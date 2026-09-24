@@ -1,0 +1,445 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Does a change to the Windows installer alter what it does?
+#
+# Six antivirus-hardening passes have shipped, each argued safe in prose. This lane replaces the
+# argument with a measurement: install from the merge base and from the candidate on two identical
+# Windows runners, and compare the user-visible transcript, the .lnk launch contract read back
+# through the shell, the generated launcher files, and whether a second install rewrites anything.
+# Zero differences is the pass condition.
+#
+# Three things make this different from the install lanes that already exist:
+#
+#   * It is DIFFERENTIAL. A single absolute verdict on a 443 KB script is noise; a delta is not. The
+#     two sides run in parallel, so the wall clock is one install rather than two.
+#   * VOID is a first-class outcome. Same commit on both sides, missing evidence, an installer that
+#     did not finish -- each of those is reported as "nothing was measured" and exits non-zero, with
+#     a distinct exit code from "it changed". A lane whose broken state looks like its clean state is
+#     worse than no lane.
+#   * The comparer runs its own positive controls BEFORE it compares anything, and refuses to
+#     produce a verdict if they fail. Unit tests for it are in
+#     tests/python/test_installer_differential_comparer.py, and they test the failure direction
+#     harder than the pass direction.
+#
+# Deliberately not a required check and deliberately not on every push: two full clean-machine
+# installs is expensive, and the installer changes it judges are rare. Run it with the
+# `installer-differential` label, by dispatch, or wait for the weekly schedule.
+#
+# What this lane cannot answer: anything about a third-party antivirus. Hosted runners have none,
+# and installing an endpoint agent per run is neither fast nor faithful. It also cannot answer
+# anything about Windows PowerShell 5.1 at a real console -- see windows-vt-preflight.yml for that.
+
+name: "Windows: installer differential (base vs head)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: "What to compare against (default: the PR merge base, or main)"
+        required: false
+        default: ''
+  pull_request:
+    types: [labeled, synchronize]
+    paths:
+      # Only what this lane actually runs. The measurement invokes install.ps1, which hands off to
+      # studio/setup.ps1, and nothing here executes studio/setup.bat or scripts/uninstall.ps1 --
+      # a PR touching either used to start this workflow, produce identical evidence on both legs
+      # because neither file was ever read, and report PASS without having tested the change. A
+      # green lane that did not exercise the thing is worse than no lane, so the trigger now
+      # matches the coverage. studio/setup.bat is covered by tests/studio/test_installer_av_shapes.py
+      # and scripts/uninstall.ps1 by tests/studio/test_uninstall_dual_install_icon.ps1.
+      - 'install.ps1'
+      - 'studio/setup.ps1'
+      - '.github/scripts/Collect-InstallerEvidence.ps1'
+      - '.github/scripts/compare_installer_evidence.py'
+      - '.github/workflows/windows-installer-differential-ci.yml'
+  schedule:
+    # Weekly, against main's own merge base, so the lane is known to work before it is relied on to
+    # judge a change. A differential lane that has not run in a month is not evidence of anything.
+    - cron: '17 5 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  # The label is part of the group, not only of the step gate. Workflow concurrency is evaluated
+  # before any job runs, so a step that decides to do nothing still cancelled the measurement that
+  # was in flight: applying any label to a PR whose files match the filter above started a run,
+  # that run took this group, and the installs already going were killed. Label events that are not
+  # `installer-differential` now share a group of their own, so they cancel each other and never a
+  # measurement.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ (github.event.action == 'labeled' && github.event.label.name != 'installer-differential') && 'unrelated-label' || 'measure' }}
+  cancel-in-progress: true
+
+env:
+  UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK: '1'
+  UNSLOTH_SKIP_AUTOSTART: '1'
+  # No colour and no spinner: this lane diffs the transcript, and a redraw is noise the comparer
+  # would have to strip. It strips it anyway, but not needing to is better.
+  NO_COLOR: '1'
+
+jobs:
+  resolve:
+    name: is there anything to compare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      base_sha: ${{ steps.pick.outputs.base_sha }}
+      head_sha: ${{ steps.pick.outputs.head_sha }}
+      proceed: ${{ steps.pick.outputs.proceed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Skip unless the label asked for it
+        id: gate
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          NEW_LABEL: ${{ github.event.label.name }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "wanted=1" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # On a `labeled` event, the label that was just applied, not the PR's whole list. With the
+          # full list, adding ANY label to a PR that already carries this one started the lane again,
+          # and the concurrency group has cancel-in-progress, so a measurement already running was
+          # cancelled and restarted by an unrelated label. `synchronize` still reads the full list,
+          # because there no single label was applied and the question is whether the PR has opted in.
+          if [ "$ACTION" = "labeled" ]; then
+            if [ "$NEW_LABEL" = "installer-differential" ]; then
+              echo "wanted=1" >> "$GITHUB_OUTPUT"
+            else
+              echo "wanted=0" >> "$GITHUB_OUTPUT"
+              echo "the label just applied is '$NEW_LABEL', not 'installer-differential'; not restarting two clean installs for it"
+            fi
+            exit 0
+          fi
+          # Two full installs per run, so a pull_request only opts in by label. `synchronize` is in
+          # the trigger list so that a labelled PR keeps being re-measured as it is pushed to;
+          # without it the verdict would be about whichever commit happened to be there when the
+          # label was applied.
+          # The quotes are part of the match. A bare substring would also fire on a future
+          # `installer-differential-skip`, which is the one label that must not start two installs.
+          if echo "$LABELS" | grep -q '"installer-differential"'; then
+            echo "wanted=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "wanted=0" >> "$GITHUB_OUTPUT"
+            echo "no 'installer-differential' label; this lane costs two clean installs so it opts in"
+          fi
+
+      - name: Pick the two commits
+        id: pick
+        if: steps.gate.outputs.wanted == '1'
+        env:
+          BASE_INPUT: ${{ inputs.base_ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          head="${PR_HEAD:-$(git rev-parse HEAD)}"
+
+          if [ -n "$BASE_INPUT" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_INPUT" 2>/dev/null || true
+            # --verify --quiet on every one of these, not `2>/dev/null`. rev-parse ECHOES an
+            # argument it cannot resolve to stdout before failing, so `a || b` captured the literal
+            # AND the fallback's SHA and $base became two lines. base_ref=main is the documented
+            # input and hits it every time: a checkout has origin/main and no local main.
+            base="$(git rev-parse --verify --quiet "$BASE_INPUT^{commit}" || git rev-parse --verify --quiet FETCH_HEAD || true)"
+            if [ -z "$base" ]; then
+              echo "::error::base_ref '$BASE_INPUT' could not be resolved to a commit, so there is no baseline to measure against."
+              echo "proceed=0" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          elif [ -n "${PR_BASE:-}" ]; then
+            # The merge base, not the base branch tip. Comparing against a tip that has moved on
+            # attributes somebody else's merged change to this PR.
+            base="$(git merge-base "$PR_BASE" "$head")"
+          else
+            # The default branch's merge base, which is what the base_ref input documents. HEAD~1 was
+            # wrong for the case this branch actually serves: a manual dispatch on a feature branch
+            # with more than one commit, where an installer change from an earlier commit is already
+            # in both HEAD and HEAD~1, so the lane compared two trees that share it and reported PASS
+            # without ever testing it against main.
+            git fetch --no-tags origin "$DEFAULT_BRANCH" 2>/dev/null || true
+            default_tip="$(git rev-parse --verify --quiet FETCH_HEAD || git rev-parse --verify --quiet "origin/$DEFAULT_BRANCH" || true)"
+            base="$(git merge-base "$default_tip" "$head" 2>/dev/null || true)"
+            if [ -n "$default_tip" ] && [ "$head" = "$default_tip" ]; then
+              # We ARE the tip of the default branch: the weekly health run, and a manual dispatch
+              # from main. The merge base of main with main is main, and the same-commit guard below
+              # would VOID every scheduled run, so the baseline here is the previous commit. That is
+              # the right question for a health run, whose job is to show the lane still works.
+              #
+              # Compared against the fetched TIP, not inferred from the merge base being head. Head
+              # being an ancestor of the default branch also makes that merge base head -- a dispatch
+              # at an older main commit, or a branch with no commits of its own -- and substituting
+              # HEAD~1 there measured two adjacent historical commits and could report PASS for a
+              # comparison nobody asked for. Those cases fall through to the same-commit guard and
+              # are VOID, which is the honest answer: there is nothing of this branch to measure.
+              echo "head is the tip of $DEFAULT_BRANCH, so this compares it against the previous commit on that branch"
+              base="$(git rev-parse HEAD~1)"
+            elif [ -z "$base" ]; then
+              # Said out loud. HEAD~1 answers a narrower question than this lane claims to, and a
+              # reader has to know which one they got.
+              echo "::warning::could not resolve $DEFAULT_BRANCH, so this compares against HEAD~1. That is the previous commit, not the default branch, and an installer change older than one commit is present on both sides."
+              base="$(git rev-parse HEAD~1)"
+            fi
+          fi
+
+          echo "base_sha=$base" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head" >> "$GITHUB_OUTPUT"
+          echo "base $base"
+          echo "head $head"
+
+          if [ "$base" = "$head" ]; then
+            # Not a pass. Comparing a commit with itself shows the lane is deterministic and
+            # nothing else, and reporting "no differences" for it would be a lie.
+            echo "::error::base and head are the same commit ($base), so there is nothing to compare."
+            echo "::error::VOID. Pass base_ref explicitly if you meant to compare against something else."
+            echo "proceed=0" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          changed="$(git diff --name-only "$base".."$head" -- install.ps1 studio/setup.ps1 \
+                      studio/setup.bat scripts/uninstall.ps1 install.sh | tr '\n' ' ')"
+          if [ -n "$changed" ]; then
+            echo "installer files changed between the two: $changed"
+          else
+            # Still worth running. It measures the lane itself, and it is the only way to learn
+            # that two installs of adjacent commits differ for reasons outside these files.
+            echo "::notice::no installer file changed between the two commits; this run measures the lane"
+          fi
+          echo "proceed=1" >> "$GITHUB_OUTPUT"
+
+      - name: Prove the comparer can still fail
+        if: steps.gate.outputs.wanted == '1'
+        run: |
+          set -euo pipefail
+          # Before either install starts. If the comparer's normalisation has drifted wide enough to
+          # swallow a real change, the two installs are 90 minutes of runner time spent producing a
+          # green check that means nothing, and it is far better to learn that here.
+          python .github/scripts/compare_installer_evidence.py --self-test
+
+  measure:
+    name: install from ${{ matrix.side }}
+    needs: resolve
+    if: needs.resolve.outputs.proceed == '1'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        side: [base, head]
+    steps:
+      - name: Check out the ${{ matrix.side }} commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.side == 'base' && needs.resolve.outputs.base_sha || needs.resolve.outputs.head_sha }}
+          persist-credentials: false
+
+      - name: Confirm this really is the ${{ matrix.side }} commit
+        shell: pwsh
+        env:
+          WANT: ${{ matrix.side == 'base' && needs.resolve.outputs.base_sha || needs.resolve.outputs.head_sha }}
+        run: |
+          # Without this, a checkout that silently resolved to the default branch would make both
+          # sides the same tree, the comparison trivially pass, and the lane report that a change
+          # broke nothing while never having seen the change.
+          $got = (git rev-parse HEAD).Trim()
+          Write-Host "checked out $got, wanted $env:WANT"
+          if ($got -ne $env:WANT) {
+            Write-Host "::error::checkout resolved to $got instead of $env:WANT. Refusing to measure: both sides would be the same tree and the comparison would pass for the wrong reason."
+            exit 1
+          }
+
+      # The collector and the comparer come from the HEAD of this branch on both sides on purpose.
+      # A base commit that predates them has neither, and even where it has both, measuring the two
+      # sides with two different rulers is not a measurement.
+      - name: Take the measuring tools from the candidate, not from each side
+        shell: pwsh
+        env:
+          TOOLS_REF: ${{ needs.resolve.outputs.head_sha }}
+        run: |
+          $tools = Join-Path $env:RUNNER_TEMP 'tools'
+          New-Item -ItemType Directory -Force -Path $tools | Out-Null
+          git fetch --no-tags --depth=1 origin $env:TOOLS_REF 2>&1 | Out-Null
+          foreach ($f in @('.github/scripts/Collect-InstallerEvidence.ps1',
+                           '.github/scripts/compare_installer_evidence.py')) {
+            $leaf = Split-Path $f -Leaf
+            $dest = Join-Path $tools $leaf
+            git show "$($env:TOOLS_REF):$f" | Set-Content -LiteralPath $dest -Encoding utf8
+            # Test-Path is not the check it looks like: a failed `git show` writes nothing down the
+            # pipeline, Set-Content still creates the file, and the guard passes on a zero-byte
+            # collector that then collects nothing. Both the exit status and the size are checked.
+            $code = $LASTEXITCODE
+            $size = if (Test-Path -LiteralPath $dest) { (Get-Item -LiteralPath $dest).Length } else { -1 }
+            if ($code -ne 0 -or $size -lt 1) {
+              Write-Host "::error::could not extract $f from $env:TOOLS_REF (git exit $code, $size bytes); the two sides would be measured differently"
+              exit 1
+            }
+          }
+          "UNSLOTH_EVIDENCE_TOOLS=$tools" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "measuring tools taken from $env:TOOLS_REF"
+
+      - name: Install, capturing every line it prints
+        id: install
+        shell: pwsh
+        env:
+          # Without this, install.ps1 installs `unsloth` from PyPI and the `studio setup` handoff
+          # resolves studio/setup.ps1 from the RELEASED wheel, so both legs would exercise the same
+          # released setup code and report PASS without ever running the candidate -- even though
+          # studio/setup.ps1 and studio/setup.bat are two of this workflow's own triggers.
+          # install.ps1:7172-7185 documents the mechanism; the overlay makes _PACKAGE_ROOT resolve
+          # to this leg's checkout by PEP 660 __file__.
+          UNSLOTH_CI_SOURCE_OVERLAY: ${{ github.workspace }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # Deliberately NO UNSLOTH_STUDIO_HOME. Setting it puts install.ps1 into
+          # StudioRedirectMode 'env', and New-StudioShortcuts returns before creating any .lnk
+          # (install.ps1:3398), because in that mode a shortcut may point at a deleted workspace.
+          # Both manifests then came back empty, so the shortcut comparison -- the one that sees a
+          # change to -WindowStyle or -ExecutionPolicy, which is what this whole effort is about --
+          # compared nothing at all. Isolation does not need the override: base and head are
+          # separate matrix legs on separate throwaway runners.
+          $out = Join-Path $env:RUNNER_TEMP 'evidence'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $transcript = Join-Path $out 'transcript.txt'
+
+          # Tee, not redirect: the log has to stay readable in the run's own output, and a lane
+          # nobody can debug from the web UI gets deleted the first time it is inconvenient.
+          & powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File ./install.ps1 2>&1 |
+            Tee-Object -FilePath $transcript
+          $code = $LASTEXITCODE
+          if ($null -eq $code) { $code = -1 }
+          Write-Host "installer exited $code"
+          "install_exit=$code" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          # Into the evidence directory, not only into a step output. A step output does not cross
+          # into the compare job, so without this the comparer never sees whether the installer
+          # finished -- and two installs that failed the same way print matching transcripts, leave
+          # matching empty manifests, and read as "no behaviour difference".
+          [ordered]@{ side = '${{ matrix.side }}'; installExit = $code } |
+            ConvertTo-Json -Depth 4 |
+            Set-Content -LiteralPath (Join-Path $out 'run.json') -Encoding utf8
+          # Not a failure here. An installer that did not finish is recorded, and the comparer calls
+          # the run VOID -- which is the honest outcome, and distinguishable from "it changed".
+          exit 0
+
+      - name: Record what it left behind
+        if: always()
+        shell: pwsh
+        run: |
+          # The default install root, matching the install above. install.ps1 derives it the same
+          # way when no override is set (install.ps1:1566).
+          $studioHome = Join-Path $env:USERPROFILE '.unsloth\studio'
+          # The launcher lives here on a normal-profile install, not under $StudioHome.
+          $studioData = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Unsloth Studio' } else { $studioHome }
+          & (Join-Path $env:UNSLOTH_EVIDENCE_TOOLS 'Collect-InstallerEvidence.ps1') `
+            -StudioHome $studioHome -StudioDataDir $studioData `
+            -OutDir (Join-Path $env:RUNNER_TEMP 'evidence')
+
+      - name: Install a second time, and check it rewrote nothing
+        if: always()
+        shell: pwsh
+        env:
+          UNSLOTH_CI_SOURCE_OVERLAY: ${{ github.workspace }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $studioHome = Join-Path $env:USERPROFILE '.unsloth\studio'
+          $studioData = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Unsloth Studio' } else { $studioHome }
+          $out = Join-Path $env:RUNNER_TEMP 'evidence'
+          $first = Join-Path $env:RUNNER_TEMP 'first-run-artifacts.json'
+          Copy-Item -LiteralPath (Join-Path $out 'artifacts.json') -Destination $first -Force
+
+          # Several of the changes this lane judges touch content-comparison paths -- the code that
+          # decides whether a launcher needs rewriting at all -- so "a reinstall writes nothing" is
+          # a contract that can break silently.
+          & powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File ./install.ps1 2>&1 |
+            Tee-Object -FilePath (Join-Path $out 'transcript-second-run.txt') | Out-Null
+          $code = $LASTEXITCODE
+          if ($null -eq $code) { $code = -1 }
+          Write-Host "second install exited $code"
+
+          & (Join-Path $env:UNSLOTH_EVIDENCE_TOOLS 'Collect-InstallerEvidence.ps1') `
+            -StudioHome $studioHome -StudioDataDir $studioData -OutDir $out -CompareAgainst $first
+
+          # Merged rather than overwritten, so a second-install step that runs after a failed first
+          # one cannot quietly drop the first install's exit status and leave the evidence looking
+          # complete.
+          $runFile = Join-Path $out 'run.json'
+          $run = if (Test-Path -LiteralPath $runFile) {
+            Get-Content -Raw -LiteralPath $runFile | ConvertFrom-Json
+          } else { $null }
+          $first_code = if ($run -and $null -ne $run.installExit) { [int]$run.installExit } else { -1 }
+          [ordered]@{
+            side              = '${{ matrix.side }}'
+            installExit       = $first_code
+            secondInstallExit = $code
+          } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $runFile -Encoding utf8
+          Get-Content -Raw -LiteralPath $runFile
+          exit 0
+
+      - name: Upload this side's evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: installer-evidence-${{ matrix.side }}
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: warn
+          retention-days: 30
+
+  compare:
+    name: did anything the user sees change
+    needs: [resolve, measure]
+    # always(), so a side that failed still produces a verdict. The verdict in that case is VOID,
+    # which is the point: "we could not measure" has to be visible and must not read as a pass.
+    if: always() && needs.resolve.outputs.proceed == '1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.head_sha }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        continue-on-error: true
+        id: dl_base
+        with:
+          name: installer-evidence-base
+          path: evidence/base
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        continue-on-error: true
+        id: dl_head
+        with:
+          name: installer-evidence-head
+          path: evidence/head
+
+      - name: Prove the comparer can still fail, then compare
+        run: |
+          set -euo pipefail
+          # Again, immediately before the verdict. The run above was 10 minutes and two installs
+          # ago, and this is the assertion the whole lane rests on.
+          python .github/scripts/compare_installer_evidence.py --self-test
+          echo
+          set +e
+          python .github/scripts/compare_installer_evidence.py \
+            --base evidence/base --head evidence/head \
+            --base-sha '${{ needs.resolve.outputs.base_sha }}' \
+            --head-sha '${{ needs.resolve.outputs.head_sha }}'
+          code=$?
+          set -e
+          case "$code" in
+            0) echo "VERDICT: no behaviour difference." ;;
+            2) echo "::error::VERDICT: the installer's behaviour changed. See the differences above."
+               echo "::error::If the change is intended, say so in the PR and update whichever test pins the old behaviour. Do not widen the comparer's normalisation to make this green." ;;
+            3) echo "::error::VERDICT: VOID. Nothing was compared, so nothing was shown to be unchanged." ;;
+            *) echo "::error::VERDICT: the comparer itself failed (exit $code); no verdict." ;;
+          esac
+          exit "$code"

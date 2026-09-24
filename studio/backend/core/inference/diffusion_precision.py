@@ -82,6 +82,41 @@ def normalize_te_quant(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
+def te_quant_is_auto(value: Optional[str]) -> bool:
+    """Whether ``value`` is the UNSET side of the text-encoder tri-state (unset / "" / "auto").
+
+    ``normalize_te_quant`` folds "none" and "off" into the same None, which is right for every
+    caller that only needs a scheme, and wrong for the one that has to tell "choose for me" from
+    "leave it alone". Reads the raw request, so it must run before normalising.
+    """
+    if value is None:
+        return True
+    normalized = str(value).strip().lower().replace("-", "_")
+    return not normalized or normalized == "auto"
+
+
+def resolve_te_quant_request(
+    value: Optional[str], auto_scheme: Optional[str]
+) -> tuple[Optional[str], bool]:
+    """``(mode, auto_selected)`` for a raw text-encoder request on a family offering ``auto_scheme``.
+
+    The tri-state: unset / "auto" takes ``auto_scheme`` (the family's ``te_quant_auto``, None on a
+    family that has not opted in); "none" / "off" pins the released bf16 encoder; an explicit
+    scheme pins that scheme. ``auto_selected`` is what keeps an auto pick from being reported as a
+    request the caller made, and from REFUSING the load when it does not engage: nobody asked for
+    it, so falling back to dense is the correct outcome rather than an error.
+
+    Raises ValueError for an unsupported explicit value, via ``normalize_te_quant``.
+    """
+    if not te_quant_is_auto(value):
+        return normalize_te_quant(value), False
+    if auto_scheme is None:
+        return None, False
+    # Validate the family's own field rather than trusting it: a typo here would otherwise reach
+    # quantize_text_encoders as an unknown mode on every default load of that family.
+    return normalize_te_quant(auto_scheme), True
+
+
 def effective_te_quant(mode: Optional[str], family: Optional[str]) -> Optional[str]:
     """The text-encoder mode ``quantize_text_encoders`` will ACTUALLY attempt for ``family``.
 
@@ -365,7 +400,6 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
     from diffusers.hooks import apply_layerwise_casting
     from diffusers.hooks.layerwise_casting import DEFAULT_SKIP_MODULES_PATTERN
 
-    # idempotent, keyed on the completion marker NOT hook presence
     # Idempotent: a pre-cast encoder arrives with the layerwise hooks installed and re-registering a hook name raises,
     # which would report an engaged cast as failed. Keyed on the completion marker, NOT hook presence, so a mid-pass
     # failure still fails closed.
@@ -398,7 +432,6 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
         storage_dtype = torch.float8_e4m3fn,
         compute_dtype = target.dtype,
         skip_modules_pattern = skip,
-        # fp8-ing nn.Embedding would put every prompt token on the coarse fp8 grid
         # Keep token-embedding tables full precision: the diffusers default only skips vision pos/patch embeds, and
         # fp8-ing nn.Embedding puts every prompt token on the coarse fp8 grid.
         skip_modules_classes = (torch.nn.Embedding,),
@@ -459,12 +492,17 @@ def _cast_nvfp4(encoder: Any, target: Any) -> None:
     # exclusions as the int8/fp8 TE modes; require_bf16 skips non-bf16 Linears so the cast engages instead of aborting.
     from torchao.quantization import quantize_
     from torchao.prototype.mx_formats import NVFP4WeightOnlyConfig
-    from .diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES, make_filter_fn
+    from .diffusion_transformer_quant import (
+        DEFAULT_MIN_LINEAR_FEATURES,
+        _quiet_config,
+        make_filter_fn,
+    )
 
     filter_fn = make_filter_fn(
         DEFAULT_MIN_LINEAR_FEATURES, _te_exclude_tokens(encoder), require_bf16 = True
     )
-    quantize_(encoder, NVFP4WeightOnlyConfig(), filter_fn = filter_fn)
+    # No-op today (the prototype config has no set_inductor_config knob), but no torchao config is built bare.
+    quantize_(encoder, _quiet_config(NVFP4WeightOnlyConfig), filter_fn = filter_fn)
 
 
 def _warn(logger: Any, what: str, exc: Exception) -> None:

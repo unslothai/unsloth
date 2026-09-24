@@ -1,17 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-API routes for external LLM provider management.
-
-Endpoints:
-  - Discover available provider types (registry)
-  - CRUD for saved provider configurations and API keys
-  - Fetch the RSA public key for API key encryption
-  - Test provider connectivity
-  - List models from a provider
+"""API routes for external LLM provider management: the provider-type registry, CRUD for saved provider
+configurations and their API keys, the RSA public key used to encrypt those keys, connectivity tests, and model
+listing.
 """
 
+import asyncio
+import json
+import time
 import uuid
 from typing import Optional
 
@@ -44,10 +41,18 @@ from core.inference.pricing import pricing_snapshot
 from core.inference.external_provider import ExternalProviderClient
 
 from core.inference import openai_codex_auth, openai_codex_client
+from core.inference.provider_model_capabilities import (
+    MODEL_CAPABILITY_PROVIDERS,
+    MODELS_DEV_URL,
+    provider_model_capabilities,
+    trim_models_dev_catalog,
+)
 from models.providers import (
+    ModelCatalogResponse,
     ProviderCreate,
     ProviderCredentialMigration,
     ProviderModelsRequest,
+    ProviderModelCapabilityInfo,
     ProviderModelInfo,
     ProviderResponse,
     ProviderRegistryEntry,
@@ -56,11 +61,17 @@ from models.providers import (
     ProviderUpdate,
 )
 from storage import credential_secrets, providers_db
+from hub.services.models import account_access
+from utils.paths.storage_roots import cache_root
 from utils.utils import safe_curated_detail, log_and_http_error
 
 logger = structlog.get_logger(__name__)
 
-router = APIRouter()
+
+router = APIRouter(dependencies = [Depends(get_current_subject)])
+
+_MAX_RESPONSES_CONNECTIVITY_MODELS = 5
+_PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS = 15.0
 
 
 def _provider_response(row: dict) -> ProviderResponse:
@@ -69,6 +80,7 @@ def _provider_response(row: dict) -> ProviderResponse:
         provider_type = row["provider_type"],
         display_name = row["display_name"],
         base_url = row["base_url"],
+        api_type = row.get("api_type", "chat_completions"),
         is_enabled = bool(row["is_enabled"]),
         has_api_key = credential_secrets.has_secret(
             credential_secrets.PROVIDER_API_KEY_KIND,
@@ -114,9 +126,9 @@ def _validate_provider_auth_contract(
         raise HTTPException(status_code = 400, detail = "ChatGPT subscription routing is fixed.")
     if models is None:
         return
-    # Same order of evidence the chat route uses, so a save cannot persist a model that
-    # every send would then refuse: the plan's catalog once it is known, otherwise the
-    # seed, plus what this row already carries unless it was left by another account.
+    # Same order of evidence the chat route uses, so a save cannot persist a model that every send would then
+    # refuse: the plan's catalog once it is known, otherwise the seed, plus what this row already carries unless it
+    # was left by another account.
     if provider_id and openai_codex_client.subscription_catalog_known(provider_id):
         allowed = openai_codex_client.offered_subscription_model_ids(provider_id) | {
             slug
@@ -145,24 +157,16 @@ def _validate_max_output_tokens_contract(
     field_was_set: bool,
     value: Optional[int] = None,
 ) -> None:
-    """Reject a non-null override on a ChatGPT subscription.
-
-    Codex routing, model list and output cap are all fixed, so an override stored there
-    would never be read. Every other type takes one: the frontend uses it to lower a
-    model's documented cap, or to replace the 32,768-token fallback for a model with no
-    documented cap.
-
-    An explicit null is allowed everywhere, Codex included: a blank field serialises as
-    null rather than as an omission, and clearing an absent override is a no-op.
-    """
+    """Reject a non-null override on a ChatGPT subscription. Codex routing, model list and output cap
+    are all fixed, so an override stored there would never be read. Every other type takes one: the
+    frontend uses it to lower a model's documented cap, or to replace the 32,768-token fallback for
+    a model with no documented cap. An explicit null is allowed everywhere, Codex included: a blank
+    field serialises as null rather than as an omission, and clearing an absent override is a no-op."""
     if field_was_set and value is not None and provider_type == "openai_codex":
         raise HTTPException(
             status_code = 400,
             detail = "ChatGPT subscriptions use a fixed Max Tokens limit.",
         )
-
-
-# ── Public key for API key encryption ─────────────────────────────
 
 
 @router.get("/public-key")
@@ -176,9 +180,6 @@ async def get_public_key(current_subject: str = Depends(get_current_subject)):
         "public_key": get_public_key_pem(),
         "fingerprint": get_public_key_fingerprint(),
     }
-
-
-# ── Provider registry (static) ───────────────────────────────────
 
 
 @router.get("/registry", response_model = list[ProviderRegistryEntry])
@@ -196,17 +197,11 @@ async def list_registry(
     return list_available_providers(include_hidden = include_hidden)
 
 
-# ── Per-MTok pricing snapshot for client-side cost display ──────────
-
-
 @router.get("/pricing")
 async def get_pricing_snapshot(current_subject: str = Depends(get_current_subject)):
     """Static per-MTok pricing table the frontend uses to convert upstream
     usage into per-turn USD cost. See ``core/inference/pricing.py`` for sourcing."""
     return pricing_snapshot()
-
-
-# ── Provider config CRUD ──────────────────────────────────────────
 
 
 # FastAPI offloads sync reads; mutations stay on-loop to preserve atomic sequences.
@@ -271,6 +266,7 @@ async def create_provider_config(
             models = payload.models,
             available_models = payload.available_models,
             max_output_tokens = payload.max_output_tokens,
+            api_type = payload.api_type,
         )
         try:
             if api_key:
@@ -306,15 +302,13 @@ async def update_provider_config(
         payload.max_output_tokens,
     )
     persisted_models = list(existing.get("models") or [])
-    # One reading of who owns this connection, used for every decision in this request:
-    # a second lookup later could name a different account than the one the selection was
-    # actually judged against.
+    # One reading of who owns this connection, used for every decision in this request: a second lookup later could
+    # name a different account than the one the selection was actually judged against.
     validated_account: str | None = None
     if existing_info.get("auth_kind") == "chatgpt_oauth":
-        # The OAuth bundle is shared through the installation DB while the catalog is per
-        # process, so another worker may have rebound this connection. The chat route
-        # makes the same check; without it here a save would persist exactly what every
-        # send then refuses.
+        # The OAuth bundle is shared through the installation DB while the catalog is per process, so another worker
+        # may have rebound this connection. The chat route makes the same check; without it here a save would persist
+        # exactly what every send then refuses.
         current_bundle = openai_codex_auth.load_oauth_bundle(provider_id)
         validated_account = current_bundle.get("account_id") if current_bundle else None
         current_account = validated_account
@@ -324,10 +318,9 @@ async def update_provider_config(
             openai_codex_client.forget_subscription_models(provider_id)
             openai_codex_client.mark_subscription_catalog_stale(provider_id)
     if existing_info.get("auth_kind") == "chatgpt_oauth" and payload.models:
-        # Only a slug that is neither seeded nor already saved here needs the plan
-        # catalog. Reaching upstream for the others would make an ordinary save wait out
-        # the 20s connect / 120s read timeout whenever ChatGPT is unreachable, and would
-        # fail an unrelated edit to a connection whose selection was accepted long ago.
+        # Only a slug that is neither seeded nor already saved here needs the plan catalog. Reaching upstream for the
+        # others would make an ordinary save wait out the 20s connect / 120s read timeout whenever ChatGPT is
+        # unreachable, and would fail an unrelated edit to a connection whose selection was accepted long ago.
         unproven = (
             set(payload.models) - set(existing_info["default_models"]) - set(persisted_models)
         )
@@ -364,12 +357,12 @@ async def update_provider_config(
         "models",
         "available_models",
         "max_output_tokens",
+        "api_type",
     }
     metadata_requested = bool(payload.model_fields_set & metadata_fields)
 
-    # Only a *changed* base URL is validated. The dialog re-sends the stored value
-    # on every edit, so validating an unchanged legacy row would lock the user out
-    # of editing its models or API key. Outbound use is still checked.
+    # Only a *changed* base URL is validated. The dialog re-sends the stored value on every edit, so validating an
+    # unchanged legacy row would lock the user out of editing its models or API key. Outbound use is still checked.
     base_url = payload.base_url
     if base_url and base_url != existing["base_url"]:
         try:
@@ -395,6 +388,7 @@ async def update_provider_config(
             is_enabled = payload.is_enabled,
             models = payload.models,
             available_models = payload.available_models,
+            api_type = payload.api_type,
         )
         if max_output_tokens_requested:
             metadata_updates["max_output_tokens"] = payload.max_output_tokens
@@ -407,6 +401,7 @@ async def update_provider_config(
         models = existing.get("models") or [],
         available_models = existing.get("available_models") or [],
         max_output_tokens = existing.get("max_output_tokens"),
+        api_type = existing.get("api_type", "chat_completions"),
     )
 
     def _current_matches(current: dict, field: str, written) -> bool:
@@ -416,17 +411,14 @@ async def update_provider_config(
         return current.get(field) == written
 
     def _restore_metadata() -> None:
-        """Undo this request's own metadata write, while it is still the row.
-
-        update_provider commits and closes its own connection, so the row is already
-        durable by the time any later step fails; a compensating write is the only undo
-        there is. This handler suspends between that commit and the proof write, though
-        (remember_catalog_account awaits a 30s file lock, and the failure worth undoing is
-        exactly the one where that lock was contended), so a second save can land in
-        between. Restoring the whole pre-request snapshot would silently erase it. Put
-        back only the columns this request set, and only those the row still holds this
-        request's value for: a column a later save has since claimed belongs to that save.
-        """
+        """Undo this request's own metadata write, while it is still the row. update_provider commits
+        and closes its own connection, so the row is already durable by the time any later step
+        fails; a compensating write is the only undo there is. This handler suspends between that
+        commit and the proof write, though (remember_catalog_account awaits a 30s file lock, and the
+        failure worth undoing is exactly the one where that lock was contended), so a second save
+        can land in between. Restoring the whole pre-request snapshot would silently erase it. Put
+        back only the columns this request set, and only those the row still holds this request's
+        value for: a column a later save has since claimed belongs to that save."""
         if not metadata_requested:
             return
         current = providers_db.get_provider(provider_id)
@@ -436,9 +428,8 @@ async def update_provider_config(
         for field, written in metadata_updates.items():
             if field == "id":
                 continue
-            # None means "not sent" for every column but max_output_tokens, which is only
-            # present here when it was explicitly requested. update_provider left the
-            # unsent ones alone, so there is nothing of this request's to take back.
+            # None means "not sent" for every column but max_output_tokens, which is only present here when it was
+            # explicitly requested. update_provider left the unsent ones alone, so there is nothing to take back.
             if written is None and field != "max_output_tokens":
                 continue
             if not _current_matches(current, field, written):
@@ -482,18 +473,15 @@ async def update_provider_config(
 
     row = providers_db.get_provider(provider_id)
     if existing_info.get("auth_kind") == "chatgpt_oauth" and payload.models is not None:
-        # Record the proof here rather than when a catalog is read: reading one only
-        # shows which account answered, while this is the point where the row's models
-        # were actually judged against it and stored.
-        # The account the selection was judged against, not whatever owns the connection
-        # by now. remember_catalog_account re-reads under the guard and declines to write
-        # when the bundle has moved on, so a rebind in between records nothing.
-        # Written after the row, never before: a proof recorded ahead of a commit that
-        # then failed would license models this connection never saved. Recording it is
-        # part of the save, so a failure here undoes the row too. Leaving the new models
-        # behind without the proof is the state saved_models_proven_for exists to catch,
-        # and it outlives the process: after a restart, with the plan catalog unreadable,
-        # the row's own slugs stop authorizing chat and the next save is refused as well.
+        # Record the proof here rather than when a catalog is read: reading one only shows which account answered,
+        # while this is the point where the row's models were actually judged against it and stored. The account the
+        # selection was judged against, not whatever owns the connection by now: remember_catalog_account re-reads
+        # under the guard and declines to write when the bundle has moved on, so a rebind in between records nothing.
+        # Written after the row, never before: a proof recorded ahead of a commit that then failed would license
+        # models this connection never saved. Recording it is part of the save, so a failure here undoes the row too.
+        # Leaving the new models behind without the proof is the state saved_models_proven_for exists to catch, and it
+        # outlives the process: after a restart, with the plan catalog unreadable, the row's own slugs stop
+        # authorizing chat and the next save is refused as well.
         if validated_account:
             try:
                 await openai_codex_auth.remember_catalog_account(provider_id, validated_account)
@@ -534,6 +522,8 @@ async def delete_provider_config(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Idempotently delete a saved provider and its installation credential."""
+    if account_access.managed_account() and providers_db.get_provider(provider_id) is None:
+        raise HTTPException(status_code = 404, detail = "Provider config not found")
     require_ui_session(via_api_key)
     await openai_codex_auth.cancel_provider_flows(provider_id)
     credential_secrets.get_or_create_credential_encryption_key()
@@ -579,14 +569,12 @@ async def delete_provider_config(
                         "provider.delete_credential_rollback_failed", provider_id = provider_id
                     )
                 raise
-            # The plan catalog is held per connection in this process and is only
-            # released by forget_subscription_models. Disconnecting the OAuth bundle
-            # calls it, deleting the whole connection did not, so every ChatGPT
-            # connection a user removed left its catalog, its account marker and its
-            # request ticket behind for the life of the process. Ids come from uuid4 and
-            # are never reused, so nothing stale could be consulted again; it simply
-            # accumulated. Released here, after the row is gone for good, so a rolled
-            # back delete keeps the catalog it is about to need again.
+            # The plan catalog is held per connection in this process and is only released by
+            # forget_subscription_models. Disconnecting the OAuth bundle calls it, deleting the whole connection did
+            # not, so every ChatGPT connection a user removed left its catalog, its account marker and its request
+            # ticket behind for the life of the process. Ids come from uuid4 and are never reused, so nothing stale
+            # could be consulted again; it simply accumulated. Released here, after the row is gone for good, so a
+            # rolled back delete keeps the catalog it is about to need again.
             openai_codex_client.forget_subscription_models(provider_id)
 
 
@@ -609,31 +597,63 @@ def _bind_saved_provider_target(payload):
         update = {
             "provider_type": config["provider_type"],
             "base_url": config["base_url"],
+            "api_type": config.get("api_type", "chat_completions"),
         }
     )
 
 
-# ── Test connectivity ─────────────────────────────────────────────
-
-
-async def _test_custom_provider_connectivity(client, model_id: str) -> ProviderTestResult:
-    """Probe a custom OpenAI-compatible endpoint without assuming /chat/completions.
-
-      TTS-only gateways such as Kokoro expose ``/models`` and ``/audio/speech`` but
-    not ``/chat/completions``. Try those first, then fall back to a chat probe."""
+async def _test_custom_provider_connectivity(
+    client,
+    model_id: str,
+    api_type: str = "chat_completions",
+) -> ProviderTestResult:
+    """Probe a custom OpenAI-compatible endpoint without assuming /chat/completions. TTS-only gateways such as
+    Kokoro expose ``/models`` and ``/audio/speech`` but not ``/chat/completions``. Try those first, then fall
+    back to a chat probe."""
     model_id = (model_id or "").strip()
     models_error: Exception | None = None
+    models = None
     try:
         models = await client.list_models()
+    except Exception as exc:
+        models_error = exc
+
+    if models is not None and api_type != "responses":
         return ProviderTestResult(
             success = True,
             message = f"Connected successfully. Found {len(models)} model(s).",
             models_count = len(models),
         )
-    except Exception as exc:
-        models_error = exc
+
+    responses_model_ids: list[str] = []
+    if model_id and api_type == "responses":
+        responses_model_ids = [model_id]
+    elif api_type == "responses" and models is not None:
+        for model in models:
+            candidate = model.get("id") if isinstance(model, dict) else None
+            candidate = candidate.strip() if isinstance(candidate, str) else ""
+            if candidate and candidate not in responses_model_ids:
+                responses_model_ids.append(candidate)
+            if len(responses_model_ids) >= _MAX_RESPONSES_CONNECTIVITY_MODELS:
+                break
+        if not responses_model_ids:
+            return ProviderTestResult(
+                success = False,
+                message = (
+                    "Connection failed: /models responded, but no model ID was available "
+                    "to test the Responses endpoint."
+                ),
+                models_count = len(models),
+            )
+        model_id = responses_model_ids[0]
 
     if not model_id:
+        if models is not None:
+            return ProviderTestResult(
+                success = True,
+                message = f"Connected successfully. Found {len(models)} model(s).",
+                models_count = len(models),
+            )
         return ProviderTestResult(
             success = False,
             message = (
@@ -641,6 +661,56 @@ async def _test_custom_provider_connectivity(client, model_id: str) -> ProviderT
                 f"provided to test further. {safe_curated_detail(models_error)}"
             ),
             models_count = None,
+        )
+
+    if api_type == "responses":
+        last_failure = "Responses endpoint returned no completion."
+        for response_model_id in responses_model_ids:
+            try:
+                received_response = False
+                model_failure: str | None = None
+                response_stream = client.stream_chat_completion(
+                    messages = [{"role": "user", "content": "ping"}],
+                    model = response_model_id,
+                    temperature = None,
+                    top_p = None,
+                    max_tokens = 16,
+                )
+
+                async def consume_response_stream():
+                    nonlocal received_response, model_failure
+                    async for line in response_stream:
+                        if line.startswith("data: ") and line[6:].strip() != "[DONE]":
+                            event = json.loads(line[6:])
+                            received_response = received_response or bool(event.get("choices"))
+                            if event.get("error"):
+                                model_failure = event["error"].get(
+                                    "message", "Responses request failed"
+                                )
+
+                try:
+                    await asyncio.wait_for(
+                        consume_response_stream(),
+                        timeout = _PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS,
+                    )
+                finally:
+                    await response_stream.aclose()
+                if received_response and model_failure is None:
+                    return ProviderTestResult(
+                        success = True,
+                        message = "Connected successfully. Responses endpoint responded.",
+                    )
+                last_failure = model_failure or "Responses endpoint returned no completion."
+            except asyncio.TimeoutError:
+                last_failure = (
+                    "Responses endpoint timed out after "
+                    f"{_PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS:g} seconds."
+                )
+            except Exception as exc:
+                last_failure = safe_curated_detail(exc)
+        return ProviderTestResult(
+            success = False,
+            message = f"Connection failed: {last_failure}",
         )
 
     try:
@@ -663,7 +733,7 @@ async def _test_custom_provider_connectivity(client, model_id: str) -> ProviderT
             messages = [{"role": "user", "content": "ping"}],
             model = model_id,
             temperature = 0.0,
-            top_p = 1.0,
+            top_p = None,
             max_tokens = 1,
         )
         return ProviderTestResult(
@@ -729,12 +799,15 @@ async def test_provider(
         provider_type = payload.provider_type,
         base_url = base_url,
         api_key = api_key,
-        timeout = 15.0,
+        api_type = payload.api_type,
+        timeout = _PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS,
     )
 
     try:
         if payload.provider_type == "custom":
-            return await _test_custom_provider_connectivity(client, payload.model_id or "")
+            return await _test_custom_provider_connectivity(
+                client, payload.model_id or "", payload.api_type
+            )
         if info.get("model_list_mode") == "curated":
             await client.verify_models_endpoint_lightweight()
             return ProviderTestResult(
@@ -767,7 +840,126 @@ async def test_provider(
         await client.close()
 
 
-# ── List models from provider ─────────────────────────────────────
+_MODEL_CAPABILITY_CACHE_TTL_SECONDS = 3600.0
+_model_capability_cache: dict[str, tuple[float, list[dict]]] = {}
+
+
+_MODEL_CATALOG_TTL_SECONDS = 24 * 3600.0
+_model_catalog_cache: dict | None = None
+
+
+def _model_catalog_cache_path():
+    return cache_root() / "model_catalog.json"
+
+
+def _read_model_catalog_file() -> dict | None:
+    try:
+        data = json.loads(_model_catalog_cache_path().read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return None
+    if (
+        isinstance(data, dict)
+        and isinstance(data.get("providers"), dict)
+        and isinstance(data.get("fetched_at"), (int, float))
+    ):
+        return data
+    return None
+
+
+def _write_model_catalog_file(data: dict) -> None:
+    try:
+        path = _model_catalog_cache_path()
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text(json.dumps(data), encoding = "utf-8")
+    except OSError as exc:
+        logger.warning("providers.model_catalog_cache_write_failed", error = str(exc))
+
+
+async def _fetch_models_dev_catalog() -> dict:
+    from core.inference.external_provider import _client
+
+    response = await _client().get(MODELS_DEV_URL, timeout = 20.0)
+    response.raise_for_status()
+    return {"fetched_at": time.time(), "providers": trim_models_dev_catalog(response.json())}
+
+
+@router.get("/model-catalog", response_model = ModelCatalogResponse)
+async def get_model_catalog(_current_subject: str = Depends(get_current_subject)):
+    global _model_catalog_cache
+    cached = _model_catalog_cache or _read_model_catalog_file()
+    if cached is not None and time.time() - cached["fetched_at"] < _MODEL_CATALOG_TTL_SECONDS:
+        _model_catalog_cache = cached
+        return cached
+    try:
+        fresh = await _fetch_models_dev_catalog()
+    except Exception as exc:
+        logger.warning("providers.model_catalog_refresh_failed", error = str(exc))
+        if cached is not None:
+            _model_catalog_cache = cached
+            return cached
+        raise HTTPException(
+            status_code = 503, detail = "The model catalog is unavailable offline."
+        ) from None
+    _model_catalog_cache = fresh
+    _write_model_catalog_file(fresh)
+    return fresh
+
+
+@router.post("/model-capabilities", response_model = list[ProviderModelCapabilityInfo])
+async def list_provider_model_capabilities(
+    payload: ProviderModelsRequest,
+    _current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    payload = _bind_saved_provider_target(payload)
+    info = get_provider_info(payload.provider_type)
+    if info is None:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Unknown provider type: {payload.provider_type}",
+        )
+    if payload.provider_type not in MODEL_CAPABILITY_PROVIDERS:
+        return []
+
+    api_key = resolve_provider_api_key_or_400(
+        payload.provider_id,
+        payload.encrypted_api_key,
+        allow_saved_key = not via_api_key,
+    )
+    base_url = payload.base_url or info["base_url"]
+    try:
+        base_url = validate_provider_base_url(base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+
+    cache_key = f"{payload.provider_type}\n{base_url}"
+    cached = _model_capability_cache.get(cache_key)
+    if cached is not None and time.monotonic() - cached[0] < _MODEL_CAPABILITY_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    client = ExternalProviderClient(
+        provider_type = payload.provider_type,
+        base_url = base_url,
+        api_key = api_key,
+        api_type = payload.api_type,
+        timeout = 15.0,
+    )
+    try:
+        models = await client.list_models()
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            502,
+            f"Failed to list model capabilities from {payload.provider_type}.",
+            event = "providers.list_model_capabilities_failed",
+            log = logger,
+        )
+    finally:
+        await client.close()
+    capabilities = provider_model_capabilities(payload.provider_type, models)
+    if capabilities:
+        _model_capability_cache[cache_key] = (time.monotonic(), capabilities)
+    return capabilities
 
 
 @router.post("/models", response_model = list[ProviderModelInfo])
@@ -817,17 +1009,16 @@ async def list_provider_models(
         provider_type = payload.provider_type,
         base_url = base_url,
         api_key = api_key,
+        api_type = payload.api_type,
         timeout = 15.0,
     )
 
     try:
         models = await client.list_models()
-        # Registry model-id filters describe one vendor's own catalog, so they
-        # only apply on that vendor's host. A Gemini OAI-compat proxy returns
-        # prefixed ids the allowlist strips, and an Azure or self-hosted OpenAI
-        # base returns operator-chosen deployment names that can carry any word
-        # the denylist reads as non-chat (`gpt-5.5-image-analysis`). Either way
-        # the picker empties out for a connection that works.
+        # Registry model-id filters describe one vendor's own catalog, so they only apply on that vendor's host. A
+        # Gemini OAI-compat proxy returns prefixed ids the allowlist strips, and an Azure or self-hosted OpenAI base
+        # returns operator-chosen deployment names that can carry any word the denylist reads as non-chat
+        # (`gpt-5.5-image-analysis`). Either way the picker empties out for a connection that works.
         _NATIVE_HOSTS = {
             "gemini": ("generativelanguage.googleapis.com",),
             "openai": ("api.openai.com",),
@@ -859,8 +1050,8 @@ async def list_provider_models(
             denylist = info.get("model_id_denylist")
             if denylist is not None:
                 models = [m for m in models if not denylist.search(m.get("id", ""))]
-        # Optional cap after filtering to keep large catalogs picker-sized.
-        # Unsorted, so "first N matches"; pair with default_models for flagships.
+        # Optional cap after filtering to keep large catalogs picker-sized. Unsorted, so "first N matches"; pair with
+        # default_models for flagships.
         limit = info.get("model_id_limit")
         if isinstance(limit, int) and limit > 0:
             models = models[:limit]

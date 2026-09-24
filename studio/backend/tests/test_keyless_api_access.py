@@ -132,6 +132,44 @@ def test_exact_route_matrix_matches_registered_topology():
     assert intended <= registered
 
 
+def test_the_allowlisted_studio_paths_name_routes_that_exist():
+    # The matrix above pins the /v1 router. This one covers the studio router, whose
+    # paths carry a mount prefix, so a rename there cannot silently strand an entry.
+    from routes.inference import studio_router
+    from utils.keyless_api_access import _INFERENCE_ROUTES
+
+    registered = {("/api/inference" + route.path, method)
+                  for route in studio_router.routes
+                  for method in getattr(route, "methods", set())}
+    for method, path in _INFERENCE_ROUTES:
+        if path.startswith("/api/inference/"):
+            assert (path, method) in registered, path
+
+
+@pytest.mark.parametrize("token", [None, "not-needed"])
+def test_resident_model_discovery_preserves_keyless_inference_access(token):
+    seed_user()
+    set_keyless_api_access("inference", tools = False)
+
+    def discovery_request(method = "GET", path = "/api/inference/loaded-models"):
+        if token is None:
+            return request_for(path = path, method = method)
+        return bearer_request(token, path = path, method = method)
+
+    assert subject_of(discovery_request()) == storage.DEFAULT_ADMIN_USERNAME
+    for method, path in (
+        ("POST", "/api/inference/loaded-models"),
+        ("POST", "/api/inference/load"),
+        ("GET", "/api/inference/status"),
+    ):
+        with pytest.raises(HTTPException):
+            subject_of(discovery_request(method, path))
+
+    set_keyless_api_access("off")
+    with pytest.raises(HTTPException):
+        subject_of(discovery_request())
+
+
 def test_settings_are_immediate_and_fail_closed(monkeypatch):
     import storage.studio_db as studio_db
 
@@ -223,6 +261,7 @@ def test_concurrent_stale_cache_misses_coalesce_into_one_sqlite_read(monkeypatch
 
 def test_concurrent_keyless_checks_through_the_real_entrypoint_stay_bounded(monkeypatch):
     import utils.keyless_api_access as keyless
+
     from utils.keyless_api_access import asgi_request_is_keyless
 
     set_keyless_api_access("inference", tools = False)
@@ -315,8 +354,9 @@ def test_async_stale_cache_miss_broadcasts_one_refresh_result(monkeypatch):
 
 
 def test_slow_refresh_does_not_exhaust_the_anyio_worker_pool(monkeypatch):
-    import anyio.to_thread
     import utils.keyless_api_access as keyless
+
+    import anyio.to_thread
     from starlette.concurrency import run_in_threadpool
 
     set_keyless_api_access("inference", tools = False)
@@ -427,9 +467,10 @@ def test_failed_refresh_does_not_reuse_permissive_stale_settings(monkeypatch):
 
 
 def test_async_settings_tasks_do_not_retain_closed_event_loops(monkeypatch):
+    import utils.keyless_api_access as keyless
+
     import gc
     import weakref
-    import utils.keyless_api_access as keyless
 
     loop_refs = []
 

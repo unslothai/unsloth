@@ -5,6 +5,16 @@ import {
   normalizeProviderMaxOutputTokens,
   providerModelSupportsStudioTools,
 } from "./external-providers";
+import {
+  type ModelCatalogEntry,
+  REASONING_EFFORT_SCALE,
+  type ReasoningEffortLevel,
+  resolveModelCatalogEntry,
+  resolveModelCatalogEntryByName,
+  sortReasoningEfforts,
+} from "./model-catalog";
+
+export { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
 
 /** Per-provider sampling capability matrix from each provider's chat docs (2026-05).
  *  Params a provider rejects are hidden; local models use a null capability, so all render. */
@@ -31,19 +41,21 @@ export type ExternalReasoningCapabilities = {
   reasoningStyle: "enable_thinking" | "reasoning_effort" | "enable_thinking_effort";
   reasoningAlwaysOn: boolean;
   supportsReasoningOff: boolean;
-  reasoningEffortLevels: readonly (
-    | "none"
-    | "minimal"
-    | "low"
-    | "medium"
-    | "high"
-    | "max"
-    | "xhigh"
-  )[];
+  reasoningEffortLevels: readonly ReasoningEffortLevel[];
+  defaultEffort?: ReasoningEffortLevel | null;
 };
 
 /** Pick a stored effort level present in `effortLevels`, mapping legacy "xhigh" to "max"
- *  when only the latter is exposed (Claude 4.6). */
+ *  when only the latter is exposed (Claude 4.6).
+ *
+ *  An unavailable level searches DOWNWARD to the nearest offered level, so the clamp never
+ *  spends more compute than was asked for; only a level under everything on offer falls up to
+ *  the weakest rung.
+ *
+ *  "none" is the off switch, not a rung, so it is skipped unless it is what was asked for:
+ *  otherwise a thinking request clamps onto thinking disabled (Mistral's none | high turned a
+ *  stored Medium into none). llama_cpp.py strips "none" from an enable_thinking_effort ladder
+ *  for the same reason; a reasoning_effort ladder keeps it, and an explicit ask still gets it. */
 export function clampReasoningEffortToLevels(
   preferred: ExternalReasoningCapabilities["reasoningEffortLevels"][number],
   effortLevels: ExternalReasoningCapabilities["reasoningEffortLevels"],
@@ -59,7 +71,92 @@ export function clampReasoningEffortToLevels(
   if (effortLevels.includes(candidate)) {
     return candidate;
   }
+  const rank = REASONING_EFFORT_SCALE.indexOf(
+    candidate as (typeof REASONING_EFFORT_SCALE)[number],
+  );
+  if (rank !== -1) {
+    // Scale order, not the order the provider table happens to list.
+    const offered = REASONING_EFFORT_SCALE.filter((level) =>
+      effortLevels.includes(level),
+    );
+    const rungs =
+      candidate === "none" ? offered : offered.filter((level) => level !== "none");
+    const searchable = rungs.length > 0 ? rungs : offered;
+    const below = searchable.filter(
+      (level) => REASONING_EFFORT_SCALE.indexOf(level) < rank,
+    );
+    const nearest = below.length > 0 ? below[below.length - 1] : searchable[0];
+    if (nearest !== undefined) {
+      return nearest;
+    }
+  }
   return effortLevels[0] ?? "low";
+}
+
+/** Whether a level reaches the provider at all. The external request path sends reasoning_effort
+ *  for that style alone; every other style carries a bare thinking on/off, so a level chosen for
+ *  one of those is never sent. The default ladder is present either way, so the style is the only
+ *  thing that can say so. */
+export function externalReasoningTakesEffort(
+  caps: ExternalReasoningCapabilities,
+): boolean {
+  return caps.supportsReasoning && caps.reasoningStyle === "reasoning_effort";
+}
+
+/** The effort an external model should run at, pin first.
+ *
+ *  One resolver, because there are three callers and they must not disagree: a model switch, the
+ *  normalization that reruns on reload and on every provider resync, and the picker's own
+ *  per-model editor. The pin used to be read by the switch alone, so a reload or a resync put the
+ *  provider default back over it.
+ *
+ *  Pass `pinned: null` to resolve as if nothing were pinned, which is what clearing a pin needs. */
+export function resolveExternalReasoningEffort(opts: {
+  caps: ExternalReasoningCapabilities;
+  providerType: string | null | undefined;
+  apiType?: "chat_completions" | "responses";
+  /** The chat's level now: the clamp target, and what a model that cannot think keeps. */
+  current: ReasoningEffortLevel;
+  /** The level pinned on this model's picker row. Ignored when the model no longer offers it. */
+  pinned?: string | null;
+  /** Restore an existing preference without choosing a new model default. */
+  restore?: boolean;
+}): ReasoningEffortLevel {
+  const { caps, current, pinned } = opts;
+  const providerType = effectiveExternalReasoningProviderType(
+    opts.providerType,
+    opts.apiType,
+  );
+  const levels = caps.reasoningEffortLevels;
+  // A style that sends no level has nothing to resolve, and moving the chat's level for it would
+  // change what every other model runs at on the strength of a setting this one never sends.
+  if (!externalReasoningTakesEffort(caps)) return current;
+  // Set deliberately, for this model, so it outranks every default below.
+  if (pinned && levels.includes(pinned as ReasoningEffortLevel)) {
+    return pinned as ReasoningEffortLevel;
+  }
+  if (opts.restore) return clampReasoningEffortToLevels(current, levels);
+  if (caps.defaultEffort && levels.includes(caps.defaultEffort)) {
+    return caps.defaultEffort;
+  }
+  const clamped = clampReasoningEffortToLevels(current, levels);
+  // Anthropic gets the highest level, since Claude's adaptive thinking adjusts cost per turn;
+  // OpenAI gets "high"; everyone else "medium". Overridable via Think.
+  if (providerType === "anthropic") {
+    return levels.includes("xhigh")
+      ? "xhigh"
+      : levels.includes("high")
+        ? "high"
+        : clamped;
+  }
+  if (providerType === "openai") {
+    return levels.includes("high")
+      ? "high"
+      : levels.includes("medium")
+        ? "medium"
+        : clamped;
+  }
+  return levels.includes("medium") ? "medium" : clamped;
 }
 
 /** Fallback cap for a model with no documented limit and no connection override. */
@@ -71,12 +168,10 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   prefixes: readonly string[];
   cap: number;
 }> = [
-  // OpenAI. The Responses API rejects an over-limit max_output_tokens rather
-  // than clamping it, so an overstated cap is a failed request and an
-  // understated one only a shorter answer. First match wins: a bare family
-  // prefix (`gpt-5`, `gpt-4`) goes last or it swallows its own minors, and the
-  // `-chat-latest` aliases go first because they cap at 16,384 whatever their
-  // family does.
+  // OpenAI. The Responses API rejects an over-limit max_output_tokens rather than clamping it, so
+  // an overstated cap is a failed request and an understated one only a shorter answer. First match
+  // wins: a bare family prefix (`gpt-5`, `gpt-4`) goes last or it swallows its own minors, and the
+  // `-chat-latest` aliases go first because they cap at 16,384 whatever their family does.
   {
     providerType: "openai",
     prefixes: [
@@ -106,7 +201,6 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
     cap: 4096,
   },
   { providerType: "openai", prefixes: ["gpt-4"], cap: 8192 },
-  // Anthropic
   {
     providerType: "anthropic",
     prefixes: [
@@ -138,13 +232,12 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
     prefixes: ["claude-opus-4-1", "claude-opus-4-20250514"],
     cap: 32000,
   },
-  // Gemini
   {
     providerType: "gemini",
     prefixes: ["gemini-3", "gemini-pro", "gemini-flash"],
     cap: 65536,
   },
-  // DeepSeek (V4: deepseek-chat / deepseek-reasoner alias V4-flash).
+  // DeepSeek (deepseek-flash / deepseek-v4-pro).
   { providerType: "deepseek", prefixes: ["deepseek"], cap: 384000 },
 ];
 
@@ -213,7 +306,9 @@ function _publishedMaxOutputTokens(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
 ): number | null {
-  if (providerType === "openrouter") return null;
+  if (providerType === "openrouter") {
+    return resolveModelCatalogEntry(providerType, modelId)?.maxOutputTokens ?? null;
+  }
   return _documentedMaxOutputTokens(providerType, modelId);
 }
 
@@ -229,6 +324,10 @@ function _documentedMaxOutputTokens(
   if (!providerType || !modelId) return null;
   const normalized = modelId.trim().toLowerCase();
   if (!normalized) return null;
+  if (providerType === "openrouter") {
+    const live = resolveModelCatalogEntry(providerType, normalized)?.maxOutputTokens;
+    if (live != null) return live;
+  }
   const stripped =
     providerType === "openrouter" && normalized.includes("/")
       ? normalized.split("/").slice(-1)[0]
@@ -368,20 +467,53 @@ const OPENAI_CODE_EXECUTION_MODEL_PREFIXES = [
 
 /** Strict check for OpenAI managed cloud or Azure Foundry, not a custom OpenAI-compat
  *  backend: shell and image-generation tools 400 elsewhere. Mirrors _is_openai_family_cloud. */
+function isAzureOpenAICloudHost(host: string): boolean {
+  return (
+    host.endsWith(".openai.azure.com") ||
+    host.endsWith(".services.ai.azure.com")
+  );
+}
+
 function isOpenAICloudBaseUrl(baseUrl: string | null | undefined): boolean {
   if (!baseUrl) return true; // No override → uses the default openai.com base.
   try {
     const host = new URL(baseUrl).hostname.toLowerCase();
-    return host === "api.openai.com" || host.endsWith(".openai.azure.com");
+    return host === "api.openai.com" || isAzureOpenAICloudHost(host);
   } catch {
     return false;
   }
+}
+
+function isAzureOpenAICloudBaseUrl(baseUrl: string | null | undefined): boolean {
+  if (!baseUrl) return false;
+  try {
+    return isAzureOpenAICloudHost(new URL(baseUrl).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+function usesOpenAIHostedResponses(
+  providerType: string | null | undefined,
+  baseUrl: string | null | undefined,
+  apiType: "chat_completions" | "responses" | undefined,
+): boolean {
+  if (providerType === "openai") {
+    return isOpenAICloudBaseUrl(baseUrl);
+  }
+  return (
+    providerType === "custom" &&
+    apiType === "responses" &&
+    Boolean(baseUrl?.trim()) &&
+    isOpenAICloudBaseUrl(baseUrl)
+  );
 }
 
 export function providerSupportsBuiltinCodeExecution(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
   baseUrl?: string | null,
+  apiType?: "chat_completions" | "responses",
 ): boolean {
   const normalized = modelId?.trim().toLowerCase() ?? "";
   if (!normalized) return false;
@@ -390,12 +522,8 @@ export function providerSupportsBuiltinCodeExecution(
       normalized.startsWith(prefix),
     );
   }
-  if (providerType === "openai_codex") {
-    return providerModelSupportsStudioTools(providerType, modelId) === true;
-  }
-
-  if (providerType === "openai") {
-    if (!isOpenAICloudBaseUrl(baseUrl)) return false;
+  // Codex runs Studio tools locally, not provider-hosted code_execution.
+  if (usesOpenAIHostedResponses(providerType, baseUrl, apiType)) {
     return OPENAI_CODE_EXECUTION_MODEL_PREFIXES.some((prefix) =>
       normalized.startsWith(prefix),
     );
@@ -412,15 +540,20 @@ export function providerSupportsBuiltinCodeExecution(
   return false;
 }
 
-/** Whether the provider TYPE ships its own code sandbox, model aside. Mirrors backend
- *  PROVIDER_REGISTRY `hosted_tools` code_execution. Coarser than the per-model check:
- *  it asks whether running the code locally would be a relocation. */
+/** Whether this connection has its own code sandbox, model aside. Coarser than the
+ *  per-model check: it asks whether running the code locally would be a relocation. */
 const PROVIDER_TYPES_WITH_CODE_SANDBOX = new Set(["openai", "anthropic", "gemini"]);
 
 export function providerHostsCodeExecution(
   providerType: string | null | undefined,
+  baseUrl?: string | null,
+  apiType?: "chat_completions" | "responses",
 ): boolean {
-  return PROVIDER_TYPES_WITH_CODE_SANDBOX.has(providerType ?? "");
+  return (
+    PROVIDER_TYPES_WITH_CODE_SANDBOX.has(providerType ?? "") ||
+    (providerType === "custom" &&
+      usesOpenAIHostedResponses(providerType, baseUrl, apiType))
+  );
 }
 
 /** Whether provider/model exposes OpenAI's Responses-API image_generation tool. On for
@@ -441,11 +574,11 @@ export function providerSupportsBuiltinImageGeneration(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
   baseUrl?: string | null,
+  apiType?: "chat_completions" | "responses",
 ): boolean {
   const normalized = modelId?.trim().toLowerCase() ?? "";
   if (!normalized) return false;
-  if (providerType === "openai") {
-    if (!isOpenAICloudBaseUrl(baseUrl)) return false;
+  if (usesOpenAIHostedResponses(providerType, baseUrl, apiType)) {
     return OPENAI_IMAGE_GENERATION_MODEL_PREFIXES.some((prefix) =>
       normalized.startsWith(prefix),
     );
@@ -514,6 +647,12 @@ const OPENAI_COMPAT_BASE: ProviderCapabilities = {
   minP: false,
   repetitionPenalty: false,
   presencePenalty: true,
+};
+
+const CUSTOM_RESPONSES_CAPABILITIES: ProviderCapabilities = {
+  ...OPENAI_COMPAT_BASE,
+  // The Responses translator forwards temperature/top_p, but drops presence_penalty.
+  presencePenalty: false,
 };
 
 const ALL_SUPPORTED: ProviderCapabilities = {
@@ -607,12 +746,33 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
 
 const DEFAULT_EXTERNAL_CAPABILITIES = OPENAI_COMPAT_BASE;
 
+const OPENAI_RESPONSES_FIXED_SAMPLING_MODEL =
+  /^(?:gpt-5(?:[.-]|$)|gpt-4\.5(?:[.-]|$)|o\d+(?:[.-]|$)|codex-mini(?:[.-]|$)|gpt-6-astra(?:[.-]|$))/;
+
 /** Resolve the capability set for an external provider. Null for a local model, which
  *  callers treat as "every knob applies". */
 export function getProviderCapabilities(
   providerType: string | null | undefined,
+  apiType?: "chat_completions" | "responses",
+  modelId?: string | null,
+  baseUrl?: string | null,
 ): ProviderCapabilities | null {
   if (!providerType) return null;
+  if (providerType === "custom" && apiType === "responses") {
+    // Azure deployment names may not reveal the underlying model. Suppress sampling
+    // there; on api.openai.com only known fixed-sampling models need that restriction.
+    // Custom gateways may accept sampling even for those same model IDs.
+    const model = modelId?.trim().toLowerCase() ?? "";
+    if (
+      usesOpenAIHostedResponses(providerType, baseUrl, apiType) &&
+      (isAzureOpenAICloudBaseUrl(baseUrl) ||
+        (!OPENAI_NON_REASONING_CHAT_ALIAS.test(model) &&
+          OPENAI_RESPONSES_FIXED_SAMPLING_MODEL.test(model)))
+    ) {
+      return PROVIDER_CAPABILITIES.openai;
+    }
+    return CUSTOM_RESPONSES_CAPABILITIES;
+  }
   return PROVIDER_CAPABILITIES[providerType] ?? DEFAULT_EXTERNAL_CAPABILITIES;
 }
 
@@ -677,13 +837,36 @@ const ANTHROPIC_REASONING_MODELS = [
     supportsOff: true,
     levels: ["none", "low", "medium", "high"],
   },
+  {
+    // Earlier Claude 4 and 3.7 Sonnet: manual budget_tokens only, after the 4-5..4-8 entries so
+    // those match first. models.dev has no entry for these ids, so the catalog cannot cover them.
+    prefixes: [
+      "claude-opus-4-1",
+      "claude-opus-4-0",
+      "claude-opus-4-2025",
+      "claude-sonnet-4-0",
+      "claude-sonnet-4-2025",
+      "claude-3-7-sonnet",
+    ],
+    supportsOff: true,
+    levels: ["none", "low", "medium", "high"],
+  },
 ] as const;
 
 function matchesModelPrefix(
   modelId: string,
   prefixes: readonly string[],
 ): boolean {
-  return prefixes.some((prefix) => modelId.startsWith(prefix));
+  // Mirrors `_anthropic_spec_prefix_matches` in external_provider.py: a version prefix stops at a
+  // boundary, a date-truncated one ("claude-opus-4-2025") runs on.
+  return prefixes.some((prefix) => {
+    if (modelId === prefix) return true;
+    if (!modelId.startsWith(prefix)) return false;
+    const rest = modelId.slice(prefix.length);
+    if (rest.startsWith("-")) return true;
+    const trailingDigits = /\d+$/.exec(prefix)?.[0] ?? "";
+    return trailingDigits.length >= 4 && /^\d/.test(rest);
+  });
 }
 
 function resolveAnthropicReasoningEffortCapabilities(modelId: string): ReasoningCaps {
@@ -861,10 +1044,9 @@ function resolveGeminiReasoningCapabilities(
     // Image generation; no thinking knob.
     return withEnableThinkingStyle();
   }
-  // Gemini 2.5 Flash-Lite: thinkingBudget 0 = off, positive from 512. Must be checked
-  // BEFORE the broader `gemini-2.5-flash` prefix.
-  // The backend maps "minimal" to that 512 floor in _stream_gemini.
-  // https://ai.google.dev/gemini-api/docs/thinking
+  // Gemini 2.5 Flash-Lite: thinkingBudget 0 = off, positive from 512. Must be checked BEFORE the
+  // broader `gemini-2.5-flash` prefix. The backend maps "minimal" to that 512 floor in
+  // _stream_gemini. https://ai.google.dev/gemini-api/docs/thinking
   if (m.startsWith("gemini-2.5-flash-lite")) {
     return withReasoningEffortStyle({
       supportsReasoning: true,
@@ -952,6 +1134,18 @@ export interface ExternalReasoningResolveOptions {
   isReasoningProvider?: boolean;
   /** Provider base URL; used to detect custom Gemini OAI-compat gateways. */
   baseUrl?: string | null;
+  /** Custom providers can opt into OpenAI's Responses API and its reasoning controls. */
+  apiType?: "chat_completions" | "responses";
+}
+
+export function effectiveExternalReasoningProviderType(
+  providerType: string | null | undefined,
+  apiType?: "chat_completions" | "responses",
+): string {
+  const normalizedProvider = providerType?.trim().toLowerCase() ?? "";
+  return normalizedProvider === "custom" && apiType === "responses"
+    ? "openai"
+    : normalizedProvider;
 }
 
 // vLLM has no per-model reasoning signal on OpenAI-compat, so pin via user toggle.
@@ -968,15 +1162,110 @@ function resolveConnectionLevelReasoning(
   return null;
 }
 
-/** Resolve external-model thinking capabilities. Per-provider resolvers do the matching;
- *  anything else defaults to no reasoning controls. */
+type ReasoningWire = {
+  levels: readonly ReasoningEffortLevel[] | null;
+  aliases?: Partial<Record<ReasoningEffortLevel, ReasoningEffortLevel>>;
+  off: "unified" | "none-level";
+};
+
+const LOCAL_SERVER_WIRE: ReasoningWire = {
+  levels: ["low", "medium", "high"],
+  aliases: { minimal: "low", xhigh: "high", max: "high" },
+  off: "unified",
+};
+
+/** What each backend branch in external_provider.py can put on the wire. `levels: null` forwards
+ *  the whole scale; `levels: []` means the provider only has an on/off switch. */
+const CATALOG_REASONING_WIRE: Record<string, ReasoningWire> = {
+  openrouter: { levels: null, off: "unified" },
+  openai: { levels: null, off: "none-level" },
+  openai_codex: { levels: null, off: "none-level" },
+  anthropic: { levels: null, off: "unified" },
+  gemini: { levels: ["minimal", "low", "medium", "high", "xhigh", "max"], off: "unified" },
+  mistral: { levels: ["high"], off: "unified" },
+  kimi: { levels: [], off: "unified" },
+  deepseek: { levels: ["low", "high", "max"], aliases: { minimal: "low", medium: "high", xhigh: "high" }, off: "unified" },
+  qwen: { levels: [], off: "unified" },
+  huggingface: { levels: null, off: "unified" },
+  ollama: { levels: null, off: "unified" },
+  vllm: LOCAL_SERVER_WIRE,
+  llama_cpp: LOCAL_SERVER_WIRE,
+};
+
+function projectCatalogEntry(
+  entry: ModelCatalogEntry,
+  wire: ReasoningWire,
+): ExternalReasoningCapabilities {
+  if (!entry.reasoning) return withEnableThinkingStyle();
+  const supportsOff =
+    wire.off === "unified" ? !entry.mandatory : entry.efforts.includes("none");
+  let levels: ReasoningEffortLevel[] = [];
+  if (wire.levels === null || wire.levels.length > 0) {
+    const mapped = entry.efforts
+      .filter((level) => level !== "none")
+      .map((level) => wire.aliases?.[level] ?? level)
+      .filter((level) => wire.levels === null || wire.levels.includes(level));
+    levels = sortReasoningEfforts(mapped);
+  }
+  if (levels.length === 0) {
+    return withEnableThinkingStyle({
+      supportsReasoning: true,
+      reasoningAlwaysOn: entry.mandatory,
+      supportsReasoningOff: supportsOff,
+    });
+  }
+  const ladder: ReasoningEffortLevel[] = supportsOff ? ["none", ...levels] : levels;
+  // Checked against the final ladder: OpenRouter reports default_effort "none" for models such as openai/gpt-5.1.
+  const mappedDefault = entry.defaultEffort
+    ? (wire.aliases?.[entry.defaultEffort] ?? entry.defaultEffort)
+    : null;
+  const defaultEffort = mappedDefault && ladder.includes(mappedDefault) ? mappedDefault : null;
+  return {
+    ...withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: supportsOff,
+      reasoningEffortLevels: ladder,
+    }),
+    // After the spread: withReasoningEffortStyle hardcodes reasoningAlwaysOn to false, so a
+    // mandatory catalog model with an effort ladder would lose its always-on state.
+    reasoningAlwaysOn: entry.mandatory,
+    defaultEffort,
+  };
+}
+
+function catalogCapabilities(
+  providerType: string,
+  modelId: string,
+  byName = false,
+): ExternalReasoningCapabilities | null {
+  const wire = CATALOG_REASONING_WIRE[providerType];
+  if (!wire) return null;
+  const entry = byName
+    ? resolveModelCatalogEntryByName(modelId)
+    : resolveModelCatalogEntry(providerType, modelId);
+  return entry ? projectCatalogEntry(entry, wire) : null;
+}
+
+const OPENROUTER_GENERIC_TOGGLE: ExternalReasoningCapabilities = {
+  supportsReasoning: true,
+  reasoningStyle: "enable_thinking",
+  reasoningAlwaysOn: false,
+  supportsReasoningOff: true,
+  reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
+};
+
+/** Resolve external-model thinking capabilities: the connection pin, then the hand-maintained
+ *  provider tables, then the model catalog (live OpenRouter data or the models.dev snapshot). */
 export function getExternalReasoningCapabilities(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
   options?: ExternalReasoningResolveOptions,
 ): ExternalReasoningCapabilities {
   const normalizedModel = modelId?.trim().toLowerCase() ?? "";
-  const normalizedProvider = providerType?.trim().toLowerCase() ?? "";
+  const normalizedProvider = effectiveExternalReasoningProviderType(
+    providerType,
+    options?.apiType,
+  );
   const connectionLevel = resolveConnectionLevelReasoning(
     normalizedProvider,
     options,
@@ -986,6 +1275,11 @@ export function getExternalReasoningCapabilities(
   }
   if (!normalizedModel) {
     return withEnableThinkingStyle();
+  }
+
+  if (normalizedProvider === "openrouter" && !normalizedModel.startsWith("openrouter/")) {
+    const catalog = catalogCapabilities(normalizedProvider, normalizedModel);
+    if (catalog) return catalog;
   }
 
   // Some OpenRouter-routed ids are mandatory-reasoning and must stay on even when they
@@ -1004,43 +1298,99 @@ export function getExternalReasoningCapabilities(
       ? normalizedModel.split("/").at(-1) ?? normalizedModel
       : normalizedModel;
 
-  const isOpenAIProvider =
-    normalizedProvider === "openai" || normalizedProvider === "openai_codex";
-  const isAnthropicProvider = normalizedProvider === "anthropic";
-  const isKimiProvider = normalizedProvider === "kimi";
-  const isMistralProvider = normalizedProvider === "mistral";
-  const isOpenRouterProvider = normalizedProvider === "openrouter";
-  if (isOpenRouterProvider) {
-    // OpenRouter's unified `reasoning` param is accepted everywhere and no-ops for non-reasoning
-    // models, so past the mandatory guard everything gets a toggleable control.
-    return {
-      supportsReasoning: true,
-      reasoningStyle: "enable_thinking",
-      reasoningAlwaysOn: false,
-      supportsReasoningOff: true,
-      reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
-    };
-  }
-  if (isKimiProvider) return resolveKimiReasoningCapabilities(modelForMatching);
-  if (isMistralProvider) return resolveMistralReasoningCapabilities(modelForMatching);
-  if (normalizedProvider === "gemini") {
-    // Custom Gemini OAI-compat gateways route through /chat/completions, which drops the native
-    // thinkingConfig payload, so hide the ladder.
-    if (isGeminiCustomOpenAICompatBase(options?.baseUrl)) {
-      return withEnableThinkingStyle();
+  switch (normalizedProvider) {
+    case "openrouter": {
+      // OpenRouter's unified `reasoning` param is accepted everywhere and no-ops for non-reasoning
+      // models, so a route the live catalog does not know still gets a toggleable control. The
+      // catalog lookup itself already ran above.
+      return OPENROUTER_GENERIC_TOGGLE;
     }
-    return resolveGeminiReasoningCapabilities(modelForMatching);
+    case "kimi": {
+      const table = resolveKimiReasoningCapabilities(modelForMatching);
+      return table.supportsReasoning
+        ? table
+        : (catalogCapabilities("kimi", normalizedModel) ?? table);
+    }
+    case "mistral": {
+      const table = resolveMistralReasoningCapabilities(modelForMatching);
+      return table.supportsReasoning
+        ? table
+        : (catalogCapabilities("mistral", normalizedModel) ?? table);
+    }
+    case "gemini": {
+      // Custom Gemini OAI-compat gateways route through /chat/completions, which drops the native
+      // thinkingConfig payload, so hide the ladder.
+      if (isGeminiCustomOpenAICompatBase(options?.baseUrl)) {
+        return withEnableThinkingStyle();
+      }
+      const table = resolveGeminiReasoningCapabilities(modelForMatching);
+      // Image models take no thinkingConfig (the backend strips it), so the table's "no control" is deliberate.
+      if (table.supportsReasoning || GEMINI_IMAGE_HINTS.some((hint) => normalizedModel.includes(hint))) {
+        return table;
+      }
+      return catalogCapabilities("gemini", normalizedModel) ?? table;
+    }
+    case "ollama":
+    case "deepseek":
+    case "qwen":
+    case "huggingface":
+      return catalogCapabilities(normalizedProvider, normalizedModel) ?? withEnableThinkingStyle();
+    case "vllm":
+    case "llama_cpp":
+      return catalogCapabilities(normalizedProvider, normalizedModel, true) ?? withEnableThinkingStyle();
+    case "openai":
+    case "openai_codex":
+    case "anthropic": {
+      const isOpenAIProvider = normalizedProvider !== "anthropic";
+      const providerCaps = isOpenAIProvider
+        ? resolveOpenAIReasoningEffortCapabilities(modelForMatching)
+        : resolveAnthropicReasoningEffortCapabilities(modelForMatching);
+      if (providerCaps.supportsReasoning) {
+        return withReasoningEffortStyle(providerCaps);
+      }
+      if (isOpenAIProvider && OPENAI_NON_REASONING_CHAT_ALIAS.test(modelForMatching)) {
+        return withEnableThinkingStyle();
+      }
+      return (
+        catalogCapabilities(isOpenAIProvider ? "openai" : "anthropic", modelForMatching) ??
+        withEnableThinkingStyle()
+      );
+    }
+    default:
+      return withEnableThinkingStyle();
   }
-  if (!isOpenAIProvider && !isAnthropicProvider) {
-    return withEnableThinkingStyle();
-  }
+}
 
-  const providerCaps = isOpenAIProvider
-    ? resolveOpenAIReasoningEffortCapabilities(modelForMatching)
-    : resolveAnthropicReasoningEffortCapabilities(modelForMatching);
-  if (providerCaps.supportsReasoning) {
-    return withReasoningEffortStyle(providerCaps);
-  }
+export type RuntimeReasoningFields = Pick<
+  ExternalReasoningCapabilities,
+  "supportsReasoning" | "reasoningAlwaysOn" | "reasoningStyle" | "supportsReasoningOff" | "reasoningEffortLevels"
+> & { reasoningEffort: ReasoningEffortLevel; reasoningEnabled: boolean };
 
-  return withEnableThinkingStyle();
+/** Runtime reasoning fields for a catalog that lands after the model is selected. A chosen effort the new ladder
+ *  still offers is kept and one it dropped is clamped; the model-selection defaults and pills are left alone. */
+export function reasoningFieldsAfterCatalogRefresh(
+  current: { reasoningEffort: ReasoningEffortLevel; reasoningEnabled: boolean },
+  caps: ExternalReasoningCapabilities,
+): RuntimeReasoningFields {
+  const levels = caps.reasoningEffortLevels;
+  return {
+    supportsReasoning: caps.supportsReasoning,
+    reasoningAlwaysOn: caps.reasoningAlwaysOn,
+    reasoningStyle: caps.reasoningStyle,
+    supportsReasoningOff: caps.supportsReasoningOff,
+    reasoningEffortLevels: levels,
+    reasoningEffort:
+      levels.length > 0 && !levels.includes(current.reasoningEffort)
+        ? clampReasoningEffortToLevels(current.reasoningEffort, levels)
+        : current.reasoningEffort,
+    reasoningEnabled:
+      caps.supportsReasoning && !caps.supportsReasoningOff ? true : current.reasoningEnabled,
+  };
+}
+
+/** Sent as a llama-server template kwarg, so the model's template must still read it. */
+export function providerSupportsPreserveThinking(
+  providerType: string | null | undefined,
+): boolean {
+  return providerType === "llama_cpp";
 }

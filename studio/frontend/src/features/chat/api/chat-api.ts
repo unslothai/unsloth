@@ -13,13 +13,17 @@ import {
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 // eslint-disable-next-line no-restricted-imports
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
+import { dismissCarveoutAdviceForModel, showCarveoutAdvice } from "@/features/igpu-carveout";
 // eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
+// eslint-disable-next-line no-restricted-imports
+import { checkDiskSpace } from "@/features/settings/low-disk-check";
 import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import {
   type ModelRuntime,
   withModelLoadNotice,
 } from "@/lib/model-lifecycle-events";
+import { showLoadWarning } from "../utils/load-warning-toast";
 import type {
   MessageRecord,
   ModelType,
@@ -107,10 +111,10 @@ export class StreamInterruptedError extends Error {
 /** Thrown when a reasoning model consumes its output budget before emitting any standard content,
  *  so the chat UI can explain a completed stream holding only a thinking panel. */
 export class GenerationLengthError extends Error {
-  /** @param maxTokensWasSet whether the user actually configured a Max Tokens value. With Max Tokens
-   *  on "Max" the backend already requests the whole context length, so generation stops at the
-   *  context wall and "Increase Max Tokens" cannot be followed. The false branch also covers a
-   *  finite cap the prompt left no room for, hence the wording about raising the cap. */
+  /** @param maxTokensWasSet whether the user actually configured a Max Tokens value. With Max Tokens on "Max"
+     *  the backend already requests the whole context length, so generation stops at the context wall and
+     *  "Increase Max Tokens" cannot be followed. The false branch also covers a finite cap the prompt left no room
+     *  for, hence the wording about raising the cap. */
   constructor(maxTokensWasSet = true) {
     super(
       maxTokensWasSet
@@ -224,9 +228,12 @@ export async function getApiMonitor(): Promise<ApiMonitorResponse> {
   return parseJsonOrThrow<ApiMonitorResponse>(response);
 }
 
-export async function getApiMonitorEntry(id: string): Promise<ApiMonitorEntry> {
+export async function getApiMonitorEntry(
+  id: string,
+  includePrompt = true,
+): Promise<ApiMonitorEntry> {
   const response = await authFetch(
-    `/api/inference/monitor/${encodeURIComponent(id)}`,
+    `/api/inference/monitor/${encodeURIComponent(id)}${includePrompt ? "" : "?include_prompt=false"}`,
   );
   return parseJsonOrThrow<ApiMonitorEntry>(response);
 }
@@ -281,18 +288,43 @@ export async function loadModel(
     options?.runtime ?? "chat",
     payload.model_path ?? null,
     async () => {
-      const response = await authFetch("/api/inference/load", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...payload,
-          hf_token: preparedToken.token,
-          native_path_lease: payload.nativePathLease ?? null,
-          nativePathLease: undefined,
-        }),
-        signal: options?.signal,
-      });
-      return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
+      // The other way bytes reach the cache. The Hub download manager funnels its transfers
+      // through requestStart, but an uncached model selected here is fetched by the BACKEND
+      // inside this one request, by _maybe_auto_download_model in routes/inference.py, so it
+      // passes no funnel on this side. Without this a load is free to fill the disk between
+      // the mount reading and the next Hub operation, which is the case the notice is for.
+      // Throttled like every other caller, so picking through several models costs one read.
+      void checkDiskSpace();
+      try {
+        const response = await authFetch("/api/inference/load", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...payload,
+            hf_token: preparedToken.token,
+            native_path_lease: payload.nativePathLease ?? null,
+            nativePathLease: undefined,
+          }),
+          signal: options?.signal,
+        });
+        const loaded = await parseJsonOrThrow<LoadModelResponse>(response, "Model load");
+        // Unconditional: absent on nearly every load, anything malformed is ignored,
+        // and the model is already resident by the time this runs. Both identities are
+        // passed -- a cached Hub candidate is requested by its loadId while the runtime
+        // keeps `loaded.model`, and the unload is issued with the second.
+        showCarveoutAdvice(loaded.carveout_advice, loaded.model, payload.model_path);
+        showLoadWarning(loaded.memory_warning);
+        return loaded;
+      } finally {
+        // force, for the same reason the download manager's finalize does it: the reading has
+        // to be taken AFTER the write, and unforced it would be swallowed by the interval or
+        // handed the pre-load figure it exists to correct.
+        //
+        // finally, not after the await: a load that FAILED is the likeliest one to have filled
+        // the disk on the way, and telling the user their disk is full is most of the answer
+        // to why it failed. Never a gate, so a rejected load still rejects.
+        void checkDiskSpace({ force: true });
+      }
     },
   );
 }
@@ -353,6 +385,8 @@ export async function validateModel(
       gpu_layers: payload.gpu_layers,
       // Slots scale the KV estimate; keep validate sized like the load.
       n_parallel: payload.n_parallel,
+      reasoning_budget: payload.reasoning_budget ?? -1,
+      reasoning_budget_message: payload.reasoning_budget_message ?? "",
       // A --ctx-size or cache override in here changes the estimate, so a preflight that dropped them
       // would approve a different command from the one that runs.
       ...(payload.llama_extra_args !== undefined
@@ -435,11 +469,27 @@ export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
     body: JSON.stringify(payload),
   });
   await parseJsonOrThrow<unknown>(response, "Model unload");
+  // Only after the unload is known to have happened: a rejected one leaves the model
+  // resident and the notice true. A different model's unload leaves it standing.
+  dismissCarveoutAdviceForModel(payload.model_path);
+}
+
+/** The approval this decision was for is no longer waiting: it expired unanswered, the run was
+ *  cancelled, or the backend restarted and took its in-memory slot with it.
+ *
+ *  Distinct from a transport failure because the advice is the opposite: a failed post is worth
+ *  retrying, this can never succeed. */
+export class ToolApprovalGoneError extends Error {
+  constructor(message = "No pending tool call confirmation") {
+    super(message);
+    this.name = "ToolApprovalGoneError";
+  }
 }
 
 /** Allow or deny a tool call paused awaiting user confirmation, identified by the backend
  *  `approvalId` echoed in the tool_start event, with `sessionId` as a scope check. Resolves to
- *  true only when the backend matched a pending call. */
+ *  true only when the backend matched a pending call, and throws `ToolApprovalGoneError` when the
+ *  slot has already gone. */
 export async function resolveToolConfirmation(
   sessionId: string,
   approvalId: string,
@@ -454,6 +504,8 @@ export async function resolveToolConfirmation(
       decision,
     }),
   });
+  // Ahead of parseJsonOrThrow, which folds every non-ok status into one bare Error.
+  if (response.status === 404) throw new ToolApprovalGoneError();
   const parsed = await parseJsonOrThrow<{ resolved?: boolean }>(response);
   return parsed.resolved === true;
 }
@@ -524,8 +576,10 @@ export interface DownloadProgressResponse {
 export async function getDownloadProgress(
   repoId: string,
   hfToken?: string | null,
+  mlxLoad = false,
 ): Promise<DownloadProgressResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
+  if (mlxLoad) params.set("mlx_load", "true");
   const response = await authFetch(`/api/models/download-progress?${params}`, {
     headers: hubTokenHeader(hfToken),
   });
@@ -566,7 +620,7 @@ export interface LocalModelInfo {
   id: string;
   display_name: string;
   path: string;
-  source: "models_dir" | "hf_cache" | "lmstudio" | "ollama" | "custom";
+  source: "models_dir" | "hf_cache" | "lmstudio" | "ollama" | "hermes" | "custom";
   model_id?: string | null;
   // Backend-detected weights format ("gguf" when known), for folders whose name lacks -GGUF.
   model_format?: string | null;
@@ -818,10 +872,10 @@ export async function getChatThread(
   threadId: string,
   options: { bounded?: boolean; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<ThreadRecord | null> {
-  // Bounded for the delete reconciliation: an unbounded read there would hang the delete the write
-  // timeout exists to keep moving. `timeoutMs` is for a caller with a deadline of its own,
-  // since the settings pairing gives up long before the write timeout and each retry otherwise
-  // left the previous attempt running. `signal` ends it earlier still.
+  // Bounded for the delete reconciliation: an unbounded read there would hang the delete the write timeout
+  // exists to keep moving. `timeoutMs` is for a caller with a deadline of its own, since the settings pairing
+  // gives up long before the write timeout and each retry otherwise left the previous attempt running. `signal`
+  // ends it earlier still.
   const timeout =
     options.bounded || options.timeoutMs !== undefined
       ? disposableTimeoutSignal(options.timeoutMs ?? THREAD_WRITE_TIMEOUT_MS)
@@ -851,6 +905,18 @@ export class ChatThreadDeletedError extends Error {
   }
 }
 
+/** Carries the response status, so a caller can tell a rejected row from a backend that was
+ *  merely unreachable. Only the write paths that have something different to do about the two
+ *  need it; everything else keeps catching a plain Error with the same message. */
+export class ChatThreadWriteError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ChatThreadWriteError";
+    this.status = status;
+  }
+}
+
 export async function saveChatThread(
   thread: ThreadRecord,
 ): Promise<ThreadRecord> {
@@ -863,6 +929,13 @@ export async function saveChatThread(
     const body = await response.json().catch(() => null);
     throw new ChatThreadDeletedError(parseErrorText(response.status, body));
   }
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new ChatThreadWriteError(
+      parseErrorText(response.status, body),
+      response.status,
+    );
+  }
   const savedThread = await parseJsonOrThrow<ThreadRecord>(response);
   notifyChatHistoryUpdated({ thread: savedThread });
   return savedThread;
@@ -873,9 +946,9 @@ export interface UpdateChatThreadOptions {
   expectedTitle?: string;
   /** And only while this is still the thread's opening user message. */
   expectedOpeningMessageId?: string;
-  /** Off for one update inside a bulk action, which announces itself once at the end. Every
-   *  notification is a synchronous localStorage write that wakes the other tabs, so Archive All
-   *  would otherwise send one per thread. */
+  /** Off for one update inside a bulk action, which announces itself once at the end. Every notification is a
+     *  synchronous localStorage write that wakes the other tabs, so Archive All would otherwise send one per
+     *  thread. */
   notify?: boolean;
   /** Give up on the write; used to stand a superseded settings PATCH down. */
   signal?: AbortSignal;
@@ -924,7 +997,9 @@ export interface ForkChatThreadResult {
 
 export async function forkChatThread(
   threadId: string,
-  args: { messageId: string; newThreadId: string; createdAt: number },
+  /** Omit `messageId` to fork at the tip, which the route resolves after its own check that
+   *  the chat is not generating. */
+  args: { messageId?: string; newThreadId: string; createdAt: number },
 ): Promise<ForkChatThreadResult> {
   const response = await authFetch(
     `/api/chat/threads/${encodeURIComponent(threadId)}/fork`,
@@ -1097,9 +1172,9 @@ export async function getChatMessage(
   return parseJsonOrThrow<MessageRecord>(response);
 }
 
-/** The server owns this message and will reject every save of it. Distinct from a transient
- *  failure: retrying can never succeed, so callers must stop rather than back off. Without
- *  this the per-chunk autosave re-sent on every chunk for the whole generation. */
+/** The server owns this message and will reject every save of it. Distinct from a transient failure: retrying
+ *  can never succeed, so callers must stop rather than back off. Without this the per-chunk autosave re-sent on
+ *  every chunk for the whole generation. */
 /** Set by routes/chat_history.py; exposed through the CORS middleware in main.py. */
 const CONFLICT_KIND_HEADER = "X-Unsloth-Conflict-Kind";
 const CONFLICT_KIND_PROTECTED = "protected";
@@ -1553,9 +1628,8 @@ export async function* streamChatCompletions(
       sawReasoningContent &&
       !sawAssistantContent
     ) {
-      // The backend substitutes the full context length when the user left Max Tokens on "Max", so a
-      // payload value equal to it is indistinguishable from unset, and both mean the setting is
-      // not the lever.
+      // The backend substitutes the full context length when the user left Max Tokens on "Max", so a payload value
+      // equal to it is indistinguishable from unset, and both mean the setting is not the lever.
       throw new GenerationLengthError(
         maxTokensIsTheLimit({
           cap: payload.max_tokens ?? null,
@@ -1688,9 +1762,8 @@ export async function* streamChatCompletions(
       }
     }
   } finally {
-    // Only abort on an early/abnormal exit: after a natural [DONE] the request is logically complete
-    // and the backend finalizes its api-monitor entry, so cancelling here can mark a successful
-    // request as cancelled.
+    // Only abort on an early/abnormal exit: after a natural [DONE] the request is logically complete and the
+    // backend finalizes its api-monitor entry, so cancelling here can mark a successful request as cancelled.
     if (!completed) {
       try {
         await reader.cancel();

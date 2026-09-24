@@ -19,9 +19,8 @@ export type ExportedReplyItem = {
   message: { metadata?: unknown };
 };
 
-// Keyed on the revision object, not a counter, so a stale entry is unreachable: a current
-// revision is the same object, a stale one has been replaced. Weak, so a dead thread's entry goes
-// with it.
+// Keyed on the revision object, not a counter, so a stale entry is unreachable: a current revision
+// is the same object, a stale one has been replaced. Weak, so a dead thread's entry goes with it.
 const ownersByRevision = new WeakMap<object, ReadonlySet<string>>();
 
 /**

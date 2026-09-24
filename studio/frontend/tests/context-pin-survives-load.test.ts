@@ -25,28 +25,17 @@
 // path has a seam (resolveCtxPinSeed) and is checked through it.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const read = (relative: string) =>
-  readFileSync(path.join(HERE, "..", relative), "utf8");
-
-const APPLIER = read(
-  "src/features/chat/lib/apply-inference-status-to-store.ts",
-);
-const RUNTIME = read("src/features/chat/hooks/use-chat-model-runtime.ts");
-const ADAPTER = read("src/features/chat/api/chat-adapter.ts");
-const COMPOSER = read("src/features/chat/shared-composer.tsx");
-const CONFIG_PAGE = read(
-  "src/features/model-picker/components/model-config-page.tsx",
-);
+const APPLIER = readSrc("features/chat/lib/apply-inference-status-to-store.ts");
+const RUNTIME = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
+const ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
+const COMPOSER = readSrc("features/chat/shared-composer.tsx");
+const CONFIG_PAGE = readSrc("features/model-picker/components/model-config-page.tsx");
 
 const policy = await import("../src/features/chat/presets/preset-policy.ts");
 const { resolveCtxPinSeed } = await import(
@@ -547,6 +536,6 @@ test("a failed switch rolls back on the backend that served the outgoing model",
   // back at the auto-size sentinel, losing the context it was actually serving.
   assert.match(
     RUNTIME,
-    /const previousIsMlx = residentIsServedByMlx\(\s*\n\s*previousIsGguf,\s*\n\s*platform\.deviceType,\s*\n\s*platform\.chatOnlyReason,\s*\n\s*stateBeforeUnload\.loadedIsMlx,\s*\n\s*\);/,
+    /const previousIsMlx = residentIsServedByMlx\(\s*\n\s*previousIsGguf,\s*\n\s*platform\.deviceType,\s*\n\s*platform\.chatOnlyReason,\s*\n\s*rollbackState\.loadedIsMlx,\s*\n\s*\);/,
   );
 });

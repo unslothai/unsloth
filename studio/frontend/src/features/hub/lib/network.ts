@@ -1,10 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getHfEndpoint } from "@/lib/hf-endpoint";
+
 const NETWORK_STATUS_EVENT = "unsloth-network-status";
 const REMOTE_OFFLINE_TTL_MS = 30_000;
 const HUGGING_FACE_ORIGIN = "https://huggingface.co";
 const noopUnsubscribe = () => undefined;
+
+/**
+ * Origin the Hub traffic actually goes to. The backoff maps key on the request
+ * origin, so this has to follow HF_ENDPOINT too: keying a mirror deployment on
+ * huggingface.co would probe an origin nothing ever talks to.
+ */
+function defaultHubOrigin(): string {
+  try {
+    return new URL(getHfEndpoint()).origin;
+  } catch {
+    return HUGGING_FACE_ORIGIN;
+  }
+}
 
 type RemoteNetworkScope = string | readonly string[];
 
@@ -111,17 +126,16 @@ function getEarliestRemoteOfflineUntil(): number {
 }
 
 export function isRemoteNetworkOffline(
-  scope: RemoteNetworkScope = HUGGING_FACE_ORIGIN,
+  scope: RemoteNetworkScope = defaultHubOrigin(),
 ): boolean {
   return getRemoteOfflineUntil(scope) > Date.now();
 }
 
 export function isHuggingFaceOffline(): boolean {
-  // navigator.onLine is advisory only (false-reports offline on WSL2 / some
-  // WebKitGTK/Tauri webviews). The authoritative signal is the empirical
-  // remote-offline TTL, set when a real fetch fails and cleared on next success;
-  // navigator's online/offline events still drive re-evaluation.
-  return isRemoteNetworkOffline(HUGGING_FACE_ORIGIN);
+  // navigator.onLine is advisory only (false-reports offline on WSL2 / some WebKitGTK/Tauri
+  // webviews). The authoritative signal is the empirical remote-offline TTL, set when a real fetch
+  // fails and cleared on next success; navigator's online/offline events still drive re-evaluation.
+  return isRemoteNetworkOffline(defaultHubOrigin());
 }
 
 /**
@@ -130,7 +144,7 @@ export function isHuggingFaceOffline(): boolean {
  */
 export type HubPhase = "available" | "probing" | "unavailable";
 
-export function getHubPhase(origin: string = HUGGING_FACE_ORIGIN): HubPhase {
+export function getHubPhase(origin: string = defaultHubOrigin()): HubPhase {
   if (!lastFailureByOrigin.has(origin)) {
     return "available";
   }
@@ -138,7 +152,7 @@ export function getHubPhase(origin: string = HUGGING_FACE_ORIGIN): HubPhase {
 }
 
 export function getLastHubFailure(
-  origin: string = HUGGING_FACE_ORIGIN,
+  origin: string = defaultHubOrigin(),
 ): HubFailure | null {
   return lastFailureByOrigin.get(origin) ?? null;
 }
@@ -166,19 +180,18 @@ export function markRemoteNetworkOnline(origin?: string): void {
 }
 
 export function markRemoteNetworkOffline(
-  originOrTtl: string | number = HUGGING_FACE_ORIGIN,
+  originOrTtl: string | number = defaultHubOrigin(),
   ttlMs = REMOTE_OFFLINE_TTL_MS,
   failure?: HubFailure,
 ): void {
   const origin =
-    typeof originOrTtl === "string" ? originOrTtl : HUGGING_FACE_ORIGIN;
+    typeof originOrTtl === "string" ? originOrTtl : defaultHubOrigin();
   const ttl = typeof originOrTtl === "number" ? originOrTtl : ttlMs;
   const nextUntil = Date.now() + ttl;
   const previousUntil = remoteOfflineUntilByOrigin.get(origin) ?? 0;
-  // The cause has to describe the window in force: recording a newer cause while
-  // keeping a longer window left the panel naming a spent failure while a
-  // different, still-live one held it unavailable. A first cause is always
-  // taken, so nothing the user sees goes unexplained.
+  // The cause has to describe the window in force: recording a newer cause while keeping a longer
+  // window left the panel naming a spent failure while a different, still-live one held it
+  // unavailable. A first cause is always taken, so nothing the user sees goes unexplained.
   const takesWindow = nextUntil > previousUntil;
   const records =
     failure !== undefined && (takesWindow || !lastFailureByOrigin.has(origin));
@@ -199,7 +212,7 @@ export function markRemoteNetworkOffline(
 
 /** Let Retry re-probe now. The failure stays until a request succeeds. */
 export function clearRemoteBackoff(
-  origin: string = HUGGING_FACE_ORIGIN,
+  origin: string = defaultHubOrigin(),
 ): void {
   if (!remoteOfflineUntilByOrigin.delete(origin)) {
     return;

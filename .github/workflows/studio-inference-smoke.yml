@@ -35,11 +35,27 @@ name: Unsloth GGUF CI
 on:
   pull_request:
     paths:
-      - 'studio/**'
-      - 'unsloth/**'
+      # What the three phases exercise: the backend's OpenAI and Anthropic surfaces over
+      # a llama.cpp prebuilt, the installer that lays them down and the CLI that boots
+      # them. Not studio/** plus unsloth/**: the install is --no-torch so the training
+      # library is not importable here, the frontend is never served (UNSLOTH_API_ONLY),
+      # and src-tauri is never touched.
+      - 'studio/backend/**'
+      - 'studio/setup.sh'
+      - 'studio/install_*.py'
+      # install_node_prebuilt.py trusts the archives pinned here (setup.sh:1243).
+      - 'studio/node_prebuilt_pins.json'
+      - 'studio/prebuilt_core.py'
+      - 'studio/install_manifest.py'
       - 'unsloth_cli/**'
       - 'install.sh'
       - 'pyproject.toml'
+      # Reached by the installer this workflow already triggers on, so a commit touching
+      # only one of these changes what the job runs while matching nothing else in the
+      # list. install.sh --local hands off to the checked-out studio/setup.sh
+      # (install.sh:7351), setup.sh runs nvidia_probe.py (setup.sh:266), and setup.ps1
+      # runs install_python_stack.py and install_llama_prebuilt.py (setup.ps1:8127, 8655).
+      - 'studio/nvidia_probe.py'
       - '.github/workflows/studio-inference-smoke.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
       # Every server boot in this workflow shells out to that script, so an edit
@@ -47,16 +63,42 @@ on:
       - '.github/scripts/boot-studio-api-only.sh'
       # Same for the /api/health wait that runs after a boot.
       - '.github/scripts/wait-for-health.sh'
+      # Every model download in every phase goes through it.
+      - '.github/scripts/hf-download-with-retry.sh'
+      # Phase 1 drives both SDKs through this script.
+      - '.github/scripts/studio_smoke/multi_turn_chat.py'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
-      # The dist cache moved out of install-unsloth-local so the Windows jobs could
-      # share one definition of its key; a change to it still has to re-run the jobs
-      # that depend on it.
+      # Reached through install-unsloth-local, which uses the dist and uv cache pairs.
       - '.github/actions/frontend-dist-restore/action.yml'
       - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
   push:
     branches: [main]
+    paths:
+      - 'studio/backend/**'
+      - 'studio/setup.sh'
+      - 'studio/install_*.py'
+      - 'studio/node_prebuilt_pins.json'
+      - 'studio/prebuilt_core.py'
+      - 'studio/install_manifest.py'
+      - 'unsloth_cli/**'
+      - 'install.sh'
+      - 'pyproject.toml'
+      - 'studio/nvidia_probe.py'
+      - '.github/workflows/studio-inference-smoke.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
+      - '.github/scripts/boot-studio-api-only.sh'
+      - '.github/scripts/wait-for-health.sh'
+      - '.github/scripts/hf-download-with-retry.sh'
+      - '.github/scripts/studio_smoke/multi_turn_chat.py'
+      - '.github/actions/install-unsloth-local/action.yml'
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
   # Manual trigger for pre-warming HF_HOME caches on main, or re-running
   # against an arbitrary branch without pushing a no-op commit.
   workflow_dispatch:

@@ -14,7 +14,11 @@ import { readFile } from "node:fs/promises";
 import { register } from "node:module";
 import test from "node:test";
 
-import { installLocalStorageFake, registerBundlerResolver } from "./helpers/kit.ts";
+import {
+  installLocalStorageFake,
+  readSrcAsync,
+  registerBundlerResolver,
+} from "./helpers/kit.ts";
 
 register("./helpers/vite-env-loader.mjs", import.meta.url);
 registerBundlerResolver();
@@ -105,10 +109,7 @@ test("a cached authoritative verdict is not re-read without force", async () => 
 });
 
 test("the recovery poll runs while the verdict is unknown, on every platform", async () => {
-  const src = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const src = await readSrcAsync("components/app-sidebar.tsx");
   const call = src.indexOf("void fetchDeviceType({ force: true })");
   assert.ok(call > 0, "the recovery poll left app-sidebar.tsx");
   const start = src.lastIndexOf("useEffect(() => {", call);
@@ -152,10 +153,7 @@ test("the recovery poll runs while the verdict is unknown, on every platform", a
 });
 
 test("the poll is mounted on every route that gates on the verdict", async () => {
-  const root = await readFile(
-    new URL("../src/app/routes/__root.tsx", import.meta.url),
-    "utf8",
-  );
+  const root = await readSrcAsync("app/routes/__root.tsx");
   const hidden = /const HIDDEN_NAVBAR_ROUTES = \[([^\]]*)\]/.exec(root);
   assert.ok(hidden, "could not find HIDDEN_NAVBAR_ROUTES in __root.tsx");
   assert.ok(
@@ -177,10 +175,7 @@ test("the poll is mounted on every route that gates on the verdict", async () =>
       `${page} re-reads the verdict itself instead of reading the store`,
     );
   }
-  const studio = await readFile(
-    new URL("../src/features/studio/studio-page.tsx", import.meta.url),
-    "utf8",
-  );
+  const studio = await readSrcAsync("features/studio/studio-page.tsx");
   assert.match(
     studio,
     /capabilitiesUnknown/,

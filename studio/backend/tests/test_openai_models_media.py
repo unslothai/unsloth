@@ -25,6 +25,7 @@ from core.inference import local_model_resolver as resolver  # noqa: E402
 from core.inference import media_model_index as mmi  # noqa: E402
 from core.inference.media_model_index import MediaModelPick  # noqa: E402
 from utils.api_errors import install_api_error_handlers  # noqa: E402
+from core.inference import media_locality
 
 
 class _Info:
@@ -64,8 +65,6 @@ class _FakeUnsloth:
 
 def _media_index(monkeypatch, picks_by_task):
     """Stand in for the media index the generation routes resolve against."""
-    from core.inference import media_locality
-
     inf._MEDIA_PICK_CACHE.update(at = None, picks = {})
     monkeypatch.setattr(media_locality, "missing_download_bytes", lambda owner, pick: 0)
     monkeypatch.setattr(
@@ -266,8 +265,6 @@ def test_edit_only_checkpoints_are_not_offered_for_text_to_image(monkeypatch):
     """The catalog tags an instruction-editing checkpoint text-to-image, but it ships no
     txt2img workflow: the switch refuses it with a 400 and a resident one is refused by
     /v1/images/generations too."""
-    from core.inference import media_locality
-
     edit = MediaModelPick("org/qwen-image-edit", "/hf/edit")
     plain = MediaModelPick("org/plain-image", "/hf/plain")
     monkeypatch.setattr(
@@ -356,8 +353,6 @@ def test_only_ids_the_media_resolver_accepts_are_listed(monkeypatch):
 
 
 def test_media_model_with_missing_companions_is_not_advertised(monkeypatch):
-    from core.inference import media_locality
-
     image = _PICKS["text-to-image"][0]
     _catalog(monkeypatch, _INFOS, picks = {"text-to-image": [image]})
     monkeypatch.setattr(

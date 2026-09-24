@@ -211,7 +211,7 @@ function SttModelPicker({
           type="button"
           data-testid="stt-model-trigger"
           aria-label={t("settings.voice.dictation.sttModelLabel")}
-          className="border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10 focus-visible:border-ring flex h-8 w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border px-3.5 text-sm outline-none transition-colors"
+          className="border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:border-ring flex h-8 w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border px-3.5 text-sm outline-none transition-colors"
         >
           <span className="truncate">{sttModelName(value)}</span>
           <HugeiconsIcon
@@ -560,11 +560,10 @@ export function VoiceTab() {
       try {
         const status = await fetchSttStatus(statusNonce, sttModel);
         if (cancelled) return;
-        // A curated model prefers the GGUF (whisper.cpp) engine, but without
-        // whisper-server the backend serves it through Transformers instead of
-        // failing. Fall back to the Transformers status here too, or the model
-        // shows as unavailable and download is blocked even though it works.
-        // mtmd models run nowhere else, so they never fall back.
+        // A curated model prefers the GGUF (whisper.cpp) engine, but without whisper-server the
+        // backend serves it through Transformers instead of failing. Fall back to the Transformers
+        // status here too, or the model shows as unavailable and download is blocked even though it
+        // works. mtmd models run nowhere else, so they never fall back.
         const engineStatus = isMtmdModel
           ? status.mtmd
           : isGgufModel && status.gguf?.available
@@ -715,10 +714,9 @@ export function VoiceTab() {
     try {
       await startSttDownload(sttModel, hfApiToken(hfToken));
       trackSttDownload(sttModel);
-      // The status effect only re-polls while it can see a download. Its last
-      // read was before this one existed, and the on-demand branch schedules
-      // nothing, so without a nudge the tab shows Download for the whole
-      // transfer.
+      // The status effect only re-polls while it can see a download. Its last read was before this
+      // one existed, and the on-demand branch schedules nothing, so without a nudge the tab shows
+      // Download for the whole transfer.
       setStatusNonce((nonce) => nonce + 1);
     } catch (error) {
       toast.error(t("settings.voice.dictation.sttDownloadFailed"), {
@@ -1436,7 +1434,7 @@ export function VoiceTab() {
                   >
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent className="max-h-72">
+                  <SelectContent className="max-h-[min(--spacing(72),var(--radix-select-content-available-height))]">
                     <SelectItem value="default">
                       {t("settings.voice.dictation.systemDefault")}
                     </SelectItem>

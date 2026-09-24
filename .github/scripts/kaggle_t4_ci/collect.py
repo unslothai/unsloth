@@ -58,7 +58,6 @@ from gate import GONE_MARKERS, _as_naive_utc  # noqa: E402
 # How long a dispatched kernel may stay in flight before the reaper takes it.
 # The ceiling is ours because Kaggle's has been caught failing: a kernel pushed
 # with `-t 5400` whose nbconvert crashed sat RUNNING two hours past it.
-#
 # Generous rather than tight: the wired notebook kernel measured 2101.8s, the
 # two-account run 41.5 min of job wall clock, and queueing behind another of
 # ours adds most of that again. Reaping a kernel that would have finished costs
