@@ -220,3 +220,21 @@ def test_unreachable_hub_still_loads_the_plain_artifact_already_cached(monkeypat
     plain.unlink()
     with pytest.raises(LocalEntryNotFoundError):  # nothing cached: the connection error is still the answer
         pq._resolve_checkpoint_path(source, None, None)
+
+
+def test_builder_publishes_rotated_and_plain_int8_under_different_names():
+    import importlib.util
+    from pathlib import Path
+
+    from core.inference.diffusion_families import detect_family
+
+    script = Path(__file__).resolve().parents[3] / "scripts" / "build_prequant_checkpoint.py"
+    spec = importlib.util.spec_from_file_location("_build_prequant_for_convrot_test", script)
+    build = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(build)
+    fam = detect_family("Qwen/Qwen-Image-2.1", override = "qwen-image-2.1")
+    repo = "unsloth/Qwen-Image-2.1-FP8"
+    dest = lambda rotated: build.upload_destination(fam, "int8", rotated = rotated, safetensors = True, upload_repo = repo)
+    assert dest(True) == "Qwen-Image-2.1-INT8-ConvRot.safetensors"
+    assert dest(False) == "Qwen-Image-2.1-INT8.safetensors"
+    assert build.upload_destination(fam, "fp8", rotated = False, safetensors = True, upload_repo = repo) == "Qwen-Image-2.1-FP8.safetensors"
