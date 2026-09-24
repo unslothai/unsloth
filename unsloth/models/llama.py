@@ -3143,6 +3143,7 @@ class FastLlamaModel:
         layers_pattern = None,
         finetune_last_n_layers = None,
         use_gradient_checkpointing = "unsloth",
+        block_swap_layers = 0,
         random_state = 3407,
         max_seq_length = 2048,  # not used anymore
         use_rslora = False,
@@ -3606,6 +3607,7 @@ class FastLlamaModel:
         model._saved_temp_tokenizer = _saved_temp_tokenizer
 
         model = FastLlamaModel.patch_peft_model(model, use_gradient_checkpointing)
+        install_block_swap(model, block_swap_layers)
 
         if ensure_weight_tying:
             try:

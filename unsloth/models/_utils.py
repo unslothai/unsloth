@@ -84,6 +84,7 @@ __all__ = [
     "hf_login",
     "maybe_prefetch_hf_snapshot",
     "is_moe_model",
+    "install_block_swap",
     "get_moe_target_parameters",
     "get_moe_target_modules",
     "warn_if_zoo_cannot_merge_moe_experts",
@@ -150,6 +151,11 @@ from unsloth_zoo.patching_utils import (
     patch_model_and_tokenizer,
     patch_compiled_autograd,
 )
+from ._uma_safetensors import is_integrated_unified_memory_gpu
+try:
+    from unsloth_zoo.block_swap import BlockSwap, find_decoder_layers
+except ImportError:  # unsloth_zoo predates block_swap
+    BlockSwap = find_decoder_layers = None
 from unsloth_zoo.gradient_checkpointing import (
     Unsloth_Offloaded_Gradient_Checkpointer,
     unsloth_offloaded_gradient_checkpoint,
@@ -4611,6 +4617,42 @@ def hf_login(token: Optional[str] = None) -> Optional[str]:
     except Exception as e:
         logger.info(f"Failed to login to huggingface using token with error: {e}")
     return token
+
+
+def install_block_swap(model, block_swap_layers = 0, prefetch_depth = 2):
+    """Stream the last `block_swap_layers` frozen decoder blocks from pinned host RAM.
+
+    Off at 0. Refused where it cannot help or would break: MoE moves every
+    expert but computes with a few, so the fetch never hides; a unified-memory
+    GPU has no separate RAM to swap to; vLLM would sync evicted weights as
+    empty tensors.
+    """
+    if not block_swap_layers or block_swap_layers <= 0:
+        return None
+    if BlockSwap is None:
+        raise ImportError(
+            "Unsloth: block_swap_layers needs a newer unsloth_zoo. "
+            "Run `pip install --upgrade unsloth_zoo`."
+        )
+    if getattr(model, "vllm_engine", None) is not None:
+        raise ValueError(
+            "Unsloth: block_swap_layers cannot be combined with fast_inference = True, "
+            "since evicted weights would sync to vLLM as empty tensors."
+        )
+    if is_moe_model(model):
+        raise ValueError(
+            "Unsloth: block_swap_layers does not support MoE models. Every expert "
+            "has to move across PCIe but only the active ones compute, so the copy "
+            "cannot hide behind the work."
+        )
+    if is_integrated_unified_memory_gpu():
+        raise ValueError(
+            "Unsloth: block_swap_layers has nothing to swap to on a unified-memory "
+            "GPU; host and device already share the same RAM."
+        )
+    swapper = BlockSwap(find_decoder_layers(model), block_swap_layers, prefetch_depth)
+    model._unsloth_block_swap = swapper
+    return swapper
 
 
 def is_moe_model(model) -> bool:

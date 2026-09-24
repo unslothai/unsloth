@@ -2238,6 +2238,7 @@ class FastBaseModel:
         layers_to_transform = None,
         layers_pattern = None,
         use_gradient_checkpointing = "unsloth",
+        block_swap_layers = 0,
         random_state = 3407,
         max_seq_length = 2048,  # not used anymore
         use_rslora = False,
@@ -2507,6 +2508,7 @@ class FastBaseModel:
             use_gradient_checkpointing = use_gradient_checkpointing,
             trust_remote_code = trust_remote_code,
         )
+        install_block_swap(model, block_swap_layers)
         model.max_seq_length = max_seq_length
         for module in model.modules():
             module.max_seq_length = max_seq_length
