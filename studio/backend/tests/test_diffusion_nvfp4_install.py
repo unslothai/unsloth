@@ -136,6 +136,7 @@ def _clean(monkeypatch, tmp_path):
         *inst._CUSTOM_INDEX_ENVS,
         "UV_INDEX",
         "UV_EXTRA_INDEX_URL",
+        *inst._PIP_EXTRA_INDEX_ENVS,
         "UV_OFFLINE",
         "UV_CONFIG_FILE",
         "ALL_PROXY",
@@ -888,6 +889,32 @@ def test_a_pip_conf_mirror_skips_the_pypi_probe_for_the_pip_fallback(env, monkey
     ok, reason = inst.ensure_flashinfer_for_nvfp4(0, run = run)
     assert ok, reason
     assert probed == ["https://flashinfer.ai/whl/cu130/flashinfer-jit-cache/"]
+
+
+@pytest.mark.parametrize(
+    "lines, envvar",
+    [
+        ([":env:.extra-index-url='https://corp.example/simple'"], None),
+        (["global.extra-index-url='https://corp.example/simple'"], None),
+        (["install.find-links='https://corp.example/links'"], None),
+        ([], "PIP_EXTRA_INDEX_URL"),
+        ([], "PIP_FIND_LINKS"),
+    ],
+)
+def test_a_pip_extra_index_skips_the_pypi_probe_for_the_pip_fallback(
+    env, monkeypatch, lines, envvar
+):
+    # pip falls through an unreachable pypi.org to the extra index, so a blocked pypi.org must not refuse the install.
+    probed = []
+    monkeypatch.setattr(
+        inst, "_reachable", lambda url: probed.append(url) or url != inst._PYPI_PROBE_URL
+    )
+    monkeypatch.setattr(inst, "_uv_executable", lambda: None)
+    if envvar:
+        monkeypatch.setenv(envvar, "https://corp.example/simple")
+    ok, reason = inst.ensure_flashinfer_for_nvfp4(0, run = _pip_config(env, lines))
+    assert ok, reason
+    assert inst._PYPI_PROBE_URL not in probed
 
 
 def test_a_pip_conf_mirror_is_not_overridden_by_a_uv_one(env, monkeypatch):

@@ -48,6 +48,7 @@ _PYPI_PROBE_URL = "https://pypi.org/simple/flashinfer-python/"
 _CUSTOM_INDEX_ENVS = ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "PIP_INDEX_URL")
 # uv ranks these above its default index and stops at the first that has a package; pip never reads them.
 _UV_INDEX_ENVS = ("UV_INDEX", "UV_EXTRA_INDEX_URL")
+_PIP_EXTRA_INDEX_ENVS = ("PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS")
 
 # The jit-cache wheel is 1.2-1.8 GB; the timeout covers a slow link, not a hung resolver.
 _INSTALL_TIMEOUT_S = 1800
@@ -591,9 +592,10 @@ def _installer_config(uv: Optional[str], run: Callable[..., Any]) -> dict[str, A
         return config
 
     settings = _pip_settings(run)
-    config["mirror"] = any(os.environ.get(v) for v in _CUSTOM_INDEX_ENVS) or bool(
-        settings.get("index-url")
-    )
+    # pip still installs from an extra index or find-links when pypi.org is unreachable.
+    config["mirror"] = any(
+        os.environ.get(v) for v in _CUSTOM_INDEX_ENVS + _PIP_EXTRA_INDEX_ENVS
+    ) or any(settings.get(k) for k in ("index-url", "extra-index-url", "find-links"))
     config["own_index"] = bool(settings.get("index-url"))
     if settings.get("proxy"):
         config["unprobed"] = True
