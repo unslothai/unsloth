@@ -2466,8 +2466,8 @@ def test_image_train_rail_matches_create_and_header():
         # is not a property.
         if re.search(r"(?:^|[:!(\[])(?:p|px|pr|pe|pl|ps)-", t)
         or re.search(r"(?:^|:)!?\[[^\]]*:[^\]]*\]!?$", t)
-        # A horizontal border narrows the content box too (border, border-r-8, border-x-[3px]).
-        or re.search(r"(?:^|[:!])border(?:-[xlrse])?(?:-\d+|-\[[^\]]*\]|-\([^)]*\))?!?$", t)
+        # A horizontal border narrows the content box too (border, border-r-8, -px, -[3px]).
+        or re.search(r"(?:^|[:!])border(?:-[xlrse])?(?:-\d+|-px|-\[[^\]]*\]|-\([^)]*\))?!?$", t)
     ]
     below = [t for t in touches if re.fullmatch(rf"(?:max-sm:)?pr-{step}", t)]
     at_rail = [t for t in touches if re.fullmatch(rf"sm:pr-{step}", t)]
