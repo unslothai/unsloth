@@ -856,6 +856,67 @@ def test_state_cut_matches_the_full_tokenization(words, cut):
     assert (len(ids), was_cut) == (min(words, 900), cut)
 
 
+class MovableModel:
+    def __init__(self):
+        self.moved_to = []
+
+    def to(self, device):
+        self.moved_to.append(device.type)
+        return self
+
+
+@pytest.fixture
+def gpu_agent(monkeypatch):
+    torch = pytest.importorskip("torch")
+    collate = lambda groups, pad: {"attention_mask": torch.ones(1, len(groups[0][0]["ids"]))}
+    monkeypatch.setitem(sys.modules, "laya.common", SimpleNamespace(collate_items = collate))
+    return SimpleNamespace(
+        device = torch.device("cuda"),
+        dtype = torch.float16,
+        model = MovableModel(),
+        tok = SimpleNamespace(pad_token_id = 0),
+    )
+
+
+def _items():
+    return [{"ids": [1, 5, 2], "markers": [1], "qtype": 0}]
+
+
+def test_gpu_out_of_memory_falls_back_to_cpu_like_laya(monkeypatch, gpu_agent):
+    import torch
+
+    agent = gpu_agent
+    ran_on = []
+
+    def run(agent, batch):
+        ran_on.append(agent.device.type)
+        if agent.device.type != "cpu":
+            raise torch.cuda.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB")
+        return torch.tensor([[0.5, 1.5]])
+
+    monkeypatch.setattr(laya_runtime, "_run_model", run)
+    monkeypatch.setattr(laya_runtime, "_device_name", "cuda:0")
+    logits, tokens = laya_runtime._forward(agent, _items())
+    assert logits.tolist() == [[0.5, 1.5]] and tokens == 3
+    assert ran_on == ["cuda", "cpu"]
+    assert (agent.device.type, agent.dtype, agent.model.moved_to) == ("cpu", torch.float32, ["cpu"])
+    assert laya_runtime._device_name == "cpu"
+    laya_runtime._forward(agent, _items())
+    assert ran_on == ["cuda", "cpu", "cpu"]
+
+
+def test_unrelated_gpu_errors_are_not_retried_on_cpu(monkeypatch, gpu_agent):
+    agent = gpu_agent
+
+    def run(agent, batch):
+        raise RuntimeError("shape mismatch")
+
+    monkeypatch.setattr(laya_runtime, "_run_model", run)
+    with pytest.raises(RuntimeError, match = "shape mismatch"):
+        laya_runtime._forward(agent, _items())
+    assert agent.device.type == "cuda" and agent.model.moved_to == []
+
+
 def test_fast_path_matches_laya_predict():
     path = os.environ.get("SYSTEMONE_TEST_LAYA")
     if not path:

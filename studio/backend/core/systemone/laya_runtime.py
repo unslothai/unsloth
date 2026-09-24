@@ -468,10 +468,29 @@ def _predict(agent, state, questions: dict[str, dict[str, Any]]) -> tuple[dict[s
 
 
 def _forward(agent, items: list[dict[str, Any]]):
+    global _device_name
     import torch
     from laya.common import collate_items
 
     batch = collate_items([items], agent.tok.pad_token_id)
+    try:
+        logits = _run_model(agent, batch)
+    except (RuntimeError, torch.cuda.OutOfMemoryError) as exc:
+        # Same fallback as laya's Agent.predict: a GPU that runs out of memory moves the model to CPU.
+        reason = str(exc).lower()
+        if agent.device.type == "cpu" or ("memory" not in reason and "cuda" not in reason):
+            raise
+        logger.warning("Laya ran out of GPU memory; moving it to CPU")
+        agent.device, agent.dtype = torch.device("cpu"), torch.float32
+        agent.model.to(agent.device)
+        _device_name = "cpu"
+        logits = _run_model(agent, batch)
+    return logits.float().cpu().numpy(), int(batch["attention_mask"].sum())
+
+
+def _run_model(agent, batch):
+    import torch
+
     device = agent.device
     with (
         torch.inference_mode(),
@@ -484,7 +503,7 @@ def _forward(agent, items: list[dict[str, Any]]):
             batch["marker_mask"].to(device),
             batch["qtype"].to(device),
         )
-    return logits.float().cpu().numpy(), int(batch["attention_mask"].sum())
+    return logits
 
 
 def _probabilities(agent, row, k: int, qtype: int):
