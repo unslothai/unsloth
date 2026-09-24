@@ -21,10 +21,16 @@ import { RAISED_SURFACE } from "../surface";
 import { CardSelectionContext } from "./card-selection";
 import { LibraryActionsMenu } from "./library-actions";
 
+// A faint shadow all round rather than the composer's lower edge, so a wall of cards reads as
+// separate tiles without outlines.
+const CARD_SHADOW =
+  "shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_16px_rgba(0,0,0,0.06)] dark:shadow-none";
+
 // On hover the card goes flat grey, as ChatGPT's do. Keyed to the card group, so moving onto its
 // menu button keeps it.
 const CARD_SURFACE = cn(
   RAISED_SURFACE,
+  CARD_SHADOW,
   "group-hover/library-card:bg-neutral-100 group-hover/library-card:shadow-none dark:group-hover/library-card:bg-accent/60",
 );
 
@@ -134,7 +140,7 @@ export function ItemCard({ item, showTime = true }: { item: LibraryItem; showTim
         label={item.name}
         onOpen={() => actions.openItem(item)}
         menu={menu}
-        className="bg-muted shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
+        className={cn("bg-muted", CARD_SHADOW)}
       >
         <ImageThumb item={item} />
       </CardFrame>
@@ -148,7 +154,7 @@ export function ItemCard({ item, showTime = true }: { item: LibraryItem; showTim
       menu={menu}
       className={CARD_SURFACE}
     >
-      <div className="flex aspect-square flex-col p-4">
+      <div className="flex aspect-square flex-col p-5">
         <p className="line-clamp-2 break-all pr-7 font-medium text-[14px] leading-snug text-foreground">
           {item.name}
         </p>
@@ -214,9 +220,9 @@ export function Masonry<T>({
   const buckets: T[][] = Array.from({ length: columns }, () => []);
   items.forEach((item, index) => buckets[index % columns]!.push(item));
   return (
-    <div ref={container} className="flex items-start gap-4">
+    <div ref={container} className="flex items-start gap-5">
       {buckets.map((bucket, column) => (
-        <div key={column} className="flex min-w-0 flex-1 flex-col gap-4">
+        <div key={column} className="flex min-w-0 flex-1 flex-col gap-5">
           {bucket.map((item) => (
             <div key={getKey(item)}>{render(item)}</div>
           ))}
@@ -240,7 +246,7 @@ export function FolderGrid({
   return (
     <div
       ref={container}
-      className="grid gap-4"
+      className="grid gap-5"
       style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
     >
       {folders.map((folder) => (
