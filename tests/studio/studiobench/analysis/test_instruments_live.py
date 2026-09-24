@@ -45,8 +45,8 @@ from studiobench.runtime.types import (  # noqa: E402
     new_session_id,
 )
 
-# A page with a known shape: a message-channel loop (the React scheduler's
-# mechanism), a timer loop, and a function whose call count is exactly known.
+# A page with a known shape: a message-channel loop (the React scheduler's mechanism), a timer
+# loop, and a function whose call count is exactly known.
 PAGE = """<!doctype html><meta charset=utf-8><body><div id=o></div><script>
 window.__N = 0;
 window.__junk = [];
@@ -205,8 +205,8 @@ def _check_level(level, wrows, crows, ground_truth) -> int:
     except Exception as exc:  # noqa: BLE001
         fail(f"window row is not JSON-safe: {exc}")
 
-    # Overhead is mandatory from every instrument at level >= 1, and it is what
-    # the report layer's overhead_growth_with_length gate consumes.
+    # Overhead is mandatory from every instrument at level >= 1, and it is what the report layer's
+    # overhead_growth_with_length gate consumes.
     for name, payload in crows.items():
         if "overhead_ms" not in payload or "overhead_ms_attempted" not in payload:
             fail(f"{name}.end_cell has no overhead_ms/overhead_ms_attempted")
@@ -225,8 +225,8 @@ def _check_level(level, wrows, crows, ground_truth) -> int:
         if by_origin.get("message_channel", 0) < MESSAGE_ITERATIONS * 0.8:
             fail(f"expected ~{MESSAGE_ITERATIONS} message-channel tasks, got {by_origin}")
 
-    # THE LADDER. Naming requires the v8 profiler, which only L2+ turns on. At
-    # L1 that must be an explicit null with a reason, never an empty list.
+    # THE LADDER. Naming requires the v8 profiler, which only L2+ turns on; at L1 that must be an
+    # explicit null with a reason, never an empty list.
     if level == 1:
         if tracing.get("named_frames") is not None:
             fail("L1 must not report named frames; the profiler category is off")

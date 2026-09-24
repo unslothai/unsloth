@@ -18,6 +18,51 @@ function repoKey(repoId: string | null | undefined): string | null {
   return repoId?.trim().toLowerCase() || null;
 }
 
+export type PartialFormatFamily = "gguf" | "model";
+
+function partialFormatFamily(
+  modelFormat: CachedInventoryRow["modelFormat"],
+): PartialFormatFamily | null {
+  if (modelFormat === "unknown") return null;
+  return modelFormat === "gguf" ? "gguf" : "model";
+}
+
+/**
+ * The family an unclassified PARTIAL row can be PROVEN to belong to, or null. The backend writes a transport
+ * only for snapshot partials and hardcodes none for a GGUF (`services/models/common.py`, `cache_inventory.py`).
+ * The converse is WRONG: a snapshot partial with neither a cancel marker nor a manifest also reports none
+ * (`utils/inventory_scan.py`), so an absent transport must not be read as "GGUF". Null for a complete row.
+ */
+export function provenUnknownPartialFamily(
+  row: Pick<CachedInventoryRow | LocalInventoryRow, "partialTransport">,
+): PartialFormatFamily | null {
+  return row.partialTransport ? "model" : null;
+}
+
+function addPartialFormatFamily(
+  familiesByRepo: Map<string, Set<PartialFormatFamily>>,
+  repoId: string | null | undefined,
+  modelFormat: CachedInventoryRow["modelFormat"],
+): void {
+  const repo = repoKey(repoId);
+  const family = partialFormatFamily(modelFormat);
+  if (!repo || !family) return;
+  const families = familiesByRepo.get(repo) ?? new Set<PartialFormatFamily>();
+  families.add(family);
+  familiesByRepo.set(repo, families);
+}
+
+function knownFamiliesMatchUnknownRow(
+  row: Pick<CachedInventoryRow | LocalInventoryRow, "partialTransport" | "partial">,
+  families: ReadonlySet<PartialFormatFamily> | undefined,
+): boolean {
+  if (!families?.size) return false;
+  if (families.size > 1) return true;
+  // A complete row has no transport, so the test below would always say "gguf" and keep it beside a safetensors row; any known family shadows it instead.
+  if (!row.partial) return true;
+  return families.has(row.partialTransport ? "model" : "gguf");
+}
+
 export function findCompleteHfCacheLocalRow(
   cachedRow: CachedInventoryRow,
   localRows: readonly LocalInventoryRow[],
@@ -101,27 +146,37 @@ export function dedupeSameSourceHubCacheRows({
   localRows: LocalInventoryRow[];
 } {
   const uniqueCachedRows = dedupeCachedRows(cachedRows);
-  const completeCachedRepos = new Set<string>();
-  const partialGgufRepos = new Set<string>();
+  const completeCachedFormatFamilies = new Map<
+    string,
+    Set<PartialFormatFamily>
+  >();
+  const partialFormatFamilies = new Map<string, Set<PartialFormatFamily>>();
   for (const row of uniqueCachedRows) {
-    if (row.partial && row.modelFormat === "gguf") {
-      const repo = repoKey(row.repoId);
-      if (repo) partialGgufRepos.add(repo);
+    if (row.partial && row.modelFormat !== "unknown") {
+      addPartialFormatFamily(
+        partialFormatFamilies,
+        row.repoId,
+        row.modelFormat,
+      );
     }
     if (row.partial) {
       continue;
     }
-    const repo = repoKey(row.repoId);
-    if (repo) {
-      completeCachedRepos.add(repo);
-    }
+    addPartialFormatFamily(
+      completeCachedFormatFamilies,
+      row.repoId,
+      row.modelFormat,
+    );
   }
 
   const completeHfCacheLocalKeys = new Set<string>();
   for (const row of localRows) {
-    if (row.partial && row.modelFormat === "gguf") {
-      const repo = repoKey(row.repoId);
-      if (repo) partialGgufRepos.add(repo);
+    if (row.partial && row.modelFormat !== "unknown") {
+      addPartialFormatFamily(
+        partialFormatFamilies,
+        row.repoId,
+        row.modelFormat,
+      );
     }
     if (row.source !== "hf_cache" || row.partial) {
       continue;
@@ -139,7 +194,7 @@ export function dedupeSameSourceHubCacheRows({
       !row.liveDownload &&
       row.modelFormat === "unknown" &&
       repo &&
-      partialGgufRepos.has(repo)
+      knownFamiliesMatchUnknownRow(row, partialFormatFamilies.get(repo))
     ) {
       return false;
     }
@@ -168,14 +223,17 @@ export function dedupeSameSourceHubCacheRows({
         row.partial &&
         row.modelFormat === "unknown" &&
         repo &&
-        partialGgufRepos.has(repo)
+        knownFamiliesMatchUnknownRow(row, partialFormatFamilies.get(repo))
       ) {
         return false;
       }
       if (
         row.modelFormat === "unknown" &&
         repo &&
-        completeCachedRepos.has(repo)
+        knownFamiliesMatchUnknownRow(
+          row,
+          completeCachedFormatFamilies.get(repo),
+        )
       ) {
         return false;
       }

@@ -7,14 +7,11 @@
 // the cheap path, assert the expensive one is gone.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { markdownPluginNeeds, MAX_HIGHLIGHT_CHARS } from "../src/lib/markdown-plugins.ts";
 
-function source(path: string): string {
-  return readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
-}
+import { readSrc } from "./helpers/kit.ts";
 
 test("no research subscriber selects the whole run object", () => {
   // Each re-rendered its subtree on every streamed delta; thread.tsx's useThreadResearchActive
@@ -23,7 +20,7 @@ test("no research subscriber selects the whole run object", () => {
     "features/chat/chat-page.tsx",
     "components/assistant-ui/thread.tsx",
   ]) {
-    const text = source(path);
+    const text = readSrc(path);
     assert.doesNotMatch(
       text,
       /state\.sessions\[[^\]]+\]\?\.run;/,
@@ -38,24 +35,24 @@ test("no research subscriber selects the whole run object", () => {
 });
 
 test("chat-page derives the research pane from strings", () => {
-  const page = source("features/chat/chat-page.tsx");
+  const page = readSrc("features/chat/chat-page.tsx");
   assert.match(page, /state\.sessions\[openResearchRunId\]\?\.run\.threadId/);
   assert.match(page, /state\.sessions\[latestResearchRunId\]\?\.run\.status/);
 });
 
 test("Thread is memoized", () => {
-  const thread = source("components/assistant-ui/thread.tsx");
+  const thread = readSrc("components/assistant-ui/thread.tsx");
   assert.match(thread, /export const Thread: FC<\{[^}]*\}> = memo\(/s);
   assert.match(thread, /Thread\.displayName = "Thread";/);
 });
 
 test("the report renderer is deferred and its plugins are conditional", () => {
-  const preview = source("components/markdown/markdown-preview.tsx");
+  const preview = readSrc("components/markdown/markdown-preview.tsx");
   assert.match(preview, /markdownPluginNeeds\(markdown\)/);
   assert.match(preview, /scheduleIdleTask\(\(\) => setReadyMarkdown\(markdown\), 200\)/);
   // The old path: all three plugins, always, in one synchronous commit.
   assert.doesNotMatch(preview, /const MARKDOWN_PLUGINS = \{ code, math, mermaid \}/);
-  const message = source("features/chat/components/research-message.tsx");
+  const message = readSrc("features/chat/components/research-message.tsx");
   assert.match(message, /markdown=\{run\.report\}[\s\S]*?defer=\{true\}/);
 });
 
@@ -63,7 +60,7 @@ test("deferred readiness belongs to a markdown value, not to the component", () 
   // Blanking readiness from a passive effect lands one commit late, so the parse is paid twice.
   // Measured on a 202KB report: a wasted 576ms parse, then a second one, ~1.11s blocked against
   // ~0.66s once readiness is derived during render.
-  const preview = source("components/markdown/markdown-preview.tsx");
+  const preview = readSrc("components/markdown/markdown-preview.tsx");
   assert.match(preview, /const ready = !defer \|\| readyMarkdown === markdown;/);
   assert.match(preview, /scheduleIdleTask\(\(\) => setReadyMarkdown\(markdown\), 200\)/);
   assert.doesNotMatch(preview, /useState\(!defer\)/);
@@ -88,7 +85,7 @@ test("plugin needs follow the document", () => {
   // must change with it - and "costs $5 and $10" is why a balanced-pair regex is not the answer.
   assert.equal(markdownPluginNeeds("the area is $x^2$ per unit").math, false);
   assert.match(
-    source("components/markdown/markdown-preview.tsx"),
+    readSrc("components/markdown/markdown-preview.tsx"),
     /import \{ math \} from "@streamdown\/math";/,
   );
   assert.equal(markdownPluginNeeds("```mermaid\ngraph TD;\n```").mermaid, true);
@@ -116,7 +113,7 @@ test("highlighting is capped, and the cap is one constant", () => {
     "components/assistant-ui/tool-code-cell.tsx",
     "components/assistant-ui/attachment-preview.tsx",
   ]) {
-    const cell = source(path);
+    const cell = readSrc(path);
     assert.match(cell, imports, path);
     assert.doesNotMatch(cell, /const MAX_HIGHLIGHT_CHARS = /, path);
   }

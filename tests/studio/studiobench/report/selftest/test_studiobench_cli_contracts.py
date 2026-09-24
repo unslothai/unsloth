@@ -95,20 +95,17 @@ def test_one_attached_studio_driven_twice_is_a_null_control():
     assert is_null_control(sides) is True
 
 
-# ── the stream-cost injection needs two origins ─────────────────────────────────────────────
-#
-# The injection is a CONTEXT init script gated on `window.location.origin`, and both arms are
-# driven by one browser context and one page, so the origin is the only thing that can tell them
-# apart. Two arms on one origin therefore BOTH burn the injected cost, the difference between them
-# is zero, and `evaluate_stream_cost_recovery_gate` -- which reads back
-# `(injected_rate - base_rate) * chars` -- reports a recovery of nothing and blames the
-# accumulator. The one flag whose job is to separate "the change did nothing" from "the metric is
-# not watching" would answer the second when the truth is neither.
-#
+# The stream-cost injection needs two origins. The injection is a CONTEXT init script gated on
+# `window.location.origin`, and both arms are driven by one browser context and one page, so the
+# origin is the only thing that can tell them apart. Two arms on one origin BOTH burn the injected
+# cost, the difference is zero, and `evaluate_stream_cost_recovery_gate` reports a recovery of
+# nothing and blames the accumulator, so the one flag whose job is to separate 'the change did
+# nothing' from 'the metric is not watching' answers the second when the truth is neither.
 # One attached Unsloth driven twice is not a mistake in general: it is a null control this tool
-# detects on purpose, pinned by the test directly above. It is only fatal with the injection on.
+# detects on purpose, pinned by the test above. It is only fatal with the injection on.
 
 
+# ── the stream-cost injection needs two origins ─────────────────────────────────────────────
 def _inject_args(attach, attach_b, *extra):
     return parse_args(["--attach", attach, "--ab", "main", "--attach-b", attach_b, *extra])
 

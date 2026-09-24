@@ -16,6 +16,7 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
+from tests.studio._js_source import assert_guard_holds
 
 WORKDIR = Path(__file__).resolve().parents[2]
 FRONTEND = WORKDIR / "studio" / "frontend" / "src"
@@ -188,6 +189,26 @@ def _brace_matched_body(text: str, declaration: str) -> str:
     """
     start = text.index(declaration)
     open_brace = text.index("{", text.index("=>", start))
+    depth = 0
+    for i in range(open_brace, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[open_brace : i + 1]
+    raise AssertionError(f"unbalanced braces reading {declaration!r}")
+
+
+def _braced_block(text: str, declaration: str) -> str:
+    """The ``{...}`` block for a declaration that is not an arrow function.
+
+    Same reason as ``_brace_matched_body``: splitting on the declaration and keeping the
+    remainder runs to end of file, so an ordering assertion inside it stays satisfied by code
+    that has been moved out of the block entirely.
+    """
+    start = text.index(declaration)
+    open_brace = text.index("{", start)
     depth = 0
     for i in range(open_brace, len(text)):
         if text[i] == "{":
@@ -380,6 +401,17 @@ def test_chat_autoload_toast_is_persistent_and_dismissible():
     assert "duration: Infinity" in explicit_load
 
 
+def test_a_recipe_restores_the_previous_model_at_the_context_it_asked_for():
+    """A recipe pins nothing, so restoring the model it displaced replays what it asked for."""
+    src = _read("features/recipe-studio/hooks/use-recipe-executions.ts")
+    assert src.count("requestedContextLength: status.requested_context_length ?? null,") == 2, src
+    assert (
+        "      max_seq_length:\n"
+        "        requestedContextLength ??\n"
+        "        unpinnedLoadContext(" in src
+    ), src
+
+
 def test_recipe_model_load_toast_is_persistent_and_dismissible():
     """Recipe model loading uses the same dismissible persistent lifecycle as
     chat loading because both call the non-abortable loadModel API."""
@@ -449,10 +481,10 @@ def test_hidden_model_matchers_refresh_with_inventory_version():
     assert "getInventoryVersion() !== version" in src
 
 
-def test_diffusion_capability_labeled_image_generation():
-    """The diffusion capability detects image GENERATORS (FLUX, SDXL,
-    text-to-image tags); labeling it "Image to text" showed generators when
-    users asked for captioning models."""
+def test_diffusion_capability_labeled_image_video_gen():
+    """The diffusion capability detects image and video GENERATORS (FLUX, SDXL,
+    LTX, Wan, text-to-image tags); labeling it "Image to text" showed generators
+    when users asked for captioning models."""
     for rel in (
         "features/hub/lib/model-capabilities.ts",
         "features/hub/lib/model-type-filter.ts",
@@ -460,12 +492,12 @@ def test_diffusion_capability_labeled_image_generation():
     ):
         src = _read(rel)
         assert "Image to text" not in src, rel
-        assert "Image generation" in src, rel
+        assert "Image/video gen" in src, rel
 
 
 def test_active_model_config_round_trips_gpu_fields():
     """The active model's config must carry the GPU Memory knobs (GGUF only) so a
-    sidebar/hub-gear reload cannot silently reset manual GPU settings, and "Remember
+    sidebar reload cannot silently reset manual GPU settings, and "Remember
     settings" cannot persist a GPU-less config over a saved one."""
     src = _read("features/model-picker/hooks/use-active-model-config.ts")
     for field in (
@@ -478,16 +510,16 @@ def test_active_model_config_round_trips_gpu_fields():
         assert field in src, field
     assert "if (!isGguf)" in src and "return base" in src
     assert "useActiveModelConfig(" in _read("features/chat/chat-page.tsx")
-    # The GPU knobs are in the editor's instance key, so a reload re-seeds instead of keeping.
+    # Live config sync is in the shared draft store; instance keys still remount on signature.
     shared = _read("features/model-picker/model-config/config-signature.ts")
     assert "export function gpuFieldsSignature" in shared
     assert "gpuFieldsSignature(config)," in shared
     assert "export function modelConfigInstanceKey" in shared
-    for rel in (
-        "features/model-picker/components/sidebar-model-config.tsx",
-        "features/hub/catalog/hub-model-settings-view.tsx",
-    ):
-        assert "modelConfigInstanceKey(" in _read(rel), rel
+    assert "export function loadedConfigSignature" in shared
+    draft = _read("features/model-picker/model-config/model-config-draft.ts")
+    assert "export function primeModelConfigDraft" in draft
+    sidebar = _read("features/model-picker/components/sidebar-model-config.tsx")
+    assert "modelConfigInstanceKey(" in sidebar
     # apply-per-model-config re-exports it, so its own callers are unchanged.
     reexport = _read("features/model-picker/model-config/apply-per-model-config.ts")
     assert "export { gpuFieldsSignature };" in reexport
@@ -640,6 +672,33 @@ def test_variant_expander_refreshes_after_delete():
     assert del_confirm, "delete onConfirm must bump refreshKey after a successful delete"
 
 
+def test_gguf_vision_capability_is_threaded_through_deferred_chat_load():
+    """Variant metadata is more authoritative than the parent catalog row for GGUF
+    vision support. Both the direct pick and the settings action must carry the hint,
+    the pinned-quant row must forward its validated verdict, and the collapsed
+    sole-quant row must not drop the mmproj answer it already read."""
+    picker = _read("features/model-picker/components/model-selector/pickers.tsx")
+    assert "const variantVisionHint = hasVision === false ? false : undefined;" in picker
+    assert "hasVision: normalizeGgufVisionCapability(res?.has_vision)," in picker
+    assert picker.count("isVision: variantVisionHint") >= 2
+    assert "variantVisionHint," in picker
+    assert "visionByRepo: ReadonlyMap<string, boolean>" in picker
+    assert "pinnedQuantValidation.visionByRepo.get(entry.repoId) === false" in picker
+    assert picker.count("isVision: pinnedVisionHint") >= 2
+    assert "isVision: sole.hasVision === false ? false : undefined," in picker
+    assert "cachedRepo?.has_vision === false" not in picker
+
+    types = _read("features/model-picker/components/model-selector/types.ts")
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    page = _read("features/chat/chat-page.tsx")
+    assert "isVision?: boolean;" in types
+    assert "isVision?: boolean;" in runtime
+    assert "isVision: meta?.isVision" in page
+    assert "isKnownTextOnlySelection(" in page
+    assert "selection,\n                contextKey:" in page
+    assert "{ ...pending.selection, isDownloaded: true }" in page
+
+
 def test_local_picker_rows_require_chat_capability():
     """Local inventory rows can be classified non-chat (canChat false, e.g."""
     src = _read("features/model-picker/inventory/use-chat-picker-inventory.ts")
@@ -670,11 +729,25 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     # loosely, so a new row that forgets it is a failure here rather than a load
     # that silently follows the default ref. #7736 added the third: the collapsed
     # single-quant GGUF row. #7880 added the fourth: the per-quant VRAM bar, which
-    # has to price the pinned snapshot rather than the default ref.
-    assert picker.count("loadId: c.load_id") == 4, (
+    # has to price the pinned snapshot rather than the default ref. #10128 put three of
+    # them behind a torn-snapshot guard. The sole-quant row uses the stronger downloaded
+    # verdict; the other two guard directly on partial state.
+    pins = re.findall(r"loadId:\s*(?:(\w+)\s*\?\s*undefined\s*:\s*)?c\.load_id", picker)
+    downloaded_pins = re.findall(r"loadId:\s*(\w+)\s*\?\s*c\.load_id\s*:\s*undefined", picker)
+    assert len(pins) + len(downloaded_pins) == 4, (
         "a row or gear that can start a load is missing the pin, or a new one was "
         "added and this count needs to follow it"
     )
+    # #10128: the three that can START a load withhold the pin for a part-downloaded
+    # snapshot, since audio-page.tsx reads a forwarded loadId as proof the weights are
+    # on disk. The VRAM bar only prices what is there, so it pins unconditionally.
+    assert sorted(pins) == ["", "isPartial", "isPartial"], (
+        "a multi-quant row that can start a load lost its partial-snapshot guard, or the VRAM bar "
+        f"gained one: {sorted(pins)}"
+    )
+    assert downloaded_pins == [
+        "isDownloaded"
+    ], "the sole-quant row must carry the pin only after that quant is known complete"
     block = re.search(r"onConfigure\(repoId, \{.*?\n\s*\}", picker, re.S)
     assert block and "loadId," in block.group(0), "the GGUF gear drops the pin"
     # The variant click withholds it: a quant outside the pinned snapshot lands in a different one.
@@ -760,11 +833,7 @@ def test_native_picked_gguf_template_read_through_lease():
     assert '${nativePathToken ?? ""}' in hook
 
 
-def test_model_load_guard_is_cross_instance():
-    """The in-flight load guard must consult the shared store pick (not only the
-    per-hook ref) and ejectModel must refuse while any instance is loading:
-    three live useChatModelRuntime instances exist (chat page, hub page, hub
-    gear dialog)."""
+def test_model_load_guard_uses_shared_store_state():
     src = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "useChatRuntimeStore.getState().loadingModelPick" in src
     assert "clearLoadingModelPick" in src
@@ -981,6 +1050,9 @@ def test_reset_persists_null_max_length_and_substitutes_only_for_load():
     # Load-only substitution of the resolved value (recomputed from any committed
     # same-click Max Seq Length draft, so it is never dropped).
     assert "maxSeqLength: effectiveMaxSeqLengthValue" in src
+    # MLX pins via customContextLength, so substituting the shown default would turn
+    # "Auto" into a request for that number.
+    assert "      : targetIsMlx\n        ? effectiveRuntimeConfig" in src
     assert "const effectiveLoadConfig" in src
     # The persisted record is saved from effectiveRuntimeConfig; the load request
     # carries effectiveLoadConfig (with any committed context input).
@@ -1001,8 +1073,7 @@ def test_initial_load_uses_staged_config_payload():
     numeric = _read("features/model-picker/components/numeric-value-input.tsx")
     assert "export type NumericValueInputHandle" in numeric
     assert "commit:" in numeric
-    # P1: commit returns null unless the user actually edited the field,
-    # so Load/Save with untouched Auto does not pin native context.
+    # Commit returns null unless the field was edited, so an untouched control pins nothing.
     assert "dirtyRef.current" in numeric
     assert "return null;" in numeric
     # P2: blur clears dirtyRef after commit so Reset/slider cannot be
@@ -1011,7 +1082,7 @@ def test_initial_load_uses_staged_config_payload():
     assert "draftRef.current = String(final);" in numeric
     # Same-click Load after blur still sees the committed draft.
     assert "lastBlurCommittedRef" in numeric
-    # Invalid drafts must not turn Auto into an explicit pin.
+    # Invalid drafts must not become an explicit pin.
     assert "const commitDraft = (raw: string): number | null" in numeric
     assert re.search(r"if \(!Number\.isFinite\(parsed\)\) \{\s*return null;", numeric)
     assert re.search(
@@ -1048,6 +1119,10 @@ def test_same_click_commit_covers_all_numeric_inputs():
     # The non-GGUF load path substitutes the committed Max Seq Length draft.
     assert "const effectiveMaxSeqLengthValue =" in page
     assert "maxSeqLength: effectiveMaxSeqLengthValue" in page
+    # The committed draft lands in this target's pin field.
+    assert (
+        "Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, targetIsMlx));" in page
+    )
 
 
 def test_context_commit_rechecks_persistence_only_shortcut():
@@ -1063,7 +1138,12 @@ def test_reset_enabled_for_explicit_context_pin_at_native():
     """An explicit customContextLength that equals the native ceiling is still a user
     override, so contextAtDefault must require customContextLength == null."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert "const contextAtDefault = !target.isGguf || config.customContextLength == null;" in src
+    # An MLX pin is an override too, so Reset stays enabled, whichever field held it.
+    assert (
+        "const contextAtDefault = !target.isGguf "
+        "? savedContextPin(config) == null "
+        ": config.customContextLength == null;" in src
+    )
     # The old form that ignored an explicit pin equal to native must not return.
     assert (
         "(nativeContextLength == null ? config.customContextLength == null : "
@@ -1084,14 +1164,98 @@ def test_compare_pane_non_gguf_falls_back_to_app_default():
     assert "DEFAULT_MAX_SEQ_LENGTH," in barrel
     src = " ".join(_read("features/chat/shared-composer.tsx").split())
     assert "DEFAULT_MAX_SEQ_LENGTH," in src
+    # Same helper as the single-view load, so a pane cannot load at a different size.
     assert (
-        "const effectiveMaxSeqLength = ownConfig.customContextLength ?? "
-        "normalizeMaxSeqLength(ownConfig.maxSeqLength) ?? "
-        "(targetIsGguf ? 0 : DEFAULT_MAX_SEQ_LENGTH);" in src
+        "const effectiveMaxSeqLength = savedContextPin(ownConfig) ?? "
+        "unpinnedLoadContext( targetIsGguf, "
+        "isServedByMlx(targetIsGguf, platform.deviceType, platform.chatOnlyReason), "
+        "DEFAULT_MAX_SEQ_LENGTH, );" in src
     )
     # The buggy fallback to the active model's shared runtime value must not return.
     assert "(isGgufLoad ? 0 : maxSeqLength)" not in src
     assert "const maxSeqLength = store.params.maxSeqLength;" not in src
+
+
+def test_every_load_path_asks_the_backend_before_it_asks_for_a_window():
+    """Which backend serves and what window it reported decide the request and the Max
+    Tokens ceiling. A literal for the first makes an interactive MLX load ask for the app
+    default again; a raw context field for the second raises Max Tokens to meet a length
+    nobody measured."""
+    load_paths = ("chat/hooks/use-chat-model-runtime.ts", "chat/api/chat-adapter.ts")
+    derived_backend = r"isMlx: isServedByMlx\(\s*[\w.=\" ]+,\s*platform\.deviceType,\s*platform\.chatOnlyReason,?\s*\)"
+    # A name bound to that same call counts, so hoisting one is not a literal creeping
+    # in; the binding itself is checked below.
+    hoisted = r"isMlx: (\w+),"
+    hoist_source = r"const {name} = isServedByMlx\(\s*\w+,\s*platform\.deviceType,\s*platform\.chatOnlyReason,?\s*\);"
+    for name in load_paths:
+        src = _read(f"features/{name}")
+        calls = src.count("resolveLoadMaxSeqLength({") + src.count("retainedContextPin({")
+        derived = len(re.findall(derived_backend, src))
+        for bound in set(re.findall(hoisted, src)):
+            if re.search(hoist_source.format(name = re.escape(bound)), src):
+                derived += src.count(f"isMlx: {bound},")
+        assert derived >= calls, (name, derived, calls)
+    for name in (*load_paths, "chat/lib/apply-inference-status-to-store.ts"):
+        src = _read(f"features/{name}")
+        # maxTokensCap is exempt: it only lowers a budget, and a transformers load
+        # reports there the max_seq_length it was configured with.
+        windows = re.sub(r"maxTokensCap:[^,]*,", "", src)
+        assert not re.search(r"\w+\.context_length\b", windows), name
+    # Including the fallback: on a model change the session length is the outgoing one's.
+    policy = _read("features/chat/presets/preset-policy.ts")
+    assert (
+        "localMaxTokensCeiling(\n    loadedContextLength,\n"
+        "    unreportedWindowMaxTokens(response.is_gguf ?? false, current.maxTokens)," in policy
+    )
+    # No window reported falls back to what this load asked for, not the app default,
+    # which halved Max Tokens for a transformers model carrying more.
+    adapter = _read("features/chat/api/chat-adapter.ts")
+    assert re.search(r"MaxTokensCeiling\(\s+loadedContextFields[^;]+loadedWindow,", adapter)
+    assert re.search(r"ContextForParams\(\s+loadedContext[^,]+,\s+effectiveMaxSeqLength,", adapter)
+
+
+def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
+    """MLX sizes its own window, so the control is GGUF's Context Length and states what a
+    load would serve. Max Seq Length at 4096 would describe a pin never sent."""
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert 'const label = isMlx ? "Context Length" : "Max Seq Length";' in page
+    # A number, not a word: the placeholder is only for a window nobody has read.
+    assert 'displayValue={isMlx && windowUnknown ? "—" : undefined}' in page
+    assert "savedContextPin(config) == null && mlxServedWindow == null\n" in page
+    # The resident model's window, else this model's; request bounds would shorten it.
+    assert "(targetIsMlx && isActiveModel ? servedWindow(loadedContextLength) : null) ??" in page
+    assert "? servedWindow(modelMaxPosition.maxPositionEmbeddings)" in page
+    assert re.search(r"const servedWindow = [^;]*Math\.floor\(value\)\n\s*: null;", page), page
+    numeric = _read("features/model-picker/components/numeric-value-input.tsx")
+    # Typing the shown number is a choice even where it equals the value beneath it.
+    assert "derived={isMlx && !pinned}" in page
+    assert "pinned={savedContextPin(config) != null}" in page
+    # Committing pins that exact number; one outside the control's range is no commit,
+    # which is why the slider stays inside it too.
+    assert "const shown = parsed === value;" in numeric
+    assert re.search(r"shown && \(\(max[^{]+parsed < min\)+ \{\n\s+return null;", numeric)
+    assert "const final = commitDraft(draftRef.current);\n          dirtyRef" in numeric
+    assert "value={maxSeqLengthValue}\n              max={maxSeqLengthMax}" in page
+    assert "value={[Math.min(Math.max(value, MAX_SEQ_LENGTH_MIN), max)]}" in page
+    assert "const final = shown ? parsed : snapToStep(parsed, step, min, max);" in numeric
+    assert re.search(
+        r"MAX_SEQ_LENGTH_MAX,\s+Math\.max\(native\w+, maxSeqLengthValue\),\s+\);", page
+    )
+    # A record written before the pin moved fields carries it in maxSeqLength, and wins.
+    assert "servedWindow(savedContextPin(config)) ??\n    mlxServedWindow ??" in page
+    # A hidden value and a value nobody chose both still count, through one predicate.
+    assert "final !== value || displayValue != null || derived;" in numeric
+    assert "if (isEdit(final)) {\n      onChange(final);\n    }\n    return final;" in numeric
+    assert "lastBlurCommittedRef.current = isEdit(final) ? final : null;" in numeric
+    assert "update(contextPinPatch(value, targetIsMlx))" in page
+    # The platform answers which backend serves: "anything not GGUF" relabels CUDA.
+    assert (
+        "isServedByMlx(\n    target.isGguf,\n    platform.deviceType,\n    platform.chatOnlyReason,\n  )"
+        in page
+    )
+    # Both props are optional, so dropping either typechecks and mislabels the control.
+    assert "isMlx={targetIsMlx}" in page
+    assert "windowUnknown={" in page
 
 
 def test_default_gpu_mode_clears_manual_knobs():
@@ -1157,7 +1321,7 @@ def test_model_config_prepares_hf_token_before_gguf_metadata_preflight():
     """Settings classification must use the same stale-token recovery as load."""
     page = _read("features/model-picker/components/model-config-page.tsx")
     assert 'import { prepareHfTokenForUse } from "@/features/hf-auth";' in page
-    effect = page.split("// Fetch GGUF header dims", 1)[1]
+    effect = page.split("  const contextFetchKey = target.isGguf", 1)[1]
     effect = effect.split("const stagedDims =", 1)[0]
     prepare = effect.index("prepareHfTokenForUse(hfToken || null)")
     metadata = effect.index("fetchGgufStagedMetadata({", prepare)
@@ -1181,12 +1345,29 @@ def test_chat_load_prepares_hf_token_before_gguf_metadata_preflight():
     prepare = runtime.index("prepareHfTokenForUse(")
     metadata = runtime.index("fetchGgufStagedMetadata({", prepare)
     assert prepare < metadata
-    # The raw store token must not be handed to the preflight.
-    assert "hf_token: preparedToken.token" in runtime
+    # The raw store token must not be handed to the preflight. The prepared value now
+    # reaches it through the hoisted `hfToken` binding rather than inline, so pin both
+    # halves: the assignment, and that the preflight reads that binding.
+    assert "hfToken = preparedToken.token" in runtime
+    preflight = runtime.index("fetchGgufStagedMetadata({", prepare)
+    assert "hf_token: hfToken" in runtime[preflight : preflight + 400]
+    assert runtime.index("hfToken = preparedToken.token") < preflight
     assert (
         "hf_token: useChatRuntimeStore.getState().hfToken" not in runtime
     ), "GGUF metadata preflight must not send the unprepared stored token"
-    assert 'throw new Error("Model load cancelled.")' in runtime
+    # A declined prompt no longer throws: it returns, and it must do so before the prepared token is
+    # adopted, or a cancelled load would be counted as a Hub failure and would send the token the
+    # user just refused. Brace-matched, and anchored on the branch's own LAST statement, so an early
+    # return buried in the nested reconciliation callback cannot stand in for the pick's return.
+    decline = _braced_block(runtime, "if (!preparedToken.proceed) {")
+    assert 'toast.error("Model load cancelled.");' in decline
+    assert "throw" not in decline, "a declined pick is a cancellation, not a failed load"
+    body = decline.rstrip()
+    assert body.endswith("}"), decline[-80:]
+    assert (
+        body[:-1].rstrip().endswith("return;")
+    ), "the decline branch must end by returning, not by falling through to the load"
+    assert runtime.index("hfToken = preparedToken.token") > runtime.index(decline) + len(decline)
 
 
 def test_chat_autoload_prepares_hf_token_before_gguf_metadata_preflight():
@@ -1393,7 +1574,7 @@ def test_diffusion_pages_stage_downloads_through_the_manager():
         # A missing plan must still load rather than dead-end.
         assert "catch" in body, f"{rel}: no fallback when the plan is unavailable"
 
-        assert "handleLoadRef.current(repoId, opts, advanced)" in body, rel
+        assert "handleLoadRef.current(repoId, opts, advanced, pickToastId)" in body, rel
 
 
 def test_every_diffusion_planner_filters_the_cache_before_staging():
@@ -1430,9 +1611,14 @@ def test_a_hidden_diffusion_page_does_not_load_when_its_download_lands():
         src = _read(rel)
         ready = re.search(r"onReady: \(\) => \{.*?\n    \},", src, re.S)
         assert ready, f"{rel}: staged-download onReady not found"
-        assert "if (!active)" in ready.group(0), f"{rel}: a hidden page still takes the GPU"
+        region = ready.group(0)
+        if "resumePendingLoad();" in region:
+            resume = re.search(r"function resumePendingLoad\(\) \{.*?\n  \}", src, re.S)
+            assert resume, f"{rel}: staged-load continuation not found"
+            region += resume.group(0)
+        assert "if (!active)" in region, f"{rel}: a hidden page still takes the GPU"
         # Deferred, not dropped: something has to fire the held pick when the page returns.
-        assert "stagedLoadDeferred" in ready.group(0), f"{rel}: the pick is discarded"
+        assert "stagedLoadDeferred" in region, f"{rel}: the pick is discarded"
         # The deps array grew when the load body moved into runStagedLoad, so match the
         # effect by its guard and check the deps separately. Keying the boundary on
         # `[active` instead lets a reordered array run the match on into the next hook,
@@ -1484,7 +1670,12 @@ def test_a_dying_staged_download_only_rolls_back_its_own_pick():
     for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(rel)
         # Captured before the plan await, otherwise it is the newer pick's entry that gets stored.
-        own = re.search(r"const ownRevert = quantRevert\.current;\n(.*?)await ", src, re.S)
+        own = re.search(
+            r"const ownRevert = (?:downloadSnapshot(?: \|\| downloadOnly)? \? null : )?"
+            r"quantRevert\.current;\n(.*?)await ",
+            src,
+            re.S,
+        )
         assert own, f"{rel}: loadOrStage does not capture its own rollback entry"
         assert "await" not in own.group(
             1
@@ -1511,7 +1702,7 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
     first plan is still in flight. Plans then resolve in RESPONSE order, not pick order: the older
     one would restage over the newer queue, or fall through and load the model the user left.
 
-    So each pick takes a sequence number and gives up if a newer one has been made since. It must
+    Each load pick takes a sequence number and gives up if a newer one has been made since. It must
     report started, not failed: returning false would send this pick's `.then` rollback at a label
     the newer pick now owns. Every exit that acts on the pick is covered, not just the one after a
     successful plan -- a rejected plan falls through to the load, and a pick that never asks for a
@@ -1521,9 +1712,14 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
         body = re.search(r"const loadOrStage = useCallback\(\n(.*?)\n  \);", src, re.S)
         assert body, f"{rel}: loadOrStage not found"
         text = body.group(1)
-        assert "const pick = ++pickSeq.current;" in text, f"{rel}: no pick sequence is taken"
+        sequence = re.search(
+            r"const pick = (?:(?:downloadSnapshot|downloadOnly) \? pickSeq\.current : )?"
+            r"\+\+pickSeq\.current;",
+            text,
+        )
+        assert sequence, f"{rel}: no pick sequence is taken"
         # Before any real await, or two picks can share a number.
-        seq = text.index("const pick = ++pickSeq.current;")
+        seq = sequence.start()
         first_await = min(
             (
                 text.index(tok)
@@ -1535,19 +1731,22 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
         assert seq < first_await, f"{rel}: the sequence is taken after the plan await"
         # Before the non-hub return, so a local pick invalidates an in-flight hub plan.
         assert seq < text.index(
-            'if (source !== "hub")'
+            'if (source !== "hub"'
         ), f"{rel}: a non-hub pick returns without invalidating an in-flight hub plan"
         guards = re.findall(
-            r"if \(pick !== pickSeq\.current(?: \|\| !owns\(\))?\) return (\w+);", text
+            r"if \((?:!downloadOnly && \()?pick !== pickSeq\.current(?: \|\| !owns\(\))?\){1,2} "
+            r"(?:\{\s*pickToast\.dismiss\(pickToastId\);\s*)?return (\w+);",
+            text,
         )
         assert guards, f"{rel}: a superseded plan is not dropped"
         assert (
             set(guards) == {"true"}
         ), f"{rel}: a superseded pick reports failure, so its rollback fires at the newer pick's label"
         # The fallback load after a rejected plan is guarded too.
-        tail = text[text.rindex("} catch {") :]
+        tail = text[text.rindex("} catch") :]
         assert re.search(
-            r"if \(pick !== pickSeq\.current(?: \|\| !owns\(\))?\) return true;.*?return handleLoadRef",
+            r"if \((?:!downloadOnly && \()?pick !== pickSeq\.current(?: \|\| !owns\(\))?\){1,2} "
+            r"(?:\{\s*pickToast\.dismiss\(pickToastId\);\s*)?return true;.*?return handleLoadRef",
             tail,
             re.S,
         ), f"{rel}: a plan that rejected after a newer pick still reaches the fallback load"
@@ -1683,11 +1882,11 @@ def test_a_new_pick_drops_the_previous_staged_intent():
         text = body.group(1)
         cleared = text.index("pendingStagedLoad.current = null;")
         assert cleared < text.index(
-            'if (source !== "hub")'
+            'if (source !== "hub"'
         ), f"{rel}: a non-hub pick returns while the previous staged intent is still armed"
         assert cleared < text.index("await "), f"{rel}: the intent survives until the plan resolves"
         # The deferred re-fire and the rollback owner belong to that dead intent too.
-        head = text[: text.index('if (source !== "hub")')]
+        head = text[: text.index('if (source !== "hub"')]
         assert (
             "stagedLoadDeferred.current = false;" in head
         ), f"{rel}: a deferred staged load can still fire for the abandoned pick"
@@ -1739,7 +1938,7 @@ def test_staged_downloads_use_one_actionable_download_surface():
     duplicates the same state and gives users another X that only dismisses copy."""
     staged = _read("features/hub/download-manager/use-staged-download.ts")
     stage_fn = re.search(
-        r"const stage = useCallback\(\(entries: StagedDownloadEntry\[\]\) => \{.*?\n  \}, \[\]\);",
+        r"const stage = useCallback\(\(entries: StagedDownloadEntry\[\]\)(?:: number)? => \{.*?\n  \}, \[\]\);",
         staged,
         re.S,
     )
@@ -1842,18 +2041,20 @@ def test_staged_download_callbacks_only_answer_their_own_variant():
 
 
 def test_video_gallery_fetches_clips_as_their_cards_come_into_view():
-    """Each gallery record's src is a blob holding the whole MP4 until the page closes, so
-    fetching a full page of them up front pinned hundreds of MB (gigabytes across "load more"
-    pages) for cards the user may never scroll to. Fetch on visibility instead, and always
-    fetch the selected clip, since that is the one the preview player plays."""
+    """A card was a <video> pointed at a signed MP4 link, so a whole page of them made WebKit build
+    a demux and decode pipeline per clip, for cards the user may never scroll to. Cards now draw a
+    still poster fetched as they near the viewport, and only the selected clip mints a playback
+    link, since that is the one the preview player plays."""
     src = _read("features/video/video-page.tsx")
     assert "new IntersectionObserver(" in src
     assert "ref={stripRef}" in src and "data-clip-id={video.id}" in src
     assert 'root.querySelectorAll("[data-clip-id]")' in src
     # rootMargin applies to the root box only, so the strip (the clipping scroller) must BE the root or the prefetch margin never reaches a clipped card.
     assert '{ root, rootMargin: "0px 600px" }' in src
-    # The only surviving whole-page fetches are the no-IntersectionObserver fallbacks.
-    eager = list(re.finditer(r"page\.videos\.forEach\(\(video\) => void ensureSrc\(video\)\)", src))
+    # A whole page of playback links is what the pipelines were built from, so no path may mint one.
+    assert not re.search(r"forEach\(\(video\) => void ensureSrc\(video\)\)", src)
+    # The only surviving whole-page fetches are the no-IntersectionObserver poster fallbacks.
+    eager = list(re.finditer(r"forEach\(\(video\) => void ensureThumbnail\(video\)\)", src))
     assert eager, "the jsdom/old-webview fallback fetch is missing"
     for match in eager:
         assert (
@@ -1861,7 +2062,8 @@ def test_video_gallery_fetches_clips_as_their_cards_come_into_view():
             in src[max(0, match.start() - 260) : match.start()]
         )
     assert re.search(
-        r"if \(!selected\) return;\s*\n\s*void \(async \(\) => \{\s*\n\s*await ensureSrc\(selected\);",
+        r"if \(!selected\) return;\s*\n\s*void ensureThumbnail\(selected\);"
+        r"\s*\n\s*void ensureSrc\(selected\);",
         src,
     )
 
@@ -2003,7 +2205,7 @@ def test_parallel_slots_setting_wired_end_to_end():
     assert "n_parallel: isGguf ? loadNParallel : null," in runtime
     assert "n_parallel: validateNParallel," in runtime
     assert "loadNParallel = pendingLoadConfig?.nParallel ?? null;" in runtime
-    assert "n_parallel: stateBeforeUnload.loadedNParallel," in runtime
+    assert "n_parallel: rollbackState.loadedNParallel," in runtime
     chat_api = _read("features/chat/api/chat-api.ts")
     assert "n_parallel: payload.n_parallel," in chat_api
     composer = _read("features/chat/shared-composer.tsx")
@@ -2073,9 +2275,9 @@ def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
     assert "nParallel: null," in non_gguf_branch
     assert "loadedNParallel: null," in non_gguf_branch
 
-    fresh_default = adapter.split("// Nothing on the device:", 1)[1].split(
-        "showAutoLoadSuccess(\n          `Loaded ${DEFAULT_CHAT_MODEL_LABEL}", 1
-    )[0]
+    fresh_default = adapter.split(
+        "      return { loaded: false, blockedByTrustRemoteCode: false };", 1
+    )[1].split("showAutoLoadSuccess(\n          `Loaded ${DEFAULT_CHAT_MODEL_LABEL}", 1)[0]
     # The fresh-default download omits the slots, so its success state clears both,
     # or the control reads as an unapplied edit against the seeded baseline.
     assert "n_parallel" not in fresh_default.split("saveSpeculativeType", 1)[0]
@@ -2128,9 +2330,13 @@ def test_adopting_a_resident_model_reseeds_the_slot_and_batch_controls():
     assert "loadedNParallel: status.requested_parallel_slots," in status
     # The batch pair is told the same thing, from the same local, so the two cannot drift.
     assert "modelChanged: slotsModelChanged," in status
-    # And the reseed re-reads this model's remembered config rather than blanking.
+    # The reseed re-reads this model's remembered config rather than blanking. Slot
+    # conditions are GGUF's alone; without slot fields it goes by whether the poll is
+    # hydrating a model already on screen.
     assert (
-        "status.is_gguf && (slotsUnseeded || batchesUnseeded || slotsModelChanged) "
+        "const remembered = (status.is_gguf "
+        "? slotsUnseeded || batchesUnseeded || slotsModelChanged "
+        ": hydratingExistingModel) "
         "? resolveResidentInitialConfig(checkpointId, status.gguf_variant ?? null)" in status
     ), "the model-change reseed must feed the remembered lookup, or it discards the saved config"
 
@@ -2182,8 +2388,12 @@ def test_hydration_restores_a_remembered_slot_override():
         "prevState.nParallel === null;" in status
     )
     assert (
-        "status.is_gguf && (slotsUnseeded || batchesUnseeded || slotsModelChanged)" in status
+        "(status.is_gguf ? slotsUnseeded || batchesUnseeded || slotsModelChanged "
+        ": hydratingExistingModel)" in status
     ), "storage is read on a fresh store or a model change, never on a steady poll"
+    assert (
+        "const rememberedNParallel = status.is_gguf && remembered?.remembered" in status
+    ), "slots are a llama.cpp knob; reading MLX's record must not seed one"
     assert (
         "...(seedLoadParams && (slotsUnseeded || slotsModelChanged) &&" in status
     ), "the seed fires in both cases the clear leaves the control blank"
@@ -2206,10 +2416,18 @@ def test_remembered_slots_are_read_through_the_cached_repo_alias():
     blanks on the model change and the next Save writes the blank over the saved
     ``n_parallel``, locally and through the server mirror."""
     config = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
-    # The raw identifier still wins, so a path-keyed record is never shadowed.
+    # The raw identifier still wins, so a path-keyed record is never shadowed. A standalone
+    # file drops the reported quant first, since nothing is ever written under that key.
     assert (
-        "const direct = resolveInitialConfig(modelId, ggufVariant); "
+        "const direct = resolveInitialConfig(modelId, standalone ? null : ggufVariant); "
         "if (direct.remembered) {" in config
+    )
+    # Then the label, the order override_lookup_candidates reads a loose .gguf in: a picker
+    # before #7473 keyed the label, and those records are still on disk.
+    assert (
+        "if (standalone && ggufVariant) { const labelled = "
+        "resolveInitialConfig(modelId, ggufVariant); if (labelled.remembered) { "
+        "return labelled; } }" in config
     )
     assert "const alias = publicModelId(modelId);" in config
     # Only a namespaced collapse, the rule residentModelIdMatches applies: every other
@@ -2240,8 +2458,11 @@ def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count(
     preset capture pins."""
     runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
     assert (
-        'const previousNParallel = typeof selection !== "string" && '
-        "selection.previousConfig ? (selection.previousConfig.nParallel ?? null) "
+        # The inherited replacement's config, not this pick's own `selection.previousConfig`:
+        # a superseded load's field holds its own transient target config, and restoring that
+        # on the resident model's slot control would pin another model's count. Falls back to
+        # the live store when no replacement was inherited.
+        "const previousNParallel = rollbackConfig ? (rollbackConfig.nParallel ?? null) "
         ": useChatRuntimeStore.getState().nParallel;" in runtime
     )
     # Matched on the call prefix, not the whole call: the staged apply also
@@ -2266,8 +2487,8 @@ def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count(
     assert "nParallel: previousNParallel," in rollback
     # Baseline and reload payload keep the resolved count, or the rollback
     # recreates the previous model at a different slot count.
-    assert "loadedNParallel: stateBeforeUnload.loadedNParallel ?? null," in rollback
-    assert "n_parallel: stateBeforeUnload.loadedNParallel," in runtime
+    assert "loadedNParallel: rollbackState.loadedNParallel ?? null," in rollback
+    assert "n_parallel: rollbackState.loadedNParallel," in runtime
 
 
 def test_batch_sizes_setting_wired_end_to_end():
@@ -2300,9 +2521,9 @@ def test_batch_sizes_setting_wired_end_to_end():
     assert "loadNBatch = pendingLoadConfig?.nBatch ?? null;" in runtime
     assert "loadNUbatch = pendingLoadConfig?.nUbatch ?? null;" in runtime
     # rollback re-sends a baseline only when one was asked, for the same reason
-    assert "{ n_batch: stateBeforeUnload.loadedNBatch }" in runtime
-    assert "{ n_ubatch: stateBeforeUnload.loadedNUbatch }" in runtime
-    assert "n_batch: stateBeforeUnload.loadedNBatch," not in runtime
+    assert "{ n_batch: rollbackState.loadedNBatch }" in runtime
+    assert "{ n_ubatch: rollbackState.loadedNUbatch }" in runtime
+    assert "n_batch: rollbackState.loadedNBatch," not in runtime
     chat_api = " ".join(_read("features/chat/api/chat-api.ts").split())
     assert "...(payload.n_batch != null ? { n_batch: payload.n_batch } : {})," in chat_api
     assert "...(payload.n_ubatch != null ? { n_ubatch: payload.n_ubatch } : {})," in chat_api
@@ -2485,7 +2706,13 @@ def test_chat_autoload_records_every_validation_failure():
     # The preflight's own cancellation goes through the helper too, or it records without halting.
     assert "recordCandidateFailure(failureLabel, cancelled)" in autoload
     assert "noteLoadFailure(failureLabel, cancelled)" not in autoload
-    assert "if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS)" in autoload
+    assert_guard_holds(
+        autoload,
+        "if",
+        "||",
+        {"autoLoadCancelled", "loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS"},
+        expected = 2,
+    )
 
 
 def test_auth_retries_tag_transport_failures_like_the_first_attempt():
@@ -2494,16 +2721,22 @@ def test_auth_retries_tag_transport_failures_like_the_first_attempt():
     src = (WORKDIR / "studio" / "frontend" / "src" / "features" / "auth" / "api.ts").read_text(
         encoding = "utf-8"
     )
-    assert src.count("unslothTransportFailure: true") == 2, "one tag per message, in one helper"
-    tagger = src.split("function asTransportFailure", 1)[1].split("\n}\n", 1)[0]
+    tagger = src.split("async function asTransportFailure", 1)[1].split("\n}\n", 1)[0]
     assert "err instanceof TypeError" in tagger
     assert "navigator.onLine === false" in tagger
+    # Counted against the helper's own raises, not pinned to a number that a new message would trip.
+    assert tagger.count("unslothTransportFailure: true") == tagger.count("new Error(")
+    assert tagger.count("unslothTransportFailure: true") >= 2
+    assert src.count("unslothTransportFailure: true") == tagger.count(
+        "unslothTransportFailure: true"
+    ), "every tag belongs to the one helper"
     retry = src.split("async function retryWithCurrentToken", 1)[1]
     retry = retry.split("\n}\n", 1)[0]
     assert "fetchWithTauriNetworkRetry" in retry
-    assert "throw asTransportFailure(err);" in retry
+    # Awaited since #10520: dropping the await throws a pending promise and the tag is never seen.
+    assert "throw await asTransportFailure(err);" in retry
     first = src.split("export async function authFetch", 1)[1]
-    assert "throw asTransportFailure(err);" in first
+    assert "throw await asTransportFailure(err);" in first
 
 
 def test_adoption_takes_its_own_pin_before_moving_the_checkpoint():
@@ -2590,6 +2823,86 @@ def test_evicted_local_configs_drop_their_server_overrides():
     assert "modelIdFromStorageKey(" in store and "ggufVariantFromStorageKey(" in store
 
 
+def test_reasoning_resets_reach_the_server_without_making_backfill_destructive():
+    api = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
+    assert "options?.resetReasoningBudget && config?.reasoningBudget === -1" in api
+    assert "reasoning_budget: -1" in api
+    assert 'options?.resetReasoningBudgetMessage && config?.reasoningBudgetMessage === ""' in api
+    assert 'reasoning_budget_message: ""' in api
+
+    route = _read_backend("routes/settings.py")
+    assert "fields_set = payload.model_fields_set" in route
+    assert '"reasoning_budget" in fields_set and payload.reasoning_budget == -1' in route
+    assert (
+        '"reasoning_budget_message" in fields_set and payload.reasoning_budget_message == ""'
+        in route
+    )
+    assert "if not payload.fill_absent_fields and requested_extra_args:" in route
+
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert "baseline.reasoningBudget !== -1" in page
+    assert "normalizedRuntimeConfig.reasoningBudget === -1" in page
+    assert 'baseline.reasoningBudgetMessage !== ""' in page
+    assert 'normalizedRuntimeConfig.reasoningBudgetMessage === ""' in page
+
+
+def test_a_recipe_restores_the_previous_model_at_its_reasoning_budget():
+    """Captured from /status beside the context request and replayed the same way; a recipe's
+    own target carries neither and runs at the defaults."""
+    src = _read("features/recipe-studio/hooks/use-recipe-executions.ts")
+    assert src.count("reasoningBudget: status.requested_reasoning_budget ?? -1,") == 2, src
+    assert (
+        src.count('reasoningBudgetMessage: status.requested_reasoning_budget_message ?? "",') == 2
+    ), src
+    assert "reasoning_budget: reasoningBudget ?? -1," in src
+    assert 'reasoning_budget_message: reasoningBudgetMessage ?? "",' in src
+    assert "(left.reasoningBudget ?? -1) === (right.reasoningBudget ?? -1)" in src
+
+    api = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
+    assert "mirrors_reasoning_budget: true," in api
+
+
+def test_reasoning_settings_hydrate_from_a_server_authored_override():
+    """A row written by another browser or an API client carries the pair, and fromApiOverride has
+    to copy it or the panel shows local defaults and the next save writes them back."""
+    api = _read("features/model-picker/api/model-overrides.ts")
+    hydrate = api.split("export function fromApiOverride", 1)[1]
+    hydrate = hydrate[: hydrate.index("\n}")]
+    assert "reasoningBudget: override.reasoning_budget ?? local.reasoningBudget" in hydrate
+    assert "override.reasoning_budget_message ?? local.reasoningBudgetMessage" in hydrate
+
+
+def test_a_recipe_compares_the_requested_reasoning_budget():
+    """Requested, never effective: the effective pair folds in LLAMA_ARG_THINK_BUDGET*, which no
+    request can express, so comparing it would reload the weights on every run forever."""
+    src = _read("features/recipe-studio/hooks/use-recipe-executions.ts")
+    reuse = src.split("async function isLocalModelAlreadyLoaded", 1)[1]
+    reuse = reuse[: reuse.index("\n}")]
+    assert "status.requested_reasoning_budget" in reuse
+    assert (
+        "status.reasoning_budget" not in reuse
+    ), "the reuse check must compare the request, never the environment-resolved value"
+
+
+def test_validate_sends_reasoning_controls_before_the_runtime_unloads():
+    api = _read("features/chat/api/chat-api.ts")
+    validate_body = api.split("export async function validateModel", 1)[1].split(
+        "export async function", 1
+    )[0]
+    assert "reasoning_budget: payload.reasoning_budget ?? -1" in validate_body
+    assert 'reasoning_budget_message: payload.reasoning_budget_message ?? ""' in validate_body
+
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    validation = runtime.index("const validation = await validateModel({")
+    unload = runtime.index("await unloadModel(", validation)
+    assert validation < unload
+    validate_payload = runtime[validation:unload]
+    assert "reasoning_budget:" in validate_payload
+    assert "validateReasoningBudget" in validate_payload
+    assert "reasoning_budget_message:" in validate_payload
+    assert "validateReasoningBudgetMessage" in validate_payload
+
+
 def test_backfill_compares_server_keys_by_normalized_identity():
     """app_settings has no schema version, so an install predating identity normalization
     holds rows keyed by whatever id was typed, e.g."""
@@ -2615,15 +2928,6 @@ def test_monitor_stats_exclude_model_lifecycle_rows():
 
     backend = _read_backend("core/inference/api_monitor.py")
     assert 'entry.kind != "lifecycle"' in backend, "the rule this mirrors"
-
-
-def test_api_reach_copy_is_limited_to_gguf_models():
-    """The Hub opens this page for every downloaded model, but ModelConfigPage mirrors
-    settings to the server only when target.isGguf, because API auto-switch indexes
-    GGUFs only."""
-    src = " ".join(_read("features/hub/catalog/hub-model-settings-view.tsx").split())
-    assert "{(target.apiLoadable ?? target.isGguf)" in src
-    assert "Saved settings apply everywhere Unsloth loads this model." in src
 
 
 def test_backfill_includes_a_standalone_gguf_with_no_variant():
@@ -2653,7 +2957,11 @@ def test_override_writes_are_ordered_per_model():
     requests with no sequencing, so the older response could commit last and resurrect
     the entry the newer one meant to replace."""
     src = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
-    assert "const writesByKey = new Map<string, Promise<void>>();" in src
+    # One in-flight promise per key is the ordering; what it resolves to is not,
+    # so pinning the old `void` failed #10160, which reordered nothing.
+    assert (
+        "const writesByKey = new Map<string, Promise<" in src
+    ), "writes are no longer serialised through one in-flight promise per model"
     # Keyed by the same override key the server stores under.
     assert (
         "const key = modelOverrideKey( normalizeModelIdentity(modelId), normalizeGgufVariantIdentity(ggufVariant), );"
@@ -2661,6 +2969,8 @@ def test_override_writes_are_ordered_per_model():
     )
     # Chained on the settled tail, so one failed write cannot cancel the next.
     assert "previous .catch(() => {}) .then(() => sendModelOverride(" in src
+    # The tail is stored, or every writer chains on the same empty slot.
+    assert "writesByKey.set(key, write);" in src
     # Only the last writer clears the slot, or a queue still building loses order.
     assert "if (writesByKey.get(key) === write) { writesByKey.delete(key); }" in src
 
@@ -2673,16 +2983,6 @@ def test_backfill_skips_future_schema_local_records():
     assert "storedConfigVersion(raw) > STORAGE_SCHEMA_VERSION" in listing[:900]
 
 
-def test_detail_settings_need_a_resolved_quant():
-    """The on-device card passes a null variant while its own lookup is pending or after it
-    failed."""
-    src = " ".join(_read("features/hub/hub-page.tsx").split())
-    # `variant`, not the argument: a resident quant may have replaced it, so judge what is saved.
-    guard = "if (!variant && selectedModel.isGguf && selectedModel.requiresVariant) {"
-    assert guard in src
-    assert src.count("Couldn't determine which quant to configure.") == 2
-
-
 def test_a_failed_detail_fetch_is_retried():
     """A terminal row's updated_at never advances and selectedIsMissing stays true, so a
     fetch that failed had nothing left to re-run the effect and the payload stayed
@@ -2693,24 +2993,9 @@ def test_a_failed_detail_fetch_is_retried():
     assert "if (attemptsRef.current.count >= DETAIL_FETCH_ATTEMPTS) { return; }" in src
 
 
-def test_ollama_models_are_not_advertised_as_api_loadable():
-    """local_model_resolver skips Ollama's scanner, so an Ollama GGUF is never in the
-    auto-switch index and no OpenAI request can resolve it."""
-    types_src = " ".join(_read("features/model-picker/components/model-selector/types.ts").split())
-    assert "apiLoadable?: boolean;" in types_src
-    hub = " ".join(_read("features/hub/hub-page.tsx").split())
-    assert "row.source !== LOCAL_MODEL_SOURCE.OLLAMA" in hub
-    assert "apiLoadable:" in hub
-    backend = _read_backend("core/inference/local_model_resolver.py")
-    assert (
-        "Ollama's\n    scanner is skipped" in backend or "scanner is skipped" in backend
-    ), "the rule this mirrors"
-
-
-def test_cached_repo_settings_are_keyed_by_the_repo_id():
-    """A repo cached outside the active HF cache reports load_id = the snapshot path
-    (hub/services/cache_inventory.py), while the chat picker and the auto-switch index
-    key it by repo_id."""
+def test_model_config_keeps_storage_and_load_identities_separate():
+    """The config target can store settings under a stable repo id while probes use
+    the concrete load id supplied by the picker."""
     config_page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert "const configId = target.configId ?? target.id;" in config_page
     for call in (
@@ -2723,17 +3008,6 @@ def test_cached_repo_settings_are_keyed_by_the_repo_id():
     # The probes have to open the model, so they keep the load id.
     assert "useDefaultChatTemplate( target.id," in config_page
     assert "model_path: target.id," in config_page
-
-    hub = " ".join(_read("features/hub/hub-page.tsx").split())
-    assert 'if (kind !== "cache" && resource.source !== "hub_cache") {' in hub
-    assert "return resource.repoId ?? resource.runId;" in hub
-    # Both openers and the Hub's own load resolve through it.
-    assert hub.count("modelConfigIdentity(") == 3
-    assert 'const configId = row.kind === "cache" ? row.repoId : id;' in hub
-    assert hub.count("configId,") >= 2
-
-    backend = _read_backend("hub/tests/test_model_services.py")
-    assert 'fields["load_id"] == str(snapshot)' in backend, "the rule this mirrors"
 
 
 def test_backfill_splits_a_quant_suffix_the_way_the_backend_does():
@@ -2772,14 +3046,6 @@ def test_backfill_splits_a_quant_suffix_the_way_the_backend_does():
     assert (WORKDIR / "studio" / "frontend" / "tests" / "model-identity.test.ts").is_file()
 
 
-def test_the_detail_card_also_gates_ollama_out_of_the_api_promise():
-    """Settings opens from two places in the Hub."""
-    hub = " ".join(_read("features/hub/hub-page.tsx").split())
-    assert hub.count("LOCAL_MODEL_SOURCE.OLLAMA") == 2
-    assert "selectedModel.localSource !== LOCAL_MODEL_SOURCE.OLLAMA" in hub
-    assert "row.source !== LOCAL_MODEL_SOURCE.OLLAMA" in hub
-
-
 def test_the_settings_page_judges_the_config_storage_actually_keeps():
     """savePerModelConfig normalizes before deciding, and the runtime hands this page
     Speculative Decoding "auto", which canonicalizes to null."""
@@ -2802,8 +3068,8 @@ def test_the_settings_page_judges_the_config_storage_actually_keeps():
 def test_the_chat_picker_marks_ollama_targets_unloadable_by_the_api():
     """A settings target opened from the Chat model picker carried no apiLoadable, so the
     `??"""
-    picker = " ".join(_read("features/model-picker/components/model-selector.tsx").split())
-    assert "apiLoadable: isGguf && !isOllamaLinkPath(id)," in picker
+    handoff = " ".join(_read("features/model-picker/model-config/model-config-handoff.ts").split())
+    assert "apiLoadable: isGguf && !isOllamaLinkPath(id) && !isOllamaLinkPath(loadId)," in handoff
     sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
     assert "apiLoadable: isGguf && !isOllamaLinkPath(modelId)," in sidebar
     # The same classification gates the backfill, or an older config still reaches the server.
@@ -2853,33 +3119,17 @@ def test_the_backfill_fills_in_fields_rather_than_skipping_known_keys():
 
     # The merge is the server's, in the write's transaction: a client-side one reopens the race.
     db = _read_backend("storage/studio_db.py")
-    assert "merged = {**entry_value, **stored}" in db
+    # `incoming` is entry_value minus any coupled group the stored row already states,
+    # so a field-by-field backfill cannot pair one half of a pin with the other's.
+    assert "merged = {**incoming, **stored}" in db
     assert "BEGIN IMMEDIATE" in db
 
 
-def test_the_hub_settings_page_matches_a_resident_path_loaded_model():
-    """A GGUF loaded from an inactive HF cache or straight off disk loads by path, but
-    /status reports the clean public id, so comparing it to settingsTarget.id said "not
-    loaded" and the page showed saved or default values instead of the live launch
-    config."""
-    hub = " ".join(_read("features/hub/hub-page.tsx").split())
-    assert (
-        "residentModelIdMatches( activeCheckpoint, settingsTarget.id, settingsTarget.configId, )"
-        in hub
-    )
-    assert "loadedConfig={settingsTargetIsResident ? activeModelConfig : null}" in hub
-    assert "settingsTargetIsResident ? activeGgufContextLength : null" in hub
-    # The loadable identifier, as every other status reader records it -- except for a
-    # speech model, which chat cannot adopt at all. speechOnly rides beside the null so
-    # the helper can tell it from the empty slot the idle-unload rule is about.
-    assert (
-        "checkpointId: isSpeechOnlyStatus(status) ? null "
-        ": resolveInferenceCheckpointId(status), "
-        "speechOnly: isSpeechOnlyStatus(status)," in hub
-    )
-    assert "setCheckpoint(status.active_model" not in hub
+def test_public_model_identity_matches_the_backend_for_path_loaded_models():
+    """Path-loaded models use the backend's public identity rule wherever a
+    resident model is reconciled with a picker entry."""
     chat = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
-    assert "return status.model_identifier ?? status.active_model;" in chat, "the rule this mirrors"
+    assert "return status.model_identifier ?? status.active_model;" in chat
     # The alias is the backend's own public id rule, not a private heuristic.
     identity = _read("features/hub/lib/model-identity.ts")
     assert "export function publicModelId(" in identity
@@ -2890,35 +3140,8 @@ def test_the_hub_settings_page_matches_a_resident_path_loaded_model():
     assert "def public_model_id(" in backend, "the rule this mirrors"
 
 
-def test_the_hub_hydrates_the_live_settings_before_it_offers_them():
-    """The Hub builds activeModelConfig out of the chat runtime store, and landing straight
-    on /hub is the one entry point where nothing has applied /api/inference/status yet:
-    useChatModelRuntime has no mount sync and the chat page is a different route."""
-    hub = " ".join(_read("features/hub/hub-page.tsx").split())
-    assert "adoptResidentModelStatus(" in hub
-    assert "applyActiveModelStatusToStore(status, {" in hub
-    assert "previousCheckpoint: previous.checkpoint ?? undefined," in hub
-    assert "previousGgufVariant: previous.ggufVariant," in hub
-    assert "modelLoading: store.modelLoading," in hub
-
-    adopt = " ".join(_read("features/hub/lib/adopt-inference-status.ts").split())
-    # Unconditional: a persisted checkpoint rehydrates without the fields saying how it launched.
-    assert "actions.applyStatus(previous); return true;" in adopt
-    # Never fight the owning load, nor describe an external model with the resident's settings.
-    assert "if (state.checkpointIsExternal) { return false; }" in adopt
-    assert "if (state.modelLoading) { return false; }" in adopt
-
-    # Same call the chat runtime's own refresh makes, which is the rule this mirrors.
-    runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
-    assert "applyActiveModelStatusToStore(statusRes, {" in runtime
-
-
-def test_the_hub_settings_editor_reseeds_when_the_live_config_lands():
-    """ModelConfigPage reads loadedConfig in a useState initializer, so it seeds once per
-    mounted instance."""
-    view = " ".join(_read("features/hub/catalog/hub-model-settings-view.tsx").split())
-    assert "key={modelConfigInstanceKey( target.id, target.ggufVariant, loadedConfig, )}" in view
-    # Same key the sidebar entry uses; that parity is the point.
+def test_the_sidebar_settings_editor_reseeds_when_the_live_config_lands():
+    """ModelConfigPage primes the shared draft when loadedConfigSignature changes."""
     sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
     assert "key={modelConfigInstanceKey(modelId, settingsGgufVariant, loadedConfig)}" in sidebar
 
@@ -2937,49 +3160,39 @@ def test_the_hub_settings_editor_reseeds_when_the_live_config_lands():
         assert field in signature, field
 
     page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert "const [initial] = useState(resolveInitial);" in page, "the rule this mirrors"
+    assert "primeModelConfigDraft(" in page
+    assert "loadedConfigSignature(loadedConfig)" in page
+    # LAYOUT: a live change remounts under the same key, so only a layout cleanup runs first.
+    assert "useLayoutEffect(() => retainModelConfigDraft(draftKey), [draftKey])" in page
+    # Marked by the DRAFT, never the candidate keys: the hosts build differently shaped lists.
+    assert "isExtraArgsHydratedForDraft(draftKey)" in page
+    # Retiring it on retain is how a fresh editor re-reads: the sidebar stays mounted for a
+    # model's whole residency and would never see another origin's save.
+    assert "!isModelConfigDraftEdited(draftKey) &&" in page
+    assert "markModelConfigDraftEdited(draftKey)" in page
+    # Only once the write landed, or the next read replaces values still on screen.
+    assert re.search(r"if \(!saveFailed\) \{.*?clearModelConfigDraftEdited\(draftKey\);", page)
+    # An unticked Remember is a pending Forget the read's own guard would pass and re-tick.
+    assert "markModelConfigDraftEdited(draftKey); setRemember(checked === true);" in page
+    # A peer that fixed the text lifts this editor's retained refusal.
+    assert "(!extraArgsLoadable && !sharedExtraArgsCleared) ||" in page
+    # Run reads the draft, not the render closure: the peer's input blurs during this click.
+    assert "const liveDraftConfig = readModelConfigDraft(draftKey)?.config;" in page
+    assert "const peerChanged = !perModelConfigsEqual(baseConfig, config);" in page
+    assert "markExtraArgsHydratedForDraft(draftKey)" in page
+    # DEFAULT_PER_MODEL_CONFIG names no GPU field, so a merge could not clear a manual pick.
+    assert 'typeof action === "function" ? action(current) : action' in page
+    # Only the row reads the raw text; an editor with Advanced collapsed judges the TOKENS.
+    # Only ever LOWERED by a row that has no catalogue: until the probe lands every flag reads
+    # as unknown, so a second row mounting would otherwise clear a refusal another row verified.
+    assert "if (catalog !== null || !loadable) {" in page
+    assert "setExtraArgsEditLoadableForDraft(draftKey, loadable)" in page
+    assert "sharedExtraArgsRefused" in page
+    assert "resetExtraArgsHydrationForDraft(" not in page
+    assert "extraArgsHydrationIdentityForDraft(" not in page
 
 
-def test_a_standalone_gguf_has_one_settings_key():
-    """The inventory labels a single scanned .gguf from its filename, so the Hub row menu
-    keyed its settings to `<path>:Q4_K_M` while the Chat picker, the detail card and the
-    backfill all use the bare path: two surfaces, two configs."""
-    hub = " ".join(_read("features/hub/hub-page.tsx").split())
-    assert "let ggufVariant = settingsGgufVariantForRow(row);" in hub
-    assert "row.formatVariant" not in hub, "the row's raw label is not a settings key"
-
-    helper = " ".join(_read("features/hub/inventory/settings-identity.ts").split())
-    assert 'row.kind === "local" && row.path.toLowerCase().endsWith(".gguf")' in helper
-
-    common = _read_backend("hub/services/models/common.py")
-    # The rule this mirrors: a variant is derived only for a single scanned file.
-    # gguf_variant_key, not the hub's extract_quant_label: for a standalone file there is no
-    # directory to qualify, so the key IS the quant token -- and it keeps the bpw modifier, which
-    # is what makes it agree with the loader's own _extract_quant_label (the equality the sibling
-    # test below depends on). The hub label drops that modifier.
-    assert "gguf_variant_key(gguf_files[0].name)" in common
-    assert "if scan_path.is_file() and len(gguf_files) == 1" in common
-
-
-def test_a_standalone_gguf_is_resident_despite_its_derived_quant():
-    """A loose .gguf keys its settings by the bare path with no variant, but the loader
-    derives one from the filename (llama_cpp sets _hf_variant from _extract_quant_label)
-    and /status reports it, so an equality between the two could never hold and the
-    settings page withheld the live launch config from the very file that was loaded."""
-    hub = " ".join(_read("features/hub/hub-page.tsx").split())
-    assert "const settingsTargetIsStandaloneFile =" in hub
-    assert 'settingsTarget.id.toLowerCase().endsWith(".gguf")' in hub
-    assert (
-        "(settingsTargetIsStandaloneFile || ggufVariantsMatch(activeGgufVariant, settingsTarget.ggufVariant))"
-        in hub
-    )
-    backend = _read_backend("core/inference/llama_cpp.py")
-    assert (
-        "self._hf_variant = _extract_quant_label(gguf_path)" in backend
-    ), "the derived label this accounts for"
-
-
-def test_a_standalone_gguf_has_one_settings_identity_everywhere():
+def test_a_standalone_gguf_has_one_settings_identity_in_the_picker():
     """A loose .gguf has no quant to choose between, but llama_cpp falls back to
     _extract_quant_label(gguf_path) when a load names no variant, and /status echoes
     that as gguf_variant."""
@@ -2993,15 +3206,11 @@ def test_a_standalone_gguf_has_one_settings_identity_everywhere():
     # The label still shows the quant; only the identity drops it.
     assert "displayName: ggufVariant ? `${leaf} · ${ggufVariant}` : leaf," in sidebar
 
-    # One rule, one definition: the Hub row applies the same test.
     identity = _read("features/hub/lib/model-identity.ts")
     assert "export function isStandaloneGgufPath(" in identity
     # The suffix, and something that names a file on this machine: see
     # test_a_repo_id_ending_in_gguf_keeps_its_quant for why the suffix is not enough.
     assert "GGUF_SUFFIX_RE.test(modelId)" in identity
-    row_identity = _read("features/hub/inventory/settings-identity.ts")
-    assert 'row.path.toLowerCase().endsWith(".gguf")' in row_identity
-
     # The precedence that makes the bare path win, asserted on the real function rather than on
     # inference.py's text: #8702 moved this ladder to utils/openai_auto_switch_settings.py
     # unchanged, and the grep that used to live here went red for a pure refactor.
@@ -3032,30 +3241,9 @@ def test_monitor_unload_clears_only_the_model_it_freed():
     assert "store.clearCheckpoint();" in page
 
 
-def test_settings_open_reads_status_before_resolving_the_quant():
-    """A cache row carries no quant, so opening its settings resolves one from the store's
-    active variant."""
-    page = " ".join(_read("features/hub/hub-page.tsx").split())
-    assert "const refreshResidentModelStatus = useCallback((): Promise<void> => {" in page
-    assert (
-        "await refreshResidentModelStatus(); if (settingsOpenSeq.current !== openSeq) return;"
-        in page
-    )
-    # Three: both handlers read on entry, and openModelSettings reads again after the
-    # variant lookup, whose network round trip is its own window for a switch to land.
-    assert page.count("await refreshResidentModelStatus();") == 3
-
-
-def test_a_local_quant_folder_resolves_its_variants_by_path():
+def test_a_local_quant_folder_lists_its_variants_by_path():
     """A local row carries a repo id only inside the HF cache, so a plain folder of
-    quants has none while still being marked as needing one, and the row menu's
-    Settings could then only reach the error toast."""
-    hub = " ".join(_read("features/hub/hub-page.tsx").split())
-    assert (
-        'const repoId = row.kind === "cache" ? row.repoId : (row.repoId ?? row.path ?? null);'
-        in hub
-    )
-    # The on-device card already lists by path, so both surfaces choose from one set of quants.
+    quants has none while still needing a local variant listing."""
     card = " ".join(_read("features/hub/catalog/local-on-device-card.tsx").split())
     assert "repoId: modelId, hfToken, preferLocalCache: true, localPath: localGgufPath," in card
     # The backend scans a path in the repo_id position before the validation that would 400.
@@ -3063,50 +3251,6 @@ def test_a_local_quant_folder_resolves_its_variants_by_path():
     scan = variants.split("if is_local_path(repo_id) or probe.exists():", 1)
     assert len(scan) == 2, "the local-path branch this leans on"
     assert "_is_valid_repo_id(repo_id)" in scan[1], "the branch has to come first"
-
-
-def test_no_settings_target_is_built_on_an_unread_store():
-    """Every path out of both handlers seeds the editor from the store, and Apply
-    reloads with what it seeded, so a target built before the status read lands can
-    persist and launch the settings of the model an API switch displaced."""
-    page = " ".join(_read("features/hub/hub-page.tsx").split())
-    # Both handlers read first and drop the open if a newer one started meanwhile, and
-    # the variant lookup's await gets the same treatment. Every read carries the guard.
-    assert page.count("await refreshResidentModelStatus();") == 3
-    assert (
-        page.count(
-            "await refreshResidentModelStatus(); if (settingsOpenSeq.current !== openSeq) return;"
-        )
-        == 3
-    )
-    # Nothing may build a target off a concurrent read instead of an awaited one.
-    assert "Promise.all([ listGgufVariants(" not in page
-
-
-def test_an_empty_status_is_read_against_the_idle_unload_setting():
-    """/status cannot say whether an empty answer is an idle eviction that reloads
-    or a real unload, so the Hub reads the only endpoint that knows and keeps the
-    checkpoint only while the loop is armed."""
-    hub = " ".join(_read("features/hub/hub-page.tsx").split())
-    adopt = " ".join(_read("features/hub/lib/adopt-inference-status.ts").split())
-    # Awaited, not raced: the first status read is the one most likely to land on an evicted
-    # model, and an unresolved default of false would clear a checkpoint that is coming back.
-    assert (
-        "Promise.all([getInferenceStatus(), readIdleUnloadArmed()]) "
-        ".then(([status, idleUnloadArmed]) => {" in hub
-    )
-    assert "idleUnloadArmed," in hub
-    # Read with every status read, not cached for the life of the page: the idle timeout
-    # is editable from Settings while this page stays mounted.
-    assert "idleUnloadRead.current ??=" not in hub
-    assert "idleUnloadArmed.current = settings.idleUnloadActive;" in hub
-    # A failed read keeps the last answer. The default is disarmed, which is the side
-    # that clears the checkpoint, so falling back to it would drop a live selection.
-    assert ".catch(() => idleUnloadArmed.current)" in hub
-    # An Audio load taking the single slot is not an idle eviction: nothing stashes the
-    # chat model, so the exemption must not swallow that case.
-    assert "if (state.idleUnloadArmed && !status.speechOnly) { return false; }" in adopt
-    assert "actions.clearCheckpoint?.();" in adopt
 
 
 def test_a_repo_id_ending_in_gguf_keeps_its_quant():
@@ -3120,36 +3264,21 @@ def test_a_repo_id_ending_in_gguf_keeps_its_quant():
     assert "isNativeFileLabel(modelId)" in identity
 
 
-def test_cached_repo_settings_key_follows_the_row_not_the_view():
-    """A repo in an inactive HF cache loads by snapshot path while its settings are keyed
-    by repo id."""
-    page = " ".join(_read("features/hub/hub-page.tsx").split())
-    assert 'if (kind !== "cache" && resource.source !== "hub_cache") {' in page
-
-
-def test_detail_settings_defers_a_derived_quant_to_a_fresh_status_read():
-    """The on-device card resolves the quant it shows from the store's active variant, and
-    nothing re-reads status while the window keeps focus, so an API-driven switch leaves
-    that quant naming the model it displaced."""
-    page = " ".join(_read("features/hub/hub-page.tsx").split())
-    card = " ".join(_read("features/hub/catalog/local-on-device-card.tsx").split())
-    assert "if (!quantIsUserPicked) { const settled = useChatRuntimeStore.getState();" in page
-    assert "variant = settled.activeGgufVariant;" in page
-    assert "onOpenSettings(selectedQuant ?? null, quantIsUserPicked)" in card
-
-
-def test_only_a_physical_gpu_pin_is_mirrored_to_the_server():
-    """The same integers are Vulkan ordinals under Vulkan and device indices elsewhere,
-    and the server override carries no namespace, so a backend change would pin the model
-    to a different device with ids that validate."""
+def test_a_gpu_pin_is_mirrored_to_the_server_with_its_index_space():
+    """The same integers are Vulkan ordinals under Vulkan and device indices elsewhere, so
+    a pin mirrored without its namespace would, after a backend change, address a different
+    device with ids that validate. The namespace travels with it and the server drops the
+    pin on a mismatch instead."""
     mirror = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
     assert 'const gpuIndexKind = config.selectedGpuIndexKind ?? "physical";' in mirror
-    assert 'gpuIndexKind === "physical"' in mirror
+    assert "payload.gpu_ids = config.selectedGpuIds;" in mirror
+    # Omitted at the legacy default, so a physical pin's payload is what it always was and
+    # a row written before this field still reads as physical.
+    assert 'if (gpuIndexKind !== "physical") { payload.gpu_index_kind = gpuIndexKind; }' in mirror
 
 
-def test_a_cached_repo_keeps_the_settings_saved_under_its_old_key():
-    """A cached repo was keyed by the snapshot path it loads from and is now keyed by its
-    repo id; the server backfill only mirrors what is stored, so nothing else moves it."""
+def test_a_cached_repo_moves_legacy_settings_to_the_current_key():
+    """A cached repo's legacy snapshot-path settings move to its current repo-id key."""
     config = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
     assert "export function adoptLegacyConfigKey(" in config
     # The key is renamed in one write. Saving the second copy first puts a full map one entry
@@ -3167,16 +3296,16 @@ def test_a_cached_repo_keeps_the_settings_saved_under_its_old_key():
         "delete map[legacyKey]; deleteConfigEntriesForModelVariant(map, legacyModelId, "
         "ggufVariant);" in config
     )
-    # Both entry points move it before anything reads the new key.
-    page = " ".join(_read("features/hub/hub-page.tsx").split())
-    assert page.count("adoptLegacyConfigKey(") == 2
 
 
 def test_clearing_the_log_keeps_a_request_that_is_still_running():
     """Dropping an own row mid-flight loses the request outright: active_count falls to
     zero and the finish or fail that follows has no entry left to land on."""
     monitor = " ".join(_read_backend("core/inference/api_monitor.py").split())
-    assert 'if entry.shared or entry.subject != subject or entry.status == "running"' in monitor
+    assert (
+        "if entry.shared or not self._attributed(entry, subject) or "
+        'entry.status == "running"' in monitor
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3399,7 +3528,9 @@ def test_default_model_download_is_visible_and_cancellable():
     assert "loadModel(" not in helper
 
     auto_load = src.split("async function autoLoadSmallestModel", 1)[1]
-    fallback = auto_load.split("// Nothing on the device:", 1)[1]
+    fallback = auto_load.split(
+        "      return { loaded: false, blockedByTrustRemoteCode: false };", 1
+    )[1]
     assert 'if (download !== "ready") {' in fallback
     # Cancelling leaves the user with actionable next steps, not a dead end.
     assert "Pick one from the top bar" in fallback
@@ -3507,8 +3638,14 @@ def test_a_failed_quant_is_marked_tried_so_the_repo_continues():
     """One corrupt quant must not cost a repo that holds a valid one."""
     src = _read("features/chat/api/chat-adapter.ts")
     cascade = src.split("for (const source of sources)", 1)[1]
-    cascade = cascade.split("// Nothing on the device:", 1)[0]
-    assert "while (!autoLoadCancelled && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS)" in cascade
+    cascade = cascade.split("    try {\n      const rt = useChatRuntimeStore.getState();", 1)[0]
+    assert_guard_holds(
+        cascade,
+        "while",
+        "&&",
+        {"!autoLoadCancelled", "loadAttempts < MAX_AUTO_LOAD_ATTEMPTS"},
+        expected = 1,
+    )
     assert "skippedAutoLoadCandidates.add(" in cascade
 
 
@@ -3545,7 +3682,9 @@ def test_sources_dedupe_on_the_load_target_alone():
     assert "filter(" not in order
     # The skip is keyed on a candidate having been resolved, not on merely visiting.
     body = src.split("const candidateResolvedFor = new Set<string>();", 1)[1]
-    body = body.split("\n    // Cap also gates", 1)[0]
+    body = body.split(
+        "\n    if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS || loadFailure.current) {", 1
+    )[0]
     assert body.index("if (candidateResolvedFor.has(sourceKey)) continue;") < body.index(
         "candidateResolvedFor.add(sourceKey);"
     )
@@ -3683,7 +3822,7 @@ def test_the_default_is_preflighted_before_the_managed_download():
     """A refusal from the training or placement guard must not cost gigabytes
     first."""
     src = _read("features/chat/api/chat-adapter.ts")
-    fallback = src.split("// Nothing on the device:", 1)[1]
+    fallback = src.split("      return { loaded: false, blockedByTrustRemoteCode: false };", 1)[1]
     fallback = fallback.split("export function createOpenAIStreamAdapter", 1)[0]
     assert fallback.index("canAutoLoad({") < fallback.index("ensureDefaultModelDownloaded(")
     # One GPU snapshot feeds both, so the load sends what was cleared.
@@ -3813,7 +3952,7 @@ def test_a_refused_load_after_staging_rolls_the_pick_back():
     the same bug."""
     for page in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(page)
-        helper = src.split("const runStagedLoad = useCallback(", 1)[1].split("[revertPick],", 1)[0]
+        helper = src.split("const runStagedLoad = useCallback(", 1)[1].split("\n  );", 1)[0]
         # Fire-and-forget is precisely the defect: the boolean has to be observed.
         assert ".then((started) => {" in helper, page
         assert "if (started) return;" in helper, page
@@ -3822,8 +3961,21 @@ def test_a_refused_load_after_staging_rolls_the_pick_back():
         assert "const owned = stagedQuantRevert.current;" in helper, page
         assert "quantRevert.current === owned" in helper, page
         assert "revertPick(quantRevert.current);" in helper, page
-        # One implementation, reached from both deferred paths, so neither can drift.
-        assert src.count("if (pending) runStagedLoad(pending);") == 2, page
+        # Both visible and deferred loads must use the rollback helper.
+        ready = re.search(r"onReady: \(\) => \{.*?\n    \},", src, re.S)
+        assert ready, page
+        continuation = ready.group(0)
+        if "resumePendingLoad();" in continuation:
+            resume = re.search(r"function resumePendingLoad\(\) \{.*?\n  \}", src, re.S)
+            assert resume, page
+            continuation = resume.group(0)
+        assert "runStagedLoad(pending);" in continuation, page
+        deferred = re.search(
+            r"if \(!active \|\| !stagedLoadDeferred\.current\) return;.*?\n  \}, \[[^\]]*\]\);",
+            src,
+            re.S,
+        )
+        assert deferred and "runStagedLoad(pending);" in deferred.group(0), page
         # Exactly one direct call left, the one inside the helper itself.
         assert len(re.findall(r"void handleLoadRef\s*\.current\(\s*pending\.", src)) == 1, page
 
@@ -3886,7 +4038,7 @@ def test_the_diffusion_gpu_choices_are_memoized():
     """
     src = " ".join(_read("hooks/use-gpu-info.ts").split())
     choices = src[src.index("export function useDiffusionGpuChoices") :]
-    choices = choices[: choices.index("/** Whether device discovery")]
+    choices = choices[: choices.index("export function gpuDeviceCacheReady(")]
     assert "return useMemo(() => {" in choices
     # Keyed on the device list, which useGpuDevices only replaces when the inventory changes.
     assert "}, [devices]);" in choices
@@ -3907,3 +4059,153 @@ def test_the_media_gpu_pick_survives_a_reload():
         assert "gpuChoices.some((d) => String(d.index) === selectedGpu)" in src or (
             "controls.gpuChoices.some((d) => String(d.index) === controls.selectedGpu)" in src
         ), page
+
+
+def test_a_download_only_pick_does_not_strand_a_staged_load():
+    """Download only fetches files. It must not take the page from a load that is already staging.
+
+    Both pick routes used to retire the staged intent unconditionally: `handleModelSelect` called
+    `beginPick()` plus `pickGuard.claim()` before it looked at the mode, and `loadGgufRepoPick` did
+    the same, so picking a second model in Download only mode left the first one downloaded in full
+    and never loaded, with no toast and nothing to retry from. `loadOrStage` cleared the same refs a
+    second time on its way in.
+
+    So: the mode is read first, and a download-only pick claims nothing and clears nothing."""
+    src = _read("features/images/images-page.tsx")
+    select = re.search(r"const handleModelSelect = useCallback\(\n(.*?)\n  \);", src, re.S)
+    assert select, "handleModelSelect not found"
+    pick = select.group(1)
+    mode = re.search(r'const (\w+) = modelSelectionAction === "download";', pick)
+    assert mode, "handleModelSelect does not read the selection mode before branching"
+    flag = mode.group(1)
+    assert pick.index(mode.group(0)) < pick.index(
+        "beginPick();"
+    ), "the mode is read after the staged intent has already been retired"
+    assert (
+        f"if (!{flag}) beginPick();" in pick
+    ), "a download-only pick still retires the staged load"
+    assert re.search(
+        rf"const token = {flag} \? undefined : pickGuard\.claim\(\);", pick
+    ), "a download-only pick still claims the page, which makes the staged load's token stale"
+
+    repo_pick = re.search(r"const loadGgufRepoPick = useCallback\(\n(.*?)\n  \);", src, re.S)
+    assert repo_pick, "loadGgufRepoPick not found"
+    repo = repo_pick.group(1)
+    assert (
+        "beginPick();" not in repo
+    ), "the repo-level download-only pick still retires the staged load"
+    assert re.search(
+        r"const token = downloadOnly \? 0 : pickGuard\.claim\(\);", repo
+    ), "the repo-level download-only pick still claims the page"
+
+    stage_fn = re.search(r"const loadOrStage = useCallback\(\n(.*?)\n  \);", src, re.S)
+    assert stage_fn, "loadOrStage not found"
+    body = stage_fn.group(1)
+    clearing = re.search(r"if \(([^)]*)\) \{\n\s*pendingStagedLoad\.current = null;", body)
+    assert clearing, "loadOrStage no longer has the staged-intent clearing block"
+    assert "!downloadOnly" in clearing.group(
+        1
+    ), "loadOrStage still clears the staged load intent for a download-only pick"
+
+
+def test_every_optimistic_pick_hands_its_label_back_under_a_guard():
+    """`quantRevert` is one slot. A pick that no longer owns the page must not revert over the label
+    a newer pick has already set, so every `!started` rollback is guarded. Two branches lost that
+    guard when they moved from `handleLoad` to `loadOrStage`."""
+    src = _read("features/images/images-page.tsx")
+    start = src.index("const handleModelSelect = useCallback(")
+    # Bounded at the next top-level callback: handleDeployAdapter rolls back a deploy, not a pick.
+    pick = src[start : src.index("const handleDeployAdapter", start)]
+    rollbacks = re.findall(r"if \(!started(.*?)\) \{\n\s*revertPick\(", pick, re.S)
+    assert rollbacks, "no optimistic rollback found; this guard has gone stale"
+    for tail in rollbacks:
+        assert (
+            "stillOwnsPick()" in tail
+        ), "an optimistic pick reverts its label without checking it still owns the page"
+
+
+def test_a_repeated_download_only_pick_queues_one_download():
+    """Two picks of the same model planned the same files twice and downloaded every byte twice;
+    the second start could also come back "busy" against the first and be dropped silently."""
+    src = " ".join(_read("features/images/images-page.tsx").split())
+    assert (
+        "if (queuedDownloadKeys().has(planKey(entries))) return true;" in src
+    ), "download-only plans are queued without checking what is already queued"
+    assert "function planKey(entries: StagedDownloadEntry[])" in src
+
+
+def test_a_download_only_pick_does_not_retire_the_pick_sequence():
+    """`pickSeq` is how a load pick tells a NEWER load pick from itself. A Download only pick is
+    neither: it fetches files and takes over nothing. Advancing the sequence for one made the
+    ordinary selection that was still awaiting its plan fail its own stale check and return
+    silently, leaving that model neither staged nor loaded and nothing on screen to say so."""
+    src = _read("features/images/images-page.tsx")
+    body = re.search(r"const loadOrStage = useCallback\(\n(.*?)\n  \);", src, re.S)
+    assert body, "loadOrStage not found"
+    text = body.group(1)
+    assert "const pick = downloadOnly ? pickSeq.current : ++pickSeq.current;" in text
+    # The flag has to be decided first, or the ternary reads an undefined binding.
+    assert text.index("const downloadOnly =") < text.index("const pick =")
+
+
+def test_a_download_only_pick_claims_no_label_rollback():
+    """`quantRevert` is ONE slot and a staged load in flight owns what is in it: that entry is the
+    baseline it restores on failure and commits on success. A Download only pick used to take the
+    slot for an optimistic label it then reverted, which restored the PREVIOUS resident's quant and
+    recipe underneath a load that was still coming and left it nothing to commit. So it installs no
+    label at all, and reads no rollback out of the slot."""
+    src = _read("features/images/images-page.tsx")
+    start = src.index("const handleModelSelect = useCallback(")
+    pick = src[start : src.index("const handleDeployAdapter", start)]
+    installs = re.findall(r"const revert: PickRevert(.*?);\n", pick, re.S)
+    assert installs, "no optimistic label install found; this guard has gone stale"
+    for tail in installs:
+        assert "downloadOnlyPick" in tail, "a download-only pick installs an optimistic label"
+    assert "const ownRevert = downloadSnapshot || downloadOnly ? null : quantRevert.current;" in src
+
+
+def test_a_routed_download_only_arrival_claims_nothing():
+    """A ?model= arrival from the chat picker or the Hub takes the page like a direct pick. Under
+    Download only it must not: claiming there revokes the token of a load that is already staging,
+    and resumePendingLoad then drops that load once its files have finished arriving."""
+    src = _read("features/images/images-page.tsx")
+    body = re.search(r"const handledRouteModel = useRef(.*?)\n  \]\);", src, re.S)
+    assert body, "the routed-pick effect was not found; this guard has gone stale"
+    text = body.group(1)
+    assert 'const downloadOnlyPick = modelSelectionAction === "download";' in text
+    assert "const token = downloadOnlyPick ? undefined : pickGuard.claim();" in text
+    # And no optimistic label either: quantRevert is the staged load's slot, not this arrival's.
+    assert "const revert: PickRevert | null = downloadOnlyPick" in text
+
+
+def test_a_refused_download_only_pick_leaves_the_staged_rollback_alone():
+    """abandonPick() reverts and clears quantRevert. A Download only pick refused for being an
+    unsupported repo never claimed the page, so what it would clear is the staged load's own
+    baseline: that load would then resume with the previous resident's steps and guidance and have
+    nothing left to commit."""
+    src = " ".join(_read("features/images/images-page.tsx").split())
+    assert "if (!downloadOnlyPick) abandonPick();" in src
+
+
+def test_an_unresolvable_download_only_gguf_hands_nothing_back():
+    """A GGUF repo whose filename cannot be resolved (several quants and no hint, or a failed
+    listing) reaches onNotStarted. Under Download only nothing was applied, so what sits in
+    quantRevert is the staged load's own baseline: reverting it would load that model with the
+    previous resident's steps and guidance and leave it nothing to commit."""
+    src = _read("features/images/images-page.tsx")
+    body = re.search(r"onNotStarted: \(\) => \{\n(.*?)\n        \},", src, re.S)
+    assert body, "the not-started callback was not found; this guard has gone stale"
+    assert "!downloadOnly &&" in body.group(1)
+
+
+def test_a_download_only_pick_is_allowed_while_the_page_is_busy():
+    """The busy guard exists because the backend 409s a second load. A Download only pick submits
+    no load, and the selector stays interactive during a generation, so refusing it there was a
+    silent dead click: the user picked a model to download and nothing happened."""
+    src = _read("features/images/images-page.tsx")
+    body = re.search(r"const handleModelSelect = useCallback\(\n(.*?)\n  \);", src, re.S)
+    assert body, "handleModelSelect not found"
+    text = body.group(1)
+    assert "if (busy !== null && !downloadOnlyPick) return;" in text
+    # Decided before the guard, or the guard reads an undefined binding.
+    assert text.index("const downloadOnlyPick =") < text.index("if (busy !== null")

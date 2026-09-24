@@ -282,8 +282,8 @@ class _SquareModel:
         self.lm_head = lm_head
         self.returns_hidden_states = returns_hidden_states
         if signal == "compiled":
-            # the compiler writes the marker onto the class it generated, so give
-            # this instance its own class rather than marking every _SquareModel
+            # The compiler writes the marker onto the class it generated, so give this instance its own class rather
+            # than marking every _SquareModel.
             self.__class__ = type("_CompiledSquareModel", (_SquareModel,), {MARKER: True})
         elif signal in ("wrapped", "degraded"):
             setattr(self, WRAPPED, True)
@@ -316,6 +316,8 @@ def _run_padded_loop(*, returns_hidden_states, signal):
         "chunked_hidden_states_selective_log_softmax": _ZOO_HIDDEN,
         "chunked_selective_log_softmax": _ZOO_RAW,
         "device_synchronize": lambda *a, **k: None,
+        # The generated trainer gets this from rl.py's preamble, so the block resolves it here too.
+        "DEVICE_TYPE_TORCH": "cuda",
         "_get_inference_mode_context_manager": lambda _model: contextlib.nullcontext(),
         "model": model,
         "unwrapped_model": model,
@@ -323,8 +325,7 @@ def _run_padded_loop(*, returns_hidden_states, signal):
         "pixel_values": None,
         "lm_head": lm_head,
         "zipped_inputs": [
-            (input_ids[i : i + 1], torch.ones(1, SEQ, dtype = torch.long)) + (None,) * 6
-            for i in range(BATCH)
+            (input_ids[i : i + 1], torch.ones(1, SEQ, dtype = torch.long), {}) for i in range(BATCH)
         ],
         "logits_to_keep": KEEP,
         "max_left_pad": MAX_LEFT_PAD,

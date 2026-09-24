@@ -380,3 +380,122 @@ def test_a_filesystem_that_cannot_lock_still_completes_the_write(gdir, monkeypat
     with flags.exclusive(gdir):
         pass
     assert flags.read(gdir) == {}
+
+
+# -- manual order (drag) --------------------------------------------------------------------------
+
+
+def _shelf(gdir, mtimes):
+    """The shelf in listing order, as the galleries sort it."""
+    items = flags.read(gdir)
+    pairs = list(mtimes.items())
+    pairs.sort(
+        key = lambda p: (flags.pin_rank(items, p[0]), flags.order_rank(items, p[0], p[1])),
+        reverse = True,
+    )
+    return [i for i, _ in pairs]
+
+
+def _move(gdir, mtimes, item_id, after_id):
+    with flags.exclusive(gdir):
+        items = flags.read(gdir)
+        ordered = sorted(
+            mtimes.items(),
+            key = lambda p: (flags.pin_rank(items, p[0]), flags.order_rank(items, p[0], p[1])),
+            reverse = True,
+        )
+        return flags.place_locked(gdir, item_id, ordered, after_id = after_id)
+
+
+MTIMES = {"a": 400.0, "b": 300.0, "c": 200.0, "d": 100.0}
+
+
+def test_an_undragged_shelf_sorts_newest_first(gdir):
+    assert _shelf(gdir, MTIMES) == ["a", "b", "c", "d"]
+
+
+@pytest.mark.parametrize(
+    "item, after, expected",
+    [
+        ("d", None, ["d", "a", "b", "c"]),
+        ("a", "d", ["b", "c", "d", "a"]),
+        ("a", "b", ["b", "a", "c", "d"]),
+        ("d", "a", ["a", "d", "b", "c"]),
+        ("b", "c", ["a", "c", "b", "d"]),
+    ],
+)
+def test_a_drag_lands_after_its_neighbour(gdir, item, after, expected):
+    assert _move(gdir, MTIMES, item, after) == {"pinned": False, "archived": False}
+    assert _shelf(gdir, MTIMES) == expected
+
+
+def test_only_the_moved_item_is_rewritten(gdir):
+    _move(gdir, MTIMES, "d", "a")
+    items = flags.read(gdir)
+    assert set(items) == {"d"}
+    assert 300.0 < flags.order_at(items, "d") < 400.0
+
+
+def test_new_media_still_lands_first_after_a_drag_to_the_front(gdir):
+    _move(gdir, MTIMES, "d", None)
+    later = {**MTIMES, "new": flags.order_at(flags.read(gdir), "d") + 1}
+    assert _shelf(gdir, later)[:2] == ["new", "d"]
+
+
+def test_repeated_drops_in_one_gap_keep_their_order(gdir):
+    mtimes = dict(MTIMES)
+    for _ in range(5):
+        _move(gdir, mtimes, "d", "a")
+        _move(gdir, mtimes, "c", "a")
+    assert _shelf(gdir, mtimes) == ["a", "c", "d", "b"]
+
+
+def test_dropping_between_pins_pins_and_orders_it(gdir):
+    flags.set_flags(gdir, "c", pinned = True)
+    flags.set_flags(gdir, "a", pinned = True)  # pinned group: a, c
+    assert _move(gdir, MTIMES, "d", "a")["pinned"] is True
+    assert _shelf(gdir, MTIMES) == ["a", "d", "c", "b"]
+
+
+def test_dropping_at_the_front_of_a_pinned_shelf_pins_it(gdir):
+    flags.set_flags(gdir, "c", pinned = True)
+    assert _move(gdir, MTIMES, "b", None)["pinned"] is True
+    assert _shelf(gdir, MTIMES)[:2] == ["b", "c"]
+
+
+def test_dropping_among_unpinned_items_unpins_it(gdir):
+    flags.set_flags(gdir, "a", pinned = True)
+    assert _move(gdir, MTIMES, "a", "c")["pinned"] is False
+    assert _shelf(gdir, MTIMES) == ["b", "c", "a", "d"]
+
+
+@pytest.mark.parametrize("item, pinned", [("a", True), ("c", False)])
+def test_the_seam_between_groups_keeps_the_items_state(gdir, item, pinned):
+    flags.set_flags(gdir, "b", pinned = True)
+    flags.set_flags(gdir, "a", pinned = True)  # pinned group: a, b
+    # Right after the last pin: "a" stays pinned, "c" stays unpinned.
+    assert _move(gdir, MTIMES, item, "b")["pinned"] is pinned
+    shelf = _shelf(gdir, MTIMES)
+    assert shelf.index(item) == shelf.index("b") + 1
+
+
+def test_a_later_pin_still_leads_a_dragged_pin(gdir):
+    flags.set_flags(gdir, "c", pinned = True)
+    _move(gdir, MTIMES, "d", None)
+    flags.set_flags(gdir, "b", pinned = True)
+    assert _shelf(gdir, MTIMES)[:3] == ["b", "d", "c"]
+
+
+def test_an_unknown_neighbour_is_refused(gdir):
+    with pytest.raises(KeyError):
+        _move(gdir, MTIMES, "a", "gone")
+    assert not _store(gdir).exists()
+
+
+@pytest.mark.parametrize("order_at", ["x", True, None, 10**400])
+def test_an_unusable_order_key_reads_as_undragged_and_costs_trust(gdir, order_at):
+    _store(gdir).write_text(json.dumps({"version": 1, "items": {"d": {"order_at": order_at}}}))
+    items = flags.read(gdir)
+    assert flags.order_at(items, "d") is None
+    assert _shelf(gdir, MTIMES) == ["a", "b", "c", "d"]
+    assert flags.is_trusted(gdir) is False

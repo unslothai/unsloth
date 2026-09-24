@@ -15,7 +15,16 @@ SETTINGS = REPO / "studio/frontend/src/features/settings"
 
 def test_dialog_content_can_shrink_inside_the_dialog_grid():
     source = SETTINGS_DIALOG.read_text(encoding = "utf-8")
-    assert "flex h-full min-h-0 min-w-0 w-full max-sm:flex-col" in source
+    assert "flex h-full min-h-0 min-w-0 w-full" in source
+    # Stacks on the dialog's measured width (`data-stacked`), not a viewport breakpoint: #11648 made the
+    # interface scale work in the browser, and `max-sm:` reads the viewport, which a larger UI does not change.
+    # Tailwind's data variant reads the attribute on the element carrying the class, so both sit in one tag.
+    at = source.index("min-w-0 w-full data-stacked:flex-col")
+    tag = source[source.rindex("<div", 0, at) : source.index(">", at)]
+    assert (
+        "data-stacked={stacked || undefined}" in tag
+    ), "the stacking attribute left the flex container"
+    assert "group/settings" in tag, "the stacked children read group/settings off this container"
     assert "relative flex min-h-0 min-w-0 flex-1 flex-col" in source
 
 
@@ -48,12 +57,9 @@ def test_remote_access_card_can_shrink():
 
 
 def test_embedding_model_controls_stack_on_the_narrowest_viewports():
-    # The picker has already moved once, from the General tab to Documents & RAG, and
-    # pinning the filename turned that move into a red build even though both responsive
-    # classes came along untouched. Follow whichever settings surface renders the picker.
-    # Dropping the classes still fails; relocating them no longer does.
-    # The combobox became EmbeddingModelPicker; follow the component, since the
-    # contract is that the control stacks and fills the row under 360px.
+    # The picker has already moved once, from the General tab to Documents & RAG, and pinning the filename turned that
+    # move into a red build even though both responsive classes came along untouched.
+    # follow the component, since the contract is that the control stacks and fills the row under 360px.
     owners = [
         path
         for path in sorted(SETTINGS.rglob("*.tsx"))

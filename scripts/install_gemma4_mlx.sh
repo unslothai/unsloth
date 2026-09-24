@@ -3,22 +3,16 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 set -euo pipefail
 
-# ============================================================
 # Gemma 4 MLX — One-command setup + inference
-#
 # Supply-chain hardening: the uv installer payload is pinned by
 # SHA-256. Rotate by running:
 #   curl -sSLf https://astral.sh/uv/install.sh | shasum -a 256
 # and updating _UV_INSTALLER_SHA256 below.
-# ============================================================
-#
 # Usage:
 #   bash install_gemma4_mlx.sh [--venv-dir DIR]
-#
 # This script:
 #   1. Creates a Python virtual environment
 #   2. Installs uv, mlx-vlm, transformers
-# ============================================================
 
 # ── Output style (inspired by unsloth/install.sh) ─────────────
 RULE=""

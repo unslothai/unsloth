@@ -72,7 +72,7 @@ def test_a_fully_resumed_ab_keeps_the_table_the_measured_run_wrote(tmp_path):
     _render_ab(paths, SIDES, MEASURED, "c0ffee")
     measured = (paths.out / "ab.md").read_text(encoding = "utf-8")
     # A real reading, as opposed to an empty table. The fixture is one pair, so the verdict is
-    # INCONCLUSIVE rather than a direction; what matters here is that something was measured.
+    # INCONCLUSIVE rather than a direction; what matters is that something was measured.
     assert "NO READING" not in measured
     assert "keystroke_p95_ms" in measured
 

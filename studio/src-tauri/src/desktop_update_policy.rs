@@ -150,7 +150,7 @@ fn validate_channel_metadata(
 fn desktop_update_mode() -> DesktopUpdateMode {
     #[cfg(target_os = "linux")]
     {
-        if std::env::var_os("APPIMAGE").is_some() {
+        if std::env::var_os("APPIMAGE").is_some() || crate::debian_update::is_supported_install() {
             DesktopUpdateMode::InApp
         } else {
             DesktopUpdateMode::ManualLinuxPackage
@@ -173,7 +173,7 @@ fn normalize_version(version: &str) -> Option<String> {
     }
 }
 
-pub(crate) fn compare_versions(left: &str, right: &str) -> i8 {
+fn compare_versions(left: &str, right: &str) -> i8 {
     let Some(left) = parse_version(left) else {
         return 0;
     };

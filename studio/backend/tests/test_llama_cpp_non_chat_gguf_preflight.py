@@ -213,7 +213,10 @@ def test_the_shared_arch_verdict_matches_the_pickers(tmp_path):
     # The invariant: the refusal names the Images page exactly when
     # routes.models._arch_to_task says the row is selectable there, or the message points at
     # a list the model is not in.
+    from routes.models import _arch_to_task
+
     from routes.models import _AMBIGUOUS_DIFFUSION_GGUF_ARCHS, _arch_to_task
+
     assert LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES == _AMBIGUOUS_DIFFUSION_GGUF_ARCHS
     for identifier, name in (
         ("unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q2_K.gguf"),

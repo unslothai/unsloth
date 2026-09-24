@@ -2,16 +2,35 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  ArchiveRestoreIcon,
   AudioWave01Icon,
   Delete02Icon,
+  Image03Icon,
+  FlimSlateIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  DEFAULT_LIBRARY_FILTERS,
+  filterLibraryItems,
+  type LibraryFilters,
+} from "./data-library";
+import { LibraryRow, LibraryToolbar } from "./data-library-controls";
 import { Spinner } from "@/components/ui/spinner";
 import {
+  type AudioGalleryCursor,
+  audioGalleryCursor,
   deleteAudioClip,
   listAudioGallery,
   setAudioClipFlags,
@@ -24,16 +43,19 @@ import {
 } from "@/features/images/api";
 import {
   deleteGalleryVideo,
-  fetchGalleryVideoSignedUrl,
+  fetchGalleryVideoThumbnail,
   getVideoGallery,
   setGalleryVideoFlags,
 } from "@/features/video/api";
+import { videoThumbnailQueue } from "@/features/video/thumbnail-request-queue";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { notifyGalleryChanged } from "@/lib/gallery-flags";
+import { translate, useLocale, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 
 /** Archived items shown per page; "Show more" pulls the next page. Matches ArchivedChatsView. */
 const ARCHIVED_PAGE_SIZE = 20;
+const SEARCH_PAGE_SIZE = 200;
 
 // Blob budget for archived thumbnails. Far smaller than the gallery strip's 192 MB: these are 40px
 // rows in a settings list, and only the loaded pages are ever on screen.
@@ -46,40 +68,20 @@ const THUMB_RETRY_DELAY_MS = 750;
 
 export type ArchivedMediaKind = "images" | "videos" | "audio";
 
-const NOUN: Record<ArchivedMediaKind, string> = {
-  images: "image",
-  videos: "video",
-  audio: "clip",
-};
-
 /** The shape both galleries share, once flattened for this list. */
 interface ArchivedRow {
   id: string;
-  prompt: string;
+  title: string;
   /** Epoch ms, so images (epoch seconds) and videos (ISO 8601) render the same way. */
-  createdAtMs: number;
+  createdAt: number;
   /** Relative, auth-protected URL of the underlying file. */
   url: string;
-}
-
-interface AudioCursor {
-  mtime: number;
-  id: string;
 }
 
 interface ArchivedPage {
   rows: ArchivedRow[];
   hasMore: boolean;
-  nextAudioCursor: AudioCursor | null;
-}
-
-function formatCreatedAt(ms: number): string {
-  if (!Number.isFinite(ms)) return "";
-  return new Date(ms).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
+  nextAudioCursor: AudioGalleryCursor | null;
 }
 
 /**
@@ -88,17 +90,17 @@ function formatCreatedAt(ms: number): string {
  * by, so each row carries a thumbnail alongside its prompt.
  */
 export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
+  const t = useT();
+  const locale = useLocale();
   const isImages = kind === "images";
   const isAudio = kind === "audio";
-  const noun = NOUN[kind];
-  const Noun = noun[0].toUpperCase() + noun.slice(1);
   const [rows, setRows] = useState<ArchivedRow[]>([]);
   // `showMore` reads the row count and the drop count from refs, not state: both can change while
   // its request is in flight, and a stale closure is exactly what makes it skip a row. The ref is
   // written with every list change rather than during render, so it is current the moment a drop
   // lands instead of one render later.
   const rowsRef = useRef<ArchivedRow[]>([]);
-  const audioCursor = useRef<AudioCursor | null>(null);
+  const audioCursor = useRef<AudioGalleryCursor | null>(null);
   const mutations = useRef(0);
   // Restores and deletes in flight. The counter above is an EDGE, so a page starting after it moves
   // and landing before the row is dropped sees it hold still. A page applies only while this is zero.
@@ -109,11 +111,45 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     setRows(next);
   }, []);
   const [hasMore, setHasMore] = useState(false);
+  const [filters, setFilters] = useState<LibraryFilters>({
+    ...DEFAULT_LIBRARY_FILTERS,
+    sort: "default",
+  });
+  const [visibleCount, setVisibleCount] = useState(ARCHIVED_PAGE_SIZE);
+  const [paging, setPaging] = useState(false);
+  const [pageError, setPageError] = useState(false);
+  const [bulkIntent, setBulkIntent] = useState<"delete" | "restore" | null>(
+    null,
+  );
+  const [confirming, setConfirming] = useState<{
+    rows: ArchivedRow[];
+    action: "delete" | "restore";
+  } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const running = useRef(false);
+  const filtered = useMemo(
+    () => filterLibraryItems(rows, filters, undefined, undefined, locale),
+    [rows, filters, locale],
+  );
+  const displayed = useMemo(
+    () => filtered.slice(0, visibleCount),
+    [filtered, visibleCount],
+  );
+  const scanAll =
+    filters.query.trim() !== "" ||
+    filters.sort !== "default" ||
+    bulkIntent !== null;
+
+  function changeFilters(next: LibraryFilters) {
+    setFilters(next);
+    setVisibleCount(ARCHIVED_PAGE_SIZE);
+    setPageError(false);
+    setBulkIntent(null);
+  }
   const [loading, setLoading] = useState(true);
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
-  // Archived PNGs are full-size generated images, so "Show more" a few times would pin hundreds of
-  // MB if every blob were held to unmount. Budget them like the main gallery does. Images only: a
-  // clip uses a signed link, which is not an object URL and must not be revoked.
+  // Archived images and video posters are object URLs, so "Show more" a few times would otherwise
+  // pin their bytes until unmount. Budget them like the main galleries do.
   const blobs = useRef(new BlobUrlCache(ARCHIVED_THUMB_BUDGET_BYTES));
   // Only rows on screen fetch a thumbnail, and only rows off screen are evicted. Together those
   // two rules keep memory bounded without ever blanking a row the user is looking at.
@@ -121,14 +157,18 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   const [visible, setVisible] = useState<ReadonlySet<string>>(new Set());
 
   const loadPage = useCallback(
-    async (offset: number, before: AudioCursor | null = null): Promise<ArchivedPage> => {
+    async (
+      offset: number,
+      before: AudioGalleryCursor | null = null,
+      pageSize = ARCHIVED_PAGE_SIZE,
+    ): Promise<ArchivedPage> => {
       if (isImages) {
-        const page = await getGallery(offset, ARCHIVED_PAGE_SIZE, true);
+        const page = await getGallery(offset, pageSize, true);
         return {
           rows: page.images.map((i) => ({
             id: i.id,
-            prompt: i.prompt,
-            createdAtMs: i.created_at * 1000,
+            title: i.prompt,
+            createdAt: i.created_at * 1000,
             url: i.url,
           })),
           hasMore: page.has_more,
@@ -136,27 +176,24 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
         };
       }
       if (isAudio) {
-        const page = await listAudioGallery(0, ARCHIVED_PAGE_SIZE, before, true);
+        const page = await listAudioGallery(0, pageSize, before, true);
         return {
           rows: page.audio.map((a) => ({
             id: a.id,
-            prompt: a.prompt,
-            createdAtMs: Date.parse(a.created_at),
+            title: a.prompt,
+            createdAt: Date.parse(a.created_at),
             url: a.url,
           })),
           hasMore: page.has_more,
-          nextAudioCursor:
-            page.next_before_mtime !== null && page.next_before_id !== null
-              ? { mtime: page.next_before_mtime, id: page.next_before_id }
-              : null,
+          nextAudioCursor: audioGalleryCursor(page),
         };
       }
-      const page = await getVideoGallery(offset, ARCHIVED_PAGE_SIZE, true);
+      const page = await getVideoGallery(offset, pageSize, true);
       return {
         rows: page.videos.map((v) => ({
           id: v.id,
-          prompt: v.prompt,
-          createdAtMs: Date.parse(v.created_at),
+          title: v.prompt,
+          createdAt: Date.parse(v.created_at),
           url: v.url,
         })),
         hasMore: page.has_more,
@@ -178,7 +215,9 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
         setHasMore(page.hasMore);
       } catch (err) {
         if (!cancelled) {
-          toast.error(`Failed to load archived ${kind}`, {
+          setPageError(true);
+          setHasMore(true);
+          toast.error(translate("settings.data.library.loadFailed"), {
             description: err instanceof Error ? err.message : undefined,
           });
         }
@@ -202,12 +241,19 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   useEffect(() => {
     const root = listRef.current;
     if (!root) return;
+    setVisible((previous) =>
+      new Set(
+        displayed.filter((row) => previous.has(row.id)).map((row) => row.id),
+      ),
+    );
+    let observing = true;
     if (typeof IntersectionObserver === "undefined") {
-      setVisible(new Set(rows.map((r) => r.id)));
+      setVisible(new Set(displayed.map((r) => r.id)));
       return;
     }
     const io = new IntersectionObserver(
       (entries) => {
+        if (!observing) return;
         setVisible((prev) => {
           const next = new Set(prev);
           for (const entry of entries) {
@@ -222,9 +268,13 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
       // A little margin so a row is fetched just before it scrolls into view.
       { rootMargin: "200px 0px" },
     );
-    for (const el of root.querySelectorAll("[data-archived-id]")) io.observe(el);
-    return () => io.disconnect();
-  }, [rows]);
+    for (const el of root.querySelectorAll("[data-archived-id]"))
+      io.observe(el);
+    return () => {
+      observing = false;
+      io.disconnect();
+    };
+  }, [displayed, loading]);
 
   // Thumbnails for VISIBLE rows that do not have one yet. `requested` is a ref, not state, so a
   // landing thumbnail cannot re-enter this effect and refetch the rest.
@@ -279,11 +329,18 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
         if ((failures.current.get(row.id) ?? 0) > THUMB_RETRY_LIMIT) continue;
         requested.current.add(row.id);
         try {
-          if (isImages) {
-            const { url, bytes } = await fetchGalleryObjectUrl(row.url);
+          if (isImages || kind === "videos") {
+            const { url, bytes } = isImages
+              ? await fetchGalleryObjectUrl(row.url)
+              : await videoThumbnailQueue.run(() =>
+                  fetchGalleryVideoThumbnail(row.id),
+                );
             // Dropped from the list, or the dialog closed: there is no row left to show it on,
             // and caching it after the unmount sweep would leak the blob.
-            if (!alive.current || !rowsRef.current.some((r) => r.id === row.id)) {
+            if (
+              !alive.current ||
+              !rowsRef.current.some((r) => r.id === row.id)
+            ) {
               URL.revokeObjectURL(url);
               requested.current.delete(row.id);
               return;
@@ -308,15 +365,6 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
             if (cancelled) return;
             continue;
           }
-          // A clip is a short-lived signed link, not a blob: nothing to budget or revoke.
-          const src = await fetchGalleryVideoSignedUrl(row.id);
-          if (!alive.current || !rowsRef.current.some((r) => r.id === row.id)) {
-            requested.current.delete(row.id);
-            return;
-          }
-          failures.current.delete(row.id);
-          setThumbs((prev) => ({ ...prev, [row.id]: src }));
-          if (cancelled) return;
         } catch {
           // A missing thumbnail still leaves a usable, actionable row, so a failure is not fatal.
           // Schedule the retry rather than only clearing the flag, which nothing would act on.
@@ -334,12 +382,12 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     return () => {
       cancelled = true;
     };
-  }, [rows, isImages, isAudio, visible, retryTick]);
+  }, [rows, isImages, isAudio, kind, visible, retryTick]);
 
   // Drop a row, then top the page back up if that emptied it while more remain, so the list never
   // dead-ends with rows still unreachable behind a hidden "Show more".
   const dropRow = useCallback(
-    (id: string, backToGallery: boolean) => {
+    (id: string) => {
       putRows(rowsRef.current.filter((r) => r.id !== id));
       // Every drop shifts the rows behind it up by one, so an offset taken before this point is
       // now short. `showMore` uses the counter to notice and re-page instead of skipping a row.
@@ -361,13 +409,8 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
         delete next[id];
         return next;
       });
-      // The page that owns this gallery is mounted persistently and only loads on mount, so a
-      // restore has to be announced or the strip stays stale until a reload. A delete does not:
-      // the item was archived, so it was never on that strip, and refetching would only cost the
-      // user the pages they had scrolled to.
-      if (backToGallery) notifyGalleryChanged(kind);
     },
-    [kind, putRows],
+    [putRows],
   );
 
   async function handleRestore(row: ArchivedRow) {
@@ -379,14 +422,15 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
       if (isImages) await setGalleryImageFlags(row.id, { archived: false });
       else if (isAudio) await setAudioClipFlags(row.id, { archived: false });
       else await setGalleryVideoFlags(row.id, { archived: false });
-      dropRow(row.id, true);
+      dropRow(row.id);
       pendingMutations.current -= 1;
-      toast.success(`${Noun} restored`);
+      return true;
     } catch (err) {
       pendingMutations.current -= 1;
-      toast.error(`Failed to restore ${noun}`, {
+      toast.error(t("settings.data.library.restoreFailed"), {
         description: err instanceof Error ? err.message : undefined,
       });
+      return false;
     }
   }
 
@@ -399,39 +443,100 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
       if (isImages) await deleteGalleryImage(row.id);
       else if (isAudio) await deleteAudioClip(row.id);
       else await deleteGalleryVideo(row.id);
-      dropRow(row.id, false);
+      dropRow(row.id);
       pendingMutations.current -= 1;
-      toast.success(`${Noun} deleted`);
+      return true;
     } catch (err) {
       pendingMutations.current -= 1;
-      toast.error(`Failed to delete ${noun}`, {
+      toast.error(t("settings.data.library.deleteFailed"), {
         description: err instanceof Error ? err.message : undefined,
       });
+      return false;
     }
   }
 
-  async function showMore() {
-    if (loadingMore.current) return;
+  const showMore = useCallback(async () => {
+    if (loadingMore.current || running.current) return;
     loadingMore.current = true;
+    setPaging(true);
+    setPageError(false);
     try {
-      // Images and videos page by offset over a shelf the user can shorten; audio uses its stable
-      // cursor. The same retry fence keeps locally mutated responses off every shelf.
       for (let attempt = 0; attempt < 4; attempt += 1) {
         const before = mutations.current;
-        const page = await loadPage(rowsRef.current.length, audioCursor.current);
-        if (mutations.current !== before || pendingMutations.current > 0) continue;
+        const page = await loadPage(
+          rowsRef.current.length,
+          audioCursor.current,
+          scanAll ? SEARCH_PAGE_SIZE : ARCHIVED_PAGE_SIZE,
+        );
+        if (!alive.current) return;
+        if (mutations.current !== before || pendingMutations.current > 0)
+          continue;
         const seen = new Set(rowsRef.current.map((r) => r.id));
-        putRows([...rowsRef.current, ...page.rows.filter((r) => !seen.has(r.id))]);
+        const added = page.rows.filter((r) => !seen.has(r.id));
+        if (page.hasMore && added.length === 0)
+          throw new Error(t("settings.data.library.pageStalled"));
+        putRows([...rowsRef.current, ...added]);
         audioCursor.current = page.nextAudioCursor;
         setHasMore(page.hasMore);
         return;
       }
+      throw new Error(t("settings.data.library.pageChanged"));
     } catch (err) {
-      toast.error(`Failed to load more archived ${kind}`, {
+      if (!alive.current) return;
+      setPageError(true);
+      toast.error(t("settings.data.library.loadMoreFailed"), {
         description: err instanceof Error ? err.message : undefined,
       });
     } finally {
       loadingMore.current = false;
+      if (alive.current) setPaging(false);
+    }
+  }, [t, loadPage, putRows, scanAll]);
+
+  useEffect(() => {
+    if (!scanAll || loading || paging || pageError || busy || !hasMore) return;
+    const timer = setTimeout(
+      () => void showMore(),
+      rows.length <= ARCHIVED_PAGE_SIZE ? 250 : 0,
+    );
+    return () => clearTimeout(timer);
+  }, [
+    scanAll,
+    loading,
+    paging,
+    pageError,
+    busy,
+    hasMore,
+    showMore,
+    rows.length,
+  ]);
+
+  useEffect(() => {
+    if (!bulkIntent || hasMore || loading || paging || pageError) return;
+    setConfirming({ rows: [...filtered], action: bulkIntent });
+    setBulkIntent(null);
+  }, [bulkIntent, hasMore, loading, paging, pageError, filtered]);
+
+  async function run(targets: ArchivedRow[], action: "delete" | "restore") {
+    if (running.current) return;
+    running.current = true;
+    setBusy(true);
+    let restored = false;
+    try {
+      for (const row of targets) {
+        const succeeded =
+          action === "delete"
+            ? await handleDelete(row)
+            : await handleRestore(row);
+        if (!succeeded) break;
+        if (action === "restore") restored = true;
+      }
+    } finally {
+      // refresh the persistent gallery once, including after a partially successful batch.
+      if (restored) notifyGalleryChanged(kind);
+      running.current = false;
+      setBusy(false);
+      setConfirming(null);
     }
   }
 
@@ -443,88 +548,214 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     );
   }
 
-  // Only a genuinely empty shelf ends here. Emptying the LOADED page while more remain keeps the
-  // list rendered so "Show more" survives, else the rest become unreachable without reopening.
-  if (rows.length === 0 && !hasMore) {
-    return (
-      <p className="py-8 text-center text-sm text-muted-foreground">
-        No archived {kind}.
-      </p>
-    );
-  }
-
   return (
     <div className="flex flex-col gap-4">
-      <div ref={listRef}>
-        <div className="flex items-center gap-4 border-b border-border/60 px-1 pb-2 text-xs font-semibold text-foreground">
-          <span className="w-10 shrink-0" />
-          <span className="flex-1">Prompt</span>
-          <span className="w-32 shrink-0">Date created</span>
-          <span className="w-16 shrink-0" />
-        </div>
-        {rows.map((row) => (
-          <div
-            key={row.id}
-            data-archived-id={row.id}
-            className="group flex items-center gap-4 border-b border-border/40 px-1 py-2.5 text-sm last:border-0"
-          >
-            <span className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted/40">
-              {isAudio ? (
-                <HugeiconsIcon
-                  icon={AudioWave01Icon}
-                  className="size-4 text-muted-foreground"
-                />
-              ) : thumbs[row.id] ? (
-                isImages ? (
-                  <img src={thumbs[row.id]} alt="" className="size-full object-cover" />
-                ) : (
-                  // Muted metadata-only poster, same treatment as the filmstrip cards.
-                  <video
-                    src={thumbs[row.id]}
-                    muted={true}
-                    playsInline={true}
-                    preload="metadata"
-                    className="size-full object-cover"
-                  />
-                )
-              ) : null}
-            </span>
-            <span className="min-w-0 flex-1 truncate" title={row.prompt}>
-              {row.prompt}
-            </span>
-            <span className="w-32 shrink-0 text-muted-foreground tabular-nums">
-              {formatCreatedAt(row.createdAtMs)}
-            </span>
-            <span className="flex w-16 shrink-0 items-center justify-end gap-1">
-              <button
-                type="button"
-                onClick={() => void handleRestore(row)}
-                aria-label={`Restore ${noun}`}
-                title="Restore"
-                className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                <HugeiconsIcon icon={ArchiveRestoreIcon} strokeWidth={1.75} className="size-4" />
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleDelete(row)}
-                aria-label={`Delete ${noun}`}
-                title="Delete"
-                className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-              >
-                <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
-              </button>
-            </span>
+      <LibraryToolbar
+        filters={filters}
+        onChange={changeFilters}
+        placeholder={t(
+          isImages
+            ? "settings.data.library.searchImages"
+            : isAudio
+              ? "settings.data.library.searchAudio"
+              : "settings.data.library.searchVideos",
+        )}
+        disabled={busy || bulkIntent !== null}
+      />
+      <div className="flex flex-wrap items-center gap-2">
+        <span role="status" className="flex-1 text-xs text-muted-foreground">
+          {pageError
+            ? t("settings.data.library.incompleteSearch")
+            : scanAll && hasMore
+              ? t("settings.data.library.searchingRemaining", {
+                  count: rows.length,
+                })
+              : t("settings.data.library.itemCount", {
+                  count: `${filtered.length}${hasMore ? "+" : ""}`,
+                })}
+        </span>
+        {bulkIntent ? (
+          <Button variant="ghost" size="sm" onClick={() => setBulkIntent(null)}>
+            {t("common.cancel")}
+          </Button>
+        ) : (
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={busy || (rows.length === 0 && !hasMore)}
+              onClick={() => setBulkIntent("restore")}
+            >
+              {filters.query.trim()
+                ? t("settings.data.library.unarchiveResults")
+                : t("settings.data.library.unarchiveAll")}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={busy || (rows.length === 0 && !hasMore)}
+              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+              onClick={() => setBulkIntent("delete")}
+            >
+              <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-4" />
+              {filters.query.trim()
+                ? t("settings.data.library.deleteResults")
+                : t("settings.data.deleteAllAction")}
+            </Button>
+          </>
+        )}
+      </div>
+      <div
+        ref={listRef}
+        className="divide-y divide-border/50 rounded-2xl border border-border/60 px-3 sm:px-4"
+      >
+        {displayed.map((row) => (
+          <div key={row.id} data-archived-id={row.id}>
+            <LibraryRow
+              title={row.title}
+              date={row.createdAt}
+              leading={
+                <span className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted/40">
+                  {!isAudio && thumbs[row.id] ? (
+                    <img
+                      src={thumbs[row.id]}
+                      alt=""
+                      className="size-full object-cover"
+                    />
+                  ) : (
+                    <HugeiconsIcon
+                      icon={
+                        isAudio
+                          ? AudioWave01Icon
+                          : isImages
+                            ? Image03Icon
+                            : FlimSlateIcon
+                      }
+                      className="size-5 text-muted-foreground"
+                    />
+                  )}
+                </span>
+              }
+              actions={
+                <>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    disabled={busy || bulkIntent !== null}
+                    aria-label={t("settings.data.library.deleteItem", {
+                      title: row.title,
+                    })}
+                    title={t("common.delete")}
+                    className="text-muted-foreground hover:text-destructive"
+                    onClick={() =>
+                      setConfirming({ rows: [row], action: "delete" })
+                    }
+                  >
+                    <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={busy || bulkIntent !== null}
+                    aria-label={t("settings.data.library.unarchiveItem", {
+                      title: row.title,
+                    })}
+                    className="rounded-xl bg-muted/60 hover:bg-muted"
+                    onClick={() => void run([row], "restore")}
+                  >
+                    {t("settings.data.library.unarchive")}
+                  </Button>
+                </>
+              }
+            />
           </div>
         ))}
-        {hasMore ? (
-          <div className="flex justify-center pt-3">
-            <Button variant="outline" size="sm" onClick={() => void showMore()}>
-              Show more
-            </Button>
-          </div>
-        ) : null}
+        {displayed.length === 0 && (
+          <p className="py-8 text-center text-sm text-muted-foreground">
+            {hasMore
+              ? t("settings.data.library.noLoadedMatches")
+              : filters.query.trim()
+                ? t("settings.data.library.noMediaMatches")
+                : t("settings.data.library.noMedia")}
+          </p>
+        )}
       </div>
+      {hasMore || filtered.length > visibleCount ? (
+        <div className="flex justify-center">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={paging || busy}
+            onClick={() => {
+              if (pageError) void showMore();
+              else if (filtered.length > visibleCount)
+                setVisibleCount((count) => count + ARCHIVED_PAGE_SIZE);
+              else
+                void showMore().then(() =>
+                  setVisibleCount((count) => count + ARCHIVED_PAGE_SIZE),
+                );
+            }}
+          >
+            {paging
+              ? t("common.loading")
+              : pageError
+                ? t("picker.retry")
+                : t("shell.navigation.showMore")}
+          </Button>
+        </div>
+      ) : null}
+      <AlertDialog
+        open={confirming !== null}
+        onOpenChange={(open) => {
+          if (!open && !busy) setConfirming(null);
+        }}
+      >
+        <AlertDialogContent
+          onEscapeKeyDown={(event) => {
+            if (busy) event.preventDefault();
+          }}
+        >
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t(
+                confirming?.action === "delete"
+                  ? "settings.data.library.deleteItemsTitle"
+                  : "settings.data.library.unarchiveItemsTitle",
+                { count: confirming?.rows.length ?? 0 },
+              )}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirming?.rows.length === 1
+                ? `"${confirming.rows[0].title}". `
+                : ""}
+              {confirming?.action === "delete"
+                ? t("settings.data.library.deleteFilesWarning")
+                : t("settings.data.library.restoreWarning")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={busy}>
+              {t("common.cancel")}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={busy || !confirming?.rows.length}
+              variant={
+                confirming?.action === "delete" ? "destructive" : "default"
+              }
+              onClick={(event) => {
+                event.preventDefault();
+                if (confirming) void run(confirming.rows, confirming.action);
+              }}
+            >
+              {busy
+                ? t("settings.data.library.working")
+                : confirming?.action === "delete"
+                  ? t("common.delete")
+                  : t("settings.data.library.unarchive")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

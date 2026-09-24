@@ -21,12 +21,12 @@ import {
   ggufVariantDisplayLabel,
   useHfTokenStore,
 } from "@/features/hub";
-import { modelIdsMatch } from "../lib/model-identity";
 import {
   ModelRowMenu,
   pinKey,
   usePinnedModelsStore,
 } from "@/features/model-picker";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { cn, formatCompact } from "@/lib/utils";
 import {
   Download01Icon,
@@ -42,6 +42,7 @@ import {
   memo,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -60,11 +61,10 @@ const COARSE_POINTER =
   typeof window.matchMedia === "function" &&
   window.matchMedia("(pointer: coarse)").matches;
 
-// Defer the cached-size chip (Radix Tooltip + two store subscriptions) until a
-// row is first hovered/focused so scrolling the virtualized list doesn't pay
-// that cost per row; an identical StatChip placeholder makes the swap invisible.
-// Coarse pointers have no hover, so they arm immediately. Default true so any
-// out-of-row usage stays functional.
+// Defer the cached-size chip (Radix Tooltip + two store subscriptions) until a row is first
+// hovered/focused so scrolling the virtualized list doesn't pay that cost per row; an identical
+// StatChip placeholder makes the swap invisible. Coarse pointers have no hover, so they arm
+// immediately. Default true so any out-of-row usage stays functional.
 const CatalogRowInteractiveContext = createContext(true);
 
 function CachedSizeChip(props: {
@@ -241,7 +241,6 @@ export function StatChip({
 
 function CatalogRow({
   selected,
-  active,
   onClick,
   tooltip,
   label,
@@ -249,7 +248,6 @@ function CatalogRow({
   variant = "flat",
 }: {
   selected: boolean;
-  active?: boolean;
   tooltip?: ReactNode;
   onClick: () => void;
   label: string;
@@ -262,7 +260,6 @@ function CatalogRow({
   const button = (
     <div
       data-selected={selected || undefined}
-      data-active={active || undefined}
       onPointerEnter={arm}
       onFocusCapture={arm}
       className={cn(
@@ -323,7 +320,7 @@ function StatusDot({
     <span
       role="img"
       aria-label={label}
-      className={cn("inline-block size-[5px] shrink-0 rounded-full", toneClass)}
+      className={cn("inline-block size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full", toneClass)}
     />
   );
 }
@@ -423,14 +420,12 @@ export function buildRowStatusTooltip({
 export const DiscoverModelRow = memo(function DiscoverModelRow({
   row,
   selected,
-  active,
   deviceType,
   isDataset,
   onSelect,
 }: {
   row: DiscoverRow;
   selected: boolean;
-  active: boolean;
   deviceType: string | null;
   isDataset: boolean;
   onSelect: (id: string) => void;
@@ -467,7 +462,6 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
   return (
     <CatalogRow
       selected={selected}
-      active={active}
       tooltip={tooltip}
       label={row.repo}
       onClick={handleClick}
@@ -479,8 +473,8 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
           className="size-8 rounded-[11px]"
           remote={false}
         />
-        <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
-          <div className="flex h-[18px] min-w-0 items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-1 flex-col gap-[calc(3px*var(--ui-space-scale,1))]">
+          <div className="flex h-[calc(18px*var(--ui-space-scale,1))] min-w-0 items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2 pr-2">
               <p className="truncate text-ui-12 font-medium leading-ui-18 tracking-[-0.005em] text-foreground">
                 {row.repo}
@@ -494,7 +488,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
                 <span
                   role="img"
                   aria-label="GGUF"
-                  className="inline-block size-[5px] shrink-0 rounded-full bg-format-gguf"
+                  className="inline-block size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-format-gguf"
                 />
               )}
               {unsupported && (
@@ -518,7 +512,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
               />
             </div>
           </div>
-          <div className="flex h-[16px] min-w-0 items-center justify-between gap-2 text-ui-11p5 leading-ui-16 text-muted-foreground/85">
+          <div className="flex h-[calc(16px*var(--ui-space-scale,1))] min-w-0 items-center justify-between gap-2 text-ui-11p5 leading-ui-16 text-muted-foreground/85">
             <span className="flex min-w-0 items-center gap-1">
               <span className="truncate">{row.owner}</span>
               {row.owner.toLowerCase() === "unsloth" && (
@@ -538,56 +532,27 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
   );
 });
 
-function cachedRowActive(
-  row: CachedInventoryRow,
-  activeCheckpoint: string | null,
-  activeGgufVariant: string | null,
-): boolean {
-  if (!modelIdsMatch(activeCheckpoint, row.loadId)) return false;
-  if (row.modelFormat === "gguf") {
-    return row.capabilities.requiresVariant ? activeGgufVariant !== null : true;
-  }
-  return activeGgufVariant === null;
-}
-
-function localRowActive(
-  row: LocalInventoryRow,
-  activeCheckpoint: string | null,
-  activeGgufVariant: string | null,
-): boolean {
-  if (!modelIdsMatch(activeCheckpoint, row.loadId)) return false;
-  if (row.modelFormat === "gguf") {
-    return row.capabilities.requiresVariant ? activeGgufVariant !== null : true;
-  }
-  return activeGgufVariant === null;
-}
-
 export const InventoryRow = memo(function InventoryRow({
   row,
   selected,
-  activeCheckpoint,
-  activeGgufVariant,
   isDataset,
   dimmed,
   deviceType,
   compact = false,
+  showFormatDot = true,
   onSelect,
   onChange,
-  onOpenSettings,
 }: {
   row: CachedInventoryRow | LocalInventoryRow;
   selected: boolean;
-  activeCheckpoint: string | null;
-  activeGgufVariant: string | null;
   isDataset: boolean;
   dimmed: boolean;
   deviceType: string | null;
   /** Narrow split master pane: drop the capability column so the name fits. */
   compact?: boolean;
+  showFormatDot?: boolean;
   onSelect: (id: string) => void;
   onChange?: () => void;
-  /** Open this model's settings page. Omitted for datasets. */
-  onOpenSettings?: (row: CachedInventoryRow | LocalInventoryRow) => void;
 }) {
   const rowModelId =
     row.kind === "cache"
@@ -616,10 +581,6 @@ export const InventoryRow = memo(function InventoryRow({
     deviceType,
   ]);
   const handleClick = useCallback(() => onSelect(row.id), [onSelect, row.id]);
-  const active =
-    row.kind === "cache"
-      ? cachedRowActive(row, activeCheckpoint, activeGgufVariant)
-      : localRowActive(row, activeCheckpoint, activeGgufVariant);
   const title = row.kind === "cache" ? row.repo : row.title;
 
   const subLabel = row.owner;
@@ -640,8 +601,8 @@ export const InventoryRow = memo(function InventoryRow({
       : (row.repoId ?? row.loadId)
     : undefined;
   const tooltip = buildRowStatusTooltip({
-    isGguf: row.isGguf,
-    isAdapter: row.modelFormat === "adapter",
+    isGguf: showFormatDot && row.isGguf,
+    isAdapter: showFormatDot && row.modelFormat === "adapter",
     isAvailableOnDevice: !partialRepoId,
     partialRepoId,
     unsupported,
@@ -681,18 +642,18 @@ export const InventoryRow = memo(function InventoryRow({
 
   const statusMarkers = (
     <>
-      {row.isGguf && (
+      {showFormatDot && row.isGguf && (
         <span
           role="img"
           aria-label="GGUF"
-          className="inline-block size-[5px] shrink-0 rounded-full bg-format-gguf"
+          className="inline-block size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-format-gguf"
         />
       )}
-      {row.modelFormat === "adapter" && (
+      {showFormatDot && row.modelFormat === "adapter" && (
         <span
           role="img"
           aria-label="Adapter"
-          className="inline-block size-[5px] shrink-0 rounded-full bg-format-adapter"
+          className="inline-block size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-format-adapter"
         />
       )}
       {partialRepoId ? (
@@ -735,18 +696,13 @@ export const InventoryRow = memo(function InventoryRow({
   const rowPinned =
     cacheDeletableRepoId != null &&
     pinnedKeys.includes(pinKey(cacheDeletableRepoId));
-  // Settings applies to any downloaded model, not just deletable ones, so the menu renders
-  // when either action applies. `deletableRepoId` keeps the delete closures' narrowing.
-  const settingsAction =
-    !isDataset && onOpenSettings ? { onOpen: () => onOpenSettings(row) } : undefined;
   const deletableRepoId = canDelete ? cacheDeletableRepoId : null;
   const deleteAction =
-    deletableRepoId || settingsAction ? (
+    deletableRepoId ? (
       <ModelRowMenu
         ariaLabel={`More options for ${deletableRepoId ?? rowModelId}`}
         buttonClassName="pointer-events-auto hub-modal-pe-guard size-8 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
         iconClassName="size-4"
-        settings={settingsAction}
         pin={
           isDataset || !deletableRepoId
             ? undefined
@@ -796,21 +752,7 @@ export const InventoryRow = memo(function InventoryRow({
               );
               // Deleted repos can't stay pinned: drop the repo pin and any of
               // its per-quant pins so stale rows don't linger up top.
-              const { pinned, togglePinned: toggle } =
-                usePinnedModelsStore.getState();
-              for (const key of pinned) {
-                if (
-                  key === pinKey(deletableRepoId) ||
-                  key.startsWith(`${deletableRepoId}::`)
-                ) {
-                  toggle(
-                    deletableRepoId,
-                    key.includes("::")
-                      ? key.slice(key.indexOf("::") + 2)
-                      : undefined,
-                  );
-                }
-              }
+              usePinnedModelsStore.getState().unpinRepo(deletableRepoId);
             }
           },
           onDeleted: onChange,
@@ -825,7 +767,6 @@ export const InventoryRow = memo(function InventoryRow({
       <CatalogRow
         variant="flat"
         selected={selected}
-        active={active}
         tooltip={tooltip}
         label={title}
         onClick={handleClick}
@@ -896,7 +837,6 @@ export const InventoryRow = memo(function InventoryRow({
     <CatalogRow
       variant="card"
       selected={selected}
-      active={active}
       tooltip={tooltip}
       label={title}
       onClick={handleClick}
@@ -927,7 +867,7 @@ export const InventoryRow = memo(function InventoryRow({
 
         {metaChips}
 
-        <div className="flex w-[96px] shrink-0 items-center justify-end text-right">
+        <div className="flex w-[calc(96px*var(--ui-space-scale,1))] shrink-0 items-center justify-end text-right">
           {row.kind === "cache" ? (
             <CachedSizeChip
               repoId={row.repoId}
@@ -956,6 +896,8 @@ export const InventoryRow = memo(function InventoryRow({
 });
 
 export const CATALOG_ROW_HEIGHT_PX = 57;
+/** Gutter between lanes, shared with the hand-laid grids beside these rows. */
+export const CATALOG_COLUMN_GAP_PX = 12;
 
 export function VirtualRows<T>({
   items,
@@ -966,7 +908,7 @@ export function VirtualRows<T>({
   columns = 1,
   rowHeight = CATALOG_ROW_HEIGHT_PX,
   cellHeight = rowHeight,
-  columnGap = 12,
+  columnGap = CATALOG_COLUMN_GAP_PX,
 }: {
   items: readonly T[];
   scrollElement: HTMLDivElement | null;
@@ -980,11 +922,17 @@ export function VirtualRows<T>({
 }) {
   const lanes = Math.max(1, columns);
   const rowCount = Math.ceil(items.length / lanes);
+  // The rows inside these slots scale with the UI font size, so the slots do
+  // too, or tall rows run into the next absolutely positioned one.
+  const scale = useUiSpaceScale();
+  const slotHeight = Math.round(rowHeight * scale);
+  const slotCellHeight = Math.round(cellHeight * scale);
+  const laneGap = Math.round(columnGap * scale);
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: rowCount,
     getScrollElement: () => scrollElement,
-    estimateSize: () => rowHeight,
+    estimateSize: () => slotHeight,
     overscan: 10,
     scrollMargin,
     getItemKey: (rowIndex) => {
@@ -992,6 +940,11 @@ export function VirtualRows<T>({
       return item ? getKey(item, rowIndex * lanes) : `row-${rowIndex}`;
     },
   });
+
+  // Sizes are cached from estimateSize, so a new scale has to invalidate them.
+  useEffect(() => {
+    virtualizer.measure();
+  }, [virtualizer, slotHeight]);
 
   return (
     <ul
@@ -1014,10 +967,9 @@ export function VirtualRows<T>({
               left: 0,
               width: "100%",
               transform: `translateY(${virtualRow.start - scrollMargin}px)`,
-              // Fixed height matching estimateSize (no measureElement ref):
-              // dynamic per-row measurement churns virtualizer state and causes
-              // visible jumps as new rows arrive.
-              height: `${rowHeight}px`,
+              // Fixed height matching estimateSize (no measureElement ref): dynamic per-row
+              // measurement churns virtualizer state and causes visible jumps as new rows arrive.
+              height: `${slotHeight}px`,
               contain: "layout",
             }}
           >
@@ -1025,8 +977,8 @@ export function VirtualRows<T>({
               style={{
                 display: "grid",
                 gridTemplateColumns: `repeat(${lanes}, minmax(0, 1fr))`,
-                columnGap: `${columnGap}px`,
-                height: `${cellHeight}px`,
+                columnGap: `${laneGap}px`,
+                height: `${slotCellHeight}px`,
               }}
             >
               {Array.from({ length: lanes }, (_, lane) => {

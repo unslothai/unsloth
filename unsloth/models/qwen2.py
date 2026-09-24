@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -57,11 +54,8 @@ class FastQwen2Model(FastLlamaModel):
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(Qwen2ForCausalLM)
 
-        # Solves https://github.com/unslothai/unsloth/issues/168
-        # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
-        # Inference can now be CUDAGraphed, but we shall retain the old rotary embeddings.
-        # https://github.com/huggingface/transformers/pull/27931
-        # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
+        # Static KV Cache landed in 4.38.0 and made training much slower (#168,
+        # huggingface/transformers#27931), so the old rotary embeddings are retained.
         import transformers.models.qwen2.modeling_qwen2
 
         transformers.models.qwen2.modeling_qwen2.Qwen2RotaryEmbedding = LlamaRotaryEmbedding

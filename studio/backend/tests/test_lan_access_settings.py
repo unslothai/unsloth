@@ -86,6 +86,42 @@ def test_auto_start_persistence_is_strict_and_fail_closed(monkeypatch, stored_se
     assert lan_settings.get_lan_access_auto_start() is False
 
 
+def test_port_persistence_defaults_to_automatic_and_validates(stored_settings):
+    assert lan_settings.get_lan_access_port() is None
+    assert lan_settings.lan_access_port_candidates() == tuple(range(8888, 8909))
+
+    assert lan_settings.set_lan_access_port(43210) == 43210
+    assert lan_settings.get_lan_access_port() == 43210
+    assert lan_settings.lan_access_port_candidates() == (43210,)
+
+    for invalid in (0, 65536, True, "8888"):
+        with pytest.raises((ValueError, TypeError)):
+            lan_settings.set_lan_access_port(invalid)
+        with pytest.raises(ValueError):
+            routes.LanAccessPortPayload(port = invalid)
+
+    stored_settings[lan_settings.LAN_ACCESS_PORT_KEY] = "broken"
+    assert lan_settings.get_lan_access_port() is None
+    assert routes.LanAccessPortPayload(port = None).port is None
+
+    with pytest.raises(ValueError):
+        routes.LanAccessPortPayload()
+
+
+def test_saving_a_new_port_policy_clears_the_previous_bind_error():
+    app = _app()
+    lan_access._error = "bind_failed"
+
+    status = lan_settings.save_lan_access_port(app, 43210)
+    assert status["error"] is None
+    assert status["configured_port"] == 43210
+
+    lan_access._error = "bind_failed"
+    status = lan_settings.save_lan_access_port(app, None)
+    assert status["error"] is None
+    assert status["configured_port"] is None
+
+
 # ── launch policy ──
 
 
@@ -419,8 +455,8 @@ def test_a_specific_host_launch_reports_the_address_it_was_given():
 def test_a_wildcard_launch_refreshes_lan_addresses_instead_of_showing_the_public_address(
     monkeypatch,
 ):
-    """server_url resolves the public IP for sharing, which behind NAT reaches
-    nothing on the LAN and would trip the public-address warning as well."""
+    """The status refreshes every LAN address instead of relying on server_url's
+    single direct base, and never leaks an obsolete public-address value."""
     monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["192.168.1.24"])
     state = _app(
         lan_access_launch_managed = True,
@@ -911,15 +947,23 @@ def test_a_start_with_no_usable_address_fails_without_leaving_state(monkeypatch)
     assert lan_access.lan_listener_status()["error"] is None
 
 
-def test_a_port_already_taken_on_every_address_fails_closed(monkeypatch):
+def test_automatic_tries_each_port_and_exact_does_not_fall_back(monkeypatch):
     monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda: ["10.0.0.7"])
+    attempted = []
 
-    def _refuse(*_args, **_kwargs):
+    def _refuse(_address, port):
+        attempted.append(port)
         raise OSError("address in use")
 
     monkeypatch.setattr(lan_access, "_bind_listener", _refuse)
     with pytest.raises(RuntimeError, match = "bind_failed"):
-        lan_access.start_lan_listener(object(), object(), 8888)
+        lan_access.start_lan_listener(object(), object(), 8888, (8889, 8890))
+    assert attempted == [8888, 8889, 8890]
+
+    attempted.clear()
+    with pytest.raises(RuntimeError, match = "bind_failed"):
+        lan_access.start_lan_listener(object(), object(), 43210)
+    assert attempted == [43210]
     assert lan_access.lan_listener_status()["running"] is False
 
 
@@ -1136,6 +1180,7 @@ def test_stop_releases_the_sockets_itself_when_the_serving_loop_is_gone(monkeypa
 
 
 def _configured(live_server):
+    lan_settings.set_lan_access_port(live_server.port)
     """The live app carrying the launch policy run.py would have published on it."""
     lan_settings.configure_lan_access(
         live_server.app.state,
@@ -1253,9 +1298,100 @@ def test_start_refuses_while_a_block_is_in_force():
         lan_settings.stop_lan_access(_app(lan_access_launch_managed = True))
 
 
-def test_start_refuses_a_port_the_server_never_published():
-    with pytest.raises(RuntimeError, match = "server_port_unavailable"):
-        lan_settings.start_lan_access(_app(lan_access_port = None))
+def test_start_uses_the_saved_port_policy(monkeypatch):
+    calls = []
+    loop = SimpleNamespace(is_closed = lambda: False, is_running = lambda: True)
+    app = _app(lan_access_loop = loop)
+    monkeypatch.setattr(
+        lan_access,
+        "start_lan_listener",
+        lambda _app, _loop, port, fallback: calls.append((port, fallback)) or ("10.0.0.7",),
+    )
+
+    lan_settings.start_lan_access(app)
+    assert calls == [(8888, tuple(range(8889, 8909)))]
+
+    lan_settings.set_lan_access_port(43210)
+    lan_settings.start_lan_access(app)
+    assert calls[-1] == (43210, ())
+
+
+@pytest.mark.parametrize(
+    "stored,reason",
+    [
+        (43210, "lan_access_port_unavailable"),
+        ("broken", "lan_access_port_invalid"),
+    ],
+)
+def test_start_refuses_when_the_saved_port_policy_is_unusable(
+    monkeypatch, stored_settings, stored, reason
+):
+    stored_settings[lan_settings.LAN_ACCESS_PORT_KEY] = stored
+    loop = SimpleNamespace(is_closed = lambda: False, is_running = lambda: True)
+    app = _app(lan_access_loop = loop)
+    calls = []
+    monkeypatch.setattr(
+        lan_access,
+        "start_lan_listener",
+        lambda *_args: calls.append(_args) or ("10.0.0.7",),
+    )
+    if stored == 43210:
+        monkeypatch.setattr(
+            studio_db,
+            "get_app_setting",
+            lambda *_args: (_ for _ in ()).throw(OSError("database unavailable")),
+        )
+
+    with pytest.raises(RuntimeError, match = reason):
+        lan_settings.start_lan_access(app)
+    assert calls == []
+
+
+def test_start_and_port_save_are_serialized(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    running = False
+    loop = SimpleNamespace(is_closed = lambda: False, is_running = lambda: True)
+    app = _app(lan_access_loop = loop)
+
+    def status(_app):
+        return {
+            "state": "online" if running else "off",
+            "can_start": not running,
+            "block_reason": None,
+        }
+
+    def start_listener(*_args):
+        nonlocal running
+        entered.set()
+        assert release.wait(timeout = 2)
+        running = True
+        return ("10.0.0.7",)
+
+    monkeypatch.setattr(lan_settings, "lan_access_status", status)
+    monkeypatch.setattr(lan_access, "start_lan_listener", start_listener)
+
+    start_thread = threading.Thread(target = lan_settings.start_lan_access, args = (app,))
+    start_thread.start()
+    assert entered.wait(timeout = 2)
+
+    save_errors = []
+
+    def save():
+        try:
+            lan_settings.save_lan_access_port(app, 43210)
+        except RuntimeError as exc:
+            save_errors.append(str(exc))
+
+    save_thread = threading.Thread(target = save)
+    save_thread.start()
+    time.sleep(0.05)
+    assert save_thread.is_alive(), "port save did not wait for the in-flight start"
+
+    release.set()
+    start_thread.join(timeout = 2)
+    save_thread.join(timeout = 2)
+    assert save_errors == ["lan_access_running"]
 
 
 def test_start_refuses_once_the_server_loop_is_gone(monkeypatch):
@@ -1299,6 +1435,23 @@ def test_colab_auto_start_setting_is_read_only(monkeypatch):
     assert exc.value.status_code == 409
 
 
+def test_port_update_route_rejects_running_and_colab_lan_access(monkeypatch):
+    for reason in ("lan_access_running", "colab"):
+        monkeypatch.setattr(
+            routes,
+            "save_lan_access_port",
+            lambda *_args, reason = reason: (_ for _ in ()).throw(RuntimeError(reason)),
+        )
+        with pytest.raises(HTTPException) as exc:
+            routes.update_lan_access_port(
+                SimpleNamespace(app = _app()),
+                routes.LanAccessPortPayload(port = 43210),
+                "admin",
+                None,
+            )
+        assert exc.value.status_code == 409 and exc.value.detail == reason
+
+
 def test_a_blocked_start_answers_409_rather_than_500(monkeypatch):
     monkeypatch.setattr(
         routes, "start_lan_access", lambda _app: (_ for _ in ()).throw(RuntimeError("colab"))
@@ -1323,7 +1476,7 @@ def test_management_rejects_api_keys():
             continue
         args = node.args.args + node.args.kwonlyargs
         gated[node.name] = any(a.arg == "_ui_session" for a in args)
-    assert len(gated) == 4, f"expected 4 lan-access handlers, found {sorted(gated)}"
+    assert len(gated) == 5, f"expected 5 lan-access handlers, found {sorted(gated)}"
     assert all(
         gated.values()
     ), f"ungated lan-access handlers: {sorted(k for k, v in gated.items() if not v)}"

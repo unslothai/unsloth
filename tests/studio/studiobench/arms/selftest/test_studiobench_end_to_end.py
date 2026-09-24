@@ -76,8 +76,8 @@ def _outcome(
     )
 
 
-#: One coherent synthetic world: the autoscroll observer is the dominant cost on both routes,
-#: and the two routes disagree about it, which is the interaction the design exists to surface.
+#: One coherent synthetic world: the autoscroll observer is the dominant cost on both routes, and
+#: the two routes disagree about it, which is the interaction the design exists to surface.
 _VISUAL = {
     "shipping": 40.0,
     "A": 34.0,
@@ -140,8 +140,9 @@ def _blind_calibration():
     )
 
 
-# ---------------------------------------------------------------------------------------
 # planning
+
+
 # ---------------------------------------------------------------------------------------
 
 
@@ -166,8 +167,9 @@ def test_no_scene_durations_at_all_is_a_refusal_not_a_pass():
         assert_equal_scene_duration({})
 
 
-# ---------------------------------------------------------------------------------------
 # judging and rendering
+
+
 # ---------------------------------------------------------------------------------------
 
 
@@ -250,8 +252,8 @@ def test_fix_implications_rank_the_largest_step_and_name_its_fix():
     )
     rendered = render_fix_implications(result)
     top = rendered.splitlines()[1].strip()
-    # the two routes disagree about the autoscroll observer, so the headline is a RANGE and both
-    # routes are named; quoting only the larger would let a reader pick the flattering route
+    # the two routes disagree about the autoscroll observer, so the headline is a RANGE and both routes
+    # are named; quoting only the larger would let a reader pick the flattering route
     assert top.startswith("9.000 to 18.000 ms")
     assert "autoscroll_forced_layout" in top
     assert "routes disagree: scheduler_first 18.000, visual_first 9.000" in rendered
@@ -288,8 +290,9 @@ def test_a_batch_with_a_dose_fit_an_armpack_refusal_and_a_recovery_renders_all_t
     assert "RETAINED STRUCTURE" in rendered
 
 
-# ---------------------------------------------------------------------------------------
 # the harness layer's row stream
+
+
 # ---------------------------------------------------------------------------------------
 
 

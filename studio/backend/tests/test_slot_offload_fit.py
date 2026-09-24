@@ -20,6 +20,9 @@ from pathlib import Path
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
+_TESTS_DIR = str(Path(__file__).resolve().parent)
+if _TESTS_DIR not in sys.path:
+    sys.path.insert(0, _TESTS_DIR)
 
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
@@ -39,11 +42,15 @@ def _backend(
     kv_calls = None,
 ):
     """Backend with the dims the compute buffer reads; KV mocked to a fixed size so the
-    only slot-dependent term is the compute buffer (485 MiB/slot f32 output x 1.15)."""
+    only slot-dependent term is the synthetic compute buffer from
+    ``_install_slot_scaled_compute`` (558 MiB per extra slot at ubatch 512)."""
+    from test_llama_cpp_placement import _install_slot_scaled_compute
+
     b = LlamaCppBackend.__new__(LlamaCppBackend)
     b._vocab_size = vocab
     b._embedding_length = embd
     b._key_length_mla = None
+    _install_slot_scaled_compute(b)
 
     def estimate(
         ctx,
@@ -88,8 +95,8 @@ def _run(
 
 
 class TestSlotsThatFitOnGpu:
-    """Compute-buffer per slot (vocab 248320, embd 5120): cb(1)=46, cb(2)=604, cb(3)=1162,
-    cb(4)=1719 MiB. Single 24 GB card usable = 24576 - 0.03*24576 = 23839 MiB."""
+    """Synthetic compute buffer per slot count: cb(1)=46, cb(2)=604, cb(3)=1162,
+    cb(4)=1720 MiB. Single 24 GB card usable = 24576 - 0.03*24576 = 23839 MiB."""
 
     def test_reduces_to_largest_fitting_slot(self):
         # base+KV = 22500: par4 (24219) over 23839, par3 (23662) fits -> 3 slots on GPU.
@@ -159,12 +166,8 @@ class TestSlotsThatFitOnGpu:
         assert all(call["swa_full"] is True for call in calls)
 
     def test_micro_batch_is_re_derived_per_candidate(self):
-        """llama-server raises --batch-size to max(slots, 2) and llama.cpp caps the
-        micro-batch against it, so a batch below the requested slot count shrinks as the
-        candidates do: n_batch=1 launches the 3-slot candidate at -b 3, not the 64 the
-        4-slot request resolved to. At these dims that is 6.8 MiB of compute buffer
-        against 145.2, so pricing every candidate at the requested count's micro-batch
-        rejects a 3-slot fit that launches comfortably and cuts serving capacity for it."""
+        """Recompute the batch floor and ubatch for each candidate slot count.
+        Keeping the requested ubatch would reject the fitting three-slot candidate."""
         from core.inference.llama_cpp import _emitted_n_batch, _extra_args_n_ubatch
 
         def ubatch_for_slots(slots: int):

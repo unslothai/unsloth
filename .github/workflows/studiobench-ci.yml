@@ -35,6 +35,20 @@ on:
   pull_request:
     paths:
       - 'tests/studio/studiobench/**'
+      # Reached by the installer this workflow already triggers on, so a commit touching
+      # only one of these changes what the job runs while matching nothing else in the
+      # list. install.sh --local hands off to the checked-out studio/setup.sh
+      # (install.sh:7351), setup.sh runs nvidia_probe.py (setup.sh:266), and setup.ps1
+      # runs install_python_stack.py and install_llama_prebuilt.py (setup.ps1:8127, 8655).
+      - 'studio/nvidia_probe.py'
+      - 'studio/setup.sh'
+      # setup.sh's fresh-install path runs install_python_stack.py (setup.sh:2014) and
+      # install_llama_prebuilt.py, so the chain from install.sh --local reaches these too.
+      - 'studio/prebuilt_core.py'
+      # setup.sh runs this at setup.sh:5130 and setup.ps1 at setup.ps1:9025, so it is the
+      # last executed edge of the installer chain that was not listed here.
+      - 'studio/install_*.py'
+      - 'studio/node_prebuilt_pins.json'
       - '.github/workflows/studiobench-ci.yml'
       # The harness drives the shipped frontend through the real backend, so a
       # change to either can break it without touching a file under tests/.
@@ -44,6 +58,11 @@ on:
       - 'install.sh'
       - 'pyproject.toml'
       - '.github/actions/install-unsloth-local/action.yml'
+      # Reached through install-unsloth-local, which uses the dist and uv cache pairs.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
       - '.github/scripts/boot-studio-api-only.sh'
       - '.github/scripts/wait-for-health.sh'
       # The Chromium install step shells out to this, so an edit to it changes what
@@ -51,6 +70,26 @@ on:
       - '.github/scripts/retry-with-apt-lock.sh'
   push:
     branches: [main]
+    paths:
+      - 'tests/studio/studiobench/**'
+      - 'studio/nvidia_probe.py'
+      - 'studio/setup.sh'
+      - 'studio/prebuilt_core.py'
+      - 'studio/install_*.py'
+      - 'studio/node_prebuilt_pins.json'
+      - '.github/workflows/studiobench-ci.yml'
+      - 'studio/frontend/**'
+      - 'studio/backend/**'
+      - 'install.sh'
+      - 'pyproject.toml'
+      - '.github/actions/install-unsloth-local/action.yml'
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
+      - '.github/scripts/boot-studio-api-only.sh'
+      - '.github/scripts/wait-for-health.sh'
+      - '.github/scripts/retry-with-apt-lock.sh'
   workflow_dispatch:
 
 concurrency:
@@ -140,7 +179,7 @@ jobs:
         continue-on-error: true
         with:
           path: ~/.cache/ms-playwright
-          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-sbench-v1
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-c-v2
 
       # Chromium alone. The other two engines are 470 MB each and this workflow
       # never asks for them: studiobench's Linux default is WebKit as a proxy for
@@ -212,7 +251,7 @@ jobs:
         continue-on-error: true
         with:
           path: ~/.cache/ms-playwright
-          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-sbench-v1
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-c-v2
 
       # No --api-only: studiobench drives the real SPA, so the server has to be
       # serving `studio/frontend/dist`. It needs no model, because the reply it

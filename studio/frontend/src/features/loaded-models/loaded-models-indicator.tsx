@@ -90,7 +90,7 @@ function LoadedModelRow({
   const label = shortModelLabel(entry.name);
   const target = loadedModelTarget(entry.source);
   return (
-    <div className="flex items-center gap-2 rounded-[14px] px-1.5 py-1 transition-colors hover:bg-foreground/[0.04]">
+    <div className="flex items-center gap-2 rounded-[14px] px-1.5 py-1 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
       {/* Only the label half is the link: the eject button cannot nest inside it. */}
       <Tooltip>
         <TooltipTrigger asChild={true}>
@@ -100,11 +100,11 @@ function LoadedModelRow({
             onClick={onOpen}
             className="flex min-w-0 flex-1 items-center gap-2 text-left"
           >
-            <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-foreground/[0.05] text-muted-foreground">
+            <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] text-muted-foreground">
               <HugeiconsIcon
                 icon={KIND_ICONS[entry.kind]}
                 strokeWidth={1.75}
-                className="size-[15px]"
+                className="size-[calc(15px*var(--ui-space-scale,1))]"
               />
             </span>
             <span className="min-w-0 flex-1">
@@ -138,7 +138,7 @@ function LoadedModelRow({
               aria-label={`Eject ${label}`}
               disabled={ejecting}
               onClick={onEject}
-              className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/[0.07] hover:text-foreground disabled:pointer-events-none disabled:opacity-60"
+              className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground disabled:pointer-events-none disabled:opacity-60"
             >
               {ejecting ? (
                 <Spinner className="size-3.5" label="Ejecting" />
@@ -202,11 +202,10 @@ export function LoadedModelsIndicator({
   const { position, panelRef, startDrag, dragging, justDragged } =
     useDragPosition(LOADED_MODELS_PREFERENCE_KEYS.position);
 
-  // A new load brings a closed card back: closing it means "not now", not "stop
-  // telling me", which is what the Settings toggle is for. Subscribed above the
-  // early return, so a dismissed card is still listening for the load that
-  // reopens it. On the start of the load, not the end, so it is up for the whole
-  // time the toast is.
+  // A new load brings a closed card back: closing it means "not now", not "stop telling me", which
+  // is what the Settings toggle is for. Subscribed above the early return, so a dismissed card is
+  // still listening for the load that reopens it. On the start of the load, not the end, so it is
+  // up for the whole time the toast is.
   useEffect(
     () =>
       subscribeModelLifecycle(({ loading }) => {
@@ -217,14 +216,12 @@ export function LoadedModelsIndicator({
     [],
   );
 
-  // A load started outside this tab raises no lifecycle event at all: the
-  // OpenAI-compatible API and auto-switch go nowhere near the frontend wrappers
-  // that announce one. The poll is the only witness, so a row appearing while
-  // the card is closed reopens it too, which is what the tooltip promises.
-  //
-  // The first poll after closing is the baseline, never a reopen: the ids are
-  // read fresh on mount, and a dismissal survives a reload, so treating what is
-  // already resident as new would make the card impossible to close.
+  // A load started outside this tab raises no lifecycle event at all: the OpenAI-compatible API and
+  // auto-switch go nowhere near the frontend wrappers that announce one. The poll is the only
+  // witness, so a row appearing while the card is closed reopens it too, which is what the tooltip
+  // promises. The first poll after closing is the baseline, never a reopen: the ids are read fresh
+  // on mount, and a dismissal survives a reload, so treating what is already resident as new would
+  // make the card impossible to close.
   const idsWhileClosedRef = useRef<Set<string> | null>(null);
   useEffect(() => {
     if (!dismissed) {
@@ -281,7 +278,7 @@ export function LoadedModelsIndicator({
               <HugeiconsIcon
                 icon={SparkleIcon}
                 strokeWidth={1.75}
-                className="size-[15px]"
+                className="size-[calc(15px*var(--ui-space-scale,1))]"
               />
               <span className="text-ui-12p5 font-medium tabular-nums">
                 {entries.length}
@@ -293,12 +290,12 @@ export function LoadedModelsIndicator({
           </TooltipContent>
         </Tooltip>
       ) : (
-        <div className="menu-soft-surface menu-soft-edgeless pointer-events-auto flex min-h-0 w-[268px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[20px] p-1.5 font-heading">
+        <div className="menu-soft-surface menu-soft-edgeless pointer-events-auto flex min-h-0 w-[calc(268px*var(--ui-space-scale,1))] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[20px] p-1.5 font-heading">
           <div className="flex items-center gap-1.5 px-1.5 pb-2.5 pt-0.5">
             <HugeiconsIcon
               icon={SparkleIcon}
               strokeWidth={1.75}
-              className="size-[15px] shrink-0 text-muted-foreground"
+              className="size-[calc(15px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
             />
             <span className="min-w-0 flex-1 truncate text-ui-12p5 font-semibold text-foreground">
               Loaded models
@@ -307,11 +304,10 @@ export function LoadedModelsIndicator({
               <TooltipTrigger asChild={true}>
                 <div
                   aria-label="Drag to move"
-                  // Not a button, so no click follows to consume the drag
-                  // sentinel: say so, or the collapsed pill's next click reads
-                  // this drag as its own and refuses to expand.
+                  // Not a button, so no click follows to consume the drag sentinel: say so, or the
+                  // collapsed pill's next click reads this drag as its own and refuses to expand.
                   onPointerDown={startDrag}
-                  className="flex size-6 shrink-0 cursor-grab touch-none items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-foreground/[0.07] hover:text-foreground active:cursor-grabbing"
+                  className="flex size-6 shrink-0 cursor-grab touch-none items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground active:cursor-grabbing"
                 >
                   <HugeiconsIcon
                     icon={DragDropVerticalIcon}
@@ -330,7 +326,7 @@ export function LoadedModelsIndicator({
                   type="button"
                   aria-label="Collapse loaded models"
                   onClick={() => setCollapsed(true)}
-                  className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/[0.07] hover:text-foreground"
+                  className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground"
                 >
                   <HugeiconsIcon
                     icon={ChevronDownStandardIcon}
@@ -349,7 +345,7 @@ export function LoadedModelsIndicator({
                   type="button"
                   aria-label="Close loaded models"
                   onClick={() => setLoadedModelsDismissed(true)}
-                  className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/[0.07] hover:text-foreground"
+                  className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground"
                 >
                   <HugeiconsIcon
                     icon={Cancel01Icon}

@@ -183,7 +183,6 @@ class TestBackwardsCompatibility:
 class TestTheRouteHelpers:
     def test_the_budget_is_the_backends_own_context_length(self):
         from types import SimpleNamespace
-
         import routes.inference as routes_inference
 
         backend = SimpleNamespace(context_length = 2048)
@@ -191,7 +190,6 @@ class TestTheRouteHelpers:
 
     def test_an_unreadable_context_length_means_no_budget(self):
         from types import SimpleNamespace
-
         import routes.inference as routes_inference
         for value in (None, 0, -1, "nonsense"):
             backend = SimpleNamespace(context_length = value)
@@ -199,7 +197,6 @@ class TestTheRouteHelpers:
 
     def test_the_cost_is_the_prompt_plus_the_output_allowance(self):
         from types import SimpleNamespace
-
         import routes.inference as routes_inference
 
         payload = SimpleNamespace(
@@ -215,7 +212,6 @@ class TestTheRouteHelpers:
 
     def test_the_cost_is_clamped_to_the_budget(self):
         from types import SimpleNamespace
-
         import routes.inference as routes_inference
 
         payload = SimpleNamespace(
@@ -232,7 +228,6 @@ class TestTheRouteHelpers:
 
     def test_a_shape_with_no_messages_reserves_a_fair_share(self):
         from types import SimpleNamespace
-
         import routes.inference as routes_inference
 
         payload = SimpleNamespace(prompt = "raw completion text", max_tokens = 128)
@@ -247,7 +242,6 @@ class TestTheRouteHelpers:
 
     def test_no_budget_means_no_cost(self):
         from types import SimpleNamespace
-
         import routes.inference as routes_inference
 
         payload = SimpleNamespace(messages = [{"role": "user", "content": "hi"}], max_tokens = 8)
@@ -302,7 +296,6 @@ class TestTheOutputAllowanceIsCounted:
         """Generation honours max_completion_tokens through
         _effective_openai_max_tokens; admission must reserve the same allowance."""
         from types import SimpleNamespace
-
         import routes.inference as routes_inference
 
         messages = [{"role": "user", "content": "x" * 400}]
@@ -322,7 +315,6 @@ class TestTheOutputAllowanceIsCounted:
         """Why the /v1/responses site now reserves against the translated chat_req: the
         raw model has `input` and `max_output_tokens`, so nothing here can size it."""
         from types import SimpleNamespace
-
         import routes.inference as routes_inference
 
         raw = SimpleNamespace(input = "x" * 100_000, max_output_tokens = 4096)
@@ -341,7 +333,9 @@ class TestTheWholeRenderedPromptIsCounted:
 
     An uncapped request reserved no output allowance even though
     `_build_passthrough_payload` then sends `max_tokens = backend_ctx`, so short
-    prompts held tiny commitments while each generation could fill the cache. And
+    prompts held tiny commitments while each generation could fill the cache. That is
+    now a bounded allowance rather than the whole window, which fixed the undercount by
+    making Studio's default chat un-runnable concurrently. And
     the estimate covered only `messages`, while OpenAI tool definitions are
     rendered into the prompt and Anthropic keeps `system` and `tools` separate
     until they are translated.
@@ -360,18 +354,28 @@ class TestTheWholeRenderedPromptIsCounted:
             capacity = capacity,
         )
 
-    def test_an_uncapped_request_reserves_the_rest_of_the_window(self):
+    def test_an_uncapped_request_reserves_a_bounded_allowance(self):
+        """It reserved the whole window because generation MAY run that long, which cost
+        the default chat the entire cache before it wrote a token."""
         from types import SimpleNamespace
+
+        from routes.inference import _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+
         payload = SimpleNamespace(
             messages = [{"role": "user", "content": "hi"}],
             max_tokens = None,
             max_completion_tokens = None,
         )
-        # Generation may run until the window is full, so the reservation says so.
-        assert self._cost(payload, budget = 2048) == 2048
+        cost = self._cost(payload, budget = 2048)
+        assert cost < 2048, "an uncapped request still reserves the whole window"
+        assert cost <= _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS + 64
 
-    def test_two_uncapped_short_prompts_do_not_both_run(self):
-        """The collision this closes: tiny commitments, cache-filling generations."""
+    def test_uncapped_short_prompts_fill_the_slots_and_no_more(self):
+        """The collision this closes: tiny commitments, cache-filling generations.
+
+        Four fit and a fifth does not, on a cache small enough that the flat allowance would
+        not have left room for four. A prompt-only charge would admit any number.
+        """
         from types import SimpleNamespace
 
         async def scenario():
@@ -382,10 +386,11 @@ class TestTheWholeRenderedPromptIsCounted:
                 max_completion_tokens = None,
             )
             cost = self._cost(payload, budget = 2048)
-            first = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
-            assert first.lease_nowait() is not None
-            second = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
-            return second.lease_nowait()
+            for _ in range(4):
+                admitted = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
+                assert admitted.lease_nowait() is not None
+            fifth = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
+            return fifth.lease_nowait()
 
         assert _run(scenario()) is None
 

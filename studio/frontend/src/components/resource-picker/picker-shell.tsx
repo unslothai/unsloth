@@ -11,10 +11,12 @@ import { Spinner } from "@/components/ui/spinner";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
-  ArrowRight01Icon,
   FolderSearchIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
+import {
+  ChevronRightIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
@@ -368,7 +370,7 @@ export function PickerShell({
 
           <div
             ref={scrollRef}
-            className="min-h-0 max-h-[320px] flex-1 overflow-y-auto overscroll-contain rounded-[10px] [scrollbar-width:thin]"
+            className="min-h-0 max-h-[calc(320px*var(--ui-space-scale,1))] flex-1 overflow-y-auto overscroll-contain rounded-[10px] [scrollbar-width:thin]"
           >
             {canUseThis && (
               <button
@@ -396,8 +398,7 @@ export function PickerShell({
                     {useThisLabel}
                   </span>
                 </span>
-                <HugeiconsIcon
-                  icon={ArrowRight01Icon}
+                <ChevronRightIcon
                   strokeWidth={1.5}
                   className="size-3.5 shrink-0 text-muted-foreground/70"
                 />
