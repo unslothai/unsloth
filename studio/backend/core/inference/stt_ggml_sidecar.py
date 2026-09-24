@@ -71,6 +71,7 @@ from core.inference.stt_sidecar import (
 from utils.prebuilt.child_env import isolate_home, scrub_env, wsl_system_rocm_lib_dirs
 from utils.prebuilt.runtime_libs import dedupe_existing_dirs
 from utils.prebuilt.whisper_layout import lookup_marker
+from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 from utils.process_lifetime import (
     adopt_pid,
     child_popen_kwargs,
@@ -998,6 +999,8 @@ class GgmlSttSidecar:
                     # Co-located GPU libs on the loader path (WSL system HIP first), secrets scrubbed from the
                     # downloaded binary's env.
                     env = _whisper_server_child_env(binary),
+                    # no console window under the desktop shell, as the chat llama-server is spawned
+                    **windows_hidden_subprocess_kwargs(),
                     # die with Unsloth (Linux PDEATHSIG, Windows job) so a crash never orphans a server holding the
                     # model
                     **child_popen_kwargs(),

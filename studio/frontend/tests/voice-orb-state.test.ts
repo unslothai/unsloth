@@ -13,6 +13,7 @@ import {
 function idle(overrides: Partial<VoiceOrbInputs> = {}): VoiceOrbInputs {
   return {
     voiceMode: "active",
+    hasChatModel: true,
     voiceSlotLoading: false,
     voiceHearing: false,
     isPlaying: false,
@@ -82,4 +83,30 @@ test("a synthesis gap holds the current state instead of switching", () => {
 
 test("an armed mic with nothing else happening is listening", () => {
   assert.deepEqual(deriveOrbState(idle()), { kind: "set", state: "listening" });
+});
+
+test("no chat model waits instead of claiming to listen", () => {
+  // The orb is reachable from the + menu before a model is picked. The mic stays
+  // shut in that state, so "listening" would be a lie that leaves the user
+  // talking at nothing.
+  assert.deepEqual(deriveOrbState(idle({ hasChatModel: false })), {
+    kind: "set",
+    state: "waiting",
+  });
+});
+
+test("waiting outranks a warming voice slot", () => {
+  // A voice slot can load fine with no chat model behind it. Showing "loading"
+  // would put the wait on the machine when it is actually on the user.
+  assert.deepEqual(
+    deriveOrbState(idle({ hasChatModel: false, voiceSlotLoading: true })),
+    { kind: "set", state: "waiting" },
+  );
+});
+
+test("a blank orb still wins over waiting when the loop is not running", () => {
+  assert.deepEqual(
+    deriveOrbState(idle({ voiceMode: "configuring", hasChatModel: false })),
+    { kind: "set", state: null },
+  );
 });

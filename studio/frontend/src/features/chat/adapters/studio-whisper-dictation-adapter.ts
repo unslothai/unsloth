@@ -12,6 +12,7 @@ import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
 import { SttModelNotDownloadedError } from "./stt-errors";
+import { isMissingDeviceError } from "./studio-web-speech-dictation-adapter";
 import {
   loadSttModel,
   transcribeAudioBlob,
@@ -332,18 +333,31 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
 
     void (async () => {
       try {
-        // Pin capture to the user-chosen input device when set, so the loop
+        // Pin capture to the input device chosen in Settings > Voice, so the loop
         // listens to their headset mic and not a loopback / "Stereo Mix" /
         // default-communications device that mixes in system/app audio (e.g.
-        // Discord). null -> browser default.
-        const micDeviceId = useChatRuntimeStore.getState().selectedMicDeviceId;
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            ...(micDeviceId ? { deviceId: { exact: micDeviceId } } : {}),
-          },
-        });
+        // Discord). "default" -> browser default.
+        const micDeviceId = useVoiceSettingsStore.getState().micDeviceId;
+        const pinnedMic = micDeviceId && micDeviceId !== "default";
+        const baseAudio: MediaTrackConstraints = {
+          echoCancellation: true,
+          noiseSuppression: true,
+        };
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: pinnedMic
+              ? { ...baseAudio, deviceId: { exact: micDeviceId } }
+              : baseAudio,
+          });
+        } catch (error) {
+          // Same fallback as the Dictate adapters: a pinned headset that is
+          // unplugged must not kill the loop, just lose its pin for this turn.
+          if (pinnedMic && isMissingDeviceError(error)) {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: baseAudio });
+          } else {
+            throw error;
+          }
+        }
         if (ended) {
           teardown();
           return;

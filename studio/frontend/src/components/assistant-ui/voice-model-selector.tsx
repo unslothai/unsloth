@@ -8,14 +8,17 @@ import {
 } from "@/components/ui/popover";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { ArrowDown01Icon, CloudIcon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Speech } from "lucide-react";
+import { SettingsIcon, Speech } from "lucide-react";
 import { useState, type FC } from "react";
 import { useChatRuntimeStore } from "@/features/chat";
 import { DotTag } from "@/features/hub/catalog/dot-tag";
 import { GgufVariantExpander } from "@/features/model-picker/components/model-selector/pickers";
-import { splitRepoLabel } from "@/features/model-picker/components/model-selector/row-meta";
+import {
+  loraOptionLabel,
+  splitRepoLabel,
+} from "@/features/model-picker/components/model-selector/row-meta";
 import type { LoraModelOption } from "@/features/model-picker/components/model-selector/types";
 
 interface VoiceModelSelectorProps {
@@ -37,12 +40,18 @@ interface VoiceModelSelectorProps {
   className?: string;
 }
 
-const BROWSER_VOICE_ID = null;
-const BROWSER_VOICE_LABEL = "Browser voice";
+// A voice row's display name. Exported and locally-scanned models carry a real
+// name and a filesystem path for an id, so splitting the id printed the whole
+// "C:\Users\...\exports\..." path into the row. Hub repos are the other way
+// round: "owner/repo" is the id worth splitting.
+export function voiceOptionLabel(model: LoraModelOption): string {
+  return model.source ? loraOptionLabel(model) : splitRepoLabel(model.id).name;
+}
 
 // How many sentence chunks a GGUF voice slot synthesizes at once (llama-server
 // --parallel N). If a voice is loaded, changing it hot-reloads that slot so
-// backend and UI stay in sync.
+// backend and UI stay in sync. Behind the gear rather than in the list: it is a
+// tuning knob, and it was pushing the voices themselves down the popover.
 const ParallelVoicesPicker: FC<{
   reloadVoiceId: string | null;
   onReload: (id: string) => void;
@@ -50,40 +59,32 @@ const ParallelVoicesPicker: FC<{
   const value = useChatRuntimeStore((s) => s.voiceParallelN);
   const setValue = useChatRuntimeStore((s) => s.setVoiceParallelN);
   return (
-    <>
-      <div className="my-1.5 h-px bg-[rgb(0_0_0_/_calc(0.08*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]" />
-      <div className="flex items-center justify-between gap-2 px-2 py-1">
-        <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-          Parallel synthesis
-        </span>
-        <div className="flex items-center gap-1">
-          {[1, 2, 3, 4].map((n) => (
-            <button
-              key={n}
-              type="button"
-              onClick={() => {
-                if (n === value) return;
-                setValue(n);
-                // Hot-reload the active GGUF voice so its --parallel matches now.
-                if (reloadVoiceId) onReload(reloadVoiceId);
-              }}
-              className={cn(
-                "flex size-6 items-center justify-center rounded-md text-[13px] transition-colors",
-                value === n
-                  ? "bg-[#ececec] text-foreground dark:bg-[var(--sidebar-accent)]"
-                  : "text-muted-foreground hover:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)]",
-              )}
-              aria-label={`${n} parallel voice${n > 1 ? "s" : ""}`}
-            >
-              {n}
-            </button>
-          ))}
-        </div>
+    <div className="flex items-center justify-between gap-2 px-2 py-1">
+      <span className="text-[13px] text-foreground">Parallel synthesis</span>
+      <div className="flex items-center gap-1">
+        {[1, 2, 3, 4].map((n) => (
+          <button
+            key={n}
+            type="button"
+            onClick={() => {
+              if (n === value) return;
+              setValue(n);
+              // Hot-reload the active GGUF voice so its --parallel matches now.
+              if (reloadVoiceId) onReload(reloadVoiceId);
+            }}
+            className={cn(
+              "flex size-6 items-center justify-center rounded-md text-[13px] transition-colors",
+              value === n
+                ? "bg-[#ececec] text-foreground dark:bg-[var(--sidebar-accent)]"
+                : "text-muted-foreground hover:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)]",
+            )}
+            aria-label={`${n} parallel voice${n > 1 ? "s" : ""}`}
+          >
+            {n}
+          </button>
+        ))}
       </div>
-      <p className="px-2 pb-1 text-[10px] leading-tight text-muted-foreground/70">
-        GGUF voices only.
-      </p>
-    </>
+    </div>
   );
 };
 
@@ -100,6 +101,8 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
   const [open, setOpen] = useState(false);
   // Which GGUF voice row is expanded to show its quant list.
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Gear panel: tuning knobs that would otherwise push the voices down the list.
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const setSelectedVoiceVariant = useChatRuntimeStore(
     (s) => s.setSelectedVoiceVariant,
   );
@@ -122,8 +125,8 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
     : voiceOwnedByModel
       ? "Model's own voice"
       : selectedModel
-        ? selectedModel.name
-        : BROWSER_VOICE_LABEL;
+        ? voiceOptionLabel(selectedModel)
+        : "Select a voice";
   const metaText =
     !inactive && selectedModel?.isGguf && selectedVoiceVariant
       ? `GGUF · ${selectedVoiceVariant}`
@@ -202,48 +205,44 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
         sideOffset={6}
         className="unsloth-model-selector-menu menu-soft-surface w-[340px] gap-0 rounded-lg border-0 p-1.5 ring-0"
       >
-        <div className="px-2 pb-1 pt-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-          Speak with
+        {/* Every voice here is a local model on the voice slot. The browser's own
+            speechSynthesis used to sit at the top of this list; it is gone, so a
+            reply is either spoken by a voice you loaded or not spoken at all. */}
+        <div className="flex items-center justify-between gap-2 px-2 pb-1 pt-0.5">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Speak with
+          </span>
+          <button
+            type="button"
+            onClick={() => setSettingsOpen((o) => !o)}
+            aria-label="Voice settings"
+            aria-expanded={settingsOpen}
+            className={cn(
+              "flex size-6 items-center justify-center rounded-md transition-colors",
+              settingsOpen
+                ? "bg-[#ececec] text-foreground dark:bg-[var(--sidebar-accent)]"
+                : "text-muted-foreground hover:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)]",
+            )}
+          >
+            <SettingsIcon className="size-3.5" />
+          </button>
         </div>
 
-        {/* Browser's built-in speech synthesis -- not a downloadable file, so
-            it's badged like a cloud/API entry rather than an on-device one. The
-            picker only opens for a regular chat model; a speech-LLM greys the
-            trigger out (voiceOwnedByModel), so no "own voice" message is needed
-            here. Entering the ball is a separate phone button in the composer. */}
-        <button
-          type="button"
-          onClick={() => handleSelect(BROWSER_VOICE_ID)}
-          className={cn(
-            "flex w-full items-center gap-2 rounded-full px-2 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)]",
-            value === null && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
-          )}
-        >
-          <Speech className="size-3.5 shrink-0 text-muted-foreground" />
-          <span className="min-w-0 flex-1 truncate">{BROWSER_VOICE_LABEL}</span>
-          <span className="ml-auto flex shrink-0 items-center gap-1.5">
-            <HugeiconsIcon
-              icon={CloudIcon}
-              strokeWidth={1.75}
-              className="size-3.5 text-muted-foreground"
+        {settingsOpen && (
+          <>
+            <ParallelVoicesPicker
+              reloadVoiceId={value && selectedModel?.isGguf ? value : null}
+              onReload={(id) => onValueChange(id)}
             />
-            {value === null && (
-              <DotTag
-                tone="success"
-                label="Active"
-                className="h-[18px] gap-1 rounded-md px-1.5"
-                dotClassName="size-[5px]"
-              />
-            )}
-          </span>
-        </button>
-
-        {models.length > 0 && (
-          <div className="my-1.5 h-px bg-[rgb(0_0_0_/_calc(0.08*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]" />
+            <p className="px-2 pb-1 text-[10px] leading-tight text-muted-foreground/70">
+              GGUF voices only.
+            </p>
+            <div className="my-1.5 h-px bg-[rgb(0_0_0_/_calc(0.08*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]" />
+          </>
         )}
 
         {models.map((model) => {
-          const { name } = splitRepoLabel(model.id);
+          const name = voiceOptionLabel(model);
           const isExpanded = expandedId === model.id;
           // A repo expands to the same quant list as the model picker, so clicking
           // the row toggles the quants instead of loading the repo default. A row that
@@ -319,11 +318,6 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
             No TTS models found. Train or export a voice model first.
           </p>
         )}
-
-        <ParallelVoicesPicker
-          reloadVoiceId={value && selectedModel?.isGguf ? value : null}
-          onReload={(id) => onValueChange(id)}
-        />
       </PopoverContent>
     </Popover>
   );

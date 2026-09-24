@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import type { VoiceOrbState } from "@/features/chat/voice/orb-state";
 import {
   mirrorHfTokenInto,
   useHfTokenStore,
@@ -2546,10 +2547,6 @@ type ChatRuntimeStore = {
   /** Whisper checkpoint the loop transcribes with (null = backend default).
    *  Persisted. */
   selectedSttModelId: string | null;
-  /** Input device the loop captures from (null = browser default). Pinning it
-   *  matters: a default-communications device or a "Stereo Mix" loopback mixes in
-   *  system audio, so the loop hears the model's own voice. Persisted. */
-  selectedMicDeviceId: string | null;
   /** Named speaker for Orpheus (snac) TTS -- tara/leo/jess/etc. Orpheus randomizes
    *  the voice unless a speaker is pinned, so this is sent with every synth call.
    *  Persisted so the choice sticks across reloads. */
@@ -2577,16 +2574,9 @@ type ChatRuntimeStore = {
    *  the orb shows a distinct "hearing you" colour -- immediate feedback that your
    *  speech is being captured. Not persisted. */
   voiceHearing: boolean;
-  /** Derived orb state written by the voice control; consumed by VoiceOrb. */
-  voiceOrbState:
-    | "listening"
-    | "transcribing"
-    | "generating"
-    | "synthesizing"
-    | "speaking"
-    | "hearing"
-    | "loading"
-    | null;
+  /** Derived orb state written by the voice control; consumed by VoiceOrb. The
+   *  union lives with deriveOrbState, which is what produces every value here. */
+  voiceOrbState: VoiceOrbState | null;
   /** When voice mode is active, whether the full-screen orb is minimized so the
    *  chat is visible while speech-to-speech keeps running. Not persisted. */
   voiceOrbCollapsed: boolean;
@@ -2607,23 +2597,12 @@ type ChatRuntimeStore = {
   setSelectedVoiceName: (name: string) => void;
   setVoiceParallelN: (n: number) => void;
   setSelectedSttModelId: (id: string | null) => void;
-  setSelectedMicDeviceId: (id: string | null) => void;
   setSelectedVoiceVariant: (variant: string | null) => void;
   setVoiceSlotLoading: (loading: boolean) => void;
   setVoiceSlotLoaded: (loaded: boolean) => void;
   setVoiceTranscribing: (transcribing: boolean) => void;
   setVoiceHearing: (hearing: boolean) => void;
-  setVoiceOrbState: (
-    state:
-      | "listening"
-      | "transcribing"
-      | "generating"
-      | "synthesizing"
-      | "speaking"
-      | "hearing"
-      | "loading"
-      | null,
-  ) => void;
+  setVoiceOrbState: (state: VoiceOrbState | null) => void;
   setVoiceOrbCollapsed: (collapsed: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
   setParams: (
@@ -4350,7 +4329,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   voiceMode: "off" as const,
   selectedVoiceModelId: loadString(CHAT_VOICE_MODEL_ID_KEY, "") || null,
   selectedSttModelId: loadString(CHAT_STT_MODEL_ID_KEY, "") || null,
-  selectedMicDeviceId: loadString(CHAT_MIC_DEVICE_ID_KEY, "") || null,
   selectedVoiceName: loadString(CHAT_VOICE_NAME_KEY, "tara") || "tara",
   voiceParallelN: Math.min(4, Math.max(1, Number(loadString(CHAT_VOICE_PARALLEL_KEY, "1")) || 1)),
   selectedVoiceVariant: loadString(CHAT_VOICE_VARIANT_KEY, "") || null,
@@ -4601,11 +4579,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set(() => {
       saveString(CHAT_STT_MODEL_ID_KEY, selectedSttModelId ?? "");
       return { selectedSttModelId };
-    }),
-  setSelectedMicDeviceId: (selectedMicDeviceId) =>
-    set(() => {
-      saveString(CHAT_MIC_DEVICE_ID_KEY, selectedMicDeviceId ?? "");
-      return { selectedMicDeviceId };
     }),
   setVoiceParallelN: (n) =>
     set(() => {

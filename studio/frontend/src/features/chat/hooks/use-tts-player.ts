@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { TTS_AUDIO_TYPES, VOICE_SLOT_AUDIO_TYPES } from "../voice/tts-audio-types";
 import {
@@ -139,7 +140,9 @@ export function useTtsPlayer(
   // synthesize the new turn immediately (llama-server cancels a slot when its
   // request connection closes).
   const synthAbortRef = useRef<AbortController | null>(null);
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  // Set once a reply has already toasted a synthesis failure, so a voice slot
+  // that is down fails every sentence but only says so once.
+  const synthFailedReqRef = useRef(-1);
   // Resolver for the sentence currently awaiting playback, so stop() can unwind
   // the speak loop immediately (pause() doesn't fire "ended").
   const playResolveRef = useRef<(() => void) | null>(null);
@@ -216,13 +219,6 @@ export function useTtsPlayer(
     playResolveRef.current = null;
   }, [revokeUrl]);
 
-  const stopSynth = useCallback(() => {
-    if (utteranceRef.current) {
-      window.speechSynthesis.cancel();
-      utteranceRef.current = null;
-    }
-  }, []);
-
   // Cut streaming-PCM playback: stop every scheduled buffer source, drop the orb
   // level loop, and resolve the sentence that's mid-stream so its awaiter unwinds.
   const stopStream = useCallback(() => {
@@ -252,10 +248,9 @@ export function useTtsPlayer(
     synthAbortRef.current = new AbortController();
     stopTts();
     stopStream();
-    stopSynth();
     setIsSpeaking(false);
     setIsPlaying(false);
-  }, [stopTts, stopStream, stopSynth]);
+  }, [stopTts, stopStream]);
 
   // Play a single audio blob; resolves when it ends, errors, or is superseded by
   // a stop()/new speak().
@@ -559,105 +554,18 @@ export function useTtsPlayer(
     [],
   );
 
-  // Speak with the browser's own voice. Reached either because no backend TTS is
-  // available, or because backend synthesis produced nothing for this reply --
-  // in that second case it is the difference between a spoken answer and silence.
-  const speakWithBrowser = useCallback(
-    (sentences: string[], reqId: number) => {
-      if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-        onPlaybackEndRef.current?.();
-        return;
-      }
-      // Queue one utterance per sentence: gives the same chunked cadence and
-      // sidesteps Chrome's long-utterance cutoff bug. Completion fires on the
-      // last sentence; any error ends the loop.
-      setIsSpeaking(true);
-      let remaining = sentences.length;
-      const finish = () => {
-        // Tied to this speak() call, not merely to "some utterance is recorded".
-        // A cancelled utterance still fires onend/onerror, and after a quick
-        // stop-then-restart that stale event arrives with the NEW utterance
-        // recorded -- clearing its state and resuming the voice loop while the
-        // new speech was still queued.
-        if (requestIdRef.current !== reqId) return;
-        if (utteranceRef.current === null) return;
-        utteranceRef.current = null;
-        setIsSpeaking(false);
-        setIsPlaying(false);
-        onPlaybackEndRef.current?.();
-      };
-      const utterances = sentences.map((sentence) => {
-        const utterance = new SpeechSynthesisUtterance(sentence);
-        utterance.onstart = () => setIsPlaying(true);
-        // Both handlers can fire for a cancelled utterance long after stop():
-        // speechSynthesis.cancel() reports the old utterance's end/error
-        // asynchronously, by which time the replacement reply may already be
-        // queued. Only the current request may touch playback state or the global
-        // queue, or that stale event kills the new reply too; finish() re-checks
-        // the same id for the same reason.
-        utterance.onend = () => {
-          if (requestIdRef.current !== reqId) return;
-          setIsPlaying(false);
-          remaining -= 1;
-          if (remaining <= 0) finish();
-        };
-        utterance.onerror = () => {
-          if (requestIdRef.current !== reqId) return;
-          window.speechSynthesis.cancel();
-          finish();
-        };
-        return utterance;
-      });
-      // Sentinel so stop()/stopSynth() knows synth playback is active.
-      utteranceRef.current = utterances[utterances.length - 1] ?? null;
-      for (const utterance of utterances) window.speechSynthesis.speak(utterance);
-    },
-    // Empty on purpose: everything closed over is a ref or a setState, all stable
-    // for the life of the hook. A dependency here would give speak() a new identity
-    // every render and restart the loop's effects mid-conversation.
-    [],
-  );
-
-  // Say ONE sentence with the browser voice, mid-reply, because the backend failed
-  // to synthesize it (a transient 5xx, a codec error, a dropped connection). The
-  // sentences around it played from the voice slot, so no whole-reply fallback
-  // would fire and the loop would otherwise advance as if this one had been
-  // spoken. Resolves when the utterance ends, at once when there is nothing to
-  // say or no speech synthesis, and through onend/onerror when a barge-in's
-  // stop() -> stopSynth() cancels it. It does not end the turn: the loop that
-  // called it does, once the rest of the reply has played.
-  const speakSentenceWithBrowser = useCallback(
-    (sentence: string, reqId: number): Promise<void> =>
-      new Promise<void>((resolve) => {
-        if (
-          !sentence ||
-          requestIdRef.current !== reqId ||
-          typeof window === "undefined" ||
-          !("speechSynthesis" in window)
-        ) {
-          resolve();
-          return;
-        }
-        const utterance = new SpeechSynthesisUtterance(sentence);
-        let settled = false;
-        const settle = () => {
-          if (settled) return;
-          settled = true;
-          if (utteranceRef.current === utterance) utteranceRef.current = null;
-          if (requestIdRef.current === reqId) setIsPlaying(false);
-          resolve();
-        };
-        utterance.onstart = () => {
-          if (requestIdRef.current === reqId) setIsPlaying(true);
-        };
-        utterance.onend = settle;
-        utterance.onerror = settle;
-        // Recorded so stopSynth() cancels it on barge-in.
-        utteranceRef.current = utterance;
-        window.speechSynthesis.speak(utterance);
-      }),
-    [],
-  );
+  // A sentence the voice slot could not synthesize. There is no browser-voice
+  // fallback any more: a reply is spoken by the voice you loaded or not at all,
+  // so a failure has to be visible rather than silently swapped for a system
+  // voice mid-reply. Toasted once per reply -- a slot that is down fails every
+  // sentence, and one broken turn should not stack five toasts.
+  const reportSynthFailure = useCallback((reqId: number) => {
+    if (synthFailedReqRef.current === reqId) return;
+    synthFailedReqRef.current = reqId;
+    toast.error("Could not synthesize speech", {
+      description: "The voice model did not return audio for part of this reply.",
+    });
+  }, []);
 
   const speak = useCallback(
     async (text: string) => {
@@ -702,7 +610,7 @@ export function useTtsPlayer(
                 const blob = await requestSpeechBlob(sentence);
                 if (requestIdRef.current !== reqId) return;
                 if (blob) await playBlob(blob, reqId);
-                else await speakSentenceWithBrowser(sentence, reqId);
+                else reportSynthFailure(reqId);
               },
             );
             gate = job;
@@ -743,7 +651,7 @@ export function useTtsPlayer(
             // Refill the window so N stay in flight ahead of playback.
             launchUpTo(i + 1 + N);
             if (blob) await playBlob(blob, reqId);
-            else await speakSentenceWithBrowser(sentences[i] ?? "", reqId);
+            else reportSynthFailure(reqId);
           }
         }
 
@@ -751,7 +659,10 @@ export function useTtsPlayer(
         setIsSpeaking(false);
         onPlaybackEndRef.current?.();
       } else {
-        speakWithBrowser(sentences, reqId);
+        // No voice slot and no speech-LLM: nothing can say this. The browser
+        // voice used to cover it. The turn still has to END, or the loop never
+        // re-arms the mic and the orb sits there forever.
+        onPlaybackEndRef.current?.();
       }
     },
     [
@@ -762,8 +673,7 @@ export function useTtsPlayer(
       playSentenceStream,
       requestSpeechBlob,
       drainStream,
-      speakWithBrowser,
-      speakSentenceWithBrowser,
+      reportSynthFailure,
     ],
   );
 
@@ -845,7 +755,7 @@ export function useTtsPlayer(
                   const blob = await synthOne(sentence);
                   if (requestIdRef.current !== reqId) return;
                   if (blob) await playBlob(blob, reqId);
-                  else await speakSentenceWithBrowser(sentence, reqId);
+                  else reportSynthFailure(reqId);
                 },
               );
               gate = job;
@@ -864,7 +774,7 @@ export function useTtsPlayer(
             st.playIndex++;
             pumpSynth(); // playback advanced -> refill the lookahead window
             if (blob) await playBlob(blob, reqId);
-            else await speakSentenceWithBrowser(sentence, reqId);
+            else reportSynthFailure(reqId);
           }
         } else if (st.final) {
           break;
@@ -890,7 +800,7 @@ export function useTtsPlayer(
     playSentenceStream,
     synthOne,
     drainStream,
-    speakSentenceWithBrowser,
+    reportSynthFailure,
   ]);
 
   // Feed the growing assistant text; records newly-complete sentences and lets the
@@ -914,9 +824,11 @@ export function useTtsPlayer(
       const s = streamRef.current;
       if (!s || requestIdRef.current !== s.reqId) return;
       if (!isTtsModel) {
-        // Browser voice: nothing streamed; speak the whole reply now.
+        // No voice slot and no speech-LLM, so nothing streamed and nothing can
+        // say this. End the turn so the loop re-arms the mic.
         streamRef.current = null;
-        speak(finalText);
+        setIsSpeaking(false);
+        onPlaybackEndRef.current?.();
         return;
       }
       const all = splitIntoSentences(finalText);
@@ -940,9 +852,8 @@ export function useTtsPlayer(
       synthAbortRef.current?.abort();
       stopTts();
       stopStream();
-      stopSynth();
     };
-  }, [stopTts, stopStream, stopSynth]);
+  }, [stopTts, stopStream]);
 
   return { isSpeaking, isPlaying, speak, beginStream, feedText, endStream, stop, primeAudio };
 }

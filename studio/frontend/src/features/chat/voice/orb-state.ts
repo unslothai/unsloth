@@ -15,6 +15,7 @@
  */
 
 export type VoiceOrbState =
+  | "waiting"
   | "listening"
   | "transcribing"
   | "generating"
@@ -26,6 +27,8 @@ export type VoiceOrbState =
 export type VoiceOrbInputs = {
   /** The loop's own mode, not the store mirror. */
   voiceMode: "off" | "configuring" | "active";
+  /** A chat model is loaded, so a spoken turn has something to answer it. */
+  hasChatModel: boolean;
   /** The voice slot or the transcription model is still warming up. */
   voiceSlotLoading: boolean;
   /** The microphone is picking up speech right now. */
@@ -59,6 +62,11 @@ const set = (state: VoiceOrbState | null): VoiceOrbDecision => ({
 export function deriveOrbState(inputs: VoiceOrbInputs): VoiceOrbDecision {
   // Voice is not running: the orb has nothing to say.
   if (inputs.voiceMode !== "active") return set(null);
+  // Voice opened before a chat model was picked. The mic stays shut -- a
+  // transcript with nothing to answer it is a dead end -- so the orb has to say
+  // that rather than sit on "listening" while nothing listens. Above the loading
+  // check: a voice slot warming up is not the thing blocking the turn.
+  if (!inputs.hasChatModel) return set("waiting");
   // A model is warming up (~35s on ROCm). Grey-blue rather than the lilac
   // "generating speech", so it does not read as a ready green, and so loading
   // does not collide with TTS synthesis on the same colour.

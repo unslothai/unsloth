@@ -20,7 +20,6 @@ import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button
 import { ORB_IDLE_GRADIENT, orbConfig } from "@/components/assistant-ui/voice-orb";
 import { subscribeDictationLevel } from "@/features/chat/adapters/dictation-level";
 import { StudioModelDictationAdapter } from "@/features/chat/adapters/studio-model-dictation-adapter";
-import { StudioWebSpeechDictationAdapter } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
 import { useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { deriveOrbState } from "@/features/chat/voice/orb-state";
@@ -29,10 +28,10 @@ import {
   registerVoiceBargeIn,
   registerVoiceResume,
   registerVoiceSubmit,
+  registerVoiceThreadReset,
   registerVoiceToggle,
   setVoiceMode as setLoopVoiceMode,
 } from "@/features/chat/voice/voice-loop-bridge";
-import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { cn } from "@/lib/utils";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import { MessageSquareIcon } from "lucide-react";
@@ -110,24 +109,22 @@ const VOICE_NO_SPEECH_CUT_MS = 12_000;
 const VOICE_TRANSCRIBE_TIMEOUT_MS = 60_000;
 
 /**
- * Whether the plus menu may offer Voice at all. Listening is the gate: whichever
- * engine is configured has to be able to run here -- Web Speech needs
- * SpeechRecognition, the batch engines need a secure context and MediaRecorder.
- * Without it, Voice could be switched on and never produce a word.
+ * Whether the plus menu may offer Voice at all. Listening is the gate: the batch
+ * adapter needs a secure context and MediaRecorder. Without them, Voice could be
+ * switched on and never produce a word.
  *
- * Speaking is deliberately not gated. It is always satisfiable: the voice picker
- * always offers a local GGUF voice for the slot (VOICE_MODEL_DEFAULTS in
- * chat-page.tsx), and the browser voice ends the turn cleanly when
- * speechSynthesis is missing rather than hanging the loop. Requiring
- * speechSynthesis or a loaded TTS chat model here hid the menu in exactly the
- * browser where that local voice is the only way to speak -- and since the voice
- * inventory is fetched only after voice mode opens, nothing could satisfy it first.
+ * Speaking is deliberately not gated. The voice picker always offers a local GGUF
+ * voice for the slot (VOICE_MODEL_DEFAULTS in chat-page.tsx) and ChatPage seeds
+ * one on open, and the voice inventory is only fetched after voice mode opens --
+ * so a speaking gate here could never be satisfied before the menu was needed.
  */
 export function useVoiceAvailable(): boolean {
-  const dictationEngine = useVoiceSettingsStore((s) => s.dictationEngine);
-  return dictationEngine === "browser"
-    ? StudioWebSpeechDictationAdapter.isSupported()
-    : StudioModelDictationAdapter.isSupported();
+  // Model transcription only. The loop used to follow the Dictate button's
+  // dictationEngine setting and run on the browser's SpeechRecognition when that
+  // said "browser" -- which meant voice mode silently depended on an online
+  // Google endpoint, and did not exist at all in the desktop WebView. It now
+  // always runs a local transcription model, so this is the only thing to check.
+  return StudioModelDictationAdapter.isSupported();
 }
 
 export const VoiceEngine: FC = () => {
@@ -172,11 +169,22 @@ export const VoiceEngine: FC = () => {
     const m = s.models.find((m) => m.id === s.params.checkpoint);
     return m?.audioType ?? null;
   });
+  // Voice can be opened before a chat model is picked -- the orb is reachable from
+  // the + menu at any time. Without one there is nothing to answer a spoken turn,
+  // so the mic stays shut and the orb says so, rather than capturing into a dead
+  // end. The ref is what the async re-arm retries read.
+  const hasChatModel = useChatRuntimeStore((s) => Boolean(s.params.checkpoint));
+  const hasChatModelRef = useRef(hasChatModel);
+  hasChatModelRef.current = hasChatModel;
   // Which listening engine is configured. "browser" streams a transcript that
   // grows during the utterance; "model" and "custom" return one transcript when
   // the session ends. Two different turn-taking paths, below.
-  const dictationEngine = useVoiceSettingsStore((s) => s.dictationEngine);
-  const batchDictation = dictationEngine !== "browser";
+  // The loop is always on a batch engine now: it records an utterance and hands
+  // back one transcript at the end, rather than a transcript that grows while you
+  // speak. Kept as a named constant instead of being inlined -- every half-duplex
+  // decision below reads it, and they are all true *because* of that property,
+  // not because of which engine happens to be configured.
+  const batchDictation = true;
   const batchDictationRef = useRef(batchDictation);
   batchDictationRef.current = batchDictation;
   // Supersedes an in-flight re-arm poll, so a later resumeListen can't leave two
@@ -223,6 +231,10 @@ export const VoiceEngine: FC = () => {
     const attempt = (n: number) => {
       // Voice turned off while we were waiting — abort the re-arm.
       if (voiceModeRef.current !== "active") return;
+      // No chat model: don't open the mic. Not a retry — waiting here would spin
+      // for as long as the orb is up. Picking a model re-arms through its own
+      // effect below.
+      if (!hasChatModelRef.current) return;
       if (rearmSeqRef.current !== seq) return; // superseded by a newer re-arm
       // Half-duplex, and the reason this guard lives here rather than at the call
       // sites: a batch engine transcribes the whole session at the end, so a mic
@@ -430,6 +442,7 @@ export const VoiceEngine: FC = () => {
     };
     const decision = deriveOrbState({
       voiceMode,
+      hasChatModel,
       voiceSlotLoading,
       voiceHearing,
       isPlaying,
@@ -459,7 +472,7 @@ export const VoiceEngine: FC = () => {
         setVoiceOrbState("synthesizing");
       }
     }, SYNTH_GAP_MS);
-  }, [voiceMode, voiceSlotLoading, voiceHearing, voiceTranscribing, isThreadRunning, isSpeaking, isPlaying, setVoiceOrbState]);
+  }, [voiceMode, hasChatModel, voiceSlotLoading, voiceHearing, voiceTranscribing, isThreadRunning, isSpeaking, isPlaying, setVoiceOrbState]);
 
   // Clear any pending synth-gap timer on unmount so it can't fire after teardown.
   useEffect(() => () => {
@@ -471,10 +484,24 @@ export const VoiceEngine: FC = () => {
     setLoopVoiceMode("active");
     voiceModeRef.current = "active";
     setVoiceModeState("active");
+    if (!hasChatModelRef.current) return; // orb shows "Select a model"; mic stays shut
     if (!auiRef.current.thread().getState().isRunning && !isSpeakingRef.current) {
       auiRef.current.composer().startDictation();
     }
   }, []);
+
+  // A chat model arriving while the orb is up is what unblocks the loop, so it is
+  // also what opens the mic: the activate path already ran and returned without
+  // arming. Skipped on the first render so a model loaded before voice was opened
+  // doesn't double-arm on top of activateLoop.
+  const armedForModelRef = useRef(hasChatModel);
+  useEffect(() => {
+    if (armedForModelRef.current === hasChatModel) return;
+    armedForModelRef.current = hasChatModel;
+    if (!hasChatModel) return;
+    if (voiceModeRef.current !== "active") return;
+    resumeListen();
+  }, [hasChatModel, resumeListen]);
 
   // On remount: restore "active" only — "configuring" stays as-is (no mic).
   // Deferred one tick: on a New Chat the Thread remounts here with getVoiceMode() still
@@ -488,6 +515,7 @@ export const VoiceEngine: FC = () => {
     if (getVoiceMode() !== "active" || isThreadRunning) return;
     const id = setTimeout(() => {
       if (getVoiceMode() !== "active") return;
+      if (!hasChatModelRef.current) return;
       if (auiRef.current.thread().getState().isRunning || isSpeakingRef.current) return;
       auiRef.current.composer().startDictation();
     }, 0);
@@ -839,10 +867,11 @@ export const VoiceEngine: FC = () => {
     useChatRuntimeStore.getState().setVoiceMode(next);
 
     if (next === "configuring") {
-      // Open each voice session with no TTS pre-selected (Browser voice) so a
-      // previously-remembered pick doesn't silently auto-load; the user chooses
-      // a voice explicitly from the "Speak with" dropdown.
-      useChatRuntimeStore.getState().setSelectedVoiceModelId(null);
+      // The pick is left alone. Clearing it here used to be safe because null
+      // meant "browser voice" -- a working fallback. With the browser voice gone
+      // null means silence, so voice would open mute every time. ChatPage seeds a
+      // default when nothing is remembered; the slot still loads on activate, not
+      // here, so opening the picker costs nothing.
       primeAudio();
     }
 
@@ -865,6 +894,45 @@ export const VoiceEngine: FC = () => {
     }
     // "configuring": dropdown appears via store; mic stays off.
   }, [stop, primeAudio]);
+
+  // Switching threads carries the loop over instead of ending it: cut the old
+  // thread's reply and mic, drop its pending timers, then re-arm on the new one.
+  // Voice mode, the picked voice and the loaded slot all survive, the same as the
+  // chat model does.
+  const threadReset = useCallback(() => {
+    if (voiceModeRef.current === "off") return;
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+    if (bargeTimerRef.current) {
+      clearTimeout(bargeTimerRef.current);
+      bargeTimerRef.current = null;
+    }
+    if (voiceCoalesceTimerRef.current) {
+      clearTimeout(voiceCoalesceTimerRef.current);
+      voiceCoalesceTimerRef.current = null;
+    }
+    if (streamPollRef.current) {
+      clearInterval(streamPollRef.current);
+      streamPollRef.current = null;
+    }
+    streamBegunRef.current = false;
+    latestTranscriptRef.current = "";
+    stop();
+    const composer = auiRef.current.composer();
+    if (composer.getState().dictation) composer.stopDictation();
+    // Only "active" re-arms. In "configuring" the mic was never open, and the
+    // re-arm would start a loop the user has not started yet.
+    if (voiceModeRef.current === "active") resumeListen();
+  }, [stop, resumeListen]);
+
+  useEffect(() => {
+    registerVoiceThreadReset(threadReset);
+    return () => {
+      registerVoiceThreadReset(null);
+    };
+  }, [threadReset]);
 
   // When voice mode turns off, make sure no loop-owned dictation session lingers.
   // Otherwise the manual Dictate button (un-hidden the instant voice is off) shows

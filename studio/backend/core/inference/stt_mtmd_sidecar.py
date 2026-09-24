@@ -30,6 +30,7 @@ from typing import Iterator, Optional
 from loggers import get_logger
 
 from hub.utils.hf_tokens import normalize_token
+from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 from utils.process_lifetime import (
     adopt_pid,
     child_popen_kwargs,
@@ -950,6 +951,8 @@ class MtmdSttSidecar:
                 # bundled libs and pip CUDA runtimes on the loader path, secrets scrubbed, as the chat backend spawns
                 # the same binary
                 env = _llama_server_child_env(binary),
+                # no console window under the desktop shell, as the chat llama-server is spawned
+                **windows_hidden_subprocess_kwargs(),
                 # Die with Unsloth, so a crash never orphans a server on the GPU.
                 **child_popen_kwargs(),
             )

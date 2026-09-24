@@ -27,7 +27,7 @@ import {
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import {
   getVoiceMode,
-  requestVoiceToggle,
+  requestVoiceThreadReset,
 } from "@/features/chat/voice/voice-loop-bridge";
 import { VoiceModelSelector } from "@/components/assistant-ui/voice-model-selector";
 import { VoiceNamePicker } from "@/components/assistant-ui/voice-name-picker";
@@ -465,8 +465,11 @@ const SingleContent = memo(function SingleContent({
   // is stable across the ThreadWelcome → ThreadComposerDock remount that fires on
   // first-send; VoiceEngine remounts there and never observes null → __LOCALID_xxx,
   // leaving its prev-thread ref stale so the later New Chat (→ null) reset is missed.
-  // We drive the module-level toggle bridge, gated on getVoiceMode() so a plain
-  // thread switch while voice is OFF can't accidentally toggle voice ON.
+  // We drive the module-level bridge, gated on getVoiceMode() so a plain thread
+  // switch while voice is OFF can't wake the loop up.
+  //
+  // The reset carries voice mode over rather than ending it: starting a new chat
+  // keeps the conversation mode the same way it keeps the loaded model.
   const prevVoiceThreadIdRef = useRef(activeThreadId);
   useEffect(() => {
     const current = activeThreadId;
@@ -485,7 +488,7 @@ const SingleContent = memo(function SingleContent({
       return;
     }
     if (getVoiceMode() !== "off") {
-      requestVoiceToggle();
+      requestVoiceThreadReset();
     }
     prevVoiceThreadIdRef.current = current;
   }, [activeThreadId]);
@@ -4302,6 +4305,23 @@ export function ChatPage({
     return [...fromLoras, ...cachedGgufs, ...voiceDefaults];
   }, [loraModels, cachedGgufs]);
 
+  // Seed a voice the first time voice mode opens, so the loop is never mute. The
+  // browser voice used to cover this: null meant "speak with speechSynthesis", so
+  // opening with nothing picked still talked. Now null means silence.
+  //
+  // Runs at "configuring" -- opening the picker, a render before the orb can be
+  // started -- so the activate effect above sees the pick and loads the slot once.
+  // A remembered voice is left alone, and a speech-LLM chat model owns its own
+  // voice, so it must not be given a slot at all.
+  useEffect(() => {
+    if (voiceMode === "off") return;
+    const store = useChatRuntimeStore.getState();
+    if (store.selectedVoiceModelId) return;
+    if (chatModelOwnsItsVoice(store)) return;
+    const first = ttsModels[0];
+    if (first) store.setSelectedVoiceModelId(first.id);
+  }, [voiceMode, ttsModels]);
+
   // A speech-LLM chat model (Orpheus, CSM, Spark...) produces its own voice, so a
   // separate TTS voice doesn't apply.
   const chatModelIsSpeechLLM = checkpointOwnsItsVoice;
@@ -4569,6 +4589,19 @@ export function ChatPage({
                 className="max-w-[62vw] !pr-3 md:max-w-none !h-[var(--studio-chat-control-height,34px)]"
               />
             )}
+            {/* Listen, then speak, then the speaker's name: the pipeline's order,
+                and it puts the one-word name picker at the far end instead of
+                wedged between two model pickers. */}
+            {view.mode !== "compare" && voiceMode !== "off" && (
+              <SttModelSelector
+                models={sttModels}
+                value={selectedSttModelId}
+                onValueChange={setSelectedSttModelId}
+                disabled={!hasActiveModel}
+                ready={true}
+                className="!h-[34px]"
+              />
+            )}
             {view.mode !== "compare" && voiceMode !== "off" && (
               <VoiceModelSelector
                 models={ttsModels}
@@ -4582,16 +4615,6 @@ export function ChatPage({
               />
             )}
             {view.mode !== "compare" && voiceMode !== "off" && <VoiceNamePicker />}
-            {view.mode !== "compare" && voiceMode !== "off" && (
-              <SttModelSelector
-                models={sttModels}
-                value={selectedSttModelId}
-                onValueChange={setSelectedSttModelId}
-                disabled={!hasActiveModel}
-                ready={true}
-                className="!h-[34px]"
-              />
-            )}
             {view.mode !== "compare" && currentProjectId && (
               <nav
                 aria-label="Project location"

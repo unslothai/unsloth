@@ -25,6 +25,7 @@ export type VoiceMode = "off" | "configuring" | "active";
 let voiceMode: VoiceMode = "off";
 
 let voiceToggle: (() => void) | null = null;
+let voiceThreadReset: (() => void) | null = null;
 let voiceResume: (() => void) | null = null;
 let voiceBargeIn: (() => void) | null = null;
 let voiceSubmit: (() => void) | null = null;
@@ -51,6 +52,24 @@ export function registerVoiceToggle(fn: (() => void) | null): void {
  */
 export function requestVoiceToggle(): void {
   voiceToggle?.();
+}
+
+/** Called by the mounted voice loop. Pass null on teardown. */
+export function registerVoiceThreadReset(fn: (() => void) | null): void {
+  voiceThreadReset = fn;
+}
+
+/**
+ * Carry the loop across a thread switch: cut whatever the last thread had in
+ * flight (playing reply, open mic, pending timers) and re-arm on the new one.
+ *
+ * Voice mode itself survives, the same way a loaded chat model does. This used to
+ * call the plain toggle, which turned voice OFF -- so starting a new chat silently
+ * ended the conversation mode and the controls vanished from the header.
+ * A no-op while the loop is unmounted or off.
+ */
+export function requestVoiceThreadReset(): void {
+  voiceThreadReset?.();
 }
 
 /** Called by the mounted voice loop. Pass null on teardown. */

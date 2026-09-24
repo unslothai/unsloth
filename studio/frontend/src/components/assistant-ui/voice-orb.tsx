@@ -9,12 +9,23 @@ import {
   AudioWaveformIcon,
   LoaderCircleIcon,
   MicIcon,
+  MicOffIcon,
   PencilLineIcon,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, type FC } from "react";
 
 export const orbConfig = {
+  // Voice is open but no chat model is loaded, so nothing can answer a turn. The
+  // resting theme tones, a slow breathe, and a caption that names the block --
+  // it is the one state that is waiting on the user, not on the machine.
+  waiting: {
+    gradient:
+      "radial-gradient(circle at 40% 35%, var(--voice-orb-idle-from), var(--voice-orb-idle-to))",
+    animation: "voice-orb-breathe",
+    duration: "4.5s",
+    shadow: "0 0 26px 6px var(--voice-orb-idle-glow)",
+  },
   listening: {
     gradient: "radial-gradient(circle at 40% 35%, #34d399, #059669)",
     animation: "voice-orb-breathe",
@@ -74,14 +85,18 @@ export const orbConfig = {
 
 type OrbStateName = keyof typeof orbConfig;
 
-// Grey gradient for the mini orb when the voice loop isn't running yet.
+// The orb at rest, before the loop starts. Theme tokens rather than fixed greys
+// (index.css, :root and .dark): a flat mid-grey reads as disabled chrome on the
+// light page and as a hole on the dark one.
 export const ORB_IDLE_GRADIENT =
-  "radial-gradient(circle at 40% 35%, #9ca3af, #4b5563)";
+  "radial-gradient(circle at 40% 35%, var(--voice-orb-idle-from), var(--voice-orb-idle-to))";
+export const ORB_IDLE_SHADOW = "0 0 26px 6px var(--voice-orb-idle-glow)";
 
 // The full-overlay orb is a dark 3D glass sphere. Each state carves an icon into
 // it as a recessed "black hole" (near-black fill + a light bottom rim so the
 // shape reads as pressed into the surface) and shows a one-word caption below.
 const orbMeta: Record<OrbStateName, { label: string; icon: IconKind }> = {
+  waiting: { label: "Select a model", icon: "mic-off" },
   listening: { label: "Listening", icon: "mic" },
   hearing: { label: "Hearing you", icon: "wave" },
   loading: { label: "Warming up", icon: "spinner" },
@@ -91,7 +106,15 @@ const orbMeta: Record<OrbStateName, { label: string; icon: IconKind }> = {
   speaking: { label: "Speaking", icon: "bars-live" },
 };
 
-type IconKind = "mic" | "wave" | "bars-live" | "dots" | "spinner" | "pencil" | "waveform";
+type IconKind =
+  | "mic"
+  | "mic-off"
+  | "wave"
+  | "bars-live"
+  | "dots"
+  | "spinner"
+  | "pencil"
+  | "waveform";
 
 // Deboss: near-black fill with a faint highlight below and a dark cut above, so
 // the glyph looks carved into the sphere rather than sitting on top of it.
@@ -195,6 +218,12 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
     return (
       <AudioWaveformIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
     );
+  if (icon === "mic-off")
+    // Waiting on a chat model: the struck-through mic says the loop is open but
+    // not capturing, without needing the caption to be read first.
+    return (
+      <MicOffIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
+    );
   // mic (listening): a resting state, so the icon gets NO independent animation.
   // It rides the ball's breathe scale only, so it grows and shrinks in perfect
   // sync with the sphere -- reading as carved into the surface, not floating.
@@ -254,7 +283,10 @@ export const VoiceOrb: FC = () => {
           // inactive the backdrop is still mounted (opacity-0), so it must let
           // clicks pass through.
           "absolute inset-0 z-30 flex flex-col items-center justify-center gap-8 bg-background",
-          "transition-opacity duration-500",
+          // Fast, and on its own compositor layer: this is a full-viewport
+          // cross-fade over a chat that keeps rendering underneath, and at 500ms
+          // the swap read as lag rather than a transition.
+          "transition-opacity duration-200 ease-out will-change-[opacity]",
           showOverlay
             ? "pointer-events-auto opacity-100"
             : "pointer-events-none opacity-0",
@@ -266,22 +298,36 @@ export const VoiceOrb: FC = () => {
             so it grows and shrinks with the sphere -- reading as part of the
             surface rather than floating on top. */}
         <div
-          className="grid place-items-center transition-all duration-500"
+          // Transition the two things that change between states, not `all`:
+          // that was also animating transform, which fights the breathe keyframe
+          // on every state swap.
+          className="grid place-items-center transition-[background,box-shadow] duration-300"
           aria-hidden
           style={{
             width: 140,
             height: 140,
             borderRadius: "50%",
-            background: cfg?.gradient ?? orbConfig.listening.gradient,
+            // No state yet falls back to the resting tones, not to listening's
+            // green: a green orb with no loop behind it reads as live.
+            background: cfg?.gradient ?? ORB_IDLE_GRADIENT,
             boxShadow: cfg?.shadow ?? "none",
-            animation: cfg
-              ? `${cfg.animation} ${cfg.duration} ease-in-out infinite`
-              : undefined,
+            // The keyframe and its 32px blurred shadow only run while the orb is
+            // on screen. Minimized, the loop keeps going and orbState stays set,
+            // so without this the sphere kept repainting under an invisible
+            // layer for the whole conversation, and that is what made the swap
+            // back to chat stutter.
+            animation:
+              cfg && showOverlay
+                ? `${cfg.animation} ${cfg.duration} ease-in-out infinite`
+                : undefined,
           }}
         >
+          {/* Keyed on visibility too, so the icon unmounts when minimized: the
+              speaking bars run a requestAnimationFrame loop that has no business
+              ticking under a hidden overlay. */}
           <AnimatePresence mode="wait">
             <motion.div
-              key={meta?.icon ?? "none"}
+              key={showOverlay ? (meta?.icon ?? "none") : "hidden"}
               initial={{ opacity: 0, scale: 0.85 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.85 }}
