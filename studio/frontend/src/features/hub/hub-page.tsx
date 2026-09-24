@@ -757,8 +757,11 @@ export function ModelsPage() {
     setSortBrowseActive(true);
     void navigate({
       to: "/hub",
+      // Discover models, whatever tab or kind the link carried.
       search: (prev) => ({
         ...prev,
+        tab: "discover",
+        kind: undefined,
         capability: undefined,
         section: undefined,
         model: undefined,
