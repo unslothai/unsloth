@@ -2603,6 +2603,7 @@ export function AudioPage({
               // TTS/ASR come from the checkpoint's own tokenizer, not a curated recipe, so any publisher's
               // audio repo loads here.
               communityModelPolicy="search-only"
+              hubCapability="audio"
               placeholder="Select audio model"
               open={active && selectorOpen}
               onOpenChange={(o) => setSelectorOpen(active && o)}
