@@ -558,3 +558,121 @@ def test_clear_stops_when_the_cross_process_lock_is_unavailable(monkeypatch):
     with pytest.raises(gallery_flags.FlagsUnavailable):
         gallery.clear()
     assert gallery.audio_path(record["id"]) is not None
+
+
+# --- pins and manual order ---------------------------------------------------------------
+
+
+def test_pinned_clips_lead_history():
+    old = _save_with_mtime("old", 100.0)
+    new = _save_with_mtime("new", 200.0)
+    assert gallery.set_flags(old["id"], pinned = True)["pinned"] is True
+    assert [r["id"] for r in gallery.list_audio()] == [old["id"], new["id"]]
+    gallery.set_flags(old["id"], pinned = False)
+    assert [r["id"] for r in gallery.list_audio()] == [new["id"], old["id"]]
+
+
+def test_records_carry_the_listing_sort_key():
+    record = _save_with_mtime("a", 150.0)
+    assert gallery.list_audio()[0]["order_at"] == 150.0
+    assert record["pinned"] is False
+
+
+def test_move_places_a_clip_after_its_new_neighbour():
+    a, b, c = (_save_with_mtime(p, t) for p, t in (("a", 300.0), ("b", 200.0), ("c", 100.0)))
+    gallery.move(c["id"], a["id"])
+    assert [r["prompt"] for r in gallery.list_audio()] == ["a", "c", "b"]
+    gallery.move(b["id"], None)
+    assert [r["prompt"] for r in gallery.list_audio()] == ["b", "a", "c"]
+
+
+def test_move_among_pins_pins_the_clip():
+    a, b, c = (_save_with_mtime(p, t) for p, t in (("a", 300.0), ("b", 200.0), ("c", 100.0)))
+    gallery.set_flags(a["id"], pinned = True)
+    gallery.set_flags(b["id"], pinned = True)
+    moved = gallery.move(c["id"], None)
+    assert moved["pinned"] is True
+    assert [r["prompt"] for r in gallery.list_audio()][0] == "c"
+
+
+def test_move_refuses_unknown_or_archived_clips():
+    a = _save_with_mtime("a", 100.0)
+    b = _save_with_mtime("b", 200.0)
+    assert gallery.move("missing", None) is None
+    gallery.set_flags(a["id"], archived = True)
+    assert gallery.move(a["id"], None) is None
+    with pytest.raises(KeyError):
+        gallery.move(b["id"], "not-on-the-shelf")
+
+
+def test_cursor_pages_through_pins_and_dragged_clips():
+    clips = [_save_with_mtime(f"p{i}", float(i)) for i in range(1, 6)]
+    gallery.set_flags(clips[0]["id"], pinned = True)
+    gallery.move(clips[1]["id"], clips[3]["id"])
+    full = [r["id"] for r in gallery.list_audio()]
+    seen, before = [], None
+    while True:
+        page = gallery.list_audio_page(limit = 2, before = before)
+        seen += [r["id"] for r, _ in page]
+        if len(page) < 2:
+            break
+        before = page[-1][1]
+    assert seen == full
+
+
+def test_prune_goes_by_age_and_spares_pins(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS", "2")
+    oldest = _save_with_mtime("oldest", 100.0)
+    gallery.set_flags(oldest["id"], pinned = True)
+    b = _save_with_mtime("b", 200.0)
+    c = _save_with_mtime("c", 300.0)
+    # Dragged to the bottom, but still newer than b.
+    gallery.move(c["id"], b["id"])
+    gallery.save(_wav(), _meta(prompt = "d"))
+    assert gallery.audio_path(oldest["id"]) is not None
+    assert gallery.audio_path(c["id"]) is not None
+    assert gallery.audio_path(b["id"]) is None
+
+
+def test_list_route_round_trips_a_pinned_cursor():
+    from routes.inference import list_gallery_audio
+
+    clips = [_save_with_mtime(f"p{i}", float(i)) for i in range(1, 4)]
+    for clip in clips:
+        gallery.set_flags(clip["id"], pinned = True)
+    page1 = asyncio.run(list_gallery_audio(limit = 2, current_subject = "tester"))
+    assert page1.has_more and page1.next_before_pin is not None
+    page2 = asyncio.run(
+        list_gallery_audio(
+            limit = 2,
+            before_mtime = page1.next_before_mtime,
+            before_id = page1.next_before_id,
+            before_pin = page1.next_before_pin,
+            current_subject = "tester",
+        )
+    )
+    ids = [c.id for c in page1.audio] + [c.id for c in page2.audio]
+    assert sorted(ids) == sorted(c["id"] for c in clips) and len(set(ids)) == 3
+
+
+def test_project_route_copies_the_wav(monkeypatch, tmp_path):
+    import storage.studio_db as studio_db
+    from models.inference import GalleryProjectRequest
+    from routes.inference import add_gallery_audio_to_project
+
+    root = tmp_path / "Projects" / "demo"
+    (root / "sandbox").mkdir(parents = True)
+    monkeypatch.setattr(
+        studio_db,
+        "ensure_chat_project_workspace",
+        lambda pid: {"id": pid, "rootPath": str(root), "sandboxPath": str(root / "sandbox")},
+    )
+    record = gallery.save(_wav(), _meta())
+    result = asyncio.run(
+        add_gallery_audio_to_project(
+            record["id"], GalleryProjectRequest(project_id = "p1"), current_subject = "tester"
+        )
+    )
+    dest = root / "sandbox" / "audio" / f"{record['id']}.wav"
+    assert result.path == str(dest) and result.already is False
+    assert dest.read_bytes() == _wav()

@@ -39789,6 +39789,7 @@ async def list_gallery_audio(
     offset: int = 0,
     before_mtime: Optional[float] = None,
     before_id: Optional[str] = None,
+    before_pin: Optional[float] = None,
     archived: bool = False,
     current_subject: str = Depends(get_current_subject),
 ):
@@ -39800,8 +39801,11 @@ async def list_gallery_audio(
     offset = max(0, offset)
     if (before_mtime is None) != (before_id is None):
         raise HTTPException(status_code = 400, detail = "Incomplete audio gallery cursor.")
+    # No before_pin means the cursor clip is unpinned.
     before = (
-        (before_mtime, before_id) if before_mtime is not None and before_id is not None else None
+        (float("-inf") if before_pin is None else before_pin, before_mtime, before_id)
+        if before_mtime is not None and before_id is not None
+        else None
     )
 
     # validate inside the pager so offset, limit and has_more count over the accepted domain
@@ -39828,8 +39832,9 @@ async def list_gallery_audio(
     return AudioGalleryListResponse(
         audio = audio,
         has_more = has_more,
-        next_before_mtime = next_cursor[0] if next_cursor else None,
-        next_before_id = next_cursor[1] if next_cursor else None,
+        next_before_mtime = next_cursor[1] if next_cursor else None,
+        next_before_id = next_cursor[2] if next_cursor else None,
+        next_before_pin = next_cursor[0] if next_cursor and next_cursor[0] > float("-inf") else None,
     )
 
 
@@ -39862,13 +39867,60 @@ async def update_gallery_audio_flags(
     from core.inference import audio_gallery
 
     try:
-        record = await asyncio.to_thread(audio_gallery.set_flags, audio_id, archived = patch.archived)
+        record = await asyncio.to_thread(
+            audio_gallery.set_flags, audio_id, pinned = patch.pinned, archived = patch.archived
+        )
     except OSError as exc:
         logger.warning("audio_gallery.set_flags_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Could not save the change to this clip.")
     if record is None:
         raise HTTPException(status_code = 404, detail = "Audio not found.")
     return AudioGalleryItem(**record)
+
+
+@studio_router.post("/audio/gallery/{audio_id}/move", response_model = AudioGalleryItem)
+async def move_gallery_audio(
+    audio_id: str,
+    body: GalleryMoveRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Move one clip to just after ``after_id``. Dropping among pins pins it, elsewhere unpins it."""
+    from core.inference import audio_gallery
+
+    try:
+        record = await asyncio.to_thread(audio_gallery.move, audio_id, body.after_id)
+    except KeyError:
+        # The neighbour left history; the client resyncs.
+        raise HTTPException(status_code = 409, detail = "The gallery changed; try the move again.")
+    except OSError as exc:
+        logger.warning("audio_gallery.move_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Could not save the new order.")
+    if record is None:
+        raise HTTPException(status_code = 404, detail = "Audio not found.")
+    return AudioGalleryItem(**record)
+
+
+@studio_router.post("/audio/gallery/{audio_id}/project", response_model = GalleryProjectResponse)
+async def add_gallery_audio_to_project(
+    audio_id: str,
+    body: GalleryProjectRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Copy one clip into a chat project's folder."""
+    from core.inference import audio_gallery
+    from core.inference.gallery_projects import ProjectNotFound, copy_into_project
+
+    path = await asyncio.to_thread(audio_gallery.owned_audio_path, audio_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Audio not found.")
+    try:
+        result = await asyncio.to_thread(copy_into_project, path, body.project_id, "audio")
+    except ProjectNotFound:
+        raise HTTPException(status_code = 404, detail = "Project not found.")
+    except OSError as exc:
+        logger.warning("audio_gallery.add_to_project_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Could not copy the clip into the project.")
+    return GalleryProjectResponse(**result)
 
 
 @studio_router.delete("/audio/gallery/{audio_id}")
