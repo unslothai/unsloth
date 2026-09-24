@@ -48,30 +48,64 @@ def _page(text: str, page_number: int | None) -> Page:
     return Page(text = text, page_number = page_number, char_count = len(text))
 
 
+_HTML_SKIP_TAGS = frozenset(("script", "style", "template"))
+# Elements that start a new line. Anything else (b, a, code, span, ...) is inline:
+# its text runs on in the line it sits in, so a word or sentence is not cut apart.
+_HTML_BLOCK_TAGS = frozenset(
+    "address article aside blockquote br caption dd details dialog div dl dt fieldset"
+    " figcaption figure footer form h1 h2 h3 h4 h5 h6 header hr li main nav ol p pre"
+    " section summary table td th title tr ul".split()
+)
+
+
 class _Stripper(HTMLParser):
-    """Collect visible text, skipping <script>/<style>."""
+    """Collect visible text, one line per block element, skipping <script>/<style>/<template>."""
 
     def __init__(self) -> None:
         super().__init__()
         self._skip = 0
+        self._pre = 0
+        self._line: list[str] = []
         self.out: list[str] = []
 
+    def _flush(self) -> None:
+        text = "".join(self._line)
+        self._line = []
+        # Whitespace inside <pre> is content; elsewhere it is layout.
+        text = text.strip("\n") if self._pre else " ".join(text.split())
+        if text.strip():
+            self.out.append(text)
+
     def handle_starttag(self, tag, attrs):
-        if tag in ("script", "style"):
+        if tag in _HTML_SKIP_TAGS:
             self._skip += 1
+        elif tag in _HTML_BLOCK_TAGS:
+            self._flush()
+            if tag == "pre":
+                self._pre += 1
 
     def handle_endtag(self, tag):
-        if tag in ("script", "style") and self._skip:
-            self._skip -= 1
+        if tag in _HTML_SKIP_TAGS:
+            if self._skip:
+                self._skip -= 1
+        elif tag in _HTML_BLOCK_TAGS:
+            self._flush()
+            if tag == "pre" and self._pre:
+                self._pre -= 1
 
     def handle_data(self, data):
-        if not self._skip and data.strip():
-            self.out.append(data.strip())
+        if not self._skip:
+            self._line.append(data)
+
+    def close(self):
+        super().close()
+        self._flush()
 
 
 def _html(raw: str) -> list[Page]:
     parser = _Stripper()
     parser.feed(raw)
+    parser.close()
     return [_page("\n".join(parser.out), 1)]
 
 

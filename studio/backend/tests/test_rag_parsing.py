@@ -331,3 +331,50 @@ def test_docx_table_vertical_merge_emitted_once(tmp_path):
     text = "\n".join(p.text for p in parsers.parse(str(path)))
     assert text.count("SECTION") == 1  # not repeated on each spanned row
     assert "SECTION | r0" in text and " | r1" in text and " | r2" in text
+
+
+def _parse_html(tmp_path, body):
+    from core.rag import parsers
+
+    path = tmp_path / "page.html"
+    path.write_text(f"<html><body>{body}</body></html>", encoding = "utf-8")
+    return "\n".join(p.text for p in parsers.parse(str(path)))
+
+
+def test_html_keeps_inline_elements_in_their_line(tmp_path):
+    # Each text node used to become its own line, so a sentence broke at every <b> or <a>
+    # and a word styled in the middle was cut into pieces.
+    text = _parse_html(
+        tmp_path,
+        '<p>The <b>quick</b> brown fox jumps over the <a href="#">lazy</a> dog.</p>'
+        "<p>It is un<b>believ</b>able.</p>",
+    )
+    assert text == "The quick brown fox jumps over the lazy dog.\nIt is unbelievable."
+
+
+def test_html_block_elements_start_new_lines(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<h1>Install <em>guide</em></h1><ul><li>One</li><li>Two <i>items</i></li></ul>"
+        "<p>line one<br>line two</p><table><tr><td>cell a</td><td>cell b</td></tr></table>",
+    )
+    assert text == "Install guide\nOne\nTwo items\nline one\nline two\ncell a\ncell b"
+
+
+def test_html_keeps_text_after_the_last_block(tmp_path):
+    text = _parse_html(tmp_path, "<p>First</p>Trailing <b>text</b>")
+    assert text == "First\nTrailing text"
+
+
+def test_html_pre_keeps_its_layout(tmp_path):
+    text = _parse_html(tmp_path, "<p>Code:</p><pre>def f():\n    return 1</pre>")
+    assert text == "Code:\ndef f():\n    return 1"
+
+
+def test_html_skips_script_style_and_template(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<p>Visible</p><script>var x = 1;</script><style>p { color: red }</style>"
+        "<template><p>Inert until cloned</p></template>",
+    )
+    assert text == "Visible"
