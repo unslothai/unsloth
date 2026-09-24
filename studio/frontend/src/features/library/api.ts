@@ -118,6 +118,25 @@ export async function addLibraryItemToProject(
   return response.json();
 }
 
+/** Shows the item's file in the OS file manager on the machine running Studio. */
+export async function revealLibraryItem(id: string): Promise<void> {
+  await ensureOk(await authFetch("/api/library/items/reveal", jsonInit("POST", { id })));
+}
+
+export interface LibraryLocation {
+  key: "uploads" | "images" | "videos" | "audio" | "fineTunes" | "exports";
+  path: string;
+}
+
+export async function getLibraryLocations(): Promise<LibraryLocation[]> {
+  const response = await ensureOk(await authFetch("/api/library/locations"));
+  return (await response.json()).locations;
+}
+
+export async function revealLibraryLocation(key: LibraryLocation["key"]): Promise<void> {
+  await ensureOk(await authFetch("/api/library/locations/reveal", jsonInit("POST", { key })));
+}
+
 export async function deleteLibraryItem(id: string): Promise<void> {
   await ensureOk(
     await authFetch("/api/library/items/delete", jsonInit("POST", { id })),

@@ -493,6 +493,42 @@ def project_source(item_id: str) -> tuple[Path, str, str]:
     raise ValueError("This item cannot be added to a project.")
 
 
+def local_path(item_id: str) -> Path:
+    """The file, or model folder, behind an item, for Reveal in Finder.
+
+    Same errors as ``project_source``. A model path comes from the id, so it must sit inside the
+    outputs or exports root."""
+    kind, _, ref = item_id.partition(":")
+    if kind != "model":
+        return project_source(item_id)[0]
+    from utils.paths.storage_roots import exports_root, outputs_root
+
+    _origin, _, path = ref.partition(":")
+    resolved = os.path.realpath(path) if path else ""
+    roots = [os.path.realpath(root) for root in (outputs_root(), exports_root())]
+    if not any(resolved.startswith(root + os.sep) for root in roots) or not os.path.exists(resolved):
+        raise LookupError(item_id)
+    return Path(resolved)
+
+
+def locations() -> list[dict]:
+    """Where each kind of Library file lives, for Settings > Library."""
+    from core.inference import audio_gallery, image_gallery, video_gallery
+    from utils.paths.storage_roots import exports_root, outputs_root
+
+    return [
+        {"key": key, "path": str(resolve())}
+        for key, resolve in (
+            ("uploads", uploads_dir),
+            ("images", image_gallery.gallery_dir),
+            ("videos", video_gallery.gallery_dir),
+            ("audio", audio_gallery.gallery_dir),
+            ("fineTunes", outputs_root),
+            ("exports", exports_root),
+        )
+    ]
+
+
 def delete_item(item_id: str) -> bool:
     """Delete an item from its source. Returns False when the source no longer has it."""
     kind, _, ref = item_id.partition(":")

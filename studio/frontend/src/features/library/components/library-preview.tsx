@@ -25,6 +25,7 @@ import {
 } from "../file-kind";
 import { formatCardTime, formatSize } from "../format";
 import { useLibraryObjectUrl } from "../hooks";
+import { canReveal, revealInFolder, useRevealLabel } from "../reveal";
 import { KindIcon } from "./library-cards";
 
 // Past this the preview shows a read-only prefix; the full file is a download away.
@@ -203,6 +204,7 @@ export function LibraryPreview({
   const setDraft = (text: string | null) =>
     setEdit(item && text !== null ? { itemId: item.id, text } : null);
   const [saving, setSaving] = useState(false);
+  const revealLabel = useRevealLabel();
 
   async function save(): Promise<boolean> {
     if (!item || draft === null) return true;
@@ -277,6 +279,10 @@ export function LibraryPreview({
               onViewChat: item.threadId
                 ? () => void saveThen(() => onOpenThread(item.threadId!))
                 : undefined,
+              reveal:
+                revealLabel && canReveal(item)
+                  ? { label: revealLabel, onClick: () => revealInFolder(item.id) }
+                  : undefined,
               favorite: item.favorite,
               onToggleFavorite: () => onToggleFavorite(item),
               onAddToProject: canAddToProject(item)

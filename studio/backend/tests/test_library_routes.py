@@ -388,3 +388,47 @@ def test_add_to_project_refuses_what_it_cannot_copy(client, project):
     assert post("upload:0123456789abcdef0123456789abcdef").status_code == 404
     assert post("attachment:m:a").status_code == 400
     assert post("model:training:/tmp/run").status_code == 400
+
+
+# ── Reveal in Finder ─────────────────────────────────────────────
+
+
+@pytest.fixture
+def revealed(monkeypatch):
+    import utils.paths.path_utils as path_utils
+
+    calls = []
+    monkeypatch.setattr(path_utils, "reveal_in_file_manager", lambda path: calls.append(str(path)))
+    return calls
+
+
+def test_reveal_opens_the_items_own_file(client, revealed):
+    [note] = _upload(client, ("plan.md", b"# plan", "text/markdown"))
+    assert client.post("/api/library/items/reveal", json = {"id": note}).status_code == 200
+    assert revealed == [str(library.upload_path(note.split(":", 1)[1]))]
+
+
+def test_reveal_refuses_what_has_no_file_or_is_outside_studio(client, revealed):
+    post = lambda item_id: client.post("/api/library/items/reveal", json = {"id": item_id})  # noqa: E731
+    assert post("attachment:m:a").status_code == 400
+    assert post("upload:0123456789abcdef0123456789abcdef").status_code == 404
+    # A model id carries its path, so one outside the outputs and exports roots is not opened.
+    assert post("model:training:/etc").status_code == 404
+    assert revealed == []
+
+
+def test_only_the_installation_owner_can_reveal(client, revealed, monkeypatch):
+    monkeypatch.setattr(library_routes.account_access, "managed_account", lambda: True)
+    [note] = _upload(client, ("plan.md", b"# plan", "text/markdown"))
+    assert client.post("/api/library/items/reveal", json = {"id": note}).status_code == 403
+    assert client.post("/api/library/locations/reveal", json = {"key": "images"}).status_code == 403
+    assert revealed == []
+
+
+def test_locations_are_listed_and_revealed_by_key(client, revealed):
+    locations = client.get("/api/library/locations").json()["locations"]
+    paths = {entry["key"]: entry["path"] for entry in locations}
+    assert set(paths) == {"uploads", "images", "videos", "audio", "fineTunes", "exports"}
+    assert client.post("/api/library/locations/reveal", json = {"key": "images"}).status_code == 200
+    assert revealed == [paths["images"]]
+    assert client.post("/api/library/locations/reveal", json = {"key": "/etc"}).status_code == 404

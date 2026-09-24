@@ -14,6 +14,7 @@ from starlette.concurrency import run_in_threadpool
 
 from auth.authentication import get_current_subject
 from core import library
+from hub.services.models import account_access
 from loggers import get_logger
 from storage import library_db
 from storage.studio_db import ChatMessageProtectedError
@@ -48,6 +49,10 @@ class ItemPatch(BaseModel):
 
 class ItemRef(BaseModel):
     id: str = Field(max_length = 4096)
+
+
+class LocationRef(BaseModel):
+    key: str = Field(max_length = 32)
 
 
 class ProjectCopy(BaseModel):
@@ -152,6 +157,53 @@ async def add_item_to_project(
         logger.warning("library.add_to_project_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Could not copy the file into the project.")
     return {"already": result["already"]}
+
+
+def _reveal(path) -> None:
+    from utils.paths.path_utils import reveal_in_file_manager
+
+    try:
+        reveal_in_file_manager(path)
+    except FileNotFoundError:
+        raise HTTPException(status_code = 404, detail = "File not found")
+    except Exception:
+        logger.error("library.reveal_failed: %s", path, exc_info = True)
+        raise HTTPException(status_code = 500, detail = "Failed to open file manager")
+
+
+@router.post("/items/reveal")
+async def reveal_item(body: ItemRef, current_subject: str = Depends(get_current_subject)) -> dict:
+    """Show the item's file in the OS file manager. The backend host's, so the desktop app's."""
+    account_access.require_installation_owner()
+    try:
+        path = await run_in_threadpool(library.local_path, body.id)
+    except LookupError:
+        raise HTTPException(status_code = 404, detail = "Item not found")
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    await run_in_threadpool(_reveal, path)
+    return {"ok": True}
+
+
+@router.get("/locations")
+async def get_locations(current_subject: str = Depends(get_current_subject)) -> dict:
+    return {"locations": await run_in_threadpool(library.locations)}
+
+
+@router.post("/locations/reveal")
+async def reveal_location(
+    body: LocationRef, current_subject: str = Depends(get_current_subject)
+) -> dict:
+    account_access.require_installation_owner()
+    from pathlib import Path
+
+    paths = {entry["key"]: entry["path"] for entry in await run_in_threadpool(library.locations)}
+    if body.key not in paths:
+        raise HTTPException(status_code = 404, detail = "Unknown location")
+    path = Path(paths[body.key])
+    await run_in_threadpool(lambda: path.mkdir(parents = True, exist_ok = True))
+    await run_in_threadpool(_reveal, path)
+    return {"ok": True}
 
 
 # ── Library-owned uploads ────────────────────────────────────────
