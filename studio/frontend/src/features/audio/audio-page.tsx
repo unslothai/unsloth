@@ -7,13 +7,11 @@
 
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import {
-  Archive02Icon,
   AudioWave01Icon,
   Copy01Icon,
   Delete02Icon,
   Download01Icon,
   Mic01Icon,
-  MoreVerticalIcon,
   SparklesIcon,
   StopIcon,
 } from "@hugeicons/core-free-icons";
@@ -28,16 +26,15 @@ import {
 } from "react";
 
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
+import { GalleryItemMenu, GalleryPinBadge } from "@/components/gallery-item-menu";
+import { StripDropLine } from "@/components/gallery-strip-reorder";
+import { useStripReorder } from "@/hooks/use-strip-reorder";
+import { MediaRailResizeHandle } from "@/components/media-rail-resize-handle";
+import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-width";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildAudioTourSteps } from "./tour";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
@@ -102,20 +99,33 @@ import { fetchSystemInfo } from "@/hooks/use-system";
 import { isTauri } from "@/lib/api-base";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { subscribeGalleryChanged } from "@/lib/gallery-flags";
+import {
+  applyPin,
+  moveGalleryItem,
+  pinnedOrder,
+  restorePinOrder,
+  serializeById,
+  sortGalleryItems,
+  subscribeGalleryChanged,
+} from "@/lib/gallery-flags";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 
 import {
   type AudioGalleryClip,
+  type AudioGalleryCursor,
+  addAudioClipToProject,
+  audioGalleryCursor,
   clearAudioGallery,
   deleteAudioClip,
   fetchClipObjectUrl,
   generateAudio,
   getAudioDownloadPlan,
   listAudioGallery,
+  moveAudioClip,
   setAudioClipFlags,
   transcribeWithProgress,
 } from "./api";
@@ -213,7 +223,7 @@ const CLIP_BLOB_BUDGET_BYTES = 64 * 1024 * 1024;
 const galleryCache: {
   clips: AudioGalleryClip[];
   hasMore: boolean;
-  nextCursor: { mtime: number; id: string } | null;
+  nextCursor: AudioGalleryCursor | null;
   selectedId: string | null;
   srcById: BlobUrlCache;
 } = {
@@ -259,68 +269,6 @@ function Field({
   );
 }
 
-/** Per-row actions for a history clip, in a dots menu so rows keep one line. Mirrors the model
- *  rows' MoreVertical pattern. */
-function ClipRowMenu({
-  clip,
-  onDownload,
-  onCopyPrompt,
-  onUseAsText,
-  onArchive,
-  onDelete,
-}: {
-  clip: AudioGalleryClip;
-  onDownload: () => void;
-  onCopyPrompt: () => void;
-  onUseAsText: () => void;
-  onArchive: () => void;
-  onDelete: () => void;
-}) {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild={true}>
-        <button
-          type="button"
-          onClick={(event) => event.stopPropagation()}
-          aria-label={`Actions for ${clip.prompt || "clip"}`}
-          // Hidden until the row is hovered or the menu is open, so a long list stays quiet; keyboard
-          // focus reveals it too.
-          className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 opacity-0 transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
-        >
-          <HugeiconsIcon
-            icon={MoreVerticalIcon}
-            strokeWidth={1.75}
-            className="size-3.5"
-          />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-48">
-        <DropdownMenuItem onSelect={onUseAsText}>
-          <HugeiconsIcon icon={SparklesIcon} className="size-4" />
-          Use text again
-        </DropdownMenuItem>
-        <DropdownMenuItem onSelect={onCopyPrompt}>
-          <HugeiconsIcon icon={Copy01Icon} className="size-4" />
-          Copy text
-        </DropdownMenuItem>
-        <DropdownMenuItem onSelect={onDownload}>
-          <HugeiconsIcon icon={Download01Icon} className="size-4" />
-          Download WAV
-        </DropdownMenuItem>
-        <DropdownMenuItem onSelect={onArchive}>
-          <HugeiconsIcon icon={Archive02Icon} className="size-4" />
-          Archive
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem variant="destructive" onSelect={onDelete}>
-          <HugeiconsIcon icon={Delete02Icon} className="size-4" />
-          Delete
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
 function formatClipDuration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "0:00";
   const whole = Math.round(seconds);
@@ -337,7 +285,10 @@ export function AudioPage({
   onInitialReady?: () => void;
 }) {
   const initialReadySent = useRef(false);
+  // Clear the floating sidebar toggle on mobile.
+  const isMobileShell = useIsMobileShell();
   const [mode, setMode] = useState<CreateMode>("speak");
+  const { rootStyle: railRootStyle } = useMediaRailWidth("audio");
   const tourSteps = useMemo(() => buildAudioTourSteps({ mode }), [mode]);
   const tour = useGuidedTourController({
     id: "audio",
@@ -451,6 +402,8 @@ export function AudioPage({
   fallbackClipRef.current = fallbackClip;
   const loadingMoreRef = useRef(false);
   const galleryRefreshGeneration = useRef(0);
+  // Pins and moves in flight. A refresh that overlaps one read the old order, so it is dropped and rerun after.
+  const orderWrites = useRef({ inFlight: 0, epoch: 0, deferred: false });
   const recorderRef = useRef<SegmentRecorder | null>(null);
   const recordStreamRef = useRef<MediaStream | null>(null);
   const discardRecordingRef = useRef(false);
@@ -784,12 +737,17 @@ export function AudioPage({
       windowSize = PAGE_SIZE,
     ): Promise<AudioGalleryClip[]> => {
       const generation = ++galleryRefreshGeneration.current;
+      const writeEpoch = orderWrites.current.epoch;
       const wanted = Math.max(PAGE_SIZE, windowSize);
       const asked = Math.min(wanted, MAX_PAGE_SIZE);
       try {
         const page = await listAudioGallery(0, asked);
         // The caller's own fetch: a generation whose clip persisted must not be told otherwise.
         if (generation !== galleryRefreshGeneration.current) return page.audio;
+        if (orderWrites.current.inFlight > 0 || orderWrites.current.epoch !== writeEpoch) {
+          orderWrites.current.deferred = true;
+          return page.audio;
+        }
         // A window past the route's cap cannot be covered in one page, and stitching the old scrollback
         // back on keeps a cursor that starts BELOW it, stranding whatever was restored.
         const { clips: merged, stitched } =
@@ -805,10 +763,7 @@ export function AudioPage({
         // A clip record carries no mtime, so kept scrollback has no cursor; keep the deeper one.
         if (!stitched) {
           galleryCache.hasMore = page.has_more;
-          galleryCache.nextCursor =
-            page.next_before_mtime !== null && page.next_before_id !== null
-              ? { mtime: page.next_before_mtime, id: page.next_before_id }
-              : null;
+          galleryCache.nextCursor = audioGalleryCursor(page);
         }
         setClips(merged);
         setHasMore(galleryCache.hasMore);
@@ -863,10 +818,7 @@ export function AudioPage({
         cursor !== galleryCache.nextCursor
       )
         return;
-      galleryCache.nextCursor =
-        page.next_before_mtime !== null && page.next_before_id !== null
-          ? { mtime: page.next_before_mtime, id: page.next_before_id }
-          : null;
+      galleryCache.nextCursor = audioGalleryCursor(page);
       const known = new Set(galleryCache.clips.map((clip) => clip.id));
       galleryCache.clips = [
         ...galleryCache.clips,
@@ -2378,6 +2330,101 @@ export function AudioPage({
     [dropClip, refreshGallery],
   );
 
+  // The pin state each id was last clicked or dragged into, so a stale response cannot undo a later one.
+  const pinAttempt = useRef(new Map<string, number>());
+  const pinSeq = useRef(0);
+
+  const beginOrderWrite = useCallback(() => {
+    orderWrites.current.inFlight += 1;
+    orderWrites.current.epoch += 1;
+  }, []);
+  const endOrderWrite = useCallback(() => {
+    const writes = orderWrites.current;
+    writes.inFlight -= 1;
+    writes.epoch += 1;
+    if (writes.inFlight === 0 && writes.deferred) {
+      writes.deferred = false;
+      void refreshGallery(undefined, galleryCache.clips.length);
+    }
+  }, [refreshGallery]);
+
+  const handleTogglePin = useCallback(async (id: string, pinned: boolean) => {
+    // The pinned order before the click, so a failed unpin goes back where it was.
+    const orderBefore = pinnedOrder(galleryCache.clips);
+    const attempt = (pinSeq.current += 1);
+    pinAttempt.current.set(id, attempt);
+    // Optimistic. Records carry the server's sort key, so the local re-sort matches it.
+    galleryCache.clips = applyPin(galleryCache.clips, id, pinned);
+    setClips(galleryCache.clips);
+    beginOrderWrite();
+    try {
+      // One queue for pins and moves: the server stamps pins in the order it runs them.
+      await serializeById("audio-pin", () => setAudioClipFlags(id, { pinned }));
+      // An unpinned clip can belong below the loaded window, so resync it once writes settle.
+      if (!pinned && galleryCache.hasMore) orderWrites.current.deferred = true;
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not pin the clip.",
+      );
+      if (pinAttempt.current.get(id) === attempt) {
+        galleryCache.clips = pinned
+          ? applyPin(galleryCache.clips, id, false)
+          : restorePinOrder(galleryCache.clips, id, orderBefore);
+        setClips(galleryCache.clips);
+      }
+    } finally {
+      if (pinAttempt.current.get(id) === attempt) pinAttempt.current.delete(id);
+      endOrderWrite();
+    }
+  }, [beginOrderWrite, endOrderWrite]);
+
+  // Drag to reorder: applied optimistically, then the server's record (key and pin) is adopted.
+  const handleMoveClip = useCallback(
+    async (id: string, afterId: string | null) => {
+      const next = moveGalleryItem(galleryCache.clips, id, afterId);
+      if (next === galleryCache.clips) return;
+      const guessedPinned = Boolean(next.find((c) => c.id === id)?.pinned);
+      // Takes a pin token too: a pin clicked after this drop must not be undone by its response.
+      const attempt = (pinSeq.current += 1);
+      pinAttempt.current.set(id, attempt);
+      galleryCache.clips = next;
+      setClips(next);
+      beginOrderWrite();
+      try {
+        const record = await serializeById("audio-pin", () =>
+          moveAudioClip(id, afterId),
+        );
+        if (pinAttempt.current.get(id) !== attempt) return;
+        pinAttempt.current.delete(id);
+        const patched = galleryCache.clips.map((c) =>
+          c.id === id
+            ? { ...c, pinned: record.pinned, order_at: record.order_at }
+            : c,
+        );
+        // Re-sort only if the local pin guess was wrong.
+        galleryCache.clips =
+          Boolean(record.pinned) === guessedPinned
+            ? patched
+            : sortGalleryItems(patched);
+        setClips(galleryCache.clips);
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Could not move the clip.",
+        );
+        if (pinAttempt.current.get(id) === attempt) pinAttempt.current.delete(id);
+        // Put the server's order back once no other write is in flight.
+        orderWrites.current.deferred = true;
+      } finally {
+        endOrderWrite();
+      }
+    },
+    [beginOrderWrite, endOrderWrite],
+  );
+  const historyReorder = useStripReorder(
+    (id, afterId) => void handleMoveClip(id, afterId),
+    { axis: "y" },
+  );
+
   // This page stays mounted across route changes, so a restore from the Settings archive would not reach
   // History until a reload. Refresh the loaded window, not just the first page: a clip re-enters at its own age.
   useEffect(
@@ -2563,13 +2610,24 @@ export function AudioPage({
         : "No transcription model selected.";
 
   return (
-    <div className="@container flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
+    <div
+      {...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}
+      style={railRootStyle}
+      className="@container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
+    >
+      {/* Page-level, so the handle covers the divider through the header too. */}
+      <MediaRailResizeHandle kind="audio" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
       {active && <GuidedTour {...tour.tourProps} />}
-      {/* Keep the tabs centered over the preview at every width. The model rail holds at 408px when
-          space permits and shrinks only to preserve the controls. */}
-      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]">
-        <div className="pointer-events-none flex h-full min-w-0 items-start overflow-hidden pl-[var(--studio-media-header-left-inset,1.5rem)] @[50rem]:border-r @[50rem]:border-border/60">
+      {/* Keep the tabs centered over the preview at every width. The model rail holds at its
+          (draggable) width when space permits and shrinks only to preserve the controls. */}
+      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
+        <div
+          className={cn(
+            "pointer-events-none flex h-full min-w-0 items-start overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
+            isMobileShell ? "pl-12" : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
+          )}
+        >
           {/* A long resident model name must yield to the mode pill instead of painting over it. */}
           <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-[var(--studio-chat-header-padding-top,11px)]">
             <ModelSelector
@@ -2595,6 +2653,7 @@ export function AudioPage({
               // TTS/ASR come from the checkpoint's own tokenizer, not a curated recipe, so any publisher's
               // audio repo loads here.
               communityModelPolicy="search-only"
+              hubCapability="audio"
               placeholder="Select audio model"
               open={active && selectorOpen}
               onOpenChange={(o) => setSelectorOpen(active && o)}
@@ -2616,7 +2675,7 @@ export function AudioPage({
                 void navigateSelf({ to: "/studio" });
               }}
               fit={true}
-              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11"
+              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>span]:sr-only"
               tabs={[
                 {
                   value: "create",
@@ -2641,17 +2700,17 @@ export function AudioPage({
         </div>
       </div>
       {/* Below 50rem the panes stack and the page scrolls as one column, matching Images and Video:
-          side by side, the 408px rail plus a usable preview needs more width. */}
+          side by side, the rail plus a usable preview needs more width. */}
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
         <div
           data-tour="audio-settings"
-          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
+          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-13rem))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
         >
           <div
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar flex min-h-0 flex-1 flex-col gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto",
+              "hover-scrollbar flex min-h-0 flex-1 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto",
               mode === "speak"
                 ? "panel-scroll-fade-action"
                 : "panel-scroll-fade",
@@ -2663,7 +2722,7 @@ export function AudioPage({
               <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
                 <HugeiconsIcon
                   icon={mode === "speak" ? AudioWave01Icon : Mic01Icon}
-                  className="size-[18px] shrink-0"
+                  className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0"
                 />
                 {mode === "speak" ? "Generate audio" : "Transcribe"}
               </h2>
@@ -3175,7 +3234,9 @@ export function AudioPage({
                     </Button>
                   </div>
                   <div
-                    className="hover-scrollbar flex max-h-40 flex-col gap-1 overflow-y-auto"
+                    {...historyReorder.stripProps}
+                    // py-1 keeps the first and last drop lines inside the scroller.
+                    className="hover-scrollbar flex max-h-40 flex-col gap-1 overflow-y-auto py-1"
                     onScroll={(event) => {
                       const el = event.currentTarget;
                       if (
@@ -3187,14 +3248,22 @@ export function AudioPage({
                     }}
                   >
                     {clips.map((clip) => (
-                      // Shell, not a button: the dots menu is a button and cannot nest.
+                      // Shell, not a button: the pin badge and dots menu are buttons and cannot nest.
                       <div
                         key={clip.id}
+                        {...historyReorder.tileProps(clip.id)}
                         className={cn(
-                          "group flex items-center rounded-md pr-1 transition-colors hover:bg-muted",
+                          "group relative flex items-center gap-1 rounded-md pr-1 transition-colors hover:bg-muted",
                           clip.id === selectedId && "bg-muted",
+                          historyReorder.draggingId === clip.id && "opacity-40",
                         )}
                       >
+                        {historyReorder.cue?.id === clip.id && (
+                          <StripDropLine
+                            axis="y"
+                            edge={historyReorder.cue.edge}
+                          />
+                        )}
                         <button
                           type="button"
                           onClick={() => selectClip(clip.id)}
@@ -3214,17 +3283,54 @@ export function AudioPage({
                             {formatClipDuration(clip.duration_s)}
                           </span>
                         </button>
-                        <ClipRowMenu
-                          clip={clip}
-                          onDownload={() => void handleDownloadClipById(clip)}
-                          onCopyPrompt={() =>
-                            void handleCopyPrompt(clip.prompt)
+                        {clip.pinned && (
+                          <GalleryPinBadge
+                            noun="clip"
+                            className="static shrink-0"
+                            onUnpin={() => void handleTogglePin(clip.id, false)}
+                          />
+                        )}
+                        <GalleryItemMenu
+                          variant="row"
+                          noun="clip"
+                          active={active}
+                          pinned={Boolean(clip.pinned)}
+                          archived={false}
+                          onTogglePin={() =>
+                            void handleTogglePin(clip.id, !clip.pinned)
                           }
-                          onUseAsText={() => {
-                            if (transitionMode("speak")) setPrompt(clip.prompt);
-                          }}
-                          onArchive={() => void handleArchiveClip(clip.id)}
+                          onToggleArchive={() => void handleArchiveClip(clip.id)}
                           onDelete={() => void handleDeleteClip(clip.id)}
+                          onDownload={() => void handleDownloadClipById(clip)}
+                          onAddToProject={(projectId) =>
+                            addAudioClipToProject(clip.id, projectId)
+                          }
+                          leadingItems={
+                            <>
+                              <DropdownMenuItem
+                                onClick={() => {
+                                  if (transitionMode("speak")) setPrompt(clip.prompt);
+                                }}
+                              >
+                                <HugeiconsIcon
+                                  icon={SparklesIcon}
+                                  strokeWidth={1.75}
+                                  className="size-icon"
+                                />
+                                Use text again
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onClick={() => void handleCopyPrompt(clip.prompt)}
+                              >
+                                <HugeiconsIcon
+                                  icon={Copy01Icon}
+                                  strokeWidth={1.75}
+                                  className="size-icon"
+                                />
+                                Copy text
+                              </DropdownMenuItem>
+                            </>
+                          }
                         />
                       </div>
                     ))}

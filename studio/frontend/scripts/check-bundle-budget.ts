@@ -32,14 +32,14 @@ const DIST = resolve(HERE, "..", "dist");
  * machine.
  */
 export const BUDGET = {
-  // Taken from upstream main rather than re-derived here: this branch's own base predates
-  // main's re-measure, and holding the older pair would make the dock work fail a number main
-  // has already moved past. The monitor is imported eagerly on purpose (an existing test in
-  // tests/monitor-frame-ownership.test.ts requires it), so its interaction code is part of this
-  // path by design; the dock change is +4.2 KB raw / +1.7 KB transfer on main (5,601.4 ->
-  // 5,605.6 KB raw, 1,664.1 -> 1,665.8 KB transfer, 79 chunks both sides), measured by
-  // building main and then rebuilding with only this change's three source files overlaid.
-  // Both halves are re-measured TOGETHER, or each drags main red on its own.
+  // Measured, one machine and one build per side, so the pair is comparable to itself rather
+  // than to a runner's: 5,599.7 KB raw / 1,663.4 KB transfer at 0065fade6 once its two
+  // ineffective import() calls were made static, leaving 210.8 KB and 65.1 KB spare, the margin
+  // the previous raise chose. Both halves are re-measured TOGETHER, or each drags main red on
+  // its own. Since that raise the eager set gained one 303-byte chunk (#11607's
+  // thread-message-slot split) and otherwise grew inside chunks already eager: #11607's fork
+  // boundary and #11648's UI scale, so what ran out is headroom, not laziness.
+  // The resource monitor remains eager so its frame can coordinate with overlays.
   transferBytes: 1_770_000,
   rawBytes: 5_950_000,
 };

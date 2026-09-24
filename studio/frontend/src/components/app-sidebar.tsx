@@ -249,6 +249,10 @@ import {
   type SidebarSection,
 } from "@/features/chat";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
+import {
+  buildChatItemMarkdown,
+  saveChatItemAsProjectSource,
+} from "@/features/chat/prompt-storage/prompt-storage-dialog";
 import { translate, useT, type TranslationKey } from "@/i18n";
 
 const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
@@ -458,9 +462,6 @@ async function saveChatToProjectSources(
   item: SidebarItem,
   projectId: string,
 ): Promise<void> {
-  const { saveChatItemAsProjectSource } = await import(
-    "@/features/chat/prompt-storage/prompt-storage-dialog"
-  );
   await saveChatItemAsProjectSource(item, projectId);
 }
 
@@ -2169,8 +2170,8 @@ export function AppSidebar() {
   // the list scroller add the rail width it does not lose, so both end on the same edge whether or
   // not the scrollbar takes space. Logical sides, since the rail moves under rtl.
   const rowPadding = usesDesktopTitlebar
-    ? "ps-[5px] pe-[calc(var(--sidebar-rail,0px)+5px)]"
-    : "ps-1.5 pe-[calc(var(--sidebar-rail,0px)+6px)]";
+    ? "ps-[calc(5px*var(--ui-space-scale,1))] pe-[calc(var(--sidebar-rail,0px)+5px*var(--ui-space-scale,1))]"
+    : "ps-1.5 pe-[calc(var(--sidebar-rail,0px)+6px*var(--ui-space-scale,1))]";
 
   // Inside the scroller the rail already occupies that space. The profile footer also uses this
   // padding deliberately: its width is independent of whether the recent-chat list has a scrollbar.
@@ -2788,9 +2789,6 @@ export function AppSidebar() {
     // The read runs inside the write: Safari drops the gesture across an
     // await, and a chord has no second one to fall back on.
     const copied = await copyToClipboardFrom(async () => {
-      const { buildChatItemMarkdown } = await import(
-        "@/features/chat/prompt-storage/prompt-storage-dialog"
-      );
       // A compare row is two threads: keep both, each under its model's name.
       const markdown = await buildChatItemMarkdown(item);
       if (!markdown) {
@@ -4842,7 +4840,7 @@ export function AppSidebar() {
                   <HugeiconsIcon
                     icon={BadgeInfoIcon}
                     strokeWidth={1.75}
-                    className="size-[21px] text-nav-fg"
+                    className="size-[calc(21px*var(--ui-space-scale,1))] text-nav-fg"
                   />
                 </span>
                 <div className="flex min-w-0 flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
@@ -4860,7 +4858,7 @@ export function AppSidebar() {
                   className="ml-auto flex size-[calc(32px*var(--ui-space-scale,1))] shrink-0 items-center justify-center text-muted-foreground group-data-[collapsible=icon]:hidden"
                 >
                   <ArrowRightIcon
-                    className="size-[17px]"
+                    className="size-[calc(17px*var(--ui-space-scale,1))]"
                     strokeWidth={1.75}
                   />
                 </span>
@@ -4884,7 +4882,7 @@ export function AppSidebar() {
               side="top"
               align="center"
               sideOffset={8}
-              className="app-user-menu menu-soft-surface-up ring-0 w-[16rem] rounded-[20px] border border-transparent px-2.5 py-2.5 font-heading dark:border-[rgb(255_255_255_/_calc(0.05*var(--contrast-edge-gain,1)))]"
+              className="app-user-menu menu-soft-surface-up ring-0 w-[calc(16rem*var(--ui-space-scale,1))] rounded-[20px] border border-transparent px-2.5 py-2.5 font-heading dark:border-[rgb(255_255_255_/_calc(0.05*var(--contrast-edge-gain,1)))]"
               trigger={(triggerRef) => (
                 <SidebarMenuButton
                   ref={triggerRef}
@@ -4932,7 +4930,7 @@ export function AppSidebar() {
                         key={item.id}
                         onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
                       >
-                        <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[18px]" />
+                        <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
                         <span>{t("shell.navigation.api")}</span>
                       </DropdownMenuItem>
                     );
@@ -5027,7 +5025,7 @@ export function AppSidebar() {
               <HugeiconsIcon
                 icon={Settings02Icon}
                 strokeWidth={1.5}
-                className="!size-[18px]"
+                className="!size-[calc(18px*var(--ui-space-scale,1))]"
               />
             </button>
           </SidebarMenuItem>

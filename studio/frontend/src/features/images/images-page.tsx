@@ -13,7 +13,6 @@ import {
   Image03Icon,
   ImageAdd02Icon,
   InformationCircleIcon,
-  PinIcon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -75,7 +74,11 @@ import type {
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
-import { GalleryItemMenu } from "@/components/gallery-item-menu";
+import { GalleryItemMenu, GalleryPinBadge } from "@/components/gallery-item-menu";
+import { MediaRailResizeHandle } from "@/components/media-rail-resize-handle";
+import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-width";
+import { StripDropLine } from "@/components/gallery-strip-reorder";
+import { useStripReorder } from "@/hooks/use-strip-reorder";
 import { MediaPageLink } from "@/components/media-page-link";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
@@ -85,6 +88,7 @@ import {
   fetchWhileStable,
   hasUnknownRecord,
   mergeGenerated,
+  moveGalleryItem,
   newRecordProbeBaseline,
   nextSelectedId,
   pinnedOrder,
@@ -119,6 +123,7 @@ import {
 import { resolveDiffusionGgufFilename } from "@/lib/diffusion-gguf-filename";
 import { createPickGuard, runGgufRepoPick } from "@/lib/diffusion-gguf-pick";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
+import { useDiffusionPickToast, usePickToastProgress } from "@/lib/use-diffusion-pick-toast";
 import {
   PRECISION_REFUSAL_TITLE,
   denseTextEncoderBuildLabel,
@@ -189,6 +194,8 @@ import {
   getGenerateProgress,
   listDiffusionControlNets,
   listDiffusionLoras,
+  addGalleryImageToProject,
+  moveGalleryImage,
   setGalleryImageFlags,
   getDiffusionDownloadPlan,
   loadDiffusionModel,
@@ -345,7 +352,7 @@ function DimensionSelect({
         >
           <ChevronDown className="size-4" />
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="max-h-72 overflow-y-auto">
+        <DropdownMenuContent align="end" className="max-h-[min(--spacing(72),var(--radix-dropdown-menu-content-available-height))] overflow-y-auto">
           {dimOptions(limits).map((n) => (
             <DropdownMenuItem key={n} onSelect={() => pick(n)}>
               <span className="tabular-nums">{n}</span>
@@ -738,7 +745,7 @@ function AdvancedSelect({
           {badge}
         </span>
         <Select value={value} onValueChange={onValueChange}>
-          <SelectTrigger aria-label={label} className="h-8 w-[160px] text-xs">
+          <SelectTrigger aria-label={label} className="h-8 w-[calc(160px*var(--ui-space-scale,1))] max-sm:w-[min(calc(160px*var(--ui-space-scale,1)),50vw)] text-xs">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -1045,12 +1052,18 @@ function RecipePopover({
           Recipe
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" side="top" className="w-80 p-0">
-        <div className="border-b border-border/60 px-4 py-2.5">
+      {/* Fits the viewport: only the settings scroll, and overflow-hidden keeps the corners round. */}
+      <PopoverContent
+        align="end"
+        side="top"
+        collisionPadding={12}
+        className="flex max-h-[var(--radix-popover-content-available-height)] w-80 flex-col gap-0 overflow-hidden p-0"
+      >
+        <div className="shrink-0 border-b border-border/60 px-4 py-2.5">
           <p className="text-sm font-semibold">Generation settings</p>
           <p className="text-ui-11 text-muted-foreground">{formatTimestamp(image.created_at)}</p>
         </div>
-        <div className="flex flex-col gap-2 px-4 py-3 text-xs">
+        <div className="flex min-h-0 flex-col gap-2 overflow-y-auto overscroll-contain px-4 py-3 text-xs">
           <RecipeRow label="Prompt" value={image.prompt} wrap />
           {image.negative_prompt ? (
             <RecipeRow label="Negative" value={image.negative_prompt} wrap />
@@ -1085,7 +1098,7 @@ function RecipePopover({
           <RecipeRow label="Guidance" value={String(image.guidance)} />
           <RecipeRow label="Seed" value={String(image.seed)} mono />
         </div>
-        <div className="border-t border-border/60 px-3 py-2.5">
+        <div className="shrink-0 border-t border-border/60 px-3 py-2.5">
           <Button size="sm" className="w-full gap-1.5" onClick={() => onRestore(image)}>
             <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="size-4" />
             Restore these settings
@@ -1223,9 +1236,10 @@ export function ImagesPage({
   const hostClass = useHostClass();
   const denseQuantSchemes = useDenseQuantSchemes();
   const imageModels = useImageModels(hostClass, denseQuantSchemes);
+  const { rootStyle: railRootStyle } = useMediaRailWidth("images");
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
-    "A rally car speeding across vast desert dunes, throwing a dramatic trail of sand behind it. Low-angle action photograph, crisp vehicle details, motion blur in the foreground, harsh afternoon light, realistic textures.",
+    "Cinematic wide shot of a whimsical Alice in Wonderland tea party in an overgrown Victorian garden. Exactly three figures at a long white lace-draped table: a tall eccentric gentleman in an oversized emerald velvet top hat pouring tea from a silver pot mid-motion; a young woman in a pale blue Victorian dress seated left, holding a porcelain teacup with both hands, looking up and laughing; an older woman in deep burgundy seated right in profile, reaching for a tiered cake stand. Detailed embroidered fabrics, realistic skin texture, natural expressions. The table holds mismatched porcelain, antique silverware, towering pastel cakes, and wildflowers. Giant red-capped mushrooms rise behind the table, with ancient trees overhead and golden sunlight streaming through leaves. Shot on 85mm, f/2.8, focus on the gentleman, soft background falloff. Photorealistic, saturated storybook color, warm amber and deep green palette.",
   );
   const [negativePrompt, setNegativePrompt] = useState("");
   const [negativeOpen, setNegativeOpen] = useState(false);
@@ -1535,6 +1549,7 @@ export function ImagesPage({
     if (loadToastId.current != null) toast.dismiss(loadToastId.current);
     loadToastId.current = null;
   }, []);
+  const pickToast = useDiffusionPickToast();
 
   // The load toast is built by handleLoad and the progress poll, both defined above
   // handleCancelLoad, so the action goes through a ref to keep a stable onClick.
@@ -1563,6 +1578,8 @@ export function ImagesPage({
     // need was inert anyway, since the marker was cleared when the PLAN resolved rather than when
     // the download finished.
     pickGuard.cancel();
+    // That pick can no longer load, so its toast must not keep promising it will.
+    pickToast.dismissAll();
     // Everything in flight is now stale. Clearing the timer stops the NEXT poll tick but not a
     // request awaiting its response, and those still apply terminal state; the counter is what
     // they compare against.
@@ -1583,7 +1600,7 @@ export function ImagesPage({
       revertPick(quantRevert.current);
       quantRevert.current = null;
     }
-  }, [dismissLoadToast, pickGuard, revertPick]);
+  }, [dismissLoadToast, pickGuard, pickToast, revertPick]);
 
   // Mirror to the module cache so a tab switch re-renders instantly.
   useEffect(() => {
@@ -2001,6 +2018,69 @@ export function ImagesPage({
     },
     [resyncWindow],
   );
+
+  // Drag-to-reorder: applied optimistically, then the server's record (key and pin) is adopted.
+  const handleMove = useCallback(
+    async (id: string, afterId: string | null) => {
+      const next = moveGalleryItem(galleryCache.images, id, afterId);
+      if (next === galleryCache.images) return;
+      const guessedPinned = Boolean(next.find((i) => i.id === id)?.pinned);
+      // Takes a pin token too: a pin clicked after this drop must not be undone by its response.
+      const attempt = (pinSeq.current += 1);
+      pinAttempt.current.set(id, attempt);
+      stripEpoch.current += 1;
+      galleryCache.images = next;
+      setImages(next);
+      try {
+        // Shares the pin queue, since both rewrite the order.
+        const record = await serializeById("image-pin", () => moveGalleryImage(id, afterId));
+        if (pinAttempt.current.get(id) !== attempt) return;
+        pinAttempt.current.delete(id);
+        setImages((prev) => {
+          const patched = prev.map((i) =>
+            i.id === id ? { ...i, pinned: record.pinned, order_at: record.order_at } : i,
+          );
+          // Re-sort only if the local pin guess was wrong.
+          const out =
+            Boolean(record.pinned) === guessedPinned ? patched : sortGalleryItems(patched);
+          galleryCache.images = out;
+          return out;
+        });
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to move image");
+        // Restore the server's order.
+        stripEpoch.current += 1;
+        const epoch = stripEpoch.current;
+        try {
+          await resyncWindow(galleryCache.images.length, () => stripEpoch.current === epoch);
+        } catch {
+          void loadGallery();
+        }
+      }
+    },
+    [resyncWindow, loadGallery],
+  );
+  // One-click download of the original PNG.
+  const handleQuickDownload = useCallback(
+    async (image: GalleryImage) => {
+      const src = srcById[image.id];
+      if (src) {
+        await downloadImage(src, image, "png");
+        return;
+      }
+      try {
+        const blob = await fetchGalleryBlob(image.url);
+        await downloadFile(blob, exportFilename(image, "png"), blob.type);
+      } catch (error) {
+        if (isDownloadCancelled(error)) return;
+        toast.error("Could not save image", {
+          description: error instanceof Error ? error.message : undefined,
+        });
+      }
+    },
+    [srcById],
+  );
+  const stripReorder = useStripReorder((id, afterId) => void handleMove(id, afterId));
 
   const handleArchive = useCallback(
     async (id: string) => {
@@ -2547,6 +2627,8 @@ export function ImagesPage({
       // The Advanced values this load must use when pinned earlier: a staged download plans its file
       // set at pick time and loads minutes later, so live state could outrun the staged files.
       pinned?: LoadAdvanced,
+      // Reuse the pick toast when loading starts.
+      pickToastId?: string,
     ): Promise<boolean> => {
       // Cancel any prior poll loop so two cannot run at once.
       if (pollTimer.current) clearTimeout(pollTimer.current);
@@ -2570,7 +2652,8 @@ export function ImagesPage({
       // Show the chat-style toast immediately; the poll updates it by id.
       dismissLoadToast();
       lastLoadSig.current = null;
-      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast));
+      const handedOver = pickToast.take(pickToastId);
+      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, handedOver, cancelLoadFromToast));
       // Remember what was loaded so "Reapply" can reload it. Snapshot the prior target first: a load
       // that fails to START leaves the previous model resident.
       const prevLastLoad = lastLoad.current;
@@ -2636,7 +2719,7 @@ export function ImagesPage({
       void pollLoadProgress();
       return settle(true);
     },
-    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast],
+    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast, pickToast],
   );
 
   // Set or clear the Transform/Inpaint source image; always drop the painted mask, which is
@@ -2657,6 +2740,7 @@ export function ImagesPage({
     advanced: LoadAdvanced;
     // The pick that staged it: a download outlives its pick, so it must not evict a newer one when it lands.
     token: number;
+    toastId?: string;
   } | null>(null);
   const handleLoadRef = useRef(handleLoad);
   handleLoadRef.current = handleLoad;
@@ -2669,9 +2753,12 @@ export function ImagesPage({
   const runStagedLoad = useCallback(
     (pending: NonNullable<typeof pendingStagedLoad.current>) => {
       if (pendingStagedLoad.current === pending) pendingStagedLoad.current = null;
-      if (!pickGuard.isLatest(pending.token)) return;
+      if (!pickGuard.isLatest(pending.token)) {
+        pickToast.dismiss(pending.toastId);
+        return;
+      }
       const owned = stagedQuantRevert.current;
-      void handleLoadRef.current(pending.repoId, pending.opts, pending.advanced).then((started) => {
+      void handleLoadRef.current(pending.repoId, pending.opts, pending.advanced, pending.toastId).then((started) => {
         if (started) return;
         if (quantRevert.current && quantRevert.current === owned) {
           revertPick(quantRevert.current);
@@ -2680,25 +2767,33 @@ export function ImagesPage({
         if (stagedQuantRevert.current === owned) stagedQuantRevert.current = null;
       });
     },
-    [pickGuard, revertPick],
+    [pickGuard, revertPick, pickToast],
   );
   // Each download-only selection keeps its complete plan until it finishes or is cancelled.
   const downloadOnlyPlans = useRef<StagedDownloadEntry[][]>([]);
   const pendingLoadEntries = useRef<StagedDownloadEntry[] | null>(null);
   const stagedPlan = useRef<"download" | { token: number } | null>(null);
 
-  const { stage } = useStagedDownload({
+  const { stage, progress: stagedProgress } = useStagedDownload({
     scopeId: "diffusion",
     onReady: () => {
       if (stagedPlan.current === "download") {
         finishDownloadOnlyPlan();
         return;
       }
-      if (pendingStagedLoad.current?.token === stagedPlan.current?.token) {
+      const finished =
+        pendingStagedLoad.current?.token === stagedPlan.current?.token
+          ? pendingStagedLoad.current
+          : null;
+      if (finished) {
         pendingLoadEntries.current = null;
       }
       stagedPlan.current = null;
-      if (startQueuedDownload()) return;
+      if (startQueuedDownload()) {
+        // Loading waits for queued download-only plans.
+        pickToast.setPhase(finished?.toastId, "waiting");
+        return;
+      }
       resumePendingLoad();
     },
     onCancelled: () => {
@@ -2713,6 +2808,7 @@ export function ImagesPage({
         return;
       }
       pendingLoadEntries.current = null;
+      pickToast.dismiss(pendingStagedLoad.current?.toastId);
       // The selected model is only an intent until every dependency is ready: a cancelled companion
       // must not leave that intent behind for a late completion to load.
       pendingStagedLoad.current = null;
@@ -2727,6 +2823,7 @@ export function ImagesPage({
       startQueuedDownload();
     },
   });
+  usePickToastProgress(pickToast, stagedProgress);
 
   /** A staged file set, as the identity two picks of the same model share. */
   function planKey(entries: StagedDownloadEntry[]) {
@@ -2760,13 +2857,15 @@ export function ImagesPage({
     const pending = pendingStagedLoad.current;
     if (!pending || !pickGuard.isLatest(pending.token)) {
       pendingLoadEntries.current = null;
+      pickToast.dismiss(pending?.toastId);
       return;
     }
     if (entries) {
       stagedPlan.current = { token: pending.token };
-      stage(entries);
+      pickToast.setPhase(pending.toastId, "downloading", stage(entries));
     } else if (!active) {
       stagedLoadDeferred.current = true;
+      pickToast.setPhase(pending.toastId, "ready");
     } else {
       runStagedLoad(pending);
     }
@@ -2840,9 +2939,12 @@ export function ImagesPage({
         pendingLoadEntries.current = null;
         stagedLoadDeferred.current = false;
         stagedQuantRevert.current = null;
+        pickToast.dismissAll();
         if (!owns()) return true;
       }
       if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts);
+      // Show feedback before the potentially slow Hub metadata request.
+      const pickToastId = downloadOnly ? undefined : pickToast.show();
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
       const advanced = downloadSnapshot ?? currentLoadAdvanced(repoId);
       // Read before the await: a pick made while the plan resolves replaces quantRevert, and this
@@ -2857,7 +2959,10 @@ export function ImagesPage({
       try {
         const plan = await requestDownloadPlan(repoId, opts, advanced);
         // Only load intents are superseded; accepted downloads keep their own plans.
-        if (!downloadOnly && (pick !== pickSeq.current || !owns())) return true;
+        if (!downloadOnly && (pick !== pickSeq.current || !owns())) {
+          pickToast.dismiss(pickToastId);
+          return true;
+        }
         if (downloadOnly && plan.plan_failed) {
           throw new Error("Required asset metadata is incomplete. Retry when it is available.");
         }
@@ -2869,6 +2974,7 @@ export function ImagesPage({
               opts,
               advanced,
               token: token ?? pickGuard.claim(),
+              toastId: pickToastId,
             };
             stagedQuantRevert.current = ownRevert;
           }
@@ -2899,7 +3005,9 @@ export function ImagesPage({
             const pending = pendingStagedLoad.current;
             if (downloadOnlyPlans.current.length === 0 && pending) {
               stagedPlan.current = { token: pending.token };
-              stage(entries);
+              pickToast.setPhase(pickToastId, "downloading", stage(entries));
+            } else {
+              pickToast.setPhase(pickToastId, "queued");
             }
           }
           return true;
@@ -2914,8 +3022,12 @@ export function ImagesPage({
         // No plan (older backend, metadata hiccup): fall back to the load's own download.
       }
       // Re-checked: a plan that REJECTED after a newer pick would otherwise reach the fallback load.
-      if (!downloadOnly && (pick !== pickSeq.current || !owns())) return true;
+      if (!downloadOnly && (pick !== pickSeq.current || !owns())) {
+        pickToast.dismiss(pickToastId);
+        return true;
+      }
       if (incompatible) {
+        pickToast.dismiss(pickToastId);
         toast.error(incompatible);
         return downloadOnly;
       }
@@ -2923,9 +3035,9 @@ export function ImagesPage({
         toast.info("No downloads were planned for this selection");
         return true;
       }
-      return handleLoadRef.current(repoId, opts, advanced);
+      return handleLoadRef.current(repoId, opts, advanced, pickToastId);
     },
-    [stage, currentLoadAdvanced, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick],
+    [stage, currentLoadAdvanced, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick, pickToast],
   );
 
   const resolveDownloadFootprint = useCallback(
@@ -2954,7 +3066,8 @@ export function ImagesPage({
     pendingLoadEntries.current = null;
     stagedLoadDeferred.current = false;
     stagedQuantRevert.current = null;
-  }, []);
+    pickToast.dismissAll();
+  }, [pickToast]);
 
   // A GGUF pick can arrive with only a repo id. The backend rejects a gguf load with no filename
   // and a pipeline load of a GGUF repo, so name the file from the listing first.
@@ -3327,6 +3440,7 @@ export function ImagesPage({
       }
       // The deploy owns the page now: a resolving pick or a staged download would load over the base it is about to.
       pickGuard.cancel();
+      pickToast.dismissAll();
       pendingDeploy.current = { loraId: stem, family: args.family };
       if (args.trigger.trim()) setPrompt(args.trigger.trim());
       setPageMode("create");
@@ -3344,7 +3458,7 @@ export function ImagesPage({
         }
       });
     },
-    [applyImageModelDefaults, busy, handleLoad, pickGuard, quant, revertPick, setPageMode],
+    [applyImageModelDefaults, busy, handleLoad, pickGuard, pickToast, quant, revertPick, setPageMode],
   );
 
   // Resolves true when the backend accepted the unload; handleCancelLoad reports the cancel only then.
@@ -4155,12 +4269,18 @@ export function ImagesPage({
   return (
     // The chat-style layout gives this page no outer top inset, so clear the custom titlebar here as chat does.
     // 34px on win/linux, 0 under macOS's native one.
-    <div className="diffusion-surface @container flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
+    <div
+      {...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}
+      style={railRootStyle}
+      className="diffusion-surface @container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
+    >
+      {/* Page-level, so the handle covers the divider through the header too (Create and Train). */}
+      <MediaRailResizeHandle kind="images" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
       {active && <GuidedTour {...tour.tourProps} />}
-      {/* Keep the tabs centered over the preview at every width: the model rail holds at 408px when
-          space permits and shrinks only to preserve the controls. */}
-      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]">
+      {/* Keep the tabs centered over the preview at every width: the model rail holds at its
+          (draggable) width when space permits and shrinks only to preserve the controls. */}
+      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
         <div
           className={cn(
             "pointer-events-none flex h-full min-w-0 items-start overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
@@ -4196,6 +4316,7 @@ export function ImagesPage({
                 triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
                 task={IMAGE_GEN_TASKS}
                 catalog={IMAGE_CATALOG}
+                hubCapability="diffusion"
                 placeholder="Select image model"
                 open={active && selectorOpen}
                 onOpenChange={(o) => setSelectorOpen(active && o)}
@@ -4228,7 +4349,7 @@ export function ImagesPage({
               value={pageMode}
               onValueChange={(v) => setPageMode(v as "create" | "train")}
               fit={true}
-              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11"
+              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>span]:sr-only"
               tabs={[
                 { value: "create", label: "Create", icon: <HugeiconsIcon icon={SparklesIcon} className="size-3.5" /> },
                 { value: "train", label: "Train", icon: <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" /> },
@@ -4272,14 +4393,14 @@ export function ImagesPage({
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
         <div
           data-tour="images-settings"
-          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
+          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-13rem))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
         >
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto",
+              "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto",
               settingsFadeClass,
             )}
           >
@@ -4291,7 +4412,7 @@ export function ImagesPage({
                   {/* Same icon the sidebar submenu uses for this workflow. */}
                   <HugeiconsIcon
                     icon={activeWorkflowTab.icon}
-                    className="size-[18px] shrink-0"
+                    className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0"
                   />
                   {activeWorkflowTab.heading ?? activeWorkflowTab.label}
                 </h2>
@@ -4666,7 +4787,7 @@ export function ImagesPage({
                         value={String(matchResolution)}
                         onValueChange={(v) => setMatchResolution(Number(v))}
                       >
-                        <SelectTrigger aria-label="Match size" className="w-[120px]">
+                        <SelectTrigger aria-label="Match size" className="w-[calc(120px*var(--ui-space-scale,1))]">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -5043,7 +5164,7 @@ export function ImagesPage({
                 variant="outline"
                 onClick={handleCancelGenerate}
               >
-                <Spinner variant="ring" className="mr-2 size-4" />
+                <Spinner className="mr-2 size-4" />
                 {genDone != null && count > 1 ? `Stop (${genDone}/${count})` : "Stop"}
               </Button>
             ) : (
@@ -5073,7 +5194,8 @@ export function ImagesPage({
                 />
                 {/* Actions grouped in one glass toolbar so they stay legible over any image. Size and seed
                     live in the Recipe popover. */}
-                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur">
+                {/* No button borders: focus returning from a menu would draw one. Keyboard focus tints instead. */}
+                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
                   <RecipePopover image={selected} onRestore={restoreSettings} active={active} />
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild={true}>
@@ -5110,13 +5232,15 @@ export function ImagesPage({
                     }
                     onToggleArchive={() => void handleArchive(selected.id)}
                     onDelete={() => void handleDelete(selected.id)}
+                    onDownload={() => void handleQuickDownload(selected)}
+                    onAddToProject={(projectId) => addGalleryImageToProject(selected.id, projectId)}
                   />
                 </div>
               </>
             ) : selected ? (
               // The selected record's blob is still loading; spin in place.
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                <Spinner variant="ring" className="size-8" />
+                <Spinner className="size-8" />
                 <p className="text-sm">Loading…</p>
               </div>
             ) : busy === "generating" ? null : (
@@ -5139,9 +5263,8 @@ export function ImagesPage({
                   selectedSrc ? "inset-x-0 bottom-4" : "inset-0 items-center",
                 )}
               >
-                <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg backdrop-blur dark:bg-card/95">
+                <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg ring-1 ring-border backdrop-blur">
                   <ModelLoadDescription
-                    variant="floating"
                     // Drop the chat min-height: this floating card has no layout to stabilise.
                     className="min-h-0"
                     title={
@@ -5161,8 +5284,9 @@ export function ImagesPage({
           {(images.length > 0 || busy === "generating") && (
             <div
               ref={stripRef}
+              {...stripReorder.stripProps}
               // The rule spans the pane; only the thumbnail contents receive the 40px gutter.
-              className="hover-scrollbar flex shrink-0 gap-2 overflow-x-auto border-t border-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] px-10 py-3"
+              className="hover-scrollbar flex shrink-0 gap-2 overflow-x-auto border-t border-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] px-10 max-sm:px-5 py-3"
               onScroll={(e) => {
                 // Near the right edge: pull the next older page (infinite scroll).
                 const el = e.currentTarget;
@@ -5172,8 +5296,8 @@ export function ImagesPage({
               {/* In-progress generation: a placeholder tile at the front so past images stay browsable while
                   the new one renders. */}
               {busy === "generating" && (
-                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center rounded-lg bg-muted/50">
-                  <Spinner variant="ring" className="size-6 text-muted-foreground" />
+                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center rounded-lg bg-muted/50 ring-2 ring-primary/30">
+                  <Spinner className="size-5 text-muted-foreground" />
                 </div>
               )}
               {/* The tile is a wrapper, not a button: the actions menu must be the select button's SIBLING,
@@ -5183,8 +5307,16 @@ export function ImagesPage({
                 <div
                   key={image.id}
                   data-image-id={image.id}
-                  className="group relative size-16 shrink-0"
+                  {...stripReorder.tileProps(image.id)}
+                  className={cn(
+                    "group relative size-16 shrink-0",
+                    // Fade the tile being dragged.
+                    stripReorder.draggingId === image.id && "opacity-40",
+                  )}
                 >
+                  {stripReorder.cue?.id === image.id && (
+                    <StripDropLine edge={stripReorder.cue.edge} />
+                  )}
                   <button
                     type="button"
                     onClick={() => setSelectedId(image.id)}
@@ -5194,6 +5326,7 @@ export function ImagesPage({
                       <img
                         src={srcById[image.id]}
                         alt={image.prompt}
+                        draggable={false}
                         className="size-full object-cover"
                       />
                     ) : (
@@ -5206,11 +5339,13 @@ export function ImagesPage({
                       <span className="pointer-events-none absolute inset-0 rounded-[10px] border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
                     )}
                   </button>
-                  {/* Pin marker, bottom-left so it never sits under the menu. */}
+                  {/* Pin marker and Unpin button, bottom-left so it clears the menu. */}
                   {image.pinned && (
-                    <span className="pointer-events-none absolute bottom-0.5 left-0.5 rounded-full bg-background/80 p-0.5 text-foreground shadow-sm ring-1 ring-border backdrop-blur">
-                      <HugeiconsIcon icon={PinIcon} className="size-3" />
-                    </span>
+                    <GalleryPinBadge
+                      noun="image"
+                      className="bottom-0.5 left-0.5"
+                      onUnpin={() => void handleTogglePin(image.id, false)}
+                    />
                   )}
                   <div className="absolute right-0.5 top-0.5">
                     <GalleryItemMenu
@@ -5222,6 +5357,8 @@ export function ImagesPage({
                       onTogglePin={() => void handleTogglePin(image.id, !image.pinned)}
                       onToggleArchive={() => void handleArchive(image.id)}
                       onDelete={() => void handleDelete(image.id)}
+                    onDownload={() => void handleQuickDownload(image)}
+                    onAddToProject={(projectId) => addGalleryImageToProject(image.id, projectId)}
                     />
                   </div>
                 </div>

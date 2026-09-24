@@ -2313,6 +2313,88 @@ def _transformers_rope_scaling_assignment_drops_theta():
         return False
 
 
+_PLAIN_ROPE_KEYS = frozenset({"rope_type", "type", "rope_theta", "partial_rotary_factor"})
+_ATTRIBUTE_ROPE_KEYS = ("rope_theta", "partial_rotary_factor")
+_NO_ROPE_ATTRIBUTE = object()
+
+
+def fix_transformers_remote_rope_scaling_none():
+    """For remote-code configs only, read plain RoPE back as ``rope_scaling = None`` as 4.x did.
+
+    transformers 5 aliases ``rope_scaling`` to ``rope_parameters``, which is never None, so hub code
+    guarded by ``if config.rope_scaling is not None`` indexes missing keys (``KeyError: 'factor'``).
+    Only configs whose ``__init__`` takes ``rope_scaling`` and not ``rope_parameters``; native and
+    5.x-authored configs are untouched; a real scaling dict only loses the base and partial rotary
+    factor it duplicates from the config's own attributes."""
+    try:
+        from transformers.configuration_utils import PretrainedConfig
+    except Exception:
+        return
+    prop = PretrainedConfig.__dict__.get("rope_scaling")
+    if not isinstance(prop, property) or prop.fget is None:
+        return
+    if getattr(prop.fget, "_unsloth_remote_plain_rope_none", False):
+        return
+    original_get = prop.fget
+
+    legacy = {}
+
+    def _written_for_4x(cls):
+        # A 4.x-era config takes rope_scaling in __init__; a 5.x one takes rope_parameters.
+        if cls not in legacy:
+            try:
+                parameters = inspect.signature(cls.__init__).parameters
+                legacy[cls] = "rope_scaling" in parameters and "rope_parameters" not in parameters
+            except (TypeError, ValueError):
+                legacy[cls] = False
+        return legacy[cls]
+
+    @functools.wraps(original_get)
+    def rope_scaling(self):
+        value = original_get(self)
+        if not (
+            isinstance(value, dict)
+            and "transformers_modules" in (type(self).__module__ or "")
+            and _written_for_4x(type(self))
+        ):
+            return value
+        if (
+            value.get("rope_type", value.get("type", "default")) == "default"
+            and set(value) <= _PLAIN_ROPE_KEYS
+        ):
+            return None
+        # 4.x kept these as config attributes; their copies in a real scaling dict fail 4.x
+        # validators that expect exactly the checkpoint's keys (InternLM2: len(rope_scaling) == 2).
+        moved = [
+            key
+            for key in _ATTRIBUTE_ROPE_KEYS
+            if key in value and self.__dict__.get(key, _NO_ROPE_ATTRIBUTE) == value[key]
+        ]
+        if not moved:
+            return value
+        return {key: item for key, item in value.items() if key not in moved}
+
+    rope_scaling._unsloth_remote_plain_rope_none = True
+    PretrainedConfig.rope_scaling = property(rope_scaling, prop.fset, prop.fdel, prop.__doc__)
+
+
+def fix_transformers_is_torch_fx_available():
+    """Restore ``transformers.utils.import_utils.is_torch_fx_available``, removed in 5.x and
+    imported at module level by 4.x-era remote code (Ling / BailingMoe, DeepSeek-V3, Kimi-K2).
+    Same body as 4.57.6; only added when missing."""
+    try:
+        import transformers.utils.import_utils as import_utils
+    except Exception:
+        return
+    if hasattr(import_utils, "is_torch_fx_available"):
+        return
+
+    def is_torch_fx_available():
+        return import_utils.is_torch_available()
+
+    import_utils.is_torch_fx_available = is_torch_fx_available
+
+
 def fix_transformers_rope_scaling_drops_theta():
     """Stop a replaced ``rope_scaling`` silently unscaling RoPE (issue #2405).
 
