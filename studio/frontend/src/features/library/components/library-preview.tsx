@@ -11,6 +11,7 @@ import { ArtifactHtmlFrame } from "@/features/chat";
 import { isTauri } from "@/lib/api-base";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { toast } from "@/lib/toast";
+import { useNavigate } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
 import { PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -53,6 +54,23 @@ function bodyFor(item: LibraryItem): Body {
   if (kind === "pdf") return isTauri || navigator.pdfViewerEnabled === false ? "none" : "pdf";
   if (kind === "audio" || kind === "video") return kind;
   return isTextPreviewable(item) ? "text" : "none";
+}
+
+/** The page a generated file came from, which opens with it selected. */
+function generatedOn(item: LibraryItem) {
+  const [kind, ...rest] = item.id.split(":");
+  const id = rest.join(":");
+  if (kind === "image") return { label: "View in Images", to: "/images", search: { item: id } } as const;
+  if (kind === "video") return { label: "View in Video", to: "/video", search: { item: id } } as const;
+  if (kind === "audio") {
+    // Generated clips list in Speak mode.
+    return {
+      label: "View in Audio",
+      to: "/audio",
+      search: { task: "text-to-speech", item: id },
+    } as const;
+  }
+  return null;
 }
 
 /** Items with a file of their own; chat attachments live inside messages, fine-tunes are folders. */
@@ -280,6 +298,8 @@ export function LibraryPreview({
   const showCode = item !== null && codeFor === item.id;
   const pageScale = item !== null && zoom?.itemId === item.id ? zoom.scale : 1;
   const revealLabel = useRevealLabel();
+  const navigate = useNavigate();
+  const origin = item ? generatedOn(item) : null;
 
   async function save(): Promise<boolean> {
     if (!item || draft === null) return true;
@@ -376,9 +396,17 @@ export function LibraryPreview({
                 onClick: () => void saveThen(() => onChat(item)),
               },
               onDownload: isFileItem(item) ? () => void saveThen(() => onDownload(item)) : undefined,
-              onViewChat: item.threadId
-                ? () => void saveThen(() => onOpenThread(item.threadId!))
-                : undefined,
+              viewOriginal: item.threadId
+                ? {
+                    label: "View original chat",
+                    onClick: () => void saveThen(() => onOpenThread(item.threadId!)),
+                  }
+                : origin
+                  ? {
+                      label: origin.label,
+                      onClick: () => void navigate({ to: origin.to, search: origin.search }),
+                    }
+                  : undefined,
               reveal:
                 revealLabel && canReveal(item)
                   ? { label: revealLabel, onClick: () => revealInFolder(item.id) }
