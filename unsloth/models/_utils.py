@@ -1465,25 +1465,36 @@ def _adapter_fits_text_model(
     # key_mapping strips) or its weights cannot be read: PeftModel would drop them on the standalone decoder.
     import os
 
-    file_name = "adapter_model.safetensors"
-    try:
-        from safetensors import safe_open
-        if os.path.isdir(str(adapter_name)):
-            path = os.path.join(adapter_name, file_name)
-        else:
-            from huggingface_hub import hf_hub_download
-            path = hf_hub_download(
-                adapter_name,
-                file_name,
-                token = token,
-                revision = revision,
-                local_files_only = local_files_only,
-                cache_dir = cache_dir,
-            )
-        with safe_open(path, framework = "pt") as f:
-            names = list(f.keys())
-    except Exception:
-        return False
+    names = None
+    # PEFT's own order: safetensors first, then a safe_serialization = False adapter_model.bin.
+    for file_name in ("adapter_model.safetensors", "adapter_model.bin"):
+        try:
+            if os.path.isdir(str(adapter_name)):
+                path = os.path.join(adapter_name, file_name)
+                if not os.path.isfile(path):
+                    continue
+            else:
+                from huggingface_hub import hf_hub_download
+                path = hf_hub_download(
+                    adapter_name,
+                    file_name,
+                    token = token,
+                    revision = revision,
+                    local_files_only = local_files_only,
+                    cache_dir = cache_dir,
+                )
+            if file_name.endswith(".safetensors"):
+                from safetensors import safe_open
+                with safe_open(path, framework = "pt") as f:
+                    names = list(f.keys())
+            else:
+                import torch
+
+                # An adapter is small; weights_only never runs pickled code.
+                names = list(torch.load(path, map_location = "cpu", weights_only = True))
+            break
+        except Exception:
+            continue
     if not names:
         return False
     patterns = [re.compile(p) for p in key_mapping]

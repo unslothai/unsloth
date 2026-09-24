@@ -759,3 +759,40 @@ def test_nested_repo_code_class_lookup_honours_local_files_only(tmp_path, monkey
         server.server_close()
     assert plan is not None
     assert seen == []
+
+
+@needs_tf5
+def test_bin_adapter_is_read_like_a_safetensors_one(tmp_path):
+    # safe_serialization = False writes adapter_model.bin; PEFT loads it, so the gate must read it too.
+    peft = pytest.importorskip("peft")
+
+    ns = _ns()
+    repo, _ = _write_repo(tmp_path, name = "peft_bin_base")
+    parent = _load_parent_config(repo)
+    text_config, mapping = ns["_get_remote_composite_text_only"](
+        parent, str(repo), trust_remote_code = True
+    )
+    lora = dict(r = 4, target_modules = ["q_proj", "v_proj"])
+    text = transformers.AutoModelForCausalLM.from_pretrained(
+        repo,
+        config = text_config,
+        key_mapping = mapping,
+        trust_remote_code = True,
+        dtype = torch.float32,
+        local_files_only = True,
+    )
+    text_adapter = tmp_path / "text_adapter_bin"
+    peft.get_peft_model(text, peft.LoraConfig(**lora)).save_pretrained(
+        text_adapter, safe_serialization = False
+    )
+    wrapper = transformers.AutoModelForCausalLM.from_pretrained(
+        repo, trust_remote_code = True, dtype = torch.float32, local_files_only = True
+    )
+    wrapper_adapter = tmp_path / "wrapper_adapter_bin"
+    peft.get_peft_model(wrapper, peft.LoraConfig(**lora)).save_pretrained(
+        wrapper_adapter, safe_serialization = False
+    )
+    assert (text_adapter / "adapter_model.bin").is_file()
+    assert not (text_adapter / "adapter_model.safetensors").exists()
+    assert ns["_adapter_fits_text_model"](str(text_adapter), mapping) is True
+    assert ns["_adapter_fits_text_model"](str(wrapper_adapter), mapping) is False
