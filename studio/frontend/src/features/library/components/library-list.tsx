@@ -81,7 +81,7 @@ function GutterCheckbox({
         onCheckedChange={onCheckedChange}
         aria-label={label}
         className={cn(
-          "opacity-0 transition-opacity focus-visible:opacity-100",
+          "rounded-full opacity-0 transition-opacity focus-visible:opacity-100",
           group === "row"
             ? "group-hover/library-row:opacity-100"
             : "group-hover/library-head:opacity-100",

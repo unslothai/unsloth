@@ -6,6 +6,9 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -23,9 +26,12 @@ import {
   Cancel01Icon,
   FlimSlateIcon,
   Delete02Icon,
+  Download01Icon,
   Folder01Icon,
   FolderExportIcon,
   Image02Icon,
+  MoreHorizontalIcon,
+  PencilEdit02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
@@ -349,16 +355,22 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const chatAbout = (item: LibraryItem) =>
     void (item.model ? chatWithModel(navigate, item) : chatAboutItems(navigate, [item]));
 
-  const moveTo = async (target: LibraryTarget, destination: string | null) => {
+  // One toast for the batch, however many moved.
+  const moveAll = async (targets: LibraryTarget[], destination: string | null) => {
     const label = destination ? (folderById.get(destination)?.name ?? "folder") : "Library";
-    try {
-      if (target.kind === "item") await patchItem(target.item.id, { folderId: destination });
-      else await patchFolder(target.folder.id, { parentId: destination });
-      toast.success(`Moved to ${label}`);
-    } catch (err) {
-      fail("Could not move")(err);
-    }
+    const results = await Promise.allSettled(
+      targets.map((target) =>
+        target.kind === "item"
+          ? patchItem(target.item.id, { folderId: destination })
+          : patchFolder(target.folder.id, { parentId: destination }),
+      ),
+    );
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed) fail("Could not move")(failed.reason);
+    else toast.success(`Moved to ${label}`);
   };
+  const moveTo = (target: LibraryTarget, destination: string | null) =>
+    moveAll([target], destination);
 
   const actions: LibraryActions = {
     folders,
@@ -738,6 +750,40 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       : { title: "New folder", submitLabel: "Create", initialValue: "" };
 
   const selectedCount = selection.size;
+  // Selected files and the files in selected folders, each once.
+  const selectedFiles = () => {
+    const out = new Map<string, LibraryItem>();
+    for (const target of selectedTargets()) {
+      const files =
+        target.kind === "item"
+          ? [target.item].filter(isFileItem)
+          : filesInFolder(target.folder.id);
+      for (const file of files) out.set(file.id, file);
+    }
+    return [...out.values()];
+  };
+  // A lone fine-tune opens with its run settings, as its own menu does.
+  const selectedModel = () => {
+    const targets = selectedTargets();
+    const only = targets.length === 1 ? targets[0] : undefined;
+    return only?.kind === "item" && isModelItem(only.item) ? only.item : null;
+  };
+  const bulkChat = () => {
+    const model = selectedModel();
+    if (model) chatAbout(model);
+    else void chatAboutItems(navigate, selectedFiles());
+    setSelection(new Set());
+  };
+  const bulkDownload = async () => {
+    const files = selectedFiles();
+    setSelection(new Set());
+    // One at a time, so each save dialog or download finishes before the next starts.
+    for (const file of files) await downloadLibraryItem(file);
+  };
+  const bulkMove = (destination: string | null) => {
+    void moveAll(selectedTargets(), destination);
+    setSelection(new Set());
+  };
   const deletableSelection = () =>
     selectedTargets().filter((t) => t.kind === "folder" || isDeletable(t.item));
   const deleteText = pendingDelete ? deleteCopy(pendingDelete) : null;
@@ -790,58 +836,74 @@ function LibraryView({ search }: { search: LibrarySearch }) {
         )}
 
         {selectedCount > 0 && (
-          <div className="fixed bottom-8 left-1/2 z-30 flex -translate-x-1/2 items-center gap-1 rounded-full border border-border bg-popover p-1.5 pl-5 shadow-lg">
-            <span className="mr-2 text-sm">{selectedCount} selected</span>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm" className="rounded-full">
-                  <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-4" />
-                  Add to folder
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="center" side="top" className="max-h-[min(--spacing(80),var(--radix-dropdown-menu-content-available-height))] w-56">
-                <DropdownMenuItem
-                  onSelect={() => {
-                    void Promise.all(selectedTargets().map((t) => moveTo(t, null)));
-                    setSelection(new Set());
-                  }}
-                >
-                  <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
-                  Library (no folder)
-                </DropdownMenuItem>
-                {bulkDestinations().map((folder) => (
-                  <DropdownMenuItem
-                    key={folder.id}
-                    onSelect={() => {
-                      void Promise.all(selectedTargets().map((t) => moveTo(t, folder.id)));
-                      setSelection(new Set());
-                    }}
-                  >
-                    <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
-                    <span className="truncate">{folder.name}</span>
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="rounded-full text-destructive hover:text-destructive"
+          <div className="fixed bottom-8 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full bg-neutral-900 py-2 pl-6 pr-2 text-white shadow-xl">
+            <span className="mr-4 whitespace-nowrap text-sm font-medium">{selectedCount} selected</span>
+            <button
+              type="button"
+              disabled={selectedModel() === null && selectedFiles().length === 0}
+              onClick={bulkChat}
+              className="flex h-9 items-center gap-2 rounded-full bg-white px-4 text-sm font-medium text-neutral-900 outline-none transition-colors hover:bg-neutral-200 focus-visible:ring-2 focus-visible:ring-white/60 disabled:opacity-50"
+            >
+              <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-4" />
+              Start chat
+            </button>
+            <button
+              type="button"
+              disabled={selectedFiles().length === 0}
+              onClick={() => void bulkDownload()}
+              className="flex h-9 items-center gap-2 rounded-full border border-neutral-700 px-4 text-sm font-medium outline-none transition-colors hover:bg-neutral-800 focus-visible:ring-2 focus-visible:ring-white/60 disabled:opacity-50"
+            >
+              <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4" />
+              Download
+            </button>
+            <button
+              type="button"
               disabled={deletableSelection().length === 0}
-              onClick={() => requestDelete(deletableSelection())}
+              onClick={() => setPendingDelete(deletableSelection())}
+              className="flex h-9 items-center gap-2 rounded-full border border-red-500/70 px-4 text-sm font-medium text-red-400 outline-none transition-colors hover:bg-red-500/15 focus-visible:ring-2 focus-visible:ring-white/60 disabled:opacity-50"
             >
               <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
               Delete
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="rounded-full"
+            </button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="More actions"
+                  className="flex size-9 items-center justify-center rounded-full bg-neutral-800 outline-none transition-colors hover:bg-neutral-700 focus-visible:ring-2 focus-visible:ring-white/60"
+                >
+                  <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-5" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="center" side="top" className="w-48">
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger className="gap-2.5">
+                    <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-icon" />
+                    Move
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="max-h-[min(--spacing(80),var(--radix-dropdown-menu-content-available-height))] w-56">
+                    <DropdownMenuItem onSelect={() => bulkMove(null)}>
+                      <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                      Library (no folder)
+                    </DropdownMenuItem>
+                    {bulkDestinations().map((folder) => (
+                      <DropdownMenuItem key={folder.id} onSelect={() => bulkMove(folder.id)}>
+                        <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                        <span className="truncate">{folder.name}</span>
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <button
+              type="button"
               aria-label="Clear selection"
               onClick={() => setSelection(new Set())}
+              className="flex size-9 items-center justify-center rounded-full outline-none transition-colors hover:bg-neutral-800 focus-visible:ring-2 focus-visible:ring-white/60"
             >
-              <HugeiconsIcon icon={Cancel01Icon} strokeWidth={1.75} className="size-4" />
-            </Button>
+              <HugeiconsIcon icon={Cancel01Icon} strokeWidth={1.75} className="size-5" />
+            </button>
           </div>
         )}
       </main>
