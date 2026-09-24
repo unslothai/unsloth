@@ -243,15 +243,13 @@ async def reveal_location(
     account_access.require_installation_owner()
     from pathlib import Path
 
-    paths = {entry["key"]: entry["path"] for entry in await run_in_threadpool(library.locations)}
-    if body.key not in paths:
+    entries = {entry["key"]: entry for entry in await run_in_threadpool(library.locations)}
+    if body.key not in entries:
         raise HTTPException(status_code = 404, detail = "Unknown location")
-    from utils.paths.relocations import chosen
-
-    path = Path(paths[body.key])
+    path = Path(entries[body.key]["path"])
     # A chosen folder that is gone is on a drive that is not there: making it would put the next
     # saves beneath the mount point. Only a default is made.
-    if await run_in_threadpool(lambda: chosen(body.key) is not None and not path.is_dir()):
+    if not entries[body.key]["available"]:
         raise HTTPException(
             status_code = 409,
             detail = f"{path} is not available. Reconnect its drive, or reset the folder.",
@@ -272,16 +270,20 @@ async def move_location(
     body: LocationMove, current_subject: str = Depends(get_current_subject)
 ) -> dict:
     """Move one kind of file to another folder, files and all. Installation owner only, like the
-    other storage settings: other accounts keep their files in their own workspace."""
+    other storage settings: other accounts keep their files in their own workspace. `leftBehind`
+    names the folder whose files stayed on an unplugged drive when a Reset let go of it."""
     account_access.require_installation_owner()
     try:
-        await run_in_threadpool(library.move_location, body.key, body.path)
+        left_behind = await run_in_threadpool(library.move_location, body.key, body.path)
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc))
     except RuntimeError as exc:
         logger.warning("library.move_location_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = str(exc))
-    return {"locations": await run_in_threadpool(library.locations)}
+    return {
+        "locations": await run_in_threadpool(library.locations),
+        "leftBehind": left_behind,
+    }
 
 
 # ── Library-owned uploads ────────────────────────────────────────

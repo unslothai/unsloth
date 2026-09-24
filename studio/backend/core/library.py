@@ -20,6 +20,7 @@ and layers its overlay (name, favorite, folder) on top.
 
 from __future__ import annotations
 
+import errno
 import os
 import re
 import shutil
@@ -144,13 +145,33 @@ _SOURCE_ROOTS = {
 }
 
 
+_reported_unavailable: set[str] = set()
+
+
+def _log_unavailable(exc: Exception) -> None:
+    """Once per folder per process: every listing asks again while a drive is unplugged."""
+    message = str(exc)
+    if message not in _reported_unavailable:
+        _reported_unavailable.add(message)
+        logger.info("library.location_unavailable: %s", message)
+
+
 def disk_usage() -> Optional[dict]:
     """Capacity of the disk the Library's own files live on, which need not be the system disk,
-    and the sources stored on it, so the bar only counts bytes that disk actually holds. A source
-    that cannot say where it lives is left out rather than failing the listing."""
+    and the sources stored on it, so the bar only counts bytes that disk actually holds. While the
+    uploads folder's drive is unplugged, Studio's own disk. A source that cannot say where it lives
+    is left out rather than failing the listing."""
+    from utils.paths.relocations import LocationUnavailable
+    from utils.paths.storage_roots import studio_root
+
     try:
-        usage = shutil.disk_usage(uploads_dir())
-        device = _device(uploads_dir())
+        try:
+            home = uploads_dir()
+        except LocationUnavailable as exc:
+            _log_unavailable(exc)
+            home = studio_root()
+        usage = shutil.disk_usage(home)
+        device = _device(home)
     except OSError:
         return None
     sources = []
@@ -158,6 +179,8 @@ def disk_usage() -> Optional[dict]:
         try:
             if all(_device(root) == device for root in roots()):
                 sources.append(source)
+        except LocationUnavailable as exc:
+            _log_unavailable(exc)
         except Exception:
             logger.warning("library.source_root_failed: %s", source, exc_info = True)
     return {"totalBytes": usage.total, "freeBytes": usage.free, "sources": sources}
@@ -172,15 +195,22 @@ def upload_path(upload_id: str) -> Optional[Path]:
 def save_upload(name: str, content_type: str, chunks) -> dict:
     """Stream ``chunks`` to disk and record the upload."""
     upload_id = uuid.uuid4().hex
-    final_path = uploads_dir() / upload_id
     tmp_path = uploads_dir() / f".{upload_id}.tmp"
+    final_path = tmp_path.with_name(upload_id)
     size = 0
     try:
         with open(tmp_path, "wb") as handle:
             for chunk in chunks:
                 size += len(chunk)
                 handle.write(chunk)
-        os.replace(tmp_path, final_path)
+        # Settings > Library may have moved the uploads folder meanwhile. A move leaves `.tmp`
+        # files be, so the upload lands itself, never during a move, wherever uploads live now.
+        with _move_lock:
+            final_path = uploads_dir() / upload_id
+            if final_path.parent == tmp_path.parent:
+                os.replace(tmp_path, final_path)
+            else:
+                shutil.move(str(tmp_path), str(final_path))
         return library_db.insert_upload(upload_id, name, content_type, size)
     except BaseException:
         tmp_path.unlink(missing_ok = True)
@@ -556,11 +586,15 @@ _SOURCES = (
 def list_items() -> list[dict]:
     """Every item with its overlay applied, newest activity first. A failing source is skipped so
     one broken store cannot empty the whole Library."""
+    from utils.paths.relocations import LocationUnavailable
+
     overlay = library_db.list_entries()
     items: list[dict] = []
     for source in _SOURCES:
         try:
             items.extend(source())
+        except LocationUnavailable as exc:
+            _log_unavailable(exc)
         except Exception:
             logger.warning("library.source_failed: %s", source.__name__, exc_info = True)
     for item in items:
@@ -758,24 +792,86 @@ def _location_path(key: str, resolve) -> Path:
         return chosen(key)
 
 
+def _disk(path: Path) -> Optional[dict]:
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError:
+        return None
+    return {"totalBytes": usage.total, "freeBytes": usage.free}
+
+
 def locations() -> list[dict]:
     """Where each kind of Library file lives, for Settings > Library. `movable` kinds can be moved
-    with ``move_location``; `custom` says the owner already has."""
-    from utils.paths.relocations import MOVABLE, chosen
-    return [
-        {
-            "key": key,
-            "path": str(_location_path(key, resolve)),
-            "movable": key in MOVABLE,
-            "custom": chosen(key) is not None,
-        }
-        for key, resolve in _location_resolvers().items()
-    ]
+    with ``move_location``; `custom` says the owner already has. `available` is false while a
+    chosen folder's drive is not there; `disk` is the free space where the folder is, and `device`
+    tells folders on one disk from folders on another (both null while unavailable)."""
+    from utils.paths.relocations import MOVABLE, chosen, is_available
+
+    entries = []
+    for key, resolve in _location_resolvers().items():
+        path = _location_path(key, resolve)
+        available = key not in MOVABLE or is_available(key)
+        device = _device(path) if available else None
+        entries.append(
+            {
+                "key": key,
+                "path": str(path),
+                "movable": key in MOVABLE,
+                "custom": chosen(key) is not None,
+                "available": available,
+                "disk": _disk(path) if available else None,
+                # A string: a device number can be wider than a JavaScript number is exact.
+                "device": None if device is None else str(device),
+            }
+        )
+    return entries
 
 
 # Left behind by a move and ignored in an "empty" target: the OS writes them into any folder it shows.
 _OS_CLUTTER = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
+# Held for a whole move. A Library upload finishes under it, so it lands in whichever folder the
+# move leaves in use (see save_upload).
 _move_lock = threading.Lock()
+
+
+def _in_progress(name: str) -> bool:
+    """A save still being written (`.<id>.tmp`, renamed into place when whole), a delete setting its
+    file aside, or the write test. Never moved: the writer renames it by the path it started with."""
+    return name.startswith(".") and (
+        name.endswith((".tmp", ".deleting")) or name.startswith(".unsloth-write-test-")
+    )
+
+
+def _identity(path) -> Optional[tuple[int, int]]:
+    try:
+        stat = os.stat(path)
+    except (OSError, ValueError):
+        return None
+    return stat.st_dev, stat.st_ino
+
+
+def _loose(path: Path) -> str:
+    # For folders that are not there to ask: as spelled, case ignored, erring toward "the same".
+    return os.path.normcase(str(path)).casefold()
+
+
+def _inside(path: Path, folder: Path) -> bool:
+    """Whether `path` is `folder` or inside it. Compared by what the disk says, not by spelling:
+    resolve() keeps the case it is given, so on a case-insensitive disk (macOS, exFAT, NTFS) or
+    through a bind mount two spellings name one folder. `path` need not exist yet: its nearest
+    existing parents are compared."""
+    folder_id = _identity(folder)
+    if folder_id is None:
+        loose = _loose(folder)
+        return any(_loose(candidate) == loose for candidate in (path, *path.parents))
+    return any(_identity(candidate) == folder_id for candidate in (path, *path.parents))
+
+
+def _same_folder(a: Path, b: Path) -> bool:
+    a_id, b_id = _identity(a), _identity(b)
+    if a_id is None and b_id is None:
+        return _loose(a) == _loose(b)
+    return a_id == b_id
 
 
 def _location_default(key: str) -> Path:
@@ -783,17 +879,58 @@ def _location_default(key: str) -> Path:
     return account_path("library") if key == "uploads" else studio_root() / key
 
 
+def _scratch_and_system_folders() -> list[str]:
+    """Folders Library files must not move to although the model download folder may be there:
+    temporary and cache folders the OS empties on its own, and system folders for programs."""
+    import platform
+    import tempfile
+
+    home = Path.home()
+    folders = [tempfile.gettempdir()]
+    system = platform.system()
+    if system == "Windows":
+        drive = os.environ.get("SystemDrive", "C:") + "\\"
+        folders += [
+            os.environ.get("TEMP", ""),
+            os.environ.get("TMP", ""),
+            os.path.join(os.environ.get("SystemRoot", drive + "Windows"), "Temp"),
+            os.path.join(os.environ.get("LOCALAPPDATA", str(home / "AppData" / "Local")), "Temp"),
+            os.environ.get("ProgramData", drive + "ProgramData"),
+            drive + "$Recycle.Bin",
+        ]
+    else:
+        folders += ["/tmp", "/var/tmp", "/dev/shm", "/usr", "/bin", "/sbin", "/var", "/snap"]
+        folders += ["/lib", "/lib32", "/lib64", "/libx32", "/private/var", "/private/tmp"]
+        if system == "Darwin":
+            folders += [
+                "/Applications",
+                "/opt/homebrew",
+                str(home / "Library" / "Caches"),
+                str(home / ".Trash"),
+            ]
+        elif str(home) != "/root":
+            # Another account's home, where this one cannot keep files anyway.
+            folders.append("/root")
+    return [folder for folder in folders if folder]
+
+
 def _refuse_denied(resolved: Path) -> None:
     from hub.storage.scan_folders import (
         contains_sensitive_path_component,
         is_denied_system_path,
+        is_within_any,
     )
     if is_denied_system_path(str(resolved)) or contains_sensitive_path_component(str(resolved)):
         raise ValueError("System, credential and config folders cannot hold these files.")
+    if is_within_any(str(resolved), _scratch_and_system_folders()):
+        raise ValueError(
+            "Temporary, cache and program folders cannot hold these files: the system may empty them."
+        )
 
 
 def _move_target(raw: str) -> Path:
-    """An absolute, ordinary folder whose parent exists. Same rules as the model download folder."""
+    """An absolute, ordinary folder whose parent exists. Same rules as the model download folder,
+    and no temporary folders."""
     value = raw.strip()
     if not value:
         raise ValueError("Choose a folder.")
@@ -825,17 +962,21 @@ def _is_empty(folder: Path) -> bool:
     return not any(entry.name not in _OS_CLUTTER for entry in folder.iterdir())
 
 
-def _prepare_target(target: Path, key: str) -> Path:
-    """The folder the files go to: `target` itself when empty, else a named folder made inside it.
-    Created if needed and checked writable."""
+def _prepare_target(target: Path, key: str, current: Path) -> Path:
+    """The folder the files go to: `target` itself when empty, else a named folder made inside it,
+    and inside a drive's mount point too, so the files stay together on it. Created if needed and
+    checked writable. The named folder can already be `current` (a Reset after a Reset into a
+    default that held files), which is returned as is."""
     import tempfile
 
     try:
         target.mkdir(exist_ok = True)
         if not target.is_dir():
             raise ValueError("That path is a file, not a folder.")
-        if not _is_empty(target):
+        if os.path.ismount(target) or not _is_empty(target):
             target = target / _SUBFOLDERS[key]
+            if _same_folder(target, current):
+                return target
             # It can be a link out of the checked folder, so its destination is checked before use.
             _refuse_denied(target.resolve(strict = False))
             target.mkdir(exist_ok = True)
@@ -850,81 +991,283 @@ def _prepare_target(target: Path, key: str) -> Path:
     return target
 
 
-def _remove(path: Path) -> None:
-    if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path)
-    else:
-        path.unlink(missing_ok = True)
-
-
-# Patched in tests to force the copy path.
-_rename = os.rename
-
-
-def _move_entry(entry: Path, dest: Path, moved: list[tuple[Path, Path]]) -> None:
-    """Move one entry, noted in `moved` once `dest` holds all of it. Across drives it is copied
-    whole before the original goes: a failed copy is cleared away and the original stays, and a
-    failed removal leaves the complete copy noted, so the rollback takes it back."""
-    try:
-        _rename(entry, dest)
-    except OSError:
-        pass
-    else:
-        moved.append((entry, dest))
-        return
-    try:
-        if entry.is_dir() and not entry.is_symlink():
-            shutil.copytree(entry, dest, symlinks = True)
-        else:
-            shutil.copy2(entry, dest, follow_symlinks = False)
-    except BaseException:
-        try:
-            _remove(dest)
-        except OSError:
-            logger.error("library.move_cleanup_failed: %s", dest, exc_info = True)
-        raise
-    moved.append((entry, dest))
-    _remove(entry)
-
-
-def _move_back(source: Path, dest: Path) -> None:
-    """Undo one move. What a failed removal left of the original goes first: the copy is whole."""
-    if source.exists() or source.is_symlink():
-        _remove(source)
-    shutil.move(str(dest), str(source))
-
-
-def _move_entries(source: Path, target: Path, moved: list[tuple[Path, Path]]) -> None:
-    """Move everything in `source` into `target`, across drives too, noting each move in `moved`
-    as it lands so a failure part way can be undone."""
-    for entry in list(source.iterdir()):
-        if entry.name in _OS_CLUTTER:
-            continue
-        _move_entry(entry, target / entry.name, moved)
-
-
-def _refuse_overlap(target: Path, resolvers) -> None:
+def _refuse_overlap(target: Path, key: str, resolvers, final: bool) -> None:
+    """Refuse a target inside another kind's folder, a chat sandbox, the current folder or Unsloth's
+    own home (the key's default aside). The `final` folder, the one files go into, also must not
+    hold any of them: moving a folder into itself empties it."""
     from core.inference.tools import sandbox_root
+    from utils.paths.storage_roots import studio_root
 
+    current = _location_path(key, resolvers[key])
     # Chat sandboxes too: their listing would show the files as tool output, and clearing the chat
     # with its files would delete them.
-    roots = [_location_path(key, resolve) for key, resolve in resolvers.items()]
-    roots.append(Path(sandbox_root()))
-    for root in roots:
-        root = root.resolve()
-        if target == root or root in target.parents:
-            raise ValueError("That folder is inside another Unsloth folder.")
+    others = [_location_path(other, resolve) for other, resolve in resolvers.items() if other != key]
+    others.append(Path(sandbox_root()))
+    if any(_inside(target, root) for root in (*others, current)):
+        raise ValueError("That folder is inside another Unsloth folder.")
+    home = studio_root()
+    if _inside(target, home) and not _inside(target, _location_default(key)):
+        raise ValueError("That folder is inside Unsloth's own folder. Choose one outside it.")
+    if final and any(_inside(root, target) for root in (*others, current, home)):
+        raise ValueError("That folder holds Unsloth's own folders. Choose another folder.")
 
 
-def move_location(key: str, path: Optional[str]) -> None:
+def _readable_size(size: int) -> str:
+    value = float(size)
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024:
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
+
+
+def _nearest_existing(path: Path) -> Path:
+    for candidate in (path, *path.parents):
+        if candidate.exists():
+            return candidate
+    return path
+
+
+def _refuse_short_space(current: Path, target: Path) -> None:
+    """Across disks every byte is copied before the originals go: refuse up front when the target
+    disk cannot hold them all, rather than fill it and undo."""
+    if _device(current) == _device(target):
+        return
+    try:
+        need = _tree_stats(current)[0]
+        free = shutil.disk_usage(_nearest_existing(target)).free
+    except OSError:
+        return
+    # Room to spare for saves made meanwhile and for the filesystem's own bookkeeping.
+    if need + max(need // 50, 64 * 1024 * 1024) > free:
+        raise ValueError(
+            f"The files take {_readable_size(need)} and that drive has {_readable_size(free)} "
+            "free. Free up space there or choose another drive."
+        )
+
+
+class _MoveLog:
+    """What a move did, so a failure can undo it: each (source, dest, kept) that landed, where
+    `kept` means an identical file was already at `dest` and the original was dropped, and each
+    folder the move made."""
+
+    def __init__(self) -> None:
+        self.moved: list[tuple[Path, Path, bool]] = []
+        self.created: list[Path] = []
+
+
+# Patched in tests to force the copy path, or a file another program holds open.
+_rename = os.rename
+_unlink = os.remove
+
+
+def _discard(path: Path) -> None:
+    try:
+        path.unlink(missing_ok = True)
+    except OSError:
+        logger.error("library.move_cleanup_failed: %s", path, exc_info = True)
+
+
+def _in_use_error(path: Path, exc: OSError) -> OSError:
+    # ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION: Windows will not let go of an open file, and
+    # reports most other holds on one as access denied.
+    in_use = getattr(exc, "winerror", None) in (32, 33) or (
+        os.name == "nt" and isinstance(exc, PermissionError)
+    )
+    if in_use:
+        message = f"{path} is in use by another program. Close it and try again."
+    else:
+        message = f"{path} could not be moved: {exc.strerror or exc}"
+    return OSError(exc.errno, message)
+
+
+def _free_name(dest: Path) -> Path:
+    """`name (2).ext`, or the next number free, beside `dest`."""
+    for number in range(2, 10_000):
+        candidate = dest.with_name(f"{dest.stem} ({number}){dest.suffix}")
+        if not os.path.lexists(candidate):
+            return candidate
+    raise FileExistsError(errno.EEXIST, f"{dest} already exists")
+
+
+def _same_bytes(a: Path, b: Path) -> bool:
+    import filecmp
+    try:
+        return a.is_file() and b.is_file() and filecmp.cmp(a, b, shallow = False)
+    except OSError:
+        return False
+
+
+def _move_file(entry: Path, dest: Path, log: _MoveLog) -> None:
+    """Move one file (or link) to `dest`. Where something is already there, an identical file just
+    lets the original go, and a different one keeps both, the moved one renamed `name (2).ext`:
+    a move never overwrites or deletes a file it did not bring. Across drives the file is copied,
+    then the original removed; if the original cannot go (open in another program on Windows) the
+    copy goes instead, so each file is only ever in one place."""
+    kept = False
+    if os.path.lexists(dest):
+        if _same_bytes(entry, dest):
+            kept = True
+        else:
+            dest = _free_name(dest)
+    if not kept:
+        try:
+            _rename(entry, dest)
+        except FileNotFoundError:
+            if not os.path.lexists(entry):
+                return  # Deleted meanwhile: nothing to move.
+        except OSError:
+            pass
+        else:
+            log.moved.append((entry, dest, False))
+            return
+        try:
+            shutil.copy2(entry, dest, follow_symlinks = False)
+        except BaseException as exc:
+            _discard(dest)
+            if isinstance(exc, FileNotFoundError) and not os.path.lexists(entry):
+                return
+            if isinstance(exc, PermissionError):
+                raise _in_use_error(entry, exc) from exc
+            raise
+    try:
+        _unlink(entry)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        if not kept:
+            _discard(dest)
+        raise _in_use_error(entry, exc) from exc
+    log.moved.append((entry, dest, kept))
+
+
+def _move_entry(entry: Path, dest: Path, log: _MoveLog) -> None:
+    """Move `entry` to `dest`. A folder is renamed whole where it can be; across drives, or onto a
+    folder already there, it is merged in file by file, and the emptied original removed with
+    rmdir alone, which cannot take anything with it."""
+    if entry.name in _OS_CLUTTER or _in_progress(entry.name):
+        return
+    if not (entry.is_dir() and not entry.is_symlink()):
+        _move_file(entry, dest, log)
+        return
+    if not os.path.lexists(dest):
+        try:
+            _rename(entry, dest)
+        except FileNotFoundError:
+            if not os.path.lexists(entry):
+                return
+        except OSError:
+            pass
+        else:
+            log.moved.append((entry, dest, False))
+            return
+    if os.path.lexists(dest) and not (dest.is_dir() and not dest.is_symlink()):
+        dest = _free_name(dest)
+    if not dest.is_dir():
+        dest.mkdir()
+        log.created.append(dest)
+    try:
+        children = list(entry.iterdir())
+    except FileNotFoundError:
+        return
+    for child in children:
+        _move_entry(child, dest / child.name, log)
+    try:
+        entry.rmdir()
+    except OSError:
+        pass  # A save still writing in it, left for the next pass.
+
+
+def _move_entries(source: Path, target: Path, log: _MoveLog, only = None) -> None:
+    """Move everything in `source` into `target`, across drives too, noting each move in `log` as
+    it lands so a failure part way can be undone. Never an entry that holds `target` itself."""
+    for entry in list(source.iterdir()):
+        if only is not None and not only(entry):
+            continue
+        if _inside(target, entry):
+            continue
+        _move_entry(entry, target / entry.name, log)
+
+
+def _undo(log: _MoveLog) -> None:
+    """Put back everything `log` moved, then the folders it made, as long as they are empty."""
+    for source, dest, kept in reversed(log.moved):
+        try:
+            source.parent.mkdir(parents = True, exist_ok = True)
+            if kept:
+                # The file at `dest` was there before: copied back, never taken.
+                if not os.path.lexists(source):
+                    shutil.copy2(dest, source, follow_symlinks = False)
+            else:
+                _move_entry(dest, source, _MoveLog())
+        except OSError:
+            logger.error("library.move_rollback_failed: %s", dest, exc_info = True)
+    for folder in reversed(log.created):
+        try:
+            folder.rmdir()
+        except OSError:
+            pass  # Something was saved into it meanwhile; the stray pass takes that back.
+
+
+# How long a finished move waits for saves still writing to the old folder, and how recently a
+# save must have written to count as still writing (a crash's leftover does not hold a move up).
+_SETTLE_SECONDS = 30.0
+_WRITING_SECONDS = 10.0
+
+
+def _writing_in(folder: Path) -> bool:
+    import time
+
+    now = time.time()
+    try:
+        entries = list(folder.iterdir())
+    except OSError:
+        return False
+    for entry in entries:
+        if entry.name.endswith(".tmp") and _in_progress(entry.name):
+            try:
+                if now - entry.stat().st_mtime < _WRITING_SECONDS:
+                    return True
+            except OSError:
+                continue
+    return False
+
+
+def _settle(source: Path, target: Path, wait: bool, only = None) -> None:
+    """Pick up what landed in `source` after the switch: saves that were already writing there.
+    Repeats until a pass finds nothing new and, with `wait`, nothing is still being written, for
+    at most _SETTLE_SECONDS."""
+    import time
+
+    deadline = time.monotonic() + _SETTLE_SECONDS
+    while True:
+        log = _MoveLog()
+        try:
+            _move_entries(source, target, log, only)
+        except OSError:
+            logger.warning("library.move_straggler_failed: %s", source, exc_info = True)
+            return
+        writing = wait and _writing_in(source)
+        if not log.moved and not writing:
+            return
+        if time.monotonic() >= deadline:
+            if writing:
+                logger.warning("library.move_straggler_timeout: %s", source)
+            return
+        time.sleep(0.1)
+
+
+def move_location(key: str, path: Optional[str]) -> Optional[str]:
     """Move one kind of file to another folder, files and all, and keep saving there. `path` None
     moves it back to the default. Owner only; the caller checks.
 
     The switch is recorded first, so a file saved during the move already lands in the new folder;
-    a second pass then picks up any save that was writing to the old one. On a failure everything
-    moved so far goes back and the old folder stays in use. Raises ValueError for a folder that
-    cannot be used, RuntimeError when the move itself fails."""
-    from utils.paths.relocations import MOVABLE, chosen, set_chosen
+    later passes then pick up saves that were writing to the old one. On a failure everything
+    moved so far goes back, with anything saved into the new folder meanwhile, and the old folder
+    stays in use. Returns the folder whose files were left where they are, for a Reset while its
+    drive is not there, else None. Raises ValueError for a folder that cannot be used,
+    RuntimeError when the move itself fails."""
+    from utils.paths.relocations import MOVABLE, chosen, is_available, set_chosen
 
     if key not in MOVABLE:
         raise ValueError(
@@ -933,7 +1276,7 @@ def move_location(key: str, path: Optional[str]) -> None:
     resolvers = _location_resolvers()
     with _move_lock:
         current = _location_path(key, resolvers[key]).resolve()
-        if not current.is_dir():
+        if not is_available(key):
             # Its drive unplugged: nothing can move, but Reset still lets go of the folder.
             if path is not None:
                 raise ValueError(
@@ -941,35 +1284,36 @@ def move_location(key: str, path: Optional[str]) -> None:
                     "or reset the folder."
                 )
             set_chosen(key, None)
-            return
+            return str(current)
         target = _move_target(path) if path is not None else _location_default(key).resolve()
-        if target == current:
-            return
-        _refuse_overlap(target, resolvers)
+        if _same_folder(target, current):
+            return None
+        _refuse_overlap(target, key, resolvers, final = False)
+        _refuse_short_space(current, target)
         # Resolved again: the named subfolder can be a link to somewhere else entirely.
-        target = _prepare_target(target, key).resolve()
-        if target == current:
-            return
+        target = _prepare_target(target, key, current).resolve()
+        if _same_folder(target, current):
+            return None
         # Again for the named subfolder, which can be another kind's folder.
-        _refuse_overlap(target, resolvers)
+        _refuse_overlap(target, key, resolvers, final = True)
         previous = chosen(key)
+        before = {entry.name for entry in target.iterdir()}
         # A default already holding files gets a subfolder, which has to be recorded to be used.
-        set_chosen(key, None if target == _location_default(key).resolve() else target)
-        moved: list[tuple[Path, Path]] = []
+        is_default = _same_folder(target, _location_default(key))
+        set_chosen(key, None if is_default else target)
+        log = _MoveLog()
         try:
-            _move_entries(current, target, moved)
+            _move_entries(current, target, log)
         except OSError as exc:
-            for source, dest in reversed(moved):
-                try:
-                    _move_back(source, dest)
-                except OSError:
-                    logger.error("library.move_rollback_failed: %s", dest, exc_info = True)
+            _undo(log)
             set_chosen(key, previous)
+            # Saved into the new folder while the move ran: back with the rest, or out of sight.
+            _settle(target, current, wait = False, only = lambda entry: entry.name not in before)
             raise RuntimeError(f"Could not move the files: {exc.strerror or exc}") from exc
-        try:
-            _move_entries(current, target, [])
-        except OSError:
-            logger.warning("library.move_straggler_failed: %s", current, exc_info = True)
+        # Library uploads finish under the move lock into wherever uploads live, so only the
+        # galleries' saves are waited for.
+        _settle(current, target, wait = key != "uploads")
+    return None
 
 
 def _delete_upload(upload_id: str, path: Path) -> bool:

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -16,6 +17,12 @@ if str(_BACKEND) not in sys.path:
 from auth.authentication import get_current_subject  # noqa: E402
 from core import library  # noqa: E402
 from routes import library as library_routes  # noqa: E402
+import hub.storage.scan_folders as _scan_folders  # noqa: E402
+
+# Before any fixture swaps them for tests that use temp folders.
+_REAL_DENIED = _scan_folders.is_denied_system_path
+_REAL_SCRATCH = library._scratch_and_system_folders
+_REAL_MOVE_TARGET = library._move_target
 
 
 @pytest.fixture
@@ -821,6 +828,13 @@ def _temp_folders_are_ordinary(monkeypatch):
     monkeypatch.setattr(
         scan_folders, "is_denied_system_path", lambda path: path.startswith(("/etc", "/usr"))
     )
+    # And pytest's temp folders are temporary folders, which Library moves refuse too.
+    real = library._scratch_and_system_folders
+    monkeypatch.setattr(
+        library,
+        "_scratch_and_system_folders",
+        lambda: [folder for folder in real() if folder.startswith(("/usr", "/opt", "/Applications"))],
+    )
 
 
 def _move(client, key, path):
@@ -846,12 +860,16 @@ def test_images_move_to_a_new_folder_and_back(client, tmp_path):
     assert sorted(p.name for p in new.iterdir()) == ["a.json", "a.png"]
     assert not any(old.iterdir())
     assert image_gallery.gallery_dir() == new.resolve()
-    assert _location(client, "images") == {
+    location = _location(client, "images")
+    assert {key: location[key] for key in ("key", "path", "movable", "custom", "available")} == {
         "key": "images",
         "path": str(new.resolve()),
         "movable": True,
         "custom": True,
+        "available": True,
     }
+    assert location["disk"]["freeBytes"] <= location["disk"]["totalBytes"]
+    assert location["device"] == _location(client, "fineTunes")["device"]
 
     assert _move(client, "images", None).status_code == 200
     assert (old / "a.png").read_bytes() == b"png"
@@ -1037,33 +1055,405 @@ def test_a_failed_move_puts_everything_back(client, tmp_path, monkeypatch):
     assert _location(client, "images")["custom"] is False
 
 
-def test_a_failed_removal_after_a_whole_copy_is_taken_back(client, tmp_path, monkeypatch):
+def test_a_file_another_program_holds_open_stays_put_whole(client, tmp_path, monkeypatch):
     import errno
 
     from core.inference import image_gallery
 
     old = image_gallery.gallery_dir()
+    (old / "a.png").write_bytes(b"a")
     (old / "d").mkdir()
     (old / "d" / "keep.png").write_bytes(b"keep")
-    (old / "d" / "lost.png").write_bytes(b"lost")
+    (old / "d" / "open.png").write_bytes(b"open")
 
     def cross_device(_src, _dst):
         raise OSError(errno.EXDEV, "Invalid cross-device link")
 
-    real_remove = library._remove
-    failed = []
+    real_unlink = library._unlink
 
-    def partial_remove(path):
-        # The original loses one file, then the removal fails, once.
-        if path == old / "d" and not failed:
-            failed.append(path)
-            (path / "lost.png").unlink()
-            raise OSError(13, "Permission denied")
-        real_remove(path)
+    def locked(path):
+        # Windows copies an open file but will not delete it (ERROR_SHARING_VIOLATION).
+        if Path(path).name == "open.png":
+            exc = PermissionError(errno.EACCES, "The process cannot access the file")
+            exc.winerror = 32
+            raise exc
+        real_unlink(path)
 
     monkeypatch.setattr(library, "_rename", cross_device)
-    monkeypatch.setattr(library, "_remove", partial_remove)
-    assert _move(client, "images", str(tmp_path / "other-disk")).status_code == 500
-    monkeypatch.setattr(library, "_remove", real_remove)
-    assert sorted(p.name for p in (old / "d").iterdir()) == ["keep.png", "lost.png"]
+    monkeypatch.setattr(library, "_unlink", locked)
+    target = tmp_path / "other-disk"
+    response = _move(client, "images", str(target))
+    assert response.status_code == 500
+    assert "open.png is in use by another program. Close it and try again." in response.json()["detail"]
+    monkeypatch.setattr(library, "_unlink", real_unlink)
+    # Everything back, and no copy of anything left in the target.
+    assert (old / "a.png").read_bytes() == b"a"
+    assert sorted(p.name for p in (old / "d").iterdir()) == ["keep.png", "open.png"]
+    assert (old / "d" / "open.png").read_bytes() == b"open"
+    assert not any(target.iterdir())
     assert image_gallery.gallery_dir() == old
+
+
+def _fill(folder, count = 3):
+    for i in range(count):
+        (folder / f"{i}.png").write_bytes(b"png%d" % i)
+
+
+def _files(folder):
+    return sorted(str(p.relative_to(folder)) for p in folder.rglob("*") if p.is_file())
+
+
+def _unresolved_target(monkeypatch):
+    # resolve() keeps the spelling it is given: a case alias on a case-insensitive disk, or a bind
+    # mount, names a folder by a path that is not its own. A link that resolve() is kept from
+    # following stands in for either on any disk.
+    monkeypatch.setattr(library, "_move_target", lambda raw: Path(raw))
+
+
+def _case_insensitive(folder):
+    return os.path.isdir(str(folder.parent / folder.name.upper()))
+
+
+def test_another_spelling_of_the_current_folder_moves_nothing(client, tmp_path, monkeypatch):
+    from core.inference import image_gallery
+
+    old = image_gallery.gallery_dir()
+    _fill(old)
+    alias = tmp_path / "alias"
+    alias.symlink_to(old, target_is_directory = True)
+    _unresolved_target(monkeypatch)
+    assert _move(client, "images", str(alias)).status_code == 200
+    assert _files(old) == ["0.png", "1.png", "2.png"]
+    assert image_gallery.gallery_dir() == old
+
+
+def test_a_case_alias_of_the_current_folder_moves_nothing(client):
+    from core.inference import image_gallery
+
+    old = image_gallery.gallery_dir()
+    if not _case_insensitive(old):
+        pytest.skip("this disk tells case apart")
+    _fill(old)
+    assert _move(client, "images", str(old.parent / old.name.upper())).status_code == 200
+    assert _files(old) == ["0.png", "1.png", "2.png"]
+    assert image_gallery.gallery_dir() == old
+
+
+def test_another_spelling_of_another_kinds_folder_is_refused(client, tmp_path, monkeypatch):
+    from core.inference import image_gallery, video_gallery
+
+    _fill(image_gallery.gallery_dir())
+    videos = video_gallery.gallery_dir()
+    (videos / "v.mp4").write_bytes(b"v")
+    alias = tmp_path / "alias"
+    alias.symlink_to(videos, target_is_directory = True)
+    _unresolved_target(monkeypatch)
+    assert _move(client, "images", str(alias)).status_code == 400
+    if _case_insensitive(videos):
+        monkeypatch.setattr(library, "_move_target", _REAL_MOVE_TARGET)
+        response = _move(client, "images", str(videos.parent / videos.name.upper()))
+        assert response.status_code == 400
+    assert _files(videos) == ["v.mp4"]
+    assert _files(image_gallery.gallery_dir()) == ["0.png", "1.png", "2.png"]
+
+
+def test_unsloths_own_folder_and_folders_inside_the_current_one_are_refused(client):
+    from core.inference import image_gallery
+    from utils.paths import studio_root
+
+    old = image_gallery.gallery_dir()
+    _fill(old)
+    (old / "sub").mkdir()
+    for target in (studio_root(), studio_root() / "elsewhere", old / "sub", old / "new"):
+        assert _move(client, "images", str(target)).status_code == 400, target
+    assert _files(old) == ["0.png", "1.png", "2.png"]
+    assert not (studio_root() / "elsewhere").exists()
+    assert image_gallery.gallery_dir() == old
+
+
+def test_a_move_never_moves_a_folder_into_itself(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    _fill(source)
+    (source / "Unsloth Images").mkdir()
+    log = library._MoveLog()
+    library._move_entries(source, source / "Unsloth Images", log)
+    assert _files(source) == [f"Unsloth Images/{i}.png" for i in range(3)]
+
+
+def test_reset_again_after_a_reset_into_a_full_default_is_a_no_op(client, tmp_path):
+    from core.inference import image_gallery
+
+    old = image_gallery.gallery_dir()
+    (old / "a.png").write_bytes(b"png")
+    assert _move(client, "images", str(tmp_path / "elsewhere")).status_code == 200
+    (old / "stray.txt").write_text("left behind")
+    assert _move(client, "images", None).status_code == 200
+    response = _move(client, "images", None)
+    assert response.status_code == 200, response.text
+    assert image_gallery.gallery_dir() == (old / "Unsloth Images").resolve()
+    assert (old / "Unsloth Images" / "a.png").read_bytes() == b"png"
+    assert (old / "stray.txt").read_text() == "left behind"
+
+
+def _cross_device(monkeypatch):
+    import errno
+
+    def cross_device(_src, _dst):
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    monkeypatch.setattr(library, "_rename", cross_device)
+
+
+def _save_during_move(monkeypatch, save):
+    """Calls `save(new_folder)` right after the move records the new folder."""
+    from utils.paths import relocations
+
+    real = relocations.set_chosen
+
+    def set_and_save(key, path):
+        real(key, path)
+        if path is not None:
+            save(Path(path))
+
+    monkeypatch.setattr(relocations, "set_chosen", set_and_save)
+
+
+def test_a_merge_across_drives_keeps_what_the_new_folder_already_holds(client, tmp_path, monkeypatch):
+    from core.inference import video_gallery
+
+    old = video_gallery.gallery_dir()
+    (old / ".jobs").mkdir()
+    (old / ".jobs" / "old.json").write_text("old job")
+    (old / "same.txt").write_text("same")
+    (old / "clash.txt").write_text("from the old folder")
+    (old / "v.mp4").write_bytes(b"v")
+
+    def save(new):
+        # A video job and two files saved into the new folder before the move reaches them.
+        (new / ".jobs").mkdir()
+        (new / ".jobs" / "new.json").write_text("running job")
+        (new / "same.txt").write_text("same")
+        (new / "clash.txt").write_text("from the new folder")
+
+    _cross_device(monkeypatch)
+    _save_during_move(monkeypatch, save)
+    new = tmp_path / "videos"
+    assert _move(client, "videos", str(new)).status_code == 200
+    assert (new / ".jobs" / "new.json").read_text() == "running job"
+    assert (new / ".jobs" / "old.json").read_text() == "old job"
+    assert (new / "same.txt").read_text() == "same"
+    assert (new / "clash.txt").read_text() == "from the new folder"
+    assert (new / "clash (2).txt").read_text() == "from the old folder"
+    assert (new / "v.mp4").read_bytes() == b"v"
+    assert _files(old) == []
+
+
+def test_a_failed_move_takes_back_what_was_saved_meanwhile(client, tmp_path, monkeypatch):
+    import shutil
+
+    from core.inference import image_gallery
+
+    old = image_gallery.gallery_dir()
+    _fill(old)
+    real_copy = shutil.copy2
+    calls = []
+
+    def filling_copy(src, dst, **kwargs):
+        calls.append(src)
+        if len(calls) == 2:
+            raise OSError(28, "No space left on device")
+        return real_copy(src, dst, **kwargs)
+
+    _cross_device(monkeypatch)
+    monkeypatch.setattr(library.shutil, "copy2", filling_copy)
+    _save_during_move(monkeypatch, lambda new: (new / "saved-meanwhile.png").write_bytes(b"new"))
+    target = tmp_path / "target"
+    assert _move(client, "images", str(target)).status_code == 500
+    monkeypatch.setattr(library.shutil, "copy2", real_copy)
+    assert _files(old) == ["0.png", "1.png", "2.png", "saved-meanwhile.png"]
+    assert _files(target) == []
+    assert image_gallery.gallery_dir() == old
+
+
+def test_an_upload_finishing_during_a_move_lands_in_the_new_folder(client, tmp_path):
+    new = tmp_path / "uploads"
+
+    def chunks():
+        yield b"first half, "
+        # Moved while the upload is still writing to the old folder.
+        library.move_location("uploads", str(new))
+        yield b"second half"
+
+    record = library.save_upload("slow.txt", "text/plain", chunks())
+    assert (new / record["id"]).read_bytes() == b"first half, second half"
+    assert client.get(f"/api/library/uploads/{record['id']}/file").content == (
+        b"first half, second half"
+    )
+    assert not [p for p in library._location_default("uploads").iterdir() if p.name.endswith(".tmp")]
+
+
+def test_a_gallery_save_still_writing_is_waited_for(client, tmp_path):
+    import threading
+    import time
+
+    from core.inference import image_gallery
+
+    old = image_gallery.gallery_dir()
+    (old / "a.png").write_bytes(b"a")
+    writing = old / ".late.png.tmp"
+    writing.write_bytes(b"late")
+
+    def finish():
+        time.sleep(0.5)
+        os.replace(writing, old / "late.png")
+
+    writer = threading.Thread(target = finish)
+    writer.start()
+    new = tmp_path / "images"
+    assert _move(client, "images", str(new)).status_code == 200
+    writer.join()
+    assert _files(new) == ["a.png", "late.png"]
+    assert _files(old) == []
+
+
+def test_a_file_deleted_during_the_move_is_skipped(client, tmp_path, monkeypatch):
+    from core.inference import image_gallery
+
+    old = image_gallery.gallery_dir()
+    _fill(old)
+    real = library._rename
+
+    def rename(src, dst):
+        if Path(src).name == "1.png":
+            # Deleted from the Library just before the move reached it.
+            Path(src).unlink()
+            raise FileNotFoundError(2, "No such file or directory")
+        return real(src, dst)
+
+    monkeypatch.setattr(library, "_rename", rename)
+    new = tmp_path / "images"
+    assert _move(client, "images", str(new)).status_code == 200
+    assert _files(new) == ["0.png", "2.png"]
+    assert image_gallery.gallery_dir() == new.resolve()
+
+
+def test_a_drive_without_room_for_the_files_is_refused_up_front(client, tmp_path, monkeypatch):
+    import shutil
+
+    from core.inference import image_gallery
+
+    old = image_gallery.gallery_dir()
+    (old / "big.png").write_bytes(b"x" * 1000)
+    target = tmp_path / "small-drive" / "images"
+    target.parent.mkdir()
+    real_device = library._device
+    monkeypatch.setattr(
+        library,
+        "_device",
+        lambda path: -1 if str(path).startswith(str(target.parent)) else real_device(path),
+    )
+    monkeypatch.setattr(
+        library.shutil, "disk_usage", lambda path: shutil._ntuple_diskusage(10**6, 10**6, 10)
+    )
+    response = _move(client, "images", str(target))
+    assert response.status_code == 400
+    assert "free" in response.json()["detail"]
+    assert not target.exists()
+    assert (old / "big.png").stat().st_size == 1000
+
+
+def test_temporary_and_cache_folders_cannot_hold_library_files(monkeypatch):
+    import tempfile
+
+    import hub.storage.scan_folders as scan_folders
+
+    # The real lists, temp folders and all.
+    monkeypatch.setattr(scan_folders, "is_denied_system_path", _REAL_DENIED)
+    monkeypatch.setattr(
+        library, "_scratch_and_system_folders", lambda: [*_REAL_SCRATCH(), "/scratch-for-test"]
+    )
+    for folder in (Path(tempfile.gettempdir()) / "images", Path("/var/tmp/images")):
+        with pytest.raises(ValueError, match = "cannot hold these files"):
+            library._refuse_denied(folder.resolve())
+    # Library-only: the model download folder's check lets it be.
+    assert not _REAL_DENIED("/scratch-for-test/images")
+    with pytest.raises(ValueError, match = "Temporary"):
+        library._refuse_denied(Path("/scratch-for-test/images"))
+    library._refuse_denied(Path.home() / "Pictures" / "Unsloth")
+
+
+def _mounted(monkeypatch, mounts):
+    real = os.path.ismount
+    monkeypatch.setattr(
+        os.path, "ismount", lambda path: str(path) in mounts or real(path)
+    )
+
+
+def test_a_drive_unplugged_from_a_fixed_mount_point_is_unavailable(client, tmp_path, monkeypatch):
+    from core.inference import image_gallery
+    from utils.paths.relocations import LocationUnavailable
+
+    (image_gallery.gallery_dir() / "a.png").write_bytes(b"png")
+    drive = tmp_path / "mnt-usb"
+    drive.mkdir()
+    mounts = {str(drive.resolve())}
+    _mounted(monkeypatch, mounts)
+    assert _move(client, "images", str(drive)).status_code == 200
+    # A mount point gets a named folder, so the drive's own top level stays the user's.
+    assert image_gallery.gallery_dir() == (drive / "Unsloth Images").resolve()
+
+    # Unplugged: the mount point is an ordinary empty folder on the system disk again.
+    mounts.clear()
+    with pytest.raises(LocationUnavailable):
+        image_gallery.gallery_dir()
+    location = _location(client, "images")
+    assert location["available"] is False and location["disk"] is None
+    assert client.post("/api/library/locations/reveal", json = {"key": "images"}).status_code == 409
+    response = _move(client, "images", None)
+    assert response.status_code == 200
+    assert response.json()["leftBehind"] == str((drive / "Unsloth Images").resolve())
+    assert _location(client, "images")["custom"] is False
+
+
+def test_a_folder_chosen_before_mount_points_were_recorded_still_resolves(client, tmp_path):
+    from core.inference import image_gallery
+    from storage.studio_db import upsert_app_settings
+    from utils.paths import relocations
+
+    folder = tmp_path / "old-choice"
+    folder.mkdir()
+    upsert_app_settings({"library.locations": {"images": str(folder)}}, read_back = False)
+    relocations.forget_cache()
+    try:
+        assert image_gallery.gallery_dir() == folder
+        assert _location(client, "images")["custom"] is True
+    finally:
+        upsert_app_settings({"library.locations": {}}, read_back = False)
+        relocations.forget_cache()
+
+
+def test_an_unplugged_folder_is_reported_once_and_the_bar_falls_back(client, tmp_path, monkeypatch):
+    import shutil
+
+    logged = []
+
+    class Logger:
+        def info(self, message, *args, **kwargs):
+            logged.append(message % args)
+
+        def warning(self, message, *args, **kwargs):
+            logged.append(message % args)
+
+    drive = tmp_path / "Drive"
+    drive.mkdir()
+    assert _move(client, "uploads", str(drive / "uploads")).status_code == 200
+    assert _move(client, "images", str(drive / "images")).status_code == 200
+    shutil.rmtree(drive)
+    monkeypatch.setattr(library, "logger", Logger())
+    monkeypatch.setattr(library, "_reported_unavailable", set())
+    for _ in range(3):
+        disk = client.get("/api/library").json()["disk"]
+        assert disk is not None and disk["totalBytes"] > 0
+    assert len(logged) == len(set(logged)) == 2
+    assert all("location_unavailable" in line for line in logged)
