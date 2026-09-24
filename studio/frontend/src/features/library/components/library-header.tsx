@@ -234,6 +234,14 @@ export function LibraryHeader({
         ) : (
           <div className="h-9" />
         )}
+        {/* Once stuck, what scrolls under the row fades out below it instead of cutting off. */}
+        <div
+          aria-hidden
+          className={cn(
+            "pointer-events-none absolute inset-x-0 top-full h-6 bg-gradient-to-b from-background to-transparent transition-opacity",
+            covered ? "opacity-100" : "opacity-0",
+          )}
+        />
       </div>
     </>
   );

@@ -9,7 +9,9 @@ export const RAISED_SURFACE =
 export const OVERLAY_CONTROL =
   "bg-white shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-neutral-700 dark:shadow-none";
 
-/** The same controls over a picture, which can be any color: frosted glass, legible on light and dark
- *  alike. */
-export const GLASS_CONTROL =
-  "bg-black/40 text-white shadow-none ring-1 ring-white/20 backdrop-blur-md hover:bg-black/55 hover:text-white dark:bg-black/40 dark:text-white dark:hover:bg-black/55";
+/** Frosted glass over a picture, which can be any color: white in light mode, black in dark. */
+export const GLASS_SURFACE =
+  "bg-white/60 text-neutral-900 shadow-none ring-1 ring-white/50 backdrop-blur-md dark:bg-black/40 dark:text-white dark:ring-white/20";
+
+/** The card's round controls (the ⋯ button and the select dot) over a picture. */
+export const GLASS_CONTROL = `${GLASS_SURFACE} hover:bg-white/80 hover:text-neutral-900 dark:hover:bg-black/55 dark:hover:text-white`;

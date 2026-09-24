@@ -17,7 +17,7 @@ import { formatCardTime, pluralize } from "../format";
 import { useColumnCount, useLibraryThumbnail, useSeen } from "../hooks";
 import { useLibraryActions } from "../actions-context";
 import { CARD_COLUMNS, useLibrarySettingsStore } from "../settings-store";
-import { GLASS_CONTROL, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
+import { GLASS_CONTROL, GLASS_SURFACE, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
 import { CardSelectionContext } from "./card-selection";
 import { LibraryActionsMenu } from "./library-actions";
 
@@ -87,7 +87,12 @@ function ImageThumb({
         />
       )}
       {loaded && fileKind(item) === "video" && (
-        <span className="pointer-events-none absolute inset-0 m-auto flex aspect-square w-1/4 max-w-10 items-center justify-center rounded-full bg-black/45 text-white backdrop-blur-sm">
+        <span
+          className={cn(
+            GLASS_SURFACE,
+            "pointer-events-none absolute inset-0 m-auto flex aspect-square w-1/4 max-w-10 items-center justify-center rounded-full",
+          )}
+        >
           <HugeiconsIcon icon={PlayIcon} strokeWidth={2} className="size-1/2 [&_path]:fill-current" />
         </span>
       )}
@@ -178,7 +183,12 @@ export function ItemCard({ item }: { item: LibraryItem }) {
         <ImageThumb item={item} square={square && fileKind(item) === "image"} />
         {/* On hover, so the grid stays a wall of pictures. */}
         {showTime && (
-          <span className="pointer-events-none absolute bottom-2 left-2 rounded-full bg-black/40 px-2 py-0.5 text-[12px] text-white opacity-0 ring-1 ring-white/20 backdrop-blur-md transition-opacity group-hover/library-card:opacity-100">
+          <span
+            className={cn(
+              GLASS_SURFACE,
+              "pointer-events-none absolute bottom-2 left-2 rounded-full px-2 py-0.5 text-[12px] opacity-0 transition-opacity group-hover/library-card:opacity-100",
+            )}
+          >
             {formatCardTime(item.updatedAt)}
           </span>
         )}
