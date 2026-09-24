@@ -53,6 +53,7 @@ def _load(name: str, path: Path):
 
 
 prebuilt_wheels = _load("prebuilt_wheels", SCRIPTS / "prebuilt_wheels.py")
+prebuilt_wheels_shard = _load("prebuilt_wheels_shard", SCRIPTS / "prebuilt_wheels_shard.py")
 
 
 def env(
@@ -666,3 +667,85 @@ class TestWorkflow:
 
     def test_concurrency_queues_rather_than_cancels(self, workflow):
         assert workflow["concurrency"]["cancel-in-progress"] is False
+
+
+# ── flash-attn warm slices ────────────────────────────────────────────────────
+
+
+class TestWarmSlices:
+    def test_the_slices_compile_every_object_exactly_once(self):
+        objects = [f"/src/build/temp/csrc/kernel_{i:03d}.o" for i in range(97)]
+        # ninja lists rules and phony targets too, and nothing guarantees order or uniqueness.
+        listing = "\n".join(
+            [f"{o}: cuda_compile" for o in reversed(objects)]
+            + [f"{objects[0]}: cuda_compile", "/src/build/temp/flash_api.o: compile", "all: phony"]
+        )
+        expected = sorted(objects + ["/src/build/temp/flash_api.o"])
+        slices = [prebuilt_wheels_shard.slice_objects(listing, k, 8) for k in range(8)]
+        assert sorted(o for s in slices for o in s) == expected
+        assert max(map(len, slices)) - min(map(len, slices)) <= 1
+
+    @pytest.mark.parametrize("shard", [-1, 8])
+    def test_a_slice_outside_the_range_is_refused(self, shard):
+        with pytest.raises(SystemExit):
+            prebuilt_wheels_shard.slice_objects("a.o: compile", shard, 8)
+
+    def test_every_sharded_cell_gets_one_warm_job_per_slice(self):
+        include = prebuilt_wheels.build_matrix()
+        warm = prebuilt_wheels.warm_matrix(include)
+        for cell in include:
+            jobs = [w for w in warm if w["wheel_name"] == cell["wheel_name"]]
+            assert [w["shard"] for w in jobs] == list(range(cell["shards"]))
+            for w in jobs:
+                assert w["label"] == f"{cell['label']} / shard {w['shard'] + 1} of {cell['shards']}"
+        assert {w["package"] for w in warm} == {"flash-attn"}
+
+    def test_nothing_to_warm_without_flash_attn(self):
+        include = prebuilt_wheels.build_matrix(packages = "causal-conv1d,mamba-ssm")
+        assert prebuilt_wheels.warm_matrix(include) == []
+
+    def test_the_plan_step_writes_the_warm_outputs(self, tmp_path):
+        output = tmp_path / "output"
+        subprocess.run(
+            [sys.executable, str(SCRIPTS / "prebuilt_wheels.py"), "matrix", "--github"],
+            env = {
+                "GITHUB_OUTPUT": str(output),
+                "UW_PACKAGES": "flash-attn,mamba-ssm",
+                "UW_TORCH_VERSIONS": "2.13.0",
+                "UW_PYTHON_VERSIONS": "",
+            },
+            check = True,
+            capture_output = True,
+        )
+        values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+        warm = json.loads(values["warm_matrix"])["include"]
+        assert (
+            values["warm_count"]
+            == str(len(warm))
+            == str(prebuilt_wheels.SPECS["flash-attn"]["shards"])
+        )
+        assert values["count"] == "2"
+
+
+class TestWarmWiring:
+    def test_warm_and_build_hash_the_same_compiles(self, workflow):
+        warm, build = workflow["jobs"]["warm"], workflow["jobs"]["build"]
+        assert warm["env"] == build["env"]
+        assert warm["runs-on"] == build["runs-on"] == "ubuntu-22.04"
+
+    def test_the_build_waits_for_warm_but_not_on_its_success(self, workflow):
+        warm, build = workflow["jobs"]["warm"], workflow["jobs"]["build"]
+        assert warm["continue-on-error"] is True
+        assert "warm" in build["needs"]
+        assert "!cancelled()" in build["if"]
+        assert warm["strategy"]["matrix"] == "${{ fromJSON(needs.plan.outputs.warm_matrix) }}"
+
+    def test_the_build_downloads_the_names_warm_uploads(self, workflow):
+        def step(job, name):
+            return next(s for s in workflow["jobs"][job]["steps"] if s.get("name") == name)
+
+        uploaded = step("warm", "Hand the slice to the build job")["with"]["name"]
+        pattern = step("build", "Download the warm slices")["with"]["pattern"]
+        assert pattern.endswith("*")
+        assert uploaded.startswith(pattern[:-1])
+        assert uploaded[len(pattern) - 1 :] == "${{ matrix.shard }}"
