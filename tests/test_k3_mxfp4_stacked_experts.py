@@ -376,6 +376,21 @@ def test_expert_lora_stays_opt_in():
     assert packed_expert_target_parameters(plain, auto, None) is auto
 
 
+def test_a_target_list_naming_expert_paths_opts_packed_experts_in():
+    """PEFT matches list entries as dotted suffixes, so `experts.3.w1` or the full module path of
+    one per-expert Linear named it before stacking; those must not be dropped silently."""
+    _, model = _tiny_model("transformers_modules.k3c_lora_paths.modeling_tinymoe")
+    _swap_planned_stacks(model, _keys(), torch.bfloat16)
+    stack = next(n for n, m in model.named_modules() if type(m).__name__ == "Mxfp4StackedExperts")
+    auto = ["experts.gate_up_proj", "experts.down_proj"]
+    assert packed_expert_target_parameters(model, auto, ["q_proj", f"{stack}.1.w1"]) == [
+        "experts.gate_up_proj"
+    ]
+    assert packed_expert_target_parameters(model, None, ["experts.0.w2"]) == ["experts.down_proj"]
+    # Suffixes that name something else, and a non-index where the expert index goes, do not.
+    assert packed_expert_target_parameters(model, auto, ["mlp.w1", "experts.x.w1", "0.w1x"]) is None
+
+
 def test_packed_experts_are_found_under_peft_wrappers():
     """Expert LoRA wraps `block.experts` in PEFT ParamWrappers (one per parameter); the block
     must still dispatch to the packed stacks, or it falls back to the port's `len(experts)`."""

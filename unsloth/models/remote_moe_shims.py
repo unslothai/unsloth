@@ -329,6 +329,18 @@ def prepare_remote_moe_for_training(model, verbose = True):
     return patched
 
 
+def _names_a_packed_expert(entry, stack, leaf):
+    """Whether list entry `entry` is a dotted suffix of some `{stack}.<index>.{leaf}`."""
+    parts = entry.split(".")
+    template = stack.split(".") + [None, leaf]
+    if len(parts) > len(template):
+        return False
+    return all(
+        part.isdigit() if want is None else part == want
+        for part, want in zip(parts, template[len(template) - len(parts):])
+    )
+
+
 def packed_expert_target_parameters(model, target_parameters, requested_leaves):
     """Expert LoRA on packed MXFP4 experts is opt in, as it was on their per-expert Linears.
 
@@ -336,7 +348,9 @@ def packed_expert_target_parameters(model, target_parameters, requested_leaves):
     them for the default MLP targets; drop those, and add them back only for the leaves that
     named the per-expert Linears (`w1` / `w3` share the fused `gate_up_proj`, `w2` is
     `down_proj`). A regex string names them when it matches their original module names, as
-    PEFT's `re.fullmatch` would have before stacking."""
+    PEFT's `re.fullmatch` would have before stacking; a list entry when it is a dotted suffix
+    of one (`w1`, `experts.3.w1`, the full path), as PEFT's list matching would have. A stack
+    trains every expert, so a single named expert opts its whole stack in."""
     stacks = [name for name, m in model.named_modules() if _is_packed_experts(m)]
     if not stacks:
         return target_parameters
@@ -350,7 +364,12 @@ def packed_expert_target_parameters(model, target_parameters, requested_leaves):
             if any(re.fullmatch(requested_leaves, f"{stack}.0.{leaf}") for stack in stacks)
         }
     else:
-        leaves = set(requested_leaves or ())
+        leaves = {
+            leaf
+            for leaf in ("w1", "w2", "w3")
+            for entry in requested_leaves or ()
+            if any(_names_a_packed_expert(str(entry), stack, leaf) for stack in stacks)
+        }
     if leaves & {"w1", "w3"}:
         kept.append("experts.gate_up_proj")
     if "w2" in leaves:
