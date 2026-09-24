@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { type RefObject, useEffect, useState } from "react";
-import { type LibraryItem, fetchLibraryBlob } from "./api";
+import { type LibraryItem, fetchLibraryBlob, fetchLibraryThumbnail } from "./api";
 import { hasImagePreview } from "./file-kind";
 
 // Thumbnails are auth-fetched blobs, so the browser cache cannot hold them. Keep the most recent
@@ -10,11 +10,10 @@ import { hasImagePreview } from "./file-kind";
 const MAX_CACHED_URLS = 300;
 const objectUrls = new Map<string, Promise<string>>();
 
-function objectUrlFor(item: LibraryItem): Promise<string> {
-  const key = `${item.id}@${item.updatedAt}`;
+function cachedObjectUrl(key: string, load: () => Promise<Blob>): Promise<string> {
   let url = objectUrls.get(key);
   if (!url) {
-    url = fetchLibraryBlob(item).then((blob) => URL.createObjectURL(blob));
+    url = load().then((blob) => URL.createObjectURL(blob));
     url.catch(() => objectUrls.delete(key));
     objectUrls.set(key, url);
     if (objectUrls.size > MAX_CACHED_URLS) {
@@ -41,7 +40,7 @@ export function useLibraryObjectUrl(
     let cancelled = false;
     const cached = hasImagePreview(item);
     const next = cached
-      ? objectUrlFor(item)
+      ? cachedObjectUrl(key, () => fetchLibraryBlob(item))
       : fetchLibraryBlob(item).then((blob) => URL.createObjectURL(blob));
     next.then(
       (url) => !cancelled && setState({ key, url }),
@@ -55,6 +54,34 @@ export function useLibraryObjectUrl(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, enabled]);
   return enabled && state?.key === key ? state.url : null;
+}
+
+/** A card's picture once `enabled`: the image itself, or a video's first frame. Cached like images;
+ *  `failed` once it cannot load, so the card can fall back to the type icon. */
+export function useLibraryThumbnail(
+  item: LibraryItem,
+  enabled: boolean,
+): { url: string | null; failed: boolean } {
+  const key = `${item.id}@${item.updatedAt}`;
+  const [state, setState] = useState<{ key: string; url: string | null } | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    const next = hasImagePreview(item)
+      ? cachedObjectUrl(key, () => fetchLibraryBlob(item))
+      : cachedObjectUrl(`thumbnail:${key}`, () => fetchLibraryThumbnail(item));
+    next.then(
+      (url) => !cancelled && setState({ key, url }),
+      () => !cancelled && setState({ key, url: null }),
+    );
+    return () => {
+      cancelled = true;
+    };
+    // `key` carries the item's identity and version; the object itself changes on every refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, enabled]);
+  const current = enabled && state?.key === key ? state : null;
+  return { url: current?.url ?? null, failed: current !== null && current.url === null };
 }
 
 /** True once the element has come within a screen of the viewport; never flips back. */

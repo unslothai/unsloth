@@ -525,6 +525,53 @@ def local_path(item_id: str) -> Path:
     return Path(resolved)
 
 
+# Cards are up to a few hundred CSS pixels wide, so twice that for high-density screens.
+_VIDEO_THUMBNAIL_WIDTH = 640
+
+
+def _attachment_clip(ref: str) -> bytes:
+    """The clip stored in a chat attachment. LookupError when it holds none."""
+    from routes.chat_history import _decode_attachment_base64
+    from storage.studio_db import get_chat_attachment
+
+    message_id, _, attachment_id = ref.partition(":")
+    attachment = get_chat_attachment(message_id, attachment_id) or {}
+    for part in attachment.get("content") or []:
+        if not isinstance(part, dict) or part.get("type") != "file":
+            continue
+        data = part.get("data")
+        mime_type = str(part.get("mimeType") or attachment.get("contentType") or "").lower()
+        if isinstance(data, str) and data and mime_type.startswith("video/"):
+            return _decode_attachment_base64(data)
+    raise LookupError(ref)
+
+
+def video_thumbnail(item_id: str) -> bytes:
+    """The first frame of a video item, as WebP, for its card.
+
+    LookupError when the item is gone or is not a video; RuntimeError when it cannot be decoded."""
+    import io
+
+    from core.inference import video_gallery
+
+    kind, _, ref = item_id.partition(":")
+    if kind == "attachment":
+        return video_gallery.first_frame_webp(
+            io.BytesIO(_attachment_clip(ref)), width = _VIDEO_THUMBNAIL_WIDTH
+        )
+    if kind not in ("upload", "video", "sandbox"):
+        raise LookupError(item_id)
+    path = project_source(item_id)[0]
+    if kind == "upload":
+        record = library_db.get_upload(ref) or {}
+        types = (str(record.get("contentType") or ""), _guess_type(str(record.get("name") or "")))
+    else:
+        types = ("video/" if kind == "video" else _guess_type(path.name),)
+    if not any(value.lower().startswith("video/") for value in types):
+        raise LookupError(item_id)
+    return video_gallery.first_frame_webp(path, width = _VIDEO_THUMBNAIL_WIDTH)
+
+
 def locations() -> list[dict]:
     """Where each kind of Library file lives, for Settings > Library."""
     from core.inference import audio_gallery, image_gallery, video_gallery

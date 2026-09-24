@@ -1,14 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
+import { CodeSourceView } from "@/components/code-source-view";
 import { Button } from "@/components/ui/button";
 import { MediaViewer } from "@/components/media-viewer";
 import { Spinner } from "@/components/ui/spinner";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ArtifactHtmlFrame } from "@/features/chat";
 import { isTauri } from "@/lib/api-base";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { toast } from "@/lib/toast";
-import { useEffect, useState } from "react";
+import { cn } from "@/lib/utils";
+import { PlayIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { type ReactNode, useEffect, useState } from "react";
 import {
   type LibraryItem,
   addLibraryItemToProject,
@@ -116,14 +122,50 @@ function TextPrefix({ text }: { text: string }) {
   );
 }
 
+/** A round header button with a tooltip; `active` marks the view on screen. */
+function ViewButton({
+  label,
+  active,
+  onClick,
+  children,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>
+        <button
+          type="button"
+          aria-label={label}
+          aria-pressed={active}
+          onClick={onClick}
+          className={cn(
+            "flex size-9 shrink-0 items-center justify-center rounded-full outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring",
+            active && "bg-muted",
+          )}
+        >
+          {children}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 function PreviewBody({
   item,
   draft,
   onDraftChange,
+  showCode,
 }: {
   item: LibraryItem;
   draft: string | null;
   onDraftChange: (value: string) => void;
+  /** Web pages: their source instead of the rendered page. */
+  showCode: boolean;
 }) {
   const body = bodyFor(item);
   const needsUrl = body === "image" || body === "pdf" || body === "audio" || body === "video";
@@ -148,6 +190,15 @@ function PreviewBody({
     case "video":
       return <video src={url!} controls autoPlay className="size-full object-contain" />;
     case "web":
+      if (showCode) {
+        return (
+          <CodeSourceView
+            code={truncated ? `${text!}\n…` : text!}
+            language="html"
+            className="rounded-xl border border-border/60"
+          />
+        );
+      }
       if (truncated) return <TextPrefix text={`${text!}\n\n…`} />;
       // The chat canvas frame: served by the backend under its own CSP, so it renders the same in
       // the browser and the desktop app, and honors the canvas network-access setting.
@@ -203,6 +254,10 @@ export function LibraryPreview({
   const setDraft = (text: string | null) =>
     setEdit(item && text !== null ? { itemId: item.id, text } : null);
   const [saving, setSaving] = useState(false);
+  // Tagged too, and cleared on close, so every file opens on its preview.
+  const [codeFor, setCodeFor] = useState<string | null>(null);
+  if (item === null && codeFor !== null) setCodeFor(null);
+  const showCode = item !== null && codeFor === item.id;
   const revealLabel = useRevealLabel();
 
   async function save(): Promise<boolean> {
@@ -261,11 +316,23 @@ export function LibraryPreview({
         }
       }}
       extra={
-        draft !== null && (
-          <Button variant="dark" size="sm" className="mr-1" disabled={saving} onClick={() => void save()}>
-            Save
-          </Button>
-        )
+        <>
+          {body === "web" && item && (
+            <div className="mr-1 flex items-center gap-1">
+              <ViewButton label="Code" active={showCode} onClick={() => setCodeFor(item.id)}>
+                <CodeToggleIcon className="size-4.5" />
+              </ViewButton>
+              <ViewButton label="Preview" active={!showCode} onClick={() => setCodeFor(null)}>
+                <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} className="size-5" />
+              </ViewButton>
+            </div>
+          )}
+          {draft !== null && (
+            <Button variant="dark" size="sm" className="mr-1" disabled={saving} onClick={() => void save()}>
+              Save
+            </Button>
+          )}
+        </>
       }
       actions={
         item
@@ -298,7 +365,7 @@ export function LibraryPreview({
           : {}
       }
     >
-      {item && <PreviewBody item={item} draft={draft} onDraftChange={setDraft} />}
+      {item && <PreviewBody item={item} draft={draft} onDraftChange={setDraft} showCode={showCode} />}
     </MediaViewer>
   );
 }
