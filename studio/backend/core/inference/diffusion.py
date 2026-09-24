@@ -2090,10 +2090,15 @@ class DiffusionBackend:
         # really fetch it: the family table names it whether or not the repo is readable.
         if candidate is None:
             return False
-        if candidate.prequant and self._hosted_prequant_reachable(
-            fam, getattr(candidate, "scheme", None), kwargs
-        ):
-            return False
+        if candidate.prequant:
+            scheme = getattr(candidate, "scheme", None)
+            if self._hosted_prequant_reachable(fam, scheme, kwargs):
+                return False
+            # Carried into load_pipeline (begin_load hands it these kwargs), so the load sizes and fit-checks this
+            # scheme as the dense bf16 build it will fall back to, not as a checkpoint that will never arrive.
+            kwargs["_prequant_unreachable"] = tuple(
+                dict.fromkeys((*kwargs.get("_prequant_unreachable", ()), scheme))
+            )
         # Capacity gate: mirror plan_fits_total_capacity against TOTAL capacity, else load_pipeline declines the dense
         # path anyway
         from .diffusion_memory import (
@@ -4293,6 +4298,9 @@ class DiffusionBackend:
         # The scheme the plan settled, or PIPELINE_SEED_DECLINED; None for a direct call, which the pull never scoped.
         _pipeline_prequant_planned: Optional[str] = None,
         _pipeline_prequant_skipped: tuple[str, ...] = (),
+        # Schemes whose hosted prequant the prefetch found this user cannot fetch (401 / 403 / 404). Sized and
+        # fit-checked as the dense bf16 build the loader falls back to. Empty for a direct call, which never probed.
+        _prequant_unreachable: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         with self._load_cancel_lock:
             if _load_token is None:
@@ -4669,6 +4677,22 @@ class DiffusionBackend:
                             force_dense = _has_active_lora(loras),
                             logger = logger,
                         )
+                        if (
+                            candidate is not None
+                            and candidate.prequant
+                            and getattr(candidate, "scheme", None) in _prequant_unreachable
+                        ):
+                            # The family table names a checkpoint this user cannot fetch, so the load falls back to
+                            # the dense build: size THAT, as the download plan did when it staged the dense shards.
+                            candidate = resolve_dense_quant_candidate(
+                                fam = fam,
+                                target = target,
+                                requested = transformer_quant,
+                                base_repo = base,
+                                prequant_path = transformer_prequant_path,
+                                force_dense = True,
+                                logger = logger,
+                            )
 
                         # Defined OUTSIDE the candidate check: the retry below rebinds ``candidate`` and calls this,
                         # and that retry is reached precisely when the first resolve returned None. Nested, the name
@@ -4805,7 +4829,8 @@ class DiffusionBackend:
                         prequant = (
                             # A LoRA bake skips the prequant shortcut, so gate the fast path as if no prequant existed
                             None
-                            if _has_active_lora(loras)
+                            # Nor one this user cannot fetch: the loader would build dense, so the check must too
+                            if _has_active_lora(loras) or scheme in _prequant_unreachable
                             else usable_prequant_source(
                                 fam,
                                 scheme,
