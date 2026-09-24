@@ -202,6 +202,7 @@ def test_install_is_idempotent_and_signature_preserved():
 
 
 def test_composes_with_the_disk_cache(tmp_path, monkeypatch):
+    pytest.importorskip("safetensors")  # the disk cache writes safetensors files
     monkeypatch.setenv("UNSLOTH_DIFFUSION_COND_CACHE_DIR", str(tmp_path))
     pipe = _EncodePipe()
     assert cond_cache.install(pipe, family = "fam", repo_id = "r", dtype = torch.float32)
@@ -335,8 +336,11 @@ def test_budget_respects_a_cgroup_memory_limit(monkeypatch):
     assert prompt_cache.budget_bytes() == 100 * 1024 * 1024
     monkeypatch.delenv(prompt_cache._ENV_BUDGET_MB)
     monkeypatch.setattr(diffusion_memory, "_cgroup_memory_limit_mib", lambda: None)
-    host = prompt_cache._host_ram_bytes()
-    assert prompt_cache.budget_bytes() == min(256 * 1024 * 1024, max(16 * 1024 * 1024, host // 64))
+    host = prompt_cache._host_ram_bytes()  # 0 where sysconf is missing (Windows): no cap
+    expected = 256 * 1024 * 1024
+    if host:
+        expected = min(expected, max(16 * 1024 * 1024, host // 64))
+    assert prompt_cache.budget_bytes() == expected
 
 
 def test_controlnet_pipe_gets_the_prompt_cache(monkeypatch):
