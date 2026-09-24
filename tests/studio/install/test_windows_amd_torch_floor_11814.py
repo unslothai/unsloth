@@ -25,7 +25,9 @@ _SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
 
 
 def _load_stack_module():
-    spec = importlib.util.spec_from_file_location("studio_install_python_stack_floor_11814", _STACK_PY)
+    spec = importlib.util.spec_from_file_location(
+        "studio_install_python_stack_floor_11814", _STACK_PY
+    )
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
@@ -69,7 +71,9 @@ class TestPythonRepairMap:
         """The stale/mismatch checks key on the family leaf, the install on the arch: a
         floor in one and not the other reinstalls every update or never repairs."""
         leaf = stack_mod._GFX_TO_AMD_INDEX_ARCH[gfx].lower()
-        assert leaf in stack_mod._ROCM_GFX_TORCH211_LEAVES, f"{gfx} -> {leaf} not in the 2.11 allowlist"
+        assert (
+            leaf in stack_mod._ROCM_GFX_TORCH211_LEAVES
+        ), f"{gfx} -> {leaf} not in the 2.11 allowlist"
 
     def test_cdna_stays_bare(self):
         """gfx908 / gfx90a: no Windows wheels, unmeasured; Linux reaches them via the
@@ -86,7 +90,9 @@ class TestPowerShellMirrorsTheFloor:
         vision_map = _ps_map(path, "torchvisionFloorMap")
         audio_map = _ps_map(path, "torchaudioFloorMap")
         expected = set(stack_mod._WINDOWS_ROCM_TORCH_PKG_SPECS)
-        assert set(torch_map) == expected, f"{path.name}: torchFloorMap keys {sorted(set(torch_map) ^ expected)}"
+        assert (
+            set(torch_map) == expected
+        ), f"{path.name}: torchFloorMap keys {sorted(set(torch_map) ^ expected)}"
         assert set(vision_map) == expected and set(audio_map) == expected
         for gfx in expected:
             assert (torch_map[gfx], vision_map[gfx], audio_map[gfx]) == _TRIO, f"{path.name}: {gfx}"
