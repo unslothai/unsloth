@@ -1428,3 +1428,23 @@ def test_family_compiles_regionally_reads_the_repeated_blocks_declaration(monkey
     assert family_compiles_regionally(fam("Unblocked", denoiser_attr = "unet")) is True
     assert family_compiles_regionally(fam(None)) is True
     assert family_compiles_regionally(None) is True
+
+
+def test_family_compiles_regionally_closes_the_dynamo_import_window_first(monkeypatch):
+    """The seed decision probes the class before load_pipeline's own guard, so the probe must take it."""
+    import utils.torch_warmup as warmup
+
+    from core.inference.diffusion_speed import family_compiles_regionally
+
+    events: list = []
+    monkeypatch.setattr(warmup, "close_dynamo_import_window", lambda _log: events.append("guard"))
+
+    class _Diffusers(types.ModuleType):
+        def __getattr__(self, name):
+            events.append("probe")
+            raise AttributeError(name)
+
+    monkeypatch.setitem(sys.modules, "diffusers", _Diffusers("diffusers"))
+    fam = types.SimpleNamespace(transformer_class = "Lumina2Transformer2DModel")
+    assert family_compiles_regionally(fam) is True
+    assert events[:2] == ["guard", "probe"]

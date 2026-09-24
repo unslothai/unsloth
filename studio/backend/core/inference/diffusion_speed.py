@@ -229,6 +229,14 @@ def family_compiles_regionally(family: Any) -> bool:
     name = getattr(family, "transformer_class", None)
     if not isinstance(name, str) or not name:
         return True
+    # The pre-download seed decision asks this before load_pipeline's own guard, and `import diffusers` imports
+    # torch._dynamo, so close the race with the background torch warm first.
+    try:
+        from loggers import get_logger
+        from utils.torch_warmup import close_dynamo_import_window
+        close_dynamo_import_window(get_logger(__name__))
+    except Exception:  # noqa: BLE001, S110 - optimisation only
+        pass
     try:
         import diffusers
         cls = getattr(diffusers, name, None)
