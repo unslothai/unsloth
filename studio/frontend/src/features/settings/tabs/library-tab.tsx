@@ -23,12 +23,15 @@ import {
   SUGGESTED_LIMITS,
   formatSize,
   getLibraryLocations,
+  moveLibraryLocation,
   revealLibraryLocation,
   useLibrarySettingsStore,
   useLibraryStorage,
   useLibraryViewStore,
   useRevealPlatform,
 } from "@/features/library";
+import { useIsAccountOwner } from "@/features/auth";
+import { FolderBrowser } from "@/features/model-picker";
 import { type TranslationKey, useT } from "@/i18n";
 import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
@@ -241,6 +244,29 @@ function LocationsSection() {
         description: error instanceof Error ? error.message : String(error),
       }),
     );
+  // Moving is the owner's call, like the model download folder: other accounts keep their files
+  // in their own workspace.
+  const owner = useIsAccountOwner();
+  const [moving, setMoving] = useState(false);
+  const [picking, setPicking] = useState<LibraryLocation | null>(null);
+  const nameOf = (location: LibraryLocation) => t(LOCATION_LABELS[location.key]);
+
+  async function move(location: LibraryLocation, path: string | null) {
+    const name = nameOf(location);
+    setMoving(true);
+    const id = toast.loading(t("settings.library.locationMoving", { name }));
+    try {
+      setLocations(await moveLibraryLocation(location.key, path));
+      toast.success(t("settings.library.locationMoved", { name }), { id });
+    } catch (error) {
+      toast.error(t("settings.library.locationMoveFailed", { name }), {
+        id,
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setMoving(false);
+    }
+  }
 
   return (
     <SettingsSection
@@ -260,14 +286,49 @@ function LocationsSection() {
               </span>
             }
           >
-            {reveal && (
-              <Button variant="outline" size="sm" onClick={() => void open(location.key)}>
-                {t(reveal === "finder" ? "settings.library.revealInFinder" : "settings.library.revealInFolder")}
-              </Button>
-            )}
+            <div className="flex shrink-0 items-center gap-2">
+              {owner && location.movable && location.custom && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={moving}
+                  onClick={() => void move(location, null)}
+                >
+                  {t("settings.library.locationReset")}
+                </Button>
+              )}
+              {owner && location.movable && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={moving}
+                  onClick={() => setPicking(location)}
+                >
+                  {t("settings.library.locationChange")}
+                </Button>
+              )}
+              {reveal && (
+                <Button variant="outline" size="sm" onClick={() => void open(location.key)}>
+                  {t(reveal === "finder" ? "settings.library.revealInFinder" : "settings.library.revealInFolder")}
+                </Button>
+              )}
+            </div>
           </SettingsRow>
         ))
       )}
+      <FolderBrowser
+        open={picking !== null}
+        onOpenChange={(next) => !next && setPicking(null)}
+        onSelect={(path) => {
+          if (picking) void move(picking, path);
+        }}
+        // Start beside the current folder, where a new one usually goes.
+        initialPath={picking?.path.replace(/[\\/][^\\/]*$/, "") || undefined}
+        title={picking ? t("settings.library.locationMoveTitle", { name: nameOf(picking) }) : ""}
+        description={t("settings.library.locationMoveDescription")}
+        confirmLabel={t("settings.library.locationMoveAction")}
+        showModelHints={false}
+      />
     </SettingsSection>
   );
 }

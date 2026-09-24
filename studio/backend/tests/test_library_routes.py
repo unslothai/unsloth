@@ -565,3 +565,127 @@ def test_undecodable_video_has_no_thumbnail(client):
     [clip] = _upload(client, ("broken.mp4", b"not a video", "video/mp4"))
     response = client.get("/api/library/items/thumbnail", params = {"id": clip})
     assert response.status_code == 501
+
+
+# ── Moving a kind of file ────────────────────────────────────────
+
+
+@pytest.fixture(autouse = True)
+def _temp_folders_are_ordinary(monkeypatch):
+    # macOS keeps pytest's temp folders under /private/var, which the real check refuses.
+    import hub.storage.scan_folders as scan_folders
+
+    monkeypatch.setattr(
+        scan_folders, "is_denied_system_path", lambda path: path.startswith(("/etc", "/usr"))
+    )
+
+
+def _move(client, key, path):
+    return client.post("/api/library/locations/move", json = {"key": key, "path": path})
+
+
+def _location(client, key):
+    locations = client.get("/api/library/locations").json()["locations"]
+    return next(entry for entry in locations if entry["key"] == key)
+
+
+def test_images_move_to_a_new_folder_and_back(client, tmp_path):
+    from core.inference import image_gallery
+
+    old = image_gallery.gallery_dir()
+    (old / "a.png").write_bytes(b"png")
+    (old / "a.json").write_text("{}")
+    new = tmp_path / "Pictures" / "Unsloth"
+    new.parent.mkdir()
+
+    response = _move(client, "images", str(new))
+    assert response.status_code == 200, response.text
+    assert sorted(p.name for p in new.iterdir()) == ["a.json", "a.png"]
+    assert not any(old.iterdir())
+    assert image_gallery.gallery_dir() == new.resolve()
+    assert _location(client, "images") == {
+        "key": "images",
+        "path": str(new.resolve()),
+        "movable": True,
+        "custom": True,
+    }
+
+    assert _move(client, "images", None).status_code == 200
+    assert (old / "a.png").read_bytes() == b"png"
+    assert image_gallery.gallery_dir() == old
+    assert _location(client, "images")["custom"] is False
+
+
+def test_uploads_follow_their_folder(client, tmp_path):
+    [note] = _upload(client, ("plan.md", b"# plan", "text/markdown"))
+    assert _move(client, "uploads", str(tmp_path / "uploads")).status_code == 200
+    upload_id = note.split(":", 1)[1]
+    assert client.get(f"/api/library/uploads/{upload_id}/file").content == b"# plan"
+
+
+def test_a_move_needs_an_empty_ordinary_folder(client, tmp_path):
+    from core.inference import video_gallery
+
+    # A folder that already holds a same-named "Unsloth Images" with files in it.
+    full = tmp_path / "full"
+    (full / "Unsloth Images").mkdir(parents = True)
+    (full / "Unsloth Images" / "keep.txt").write_text("mine")
+    assert _move(client, "images", str(full)).status_code == 400
+    assert _move(client, "images", "relative/folder").status_code == 400
+    assert _move(client, "images", "/etc/unsloth-images").status_code == 400
+    assert _move(client, "images", str(tmp_path / "missing" / "deeper")).status_code == 400
+    # Inside another kind's folder, where its listing would pick the files up.
+    assert _move(client, "images", str(video_gallery.gallery_dir() / "images")).status_code == 400
+    assert (full / "Unsloth Images" / "keep.txt").read_text() == "mine"
+
+
+def test_a_folder_with_files_gets_a_named_folder_inside(client, tmp_path):
+    from core.inference import image_gallery
+
+    (image_gallery.gallery_dir() / "a.png").write_bytes(b"png")
+    pictures = tmp_path / "Pictures"
+    pictures.mkdir()
+    (pictures / "holiday.jpg").write_bytes(b"jpg")
+    assert _move(client, "images", str(pictures)).status_code == 200
+    assert image_gallery.gallery_dir() == (pictures / "Unsloth Images").resolve()
+    assert (pictures / "Unsloth Images" / "a.png").read_bytes() == b"png"
+    assert (pictures / "holiday.jpg").read_bytes() == b"jpg"
+
+
+def test_fine_tunes_and_exports_do_not_move(client, tmp_path):
+    for key in ("fineTunes", "exports", "somewhere"):
+        assert _move(client, key, str(tmp_path / key)).status_code == 400
+    assert _location(client, "fineTunes")["movable"] is False
+
+
+def test_only_the_installation_owner_can_move(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(library_routes.account_access, "managed_account", lambda: True)
+    assert _move(client, "images", str(tmp_path / "elsewhere")).status_code == 403
+    assert not (tmp_path / "elsewhere").exists()
+
+
+def test_a_failed_move_puts_everything_back(client, tmp_path, monkeypatch):
+    import shutil
+
+    from core.inference import image_gallery
+
+    old = image_gallery.gallery_dir()
+    for name in ("a.png", "b.png", "c.png"):
+        (old / name).write_bytes(name.encode())
+    real_move = shutil.move
+    calls = []
+
+    def flaky_move(src, dst):
+        calls.append(src)
+        if len(calls) == 2:
+            raise OSError(28, "No space left on device")
+        return real_move(src, dst)
+
+    monkeypatch.setattr(library.shutil, "move", flaky_move)
+    response = _move(client, "images", str(tmp_path / "small-disk"))
+    assert response.status_code == 500
+    assert "No space left" in response.json()["detail"]
+    monkeypatch.setattr(library.shutil, "move", real_move)
+    assert sorted(p.name for p in old.iterdir()) == ["a.png", "b.png", "c.png"]
+    assert image_gallery.gallery_dir() == old
+    assert _location(client, "images")["custom"] is False

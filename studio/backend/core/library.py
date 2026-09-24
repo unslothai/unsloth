@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import threading
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -83,7 +84,10 @@ def _item(
 
 
 def uploads_dir() -> Path:
-    return ensure_dir(account_path("library"))
+    from utils.paths.relocations import relocated
+
+    # Settings > Library can move the owner's folder elsewhere; other accounts keep theirs.
+    return ensure_dir(relocated("uploads", account_path("library")))
 
 
 def _device(path) -> Optional[int]:
@@ -618,22 +622,162 @@ def video_thumbnail(item_id: str) -> bytes:
     return video_gallery.first_frame_webp(path, width = _VIDEO_THUMBNAIL_WIDTH)
 
 
-def locations() -> list[dict]:
-    """Where each kind of Library file lives, for Settings > Library."""
+def _location_resolvers() -> dict:
     from core.inference import audio_gallery, image_gallery, video_gallery
     from utils.paths.storage_roots import exports_root, outputs_root
 
+    return {
+        "uploads": uploads_dir,
+        "images": image_gallery.gallery_dir,
+        "videos": video_gallery.gallery_dir,
+        "audio": audio_gallery.gallery_dir,
+        "fineTunes": outputs_root,
+        "exports": exports_root,
+    }
+
+
+def locations() -> list[dict]:
+    """Where each kind of Library file lives, for Settings > Library. `movable` kinds can be moved
+    with ``move_location``; `custom` says the owner already has."""
+    from utils.paths.relocations import MOVABLE, chosen
+
     return [
-        {"key": key, "path": str(resolve())}
-        for key, resolve in (
-            ("uploads", uploads_dir),
-            ("images", image_gallery.gallery_dir),
-            ("videos", video_gallery.gallery_dir),
-            ("audio", audio_gallery.gallery_dir),
-            ("fineTunes", outputs_root),
-            ("exports", exports_root),
-        )
+        {
+            "key": key,
+            "path": str(resolve()),
+            "movable": key in MOVABLE,
+            "custom": chosen(key) is not None,
+        }
+        for key, resolve in _location_resolvers().items()
     ]
+
+
+# Left behind by a move and ignored in an "empty" target: the OS writes them into any folder it shows.
+_OS_CLUTTER = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
+_move_lock = threading.Lock()
+
+
+def _location_default(key: str) -> Path:
+    from utils.paths.storage_roots import studio_root
+
+    return account_path("library") if key == "uploads" else studio_root() / key
+
+
+def _move_target(raw: str) -> Path:
+    """An absolute, ordinary folder whose parent exists. Same rules as the model download folder."""
+    from hub.storage.scan_folders import (
+        contains_sensitive_path_component,
+        is_denied_system_path,
+    )
+
+    value = raw.strip()
+    if not value:
+        raise ValueError("Choose a folder.")
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        raise ValueError("Choose an absolute folder path.")
+    try:
+        resolved = candidate.resolve(strict = False)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError("That folder path is invalid.") from exc
+    if resolved.parent == resolved:
+        raise ValueError("Choose a folder inside the drive, not the drive itself.")
+    if is_denied_system_path(str(resolved)) or contains_sensitive_path_component(str(resolved)):
+        raise ValueError("System, credential and config folders cannot hold these files.")
+    if not resolved.parent.is_dir():
+        raise ValueError("The parent folder does not exist.")
+    return resolved
+
+
+# A picked folder that already holds files gets one of these made inside it instead.
+_SUBFOLDERS = {
+    "uploads": "Unsloth Library",
+    "images": "Unsloth Images",
+    "videos": "Unsloth Videos",
+    "audio": "Unsloth Audio",
+}
+
+
+def _is_empty(folder: Path) -> bool:
+    return not any(entry.name not in _OS_CLUTTER for entry in folder.iterdir())
+
+
+def _prepare_target(target: Path, key: str) -> Path:
+    """The folder the files go to: `target` itself when empty, else a named folder made inside it.
+    Created if needed and checked writable."""
+    import tempfile
+
+    try:
+        target.mkdir(exist_ok = True)
+        if not target.is_dir():
+            raise ValueError("That path is a file, not a folder.")
+        if not _is_empty(target):
+            target = target / _SUBFOLDERS[key]
+            target.mkdir(exist_ok = True)
+            if not target.is_dir() or not _is_empty(target):
+                raise ValueError(f"{target} already holds files. Choose another folder.")
+        with tempfile.NamedTemporaryFile(prefix = ".unsloth-write-test-", dir = target):
+            pass
+    except PermissionError as exc:
+        raise ValueError("Unsloth cannot write to that folder.") from exc
+    except OSError as exc:
+        raise ValueError(f"Unsloth cannot use that folder: {exc.strerror or exc}") from exc
+    return target
+
+
+def _move_entries(source: Path, target: Path, moved: list[tuple[Path, Path]]) -> None:
+    """Move everything in `source` into `target`, across drives too, noting each move in `moved`
+    as it lands so a failure part way can be undone."""
+    for entry in list(source.iterdir()):
+        if entry.name in _OS_CLUTTER:
+            continue
+        dest = target / entry.name
+        shutil.move(str(entry), str(dest))
+        moved.append((entry, dest))
+
+
+def move_location(key: str, path: Optional[str]) -> None:
+    """Move one kind of file to another folder, files and all, and keep saving there. `path` None
+    moves it back to the default. Owner only; the caller checks.
+
+    The switch is recorded first, so a file saved during the move already lands in the new folder;
+    a second pass then picks up any save that was writing to the old one. On a failure everything
+    moved so far goes back and the old folder stays in use. Raises ValueError for a folder that
+    cannot be used, RuntimeError when the move itself fails."""
+    from utils.paths.relocations import MOVABLE, chosen, set_chosen
+
+    if key not in MOVABLE:
+        raise ValueError("These files stay where they are: training and chats remember them by path.")
+    resolvers = _location_resolvers()
+    with _move_lock:
+        current = resolvers[key]().resolve()
+        target = _move_target(path) if path is not None else _location_default(key).resolve()
+        if target == current:
+            return
+        for other in resolvers.values():
+            root = other().resolve()
+            if target == root or root in target.parents:
+                raise ValueError("That folder is inside another Unsloth folder.")
+        target = _prepare_target(target, key)
+        if target == current:
+            return
+        previous = chosen(key)
+        set_chosen(key, target if path is not None else None)
+        moved: list[tuple[Path, Path]] = []
+        try:
+            _move_entries(current, target, moved)
+        except OSError as exc:
+            for source, dest in reversed(moved):
+                try:
+                    shutil.move(str(dest), str(source))
+                except OSError:
+                    logger.error("library.move_rollback_failed: %s", dest, exc_info = True)
+            set_chosen(key, previous)
+            raise RuntimeError(f"Could not move the files: {exc.strerror or exc}") from exc
+        try:
+            _move_entries(current, target, [])
+        except OSError:
+            logger.warning("library.move_straggler_failed: %s", current, exc_info = True)
 
 
 def delete_item(item_id: str) -> bool:

@@ -224,6 +224,29 @@ async def reveal_location(
     return {"ok": True}
 
 
+class LocationMove(BaseModel):
+    key: str = Field(max_length = 32)
+    # None moves the files back to the default folder.
+    path: Optional[str] = Field(default = None, max_length = 4096)
+
+
+@router.post("/locations/move")
+async def move_location(
+    body: LocationMove, current_subject: str = Depends(get_current_subject)
+) -> dict:
+    """Move one kind of file to another folder, files and all. Installation owner only, like the
+    other storage settings: other accounts keep their files in their own workspace."""
+    account_access.require_installation_owner()
+    try:
+        await run_in_threadpool(library.move_location, body.key, body.path)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    except RuntimeError as exc:
+        logger.warning("library.move_location_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = str(exc))
+    return {"locations": await run_in_threadpool(library.locations)}
+
+
 # ── Library-owned uploads ────────────────────────────────────────
 
 

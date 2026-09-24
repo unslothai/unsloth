@@ -35,6 +35,7 @@ export { LibraryStorageBar } from "./components/storage-bar";
 export {
   type LibraryLocation,
   getLibraryLocations,
+  moveLibraryLocation,
   revealLibraryLocation,
 } from "./api";
 export { revealInFolder, useRevealLabel, useRevealPlatform } from "./reveal";

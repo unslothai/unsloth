@@ -128,6 +128,10 @@ export async function revealLibraryItem(id: string): Promise<void> {
 export interface LibraryLocation {
   key: "uploads" | "images" | "videos" | "audio" | "fineTunes" | "exports";
   path: string;
+  /** Can be moved to another folder (installation owner only). */
+  movable?: boolean;
+  /** Already moved away from the default. */
+  custom?: boolean;
 }
 
 export async function getLibraryLocations(): Promise<LibraryLocation[]> {
@@ -137,6 +141,17 @@ export async function getLibraryLocations(): Promise<LibraryLocation[]> {
 
 export async function revealLibraryLocation(key: LibraryLocation["key"]): Promise<void> {
   await ensureOk(await authFetch("/api/library/locations/reveal", jsonInit("POST", { key })));
+}
+
+/** Move one kind of file, files and all; `path` null moves it back to the default. */
+export async function moveLibraryLocation(
+  key: LibraryLocation["key"],
+  path: string | null,
+): Promise<LibraryLocation[]> {
+  const response = await ensureOk(
+    await authFetch("/api/library/locations/move", jsonInit("POST", { key, path })),
+  );
+  return (await response.json()).locations;
 }
 
 export async function deleteLibraryItem(id: string): Promise<void> {
