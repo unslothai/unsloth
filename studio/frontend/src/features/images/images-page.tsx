@@ -27,6 +27,7 @@ import {
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { MediaViewer } from "@/components/media-viewer";
+import { openMediaLabel } from "@/lib/open-media-label";
 
 import { ImageDropzone } from "@/components/image-dropzone";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
@@ -5326,7 +5327,7 @@ export function ImagesPage({
                   style={TRANSPARENCY_CHECKER}
                   role="button"
                   tabIndex={0}
-                  aria-label="Open image"
+                  aria-label={openMediaLabel("image", selected.prompt)}
                   onClick={openViewer}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
@@ -5345,7 +5346,11 @@ export function ImagesPage({
                     variant="ghost"
                     aria-label="Open image"
                     title="Open image"
-                    onClick={openViewer}
+                    onClick={(event) => {
+                      // Safari does not focus a clicked button, and the viewer returns focus to what had it.
+                      event.currentTarget.focus();
+                      openViewer();
+                    }}
                   >
                     <HugeiconsIcon icon={ArrowExpand01Icon} className="size-4" />
                   </Button>
