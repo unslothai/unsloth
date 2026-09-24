@@ -202,6 +202,7 @@ import {
   unloadVideoModel,
 } from "./api";
 import { fetchWithFreshLink } from "./signed-link-fetch";
+import { type Playback, playWithMutedFallback, readPlayback } from "./viewer-playback";
 import { videoThumbnailQueue, withThumbnailRetries } from "./thumbnail-request-queue";
 
 // Curated models come from the shared catalog, one group per model with a format second level,
@@ -297,6 +298,10 @@ const VIDEO_LINK_REFRESH_MS = 6 * 60 * 60 * 1000;
 
 // Videos loaded per infinite-scroll page.
 const PAGE_SIZE = 50;
+
+// Where the viewer starts when the inline player has not loaded yet: at the top, paused, and muted
+// as the inline player starts.
+const INLINE_PLAYBACK: Playback = { time: 0, playing: false, muted: true, volume: 1 };
 
 // Passes a window resync may make before giving up: each extra pass only happens when
 // pagination moved while it was fetching.
@@ -1163,12 +1168,15 @@ function VideoGenerator({
     [videos, selectedId],
   );
   const selectedSrc = selected ? srcById[selected.id] : undefined;
-  // The same full-window viewer the Library opens, picking the clip up where the inline player was.
+  // The same full-window viewer the Library opens, picking the clip up where the inline player was:
+  // its time, whether it was playing, and its sound, all handed back on close.
   // Bound to the clip that opened it: a generation finishing moves the selection, not the viewer.
-  const [viewer, setViewer] = useState<{ id: string; start: number; muted: boolean } | null>(null);
+  const [viewer, setViewer] = useState<{ id: string; from: Playback } | null>(null);
   const viewerVideoRef = useRef<HTMLVideoElement | null>(null);
+  // Set once the viewer's player has seeked to `from`: before that its own time reads 0.
+  const viewerPositioned = useRef(false);
   // Where the viewer's clip got to, handed back to the inline player however the viewer closes.
-  const viewerTime = useRef<{ id: string; time: number } | null>(null);
+  const handback = useRef<{ id: string; playback: Playback } | null>(null);
   const navigateToChat = useNavigate();
   const revealLabel = useRevealLabel();
   const viewerVideo = viewer ? (videos.find((video) => video.id === viewer.id) ?? null) : null;
@@ -1177,28 +1185,45 @@ function VideoGenerator({
   if (viewer && (!active || !viewerVideo)) setViewer(null);
   const openViewer = () => {
     if (!selected || !selectedSrc) return;
-    setViewer({
-      id: selected.id,
-      start: previewRef.current?.currentTime ?? 0,
-      muted: previewRef.current?.muted ?? true,
-    });
+    const inline = previewRef.current;
+    viewerPositioned.current = false;
+    handback.current = null;
+    setViewer({ id: selected.id, from: readPlayback(inline, INLINE_PLAYBACK) });
     // Only one plays.
-    previewRef.current?.pause();
+    inline?.pause();
+  };
+  // Also while it closes: the element is gone once it has, and its late events are not the viewer's.
+  const recordViewer = (video: HTMLVideoElement) => {
+    if (!viewer || video !== viewerVideoRef.current) return;
+    handback.current = {
+      id: viewer.id,
+      playback: readPlayback(video, viewer.from, viewerPositioned.current),
+    };
   };
   const closeViewer = () => {
-    const video = viewerVideoRef.current;
-    if (viewer && video) viewerTime.current = { id: viewer.id, time: video.currentTime };
+    if (viewerVideoRef.current) recordViewer(viewerVideoRef.current);
     setViewer(null);
   };
-  // Also when leaving the page closed it above, mid-render, with no chance to read the player. Kept
-  // until that clip is the one shown: a generation finishing while it was open selects another.
+  // Also when leaving the page closed it above, mid-render, with no chance to read the player. Only
+  // for the clip the viewer showed: a generation finishing while it was open selects another, and
+  // that one starts where it is. Waits while the shown clip's link is still being minted.
   const shownId = selected?.id;
   useEffect(() => {
-    const last = viewerTime.current;
-    if (viewer || !last || last.id !== shownId || !previewRef.current) return;
-    viewerTime.current = null;
-    previewRef.current.currentTime = last.time;
-  }, [viewer, shownId]);
+    const last = handback.current;
+    if (viewer || !last) return;
+    if (last.id !== shownId) {
+      handback.current = null;
+      return;
+    }
+    const inline = previewRef.current;
+    if (!selectedSrc || !inline) return;
+    handback.current = null;
+    const { playback } = last;
+    inline.currentTime = playback.time;
+    inline.muted = playback.muted;
+    inline.volume = playback.volume;
+    if (playback.playing && activeRef.current) void playWithMutedFallback(inline);
+  }, [viewer, shownId, selectedSrc]);
 
   // The resolution presets + temporal lattice for the loaded family, or the fallbacks before anything is loaded.
   const resolutionPresets = useMemo<Array<[number, number]>>(() => {
@@ -4319,20 +4344,24 @@ function VideoGenerator({
                 ref={viewerVideoRef}
                 src={viewerSrc}
                 controls
-                autoPlay
                 playsInline
-                muted={viewer.muted}
+                muted={viewer.from.muted}
                 onLoadedMetadata={(event) => {
-                  if (viewer.start) event.currentTarget.currentTime = viewer.start;
+                  const video = event.currentTarget;
+                  if (viewer.from.time) video.currentTime = viewer.from.time;
+                  video.volume = viewer.from.volume;
+                  viewerPositioned.current = true;
+                  // Not autoPlay: a clip paused inline opens paused.
+                  if (viewer.from.playing) void playWithMutedFallback(video);
                 }}
-                onTimeUpdate={(event) => {
-                  viewerTime.current = { id: viewer.id, time: event.currentTarget.currentTime };
-                }}
+                onTimeUpdate={(event) => recordViewer(event.currentTarget)}
+                onVolumeChange={(event) => recordViewer(event.currentTarget)}
                 // An expired or restart-invalidated link gets a fresh one, as the inline player does,
-                // and the fresh one picks up where this one stopped.
+                // and the fresh one picks up where this one stopped, or where this one was to start.
                 onError={(event) => {
-                  const time = event.currentTarget.currentTime;
-                  setViewer((current) => current && { ...current, start: time });
+                  const from = readPlayback(event.currentTarget, viewer.from, viewerPositioned.current);
+                  viewerPositioned.current = false;
+                  setViewer((current) => current && { ...current, from });
                   remintSrc(viewerVideo);
                 }}
                 className="size-full object-contain"
