@@ -4837,6 +4837,23 @@ def test_a_raising_teardown_still_drains_the_fence(fake_runtime, tmp_path, monke
     assert backend.generate(prompt = "after", steps = 2)["mp4_bytes"] == b"MP4"
 
 
+def test_teardown_returns_freed_host_pages_after_the_gpu_cache(fake_runtime, tmp_path, monkeypatch):
+    # A Wan-class pipeline left 7+ GiB of host RSS behind after unload until a malloc_trim.
+    from core.inference import video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    order = []
+    monkeypatch.setattr(video_mod, "clear_gpu_cache", lambda: order.append("clear"))
+    monkeypatch.setattr(
+        video_mod,
+        "reclaim_host_memory",
+        lambda logger = None: order.append(("trim", backend._state is None)) or True,
+    )
+    assert backend.unload()["loaded"] is False
+    assert order == ["clear", ("trim", True)]
+
+
 # ── the H3 native path and the audio VAE ─────────────────────────────────────
 def test_the_h3_native_load_never_puts_the_vae_on_the_cpu():
     """`low_vram` maps to the `model` policy, which emits `--vae-on-cpu` for everyone else.

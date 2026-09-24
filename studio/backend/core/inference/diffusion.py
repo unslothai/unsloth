@@ -111,6 +111,7 @@ from .diffusion_memory import (
     raise_on_image_activation_shortfall,
     raise_on_unified_memory_shortfall,
     reclaimable_snapshot_device_memory,
+    reclaim_host_memory,
     reclaim_offload_host_memory,
     refine_memory_plan_for_components,
     settled_snapshot_device_memory,
@@ -7753,6 +7754,9 @@ class DiffusionBackend:
         self._state = None
         del state
         clear_gpu_cache()
+        # clear_gpu_cache() ran gc, so the pipeline's host staging buffers are freed but still mapped by
+        # the allocator; return them, or host RSS grows by several GiB per load / unload cycle.
+        reclaim_host_memory(logger = logger)
 
     def status(self) -> dict[str, Any]:
         state = self._state
