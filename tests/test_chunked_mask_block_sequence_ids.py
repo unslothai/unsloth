@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A chunked-attention model must generate with a static cache on transformers 5.17.
-
-5.17's `masking_utils.create_masks_for_generate` passes `block_sequence_ids` to every
-function in `LAYER_PATTERN_TO_MASK_FUNCTION_MAPPING`, but `create_chunked_causal_mask`
-does not accept it, so Llama-4 raises TypeError as soon as generate builds masks up
-front (static / hybrid-chunked cache, which unsloth's fast generate always uses).
-Every test DRIVES the real transformers functions on a tiny CPU Llama-4.
-"""
+"""Llama-4 static-cache generate on transformers 5.17 (`block_sequence_ids` to chunked mask)."""
 
 import inspect
 
@@ -62,10 +55,7 @@ def _generate(model, cache_implementation):
 
 @pytest.fixture
 def unpatched():
-    """The upstream function in every binding for the test, the session state restored after.
-
-    `import unsloth` in conftest may already have installed the fix, so unwrap it first.
-    """
+    # conftest's `import unsloth` may already have installed the fix, so unwrap it first.
     live = masking_utils.create_chunked_causal_mask
     if getattr(live, _CHUNKED_MASK_PATCH_FLAG, False):
         original = live.__wrapped__
@@ -84,7 +74,7 @@ def test_static_cache_generate_matches_dynamic(unpatched):
     if not _chunked_mask_rejects_block_sequence_ids(masking_utils):
         pytest.skip("this transformers does not pass block_sequence_ids to chunked masks")
     model = _tiny_llama4()
-    # The defect itself, on the upstream function: without it this test proves nothing.
+    # Without the defect reproducing upstream, this test proves nothing.
     with pytest.raises(TypeError, match = "block_sequence_ids"):
         _generate(model, "static")
 
@@ -102,7 +92,6 @@ def test_static_cache_generate_matches_dynamic(unpatched):
     assert static.shape == (1, 7)
     assert torch.equal(static, dynamic)
 
-    # Idempotent: a second call keeps the same wrapper rather than stacking another.
     fix_transformers_chunked_mask_block_sequence_ids()
     assert masking_utils.create_chunked_causal_mask is patched
 
@@ -127,7 +116,7 @@ def test_block_sequence_ids_are_honoured_not_dropped(unpatched):
     assert torch.equal(plain, unpatched(**kwargs))
     all_text = patched(**kwargs, block_sequence_ids = torch.full((1, length), -1))
     assert torch.equal(all_text, plain)
-    # One media block spanning the chunk boundary at 8: positions 6..9 see each other both ways.
+    # Media block spanning the chunk boundary at 8: 6..9 must see each other both ways.
     ids = torch.full((1, length), -1)
     ids[0, 6:10] = 0
     blocked = patched(**kwargs, block_sequence_ids = ids)[0, 0]

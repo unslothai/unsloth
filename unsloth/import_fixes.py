@@ -1659,12 +1659,7 @@ _BLOCK_SEQUENCE_IDS = "block_sequence_ids"
 
 
 def _names_parameter(function, name):
-    """Does `function` name `name` as a parameter? `**kwargs` alone does not count.
-
-    Strict on purpose: unsloth_zoo's mask wrapper (`temporary_patches/misc.py`) is a bare
-    `(*args, **kwargs)` closure, so counting VAR_KEYWORD would report every wrapped build,
-    5.4 included, as one whose generate path passes the kwarg.
-    """
+    # Ignores **kwargs on purpose: unsloth_zoo's bare (*args, **kwargs) wrapper would match 5.4.
     try:
         return name in inspect.signature(function).parameters
     except Exception:
@@ -1672,7 +1667,6 @@ def _names_parameter(function, name):
 
 
 def _accepts_keyword(function, name):
-    """Can `function` be called with `name=`, by name or through `**kwargs`?"""
     try:
         parameters = inspect.signature(function).parameters
     except Exception:
@@ -1683,14 +1677,7 @@ def _accepts_keyword(function, name):
 
 
 def _masks_pass_block_sequence_ids(masking_utils):
-    """Does this transformers hand `block_sequence_ids` to every per-layer mask function?
-
-    5.17 added it to `create_masks_for_generate`'s shared `mask_kwargs` (and to
-    `create_causal_mask` / `create_sliding_window_causal_mask`, next to `blockwise_overlay`);
-    5.4 and 4.57.6 have none of it. Several markers, because unsloth_zoo replaces
-    `create_masks_for_generate` and `create_causal_mask` with signature-less wrappers and
-    keeps only the latter's original reachable.
-    """
+    # Several markers: unsloth_zoo wraps create_masks_for_generate/create_causal_mask sans signature.
     if callable(getattr(masking_utils, "blockwise_overlay", None)):
         return True
     for name in (
@@ -1705,12 +1692,6 @@ def _masks_pass_block_sequence_ids(masking_utils):
 
 
 def _chunked_mask_rejects_block_sequence_ids(masking_utils = None):
-    """Would `create_masks_for_generate` raise TypeError on a chunked-attention model?
-
-    True only when the generate path passes `block_sequence_ids` AND the ORIGINAL
-    `create_chunked_causal_mask` cannot take it. Unwraps our own wrapper first, so a second
-    call answers for upstream rather than for the installed patch.
-    """
     if masking_utils is None:
         try:
             from transformers import masking_utils
@@ -1727,12 +1708,7 @@ def _chunked_mask_rejects_block_sequence_ids(masking_utils = None):
 
 
 def _bounded_blockwise_overlay(block_sequence_ids):
-    """`masking_utils.blockwise_overlay`, safe for indices past the end of the ids.
-
-    Upstream pads the ids with -1 up to `kv_length + kv_offset` before building its overlay,
-    and those lengths are only known inside the mask function. Treating an out-of-range
-    query or key index as group -1 is the same answer without them.
-    """
+    # Upstream pads ids with -1 to kv_length + kv_offset (unknown here); out-of-range = -1 matches.
     import torch
 
     length = block_sequence_ids.shape[-1]
@@ -1756,13 +1732,7 @@ def _bounded_blockwise_overlay(block_sequence_ids):
 
 
 def _swap_function_references(masking_utils, original, replacement):
-    """Point every live reference to `original` at `replacement`.
-
-    The mapping is read by `create_masks_for_generate` at call time, so mutating it in place
-    covers generate whichever order this and unsloth_zoo's mask wrapper install in. Nested
-    dicts (`hybrid`) and `functools.partial` entries are rebuilt; module globals are read
-    through `vars()` so a transformers `_LazyModule` is never asked to import anything.
-    """
+    # vars(), not getattr: a transformers _LazyModule must never be asked to import anything.
     swap = lambda value: replacement if value is original else value
     mapping = getattr(masking_utils, "LAYER_PATTERN_TO_MASK_FUNCTION_MAPPING", None)
     if isinstance(mapping, dict):
@@ -1790,29 +1760,7 @@ def _swap_function_references(masking_utils, original, replacement):
 
 
 def fix_transformers_chunked_mask_block_sequence_ids():
-    """Let a chunked-attention model (Llama-4) generate with a static cache on transformers 5.17.
-
-    5.17's `masking_utils.create_masks_for_generate` puts `block_sequence_ids` in the kwargs it
-    hands to EVERY function in `LAYER_PATTERN_TO_MASK_FUNCTION_MAPPING`, but only
-    `create_causal_mask` and `create_sliding_window_causal_mask` learned the parameter.
-    `create_chunked_causal_mask` did not, so any model with `chunked_attention` layers raises
-    `TypeError: create_chunked_causal_mask() got an unexpected keyword argument
-    'block_sequence_ids'` the moment generate prepares masks up front -- which it does for a
-    static or hybrid-chunked cache, and unsloth's fast generate always uses a static cache.
-    Still unfixed on transformers main as of 2026-09.
-
-    The wrapper accepts the kwarg. `None` (every chunked model today: no media block
-    overlays) is dropped, so the call is byte-identical to upstream. A real tensor is NOT
-    dropped, since that would silently turn bidirectional media blocks causal; it is folded
-    into `or_mask_function` as the same overlay `create_causal_mask` applies, so the result
-    matches the full-attention path's semantics (the one ordering difference: upstream ORs the
-    overlay after `and_mask_function`, here it is ORed before it). Like any
-    `or_mask_function`, that needs torch>=2.6 and raises the upstream ValueError otherwise.
-
-    Probe-gated, idempotent (the mark lives on the live binding), silent on failure, and a
-    no-op where the function already takes the kwarg or the generate path never passes it
-    (4.57.6, 5.4).
-    """
+    """5.17 passes `block_sequence_ids` to chunked masks that reject it (Llama-4 static cache)."""
     try:
         from transformers import masking_utils
     except Exception as e:
@@ -1830,6 +1778,7 @@ def fix_transformers_chunked_mask_block_sequence_ids():
         @functools.wraps(original)
         def create_chunked_causal_mask(*args, **kwargs):
             block_sequence_ids = kwargs.pop(_BLOCK_SEQUENCE_IDS, None)
+            # Never drop a real tensor: that would silently make bidirectional media blocks causal.
             if block_sequence_ids is None:
                 return original(*args, **kwargs)
             arguments = signature.bind_partial(*args, **kwargs).arguments
