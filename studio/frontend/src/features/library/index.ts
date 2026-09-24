@@ -31,3 +31,4 @@ export {
   useLibraryStorage,
 } from "./storage";
 export { formatSize } from "./format";
+export { LibraryStorageBar } from "./components/storage-bar";

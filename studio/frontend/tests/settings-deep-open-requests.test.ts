@@ -142,6 +142,16 @@ test("the canvas network target lands on Chat and stays until Chat reads it", ()
   assert.equal(store.getState().scrollTarget, null);
 });
 
+test("Manage storage in Data moves the open dialog to Library storage", () => {
+  reset();
+  store.getState().openDialog("data");
+  store.getState().openDialog("library", { scrollTarget: "library-storage" });
+  assert.equal(store.getState().activeTab, "library");
+  assert.equal(store.getState().scrollTarget, "library-storage");
+  store.getState().setActiveTab("data");
+  assert.equal(store.getState().scrollTarget, null);
+});
+
 test("a deep link can provide a stable focus fallback", () => {
   reset();
   const fallback = {} as HTMLElement;

@@ -156,6 +156,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.data.archivedVideos",
     "settings.data.archivedAudio",
     "settings.data.uploadedFiles",
+    "settings.library.dataStorage",
     "settings.chat.exportHistory",
     "settings.chat.exportConversations",
     "settings.chat.importChats",

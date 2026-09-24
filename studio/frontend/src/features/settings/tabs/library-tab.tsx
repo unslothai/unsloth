@@ -13,6 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import {
   LIBRARY_TABS,
+  LibraryStorageBar,
   type LibrarySettings,
   type LibraryTab as LibraryTabId,
   type LibraryTabVisibility,
@@ -23,12 +24,12 @@ import {
   useLibraryStorage,
   useLibraryViewStore,
 } from "@/features/library";
-import { useSystemInfo } from "@/hooks";
 import { type TranslationKey, useT } from "@/i18n";
 import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
+import { useEffect, useRef } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
@@ -121,19 +122,26 @@ const CATEGORY_LABELS: Record<StorageCategory, TranslationKey> = {
   fineTunes: "settings.library.categoryFineTunes",
 };
 
-const GB = 1e9;
-
 /** Library usage against the disk it lives on, and a way into each category, largest first. */
 function StorageSection() {
   const t = useT();
   const navigate = useNavigate();
   const closeDialog = useSettingsDialogStore((s) => s.closeDialog);
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const consumeScrollTarget = useSettingsDialogStore((s) => s.consumeScrollTarget);
+  const sectionRef = useRef<HTMLElement | null>(null);
   const setView = useLibraryViewStore((s) => s.setView);
   const storage = useLibraryStorage();
-  const { disk } = useSystemInfo();
-  const diskBytes = disk.total_gb > 0 ? disk.total_gb * GB : 0;
-  const otherBytes = Math.max(0, diskBytes - disk.free_gb * GB - storage.totalBytes);
-  const share = (bytes: number) => (diskBytes ? `${(bytes / diskBytes) * 100}%` : "0%");
+
+  // Manage storage in the Data tab lands here.
+  useEffect(() => {
+    if (scrollTarget !== "library-storage") return;
+    const frame = window.requestAnimationFrame(() => {
+      sectionRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+      consumeScrollTarget("library-storage");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [consumeScrollTarget, scrollTarget]);
 
   const open = (tab: (typeof storage.categories)[number]["tab"]) => {
     closeDialog();
@@ -153,22 +161,7 @@ function StorageSection() {
           <p className="text-sm font-medium text-foreground">
             {t("settings.library.storageUsed", { size: formatSize(storage.totalBytes) ?? "0 B" })}
           </p>
-          {diskBytes > 0 && (
-            <>
-              {/* One track: the Library, then everything else on the disk, then free space. Only
-                  the track is rounded, so the segments join flush. */}
-              <div className="flex h-2 overflow-hidden rounded-full bg-muted">
-                <div className="min-w-1 bg-foreground" style={{ width: share(storage.totalBytes) }} />
-                <div className="bg-muted-foreground/35" style={{ width: share(otherBytes) }} />
-              </div>
-              <p className="text-xs text-muted-foreground">
-                {t("settings.library.storageDisk", {
-                  free: formatSize(disk.free_gb * GB) ?? "",
-                  total: formatSize(diskBytes) ?? "",
-                })}
-              </p>
-            </>
-          )}
+          <LibraryStorageBar libraryBytes={storage.totalBytes} />
         </div>
         {storage.categories.length === 0 ? (
           <p className="pb-3 text-sm text-muted-foreground">{t("settings.library.storageEmpty")}</p>
@@ -204,6 +197,7 @@ function StorageSection() {
 
   return (
     <SettingsSection
+      ref={sectionRef}
       title={t("settings.library.storageSection")}
       description={t("settings.library.storageDescription")}
     >

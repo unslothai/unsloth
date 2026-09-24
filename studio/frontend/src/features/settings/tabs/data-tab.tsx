@@ -53,11 +53,17 @@ import {
   useChatSidebarItems,
 } from "@/features/chat";
 import {
+  LibraryStorageBar,
+  type StorageCategory,
+  formatSize,
+  useLibraryStorage,
+} from "@/features/library";
+import {
   LinkedFoldersManager,
   listKnowledgeBases,
   useRagAvailabilityStore,
 } from "@/features/rag";
-import { useT } from "@/i18n";
+import { type TranslationKey, useT } from "@/i18n";
 
 import { isTauri } from "@/lib/api-base";
 import {
@@ -101,6 +107,64 @@ import {
 
 // display order, and the guard against a persisted action this build dropped.
 const FINE_TUNE_ACTIONS: FineTuneAction[] = ["export", "train", "recipes"];
+
+const LIBRARY_CATEGORY_LABELS: Record<StorageCategory, TranslationKey> = {
+  files: "settings.library.categoryFiles",
+  images: "settings.library.categoryImages",
+  videos: "settings.library.categoryVideos",
+  audio: "settings.library.categoryAudio",
+  fineTunes: "settings.library.categoryFineTunes",
+};
+
+/** Library storage at a glance. Managing it lives in the Library tab. */
+function LibraryDataSection() {
+  const t = useT();
+  const openDialog = useSettingsDialogStore((s) => s.openDialog);
+  const storage = useLibraryStorage();
+  const count = storage.categories.reduce((sum, entry) => sum + entry.count, 0);
+  const largest = [...storage.categories]
+    .sort((a, b) => b.bytes - a.bytes)
+    .slice(0, 3)
+    .map((entry) => `${t(LIBRARY_CATEGORY_LABELS[entry.category])} ${formatSize(entry.bytes) ?? "0 B"}`)
+    .join(" · ");
+
+  let summary: string;
+  if (storage.status === "loading") summary = "";
+  else if (storage.status === "error") summary = t("settings.library.storageError");
+  else if (count === 0) summary = t("settings.library.storageEmpty");
+  else {
+    summary = [
+      t("settings.library.storageUsed", { size: formatSize(storage.totalBytes) ?? "0 B" }),
+      count === 1
+        ? t("settings.library.itemCountOne")
+        : t("settings.library.itemCount", { count: count.toLocaleString() }),
+    ].join(" · ");
+  }
+
+  return (
+    <SettingsSection title={t("settings.library.dataSection")}>
+      <SettingsRow
+        label={t("settings.library.dataStorage")}
+        description={summary || "\u00a0"}
+      >
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => openDialog("library", { scrollTarget: "library-storage" })}
+        >
+          {t("settings.library.manageStorage")}
+          <HugeiconsIcon icon={ChevronRightStandardIcon} className="ml-1 size-3.5" />
+        </Button>
+      </SettingsRow>
+      {storage.status === "ready" && count > 0 && (
+        <div className="flex flex-col gap-2 pb-3">
+          <LibraryStorageBar libraryBytes={storage.totalBytes} />
+          <p className="text-xs text-muted-foreground">{largest}</p>
+        </div>
+      )}
+    </SettingsSection>
+  );
+}
 
 // Which subpage an "open the archive" request lands on.
 const SUBPAGE_FOR_SHELF = {
@@ -1037,6 +1101,8 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
           </SettingsRow>
         </div>
       </SettingsSection>
+
+      <LibraryDataSection />
 
       <SettingsSection title={t("settings.data.filesSection")}>
         <SettingsRow
