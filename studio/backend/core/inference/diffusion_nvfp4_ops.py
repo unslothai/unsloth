@@ -109,7 +109,6 @@ def _quantize_impl(x: Any, global_sf: Any):
     import flashinfer
 
     from . import diffusion_nvfp4_dispatch as dispatch
-
     with _device_guard(x):
         # Both branches inside the SAME guard: the fast one reaches the same pybind entry point.
         xq, sf = dispatch._fast_quantize(x, global_sf)
