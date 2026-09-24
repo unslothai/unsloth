@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import gc
 import logging
+import sys
 import threading
 import time
 from pathlib import Path
@@ -66,6 +67,8 @@ def _device() -> str:
 
     device = get_device()
     if device == DeviceType.MLX:
+        if _mlx_available():
+            return "mlx"
         import torch
         return "mps" if torch.backends.mps.is_available() else "cpu"
     candidate = {DeviceType.CUDA: "cuda", DeviceType.XPU: "xpu"}.get(device, "cpu")
@@ -74,6 +77,15 @@ def _device() -> str:
     from utils.torch_device_probe import device_can_allocate
 
     return candidate if device_can_allocate(candidate) else "cpu"
+
+
+def _mlx_available() -> bool:
+    # An unsloth-zoo without the MLX Laya model keeps the torch MPS path.
+    try:
+        import unsloth_zoo.mlx.decision  # noqa: F401
+    except ImportError:
+        return False
+    return True
 
 
 _WEIGHT_FILES = ("rl_agent_config.json", "model.safetensors")
@@ -250,11 +262,43 @@ def download_plan(checkpoint: Checkpoint) -> dict[str, Any]:
     return plan
 
 
+def _release_memory() -> None:
+    gc.collect()
+    # MLX keeps freed buffers in its allocator cache until told otherwise.
+    if (mx := sys.modules.get("mlx.core")) is not None:
+        mx.clear_cache()
+
+
 def _evict() -> None:
     global _agent, _loaded, _device_name
     with _run_lock:
         _agent = _loaded = _device_name = None
-    gc.collect()
+    _release_memory()
+
+
+class _MLXAgent:
+    """The part of ``laya.Agent`` this module drives, over the unsloth-zoo MLX decision model."""
+
+    device = "mlx"
+
+    def __init__(self, folder: Path):
+        import json
+
+        from laya.agent import Agent
+        from laya.common import clamp_temperature
+        from transformers import AutoTokenizer
+        from unsloth_zoo.mlx.decision import load_decision_model
+
+        self.cfg = json.loads((folder / "rl_agent_config.json").read_text())
+        self.tok = AutoTokenizer.from_pretrained(str(folder / "tokenizer"))
+        self.temperature = [
+            clamp_temperature(t) for t in self.cfg.get("temperature", [1.0, 1.0, 1.0])
+        ]
+        self.temperature_by_options = {
+            k: clamp_temperature(v) for k, v in self.cfg.get("temperature_by_options", {}).items()
+        }
+        self._to_internal = Agent._to_internal
+        self.model = load_decision_model(folder)
 
 
 def _load_checkpoint(checkpoint: Checkpoint):
@@ -264,6 +308,9 @@ def _load_checkpoint(checkpoint: Checkpoint):
     # Evict only once the new checkpoint is on disk, so a long or failed download leaves the resident model serving.
     _evict()
     device = _device()
+    if device == "mlx":
+        folder = root / checkpoint.subfolder if checkpoint.subfolder else root
+        return _MLXAgent(folder), device
     return laya.load(str(root), subfolder = checkpoint.subfolder, device = device), device
 
 
@@ -473,6 +520,8 @@ def _forward(agent, items: list[dict[str, Any]]):
     from laya.common import collate_items
 
     batch = collate_items([items], agent.tok.pad_token_id)
+    if isinstance(agent, _MLXAgent):
+        return agent.model.logits(batch), int(batch["attention_mask"].sum())
     try:
         logits = _run_model(agent, batch)
     except (RuntimeError, torch.cuda.OutOfMemoryError) as exc:
@@ -654,5 +703,5 @@ def unload() -> bool:
         was_loaded = _agent is not None
         _agent = _loaded = _device_name = None
         _failure = _install_failure = None
-    gc.collect()
+    _release_memory()
     return was_loaded

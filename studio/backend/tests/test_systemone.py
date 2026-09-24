@@ -587,6 +587,52 @@ def test_device_defaults_to_cpu():
     assert laya_runtime._device() == "cpu"
 
 
+def test_gpu_on_apple_silicon_runs_mlx_and_falls_back_to_mps(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from utils.hardware import hardware
+
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_DEVICE", "gpu")
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.MLX)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+    real = laya_runtime._mlx_available
+    monkeypatch.setattr(laya_runtime, "_mlx_available", lambda: True)
+    assert laya_runtime._device() == "mlx"
+    monkeypatch.setattr(laya_runtime, "_mlx_available", real)
+    # An unsloth-zoo release without the module.
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.decision", None)
+    assert laya_runtime._device() == "mps"
+
+
+def test_mlx_answers_match_laya_on_cpu(monkeypatch):
+    path = os.environ.get("SYSTEMONE_TEST_LAYA")
+    if not path:
+        pytest.skip("set SYSTEMONE_TEST_LAYA to a downloaded convaiinnovations/laya snapshot")
+    laya = pytest.importorskip("laya")
+    if not laya_runtime._mlx_available():
+        pytest.skip("needs unsloth_zoo.mlx.decision on Apple Silicon")
+    from pathlib import Path
+
+    reference = laya.load(path, subfolder = "multilingual", device = "cpu")
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", lambda checkpoint: Path(path))
+    monkeypatch.setattr(laya_runtime, "_device", lambda: "mlx")
+    agent, device = _REAL_LOAD(catalog.CHECKPOINTS["laya-multilingual"])
+    assert isinstance(agent, laya_runtime._MLXAgent) and device == "mlx"
+    for state in (
+        "Everything is down and we have a demo at noon.",
+        "Hola, ¿me pueden devolver el dinero? " * 80,
+    ):
+        expected, _ = _REAL_PREDICT(reference, state, QUESTIONS)
+        got, _ = _REAL_PREDICT(agent, state, QUESTIONS)
+        assert got["usage"] == expected["usage"]
+        for name, answer in expected["answers"].items():
+            if answer["type"] == "noul":
+                assert got["answers"][name]["noul"] == pytest.approx(answer["noul"], abs = 2e-4)
+            else:
+                assert got["answers"][name]["probabilities"] == pytest.approx(
+                    answer["probabilities"], abs = 2e-4
+                )
+
+
 def test_managed_account_reads_the_owner_switch(monkeypatch):
     import storage.studio_db as studio_db
     from utils import account_context
