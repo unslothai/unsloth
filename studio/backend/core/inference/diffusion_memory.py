@@ -1191,6 +1191,37 @@ def _pin_budget_mib() -> Optional[int]:
     return max(0, int(available) - reserve)
 
 
+def _remove_group_offload_hooks(module: Any) -> None:
+    """Undo a group offloading apply that raised part way (best effort)."""
+    try:
+        from diffusers.hooks import group_offloading as go
+        from diffusers.hooks.hooks import HookRegistry
+
+        registry = HookRegistry.check_if_exists_or_initialize(module)
+        for name in (
+            "_GROUP_OFFLOADING",
+            "_LAZY_PREFETCH_GROUP_OFFLOADING",
+            "_LAYER_EXECUTION_TRACKER",
+        ):
+            hook = getattr(go, name, None)
+            if isinstance(hook, str):
+                registry.remove_hook(hook, recurse = True)
+    except Exception:  # noqa: BLE001 - the fallback reports its own failure
+        pass
+
+
+def _pinned_memory_capped() -> bool:
+    """Native Windows (WDDM) and WSL2 cap page-locked host memory near 1 GiB whatever RAM is free (NVIDIA's CUDA
+    on WSL guide lists it as a known limitation), so pinning a multi-GB streamed module there fails part way."""
+    if sys.platform == "win32":
+        return True
+    try:
+        with open("/proc/version", "r", encoding = "utf-8") as f:
+            return "microsoft" in f.read().lower()
+    except Exception:  # noqa: BLE001 - not Linux, or unreadable: not WSL
+        return False
+
+
 def _streamed_pin_plan(
     transformer_mib: int,
     encoder_mib: int,
@@ -1202,7 +1233,7 @@ def _streamed_pin_plan(
         return False, False
     if forced in ("1", "on", "true", "yes"):
         return True, True
-    budget = _pin_budget_mib()
+    budget = None if _pinned_memory_capped() else _pin_budget_mib()
     if budget is None or budget <= 0:
         pin_transformer = pin_encoders = False
     else:
@@ -1349,7 +1380,10 @@ def _apply_group_offload(
                 if not stream_transformer and installed == 0:
                     # The resident-transformer tier exists only because the encoder does NOT fit beside the
                     # transformer, so keeping it resident is the OOM this tier was chosen to avoid. With no hook
-                    # installed yet, whole-module offload is still reachable: hand the load to it.
+                    # installed yet, whole-module offload is still reachable: hand the load to it. Leaf level hooks
+                    # each leaf as it goes, so a refusal part way (a pin the host will not grant) leaves hooks that
+                    # enable_model_cpu_offload rejects: drop them first.
+                    _remove_group_offload_hooks(module)
                     raise
                 if not stream_transformer and not transformer_demoted:
                     # Hooks exist on an earlier encoder, so whole-module offload is gone. Stream the transformer

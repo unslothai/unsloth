@@ -2260,6 +2260,7 @@ def _sized_stream_te_kwargs(monkeypatch, sizes, budget, **call_kw):
 
     monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
     monkeypatch.setattr(mem, "_pin_budget_mib", lambda: budget)
+    monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: False, raising = False)
     monkeypatch.setattr(mem, "_module_host_mib", lambda m: sizes.get(getattr(m, "name", ""), 0))
     return _stream_te_kwargs(monkeypatch, **call_kw)
 
@@ -2298,6 +2299,88 @@ def test_the_resident_transformer_tier_pins_its_encoders_when_ram_allows(monkeyp
     assert "transformer" not in seen
     assert seen["text_encoder"]["low_cpu_mem_usage"] is False
     assert seen["text_encoder_2"]["low_cpu_mem_usage"] is False
+
+
+@pytest.mark.parametrize("stream_transformer", [True, False])
+def test_windows_and_wsl_never_pin_the_streamed_tiers(monkeypatch, stream_transformer):
+    # WDDM and WSL2 cap page-locked memory near 1 GiB however much RAM is free, so a multi-GB pin fails part way:
+    # the resident-transformer tier then falls back to whole-module offload, and the streamed tier places the
+    # encoder resident. These hosts keep the unpinned path the tiers had before.
+    import core.inference.diffusion_memory as mem
+
+    seen = _sized_stream_te_kwargs(
+        monkeypatch,
+        {"transformer": 7000, "text_encoder": 8000, "text_encoder_2": 500},
+        1_000_000,
+        stream_text_encoders = True,
+        stream_transformer = stream_transformer,
+    )
+    assert all(
+        kw["low_cpu_mem_usage"] is False for kw in seen.values()
+    ), seen  # control: RAM-rich Linux pins
+    monkeypatch.delattr(mem, "_pinned_memory_capped", raising = False)
+    monkeypatch.undo()
+    monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
+    monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 1_000_000)
+    monkeypatch.setattr(mem.sys, "platform", "win32")
+    seen = _stream_te_kwargs(
+        monkeypatch, stream_text_encoders = True, stream_transformer = stream_transformer
+    )
+    assert seen and all(kw["low_cpu_mem_usage"] is True for kw in seen.values()), seen
+    # The env override still wins for a host known to allow it.
+    monkeypatch.setenv(mem.GROUP_OFFLOAD_PIN_ENV, "1")
+    assert mem._streamed_pin_plan(7000, 8000) == (True, True)
+
+
+def test_a_first_encoder_refusal_is_unhooked_before_whole_module_offload(monkeypatch):
+    # Leaf-level group offload hooks each leaf as it builds it, so a refusal part way (a pinned allocation the host
+    # will not grant) leaves hooks behind, and enable_model_cpu_offload then raises "components with group offloading
+    # enabled": the resident-transformer tier's fallback to whole-module offload would fail the load instead.
+    import core.inference.diffusion_memory as mem
+
+    def _apply(module, **kw):
+        if getattr(module, "name", "") == "text_encoder":
+            raise RuntimeError("CUDA error: out of memory (pin_memory)")
+
+    pipe, _unused, transformer, te, te2, vae = _stream_te_pipe(monkeypatch)
+    _swap_group_offloading(monkeypatch, _apply)
+    unhooked: list[str] = []
+    monkeypatch.setattr(
+        mem, "_remove_group_offload_hooks", lambda m: unhooked.append(m.name), raising = False
+    )
+
+    assert (
+        mem._apply_group_offload(
+            pipe, "cuda", logger = None, stream_text_encoders = True, stream_transformer = False
+        )
+        is False
+    )
+    assert unhooked == ["text_encoder"]
+
+
+def test_pinned_memory_cap_detection(monkeypatch, tmp_path):
+    import builtins
+
+    import core.inference.diffusion_memory as mem
+
+    monkeypatch.setattr(mem.sys, "platform", "win32")
+    assert mem._pinned_memory_capped() is True
+    monkeypatch.setattr(mem.sys, "platform", "linux")
+    real_open = builtins.open
+    for text, capped in (
+        ("Linux version 6.6.87.2-microsoft-standard-WSL2 (gcc)", True),
+        ("Linux version 6.17.0-1007-aws (gcc)", False),
+    ):
+        monkeypatch.setattr(
+            builtins,
+            "open",
+            lambda path, *a, _t = text, **k: (
+                __import__("io").StringIO(_t)
+                if path == "/proc/version"
+                else real_open(path, *a, **k)
+            ),
+        )
+        assert mem._pinned_memory_capped() is capped
 
 
 def test_unknown_host_memory_never_pins(monkeypatch):
