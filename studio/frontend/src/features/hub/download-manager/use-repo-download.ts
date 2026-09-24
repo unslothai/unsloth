@@ -11,6 +11,7 @@ import {
   type DownloadRequest,
   type JobListeners,
   downloadManager,
+  findActiveScopedJobForRepo,
   jobKeyOf,
   repoKeyOf,
   selectActiveJob,
@@ -58,6 +59,10 @@ export interface RepoDownloadConfig {
   onError?: JobListeners["onError"];
   // Attach to a no-variant backend download already running (GGUF surfaces adopt their own variant).
   autoAdopt?: boolean;
+  /** With `activeVariant: null`, report a running scoped job in this repo as this surface's own
+   * download when the snapshot key has none. Such a job (an image model's "Required assets", a
+   * staged checkpoint) writes into this repo's cache, so the repo is downloading, not paused. */
+  includeScopedJobs?: boolean;
 }
 
 /**
@@ -74,6 +79,7 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
     onCancelled,
     onError,
     autoAdopt,
+    includeScopedJobs = false,
   } = config;
 
   const handlersRef = useLatestRef<JobListeners>({
@@ -105,7 +111,11 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
           repoPeerActive: false,
         };
       }
-      const active = selectActiveJob(state, kind, repoId, activeVariant);
+      const active =
+        selectActiveJob(state, kind, repoId, activeVariant) ??
+        (includeScopedJobs && activeVariant === null
+          ? findActiveScopedJobForRepo(state.jobs, kind, repoId)
+          : null);
       const repoActive = selectActiveJob(state, kind, repoId);
       return {
         active,

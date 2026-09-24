@@ -50,6 +50,17 @@ export function downloadStopMode(
   return transport === "http" && partialsResumable ? "pause" : "cancel";
 }
 
+/** Whether a repo-level card's job progress is a download of this repo: its own snapshot job, or a
+ * scoped job ("@scope") fetching named files into it, such as an image model's "Required assets".
+ * Keying on the snapshot job alone left the card showing "Partial" and "Resume" while the scoped
+ * job was still writing, which read as a paused download. */
+export function isRepoDownloadProgress(
+  progress: { variant: string | null } | null | undefined,
+): boolean {
+  if (!progress) return false;
+  return progress.variant === null || progress.variant.startsWith("@");
+}
+
 export function downloadActionAriaLabel(
   downloading: boolean,
   cancelling: boolean,

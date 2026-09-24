@@ -81,6 +81,45 @@ export function findCompleteHfCacheLocalRow(
   );
 }
 
+/** Repos with a download running or cancelling right now. Keyed by repo alone: every job in a
+ * repo writes into the same cache dir, and a scoped job (the "Required assets" of an image
+ * model, a staged checkpoint) never shares the key of the repo's own row. */
+export function activeDownloadRepoKeys(
+  jobs: readonly { repoId: string; state: string }[],
+): Set<string> {
+  const keys = new Set<string>();
+  for (const job of jobs) {
+    if (job.state !== "running" && job.state !== "cancelling") continue;
+    const key = repoKey(job.repoId);
+    if (key) keys.add(key);
+  }
+  return keys;
+}
+
+/** Tags the partial rows whose bytes are still arriving. A partial with a live job behind it is
+ * a download in progress, and showing it as "Partial download, open it to finish" reads as
+ * paused while the transfer runs. Returns `rows` itself when nothing changes, so memoized
+ * consumers keep their identity. */
+export function markDownloadingRows<
+  T extends { partial?: boolean; downloading?: boolean },
+>(
+  rows: T[],
+  getRepoId: (row: T) => string | null | undefined,
+  downloadingRepoKeys: ReadonlySet<string>,
+): T[] {
+  let changed = false;
+  const next = rows.map((row) => {
+    const key = repoKey(getRepoId(row));
+    const downloading = Boolean(
+      row.partial && key && downloadingRepoKeys.has(key),
+    );
+    if (Boolean(row.downloading) === downloading) return row;
+    changed = true;
+    return { ...row, downloading };
+  });
+  return changed ? next : rows;
+}
+
 export function partialSetFromRows<T extends { partial?: boolean }>(
   rows: readonly T[],
   getRepoId: (row: T) => string | null | undefined,

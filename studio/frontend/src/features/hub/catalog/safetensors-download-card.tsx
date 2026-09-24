@@ -27,7 +27,10 @@ import {
 import { QuantOptionsMenu } from "./gguf-download-card";
 import { useCardDelete } from "./use-card-delete";
 import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
-import { useDownloadCardState } from "./use-download-card-state";
+import {
+  isRepoDownloadProgress,
+  useDownloadCardState,
+} from "./use-download-card-state";
 
 function formatModelLabel(modelFormat?: ModelInventoryFormat | null): string {
   if (modelFormat === "adapter") return "Adapter";
@@ -103,6 +106,7 @@ export function SafetensorsDownloadCard({
     repoId,
     activeVariant: null,
     autoAdopt: true,
+    includeScopedJobs: true,
   });
 
   const progress = job.progress;
@@ -138,11 +142,12 @@ export function SafetensorsDownloadCard({
     };
   }, [repoId, hfToken, sizeKey, setJobExpectedBytes, knownBytes, online]);
 
-  const downloading = progress !== null && progress.variant === null;
+  const downloading = isRepoDownloadProgress(progress);
   const partialsResumable = useHttpPartialsResumable();
   const downloadAction = useDownloadCardState({
     job,
-    variant: null,
+    // The running job's own variant, so stopping a scoped job cancels that job.
+    variant: downloading ? (progress?.variant ?? null) : null,
     expectedBytes: modelTotalBytes ?? 0,
     downloading,
     disabled: isLoadingThisModel || cancelling || repoPeerActive,
@@ -210,6 +215,9 @@ export function SafetensorsDownloadCard({
         <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
           <span className="flex items-center gap-1.5 text-ui-12 text-muted-foreground">
             {isDownloaded && <DotTag tone="success" label="On device" />}
+            {!isDownloaded && isPartial && downloading && (
+              <DotTag tone="downloading" label="Downloading" />
+            )}
             {!isDownloaded && isPartial && !downloading && (
               <Tooltip>
                 <TooltipTrigger asChild={true}>
