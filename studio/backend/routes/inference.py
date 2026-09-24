@@ -24380,6 +24380,15 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
         _raise_unsupported_openai_parameter(
             "seed", "FastFlowLM on the NPU does not take a sampling seed."
         )
+    # Neither reaches FastFlowLM through the provider proxy.
+    if getattr(payload, "frequency_penalty", 0.0):
+        _raise_unsupported_openai_parameter(
+            "frequency_penalty", "FastFlowLM on the NPU does not take a frequency penalty."
+        )
+    if getattr(payload, "logit_bias", None):
+        _raise_unsupported_openai_parameter(
+            "logit_bias", "FastFlowLM on the NPU does not take a logit bias."
+        )
     if (
         _request_has_video(payload)
         or payload.audio_base64
@@ -24467,6 +24476,17 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
             status = 502
         status = status if 400 <= status < 600 else 502
         return JSONResponse(status_code = status, content = {"error": relay.error})
+    if relay.finish_reason is None:
+        # The proxy closes a stream lemond dropped with [DONE]; without a finish it is partial.
+        return JSONResponse(
+            status_code = 502,
+            content = {
+                "error": {
+                    "message": "The NPU model stopped before finishing its reply.",
+                    "type": "upstream_error",
+                }
+            },
+        )
     return JSONResponse(content = relay.completion())
 
 

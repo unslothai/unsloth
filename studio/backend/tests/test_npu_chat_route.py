@@ -50,6 +50,9 @@ def _script(prompt: str) -> str:
             + '{"error":"qds_device::wait() unexpected command state"}\n'
             + "data: [DONE]\n\n"
         )
+    if "CUT" in prompt:
+        # FastFlowLM exits mid-reply: content, then the stream closes with no finish.
+        return _chunk({"content": "par"}) + "data: [DONE]\n\n"
     if "TOOL" in prompt:
         call = {
             "index": 0,
@@ -380,6 +383,8 @@ def test_a_bare_error_line_becomes_an_error(flm):
     [
         ({"response_format": {"type": "json_object"}}, "response_format"),
         ({"seed": 7}, "seed"),
+        ({"frequency_penalty": 0.5}, "frequency_penalty"),
+        ({"logit_bias": {"42": -100}}, "logit_bias"),
         ({"n": 2}, "n"),
         (
             {
@@ -660,3 +665,10 @@ def test_an_npu_load_it_would_refuse_keeps_the_gpu_resident(monkeypatch):
         )
     assert info.value.status_code == 400 and "not downloaded" in info.value.detail
     assert teardowns == []
+
+
+def test_a_reply_cut_short_is_not_reported_complete(flm):
+    flm()
+    status, body = _call(stream = False, messages = [{"role": "user", "content": "CUT"}])
+    assert status == 502
+    assert "before finishing" in body["error"]["message"]
