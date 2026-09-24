@@ -95,7 +95,7 @@ function CardFrame({
         onClick={select && selecting ? () => select.toggle(selectKey) : onOpen}
         className={cn(
           "block w-full overflow-hidden rounded-xl text-left outline-none ring-offset-2 ring-offset-background transition focus-visible:ring-2 focus-visible:ring-ring",
-          selected && "ring-2 ring-foreground",
+          selected && "ring-3 ring-foreground ring-offset-0",
           className,
         )}
       >
@@ -107,8 +107,8 @@ function CardFrame({
           onCheckedChange={() => select.toggle(selectKey)}
           aria-label={`Select ${label}`}
           className={cn(
-            "absolute bottom-2 right-2 bg-background/90 opacity-0 transition-opacity group-hover/library-card:opacity-100 focus-visible:opacity-100",
-            (selecting || selected) && "opacity-100",
+            "absolute bottom-2.5 right-2.5 size-6 rounded-full border-border bg-background opacity-0 shadow-sm transition-opacity group-hover/library-card:opacity-100 focus-visible:opacity-100 data-checked:border-border data-checked:bg-background data-checked:text-foreground dark:bg-background dark:data-checked:bg-background [&_svg]:size-4",
+            selected && "opacity-100",
           )}
         />
       )}
