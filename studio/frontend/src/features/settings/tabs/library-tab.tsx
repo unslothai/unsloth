@@ -155,12 +155,10 @@ function StorageSection() {
           </p>
           {diskBytes > 0 && (
             <>
-              {/* The Library, then everything else on the disk, then free space. */}
+              {/* One track: the Library, then everything else on the disk, then free space. Only
+                  the track is rounded, so the segments join flush. */}
               <div className="flex h-2 overflow-hidden rounded-full bg-muted">
-                <div
-                  className="min-w-2 rounded-full bg-foreground"
-                  style={{ width: share(storage.totalBytes) }}
-                />
+                <div className="min-w-1 bg-foreground" style={{ width: share(storage.totalBytes) }} />
                 <div className="bg-muted-foreground/35" style={{ width: share(otherBytes) }} />
               </div>
               <p className="text-xs text-muted-foreground">
