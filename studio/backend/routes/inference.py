@@ -15845,7 +15845,8 @@ async def _load_npu_model(
         resident is not None
         and resident.model.id == model_id
         and not request.force_reload
-        and (requested_ctx is None or requested_ctx == resident.requested_context_length)
+        # Exact: Auto after a pin, or a pin after Auto, is a different load.
+        and requested_ctx == resident.requested_context_length
     ):
         account_access.join_resident("chat")
         return _npu_load_response(resident, "already_loaded")
@@ -24212,6 +24213,12 @@ async def _proxy_to_external_provider(
 # ── AMD NPU (FastFlowLM through a managed Lemonade) ──────────────
 
 
+_NPU_CUT_SHORT_ERROR = {
+    "message": "The NPU model stopped before finishing its reply.",
+    "type": "upstream_error",
+}
+
+
 class _NpuStreamRelay:
     """Normalize model IDs, enforce stop sequences, and collect non-streaming replies.
 
@@ -24270,12 +24277,17 @@ class _NpuStreamRelay:
             return [line]
         raw = line[len("data:") :].strip()
         if raw == "[DONE]":
+            out = []
             if self._pending:
                 self.content += self._pending
-                tail = self._chunk({"content": self._pending}, None)
+                out.append(self._chunk({"content": self._pending}, None))
                 self._pending = ""
-                return [tail, line]
-            return [line]
+            if self.finish_reason is None and self.error is None:
+                # The proxy closes a stream lemond dropped with [DONE]; without a finish it is partial.
+                self.error = dict(_NPU_CUT_SHORT_ERROR)
+                out.append("data: " + json.dumps({"error": self.error}))
+            out.append(line)
+            return out
         try:
             chunk = json.loads(raw)
         except ValueError:
@@ -24484,16 +24496,7 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
         status = status if 400 <= status < 600 else 502
         return JSONResponse(status_code = status, content = {"error": relay.error})
     if relay.finish_reason is None:
-        # The proxy closes a stream lemond dropped with [DONE]; without a finish it is partial.
-        return JSONResponse(
-            status_code = 502,
-            content = {
-                "error": {
-                    "message": "The NPU model stopped before finishing its reply.",
-                    "type": "upstream_error",
-                }
-            },
-        )
+        return JSONResponse(status_code = 502, content = {"error": dict(_NPU_CUT_SHORT_ERROR)})
     return JSONResponse(content = relay.completion())
 
 

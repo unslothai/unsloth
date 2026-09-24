@@ -686,3 +686,71 @@ def test_a_reply_cut_short_is_not_reported_complete(flm):
     status, body = _call(stream = False, messages = [{"role": "user", "content": "CUT"}])
     assert status == 502
     assert "before finishing" in body["error"]["message"]
+
+
+def test_a_streamed_reply_cut_short_ends_with_an_error(flm):
+    flm()
+    status, lines = _call(stream = True, messages = [{"role": "user", "content": "CUT"}])
+    assert status == 200
+    assert lines[-1] == "data: [DONE]"
+    assert "before finishing" in lines[-2]
+
+
+@pytest.mark.parametrize(
+    "resident_ctx, requested, expected",
+    [
+        (16384, 0, "loaded"),
+        (None, 16384, "loaded"),
+        (16384, 16384, "already_loaded"),
+        (None, 0, "already_loaded"),
+    ],
+)
+def test_a_same_model_load_reloads_when_the_context_request_changes(
+    monkeypatch, resident_ctx, requested, expected
+):
+    from models.inference import LoadRequest
+    from routes import inference as routes
+
+    model = nb.NpuModel(
+        id = "qwen3-0.6b-FLM",
+        checkpoint = "qwen3:0.6b",
+        size_gb = 0.66,
+        downloaded = True,
+        labels = ("chat",),
+        max_context_length = 40960,
+    )
+
+    class _Npu:
+        requested = resident_ctx
+
+        def resident(self):
+            return nb.NpuResident(
+                model = model,
+                context_length = self.requested or 8192,
+                requested_context_length = self.requested,
+                base_url = "http://127.0.0.1:1",
+                api_key = "key",
+            )
+
+        def loadable_model(self, model_id):
+            return model
+
+        def load(self, model_id, ctx):
+            self.requested = ctx
+
+    async def _nothing_loaded(_backend):
+        return None
+
+    monkeypatch.setattr(nb, "get_npu_backend", lambda: _Npu())
+    monkeypatch.setattr(routes, "_peek_inference_backend", lambda: None)
+    monkeypatch.setattr(routes, "release_chat_gpu_claim", lambda: True)
+    monkeypatch.setattr(routes, "_unload_llama_before_standard_load", _nothing_loaded)
+    response = asyncio.run(
+        routes._load_npu_model(
+            LoadRequest(model_path = model.model_path, max_seq_length = requested),
+            current_request_counted = False,
+            on_reload_confirmed = None,
+            load_cancel_event = None,
+        )
+    )
+    assert response.status == expected
