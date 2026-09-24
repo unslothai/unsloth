@@ -62,6 +62,7 @@ def _item(
     thread_title: Optional[str] = None,
     text_only: bool = False,
     model: Optional[dict] = None,
+    archived: bool = False,
 ) -> dict:
     return {
         "id": item_id,
@@ -77,6 +78,8 @@ def _item(
         # Chat uploads of documents keep only their extracted text, so that is what downloads.
         "textOnly": text_only,
         "model": model,
+        # Off its gallery page's active shelf, so that page cannot open it.
+        "archived": archived,
     }
 
 
@@ -101,36 +104,58 @@ def _device(path) -> Optional[int]:
     return None
 
 
-def _source_roots() -> dict[str, list]:
-    """Where each source keeps its bytes. Any of them can be configured onto another disk."""
-    from core.inference import audio_gallery, image_gallery, video_gallery
-    from core.inference.tools import sandbox_root
-    from utils.paths.storage_roots import exports_root, outputs_root, studio_db_path
+def _gallery_root(name: str) -> list:
+    import importlib
 
-    return {
-        "upload": [uploads_dir()],
-        "attachment": [studio_db_path().parent],
-        "image": [image_gallery.gallery_dir()],
-        "video": [video_gallery.gallery_dir()],
-        "audio": [audio_gallery.gallery_dir()],
-        "model": [outputs_root(), exports_root()],
-        "sandbox": [sandbox_root()],
-    }
+    return [importlib.import_module(f"core.inference.{name}").gallery_dir()]
+
+
+def _sandbox_root() -> list:
+    from core.inference.tools import sandbox_root
+
+    return [sandbox_root()]
+
+
+def _attachment_root() -> list:
+    from utils.paths.storage_roots import studio_db_path
+
+    return [studio_db_path().parent]
+
+
+def _model_roots() -> list:
+    from utils.paths.storage_roots import exports_root, outputs_root
+
+    return [outputs_root(), exports_root()]
+
+
+# Where each source keeps its bytes. Any of them can be configured onto another disk.
+_SOURCE_ROOTS = {
+    "upload": lambda: [uploads_dir()],
+    "attachment": _attachment_root,
+    "image": lambda: _gallery_root("image_gallery"),
+    "video": lambda: _gallery_root("video_gallery"),
+    "audio": lambda: _gallery_root("audio_gallery"),
+    "model": _model_roots,
+    "sandbox": _sandbox_root,
+}
 
 
 def disk_usage() -> Optional[dict]:
     """Capacity of the disk the Library's own files live on, which need not be the system disk,
-    and the sources stored on it, so the bar only counts bytes that disk actually holds."""
+    and the sources stored on it, so the bar only counts bytes that disk actually holds. A source
+    that cannot say where it lives is left out rather than failing the listing."""
     try:
         usage = shutil.disk_usage(uploads_dir())
         device = _device(uploads_dir())
-        sources = [
-            source
-            for source, roots in _source_roots().items()
-            if all(_device(root) == device for root in roots)
-        ]
     except OSError:
         return None
+    sources = []
+    for source, roots in _SOURCE_ROOTS.items():
+        try:
+            if all(_device(root) == device for root in roots()):
+                sources.append(source)
+        except Exception:
+            logger.warning("library.source_root_failed: %s", source, exc_info = True)
     return {"totalBytes": usage.total, "freeBytes": usage.free, "sources": sources}
 
 
@@ -152,10 +177,11 @@ def save_upload(name: str, content_type: str, chunks) -> dict:
                 size += len(chunk)
                 handle.write(chunk)
         os.replace(tmp_path, final_path)
+        return library_db.insert_upload(upload_id, name, content_type, size)
     except BaseException:
         tmp_path.unlink(missing_ok = True)
+        final_path.unlink(missing_ok = True)
         raise
-    return library_db.insert_upload(upload_id, name, content_type, size)
 
 
 def open_native_upload(lease: str):
@@ -264,16 +290,19 @@ def _file_size(path: Optional[Path]) -> Optional[int]:
         return None
 
 
-def _both_shelves(list_records) -> list[dict]:
-    """Active and archived records: archiving tidies a gallery page, the file is still Studio's."""
-    return list_records() + list_records(archived = True)
+def _both_shelves(list_records) -> list[tuple[dict, bool]]:
+    """(record, archived) for both shelves: archiving tidies a gallery page, the file is still
+    Studio's."""
+    return [(record, False) for record in list_records()] + [
+        (record, True) for record in list_records(archived = True)
+    ]
 
 
 def _image_items() -> list[dict]:
     from core.inference import image_gallery
 
     items = []
-    for record in _both_shelves(image_gallery.list_images):
+    for record, archived in _both_shelves(image_gallery.list_images):
         items.append(
             _item(
                 f"image:{record['id']}",
@@ -283,6 +312,7 @@ def _image_items() -> list[dict]:
                 size_bytes = _file_size(image_gallery.image_path(record["id"])),
                 created_at = _to_ms(record.get("created_at")),
                 file_url = record["url"],
+                archived = archived,
             )
         )
     return items
@@ -302,8 +332,9 @@ def _video_items() -> list[dict]:
             size_bytes = _file_size(video_gallery.video_path(record["id"])),
             created_at = _to_ms(record.get("created_at")),
             file_url = record["url"],
+            archived = archived,
         )
-        for record in _both_shelves(video_gallery.list_videos)
+        for record, archived in _both_shelves(video_gallery.list_videos)
     ]
 
 
@@ -321,8 +352,9 @@ def _audio_items() -> list[dict]:
             size_bytes = _file_size(audio_gallery.audio_path(record["id"])),
             created_at = _to_ms(record.get("created_at")),
             file_url = record["url"],
+            archived = archived,
         )
-        for record in _both_shelves(audio_gallery.list_audio)
+        for record, archived in _both_shelves(audio_gallery.list_audio)
     ]
 
 
@@ -366,8 +398,12 @@ def _model_items() -> list[dict]:
     )
     items = []
     for name, path, origin, model_type, base_model in found:
+        # A GGUF export is listed by one of its files, but every quantization beside it is on disk.
+        stats_path = Path(path)
+        if model_type == "gguf" and stats_path.is_file():
+            stats_path = stats_path.parent
         try:
-            size, modified = _tree_stats(Path(path))
+            size, modified = _tree_stats(stats_path)
         except OSError:
             continue
         if base_model is None and origin == "training":
@@ -780,15 +816,33 @@ def move_location(key: str, path: Optional[str]) -> None:
             logger.warning("library.move_straggler_failed: %s", current, exc_info = True)
 
 
+def _delete_upload(upload_id: str, path: Path) -> bool:
+    """Set the file aside before dropping its row, so a failure at either step leaves both."""
+    staged = path.with_name(f".{upload_id}.deleting")
+    try:
+        os.replace(path, staged)
+    except FileNotFoundError:
+        return library_db.delete_upload(upload_id)
+    try:
+        deleted = library_db.delete_upload(upload_id)
+    except BaseException:
+        os.replace(staged, path)
+        raise
+    if deleted:
+        staged.unlink(missing_ok = True)
+    else:
+        os.replace(staged, path)
+    return deleted
+
+
 def delete_item(item_id: str) -> bool:
     """Delete an item from its source. Returns False when the source no longer has it."""
     kind, _, ref = item_id.partition(":")
     deleted = False
     if kind == "upload":
         path = upload_path(ref)
-        if path is not None and library_db.delete_upload(ref):
-            path.unlink(missing_ok = True)
-            deleted = True
+        if path is not None:
+            deleted = _delete_upload(ref, path)
     elif kind == "attachment":
         from storage.studio_db import delete_chat_attachment
         message_id, _, attachment_id = ref.partition(":")

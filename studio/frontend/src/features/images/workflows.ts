@@ -85,3 +85,20 @@ export const WORKFLOW_TABS: Array<{
     hint: "Generate guided by a reference image",
   },
 ];
+
+/** Starter prompt per workflow, showing what each one is for. */
+export const WORKFLOW_EXAMPLE_PROMPTS: Record<WorkflowId, string> = {
+  create:
+    "A cozy wooden cabin on a snowy mountain at dusk, warm light glowing from the windows, pine trees and gently falling snow. Cinematic photo, soft golden light.",
+  edit: "Make the sky a bright sunset orange and add a red kite flying above the trees.",
+  transform:
+    "Turn this into a watercolor painting with soft pastel colors and loose, visible brush strokes.",
+  inpaint:
+    "A fluffy orange cat curled up asleep in the painted area, soft window light, realistic fur.",
+  extend:
+    "Continue the scene outward with more sandy beach, gentle waves and palm trees under a clear blue sky.",
+  upscale: "Sharp, highly detailed photo with crisp textures, clean edges and natural colors.",
+  reference:
+    "The character from the reference exploring a neon lit city street at night, cinematic lighting.",
+};
+

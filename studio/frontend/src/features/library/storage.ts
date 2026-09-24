@@ -41,6 +41,13 @@ const KIND_CATEGORIES: Partial<Record<string, StorageCategory>> = {
   model: "fineTunes",
 };
 
+const STALE_EVENT = "unsloth:library-storage-stale";
+
+/** Measure again wherever storage is on screen, after files left outside the Library (a chat clear). */
+export function refreshLibraryStorage(): void {
+  window.dispatchEvent(new Event(STALE_EVENT));
+}
+
 /**
  * What the Library holds on disk, by category. Sources hidden in Content settings are left out,
  * so each category link lands on exactly what it counted. Empty categories are left out too.
@@ -52,6 +59,12 @@ export function useLibraryStorage(): LibraryStorage {
     items: LibraryItem[];
     disk: LibraryDisk | null;
   }>({ status: "loading", items: [], disk: null });
+  const [version, setVersion] = useState(0);
+  useEffect(() => {
+    const stale = () => setVersion((current) => current + 1);
+    window.addEventListener(STALE_EVENT, stale);
+    return () => window.removeEventListener(STALE_EVENT, stale);
+  }, []);
   useEffect(() => {
     let cancelled = false;
     getLibrary().then(
@@ -61,7 +74,7 @@ export function useLibraryStorage(): LibraryStorage {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [version]);
   return useMemo(() => {
     const totals = new Map<StorageCategory, { bytes: number; count: number }>();
     const onDisk = snapshot.disk?.sources ? new Set(snapshot.disk.sources) : null;
@@ -80,7 +93,7 @@ export function useLibraryStorage(): LibraryStorage {
     const categories = CATEGORY_LINKS.flatMap(([category, link]) => {
       const total = totals.get(category);
       return total ? [{ category, link, ...total }] : [];
-    });
+    }).sort((a, b) => b.bytes - a.bytes);
     return {
       status: snapshot.status,
       totalBytes: categories.reduce((sum, entry) => sum + entry.bytes, 0),

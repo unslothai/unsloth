@@ -7,12 +7,12 @@ models and sandbox files, plus folders, favorites and renames. See ``core.librar
 import re
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from auth.authentication import get_current_subject
+from auth.authentication import get_current_subject, subject_for_header_or_query_token
 from core import library
 from hub.services.models import account_access
 from loggers import get_logger
@@ -122,8 +122,8 @@ def mark_item_opened(body: ItemRef, current_subject: str = Depends(get_current_s
 async def delete_item(body: ItemRef, current_subject: str = Depends(get_current_subject)) -> dict:
     try:
         deleted = await run_in_threadpool(library.delete_item, body.id)
-    except ValueError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc))
+    except ValueError:
+        raise HTTPException(status_code = 400, detail = "This item has no file to download")
     except ChatMessageProtectedError as exc:
         raise log_and_http_error(
             exc,
@@ -151,8 +151,8 @@ async def add_item_to_project(
         raise HTTPException(status_code = 404, detail = "Project not found")
     except LookupError:
         raise HTTPException(status_code = 404, detail = "Item not found")
-    except ValueError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc))
+    except ValueError:
+        raise HTTPException(status_code = 400, detail = "This item has no file to download")
     except OSError as exc:
         logger.warning("library.add_to_project_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Could not copy the file into the project.")
@@ -178,8 +178,8 @@ async def reveal_item(body: ItemRef, current_subject: str = Depends(get_current_
         path = await run_in_threadpool(library.local_path, body.id)
     except LookupError:
         raise HTTPException(status_code = 404, detail = "Item not found")
-    except ValueError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc))
+    except ValueError:
+        raise HTTPException(status_code = 400, detail = "This item has no file to download")
     await run_in_threadpool(_reveal, path)
     return {"ok": True}
 
@@ -200,6 +200,29 @@ def get_item_thumbnail(
         content = data,
         media_type = "image/webp",
         headers = {"Cache-Control": "private, max-age=31536000, immutable"},
+    )
+
+
+@router.api_route("/items/download", methods = ["GET", "HEAD"])
+async def download_item(
+    request: Request,
+    id: str = Query(max_length = 4096),
+    token: Optional[str] = Query(default = None, max_length = 8192),
+):
+    """An item's file as an attachment. Takes ``?token=`` as well: the desktop app streams it
+    straight to disk, and its native save sends no header."""
+    await subject_for_header_or_query_token(request, token)
+    try:
+        path, _folder, _name = await run_in_threadpool(library.project_source, id)
+    except LookupError:
+        raise HTTPException(status_code = 404, detail = "Item not found")
+    except ValueError:
+        raise HTTPException(status_code = 400, detail = "This item has no file to download")
+    return FileResponse(
+        path,
+        media_type = "application/octet-stream",
+        filename = path.name,
+        headers = {"X-Content-Type-Options": "nosniff"},
     )
 
 
@@ -283,7 +306,7 @@ async def upload_files(
             name, content_type, handle = library.open_native_upload(lease)
         except ValueError as exc:
             # A bad or expired grant, or a path outside this account's workspace.
-            raise HTTPException(status_code = 400, detail = str(exc)) from exc
+            raise HTTPException(status_code = 400, detail = "This item has no file to download") from exc
         except OSError as exc:
             raise HTTPException(status_code = 400, detail = "Dropped file could not be read.") from exc
         with handle:
@@ -372,8 +395,8 @@ def patch_folder(
         )
     except KeyError:
         raise HTTPException(status_code = 404, detail = "Parent folder not found")
-    except ValueError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc))
+    except ValueError:
+        raise HTTPException(status_code = 400, detail = "This item has no file to download")
     if folder is None:
         raise HTTPException(status_code = 404, detail = "Folder not found")
     return folder

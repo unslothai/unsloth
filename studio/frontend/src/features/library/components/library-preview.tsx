@@ -15,7 +15,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
 import { PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
   type LibraryItem,
   addLibraryItemToProject,
@@ -56,8 +56,10 @@ function bodyFor(item: LibraryItem): Body {
   return isTextPreviewable(item) ? "text" : "none";
 }
 
-/** The page a generated file came from, which opens with it selected. */
+/** The page a generated file came from, which opens with it selected. None once archived: the
+ *  page lists only its active shelf. */
 function generatedOn(item: LibraryItem) {
+  if (item.archived) return null;
   const [kind, ...rest] = item.id.split(":");
   const id = rest.join(":");
   if (kind === "image") return { label: "View in Images", to: "/images", search: { item: id } } as const;
@@ -194,8 +196,12 @@ function PreviewBody({
 }) {
   const body = bodyFor(item);
   const needsUrl = body === "image" || body === "pdf" || body === "audio" || body === "video";
-  const url = useLibraryObjectUrl(item, needsUrl);
-  const { text, truncated, error } = useItemText(item, body === "text" || body === "web");
+  const { url, error: urlError } = useLibraryObjectUrl(item, needsUrl);
+  const { text, truncated, error: textError } = useItemText(
+    item,
+    body === "text" || body === "web",
+  );
+  const error = urlError ?? textError;
 
   if (error) {
     return <p className="m-auto text-sm text-muted-foreground">{error}</p>;
@@ -284,9 +290,14 @@ export function LibraryPreview({
 }) {
   // Tagged with its item, so a draft never follows the preview to another file.
   const [edit, setEdit] = useState<{ itemId: string; text: string } | null>(null);
+  // The same draft, readable after an await: a save must not return while typing moved past it.
+  const latestEdit = useRef(edit);
   const draft = item && edit?.itemId === item.id ? edit.text : null;
-  const setDraft = (text: string | null) =>
-    setEdit(item && text !== null ? { itemId: item.id, text } : null);
+  const setDraft = (text: string | null) => {
+    const next = item && text !== null ? { itemId: item.id, text } : null;
+    latestEdit.current = next;
+    setEdit(next);
+  };
   const [saving, setSaving] = useState(false);
   // Tagged too, and cleared on close, so every file opens on its preview at 100%.
   const [codeFor, setCodeFor] = useState<string | null>(null);
@@ -303,11 +314,17 @@ export function LibraryPreview({
 
   async function save(): Promise<boolean> {
     if (!item || draft === null) return true;
-    const sent = draft;
     setSaving(true);
     try {
-      await writeLibraryText(item.id, sent);
-      // Typing during the save made a newer draft; keep it.
+      // Typing during a save makes a newer draft; send that too before anything moves on.
+      let sent = draft;
+      for (;;) {
+        await writeLibraryText(item.id, sent);
+        const latest = latestEdit.current;
+        if (latest?.itemId !== item.id || latest.text === sent) break;
+        sent = latest.text;
+      }
+      if (latestEdit.current?.text === sent) latestEdit.current = null;
       setEdit((current) => (current?.itemId === item.id && current.text === sent ? null : current));
       onSaved();
       return true;

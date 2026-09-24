@@ -56,6 +56,7 @@ import {
   LibraryStorageBar,
   type StorageCategory,
   formatSize,
+  refreshLibraryStorage,
   useLibraryStorage,
 } from "@/features/library";
 import {
@@ -541,6 +542,8 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
       const result = await clearAllChats({
         deleteFiles: deleteFilesOnClear,
       });
+      // Their attachments and tool files were Library items too.
+      refreshLibraryStorage();
       const clearedCount = result.deletedThreadIds.length;
       // A sandbox the backend could not remove, asked for or not.
       // After a clear there is no row left to reach it from.

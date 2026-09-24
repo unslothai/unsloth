@@ -28,6 +28,7 @@ import {
   useLibrarySettingsStore,
   useLibraryStorage,
   useLibraryViewStore,
+  useLibraryVisitStore,
   useRevealPlatform,
 } from "@/features/library";
 import { useIsAccountOwner } from "@/features/auth";
@@ -139,6 +140,7 @@ function StorageSection() {
   const consumeScrollTarget = useSettingsDialogStore((s) => s.consumeScrollTarget);
   const sectionRef = useRef<HTMLElement | null>(null);
   const setView = useLibraryViewStore((s) => s.setView);
+  const restartLibrary = useLibraryVisitStore((s) => s.restart);
   const storage = useLibraryStorage();
 
   // Manage storage in the Data tab lands here.
@@ -154,6 +156,8 @@ function StorageSection() {
   const open = (link: LibrarySearch) => {
     closeDialog();
     setView("list");
+    // Already on that tab, the view would keep its search and filters and show less than counted.
+    restartLibrary();
     void navigate({ to: "/library", search: link });
   };
 

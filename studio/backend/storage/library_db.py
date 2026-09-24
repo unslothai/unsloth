@@ -87,6 +87,11 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def _lock(conn: sqlite3.Connection) -> None:
+    """Take the write lock before the checks, so nothing they read can change before the write."""
+    conn.execute("BEGIN IMMEDIATE")
+
+
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -142,6 +147,7 @@ def create_folder(name: str, parent_id: Optional[str] = None) -> dict:
     folder_id = uuid.uuid4().hex
     conn = get_connection()
     try:
+        _lock(conn)
         if (
             parent_id
             and not conn.execute(
@@ -175,6 +181,7 @@ def update_folder(
     """Rename and/or move a folder. ``move`` distinguishes "move to the root" from "leave it"."""
     conn = get_connection()
     try:
+        _lock(conn)
         if not conn.execute("SELECT 1 FROM library_folders WHERE id = ?", (folder_id,)).fetchone():
             return None
         if move and parent_id:
@@ -206,6 +213,7 @@ def delete_folder(folder_id: str) -> bool:
     """Delete a folder; what it held moves up to its parent rather than disappearing."""
     conn = get_connection()
     try:
+        _lock(conn)
         row = conn.execute(
             "SELECT parent_id FROM library_folders WHERE id = ?", (folder_id,)
         ).fetchone()
@@ -256,6 +264,7 @@ def update_entry(
 ) -> None:
     conn = get_connection()
     try:
+        _lock(conn)
         if (
             move
             and folder_id

@@ -75,6 +75,7 @@ import {
   includedBySettings,
   lastActivity,
   useLibrarySettingsStore,
+  useLibraryVisitStore,
 } from "./settings-store";
 
 const TAB_LABELS: Record<LibraryTab, string> = {
@@ -213,6 +214,7 @@ const FILE_TYPES: LibraryTypeFilter[] = ["documents", "spreadsheets", "presentat
 export function LibraryPage() {
   const search = useSearch({ from: "/library" });
   const refresh = useLibraryStore((s) => s.refresh);
+  const visit = useLibraryVisitStore((s) => s.visit);
 
   useEffect(() => {
     void refresh();
@@ -223,10 +225,10 @@ export function LibraryPage() {
   }, [refresh]);
 
   // Search, filters and selection belong to the view they were made in, so each tab and folder
-  // gets a fresh one.
+  // gets a fresh one, as does a link from Settings.
   return (
     <LibraryView
-      key={`${search.show ?? ""}:${search.folder ?? ""}:${search.filter ?? ""}`}
+      key={`${visit}:${search.show ?? ""}:${search.folder ?? ""}:${search.filter ?? ""}`}
       search={search}
     />
   );
@@ -250,7 +252,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const [filters, setFilters] = useState<LibraryFilters>(() =>
     search.filter === "files" ? { sources: new Set(), types: new Set(FILE_TYPES) } : EMPTY_FILTERS,
   );
-  const [pickedKeys, setSelection] = useState<Set<string>>(new Set());
+  const [selection, setSelection] = useState<Set<string>>(new Set());
   const [nameDialog, setNameDialog] = useState<NameDialogState | null>(null);
   const [pendingDelete, setPendingDelete] = useState<LibraryTarget[] | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -331,15 +333,19 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       .sort(compareBySort(sort.key === "size" ? { key: "name", desc: false } : sort));
   }, [folders, folderId, tab, needle, filters, sort]);
 
-  // Only what is on screen counts: a search, filter or Content setting that hides a picked item
-  // drops it, so the bar never claims more than Delete or Move would act on.
-  const selection = useMemo(() => {
-    const shown = new Set([
-      ...visibleFolders.map((folder) => `folder:${folder.id}`),
-      ...visibleItems.map((item) => `item:${item.id}`),
-    ]);
-    return new Set([...pickedKeys].filter((key) => shown.has(key)));
-  }, [pickedKeys, visibleFolders, visibleItems]);
+  // A search, filter or Content setting that hides a selected entry deselects it, so bulk actions
+  // only ever act on what is on screen and clearing the filter never brings a selection back.
+  const visibleKeys = useMemo(
+    () =>
+      new Set([
+        ...visibleFolders.map((folder) => `folder:${folder.id}`),
+        ...visibleItems.map((item) => `item:${item.id}`),
+      ]),
+    [visibleFolders, visibleItems],
+  );
+  if ([...selection].some((key) => !visibleKeys.has(key))) {
+    setSelection(new Set([...selection].filter((key) => visibleKeys.has(key))));
+  }
 
   const previewItem = search.item ? (items.find((item) => item.id === search.item) ?? null) : null;
 
@@ -348,9 +354,23 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const fail = (message: string) => (err: unknown) =>
     toast.error(message, { description: err instanceof Error ? err.message : String(err) });
 
-  // Only files can be attached; a model in the folder stays behind.
-  const filesInFolder = (id: string) =>
-    items.filter((item) => item.folderId === id && isFileItem(item));
+  // Every file under the folder, subfolders included. Only files can be attached; a model in the
+  // folder stays behind.
+  const filesInFolder = (id: string) => {
+    const inside = new Set([id]);
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const folder of folders) {
+        if (folder.parentId && inside.has(folder.parentId) && !inside.has(folder.id)) {
+          inside.add(folder.id);
+          grew = true;
+        }
+      }
+    }
+    return items.filter(
+      (item) => item.folderId !== null && inside.has(item.folderId) && isFileItem(item),
+    );
+  };
 
   const chatAbout = (item: LibraryItem) =>
     void (item.model ? chatWithModel(navigate, item) : chatAboutItems(navigate, [item]));
@@ -864,7 +884,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
             <button
               type="button"
               disabled={deletableSelection().length === 0}
-              onClick={() => setPendingDelete(deletableSelection())}
+              onClick={() => requestDelete(deletableSelection())}
               className="flex h-9 items-center gap-2 rounded-full border border-red-500/70 px-4 text-sm font-medium text-red-400 outline-none transition-colors hover:bg-red-500/15 focus-visible:ring-2 focus-visible:ring-white/60 disabled:opacity-50"
             >
               <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />

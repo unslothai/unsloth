@@ -183,3 +183,9 @@ export function compareBySort({ key, desc }: LibrarySortState): (a: Sortable, b:
         : (a: Sortable, b: Sortable) => a.updatedAt - b.updatedAt;
   return desc ? (a, b) => ascending(b, a) : ascending;
 }
+
+/** Bumped to open the Library afresh, dropping a search or filter left in the view already open. */
+export const useLibraryVisitStore = create<{ visit: number; restart: () => void }>((set) => ({
+  visit: 0,
+  restart: () => set((state) => ({ visit: state.visit + 1 })),
+}));

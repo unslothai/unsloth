@@ -10,6 +10,12 @@ import { hasImagePreview } from "./file-kind";
 const MAX_CACHED_URLS = 300;
 const objectUrls = new Map<string, Promise<string>>();
 
+/** Drop every cached URL, so a sign-out leaves nothing of the last account's files. */
+export function clearCachedObjectUrls(): void {
+  for (const url of objectUrls.values()) void url.then((stale) => URL.revokeObjectURL(stale), () => {});
+  objectUrls.clear();
+}
+
 function cachedObjectUrl(key: string, load: () => Promise<Blob>): Promise<string> {
   let url = objectUrls.get(key);
   if (!url) {
@@ -26,15 +32,19 @@ function cachedObjectUrl(key: string, load: () => Promise<Blob>): Promise<string
 }
 
 /**
- * Object URL for an item's bytes once `enabled`; null until then or on failure. Only images share
- * the cache: a preview of a large clip or PDF is released as soon as it closes.
+ * Object URL for an item's bytes once `enabled`, null until then; `error` once it cannot load. Only
+ * images share the cache: a preview of a large clip or PDF is released as soon as it closes.
  */
 export function useLibraryObjectUrl(
   item: LibraryItem,
   enabled: boolean,
-): string | null {
+): { url: string | null; error: string | null } {
   const key = `${item.id}@${item.updatedAt}`;
-  const [state, setState] = useState<{ key: string; url: string | null } | null>(null);
+  const [state, setState] = useState<{
+    key: string;
+    url: string | null;
+    error?: string;
+  } | null>(null);
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
@@ -44,7 +54,9 @@ export function useLibraryObjectUrl(
       : fetchLibraryBlob(item).then((blob) => URL.createObjectURL(blob));
     next.then(
       (url) => !cancelled && setState({ key, url }),
-      () => !cancelled && setState({ key, url: null }),
+      (err: unknown) =>
+        !cancelled &&
+        setState({ key, url: null, error: err instanceof Error ? err.message : String(err) }),
     );
     return () => {
       cancelled = true;
@@ -53,7 +65,8 @@ export function useLibraryObjectUrl(
     // `key` carries the item's identity and version; the object itself changes on every refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, enabled]);
-  return enabled && state?.key === key ? state.url : null;
+  const current = enabled && state?.key === key ? state : null;
+  return { url: current?.url ?? null, error: current?.error ?? null };
 }
 
 /** A card's picture once `enabled`: the image itself, or a video's first frame. Cached like images;

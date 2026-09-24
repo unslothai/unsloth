@@ -2,7 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
+import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth";
 import { deleteFineTunedModel } from "@/features/chat";
+import { type GalleryKind, notifyGalleryChanged } from "@/lib/gallery-flags";
 import {
   type LibraryFolder,
   type LibraryItem,
@@ -17,6 +19,7 @@ import {
   uploadLibraryFiles,
 } from "./api";
 import { useLibraryFavoritesStore } from "./favorites-store";
+import { clearCachedObjectUrls } from "./hooks";
 
 type ItemPatch = { name?: string; favorite?: boolean; folderId?: string | null };
 type FolderPatch = { name?: string; parentId?: string | null };
@@ -35,6 +38,12 @@ interface LibraryState {
   patchFolder: (id: string, patch: FolderPatch) => Promise<void>;
   removeFolder: (id: string) => Promise<void>;
 }
+
+/** The gallery page behind each generated item's id prefix. */
+const GALLERIES: Record<string, GalleryKind> = { image: "images", video: "videos", audio: "audio" };
+
+// Bumped by every refresh and by sign-out, so only the newest request may commit its snapshot.
+let refreshGeneration = 0;
 
 // Edits apply locally first so menus feel instant, and roll back to the server's view on failure.
 export const useLibraryStore = create<LibraryState>((set, get) => {
@@ -57,14 +66,17 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
     status: "idle",
     error: null,
     refresh: async () => {
+      const generation = ++refreshGeneration;
       if (get().status === "idle") set({ status: "loading" });
       try {
         const { items, folders } = await getLibrary();
+        if (generation !== refreshGeneration) return;
         set({ items, folders, status: "ready", error: null });
         useLibraryFavoritesStore.setState({
           ids: new Set(items.filter((item) => item.favorite).map((item) => item.id)),
         });
       } catch (error) {
+        if (generation !== refreshGeneration) return;
         set({
           status: get().status === "ready" ? "ready" : "error",
           error: error instanceof Error ? error.message : String(error),
@@ -91,14 +103,21 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
         (state) => ({ items: state.items.filter((item) => item.id !== id) }),
         // Fine-tunes go through the models route, which refuses while one is training or loaded.
         // Clearing its favorite, name and folder after that is best effort.
-        () =>
-          model
-            ? deleteFineTunedModel({
-                modelPath: model.path,
-                source: model.origin,
-                exportType: model.exportType,
-              }).then(() => deleteLibraryItem(id).catch(() => {}))
-            : deleteLibraryItem(id),
+        async () => {
+          if (model) {
+            await deleteFineTunedModel({
+              modelPath: model.path,
+              source: model.origin,
+              exportType: model.exportType,
+            });
+            await deleteLibraryItem(id).catch(() => {});
+            return;
+          }
+          await deleteLibraryItem(id);
+          // Those pages stay mounted off-screen and would keep showing it.
+          const gallery = GALLERIES[id.slice(0, id.indexOf(":"))];
+          if (gallery) notifyGalleryChanged(gallery);
+        },
       );
     },
     // Best effort: a lost open only leaves Last activity a little stale.
@@ -151,3 +170,14 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
       ),
   };
 });
+
+// The store is module state, so a sign-out must drop it or the next account sees these files.
+if (typeof window !== "undefined") {
+  window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
+    refreshGeneration += 1;
+    useLibraryStore.setState({ items: [], folders: [], status: "idle", error: null });
+    useLibraryFavoritesStore.setState({ ids: new Set() });
+    clearCachedObjectUrls();
+  });
+}
+
