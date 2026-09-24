@@ -1206,9 +1206,7 @@ def test_an_amd_card_named_only_by_its_marketing_string_establishes_a_mismatch(
     # RDNA 1 is declined on Linux on purpose (a repair there would reinstall the same CPU
     # wheel) and repairable on Windows, where the installers route it to AMD's multi-arch
     # index since unslothai/unsloth#11755.
-    rdna1 = [
-        {"vendor": "amd", "name": "AMD Radeon RX 5700 XT", "index": 0, "gfx_candidates": []}
-    ]
+    rdna1 = [{"vendor": "amd", "name": "AMD Radeon RX 5700 XT", "index": 0, "gfx_candidates": []}]
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     assert hw._devices_that_can_establish_a_mismatch(rdna1) == []
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")

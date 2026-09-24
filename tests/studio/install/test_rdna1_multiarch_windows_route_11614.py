@@ -278,5 +278,6 @@ class TestRdna1CountsAsCoveredEverywhereItIsRouted:
         block = src[src.index("$_rocmWheelArches = @(") :]
         block = block[: block.index("\n)") + 2]
         listed = set(re.findall(r'"(gfx[0-9a-z]+)"', block))
-        assert set(stack_mod._WINDOWS_MULTIARCH_GFX) <= listed, sorted(set(stack_mod._WINDOWS_MULTIARCH_GFX) - listed)
-
+        assert set(stack_mod._WINDOWS_MULTIARCH_GFX) <= listed, sorted(
+            set(stack_mod._WINDOWS_MULTIARCH_GFX) - listed
+        )
