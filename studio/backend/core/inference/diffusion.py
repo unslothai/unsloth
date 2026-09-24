@@ -2082,8 +2082,13 @@ class DiffusionBackend:
             force_dense = _has_active_lora(kwargs.get("loras")),
             logger = None,
         )
-        # A prequant loads a small checkpoint, so widening defeats the savings and can disk-full
-        if candidate is None or candidate.prequant:
+        # A prequant loads a small checkpoint, so widening defeats the savings and can disk-full. Only if this user can
+        # really fetch it: the family table names it whether or not the repo is readable.
+        if candidate is None:
+            return False
+        if candidate.prequant and self._hosted_prequant_reachable(
+            fam, getattr(candidate, "scheme", None), kwargs
+        ):
             return False
         # Capacity gate: mirror plan_fits_total_capacity against TOTAL capacity, else load_pipeline declines the dense
         # path anyway
@@ -2100,6 +2105,29 @@ class DiffusionBackend:
             if int(steady) > budget:
                 return False
         return True
+
+    def _hosted_prequant_reachable(self, fam: Any, scheme: Optional[str], kwargs: dict) -> bool:
+        """Whether the prequant a candidate counts on can really be fetched. ``usable_prequant_source`` answers from
+        the family table alone, so a private, gated or unpublished repo still reads as available; the load then
+        falls back to the dense build with no shards staged and pulls them inline. Cached or local counts; a repo
+        the Hub refuses does not. Unanswerable keeps the candidate's own verdict."""
+        try:
+            source = usable_prequant_source(
+                fam,
+                scheme,
+                path_override = kwargs.get("transformer_prequant_path"),
+                base_repo = kwargs.get("base_repo"),
+            )
+            if source is None or getattr(source, "kind", None) != "repo":
+                return True
+            if prequant_checkpoint_cached(source, cache_dir = hub_cache_dir()):
+                return True
+            return (
+                self._prequant_source_hub_entry(source, kwargs.get("hf_token"), scheme = scheme)
+                is not None
+            )
+        except Exception:  # noqa: BLE001 -- a transient probe failure keeps the candidate's verdict
+            return True
 
     @staticmethod
     def _auto_prequant_retry_scheme(
@@ -3234,8 +3262,18 @@ class DiffusionBackend:
         if source is None or getattr(source, "kind", None) != "repo":
             return None
         from huggingface_hub import HfApi
+        from huggingface_hub.errors import RepositoryNotFoundError
 
-        info = HfApi(token = hf_token or None).model_info(source.location, files_metadata = True)
+        try:
+            info = HfApi(token = hf_token or None).model_info(source.location, files_metadata = True)
+        except RepositoryNotFoundError as exc:
+            # 401 / 403 / 404 on the repo itself (private, gated, not yet published): the pick has no hosted
+            # checkpoint, exactly as when the family names none, and the dense shards stay in the plan. Not a
+            # partial listing, so it must not mark the plan failed. GatedRepoError subclasses this.
+            logger.info(
+                "diffusion.prequant_repo_unavailable: %s (%s)", source.location, type(exc).__name__
+            )
+            return None
         sizes = {s.rfilename: int(getattr(s, "size", 0) or 0) for s in (info.siblings or [])}
         # Every candidate, in the order the loader tries them: safetensors first, then the pickle
         # spellings. Reading only two of them would miss the artifact on a repo that hosts the third.
@@ -3584,7 +3622,7 @@ class DiffusionBackend:
                 (
                     lambda companions, transformer_files: self._dense_quant_prefetch_needed(
                         fam,
-                        {**load_kwargs, "base_repo": base},
+                        {**load_kwargs, "base_repo": base, "hf_token": hf_token},
                         companion_files = companions,
                         transformer_files = transformer_files,
                     )
