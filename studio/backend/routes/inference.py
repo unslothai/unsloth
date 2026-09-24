@@ -23210,6 +23210,7 @@ async def _proxy_to_external_provider(
     current_subject: Optional[str] = None,
     *,
     managed = None,
+    early_close_status = None,
 ) -> Response:
     """
     Proxy a chat completion request to an external LLM provider.
@@ -23218,7 +23219,8 @@ async def _proxy_to_external_provider(
     either one Chat Completion JSON object or an OpenAI-compatible SSE stream.
 
     Managed upstreams supply server-owned routing and credentials. Their streams are
-    tracked for cancellation during model swaps.
+    tracked for cancellation during model swaps. ``early_close_status`` names the monitor
+    status for a consumer closing the stream before it ends ("cancelled" when omitted).
     """
     # Resolve provider type and base URL
     provider_type = payload.provider_type
@@ -24111,6 +24113,12 @@ async def _proxy_to_external_provider(
         except asyncio.CancelledError:
             api_monitor.finish(monitor_id, "cancelled")
             raise
+        except GeneratorExit:
+            # aclose() by the consumer, e.g. the NPU relay ending on a stop sequence.
+            api_monitor.finish(
+                monitor_id, early_close_status() if early_close_status else "cancelled"
+            )
+            raise
         except Exception as exc:
             logger.error("external_provider.stream_error", error = str(exc))
             api_monitor.fail(monitor_id, _friendly_error(exc))
@@ -24150,9 +24158,14 @@ async def _proxy_to_external_provider(
             return _stream()
 
         async def _wrapped():
+            inner = _stream()
             with _TrackedCancel.for_payload(cancel_event, payload, *cancel_keys):
-                async for chunk in _stream():
-                    yield chunk
+                try:
+                    async for chunk in inner:
+                        yield chunk
+                finally:
+                    # Close it now, not at garbage collection: that releases the upstream request.
+                    await inner.aclose()
 
         return _wrapped()
 
@@ -24424,6 +24437,11 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
     if payload.tool_choice == "none":
         # FastFlowLM 1.0.3 ignores tool_choice and calls a tool anyway.
         payload.tools = None
+    elif payload.tools and payload.tool_choice not in (None, "auto"):
+        # "required" or a named function: nothing makes FastFlowLM honor either.
+        _raise_unsupported_openai_parameter(
+            "tool_choice", "FastFlowLM on the NPU chooses its own tool; use auto or none."
+        )
     elif payload.tools and not upstream.supports_tools:
         raise HTTPException(
             status_code = 400,
@@ -24446,7 +24464,12 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
     relay = _NpuStreamRelay(upstream.public_model, _normalize_stop_sequences(payload.stop))
     upstream_payload = payload.model_copy(update = {"stream": True})
     response = await _proxy_to_external_provider(
-        upstream_payload, request, current_subject, managed = upstream
+        upstream_payload,
+        request,
+        current_subject,
+        managed = upstream,
+        # The relay closes the stream itself once a stop sequence ends the reply.
+        early_close_status = lambda: "completed" if relay.stopped else "cancelled",
     )
 
     async def _lines():

@@ -202,6 +202,9 @@ def _call(**fields):
     return out["status"], out["body"]
 
 
+_TOOL = {"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}
+
+
 def _data(lines):
     return [
         json.loads(line[5:]) for line in lines if line.startswith("data:") and "[DONE]" not in line
@@ -384,6 +387,11 @@ def test_a_bare_error_line_becomes_an_error(flm):
         ({"response_format": {"type": "json_object"}}, "response_format"),
         ({"seed": 7}, "seed"),
         ({"frequency_penalty": 0.5}, "frequency_penalty"),
+        ({"tools": [_TOOL], "tool_choice": "required"}, "tool_choice"),
+        (
+            {"tools": [_TOOL], "tool_choice": {"type": "function", "function": {"name": "f"}}},
+            "tool_choice",
+        ),
         ({"logit_bias": {"42": -100}}, "logit_bias"),
         ({"n": 2}, "n"),
         (
@@ -754,3 +762,17 @@ def test_a_same_model_load_reloads_when_the_context_request_changes(
         )
     )
     assert response.status == expected
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_a_stop_sequence_leaves_the_monitor_row_completed(flm, stream):
+    from core.inference.api_monitor import api_monitor
+
+    if not api_monitor.enabled:
+        pytest.skip("API monitor disabled")
+    flm()
+    before = api_monitor.active_count()
+    _call(stream = stream, stop = ["seven"])
+    # The relay closes the upstream stream itself; its row must not stay "generating".
+    assert api_monitor.active_count() == before
+    assert api_monitor._entries[0].status == "completed"
