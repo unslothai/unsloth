@@ -1031,15 +1031,6 @@ def _account_owned_load(method):
     return wrapped
 
 
-def _clear_exception_frames(exc: BaseException) -> None:
-    seen = set()
-    while exc is not None and id(exc) not in seen:
-        seen.add(id(exc))
-        # Skips frames still executing (this wrapper's own); clears the finished ones below it.
-        traceback.clear_frames(exc.__traceback__)
-        exc = exc.__cause__ or exc.__context__
-
-
 def _release_render_on_unload(method):
     """Return the pipeline's VRAM when an unload (or replacing load) lands mid-render.
 
