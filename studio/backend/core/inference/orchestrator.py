@@ -2208,7 +2208,8 @@ class InferenceOrchestrator:
         self.loading_models.discard(target)
         self.active_model_name = None
         self.models.clear()
-        self._shutdown_subprocess(timeout = 0.5)
+        managed = getattr(self, "_managed_engine", None) is not None
+        stopped = self._shutdown_subprocess(timeout = 0.5)
         # Clear the local mirrors again AFTER the teardown. A racing off-gate load_model may still be parked in
         # _wait_response("loaded"): its worker already queued a "loaded" reply, so during the shutdown window above
         # (the 0.5s settle before the response queue is drained and nulled) that thread can consume it and repopulate
@@ -2217,6 +2218,8 @@ class InferenceOrchestrator:
         # model. The nulled queue lets no further "loaded" through, so re-clearing here wipes any repopulation.
         self.active_model_name = None
         self.models.clear()
+        if managed and stopped is False:
+            raise RuntimeError("The inference engine did not stop.")
         return True
 
     # Dictation models run in the STT sidecars (whisper-server, llama-server, and the Transformers spawn child), not

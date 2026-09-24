@@ -702,6 +702,37 @@ def test_failed_managed_stop_keeps_the_chat_gpu_claim_on_unload(monkeypatch):
     assert backend.active_model_name == "model"
 
 
+def test_failed_managed_stop_during_load_cancel_keeps_chat_busy(monkeypatch):
+    from types import SimpleNamespace
+    import core.inference.gpu_arbiter as gpu_arbiter
+    import core.inference.llama_cpp as llama_cpp
+    from core.inference.orchestrator import InferenceOrchestrator
+    import routes.inference as inference_route
+
+    backend = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    backend._subprocess_shutdown_lock = threading.RLock()
+    backend.active_model_name = None
+    backend.models = {}
+    backend.loading_models = {"model"}
+    backend._managed_engine = SimpleNamespace(stop = lambda: False)
+    with pytest.raises(RuntimeError, match = "did not stop"):
+        backend.cancel_load("model")
+    assert backend._managed_engine is not None
+
+    # The mirrors are cleared, so only the engine itself can keep the claim.
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: backend)
+    monkeypatch.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_active = False, is_loaded = False),
+    )
+    monkeypatch.setattr(llama_cpp, "chat_load_active", lambda: False)
+    monkeypatch.setattr(gpu_arbiter, "release_if", lambda owner, idle: idle())
+    assert inference_route.release_chat_gpu_claim() is False
+    backend._managed_engine = None
+    assert inference_route.release_chat_gpu_claim() is True
+
+
 def test_dead_managed_server_is_reaped_without_clearing_live_server(monkeypatch):
     from types import SimpleNamespace
     from core.inference.orchestrator import InferenceOrchestrator
