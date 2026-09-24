@@ -5828,6 +5828,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
               selectedExternalProvider?.isReasoningModel === true,
             // Lets the resolver detect custom Gemini OAI-compat gateways.
             baseUrl: selectedExternalProvider?.baseUrl ?? null,
+            apiType: selectedExternalProvider?.apiType,
           },
         )
       : null;
@@ -5853,7 +5854,8 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
       : reasoningEffort;
   const effectiveReasoningVisualEnabled =
     effectiveReasoningEnabled && displayedEffort !== "none";
-  const disabled = !(modelLoaded && effectiveSupportsReasoning);
+  const disabled =
+    !modelLoaded || !(effectiveSupportsReasoning || supportsPreserveThinking);
   const formatEffortLabel = (level: typeof reasoningEffort): string => {
     if (level !== "xhigh")
       return level.charAt(0).toUpperCase() + level.slice(1);
@@ -5868,8 +5870,8 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
   };
   const effortLabel = formatEffortLabel(displayedEffort);
 
-  // Only rendered for models that can reason.
-  if (!effectiveSupportsReasoning) {
+  // A connection may support history preservation without a generation toggle.
+  if (!effectiveSupportsReasoning && !supportsPreserveThinking) {
     return null;
   }
 
@@ -5880,9 +5882,11 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     effectiveReasoningStyle === "enable_thinking_effort";
   // Dropdown when there are effort levels or preserve-thinking; else a toggle.
   const useDropdown = isEffort || supportsPreserveThinking;
-  const activeLook = isEffort
-    ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !disabled)
-    : reasoningLockedOn || (effectiveReasoningEnabled && !disabled);
+  const activeLook = !effectiveSupportsReasoning
+    ? preserveThinking && !disabled
+    : isEffort
+      ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !disabled)
+      : reasoningLockedOn || (effectiveReasoningEnabled && !disabled);
 
   if (useDropdown) {
     return (
@@ -5975,6 +5979,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
               ))}
           </>
         ) : (
+          effectiveSupportsReasoning &&
           effectiveSupportsReasoningOff &&
           !reasoningLockedOn && (
             <DropdownMenuItem
@@ -6008,8 +6013,8 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
               e.preventDefault();
               const next = !preserveThinking;
               setPreserveThinking(next);
-              // Preserve thinking requires thinking on.
-              if (next) {
+              // Only local models couple this setting to generation controls.
+              if (next && externalSelection === null) {
                 setReasoningEnabled(true);
                 applyQwenThinkingParams(true);
               }
