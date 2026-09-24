@@ -744,7 +744,11 @@ def test_video_upload_thumbnail_is_its_first_frame(client):
     assert Image.open(io.BytesIO(response.content)).size == (64, 48)
 
 
-def _png(width, height, mode = "RGB") -> bytes:
+def _png(
+    width,
+    height,
+    mode = "RGB",
+) -> bytes:
     import io
 
     from PIL import Image

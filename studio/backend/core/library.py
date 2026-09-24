@@ -711,7 +711,10 @@ def thumbnail(item_id: str) -> bytes:
         source = project_source(item_id)[0]
         if kind == "upload":
             record = library_db.get_upload(ref) or {}
-            types = (str(record.get("contentType") or ""), _guess_type(str(record.get("name") or "")))
+            types = (
+                str(record.get("contentType") or ""),
+                _guess_type(str(record.get("name") or "")),
+            )
         elif kind == "sandbox":
             types = (_guess_type(source.name),)
         else:
