@@ -14,6 +14,11 @@ torch = pytest.importorskip("torch")
 transformers = pytest.importorskip("transformers")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+from packaging.version import Version as _V
+
+# The remote text-only plan needs transformers 5 key_mapping semantics; on 4.x it must decline.
+needs_tf5 = pytest.mark.skipif(_V(transformers.__version__) < _V("5.0.0"), reason = "plan declines on transformers 4.x")
 UTILS_PATH = REPO_ROOT / "unsloth" / "models" / "_utils.py"
 LOADER_PATH = REPO_ROOT / "unsloth" / "models" / "loader.py"
 VISION_PATH = REPO_ROOT / "unsloth" / "models" / "vision.py"
@@ -218,6 +223,7 @@ def test_prefix_inference_gemma_style_split_layout_is_rejected():
 # ---------------------------------------------------------------- gate on real configs
 
 
+@needs_tf5
 def test_remote_composite_resolves_text_config_and_mapping(tmp_path):
     ns = _ns()
     repo, _ = _write_repo(tmp_path)
@@ -233,6 +239,7 @@ def test_remote_composite_resolves_text_config_and_mapping(tmp_path):
     assert text_config is not parent.llm_config
 
 
+@needs_tf5
 def test_llm_config_without_text_config_alias(tmp_path):
     ns = _ns()
     repo, weights = _write_repo(tmp_path, alias = False, name = "no_alias")
@@ -294,6 +301,7 @@ def test_merge_key_mapping_keeps_user_entries_on_top():
     assert kw["key_mapping"] == {r"^language_model\.": ""}
 
 
+@needs_tf5
 def test_hardcoded_flash_attention_does_not_block_the_meta_build(tmp_path):
     # Nemotron-Omni's config __init__ forces llm_config._attn_implementation = "flash_attention_2".
     ns = _ns()
@@ -307,6 +315,7 @@ def test_hardcoded_flash_attention_does_not_block_the_meta_build(tmp_path):
 # ---------------------------------------------------------------- end to end: the plan loads real weights
 
 
+@needs_tf5
 def test_plan_loads_only_the_language_model_with_real_weights(tmp_path):
     ns = _ns()
     repo, weights = _write_repo(tmp_path)
@@ -344,6 +353,7 @@ def test_wrapper_forward_needs_pixel_values_which_is_the_bug(tmp_path):
         model(input_ids = torch.tensor([[1, 2, 3]]))
 
 
+@needs_tf5
 def test_tied_embeddings_do_not_need_a_stored_head(tmp_path):
     ns = _ns()
     repo, _ = _write_repo(
@@ -367,3 +377,12 @@ def test_loader_and_vision_call_the_remote_branch_only_after_the_family_gate():
     i_remote = loader.index("_get_remote_composite_text_only(")
     assert i_family < i_remote
     assert "if not family_decoder:" in loader
+
+
+def test_transformers_4_keeps_the_full_model(tmp_path, monkeypatch):
+    # On transformers 4.x the prefix strip cannot be expressed with key_mapping; the plan must decline.
+    ns = _ns()
+    repo, _ = _write_repo(tmp_path, name = "tf4")
+    parent = _load_parent_config(repo)
+    ns["transformers_version"] = "4.57.6"
+    assert ns["_get_remote_composite_text_only"](parent, str(repo), trust_remote_code = True) is None

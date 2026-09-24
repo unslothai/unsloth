@@ -1317,8 +1317,11 @@ def _get_remote_composite_text_only(
     # Returns (text_config, key_mapping) or None; None keeps the previous full-model load.
     if not trust_remote_code or not _is_remote_code_config(model_config):
         return None
-    if Version(transformers_version) < Version("4.51.0"):
-        return None  # from_pretrained has no key_mapping
+    if Version(transformers_version) < Version("5.0.0"):
+        # transformers 4.x decides base-vs-task prefix handling from the UNMAPPED checkpoint keys, so key_mapping
+        # cannot strip a wrapper prefix: it raises "state dictionary ... corrupted", or with tied embeddings loads
+        # every weight as missing (random). Keep the full-model load there.
+        return None
     try:
         text_config = _get_text_only_config(model_config, model_name)
     except Exception:
