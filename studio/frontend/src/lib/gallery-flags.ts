@@ -5,8 +5,9 @@
  * Optimistic list maths for the Images and Video galleries, kept pure so both pages share one
  * implementation and it can be tested without rendering either.
  *
- * The backend is the source of truth for order (pinned first, then newest first). These helpers
- * only reproduce that ordering locally so a click lands instantly instead of waiting on a refetch.
+ * The backend is the source of truth for order (pinned first, then newest first, or by manual key
+ * once dragged). These helpers only reproduce that ordering locally so a click lands instantly
+ * instead of waiting on a refetch.
  */
 
 export const GALLERY_CHANGED_EVENT = "unsloth:gallery-changed";
@@ -40,14 +41,22 @@ export interface FlaggableItem {
   id: string;
   pinned?: boolean;
   archived?: boolean;
+  /** Manual sort key in epoch seconds, set once dragged; replaces created_at in the sort. */
+  order_at?: number | null;
   created_at: number | string;
+}
+
+/** Unpinned sort key in epoch seconds (images store seconds, videos an ISO string). */
+function orderKey(item: FlaggableItem): number {
+  if (typeof item.order_at === "number") return item.order_at;
+  return typeof item.created_at === "number"
+    ? item.created_at
+    : Date.parse(item.created_at) / 1000;
 }
 
 /** Newest first, matching the backend's mtime ordering closely enough for an optimistic reorder. */
 function newestFirst<T extends FlaggableItem>(a: T, b: T): number {
-  const at = typeof a.created_at === "number" ? a.created_at : Date.parse(a.created_at);
-  const bt = typeof b.created_at === "number" ? b.created_at : Date.parse(b.created_at);
-  return bt - at;
+  return orderKey(b) - orderKey(a);
 }
 
 /**
@@ -75,6 +84,34 @@ export function sortGalleryItems<T extends FlaggableItem>(items: T[], justPinned
 export function applyPin<T extends FlaggableItem>(items: T[], id: string, pinned: boolean): T[] {
   const next = items.map((i) => (i.id === id ? { ...i, pinned } : i));
   return sortGalleryItems(next, pinned ? id : undefined);
+}
+
+/**
+ * Move `id` to just after `afterId` (null = front), with the backend's pin rule: between pins pins
+ * it, between unpinned items unpins it, on the boundary keeps its state. Returns `items` unchanged
+ * for a no-op. The server's record is authoritative for the pin.
+ */
+export function moveGalleryItem<T extends FlaggableItem>(
+  items: T[],
+  id: string,
+  afterId: string | null,
+): T[] {
+  const from = items.findIndex((i) => i.id === id);
+  if (from < 0 || afterId === id) return items;
+  const rest = items.filter((i) => i.id !== id);
+  const at = afterId === null ? 0 : rest.findIndex((i) => i.id === afterId) + 1;
+  if (afterId !== null && at === 0) return items;
+  const moved = items[from];
+  const above = rest[at - 1];
+  const below = rest[at];
+  const pinned =
+    above && below
+      ? Boolean(above.pinned) === Boolean(below.pinned)
+        ? Boolean(above.pinned)
+        : Boolean(moved.pinned)
+      : Boolean((above ?? below ?? moved).pinned);
+  if (at === from && pinned === Boolean(moved.pinned)) return items;
+  return [...rest.slice(0, at), { ...moved, pinned }, ...rest.slice(at)];
 }
 
 /** The pinned ids in their current order, to hand back to `restorePinOrder` on a failed unpin. */
