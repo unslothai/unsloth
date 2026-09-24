@@ -858,6 +858,7 @@ class HttpChatBackend:
         self._base = base_url
         self._token = token
         self.reply_hit_token_limit = False
+        self.gguf_variant: Optional[str] = None
 
     def _request(
         self,
@@ -912,6 +913,7 @@ class HttpChatBackend:
         resident_variant = self._resident_gguf_variant(model)
         if resident_variant:
             payload["gguf_variant"] = resident_variant
+        self.gguf_variant = resident_variant
         try:
             # Read the body, don't close at the headers: a slow load commits its 200 early and pads until
             # done, so closing here would generate mid-load and discard the only report of a late failure.

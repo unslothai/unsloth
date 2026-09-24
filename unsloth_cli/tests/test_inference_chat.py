@@ -2081,6 +2081,41 @@ def test_server_load_sends_load_in_4bit_only_when_typed(monkeypatch, command, fl
     assert payloads[0].get("load_in_4bit", "omitted") == expected
 
 
+def test_server_chat_banner_names_the_kept_quant(monkeypatch):
+    from unsloth_cli import _inference
+
+    class _GgufConfig(_FakeConfig):
+        is_gguf = True
+        is_lora = False
+        display_name = "Qwen3-0.6B-GGUF (UD-Q4_K_XL)"
+        gguf_variant = "UD-Q4_K_XL"
+
+    def fake_request(
+        self,
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
+        if path == "/api/inference/status":
+            return _FakeStatusResponse(_RESIDENT_Q8)
+        return _FakeLoadResponse()
+
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(_inference, "find_studio_server", lambda: "http://127.0.0.1:8888")
+    monkeypatch.setattr(_inference, "verify_studio_identity", lambda base: True)
+    monkeypatch.setattr(_inference, "_studio_token", lambda: "token")
+    monkeypatch.setattr(HttpChatBackend, "_request", fake_request)
+    monkeypatch.setattr(chatmod, "load_chat_backend", lambda *a, **k: pytest.fail("loaded locally"))
+    monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _GgufConfig())
+    monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+
+    result = CliRunner().invoke(_chat_app(), ["unsloth/Qwen3-0.6B-GGUF"], input = "/exit\n")
+
+    assert result.exit_code == 0, result.output
+    assert "Chatting with Qwen3-0.6B-GGUF (Q8_0)" in result.output
+
+
 @pytest.mark.parametrize("command", ["chat", "inference"])
 def test_local_load_still_gets_a_load_in_4bit_bool(monkeypatch, command):
     module, app, argv = _command_and_argv(command)
