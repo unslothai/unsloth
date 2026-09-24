@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from utils.account_context import current_account_id
+from utils.hub_settings import MODELSCOPE, active_source, hugging_face_endpoint
 
 from huggingface_hub import HfApi
 from huggingface_hub.utils import build_hf_headers, get_session
@@ -152,8 +153,10 @@ def validate_hf_token(token: str, *, rate_key: str) -> TokenValidationResult:
     if not normalized:
         return TokenValidationResult(status = "invalid")
     account_id = current_account_id()
-    # Per endpoint too: a token one Hub rejects may be another Hub's.
-    token_fingerprint = (account_id, _fingerprint(normalized), HfApi().endpoint.rstrip("/"))
+    # Per endpoint too: a token one Hub rejects may be another Hub's. The ModelScope adapter has no
+    # whoami, so a Hugging Face token is checked against Hugging Face while it serves.
+    endpoint = hugging_face_endpoint() if active_source() == MODELSCOPE else HfApi().endpoint
+    token_fingerprint = (account_id, _fingerprint(normalized), endpoint.rstrip("/"))
     account_rate_key = (account_id, rate_key)
     owner_event: threading.Event | None = None
 

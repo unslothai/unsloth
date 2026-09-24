@@ -110,6 +110,11 @@ def active_source() -> str:
     return MODELSCOPE if os.environ.get(SOURCE_ENV) == MODELSCOPE else HUGGINGFACE
 
 
+def hugging_face_endpoint() -> str:
+    """The Hugging Face endpoint the settings select, also while ModelScope serves."""
+    return (get_hub_settings().hf_endpoint or DEFAULTS_BY_HEALTH_KEY["hf_endpoint"]).rstrip("/")
+
+
 def set_hub_source(source: str) -> HubSettings:
     """Persist and apply the model source. Raises ValueError on an unknown one."""
     if source not in SOURCES:

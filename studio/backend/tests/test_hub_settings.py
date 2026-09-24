@@ -279,6 +279,7 @@ def test_modelscope_points_hub_clients_at_the_adapter_and_back(store, monkeypatc
     settings = hub_settings.set_hub_source("modelscope")
     assert (settings.source, hub_settings.active_source()) == ("modelscope", "modelscope")
     assert os.environ["HF_ENDPOINT"] == constants.ENDPOINT == "http://127.0.0.1:1234"
+    assert hub_settings.hugging_face_endpoint() == MIRROR
     # Workers spawned from here on gate on the source too.
     assert os.environ[hub_settings.SOURCE_ENV] == "modelscope"
     # The loopback listener is this process's; the browser uses its own mount.

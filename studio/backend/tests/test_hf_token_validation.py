@@ -41,6 +41,16 @@ def test_cached_token_does_not_spend_another_attempt(monkeypatch):
     assert calls == ["hf_valid"]
 
 
+def test_modelscope_checks_a_token_against_hugging_face(monkeypatch):
+    seen = []
+    result = validation.TokenValidationResult(status = "valid")
+    monkeypatch.setattr(validation, "_check_remote", lambda _t, **k: seen.append(k) or result)
+    monkeypatch.setattr(validation, "active_source", lambda: validation.MODELSCOPE)
+    monkeypatch.setattr(validation, "hugging_face_endpoint", lambda: "https://hf-mirror.com")
+    assert validation.validate_hf_token("hf_ok", rate_key = "user:ip") is result
+    assert seen == [{"endpoint": "https://hf-mirror.com"}]
+
+
 def test_three_uncached_attempts_per_hour(monkeypatch):
     monkeypatch.setattr(
         validation,
