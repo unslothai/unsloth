@@ -144,6 +144,9 @@ async def video_download_plan(
 ):
     """The repos + files this pick needs, so the frontend stages them through the Hub
     download manager instead of the load downloading inline. Mirrors /images/download-plan."""
+    from routes.inference import _refuse_disabled_nvfp4_request
+
+    _refuse_disabled_nvfp4_request(request)
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_references, request)
     if account_access.managed_account():
@@ -269,6 +272,9 @@ async def load_video_model_gated(
     """Everything ``POST /video/load`` does, plus who asked for it. Media auto-switch awaits this rather than the
     route so the idle unload can tell an API-loaded pipeline from one the user picked on the Video page.
     """
+    from routes.inference import _refuse_disabled_nvfp4_request
+
+    _refuse_disabled_nvfp4_request(request)
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_references, request)
     account_access.require_idle_other_accounts()

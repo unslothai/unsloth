@@ -234,7 +234,15 @@ def assert_video_precision_available(
 
     Public because the ROUTE has to make this call itself, before it takes the GPU: the copy in
     ``begin_load`` runs inside ``acquire_for``, which evicts chat under the arbiter lock before the
-    register callback."""
+    register callback.
+
+    NVFP4 while the NVFP4 switch is off raises ``ValueError`` (the route's 400) first, ahead of the
+    opt-in fallback: a disabled scheme is refused, never swapped."""
+    from .diffusion_nvfp4_flag import refuse_disabled_nvfp4
+
+    refuse_disabled_nvfp4(
+        transformer_quant = transformer_quant, text_encoder_quant = text_encoder_quant
+    )
     if precision_fallback_allowed():
         return
     pinned = normalize_transformer_quant(transformer_quant)
@@ -3293,6 +3301,11 @@ class VideoBackend:
             logger.warning("video.denoiser_prequant_split_repos: %s", sorted(locations))
             return None, []
         location = sources[0].location
+        from core.inference.diffusion_nvfp4_flag import nvfp4_repo_blocked
+
+        if nvfp4_repo_blocked(location):
+            # The NVFP4 switch is off: never ask the Hub about a *-NVFP4 repo; the dense DiT is planned.
+            return None, []
         try:
             info = api.model_info(location, files_metadata = True)
         except Exception as exc:  # noqa: BLE001 -- unavailable prequant means the dense DiT

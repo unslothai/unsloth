@@ -1747,7 +1747,15 @@ class DiffusionBackend:
         ``begin_load`` runs inside ``acquire_for``, which evicts chat under the arbiter lock before
         the register callback, and after ``select_and_activate_engine``, which unloads the resident
         model on an engine switch.
+
+        NVFP4 while the NVFP4 switch is off raises ``ValueError`` (the route's 400) first, ahead of
+        the opt-in fallback: a disabled scheme is refused, never swapped.
         """
+        from .diffusion_nvfp4_flag import refuse_disabled_nvfp4
+
+        refuse_disabled_nvfp4(
+            transformer_quant = transformer_quant, text_encoder_quant = text_encoder_quant
+        )
         if precision_fallback_allowed():
             return
         pinned = normalize_transformer_quant(transformer_quant)
@@ -3270,6 +3278,11 @@ class DiffusionBackend:
         with no dense weights left to fall back to. Skipping an unreadable name lets a later
         candidate answer, and skipping them all reports the miss, which keeps the shards."""
         if source is None or getattr(source, "kind", None) != "repo":
+            return None
+        from .diffusion_nvfp4_flag import nvfp4_blocked, nvfp4_repo_blocked
+
+        if nvfp4_blocked(scheme) or nvfp4_repo_blocked(source.location):
+            # The NVFP4 switch is off: no Hub request to a *-NVFP4 repo, and the plan keeps the dense shards.
             return None
         from huggingface_hub import HfApi
         from huggingface_hub.errors import RepositoryNotFoundError

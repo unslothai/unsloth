@@ -84,6 +84,9 @@ def _lpips(ref, arr):
 
 def run(mode, steps, seed, res):
     sys.path.insert(0, str(BACKEND))
+    # A developer tool for checking prequant checkpoints, NVFP4 ones included: it runs whatever
+    # the Studio NVFP4 switch (UNSLOTH_NVFP4_DIFFUSION) says, so it turns the switch on for itself.
+    os.environ["UNSLOTH_NVFP4_DIFFUSION"] = "1"
     import torch
     import diffusers
     from core.inference.diffusion_prequant import (
