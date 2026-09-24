@@ -119,8 +119,10 @@ function CardFrame({
         aria-pressed={select ? selected : undefined}
         onClick={select && selecting ? () => select.toggle(selectKey) : onOpen}
         className={cn(
-          "block w-full overflow-hidden rounded-xl text-left outline-none ring-offset-2 ring-offset-background transition focus-visible:ring-2 focus-visible:ring-ring",
-          selected && "ring-3 ring-foreground ring-offset-0",
+          // The offset only with focus: Tailwind draws it into box-shadow, so left on it rims every
+          // shadowed card in the page color.
+          "block w-full overflow-hidden rounded-xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+          selected && "ring-3 ring-foreground",
           className,
         )}
       >
