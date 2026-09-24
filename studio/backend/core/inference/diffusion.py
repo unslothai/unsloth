@@ -5510,6 +5510,9 @@ class DiffusionBackend:
                         threshold = transformer_cache_threshold,
                         # GGUF transformers are quantized too, so the cache needs the higher threshold.
                         quant_active = cache_quant_active,
+                        # Prefix-KV families (Qwen-Image-2.1) cache only when asked: at 40 steps the default
+                        # threshold skips about half the steps, too lossy for an automatic default.
+                        length_changes_ok = not cache_auto,
                         logger = logger,
                     )
                     self._raise_if_load_cancelled(_load_token)
@@ -5530,6 +5533,8 @@ class DiffusionBackend:
                                 f"auto: {default_steps}-step default schedule is below "
                                 f"{FBCACHE_MIN_STEPS}; re-checked per generation"
                             )
+                    elif cache_request is not None and not cache_engaged:
+                        cache_reason = "requested, but this model does not support step caching; running uncached"
                     else:
                         cache_reason = "requested"
                     # The dense fast path sets gguf_filename, but its transformer is dense.
