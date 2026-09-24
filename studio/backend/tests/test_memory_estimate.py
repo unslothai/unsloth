@@ -294,6 +294,12 @@ class TestGgufRuntimeBytes:
         assert runtime.n_ctx == _GQA_FIELDS["context_length"]
         assert runtime.kv_bytes > 0
 
+    @pytest.mark.parametrize("pooling_type, priced_ubatch", [(1, 2048), (2, 2048), (3, None)])
+    def test_embedding_micro_batch_matches_the_launch(self, tmp_path, pooling_type, priced_ubatch):
+        # load_model sizes a MEAN/CLS embedding micro-batch to the context; LAST splits.
+        gguf = _write_gguf(tmp_path, "qwen3", {**_GQA_FIELDS, "pooling_type": pooling_type})
+        assert ri._gguf_runtime_bytes(gguf, 2048).n_ubatch == priced_ubatch
+
     def test_missing_dims_are_unknown_not_zero(self, dimless_gguf):
         # THE case this NamedTuple exists for. kv_bytes == 0 here means "could not
         # size", and the only thing separating it from a genuine zero is the flag.

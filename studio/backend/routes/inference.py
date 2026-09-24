@@ -11143,7 +11143,11 @@ def _gguf_runtime_bytes(
     over-reserves on purpose; a panel quoting a number to a user wants the other
     one, since a smaller ``-c`` in the extras is the context the user gets."""
     try:
-        from core.inference.llama_cpp import _ASSUMED_MAX_VOCAB, _batch_ubatch_for_mmproj
+        from core.inference.llama_cpp import (
+            _ASSUMED_MAX_VOCAB,
+            _batch_ubatch_for_mmproj,
+            _embedding_batch_ubatch,
+        )
         from core.inference.llama_cpp import effective_ctx_checkpoints_for_caps
         from core.inference.llama_server_args import (
             parse_ctx_override,
@@ -11210,6 +11214,12 @@ def _gguf_runtime_bytes(
             )
         if ctx <= 0:
             return unknown
+        # Same raise as load_model: MEAN/CLS pooling cannot split an input across micro-batches.
+        if (
+            getattr(probe, "is_embedding_gguf", False)
+            and getattr(probe, "_pooling_type", None) != 3
+        ):
+            n_batch, n_ubatch = _embedding_batch_ubatch(ctx, n_batch, n_ubatch, llama_extra_args)
         slots = max(1, n_parallel or 1)
         planned_cache_types = _planned_main_cache_types(cache_type_kv, llama_extra_args)
         # KV bytes take the heavier axis (conservative for storage); the dequant

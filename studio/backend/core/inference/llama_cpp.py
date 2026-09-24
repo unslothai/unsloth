@@ -6338,7 +6338,9 @@ def _embedding_batch_ubatch(
     _, _, batch_named, ubatch_named = _named_batch_sizes(extra_args, env, n_batch, n_ubatch)
     if batch_named or ubatch_named or n_ctx <= _DEFAULT_LLAMA_N_UBATCH:
         return n_batch, n_ubatch
-    return n_ctx, n_ctx
+    # Capped at the fit floor: sized before the fit, it must not outgrow the context the fit picks.
+    size = min(n_ctx, _FIT_MIN_CTX)
+    return size, size
 
 
 def _build_ngram_mod_flags(

@@ -254,6 +254,15 @@ class TestEmbeddingBatchSizedToContext:
             2048,
         )
 
+    def test_long_context_is_capped_at_the_fit_floor(self):
+        # A 128k embedder (jina-embeddings-v4) would otherwise price a 128k micro-batch
+        # before the fit, which never lands below this floor.
+        cap = llama_cpp_module._FIT_MIN_CTX
+        assert llama_cpp_module._embedding_batch_ubatch(128000, None, None, None, env = {}) == (
+            cap,
+            cap,
+        )
+
     @pytest.mark.parametrize(
         "n_batch, n_ubatch, extra_args, env",
         [
