@@ -402,6 +402,8 @@ export function AudioPage({
   fallbackClipRef.current = fallbackClip;
   const loadingMoreRef = useRef(false);
   const galleryRefreshGeneration = useRef(0);
+  // Pins and moves in flight. A refresh that overlaps one read the old order, so it is dropped and rerun after.
+  const orderWrites = useRef({ inFlight: 0, epoch: 0, deferred: false });
   const recorderRef = useRef<SegmentRecorder | null>(null);
   const recordStreamRef = useRef<MediaStream | null>(null);
   const discardRecordingRef = useRef(false);
@@ -735,12 +737,17 @@ export function AudioPage({
       windowSize = PAGE_SIZE,
     ): Promise<AudioGalleryClip[]> => {
       const generation = ++galleryRefreshGeneration.current;
+      const writeEpoch = orderWrites.current.epoch;
       const wanted = Math.max(PAGE_SIZE, windowSize);
       const asked = Math.min(wanted, MAX_PAGE_SIZE);
       try {
         const page = await listAudioGallery(0, asked);
         // The caller's own fetch: a generation whose clip persisted must not be told otherwise.
         if (generation !== galleryRefreshGeneration.current) return page.audio;
+        if (orderWrites.current.inFlight > 0 || orderWrites.current.epoch !== writeEpoch) {
+          orderWrites.current.deferred = true;
+          return page.audio;
+        }
         // A window past the route's cap cannot be covered in one page, and stitching the old scrollback
         // back on keeps a cursor that starts BELOW it, stranding whatever was restored.
         const { clips: merged, stitched } =
@@ -2327,6 +2334,20 @@ export function AudioPage({
   const pinAttempt = useRef(new Map<string, number>());
   const pinSeq = useRef(0);
 
+  const beginOrderWrite = useCallback(() => {
+    orderWrites.current.inFlight += 1;
+    orderWrites.current.epoch += 1;
+  }, []);
+  const endOrderWrite = useCallback(() => {
+    const writes = orderWrites.current;
+    writes.inFlight -= 1;
+    writes.epoch += 1;
+    if (writes.inFlight === 0 && writes.deferred) {
+      writes.deferred = false;
+      void refreshGallery(undefined, galleryCache.clips.length);
+    }
+  }, [refreshGallery]);
+
   const handleTogglePin = useCallback(async (id: string, pinned: boolean) => {
     // The pinned order before the click, so a failed unpin goes back where it was.
     const orderBefore = pinnedOrder(galleryCache.clips);
@@ -2335,6 +2356,7 @@ export function AudioPage({
     // Optimistic. Records carry the server's sort key, so the local re-sort matches it.
     galleryCache.clips = applyPin(galleryCache.clips, id, pinned);
     setClips(galleryCache.clips);
+    beginOrderWrite();
     try {
       // One queue for pins and moves: the server stamps pins in the order it runs them.
       await serializeById("audio-pin", () => setAudioClipFlags(id, { pinned }));
@@ -2350,8 +2372,9 @@ export function AudioPage({
       }
     } finally {
       if (pinAttempt.current.get(id) === attempt) pinAttempt.current.delete(id);
+      endOrderWrite();
     }
-  }, []);
+  }, [beginOrderWrite, endOrderWrite]);
 
   // Drag to reorder: applied optimistically, then the server's record (key and pin) is adopted.
   const handleMoveClip = useCallback(
@@ -2364,6 +2387,7 @@ export function AudioPage({
       pinAttempt.current.set(id, attempt);
       galleryCache.clips = next;
       setClips(next);
+      beginOrderWrite();
       try {
         const record = await serializeById("audio-pin", () =>
           moveAudioClip(id, afterId),
@@ -2386,11 +2410,13 @@ export function AudioPage({
           error instanceof Error ? error.message : "Could not move the clip.",
         );
         if (pinAttempt.current.get(id) === attempt) pinAttempt.current.delete(id);
-        // Put the server's order back.
-        void refreshGallery(undefined, galleryCache.clips.length);
+        // Put the server's order back once no other write is in flight.
+        orderWrites.current.deferred = true;
+      } finally {
+        endOrderWrite();
       }
     },
-    [refreshGallery],
+    [beginOrderWrite, endOrderWrite],
   );
   const historyReorder = useStripReorder(
     (id, afterId) => void handleMoveClip(id, afterId),

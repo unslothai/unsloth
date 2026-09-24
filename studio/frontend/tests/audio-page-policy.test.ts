@@ -380,6 +380,23 @@ test("gallery refresh preserves fallback selection and pagination identity", () 
   );
 });
 
+test("a refresh that overlaps a pin or move is dropped and rerun after it", () => {
+  assert.match(
+    audioPageSource,
+    /const writeEpoch = orderWrites\.current\.epoch;[\s\S]*listAudioGallery\(\s*0,[\s\S]*orderWrites\.current\.inFlight > 0 \|\| orderWrites\.current\.epoch !== writeEpoch[\s\S]*orderWrites\.current\.deferred = true;\s*return page\.audio;/,
+  );
+  assert.match(
+    audioPageSource,
+    /writes\.inFlight === 0 && writes\.deferred\) \{\s*writes\.deferred = false;\s*void refreshGallery\(/,
+  );
+  for (const call of ["setAudioClipFlags(id, { pinned })", "moveAudioClip(id, afterId)"]) {
+    const at = audioPageSource.indexOf(call);
+    const before = audioPageSource.lastIndexOf("beginOrderWrite();", at);
+    const after = audioPageSource.indexOf("endOrderWrite();", at);
+    assert.ok(before > 0 && at - before < 400 && after > at, call);
+  }
+});
+
 test("Audio transcription uses backend language auto-detection", () => {
   const api = readSrc("features/audio/api.ts");
   const transcription = api.slice(api.indexOf("export async function transcribeWithProgress"), api.indexOf("export async function listTranscripts"));
