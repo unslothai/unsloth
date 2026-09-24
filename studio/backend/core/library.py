@@ -563,6 +563,8 @@ _THUMBNAIL_WIDTH = 640
 # The grid crops a picture past these heights (as a share of its width), so the rest is never sent.
 _THUMBNAIL_MIN_RATIO = 2 / 3
 _THUMBNAIL_MAX_RATIO = 3 / 2
+# A small file can still decode to an enormous bitmap; past this many pixels a card shows its icon.
+_THUMBNAIL_MAX_PIXELS = 64_000_000
 
 
 def _attachment_media(ref: str) -> tuple[str, bytes]:
@@ -592,6 +594,9 @@ def _image_thumbnail(source: Union[Path, BinaryIO]) -> bytes:
         raise RuntimeError("Thumbnail generation needs the 'Pillow' package.") from exc
     try:
         with Image.open(source) as opened:
+            # Read from the header, before anything is decoded.
+            if opened.width * opened.height > _THUMBNAIL_MAX_PIXELS:
+                raise RuntimeError(f"{opened.width}x{opened.height} is too large to thumbnail.")
             # A JPEG decodes straight at a fraction of its size, so a huge photo stays cheap.
             opened.draft("RGB", (_THUMBNAIL_WIDTH, _THUMBNAIL_WIDTH))
             image = ImageOps.exif_transpose(opened)

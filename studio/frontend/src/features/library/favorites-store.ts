@@ -10,6 +10,8 @@ import { getLibraryFavorites, updateLibraryItem } from "./api";
 /** What `adopt` needs to tell stars toggled since from a snapshot being fetched. */
 export interface FavoritesSnapshotStart {
   attempts: ReadonlyMap<string, number>;
+  /** Saving as the fetch went out, so its answer may predate them even if they finish first. */
+  pending: ReadonlySet<string>;
   session: number;
 }
 
@@ -66,14 +68,15 @@ export const useLibraryFavoritesStore = create<FavoritesState>((set, get) => {
         // Favorites are a convenience here; the page works without them.
       }
     },
-    begin: () => ({ attempts: new Map(latestAttempt), session }),
+    begin: () => ({ attempts: new Map(latestAttempt), pending: new Set(pending.keys()), session }),
     adopt: (start, loaded) => {
       if (start.session !== session) return get().ids;
       // A star toggled while this was loading, or still being saved, is newer than the snapshot.
       const ids = get().ids;
       const next = new Set(loaded);
       for (const [id, attempt] of latestAttempt) {
-        if (start.attempts.get(id) === attempt && !pending.has(id)) continue;
+        const settledBefore = !start.pending.has(id) && !pending.has(id);
+        if (start.attempts.get(id) === attempt && settledBefore) continue;
         if (ids.has(id)) next.add(id);
         else next.delete(id);
       }
