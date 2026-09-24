@@ -788,6 +788,16 @@ def test_a_named_subfolder_that_is_another_kinds_folder_is_refused(client, tmp_p
     assert (image_gallery.gallery_dir() / "a.png").read_bytes() == b"png"
 
 
+def test_a_chat_sandbox_cannot_hold_moved_files(client):
+    from core.inference.tools import sandbox_root
+
+    session = Path(sandbox_root()) / "chat-1"
+    session.mkdir(parents = True, exist_ok = True)
+    assert _move(client, "uploads", str(session / "uploads")).status_code == 400
+    assert _move(client, "images", sandbox_root()).status_code == 400
+    assert not (session / "uploads").exists()
+
+
 def test_fine_tunes_and_exports_do_not_move(client, tmp_path):
     for key in ("fineTunes", "exports", "somewhere"):
         assert _move(client, key, str(tmp_path / key)).status_code == 400

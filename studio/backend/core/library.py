@@ -766,8 +766,13 @@ def _move_entries(source: Path, target: Path, moved: list[tuple[Path, Path]]) ->
 
 
 def _refuse_overlap(target: Path, resolvers) -> None:
-    for other in resolvers.values():
-        root = other().resolve()
+    from core.inference.tools import sandbox_root
+
+    # Chat sandboxes too: their listing would show the files as tool output, and clearing the chat
+    # with its files would delete them.
+    roots = [Path(resolve()) for resolve in resolvers.values()] + [Path(sandbox_root())]
+    for root in roots:
+        root = root.resolve()
         if target == root or root in target.parents:
             raise ValueError("That folder is inside another Unsloth folder.")
 
