@@ -242,7 +242,7 @@ def _await_inflight_install(wait: bool = True) -> bool:
     installed = _dist_version(FLASHINFER_PACKAGE)
     if installed is None or installed.split("+", 1)[0] != FLASHINFER_VERSION:
         return True
-    with (_env_install_lock() if wait else _env_install_lock(0)) as held:
+    with _env_install_lock() if wait else _env_install_lock(0) as held:
         return held
 
 

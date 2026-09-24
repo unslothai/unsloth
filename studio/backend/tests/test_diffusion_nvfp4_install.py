@@ -510,7 +510,11 @@ def test_video_loader_installs_only_for_a_seed_the_live_memory_plan_kept():
         body[conventional : body.index(")", conventional)]
     )
     modular = body.index("ensure_flashinfer_for_nvfp4(")
-    assert body.index("if fam.modular_workflow:") < modular < body.index("self._load_h3_modular_pipeline(")
+    assert (
+        body.index("if fam.modular_workflow:")
+        < modular
+        < body.index("self._load_h3_modular_pipeline(")
+    )
 
     calls = []
     import core.inference.diffusion_nvfp4_install as inst_mod
@@ -548,7 +552,14 @@ class _FakePlan:
         self.offload_policy = offload_policy
 
 
-def _seed_gate(monkeypatch, *, free_mib, reserved_mib, need_mib, total_mib = 100_000):
+def _seed_gate(
+    monkeypatch,
+    *,
+    free_mib,
+    reserved_mib,
+    need_mib,
+    total_mib = 100_000,
+):
     from core.inference import diffusion
     from core.inference.diffusion_memory import DeviceMemory
 
@@ -607,13 +618,25 @@ def test_seed_gate_unanswerable_keeps_the_old_answer(monkeypatch):
     from core.inference import diffusion
 
     monkeypatch.setattr(
-        diffusion, "snapshot_device_memory", lambda target: (_ for _ in ()).throw(RuntimeError("probe"))
+        diffusion,
+        "snapshot_device_memory",
+        lambda target: (_ for _ in ()).throw(RuntimeError("probe")),
     )
     backend = object.__new__(diffusion.DiffusionBackend)
-    assert backend._seed_plan_stays_resident(
-        "nvfp4", types.SimpleNamespace(device = "cuda"), "b", object(), None, False,
-        repo_id = "b", base_local_dir = None, fetch_base = None,
-    ) is True
+    assert (
+        backend._seed_plan_stays_resident(
+            "nvfp4",
+            types.SimpleNamespace(device = "cuda"),
+            "b",
+            object(),
+            None,
+            False,
+            repo_id = "b",
+            base_local_dir = None,
+            fetch_base = None,
+        )
+        is True
+    )
 
 
 def test_a_configured_mirror_skips_the_pypi_probe_but_not_the_jit_cache_one(env, monkeypatch):

@@ -2892,9 +2892,7 @@ class VideoBackend:
             return None
         from .diffusion_nvfp4_install import ensure_flashinfer_for_nvfp4
 
-        return ensure_flashinfer_for_nvfp4(
-            device, logger = logger, local_files_only = local_files_only
-        )
+        return ensure_flashinfer_for_nvfp4(device, logger = logger, local_files_only = local_files_only)
 
     def _nvfp4_denoiser_checkpoint_will_load(
         self,
@@ -4458,7 +4456,6 @@ class VideoBackend:
         if fam.modular_workflow:
             if _nvfp4_install_wanted:
                 from .diffusion_nvfp4_install import ensure_flashinfer_for_nvfp4
-
                 _nvfp4_install_outcome = ensure_flashinfer_for_nvfp4(
                     device, logger = logger, local_files_only = local_files_only
                 )

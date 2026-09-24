@@ -6478,7 +6478,9 @@ class DiffusionBackend:
             device_memory_override = device_memory_override,
         )
 
-    def _seed_plan_stays_resident(self, scheme: str, target: Any, *args: Any, **kwargs: Any) -> bool:
+    def _seed_plan_stays_resident(
+        self, scheme: str, target: Any, *args: Any, **kwargs: Any
+    ) -> bool:
         """Whether the seeded plan the loader will re-run after its teardown keeps ``scheme``, asked BEFORE that
         teardown. Live free memory plus everything this process's allocator holds on the device stands in for the
         post-teardown reading: the resident pipeline is freed then, and crediting the rest too can only err toward
