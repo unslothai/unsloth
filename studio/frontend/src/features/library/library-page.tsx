@@ -90,7 +90,7 @@ const EMPTY_COPY: Record<LibraryTab, [title: string, description: string]> = {
   images: ["No images yet", "Images you upload or generate show up here."],
   videos: ["No videos yet", "Videos you upload or generate show up here."],
   audio: ["No audio yet", "Speech you generate on the Audio page shows up here."],
-  models: ["No fine-tuned models yet", "Models you train or export in Studio show up here."],
+  models: ["No fine-tuned models yet", "Models you train or export in Unsloth show up here."],
   all: ["Your library is empty", "Files you upload or create in chats show up here."],
 };
 
