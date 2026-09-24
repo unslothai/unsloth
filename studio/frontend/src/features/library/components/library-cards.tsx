@@ -121,7 +121,7 @@ function CardFrame({
           aria-label={`Select ${label}`}
           className={cn(
             // Level with the date line, as ChatGPT's sits.
-            "absolute bottom-4.5 right-4 size-5 rounded-full border-0 bg-background opacity-0 shadow-sm transition-opacity group-hover/library-card:opacity-100 focus-visible:opacity-100 data-checked:bg-background data-checked:text-foreground dark:bg-neutral-700 dark:data-checked:bg-neutral-200 dark:data-checked:text-neutral-900 [&_svg]:size-3.5",
+            "absolute bottom-4 right-4 size-5 rounded-full border-0 bg-background opacity-0 shadow-sm transition-opacity group-hover/library-card:opacity-100 focus-visible:opacity-100 data-checked:bg-background data-checked:text-foreground dark:bg-neutral-700 dark:data-checked:bg-neutral-200 dark:data-checked:text-neutral-900 [&_svg]:size-3.5",
             selected && "opacity-100",
           )}
         />
@@ -156,7 +156,7 @@ export function ItemCard({ item, showTime = true }: { item: LibraryItem; showTim
       menu={menu}
       className={CARD_SURFACE}
     >
-      <div className="flex aspect-square flex-col px-5 pb-4 pt-5">
+      <div className="flex aspect-square flex-col px-5 pb-3.5 pt-5">
         <p className="line-clamp-2 break-all pr-7 font-medium text-[14px] leading-snug text-foreground">
           {item.name}
         </p>
@@ -164,7 +164,7 @@ export function ItemCard({ item, showTime = true }: { item: LibraryItem; showTim
           <KindIcon item={item} className="size-10" />
         </div>
         {showTime && (
-          <p className="truncate pr-6 text-[13px] text-muted-foreground">
+          <p className="truncate pr-6 text-[12.5px] text-muted-foreground">
             {formatCardTime(item.updatedAt)}
           </p>
         )}
