@@ -2452,17 +2452,17 @@ def test_image_train_rail_matches_create_and_header():
         "the Train scroller's opening tag carries more than its className, which could override "
         "the right padding the rail clamp adds back"
     )
-    # The scroller's right padding where the rail layout applies. A closed list rather than a
-    # Tailwind parser: every class that can move the right edge (p-, px-, pr-, pe-, or any arbitrary
-    # property, under any variant, !important or a typed value) must be a plain pr- step below the
-    # rail breakpoint or the one sm: step the clamp adds back. Anything else (md:, a container
-    # query, an override) could be active at @[50rem] and move the divider, so it fails here.
+    # The scroller's horizontal padding where the rail layout applies. A closed list rather than
+    # a Tailwind parser: every class that can narrow the scroller (p-, px-, pr-, pe-, pl-, ps-, or
+    # any arbitrary property, under any variant, !important or a typed value) must be a plain pr-
+    # step below the rail breakpoint or the one sm: step the clamp adds back. Anything else (left
+    # padding, md:, a container query, an override) moves the divider, so it fails here.
     touches = [
         t
         for t in classes.group(1).split()
         # An arbitrary property (a bracket holding a colon, e.g. [all:unset]) can reset padding
         # under any name, so every one counts; @[50rem]-style variants hold no colon.
-        if re.search(r"(?:^|[:!(\[])(?:p|px|pr|pe)-", t) or re.search(r"\[[^\]]*:[^\]]*\]", t)
+        if re.search(r"(?:^|[:!(\[])(?:p|px|pr|pe|pl|ps)-", t) or re.search(r"\[[^\]]*:[^\]]*\]", t)
     ]
     below = [t for t in touches if re.fullmatch(rf"(?:max-sm:)?pr-{step}", t)]
     at_rail = [t for t in touches if re.fullmatch(rf"sm:pr-{step}", t)]
