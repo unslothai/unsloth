@@ -33571,6 +33571,23 @@ def _validate_anthropic_client_tools(tools) -> None:
             )
 
 
+def _anthropic_response_format(payload) -> Optional[dict]:
+    output_config = payload.output_config if isinstance(payload.output_config, dict) else {}
+    fmt = output_config.get("format")
+    if fmt is None:
+        fmt = (payload.model_extra or {}).get("output_format")
+    if fmt is None:
+        return None
+    if not (
+        isinstance(fmt, dict)
+        and fmt.get("type") == "json_schema"
+        and isinstance(fmt.get("schema"), dict)
+    ):
+        logger.warning("Ignoring unsupported Anthropic output format: %r", fmt)
+        return None
+    return {"type": "json_schema", "json_schema": {"name": "response", "schema": fmt["schema"]}}
+
+
 def _append_to_codex_instructions(messages: list[dict], addition: str) -> list[dict]:
     """Append text to the leading system message, or prepend one.
 
@@ -34499,6 +34516,13 @@ async def anthropic_messages(
     _selects_server_tools = _anthropic_selects_server_tools(
         payload, requested_studio_tools, _has_client_tool
     )
+    response_format = _anthropic_response_format(payload)
+    if response_format is not None and (
+        _selects_server_tools
+        or (_has_client_tool and anthropic_tool_choice_to_openai(payload.tool_choice) != "none")
+    ):
+        logger.warning("Ignoring Anthropic output format: callable tools cannot run under a schema")
+        response_format = None
     _server_tools_requested_pre = _selects_server_tools and not _anthropic_top_level_image
     if _server_tools_requested_pre:
         from core.inference.tools import ALL_TOOLS as _ALL_TOOLS_PRE
@@ -34976,8 +35000,8 @@ async def anthropic_messages(
                 reservation.cancel()
 
     # ── Client-side pass-through path ─────────────────────────
-    if client_tools:
-        openai_tools = openai_client_tools
+    if client_tools or response_format is not None:
+        openai_tools = openai_client_tools if client_tools else []
 
         if payload.stream:
             return await _admitted_anthropic(
@@ -35003,6 +35027,7 @@ async def anthropic_messages(
                     cancel_id = payload.cancel_id,
                     disable_parallel_tool_use = _disable_parallel,
                     auto_heal_tool_calls = payload.auto_heal_tool_calls,
+                    response_format = response_format,
                     parse_think = _think_parsing_expected(llama_backend, payload),
                     **_anthropic_reasoning_args(payload),
                 )
@@ -35029,6 +35054,7 @@ async def anthropic_messages(
                 nudge_tool_calls = payload.nudge_tool_calls,
                 request = request,
                 cancel_event = cancel_event,
+                response_format = response_format,
                 parse_think = _think_parsing_expected(llama_backend, payload),
                 **_anthropic_reasoning_args(payload),
             )
@@ -36258,6 +36284,7 @@ async def _anthropic_passthrough_stream(
     cancel_id = None,
     disable_parallel_tool_use = False,
     auto_heal_tool_calls = None,
+    response_format = None,
     enable_thinking = None,
     reasoning_effort = None,
     preserve_thinking = None,
@@ -36280,6 +36307,7 @@ async def _anthropic_passthrough_stream(
         presence_penalty = presence_penalty,
         seed = seed,
         tool_choice = tool_choice,
+        response_format = response_format,
         chat_template_kwargs = _reasoning_template_kwargs(
             llama_backend, enable_thinking, reasoning_effort, preserve_thinking
         ),
@@ -36587,6 +36615,7 @@ async def _anthropic_passthrough_non_streaming(
     nudge_tool_calls = None,
     request: Optional[Request] = None,
     cancel_event = None,
+    response_format = None,
     enable_thinking = None,
     reasoning_effort = None,
     preserve_thinking = None,
@@ -36614,6 +36643,7 @@ async def _anthropic_passthrough_non_streaming(
         presence_penalty = presence_penalty,
         seed = seed,
         tool_choice = tool_choice,
+        response_format = response_format,
         chat_template_kwargs = _reasoning_template_kwargs(
             llama_backend, enable_thinking, reasoning_effort, preserve_thinking
         ),

@@ -1,0 +1,226 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+import asyncio
+import json
+import os
+import sys
+from types import SimpleNamespace
+
+import httpx
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+import routes.inference as inf_mod
+from core.inference.api_monitor import ApiMonitor
+from core.inference.llama_admission import reset_llama_admission_queues
+from models.inference import AnthropicMessagesRequest
+from routes.inference import anthropic_messages
+from state.tool_policy import reset_tool_policy
+
+_SCHEMA = {
+    "type": "object",
+    "properties": {"name": {"type": "string"}},
+    "required": ["name"],
+    "additionalProperties": False,
+}
+_ANSWER = '{"name": "Ada"}'
+_CLIENT_TOOL = {"name": "lookup", "description": "Look up", "input_schema": {"type": "object"}}
+
+
+@pytest.fixture(autouse = True)
+def _isolate(monkeypatch):
+    reset_tool_policy()
+    reset_llama_admission_queues()
+    monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 64))
+    monkeypatch.setattr(inf_mod, "_CANCEL_REGISTRY", {})
+    monkeypatch.setattr(inf_mod, "current_date_prompt_line", lambda **_kwargs: "")
+    yield
+    reset_llama_admission_queues()
+    reset_tool_policy()
+
+
+class _Request:
+    def __init__(self):
+        self.state = SimpleNamespace()
+        self.url = SimpleNamespace(path = "/v1/messages")
+        self.method = "POST"
+
+    async def is_disconnected(self):
+        return False
+
+
+def _install(monkeypatch, *, supports_tool_passthrough = False):
+    calls = []
+    upstream = []
+
+    def _gen_plain(**kwargs):
+        calls.append(("plain", kwargs))
+        yield "not json"
+
+    def _gen_tools(**kwargs):
+        calls.append(("tools", kwargs))
+        yield {"type": "content", "text": "not json"}
+
+    backend = SimpleNamespace(
+        is_loaded = True,
+        is_vision = False,
+        supports_tools = True,
+        supports_tool_passthrough = supports_tool_passthrough,
+        model_identifier = "test-model",
+        context_length = 2048,
+        count_chat_tokens = lambda *a, **k: 2,
+        generate_chat_completion = _gen_plain,
+        generate_chat_completion_with_tools = _gen_tools,
+        effective_parallel_slots = 1,
+        base_url = "http://llama.structured.test",
+    )
+    monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        upstream.append(body)
+        if body.get("stream"):
+            chunks = [
+                {"choices": [{"delta": {"content": _ANSWER}}]},
+                {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+            ]
+            content = "".join(f"data: {json.dumps(c)}\n\n" for c in chunks) + "data: [DONE]\n\n"
+            return httpx.Response(
+                200, content = content.encode(), headers = {"content-type": "text/event-stream"}
+            )
+        return httpx.Response(
+            200,
+            json = {
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": _ANSWER},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 5},
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        inf_mod.httpx,
+        "AsyncClient",
+        lambda *a, **k: real_client(transport = transport, timeout = k.get("timeout", 60)),
+    )
+    return calls, upstream
+
+
+def _payload(**fields) -> AnthropicMessagesRequest:
+    base = {"max_tokens": 64, "messages": [{"role": "user", "content": "Name a scientist."}]}
+    base.update(fields)
+    return AnthropicMessagesRequest(**base)
+
+
+def _run(payload):
+    async def _go():
+        response = await anthropic_messages(payload, request = _Request(), current_subject = "t")
+        if payload.stream:
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return response.status_code, "".join(chunks)
+        return response.status_code, response.body.decode()
+
+    return asyncio.run(_go())
+
+
+_EXPECTED = {"type": "json_schema", "json_schema": {"name": "response", "schema": _SCHEMA}}
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"output_config": {"format": {"type": "json_schema", "schema": _SCHEMA}}},
+        {"output_format": {"type": "json_schema", "schema": _SCHEMA}},
+    ],
+    ids = ["output_config", "legacy_output_format"],
+)
+def test_format_reaches_llama_server_as_response_format(monkeypatch, fields, stream):
+    calls, upstream = _install(monkeypatch)
+
+    status, body = _run(_payload(stream = stream, **fields))
+
+    assert status == 200
+    assert calls == []
+    [sent] = upstream
+    assert sent["response_format"] == _EXPECTED
+    assert "tools" not in sent
+    if stream:
+        assert json.dumps(_ANSWER)[1:-1] in body
+    else:
+        assert json.loads(json.loads(body)["content"][0]["text"]) == {"name": "Ada"}
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_format_rides_along_with_uncallable_client_tools(monkeypatch, stream):
+    _calls, upstream = _install(monkeypatch, supports_tool_passthrough = True)
+
+    _run(
+        _payload(
+            stream = stream,
+            tools = [_CLIENT_TOOL],
+            tool_choice = {"type": "none"},
+            output_config = {"format": {"type": "json_schema", "schema": _SCHEMA}},
+        )
+    )
+
+    [sent] = upstream
+    assert sent["response_format"] == _EXPECTED
+    assert sent["tool_choice"] == "none"
+
+
+@pytest.mark.parametrize(
+    "fmt",
+    [{"type": "bogus"}, {"type": "json_schema"}, "json_schema"],
+    ids = ["unknown-type", "missing-schema", "not-an-object"],
+)
+def test_unsupported_format_is_ignored_as_before(monkeypatch, fmt):
+    calls, upstream = _install(monkeypatch)
+
+    status, _body = _run(_payload(output_config = {"format": fmt}))
+
+    assert status == 200
+    assert [path for path, _kwargs in calls] == ["plain"]
+    assert upstream == []
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"enable_tools": True, "permission_mode": "off"},
+        {"tools": [_CLIENT_TOOL]},
+        {"tools": [_CLIENT_TOOL], "tool_choice": {"type": "auto"}},
+    ],
+    ids = ["server-tools", "client-tools", "client-tools-auto"],
+)
+def test_format_with_callable_tools_keeps_tools_callable(monkeypatch, fields):
+    calls, upstream = _install(monkeypatch, supports_tool_passthrough = True)
+    payload = _payload(
+        output_config = {"format": {"type": "json_schema", "schema": _SCHEMA}}, **fields
+    )
+
+    status, _body = _run(payload)
+
+    assert status == 200
+    assert calls or upstream
+    assert all("response_format" not in body for body in upstream)
+    assert all(kwargs.get("response_format") is None for _path, kwargs in calls)
+
+
+def test_request_without_format_stays_on_the_plain_path(monkeypatch):
+    calls, upstream = _install(monkeypatch)
+
+    status, _body = _run(_payload(output_config = {"effort": "high"}))
+
+    assert status == 200
+    assert [path for path, _kwargs in calls] == ["plain"]
+    assert upstream == []
