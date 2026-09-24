@@ -2438,8 +2438,8 @@ def test_image_train_rail_matches_create_and_header():
     # `08` still render inside --spacing() but emit no pr- rule, so the two would stop agreeing.
     step = r"(?:0|[1-9]\d*)(?:\.(?:25|5|75))?"
     rail = re.search(
-        r"pl-10 max-sm:pl-5 @\[50rem\]:w-\[min\(var\(--media-rail-width,408px\),"
-        rf"calc\(100%-13rem\+--spacing\(({step})\)\)\)\]",
+        r"(?<=[\s\"])pl-10 max-sm:pl-5 @\[50rem\]:w-\[min\(var\(--media-rail-width,408px\),"
+        rf"calc\(100%-13rem\+--spacing\(({step})\)\)\)\](?=[\s\"])",
         layout,
     )
     assert rail, "the Train rail no longer uses the Create rail's width variable and clamp"
