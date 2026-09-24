@@ -124,11 +124,15 @@ from .diffusion_speed import (
     SPEED_MAX,
     SPEED_OFF,
     apply_speed_optims,
+    auto_dynamic_active,
+    compile_dynamic,
     compile_eligible,
     compiled_shapes_are_static,
+    dynamo_graph_count,
     normalize_speed_mode,
     resolve_speed_mode,
     restore_backend_flags,
+    settle_compile_fallback,
     snapshot_backend_flags,
 )
 from .diffusion_attention import (
@@ -5562,7 +5566,11 @@ class DiffusionBackend:
                                 "fullgraph": cache_engaged is None
                                 and not cache_may_toggle
                                 and plan.offload_policy == OFFLOAD_NONE,
-                                "dynamic": effective_speed != SPEED_MAX,
+                                # The value apply_speed_optims resolves (automatic for torchao weights), so a bundle
+                                # from an explicit-dynamic build is not reused for an automatic-dynamic one.
+                                "dynamic": compile_dynamic(
+                                    getattr(pipe, "transformer", None), effective_speed != SPEED_MAX
+                                ),
                                 "mode": "max-autotune-no-cudagraphs"
                                 if effective_speed == SPEED_MAX
                                 else "default",
@@ -6907,7 +6915,7 @@ class DiffusionBackend:
                     "fullgraph": state.transformer_cache is None
                     and not state.cache_auto
                     and state.offload_policy == OFFLOAD_NONE,
-                    "dynamic": True,
+                    "dynamic": compile_dynamic(getattr(state.pipe, "transformer", None), True),
                     "mode": "default",
                 },
                 logger = logger,
@@ -7416,6 +7424,7 @@ class DiffusionBackend:
                 per_image_seeds: list[int] = []
                 chunk_shapes: list[int] = []
                 pending = list(chunks)
+                graphs_before = dynamo_graph_count()
                 while pending:
                     chunk = pending.pop(0)
                     chunk_kwargs = dict(kwargs)
@@ -7479,6 +7488,11 @@ class DiffusionBackend:
                             len(second_half),
                         )
                         continue
+                    finally:
+                        # A guarded block that fell back to eager (compile failed at its first forward) no longer runs
+                        # compiled: report it on every exit, cancel and error included, so status, LoRA gating and the
+                        # compile-cache shape registry stop treating it as compiled.
+                        settle_compile_fallback(state, state.pipe, logger)
                     if cancel.is_set():
                         raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                     images.extend(out)
@@ -7505,6 +7519,10 @@ class DiffusionBackend:
                             (reg_width, reg_height, int(chunk_batch)),
                             static = static_shapes,
                         )
+                    if auto_dynamic_active(state.pipe) and dynamo_graph_count() > graphs_before:
+                        # Automatic dynamic recompiles on the first new text length at an already-registered
+                        # (width, height, batch): persist those graphs too, or every fresh process pays them again.
+                        compile_cache.mark_recompiled(state.compile_cache_ctx)
                     compile_cache.save_async(state.compile_cache_ctx, logger = logger)
                 except Exception:  # noqa: BLE001 - cache persistence is best-effort
                     pass

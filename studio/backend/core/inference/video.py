@@ -92,6 +92,7 @@ from .diffusion_speed import (
     apply_speed_optims,
     resolve_speed_mode,
     restore_backend_flags,
+    settle_compile_fallback,
     snapshot_backend_flags,
 )
 from .diffusion_auto_policy import (
@@ -6280,6 +6281,11 @@ class VideoBackend:
                         except Exception:  # noqa: BLE001 -- cleanup is best-effort
                             pass
                     raise RuntimeError(VIDEO_CANCELLED_MSG) from None
+                finally:
+                    # A guarded compiled block that failed to build at its first forward now runs eager; the status
+                    # must not keep reporting it compiled (a forced-compile quantised load runs ~30x slower eager),
+                    # whether this render finished, was cancelled or failed.
+                    settle_compile_fallback(state, pipe, logger)
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
 
