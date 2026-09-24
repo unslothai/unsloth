@@ -23,6 +23,8 @@ def client(monkeypatch):
     # Only the Library's own uploads: the other sources read chat, gallery and sandbox stores this
     # test does not seed.
     monkeypatch.setattr(library, "_SOURCES", (library._upload_items,))
+    library.invalidate_listing()
+    library._thumbnail_cache.clear()
     app = FastAPI()
     app.dependency_overrides[get_current_subject] = lambda: "unsloth"
     app.include_router(library_routes.router, prefix = "/api/library")
@@ -1134,3 +1136,54 @@ def test_a_missing_file_manager_is_not_a_missing_file(client, monkeypatch):
     response = client.post("/api/library/items/reveal", json = {"id": note})
     assert response.status_code == 503
     assert response.json()["detail"] == "No file manager is available on this machine"
+
+
+def test_the_slow_sources_are_remembered_briefly_and_forgotten_on_a_write(client, monkeypatch):
+    calls = []
+
+    def walked():
+        calls.append(1)
+        return [
+            library._item(
+                "sandbox:t:a.txt",
+                name = "a.txt",
+                source = "generated",
+                content_type = "text/plain",
+                size_bytes = 1,
+                created_at = 1,
+                file_url = "",
+            )
+        ]
+
+    monkeypatch.setattr(library, "_sandbox_items", walked)
+    remembered = library._remembered("_sandbox_items", 60)
+    monkeypatch.setattr(library, "_SOURCES", (remembered,))
+    client.patch("/api/library/items", json = {"id": "sandbox:t:a.txt", "favorite": True})
+    assert _items(client)[0]["sandbox:t:a.txt"]["favorite"] is True
+    assert _items(client)[0]["sandbox:t:a.txt"]["favorite"] is True
+    assert len(calls) == 1
+    # Another account's listing is never this one's.
+    account = ["other"]
+    monkeypatch.setattr(library, "_account_key", lambda: account[0])
+    _items(client)
+    assert len(calls) == 2
+    _items(client)
+    assert len(calls) == 2
+    library.invalidate_listing()
+    _items(client)
+    assert len(calls) == 3
+
+
+def test_a_new_fine_tune_changes_the_model_stamp(client):
+    import shutil
+
+    from utils.paths.storage_roots import outputs_root
+
+    outputs_root().mkdir(parents = True, exist_ok = True)
+    before = library._model_stamp()
+    run = outputs_root() / "stamp-run"
+    run.mkdir()
+    try:
+        assert library._model_stamp() != before
+    finally:
+        shutil.rmtree(run)

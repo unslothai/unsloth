@@ -25,6 +25,7 @@ import os
 import re
 import stat
 import threading
+import time
 import uuid
 from collections import OrderedDict
 from pathlib import Path
@@ -704,14 +705,77 @@ def upload_content_type(name: str, declared: Optional[str]) -> str:
 
 # ── Public API ───────────────────────────────────────────────────
 
+# Walking every fine-tune and every chat's sandbox is most of a listing's time, and the page lists
+# again after each change. Their answers are remembered a few seconds, per account; a fine-tune's
+# a minute, while its roots and their folders keep their mtimes. The Library's own writes forget them.
+_SANDBOX_TTL_SECONDS = 5.0
+_MODEL_TTL_SECONDS = 60.0
+_source_cache: dict[tuple[str, str], tuple[float, object, list[dict]]] = {}
+_source_cache_lock = threading.Lock()
+_source_generation = 0
+
+
+def invalidate_listing() -> None:
+    global _source_generation
+    with _source_cache_lock:
+        _source_generation += 1
+        _source_cache.clear()
+
+
+def _model_stamp() -> tuple:
+    """The mtimes of the fine-tune roots and the folders in them: a run added, removed or renamed
+    changes one."""
+    from utils.paths.storage_roots import exports_root, outputs_root
+
+    stamp = []
+    for root in (outputs_root(), exports_root()):
+        try:
+            with os.scandir(root) as entries:
+                stamp.append((str(root), os.stat(root).st_mtime_ns))
+                stamp.extend(
+                    (entry.name, entry.stat(follow_symlinks = False).st_mtime_ns)
+                    for entry in entries
+                    if entry.is_dir(follow_symlinks = False)
+                )
+        except OSError:
+            stamp.append((str(root), None))
+    return tuple(sorted(stamp, key = repr))
+
+
+def _remembered(name: str, ttl: float, stamp = None):
+    """The source ``name``, its answer reused for ``ttl`` seconds while ``stamp()`` agrees. By
+    name, so a test that swaps the source swaps what is remembered."""
+
+    def remembered() -> list[dict]:
+        key = (_account_key(), name)
+        now = time.monotonic()
+        current = stamp() if stamp else None
+        with _source_cache_lock:
+            hit = _source_cache.get(key)
+            generation = _source_generation
+        if hit is not None and now - hit[0] < ttl and hit[1] == current:
+            items = hit[2]
+        else:
+            items = globals()[name]()
+            with _source_cache_lock:
+                # A write that forgot the cache while this was built leaves the answer unsaved.
+                if generation == _source_generation:
+                    _source_cache[key] = (now, current, items)
+        # Copies: the overlay is written onto each item.
+        return [dict(item) for item in items]
+
+    remembered.__name__ = name
+    return remembered
+
+
 _SOURCES = (
     _upload_items,
     _attachment_items,
     _image_items,
     _video_items,
     _audio_items,
-    _model_items,
-    _sandbox_items,
+    _remembered("_model_items", _MODEL_TTL_SECONDS, _model_stamp),
+    _remembered("_sandbox_items", _SANDBOX_TTL_SECONDS),
 )
 
 
@@ -1149,6 +1213,7 @@ def delete_item(item_id: str) -> bool:
         raise ValueError("Fine-tuned models are deleted from the model picker.")
     else:
         raise ValueError("Unknown library item")
+    invalidate_listing()
     if deleted:
         library_db.delete_entry(item_id)
     return deleted

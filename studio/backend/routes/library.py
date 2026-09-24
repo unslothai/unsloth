@@ -157,7 +157,10 @@ async def add_item_to_project(
 
     def _copy() -> dict:
         with library.open_item(body.id) as item:
-            return copy_into_project(item.handle, body.projectId, item.folder, item.project_name)
+            copied = copy_into_project(item.handle, body.projectId, item.folder, item.project_name)
+        # The copy is a project file of its own, listed from the next listing on.
+        library.invalidate_listing()
+        return copied
 
     try:
         result = await run_in_threadpool(_copy)
