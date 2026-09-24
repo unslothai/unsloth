@@ -9,8 +9,6 @@ import { create } from "zustand";
 // imports: the chat thread reads it, and must not pull the Library in.
 export interface LibraryChatHandoff {
   files: File[];
-  /** Composer text to start from, e.g. "Create a spreadsheet of ". */
-  text?: string;
 }
 
 interface LibraryChatHandoffState {

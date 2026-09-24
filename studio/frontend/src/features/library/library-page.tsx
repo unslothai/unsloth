@@ -37,7 +37,6 @@ import {
   chatAboutItems,
   chatWithModel,
   downloadLibraryItem,
-  startLibraryChat,
 } from "./actions";
 import type { LibraryFolder, LibraryItem, LibraryUploadBatch } from "./api";
 import { fileKind, hasImagePreview, isFileItem, isModelItem } from "./file-kind";
@@ -98,12 +97,6 @@ const KIND_TABS: Partial<Record<LibraryTab, (item: LibraryItem) => boolean>> = {
 
 // Suggested is the recent slice of everything, not a second copy of All.
 const SUGGESTED_LIMIT = 40;
-
-const NEW_CHAT_PROMPTS: Partial<Record<NewAction, string>> = {
-  document: "Write a document about ",
-  spreadsheet: "Create a spreadsheet of ",
-  presentation: "Create a presentation about ",
-};
 
 const DELETE_NOTES: Record<string, string> = {
   upload: "This permanently deletes the file.",
@@ -378,11 +371,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   }
 
   function handleNew(action: NewAction) {
-    const prompt = NEW_CHAT_PROMPTS[action];
-    if (prompt) {
-      startLibraryChat(navigate, { files: [], text: prompt });
-      return;
-    }
     switch (action) {
       case "note":
         void createNote();
