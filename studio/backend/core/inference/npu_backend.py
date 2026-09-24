@@ -502,6 +502,8 @@ class LemonadeNpuBackend:
         with self._lock:
             self._loading = model_id
             self._load_cancelled.clear()
+            replaced = False
+            loaded = False
             try:
                 model = self._model(model_id)
                 if not model.downloaded:
@@ -512,6 +514,7 @@ class LemonadeNpuBackend:
                 if limit:
                     ctx = min(ctx, limit)
                 server = self._ensure_running()
+                replaced = True
                 self._loaded = None
                 self._raise_if_load_cancelled(model_id)
                 response = server.request(
@@ -529,6 +532,7 @@ class LemonadeNpuBackend:
                 self._loaded = _Loaded(model = model, context_length = resident_ctx)
                 self._state = "ready"
                 self._error = None
+                loaded = True
                 return model
             except LemonadeUnavailable as exc:
                 # cancel_load stops lemond under the in-flight request.
@@ -536,6 +540,9 @@ class LemonadeNpuBackend:
                 raise NpuError(f"Loading {model_id} failed: {exc}") from exc
             finally:
                 self._loading = None
+                if replaced and not loaded and self._server is not None:
+                    # lemond may still hold the previous model, which Studio no longer records.
+                    self._server.stop()
 
     def _raise_if_load_cancelled(self, model_id: str) -> None:
         if self._load_cancelled.is_set():

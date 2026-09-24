@@ -169,6 +169,10 @@ def main() -> None:
                 if name not in downloaded:
                     self._send(404, {"error": {"message": f"Model '{name}' was not found."}})
                     return
+                if name == os.environ.get("FAKE_LEMOND_LOAD_FAILS_FOR"):
+                    # Refused without unloading what is resident.
+                    self._send(500, {"error": {"message": "flm failed to start"}})
+                    return
                 loaded.clear()
                 loaded[name] = {"ctx_size": body.get("ctx_size"), "flm_args": ""}
                 self._send(200, {"status": "success", "model_name": name, "recipe": "flm"})

@@ -297,6 +297,30 @@ def test_readiness_survives_a_restart_only_after_validation(npu, monkeypatch):
     assert nb.LemonadeNpuBackend(root = npu.root).status()["ready"] is False
 
 
+def test_a_failed_replacement_leaves_nothing_on_the_npu(npu, monkeypatch):
+    monkeypatch.setenv("FAKE_LEMOND_DOWNLOADED", '["qwen3-0.6b-FLM", "gemma3-4b-FLM"]')
+    monkeypatch.setenv("FAKE_LEMOND_LOAD_FAILS_FOR", "gemma3-4b-FLM")
+    npu.enable()
+    npu.load("qwen3-0.6b-FLM")
+    process = npu._server._process
+    with pytest.raises(nb.NpuError, match = "flm failed to start"):
+        npu.load("gemma3-4b-FLM")
+    # Studio records no model, so lemond must hold none: it is stopped with the old one.
+    assert not npu.is_loaded
+    assert process.poll() is not None
+    npu.load("qwen3-0.6b-FLM")
+    assert npu.is_loaded
+
+
+def test_a_load_refused_before_touching_the_npu_keeps_the_resident(npu):
+    npu.enable()
+    list(npu.download("qwen3-0.6b-FLM"))
+    npu.load("qwen3-0.6b-FLM")
+    with pytest.raises(nb.NpuError, match = "not downloaded"):
+        npu.load("gemma3-4b-FLM")
+    assert npu.loaded_model.id == "qwen3-0.6b-FLM"
+
+
 def test_a_restarted_runtime_reports_nothing_loaded(npu):
     npu.enable()
     list(npu.download("qwen3-0.6b-FLM"))
