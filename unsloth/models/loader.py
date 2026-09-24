@@ -1910,13 +1910,7 @@ class FastModel(FastBaseModel):
         # Class probes below fetch remote modeling code exactly as the load will.
         _probe_hub_kwargs = dict(
             trust_remote_code = trust_remote_code,
-            revision = (
-                _revision_for_resolved_repo(
-                    base_revision, model_name, old_model_name, mapper_moved_name
-                )
-                if not is_peft
-                else None
-            ),
+            revision = base_revision if not is_peft else None,
             code_revision = kwargs.get("code_revision", None),
             token = token,
             cache_dir = kwargs.get("cache_dir", None),
