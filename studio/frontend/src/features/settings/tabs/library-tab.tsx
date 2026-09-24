@@ -1,6 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -24,6 +34,7 @@ import {
   formatSize,
   getLibraryLocations,
   moveLibraryLocation,
+  parentFolder,
   refreshLibraryStorage,
   revealLibraryLocation,
   useLibrarySettingsStore,
@@ -263,17 +274,31 @@ function LocationsSection() {
   const owner = useIsAccountOwner();
   const [moving, setMoving] = useState(false);
   const [picking, setPicking] = useState<LibraryLocation | null>(null);
+  // A Reset while the folder's drive is away leaves its files there: said before it happens.
+  const [resettingAway, setResettingAway] = useState<LibraryLocation | null>(null);
   const nameOf = (location: LibraryLocation) => t(LOCATION_LABELS[location.key]);
+  // Free space per row only when the folders span more than one disk; one disk is the bar above.
+  const devices = new Set(
+    (locations ?? []).flatMap((location) => (location.device ? [location.device] : [])),
+  );
 
   async function move(location: LibraryLocation, path: string | null) {
     const name = nameOf(location);
     setMoving(true);
+    // A move across drives can take minutes: the toast stays up and Change and Reset stay off
+    // until the server answers.
     const id = toast.loading(t("settings.library.locationMoving", { name }));
     try {
-      setLocations(await moveLibraryLocation(location.key, path));
+      const result = await moveLibraryLocation(location.key, path);
+      setLocations(result.locations);
       // The files may now sit on another disk, which the storage bar measures.
       refreshLibraryStorage();
-      toast.success(t("settings.library.locationMoved", { name }), { id });
+      toast.success(t("settings.library.locationMoved", { name }), {
+        id,
+        description: result.leftBehind
+          ? t("settings.library.locationLeftBehind", { path: result.leftBehind })
+          : undefined,
+      });
     } catch (error) {
       toast.error(t("settings.library.locationMoveFailed", { name }), {
         id,
@@ -297,9 +322,25 @@ function LocationsSection() {
             key={location.key}
             label={t(LOCATION_LABELS[location.key])}
             description={
-              <span className="block truncate font-mono text-[11px]" title={location.path}>
-                {location.path}
-              </span>
+              <>
+                <span className="block truncate font-mono text-[11px]" title={location.path}>
+                  {location.path}
+                </span>
+                {location.available === false ? (
+                  <span className="block text-xs text-destructive">
+                    {t("settings.library.locationUnavailable")}
+                  </span>
+                ) : (
+                  devices.size > 1 &&
+                  location.disk && (
+                    <span className="block text-xs">
+                      {t("settings.library.locationFree", {
+                        free: formatSize(location.disk.freeBytes) ?? "",
+                      })}
+                    </span>
+                  )
+                )}
+              </>
             }
           >
             <div className="flex shrink-0 items-center gap-2">
@@ -308,7 +349,11 @@ function LocationsSection() {
                   variant="outline"
                   size="sm"
                   disabled={moving}
-                  onClick={() => void move(location, null)}
+                  onClick={() =>
+                    location.available === false
+                      ? setResettingAway(location)
+                      : void move(location, null)
+                  }
                 >
                   {t("settings.library.locationReset")}
                 </Button>
@@ -339,12 +384,42 @@ function LocationsSection() {
           if (picking) void move(picking, path);
         }}
         // Start beside the current folder, where a new one usually goes.
-        initialPath={picking?.path.replace(/[\\/][^\\/]*$/, "") || undefined}
+        initialPath={picking ? parentFolder(picking.path) : undefined}
         title={picking ? t("settings.library.locationMoveTitle", { name: nameOf(picking) }) : ""}
         description={t("settings.library.locationMoveDescription")}
         confirmLabel={t("settings.library.locationMoveAction")}
         showModelHints={false}
       />
+      <AlertDialog
+        open={resettingAway !== null}
+        onOpenChange={(open) => !open && setResettingAway(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="break-words">
+              {t("settings.library.locationResetUnavailableTitle", {
+                name: resettingAway ? nameOf(resettingAway) : "",
+              })}
+            </AlertDialogTitle>
+            <AlertDialogDescription className="break-words">
+              {t("settings.library.locationResetUnavailableDescription", {
+                path: resettingAway?.path ?? "",
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (resettingAway) void move(resettingAway, null);
+                setResettingAway(null);
+              }}
+            >
+              {t("settings.library.locationReset")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </SettingsSection>
   );
 }

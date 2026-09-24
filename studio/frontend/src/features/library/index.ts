@@ -33,9 +33,11 @@ export {
   useLibraryStorage,
 } from "./storage";
 export { formatSize } from "./format";
+export { parentFolder } from "./paths";
 export { LibraryStorageBar } from "./components/storage-bar";
 export {
   type LibraryLocation,
+  type LibraryLocationMove,
   getLibraryLocations,
   moveLibraryLocation,
   revealLibraryLocation,

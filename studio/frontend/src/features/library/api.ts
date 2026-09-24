@@ -159,6 +159,12 @@ export interface LibraryLocation {
   movable?: boolean;
   /** Already moved away from the default. */
   custom?: boolean;
+  /** False while a chosen folder's drive is not connected. */
+  available?: boolean;
+  /** Space on the disk holding the folder; null while it cannot be read. */
+  disk?: { totalBytes: number; freeBytes: number } | null;
+  /** Tells folders on one disk from folders on another. */
+  device?: string | null;
 }
 
 export async function getLibraryLocations(): Promise<LibraryLocation[]> {
@@ -170,15 +176,25 @@ export async function revealLibraryLocation(key: LibraryLocation["key"]): Promis
   await ensureOk(await sendWrite("/api/library/locations/reveal", jsonInit("POST", { key })));
 }
 
-/** Move one kind of file, files and all; `path` null moves it back to the default. */
+export interface LibraryLocationMove {
+  locations: LibraryLocation[];
+  /** A Reset let go of a folder on a drive that is not connected: its files are still there. */
+  leftBehind: string | null;
+}
+
+/**
+ * Move one kind of file, files and all; `path` null moves it back to the default. No time limit:
+ * the answer comes once every file has moved, which across drives can take a while.
+ */
 export async function moveLibraryLocation(
   key: LibraryLocation["key"],
   path: string | null,
-): Promise<LibraryLocation[]> {
+): Promise<LibraryLocationMove> {
   const response = await ensureOk(
     await sendWrite("/api/library/locations/move", jsonInit("POST", { key, path })),
   );
-  return (await response.json()).locations;
+  const body = await response.json();
+  return { locations: body.locations, leftBehind: body.leftBehind ?? null };
 }
 
 export async function deleteLibraryItem(id: string): Promise<void> {
