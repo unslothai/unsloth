@@ -29,7 +29,6 @@ _cache: dict[str, dict[str, str]] = {}
 
 def _db_key() -> str:
     from utils.paths.storage_roots import studio_db_path
-
     return str(studio_db_path())
 
 
