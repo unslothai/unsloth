@@ -200,7 +200,7 @@ function SectionHeading({ children }: { children: ReactNode }) {
 
 function LoadingGrid() {
   return (
-    <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+    <div className="mt-6 grid grid-cols-2 gap-5 sm:grid-cols-3 lg:grid-cols-5">
       {Array.from({ length: 10 }, (_, index) => (
         <Skeleton key={index} className="aspect-square rounded-xl" />
       ))}
