@@ -497,7 +497,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   }
 
   const title = folderId ? (
-    <nav className="flex min-w-0 items-center gap-2 text-ui-25 font-semibold tracking-[-0.028em]" aria-label="Breadcrumb">
+    <nav className="flex min-w-0 items-center gap-2 text-[calc(1.6875rem*var(--ui-font-scale,1))] font-semibold tracking-[-0.028em]" aria-label="Breadcrumb">
       <button
         type="button"
         onClick={() => go({ show: "folders" })}
@@ -523,7 +523,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       ))}
     </nav>
   ) : (
-    <h1 className="text-ui-25 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground">
+    <h1 className="text-[calc(1.6875rem*var(--ui-font-scale,1))] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground">
       Library
     </h1>
   );
