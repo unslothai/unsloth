@@ -141,6 +141,16 @@ def test_route_saves_and_reports(client, store):
     assert os.environ["HF_DATASETS_SERVER"] == MIRROR
 
 
+def test_only_the_owner_reads_the_endpoint(client, monkeypatch):
+    from fastapi import HTTPException
+
+    async def refuse():
+        raise HTTPException(status_code = 403)
+
+    monkeypatch.setattr(settings.policy, "require_owner", refuse)
+    assert client.get("/hub").status_code == 403
+
+
 @pytest.mark.parametrize(
     "raw, canonical",
     [("", ""), (" hf-mirror.com/ ", MIRROR), ("http://localhost:8080", "http://localhost:8080")],

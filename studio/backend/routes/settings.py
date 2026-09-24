@@ -1352,7 +1352,8 @@ def _hub_settings_response(settings: HubSettings) -> HubSettingsResponse:
     )
 
 
-@_shared_settings_router.get("/hub", response_model = HubSettingsResponse)
+# Owner only: the endpoint can name a private address that other accounts' clients must not learn.
+@_owner_settings_router.get("/hub", response_model = HubSettingsResponse)
 def get_hub(current_subject: str = Depends(get_current_subject)) -> HubSettingsResponse:
     return _hub_settings_response(get_hub_settings())
 
