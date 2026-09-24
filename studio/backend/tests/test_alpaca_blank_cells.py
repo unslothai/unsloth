@@ -12,17 +12,21 @@ class _Tokenizer:
     eos_token = "</s>"
 
 
-def _format(dataset):
+def _format_result(dataset, tokenizer = None):
     result = format_and_template_dataset(
         dataset,
         model_name = "Qwen2ForCausalLM",
-        tokenizer = _Tokenizer(),
+        tokenizer = tokenizer or _Tokenizer(),
         batch_size = 2,
         num_proc = 1,
     )
     assert result["success"] is True
     assert result["final_format"] == "alpaca"
-    return list(result["dataset"]["text"])
+    return result
+
+
+def _format(dataset, tokenizer = None):
+    return list(_format_result(dataset, tokenizer)["dataset"]["text"])
 
 
 def test_missing_alpaca_values_are_formatted_as_empty_text():
@@ -53,16 +57,31 @@ def test_blank_csv_cells_are_not_trained_as_none(tmp_path):
     assert all("None" not in text for text in texts)
 
 
-def test_alpaca_rows_end_with_exactly_one_eos():
-    dataset = Dataset.from_dict(
-        {"instruction": ["Add 2+2", "Echo"], "input": ["", ""], "output": ["4", "done</s>"]}
-    )
+def test_alpaca_rows_do_not_get_a_second_eos():
+    dataset = Dataset.from_dict({"instruction": ["Echo"], "input": [""], "output": ["done</s>"]})
 
-    texts = _format(dataset)
+    assert _format(dataset)[0].endswith("### Response:\ndone</s>")
 
-    assert texts[0].endswith("### Response:\n4</s>")
-    assert texts[1].endswith("### Response:\ndone</s>")
-    assert not texts[1].endswith("</s></s>")
+
+def test_alpaca_rows_take_eos_from_a_processors_tokenizer():
+    class _Processor:
+        chat_template = "{{ messages }}"
+        tokenizer = _Tokenizer()
+
+    dataset = Dataset.from_dict({"instruction": ["Add 2+2"], "input": [""], "output": ["4"]})
+
+    assert _format(dataset, _Processor())[0].endswith("### Response:\n4</s>")
+
+
+def test_alpaca_warns_when_tokenizer_has_no_eos():
+    class _NoEosTokenizer:
+        chat_template = "{{ messages }}"
+
+    dataset = Dataset.from_dict({"instruction": ["Add 2+2"], "input": [""], "output": ["4"]})
+    result = _format_result(dataset, _NoEosTokenizer())
+
+    assert result["dataset"][0]["text"].endswith("### Response:\n4")
+    assert any("no eos_token" in warning for warning in result["warnings"])
 
 
 def test_blank_csv_cells_are_not_converted_to_none_for_chatml(tmp_path):
