@@ -266,6 +266,28 @@ def test_one_repetition_cannot_be_its_own_partner():
     assert U.swapped_between_arms(results, 2) == frozenset()
 
 
+def test_one_reversal_excuses_only_one_repetition_of_the_other_direction():
+    """Three repetitions of (R1, R2) and one of (R2, R1): one pair is a swap, and the two
+    same-direction repetitions left over are still a difference seen twice."""
+    results = [
+        ("delete_message", "s", f"r100K rep{n}", {"verdict": P.DIFFER, "outcomes": outcomes})
+        for n, outcomes in enumerate([("R1", "R2"), ("R1", "R2"), ("R1", "R2"), ("R2", "R1")])
+    ]
+    swapped = U.swapped_between_arms(results, 2)
+    assert len(swapped) == 2 and 3 in swapped
+    left = [results[i] for i in range(len(results)) if i not in swapped]
+    firm, weak = U.corroborated([(a, s, c, r) for a, s, c, r in left], 2)
+    assert len({e[2] for e in firm}) == 2 and not weak
+
+
+def test_two_reversals_against_two_forwards_are_all_swaps():
+    results = [
+        ("delete_message", "s", f"r100K rep{n}", {"verdict": P.DIFFER, "outcomes": outcomes})
+        for n, outcomes in enumerate([("R1", "R2"), ("R2", "R1"), ("R1", "R2"), ("R2", "R1")])
+    ]
+    assert U.swapped_between_arms(results, 2) == frozenset(range(4))
+
+
 # ── (d) payloads without what the swap needs are scored as before ────────────────────────────
 
 

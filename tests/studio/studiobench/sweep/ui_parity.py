@@ -1663,7 +1663,8 @@ def swapped_between_arms(results: list[tuple], min_reps: int) -> frozenset[int]:
 
     Off at `min_reps <= 1`, where every difference counts by request. A repetition is its cell
     label, as in `corroborated`, so a pair cannot excuse itself and one repetition recorded in two
-    shards cannot supply its own partner.
+    shards cannot supply its own partner. Pairs are matched ONE-TO-ONE: a reversal excuses exactly
+    one observation in the other direction, and whatever is left is scored as before.
     """
     if min_reps <= 1:
         return frozenset()
@@ -1675,11 +1676,20 @@ def swapped_between_arms(results: list[tuple], min_reps: int) -> frozenset[int]:
         if base is None or treat is None or base == treat:
             continue
         groups[(action, rung_of_cell(cell))].append((i, cell, base, treat))
+    # ONE-TO-ONE. Each reversed observation excuses one forward observation and is used up, so
+    # three repetitions of (R1, R2) against one (R2, R1) leave two (R1, R2) for `corroborated` to
+    # count. Matching on existence alone let one reversal excuse every same-direction repetition.
     out: set[int] = set()
     for group in groups.values():
-        for i, cell, base, treat in group:
-            if any(c != cell and (b, t) == (treat, base) for _j, c, b, t in group):
-                out.add(i)
+        used: set[int] = set()
+        for i, cell, base, treat in sorted(group, key = lambda e: (e[1], e[0])):
+            if i in used:
+                continue
+            for j, c, b, t in sorted(group, key = lambda e: (e[1], e[0])):
+                if j not in used and j != i and c != cell and (b, t) == (treat, base):
+                    used.update((i, j))
+                    break
+        out |= used
     return frozenset(out)
 
 
