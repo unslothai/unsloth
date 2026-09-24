@@ -546,7 +546,10 @@ def test_every_family_registered_nvfp4_repo_is_recognised_by_the_table():
     from core.inference.video_families import _FAMILIES
 
     registered = {
-        repo.lower() for fam in _FAMILIES for scheme, repo in fam.prequant_repos if scheme == "nvfp4"
+        repo.lower()
+        for fam in _FAMILIES
+        for scheme, repo in fam.prequant_repos
+        if scheme == "nvfp4"
     }
     assert registered and registered <= hosted_nvfp4_repo_ids()
 
@@ -572,7 +575,6 @@ def test_a_local_dir_whose_metadata_declares_nvfp4_is_refused(tmp_path):
 
 def test_the_routes_400_an_nvfp4_checkpoint_as_the_model(tmp_path, monkeypatch):
     from fastapi import HTTPException
-
     folder = _prequant_dir(tmp_path, "local-z-image", "nvfp4")
     for image_path, video_path in (
         ("unsloth/Z-Image-Turbo-NVFP4", "unsloth/Wan2.2-TI2V-5B-NVFP4"),
