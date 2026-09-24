@@ -166,7 +166,6 @@ if (typeof window !== "undefined") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
     refreshGeneration += 1;
     useLibraryStore.setState({ items: [], folders: [], status: "idle", error: null });
-    useLibraryFavoritesStore.setState({ ids: new Set() });
     clearCachedObjectUrls();
   });
 }
