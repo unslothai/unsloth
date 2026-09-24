@@ -471,6 +471,17 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       case "image":
         void navigate({ to: "/images" });
         break;
+      case "video":
+        void navigate({ to: "/video" });
+        break;
+      case "audio":
+        // Speak mode, where generated clips are made and listed.
+        void navigate({ to: "/audio", search: { task: "text-to-speech" } });
+        break;
+      case "model":
+        // A model is made by training one.
+        void navigate({ to: "/studio" });
+        break;
       case "folder":
         setNameDialog({ mode: "create", parentId: folderId });
         break;
@@ -877,7 +888,8 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               type="button"
               disabled={selectedFiles().length === 0}
               onClick={() => void bulkDownload()}
-              className="flex h-9 items-center gap-2 rounded-full border border-border px-4 text-sm font-medium outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+              // Dark mode: borderless, filled like the model picker's search field.
+              className="flex h-9 items-center gap-2 rounded-full border border-border px-4 text-sm font-medium outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 dark:border-transparent dark:bg-accent/60 dark:hover:bg-accent"
             >
               <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4" />
               Download
@@ -896,7 +908,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
                 <button
                   type="button"
                   aria-label="More actions"
-                  className="flex size-9 items-center justify-center rounded-full bg-sidebar-accent outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+                  className="flex size-9 items-center justify-center rounded-full outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-sidebar-accent"
                 >
                   <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-5" />
                 </button>

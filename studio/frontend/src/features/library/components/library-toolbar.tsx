@@ -27,7 +27,7 @@ import {
   Tick02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
-import { SheetIcon } from "@/lib/hugeicons-derived";
+import { SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ChevronDownIcon } from "lucide-react";
@@ -142,12 +142,18 @@ function FilterMenu({
 export type NewAction =
   | "note"
   | "image"
+  | "video"
+  | "audio"
+  | "model"
   | "folder"
   | "upload";
 
 const NEW_OPTIONS: { value: NewAction; label: string; icon: IconSvgElement }[] = [
   { value: "note", label: "Note", icon: Note01Icon },
   { value: "image", label: "Image", icon: Image02Icon },
+  { value: "video", label: "Video", icon: FlimSlateIcon },
+  { value: "audio", label: "Audio", icon: AudioWave01Icon },
+  { value: "model", label: "Model", icon: TestTubeOutlineIcon },
   { value: "folder", label: "Folder", icon: Folder01Icon },
 ];
 
