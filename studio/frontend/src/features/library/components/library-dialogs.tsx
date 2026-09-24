@@ -144,3 +144,38 @@ export function ConfirmDeleteDialog({
     </AlertDialog>
   );
 }
+
+/** A note that could not be saved on the way out: try again, keep editing, or close without it. */
+export function UnsavedChangesDialog({
+  error,
+  onRetry,
+  onDiscard,
+  onKeepEditing,
+}: {
+  /** Why the save failed; the dialog shows while this is set. */
+  error: string | null;
+  onRetry: () => void;
+  onDiscard: () => void;
+  onKeepEditing: () => void;
+}) {
+  const reason = error && !/[.!?]$/.test(error) ? `${error}.` : error;
+  return (
+    <AlertDialog open={error !== null} onOpenChange={(open) => !open && onKeepEditing()}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Your changes weren't saved</AlertDialogTitle>
+          <AlertDialogDescription>
+            {reason} Try again, or discard your changes to close the file.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Keep editing</AlertDialogCancel>
+          <AlertDialogAction variant="destructive" onClick={onDiscard}>
+            Discard changes
+          </AlertDialogAction>
+          <AlertDialogAction onClick={onRetry}>Try again</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}

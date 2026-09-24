@@ -1786,8 +1786,8 @@ export function AudioPage({
   ]);
 
   // A Library "View in Audio" link arrives as ?task=text-to-speech&item=: the task switches to Speak
-  // (and clears the query), this selects the clip, paging back until it loads. A counter, not
-  // effect cleanup, retires a lookup: clearing the query must not cancel its own.
+  // (and clears its part of the query), this selects the clip, paging back until it loads. A
+  // counter, not effect cleanup, retires a lookup: clearing the query must not cancel its own.
   const routedItem = active ? routeSearch.item : undefined;
   const routedLookup = useRef(0);
   // Leaving the page does retire it: hidden pages stay mounted and would keep paging.
@@ -1797,7 +1797,14 @@ export function AudioPage({
   useEffect(() => {
     if (!routedItem) return;
     const lookup = ++routedLookup.current;
-    if (!routeSearch.task) void navigateSelf({ to: "/audio", search: {}, replace: true });
+    // The item leaves the URL at once, whoever clears the task: a mode switch refused while the
+    // page is busy keeps ?task= for its retry, and a lingering ?item= would start this lookup
+    // over whenever these callbacks change.
+    void navigateSelf({
+      to: "/audio",
+      search: (prev) => ({ ...prev, item: undefined }),
+      replace: true,
+    });
     void loadGalleryUntil({
       has: () => galleryCache.clips.some((clip) => clip.id === routedItem),
       count: () => galleryCache.clips.length,
@@ -1811,8 +1818,6 @@ export function AudioPage({
       if (found) selectClip(routedItem);
       else toast("Could not find this clip", { description: "It may be archived or deleted." });
     });
-    // The task only decides who clears the query; a change to it is not a new link.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routedItem, navigateSelf, refreshGallery, loadMore, selectClip]);
 
 

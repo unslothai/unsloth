@@ -4,6 +4,8 @@
 import { authFetch, getAuthSessionEpoch, getAuthToken } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import { libraryFileName, libraryFileType } from "./file-name";
+import { type DecodedNote, decodeNote } from "./note-text";
 
 export type LibrarySource = "uploaded" | "generated";
 
@@ -254,12 +256,29 @@ export async function deleteLibraryFolder(id: string): Promise<void> {
   );
 }
 
-/** The item's bytes, typed as what they are: sources serve most files as opaque downloads. */
-export async function fetchLibraryBlob(item: LibraryItem): Promise<Blob> {
+/** The item's bytes as `type`: sources serve most files as opaque downloads, so the caller says
+ *  what they are (see file-name.ts for the rules). */
+export async function fetchLibraryBlob(item: LibraryItem, type: string): Promise<Blob> {
   const response = await ensureOk(await authFetch(item.fileUrl));
   const blob = await response.blob();
-  const type = item.textOnly ? "text/plain" : item.contentType;
   return blob.type === type ? blob : new Blob([blob], { type });
+}
+
+/**
+ * A short-lived signed link a <video> can stream a Video page clip from, with range requests,
+ * instead of buffering the whole file. Minted by the Video gallery's own route (bearer-gated to
+ * mint, HMAC to use), so no long-lived token ends up in a URL.
+ */
+export async function fetchLibraryVideoUrl(item: LibraryItem): Promise<string> {
+  const id = item.id.slice(item.id.indexOf(":") + 1);
+  const response = await ensureOk(
+    await authFetch(`/api/inference/video/gallery/${encodeURIComponent(id)}/signed-url`),
+  );
+  const { url } = (await response.json()) as { url?: string };
+  if (!url) throw new Error("The server returned no video link.");
+  // Absolute, since the element fetches it without authFetch, and under Tauri a relative path
+  // resolves against the webview.
+  return apiUrl(url);
 }
 
 /** A video item's first frame, drawn by the backend. The version keeps a stale frame out of caches. */
@@ -269,37 +288,43 @@ export async function fetchLibraryThumbnail(item: LibraryItem): Promise<Blob> {
   return response.blob();
 }
 
-/** Up to `maxBytes` of the item decoded as text; the rest of the body is never read. */
-export async function fetchLibraryTextPrefix(
+/** Up to `maxBytes` of the item, decoded as its BOM (or UTF-8) says; the rest is never read. */
+export async function fetchLibraryText(
   item: LibraryItem,
   maxBytes: number,
-): Promise<{ text: string; truncated: boolean }> {
+): Promise<DecodedNote & { truncated: boolean }> {
   const response = await ensureOk(await authFetch(item.fileUrl));
   const reader = response.body?.getReader();
   if (!reader) {
     const bytes = new Uint8Array(await response.arrayBuffer());
-    return {
-      text: new TextDecoder().decode(bytes.subarray(0, maxBytes)),
-      truncated: bytes.length > maxBytes,
-    };
+    const truncated = bytes.length > maxBytes;
+    return { ...decodeNote(bytes.subarray(0, maxBytes), truncated), truncated };
   }
-  const decoder = new TextDecoder();
-  let text = "";
+  const chunks: Uint8Array[] = [];
   let read = 0;
+  let truncated = false;
   for (;;) {
     const { done, value } = await reader.read();
-    if (done) return { text: text + decoder.decode(), truncated: false };
+    if (done) break;
     if (read + value.length > maxBytes) {
-      text += decoder.decode(value.subarray(0, maxBytes - read), { stream: true });
+      chunks.push(value.subarray(0, maxBytes - read));
+      read = maxBytes;
+      truncated = true;
       void reader.cancel();
-      return { text: text + decoder.decode(), truncated: true };
+      break;
     }
+    chunks.push(value);
     read += value.length;
-    text += decoder.decode(value, { stream: true });
   }
+  const bytes = new Uint8Array(read);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return { ...decodeNote(bytes, truncated), truncated };
 }
 
-/** What Download and "Chat about this" hand over. Text-only chat uploads say so in the name. */
 /**
  * An absolute URL for the item's bytes that carries its own token, for the desktop app's native
  * save, which sends no header. The HEAD goes through authFetch first, which refreshes an expired
@@ -312,8 +337,9 @@ export async function libraryDownloadUrl(item: LibraryItem): Promise<string> {
   return apiUrl(token ? `${path}&token=${encodeURIComponent(token)}` : path);
 }
 
+/** What Download and "Chat about this" hand over: a name safe on any OS, typed for the composer. */
 export async function libraryItemFile(item: LibraryItem): Promise<File> {
-  const blob = await fetchLibraryBlob(item);
-  const name = item.textOnly ? `${item.name}.txt` : item.name;
-  return new File([blob], name, { type: blob.type });
+  const name = libraryFileName(item);
+  const type = libraryFileType(name, item.textOnly ? "text/plain" : item.contentType);
+  return new File([await fetchLibraryBlob(item, type)], name, { type });
 }

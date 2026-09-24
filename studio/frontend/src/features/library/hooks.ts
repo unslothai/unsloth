@@ -2,99 +2,79 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { type RefObject, useEffect, useState } from "react";
-import { type LibraryItem, fetchLibraryBlob, fetchLibraryThumbnail } from "./api";
+import {
+  type LibraryItem,
+  fetchLibraryBlob,
+  fetchLibraryThumbnail,
+  fetchLibraryVideoUrl,
+} from "./api";
+import { type EmbeddedBody, embeddedBlobType } from "./file-name";
+import { acquireObjectUrl } from "./object-url-cache";
 
-// Thumbnails are auth-fetched blobs, so the browser cache cannot hold them. Keep the most recent
-// ones as object URLs, within a count and a byte budget; a revisit of the page then paints
-// instantly instead of refetching.
-const MAX_CACHED_URLS = 300;
-const MAX_CACHED_BYTES = 128 * 1024 * 1024;
-const objectUrls = new Map<string, { url: Promise<string>; bytes: number }>();
-let cachedBytes = 0;
+// Past this a preview is not buffered into memory as a blob: the file is a download away.
+export const MAX_BUFFERED_PREVIEW_BYTES = 256 * 1024 * 1024;
 
-/** Drop every cached URL, so a sign-out leaves nothing of the last account's files. */
-export function clearCachedObjectUrls(): void {
-  for (const { url } of objectUrls.values()) {
-    void url.then((stale) => URL.revokeObjectURL(stale), () => {});
-  }
-  objectUrls.clear();
-  cachedBytes = 0;
-}
+type PreviewSource = { url: string; revoke: boolean };
 
-function evict(key: string): void {
-  const entry = objectUrls.get(key);
-  if (!entry) return;
-  objectUrls.delete(key);
-  cachedBytes -= entry.bytes;
-  void entry.url.then((stale) => URL.revokeObjectURL(stale), () => {});
-}
-
-function cachedObjectUrl(key: string, load: () => Promise<Blob>): Promise<string> {
-  const hit = objectUrls.get(key);
-  if (hit) {
-    // Most recently used goes last, so eviction takes what has gone unseen longest.
-    objectUrls.delete(key);
-    objectUrls.set(key, hit);
-    return hit.url;
-  }
-  const entry = { url: Promise.resolve(""), bytes: 0 };
-  entry.url = load().then((blob) => {
-    if (objectUrls.get(key) === entry) {
-      entry.bytes = blob.size;
-      cachedBytes += blob.size;
-      for (const oldest of objectUrls.keys()) {
-        if (cachedBytes <= MAX_CACHED_BYTES || oldest === key) break;
-        evict(oldest);
-      }
+/**
+ * Where the preview element loads the item from. A Video page clip streams from a short-lived
+ * signed link, so it plays and seeks without the whole file in memory first. Everything else is
+ * auth-fetched into a blob typed for the element it goes in (see embeddedBlobType); a file too
+ * large for that refuses rather than pinning hundreds of MB.
+ */
+async function previewSource(item: LibraryItem, body: EmbeddedBody): Promise<PreviewSource> {
+  if (body === "video" && item.id.startsWith("video:")) {
+    try {
+      return { url: await fetchLibraryVideoUrl(item), revoke: false };
+    } catch {
+      // An older server, or a clip it no longer lists: the blob below still plays it.
     }
-    return URL.createObjectURL(blob);
-  });
-  entry.url.catch(() => {
-    if (objectUrls.get(key) === entry) evict(key);
-  });
-  objectUrls.set(key, entry);
-  if (objectUrls.size > MAX_CACHED_URLS) evict(objectUrls.keys().next().value!);
-  return entry.url;
+  }
+  if (item.sizeBytes !== null && item.sizeBytes > MAX_BUFFERED_PREVIEW_BYTES) {
+    throw new Error("This file is too large to preview here. Download it to open it.");
+  }
+  const blob = await fetchLibraryBlob(item, embeddedBlobType(body, item.contentType));
+  return { url: URL.createObjectURL(blob), revoke: true };
 }
 
 /**
- * Object URL for an item's bytes once `enabled`, null until then; `error` once it cannot load. Not
- * cached: a preview's file is released as soon as it closes.
+ * A URL the preview's `body` element can load the item from once `enabled`, null until then;
+ * `error` once it cannot load. Not cached: a preview's file is released as soon as it closes.
  */
-export function useLibraryObjectUrl(
+export function useLibraryPreviewUrl(
   item: LibraryItem,
-  enabled: boolean,
+  body: EmbeddedBody | null,
 ): { url: string | null; error: string | null } {
-  const key = `${item.id}@${item.updatedAt}`;
+  const key = `${item.id}@${item.updatedAt}:${body ?? ""}`;
   const [state, setState] = useState<{
     key: string;
     url: string | null;
     error?: string;
   } | null>(null);
   useEffect(() => {
-    if (!enabled) return;
+    if (!body) return;
     let cancelled = false;
-    const next = fetchLibraryBlob(item).then((blob) => URL.createObjectURL(blob));
+    const next = previewSource(item, body);
     next.then(
-      (url) => !cancelled && setState({ key, url }),
+      ({ url }) => !cancelled && setState({ key, url }),
       (err: unknown) =>
         !cancelled &&
         setState({ key, url: null, error: err instanceof Error ? err.message : String(err) }),
     );
     return () => {
       cancelled = true;
-      void next.then((url) => URL.revokeObjectURL(url), () => {});
+      void next.then(({ url, revoke }) => revoke && URL.revokeObjectURL(url), () => {});
     };
     // `key` carries the item's identity and version; the object itself changes on every refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, enabled]);
-  const current = enabled && state?.key === key ? state : null;
+  }, [key]);
+  const current = body && state?.key === key ? state : null;
   return { url: current?.url ?? null, error: current?.error ?? null };
 }
 
 /** A card's picture once `enabled`: a bounded thumbnail of the image, or a video's first frame,
- *  never the original, whose decoded size has no limit. Cached; `failed` once it cannot load, so
- *  the card can fall back to the type icon. */
+ *  never the original, whose decoded size has no limit. Cached, and held while the card shows it;
+ *  `failed` once it cannot load, so the card can fall back to the type icon. */
 export function useLibraryThumbnail(
   item: LibraryItem,
   enabled: boolean,
@@ -104,13 +84,14 @@ export function useLibraryThumbnail(
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
-    const next = cachedObjectUrl(key, () => fetchLibraryThumbnail(item));
+    const { url: next, release } = acquireObjectUrl(key, () => fetchLibraryThumbnail(item));
     next.then(
       (url) => !cancelled && setState({ key, url }),
       () => !cancelled && setState({ key, url: null }),
     );
     return () => {
       cancelled = true;
+      release();
     };
     // `key` carries the item's identity and version; the object itself changes on every refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps

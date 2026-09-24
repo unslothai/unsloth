@@ -19,7 +19,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
   type LibraryItem,
   addLibraryItemToProject,
-  fetchLibraryTextPrefix,
+  fetchLibraryText,
   writeLibraryText,
 } from "../api";
 import {
@@ -30,9 +30,12 @@ import {
   modelLabel,
 } from "../file-kind";
 import { formatCardTime, formatSize } from "../format";
-import { useLibraryObjectUrl } from "../hooks";
+import type { EmbeddedBody } from "../file-name";
+import { useLibraryPreviewUrl } from "../hooks";
+import { type NoteFormat, encodeNote } from "../note-text";
 import { canReveal, revealInFolder, useRevealLabel } from "../reveal";
 import { KindIcon } from "./library-cards";
+import { UnsavedChangesDialog } from "./library-dialogs";
 
 // Web pages zoom like a browser tab: the page reflows at the new size.
 const PAGE_SCALES = [0.5, 0.75, 1, 1.25, 1.5, 2];
@@ -84,22 +87,36 @@ function isEditable(item: LibraryItem): boolean {
   return item.id.startsWith("upload:") && bodyFor(item) === "text";
 }
 
-/** The item's text, or null while it loads. Keyed by version so a stale result never shows. */
-function useItemText(item: LibraryItem, enabled: boolean) {
-  const key = `${item.id}@${item.updatedAt}`;
-  const [state, setState] = useState<{
-    key: string;
-    text?: string;
-    truncated?: boolean;
-    error?: string;
-  } | null>(null);
+interface LoadedText {
+  key: string;
+  itemId: string;
+  text?: string;
+  truncated?: boolean;
+  format?: NoteFormat;
+  readOnlyReason?: string | null;
+  error?: string;
+}
+
+/**
+ * The item's text, or null while it first loads. A newer version of the same item keeps showing
+ * the last one until it arrives (`loadedKey` says which is on screen), so an editor is never
+ * swapped for a spinner, and never loses focus, when its own save bumps the version.
+ */
+function useItemText(item: LibraryItem | null, enabled: boolean) {
+  const key = item ? `${item.id}@${item.updatedAt}` : "";
+  const [state, setState] = useState<LoadedText | null>(null);
+  // Closing lets it go, so every opening reads the file afresh.
+  if (!item && state) setState(null);
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || !item) return;
     let cancelled = false;
-    fetchLibraryTextPrefix(item, MAX_TEXT_PREVIEW_BYTES).then(
-      ({ text, truncated }) => !cancelled && setState({ key, text, truncated }),
+    const itemId = item.id;
+    fetchLibraryText(item, MAX_TEXT_PREVIEW_BYTES).then(
+      ({ text, truncated, format, readOnlyReason }) =>
+        !cancelled && setState({ key, itemId, text, truncated, format, readOnlyReason }),
       (err: unknown) =>
-        !cancelled && setState({ key, error: err instanceof Error ? err.message : String(err) }),
+        !cancelled &&
+        setState({ key, itemId, error: err instanceof Error ? err.message : String(err) }),
     );
     return () => {
       cancelled = true;
@@ -107,13 +124,18 @@ function useItemText(item: LibraryItem, enabled: boolean) {
     // `key` carries the item's identity and version; the object itself changes on every refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, enabled]);
-  const current = state?.key === key ? state : null;
+  const current = item && state?.itemId === item.id ? state : null;
   return {
     text: current?.text ?? null,
     truncated: current?.truncated ?? false,
+    format: current?.format ?? null,
+    readOnlyReason: current?.readOnlyReason ?? null,
     error: current?.error ?? null,
+    loadedKey: current?.key ?? null,
   };
 }
+
+type ItemText = ReturnType<typeof useItemText>;
 
 function ModelDetails({ item }: { item: LibraryItem }) {
   const rows: [string, string][] = [
@@ -137,11 +159,39 @@ function ModelDetails({ item }: { item: LibraryItem }) {
   );
 }
 
-function TextPrefix({ text }: { text: string }) {
+function TextPrefix({ text, className }: { text: string; className?: string }) {
   return (
-    <pre className="size-full overflow-auto whitespace-pre-wrap break-words font-mono text-sm leading-relaxed">
+    <pre
+      className={cn(
+        "size-full overflow-auto whitespace-pre-wrap break-words font-mono text-sm leading-relaxed",
+        className,
+      )}
+    >
       {text}
     </pre>
+  );
+}
+
+/** What shows when a file cannot be previewed here, by type or because it failed to load. */
+function NoPreview({
+  item,
+  message,
+  onDownload,
+}: {
+  item: LibraryItem;
+  message: string;
+  onDownload?: () => void;
+}) {
+  return (
+    <div className="m-auto flex max-w-md flex-col items-center gap-3 text-center text-muted-foreground">
+      <KindIcon item={item} className="size-16" />
+      <p className="text-sm">{message}</p>
+      {onDownload && (
+        <Button variant="muted" size="sm" className="rounded-full px-4" onClick={onDownload}>
+          Download
+        </Button>
+      )}
+    </div>
   );
 }
 
@@ -180,45 +230,75 @@ function ViewButton({
 
 function PreviewBody({
   item,
+  itemText,
   draft,
   onDraftChange,
   showCode,
   pageScale,
+  mediaFailed,
+  onMediaError,
+  onDownload,
 }: {
   item: LibraryItem;
+  itemText: ItemText;
   draft: string | null;
   onDraftChange: (value: string) => void;
   /** Web pages: their source instead of the rendered page. */
   showCode: boolean;
   /** Web pages: the rendered page's zoom. */
   pageScale: number;
+  /** The browser could not decode the image, audio or video (HEIC, TIFF, HEVC...). */
+  mediaFailed: boolean;
+  onMediaError: () => void;
+  onDownload?: () => void;
 }) {
   const body = bodyFor(item);
-  const needsUrl = body === "image" || body === "pdf" || body === "audio" || body === "video";
-  const { url, error: urlError } = useLibraryObjectUrl(item, needsUrl);
-  const { text, truncated, error: textError } = useItemText(
-    item,
-    body === "text" || body === "web",
-  );
-  const error = urlError ?? textError;
+  const embedded: EmbeddedBody | null =
+    !mediaFailed && (body === "image" || body === "pdf" || body === "audio" || body === "video")
+      ? body
+      : null;
+  const { url, error: urlError } = useLibraryPreviewUrl(item, embedded);
+  const { text, truncated, readOnlyReason, error: textError } = itemText;
 
-  if (error) {
-    return <p className="m-auto text-sm text-muted-foreground">{error}</p>;
+  if (mediaFailed) {
+    return (
+      <NoPreview
+        item={item}
+        message="This file can't be previewed here. Download it to open it."
+        onDownload={onDownload}
+      />
+    );
   }
-  if ((needsUrl && !url) || ((body === "text" || body === "web") && text === null)) {
+  if (urlError) return <NoPreview item={item} message={urlError} onDownload={onDownload} />;
+  if (textError) {
+    return <p className="m-auto text-sm text-muted-foreground">{textError}</p>;
+  }
+  if ((embedded && !url) || ((body === "text" || body === "web") && text === null)) {
     return <Spinner className="m-auto size-6" />;
   }
   switch (body) {
     case "model":
       return <ModelDetails item={item} />;
     case "image":
-      return <img src={url!} alt={item.name} className="size-full object-contain" />;
+      return (
+        <img src={url!} alt={item.name} onError={onMediaError} className="size-full object-contain" />
+      );
     case "pdf":
       return <iframe title={item.name} src={url!} className="size-full rounded-xl bg-white" />;
     case "audio":
-      return <audio src={url!} controls className="m-auto w-full max-w-lg" />;
+      return (
+        <audio src={url!} controls onError={onMediaError} className="m-auto w-full max-w-lg" />
+      );
     case "video":
-      return <video src={url!} controls autoPlay className="size-full object-contain" />;
+      return (
+        <video
+          src={url!}
+          controls
+          autoPlay
+          onError={onMediaError}
+          className="size-full object-contain"
+        />
+      );
     case "web":
       if (showCode) {
         return (
@@ -247,23 +327,29 @@ function PreviewBody({
         </div>
       );
     case "text":
-      return isEditable(item) && !truncated ? (
-        <textarea
-          value={draft ?? text!}
-          onChange={(event) => onDraftChange(event.target.value)}
-          spellCheck={false}
-          placeholder="Start writing…"
-          className="size-full resize-none bg-transparent font-mono text-sm leading-relaxed outline-none"
-        />
+      if (isEditable(item) && !truncated && !readOnlyReason) {
+        return (
+          <textarea
+            value={draft ?? text!}
+            onChange={(event) => onDraftChange(event.target.value)}
+            spellCheck={false}
+            placeholder="Start writing…"
+            className="size-full resize-none bg-transparent font-mono text-sm leading-relaxed outline-none"
+          />
+        );
+      }
+      // A note the editor would write back wrongly says why it cannot be edited.
+      return isEditable(item) && readOnlyReason ? (
+        <div className="flex size-full min-h-0 flex-col gap-3">
+          <p className="text-[13px] text-muted-foreground">{readOnlyReason}</p>
+          <TextPrefix text={truncated ? `${text!}\n\n…` : text!} className="min-h-0 flex-1" />
+        </div>
       ) : (
         <TextPrefix text={truncated ? `${text!}\n\n…` : text!} />
       );
     default:
       return (
-        <div className="m-auto flex flex-col items-center gap-3 text-muted-foreground">
-          <KindIcon item={item} className="size-16" />
-          <p className="text-sm">No preview for this file type.</p>
-        </div>
+        <NoPreview item={item} message="No preview for this file type." onDownload={onDownload} />
       );
   }
 }
@@ -287,16 +373,24 @@ export function LibraryPreview({
   onDelete: (item: LibraryItem) => void;
   onSaved: () => void;
 }) {
+  const body = item ? bodyFor(item) : "none";
+  const itemText = useItemText(item, body === "text" || body === "web");
   // Tagged with its item, so a draft never follows the preview to another file.
   // `savedAt` marks text already written: the item version it was saved over, shown until the
-  // refreshed item replaces that version, so the editor never falls back to the old text.
+  // refreshed item's text has loaded, so the editor never falls back to the old text.
   const [edit, setEdit] = useState<{ itemId: string; text: string; savedAt?: number } | null>(
     null,
   );
   // The same draft, readable after an await: a save must not return while typing moved past it.
   const latestEdit = useRef(edit);
   const current = item && edit?.itemId === item.id ? edit : null;
-  if (current?.savedAt !== undefined && item!.updatedAt !== current.savedAt) setEdit(null);
+  if (
+    current?.savedAt !== undefined &&
+    item!.updatedAt !== current.savedAt &&
+    itemText.loadedKey === `${item!.id}@${item!.updatedAt}`
+  ) {
+    setEdit(null);
+  }
   const draft = current ? current.text : null;
   const unsaved = current !== null && current.savedAt === undefined;
   const setDraft = (text: string | null) => {
@@ -305,6 +399,11 @@ export function LibraryPreview({
     setEdit(next);
   };
   const [saving, setSaving] = useState(false);
+  // Why the save on the way out failed; while set, the user chooses to retry or discard.
+  const [closeError, setCloseError] = useState<string | null>(null);
+  // Tagged with the version that failed to decode, so a new file (or version) tries again.
+  const [brokenMedia, setBrokenMedia] = useState<string | null>(null);
+  const mediaFailed = item !== null && brokenMedia === `${item.id}@${item.updatedAt}`;
   // Tagged too, and cleared on close, so every file opens on its preview at 100%.
   const [codeFor, setCodeFor] = useState<string | null>(null);
   const [zoom, setZoom] = useState<{ itemId: string; scale: number } | null>(null);
@@ -318,14 +417,17 @@ export function LibraryPreview({
   const navigate = useNavigate();
   const origin = item ? generatedOn(item) : null;
 
-  async function save(): Promise<boolean> {
-    if (!item || draft === null || !unsaved) return true;
+  /** Null once the text on screen is on disk, else why it is not. */
+  async function trySave(): Promise<string | null> {
+    if (!item || draft === null || !unsaved) return null;
+    // The file's own BOM and line endings go back with the edit.
+    const format = itemText.format ?? { encoding: "utf-8", bom: false, eol: "\n" };
     setSaving(true);
     try {
       // Typing during a save makes a newer draft; send that too before anything moves on.
       let sent = draft;
       for (;;) {
-        await writeLibraryText(item.id, sent);
+        await writeLibraryText(item.id, encodeNote(sent, format));
         const latest = latestEdit.current;
         if (latest?.itemId !== item.id || latest.text === sent) break;
         sent = latest.text;
@@ -335,15 +437,18 @@ export function LibraryPreview({
         latest?.itemId === item.id && latest.text === sent ? { ...latest, savedAt } : latest,
       );
       onSaved();
-      return true;
+      return null;
     } catch (error) {
-      toast.error("Could not save", {
-        description: error instanceof Error ? error.message : String(error),
-      });
-      return false;
+      return error instanceof Error ? error.message : String(error);
     } finally {
       setSaving(false);
     }
+  }
+
+  async function save(): Promise<boolean> {
+    const error = await trySave();
+    if (error !== null) toast.error("Could not save", { description: error });
+    return error === null;
   }
 
   // Leaving the preview any other way saves first too.
@@ -351,10 +456,23 @@ export function LibraryPreview({
     if (await save()) action();
   }
 
-  // Closing a note saves it, so an edit is never lost to a stray Escape.
+  // Closing a note saves it, so an edit is never lost to a stray Escape. A save that fails asks
+  // what to do instead, so the preview can always be closed.
   async function handleOpenChange(open: boolean) {
-    if (!open && !(await save())) return;
+    if (!open) {
+      const error = await trySave();
+      if (error !== null) {
+        setCloseError(error);
+        return;
+      }
+    }
     onOpenChange(open);
+  }
+
+  function discardAndClose() {
+    setCloseError(null);
+    setDraft(null);
+    onOpenChange(false);
   }
 
   const meta = item
@@ -364,8 +482,8 @@ export function LibraryPreview({
         formatCardTime(item.updatedAt),
       ].filter(Boolean)
     : [];
-  const body = item ? bodyFor(item) : "none";
-  const media = body === "image" || body === "video";
+  // A file the browser cannot decode gets no scale menu or zoom stage.
+  const media = (body === "image" || body === "video") && !mediaFailed;
 
   return (
     <MediaViewer
@@ -376,7 +494,9 @@ export function LibraryPreview({
       media={media}
       noun={media ? body : "file"}
       onKeyDown={(event) => {
-        if ((event.metaKey || event.ctrlKey) && event.key === "s") {
+        // By key position too, so Caps Lock and non-Latin layouts save.
+        const saveKey = event.code === "KeyS" || event.key.toLowerCase() === "s";
+        if ((event.metaKey || event.ctrlKey) && saveKey) {
           event.preventDefault();
           void save();
         }
@@ -457,12 +577,26 @@ export function LibraryPreview({
       {item && (
         <PreviewBody
           item={item}
+          itemText={itemText}
           draft={draft}
           onDraftChange={setDraft}
           showCode={showCode}
           pageScale={pageScale}
+          mediaFailed={mediaFailed}
+          onMediaError={() => setBrokenMedia(`${item.id}@${item.updatedAt}`)}
+          onDownload={isFileItem(item) ? () => void saveThen(() => onDownload(item)) : undefined}
         />
       )}
+      {/* Portalled, so it sits over the preview whatever the body is. */}
+      <UnsavedChangesDialog
+        error={closeError}
+        onRetry={() => {
+          setCloseError(null);
+          void handleOpenChange(false);
+        }}
+        onDiscard={discardAndClose}
+        onKeepEditing={() => setCloseError(null)}
+      />
     </MediaViewer>
   );
 }

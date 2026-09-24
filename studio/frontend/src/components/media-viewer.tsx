@@ -10,7 +10,7 @@ import {
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { type KeyboardEventHandler, type ReactNode, useState } from "react";
+import { type KeyboardEventHandler, type ReactNode, useRef, useState } from "react";
 
 import {
   Dialog,
@@ -93,7 +93,7 @@ export function ScaleMenu({
 
 /**
  * One file, nearly as tall as the window. Images and videos can be scaled and, once larger than the
- * frame, dragged. Shared by the Library and the Images and Video pages, so a file opens the same way everywhere.
+ * frame, dragged. Page-agnostic, so any page that shows files can open them the same way.
  */
 export function MediaViewer({
   open,
@@ -130,6 +130,9 @@ export function MediaViewer({
     setWasOpen(open);
     if (open) setZoom("fit");
   }
+  // Opened from a card, a row or a link rather than a DialogTrigger, so Radix has nothing to return
+  // focus to on close and would drop it on <body>. Whatever had focus when it opened gets it back.
+  const returnFocus = useRef<HTMLElement | null>(null);
   const project = useProjectSubmenu({ noun, onAddToProject: actions.onAddToProject });
   const iconButton =
     "flex size-9 shrink-0 items-center justify-center rounded-full outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-muted";
@@ -146,6 +149,16 @@ export function MediaViewer({
       <DialogContent
         showCloseButton={false}
         onKeyDown={onKeyDown}
+        onOpenAutoFocus={() => {
+          const active = document.activeElement;
+          returnFocus.current = active instanceof HTMLElement && active !== document.body ? active : null;
+        }}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          const target = returnFocus.current;
+          returnFocus.current = null;
+          if (target?.isConnected) target.focus({ preventScroll: true });
+        }}
         className="flex h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] w-[min(92vw,1200px)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none"
       >
         <div className="flex items-center gap-2 py-3 pl-6 pr-4">

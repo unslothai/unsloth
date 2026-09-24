@@ -226,6 +226,7 @@ export function LibraryToolbar({
           type="button"
           aria-label="Grid view"
           data-active={view === "grid"}
+          aria-pressed={view === "grid"}
           onClick={() => onViewChange("grid")}
           className={ROUND_BUTTON}
         >
@@ -235,6 +236,7 @@ export function LibraryToolbar({
           type="button"
           aria-label="List view"
           data-active={view === "list"}
+          aria-pressed={view === "list"}
           onClick={() => onViewChange("list")}
           className={ROUND_BUTTON}
         >
