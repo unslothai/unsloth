@@ -337,7 +337,7 @@ def _names_a_packed_expert(entry, stack, leaf):
         return False
     return all(
         part.isdigit() if want is None else part == want
-        for part, want in zip(parts, template[len(template) - len(parts):])
+        for part, want in zip(parts, template[len(template) - len(parts) :])
     )
 
 
