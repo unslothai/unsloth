@@ -108,7 +108,7 @@ export function SharedRunConfigLinkEditor({
         }
       }}
     >
-      <DialogContent>
+      <DialogContent className="content-start gap-5">
         <DialogHeader>
           <DialogTitle>Choose a model</DialogTitle>
           <DialogDescription>
@@ -118,7 +118,7 @@ export function SharedRunConfigLinkEditor({
           </DialogDescription>
         </DialogHeader>
         <form
-          className="space-y-4"
+          className="space-y-5"
           onSubmit={(event) => {
             event.preventDefault();
             if (!isRunConfigModelInput(modelInput.trim())) {
@@ -131,22 +131,29 @@ export function SharedRunConfigLinkEditor({
             setModelInput("");
           }}
         >
-          <label htmlFor="shared-run-model" className="text-sm font-medium">
-            Model ID or local path
-          </label>
-          <Input
-            id="shared-run-model"
-            autoComplete="off"
-            placeholder="owner/model or local model path"
-            value={modelInput}
-            onChange={(event) => setModelInput(event.target.value)}
-          />
-          <Button
-            type="submit"
-            disabled={!isRunConfigModelInput(modelInput.trim())}
-          >
-            Open run settings
-          </Button>
+          <div className="space-y-2">
+            <label
+              htmlFor="shared-run-model"
+              className="block text-sm font-medium"
+            >
+              Model ID or local path
+            </label>
+            <Input
+              id="shared-run-model"
+              autoComplete="off"
+              placeholder="owner/model or local model path"
+              value={modelInput}
+              onChange={(event) => setModelInput(event.target.value)}
+            />
+          </div>
+          <div className="flex justify-end">
+            <Button
+              type="submit"
+              disabled={!isRunConfigModelInput(modelInput.trim())}
+            >
+              Open run settings
+            </Button>
+          </div>
         </form>
       </DialogContent>
     </Dialog>

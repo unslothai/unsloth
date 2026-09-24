@@ -183,36 +183,42 @@ export function ShareRunConfigDialog({
     detail?: string,
     disabled = false,
   ) => (
-    <div
-      key={key}
-      className={`flex min-w-0 items-start gap-2 py-1.5 ${disabled ? "sm:col-span-2" : ""}`}
-    >
-      <Checkbox
-        id={`${id}-${key}`}
-        aria-describedby={
-          detail !== undefined ? `${id}-${key}-detail` : undefined
-        }
-        checked={checked}
-        disabled={disabled}
-        onCheckedChange={(value) => change(value === true)}
-      />
-      <div className="min-w-0">
+    <div key={key} className="py-2.5">
+      <div className="flex items-center gap-3">
+        <Checkbox
+          id={`${id}-${key}`}
+          aria-describedby={
+            detail !== undefined ? `${id}-${key}-detail` : undefined
+          }
+          checked={checked}
+          disabled={disabled}
+          onCheckedChange={(value) => change(value === true)}
+        />
         <label
           htmlFor={`${id}-${key}`}
-          className={`text-sm ${disabled ? "cursor-not-allowed text-muted-foreground" : "cursor-pointer"}`}
+          className={`flex min-w-0 flex-1 items-baseline justify-between gap-4 text-sm ${disabled ? "cursor-not-allowed text-muted-foreground" : "cursor-pointer"}`}
         >
-          {label}
+          <span className="shrink-0">{label}</span>
+          {detail !== undefined && !disabled && (
+            <span
+              id={`${id}-${key}-detail`}
+              aria-hidden={true}
+              title={detail}
+              className="min-w-0 truncate text-xs text-muted-foreground tabular-nums"
+            >
+              {detail}
+            </span>
+          )}
         </label>
-        {detail !== undefined && (
-          <p
-            id={`${id}-${key}-detail`}
-            className={`text-xs text-muted-foreground ${disabled ? "whitespace-normal break-words" : "truncate"}`}
-            title={disabled ? undefined : detail}
-          >
-            {detail}
-          </p>
-        )}
       </div>
+      {detail !== undefined && disabled && (
+        <p
+          id={`${id}-${key}-detail`}
+          className="mt-1 pl-7 text-xs text-muted-foreground"
+        >
+          {detail}
+        </p>
+      )}
     </div>
   );
   return (
@@ -224,7 +230,7 @@ export function ShareRunConfigDialog({
         }
       }}
     >
-      <DialogContent className="gap-4 sm:max-w-xl">
+      <DialogContent className="grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto_auto] gap-5 sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>Share run settings</DialogTitle>
           <DialogDescription>
@@ -232,90 +238,141 @@ export function ShareRunConfigDialog({
             existing defaults. Opening a link shows the settings before running.
           </DialogDescription>
         </DialogHeader>
-        <div className="grid max-h-[min(40dvh,24rem)] grid-cols-1 gap-x-4 overflow-y-auto rounded-xl border p-3 sm:grid-cols-2">
-          {shareableModel ? (
-            choice("model", "Model", includeModel, setIncludeModel, model)
-          ) : (
-            <p className="mb-2 text-sm text-muted-foreground">
-              This model uses a local path. The recipient can choose their own
-              model.
-            </p>
-          )}
-          {target.ggufVariant &&
-            choice(
-              "variant",
-              "GGUF variant",
-              includeVariant,
-              setIncludeVariant,
-              target.ggufVariant,
+        <div className="flex min-h-0 flex-col gap-3">
+          <div className="divide-y divide-border/50 overflow-hidden rounded-2xl border border-border/60 px-4 [scrollbar-gutter:stable_both-edges]">
+            {shareableModel ? (
+              choice("model", "Model", includeModel, setIncludeModel, model)
+            ) : (
+              <p className="py-2.5 text-sm text-muted-foreground">
+                This model uses a local path. The recipient can choose their own
+                model.
+              </p>
             )}
-          {choice(
-            "format",
-            "Model format",
-            includeFormat,
-            setIncludeFormat,
-            target.isGguf ? "GGUF" : "Native weights",
-          )}
-          {fields.map(({ key, valid, detail }) =>
-            choice(
-              key,
-              SHARED_CONFIG_FIELDS[key].label,
-              selected.has(key),
-              (checked) =>
-                setSelected((current) => {
-                  const next = new Set(current);
-                  if (checked) {
-                    next.add(key);
-                  } else {
-                    next.delete(key);
-                  }
-                  return next;
-                }),
-              detail,
-              !valid,
-            ),
-          )}
+            {target.ggufVariant &&
+              choice(
+                "variant",
+                "GGUF variant",
+                includeVariant,
+                setIncludeVariant,
+                target.ggufVariant,
+              )}
+            {choice(
+              "format",
+              "Model format",
+              includeFormat,
+              setIncludeFormat,
+              target.isGguf ? "GGUF" : "Native weights",
+            )}
+          </div>
+          <div className="hover-scrollbar min-h-0 flex-1 divide-y divide-border/50 overflow-y-auto rounded-2xl border border-border/60 px-4 [scrollbar-gutter:stable_both-edges] sm:max-h-75">
+            {fields.map(({ key, valid, detail }) =>
+              choice(
+                key,
+                SHARED_CONFIG_FIELDS[key].label,
+                selected.has(key),
+                (checked) =>
+                  setSelected((current) => {
+                    const next = new Set(current);
+                    if (checked) {
+                      next.add(key);
+                    } else {
+                      next.delete(key);
+                    }
+                    return next;
+                  }),
+                detail,
+                !valid,
+              ),
+            )}
+          </div>
         </div>
         <div className="space-y-2">
-          <label htmlFor={`${id}-destination`} className="text-sm font-medium">
-            Open in
-          </label>
-          <Select value={destination} onValueChange={setDestination}>
-            <SelectTrigger id={`${id}-destination`} className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="desktop">Unsloth desktop app</SelectItem>
-              {!isTauri && (
-                <SelectItem value="browser">This Studio web address</SelectItem>
-              )}
-            </SelectContent>
-          </Select>
+          <div className="flex items-center justify-between gap-4">
+            {isTauri ? (
+              <>
+                <span className="text-sm font-medium">Open in</span>
+                <span className="text-sm text-muted-foreground">
+                  Unsloth desktop app
+                </span>
+              </>
+            ) : (
+              <>
+                <label
+                  htmlFor={`${id}-destination`}
+                  className="text-sm font-medium"
+                >
+                  Open in
+                </label>
+                <Select value={destination} onValueChange={setDestination}>
+                  <SelectTrigger id={`${id}-destination`} className="w-56">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="desktop">Unsloth desktop app</SelectItem>
+                    <SelectItem value="browser">
+                      This Studio web address
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </>
+            )}
+          </div>
           <p className="text-xs text-muted-foreground">
             {destination === "browser"
               ? "This link contains your Studio web address. Recipients need access to that address. A localhost address opens Studio on their own computer."
               : "The recipient needs the Unsloth desktop app installed."}
           </p>
-          <label htmlFor={`${id}-link`} className="block text-sm font-medium">
-            Shareable link
-          </label>
-          <Textarea
-            id={`${id}-link`}
-            readOnly={true}
-            value={link}
-            rows={3}
-            fieldSizing="fixed"
-            onFocus={(event) => event.target.select()}
-            className="text-xs md:text-xs"
-          />
+        </div>
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <label
+              htmlFor={`${id}-link`}
+              className="flex h-9 min-w-0 flex-1 cursor-text items-center rounded-full border border-border bg-background px-3.5 transition-colors focus-within:border-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:focus-within:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]"
+            >
+              <span className="sr-only">Shareable link</span>
+              <Textarea
+                id={`${id}-link`}
+                readOnly={true}
+                value={link}
+                rows={1}
+                fieldSizing="fixed"
+                onKeyUp={(event) => {
+                  if (event.key === "Tab") {
+                    event.currentTarget.select();
+                  }
+                }}
+                className="no-scrollbar! min-h-0 flex-1 overflow-x-auto overflow-y-hidden whitespace-pre rounded-none border-0 bg-transparent p-0 py-1 font-mono text-xs leading-4 md:text-xs dark:bg-transparent dark:focus-visible:bg-transparent"
+              />
+            </label>
+            <Button
+              className="shrink-0"
+              disabled={!link || copying}
+              onClick={async () => {
+                setCopying(true);
+                try {
+                  if (await copyToClipboard(link)) {
+                    toast.success("Run settings link copied");
+                  } else {
+                    toast.error(
+                      "Could not copy the link. Select and copy it from the link field.",
+                    );
+                  }
+                } finally {
+                  setCopying(false);
+                }
+              }}
+            >
+              Copy link
+            </Button>
+          </div>
           {error && (
-            <p role="alert" className="text-sm text-destructive">
+            <p role="alert" className="text-xs text-destructive">
               {error}
             </p>
           )}
           {destination === "desktop" &&
             link.length > DESKTOP_RUN_CONFIG_URL_WARNING_LENGTH && (
-              <output className="block text-sm text-muted-foreground">
+              <output className="block text-xs text-amber-700 dark:text-amber-300">
                 Long desktop links may not open on Windows. Include fewer
                 settings{!isTauri && " or use a browser link"}.
               </output>
@@ -325,25 +382,6 @@ export function ShareRunConfigDialog({
             template code and file, network or tool arguments cannot be shared.
           </p>
         </div>
-        <Button
-          disabled={!link || copying}
-          onClick={async () => {
-            setCopying(true);
-            try {
-              if (await copyToClipboard(link)) {
-                toast.success("Run settings link copied");
-              } else {
-                toast.error(
-                  "Could not copy the link. Select and copy it above.",
-                );
-              }
-            } finally {
-              setCopying(false);
-            }
-          }}
-        >
-          Copy link
-        </Button>
       </DialogContent>
     </Dialog>
   );
