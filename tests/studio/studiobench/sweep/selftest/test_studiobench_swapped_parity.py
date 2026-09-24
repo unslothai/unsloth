@@ -280,6 +280,31 @@ def test_one_reversal_excuses_only_one_repetition_of_the_other_direction():
     assert len({e[2] for e in firm}) == 2 and not weak
 
 
+def test_a_reversal_recorded_in_two_shards_is_still_one_partner():
+    """Three (R1, R2) repetitions and one (R2, R1) repetition carried by two shards: the duplicate
+    is the same observation, so it excuses one forward repetition, not two."""
+    results = [
+        ("delete_message", "s", f"r100K rep{n}", {"verdict": P.DIFFER, "outcomes": ("R1", "R2")})
+        for n in range(3)
+    ] + [
+        ("delete_message", shard, "r100K rep3", {"verdict": P.DIFFER, "outcomes": ("R2", "R1")})
+        for shard in ("a", "b")
+    ]
+    swapped = U.swapped_between_arms(results, 2)
+    assert {3, 4} <= swapped and len(swapped) == 3
+    left = [results[i] for i in range(len(results)) if i not in swapped]
+    firm, _weak = U.corroborated(left, 2)
+    assert len({e[2] for e in firm}) == 2
+
+
+def test_a_forward_repetition_in_two_shards_is_excused_whole():
+    results = [
+        ("delete_message", shard, "r100K rep0", {"verdict": P.DIFFER, "outcomes": ("R1", "R2")})
+        for shard in ("a", "b")
+    ] + [("delete_message", "s", "r100K rep1", {"verdict": P.DIFFER, "outcomes": ("R2", "R1")})]
+    assert U.swapped_between_arms(results, 2) == frozenset({0, 1, 2})
+
+
 def test_two_reversals_against_two_forwards_are_all_swaps():
     results = [
         ("delete_message", "s", f"r100K rep{n}", {"verdict": P.DIFFER, "outcomes": outcomes})

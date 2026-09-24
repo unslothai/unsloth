@@ -1676,20 +1676,29 @@ def swapped_between_arms(results: list[tuple], min_reps: int) -> frozenset[int]:
         if base is None or treat is None or base == treat:
             continue
         groups[(action, rung_of_cell(cell))].append((i, cell, base, treat))
-    # ONE-TO-ONE. Each reversed observation excuses one forward observation and is used up, so
-    # three repetitions of (R1, R2) against one (R2, R1) leave two (R1, R2) for `corroborated` to
-    # count. Matching on existence alone let one reversal excuse every same-direction repetition.
+    # ONE-TO-ONE, BY OBSERVATION. An observation is (repetition, direction), as `corroborated`
+    # counts them: the same repetition recorded in several shards is one observation, all of whose
+    # rows are excused together or not at all. Each reversed observation then excuses exactly one
+    # observation in the other direction, so three repetitions of (R1, R2) against one (R2, R1),
+    # however many shards carry it, leave two (R1, R2) repetitions for `corroborated` to count.
     out: set[int] = set()
     for group in groups.values():
-        used: set[int] = set()
-        for i, cell, base, treat in sorted(group, key = lambda e: (e[1], e[0])):
-            if i in used:
+        observations: dict[tuple[str, str, str], list[int]] = collections.defaultdict(list)
+        for i, cell, base, treat in group:
+            observations[(cell, base, treat)].append(i)
+        used: set[tuple[str, str, str]] = set()
+        for key in sorted(observations):
+            if key in used:
                 continue
-            for j, c, b, t in sorted(group, key = lambda e: (e[1], e[0])):
-                if j not in used and j != i and c != cell and (b, t) == (treat, base):
-                    used.update((i, j))
+            cell, base, treat = key
+            for other in sorted(observations):
+                if other in used or other == key:
+                    continue
+                if other[0] != cell and (other[1], other[2]) == (treat, base):
+                    used.update((key, other))
                     break
-        out |= used
+        for key in used:
+            out.update(observations[key])
     return frozenset(out)
 
 
