@@ -116,16 +116,18 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
       }
     },
     patchItem: (id, patch) => {
-      if (patch.favorite !== undefined) {
-        useLibraryFavoritesStore.getState().mark(id, patch.favorite);
-      }
+      // Settled with the request, before a failure's refresh reads the server's value back.
+      const settle =
+        patch.favorite !== undefined
+          ? useLibraryFavoritesStore.getState().mark(id, patch.favorite)
+          : undefined;
       return optimistic(
         (state) => ({
           items: state.items.map((item) =>
             item.id === id ? { ...item, ...patch } : item,
           ),
         }),
-        () => updateLibraryItem(id, patch),
+        () => updateLibraryItem(id, patch).finally(settle),
       );
     },
     removeItem: (id) => {

@@ -98,6 +98,13 @@ function sameSession(epoch: number, message: string): () => void {
   };
 }
 
+/** A write: a retry never goes out under an account other than the one that sent it. */
+function sendWrite(input: string, init: RequestInit): Promise<Response> {
+  return authFetch(input, init, {
+    beforeRetry: sameSession(getAuthSessionEpoch(), "Signed out before the change was saved."),
+  });
+}
+
 export function updateLibraryItem(
   id: string,
   patch: { name?: string; favorite?: boolean; folderId?: string | null },
@@ -135,14 +142,14 @@ export async function addLibraryItemToProject(
   projectId: string,
 ): Promise<{ already: boolean }> {
   const response = await ensureOk(
-    await authFetch("/api/library/items/project", jsonInit("POST", { id, projectId })),
+    await sendWrite("/api/library/items/project", jsonInit("POST", { id, projectId })),
   );
   return response.json();
 }
 
 /** Shows the item's file in the OS file manager on the machine running Studio. */
 export async function revealLibraryItem(id: string): Promise<void> {
-  await ensureOk(await authFetch("/api/library/items/reveal", jsonInit("POST", { id })));
+  await ensureOk(await sendWrite("/api/library/items/reveal", jsonInit("POST", { id })));
 }
 
 export interface LibraryLocation {
@@ -160,7 +167,7 @@ export async function getLibraryLocations(): Promise<LibraryLocation[]> {
 }
 
 export async function revealLibraryLocation(key: LibraryLocation["key"]): Promise<void> {
-  await ensureOk(await authFetch("/api/library/locations/reveal", jsonInit("POST", { key })));
+  await ensureOk(await sendWrite("/api/library/locations/reveal", jsonInit("POST", { key })));
 }
 
 /** Move one kind of file, files and all; `path` null moves it back to the default. */
@@ -176,7 +183,7 @@ export async function moveLibraryLocation(
 
 export async function deleteLibraryItem(id: string): Promise<void> {
   await ensureOk(
-    await authFetch("/api/library/items/delete", jsonInit("POST", { id })),
+    await sendWrite("/api/library/items/delete", jsonInit("POST", { id })),
   );
 }
 
@@ -243,7 +250,7 @@ export async function writeLibraryText(
 ): Promise<void> {
   const uploadId = itemId.replace(/^upload:/, "");
   await ensureOk(
-    await authFetch(
+    await sendWrite(
       `/api/library/uploads/${encodeURIComponent(uploadId)}/text`,
       jsonInit("PUT", { text }),
     ),
@@ -255,7 +262,7 @@ export async function createLibraryFolder(
   parentId: string | null,
 ): Promise<LibraryFolder> {
   const response = await ensureOk(
-    await authFetch("/api/library/folders", jsonInit("POST", { name, parentId })),
+    await sendWrite("/api/library/folders", jsonInit("POST", { name, parentId })),
   );
   return response.json();
 }
@@ -265,7 +272,7 @@ export async function updateLibraryFolder(
   patch: { name?: string; parentId?: string | null },
 ): Promise<void> {
   await ensureOk(
-    await authFetch(
+    await sendWrite(
       `/api/library/folders/${encodeURIComponent(id)}`,
       jsonInit("PATCH", patch),
     ),
@@ -274,7 +281,7 @@ export async function updateLibraryFolder(
 
 export async function deleteLibraryFolder(id: string): Promise<void> {
   await ensureOk(
-    await authFetch(`/api/library/folders/${encodeURIComponent(id)}`, {
+    await sendWrite(`/api/library/folders/${encodeURIComponent(id)}`, {
       method: "DELETE",
     }),
   );
