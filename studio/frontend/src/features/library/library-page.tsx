@@ -721,8 +721,11 @@ function LibraryView({ search }: { search: LibrarySearch }) {
           onNew={handleNew}
           onSettings={() => openSettings("library")}
         />
-        {!folderId && <Tabs tabs={shownTabs} active={tab} onChange={(next) => go({ show: next })} />}
-        {renderBody()}
+        {/* Inset past the title so list checkboxes, which hang left of the rows, have room. */}
+        <div className="pl-5 sm:pl-8">
+          {!folderId && <Tabs tabs={shownTabs} active={tab} onChange={(next) => go({ show: next })} />}
+          {renderBody()}
+        </div>
 
         {dragging && (
           <div className="pointer-events-none fixed inset-0 z-40 flex items-center justify-center bg-background/70 backdrop-blur-sm">
