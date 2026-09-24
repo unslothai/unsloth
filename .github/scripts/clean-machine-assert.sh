@@ -6,7 +6,8 @@
 #            "passed" because masking silently failed, or because the installer
 #            quietly installed Xcode CLT behind our back.
 #   notools       The trace recorded no compiler/git/brew invocation (trace mode),
-#                 except uv's exact optional libpython self-ID operation.
+#                 except uv's exact optional libpython self-ID operation, and git
+#                 fetching only the git+ remotes of $UNSLOTH_ALLOW_GIT_FROM.
 #   nodylibtool   No install_name_tool invocation escaped the CLT-absent guard.
 #   dylibpatch    A CLT-present control observed only exact libpython self-ID patches.
 #   nobuild  Wheels-only: no "Building wheel" from pip, no "Building <pkg>==<ver>"
@@ -39,6 +40,21 @@ _decode_trace_arg() { # encoded, destination variable
     _decoded+=$_byte
   done
   printf -v "$2" '%s' "$_decoded"
+}
+
+# The git+ remotes named by the requirement files in $UNSLOTH_ALLOW_GIT_FROM, one per line,
+# without a trailing .git. The files are the source of truth, so a re-pinned remote follows.
+_allowed_git_remotes() {
+  for _req in ${UNSLOTH_ALLOW_GIT_FROM:-}; do
+    [ -f "$_req" ] || { echo "::error::UNSLOTH_ALLOW_GIT_FROM names a missing file: $_req" >&2; continue; }
+    sed -n 's/^[^#]*git+\([a-z][a-z0-9+.-]*:\/\/[^@#[:space:]]*\).*/\1/p' "$_req"
+  done | sed 's/\.git$//' | sort -u
+}
+
+# Every remote a traced git command line names: URLs, including `-c remote.origin.url=URL`.
+_git_line_remotes() {
+  printf '%s\n' "$1" | grep -oE '[a-z][a-z0-9+.-]*://[^[:space:]]+|[[:alnum:]_.-]+@[[:alnum:].-]+:[^[:space:]]+' \
+    | sed 's/\.git$//'
 }
 
 _is_uv_libpython_self_id_patch() { # argc, operation, source, destination, extra
@@ -160,6 +176,26 @@ for check in "$@"; do
         # git is legitimate under --local (unsloth-zoo comes from a git URL), so that
         # leg allow-lists it via UNSLOTH_ALLOW_TOOLS.
         allow="${UNSLOTH_ALLOW_TOOLS:-}"
+        # A default install with a working git fetches its pinned git+ requirements with it
+        # (the Diffusers main build: a clone records a ref, the archive fallback does not).
+        # That is git, but only for those remotes, so it is allowed structurally: each git
+        # line may name only the requirement files' remotes, and a line naming none (uv's
+        # `rev-parse`, `reset`, `clone --local` inside its own cache) counts only when some
+        # line of the trace did fetch an allowed remote. `--version` is the installer's own
+        # probe. Any other remote, or git that fetched nothing allowed, is still a hit.
+        allowed_remotes=$(_allowed_git_remotes)
+        git_fetched_allowed=false
+        if [ -n "$allowed_remotes" ]; then
+          while IFS=$'\t' read -r tool rest; do
+            [ "$tool" = "git" ] || continue
+            while IFS= read -r remote; do
+              [ -n "$remote" ] || continue
+              if printf '%s\n' "$allowed_remotes" | grep -qxF -- "$remote"; then
+                git_fetched_allowed=true
+              fi
+            done <<< "$(_git_line_remotes "$rest")"
+          done < "$TRACE"
+        fi
         hits=""
         while IFS=$'\t' read -r tool argc_or_rest arg1 arg2 arg3 extra; do
           [ -n "$tool" ] || continue
@@ -177,6 +213,23 @@ for check in "$@"; do
             continue
           fi
           case " $allow " in *" $tool "*) continue ;; esac
+          if [ "$tool" = "git" ] && [ -n "$allowed_remotes" ]; then
+            git_rest="$argc_or_rest"
+            for _field in "$arg1" "$arg2" "$arg3" "$extra"; do
+              [ -n "$_field" ] && git_rest="$git_rest	$_field"
+            done
+            if [ "$git_rest" = "--version" ]; then
+              continue
+            fi
+            git_ok=true
+            while IFS= read -r remote; do
+              [ -n "$remote" ] || continue
+              printf '%s\n' "$allowed_remotes" | grep -qxF -- "$remote" || git_ok=false
+            done <<< "$(_git_line_remotes "$git_rest")"
+            if [ "$git_ok" = true ] && [ "$git_fetched_allowed" = true ]; then
+              continue
+            fi
+          fi
           # `xcode-select -p` only ASKS whether a toolchain is selected and the fix is
           # carrying on without one, so it is not USE. `--install` stays a hit.
           if [ "$tool" = "xcode-select" ]; then

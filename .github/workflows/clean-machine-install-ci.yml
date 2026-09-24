@@ -248,8 +248,8 @@ jobs:
         run: |
           # `notools` reads an absence, so a shim dir that never reached PATH looks exactly
           # like an installer that touched nothing: prove the wrapper records before
-          # trusting an empty file. macOS never probes git off the --local path, so the
-          # call has to be explicit.
+          # trusting an empty file. The installer's own git use depends on what it installs,
+          # so the call has to be explicit.
           set -a; . ./clean-machine.env; set +a
           [ -n "$UNSLOTH_TOOL_TRACE" ] || { echo "::error::trace mode set no UNSLOTH_TOOL_TRACE"; exit 1; }
           git --version >/dev/null 2>&1 || true
@@ -358,6 +358,9 @@ jobs:
           # CLT or installed a compiler left the leg green. Re-run it after.
           [ "${{ matrix.mode }}" = "mask" ] && checks="$checks absent nodylibtool"
           [ "${{ matrix.mode }}" = "trace" ] && checks="$checks notools dylibpatch"
+          # With a working git the default install clones its pinned git+ requirements, so
+          # `notools` lets git fetch exactly those remotes and nothing else.
+          UNSLOTH_ALLOW_GIT_FROM='studio/backend/requirements/diffusers-main.txt' \
           UNSLOTH_CLEAN_ALLOW_WORKING='${{ matrix.allow_working }}' \
             bash .github/scripts/clean-machine-assert.sh $checks
 
