@@ -1962,18 +1962,27 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
 class TestEvictXformersMismatch:
     def test_a_mismatched_xformers_is_removed_with_its_scope(self, capsys):
         with (
-            patch.object(stack_mod, "_probe_installed_torch_version", return_value = "2.11.0+rocm7.13.0"),
+            patch.object(
+                stack_mod, "_probe_installed_torch_version", return_value = "2.11.0+rocm7.13.0"
+            ),
             patch.object(stack_mod, "_resident_xformers_build_torch", return_value = "2.10.0+cu128"),
             patch.object(stack_mod, "_uninstall_distribution", return_value = True) as uninstall,
         ):
-            assert stack_mod._evict_xformers_built_for_another_torch(scope = "linux torch repair") is True
+            assert (
+                stack_mod._evict_xformers_built_for_another_torch(scope = "linux torch repair")
+                is True
+            )
         uninstall.assert_called_once_with("xformers")
         assert "linux torch repair" in capsys.readouterr().out
 
     def test_a_matching_xformers_is_not_removed(self):
         with (
-            patch.object(stack_mod, "_probe_installed_torch_version", return_value = "2.11.0+rocm7.13.0"),
-            patch.object(stack_mod, "_resident_xformers_build_torch", return_value = "2.11.0+rocm7.13.0"),
+            patch.object(
+                stack_mod, "_probe_installed_torch_version", return_value = "2.11.0+rocm7.13.0"
+            ),
+            patch.object(
+                stack_mod, "_resident_xformers_build_torch", return_value = "2.11.0+rocm7.13.0"
+            ),
             patch.object(stack_mod, "_uninstall_distribution") as uninstall,
         ):
             assert stack_mod._evict_xformers_built_for_another_torch() is False
