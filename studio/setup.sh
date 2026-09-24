@@ -114,8 +114,8 @@ _remove_agent_instruction_files() {
 }
 
 # ── BEGIN mirror fallback (kept identical in install.sh and studio/setup.sh) ──
-# Each default package host is timed alone on a 1 MiB slice of an artifact it serves. One below 1 MiB/s, or whose index does not answer, is raced against its mirror (CERNET, or npmmirror for npm and uv's Python builds; each mirror URL timed once whatever it backs) and swapped for it when the default is still below 1 MiB/s there, the mirror is faster, and its own index answers. Hosts that the user has already redirected are left alone, the choice reaches every child through the env vars uv, pip, npm and the Unsloth helpers already read, and UNSLOTH_MIRROR_FALLBACK=0 turns it off.
-_MIRROR_CERNET="https://mirrors.cernet.edu.cn"
+# Each default package host is timed alone on a 1 MiB slice of an artifact it serves. One below 1 MiB/s, or whose index does not answer, is raced against its mirror (CERNET, or npmmirror for npm, Node and uv's Python builds; each mirror URL timed once whatever it backs) and swapped for it when the default is still below 1 MiB/s there, the mirror is faster, and its own index answers. Hosts that the user has already redirected are left alone, the choice reaches every child through the env vars uv, pip, npm and the Unsloth helpers already read, and UNSLOTH_MIRROR_FALLBACK=0 turns it off.
+_MIRROR_CERNET="https://tuna.mirrors.cernet.edu.cn"
 _MIRROR_PYPI="$_MIRROR_CERNET/pypi/web/simple"
 _MIRROR_NPM="https://registry.npmmirror.com"
 # GitHub-release mirrors keep only the newest Python builds, while a pinned uv asks for the builds it shipped with; npmmirror keeps every release.
@@ -133,7 +133,7 @@ _mirror_probe() {
     echo "$_mp_code $_mp_bps"
 }
 
-# Probe URLs: artifacts the installs download, which only need to stay published, served byte for byte by the mirror (every download.pytorch.org index links its wheels to download-r2). CERNET redirects each tree to a different university mirror, so each tree is timed. uv and pip resolve on the *-index URLs, which only need to answer: CERNET's PyPI index and files even sit on different mirrors.
+# Probe URLs: artifacts the installs download, which only need to stay published, served byte for byte by the mirror (every download.pytorch.org index links its wheels to download-r2). Each mirror tree can sit on its own host (CERNET redirects each to a different university mirror), so each tree is timed. uv and pip resolve on the *-index URLs, which only need to answer.
 _mirror_url() {
     case "$1" in
         pypi) echo "https://files.pythonhosted.org/packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" ;;
@@ -141,7 +141,7 @@ _mirror_url() {
         torch) echo "https://download-r2.pytorch.org/whl/cpu/torch-2.9.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl" ;;
         cernet-torch) echo "$_MIRROR_CERNET/pytorch/whl/cpu/torch-2.9.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl" ;;
         node) echo "https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-x64.tar.gz" ;;
-        cernet-node) echo "$_MIRROR_CERNET/nodejs-release/v24.18.0/node-v24.18.0-linux-x64.tar.gz" ;;
+        npmmirror-node) echo "$_MIRROR_NPM/-/binary/node/v24.18.0/node-v24.18.0-linux-x64.tar.gz" ;;
         npm) echo "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz" ;;
         npmmirror) echo "$_MIRROR_NPM/typescript/-/typescript-5.9.3.tgz" ;;
         astral) echo "https://releases.astral.sh/github/uv/releases/download/0.12.1/uv-x86_64-unknown-linux-gnu.tar.gz" ;;
@@ -157,7 +157,7 @@ _mirror_default() {
 }
 
 _mirror_source() {
-    case "$1" in npm|python) echo npmmirror ;; pypi|uvbin) echo cernet-pypi ;; *) echo "cernet-$1" ;; esac
+    case "$1" in npm|python) echo npmmirror ;; node) echo npmmirror-node ;; pypi|uvbin) echo cernet-pypi ;; *) echo "cernet-$1" ;; esac
 }
 
 # Starts a 1 KiB answer check, in the background, of the index each named host (pypi, torch) or its CERNET mirror (cernet-<host>) resolves on.
@@ -241,7 +241,7 @@ _mirror_vars() {
                 echo "PIP_INDEX_URL=$_MIRROR_PYPI"
             fi ;;
         torch) echo "UNSLOTH_PYTORCH_MIRROR=$_MIRROR_CERNET/pytorch/whl" ;;
-        node) echo "UNSLOTH_NODE_MIRROR=$_MIRROR_CERNET/nodejs-release" ;;
+        node) echo "UNSLOTH_NODE_MIRROR=$_MIRROR_NPM/-/binary/node" ;;
         npm) echo "UNSLOTH_NPM_REGISTRY=$_MIRROR_NPM" ;;
         python) echo "UV_PYTHON_INSTALL_MIRROR=$_MIRROR_PYTHON" ;;
         uvbin) echo "UNSLOTH_UV_WHEEL_MIRROR=$_MIRROR_CERNET/pypi/web" ;;

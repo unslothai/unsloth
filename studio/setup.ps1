@@ -891,7 +891,7 @@ function Invoke-ManagedLlamaCppPreflight {
 }
 
 # Swaps a default package host below 1 MiB/s on an artifact it serves, or whose index does not answer, for its mirror (CERNET,
-# or npmmirror for npm) when that is faster and its own index answers, as _mirror_fallback in install.sh does. UNSLOTH_MIRROR_FALLBACK=0 turns it off.
+# or npmmirror for npm and Node) when that is faster and its own index answers, as _mirror_fallback in install.sh does. UNSLOTH_MIRROR_FALLBACK=0 turns it off.
 function Test-MirrorConfigured {
     param([ValidateSet('uv', 'pip')][string]$Tool)
     if ($Tool -eq 'uv') {
@@ -973,20 +973,20 @@ function Wait-MirrorProbe {
 function Invoke-MirrorFallback {
     if ("$env:UNSLOTH_MIRROR_FALLBACK".Trim() -match '^(0|false|no|off)$' -or $env:_UNSLOTH_MIRROR_PROBED) { return }
     $env:_UNSLOTH_MIRROR_PROBED = '1'
-    $cernet = 'https://mirrors.cernet.edu.cn'
+    $cernet = 'https://tuna.mirrors.cernet.edu.cn'
     $npmMirror = 'https://registry.npmmirror.com'
     $pypiMirror = "$cernet/pypi/web/simple"
     $minBps = 1MB
     $useUv = -not (Test-MirrorConfigured -Tool uv)
     $usePip = -not (Test-MirrorConfigured -Tool pip)
-    # Artifacts the installs download. CERNET redirects each tree to a different university mirror, so each tree is timed.
+    # Artifacts the installs download. Each mirror tree can sit on its own host (CERNET redirects each to a different university mirror), so each tree is timed.
     $uvWheel = 'packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl'
     $torchWheel = 'whl/cpu/torch-2.9.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl'
     $nodeTarball = 'v24.18.0/node-v24.18.0-linux-x64.tar.gz'
     $artifact = @{
         'pypi' = "https://files.pythonhosted.org/$uvWheel"; 'cernet-pypi' = "$cernet/pypi/web/$uvWheel"
         'torch' = "https://download-r2.pytorch.org/$torchWheel"; 'cernet-torch' = "$cernet/pytorch/$torchWheel"
-        'node' = "https://nodejs.org/dist/$nodeTarball"; 'cernet-node' = "$cernet/nodejs-release/$nodeTarball"
+        'node' = "https://nodejs.org/dist/$nodeTarball"; 'npmmirror-node' = "$npmMirror/-/binary/node/$nodeTarball"
         'npm' = 'https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz'; 'npmmirror' = "$npmMirror/typescript/-/typescript-5.9.3.tgz"
         'astral' = 'https://releases.astral.sh/github/uv/releases/download/0.12.1/uv-x86_64-unknown-linux-gnu.tar.gz'
     }
@@ -996,7 +996,7 @@ function Invoke-MirrorFallback {
     if (-not "$env:UNSLOTH_PYTORCH_MIRROR$env:UNSLOTH_TORCH_INDEX_URL") {
         $hosts['torch'] = @('torch', 'cernet-torch', "$cernet/pytorch/whl", 'https://download.pytorch.org/whl/cpu/torch/', "$cernet/pytorch/whl/cpu/torch/")
     }
-    if (-not $env:UNSLOTH_NODE_MIRROR) { $hosts['node'] = @('node', 'cernet-node', "$cernet/nodejs-release", $null, $null) }
+    if (-not $env:UNSLOTH_NODE_MIRROR) { $hosts['node'] = @('node', 'npmmirror-node', "$npmMirror/-/binary/node", $null, $null) }
     if (-not $env:UNSLOTH_NPM_REGISTRY) { $hosts['npm'] = @('npm', 'npmmirror', $npmMirror, $null, $null) }
     if (-not "$env:UNSLOTH_UV_WHEEL_MIRROR$env:UV_DOWNLOAD_URL$env:INSTALLER_DOWNLOAD_URL$env:UV_INSTALLER_GHE_BASE_URL$env:UV_INSTALLER_GITHUB_BASE_URL") {
         $hosts['uvbin'] = @('astral', 'cernet-pypi', "$cernet/pypi/web", $null, $null)

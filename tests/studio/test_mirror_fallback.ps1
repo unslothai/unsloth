@@ -68,12 +68,12 @@ New-Item -ItemType Directory -Force -Path (Split-Path $pipIni) | Out-Null
 $env:APPDATA = Join-Path $home_ 'AppData'; $env:USERPROFILE = $home_; $env:ProgramData = Join-Path $home_ 'ProgramData'
 function step($l, $v, $c) { $script:lines += "STEP $v" }
 function substep($m) { $script:lines += "SUBSTEP $m" }
-$M = 'https://mirrors.cernet.edu.cn'
+$M = 'https://tuna.mirrors.cernet.edu.cn'
 # Every probe answers from $script:mock by class: fast, slow (<1 MiB/s), blocked or "<code> <bytes/s>"; "a|b" is a, then b.
 function Get-ProbeClass([string]$u) {
     switch -Wildcard ($u) {
         "$M/pypi/web/simple/*" { return 'cernetpypiindex' } "$M/pytorch/whl/cpu/torch/" { return 'cernettorchindex' } "$M/pytorch/*" { return 'cernettorch' }
-        "$M/nodejs-release/*" { return 'cernetnode' } "$M/*" { return 'cernet' } 'https://registry.npmmirror.com/*' { return 'npmmirror' }
+        'https://registry.npmmirror.com/-/binary/node/*' { return 'npmmirrornode' } "$M/*" { return 'cernet' } 'https://registry.npmmirror.com/*' { return 'npmmirror' }
         'https://pypi.org/*' { return 'pypiindex' } 'https://download.pytorch.org/*' { return 'torchindex' } 'https://files.pythonhosted.org/*' { return 'pypi' }
         'https://download-r2.pytorch.org/*' { return 'torch' } 'https://nodejs.org/*' { return 'node' } 'https://registry.npmjs.org/*' { return 'npm' } default { return 'astral' }
     }
@@ -105,7 +105,7 @@ try {
     Check "fast hosts never touch a mirror" (-not ($script:probed -match 'cernet|npmmirror'))
     Run @{ pypi = 'slow'; torch = 'slow'; node = 'slow'; npm = 'slow'; astral = 'slow' }; Check "defaults are timed one at a time, on 1 MiB within 1.5 s or 4 s; indexes on 1 KiB within 4 s" (-not $script:overlap -and -not $script:badRange)
     Run @{ torch = 'blocked' }
-    Check "hosts left on their defaults keep their mirror, blocked-mode, as a spare" ($env:_UNSLOTH_MIRROR_SPARE -eq "pypi|UV_DEFAULT_INDEX=$pypiMirror|PIP_INDEX_URL=$pypiMirror node|UNSLOTH_NODE_MIRROR=$M/nodejs-release npm|UNSLOTH_NPM_REGISTRY=https://registry.npmmirror.com uvbin|UNSLOTH_UV_WHEEL_MIRROR=$M/pypi/web")
+    Check "hosts left on their defaults keep their mirror, blocked-mode, as a spare" ($env:_UNSLOTH_MIRROR_SPARE -eq "pypi|UV_DEFAULT_INDEX=$pypiMirror|PIP_INDEX_URL=$pypiMirror node|UNSLOTH_NODE_MIRROR=https://registry.npmmirror.com/-/binary/node npm|UNSLOTH_NPM_REGISTRY=https://registry.npmmirror.com uvbin|UNSLOTH_UV_WHEEL_MIRROR=$M/pypi/web")
     Run @{ pypi = 'blocked' }
     Check "blocked pypi: mirror is the only uv/pip index" ($env:UV_DEFAULT_INDEX -eq $pypiMirror -and $env:PIP_INDEX_URL -eq $pypiMirror -and -not $env:UV_INDEX -and -not $env:UV_INDEX_STRATEGY -and -not $env:PIP_EXTRA_INDEX_URL)
     Check "blocked pypi: says so with both speeds and names the opt-out" ($script:lines -contains "STEP PyPI is blocked (0 KB/s, mirror 3906 KB/s); using $pypiMirror" -and $script:lines[-1] -like 'SUBSTEP Set UNSLOTH_MIRROR_FALLBACK=0*')
@@ -120,9 +120,9 @@ try {
     Run @{ pypi = 'slow|404 5000000'; cernet = '206 400000' }; Check "an HTTP error in the race weighs as 0 B/s" ($script:lines -contains "STEP PyPI is blocked (0 KB/s, mirror 390 KB/s); using $pypiMirror")
     Run @{ pypi = '404 0' }; Check "a default answering an HTTP error is kept, without timing the mirror" (-not $env:UV_DEFAULT_INDEX -and -not ($script:probed -like "$M/*"))
     Run @{ torch = 'blocked'; node = 'slow'; npm = 'blocked' }
-    Check "torch, node and npm mirrors; healthy pypi untouched" ($env:UNSLOTH_PYTORCH_MIRROR -eq "$M/pytorch/whl" -and $env:UNSLOTH_NODE_MIRROR -eq "$M/nodejs-release" -and $env:UNSLOTH_NPM_REGISTRY -eq 'https://registry.npmmirror.com' -and -not $env:PIP_INDEX_URL)
-    Check "each CERNET tree is timed once" (@($script:probed -like "$M/*" -match '\.(gz|whl)$').Count -eq 2)
-    Run @{ torch = 'blocked'; node = 'blocked'; cernetnode = 'blocked' }; Check "torch and node are weighed against their own CERNET trees" ($env:UNSLOTH_PYTORCH_MIRROR -eq "$M/pytorch/whl" -and -not $env:UNSLOTH_NODE_MIRROR)
+    Check "torch, node and npm mirrors; healthy pypi untouched" ($env:UNSLOTH_PYTORCH_MIRROR -eq "$M/pytorch/whl" -and $env:UNSLOTH_NODE_MIRROR -eq 'https://registry.npmmirror.com/-/binary/node' -and $env:UNSLOTH_NPM_REGISTRY -eq 'https://registry.npmmirror.com' -and -not $env:PIP_INDEX_URL)
+    Check "each mirror tree is timed once" (@($script:probed -match "^($([regex]::Escape($M))|https://registry\.npmmirror\.com)/.*\.(t?gz|whl)$").Count -eq 3)
+    Run @{ torch = 'blocked'; node = 'blocked'; npmmirrornode = 'blocked' }; Check "torch and node are weighed against their own mirror trees" ($env:UNSLOTH_PYTORCH_MIRROR -eq "$M/pytorch/whl" -and -not $env:UNSLOTH_NODE_MIRROR)
     Run @{ pypiindex = 'blocked' }; Check "an unreachable pypi.org means blocked mode" ($env:UV_DEFAULT_INDEX -eq $pypiMirror -and -not $env:UV_INDEX)
     Run @{ torchindex = 'blocked' }; Check "an unreachable torch index switches torch" ($env:UNSLOTH_PYTORCH_MIRROR -eq "$M/pytorch/whl")
     Run @{ pypi = 'blocked'; torch = 'blocked'; astral = 'blocked'; cernetpypiindex = 'blocked' }

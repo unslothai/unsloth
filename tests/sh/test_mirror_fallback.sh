@@ -37,9 +37,9 @@ cat > "$_WORK/bin/curl" <<'EOF'
 for _a in "$@"; do _url="$_a"; done
 echo "$_url" >> "$MOCK_LOG"
 case "$_url" in
-    https://mirrors.cernet.edu.cn/pypi/web/simple/*) _h=CERNETPYPIINDEX ;; https://mirrors.cernet.edu.cn/pytorch/whl/cpu/torch/) _h=CERNETTORCHINDEX ;;
-    https://mirrors.cernet.edu.cn/pytorch/*) _h=CERNETTORCH ;; https://mirrors.cernet.edu.cn/nodejs-release/*) _h=CERNETNODE ;;
-    https://mirrors.cernet.edu.cn/*) _h=CERNET ;; https://registry.npmmirror.com/*) _h=NPMMIRROR ;;
+    https://tuna.mirrors.cernet.edu.cn/pypi/web/simple/*) _h=CERNETPYPIINDEX ;; https://tuna.mirrors.cernet.edu.cn/pytorch/whl/cpu/torch/) _h=CERNETTORCHINDEX ;;
+    https://tuna.mirrors.cernet.edu.cn/pytorch/*) _h=CERNETTORCH ;; https://registry.npmmirror.com/-/binary/node/*) _h=NPMMIRRORNODE ;;
+    https://tuna.mirrors.cernet.edu.cn/*) _h=CERNET ;; https://registry.npmmirror.com/*) _h=NPMMIRROR ;;
     https://pypi.org/*) _h=PYPIINDEX ;; https://download.pytorch.org/*) _h=TORCHINDEX ;;
     https://files.pythonhosted.org/*) _h=PYPI ;; https://download-r2.pytorch.org/*) _h=TORCH ;;
     https://nodejs.org/*) _h=NODE ;; https://registry.npmjs.org/*) _h=NPM ;; *) _h=ASTRAL ;;
@@ -80,7 +80,7 @@ eval \"\${_AFTER:-}\"
 for _v in $_VARS; do eval \"[ -z \\\"\\\${\$_v+x}\\\" ] || echo \\\"\$_v=\\\$\$_v\\\"\"; done"
 }
 
-M=https://mirrors.cernet.edu.cn
+M=https://tuna.mirrors.cernet.edu.cn
 for SH in dash bash; do
     command -v "$SH" >/dev/null 2>&1 || { echo "  SKIP: $SH not installed"; continue; }
     out=$(_run "$SH")
@@ -114,10 +114,10 @@ for SH in dash bash; do
     out=$(_run "$SH" MOCK_PYPI="404 0")
     assert_eq "[$SH] a default answering an HTTP error is kept, without timing the mirror" "" "$out$(grep -F "$M" "$_WORK/curl.log" || true)"
     out=$(_run "$SH" MOCK_TORCH=blocked MOCK_NODE=slow MOCK_NPM=blocked)
-    for _kv in "UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl" "UNSLOTH_NODE_MIRROR=$M/nodejs-release" "UNSLOTH_NPM_REGISTRY=https://registry.npmmirror.com"; do assert_contains "[$SH] mirror $_kv" "$out" "$_kv"; done
+    for _kv in "UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl" "UNSLOTH_NODE_MIRROR=https://registry.npmmirror.com/-/binary/node" "UNSLOTH_NPM_REGISTRY=https://registry.npmmirror.com"; do assert_contains "[$SH] mirror $_kv" "$out" "$_kv"; done
     assert_not_contains "[$SH] only slow hosts switch" "$out" "PIP_INDEX_URL"
-    assert_eq "[$SH] each CERNET tree is timed once" "2" "$(grep "$M" "$_WORK/curl.log" | grep -cE '[.](gz|whl)$')"
-    out=$(_run "$SH" MOCK_TORCH=blocked MOCK_NODE=blocked MOCK_CERNETNODE=blocked)
+    assert_eq "[$SH] each mirror tree is timed once" "3" "$(grep -E '^https://(tuna[.]mirrors[.]cernet[.]edu[.]cn|registry[.]npmmirror[.]com)/' "$_WORK/curl.log" | grep -cE '[.](t?gz|whl)$')"
+    out=$(_run "$SH" MOCK_TORCH=blocked MOCK_NODE=blocked MOCK_NPMMIRRORNODE=blocked)
     assert_contains "[$SH] torch waits on CERNET's torch tree ..." "$out" "UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl"
     assert_not_contains "[$SH] ... and node on its node tree" "$out" "UNSLOTH_NODE_MIRROR"
     assert_contains "[$SH] an unreachable pypi.org means blocked mode" "$(_run "$SH" MOCK_PYPIINDEX=blocked)" "UV_DEFAULT_INDEX=$M/pypi/web/simple"
@@ -125,7 +125,7 @@ for SH in dash bash; do
     assert_not_contains "[$SH] a mirror whose index does not answer is not used ..." "$out" "PIP_INDEX_URL"
     assert_contains "[$SH] ... while a mirror with its own live index is" "$out" "UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl"
     assert_contains "[$SH] ... and the uv wheel, which skips the index, still is" "$out" "UNSLOTH_UV_WHEEL_MIRROR=$M/pypi/web"
-    assert_eq "[$SH] a mirror answering a redirect or an HTTP error is not used" "" "$(_run "$SH" MOCK_TORCH=blocked MOCK_CERNETTORCH="302 900000" MOCK_NODE=blocked MOCK_CERNETNODE="403 900000")"
+    assert_eq "[$SH] a mirror answering a redirect or an HTTP error is not used" "" "$(_run "$SH" MOCK_TORCH=blocked MOCK_CERNETTORCH="302 900000" MOCK_NODE=blocked MOCK_NPMMIRRORNODE="403 900000")"
     assert_not_contains "[$SH] a dead CERNET torch index keeps torch" "$(_run "$SH" MOCK_TORCH=blocked MOCK_CERNETTORCHINDEX=blocked)" "UNSLOTH_PYTORCH_MIRROR"
     assert_contains "[$SH] an unreachable torch index switches torch" "$(_run "$SH" MOCK_TORCHINDEX=blocked)" "UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl"
     out=$(_run "$SH" MOCK_PYPI=slow MOCK_CERNET=slow MOCK_NPM=slow MOCK_NPMMIRROR="206 400000")
@@ -177,7 +177,7 @@ for SH in dash bash; do
     out=$(_run "$SH" MOCK_PYPI=blocked _UNSLOTH_MIRROR_PROBED=1)
     assert_eq "[$SH] a parent installer's probe is not repeated" "" "$(cat "$_WORK/curl.log")"
     out=$(_run "$SH" MOCK_TORCH=blocked PIP_INDEX_URL=https://corp.example/simple _AFTER='echo "SPARE $_UNSLOTH_MIRROR_SPARE"; _mirror_switch pypi || :; _mirror_switch pypi || echo AGAIN no')
-    assert_eq "[$SH] hosts left on their default, not the switched one, are spared with their blocked-mode vars" "SPARE pypi|UV_DEFAULT_INDEX=$M/pypi/web/simple node|UNSLOTH_NODE_MIRROR=$M/nodejs-release npm|UNSLOTH_NPM_REGISTRY=https://registry.npmmirror.com python|UV_PYTHON_INSTALL_MIRROR=https://registry.npmmirror.com/-/binary/python-build-standalone uvbin|UNSLOTH_UV_WHEEL_MIRROR=$M/pypi/web" "$(echo "$out" | grep '^SPARE')"
+    assert_eq "[$SH] hosts left on their default, not the switched one, are spared with their blocked-mode vars" "SPARE pypi|UV_DEFAULT_INDEX=$M/pypi/web/simple node|UNSLOTH_NODE_MIRROR=https://registry.npmmirror.com/-/binary/node npm|UNSLOTH_NPM_REGISTRY=https://registry.npmmirror.com python|UV_PYTHON_INSTALL_MIRROR=https://registry.npmmirror.com/-/binary/python-build-standalone uvbin|UNSLOTH_UV_WHEEL_MIRROR=$M/pypi/web" "$(echo "$out" | grep '^SPARE')"
     assert_eq "[$SH] a failed step switches its host once" "STEP PyPI failed; retrying through $M/pypi/web/simple|AGAIN no|UV_DEFAULT_INDEX=$M/pypi/web/simple" "$(echo "$out" | grep -E '^(STEP PyPI failed|AGAIN|UV_DEFAULT_INDEX)' | paste -sd'|' -)"
 done
 
