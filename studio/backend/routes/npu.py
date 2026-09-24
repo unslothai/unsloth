@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -41,6 +42,63 @@ _MANAGED_ACCOUNT_STATUS = {
 
 async def _require_installation_owner(current_subject: str = Depends(get_current_subject)) -> None:
     await policy.require_owner()
+
+
+class _Download:
+    """One pull, run off the request so a dropped progress stream does not stop it."""
+
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+        self.finished = False
+        self.changed = threading.Condition()
+
+    def publish(self, event: dict) -> None:
+        with self.changed:
+            self.events.append(event)
+            self.changed.notify_all()
+
+    def follow(self):
+        """Every event so far, then each new one, until the pull ends."""
+        seen = 0
+        while True:
+            with self.changed:
+                while seen >= len(self.events) and not self.finished:
+                    self.changed.wait()
+                batch, seen = self.events[seen:], len(self.events)
+                finished = self.finished
+            yield from batch
+            if finished:
+                return
+
+
+_downloads: dict[str, _Download] = {}
+_downloads_lock = threading.Lock()
+
+
+def _start_download(npu, model_id: str) -> _Download:
+    """The model's running pull, or a new one; a second request follows the first."""
+    with _downloads_lock:
+        job = _downloads.get(model_id)
+        if job is not None and not job.finished:
+            return job
+        job = _Download()
+        _downloads[model_id] = job
+
+    def _run() -> None:
+        try:
+            for event in npu.download(model_id):
+                job.publish(event)
+        except NpuError as exc:
+            job.publish({"event": "error", "error": str(exc)})
+        except Exception as exc:  # noqa: BLE001 -- reported on the stream, not lost in a thread
+            job.publish({"event": "error", "error": f"Downloading {model_id} failed: {exc}"})
+        finally:
+            with job.changed:
+                job.finished = True
+                job.changed.notify_all()
+
+    threading.Thread(target = _run, daemon = True, name = "npu-pull").start()
+    return job
 
 
 @router.get("/status")
@@ -75,14 +133,11 @@ async def download_npu_model(model_id: str):
 
     Disconnecting stops progress updates, not the download.
     """
-    npu = get_npu_backend()
+    job = _start_download(get_npu_backend(), model_id)
 
     def _events():
-        try:
-            for event in npu.download(model_id):
-                yield f"data: {json.dumps(event)}\n\n"
-        except NpuError as exc:
-            yield f"data: {json.dumps({'event': 'error', 'error': str(exc)})}\n\n"
+        for event in job.follow():
+            yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(
         iterate_in_threadpool(_events()),

@@ -821,3 +821,53 @@ def test_a_swap_stops_an_npu_reply_still_in_prefill(flm):
     # A stop, not the cut-short error a dropped stream gets.
     assert not any('"error"' in line for line in lines)
     assert _data(lines)[-1]["choices"][0]["finish_reason"] == "stop"
+
+
+def test_a_dropped_progress_stream_does_not_stop_the_download(monkeypatch):
+    from routes import npu as npu_routes
+
+    finished = threading.Event()
+    release = threading.Event()
+
+    class _Npu:
+        def download(self, model_id):
+            yield {"event": "progress", "percent": 40}
+            # The browser goes away here.
+            assert release.wait(10)
+            yield {"event": "complete", "model": model_id, "percent": 100}
+            finished.set()
+
+    monkeypatch.setattr(npu_routes, "get_npu_backend", lambda: _Npu())
+
+    async def go():
+        response = await npu_routes.download_npu_model("qwen3-0.6b-FLM")
+        body = response.body_iterator
+        first = await body.__anext__()
+        await body.aclose()
+        return first
+
+    first = asyncio.run(go())
+    assert '"percent": 40' in (first.decode() if isinstance(first, bytes) else first)
+    release.set()
+    assert finished.wait(10)
+
+
+def test_a_second_download_request_follows_the_running_pull(monkeypatch):
+    from routes import npu as npu_routes
+
+    started: list[str] = []
+    release = threading.Event()
+
+    class _Npu:
+        def download(self, model_id):
+            started.append(model_id)
+            assert release.wait(10)
+            yield {"event": "complete", "model": model_id, "percent": 100}
+
+    monkeypatch.setattr(npu_routes, "get_npu_backend", lambda: _Npu())
+    first = npu_routes._start_download(_Npu(), "gemma3-4b-FLM")
+    second = npu_routes._start_download(_Npu(), "gemma3-4b-FLM")
+    assert first is second
+    release.set()
+    assert [event["event"] for event in second.follow()] == ["complete"]
+    assert started == ["gemma3-4b-FLM"]
