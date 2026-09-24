@@ -390,7 +390,6 @@ def load_prequant_safetensors(path: str, *, device: str = "cpu") -> dict:
         # to copy them out of the file.
         if "tensor_names" not in raw:
             from safetensors.torch import load_file
-
             return {
                 "format": str(fmt),
                 "state_dict": load_file(path, device = device),
