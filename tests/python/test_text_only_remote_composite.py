@@ -548,7 +548,13 @@ def test_adapter_trained_on_the_wrapper_keeps_the_full_model(tmp_path):
 
     # The failure the gate prevents: none of the wrapper adapter's tensors reach the standalone decoder.
     saved = list(load_file(str(wrapper_adapter / "adapter_model.safetensors")).values())
-    loaded = peft.PeftModel.from_pretrained(text_model(), wrapper_adapter)
+    from real_accelerator import has_real_accelerator
+
+    loaded = peft.PeftModel.from_pretrained(
+        text_model(),
+        wrapper_adapter,
+        torch_device = "cuda" if has_real_accelerator() else "cpu",
+    )
     got = [v for k, v in loaded.state_dict().items() if "lora_" in k]
     assert got and not any(any(torch.equal(v, s) for s in saved) for v in got)
 
