@@ -1327,7 +1327,9 @@ def vae_can_slice(vae: Any) -> bool:
     """Whether ``vae`` decodes a batch one image at a time already, or offers ``enable_slicing``."""
     if vae is None:
         return False
-    return bool(getattr(vae, "use_slicing", False)) or callable(getattr(vae, "enable_slicing", None))
+    return bool(getattr(vae, "use_slicing", False)) or callable(
+        getattr(vae, "enable_slicing", None)
+    )
 
 
 def vae_is_sliced(vae: Any) -> bool:
