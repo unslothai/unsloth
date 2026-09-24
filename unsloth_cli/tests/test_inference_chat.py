@@ -2081,14 +2081,36 @@ def test_server_load_sends_load_in_4bit_only_when_typed(monkeypatch, command, fl
     assert payloads[0].get("load_in_4bit", "omitted") == expected
 
 
-def test_server_chat_banner_names_the_kept_quant(monkeypatch):
+@pytest.mark.parametrize(
+    ("model", "display_name", "picked", "resident", "banner"),
+    [
+        (
+            "unsloth/Qwen3-0.6B-GGUF",
+            "Qwen3-0.6B-GGUF (UD-Q4_K_XL)",
+            "UD-Q4_K_XL",
+            _RESIDENT_Q8,
+            "Qwen3-0.6B-GGUF (Q8_0)",
+        ),
+        (
+            "/models/Qwen3-0.6B-GGUF",
+            "Qwen3-0.6B-Q4_K_M",
+            None,
+            {**_RESIDENT_Q8, "model_identifier": "/models/Qwen3-0.6B-GGUF"},
+            "Qwen3-0.6B-GGUF (Q8_0)",
+        ),
+    ],
+)
+def test_server_chat_banner_names_the_kept_quant(
+    monkeypatch, model, display_name, picked, resident, banner
+):
     from unsloth_cli import _inference
 
     class _GgufConfig(_FakeConfig):
         is_gguf = True
         is_lora = False
-        display_name = "Qwen3-0.6B-GGUF (UD-Q4_K_XL)"
-        gguf_variant = "UD-Q4_K_XL"
+
+    _GgufConfig.display_name = display_name
+    _GgufConfig.gguf_variant = picked
 
     def fake_request(
         self,
@@ -2098,7 +2120,7 @@ def test_server_chat_banner_names_the_kept_quant(monkeypatch):
         timeout = None,
     ):
         if path == "/api/inference/status":
-            return _FakeStatusResponse(_RESIDENT_Q8)
+            return _FakeStatusResponse(resident)
         return _FakeLoadResponse()
 
     monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
@@ -2110,10 +2132,10 @@ def test_server_chat_banner_names_the_kept_quant(monkeypatch):
     monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _GgufConfig())
     monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
 
-    result = CliRunner().invoke(_chat_app(), ["unsloth/Qwen3-0.6B-GGUF"], input = "/exit\n")
+    result = CliRunner().invoke(_chat_app(), [model], input = "/exit\n")
 
     assert result.exit_code == 0, result.output
-    assert "Chatting with Qwen3-0.6B-GGUF (Q8_0)" in result.output
+    assert f"Chatting with {banner}" in result.output
 
 
 @pytest.mark.parametrize("command", ["chat", "inference"])
