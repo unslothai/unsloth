@@ -4285,6 +4285,17 @@ class VideoBackend:
         # Why the quant did not engage, in the caller's terms; threaded into `resolved`.
         transformer_quant_decline: Optional[str] = None
         transformer_quant_decline_status = RESOLVED_FELL_BACK
+        # Auto quantises a video DiT only to keep it resident: with bf16 already resident the compiled int8 DiT measured
+        # slower and further from bf16 (Wan2.2-TI2V-5B 0.745x at PSNR 18.9, HunyuanVideo-1.5 LPIPS 0.256).
+        if (
+            kind == "pipeline"
+            and normalize_transformer_quant(transformer_quant) == TQ_AUTO
+            and not quant_replanned
+            and plan.offload_policy == "none"
+        ):
+            logger.info("video.transformer_quant: auto keeps the bf16 DiT (it fits resident)")
+            transformer_quant = "off"
+            transformer_quant_decline = "auto: the bf16 DiT fits resident, where int8 is slower"
         if transformer_quant_pinned is not None and kind != "pipeline":
             transformer_quant_decline = (
                 f"the dense DiT quant applies to full-pipeline loads only, and this is a "
