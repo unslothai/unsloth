@@ -265,7 +265,6 @@ def test_text_encoder_nvfp4_is_refused():
 
 def test_no_hosted_nvfp4_text_encoder_is_resolved():
     from core.inference.diffusion_te_prequant import family_te_prequant_repo
-
     fam = types.SimpleNamespace(
         te_prequant_repos = (("nvfp4", "text_encoder", "unsloth/Some-Model-NVFP4"),)
     )
@@ -281,7 +280,6 @@ _WAN_T2V = "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
 
 def _wan_a14b():
     from core.inference.video_families import detect_video_family
-
     return detect_video_family(_WAN_T2V)
 
 
@@ -315,7 +313,12 @@ class _RecordingApi:
         self.repos = repos
         self.asked: list[str] = []
 
-    def model_info(self, repo_id, files_metadata = False, token = None):
+    def model_info(
+        self,
+        repo_id,
+        files_metadata = False,
+        token = None,
+    ):
         self.asked.append(repo_id)
         return types.SimpleNamespace(siblings = self.repos[repo_id])
 
@@ -357,7 +360,9 @@ def _wan_plan(monkeypatch):
     # The selector is what the switch filters; forcing its answer proves the resolver below it
     # holds on its own too.
     monkeypatch.setattr(video_mod, "select_transformer_quant_scheme", lambda *a, **k: "nvfp4")
-    monkeypatch.setattr(diffusion_prequant, "restricted_prequant_load_supported", lambda *a, **k: True)
+    monkeypatch.setattr(
+        diffusion_prequant, "restricted_prequant_load_supported", lambda *a, **k: True
+    )
     monkeypatch.setattr(video_mod, "_video_seed_stays_resident", lambda fam, **kw: True)
     monkeypatch.setattr(
         video_mod,
@@ -469,7 +474,6 @@ def test_enabled_the_video_plan_stages_the_hosted_nvfp4_denoisers(monkeypatch):
 def test_enabled_the_routes_let_nvfp4_through_the_switch(monkeypatch):
     _enable(monkeypatch)
     from routes.inference import _refuse_disabled_nvfp4_request
-
     _refuse_disabled_nvfp4_request(
         types.SimpleNamespace(transformer_quant = "nvfp4", text_encoder_quant = "nvfp4")
     )
@@ -517,7 +521,9 @@ def test_no_flashinfer_import_or_preflight_is_triggered(monkeypatch):
     from core.inference import diffusion_nvfp4_ops as ops
 
     touched = []
-    monkeypatch.setattr(ops, "_flashinfer_available", lambda: touched.append("import") or (True, "x"))
+    monkeypatch.setattr(
+        ops, "_flashinfer_available", lambda: touched.append("import") or (True, "x")
+    )
     monkeypatch.setattr(ops, "_preflight_probe", lambda dev: touched.append("preflight") or True)
     backend, reason = ops._resolve_backend(0)
     assert backend == ops.BACKEND_TORCHAO and DISABLED in reason
@@ -605,12 +611,18 @@ def test_the_loaders_never_ask_whether_an_nvfp4_checkpoint_will_load(monkeypatch
     monkeypatch.setattr(
         "huggingface_hub.HfApi", lambda *a, **k: types.SimpleNamespace(model_info = asked.append)
     )
-    assert DiffusionBackend._nvfp4_checkpoint_will_load(
-        object(), None, "Tongyi-MAI/Z-Image-Turbo", None, None
-    ) is False
-    assert VideoBackend._nvfp4_denoiser_checkpoint_will_load(
-        object(), _wan_a14b(), _WAN_T2V, None, None
-    ) is False
+    assert (
+        DiffusionBackend._nvfp4_checkpoint_will_load(
+            object(), None, "Tongyi-MAI/Z-Image-Turbo", None, None
+        )
+        is False
+    )
+    assert (
+        VideoBackend._nvfp4_denoiser_checkpoint_will_load(
+            object(), _wan_a14b(), _WAN_T2V, None, None
+        )
+        is False
+    )
     assert asked == []
 
 

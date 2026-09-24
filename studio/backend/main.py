@@ -2307,7 +2307,6 @@ def _nvfp4_diffusion_enabled() -> bool:
     """Whether image and video generation may offer NVFP4 (``UNSLOTH_NVFP4_DIFFUSION``)."""
     try:
         from core.inference.diffusion_nvfp4_flag import nvfp4_diffusion_enabled
-
         return nvfp4_diffusion_enabled()
     except Exception:  # noqa: BLE001 -- a capability read must never fail a status request
         return False
