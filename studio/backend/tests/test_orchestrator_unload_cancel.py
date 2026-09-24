@@ -1866,7 +1866,7 @@ def test_unload_after_cancelling_download_records_only_a_real_eviction(
     import routes.inference as ri
 
     attempt = ri._begin_load_attempt(LoadRequest(model_path = "gguf-X"), "s")
-    calls = {"lifecycle": [], "cleared": 0}
+    calls = {"lifecycle": [], "cleared": 0, "released": 0, "stash_dropped": 0}
 
     class _Gate:
         async def __aenter__(self):
@@ -1885,8 +1885,13 @@ def test_unload_after_cancelling_download_records_only_a_real_eviction(
     monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: _Llama())
     monkeypatch.setattr(ri, "get_inference_backend", lambda: _Backend())
     monkeypatch.setattr(ri, "is_registered_native_path_label", lambda a, b: False)
-    monkeypatch.setattr(ri, "release_chat_gpu_claim", lambda: True)
     monkeypatch.setattr(ri, "_raise_or_cancel_active_generations", lambda **k: None)
+
+    def _count(key):
+        def bump(*a, **k):
+            calls[key] += 1
+
+        return bump
 
     async def _no_drain(**k):
         return None
@@ -1900,7 +1905,8 @@ def test_unload_after_cancelling_download_records_only_a_real_eviction(
     )
     monkeypatch.setattr(ri.account_access, "clear_resident", _clear_resident)
     monkeypatch.setattr(llama_keepwarm, "inference_lifecycle_gate", lambda: _Gate())
-    monkeypatch.setattr(llama_keepwarm, "note_model_unloaded", lambda: None)
+    monkeypatch.setattr(llama_keepwarm, "note_model_unloaded", _count("stash_dropped"))
+    monkeypatch.setattr(ri, "release_chat_gpu_claim", _count("released"))
     with ri._scoped_load_attempts_lock:
         ri._running_load_attempt = attempt
     try:
@@ -1913,6 +1919,9 @@ def test_unload_after_cancelling_download_records_only_a_real_eviction(
     assert attempt.cancel_event.is_set()
     assert [c["event"] for c in calls["lifecycle"]] == (["unload"] if recorded else [])
     assert calls["cleared"] == (1 if recorded else 0)
+    # Either way the load's GPU claim and any idle reload stash must not outlive the Stop.
+    assert calls["released"] == 1
+    assert calls["stash_dropped"] == 1
 
 
 # ----------------------------------------------------------------------------

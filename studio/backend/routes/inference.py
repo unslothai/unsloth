@@ -18550,7 +18550,9 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             backend = await asyncio.to_thread(get_inference_backend)
             evicts = _unload_evicts_standard_backend(backend, request.model_path)
             if cancelled_before_server and not evicts:
-                # The cancelled load never became resident, so there is no unload to record.
+                # The cancelled load never became resident: release what it held, record no unload.
+                note_model_unloaded()
+                await asyncio.to_thread(release_chat_gpu_claim)
                 return UnloadResponse(status = "unloaded", model = request.model_path)
             if evicts:
                 # Point of no return for the standard path, same rule as above.
