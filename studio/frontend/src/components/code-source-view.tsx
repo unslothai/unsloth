@@ -12,6 +12,37 @@ const sourceCodePlugin = createCodePlugin({
   themes: [unslothLightTheme, unslothDarkTheme],
 });
 
+// Past either, highlighting a whole file on the main thread freezes the page for seconds; the
+// source shows plain, still line-numbered.
+const MAX_HIGHLIGHT_CHARS = 200_000;
+const MAX_HIGHLIGHT_LINES = 5_000;
+
+function lineCount(source: string): number {
+  let lines = 1;
+  for (let index = source.indexOf("\n"); index !== -1; index = source.indexOf("\n", index + 1)) {
+    lines += 1;
+  }
+  return lines;
+}
+
+/** Monospace with a line-number gutter, for source too large to highlight. */
+function PlainSource({ code, lines, className }: { code: string; lines: number; className?: string }) {
+  const numbers = useMemo(
+    () => Array.from({ length: lines }, (_, index) => index + 1).join("\n"),
+    [lines],
+  );
+  return (
+    <div className={cn("h-full overflow-auto font-mono text-xs leading-relaxed", className)}>
+      <div className="flex min-w-max">
+        <pre aria-hidden="true" className="m-0 select-none pr-4 text-right text-muted-foreground/60">
+          {numbers}
+        </pre>
+        <pre className="m-0 flex-1">{code}</pre>
+      </div>
+    </div>
+  );
+}
+
 function buildFence(source: string, language: string): string {
   const longestBacktickRun = Math.max(
     2,
@@ -31,7 +62,13 @@ export function CodeSourceView({
   language: string;
   className?: string;
 }) {
-  const markdown = useMemo(() => buildFence(code, language), [code, language]);
+  const lines = useMemo(() => lineCount(code), [code]);
+  const plain = code.length > MAX_HIGHLIGHT_CHARS || lines > MAX_HIGHLIGHT_LINES;
+  const markdown = useMemo(
+    () => (plain ? "" : buildFence(code, language)),
+    [plain, code, language],
+  );
+  if (plain) return <PlainSource code={code} lines={lines} className={className} />;
   return (
     <div
       className={cn(
@@ -40,7 +77,8 @@ export function CodeSourceView({
       )}
     >
       <Streamdown
-        mode="streaming"
+        // Whole, unchanging source: nothing to stream.
+        mode="static"
         plugins={{ code: sourceCodePlugin }}
         controls={{ code: false }}
         shikiTheme={[unslothLightTheme, unslothDarkTheme]}
