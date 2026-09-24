@@ -209,3 +209,71 @@ def test_a_non_contiguous_weight_keeps_its_layout(monkeypatch):
     _render(pipe, torch.randn(4, 8))
     assert not lin.weight.is_pinned() and lin.bias.is_pinned()
     assert lin.weight.stride() == (1, 8)
+
+
+@cuda
+def test_a_parameter_replaced_on_the_device_is_copied_back():
+    pipe = _pipe("cuda", "transformer")
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    pipe.transformer(torch.ones(1, 8))
+    # A new Parameter under the same name can sit at the very version recorded at onload, so only its
+    # identity tells it apart.
+    old = pipe.transformer.weight
+    new = torch.nn.Parameter(torch.full_like(old, 3.0))
+    with torch.no_grad():
+        while new._version < old._version:
+            new.mul_(1)
+    assert new._version == old._version
+    pipe.transformer.weight = new
+    pipe.transformer._hf_hook.init_hook(pipe.transformer)
+    assert pipe.transformer.weight.device.type == "cpu"
+    assert torch.equal(pipe.transformer.weight.detach(), torch.full((8, 8), 3.0))
+
+
+def _host_of(module):
+    return {name: p.data for name, p in module.named_parameters()}
+
+
+@cuda
+def test_the_ram_gate_counts_the_chunks_really_allocated(monkeypatch):
+    psutil = pytest.importorskip("psutil")
+    # Weight 256 B and bias 32 B (256 aligned) do not share a 384 B chunk: 384 + 256 B are allocated for 512.
+    monkeypatch.setattr(dm, "_PIN_CHUNK_BYTES", 384)
+    reserve = 4 << 30
+    lin = torch.nn.Linear(8, 8)
+    monkeypatch.setattr(
+        psutil,
+        "virtual_memory",
+        lambda: types.SimpleNamespace(total = 16 << 30, available = reserve + 600),
+    )
+    assert dm._pin_host_weights(lin, _host_of(lin)) == 0
+    assert not lin.weight.is_pinned()
+    monkeypatch.setattr(
+        psutil,
+        "virtual_memory",
+        lambda: types.SimpleNamespace(total = 16 << 30, available = reserve + 640),
+    )
+    assert dm._pin_host_weights(lin, _host_of(lin)) == 640
+    assert lin.weight.is_pinned() and lin.bias.is_pinned()
+
+
+@cuda
+def test_a_failed_pin_hands_the_partial_chunks_back(monkeypatch):
+    monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, "1")
+    monkeypatch.setattr(dm, "_PIN_CHUNK_BYTES", 384)
+    real_empty, calls, emptied = torch.empty, [], []
+
+    def empty(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 2:
+            raise RuntimeError("cudaHostAlloc failed")
+        return real_empty(*args, **kwargs)
+
+    lin = torch.nn.Linear(8, 8)
+    host = _host_of(lin)
+    monkeypatch.setattr(torch, "empty", empty)
+    monkeypatch.setattr(dm, "_host_empty_cache", lambda: emptied.append(True))
+    assert dm._pin_host_weights(lin, host) == 0
+    assert len(calls) == 2 and emptied
+    assert not lin.weight.is_pinned() and not lin.bias.is_pinned()
