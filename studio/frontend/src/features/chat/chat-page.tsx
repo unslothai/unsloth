@@ -133,6 +133,7 @@ import {
   useChatArtifactsStore,
   useSelectedChatArtifact,
 } from "./artifacts/store";
+import { isKnownTextOnlySelection } from "./utils/model-vision-capability";
 import type { ChatArtifact, ChatArtifactSurface } from "./artifacts/types";
 import { McpServersDialogMount } from "./mcp-composer-button";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
@@ -179,6 +180,7 @@ import {
 import {
   externalReasoningTakesEffort,
   getExternalReasoningCapabilities,
+  providerSupportsPreserveThinking,
   getProviderCapabilities,
   modelCatalogVersion,
   providerHostsCodeExecution,
@@ -222,6 +224,7 @@ import {
   reconcilePinnedReasoningEffort,
   takeEffortDisplacedByPin,
   threadScopedOverride,
+  resolvePreserveThinkingOnLoad,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import { wantsDownloadManagerStaging } from "./utils/model-download-staging";
@@ -2630,7 +2633,10 @@ export function ChatPage({
             : state.reasoningEnabled
           : true
         : state.reasoningEnabled,
-      supportsPreserveThinking: false,
+      supportsPreserveThinking: providerSupportsPreserveThinking(provider?.providerType),
+      preserveThinking: resolvePreserveThinkingOnLoad({
+        supports_preserve_thinking: providerSupportsPreserveThinking(provider?.providerType),
+      }),
       supportsTools: supportsStudioToolsHere,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
@@ -3327,7 +3333,10 @@ export function ChatPage({
                 : store.reasoningEnabled
               : true
             : store.reasoningEnabled,
-          supportsPreserveThinking: false,
+          supportsPreserveThinking: providerSupportsPreserveThinking(selectedProvider?.providerType),
+          preserveThinking: resolvePreserveThinkingOnLoad({
+            supports_preserve_thinking: providerSupportsPreserveThinking(selectedProvider?.providerType),
+          }),
           supportsTools: supportsStudioToolsHere,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
@@ -3364,7 +3373,11 @@ export function ChatPage({
                 (model) => model.id === value,
               );
               showImageCompatibilityWarning =
-                hasImage && targetModel?.isVision === false;
+                hasImage &&
+                isKnownTextOnlySelection(
+                  { isVision: meta?.isVision, isGguf: meta?.isGguf },
+                  targetModel,
+                );
             }
           }
         }
@@ -3386,6 +3399,7 @@ export function ChatPage({
           expectedBytes: meta?.expectedBytes,
           downloadPresentation: meta?.downloadPresentation,
           isGguf: meta?.isGguf,
+          isVision: meta?.isVision,
           isDiffusion: meta?.isDiffusion,
           config: meta?.config,
           nativePathToken: meta?.nativePathToken,

@@ -3117,8 +3117,8 @@ class ResponsesCustomToolCallOutputInputItem(BaseModel):
 class ResponsesUnknownInputItem(BaseModel):
     """Catch-all for unmodelled Responses input item types.
 
-    Covers ``reasoning`` items and future types. Dropped during normalisation
-    (GGUFs can't consume them), but kept in the union so unrelated turns don't 422.
+    Covers ``reasoning`` items and future types, so unrelated turns don't 422.
+    Normalisation replays reasoning text and drops every other unknown item.
     """
 
     type: str
@@ -4295,7 +4295,7 @@ class GalleryImage(BaseModel):
     archived: bool = Field(False, description = "Moved to the archived shelf, hidden from the strip")
     order_at: Optional[float] = Field(
         None,
-        description = "Manual sort key (epoch-second scale) once dragged; unset sorts by creation",
+        description = "Unpinned sort key (epoch-second scale): the manual key once dragged, else the file mtime",
     )
 
 
@@ -4698,20 +4698,28 @@ class AudioGalleryItem(BaseModel):
     sample_rate: int
     duration_s: float
     created_at: str
+    pinned: bool = Field(False, description = "Pinned to the top of history")
     archived: bool = Field(False, description = "Moved to the archived shelf, hidden from history")
+    order_at: Optional[float] = Field(
+        None,
+        description = "Unpinned sort key (epoch-second scale): the manual key once dragged, else the file mtime",
+    )
 
 
 class AudioGalleryFlagsPatch(BaseModel):
+    pinned: Optional[bool] = Field(None, description = "Pin (True) or unpin (False) the clip")
     archived: Optional[bool] = Field(None, description = "Archive (True) or restore (False) the clip")
 
 
 class AudioGalleryListResponse(BaseModel):
-    """A newest-first window of the audio gallery for infinite scroll."""
+    """A window of the audio gallery for infinite scroll: pinned first, then newest first."""
 
     audio: List[AudioGalleryItem] = Field(default_factory = list)
     has_more: bool = False
+    # Cursor: the last clip's order key (mtime unless dragged), id, and pin rank (None if unpinned).
     next_before_mtime: Optional[float] = None
     next_before_id: Optional[str] = None
+    next_before_pin: Optional[float] = None
 
 
 class VideoJobCreateRequest(BaseModel):
@@ -5154,7 +5162,7 @@ class GalleryVideo(BaseModel):
     archived: bool = Field(False, description = "Moved to the archived shelf, hidden from the strip")
     order_at: Optional[float] = Field(
         None,
-        description = "Manual sort key (epoch-second scale) once dragged; unset sorts by creation",
+        description = "Unpinned sort key (epoch-second scale): the manual key once dragged, else the file mtime",
     )
 
 
