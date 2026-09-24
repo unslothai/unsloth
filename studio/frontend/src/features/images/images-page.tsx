@@ -150,6 +150,7 @@ import {
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
+import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { DEFAULT_GEN, defaultsFor, resolutionFor } from "./image-generation-defaults";
 import {
@@ -3230,6 +3231,31 @@ export function ImagesPage({
     quant,
     revertPick,
   ]);
+
+  // A Library "View in" link arrives as ?item=: select that image, paging back until it loads. A
+  // counter, not effect cleanup, retires a lookup: clearing the query must not cancel its own.
+  const routedItem = active ? routeSearch?.item : undefined;
+  const routedLookup = useRef(0);
+  useEffect(() => {
+    if (!routedItem) return;
+    const lookup = ++routedLookup.current;
+    void navigateSelf({ to: "/images", search: {}, replace: true });
+    void loadGalleryUntil({
+      has: () => galleryCache.images.some((entry) => entry.id === routedItem),
+      count: () => galleryCache.images.length,
+      hasMore: () => galleryCache.hasMore,
+      refresh: loadGallery,
+      loadMore,
+      cancelled: () => lookup !== routedLookup.current,
+    }).then((found) => {
+      if (lookup !== routedLookup.current) return;
+      if (found) {
+        setSelectedId(routedItem);
+      } else {
+        toast("Could not find this image", { description: "It may be archived or deleted." });
+      }
+    });
+  }, [routedItem, navigateSelf, loadGallery, loadMore]);
 
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {

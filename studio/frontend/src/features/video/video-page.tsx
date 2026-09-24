@@ -155,6 +155,7 @@ import {
   isDownloadCancelled,
 } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
+import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 
@@ -2965,6 +2966,31 @@ function VideoGenerator({
     revertPick,
     videoPresets.hydrated,
   ]);
+
+  // A Library "View in" link arrives as ?item=: select that clip, paging back until it loads. A
+  // counter, not effect cleanup, retires a lookup: clearing the query must not cancel its own.
+  const routedItem = active ? routeSearch?.item : undefined;
+  const routedLookup = useRef(0);
+  useEffect(() => {
+    if (!routedItem) return;
+    const lookup = ++routedLookup.current;
+    void navigateSelf({ to: "/video", search: {}, replace: true });
+    void loadGalleryUntil({
+      has: () => galleryCache.videos.some((entry) => entry.id === routedItem),
+      count: () => galleryCache.videos.length,
+      hasMore: () => galleryCache.hasMore,
+      refresh: loadGallery,
+      loadMore,
+      cancelled: () => lookup !== routedLookup.current,
+    }).then((found) => {
+      if (lookup !== routedLookup.current) return;
+      if (found) {
+        setSelectedId(routedItem);
+      } else {
+        toast("Could not find this clip", { description: "It may be archived or deleted." });
+      }
+    });
+  }, [routedItem, navigateSelf, loadGallery, loadMore]);
 
 
   // The task dialog defers the load out of the branch that snapshotted the rollback, so the two
