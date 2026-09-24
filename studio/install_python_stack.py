@@ -363,6 +363,19 @@ def _drop_torchaudio_off_the_multiarch_tag() -> bool:
     return _uninstall_distribution("torchaudio")
 
 
+def _finish_windows_multiarch_venv() -> None:
+    """Last word on a multi-arch (RDNA 1) venv: drop the torchaudio the with-deps steps
+    re-resolved. torch-stoi and descript-audiotools require torchaudio unconditionally,
+    so every dependency pass pulls 2.11.0 back in beside torch 2.12; nothing exists for the
+    pinned tag (AMD's index lists no torchaudio for it, PyPI stops at 2.11.0). Removing it
+    is the safe state: Studio imports it lazily, for audio features only, and a mismatched
+    one throws a Windows "Entry Point Not Found" dialog on that import."""
+    if _ROCM_MULTIARCH_TAG not in (_distribution_version_string("torch") or ""):
+        return
+    if not _drop_torchaudio_off_the_multiarch_tag():
+        _safe_print("   Warning: could not remove the stale torchaudio; audio imports may fail until it is removed")
+
+
 def _windows_rocm_torch_pkg_specs(gfx_arch: "str | None") -> tuple[str, str, str]:
     """Package specs for the Windows ROCm torch install of `gfx_arch`: the multi-arch pin
     for RDNA 1, the per-arch ABI pin where one exists, bare names otherwise."""
@@ -11839,6 +11852,8 @@ def install_python_stack() -> int:
         # A direct run has no setup.ps1 postlude to swap triton back. After the invariant,
         # because the swap keys off the installed +xpu label.
         _ensure_xpu_triton()
+        # After every with-deps step: they re-resolve torchaudio on a multi-arch venv.
+        _finish_windows_multiarch_venv()
     elif not NO_TORCH:
         # Resolve it on the other platforms too, for the RECORD only. Without this a Linux GPU box
         # installed with a transient explicit CPU pin looks, on the next launch, like a CPU wheel
