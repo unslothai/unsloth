@@ -9,10 +9,10 @@ import {
   ArrowReloadHorizontalIcon,
   Delete02Icon,
   Download01Icon,
-  FlimSlateIcon,
   Image03Icon,
   ImageAdd02Icon,
   InformationCircleIcon,
+  LibraryIcon,
   PinIcon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
@@ -77,6 +77,7 @@ import type {
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import { GalleryItemMenu } from "@/components/gallery-item-menu";
 import { MediaPageLink } from "@/components/media-page-link";
+import { useLibraryFavorites } from "@/features/library";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
   type NewRecordProbeBaseline,
@@ -1947,6 +1948,7 @@ export function ImagesPage({
 
   // The pin state each id was last CLICKED into, so a failing request can tell whether it is
   // still the current intent; without it a slow failure rolls back a later success.
+  const { isFavorite, toggleFavorite } = useLibraryFavorites();
   const pinAttempt = useRef(new Map<string, number>());
   const pinSeq = useRef(0);
 
@@ -4276,9 +4278,10 @@ export function ImagesPage({
           <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-2">
               <MediaPageLink
-                to="/video"
-                label="Video"
-                icon={FlimSlateIcon}
+                to="/library"
+                libraryTab="images"
+                label="Library"
+                icon={LibraryIcon}
                 labelClassName="hidden @[50rem]:inline"
                 arrowClassName="hidden @[50rem]:block"
               />
@@ -5143,6 +5146,8 @@ export function ImagesPage({
                     active={active}
                     pinned={Boolean(selected.pinned)}
                     archived={Boolean(selected.archived)}
+                    favorite={isFavorite(`image:${selected.id}`)}
+                    onToggleFavorite={() => toggleFavorite(`image:${selected.id}`)}
                     onTogglePin={() =>
                       void handleTogglePin(selected.id, !selected.pinned)
                     }
@@ -5256,6 +5261,8 @@ export function ImagesPage({
                       active={active}
                       pinned={Boolean(image.pinned)}
                       archived={Boolean(image.archived)}
+                      favorite={isFavorite(`image:${image.id}`)}
+                      onToggleFavorite={() => toggleFavorite(`image:${image.id}`)}
                       onTogglePin={() => void handleTogglePin(image.id, !image.pinned)}
                       onToggleArchive={() => void handleArchive(image.id)}
                       onDelete={() => void handleDelete(image.id)}

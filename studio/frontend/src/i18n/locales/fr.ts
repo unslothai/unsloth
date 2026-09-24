@@ -152,6 +152,7 @@ export const fr = {
       search: "Rechercher",
       hub: "Hub de modèles",
       projects: "Projets",
+      library: "Bibliothèque",
       train: "Entraîner",
       recipes: "Recettes",
       images: "Images",
@@ -2127,8 +2128,7 @@ export const fr = {
     },
   },
   studio: {
-    imageTraining: "Entraînement d'images",
-    goToImageTraining: "Aller à l'entraînement d'images",
+    goToLibrary: "Aller à la Bibliothèque",
     routeTitle: "Entraîner",
     wizard: {
       modelTitle: "Modèle",

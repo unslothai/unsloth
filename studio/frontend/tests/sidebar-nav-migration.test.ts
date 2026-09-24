@@ -60,6 +60,16 @@ const shippedLayouts: SidebarNavItemPref[][] = [
     { id: "recipes", pinned: false },
     { id: "export", pinned: false },
     { id: "api", pinned: false },
+  ],  [
+    { id: "hub", pinned: true },
+    { id: "projects", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: true },
+    { id: "audio", pinned: false },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+    { id: "api", pinned: false },
   ],
 ];
 
@@ -67,7 +77,7 @@ test("every previously shipped sidebar adopts the current default", () => {
   for (const sidebarNav of shippedLayouts) {
     const customization = sanitizeCustomization({ sidebarNav });
     assert.deepEqual(
-      migrateShippedSidebarNavDefault(customization, 4, 7).sidebarNav,
+      migrateShippedSidebarNavDefault(customization, 4, 8).sidebarNav,
       DEFAULT_CUSTOMIZATION.sidebarNav,
     );
   }
@@ -78,12 +88,12 @@ test("the untouched pre-Audio version-5 sidebar adopts the Audio-aware default",
     sidebarNav: shippedLayouts[3],
   });
   assert.deepEqual(
-    migrateShippedSidebarNavDefault(customization, 5, 7).sidebarNav,
+    migrateShippedSidebarNavDefault(customization, 5, 8).sidebarNav,
     DEFAULT_CUSTOMIZATION.sidebarNav,
   );
 });
 
-test("a customized version-5 sidebar keeps its order and only gains Audio", () => {
+test("a customized version-5 sidebar keeps its order and only gains the rows added since", () => {
   const customizedV5: SidebarNavItemPref[] = [
     { id: "projects", pinned: true },
     { id: "hub", pinned: true },
@@ -97,12 +107,12 @@ test("a customized version-5 sidebar keeps its order and only gains Audio", () =
   const customization = sanitizeCustomization({ sidebarNav: customizedV5 });
 
   assert.strictEqual(
-    migrateShippedSidebarNavDefault(customization, 5, 7),
+    migrateShippedSidebarNavDefault(customization, 5, 8),
     customization,
   );
   assert.deepEqual(
     customization.sidebarNav.map((item) => item.id),
-    [...customizedV5.map((item) => item.id), "audio"],
+    [...customizedV5.map((item) => item.id), "library", "audio"],
   );
   assert.equal(customization.sidebarNav.at(-1)?.pinned, false);
 });
@@ -114,7 +124,7 @@ test("a user-arranged sidebar survives the migration", () => {
     ),
   });
   assert.strictEqual(
-    migrateShippedSidebarNavDefault(customization, 4, 7),
+    migrateShippedSidebarNavDefault(customization, 4, 8),
     customization,
   );
 });
@@ -123,10 +133,20 @@ test("an install sitting on the version-6 default picks Video up", () => {
   // The layout this change replaces. Untouched, so it adopts the new default
   // rather than being read as a deliberate choice to keep Video under More.
   const customization = sanitizeCustomization({ sidebarNav: shippedLayouts[4] });
-  const migrated = migrateShippedSidebarNavDefault(customization, 6, 7);
+  const migrated = migrateShippedSidebarNavDefault(customization, 6, 8);
   assert.deepEqual(migrated.sidebarNav, DEFAULT_CUSTOMIZATION.sidebarNav);
   const ids = migrated.sidebarNav.filter((item) => item.pinned).map((i) => i.id);
-  assert.deepEqual(ids, ["hub", "projects", "images", "video", "train"]);
+  assert.deepEqual(ids, ["hub", "projects", "library", "images", "video", "train"]);
+});
+
+test("an install sitting on the version-7 default gains Library under Projects", () => {
+  const customization = sanitizeCustomization({ sidebarNav: shippedLayouts[5] });
+  const migrated = migrateShippedSidebarNavDefault(customization, 7, 8);
+  assert.deepEqual(migrated.sidebarNav, DEFAULT_CUSTOMIZATION.sidebarNav);
+  assert.deepEqual(
+    migrated.sidebarNav.slice(0, 3).map((item) => item.id),
+    ["hub", "projects", "library"],
+  );
 });
 
 test("a shipped-looking layout chosen after migration is preserved", () => {
@@ -134,7 +154,7 @@ test("a shipped-looking layout chosen after migration is preserved", () => {
     sidebarNav: shippedLayouts[2],
   });
   assert.strictEqual(
-    migrateShippedSidebarNavDefault(customization, 7, 7),
+    migrateShippedSidebarNavDefault(customization, 8, 8),
     customization,
   );
 });
@@ -152,10 +172,10 @@ test("a synced profile picks the layout change up too", async () => {
   // only migrates locally is overwritten by the stored layout on every login.
   // PERSONALIZATION_VERSION has to move with the layout for that migration to
   // run against the remote record.
-  const stored = sanitizeCustomization({ sidebarNav: shippedLayouts[4] });
+  const stored = sanitizeCustomization({ sidebarNav: shippedLayouts[5] });
   const migrated = migrateShippedSidebarNavDefault(
     stored,
-    3,
+    4,
     await personalizationVersion(),
   );
   assert.deepEqual(migrated.sidebarNav, DEFAULT_CUSTOMIZATION.sidebarNav);

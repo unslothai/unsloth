@@ -12,12 +12,14 @@ import {
   Copy01Icon,
   Delete02Icon,
   Download01Icon,
+  LibraryIcon,
   Mic01Icon,
   MoreVerticalIcon,
   SparklesIcon,
   StopIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { MediaPageLink } from "@/components/media-page-link";
 import {
   type ReactNode,
   useCallback,
@@ -2609,8 +2611,8 @@ export function AudioPage({
             />
           </div>
         </div>
-        <div className="grid h-full min-w-0 grid-cols-[1fr_auto] @[50rem]:grid-cols-[1fr_auto_1fr]">
-          <div className="pointer-events-auto col-start-2 justify-self-end pr-3 pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:justify-self-center @[50rem]:pr-0">
+        <div className="grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2 @[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0">
+          <div className="pointer-events-auto col-start-2 justify-self-end pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:justify-self-center">
             <PillTabs
               ariaLabel="Page mode"
               // Always "create": Train navigates away, so the pill never latches.
@@ -2645,6 +2647,18 @@ export function AudioPage({
                 },
               ]}
             />
+          </div>
+          <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
+            <div className="pointer-events-auto flex min-w-0 items-center gap-2">
+              <MediaPageLink
+                to="/library"
+                libraryTab="audio"
+                label="Library"
+                icon={LibraryIcon}
+                labelClassName="hidden @[50rem]:inline"
+                arrowClassName="hidden @[50rem]:block"
+              />
+            </div>
           </div>
         </div>
       </div>

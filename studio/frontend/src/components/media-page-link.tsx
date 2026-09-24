@@ -10,15 +10,17 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import type { LibraryTab } from "@/features/library";
 import { cn } from "@/lib/utils";
 import {
   ArrowRightIcon,
 } from "lucide-react";
 
-/** The link out to another page's workspace (Images, Video, Audio, image training).
+/** The link out to another page's workspace (Images, Video, Audio, the Library).
  *  Kept out of the mode strip and parked past a divider so it reads as leaving. */
 export function MediaPageLink({
   to,
+  libraryTab,
   label,
   icon,
   tooltip,
@@ -26,7 +28,9 @@ export function MediaPageLink({
   labelClassName,
   arrowClassName,
 }: {
-  to: "/images" | "/video" | "/audio";
+  to: "/images" | "/video" | "/audio" | "/library";
+  /** The Library tab to open, so each page lands on its own kind of output. */
+  libraryTab?: LibraryTab;
   label: string;
   icon: IconSvgElement;
   /** Needed on a translated page: the default prefix below is English. */
@@ -54,7 +58,11 @@ export function MediaPageLink({
             aria-label={label}
             onClick={() => {
               onNavigate?.();
-              navigate({ to });
+              if (to === "/library") {
+                void navigate({ to, search: libraryTab ? { show: libraryTab } : {} });
+              } else {
+                void navigate({ to });
+              }
             }}
             className="flex h-[calc(34px*var(--ui-space-scale,1))] min-w-0 items-center gap-1.5 rounded-full pl-2.5 pr-2 text-ui-13 font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >

@@ -116,6 +116,7 @@ export const it = {
       search: "Cerca",
       hub: "Hub dei modelli",
       projects: "Progetti",
+      library: "Libreria",
       train: "Addestra",
       recipes: "Ricette",
       images: "Immagini",
@@ -2123,8 +2124,7 @@ export const it = {
     },
   },
   studio: {
-    imageTraining: "Addestramento immagini",
-    goToImageTraining: "Vai all'addestramento immagini",
+    goToLibrary: "Vai alla Libreria",
     routeTitle: "Addestra",
     wizard: {
       modelTitle: "Modello",

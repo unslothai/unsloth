@@ -151,6 +151,7 @@ export const ru = {
       search: "Поиск",
       hub: "Хаб моделей",
       projects: "Проекты",
+      library: "Библиотека",
       train: "Обучение",
       recipes: "Рецепты",
       images: "Изображения",
@@ -2096,8 +2097,7 @@ export const ru = {
     },
   },
   studio: {
-    imageTraining: "Обучение изображений",
-    goToImageTraining: "Перейти к обучению изображений",
+    goToLibrary: "Перейти в Библиотеку",
     routeTitle: "Обучение",
     wizard: {
       modelTitle: "Модель",

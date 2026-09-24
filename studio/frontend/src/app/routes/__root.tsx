@@ -236,6 +236,7 @@ const CHAT_ONLY_ALLOWED = new Set([
   "/",
   "/chat",
   "/projects",
+  "/library",
   "/hub",
   "/login",
   "/signup",
@@ -388,6 +389,7 @@ function RootLayout() {
 
   // Same persistent mount for /audio so generation UI state survives leaving the tab.
   const isAudioRoute = pathname === "/audio";
+  const isLibraryRoute = pathname === "/library";
   const [audioMounted, setAudioMounted] = useState(isAudioRoute);
   if (isAudioRoute && !audioMounted) {
     setAudioMounted(true);
@@ -582,7 +584,14 @@ function RootLayout() {
           <AppSidebar />
           <SidebarEdgeTrigger />
           <SidebarInset
-            className={isChatLike ? "overflow-hidden" : "overflow-y-auto"}
+            className={
+              isChatLike
+                ? "overflow-hidden"
+                : // Reserve the scrollbar so the Library does not shift when it appears.
+                  isLibraryRoute
+                  ? "overflow-y-auto [scrollbar-gutter:stable]"
+                  : "overflow-y-auto"
+            }
           >
             <Navbar />
             <div

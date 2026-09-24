@@ -149,6 +149,7 @@ export const ar = {
       search: "بحث",
       hub: "مركز النماذج",
       projects: "المشاريع",
+      library: "المكتبة",
       train: "تدريب",
       recipes: "الوصفات",
       images: "الصور",
@@ -2077,8 +2078,7 @@ export const ar = {
     },
   },
   studio: {
-    imageTraining: "تدريب الصور",
-    goToImageTraining: "الانتقال إلى تدريب الصور",
+    goToLibrary: "الانتقال إلى المكتبة",
     routeTitle: "تدريب",
     wizard: {
       modelTitle: "النموذج",

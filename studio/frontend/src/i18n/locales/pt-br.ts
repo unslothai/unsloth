@@ -151,6 +151,7 @@ export const ptBR = {
       search: "Buscar",
       hub: "Hub de modelos",
       projects: "Projetos",
+      library: "Biblioteca",
       train: "Treinar",
       recipes: "Receitas",
       images: "Imagens",
@@ -2098,8 +2099,7 @@ export const ptBR = {
     },
   },
   studio: {
-    imageTraining: "Treinamento de imagens",
-    goToImageTraining: "Ir para o treinamento de imagens",
+    goToLibrary: "Ir para a Biblioteca",
     routeTitle: "Treinar",
     wizard: {
       modelTitle: "Modelo",

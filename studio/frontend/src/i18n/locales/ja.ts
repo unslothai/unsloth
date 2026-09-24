@@ -151,6 +151,7 @@ export const ja = {
       search: "検索",
       hub: "モデルハブ",
       projects: "プロジェクト",
+      library: "ライブラリ",
       train: "トレーニング",
       recipes: "レシピ",
       images: "画像",
@@ -2044,8 +2045,7 @@ export const ja = {
     },
   },
   studio: {
-    imageTraining: "画像トレーニング",
-    goToImageTraining: "画像トレーニングへ移動",
+    goToLibrary: "ライブラリへ移動",
     routeTitle: "トレーニング",
     wizard: {
       modelTitle: "モデル",

@@ -149,6 +149,7 @@ export const ko = {
       search: "검색",
       hub: "모델 허브",
       projects: "프로젝트",
+      library: "라이브러리",
       train: "학습",
       recipes: "레시피",
       images: "이미지",
@@ -2071,8 +2072,7 @@ export const ko = {
     },
   },
   studio: {
-    imageTraining: "이미지 학습",
-    goToImageTraining: "이미지 학습으로 이동",
+    goToLibrary: "라이브러리로 이동",
     routeTitle: "학습",
     wizard: {
       modelTitle: "모델",

@@ -136,6 +136,7 @@ import {
   useNativeIntentStore,
 } from "@/features/native-intents";
 import { nativeAttachmentIntentToFile } from "@/features/native-intents/native-attachment-file";
+import { useLibraryChatHandoffStore } from "@/features/library";
 import { cancelResearchRun } from "@/features/chat/api/research-api";
 import {
   ingestResearchUpdate,
@@ -2978,6 +2979,29 @@ const Composer: FC<{
   const nativeAttachmentTargetKey = useNativeAttachmentTargetKey();
   const nativeAttachmentTargetKeyRef = useRef(nativeAttachmentTargetKey);
   nativeAttachmentTargetKeyRef.current = nativeAttachmentTargetKey;
+
+  // Library "Chat about this" / "New document" open a fresh chat and leave their files and
+  // starting text for it; the composer may already be mounted, so listen as well as look.
+  useEffect(() => {
+    if (!nativeAttachmentTargetKey) return;
+    const targetKey = nativeAttachmentTargetKey;
+    const drain = async () => {
+      const handoff = useLibraryChatHandoffStore.getState().take(targetKey);
+      if (!handoff) return;
+      if (handoff.text) aui.composer().setText(handoff.text);
+      for (const file of handoff.files) {
+        try {
+          await aui.composer().addAttachment(file);
+        } catch {
+          // The adapter already toasted why (unsupported type, no vision model); keep the rest.
+        }
+      }
+    };
+    void drain();
+    return useLibraryChatHandoffStore.subscribe((state) => {
+      if (state.pending?.targetKey === targetKey) void drain();
+    });
+  }, [nativeAttachmentTargetKey, aui]);
   const hasPendingImageAttachments = useNativeIntentStore((s) =>
     Boolean(
       nativeAttachmentTargetKey &&

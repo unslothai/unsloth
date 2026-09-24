@@ -3633,6 +3633,7 @@ SIDEBAR_MENU_ITEM_DEFAULTS = {
 SIDEBAR_NAV_ITEM_DEFAULTS = {
     "hub": True,
     "projects": True,
+    "library": True,
     "images": True,
     "video": True,
     "audio": False,
@@ -3674,6 +3675,7 @@ def _default_sidebar_menu() -> "list[PersonalizationSidebarMenuItem]":
 SidebarNavItemId = Literal[
     "hub",
     "projects",
+    "library",
     "images",
     "video",
     "audio",

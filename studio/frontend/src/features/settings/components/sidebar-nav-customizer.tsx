@@ -11,6 +11,7 @@ import {
   Folder01Icon,
   Globe02Icon,
   Image03Icon,
+  LibraryIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
 } from "@hugeicons/core-free-icons";
@@ -35,6 +36,7 @@ const ITEM_META: Record<
   { icon: IconSvgElement; labelKey: TranslationKey }
 > = {
   projects: { icon: Folder01Icon, labelKey: "shell.navigation.projects" },
+  library: { icon: LibraryIcon, labelKey: "shell.navigation.library" },
   hub: { icon: DashboardCircleIcon, labelKey: "shell.navigation.hub" },
   images: { icon: Image03Icon, labelKey: "shell.navigation.images" },
   train: { icon: TestTubeOutlineIcon, labelKey: "shell.navigation.train" },

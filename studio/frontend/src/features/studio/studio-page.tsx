@@ -16,9 +16,8 @@ import {
 } from "@/features/training";
 import { useT } from "@/i18n";
 import { MediaPageLink } from "@/components/media-page-link";
-import { useImageWorkflowStore } from "@/features/images/stores/image-workflow-store";
 import {
-  Image03Icon,
+  LibraryIcon,
 } from "@hugeicons/core-free-icons";
 import {
   ChevronLeftIcon,
@@ -215,17 +214,14 @@ export function StudioPage(): ReactElement {
                   trainingRunActive={trainingRunActive}
                   showTrainingView={showTrainingView}
                 />
-                {/* Image training is a mode of the Images page, not a route, so it sits
-                    beside the sub-nav rather than in it. */}
+                {/* Finished runs land in the Library's Fine-tunes tab. */}
                 <div className="ml-auto flex items-center gap-2 pb-2">
                   <MediaPageLink
-                    to="/images"
-                    label={t("studio.imageTraining")}
-                    tooltip={t("studio.goToImageTraining")}
-                    icon={Image03Icon}
-                    onNavigate={() =>
-                      useImageWorkflowStore.getState().setPageMode("train")
-                    }
+                    to="/library"
+                    libraryTab="models"
+                    label={t("shell.navigation.library")}
+                    tooltip={t("studio.goToLibrary")}
+                    icon={LibraryIcon}
                   />
                 </div>
               </div>

@@ -187,6 +187,7 @@ def _sidebar_nav(items):
 FRONTEND_SHIPPED_SIDEBAR_NAV = [
     ("hub", True),
     ("projects", True),
+    ("library", True),
     ("images", True),
     ("video", True),
     ("audio", False),
@@ -228,6 +229,7 @@ def test_customization_sidebar_nav_preserves_order_and_normalizes():
         ("video", True),
         ("hub", False),
         ("projects", True),
+        ("library", True),
         ("images", True),
         ("audio", False),
         ("train", True),
@@ -526,6 +528,7 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                     {"id": "hub", "pinned": True},
                     {"id": "train", "pinned": True},
                     {"id": "projects", "pinned": False},
+                    {"id": "library", "pinned": True},
                     {"id": "recipes", "pinned": False},
                     {"id": "export", "pinned": False},
                     {"id": "api", "pinned": False},

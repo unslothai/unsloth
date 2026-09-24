@@ -20,10 +20,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { StarPointedIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 
 /**
- * Pin / archive / delete for one gallery item, shared by the Images and Video pages.
+ * Pin / favorite / archive / delete for one gallery item, shared by the Images and Video pages.
  *
  * "toolbar" sits in the glass toolbar over the preview; "overlay" is the badge that appears on a
  * filmstrip tile on hover. A tile is itself a <button>, so the overlay must be rendered as its
@@ -34,6 +35,8 @@ export type GalleryItemMenuVariant = "toolbar" | "overlay";
 export function GalleryItemMenu({
   pinned,
   archived,
+  favorite,
+  onToggleFavorite,
   onTogglePin,
   onToggleArchive,
   onDelete,
@@ -44,6 +47,9 @@ export function GalleryItemMenu({
 }: {
   pinned: boolean;
   archived: boolean;
+  /** Library favorite; the item is left out when the page does not track favorites. */
+  favorite?: boolean;
+  onToggleFavorite?: () => void;
   onTogglePin: () => void;
   onToggleArchive: () => void;
   onDelete: () => void;
@@ -70,9 +76,9 @@ export function GalleryItemMenu({
           variant="ghost"
           aria-label={`More actions for this ${noun}`}
           className={cn(
-            // Reads over any thumbnail, whatever its colours.
+            // Reads over any thumbnail. Open matches hover instead of ghost's darker open state.
             overlay &&
-              "bg-background/80 text-foreground shadow-sm ring-1 ring-border backdrop-blur hover:bg-background",
+              "bg-background/80 text-foreground shadow-sm ring-1 ring-border backdrop-blur hover:bg-background focus-visible:border-transparent aria-expanded:bg-background",
             className,
           )}
         >
@@ -84,6 +90,15 @@ export function GalleryItemMenu({
           <HugeiconsIcon icon={pinned ? PinOffIcon : PinIcon} />
           {pinned ? "Unpin" : "Pin to front"}
         </DropdownMenuItem>
+        {onToggleFavorite && (
+          <DropdownMenuItem onClick={onToggleFavorite}>
+            <HugeiconsIcon
+              icon={StarPointedIcon}
+              className={cn(favorite && "[&_path]:fill-current")}
+            />
+            {favorite ? "Remove from Favorites" : "Add to Favorites"}
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem onClick={onToggleArchive}>
           <HugeiconsIcon icon={archived ? ArchiveRestoreIcon : Archive02Icon} />
           {archived ? "Restore from archive" : "Archive"}

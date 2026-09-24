@@ -8,8 +8,8 @@ import {
   Download01Icon,
   FlimSlateIcon,
   ImageCropIcon,
-  Image03Icon,
   InformationCircleIcon,
+  LibraryIcon,
   PinIcon,
   VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
@@ -19,6 +19,7 @@ import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import { GalleryItemMenu } from "@/components/gallery-item-menu";
 import { ImageDropzone } from "@/components/image-dropzone";
 import { MediaPageLink } from "@/components/media-page-link";
+import { useLibraryFavorites } from "@/features/library";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { videoTourSteps } from "./tour";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
@@ -1881,6 +1882,7 @@ function VideoGenerator({
 
   // The pin state each id was last CLICKED into, so a failing request can tell whether it is
   // still the current intent; without it a slow failure rolls back a later success.
+  const { isFavorite, toggleFavorite } = useLibraryFavorites();
   const pinAttempt = useRef(new Map<string, number>());
   const pinSeq = useRef(0);
 
@@ -3542,11 +3544,12 @@ function VideoGenerator({
           )}
         </div>
         <div className="pointer-events-auto flex shrink-0 items-center gap-2">
-          {/* Images is a separate page, so it sits out here, not in this page's controls. */}
+          {/* A separate page, so it sits outside this page's controls. */}
           <MediaPageLink
-            to="/images"
-            label="Images"
-            icon={Image03Icon}
+            to="/library"
+            libraryTab="videos"
+            label="Library"
+            icon={LibraryIcon}
             labelClassName="@max-[30rem]:hidden"
             arrowClassName="@max-[30rem]:hidden"
           />
@@ -4175,6 +4178,8 @@ function VideoGenerator({
                     active={active}
                     pinned={Boolean(selected.pinned)}
                     archived={Boolean(selected.archived)}
+                    favorite={isFavorite(`video:${selected.id}`)}
+                    onToggleFavorite={() => toggleFavorite(`video:${selected.id}`)}
                     onTogglePin={() =>
                       void handleTogglePin(selected.id, !selected.pinned)
                     }
@@ -4313,6 +4318,8 @@ function VideoGenerator({
                     active={active}
                     pinned={Boolean(video.pinned)}
                     archived={Boolean(video.archived)}
+                    favorite={isFavorite(`video:${video.id}`)}
+                    onToggleFavorite={() => toggleFavorite(`video:${video.id}`)}
                     onTogglePin={() => void handleTogglePin(video.id, !video.pinned)}
                     onToggleArchive={() => void handleArchive(video.id)}
                     onDelete={() => void handleDelete(video.id)}

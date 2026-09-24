@@ -152,6 +152,7 @@ export const hi = {
       search: "खोजें",
       hub: "मॉडल हब",
       projects: "प्रोजेक्ट",
+      library: "लाइब्रेरी",
       train: "ट्रेनिंग",
       recipes: "रेसिपी",
       images: "इमेज",
@@ -2085,8 +2086,7 @@ export const hi = {
     },
   },
   studio: {
-    imageTraining: "इमेज ट्रेनिंग",
-    goToImageTraining: "इमेज ट्रेनिंग पर जाएं",
+    goToLibrary: "लाइब्रेरी पर जाएं",
     routeTitle: "ट्रेनिंग",
     wizard: {
       modelTitle: "मॉडल",

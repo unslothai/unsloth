@@ -147,6 +147,7 @@ export const zhCN = {
       search: "搜索",
       hub: "模型中心",
       projects: "项目",
+      library: "资料库",
       train: "训练",
       recipes: "配方",
       images: "图像",
@@ -2022,8 +2023,7 @@ export const zhCN = {
     },
   },
   studio: {
-    imageTraining: "图像训练",
-    goToImageTraining: "前往图像训练",
+    goToLibrary: "前往资料库",
     routeTitle: "训练",
     wizard: {
       modelTitle: "模型",
