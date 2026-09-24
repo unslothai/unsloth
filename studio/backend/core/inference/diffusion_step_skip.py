@@ -334,8 +334,10 @@ class StaticStepSkip:
         self.history: dict = {}
         if keep_stats:
             return self
-        if self.stats["calls"]:
-            # The generation that just ended, kept for the status route once the per-call reset clears it.
+        if self.stats["calls"] or self.counting:
+            # The generation that just ended, kept for the status route once the per-call reset clears it. Arming a
+            # new one clears it too: until its first call, or if it fails before one, status reports zeros, not the
+            # previous generation's counts.
             self.last_stats = dict(self.stats)
         self.stats = {"calls": 0, "computed": 0, "skipped": 0}
         return self

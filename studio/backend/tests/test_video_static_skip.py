@@ -371,6 +371,33 @@ def test_a_failed_clip_drops_the_kept_outputs(loop_runtime):
     backend.unload()
 
 
+def test_a_new_clip_does_not_report_the_previous_clips_counts(loop_runtime, monkeypatch):
+    import core.inference.video as video_mod
+
+    backend, pipe = _static_backend(loop_runtime)
+    backend.generate(prompt = "a sloth", steps = STEPS)
+    assert backend.status()["transformer_cache_stats"]["stats"]["calls"] == 2 * STEPS
+    # Status polled between arming the next clip and its first transformer call (prep).
+    seen = []
+    real_reset = video_mod.reset_static_step_skip
+
+    def _reset(p, steps, **k):
+        done = real_reset(p, steps, **k)
+        if steps is not None:
+            seen.append(backend.status()["transformer_cache_stats"]["stats"])
+        return done
+
+    monkeypatch.setattr(video_mod, "reset_static_step_skip", _reset)
+    zeros = {"calls": 0, "computed": 0, "skipped": 0}
+    # A clip that fails before its first transformer call leaves no stale counts behind.
+    pipe.raise_at = 0
+    with pytest.raises(RuntimeError, match = "denoise failed"):
+        backend.generate(prompt = "a sloth", steps = STEPS)
+    assert seen == [zeros]
+    assert backend.status()["transformer_cache_stats"]["stats"] == zeros
+    backend.unload()
+
+
 def test_hv15_counts_branches_by_context_without_a_step_callback(loop_runtime, monkeypatch):
     import core.inference.video as video_mod
 
