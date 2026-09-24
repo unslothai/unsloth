@@ -227,7 +227,6 @@ const TABS: TabDef[] = [
     id: "accounts",
     labelKey: "settings.tabs.accounts",
     icon: UserCircleIcon,
-    badgeKey: "common.new",
   },
   {
     id: "agents",
@@ -243,6 +242,7 @@ const TABS: TabDef[] = [
     id: "library",
     labelKey: "settings.tabs.library",
     icon: LibrariesIcon,
+    badgeKey: "common.new",
   },
   {
     id: "data",
