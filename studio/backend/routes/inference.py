@@ -9672,7 +9672,7 @@ async def _maybe_auto_switch_model(
         local_gguf_companion_roots,
         local_gguf_companion_state,
         local_target_is_gguf,
-        resolve_local_gguf,
+        resolve_local_gguf_for_switch,
         resolve_trusted_cached_local_gguf,
         warm_index_soon,
     )
@@ -9791,10 +9791,8 @@ async def _maybe_auto_switch_model(
         repo_level_companion_resolution = False
         stashed_gguf_companion_roots: tuple[str, ...] = ()
         if auto_switch_on and not reload_only:
-            # Fresh hits and entries retained across an additions-only download are
-            # safe to use immediately. An expired/config-invalidated hit, a cold
-            # cache, and every miss must refresh before an unrelated resident model
-            # can answer or an entry from a removed scan root can trigger a switch.
+            # Use trusted hits immediately. The switch resolver refreshes stale hits
+            # and unconfirmed misses, keeping removed scan roots out of switches.
             resolved = resolve_trusted_cached_local_gguf(
                 requested_model,
                 include_companion_scope = True,
@@ -9803,7 +9801,7 @@ async def _maybe_auto_switch_model(
                 warm_index_soon()
             else:
                 resolved = await asyncio.to_thread(
-                    resolve_local_gguf,
+                    resolve_local_gguf_for_switch,
                     requested_model,
                     include_companion_scope = True,
                 )

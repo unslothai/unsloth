@@ -79,6 +79,11 @@ _last_scan_s = 0.0
 _WARM_DUTY = 10.0
 
 
+def _duty_window() -> float:
+    """Minimum snapshot age for a background rescan."""
+    return max(_CACHE_TTL_S, _last_scan_s * _WARM_DUTY)
+
+
 def _is_abs_path_id(value: str) -> bool:
     """True when an id is an absolute filesystem path (the ./models and LM Studio scanners use the
     on-disk path as the id) rather than a repo id like org/name.
@@ -969,13 +974,18 @@ def _snapshot_is_trusted(timestamp: float, now: float) -> bool:
     if timestamp > 0.0:
         return now - timestamp < _CACHE_TTL_S
     if timestamp < 0.0:
-        return now + timestamp < max(_CACHE_TTL_S, _last_scan_s * _WARM_DUTY)
+        return now + timestamp < _duty_window()
     return False
 
 
 # Bumped by every invalidate_index() call. A cache built on top of this index can key on it and be dropped by the same
 # call that drops the index, rather than each new invalidation site having to remember one more cache to clear.
 _generation = 0
+
+
+# Confirmed misses keyed by account and name, valid for the recorded invalidation generation.
+_misses: dict[tuple[Optional[str], str], int] = {}
+_MAX_MISSES = 256
 
 
 def index_generation() -> int:
@@ -1015,6 +1025,7 @@ def invalidate_index(*, additions_only: bool = False) -> None:
 
 
 def _index() -> dict[str, _LocalGgufEntry]:
+    global _last_scan_s
     # Build under the lock so concurrent callers with an expired cache don't all run the (multi-dir) scan at once; the
     # rest wait and reuse the fresh result.
     with _lock:
@@ -1024,7 +1035,11 @@ def _index() -> dict[str, _LocalGgufEntry]:
         # would serve what was just revoked
         if ts > 0.0 and now - ts < _CACHE_TTL_S:
             return cached
-        fresh = _build_index()
+        # Request scans also set the background rescan interval.
+        try:
+            fresh = _build_index()
+        finally:
+            _last_scan_s = time.monotonic() - now
         # Stamp AFTER the scan, not with the pre-scan ``now``: a multi-root scan on an install with many local models
         # can itself exceed the TTL, which would store the cache already expired and make every request rebuild the
         # index.
@@ -1080,7 +1095,7 @@ def warm_index_soon() -> None:
     """
     global _warming, _warm_pending
     stamp = _snapshot()[0]
-    if stamp > 0.0 and time.monotonic() - stamp < max(_CACHE_TTL_S, _last_scan_s * _WARM_DUTY):
+    if stamp > 0.0 and time.monotonic() - stamp < _duty_window():
         return
     with _warm_lock:
         if _warming:
@@ -1089,16 +1104,14 @@ def warm_index_soon() -> None:
         _warm_pending = False
 
     def _run() -> None:
-        global _warming, _warm_pending, _last_scan_s
+        global _warming, _warm_pending
         released = False
         try:
             while True:
-                started = time.monotonic()
                 try:
                     _index()
                 except Exception:
                     pass
-                _last_scan_s = time.monotonic() - started
                 with _warm_lock:
                     if _warm_pending:
                         _warm_pending = False
@@ -1114,6 +1127,51 @@ def warm_index_soon() -> None:
 
     # Pinned to the caller's account, or the rebuild would publish under the owner's scope.
     account_thread(target = _run, name = "local-model-index-warm", daemon = True).start()
+
+
+def _miss_scope() -> Optional[str]:
+    return None if is_owner_context() else current_account_id()
+
+
+def resolve_local_gguf_for_switch(
+    requested: str, *, include_companion_scope: bool = False
+) -> Optional[tuple]:
+    """Resolve an auto-switch target without repeatedly scanning for known misses.
+
+    Reuse misses until invalidation or two duty windows of snapshot age. After one
+    window, requests trigger a background scan; the second allows time to finish.
+    New names and newly indexed hits use the normal resolver freshness checks.
+    """
+    if not isinstance(requested, str) or not requested.strip():
+        return None
+    requested = requested.strip()
+    key = (_miss_scope(), requested)
+    generation = _generation
+    started = time.monotonic()
+    ts, index = _snapshot()
+    if (
+        _misses.get(key) == generation
+        and ts > 0.0
+        and started - ts < 2 * _duty_window()
+        and _resolve_from_index(requested, index) is None
+    ):
+        warm_index_soon()
+        return None
+    resolved = resolve_local_gguf(requested, include_companion_scope = include_companion_scope)
+    if resolved is None:
+        ts, index = _snapshot()
+        # Require a scan fresh at call start or completed since, with no intervening invalidation.
+        # Failed rebuilds leave an older snapshot that cannot prove a miss.
+        if (
+            ts > 0.0
+            and started - ts < _CACHE_TTL_S
+            and generation == _generation
+            and _resolve_from_index(requested, index) is None
+        ):
+            if len(_misses) >= _MAX_MISSES:
+                _misses.clear()
+            _misses[key] = generation
+    return resolved
 
 
 def resolve_local_gguf(
