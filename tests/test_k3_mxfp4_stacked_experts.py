@@ -363,7 +363,9 @@ def test_expert_lora_stays_opt_in():
     assert packed_expert_target_parameters(model, None, ["w2", "w3"]) == auto
     assert packed_expert_target_parameters(model, ["mlp.other"], None) == ["mlp.other"]
     # A regex string names the per-expert Linears by their original module names.
-    assert packed_expert_target_parameters(model, auto, r".*experts.*w1") == ["experts.gate_up_proj"]
+    assert packed_expert_target_parameters(model, auto, r".*experts.*w1") == [
+        "experts.gate_up_proj"
+    ]
     assert packed_expert_target_parameters(model, auto, r".*\.(w1|w2)") == auto
     assert packed_expert_target_parameters(model, auto, r".*(q_proj|down_proj)") is None
     # No packed experts: untouched.
