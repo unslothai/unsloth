@@ -42,6 +42,7 @@ and so does a host without Triton.
 from __future__ import annotations
 
 import os
+import sys
 import types
 from contextlib import nullcontext
 from functools import lru_cache
@@ -1281,6 +1282,19 @@ def _install_decode_scope(vae: Any, *, fp16_accum: bool) -> bool:
 # ── entry point ────────────────────────────────────────────────────────────────────────────────────────────────────
 
 
+@lru_cache(maxsize = 1)
+def _triton_jit_toolchain_ok() -> bool:
+    """On Windows, Triton's JIT needs the MSVC CRT headers; ask the same probe the compile gate asks. Elsewhere,
+    and when the probe itself cannot run, True: a kernel that still fails to build falls back per call."""
+    if sys.platform != "win32":
+        return True
+    try:
+        from .._msvc_env import crt_headers_reachable
+        return bool(crt_headers_reachable())
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def cuda_fast_path_available(vae: Any = None) -> bool:
     try:
         import torch
@@ -1294,7 +1308,7 @@ def cuda_fast_path_available(vae: Any = None) -> bool:
                 return False
         except Exception:  # noqa: BLE001
             return False
-    return _kernels() is not None
+    return _kernels() is not None and _triton_jit_toolchain_ok()
 
 
 def apply_h3_vae_speedups(

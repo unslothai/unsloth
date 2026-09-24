@@ -719,6 +719,7 @@ def test_apply_holds_fp16_accumulation_off_outside_the_plan(monkeypatch):
 def test_the_fast_path_is_for_the_h3_vae_class_only(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(H, "_kernels", lambda: object())
+    monkeypatch.setattr(H, "_triton_jit_toolchain_ok", lambda: True)
 
     class AutoencoderKLWan:
         pass
@@ -730,6 +731,38 @@ def test_the_fast_path_is_for_the_h3_vae_class_only(monkeypatch):
         pytest.skip("ROCm build")
     assert not H.cuda_fast_path_available(AutoencoderKLWan())
     assert H.cuda_fast_path_available(AutoencoderKLMiniMaxH3())
+
+
+@pytest.mark.parametrize(
+    "platform, probe, expected",
+    [
+        ("win32", lambda: False, False),  # Triton present but its JIT cannot find the CRT headers
+        ("win32", lambda: True, True),
+        (
+            "win32",
+            lambda: 1 / 0,
+            True,
+        ),  # the probe itself failing is not evidence; per-call fallback covers it
+        ("linux", lambda: False, True),  # never asked off Windows
+    ],
+)
+def test_the_fast_path_asks_the_windows_triton_toolchain(monkeypatch, platform, probe, expected):
+    import core._msvc_env as msvc
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(H, "_kernels", lambda: object())
+    monkeypatch.setattr(H.sys, "platform", platform)
+    monkeypatch.setattr(msvc, "crt_headers_reachable", probe)
+    H._triton_jit_toolchain_ok.cache_clear()
+    try:
+
+        class AutoencoderKLMiniMaxH3:
+            pass
+
+        assert H.cuda_fast_path_available(AutoencoderKLMiniMaxH3()) is expected
+    finally:
+        H._triton_jit_toolchain_ok.cache_clear()
 
 
 # ── shared fp16-accumulation owner, atomic int8 install ───────────────────────────────────────────────────────────
