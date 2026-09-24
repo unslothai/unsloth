@@ -2448,10 +2448,16 @@ def test_image_train_rail_matches_create_and_header():
     classes = re.search(r'className="([^"]*overflow-y-auto overflow-x-hidden[^"]*)"', layout)
     assert classes, "the Train scroller moved; the rail clamp depends on its padding"
     padding: dict[str, list[str]] = {}
+    important: list[str] = []
     for token in classes.group(1).split():
         variant, _, utility = token.rpartition(":")
-        if re.fullmatch(r"(?:p|px|pr)-.+", utility):
-            padding.setdefault(variant, []).append(utility)
+        bare = utility.strip("!")
+        if re.fullmatch(r"(?:p|px|pr)-.+", bare):
+            # `!` either side is Tailwind v4's !important, which beats every other value here.
+            if bare != utility:
+                important.append(token)
+            padding.setdefault(variant, []).append(bare)
+    assert not important, f"the Train scroller forces right padding with !important: {important}"
     unaccounted = sorted(v for v in padding if v not in ("", "max-sm", "sm"))
     assert not unaccounted, (
         f"the Train scroller sets right padding under {unaccounted}, which the rail clamp does not "
