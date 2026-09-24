@@ -264,17 +264,21 @@ export function ArtifactHtmlFrame({
     setErrorsDismissedCode(null);
   }, [reloadNonce, code]);
   const artifactHtml = useMemo(() => buildArtifactSrcDoc(code), [code]);
-  // Identifies this load to the frame, which stamps its blocked reports with it.
+  // Identifies this load to the frame, which stamps every report with it. The reload
+  // counter is part of it: running the same code again is a different load, and a report
+  // still in flight from the outgoing run would otherwise pass the check below and land
+  // on the console the reload just cleared.
   const codeVersion = useMemo(() => hashArtifactCode(code), [code]);
+  const loadVersion =
+    reloadNonce > 0 ? `${codeVersion}.${reloadNonce}` : codeVersion;
   const src = useMemo(() => {
-    const query = new URLSearchParams({ v: codeVersion });
-    if (reloadNonce > 0) query.set("r", String(reloadNonce));
+    const query = new URLSearchParams({ v: loadVersion });
     // Never put the auth token in the URL: in-frame code can read location.href.
     if (networkAllowed) {
       query.set("allow_network", "1");
     }
     return apiUrl(`/api/inference/artifact-preview-frame?${query.toString()}`);
-  }, [networkAllowed, codeVersion, reloadNonce]);
+  }, [networkAllowed, loadVersion]);
   // Feed only parent-initiated loads, so a self-navigated frame can't self-upgrade.
   const pendingPostRef = useRef(false);
   useEffect(() => {
@@ -298,7 +302,7 @@ export function ArtifactHtmlFrame({
       if (event.data?.type === "unsloth:artifact-blocked") {
         // event.source survives the swap navigation, so without the frame's stamp a report from the
         // outgoing canvas would be tagged with the incoming code and prompt a needless grant.
-        if (event.data.v !== codeVersion) return;
+        if (event.data.v !== loadVersion) return;
         const uri = event.data.blockedURI;
         // A report carries the full URL, and the canvas can post these directly rather than going
         // through the CSP. The entry cap bounds how many are kept but not their size, so a handful
@@ -324,7 +328,7 @@ export function ArtifactHtmlFrame({
         event.data?.type === "unsloth:artifact-console"
       ) {
         // Stamped like the blocked reports, and for the same reason.
-        if (event.data.v !== codeVersion) return;
+        if (event.data.v !== loadVersion) return;
         const entry = parseCanvasReport(event.data);
         if (!entry) return;
         queueEntry(entry);
@@ -340,9 +344,9 @@ export function ArtifactHtmlFrame({
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-    // `code`/`codeVersion` are listed so the handler always closes over the canvas on screen,
+    // `code`/`loadVersion` are listed so the handler always closes over the canvas on screen,
     // rather than relying on postArtifactHtml changing.
-  }, [postArtifactHtml, code, codeVersion, queueEntry]);
+  }, [postArtifactHtml, code, loadVersion, queueEntry]);
 
   const showBlockedBanner =
     !networkAllowed && !dismissedForCanvas && blockedForCanvas.uris.length > 0;

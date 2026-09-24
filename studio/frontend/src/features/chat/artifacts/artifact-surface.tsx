@@ -26,6 +26,7 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -112,6 +113,18 @@ export function ArtifactSurface({
   const [viewMode, setViewMode] = useState<ArtifactViewMode>("preview");
   // Follow the view the opener asked for (Preview vs Code button), per artifact.
   const requestedView = useChatArtifactsStore((state) => state.requestedView);
+  const setArtifactView = useChatArtifactsStore(
+    (state) => state.setArtifactView,
+  );
+  // Every switch from this header goes through here, so the card that opened this
+  // surface knows which view is on screen and can hide it rather than reopening it.
+  const showView = useCallback(
+    (mode: ArtifactViewMode) => {
+      setViewMode(mode);
+      setArtifactView(mode);
+    },
+    [setArtifactView],
+  );
   const [copied, setCopied] = useState(false);
   const t = useT();
   const [consoleOpen, setConsoleOpen] = useState(false);
@@ -250,7 +263,7 @@ export function ArtifactSurface({
                   type="button"
                   role="tab"
                   disabled={isLoadingArtifact && !isPreview}
-                  onClick={() => setViewMode(mode)}
+                  onClick={() => showView(mode)}
                   className={cn(
                     "flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors",
                     effectiveViewMode === mode
@@ -285,7 +298,7 @@ export function ArtifactSurface({
             title={reloadLabel}
             onClick={() => {
               // The source view has no frame to reload, so show it first.
-              if (effectiveViewMode !== "preview") setViewMode("preview");
+              if (effectiveViewMode !== "preview") showView("preview");
               setReloadNonce((nonce) => nonce + 1);
             }}
             className={cn(
@@ -304,7 +317,7 @@ export function ArtifactSurface({
             onClick={() => {
               // The console sits under the preview, so from the source view it switches back.
               if (effectiveViewMode !== "preview") {
-                setViewMode("preview");
+                showView("preview");
                 setConsoleOpen(true);
                 return;
               }
@@ -320,7 +333,7 @@ export function ArtifactSurface({
           >
             <TerminalIcon className="size-4" />
             {outputCounts.errors > 0 ? (
-              <span className="rounded-full bg-destructive px-1.5 text-[10px] font-medium leading-4 text-destructive-foreground">
+              <span className="rounded-full bg-destructive px-1.5 text-ui-10 font-medium leading-4 text-destructive-foreground">
                 {outputCounts.errors}
               </span>
             ) : null}
@@ -404,35 +417,48 @@ export function ArtifactSurface({
       >
         {isLoadingArtifact ? (
           <ArtifactGeneratingPanel />
-        ) : effectiveViewMode === "preview" ? (
-          <ArtifactHtmlFrame
-            key={artifact.id}
-            code={artifact.code}
-            title={artifact.title}
-            fill={true}
-            className="h-full"
-            actionFocusTargetRef={
-              variant === "overlay" ? closeButtonRef : undefined
-            }
-            consoleOpen={consoleOpen}
-            reloadNonce={reloadNonce}
-            onConsoleOpenChange={setConsoleOpen}
-            onOutputCountChange={setOutputCounts}
-            onFixWithModel={variant === "overlay" ? onClose : undefined}
-          />
         ) : (
-          <div className="h-full overflow-auto px-3.5 pb-5 pt-3 text-xs leading-relaxed [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">
-            <Streamdown
-              // Only computed when the source view is actually on screen.
-              key={buildArtifactSourceKey(artifact)}
-              mode="streaming"
-              plugins={{ code: artifactSourceCodePlugin }}
-              controls={{ code: false }}
-              shikiTheme={[unslothLightTheme, unslothDarkTheme]}
+          <>
+            {/* Hidden rather than unmounted behind the source view: unmounting reloads the
+                canvas from scratch and takes every error and console line it had collected
+                with it, so a look at the HTML would cost the output you opened it to read. */}
+            <div
+              className={cn(
+                "h-full",
+                effectiveViewMode !== "preview" && "hidden",
+              )}
             >
-              {sourceMarkdown}
-            </Streamdown>
-          </div>
+              <ArtifactHtmlFrame
+                key={artifact.id}
+                code={artifact.code}
+                title={artifact.title}
+                fill={true}
+                className="h-full"
+                actionFocusTargetRef={
+                  variant === "overlay" ? closeButtonRef : undefined
+                }
+                consoleOpen={consoleOpen}
+                reloadNonce={reloadNonce}
+                onConsoleOpenChange={setConsoleOpen}
+                onOutputCountChange={setOutputCounts}
+                onFixWithModel={variant === "overlay" ? onClose : undefined}
+              />
+            </div>
+            {effectiveViewMode === "preview" ? null : (
+              <div className="h-full overflow-auto px-3.5 pb-5 pt-3 text-xs leading-relaxed [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">
+                <Streamdown
+                  // Only computed when the source view is actually on screen.
+                  key={buildArtifactSourceKey(artifact)}
+                  mode="streaming"
+                  plugins={{ code: artifactSourceCodePlugin }}
+                  controls={{ code: false }}
+                  shikiTheme={[unslothLightTheme, unslothDarkTheme]}
+                >
+                  {sourceMarkdown}
+                </Streamdown>
+              </div>
+            )}
+          </>
         )}
       </div>
     </section>

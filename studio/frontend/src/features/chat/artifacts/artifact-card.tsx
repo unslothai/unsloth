@@ -139,8 +139,11 @@ export function ArtifactCard({
           }
           openArtifact(artifact, { surface, view });
         }}
+        // Open/hide state rides on aria-expanded, not the name: a control that renames
+        // itself is announced as a different control, and the name is the stable handle
+        // the startup-bundle harness counts cards by.
         aria-expanded={showing}
-        aria-label={`${showing ? "Hide" : "Open"} ${artifact.title} ${isCode ? "code" : "preview"}`}
+        aria-label={`Open ${artifact.title} ${isCode ? "code" : "preview"}`}
       >
         {isStreaming ? (
           <span

@@ -258,7 +258,9 @@ test("blocked reports from a stale frame load are rejected", () => {
   const visit = (node: ts.Node): void => {
     if (
       ts.isIfStatement(node) &&
-      /event\.data\.v !== codeVersion/.test(node.expression.getText()) &&
+      // The load identity, which is the code hash plus the reload counter: running the
+      // same code again is a different load, so a stale report has to fail this too.
+      /event\.data\.v !== loadVersion/.test(node.expression.getText()) &&
       node.thenStatement.getText().includes("return")
     ) {
       guarded = true;

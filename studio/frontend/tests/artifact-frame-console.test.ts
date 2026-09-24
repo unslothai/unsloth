@@ -170,8 +170,47 @@ test("the frame checks the load stamp before it keeps an error or console report
   const parseAt = frameSource.indexOf("parseCanvasReport(event.data)");
   assert.ok(parseAt > 0, "the frame does not parse canvas reports");
   const typeAt = frameSource.lastIndexOf('"unsloth:artifact-console"', parseAt);
-  const guardAt = frameSource.indexOf("event.data.v !== codeVersion", typeAt);
+  const guardAt = frameSource.indexOf("event.data.v !== loadVersion", typeAt);
   assert.ok(typeAt > 0 && guardAt > typeAt && guardAt < parseAt);
+});
+
+test("the stamp counts a reload as a new load, not the same code again", () => {
+  // Run again clears the console, so a report from the outgoing run arriving a moment
+  // later has to be dropped. The code hash is identical across a reload, so the stamp
+  // the frame echoes carries the reload counter too.
+  assert.match(
+    frameSource,
+    /reloadNonce > 0 \? `\$\{codeVersion\}\.\$\{reloadNonce\}` : codeVersion/,
+  );
+  assert.match(frameSource, /new URLSearchParams\(\{ v: loadVersion \}\)/);
+  // One identity, so the src the frame reads its stamp from cannot disagree with the
+  // check here. The separate cache-busting param it replaced could.
+  assert.doesNotMatch(frameSource, /query\.set\("r",/);
+});
+
+test("the source view hides the frame instead of unmounting it", () => {
+  const surfaceSource = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/chat/artifacts/artifact-surface.tsx",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  // Unmounting reloads the canvas and drops everything the console collected, so
+  // reading the HTML would cost the output you opened it to read.
+  const frameAt = surfaceSource.indexOf("<ArtifactHtmlFrame");
+  assert.ok(frameAt > 0);
+  const wrapperAt = surfaceSource.lastIndexOf(
+    'effectiveViewMode !== "preview" && "hidden"',
+    frameAt,
+  );
+  assert.ok(wrapperAt > 0, "the frame is not rendered inside a hidden wrapper");
+  // The header's view buttons publish the view so the card that opened this surface
+  // can still tell "already on screen" from "switch to the other one".
+  assert.match(surfaceSource, /showView\(mode\)/);
+  assert.match(surfaceSource, /setArtifactView\(mode\)/);
 });
 
 test("the Fix button stages text in the composer and never sends it", () => {
@@ -226,6 +265,36 @@ test("the banner's console button toggles rather than only opening", () => {
 test("the console has the one toggle and no errors-only filter", () => {
   assert.match(frameSource, /aria-pressed=\{fullTraces\}/);
   assert.doesNotMatch(frameSource, /errorsOnly/);
+});
+
+test("the card keeps one name and puts open/hide on aria-expanded", () => {
+  const cardSource = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/chat/artifacts/artifact-card.tsx",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  // A control that renames itself is announced as a different control, and the startup
+  // bundle harness counts cards by that name.
+  assert.match(cardSource, /aria-label=\{`Open \$\{artifact\.title\}/);
+  assert.match(cardSource, /aria-expanded=\{showing\}/);
+});
+
+test("a panel dragged shut is reported closed, not left selected at no width", () => {
+  const pageSource = readFileSync(
+    fileURLToPath(new URL("../src/features/chat/chat-page.tsx", import.meta.url)),
+    "utf8",
+  );
+  // Otherwise the card still reads the artifact as on screen, and the click meant to
+  // bring the panel back spends itself hiding something already invisible.
+  const remember = pageSource.indexOf("const rememberArtifactPanelWidth");
+  assert.ok(remember > 0);
+  const closeAt = pageSource.indexOf("onCloseArtifact();", remember);
+  const widthAt = pageSource.indexOf("artifactPanelWidthRef.current = `", remember);
+  assert.ok(closeAt > 0 && closeAt < widthAt, "a shut panel still records a width");
 });
 
 test("a stack with nothing but the message, or no stack at all, renders as nothing", () => {

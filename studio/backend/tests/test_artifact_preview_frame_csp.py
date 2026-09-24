@@ -181,6 +181,16 @@ def test_error_and_console_reports_carry_the_load_stamp():
     assert "{ ...fields, v: loadVersion }" in shell
 
 
+def test_only_the_embedder_can_drive_render():
+    # The canvas runs in this same window, so it can postMessage to itself and forge the
+    # html message the shell renders. It already controls its own document, so this is the
+    # invariant rather than a hole: render() is the embedder's, and the listener says so.
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    listener = shell.index('window.addEventListener("message"')
+    guard = shell.index("if (event.source !== parent) return;", listener)
+    assert guard < shell.index("render(data.html);", listener)
+
+
 def test_the_shell_caps_and_clips_what_it_reports():
     # The parent bounds what it keeps, but every postMessage still lands on the
     # parent's thread, so the shell stops after a fixed number and clips each string.

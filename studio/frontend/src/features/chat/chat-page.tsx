@@ -375,8 +375,17 @@ const SingleContent = memo(function SingleContent({
   const artifactPanelWidthRef = useRef<string | null>(null);
   const rememberArtifactPanelWidth = useCallback(() => {
     const size = artifactPanelRef.current?.getSize().asPercentage;
-    if (size != null && size > 5) artifactPanelWidthRef.current = `${size}%`;
-  }, []);
+    if (size == null) return;
+    // Dragged shut, which is a close however far the drag actually got. Say so rather
+    // than leaving a zero-width panel still holding the selected artifact: the artifact
+    // card reads that to decide whether a click opens or hides, so it would spend the
+    // next click hiding something already invisible.
+    if (size <= 5) {
+      onCloseArtifact();
+      return;
+    }
+    artifactPanelWidthRef.current = `${size}%`;
+  }, [onCloseArtifact]);
   const hasInitializedArtifactPanelRef = useRef(false);
   const [isArtifactLayoutAnimating, setIsArtifactLayoutAnimating] =
     useState(false);
@@ -413,11 +422,11 @@ const SingleContent = memo(function SingleContent({
     artifactPanelWidthRef.current = null;
   }, [artifactPanelThread]);
 
-  // Dragging the panel shut leaves showContextPanel true, so the layout effect below
-  // never runs again and opening an artifact resizes nothing. Bring it back here
-  // instead, only when it is actually shut, so a width the user chose survives. Keyed
-  // on the open count rather than the artifact: reopening the selected one is the
-  // common way to hit this, and its ID does not change.
+  // A panel left shut with showContextPanel still true never runs the layout effect
+  // below again, so opening an artifact would resize nothing. The handle reports its own
+  // drags as a close, which covers that; this covers a collapse that arrived any other
+  // way. Keyed on the open count rather than the artifact: reopening the selected one is
+  // the common way to hit this, and its ID does not change.
   const artifactOpenSequence = useChatArtifactsStore(
     (state) => state.openSequence,
   );

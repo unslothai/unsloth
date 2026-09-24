@@ -26,12 +26,16 @@ type ChatArtifactsState = {
   // otherwise invisible to anything watching the selected ID.
   openSequence: number;
   surface: ChatArtifactSurface;
-  // View the surface should show on the next open (Preview vs Code button).
+  // View the surface should show on the next open (Preview vs Code button), and the one
+  // it is showing now once it is open.
   requestedView: ArtifactViewMode;
   openArtifact: (
     artifact: ChatArtifact,
     options?: { surface?: ChatArtifactSurface; view?: ArtifactViewMode },
   ) => void;
+  // The open surface switched views from its own header. Written back so the card that
+  // opened it can still tell "already on screen" from "switch to the other one".
+  setArtifactView: (view: ArtifactViewMode) => void;
   updateArtifact: (artifact: ChatArtifact) => void;
   closeArtifactSurface: () => void;
   clearArtifactsForThread: (threadId: string | null | undefined) => void;
@@ -56,6 +60,7 @@ export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
       surface: options?.surface ?? state.surface,
       requestedView: options?.view ?? "preview",
     })),
+  setArtifactView: (view) => set({ requestedView: view }),
   updateArtifact: (artifact) =>
     set((state) =>
       state.artifactsById[artifact.id]

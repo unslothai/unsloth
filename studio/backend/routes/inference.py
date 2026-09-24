@@ -3850,6 +3850,8 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
         // Survives the document.open() in render(), so once is enough.
         installRandomUUIDFallback();
         window.addEventListener("message", (event) => {
+          // The canvas shares this window, so it can post to itself. Only the embedder drives render().
+          if (event.source !== parent) return;
           const data = event.data;
           if (!data || data.type !== "unsloth:artifact-html" || typeof data.html !== "string") return;
           render(data.html);
