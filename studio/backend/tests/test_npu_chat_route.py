@@ -399,6 +399,8 @@ def test_a_bare_error_line_becomes_an_error(flm):
             "tool_choice",
         ),
         ({"logit_bias": {"42": -100}}, "logit_bias"),
+        ({"logprobs": True}, "logprobs"),
+        ({"top_logprobs": 3}, "logprobs"),
         ({"n": 2}, "n"),
         (
             {

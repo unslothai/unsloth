@@ -24505,6 +24505,10 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
         _raise_unsupported_openai_parameter(
             "logit_bias", "FastFlowLM on the NPU does not take a logit bias."
         )
+    if payload.logprobs or payload.top_logprobs is not None:
+        _raise_unsupported_openai_parameter(
+            "logprobs", "FastFlowLM on the NPU does not report log probabilities."
+        )
     if (
         _request_has_video(payload)
         or payload.audio_base64
