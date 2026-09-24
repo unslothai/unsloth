@@ -103,7 +103,7 @@ function FilterMenu({
           <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-5" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-56">
+      <DropdownMenuContent align="end" className="w-48">
         <DropdownMenuLabel className="px-3 pb-1 pt-2 text-muted-foreground font-normal">
           Source
         </DropdownMenuLabel>
@@ -168,7 +168,7 @@ function NewMenu({ onSelect }: { onSelect: (action: NewAction) => void }) {
           <ChevronDownIcon className="size-4" strokeWidth={2} />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-56">
+      <DropdownMenuContent align="end" className="w-44">
         {NEW_OPTIONS.map(({ value, label, icon }) => (
           <DropdownMenuItem key={value} onSelect={() => onSelect(value)}>
             <HugeiconsIcon icon={icon} strokeWidth={1.75} className={ICON} />
