@@ -12,9 +12,12 @@ points ``HF_ENDPOINT`` at the loopback adapter in ``hub.modelscope``.
 
 from __future__ import annotations
 
+import json
 import os
+import sqlite3
 import sys
 import threading
+from contextlib import closing
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -71,22 +74,24 @@ def operator_hf_endpoint() -> str:
 
 
 def _read_stored() -> dict:
-    # get_app_settings creates and migrates studio.db; do not build one just to read two keys.
-    if "storage.studio_db" not in sys.modules:
-        try:
-            from utils.paths.storage_roots import studio_db_path
-            os.stat(studio_db_path())
-        except FileNotFoundError:
-            return {}
-        except Exception:  # noqa: BLE001 - on any doubt, try the read
-            pass
+    keys = [HF_ENDPOINT_KEY, DATASETS_SERVER_FOLLOWS_KEY, SOURCE_KEY]
     try:
-        from storage.studio_db import get_app_settings
         from utils.account_context import OWNER, run_as
-        return run_as(
-            OWNER, get_app_settings, [HF_ENDPOINT_KEY, DATASETS_SERVER_FOLLOWS_KEY, SOURCE_KEY]
-        )
-    except Exception as exc:  # noqa: BLE001 - an unreadable db keeps the environment's values
+
+        # get_app_settings creates and migrates studio.db; the startup read must leave it untouched.
+        if "storage.studio_db" not in sys.modules:
+            from utils.paths.storage_roots import studio_db_path
+
+            path = run_as(OWNER, studio_db_path)
+            with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri = True)) as conn:
+                rows = conn.execute(
+                    "SELECT key, value_json FROM app_settings WHERE key IN (?, ?, ?)", keys
+                ).fetchall()
+            return {key: json.loads(value) for key, value in rows}
+        from storage.studio_db import get_app_settings
+
+        return run_as(OWNER, get_app_settings, keys)
+    except Exception as exc:  # noqa: BLE001 - a missing or unreadable db keeps the environment's values
         logger.debug("hub settings read failed (%s)", exc)
         return {}
 

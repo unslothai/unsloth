@@ -98,6 +98,26 @@ def test_datasets_server_follows_only_when_asked(store):
     assert os.environ["HF_DATASETS_SERVER"] == MIRROR
 
 
+def test_the_startup_read_leaves_studio_db_as_it_found_it(tmp_path, monkeypatch):
+    import sqlite3
+
+    db = tmp_path / "studio.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value_json TEXT)")
+        conn.execute(
+            "INSERT INTO app_settings VALUES (?, ?)", (hub_settings.SOURCE_KEY, '"modelscope"')
+        )
+    conn.close()
+    before = db.read_bytes()
+    monkeypatch.delitem(sys.modules, "storage.studio_db")
+    monkeypatch.setattr("utils.paths.storage_roots.studio_db_path", lambda: db)
+    assert hub_settings.get_hub_settings().source == hub_settings.MODELSCOPE
+    assert db.read_bytes() == before
+    db.unlink()
+    assert hub_settings.get_hub_settings().source == hub_settings.HUGGINGFACE
+    assert not db.exists()
+
+
 @pytest.fixture
 def client(store):
     app = FastAPI()
