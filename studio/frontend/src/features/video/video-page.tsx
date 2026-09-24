@@ -3233,7 +3233,6 @@ function VideoGenerator({
       toast.error("Prompt is empty");
       return;
     }
-    saveLastPrompt("video", prompt);
     if (supportsReferences && referenceImages.length === 0 && referenceVideos.length === 0) {
       toast.error("Add a reference picture or video for this checkpoint");
       return;
@@ -3269,6 +3268,8 @@ function VideoGenerator({
     const matchSource = resolutionIdx === MATCH_SOURCE_RESOLUTION;
     const preset = resolutionPresets[resolutionIdx] ?? resolutionPresets[0];
 
+    // Saved only once the request passes validation, so a rejected attempt is not kept.
+    saveLastPrompt("video", prompt);
     setBusy("generating");
     setGenStep(null);
     // The POST only STARTS the job and returns at once (a clip takes minutes, and the secure-mode

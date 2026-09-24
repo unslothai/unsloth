@@ -3704,7 +3704,6 @@ export function ImagesPage({
       toast.error("Prompt is empty");
       return;
     }
-    saveLastPrompt(`images:${workflow}`, prompt);
     const isTransform = workflow === "transform";
     const isInpaint = workflow === "inpaint";
     const isExtend = workflow === "extend";
@@ -3836,6 +3835,8 @@ export function ImagesPage({
       return;
     }
 
+    // Saved only once the request passes validation, so a rejected attempt is not kept.
+    saveLastPrompt(`images:${workflow}`, prompt);
     setBusy("generating");
     setGenDone(0);
     setGenStep(null);
