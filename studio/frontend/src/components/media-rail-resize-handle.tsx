@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useRef } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 
 import { PanelResizeHandle } from "@/components/ui/panel-resize-handle";
 import {
@@ -40,23 +40,47 @@ export function MediaRailResizeHandle({
   const anchorRef = useRef<HTMLSpanElement>(null);
   const root = () =>
     anchorRef.current?.closest<HTMLElement>(`[${MEDIA_RAIL_ROOT_ATTR}]`) ?? null;
+  // The `100% - 13rem` cap in layout px, so drags and keys start from the width actually shown.
+  const [cap, setCap] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const anchor = anchorRef.current;
+    // What the rail's 100% resolves against: the page root's padding box, or the rail's parent.
+    const block = placement === "page" ? anchor?.parentElement : anchor?.parentElement?.parentElement;
+    if (!block) return;
+    const update = () => {
+      const style = getComputedStyle(block);
+      const inner =
+        placement === "page"
+          ? block.clientWidth
+          : block.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+      setCap((inner - 13 * rem) / rail.scale);
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(block);
+    return () => observer.disconnect();
+  }, [placement, rail.scale]);
+  const max = cap === null ? rail.max : Math.max(MEDIA_RAIL_WIDTH_MIN, Math.min(rail.max, cap));
+  const width = Math.min(rail.width, max);
   const handle = (
     <PanelResizeHandle
       edge="right"
       open={true}
-      width={rail.width}
+      width={width}
       stored={rail.stored}
       min={MEDIA_RAIL_WIDTH_MIN}
-      max={rail.max}
+      max={max}
       scale={rail.scale}
-      clamp={rail.clamp}
-      setWidth={rail.setWidth}
+      clamp={(px) => Math.min(rail.clamp(px), max)}
+      // Commits what is shown; a capped pull past the edge keeps the stored preference.
+      setWidth={(px) => rail.setWidth(Math.min(px, max))}
       resetWidth={rail.resetWidth}
       // The rail does not collapse; click does nothing, drag and arrow keys resize.
       onToggle={() => {}}
       target={root}
       cssVar="--media-rail-width"
-      measure={() => rail.width}
+      measure={() => width}
       label="Resize settings panel"
       toggleLabel="Resize settings panel"
       hideTooltip={true}
