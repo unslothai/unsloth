@@ -2223,9 +2223,7 @@ class VideoBackend:
                 restore_owner_account(VIDEO)
                 restore_resident_metadata(VIDEO)
             # Free the debris of a failed construction: nothing was committed, so nothing else releases the VRAM.
-            # NVFP4 first: its caches hold VIEWS of the denoiser, which clear_gpu_cache() cannot free. Only once no
-            # resident model is left: a replacement that failed before teardown keeps the old state, whose CUDA graph
-            # still records kernels against the barrier and dispatch tensors this reset would release.
+            # NVFP4 caches pin the denoiser, but a failed replacement keeps the old model, whose graph still uses them.
             if self._state is None:
                 try:
                     from .diffusion_nvfp4_linear import reset_nvfp4_state
@@ -7398,7 +7396,6 @@ class VideoBackend:
             diffusion_cuda_graph.uninstall_all(
                 getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or ()
             )
-            # The PDL barrier belongs to this model's allocator state, never to the next capture.
             try:
                 from .diffusion_nvfp4_linear import reset_nvfp4_state
                 reset_nvfp4_state()

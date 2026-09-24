@@ -10224,9 +10224,7 @@ def test_the_boundary_marker_waits_out_a_busy_capture_lock(fake_runtime, monkeyp
 
 @pytest.mark.parametrize("resident", [True, False])
 def test_a_failed_replacement_keeps_the_resident_models_nvfp4_state(monkeypatch, resident):
-    """A load that fails before teardown leaves the old model installed, and its CUDA graph still
-    records kernels against the NVFP4 barrier and dispatch tensors; only a load with nothing
-    resident may release them."""
+    """A failed replacement keeps the old model, whose CUDA graph still uses the NVFP4 tensors."""
     import core.inference.video as vid
     from core.inference import diffusion_nvfp4_linear as lin
 

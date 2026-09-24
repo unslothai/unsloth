@@ -7819,7 +7819,6 @@ class DiffusionBackend:
         # Before clear_gpu_cache(), or the graph pool stays reserved for the life of the process.
         cuda_graph.uninstall_all(state.cuda_graphs)
         gguf_compile.uninstall_all()
-        # The PDL barrier belongs to this model's allocator state, never to the next capture.
         try:
             from .diffusion_nvfp4_linear import reset_nvfp4_state
             reset_nvfp4_state()

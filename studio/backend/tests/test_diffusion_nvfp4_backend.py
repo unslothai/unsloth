@@ -248,8 +248,7 @@ _STREAM_BANNED = ("set_stream", "set_device", "setDevice")
 
 
 def _banned_stream_calls(source: str) -> list[tuple[int, str]]:
-    """``set_stream`` silently sets the current DEVICE too, and ``set_device`` moves what the guard
-    restores."""
+    """``set_stream`` silently sets the current DEVICE; ``set_device`` moves what the guard restores."""
     found: list[tuple[int, str]] = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Attribute) and node.attr in _STREAM_BANNED:
@@ -470,8 +469,7 @@ def test_an_unprewarmed_gemm_shape_autotunes_on_its_first_eager_call_only(monkey
     monkeypatch.setitem(sys.modules, "flashinfer", fake)
     monkeypatch.setattr(ops, "_device_guard", lambda t: contextlib.nullcontext())
     monkeypatch.setattr(ops, "_fire_barrier", lambda device: None)
-    # The cached dispatch plan snapshots FlashInfer's tactic on its first build, so the tune has
-    # to come first; with no plan available every call reaches mm_fp4 and is observable here.
+    # With no dispatch plan every call reaches mm_fp4 and is observable here.
     from core.inference import diffusion_nvfp4_dispatch as dispatch
 
     monkeypatch.setattr(dispatch, "enabled", lambda device: False)
@@ -499,8 +497,7 @@ def test_an_unprewarmed_gemm_shape_autotunes_on_its_first_eager_call_only(monkey
 
 
 def test_the_first_call_tune_runs_before_the_cached_dispatch_plan_is_built(monkeypatch):
-    """``gemm_plan`` snapshots FlashInfer's tactic for a key on its first build and never asks
-    again, so a plan built before the tune would pin the fallback tactic for good."""
+    """``gemm_plan`` snapshots the tactic on its first build, so a plan before the tune pins the fallback."""
     import contextlib
     import sys
     import types
