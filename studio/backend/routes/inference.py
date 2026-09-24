@@ -9106,7 +9106,151 @@ def _loaded_satisfies(requested: str) -> bool:
     )
 
 
-def _loaded_identity_satisfies(requested: str) -> bool:
+# Load paths whose resolver pass COMPLETED with no alias to record, so asking again would
+# rebuild the index for an answer we already have. A fresh load clears the advertised id, so
+# it clears these too.
+_alias_probed_load_paths: set[str] = set()
+# Paths still mid-pass, and how many requests hold each: a concurrent request must reach the
+# resolver rather than shortcut to the filename, and two requests naming one path must not
+# release each other's claim.
+_alias_probe_inflight: dict[str, int] = {}
+# The resolver index generation the two collections describe.
+_alias_probe_generation = -1
+# The index state each settled marker answered against, so a later scan retires it.
+_alias_probe_answered_at: dict[str, tuple[int, float]] = {}
+_alias_probe_lock = threading.Lock()
+
+
+def _alias_probe_key(identifier: str) -> str:
+    """The probe key for *identifier* under the ACTING account.
+
+    The resolver keeps a snapshot per managed account (private scan roots), so a negative
+    answer is only negative for the account that took it: another whose roots DO index that
+    path has an alias to record, and inheriting the marker would report the filename for the
+    rest of the load.
+    """
+    from utils.account_context import current_account_id
+    return f"{current_account_id()}\x00{identifier}"
+
+
+def _alias_probe_index_state() -> tuple[int, float]:
+    """Which index a negative answer was read from: its configuration and its snapshot.
+
+    The generation alone is not enough: it moves on a scan-root change, but a model added
+    externally is picked up by an ordinary TTL or background scan, which publishes a fresh
+    stamp and leaves the generation alone. A marker surviving that kept the shortcut
+    answering with the filename until a reload. Paired with the stamp, a probe costs one
+    resolver pass per scan instead of one per message.
+    """
+    from core.inference.local_model_resolver import index_generation, index_scan_stamp
+    return (index_generation(), index_scan_stamp())
+
+
+def _alias_probe_forget_stale_locked() -> None:
+    """Drop probes recorded against a scan-root configuration that no longer exists.
+
+    A path with no alias under the old roots can have one under the new, so nothing taken
+    under the old configuration survives, in flight or settled. A new SNAPSHOT under the same
+    roots retires settled markers too, but per marker: see ``_alias_probe_taken``.
+    """
+    global _alias_probe_generation
+    from core.inference.local_model_resolver import index_generation
+
+    generation = index_generation()
+    if generation != _alias_probe_generation:
+        _alias_probed_load_paths.clear()
+        _alias_probe_answered_at.clear()
+        _alias_probe_inflight.clear()
+        _alias_probe_generation = generation
+
+
+def _alias_probe_taken(identifier: str) -> bool:
+    """Whether *identifier* still needs a resolver pass, claiming it if so."""
+    key = _alias_probe_key(identifier)
+    with _alias_probe_lock:
+        _alias_probe_forget_stale_locked()
+        if key in _alias_probed_load_paths:
+            if _alias_probe_answered_at.get(key) == _alias_probe_index_state():
+                return False
+            # Answered against a snapshot since replaced, so ask again rather than keep it.
+            _alias_probed_load_paths.discard(key)
+            _alias_probe_answered_at.pop(key, None)
+        _alias_probe_inflight[key] = _alias_probe_inflight.get(key, 0) + 1
+        return True
+
+
+def _alias_probe_release_locked(key: str) -> None:
+    """Give back ONE claim on *key*; caller holds ``_alias_probe_lock``."""
+    held = _alias_probe_inflight.get(key, 0) - 1
+    if held > 0:
+        _alias_probe_inflight[key] = held
+    else:
+        _alias_probe_inflight.pop(key, None)
+
+
+def _alias_probe_release(identifier: str) -> None:
+    """Give back ONE claim on *identifier*, so the next request probes rather than shortcut.
+
+    One claim, not the entry: a concurrent request naming the same path holds its own, and
+    dropping the entry would leave that one unable to record its completed pass, so the next
+    request would pay for the multi-root scan again.
+    """
+    key = _alias_probe_key(identifier)
+    with _alias_probe_lock:
+        _alias_probe_forget_stale_locked()
+        held = _alias_probe_inflight.get(key, 0) - 1
+        if held > 0:
+            _alias_probe_inflight[key] = held
+        else:
+            _alias_probe_inflight.pop(key, None)
+
+
+def _alias_probe_settle(identifier: str, answered_state = None) -> None:
+    """Record that the pass which claimed *identifier* completed and found no alias.
+
+    Only the claimer's own path, never everything in flight: any request runs a resolver
+    pass, so promoting the whole set let an unrelated request answer a claim whose switch had
+    not recorded its alias yet, and the next request naming that path would shortcut to the
+    filename.
+
+    *answered_state* is the index state the miss was READ from. The caller can await more
+    work before this call, and a warmer publishing in that window would otherwise stamp this
+    answer with a snapshot that never gave it. Mismatched, the claim is given back.
+    """
+    key = _alias_probe_key(identifier)
+    with _alias_probe_lock:
+        _alias_probe_forget_stale_locked()
+        if key not in _alias_probe_inflight:
+            return
+        state = _alias_probe_index_state()
+        # Sliced: the completeness verdict the state also carries is the caller's to read,
+        # and is not part of a marker's identity.
+        if answered_state is not None and tuple(answered_state[:2]) != state:
+            _alias_probe_release_locked(key)
+            return
+        # The whole entry: the answer is established, so a request still mid-pass on the
+        # same path has nothing left to contribute.
+        _alias_probe_inflight.pop(key, None)
+        _alias_probed_load_paths.add(key)
+        _alias_probe_answered_at[key] = state
+
+
+def _clear_advertised_alias(backend) -> None:
+    """Drop the advertised id, and with it the probe that recorded it.
+
+    A load advertises its own identifier until auto-switch overwrites it with the repo id.
+    Keeping the marker across that reset let the shortcut answer the first request after a
+    reload, so the alias was never recorded and the model kept its filename. Takes whichever
+    backend is loading: the probe set is keyed by path, not by engine.
+    """
+    backend._openai_advertised_id = None
+    with _alias_probe_lock:
+        _alias_probed_load_paths.clear()
+        _alias_probe_answered_at.clear()
+        _alias_probe_inflight.clear()
+
+
+def _loaded_identity_satisfies(requested: str, claimed: Optional[list] = None) -> bool:
     """Whether an explicit resident identity answers to *requested*.
 
     Unlike :func:`_loaded_satisfies`, this excludes a public id derived from a
@@ -9114,6 +9258,10 @@ def _loaded_identity_satisfies(requested: str) -> bool:
     resolver and the serving backend records it for responses and ``/v1/models``.
     A request naming the load path itself is held back until that recording has
     happened, for the same reason.
+
+    When *claimed* is given and this call CLAIMS the alias probe, the claimed path is
+    appended to it. Only the claimer may settle or release that claim, so the caller has
+    to know whether it took one and on which path.
     """
     from core.inference.openai_auto_download import split_model_ref
 
@@ -9122,11 +9270,21 @@ def _loaded_identity_satisfies(requested: str) -> bool:
     if getattr(llama_backend, "is_loaded", False):
         identifier = getattr(llama_backend, "model_identifier", None)
         advertised = getattr(llama_backend, "_openai_advertised_id", None)
-        # A manual load of a local path advertises nothing, so only the path could match
-        # and answering from it would skip the recording: /v1/models and every response
-        # would report the filename. One request pays the resolver, the rest match the
-        # alias it recorded and land here.
-        if advertised is None and identifier and _looks_like_local_path(identifier):
+        # A manual load of a local path advertises nothing, so answering here would skip the
+        # recording and every response would report the filename. The first such request goes
+        # to the resolver instead, once per path: a path no scan root indexes has no alias to
+        # record and must not pay again. Only a request naming the path resolves to the
+        # resident model, so only it spends the probe; _alias_probe_taken CLAIMS, so it stays
+        # last and a request failing any condition above does not spend it.
+        if (
+            advertised is None
+            and identifier
+            and _looks_like_local_path(identifier)
+            and _matches_any(base, (identifier,))
+            and _alias_probe_taken(identifier)
+        ):
+            if claimed is not None:
+                claimed.append(identifier)
             return False
         companion_roots = tuple(getattr(llama_backend, "_openai_gguf_companion_roots", ()) or ())
         if companion_roots:
@@ -9150,8 +9308,18 @@ def _loaded_identity_satisfies(requested: str) -> bool:
     if not active:
         return False
     advertised = getattr(backend, "_openai_advertised_id", None)
-    # Same rule as the llama branch: answering from the path alone skips the recording.
-    if advertised is None and _looks_like_local_path(active):
+    # Same rule and same bound as the llama branch: answering from the path alone skips the
+    # recording, so the first request naming it goes to the resolver, and a path no scan root
+    # indexes must not pay for the multi-root scan again. _alias_probe_taken CLAIMS, so it
+    # stays last.
+    if (
+        advertised is None
+        and _looks_like_local_path(active)
+        and _matches_any(base, (active,))
+        and _alias_probe_taken(active)
+    ):
+        if claimed is not None:
+            claimed.append(active)
         return False
     return _matches_any(base, (active, advertised)) and _loaded_satisfies(requested)
 
@@ -9669,6 +9837,8 @@ async def _maybe_auto_switch_model(
         model_override_load_kwargs,
     )
     from core.inference.local_model_resolver import (
+        index_answer_is_trustworthy,
+        index_scan_stamp,
         local_gguf_companion_roots,
         local_gguf_companion_state,
         local_target_is_gguf,
@@ -9763,7 +9933,10 @@ async def _maybe_auto_switch_model(
     # The common Unsloth path names the model that is already serving. Resolve that
     # from resident state before consulting the filesystem index: rebuilding a stale
     # multi-root index here used to hold the request for seconds before streaming.
-    if auto_switch_on and await asyncio.to_thread(_loaded_identity_satisfies, requested_model):
+    alias_probe_claimed: list[str] = []
+    if auto_switch_on and await asyncio.to_thread(
+        _loaded_identity_satisfies, requested_model, alias_probe_claimed
+    ):
         warm_index_soon()
         if claim_resident:
             _claim_slot_for_non_preview(fastapi_request)
@@ -9779,7 +9952,15 @@ async def _maybe_auto_switch_model(
             await _reject_unservable_model(requested_model, fastapi_request)
             return
 
+    # Whether a resolver pass both began and produced a CONFIRMED absence. A cancelled
+    # generation raises before either resolver is called, and a failed scan returns None as a
+    # best effort; settling on either marks a path answered that nothing looked for.
+    alias_probe_answered = False
+    # The index state that answer was read from; see _alias_probe_settle.
+    alias_probe_state = None
+
     async def _resolve_and_switch() -> None:
+        nonlocal alias_probe_answered, alias_probe_state
         from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
         _raise_if_generation_cancelled()
@@ -9795,6 +9976,7 @@ async def _maybe_auto_switch_model(
             # safe to use immediately. An expired/config-invalidated hit, a cold
             # cache, and every miss must refresh before an unrelated resident model
             # can answer or an entry from a removed scan root can trigger a switch.
+            scan_stamp_before = index_scan_stamp()
             resolved = resolve_trusted_cached_local_gguf(
                 requested_model,
                 include_companion_scope = True,
@@ -9802,11 +9984,43 @@ async def _maybe_auto_switch_model(
             if resolved is not None:
                 warm_index_soon()
             else:
+                # The resolver reports WHICH index answered, taken beside the snapshot it
+                # resolved against: a read afterwards would label this answer with a snapshot
+                # published since, which may already hold the alias.
+                resolved_from: list = []
                 resolved = await asyncio.to_thread(
-                    resolve_local_gguf,
-                    requested_model,
-                    include_companion_scope = True,
+                    functools.partial(
+                        resolve_local_gguf,
+                        requested_model,
+                        include_companion_scope = True,
+                        index_state = resolved_from,
+                    )
                 )
+                alias_probe_state = resolved_from[0] if resolved_from else None
+            # The marker means "this load path has no alias to record", so only a CONFIRMED
+            # ABSENCE earns it. A positive resolution is the opposite claim: the switch may
+            # still abort before recording the alias, and once it records one the shortcut is
+            # unreachable anyway, so the marker buys nothing and a stale one is wrong.
+            #
+            # An absence is only confirmed by an index that answered for real, since
+            # resolve_local_gguf swallows a failed scan and returns None, which here looks
+            # exactly like "no such model". A scan that landed says so through its published
+            # stamp; an index already trustworthy never needed one.
+            #
+            # Fresh is still not complete: every source is guarded on its own, so a transient
+            # LM Studio or scan-folder failure publishes a fresh PARTIAL snapshot, and a miss
+            # read from it is only what this pass could see. Read WITH the resolution.
+            scan_stamp_after = alias_probe_state[1] if alias_probe_state else 0.0
+            alias_probe_answered = (
+                resolved is None
+                # From the same state as the stamp: read separately, a warmer publishing a
+                # complete snapshot pairs this pass's miss with the next pass's verdict.
+                and bool(alias_probe_state and alias_probe_state[2])
+                and (
+                    (scan_stamp_after > 0.0 and scan_stamp_after != scan_stamp_before)
+                    or index_answer_is_trustworthy()
+                )
+            )
         if resolved is None:
             # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
             if auto_switch_on and not reload_only:
@@ -10300,7 +10514,17 @@ async def _maybe_auto_switch_model(
                 _note_switch_waiter(key, -1)
 
     try:
-        await _resolve_and_switch()
+        try:
+            await _resolve_and_switch()
+        finally:
+            # Only this request's own claim, and only if its pass confirmed the absence. In
+            # the finally, so a refusal or a failed load does not leave the path claimed for
+            # good; a pass that never started or whose scan failed gives the claim back.
+            for claimed_path in alias_probe_claimed:
+                if alias_probe_answered:
+                    _alias_probe_settle(claimed_path, alias_probe_state)
+                else:
+                    _alias_probe_release(claimed_path)
     except HTTPException as exc:
         path = getattr(getattr(fastapi_request, "url", None), "path", None)
         if (
@@ -16653,6 +16877,10 @@ async def _load_model_impl(
             llama_backend._openai_gguf_companion_roots = tuple(request._gguf_companion_roots)
             llama_backend._openai_gguf_companion_state = gguf_companion_state
             await asyncio.to_thread(note_model_loaded, llama_backend)
+            # A plain load advertises its own identifier; auto-switch overwrites
+            # this with the repo id right after _load_model_impl returns. This
+            # also drops the probe marker that recorded the previous alias.
+            _clear_advertised_alias(llama_backend)
             # None elsewhere: only an Ollama load has an identifier no client should be handed.
             llama_backend._openai_advertised_id = ollama_advertised_id
 
@@ -16743,7 +16971,10 @@ async def _load_model_impl(
         # would be answered by them. Auto-switch sets the repo id once this returns.
         _prior_alias = getattr(backend, "_openai_advertised_id", None)
         _prior_active = getattr(backend, "active_model_name", None)
-        backend._openai_advertised_id = None
+        # Through the helper, so the alias probe is dropped with the alias: a reload of the
+        # same local path advertises nothing again, and a probe settled under the previous
+        # load would let the resident shortcut answer with the filename for good.
+        _clear_advertised_alias(backend)
         # Not after the load (held across a long download, the chat evictor cancels
         # this very load) and not before it (until the previous worker exits, this
         # claim is all that stops a second pipeline allocating over a resident model).

@@ -15,6 +15,7 @@ from typing import List, NamedTuple, Optional
 from loggers import get_logger
 
 # Dependency-light leaf (PEP 562 package init): no llama.cpp / torch import chain.
+from core.inference.scan_incidents import note_scan_incident
 from core.inference.memory_contract import (
     EMPTY_BREAKDOWN,
     build_memory_estimate,
@@ -384,8 +385,11 @@ def _is_model_directory(d: Path) -> bool:
         has_config = (d / "config.json").exists() or (d / "adapter_config.json").exists()
         if not has_config:
             return False
-        return any(_is_weight_file(f) for f in d.iterdir() if f.is_file())
-    except OSError:
+        return any(_is_weight_file(f) for f in _dir_entries(d) if f.is_file())
+    except OSError as exc:
+        # False says "not a model directory", indistinguishable from one holding no
+        # weights, so a row this pass never classified is dropped silently.
+        note_scan_incident(f"model directory unreadable: {d} ({type(exc).__name__})")
         return False
 
 
@@ -399,6 +403,26 @@ def _is_weight_bin(name: str) -> bool:
     return low.endswith(".bin") and low.startswith(_WEIGHT_BIN_PREFIXES)
 
 
+def _dir_entries(path: Path) -> list[Path]:
+    """Every entry in *path*, with an enumeration failure RAISED rather than swallowed.
+
+    ``Path.glob`` answers an unreadable directory with an empty result, so the handlers
+    around these predicates never fired for the case they exist for and a checkpoint the
+    scan could not look at was dropped while the pass published as complete. ``iterdir``
+    raises, which is what reaches the incident.
+    """
+    return list(path.iterdir())
+
+
+def _suffixed(path: Path, suffix: str) -> list[Path]:
+    """Entries in *path* whose suffix is *suffix*, compared case-insensitively.
+
+    Matching ``glob``'s behaviour on Windows, which is case-insensitive, rather than
+    Linux's: a staged ``MODEL.GGUF`` was discovered there and must stay discovered.
+    """
+    return [entry for entry in _dir_entries(path) if entry.suffix.lower() == suffix]
+
+
 def _has_non_gguf_weights(path: Path) -> bool:
     """True if *path* holds non-GGUF weight files (``.safetensors`` or a weight ``.bin``), ignoring
     companion ``.bin`` files such as ``tokenizer.bin`` so a GGUF-only folder is not misread as a plain
@@ -406,10 +430,11 @@ def _has_non_gguf_weights(path: Path) -> bool:
     try:
         # Only the safetensors arm needs the check: a weight ".bin" is recognised by its name prefix, which a
         # "._" already fails.
-        if any(not is_appledouble_metadata(f) for f in path.glob("*.safetensors")):
+        if any(not is_appledouble_metadata(f) for f in _suffixed(path, ".safetensors")):
             return True
-        return any(_is_weight_bin(f.name) for f in path.glob("*.bin"))
+        return any(_is_weight_bin(f.name) for f in _suffixed(path, ".bin"))
     except OSError:
+        note_scan_incident(f"weights unreadable: {path}")
         return False
 
 
@@ -424,7 +449,7 @@ def _servable_gguf_names(directory: Path) -> list[str]:
     companions of a real model and presence is all they decide."""
     return [
         p.name
-        for p in directory.glob("*.gguf")
+        for p in _suffixed(directory, ".gguf")
         if not is_appledouble_metadata(p) and not _is_imatrix_path(p.name)
     ]
 
@@ -439,8 +464,11 @@ def _is_gguf_companion_only_dir(path: Path) -> bool:
             return False
         if (path / "config.json").exists() or (path / "adapter_config.json").exists():
             return False
-        return any(path.glob("*.gguf")) and not _has_non_gguf_weights(path)
-    except OSError:
+        return bool(_suffixed(path, ".gguf")) and not _has_non_gguf_weights(path)
+    except OSError as exc:
+        # Same rule as everywhere else in this pass: a folder it could not read is a gap,
+        # not a folder holding nothing.
+        note_scan_incident(f"gguf companion check unreadable: {path} ({type(exc).__name__})")
         return False
 
 
@@ -487,6 +515,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
             has_pipeline_index = _local_pipeline_index(child)
             has_model_files = has_gguf or has_non_gguf_weights or has_config or has_pipeline_index
         except OSError:
+            note_scan_incident(f"models_dir child unreadable: {child}")
             continue
         if not has_model_files:
             continue
@@ -508,7 +537,9 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
             ),
         )
     if limit is None or len(found) < limit:
-        for gguf_file in models_dir.glob("*.gguf"):
+        # Raising, like the iterdir above: a root that went unreadable after the children
+        # loop answered glob with nothing, so the loose GGUFs were dropped silently.
+        for gguf_file in _suffixed(models_dir, ".gguf"):
             if limit is not None and len(found) >= limit:
                 break
             # A standalone mmproj is a vision adapter, not servable weights.
@@ -566,7 +597,16 @@ def _scan_hf_cache(
     from hub.utils import inventory_scan as hf_cache_scan
 
     found: List[LocalModelInfo] = []
-    for repo_dir in cache_dir.glob("models--*"):
+    try:
+        # A root that stats as a directory but cannot be enumerated answered ``glob`` with
+        # no rows, so the empty result was certified complete and a probe could memoize a
+        # miss against a cache it never read. The prefix is compared case-insensitively,
+        # which is how the pattern matched on Windows.
+        repo_dirs = [p for p in _dir_entries(cache_dir) if p.name.lower().startswith("models--")]
+    except OSError as exc:
+        note_scan_incident(f"hf cache root unreadable: {cache_dir} ({type(exc).__name__})")
+        return []
+    for repo_dir in repo_dirs:
         if not repo_dir.is_dir():
             continue
 
@@ -632,13 +672,23 @@ def _dir_model_format(path: Path, recursive: bool = False) -> Optional[str]:
         def _servable(p: Path) -> bool:
             return _is_main_gguf_filename(p.name) and not is_appledouble_metadata(p)
 
-        if not any(_servable(p) for p in path.glob("*.gguf")):
+        # Raising helpers, so the handler below is reachable for an enumeration failure and
+        # not only a stat: glob's empty answer made this say "not GGUF" about a directory it
+        # never read.
+        if not any(_servable(p) for p in _suffixed(path, ".gguf")):
             if not recursive:
                 return None
-            if not any(_servable(p) for p in path.glob("*/*.gguf")):
+            nested = [
+                p
+                for child in _dir_entries(path)
+                if child.is_dir()
+                for p in _suffixed(child, ".gguf")
+            ]
+            if not any(_servable(p) for p in nested):
                 return None
         return None if _has_non_gguf_weights(path) else "gguf"
     except OSError:
+        note_scan_incident(f"format unreadable: {path}")
         return None
 
 
@@ -714,9 +764,12 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                         has_model = (
                             bool(_servable_gguf_names(model_dir))
                             or (model_dir / "config.json").exists()
+                            # Through the raising helper, like the check above: a directory
+                            # that goes unreadable between the two answers glob with
+                            # nothing, and the row was dropped as if it held nothing.
                             or any(
                                 not is_appledouble_metadata(p)
-                                for p in model_dir.glob("*.safetensors")
+                                for p in _suffixed(model_dir, ".safetensors")
                             )
                         )
                         if not has_model:
@@ -758,8 +811,10 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                             ),
                         )
                 except OSError:
+                    note_scan_incident(f"lmstudio child unreadable: {child}")
                     continue
         except OSError:
+            note_scan_incident(f"lmstudio subtree unreadable: {child}")
             continue
     return found
 

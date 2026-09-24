@@ -8,8 +8,11 @@ tests/test_gguf_completion_usage.py.
 """
 
 import asyncio
+import contextlib
 import json
 import os
+import pathlib
+import tempfile
 import threading
 import time
 import types
@@ -18,6 +21,10 @@ import pytest
 from fastapi import HTTPException
 
 import routes.inference as inference_route
+
+# Probe keys carry the acting account, since a negative answer is only negative for the
+# account whose private scan roots it was taken under.
+KEY = lambda path: inference_route._alias_probe_key(path)  # noqa: E731
 from models.inference import LoadRequest
 from core.inference import local_model_resolver as resolver
 from utils import openai_auto_switch_settings as settings
@@ -266,12 +273,14 @@ class _LoadRecorder:
         self.backend._gguf_path = request.model_path
         self.backend.is_loaded = True
         # Mirror _load_model_impl: a load advertises its own id until the
-        # auto-switch caller overwrites it with the repo id.
-        self.backend._openai_advertised_id = None
+        # auto-switch caller overwrites it with the repo id. Same helper the route
+        # calls, so the probe marker is dropped here exactly as it is in production.
+        inference_route._clear_advertised_alias(self.backend)
         self.backend._openai_gguf_companion_roots = tuple(request._gguf_companion_roots)
         self.backend._openai_gguf_companion_state = resolver.local_gguf_companion_state(
             tuple(request._gguf_companion_roots)
         )
+        from core.inference import llama_keepwarm as kw
 
         kw.note_model_loaded(self.backend)
         return None
@@ -439,7 +448,9 @@ def test_auto_switch_reads_an_additions_only_snapshot_without_rebuilding_it(monk
     assert resolver.index_is_built() is False
 
     def _resolve(name, **kwargs):
-        calls.append((name, kwargs))
+        # index_state is an out parameter, not part of WHAT was asked.
+        recorded = {k: v for k, v in kwargs.items() if k != "index_state"}
+        calls.append((name, recorded))
         return real_resolve(name, **kwargs)
 
     monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
@@ -501,7 +512,9 @@ def test_an_expired_positive_hit_refreshes_before_switching(monkeypatch):
     monkeypatch.setattr(resolver, "_build_index", lambda: scans.append(1) or {})
 
     def _resolve(name, **kwargs):
-        calls.append((name, kwargs))
+        # index_state is an out parameter, not part of WHAT was asked.
+        recorded = {k: v for k, v in kwargs.items() if k != "index_state"}
+        calls.append((name, recorded))
         return real_resolve(name, **kwargs)
 
     monkeypatch.setattr(resolver, "resolve_local_gguf", _resolve)
@@ -542,7 +555,9 @@ def test_a_stale_miss_refreshes_before_the_resident_model_can_answer(monkeypatch
     )
 
     def _resolve(name, **kwargs):
-        calls.append((name, kwargs))
+        # index_state is an out parameter, not part of WHAT was asked.
+        recorded = {k: v for k, v in kwargs.items() if k != "index_state"}
+        calls.append((name, recorded))
         return real_resolve(name, **kwargs)
 
     monkeypatch.setattr(resolver, "resolve_local_gguf", _resolve)
@@ -2828,6 +2843,16 @@ def test_inactive_hf_cache_entry_skips_newer_companion_only_snapshot(tmp_path):
 
 def test_hf_cache_entry_stays_within_the_scanned_case_variant(tmp_path):
     """A cache row must load from its exact repo directory, not a case-folded peer."""
+    # The case needs two repo directories that differ only in case, which a case-INSENSITIVE
+    # filesystem cannot hold: on macOS the second mkdir lands in the first directory and the
+    # "other" snapshot becomes a sibling of the scanned one, so the newest-mtime pick is
+    # right and the assertion below measures the filesystem instead of the resolver.
+    probe = tmp_path / "CaseProbe"
+    probe.mkdir()
+    if (tmp_path / "caseprobe").exists():
+        pytest.skip("case-insensitive filesystem cannot hold two case-variant repo dirs")
+    probe.rmdir()
+
     scanned_repo = tmp_path / "models--Org--Repo"
     scanned_snapshot = scanned_repo / "snapshots" / "scanned-revision"
     scanned_snapshot.mkdir(parents = True)
@@ -3071,6 +3096,193 @@ def test_already_serving_requested_by_path_records_advertised_alias(monkeypatch)
         resolver, "resolve_local_gguf", lambda _m, **_kw: pytest.fail("resolver re-entered")
     )
     _run_hook(path)
+
+
+def test_a_load_path_no_scan_root_indexes_is_only_resolved_once(monkeypatch):
+    # The deferral above costs a rebuild, worth it only while there is an alias to record:
+    # a model outside every scan root has none, and must not pay per message.
+    path = "/elsewhere/unscanned-model.gguf"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_load_model_impl", rec)
+    monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    scans = []
+    monkeypatch.setattr(resolver, "_build_index", lambda: scans.append(1) or {})
+    # The warmer's daemon thread also calls _build_index, so counting it here would read a
+    # background rebuild as a second request-path probe.
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda *a, **k: None)
+    # A lapsed TTL, which is how it actually lapses. NOT invalidate_index(), which also
+    # means the scan roots may have changed and so deliberately re-opens the probe.
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+    for _ in range(4):
+        _run_hook(path)
+    assert rec.calls == []
+    assert len(scans) == 1, f"resolved {len(scans)} times, expected one probe"
+
+
+def test_a_scan_root_change_reopens_the_alias_probe(monkeypatch):
+    # The probe is a NEGATIVE answer, and only true of the scan roots it was taken under:
+    # add the model's parent as a scan folder and the alias exists, so a probe outliving the
+    # change would keep answering with the filename.
+    path = "/elsewhere/unscanned-model.gguf"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_load_model_impl", rec)
+    monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+    scans = []
+    monkeypatch.setattr(resolver, "_build_index", lambda: scans.append(1) or {})
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+
+    _run_hook(path)
+    _run_hook(path)
+    assert len(scans) == 1, "the second message must reuse the probe, not re-scan"
+
+    # What add_scan_folder_endpoint / remove_scan_folder_endpoint call on every change.
+    resolver.invalidate_index()
+    _run_hook(path)
+    assert len(scans) == 2, (
+        f"resolved {len(scans)} times: a scan-root change must re-open the probe so the "
+        "alias can be recorded"
+    )
+    assert rec.calls == []
+
+
+def test_a_cancelled_generation_gives_the_probe_back(monkeypatch):
+    # _resolve_and_switch raises out of its first _raise_if_generation_cancelled(), before
+    # either resolver is called. Settling there marks a path answered that nothing looked
+    # for, so an unanswered claim goes back instead.
+    path = "/elsewhere/unscanned-model.gguf"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_load_model_impl", rec)
+    monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+    scans = []
+    monkeypatch.setattr(resolver, "_build_index", lambda: scans.append(1) or {})
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+
+    # Cancelled the way a stopped generation cancels: the event on request.state. The claim
+    # is taken before that check, so the real finally has to give it back.
+    cancelled = threading.Event()
+    cancelled.set()
+    request = SimpleNamespace(
+        state = SimpleNamespace(generation_cancel_event = cancelled),
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route._maybe_auto_switch_model(path, request, "tester"))
+    assert excinfo.value.status_code == 409
+    assert scans == [], "cancelled above both resolvers, so nothing looked for an alias"
+    assert (
+        inference_route._alias_probed_load_paths == set()
+    ), "a pass that never started was recorded as answered"
+    assert inference_route._alias_probe_inflight == {}, "the claim was not given back"
+
+    # And so the next request still reaches the resolver, rather than shortcutting to the
+    # filename for the rest of the load.
+    _run_hook(path)
+    assert len(scans) == 1, f"resolved {len(scans)} times, expected the probe to reopen"
+
+
+def test_a_concurrent_request_waits_for_a_probe_still_in_flight(monkeypatch):
+    # The first request CLAIMS the probe, then runs the slow scan. A second naming the same
+    # path must also reach the resolver: the shortcut would answer with the advertised id
+    # still None, reporting the filename while the alias is about to be recorded.
+    path = "/elsewhere/unscanned-model.gguf"
+    backend = _FakeBackend(path)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+
+    first = inference_route._loaded_identity_satisfies(path)
+    second = inference_route._loaded_identity_satisfies(path)
+    assert first is False, "the first request must reach the resolver"
+    assert second is False, (
+        "the second request shortcut while the probe was still in flight, so its response "
+        "would carry the filename rather than the alias"
+    )
+    assert backend._openai_advertised_id is None
+
+    # Once a pass completes the answer is settled and the shortcut is correct.
+    inference_route._alias_probe_settle(path)
+    assert inference_route._loaded_identity_satisfies(path) is True
+
+
+def test_a_request_for_another_model_does_not_spend_the_probe(monkeypatch):
+    # The probe exists so the request NAMING the load path reaches the resolver and the
+    # alias gets recorded. One naming something else records nothing for the resident model,
+    # and spending the probe on it would leave the path answered by its filename.
+    path = "/models/lmstudio/TheBloke/weights-file-01.gguf"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_load_model_impl", rec)
+    monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(
+        resolver,
+        "resolve_local_gguf",
+        lambda m, **_kw: (path, None, "Qwen3-4B-Instruct-GGUF") if m == path else None,
+    )
+
+    _run_hook("org/Not-Here-GGUF")  # a resolver miss: nothing loads, the path stays resident
+    assert rec.calls == []
+    assert backend._openai_advertised_id is None
+
+    _run_hook(path)
+    assert rec.calls == []  # already serving -> no reload
+    assert backend._openai_advertised_id == "Qwen3-4B-Instruct-GGUF"
+
+
+def test_a_reload_of_the_same_path_probes_for_the_alias_again(monkeypatch):
+    # Every load clears the advertised id, so the alias has to be recorded again; a marker
+    # held over would send the next request to the shortcut and back to the filename.
+    path = "/models/lmstudio/TheBloke/weights-file-01.gguf"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (path, None, "Qwen3-4B-Instruct-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    _run_hook(path)
+    assert backend._openai_advertised_id == "Qwen3-4B-Instruct-GGUF"
+
+    # What the load route does to the advertised id, by the same call it makes.
+    inference_route._clear_advertised_alias(backend)
+    _run_hook(path)
+    assert rec.calls == []  # still serving the same weights -> no reload
+    assert backend._openai_advertised_id == "Qwen3-4B-Instruct-GGUF"
+
+
+def test_the_load_route_clears_the_probe_with_the_advertised_id():
+    # The reset above is only correct where the load happens, so keep the two together.
+    import inspect
+
+    src = inspect.getsource(inference_route._load_model_impl)
+    assert "_clear_advertised_alias(llama_backend)" in src
+    # Scoped to the GGUF path's backend name: the transformers path clears the alias off
+    # `backend` for its own reason and restores it on failure, so that reset stays allowed.
+    assert "llama_backend._openai_advertised_id = None" not in src
 
 
 def test_streaming_responses_uses_advertised_id_helper():
@@ -9613,7 +9825,7 @@ def test_count_tokens_does_not_own_an_independent_load(monkeypatch):
     identity_checked = threading.Event()
     independent_load_done = threading.Event()
 
-    def loaded_identity_satisfies(_requested):
+    def loaded_identity_satisfies(_requested, _claimed = None):
         identity_checked.set()
         assert independent_load_done.wait(timeout = 2)
         return True
@@ -10509,7 +10721,8 @@ def test_the_advertised_alias_is_cleared_before_a_replacement_load(tmp_path):
     src = inspect.getsource(inference_route._load_model_impl)
     # Anchored on the line start: llama_backend.load_model appears earlier and would
     # otherwise match as a substring of the orchestrator call this guards.
-    clear = src.index("\n        backend._openai_advertised_id = None")
+    # Through the helper now, which clears the alias AND the probe taken under it.
+    clear = src.index("\n        _clear_advertised_alias(backend)")
     load = src.index("\n                backend.load_model,")
     assert clear < load, "the alias must be cleared before load_model publishes the new model"
 
@@ -10557,7 +10770,7 @@ def test_both_failed_load_exits_restore_the_alias():
 
     src = inspect.getsource(inference_route._load_model_impl)
     assert src.count("_restore_alias_if_failed_load_left_the_prior_model(") == 2
-    clear = src.index("\n        backend._openai_advertised_id = None")
+    clear = src.index("\n        _clear_advertised_alias(backend)")
     assert src.index("_restore_alias_if_failed_load_left_the_prior_model(") > clear
     # the second call sits on the falsy-success exit, past the raise the first one guards.
     assert (
@@ -11617,3 +11830,1732 @@ def test_preset_reasoning_budget_rejects_booleans():
     with pytest.raises(ValueError, match = "Expected a number, got a boolean"):
         ChatPresetLoadConfig(reasoningBudget = True)
     assert ChatPresetLoadConfig(reasoningBudget = 0).reasoningBudget == 0
+
+
+def test_an_unrelated_request_cannot_settle_someone_elses_claim(monkeypatch):
+    # Every request runs a resolver pass, but only the one NAMING the load path claims the
+    # probe. Settling the whole in-flight set let an unrelated request answer that claim
+    # before its switch had recorded the alias, and the next request took the shortcut.
+    path = "/elsewhere/unscanned-model.gguf"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_load_model_impl", rec)
+    monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+
+    # The owner claims the path and is still mid-pass, so the claim is outstanding.
+    assert inference_route._loaded_identity_satisfies(path) is False
+    assert inference_route._alias_probe_inflight == {KEY(path): 1}
+
+    # A request for a different model runs its own full pass, start to finish.
+    _run_hook("unsloth/something-else-GGUF")
+    assert (
+        inference_route._alias_probed_load_paths == set()
+    ), "an unrelated request settled a claim it never took"
+    assert inference_route._alias_probe_inflight == {KEY(path): 1}, "still in flight"
+    # So the owner's path still reaches the resolver rather than answering from the shortcut.
+    assert inference_route._loaded_identity_satisfies(path) is False
+
+    # The owner's own completed pass is what settles it.
+    inference_route._alias_probe_settle(path)
+    assert inference_route._loaded_identity_satisfies(path) is True
+
+
+def test_a_failed_index_scan_does_not_count_as_a_confirmed_absence(monkeypatch):
+    # resolve_local_gguf swallows a scan failure and returns None, which at the route looks
+    # exactly like "no such model". Settling on it marked the path answered from a scan that
+    # never landed, so the shortcut stayed wrong for the whole load even after the scanner
+    # recovered. A published stamp is the difference: _build_index raising never reaches
+    # _publish.
+    path = "/elsewhere/unscanned-model.gguf"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_load_model_impl", rec)
+    monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+
+    attempts = []
+
+    def failing_build():
+        attempts.append(1)
+        raise OSError("transient: scan root disappeared")
+
+    monkeypatch.setattr(resolver, "_build_index", failing_build)
+    _run_hook(path)
+    assert attempts, "the scan must have been attempted at all"
+    assert (
+        inference_route._alias_probed_load_paths == set()
+    ), "a scan that failed was recorded as a confirmed absence"
+    assert inference_route._alias_probe_inflight == {}, "and the claim was not given back"
+
+    # Once the scanner recovers, the next request probes again and THAT settles.
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+    _run_hook(path)
+    assert inference_route._alias_probed_load_paths == {
+        KEY(path)
+    }, "a recovered scan must settle the probe, or the index rebuilds forever"
+
+
+def test_a_positive_resolution_that_aborts_does_not_settle_the_probe(monkeypatch):
+    # The marker means "this load path has no alias to record". A POSITIVE resolution is
+    # the opposite claim, and the switch behind it can still abort before recording
+    # anything -- a resident directory asked for at a different quant is not already
+    # serving, so it goes on to the arbiter and the load, either of which can refuse.
+    # Settling there left the path answered from the shortcut with _openai_advertised_id
+    # never set, so /v1/models and every response kept reporting the filename.
+    path = "/models/lmstudio/TheBloke/weights-file-01.gguf"
+    # Resident at Q4_K_M; the request names the same path at Q8_0, which is what makes
+    # _already_serving false without inventing a state the route cannot reach.
+    backend = _FakeBackend(path, hf_variant = "Q4_K_M")
+    rec = _LoadRecorder(backend, fail = True)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_load_model_impl", rec)
+    monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda *a, **k: None)
+    monkeypatch.setattr(
+        resolver,
+        "resolve_local_gguf",
+        lambda m, **_kw: (path, "Q8_0", "Qwen3-4B-Instruct-GGUF"),
+    )
+    # The index is trustworthy, so the ONLY thing standing between this pass and a settle
+    # is that it resolved POSITIVELY. Left at whatever the process happens to hold, the
+    # assertions below pass for the wrong reason and the case discriminates nothing.
+    monkeypatch.setattr(resolver, "index_answer_is_trustworthy", lambda: True)
+
+    try:
+        _run_hook(f"{path}:Q8_0")
+    except Exception:
+        pass
+    assert rec.calls, "the switch must have been attempted for this case to mean anything"
+    assert (
+        backend._openai_advertised_id is None
+    ), "the alias was never recorded, which is the premise of this case"
+    assert (
+        inference_route._alias_probed_load_paths == set()
+    ), "a resolution that aborted before recording its alias settled the probe"
+    assert inference_route._alias_probe_inflight == {}, "and the claim was not given back"
+    # So the next request reaches the resolver again and the alias can still be recorded.
+    monkeypatch.setattr(inference_route, "_load_model_impl", _LoadRecorder(backend))
+    _run_hook(path)
+    assert backend._openai_advertised_id == "Qwen3-4B-Instruct-GGUF"
+
+
+def test_one_accounts_negative_probe_does_not_answer_for_another(monkeypatch):
+    # The resolver keeps a snapshot PER managed account because their scan roots are
+    # private (local_model_resolver._managed_scans). A negative answer is therefore only
+    # negative for the account that took it: another account whose roots do index that
+    # path has an alias to record, and inheriting the marker would send it straight to the
+    # resident shortcut with _openai_advertised_id still None -- the filename, on /v1/models
+    # and in every response, for the rest of the load.
+    from utils.account_context import AccountContext, run_as
+
+    path = "/elsewhere/unscanned-model.gguf"
+    backend = _FakeBackend(path)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+
+    tenant = AccountContext("acct-a", "ada")
+    other = AccountContext("acct-b", "bo")
+
+    # Tenant A probes and completes a pass finding no alias under ITS roots.
+    assert run_as(tenant, inference_route._loaded_identity_satisfies, path) is False
+    run_as(tenant, inference_route._alias_probe_settle, path)
+    assert run_as(tenant, inference_route._loaded_identity_satisfies, path) is True
+
+    # Tenant B has never probed, so it must still reach the resolver.
+    assert (
+        run_as(other, inference_route._loaded_identity_satisfies, path) is False
+    ), "a second account inherited the first account's negative probe"
+    # And the owner too, whose snapshot is a third one again.
+    assert inference_route._loaded_identity_satisfies(path) is False
+
+    keys = inference_route._alias_probed_load_paths | set(inference_route._alias_probe_inflight)
+    assert len(keys) == 3, f"probe state is not per account: {keys}"
+
+
+def test_a_released_claim_does_not_take_a_concurrent_one_with_it(monkeypatch):
+    # Two requests can name the same unaliased path at once, and both are told to go to the
+    # resolver. If the first is cancelled and its release dropped the whole entry, the
+    # second's completed pass would have nothing to settle, so the next request would pay
+    # for the multi-root scan all over again -- which is the cost this marker exists to
+    # avoid.
+    path = "/elsewhere/unscanned-model.gguf"
+    backend = _FakeBackend(path)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+
+    assert inference_route._loaded_identity_satisfies(path) is False
+    assert inference_route._loaded_identity_satisfies(path) is False
+    assert inference_route._alias_probe_inflight == {KEY(path): 2}, "both claims must be held"
+
+    # The first is cancelled.
+    inference_route._alias_probe_release(path)
+    assert inference_route._alias_probe_inflight == {
+        KEY(path): 1
+    }, "a cancelled request took a concurrent request's claim with it"
+    # The second's pass completes, and THAT is what memoizes the answer.
+    inference_route._alias_probe_settle(path)
+    assert inference_route._alias_probed_load_paths == {KEY(path)}
+    assert inference_route._loaded_identity_satisfies(path) is True
+
+    # Both released and nothing settled leaves the path open, not stuck claimed.
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    inference_route._loaded_identity_satisfies(path)
+    inference_route._loaded_identity_satisfies(path)
+    inference_route._alias_probe_release(path)
+    inference_route._alias_probe_release(path)
+    assert inference_route._alias_probe_inflight == {}
+    assert inference_route._alias_probed_load_paths == set()
+
+
+def test_a_miss_from_a_partial_scan_is_not_a_confirmed_absence(monkeypatch):
+    # Every source in _build_index is guarded on its own, so one bad root drops that source
+    # and the index is still published, fresh. A miss read from that snapshot is only what
+    # the pass could SEE: memoizing it left the resident shortcut answering with the
+    # filename after the failing source recovered, with nothing to reopen the probe short of
+    # an explicit invalidation or a reload.
+    path = "/elsewhere/unscanned-model.gguf"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_load_model_impl", rec)
+    monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+
+    # A scan that publishes a real snapshot having skipped a source, exactly as a transient
+    # LM Studio or scan-folder failure does.
+    def partial_build():
+        resolver._note_scan_source_skipped()
+        return {}
+
+    monkeypatch.setattr(resolver, "_build_index", partial_build)
+    _run_hook(path)
+    assert (
+        resolver.index_last_scan_was_complete() is False
+    ), "the harness did not actually produce a partial scan"
+    assert (
+        inference_route._alias_probed_load_paths == set()
+    ), "a miss from a partial scan was memoized as a confirmed absence"
+    assert inference_route._alias_probe_inflight == {}, "and the claim was not given back"
+
+    # The source recovers, and THAT pass is what settles the probe.
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+    _run_hook(path)
+    assert resolver.index_last_scan_was_complete() is True
+    assert inference_route._alias_probed_load_paths == {
+        KEY(path)
+    }, "a complete scan must still settle, or the index rebuilds for every message"
+
+
+def test_the_completeness_verdict_belongs_to_the_scan_that_published(monkeypatch):
+    """Reset per pass and set only after the build returns.
+
+    Left over from a previous pass it would either condemn a good scan or bless a partial
+    one, and a build that RAISES publishes nothing, so the snapshot a later caller reads was
+    not produced by that attempt at all.
+    """
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+    resolver._index()
+    assert resolver.index_last_scan_was_complete() is True
+
+    def partial():
+        resolver._note_scan_source_skipped()
+        return {}
+
+    monkeypatch.setattr(resolver, "_build_index", partial)
+    resolver._index()
+    assert resolver.index_last_scan_was_complete() is False, "a partial pass read as complete"
+
+    # And back again: the count does not accumulate across passes.
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+    resolver._index()
+    assert (
+        resolver.index_last_scan_was_complete() is True
+    ), "the skip count leaked into the next pass"
+
+    # A build that raises leaves no verdict claiming otherwise.
+    def boom():
+        resolver._note_scan_source_skipped()
+        raise OSError("scan root vanished")
+
+    monkeypatch.setattr(resolver, "_build_index", boom)
+    with pytest.raises(OSError):
+        resolver._index()
+    assert (
+        resolver.index_last_scan_was_complete() is True
+    ), "a raising build must not rewrite the verdict of the snapshot still published"
+
+
+def test_one_tenants_complete_scan_does_not_bless_anothers_partial_one(monkeypatch):
+    """The completeness verdict is per account, like the snapshot it describes.
+
+    Scan roots are account private: _snapshot selects from _managed_scans per tenant, so a
+    verdict kept in one process-global reads back whichever account scanned LAST. Tenant A
+    publishing a partial scan and tenant B then completing one would leave A's next cache
+    miss looking like a confirmed absence and permanently settle its alias probe, with
+    nothing to reopen it short of an invalidation or a reload.
+    """
+    from utils.account_context import AccountContext, run_as
+
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+    monkeypatch.setattr(resolver, "_scan_complete", False)
+    monkeypatch.setattr(resolver, "_managed_scans_complete", {})
+
+    tenant_a = AccountContext("acct-a", "ada")
+    tenant_b = AccountContext("acct-b", "bo")
+
+    def partial():
+        resolver._note_scan_source_skipped()
+        return {}
+
+    monkeypatch.setattr(resolver, "_build_index", partial)
+    run_as(tenant_a, resolver._index)
+    assert (
+        run_as(tenant_a, resolver.index_last_scan_was_complete) is False
+    ), "the harness did not produce a partial scan for tenant A"
+
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+    run_as(tenant_b, resolver._index)
+    assert run_as(tenant_b, resolver.index_last_scan_was_complete) is True
+
+    assert (
+        run_as(tenant_a, resolver.index_last_scan_was_complete) is False
+    ), "another tenant's complete scan blessed this tenant's partial snapshot"
+    # The owner's snapshot is a third one again, and it has not scanned at all. Unknown
+    # reads as incomplete, which only ever admits fewer memoized answers.
+    assert (
+        resolver.index_last_scan_was_complete() is False
+    ), "the owner inherited a managed account's verdict"
+
+
+def test_an_unreadable_registered_scan_folder_is_a_skipped_source(monkeypatch):
+    """A registered folder that is not there right now was not SEEN, not found empty.
+
+    Every scan under a scan folder answers an unreachable path with an empty list and no
+    exception -- a disconnected network mount, an unplugged drive, a revoked permission --
+    so only the exception handler noticing would publish that pass as complete and let a
+    miss be memoized as a confirmed absence while the mount is down.
+    """
+    import routes.models as routes_models
+    import storage.studio_db as studio_db
+
+    for name in ("_scan_models_dir", "_scan_lmstudio_dir", "_scan_ollama_dir"):
+        monkeypatch.setattr(routes_models, name, lambda *a, **k: [])
+    monkeypatch.setattr(routes_models, "_scan_hf_cache", lambda *a, **k: [])
+    monkeypatch.setattr(routes_models, "_resolve_hf_cache_dir", lambda: "/nonexistent-hf")
+    monkeypatch.setattr(routes_models, "_is_hidden_model", lambda *a, **k: False)
+
+    missing = "/nonexistent-mount/uidiff-registered-folder"
+    assert not os.path.isdir(missing), "the premise of this case is that it is absent"
+    monkeypatch.setattr(studio_db, "list_scan_folders", lambda *a, **k: [{"path": missing}])
+
+    monkeypatch.setattr(resolver, "_scan_sources_skipped", 0)
+    resolver._build_index()
+    assert (
+        resolver._scan_sources_skipped >= 1
+    ), "an absent registered scan folder was counted as a source this pass could read"
+
+    # A readable one is not penalized, or every pass would read as incomplete forever and
+    # the probe would never settle.
+    with tempfile.TemporaryDirectory() as readable:
+        monkeypatch.setattr(studio_db, "list_scan_folders", lambda *a, **k: [{"path": readable}])
+        monkeypatch.setattr(resolver, "_scan_sources_skipped", 0)
+        resolver._build_index()
+        assert (
+            resolver._scan_sources_skipped == 0
+        ), f"a readable registered folder {readable} was reported as skipped"
+
+
+def test_an_additions_only_invalidation_cannot_confirm_an_absence(monkeypatch):
+    """The one snapshot state that answers positives but must not answer negatives.
+
+    invalidate_index(additions_only=True) keeps the retained entries trusted, with a negative
+    stamp, so a known model still answers while the rebuild runs. It fires because something
+    was ADDED, which is precisely when an absence is likely to be wrong; and a rebuild that
+    raises leaves the stamp negative, so the caller's "did a scan run during my pass?" test
+    is False and this is the only thing left to consult. Trusting it memoizes the miss for
+    good, and the new model or alias is never probed for again.
+    """
+    path = "/elsewhere/unscanned-model.gguf"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_load_model_impl", rec)
+    monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda *a, **k: None)
+
+    # A complete scan, so completeness is not what this case turns on.
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 300)
+    resolver._index()
+    assert resolver.index_last_scan_was_complete() is True
+
+    # A download adds a model: entries stay trusted, stamp goes negative.
+    resolver.invalidate_index(additions_only = True)
+    assert resolver.index_scan_stamp() < 0.0, "the harness did not produce an additions-only stamp"
+    assert (
+        resolver.index_answer_is_trustworthy() is False
+    ), "an additions-only snapshot was read as able to confirm an absence"
+
+    # The rebuild keeps failing, so no scan lands during the request's own pass either.
+    def boom():
+        raise OSError("scan root vanished mid-rebuild")
+
+    monkeypatch.setattr(resolver, "_build_index", boom)
+    try:
+        _run_hook(path)
+    except Exception:
+        pass
+    assert (
+        inference_route._alias_probed_load_paths == set()
+    ), "a miss read from an additions-only snapshot was memoized as a confirmed absence"
+    assert inference_route._alias_probe_inflight == {}, "and the claim was not given back"
+
+
+def test_a_registered_scan_folder_that_cannot_be_searched_is_a_skipped_source(monkeypatch):
+    """Readable is not traversable.
+
+    A directory with r-- lists its names and fails every child stat. The scanners suppress
+    those per-child errors and return an empty list, so only R_OK being checked left the pass
+    published as complete over a folder nothing could be read out of.
+    """
+    import routes.models as routes_models
+    import storage.studio_db as studio_db
+
+    for name in ("_scan_models_dir", "_scan_lmstudio_dir", "_scan_ollama_dir"):
+        monkeypatch.setattr(routes_models, name, lambda *a, **k: [])
+    monkeypatch.setattr(routes_models, "_scan_hf_cache", lambda *a, **k: [])
+    monkeypatch.setattr(routes_models, "_resolve_hf_cache_dir", lambda: "/nonexistent-hf")
+    monkeypatch.setattr(routes_models, "_is_hidden_model", lambda *a, **k: False)
+
+    with tempfile.TemporaryDirectory() as folder:
+        # The real permission, not a stub: os.access is what the guard calls, and a fake one
+        # would pass whatever the guard happens to ask for.
+        os.chmod(folder, 0o400)
+        if os.access(folder, os.X_OK):
+            pytest.skip("running as a user that bypasses directory permissions")
+        try:
+            monkeypatch.setattr(studio_db, "list_scan_folders", lambda *a, **k: [{"path": folder}])
+            monkeypatch.setattr(resolver, "_scan_sources_skipped", 0)
+            resolver._build_index()
+            assert (
+                resolver._scan_sources_skipped >= 1
+            ), "a registered folder that cannot be searched was counted as readable"
+        finally:
+            os.chmod(folder, 0o700)
+
+
+def test_a_suppressed_child_failure_makes_the_scan_incomplete(monkeypatch):
+    """Coming back short is not the same as there being less.
+
+    _scan_models_dir catches an OSError from ONE child and carries on, so the pass returns a
+    shorter list and raises nothing: from outside it is indistinguishable from a root that
+    genuinely holds fewer models. Publishing that as complete lets a resident model's miss be
+    memoized for the rest of the load, and exact-path requests keep reporting the filename
+    after the child recovers.
+    """
+    import routes.models as routes_models
+    from core.inference.scan_incidents import collecting_scan_incidents
+
+    with tempfile.TemporaryDirectory() as root:
+        child = os.path.join(root, "Qwen3-4B-Instruct-GGUF")
+        os.mkdir(child)
+
+        # The real suppression path: make the child's own inspection raise, which is what a
+        # revoked permission or a dropped mount does to one entry.
+        def boom_is_dir(self):
+            if str(self) == child:
+                raise OSError("child vanished mid-scan")
+            return os.path.isdir(self)
+
+        monkeypatch.setattr(pathlib.Path, "is_dir", boom_is_dir)
+        with collecting_scan_incidents() as incidents:
+            routes_models._scan_models_dir(pathlib.Path(root))
+        assert incidents, "a suppressed per-child failure left no trace for the caller"
+
+    # And the resolver's verdict is the one that has to reflect it.
+    monkeypatch.undo()
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+
+    def build_with_child_failure():
+        from core.inference.scan_incidents import note_scan_incident
+        note_scan_incident("child unreadable: /root/model-a")
+        return {}
+
+    monkeypatch.setattr(resolver, "_build_index", build_with_child_failure)
+    resolver._index()
+    assert (
+        resolver.index_last_scan_was_complete() is False
+    ), "a scan that could not read a child was published as complete"
+
+    # A clean pass is still complete, or nothing would ever be memoized.
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+    resolver._index()
+    assert resolver.index_last_scan_was_complete() is True
+
+
+def test_a_concurrent_scans_incidents_are_not_charged_to_this_pass(monkeypatch):
+    """The scanners also serve /api/models, whose passes are none of this one's business.
+
+    A module global would let any listing running alongside condemn this snapshot, so the
+    probe would never settle on a busy server and the multi-root scan would run per message,
+    which is the cost this PR exists to remove.
+    """
+    import threading as _threading
+
+    from core.inference.scan_incidents import (
+        collecting_scan_incidents,
+        note_scan_incident,
+    )
+
+    done = _threading.Event()
+
+    def other_caller():
+        # No collector of its own: a note outside one is a no-op, and must not reach the
+        # collector another thread opened.
+        note_scan_incident("someone else's unreadable child")
+        with collecting_scan_incidents() as mine:
+            note_scan_incident("and their own collected one")
+            assert mine == ["and their own collected one"]
+        done.set()
+
+    with collecting_scan_incidents() as incidents:
+        thread = _threading.Thread(target = other_caller)
+        thread.start()
+        thread.join()
+        assert done.is_set()
+        assert incidents == [], f"another caller's incidents were charged to this pass: {incidents}"
+
+
+def test_a_non_gguf_resident_path_is_probed_once_too(monkeypatch):
+    """The bound belongs to the path, not to the engine that loaded it.
+
+    A transformers/orchestrator resident loaded from a local path advertises nothing either,
+    so the same rule sends the first request naming it to the resolver. Unbounded, a path no
+    scan root indexes rebuilt the multi-root index on every message -- the exact latency this
+    change removes for the llama.cpp resident.
+    """
+    path = "/srv/models/Qwen3-8B-MLX"
+
+    class _Orchestrator:
+        active_model_name = path
+        _openai_advertised_id = None
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _FakeBackend(None))
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Orchestrator())
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+
+    claimed: list[str] = []
+    assert (
+        inference_route._loaded_identity_satisfies(path, claimed) is False
+    ), "the first request naming the path must reach the resolver so the alias is recorded"
+    assert claimed == [path], "the probe was not claimed, so it can never be settled"
+
+    # The pass completes and finds no alias to record; the next request stops paying for it.
+    inference_route._alias_probe_settle(path)
+    assert (
+        inference_route._loaded_identity_satisfies(path) is True
+    ), "a settled path still reaches the resolver, so the index rebuilds per message"
+
+    # A reload of the same path advertises nothing again, so the probe must not outlive it.
+    inference_route._clear_advertised_alias(_Orchestrator())
+    assert inference_route._alias_probed_load_paths == set()
+    assert inference_route._loaded_identity_satisfies(path) is False
+
+
+def test_the_transformers_load_clears_the_probe_with_the_alias():
+    """Source-shape: the clear sits on the load path, through the helper that drops both."""
+    src = inspect.getsource(inference_route._load_model_impl)
+    assert (
+        "_clear_advertised_alias(backend)" in src
+    ), "the transformers load no longer drops the probe taken under the previous alias"
+    assert (
+        "\n        backend._openai_advertised_id = None" not in src
+    ), "the alias is cleared without the probe, so a reload keeps a settled negative"
+
+
+def test_the_hermes_and_ollama_scanners_report_a_directory_they_could_not_walk(monkeypatch):
+    """The two scanners that swallow a traversal error inside their OWN module.
+
+    The per-child notes added in routes/models.py do not reach these: Hermes catches an
+    OSError and returns [], and the Ollama scan catches one and returns whatever it had.
+    Both are indistinguishable from a directory holding nothing, so a resident split GGUF
+    served out of a Hermes dir that blinked would have its miss memoized and go on being
+    reported by its part filename after the dir came back.
+
+    Patched at the enumeration each scanner actually calls. An earlier version of this test
+    patched Path.glob and Path.rglob, which both scanners have since stopped using -- they
+    suppress the directory error themselves, which is the defect
+    test_a_scan_directory_that_cannot_be_enumerated_is_reported now pins against the real
+    filesystem -- so it was asserting about calls that no longer happen.
+    """
+    import os
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from hub.services.models import hermes, ollama
+
+    def boom(self, *a, **k):
+        raise OSError("mount went away mid-walk")
+
+    with tempfile.TemporaryDirectory() as root:
+        hermes_dir = pathlib.Path(root) / "hermes"
+        hermes_dir.mkdir()
+        monkeypatch.setattr(pathlib.Path, "iterdir", boom)
+        with collecting_scan_incidents() as incidents:
+            assert hermes.staged_gguf_files(hermes_dir) == []
+        assert any(
+            "hermes" in note for note in incidents
+        ), f"the Hermes scanner reported an unreadable directory as empty: {incidents}"
+        monkeypatch.undo()
+
+        ollama_dir = pathlib.Path(root) / "ollama"
+        (ollama_dir / "manifests").mkdir(parents = True)
+
+        def walk_fails(
+            top,
+            onerror = None,
+            **kwargs,
+        ):
+            if onerror is not None:
+                onerror(PermissionError(13, "Permission denied", str(top)))
+            return iter(())
+
+        monkeypatch.setattr(os, "walk", walk_fails)
+        with collecting_scan_incidents() as incidents:
+            assert ollama.scan_ollama_dir(ollama_dir) == []
+        # Before the temp dir is removed: shutil.rmtree walks, on Windows.
+        monkeypatch.undo()
+        assert any(
+            "ollama" in note for note in incidents
+        ), f"the Ollama scanner reported an unreadable directory as empty: {incidents}"
+
+
+def test_a_newly_published_scan_reopens_a_settled_probe(monkeypatch):
+    """A settled negative belongs to the snapshot that answered it, not to the process.
+
+    invalidate_index only fires on a scan-ROOT change. A model dropped into an existing LM
+    Studio, Hermes, Ollama or HF root is picked up by an ordinary TTL or background scan,
+    which publishes a fresh stamp and leaves the generation alone, so a marker tied to the
+    generation alone survived an index that now HAS the alias: the resident shortcut went on
+    answering with the filename until a reload.
+    """
+    path = "/elsewhere/unscanned-model.gguf"
+    backend = _FakeBackend(path)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_answered_at", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+
+    resolver._index()
+    assert inference_route._loaded_identity_satisfies(path) is False
+    inference_route._alias_probe_settle(path)
+    generation_at_settle = resolver.index_generation()
+    assert (
+        inference_route._loaded_identity_satisfies(path) is True
+    ), "a settled probe must answer for the snapshot it was taken against"
+
+    # A later scan publishes a new stamp WITHOUT touching the generation: exactly what a
+    # TTL expiry or a warm does after something appeared under an existing root.
+    resolver._index()
+    assert (
+        resolver.index_generation() == generation_at_settle
+    ), "the harness invalidated the index, which is not the case under test"
+    assert (
+        inference_route._loaded_identity_satisfies(path) is False
+    ), "a probe settled against an older snapshot answered for a newer one"
+    # And it is reopened, not merely refused: the pass it sends to the resolver can record
+    # the alias the new scan indexed.
+    assert inference_route._alias_probe_inflight == {KEY(path): 1}
+
+
+def test_a_suppressed_sibling_revision_walk_is_not_a_complete_scan(monkeypatch):
+    """_sibling_revision_entries omits a revision it could not list, without raising.
+
+    An HF cache that blinks while an older snapshot is resident drops the sibling revision
+    from the index, and published as complete that miss was memoized: the resident model
+    stayed advertised by its snapshot filename after the cache came back.
+    """
+    import pathlib
+
+    monkeypatch.setattr(resolver, "_scan_sources_skipped", 0)
+
+    def boom(self):
+        raise OSError("hf cache went away mid-walk")
+
+    with tempfile.TemporaryDirectory() as root:
+        snapshots = pathlib.Path(root) / "models--unsloth--Qwen3-4B-GGUF" / "snapshots"
+        snapshots.mkdir(parents = True)
+        resident = snapshots / "abc123"
+        resident.mkdir()
+        monkeypatch.setattr(pathlib.Path, "iterdir", boom)
+        # The id is the snapshot DIRECTORY, which is what the scan carries for an
+        # inactive-cache repo.
+        list(resolver._sibling_revision_entries(str(resident), "loader"))
+
+    assert (
+        resolver._scan_sources_skipped >= 1
+    ), "a sibling revision walk that failed was counted as a complete look"
+
+
+def test_an_entry_dropped_by_a_read_failure_is_not_a_complete_scan(monkeypatch):
+    """The classifiers are the last suppressed-failure path into the index.
+
+    _local_gguf_entry and _local_weights_entry return None for anything they cannot
+    classify, which is correct for a model that is not servable here and wrong for one whose
+    variants or weights could not be READ: the scanner found the model, the entry is
+    dropped, and published as complete that omission is memoized as an absence, leaving an
+    exact-path request advertising the filename for the rest of the load. Only OSError
+    counts; a classification refusal is an answer, not a gap.
+    """
+    import pathlib
+    from types import SimpleNamespace
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+
+    with tempfile.TemporaryDirectory() as root:
+        model_dir = pathlib.Path(root) / "Qwen3-4B-Instruct"
+        model_dir.mkdir()
+
+        def boom(self, *a, **k):
+            raise OSError("snapshot went away mid-classification")
+
+        # A read failure while inspecting what the scanner already found.
+        monkeypatch.setattr(resolver, "_resolve_load_dir", boom)
+        monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: True)
+        with collecting_scan_incidents() as incidents:
+            assert (
+                resolver._local_weights_entry("loader", SimpleNamespace(path = str(model_dir)))
+                is None
+            )
+        assert any(
+            "unreadable" in note for note in incidents
+        ), f"a dropped entry left no trace for the caller: {incidents}"
+
+        # And a model this host simply cannot serve is NOT an incident, or every scan on
+        # every host would read as incomplete and nothing would ever be memoized.
+        def refuse(*a, **k):
+            raise ValueError("not servable here")
+
+        monkeypatch.setattr(resolver, "_resolve_load_dir", refuse)
+        with collecting_scan_incidents() as incidents:
+            assert (
+                resolver._local_weights_entry("loader", SimpleNamespace(path = str(model_dir)))
+                is None
+            )
+        assert incidents == [], f"a classification refusal was reported as a gap: {incidents}"
+
+
+def test_a_helper_that_swallowed_a_read_failure_reports_it(monkeypatch):
+    """The classifiers' own helpers answer absent and unreadable the same way.
+
+    _read_json returns None for a config it could not read and _has_safetensors_weights
+    returns False for a directory it could not list, so the handler around them sees an
+    ordinary "not servable" and the row is dropped from a scan still published as complete.
+    A malformed config is NOT reported: it will not parse on the next pass either, so it is
+    an answer rather than a gap.
+    """
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+
+    with tempfile.TemporaryDirectory() as root:
+        load_dir = pathlib.Path(root)
+        config = load_dir / "config.json"
+        config.write_text("{}")
+
+        real_open = pathlib.Path.open
+
+        def boom_open(self, *a, **k):
+            if self.name == "config.json":
+                raise PermissionError("config unreadable")
+            return real_open(self, *a, **k)
+
+        monkeypatch.setattr(pathlib.Path, "open", boom_open)
+        with collecting_scan_incidents() as incidents:
+            assert resolver._read_json(config) is None
+        assert any(
+            "json unreadable" in note for note in incidents
+        ), f"an unreadable config was indistinguishable from an absent one: {incidents}"
+        monkeypatch.undo()
+
+        # Absent is not a gap: most of these files simply do not exist.
+        with collecting_scan_incidents() as incidents:
+            assert resolver._read_json(load_dir / "nope.json") is None
+        assert incidents == [], f"an absent file was reported as unreadable: {incidents}"
+
+        # Nor is malformed.
+        config.write_text("{not json")
+        with collecting_scan_incidents() as incidents:
+            assert resolver._read_json(config) is None
+        assert incidents == [], f"a malformed config was reported as a gap: {incidents}"
+
+        def boom_iterdir(self):
+            raise PermissionError("cannot list")
+
+        monkeypatch.setattr(pathlib.Path, "iterdir", boom_iterdir)
+        with collecting_scan_incidents() as incidents:
+            assert resolver._has_safetensors_weights(load_dir) is False
+        assert any(
+            "weights listing unreadable" in note for note in incidents
+        ), f"a directory that could not be listed read as having no weights: {incidents}"
+
+
+def test_snapshot_selection_read_failures_are_reported(monkeypatch):
+    """The last two suppressed read failures on the HF path.
+
+    select_gguf_cache_snapshot_for_repo_dir selects among the snapshots it could list, and
+    resolve_hf_cache_realpath answers None for a path it could not resolve. Both look from
+    outside like a repo with less in it, so a pass that came back short published as
+    complete and let the miss be memoized.
+    """
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from hub.utils.gguf import select_gguf_cache_snapshot_for_repo_dir
+    from hub.utils.inventory_scan import resolve_hf_cache_realpath
+
+    with tempfile.TemporaryDirectory() as root:
+        repo_dir = pathlib.Path(root) / "models--unsloth--Qwen3-4B-GGUF"
+        (repo_dir / "snapshots").mkdir(parents = True)
+
+        def boom(self, *a, **k):
+            raise PermissionError("cache went away")
+
+        monkeypatch.setattr(pathlib.Path, "iterdir", boom)
+        with collecting_scan_incidents() as incidents:
+            select_gguf_cache_snapshot_for_repo_dir(repo_dir)
+        assert any(
+            "snapshots dir unreadable" in note for note in incidents
+        ), f"an unlistable snapshots dir read as a repo with no snapshots: {incidents}"
+        monkeypatch.undo()
+
+        def boom_resolve(self, *a, **k):
+            raise PermissionError("realpath refused")
+
+        monkeypatch.setattr(pathlib.Path, "resolve", boom_resolve)
+        with collecting_scan_incidents() as incidents:
+            assert resolve_hf_cache_realpath(repo_dir) is None
+        assert any(
+            "realpath unreadable" in note for note in incidents
+        ), f"a path that could not be resolved dropped its row silently: {incidents}"
+
+
+def test_an_unreadable_ollama_manifest_is_reported_but_a_malformed_one_is_not(monkeypatch):
+    """_ollama_model_info_from_manifest caught read and parse failures together.
+
+    A manifest or config blob that could not be READ dropped the row from a scan still
+    published as complete, so a resident model loaded from that path kept being reported by
+    its filename rather than its Ollama alias. A manifest that does not PARSE is a different
+    thing: it will not parse on the next pass either.
+    """
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from hub.services.models import ollama
+
+    with tempfile.TemporaryDirectory() as root:
+        ollama_dir = pathlib.Path(root)
+        tag_file = ollama_dir / "manifests" / "registry" / "library" / "qwen3" / "4b"
+        tag_file.parent.mkdir(parents = True)
+        tag_file.write_text("{not json")
+
+        with collecting_scan_incidents() as incidents:
+            assert ollama._ollama_model_info_from_manifest(ollama_dir, tag_file) is None
+        assert incidents == [], f"a malformed manifest was reported as a gap: {incidents}"
+
+        real_read_text = pathlib.Path.read_text
+
+        def boom(self, *a, **k):
+            if self == tag_file:
+                raise PermissionError("manifest unreadable")
+            return real_read_text(self, *a, **k)
+
+        monkeypatch.setattr(pathlib.Path, "read_text", boom)
+        with collecting_scan_incidents() as incidents:
+            assert ollama._ollama_model_info_from_manifest(ollama_dir, tag_file) is None
+        assert any(
+            "manifest unreadable" in note for note in incidents
+        ), f"an unreadable manifest was indistinguishable from a malformed one: {incidents}"
+
+
+def test_a_miss_is_settled_against_the_snapshot_it_was_read_from(monkeypatch):
+    """The marker records WHICH index answered, not whichever is current at settle time.
+
+    _resolve_and_switch awaits more work between reading its miss and the finally that
+    settles, so a warmer publishing a new snapshot in that window would have its state
+    recorded against an answer the previous one gave: the marker then looks valid for an
+    index that may already hold the alias, and later requests shortcut to the filename.
+    """
+    path = "/elsewhere/unscanned-model.gguf"
+    backend = _FakeBackend(path)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_answered_at", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_generation", -1)
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+
+    resolver._index()
+    assert inference_route._loaded_identity_satisfies(path) is False
+    answered_state = inference_route._alias_probe_index_state()
+
+    # A warmer publishes another snapshot before this request reaches its finally.
+    resolver._index()
+    assert (
+        inference_route._alias_probe_index_state() != answered_state
+    ), "the harness did not publish a second snapshot"
+
+    inference_route._alias_probe_settle(path, answered_state)
+    assert (
+        inference_route._alias_probed_load_paths == set()
+    ), "a miss read from an older snapshot was settled against the newer one"
+    assert inference_route._alias_probe_inflight == {}, "and the claim was not given back"
+    assert inference_route._loaded_identity_satisfies(path) is False
+
+    # Settled against the state it was actually read from, it holds.
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_answered_at", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    assert inference_route._loaded_identity_satisfies(path) is False
+    inference_route._alias_probe_settle(path, inference_route._alias_probe_index_state())
+    assert inference_route._loaded_identity_satisfies(path) is True
+
+    # A concurrent claim on the same path is not lost when the stale one hands its back.
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    monkeypatch.setattr(inference_route, "_alias_probe_answered_at", {})
+    monkeypatch.setattr(inference_route, "_alias_probe_inflight", {})
+    assert inference_route._loaded_identity_satisfies(path) is False
+    assert inference_route._loaded_identity_satisfies(path) is False
+    inference_route._alias_probe_settle(path, answered_state)
+    assert inference_route._alias_probe_inflight == {
+        KEY(path): 1
+    }, "a stale settle took a concurrent request's claim with it"
+
+
+def test_a_truncated_gguf_walk_is_reported(monkeypatch):
+    """os.walk hands an unreadable subtree to onerror and carries on.
+
+    Skipping it is what keeps the walk usable on a host with a /proc under a scan root, but
+    a truncated walk yields fewer variants and reads exactly like a directory holding fewer,
+    so a resident model's row could lose its quants while the pass published as complete.
+    """
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from hub.utils.gguf import iter_gguf_files
+
+    with tempfile.TemporaryDirectory() as root:
+        directory = pathlib.Path(root)
+        (directory / "model-Q4_K_M.gguf").write_bytes(b"GGUF")
+        subtree = directory / "locked"
+        subtree.mkdir()
+
+        with collecting_scan_incidents() as incidents:
+            assert list(iter_gguf_files(directory, recursive = True))
+        assert incidents == [], f"a clean walk reported a gap: {incidents}"
+
+        os.chmod(subtree, 0o000)
+        try:
+            if os.access(subtree, os.R_OK):
+                pytest.skip("running as a user that bypasses directory permissions")
+            with collecting_scan_incidents() as incidents:
+                found = list(iter_gguf_files(directory, recursive = True))
+        finally:
+            os.chmod(subtree, 0o700)
+        # The readable part is still returned: this is a report, not a refusal.
+        assert found
+        assert any(
+            "walk truncated" in note for note in incidents
+        ), f"an unreadable subtree left the walk looking complete: {incidents}"
+
+        # And the flat walk, which gives up on a directory it cannot list.
+        def boom(self):
+            raise PermissionError("cannot list")
+
+        monkeypatch.setattr(pathlib.Path, "iterdir", boom)
+        with collecting_scan_incidents() as incidents:
+            assert list(iter_gguf_files(directory, recursive = False)) == []
+        assert any(
+            "dir unreadable" in note for note in incidents
+        ), f"an unlistable directory read as holding no GGUFs: {incidents}"
+
+
+def test_a_gguf_walk_that_hit_the_entry_cap_is_reported(monkeypatch):
+    """The entry cap truncates the walk just as an unreadable subtree does.
+
+    It exists so a pathological root cannot stall the request path, and whatever sits past
+    it was not looked at: the resident model's GGUF can be in the part that was skipped, and
+    every later scan hits the same cap, so memoizing that miss leaves the filename advertised
+    for good.
+    """
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from hub.utils import gguf as gguf_utils
+
+    with tempfile.TemporaryDirectory() as root:
+        directory = pathlib.Path(root)
+        for i in range(4):
+            (directory / f"model-{i}-Q4_K_M.gguf").write_bytes(b"GGUF")
+
+        monkeypatch.setattr(gguf_utils, "_MAX_LOCAL_SCAN_ENTRIES", 2)
+        with collecting_scan_incidents() as incidents:
+            list(gguf_utils.iter_gguf_files(directory, recursive = True))
+        assert any(
+            "entry cap" in note for note in incidents
+        ), f"a walk cut short by the cap read as a complete look: {incidents}"
+
+        # Under the cap, nothing is reported.
+        monkeypatch.setattr(gguf_utils, "_MAX_LOCAL_SCAN_ENTRIES", 1000)
+        with collecting_scan_incidents() as incidents:
+            assert len(list(gguf_utils.iter_gguf_files(directory, recursive = True))) == 4
+        assert incidents == [], f"a walk within the cap reported a gap: {incidents}"
+
+
+def test_the_answer_and_the_index_that_gave_it_describe_one_snapshot(monkeypatch):
+    """Reported by the resolver beside the snapshot it resolved against.
+
+    A caller memoizing a MISS has to know which index said so. Resolving first and reading
+    the identity afterwards labels an answer from the old index with the new one's identity
+    whenever an invalidation and a rebuild land in between, and the marker then looks valid
+    for a snapshot that may already hold the alias.
+    """
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+
+    entry = resolver._LocalGgufEntry("unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_build_index", lambda: {"unsloth/b-gguf": entry})
+
+    state: list = []
+    assert resolver.resolve_local_gguf("unsloth/B-GGUF", index_state = state) is not None
+    assert state == [
+        (resolver.index_generation(), resolver.index_scan_stamp(), True)
+    ], "the identity reported is not the one the answer came from"
+
+    # A rebuild that REPLACES the index between two resolutions is reported as a different
+    # identity, which is what retires a marker taken against the older one.
+    before = state[0]
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+    state = []
+    assert resolver.resolve_local_gguf("unsloth/B-GGUF", index_state = state) is None
+    assert state and state[0] != before
+
+    # The discriminating case, and the only one that separates this from reading the
+    # identity afterwards: something publishes DURING the resolution. The pair must name the
+    # index that answered, not the one that landed while it was answering.
+    monkeypatch.setattr(resolver, "_build_index", lambda: {"unsloth/b-gguf": entry})
+    resolver._index()
+    answered_by = (
+        resolver.index_generation(),
+        resolver.index_scan_stamp(),
+        resolver.index_last_scan_was_complete(),
+    )
+    real_resolve_from_index = resolver._resolve_from_index
+
+    def _publish_midway(requested, index, **kwargs):
+        # An invalidation landing between the snapshot being read and the answer coming back.
+        resolver.invalidate_index()
+        return real_resolve_from_index(requested, index, **kwargs)
+
+    monkeypatch.setattr(resolver, "_resolve_from_index", _publish_midway)
+    state = []
+    assert (
+        resolver.resolve_local_gguf("unsloth/B-GGUF", allow_scan = False, index_state = state)
+        is not None
+    )
+    now = (resolver.index_generation(), resolver.index_scan_stamp())
+    assert now != answered_by, "the harness did not change the index during the resolution"
+    assert state == [answered_by], (
+        "the identity reported names the index that landed during the resolution, not the "
+        "one that answered"
+    )
+
+    # Nothing to answer means nothing to memoize against.
+    state = []
+    assert resolver.resolve_local_gguf("", index_state = state) is None
+    assert state == [], "an unanswerable request still reported an index"
+
+    # And the route hands its own sink in rather than reading the state separately.
+    src = inspect.getsource(inference_route._maybe_auto_switch_model)
+    assert (
+        "index_state = resolved_from," in src
+    ), "the route no longer asks the resolver which index answered"
+    assert "alias_probe_state = resolved_from[0] if resolved_from else None" in src
+    assert (
+        "alias_probe_state = _alias_probe_index_state()" not in src
+    ), "the route reads the index state separately again"
+
+
+def test_a_cache_only_resolution_does_not_wait_for_a_scan(monkeypatch):
+    """allow_scan=False is the non-blocking snapshot read the request path relies on.
+
+    _reject_unservable_model calls it synchronously on the event loop after scheduling a
+    warm, so putting it behind the mutex a multi-root scan holds would stall every request
+    on that loop until a slow HF or network-folder scan finished.
+    """
+    entry = resolver._LocalGgufEntry("unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"unsloth/b-gguf": entry}))
+
+    holding = threading.Event()
+    release = threading.Event()
+
+    def hold_the_scan_lock():
+        with resolver._lock:
+            holding.set()
+            release.wait(10)
+
+    scanner = threading.Thread(target = hold_the_scan_lock, daemon = True)
+    scanner.start()
+    try:
+        assert holding.wait(5), "the harness never took the scan lock"
+        started = time.monotonic()
+        state: list = []
+        resolved = resolver.resolve_local_gguf(
+            "unsloth/B-GGUF", allow_scan = False, index_state = state
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        scanner.join(10)
+
+    assert resolved is not None, "the cache-only read answered nothing"
+    assert state, "the cache-only read reported no index identity"
+    assert elapsed < 2.0, f"the cache-only read waited {elapsed:.1f}s on the scan lock"
+
+
+def test_a_scanning_resolution_answers_from_the_index_it_built(monkeypatch):
+    """Not from whatever is published by the time the identity is read.
+
+    invalidate_index keeps the previous entries under a revoked stamp on purpose, so a
+    resolution that re-read the published snapshot after the build could hand back a model
+    from a scan root that had just been removed, and auto-switch to it.
+    """
+    removed = resolver._LocalGgufEntry(
+        "unsloth/B-GGUF", "/removed-root/unsloth/B-GGUF", ("Q4_K_M",)
+    )
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
+
+    real_publish = resolver._publish
+    real_snapshot = resolver._snapshot
+    published = {"done": False}
+
+    def publish(snapshot):
+        real_publish(snapshot)
+        published["done"] = True
+
+    def snapshot():
+        # After the build publishes, the world looks like an invalidation just landed:
+        # revoked stamp, entries retained from the scan before it.
+        if published["done"]:
+            return (0.0, {"unsloth/b-gguf": removed})
+        return real_snapshot()
+
+    monkeypatch.setattr(resolver, "_publish", publish)
+    monkeypatch.setattr(resolver, "_snapshot", snapshot)
+
+    state: list = []
+    assert (
+        resolver.resolve_local_gguf("unsloth/B-GGUF", index_state = state) is None
+    ), "resolved a model from a snapshot the build did not produce"
+
+
+def test_the_completeness_verdict_travels_with_the_snapshot_that_earned_it(monkeypatch):
+    """Published as part of the state, not read back separately afterwards.
+
+    A caller decides whether a MISS is a confirmed ABSENCE from two things: the snapshot it
+    resolved against, and whether the pass that built it got to see every source. Read
+    separately, a warmer replacing an incomplete snapshot with a complete one between those
+    two reads lets this pass's miss be paired with the NEXT pass's verdict, and the absence
+    is memoized over a source this pass never looked at.
+    """
+    from core.inference.scan_incidents import note_scan_incident
+
+    monkeypatch.setattr(resolver, "_CACHE_TTL_S", 0)
+    entry = resolver._LocalGgufEntry("unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",))
+
+    def incomplete():
+        note_scan_incident("a root this pass could not read")
+        return {"unsloth/b-gguf": entry}
+
+    monkeypatch.setattr(resolver, "_build_index", incomplete)
+    _, state = resolver._index_with_state()
+    assert state[2] is False, "an incomplete pass came back blessed as complete"
+
+    # The warmer, landing after this pass answered and before the caller would have read
+    # the verdict back.
+    monkeypatch.setattr(resolver, "_build_index", lambda: {"unsloth/b-gguf": entry})
+    resolver._index()
+    assert resolver.index_last_scan_was_complete() is True, "the harness published nothing new"
+    assert state[2] is False, (
+        "the verdict moved under the state that was already handed out, so a separate read "
+        "would have blessed the earlier pass's miss"
+    )
+
+    # And a pass that saw everything says so, in the same place.
+    _, state = resolver._index_with_state()
+    assert state[2] is True
+
+    # The route reads it from there rather than asking the resolver again.
+    src = inspect.getsource(inference_route._maybe_auto_switch_model)
+    assert (
+        "alias_probe_state[2]" in src
+    ), "the route no longer reads completeness from the state that answered it"
+    assert (
+        "index_last_scan_was_complete()" not in src
+    ), "the route reads the completeness verdict separately again"
+
+
+def test_an_unreadable_ollama_path_is_reported_but_an_absent_one_is_not():
+    """``_safe_is_file`` answers False for both, and only one of them is an answer.
+
+    A manifest or blob that cannot be stat'ed is dropped and reads exactly like one that is
+    not there, so a pass that swallows it would publish as complete over a row it never got
+    to see.
+    """
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from hub.services.models import ollama as ollama_service
+
+    class _Unreadable(type(pathlib.Path("/"))):
+        def is_file(self):
+            raise PermissionError(13, "Permission denied")
+
+    with collecting_scan_incidents() as incidents:
+        assert ollama_service._safe_is_file(_Unreadable("/models/manifests/library/x")) is False
+    assert any(
+        "unreadable" in note for note in incidents
+    ), f"a manifest that could not be stat'ed read as one that is not there: {incidents}"
+
+    # An absent path IS an answer, so it stays silent.
+    with collecting_scan_incidents() as incidents:
+        assert ollama_service._safe_is_file(pathlib.Path("/no/such/ollama/manifest")) is False
+    assert incidents == [], f"an absent path was reported as a gap: {incidents}"
+
+
+def test_a_hermes_per_file_stat_failure_that_is_a_gap_is_reported(monkeypatch):
+    """Which per-file stat failures Path.is_file answers, and which it lets through.
+
+    pathlib swallows exactly ENOENT, ENOTDIR, EBADF and ELOOP (pathlib._abc._IGNORED_ERRNOS)
+    and returns False; every other errno propagates. That split is the rule this PR applies:
+    the swallowed four are answers, and the ones that mean the scan could not look -- EACCES,
+    EIO, a stale NFS handle -- reach the directory handler, which notes an incident, so the
+    pass cannot publish as complete over a file it never saw.
+    """
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from hub.services.models import hermes as hermes_service
+
+    with tempfile.TemporaryDirectory() as root:
+        directory = pathlib.Path(root)
+        (directory / "model-Q4_K_M.gguf").write_bytes(b"GGUF")
+        real_stat = pathlib.Path.stat
+
+        def stat_fails(self, *args, **kwargs):
+            if self.name.endswith(".gguf"):
+                raise PermissionError(13, "Permission denied")
+            return real_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, "stat", stat_fails)
+        with collecting_scan_incidents() as incidents:
+            assert hermes_service.staged_gguf_files(directory) == []
+        assert any(
+            "hermes" in note for note in incidents
+        ), f"a GGUF the scan could not stat was dropped silently: {incidents}"
+
+        # A racing delete is an answer: the row is gone, and the pass still saw the folder.
+        def stat_absent(self, *args, **kwargs):
+            if self.name.endswith(".gguf"):
+                raise FileNotFoundError(2, "No such file or directory")
+            return real_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, "stat", stat_absent)
+        with collecting_scan_incidents() as incidents:
+            assert hermes_service.staged_gguf_files(directory) == []
+        assert incidents == [], f"a file deleted mid-scan was reported as a gap: {incidents}"
+
+
+def test_an_unreadable_hf_cache_repo_is_not_a_complete_scan(monkeypatch):
+    """``_resolve_gguf_load_snapshot`` answers None for a repo dir it could not stat.
+
+    From the caller that is indistinguishable from a cache holding nothing for that repo,
+    so the pass would publish as complete over a repo it never got to look inside, and a
+    miss read from it would be memoized as a confirmed absence.
+    """
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+
+    with tempfile.TemporaryDirectory() as root:
+        repo = pathlib.Path(root) / "models--unsloth--B-GGUF"
+        (repo / "snapshots").mkdir(parents = True)
+        real_is_dir = pathlib.Path.is_dir
+
+        def is_dir_fails(self, *args, **kwargs):
+            if self.name == "snapshots":
+                raise PermissionError(13, "Permission denied")
+            return real_is_dir(self, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, "is_dir", is_dir_fails)
+        with collecting_scan_incidents() as incidents:
+            assert resolver._resolve_gguf_load_snapshot(repo) is None
+        assert any(
+            "unreadable" in note for note in incidents
+        ), f"a cache repo the scan could not read was dropped silently: {incidents}"
+
+    # A repo with no snapshots directory at all is an ANSWER: the repo dir itself is the
+    # load path, and nothing was hidden from the pass. The stat patch goes first, or this
+    # half measures the patch rather than the code.
+    monkeypatch.undo()
+    with tempfile.TemporaryDirectory() as root:
+        flat = pathlib.Path(root) / "models--unsloth--C-GGUF"
+        flat.mkdir()
+        with collecting_scan_incidents() as incidents:
+            assert resolver._resolve_gguf_load_snapshot(flat) == flat
+        assert incidents == [], f"a flat cache repo was reported as a gap: {incidents}"
+
+
+def test_a_root_the_classifier_could_not_read_is_not_a_complete_scan(monkeypatch):
+    """``_is_model_directory`` answers False for a directory it could not look inside.
+
+    A registered scan folder or LM Studio root can itself be a model directory, and False
+    there is indistinguishable from a directory that genuinely holds no weights, so the
+    scanner drops the row and the pass still publishes as complete.
+    """
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from routes import models as models_route
+
+    with tempfile.TemporaryDirectory() as root:
+        directory = pathlib.Path(root)
+        (directory / "config.json").write_text("{}")
+        real_iterdir = pathlib.Path.iterdir
+
+        def iterdir_fails(self):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(pathlib.Path, "iterdir", iterdir_fails)
+        with collecting_scan_incidents() as incidents:
+            assert models_route._is_model_directory(directory) is False
+        assert any(
+            "unreadable" in note for note in incidents
+        ), f"a root the classifier could not read was dropped silently: {incidents}"
+
+        # A directory with a config and no weights IS an answer: nothing was hidden.
+        monkeypatch.undo()
+        with collecting_scan_incidents() as incidents:
+            assert models_route._is_model_directory(directory) is False
+        assert incidents == [], f"a config-only directory was reported as a gap: {incidents}"
+
+
+def _directory_permissions_deny_listing():
+    """Whether chmod on a directory can actually stop it being listed here.
+
+    Its own function so the patched branch below is reachable on any host: pretending to be
+    Windows is not, since pathlib refuses to build a WindowsPath off Windows.
+    """
+    return os.name != "nt"
+
+
+@contextlib.contextmanager
+def _enumeration_denied(directory):
+    """Make *directory* refuse enumeration, however this platform can.
+
+    chmod 000 is the real trigger, and on POSIX also the proof that glob suppresses the
+    failure. Windows does not deny a listing that way, so there the enumeration is patched to
+    raise the same OSError: same handler, different trigger. Yields whether the trigger was
+    real, since the glob premise can only be asserted where it is.
+    """
+    import os
+    import pathlib
+    from unittest import mock
+
+    if _directory_permissions_deny_listing():
+        os.chmod(directory, 0o000)
+        try:
+            yield True
+        finally:
+            os.chmod(directory, 0o755)
+        return
+
+    target = os.path.normcase(str(directory))
+    real_iterdir = pathlib.Path.iterdir
+    real_walk = os.walk
+
+    def denied_iterdir(self):
+        if os.path.normcase(str(self)) == target:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_iterdir(self)
+
+    def denied_walk(
+        top,
+        onerror = None,
+        **kwargs,
+    ):
+        if onerror is not None and os.path.normcase(str(top)) == target:
+            onerror(PermissionError(13, "Permission denied", str(top)))
+            return iter(())
+        return real_walk(top, onerror = onerror, **kwargs)
+
+    with mock.patch.object(pathlib.Path, "iterdir", denied_iterdir):
+        with mock.patch.object(os, "walk", denied_walk):
+            yield False
+
+
+def test_a_scan_directory_that_cannot_be_enumerated_is_reported():
+    """``glob`` and ``rglob`` SWALLOW the OSError from reading a directory.
+
+    They yield nothing for it, so an unreadable or stale-mounted root reached the caller as
+    an empty one and the pass published as complete over rows it never saw. Confirmed here
+    against the real filesystem rather than a patched stat, since the suppression is
+    pathlib's: a directory with no search permission makes glob return [] while iterdir
+    raises.
+    """
+    import os
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from hub.services.models import hermes as hermes_service
+    from hub.services.models import ollama as ollama_service
+
+    with tempfile.TemporaryDirectory() as root:
+        unreadable = pathlib.Path(root) / "hermes"
+        unreadable.mkdir()
+        (unreadable / "model-Q4_K_M.gguf").write_bytes(b"GGUF")
+        manifests = pathlib.Path(root) / "ollama" / "manifests"
+        manifests.mkdir(parents = True)
+        (manifests / "library").mkdir()
+        with _enumeration_denied(unreadable) as real_permissions:
+            # The premise of the case, asserted where the platform can arm it for real.
+            if real_permissions:
+                assert (
+                    list(unreadable.glob("*.gguf")) == []
+                ), "glob no longer suppresses the enumeration failure, so this case is stale"
+            with collecting_scan_incidents() as incidents:
+                assert hermes_service.staged_gguf_files(unreadable) == []
+            assert any(
+                "hermes" in note for note in incidents
+            ), f"an unreadable Hermes folder read as an empty one: {incidents}"
+
+        with _enumeration_denied(manifests / "library"):
+            with collecting_scan_incidents() as incidents:
+                list(ollama_service._walk_manifest_files(manifests))
+            assert any(
+                "ollama manifests" in note for note in incidents
+            ), f"an unreadable Ollama manifests tree read as an empty one: {incidents}"
+
+    # A readable folder with nothing in it is an ANSWER, and stays silent.
+    with tempfile.TemporaryDirectory() as root:
+        empty = pathlib.Path(root) / "hermes"
+        empty.mkdir()
+        with collecting_scan_incidents() as incidents:
+            assert hermes_service.staged_gguf_files(empty) == []
+        assert incidents == [], f"an empty Hermes folder was reported as a gap: {incidents}"
+
+
+def test_a_checkpoint_directory_that_cannot_be_enumerated_is_reported():
+    """The weight predicates in routes/models.py globbed too.
+
+    A model child directory that cannot be read answers every glob with nothing and every
+    exists()/is_file() with False, so a safetensors checkpoint inside it was dropped while
+    the pass published as complete. Driven against the real filesystem, since the
+    suppression is pathlib's.
+    """
+    import os
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from routes import models as models_route
+
+    with tempfile.TemporaryDirectory() as root:
+        child = pathlib.Path(root) / "checkpoint"
+        child.mkdir()
+        (child / "model.safetensors").write_bytes(b"x")
+        with _enumeration_denied(child) as real_permissions:
+            if real_permissions:
+                assert (
+                    list(child.glob("*.safetensors")) == []
+                ), "glob no longer suppresses the enumeration failure, so this case is stale"
+            with collecting_scan_incidents() as incidents:
+                assert models_route._has_non_gguf_weights(child) is False
+            assert any(
+                "unreadable" in note for note in incidents
+            ), f"a checkpoint the scan could not read was dropped silently: {incidents}"
+
+        # Readable and holding no weights is an ANSWER.
+        empty = pathlib.Path(root) / "empty"
+        empty.mkdir()
+        with collecting_scan_incidents() as incidents:
+            assert models_route._has_non_gguf_weights(empty) is False
+        assert incidents == [], f"an empty directory was reported as a gap: {incidents}"
+
+
+def test_an_hf_cache_root_that_cannot_be_enumerated_is_reported():
+    """``_scan_hf_cache`` globbed its root for ``models--*``.
+
+    A cache root that stats as a directory but cannot be enumerated answers that glob with
+    no rows, so every repo under it was dropped while the pass still published as complete
+    and the alias probe could memoize the miss. Real filesystem, since the suppression is
+    pathlib's. The route caller is unguarded, so this degrades to an empty result AND an
+    incident rather than raising into a 500.
+    """
+    import os
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from routes import models as models_route
+
+    with tempfile.TemporaryDirectory() as root:
+        cache = pathlib.Path(root) / "hub"
+        repo = cache / "models--unsloth--gemma-3-4b-it-GGUF"
+        repo.mkdir(parents = True)
+        with _enumeration_denied(cache) as real_permissions:
+            if real_permissions:
+                assert (
+                    list(cache.glob("models--*")) == []
+                ), "glob no longer suppresses the enumeration failure, so this case is stale"
+            with collecting_scan_incidents() as incidents:
+                assert models_route._scan_hf_cache(cache) == []
+            assert any(
+                "hf cache root unreadable" in note for note in incidents
+            ), f"an unreadable HF cache root read as an empty one: {incidents}"
+
+        # A readable cache holding no repos is an ANSWER, and stays silent.
+        empty = pathlib.Path(root) / "empty-hub"
+        empty.mkdir()
+        with collecting_scan_incidents() as incidents:
+            assert models_route._scan_hf_cache(empty) == []
+        assert incidents == [], f"an empty HF cache root was reported as a gap: {incidents}"
+
+
+def test_the_scanners_match_a_gguf_suffix_the_way_windows_does():
+    """glob is case-INSENSITIVE on Windows, so a staged MODEL.GGUF was discovered there.
+
+    Moving to iterdir with an endswith would have dropped it silently, and a dropped row on
+    a pass that publishes as complete is exactly what the rest of this PR is about.
+    """
+    import pathlib
+
+    from hub.services.models import hermes as hermes_service
+    from routes import models as models_route
+
+    with tempfile.TemporaryDirectory() as root:
+        directory = pathlib.Path(root)
+        (directory / "MODEL.GGUF").write_bytes(b"GGUF")
+        assert [p.name for p in hermes_service.staged_gguf_files(directory)] == [
+            "MODEL.GGUF"
+        ], "an upper-case GGUF is no longer staged, which Windows used to discover"
+        assert models_route._servable_gguf_names(directory) == ["MODEL.GGUF"]
+
+
+def test_the_patched_arm_of_the_unreadable_directory_helper_also_arms_it(monkeypatch):
+    """The Windows arm of _enumeration_denied, exercised where Windows is not.
+
+    The three cases above fall back to patching the enumeration where permissions cannot
+    stop a listing, and an arm that armed nothing would make all three pass while testing the
+    opposite. The decision is a function rather than an os.name read because pathlib refuses
+    to build a WindowsPath off Windows.
+    """
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from hub.services.models import hermes as hermes_service
+
+    monkeypatch.setitem(globals(), "_directory_permissions_deny_listing", lambda: False)
+    with tempfile.TemporaryDirectory() as root:
+        staged = pathlib.Path(root) / "hermes"
+        staged.mkdir()
+        (staged / "model-Q4_K_M.gguf").write_bytes(b"GGUF")
+        with _enumeration_denied(staged) as real_permissions:
+            assert real_permissions is False, "the helper claimed a real trigger it did not use"
+            with collecting_scan_incidents() as incidents:
+                assert hermes_service.staged_gguf_files(staged) == []
+            assert any(
+                "hermes" in note for note in incidents
+            ), f"the patched arm armed nothing, so the cases above prove nothing: {incidents}"
+        # Restored on exit: the staged GGUF is listable again.
+        assert [p.name for p in hermes_service.staged_gguf_files(staged)] == ["model-Q4_K_M.gguf"]
+
+
+def test_two_scans_inside_one_clock_tick_are_still_two_snapshots(monkeypatch):
+    """time.monotonic steps in about 16ms on Windows, so a stamp is not unique by itself.
+
+    The stamp is a snapshot's IDENTITY as well as its age, so two scans in one tick
+    published the same one and a settled negative was never reopened. Caught on
+    windows-latest, where three probe cases compared a state to an identical one.
+    """
+    from core.inference import local_model_resolver as resolver
+
+    saved = resolver._scan
+    try:
+        monkeypatch.setattr(resolver.time, "monotonic", lambda: 1234.5)
+        resolver._publish((resolver.time.monotonic(), {}))
+        first = resolver.index_scan_stamp()
+        resolver._publish((resolver.time.monotonic(), {}))
+        second = resolver.index_scan_stamp()
+        assert second > first, "two scans inside one clock tick published one identity"
+        # Still the clock's value, to the microsecond, so the TTL arithmetic is unchanged.
+        assert abs(second - 1234.5) < 1e-3
+    finally:
+        resolver._scan = saved
+
+
+def test_the_lmstudio_and_models_dir_weight_checks_also_raise():
+    """The glob sites left on the scan path after the predicates were converted.
+
+    An LM Studio publisher/model directory that goes unreadable between the GGUF check and
+    the safetensors one, a ./models root that goes unreadable after its children loop, and
+    the classifier's own listing: all three answered glob with nothing, so their handlers
+    never fired and rows were dropped from a pass that published as complete.
+    """
+    import pathlib
+
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from routes import models as models_route
+
+    with tempfile.TemporaryDirectory() as root:
+        lm_dir = pathlib.Path(root) / "lmstudio"
+        model_dir = lm_dir / "publisher" / "model"
+        model_dir.mkdir(parents = True)
+        (model_dir / "model.safetensors").write_bytes(b"x")
+        with _enumeration_denied(model_dir):
+            with collecting_scan_incidents() as incidents:
+                assert models_route._scan_lmstudio_dir(lm_dir) == []
+            assert any(
+                "lmstudio" in note for note in incidents
+            ), f"an unreadable LM Studio model folder was dropped silently: {incidents}"
+
+        # Readable, and the same checkpoint is a row again.
+        with collecting_scan_incidents() as incidents:
+            assert [m.model_id for m in models_route._scan_lmstudio_dir(lm_dir)] == [
+                "publisher/model"
+            ]
+        assert incidents == [], f"a readable LM Studio folder was reported as a gap: {incidents}"
+
+        # The classifier's own listing, which decides GGUF vs not.
+        checkpoint = pathlib.Path(root) / "checkpoint"
+        checkpoint.mkdir()
+        (checkpoint / "model-Q4_K_M.gguf").write_bytes(b"GGUF")
+        with _enumeration_denied(checkpoint):
+            with collecting_scan_incidents() as incidents:
+                assert models_route._dir_model_format(checkpoint) is None
+            assert any(
+                "format unreadable" in note for note in incidents
+            ), f"a directory the classifier could not list was answered for: {incidents}"
+
+        # A ./models root that cannot be listed at all is a skipped source, and says so.
+        with _enumeration_denied(checkpoint):
+            with pytest.raises(OSError):
+                models_route._scan_models_dir(checkpoint)
+
+
+def test_a_manifest_that_went_unreadable_between_two_reads_is_reported(monkeypatch):
+    """The scan reads a manifest, then the servable check reads it again.
+
+    The second read is wrapped as a ValueError, so an unreadable manifest was dropped by the
+    same branch that drops an unsupported one, and the pass published as complete over a row
+    it had already built. Unsupported layers stay silent: the next pass answers the same way.
+    """
+    from core.inference import local_model_resolver as resolver
+    from core.inference.scan_incidents import collecting_scan_incidents
+    from hub.services.models import ollama as ollama_service
+
+    ref = "ollama:library/llama3:latest"
+    info = types.SimpleNamespace(id = ref, source = "ollama", path = "/store/blobs/sha256-abc")
+    monkeypatch.setattr(ollama_service, "is_ollama_manifest_ref", lambda value: value == ref)
+
+    def unreadable(_ref):
+        raise ValueError("Could not read Ollama manifest: boom") from OSError(5, "I/O error")
+
+    monkeypatch.setattr(ollama_service, "ollama_model_ref_files", unreadable)
+    with collecting_scan_incidents() as incidents:
+        assert resolver._local_servable_entry(ref, info) is None
+    assert any(
+        "ollama manifest unreadable on recheck" in note for note in incidents
+    ), f"a manifest that went unreadable between two reads was dropped silently: {incidents}"
+
+    def unsupported(_ref):
+        raise ValueError("Could not resolve Ollama model from manifest")
+
+    monkeypatch.setattr(ollama_service, "ollama_model_ref_files", unsupported)
+    with collecting_scan_incidents() as incidents:
+        assert resolver._local_servable_entry(ref, info) is None
+    assert incidents == [], f"an unsupported Ollama tag was reported as a gap: {incidents}"
+
+
+def test_an_uppercase_hermes_split_is_still_grouped_as_one_model():
+    """The case-insensitive suffix filter must not outrun the split regex.
+
+    An upper-case shard passed the filter and missed the grouping, so every part became a row
+    of its own: continuation shards offered as models, and a download still in flight offered
+    as a loadable one. colocated_split_shards was already case-insensitive, so only these two
+    were out of step.
+    """
+    import pathlib
+
+    from hub.services.models import hermes as hermes_service
+
+    with tempfile.TemporaryDirectory() as root:
+        staged = pathlib.Path(root)
+        for index in (1, 2):
+            (staged / f"Model-{index:05d}-of-00002.GGUF").write_bytes(b"GGUF")
+        assert [p.name for p in hermes_service.staged_gguf_files(staged)] == [
+            "Model-00001-of-00002.GGUF"
+        ], "an upper-case split was advertised shard by shard"
+        assert (
+            hermes_service.staged_model_id(staged / "Model-00001-of-00002.GGUF") == "Model"
+        ), "the split suffix survived in the id"
+
+    # And an INCOMPLETE upper-case split is still not offered at all.
+    with tempfile.TemporaryDirectory() as root:
+        staged = pathlib.Path(root)
+        (staged / "Model-00001-of-00003.GGUF").write_bytes(b"GGUF")
+        assert (
+            hermes_service.staged_gguf_files(staged) == []
+        ), "a half-downloaded upper-case split was offered as loadable"
+
+    # A mixed-case set is one split too, so the membership check cannot be case-sensitive.
+    with tempfile.TemporaryDirectory() as root:
+        staged = pathlib.Path(root)
+        (staged / "Model-00001-of-00002.gguf").write_bytes(b"GGUF")
+        (staged / "Model-00002-of-00002.GGUF").write_bytes(b"GGUF")
+        assert [p.name for p in hermes_service.staged_gguf_files(staged)] == [
+            "Model-00001-of-00002.gguf"
+        ]

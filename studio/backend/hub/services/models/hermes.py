@@ -20,6 +20,7 @@ from typing import List, Optional
 
 from loggers import get_logger
 
+from core.inference.scan_incidents import note_scan_incident
 from hub.schemas.inventory import LocalModelInfo
 from hub.services.models.common import (
     _classify_local_path,
@@ -29,8 +30,10 @@ from hub.services.models.common import (
 
 logger = get_logger(__name__)
 
-# llama.cpp's split naming, e.g. Model-00001-of-00005.gguf.
-_SPLIT_PART = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
+# llama.cpp's split naming, e.g. Model-00001-of-00005.gguf. Case-insensitive like the suffix
+# filter below: a shard that matched the filter but not this bypassed grouping, so every part,
+# continuations and half-finished downloads included, became a row.
+_SPLIT_PART = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
 
 
 def staged_model_id(path: Path) -> str:
@@ -48,12 +51,24 @@ def staged_gguf_files(hermes_dir: Path) -> List[Path]:
     never rows of their own; llama.cpp opens the whole set from part one.
     """
     try:
-        files = sorted(p for p in hermes_dir.glob("*.gguf") if p.is_file())
+        # iterdir, not glob: glob SWALLOWS the enumeration OSError and yields nothing, so an
+        # unreadable or stale-mounted folder reached the caller as an empty one and the pass
+        # published as complete over it (verified against CPython: no search permission makes
+        # glob return [] while iterdir raises). The suffix is compared case-INSENSITIVELY,
+        # which is what glob does on Windows, where a staged MODEL.GGUF was discovered.
+        files = sorted(
+            p for p in hermes_dir.iterdir() if p.suffix.lower() == ".gguf" and p.is_file()
+        )
     except OSError as exc:
         logger.warning("Error scanning Hermes directory %s: %s", hermes_dir, exc)
+        # An empty list is indistinguishable from a directory holding nothing, which a
+        # caller memoizing a MISS needs told apart.
+        note_scan_incident(f"hermes dir unreadable: {hermes_dir}")
         return []
 
-    names = {p.name for p in files}
+    # Folded: the shard names are compared against it, and the filter above accepts any
+    # casing, so the parts of one split can differ in case.
+    names = {p.name.lower() for p in files}
     staged: List[Path] = []
     for path in files:
         # mmproj/drafter companions belong under assets/, but a hand-dropped one
@@ -69,7 +84,8 @@ def staged_gguf_files(hermes_dir: Path) -> List[Path]:
         stem = path.name[: part.start()]
         total = int(part.group(2))
         if all(
-            f"{stem}-{index:05d}-of-{part.group(2)}.gguf" in names for index in range(2, total + 1)
+            f"{stem}-{index:05d}-of-{part.group(2)}.gguf".lower() in names
+            for index in range(2, total + 1)
         ):
             staged.append(path)
     return staged

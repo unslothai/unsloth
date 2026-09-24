@@ -15,12 +15,14 @@ seconds since auto-switch consults it per request.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from dataclasses import dataclass
 from typing import Optional
 
 from core.inference.model_ids import public_model_id
+from core.inference.scan_incidents import note_scan_incident
 from loggers import get_logger
 from utils.account_context import account_thread, current_account_id, is_owner_context
 
@@ -58,6 +60,12 @@ def _snapshot() -> tuple[float, dict[str, _LocalGgufEntry]]:
 
 def _publish(snapshot: tuple[float, dict[str, _LocalGgufEntry]]) -> None:
     global _scan
+    # The stamp is a snapshot's IDENTITY as well as its age, and time.monotonic() steps in
+    # ~16ms on Windows: two scans in one tick published the SAME stamp, so a settled negative
+    # was never reopened. Nudged past the previous one, a microsecond of TTL.
+    previous = _snapshot()[0]
+    if snapshot[0] <= previous:
+        snapshot = (previous + 1e-6, snapshot[1])
     if is_owner_context():
         _scan = snapshot
     else:
@@ -149,6 +157,11 @@ def _resolve_gguf_load_snapshot(p):
         if not snapshots.is_dir():
             return p
     except OSError:
+        # None drops the repo, which from outside reads like a cache holding nothing for it,
+        # so the pass would publish as complete over a repo it could not look inside. An
+        # incident rather than the skipped-source counter: this helper is also reached off a
+        # scan, where the counter would charge the next pass.
+        note_scan_incident(f"hf cache repo unreadable: {p}")
         return None
 
     # Scoped to this exact repo dir so case-colliding repos cannot cross-load.
@@ -338,7 +351,8 @@ def _local_gguf_entry(
             try:
                 if p.name.startswith("models--") and (p / "snapshots").is_dir():
                     cache_repo_dir = p
-            except OSError:
+            except OSError as exc:
+                note_scan_incident(f"hf cache entry unreadable: {path} ({type(exc).__name__})")
                 return None
             if (
                 cache_repo_dir is None
@@ -404,6 +418,12 @@ def _local_gguf_entry(
             repo_level_companions = cache_repo_dir is not None,
             aliases = _legacy_variant_aliases(variants),
         )
+    except OSError as exc:
+        # A read that FAILED, not a model that is not servable: the entry is dropped, and
+        # published as complete that omission is memoized as an absence. Anything else is a
+        # classification refusal, which is an answer.
+        note_scan_incident(f"gguf entry unreadable: {path} ({type(exc).__name__})")
+        return None
     except Exception:
         return None
 
@@ -425,12 +445,23 @@ _VISUAL_TOKEN_ID_KEYS = (
 
 
 def _read_json(path):
-    """Parsed JSON for *path*, or None when it is absent or unreadable."""
+    """Parsed JSON for *path*, or None when it is absent or unreadable.
+
+    Absent and unreadable answer the same to a caller, so the difference is reported
+    here: a config that could not be READ drops the row, and a scan publishing that
+    omission as complete lets the miss be memoized. Malformed JSON is not a gap -- that
+    file will not parse on the next pass either.
+    """
     import json
     try:
         with path.open(encoding = "utf-8") as handle:
             return json.load(handle)
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        note_scan_incident(f"json unreadable: {path} ({type(exc).__name__})")
+        return None
+    except ValueError:
         return None
 
 
@@ -489,7 +520,10 @@ def _has_safetensors_weights(load_dir) -> bool:
         return any(
             re.fullmatch(r"model-\d+-of-\d+\.safetensors", f.name) for f in load_dir.iterdir()
         )
-    except OSError:
+    except OSError as exc:
+        # False means "no weights", which a caller acts on, so an unlistable directory has
+        # to be said separately.
+        note_scan_incident(f"weights listing unreadable: {load_dir} ({type(exc).__name__})")
         return False
 
 
@@ -676,6 +710,10 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
             return None
         # No quants: quantization is baked in, so there is no ":<quant>" to pin.
         return _LocalGgufEntry(loader_id, str(load_dir), (), is_gguf = False)
+    except OSError as exc:
+        # As in _local_gguf_entry: unreadable is not unservable.
+        note_scan_incident(f"weights entry unreadable: {path} ({type(exc).__name__})")
+        return None
     except Exception:
         return None
 
@@ -691,7 +729,13 @@ def _local_servable_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         # Raises when the tag's layers are gone or unsupported, withholding rather than advertising.
         try:
             ollama_model_ref_files(raw_id)
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
+            # A row the scan already built, dropped on a SECOND read of the same manifest,
+            # where the read failure arrives wrapped as a ValueError. Unreadable is a gap;
+            # unsupported layers or malformed JSON is an answer the next pass repeats.
+            cause = exc if isinstance(exc, OSError) else exc.__cause__
+            if isinstance(cause, OSError):
+                note_scan_incident(f"ollama manifest unreadable on recheck: {raw_id}")
             return None
         # No quants: an Ollama tag names one file, so there is no ":<quant>" to pin.
         return _LocalGgufEntry(loader_id, raw_id, ())
@@ -754,6 +798,43 @@ def local_load_dir(path: Optional[str]) -> Optional[str]:
         return path
 
 
+# How many sources the scan in progress had to skip. Each source is guarded on its own, so a
+# snapshot can be fresh and incomplete at once, and a miss read from it as a confirmed
+# ABSENCE memoizes what the recovered scan contradicts. Written only under ``_lock``.
+_scan_sources_skipped = 0
+# The verdict per account, selected like ``_snapshot``: scan roots are account private, so
+# one tenant's partial scan says nothing about another's.
+_scan_complete = False
+_managed_scans_complete: dict[str, bool] = {}
+
+
+def _note_scan_source_skipped() -> None:
+    global _scan_sources_skipped
+    _scan_sources_skipped += 1
+
+
+def _publish_scan_completeness(complete: bool) -> None:
+    global _scan_complete
+    if is_owner_context():
+        _scan_complete = complete
+    else:
+        _managed_scans_complete[current_account_id()] = complete
+
+
+def index_last_scan_was_complete() -> bool:
+    """Whether the acting account's published snapshot came from a scan that reached
+    every source it tried.
+
+    A miss from an INCOMPLETE scan is not evidence of absence, only of what that pass could
+    see. Callers memoizing a negative answer must check this; ones simply resolving a name do
+    not, since a partial index is still better than none. An account that has never scanned
+    reads False, which only ever admits fewer memoized answers.
+    """
+    if is_owner_context():
+        return _scan_complete
+    return _managed_scans_complete.get(current_account_id(), False)
+
+
 def _build_index() -> dict[str, _LocalGgufEntry]:
     """Map normalized id/model_id/display_name -> local model entry.
 
@@ -802,6 +883,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             # would duplicate the one _local_gguf_entry already does per snapshot, on the request path.
             return _scan_hf_cache(directory, active_cache = rp == active_root, classify_format = False)
         except Exception as exc:  # a missing/malformed root must skip, never crash the index
+            _note_scan_source_skipped()
             logger.debug("auto-switch: skipping HF cache dir %r: %s", directory, exc)
             return []
 
@@ -811,6 +893,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     try:
         found += _scan_models_dir(Path("./models").resolve())
     except Exception as exc:
+        _note_scan_source_skipped()
         logger.debug("auto-switch: ./models scan failed: %s", exc)
     try:
         for hf_dir in (
@@ -821,11 +904,13 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         ):
             found += _scan_hf_once(hf_dir)
     except Exception as exc:
+        _note_scan_source_skipped()
         logger.debug("auto-switch: HF cache scan failed: %s", exc)
     try:
         for lm_dir in lmstudio_model_dirs():
             found += _scan_lmstudio_dir(lm_dir)
     except Exception as exc:
+        _note_scan_source_skipped()
         logger.debug("auto-switch: LM Studio scan failed: %s", exc)
     # Read-only like the LM Studio scan, so it is safe on the request path. This is the path Hermes
     # itself takes: it downloads the GGUF, then asks Unsloth for it by name.
@@ -835,12 +920,14 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         for hermes_dir in hermes_model_dirs():
             found += scan_hermes_dir(hermes_dir)
     except Exception as exc:
+        _note_scan_source_skipped()
         logger.debug("auto-switch: Hermes scan failed: %s", exc)
     try:
         from utils.paths import ollama_model_dirs
         for ollama_dir in ollama_model_dirs():
             found += _scan_ollama_dir(ollama_dir, materialize_links = False)
     except Exception as exc:
+        _note_scan_source_skipped()
         logger.debug("auto-switch: Ollama scan failed: %s", exc)
     try:
         from storage.studio_db import list_scan_folders
@@ -849,6 +936,15 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         for folder in list_scan_folders():
             try:
                 fp = Path(folder["path"])
+                # A REGISTERED folder was configured explicitly, so its absence is a source
+                # this pass could not read rather than an empty one, unlike the discovered
+                # roots above; the scans answer an unreachable path with an empty list and no
+                # exception. X_OK as well as R_OK: a readable but unsearchable directory
+                # lists names and fails every child stat, suppressed per child.
+                if not (fp.is_dir() and os.access(fp, os.R_OK | os.X_OK)):
+                    _note_scan_source_skipped()
+                    logger.debug("auto-switch: scan folder %r not readable", folder)
+                    continue
                 custom_found += dedupe_custom_gguf_rows(
                     _scan_models_dir(fp, limit = 200)
                     + _scan_hf_once(fp)
@@ -856,9 +952,11 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
                     + _scan_ollama_dir(fp, limit = 200, materialize_links = False)
                 )
             except Exception as exc:
+                _note_scan_source_skipped()
                 logger.debug("auto-switch: scan folder %r failed: %s", folder, exc)
         found += suppress_grouped_gguf_file_rows(custom_found)
     except Exception as exc:
+        _note_scan_source_skipped()
         logger.debug("auto-switch: scan folders enumerate failed: %s", exc)
     for info in found:
         raw_id = getattr(info, "id", None)
@@ -934,6 +1032,9 @@ def _sibling_revision_entries(raw_id: str, loader_id: str):
     try:
         siblings = [p for p in snapshots.iterdir() if p.is_dir() and p.name != Path(raw_id).name]
     except OSError:
+        # A revision omitted because the cache blinked, not because it is absent: left
+        # unreported, a caller memoizes the absence of a sibling that comes back.
+        _note_scan_source_skipped()
         return
     for sibling in siblings:
         if not snapshot_variants_all_complete(str(sibling)):
@@ -1015,6 +1116,19 @@ def invalidate_index(*, additions_only: bool = False) -> None:
 
 
 def _index() -> dict[str, _LocalGgufEntry]:
+    return _index_with_state()[0]
+
+
+def _index_with_state() -> tuple[dict[str, _LocalGgufEntry], tuple[int, float, bool]]:
+    """The index, and the ``(generation, stamp, complete)`` describing where it came from.
+
+    All three inside the one critical section, so they describe the mapping being returned
+    rather than whatever has been published by the time a caller reads them. Completeness in
+    particular: read separately, a warmer replacing an incomplete snapshot with a complete
+    one lets a caller pair this pass's miss with the NEXT pass's verdict and memoize it. A
+    caller that memoizes a MISS needs all three; one that merely resolves a name does not,
+    and calls ``_index``.
+    """
     # Build under the lock so concurrent callers with an expired cache don't all run the (multi-dir) scan at once; the
     # rest wait and reuse the fresh result.
     with _lock:
@@ -1023,15 +1137,65 @@ def _index() -> dict[str, _LocalGgufEntry]:
         # `ts > 0`: monotonic() counts from boot, so under a TTL of uptime an invalidated stamp reads as recent and
         # would serve what was just revoked
         if ts > 0.0 and now - ts < _CACHE_TTL_S:
-            return cached
-        fresh = _build_index()
+            return cached, (_generation, ts, index_last_scan_was_complete())
+        global _scan_sources_skipped
+        from core.inference.scan_incidents import collecting_scan_incidents
+
+        # Around the call, so the verdict belongs to what built this snapshot. Reset first:
+        # the count is per pass.
+        _scan_sources_skipped = 0
+        # A whole source dropping is not the only way to come back short: a suppressed
+        # per-child OSError hands back a shorter list, which out here looks like a root
+        # holding less. Collected, not counted globally, so a concurrent models-route scan is
+        # not charged to this pass.
+        with collecting_scan_incidents() as incidents:
+            fresh = _build_index()
+        # Published beside the snapshot it describes: a build that raised publishes nothing
+        # and must not leave a verdict over the snapshot still there.
+        complete = _scan_sources_skipped == 0 and not incidents
+        _publish_scan_completeness(complete)
         # Stamp AFTER the scan, not with the pre-scan ``now``: a multi-root scan on an install with many local models
         # can itself exceed the TTL, which would store the cache already expired and make every request rebuild the
         # index.
         _publish((time.monotonic(), fresh))
         # The scan supersedes the notes: whatever landed is in the index now.
         _just_downloaded.clear()
-        return fresh
+        # Still under the lock, so the index returned cannot be labelled with a later
+        # snapshot's identity.
+        return fresh, (_generation, _snapshot()[0], complete)
+
+
+def index_scan_stamp() -> float:
+    """The published snapshot's stamp, as an identity for "which scan answered".
+
+    A completed scan publishes ``time.monotonic()``, so a caller holding the value from
+    before its pass can tell a scan that ran from one that did not: ``_build_index`` raising
+    never reaches ``_publish``, so the stamp is unchanged and its ``None`` result is the
+    resolver's best effort rather than a confirmed absence. Zero is a never-built or revoked
+    index and negative an additions-only invalidation, so only a positive value is a scan.
+
+    Lock-free for the same reason as ``index_is_built``: ``_scan`` is rebound, never mutated.
+    """
+    return _snapshot()[0]
+
+
+def index_answer_is_trustworthy() -> bool:
+    """Whether the published snapshot may be read as a definite answer right now.
+
+    Same trust rule a model switch is held to (``_snapshot_is_trusted``), so a caller can
+    ask "was that None a real absence?" without reaching into the snapshot itself. A scan
+    that landed during the caller's own pass is the other way to earn that, and
+    ``index_scan_stamp`` answers it; an index that was already fresh never needed one.
+
+    Narrower in one respect: an additions-only invalidation keeps a NEGATIVE stamp trusted
+    so known positive hits still answer while the rebuild runs, and that is exactly the
+    snapshot an absence cannot come from -- something was just added, and a rebuild that
+    then raises leaves the stamp where it was.
+    """
+    stamp = _snapshot()[0]
+    if stamp <= 0.0:
+        return False
+    return _snapshot_is_trusted(stamp, time.monotonic())
 
 
 def index_is_built() -> bool:
@@ -1121,6 +1285,7 @@ def resolve_local_gguf(
     *,
     allow_scan: bool = True,
     include_companion_scope: bool = False,
+    index_state: Optional[list] = None,
 ) -> Optional[tuple]:
     """Return ``(load_path, gguf_variant, loader_id)`` for a local match, else None.
 
@@ -1130,6 +1295,10 @@ def resolve_local_gguf(
     ``repo:VARIANT``: an exact id match wins first (so ids containing a colon still resolve), else
     the last ``:VARIANT`` is split off and resolves only when that quant is on disk, unless it names
     no quant at all (an Ollama-style ":latest"), which means the repo.
+
+    ``index_state``, when given a list, receives one ``(generation, stamp, complete)``
+    describing the index this answer came from. For a caller that memoizes a miss: it and
+    the answer describe the same snapshot, which separate reads afterwards cannot promise.
 
     ``allow_scan=False`` answers from the last built index and never rebuilds. It is a raw snapshot
     read for callers that separately decide whether the snapshot is trustworthy; use
@@ -1141,7 +1310,20 @@ def resolve_local_gguf(
         return None
     requested = requested.strip()
     try:
-        index = _index() if allow_scan else _snapshot()[1]
+        if allow_scan:
+            # Mapping and identity from the same pass: re-reading afterwards answers for a
+            # different index, and an invalidation landing in between keeps the old entries
+            # under a revoked stamp, resolving a model from a removed scan root.
+            index, state = _index_with_state()
+        else:
+            # Never the scan mutex: this is the non-blocking read the request path relies
+            # on, and that lock is held for a whole multi-root scan. The published tuple is
+            # immutable and carries its own stamp, so one read is enough.
+            snapshot = _snapshot()
+            index = snapshot[1]
+            state = (_generation, snapshot[0], index_last_scan_was_complete())
+        if index_state is not None:
+            index_state.append(state)
         return _resolve_from_index(
             requested,
             index,

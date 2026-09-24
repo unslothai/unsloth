@@ -20,6 +20,7 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
+from core.inference.scan_incidents import note_scan_incident
 from hub.utils.gguf import (
     gguf_variant_key,
     is_big_endian_gguf_path,
@@ -464,6 +465,10 @@ def resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
         if latest is not None:
             return str(latest.resolve())
         return str(repo_dir.resolve())
+    except OSError as exc:
+        # None drops the row, indistinguishable from a repo that is not there.
+        note_scan_incident(f"hf cache realpath unreadable: {repo_dir} ({type(exc).__name__})")
+        return None
     except Exception:
         return None
 

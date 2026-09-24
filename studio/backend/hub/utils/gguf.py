@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
 from loggers import get_logger
+from core.inference.scan_incidents import note_scan_incident
 from utils.paths.path_utils import (
     drop_shadowed_appledouble_names as _drop_shadowed_appledouble_names,
     file_contents_available_locally,
@@ -224,8 +225,13 @@ def iter_gguf_files(directory: Path, recursive: bool = False):
         return
     if recursive:
         seen = 0
-        # os.walk skips unreadable subdirs instead of raising (e.g. /proc).
-        for dirpath, dirnames, filenames in os.walk(directory, onerror = lambda _e: None):
+
+        def _walk_error(exc) -> None:
+            # os.walk skips an unreadable subdir instead of raising, which keeps this
+            # usable, but a truncated walk looks exactly like a directory holding fewer.
+            note_scan_incident(f"gguf walk truncated: {getattr(exc, 'filename', directory)}")
+
+        for dirpath, dirnames, filenames in os.walk(directory, onerror = _walk_error):
             for name in filenames:
                 if is_gguf_filename(name):
                     path = Path(dirpath) / name
@@ -234,11 +240,15 @@ def iter_gguf_files(directory: Path, recursive: bool = False):
                     yield path
             seen += len(dirnames) + len(filenames)
             if seen > _MAX_LOCAL_SCAN_ENTRIES:
+                # The cap keeps a pathological root off the request path, and truncates the
+                # walk like an unreadable subtree does: past it was never looked at.
+                note_scan_incident(f"gguf walk hit the entry cap: {directory} ({seen} entries)")
                 return
         return
     try:
         entries = list(directory.iterdir())
     except OSError:
+        note_scan_incident(f"gguf dir unreadable: {directory}")
         return
     for file in entries:
         try:
@@ -247,6 +257,7 @@ def iter_gguf_files(directory: Path, recursive: bool = False):
                     continue
                 yield file
         except OSError:
+            note_scan_incident(f"gguf file unreadable: {file}")
             continue
 
 
@@ -919,8 +930,12 @@ def select_gguf_cache_snapshot_for_repo_dir(
                     snapshots.append(snapshot)
             except OSError as exc:
                 logger.debug("Skipping unreadable cache snapshot %s: %s", snapshot, exc)
+                note_scan_incident(f"cache snapshot unreadable: {snapshot}")
     except OSError as exc:
         logger.debug("Stopping at unreadable cache snapshots dir %s: %s", snapshots_dir, exc)
+        # Selecting among fewer snapshots than exist looks like selecting among all of
+        # them, so say that this pass came back short.
+        note_scan_incident(f"cache snapshots dir unreadable: {snapshots_dir}")
     snapshots.sort(key = snapshot_selection_key, reverse = True)
     return _select_gguf_snapshot(snapshots)
 

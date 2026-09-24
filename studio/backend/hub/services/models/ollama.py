@@ -25,6 +25,7 @@ from urllib.parse import quote, unquote
 
 from loggers import get_logger
 
+from core.inference.scan_incidents import note_scan_incident
 from hub.schemas.inventory import LocalModelInfo
 from hub.services.models.common import (
     _capabilities_for_format,
@@ -124,10 +125,32 @@ def _unsupported_ollama_layer_media_types(layers: list[object]) -> tuple[str, ..
     return tuple(sorted(unsupported))
 
 
+def _walk_manifest_files(manifests_root: Path):
+    """Every file under *manifests_root*, with enumeration failures REPORTED.
+
+    ``rglob`` swallows the OSError from reading a directory and simply yields nothing for
+    it, so an unreadable manifests tree reached the caller as an empty one and the scan
+    published as complete over rows it never saw. ``os.walk`` with ``onerror`` is the
+    enumeration that can say so; the traversal order and the set of files are otherwise the
+    same.
+    """
+    import os as _os
+
+    def _onerror(exc: OSError) -> None:
+        note_scan_incident(f"ollama manifests unreadable: {getattr(exc, 'filename', '')}")
+
+    for parent, _dirs, names in _os.walk(manifests_root, onerror = _onerror):
+        for name in sorted(names):
+            yield Path(parent) / name
+
+
 def _safe_is_file(path: Path) -> bool:
     try:
         return path.is_file()
     except OSError:
+        # False drops the manifest or blob, which reads like one that is not there, so the
+        # pass would publish as complete over a row it never saw.
+        note_scan_incident(f"ollama path unreadable: {path}")
         return False
 
 
@@ -314,7 +337,12 @@ def _ollama_model_info_from_manifest(
     if manifest is None:
         try:
             manifest = json.loads(tag_file.read_text(encoding = "utf-8-sig"))
-        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+        except OSError as e:
+            # Unreadable, not malformed: it will parse once readable, so a miss from this
+            # pass is not a confirmed absence.
+            note_scan_incident(f"ollama manifest unreadable: {tag_file}")
+            return invalid_manifest(str(e))
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
             return invalid_manifest(str(e))
     if not isinstance(manifest, dict):
         return invalid_manifest("top level must be a JSON object")
@@ -330,7 +358,10 @@ def _ollama_model_info_from_manifest(
         if config_blob is not None and _safe_is_file(config_blob):
             try:
                 cfg = json.loads(config_blob.read_text(encoding = "utf-8-sig"))
-            except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+            except OSError as e:
+                note_scan_incident(f"ollama config blob unreadable: {config_blob}")
+                return invalid_manifest(f"config blob could not be read: {e}")
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
                 return invalid_manifest(f"config blob could not be parsed: {e}")
             if not isinstance(cfg, dict):
                 return invalid_manifest("config blob must be a JSON object")
@@ -527,7 +558,7 @@ def scan_ollama_dir(
         return []
 
     try:
-        for tag_file in manifests_root.rglob("*"):
+        for tag_file in _walk_manifest_files(manifests_root):
             if not _safe_is_file(tag_file):
                 continue
 
@@ -552,6 +583,8 @@ def scan_ollama_dir(
                 return found
     except OSError as e:
         logger.warning("Error scanning Ollama directory %s: %s", ollama_dir, e)
+        # A partial list reads like a complete one from outside, so say so.
+        note_scan_incident(f"ollama dir unreadable: {ollama_dir}")
     return found
 
 
@@ -583,7 +616,7 @@ def ollama_manifest_ref_for_path(model_path: str) -> Optional[str]:
             continue
         manifests_root = ollama_dir / "manifests"
         try:
-            for tag_file in manifests_root.rglob("*"):
+            for tag_file in _walk_manifest_files(manifests_root):
                 if not _safe_is_file(tag_file):
                     continue
                 rel = _manifest_rel_path(tag_file, manifests_root)
