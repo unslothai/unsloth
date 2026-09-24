@@ -47,6 +47,11 @@ export function KindIcon({ item, className }: { item: LibraryItem; className?: s
   );
 }
 
+// Thumbnails keep their own shape between these heights (as a share of the width) and crop past
+// them: 16:9 at the widest, 4:5 at the tallest.
+const MIN_THUMB_RATIO = 9 / 16;
+const MAX_THUMB_RATIO = 5 / 4;
+
 /** A lazily loaded image or video frame, sized by its own aspect ratio once it arrives, or cropped square. */
 function ImageThumb({
   item,
@@ -59,7 +64,9 @@ function ImageThumb({
 }) {
   const holder = useRef<HTMLDivElement>(null);
   const { url, failed } = useLibraryThumbnail(item, useSeen(holder));
-  const [loaded, setLoaded] = useState(false);
+  // Height over width, once the picture has loaded.
+  const [ratio, setRatio] = useState<number | null>(null);
+  const loaded = ratio !== null;
   // Fetched but undecodable (bytes that are not the image their name says) falls back too.
   const [brokenUrl, setBrokenUrl] = useState<string | null>(null);
   if (failed || (url !== null && url === brokenUrl)) {
@@ -70,19 +77,31 @@ function ImageThumb({
     );
   }
   return (
-    <div ref={holder} className={cn("relative overflow-hidden", square && "aspect-square", className)}>
+    <div
+      ref={holder}
+      className={cn("relative overflow-hidden", square && "aspect-square", className)}
+      style={
+        loaded && !square
+          ? { aspectRatio: 1 / Math.min(Math.max(ratio, MIN_THUMB_RATIO), MAX_THUMB_RATIO) }
+          : undefined
+      }
+    >
       {!loaded && <div className="aspect-square w-full animate-pulse bg-muted" />}
       {url && (
         <img
           src={url}
           alt={item.name}
           draggable={false}
-          onLoad={() => setLoaded(true)}
+          onLoad={(event) => {
+            const { naturalWidth, naturalHeight } = event.currentTarget;
+            setRatio(naturalWidth > 0 ? naturalHeight / naturalWidth : 1);
+          }}
           onError={() => setBrokenUrl(url)}
+          // A tall one is cropped from the top, where a screenshot or document starts.
           className={cn(
-            "block w-full",
-            square && "absolute inset-0 h-full object-cover",
-            loaded ? !square && "h-auto" : "absolute inset-0 opacity-0",
+            "absolute inset-0 block size-full object-cover",
+            !loaded && "opacity-0",
+            loaded && ratio > MAX_THUMB_RATIO && "object-top",
           )}
         />
       )}
