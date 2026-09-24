@@ -248,4 +248,7 @@ class TestTheWindowsRepairSiteRunsForRdna1:
         assert pip_try.call_count == 1
         args = " ".join(str(a) for a in pip_try.call_args.args)
         assert "whl-multi-arch" in args
-        assert f"torch[device-gfx1010]=={stack_mod._ROCM_MULTIARCH_TORCH_VERSION}+{stack_mod._ROCM_MULTIARCH_TAG}" in args
+        assert (
+            f"torch[device-gfx1010]=={stack_mod._ROCM_MULTIARCH_TORCH_VERSION}+{stack_mod._ROCM_MULTIARCH_TAG}"
+            in args
+        )
