@@ -41,6 +41,12 @@ const KIND_CATEGORIES: Partial<Record<string, StorageCategory>> = {
   model: "fineTunes",
 };
 
+/** The id prefix `disk.sources` names: the source, and for a model where it came from. */
+function diskSource(id: string): string {
+  const [source, origin] = id.split(":", 2);
+  return source === "model" ? `${source}:${origin}` : source!;
+}
+
 const STALE_EVENT = "unsloth:library-storage-stale";
 
 /** Measure again wherever storage is on screen, after files left outside the Library (a chat clear). */
@@ -81,7 +87,7 @@ export function useLibraryStorage(): LibraryStorage {
     let diskBytes = 0;
     for (const item of snapshot.items) {
       if (!includedBySettings(item.id, settings)) continue;
-      if (!onDisk || onDisk.has(item.id.slice(0, item.id.indexOf(":")))) {
+      if (!onDisk || onDisk.has(diskSource(item.id))) {
         diskBytes += item.sizeBytes ?? 0;
       }
       const category = KIND_CATEGORIES[fileKind(item)] ?? "files";

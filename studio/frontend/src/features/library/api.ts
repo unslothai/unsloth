@@ -50,7 +50,8 @@ export interface LibraryFolder {
 export interface LibraryDisk {
   totalBytes: number;
   freeBytes: number;
-  /** Item sources (the id prefix) stored on this disk; others may live elsewhere. */
+  /** Item sources (the id prefix, `model:<origin>` for models) stored on this disk; others may
+   *  live elsewhere. */
   sources?: string[];
 }
 

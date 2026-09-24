@@ -119,19 +119,26 @@ def _attachment_root() -> list:
     return [studio_db_path().parent]
 
 
-def _model_roots() -> list:
-    from utils.paths.storage_roots import exports_root, outputs_root
-    return [outputs_root(), exports_root()]
+def _training_root() -> list:
+    from utils.paths.storage_roots import outputs_root
+    return [outputs_root()]
 
 
-# Where each source keeps its bytes. Any of them can be configured onto another disk.
+def _export_root() -> list:
+    from utils.paths.storage_roots import exports_root
+    return [exports_root()]
+
+
+# Where each source keeps its bytes. Any of them can be configured onto another disk. Fine-tunes
+# and exports are told apart (`model:<origin>`, the start of their ids): either can be elsewhere.
 _SOURCE_ROOTS = {
     "upload": lambda: [uploads_dir()],
     "attachment": _attachment_root,
     "image": lambda: _gallery_root("image_gallery"),
     "video": lambda: _gallery_root("video_gallery"),
     "audio": lambda: _gallery_root("audio_gallery"),
-    "model": _model_roots,
+    "model:training": _training_root,
+    "model:exported": _export_root,
     "sandbox": _sandbox_root,
 }
 

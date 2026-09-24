@@ -247,9 +247,20 @@ def test_the_listing_reports_the_library_disk(client):
         "image",
         "video",
         "audio",
-        "model",
+        "model:training",
+        "model:exported",
         "sandbox",
     }
+
+
+def test_fine_tunes_and_exports_are_placed_on_disks_separately(client, monkeypatch):
+    from utils.paths.storage_roots import exports_root
+
+    real = library._device
+    exports = str(exports_root())
+    monkeypatch.setattr(library, "_device", lambda path: -1 if str(path) == exports else real(path))
+    sources = client.get("/api/library").json()["disk"]["sources"]
+    assert "model:training" in sources and "model:exported" not in sources
 
 
 def test_a_source_on_another_disk_is_left_out_of_the_bar(client, monkeypatch):
