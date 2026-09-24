@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Remote code that embeds in `get_input_embeddings` or returns no loss (Step-3.7-Flash)."""
 
 import sys

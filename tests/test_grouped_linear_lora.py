@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """LoRA on a block-diagonal grouped linear (DeepSeek-V4's `o_a_proj`)."""
 
 import pytest

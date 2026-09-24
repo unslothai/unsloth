@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """A Mistral-format checkpoint (params.json, no config.json, e.g. Mistral-Large-3) gets a
 message that says what it is, instead of the generic "both configs failed" one."""
 
