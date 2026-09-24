@@ -8,6 +8,7 @@ import { ArtifactHtmlFrame } from "@/features/chat";
 import { isTauri } from "@/lib/api-base";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import { Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
@@ -131,13 +132,13 @@ function PreviewBody({
     case "model":
       return <ModelDetails item={item} />;
     case "image":
-      return <img src={url!} alt={item.name} className="m-auto max-h-full max-w-full object-contain" />;
+      return <img src={url!} alt={item.name} className="size-full object-contain" />;
     case "pdf":
       return <iframe title={item.name} src={url!} className="size-full rounded-xl bg-white" />;
     case "audio":
       return <audio src={url!} controls className="m-auto w-full max-w-lg" />;
     case "video":
-      return <video src={url!} controls className="m-auto max-h-full max-w-full rounded-xl" />;
+      return <video src={url!} controls className="size-full object-contain" />;
     case "web":
       if (truncated) return <TextPrefix text={`${text!}\n\n…`} />;
       // The chat canvas frame: served by the backend under its own CSP, so it renders the same in
@@ -220,6 +221,7 @@ export function LibraryPreview({
     onOpenChange(open);
   }
 
+  const media = item !== null && (bodyFor(item) === "image" || bodyFor(item) === "video");
   const meta = item
     ? [
         item.model ? modelLabel(item) : item.source === "generated" ? "Generated" : "Uploaded",
@@ -231,7 +233,11 @@ export function LibraryPreview({
   return (
     <Dialog open={item !== null} onOpenChange={(open) => void handleOpenChange(open)}>
       <DialogContent
-        className="flex h-[min(88vh,960px)] w-[min(92vw,1200px)] max-w-none flex-col gap-0 p-0 sm:max-w-none"
+        className={cn(
+          "flex max-w-none flex-col gap-0 p-0 sm:max-w-none",
+          // Images and videos open near full screen; everything else keeps a reading width.
+          media ? "h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)]" : "h-[min(88vh,960px)] w-[min(92vw,1200px)]",
+        )}
         onKeyDown={(event) => {
           if ((event.metaKey || event.ctrlKey) && event.key === "s") {
             event.preventDefault();
@@ -276,7 +282,7 @@ export function LibraryPreview({
                 </Button>
               )}
             </div>
-            <div className="flex min-h-0 flex-1 p-6">
+            <div className={cn("flex min-h-0 flex-1", media ? "p-3" : "p-6")}>
               <PreviewBody item={item} draft={draft} onDraftChange={setDraft} />
             </div>
           </>
