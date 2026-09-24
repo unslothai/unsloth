@@ -579,3 +579,23 @@ def test_new_revision_downloads_only_what_changed(tmp_path, fake_hub, mode, syml
     else:
         assert not (snap / "text_encoder.safetensors").is_symlink()
         assert "Reused" in proc.stderr
+
+
+def test_a_corrupted_same_size_copy_is_downloaded_again_not_carried_forward(tmp_path, fake_hub):
+    """The Hub vouching for the OLD commit's digest says nothing about the bytes on disk now."""
+    _run_worker(tmp_path, fake_hub, "scoped", symlinks = False)
+    old_encoder = (
+        tmp_path / "hub" / "models--Org--Model" / "snapshots" / OLD / "text_encoder.safetensors"
+    )
+    damaged = bytearray(old_encoder.read_bytes())
+    damaged[1000:1010] = b"\x00" * 10
+    old_encoder.write_bytes(bytes(damaged))  # same size, different bytes
+
+    fake_hub.head = NEW
+    fake_hub.downloaded.clear()
+    _run_worker(tmp_path, fake_hub, "scoped", symlinks = False)
+
+    assert fake_hub.downloaded[(NEW, "text_encoder.safetensors")] == len(_UNCHANGED)
+    assert (NEW, "vae/vae.safetensors") not in fake_hub.downloaded
+    snap = old_encoder.parent.parent / NEW
+    assert (snap / "text_encoder.safetensors").read_bytes() == _UNCHANGED

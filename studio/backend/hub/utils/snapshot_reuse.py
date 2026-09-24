@@ -13,11 +13,15 @@ and ``hf_hub_download`` fetches every file again into the new ``snapshots/<commi
 Before a download starts, this module looks for the same relative path in the repo's other
 snapshots. A candidate must be a regular file (a symlink means the blob layout, which
 huggingface_hub already reuses) with the declared size, and its content must match the digest
-the Hub reports for the target commit (LFS sha256, or the git blob id for small files). That
-match is proven either by the Hub reporting the same digest for the candidate's own commit, or
-by hashing the local file (cached, so a file is hashed at most once). A matching file is hard
-linked into the target snapshot, or copied when hard links are unavailable. huggingface_hub then
-finds the pointer path present and skips the file (``os.path.exists(pointer_path)``).
+the Hub reports for the target commit (LFS sha256, or the git blob id for small files). The
+download worker proves that by hashing the local file (cached, so a file is hashed at most once).
+A matching file is hard linked into the target snapshot, or copied when hard links are
+unavailable. huggingface_hub then finds the pointer path present and skips the file
+(``os.path.exists(pointer_path)``).
+
+Plans cannot hash multi-GB files on the request path, so ``reusable_paths`` also accepts the Hub
+reporting the same digest for the candidate's own commit. That is an estimate only: the worker
+re-proves the bytes before placing anything, and downloads when they differ.
 """
 
 from __future__ import annotations
@@ -273,8 +277,8 @@ def find_reusable_copies(
     for path, found in candidates.items():
         size, digest = expected[path]
         kind = digest_kind(digest)
-        # The Hub says the older commit served the same bytes and the local copy has the full size:
-        # the same proof huggingface_hub itself accepts for a cached pointer (it checks size only).
+        # The Hub says the older commit served the same bytes and the local copy has the full size.
+        # Good enough for a plan's estimate; the worker passes no remote_digests and hashes instead.
         for candidate in found:
             commit = candidate.relative_to(repo_dir / "snapshots").parts[0]
             if remote.get(commit, {}).get(path) == digest:

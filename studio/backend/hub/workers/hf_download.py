@@ -208,7 +208,7 @@ def _reuse_unchanged_files(
     """Link files this commit did not change in from an older snapshot, and return the expected files still to download.
 
     Without symlinks (Windows without Developer Mode) huggingface_hub moves each blob into its snapshot, so a new commit, even a README-only one, finds no blob and downloads every file again. See :mod:`hub.utils.snapshot_reuse`. Needs the target commit and per-file digests from metadata, so an offline run reuses nothing and behaves as before."""
-    from hub.utils.snapshot_reuse import hub_remote_digests, reuse_unchanged_snapshot_files
+    from hub.utils.snapshot_reuse import reuse_unchanged_snapshot_files
 
     if not expected_files or not commit_hash:
         return list(expected_files)
@@ -217,7 +217,9 @@ def _reuse_unchanged_files(
         repo_id,
         commit_hash,
         expected_files,
-        remote_digests = hub_remote_digests(repo_type, repo_id, _hf_token_arg(hf_token)),
+        # No Hub-digest shortcut here: it proves what the older commit served, not what is on disk
+        # now, and a same-size corrupted copy would be carried into the new revision. The local
+        # hash is cached, so each file is read once.
         protected_blob_hashes = _protected_blob_hashes(),
     )
     if not result.reused:
