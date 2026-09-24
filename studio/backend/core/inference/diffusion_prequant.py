@@ -619,6 +619,136 @@ def read_prequant_metadata(path: str) -> dict:
     return dict(obj.get("metadata") or {})
 
 
+def hosted_nvfp4_repo_ids() -> frozenset:
+    """Every repo id an image or video family registers for the NVFP4 scheme, lowercased.
+
+    Read off the family tables rather than a list of its own, so a hosted NVFP4 repo added to a
+    family is recognised here with no second edit. Any row naming ``nvfp4`` whose last element is a
+    repo id counts, which covers ``(scheme, repo)`` and ``(base, scheme, repo)`` rows alike."""
+    from dataclasses import fields, is_dataclass
+
+    from .diffusion_nvfp4_flag import is_nvfp4
+
+    families: list = []
+    for module in ("diffusion_families", "video_families"):
+        try:
+            mod = __import__(f"{__package__}.{module}", fromlist = ["_FAMILIES"])
+            families.extend(getattr(mod, "_FAMILIES", ()) or ())
+        except Exception:  # noqa: BLE001 - a table that fails to import names no repo
+            continue
+    repos = set()
+    for fam in families:
+        if not is_dataclass(fam):
+            continue
+        for field in fields(fam):
+            value = getattr(fam, field.name, None)
+            if not isinstance(value, tuple):
+                continue
+            for row in value:
+                if not isinstance(row, tuple) or not row or not isinstance(row[-1], str):
+                    continue
+                if "/" in row[-1] and any(isinstance(x, str) and is_nvfp4(x) for x in row[:-1]):
+                    repos.add(row[-1].strip().lower())
+    return frozenset(repos)
+
+
+# Probed at the ROOT of a directory only, where every hosted prequant repo keeps its artifacts. A
+# diffusers pipeline keeps its weights one level down, so its root has nothing to probe.
+_PREQUANT_PROBE_SUFFIXES = (".safetensors", ".pt", ".pth")
+_PREQUANT_PROBE_LIMIT = 16
+
+
+def _cached_snapshot_dirs(repo_id: str) -> list:
+    """The local snapshot folders of Hub repo ``repo_id``, newest first. No network."""
+    import os
+
+    parts = repo_id.strip().strip("/").split("/")
+    if len(parts) != 2 or not all(parts):
+        return []
+    roots = []
+    try:
+        from utils.hf_cache_settings import active_hf_hub_cache
+        roots.append(active_hf_hub_cache())
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from huggingface_hub import constants
+        roots.append(constants.HF_HUB_CACHE)
+    except Exception:  # noqa: BLE001
+        pass
+    found = []
+    for root in dict.fromkeys(r for r in roots if r):
+        snapshots = os.path.join(root, "models--" + "--".join(parts), "snapshots")
+        try:
+            entries = [os.path.join(snapshots, name) for name in os.listdir(snapshots)]
+        except OSError:
+            continue
+        entries = [e for e in entries if os.path.isdir(e)]
+        entries.sort(key = lambda e: os.path.getmtime(e), reverse = True)
+        found.extend(entries)
+    return found
+
+
+def _artifacts_declare_nvfp4(folder: str) -> bool:
+    """Whether a pre-quant artifact at the root of ``folder`` records ``scheme = nvfp4``."""
+    import os
+
+    from .diffusion_nvfp4_flag import is_nvfp4
+
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return False
+    probed = 0
+    for name in names:
+        if not name.lower().endswith(_PREQUANT_PROBE_SUFFIXES):
+            continue
+        path = os.path.join(folder, name)
+        if not os.path.isfile(path):
+            continue
+        if is_nvfp4(local_prequant_scheme(path)):
+            return True
+        probed += 1
+        if probed >= _PREQUANT_PROBE_LIMIT:
+            break
+    return False
+
+
+def declares_nvfp4_checkpoint(model_path: Optional[str]) -> bool:
+    """Whether ``model_path`` (a Hub repo id, a local directory or a local file) is an NVFP4
+    pre-quant checkpoint.
+
+    Metadata first: a local file or directory, or the cached snapshot of a Hub repo, answers from
+    the ``scheme`` its pre-quant artifacts record (a safetensors header, or the same allowlisted
+    meta-map ``local_prequant_scheme`` uses). A Hub repo that is not cached falls back to what can
+    be known without the network: a repo a family registers for NVFP4, or the ``-NVFP4`` name.
+    Never raises."""
+    import os
+
+    raw = str(model_path or "").strip()
+    if not raw:
+        return False
+    try:
+        local = os.path.expanduser(raw)
+        if os.path.isfile(local):
+            if not local.lower().endswith(_PREQUANT_PROBE_SUFFIXES):
+                return False
+            from .diffusion_nvfp4_flag import is_nvfp4
+            return is_nvfp4(local_prequant_scheme(local))
+        if os.path.isdir(local):
+            if _artifacts_declare_nvfp4(local):
+                return True
+        else:
+            key = raw.strip("/").lower()
+            if key in hosted_nvfp4_repo_ids():
+                return True
+            if any(_artifacts_declare_nvfp4(snap) for snap in _cached_snapshot_dirs(raw)):
+                return True
+    except Exception:  # noqa: BLE001 - a probe that fails is "not known to be NVFP4"
+        pass
+    return raw.rstrip("/\\").lower().endswith("-nvfp4")
+
+
 # Bump on any payload-order or hash change, so two recipes are never compared under one name.
 FINGERPRINT_ALGO = "md5-packed-v1"
 
