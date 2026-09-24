@@ -189,10 +189,12 @@ import {
 import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
+  providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
 } from "./provider-capabilities";
+import { codeToolCanRun } from "./api/code-tool-placement";
 import { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
 import {
   type CompositionEvent,
@@ -762,6 +764,7 @@ export function SharedComposer({
             isReasoningProvider:
               selectedExternalProvider?.isReasoningModel === true,
             baseUrl: selectedExternalProvider?.baseUrl ?? null,
+            apiType: selectedExternalProvider?.apiType,
           },
         )
       : null;
@@ -810,18 +813,20 @@ export function SharedComposer({
   const thinkingActiveLook = isEffort
     ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
     : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
-  // Two-pill gating. Search: supportsTools (Code/python plus local web_search) OR
-  // supportsBuiltinWebSearch (OpenAI/Anthropic/OpenRouter/Kimi). Code: supportsTools OR the
-  // provider's own sandbox, per providerSupportsBuiltinCodeExecution.
+  // Search can use Unsloth tools or provider web search independently of Code.
+  // Code follows the provider's sandbox placement and never falls back to local
+  // execution when a hosted model lacks code support.
   const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
     selectedExternalProvider?.providerType,
     effectiveExternalModelId,
     selectedExternalProvider?.baseUrl,
+    selectedExternalProvider?.apiType,
   );
   const supportsBuiltinImageGeneration = providerSupportsBuiltinImageGeneration(
     selectedExternalProvider?.providerType,
     effectiveExternalModelId,
     selectedExternalProvider?.baseUrl,
+    selectedExternalProvider?.apiType,
   );
   const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
     selectedExternalProvider?.providerType,
@@ -844,11 +849,24 @@ export function SharedComposer({
     (isGeminiImageTier
       ? !supportsBuiltinWebSearch
       : !(supportsTools || supportsBuiltinWebSearch));
+  const externalUsesStudioTools =
+    providerModelSupportsStudioTools(
+      selectedExternalProvider?.providerType,
+      externalSelection?.modelId,
+    ) === true;
+  const canRunCode = isExternalModel
+    ? codeToolCanRun({
+        hostedCodeExecutionForThisTurn: supportsBuiltinCodeExecution,
+        providerHostsCodeExecution: providerHostsCodeExecution(
+          selectedExternalProvider?.providerType,
+          selectedExternalProvider?.baseUrl,
+          selectedExternalProvider?.apiType,
+        ),
+        supportsStudioTools: externalUsesStudioTools,
+      })
+    : supportsTools;
   const codeDisabled =
-    (modelLoaded &&
-      (isGeminiImageTier
-        ? true
-        : !(supportsTools || supportsBuiltinCodeExecution))) ||
+    (modelLoaded && (isGeminiImageTier || !canRunCode)) ||
     imageModeDisablesCode;
   // Images pill lights only on OpenAI cloud Responses-API models and the Gemini Nano Banana
   // family. No local tool runtime fallback.
@@ -856,11 +874,6 @@ export function SharedComposer({
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
-  const externalUsesStudioTools =
-    providerModelSupportsStudioTools(
-      selectedExternalProvider?.providerType,
-      externalSelection?.modelId,
-    ) === true;
   const ragDisabled =
     modelLoaded && ((!externalUsesStudioTools && isExternalModel) || !supportsTools);
   const showRagPill = !isExternalModel || externalUsesStudioTools;
