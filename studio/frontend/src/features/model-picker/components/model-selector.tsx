@@ -226,29 +226,44 @@ function ModelSelectorTrigger({
         ) : null}
         {/* A box-centred Hellix label sits above the icon's centre; drop it 0.05em to centre the caps. */}
         <span className="relative top-[0.05em] flex min-w-0 flex-1 items-baseline">
-          <span
-            className={cn(
-              "min-w-0 flex flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground",
-              triggerLabelClassName,
-            )}
-          >
-            {currentModel?.name ?? placeholder}
-            {showCloudIndicator ? (
-              <HugeiconsIcon
-                icon={CloudIcon}
-                strokeWidth={1.75}
-                className="relative top-[0.15625rem] ml-1.5 mr-[calc(0.36rem*var(--ui-space-scale,1))] size-3.5 shrink-0 text-muted-foreground"
-              />
-            ) : null}
-          </span>
-          {currentModel?.description && (
+          {/* Name and quant stay whole; only the description truncates. The suffix sits outside this
+              group, so even an over-long name leaves room for it. */}
+          <span className="flex min-w-0 items-baseline">
             <span
               className={cn(
-                "shrink-0 text-xs leading-none text-muted-foreground",
-                showCloudIndicator ? "" : "ml-2",
+                "flex max-w-full shrink-0 items-baseline whitespace-nowrap font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground",
+                triggerLabelClassName,
               )}
             >
-              {currentModel.description}
+              <span className="min-w-0 truncate">{currentModel?.name ?? placeholder}</span>
+              {showCloudIndicator ? (
+                <HugeiconsIcon
+                  icon={CloudIcon}
+                  strokeWidth={1.75}
+                  className="relative top-[0.15625rem] ml-1.5 mr-[calc(0.36rem*var(--ui-space-scale,1))] size-3.5 shrink-0 text-muted-foreground"
+                />
+              ) : null}
+            </span>
+            {currentModel?.description && (
+              <span
+                className={cn(
+                  "min-w-0 truncate text-xs leading-none text-muted-foreground",
+                  showCloudIndicator ? "" : "ml-2",
+                )}
+              >
+                {currentModel.description}
+              </span>
+            )}
+          </span>
+          {currentModel?.descriptionSuffix && (
+            <span
+              className={cn(
+                "shrink-0 whitespace-nowrap text-xs leading-none text-muted-foreground",
+                !currentModel.description && !showCloudIndicator && "ml-2",
+              )}
+            >
+              {currentModel.description ? " - " : ""}
+              {currentModel.descriptionSuffix}
             </span>
           )}
         </span>
@@ -771,10 +786,11 @@ export function ModelSelector({
     // not the namespaced public id (#7966), matches the catalog row that later replaces this one.
     const fallbackName = missingExternal?.modelName ?? modelDisplayName(selected);
     if (activeGgufVariant) {
+      // The variant is the quant, so it goes in the suffix.
       const desc = `GGUF · ${activeGgufVariant}`;
       return found
-        ? { ...found, description: desc }
-        : { id: selected, name: fallbackName, description: desc };
+        ? { ...found, description: undefined, descriptionSuffix: desc }
+        : { id: selected, name: fallbackName, descriptionSuffix: desc };
     }
     if (missingExternal) {
       const disabled = missingExternal.state === "disabled";
