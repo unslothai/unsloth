@@ -289,10 +289,17 @@ export function LibraryPreview({
   onSaved: () => void;
 }) {
   // Tagged with its item, so a draft never follows the preview to another file.
-  const [edit, setEdit] = useState<{ itemId: string; text: string } | null>(null);
+  // `savedAt` marks text already written: the item version it was saved over, shown until the
+  // refreshed item replaces that version, so the editor never falls back to the old text.
+  const [edit, setEdit] = useState<{ itemId: string; text: string; savedAt?: number } | null>(
+    null,
+  );
   // The same draft, readable after an await: a save must not return while typing moved past it.
   const latestEdit = useRef(edit);
-  const draft = item && edit?.itemId === item.id ? edit.text : null;
+  const current = item && edit?.itemId === item.id ? edit : null;
+  if (current?.savedAt !== undefined && item!.updatedAt !== current.savedAt) setEdit(null);
+  const draft = current ? current.text : null;
+  const unsaved = current !== null && current.savedAt === undefined;
   const setDraft = (text: string | null) => {
     const next = item && text !== null ? { itemId: item.id, text } : null;
     latestEdit.current = next;
@@ -313,7 +320,7 @@ export function LibraryPreview({
   const origin = item ? generatedOn(item) : null;
 
   async function save(): Promise<boolean> {
-    if (!item || draft === null) return true;
+    if (!item || draft === null || !unsaved) return true;
     setSaving(true);
     try {
       // Typing during a save makes a newer draft; send that too before anything moves on.
@@ -324,8 +331,10 @@ export function LibraryPreview({
         if (latest?.itemId !== item.id || latest.text === sent) break;
         sent = latest.text;
       }
-      if (latestEdit.current?.text === sent) latestEdit.current = null;
-      setEdit((current) => (current?.itemId === item.id && current.text === sent ? null : current));
+      const savedAt = item.updatedAt;
+      setEdit((latest) =>
+        latest?.itemId === item.id && latest.text === sent ? { ...latest, savedAt } : latest,
+      );
       onSaved();
       return true;
     } catch (error) {
@@ -396,7 +405,7 @@ export function LibraryPreview({
               </ViewButton>
             </div>
           )}
-          {draft !== null && (
+          {unsaved && (
             <Button variant="dark" size="sm" className="mr-1" disabled={saving} onClick={() => void save()}>
               Save
             </Button>
