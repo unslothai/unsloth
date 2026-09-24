@@ -3542,7 +3542,7 @@ class FastLlamaModel:
             target_parameters = packed_expert_target_parameters(
                 model,
                 target_parameters,
-                target_modules if isinstance(target_modules, (list, tuple)) else None,
+                target_modules if isinstance(target_modules, (list, tuple, str)) else None,
             )
 
         if _moe_module_targets:

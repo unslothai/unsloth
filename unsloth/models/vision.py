@@ -2424,7 +2424,7 @@ class FastBaseModel:
             target_parameters = packed_expert_target_parameters(
                 model,
                 target_parameters,
-                _moe_module_detect if isinstance(_moe_module_detect, (list, tuple)) else None,
+                _moe_module_detect if isinstance(_moe_module_detect, (list, tuple, str)) else None,
             )
 
         if _moe_module_targets:

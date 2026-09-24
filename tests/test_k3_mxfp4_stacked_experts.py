@@ -362,6 +362,10 @@ def test_expert_lora_stays_opt_in():
     assert packed_expert_target_parameters(model, auto, ["w1"]) == ["experts.gate_up_proj"]
     assert packed_expert_target_parameters(model, None, ["w2", "w3"]) == auto
     assert packed_expert_target_parameters(model, ["mlp.other"], None) == ["mlp.other"]
+    # A regex string names the per-expert Linears by their original module names.
+    assert packed_expert_target_parameters(model, auto, r".*experts.*w1") == ["experts.gate_up_proj"]
+    assert packed_expert_target_parameters(model, auto, r".*\.(w1|w2)") == auto
+    assert packed_expert_target_parameters(model, auto, r".*(q_proj|down_proj)") is None
     # No packed experts: untouched.
     _, plain = _tiny_model("transformers_modules.k3c_lora_b.modeling_tinymoe")
     assert packed_expert_target_parameters(plain, auto, None) is auto
@@ -852,6 +856,17 @@ def test_packed_expert_targets_follow_the_finetune_family_flags(flags, experts, 
     )
     want = ["experts.gate_up_proj", "experts.down_proj"] if experts else []
     assert sorted(got or []) == sorted(want)
+
+
+def test_a_regex_target_string_opts_packed_experts_in(monkeypatch):
+    """get_peft_model with a regex string naming the per-expert Linears trains the stacks."""
+    mod, _ = _tiny_model("transformers_modules.k3s_regex.modeling_tinymoe")
+    model = mod.TinyMoeForCausalLM(mod.TinyMoeConfig(num_hidden_layers = 1)).to(torch.bfloat16)
+    _swap_planned_stacks(model, _keys(layers = 1), torch.bfloat16)
+    _materialize_packed(model)
+    model.max_seq_length = 64
+    got = _peft_target_parameters(model, monkeypatch, target_modules = r".*(q_proj|experts\.\d+\.w1)")
+    assert sorted(got or []) == ["experts.gate_up_proj"]
 
 
 def test_nothing_stays_packed_without_the_zoo_full_save_support(monkeypatch):

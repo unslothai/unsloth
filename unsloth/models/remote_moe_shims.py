@@ -335,12 +335,23 @@ def packed_expert_target_parameters(model, target_parameters, requested_leaves):
     The automatic MoE detection sees the stacks' `gate_up_proj` / `down_proj` and would add
     them for the default MLP targets; drop those, and add them back only for the leaves that
     named the per-expert Linears (`w1` / `w3` share the fused `gate_up_proj`, `w2` is
-    `down_proj`)."""
-    if not any(_is_packed_experts(m) for m in model.modules()):
+    `down_proj`). A regex string names them when it matches their original module names, as
+    PEFT's `re.fullmatch` would have before stacking."""
+    stacks = [name for name, m in model.named_modules() if _is_packed_experts(m)]
+    if not stacks:
         return target_parameters
     names = ("experts.gate_up_proj", "experts.down_proj")
     kept = [p for p in (target_parameters or []) if not p.endswith(names)]
-    leaves = set(requested_leaves or ())
+    if isinstance(requested_leaves, str):
+        import re
+
+        leaves = {
+            leaf
+            for leaf in ("w1", "w2", "w3")
+            if any(re.fullmatch(requested_leaves, f"{stack}.0.{leaf}") for stack in stacks)
+        }
+    else:
+        leaves = set(requested_leaves or ())
     if leaves & {"w1", "w3"}:
         kept.append("experts.gate_up_proj")
     if "w2" in leaves:
