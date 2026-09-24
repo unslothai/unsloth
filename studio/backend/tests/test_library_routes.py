@@ -555,6 +555,17 @@ def test_an_oversized_desktop_drop_is_refused_before_copying(client, monkeypatch
     assert response.status_code == 413
 
 
+def test_concurrent_deletes_of_one_upload_leave_nothing_behind(client):
+    from concurrent.futures import ThreadPoolExecutor
+
+    [upload] = _upload(client, ("twice.txt", b"hi", "text/plain"))
+    with ThreadPoolExecutor(4) as pool:
+        results = list(pool.map(lambda _: library.delete_item(upload), range(4)))
+    assert results.count(True) == 1
+    assert not any(library.uploads_dir().iterdir())
+    assert upload not in _items(client)[0]
+
+
 def test_a_failed_upload_record_leaves_no_file(client, monkeypatch):
     from storage import library_db
 

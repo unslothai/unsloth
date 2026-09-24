@@ -24,6 +24,7 @@ import {
   formatSize,
   getLibraryLocations,
   moveLibraryLocation,
+  refreshLibraryStorage,
   revealLibraryLocation,
   useLibrarySettingsStore,
   useLibraryStorage,
@@ -261,6 +262,8 @@ function LocationsSection() {
     const id = toast.loading(t("settings.library.locationMoving", { name }));
     try {
       setLocations(await moveLibraryLocation(location.key, path));
+      // The files may now sit on another disk, which the storage bar measures.
+      refreshLibraryStorage();
       toast.success(t("settings.library.locationMoved", { name }), { id });
     } catch (error) {
       toast.error(t("settings.library.locationMoveFailed", { name }), {

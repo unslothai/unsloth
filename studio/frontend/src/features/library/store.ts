@@ -47,25 +47,28 @@ let refreshGeneration = 0;
 
 // Edits apply locally first so menus feel instant, and roll back to the server's view on failure.
 export const useLibraryStore = create<LibraryState>((set, get) => {
-  // A failure rolls back once every edit in flight has settled: a snapshot taken sooner would
-  // predate a newer edit and wipe it from the screen.
+  // Edits apply here before the server has them, so a snapshot fetched while one is in flight, or
+  // started before one, can predate it and would undo it on screen. Such a snapshot is dropped and
+  // fetched again once every edit has settled; a failed edit rolls back the same way.
   let inFlight = 0;
-  let rollBack = false;
+  let edits = 0;
+  let stale = false;
   async function optimistic(
     apply: (state: LibraryState) => Partial<LibraryState>,
     request: () => Promise<void>,
   ): Promise<void> {
     set(apply(get()));
+    edits += 1;
     inFlight += 1;
     try {
       await request();
     } catch (error) {
-      rollBack = true;
+      stale = true;
       throw error;
     } finally {
       inFlight -= 1;
-      if (inFlight === 0 && rollBack) {
-        rollBack = false;
+      if (inFlight === 0 && stale) {
+        stale = false;
         await get().refresh();
       }
     }
@@ -78,10 +81,16 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
     error: null,
     refresh: async () => {
       const generation = ++refreshGeneration;
+      const editsBefore = edits;
       if (get().status === "idle") set({ status: "loading" });
       try {
         const { items, folders } = await getLibrary();
         if (generation !== refreshGeneration) return;
+        if (inFlight > 0) {
+          stale = true;
+          return;
+        }
+        if (edits !== editsBefore) return get().refresh();
         set({ items, folders, status: "ready", error: null });
         useLibraryFavoritesStore.setState({
           ids: new Set(items.filter((item) => item.favorite).map((item) => item.id)),

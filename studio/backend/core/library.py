@@ -830,7 +830,17 @@ def move_location(key: str, path: Optional[str]) -> None:
             logger.warning("library.move_straggler_failed: %s", current, exc_info = True)
 
 
+# One delete at a time: a second one for the same upload would find the file already set aside
+# and drop the row the first is still relying on.
+_upload_delete_lock = threading.Lock()
+
+
 def _delete_upload(upload_id: str, path: Path) -> bool:
+    with _upload_delete_lock:
+        return _delete_upload_locked(upload_id, path)
+
+
+def _delete_upload_locked(upload_id: str, path: Path) -> bool:
     """Set the file aside before dropping its row, so a failure at either step leaves both."""
     staged = path.with_name(f".{upload_id}.deleting")
     try:
