@@ -53,6 +53,43 @@ function percent(scale: number): string {
   return `${Math.round(scale * 100)}%`;
 }
 
+/** The header's scale pill: the current scale, and a menu of the ones on offer. */
+export function ScaleMenu({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: { value: string; label: string }[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild={true}>
+        <button
+          type="button"
+          aria-label="Scale"
+          className="mr-1 flex h-9 shrink-0 items-center gap-1 rounded-full bg-muted px-3.5 text-sm tabular-nums outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {label}
+          <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={1.75} className="size-4" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-40">
+        <DropdownMenuRadioGroup value={value} onValueChange={onChange}>
+          {options.map((option) => (
+            <DropdownMenuRadioItem key={option.value} value={option.value}>
+              {option.label}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 /**
  * One file, nearly as tall as the window. Images and videos can be scaled and, once larger than the
  * frame, dragged. Shared by the Library and the Images and Video pages, so a file opens the same way everywhere.
@@ -119,31 +156,15 @@ export function MediaViewer({
           </div>
           {extra}
           {media && fitScale !== null && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild={true}>
-                <button
-                  type="button"
-                  aria-label="Scale"
-                  className="mr-1 flex h-9 shrink-0 items-center gap-1 rounded-full bg-muted px-3.5 text-sm tabular-nums outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  {percent(zoom === "fit" ? fitScale : zoom)}
-                  <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={1.75} className="size-4" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-40">
-                <DropdownMenuRadioGroup
-                  value={String(zoom)}
-                  onValueChange={(value) => setZoom(value === "fit" ? "fit" : Number(value))}
-                >
-                  <DropdownMenuRadioItem value="fit">Fit</DropdownMenuRadioItem>
-                  {MEDIA_ZOOMS.map((scale) => (
-                    <DropdownMenuRadioItem key={scale} value={String(scale)}>
-                      {percent(scale)}
-                    </DropdownMenuRadioItem>
-                  ))}
-                </DropdownMenuRadioGroup>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <ScaleMenu
+              label={percent(zoom === "fit" ? fitScale : zoom)}
+              value={String(zoom)}
+              options={[
+                { value: "fit", label: "Fit" },
+                ...MEDIA_ZOOMS.map((scale) => ({ value: String(scale), label: percent(scale) })),
+              ]}
+              onChange={(value) => setZoom(value === "fit" ? "fit" : Number(value))}
+            />
           )}
           {actions.primary && (
             <button

@@ -4,7 +4,7 @@
 import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
 import { CodeSourceView } from "@/components/code-source-view";
 import { Button } from "@/components/ui/button";
-import { MediaViewer } from "@/components/media-viewer";
+import { MediaViewer, ScaleMenu } from "@/components/media-viewer";
 import { Spinner } from "@/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ArtifactHtmlFrame } from "@/features/chat";
@@ -32,6 +32,9 @@ import { formatCardTime, formatSize } from "../format";
 import { useLibraryObjectUrl } from "../hooks";
 import { canReveal, revealInFolder, useRevealLabel } from "../reveal";
 import { KindIcon } from "./library-cards";
+
+// Web pages zoom like a browser tab: the page reflows at the new size.
+const PAGE_SCALES = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
 // Past this the preview shows a read-only prefix; the full file is a download away.
 const MAX_TEXT_PREVIEW_BYTES = 1024 * 1024;
@@ -160,12 +163,15 @@ function PreviewBody({
   draft,
   onDraftChange,
   showCode,
+  pageScale,
 }: {
   item: LibraryItem;
   draft: string | null;
   onDraftChange: (value: string) => void;
   /** Web pages: their source instead of the rendered page. */
   showCode: boolean;
+  /** Web pages: the rendered page's zoom. */
+  pageScale: number;
 }) {
   const body = bodyFor(item);
   const needsUrl = body === "image" || body === "pdf" || body === "audio" || body === "video";
@@ -204,7 +210,16 @@ function PreviewBody({
       // the browser and the desktop app, and honors the canvas network-access setting.
       return (
         <div className="size-full overflow-hidden rounded-xl">
-          <ArtifactHtmlFrame code={text!} title={item.name} fill />
+          <div
+            className="origin-top-left"
+            style={{
+              width: `${100 / pageScale}%`,
+              height: `${100 / pageScale}%`,
+              transform: `scale(${pageScale})`,
+            }}
+          >
+            <ArtifactHtmlFrame code={text!} title={item.name} fill />
+          </div>
         </div>
       );
     case "text":
@@ -254,10 +269,15 @@ export function LibraryPreview({
   const setDraft = (text: string | null) =>
     setEdit(item && text !== null ? { itemId: item.id, text } : null);
   const [saving, setSaving] = useState(false);
-  // Tagged too, and cleared on close, so every file opens on its preview.
+  // Tagged too, and cleared on close, so every file opens on its preview at 100%.
   const [codeFor, setCodeFor] = useState<string | null>(null);
-  if (item === null && codeFor !== null) setCodeFor(null);
+  const [zoom, setZoom] = useState<{ itemId: string; scale: number } | null>(null);
+  if (item === null && (codeFor !== null || zoom !== null)) {
+    setCodeFor(null);
+    setZoom(null);
+  }
   const showCode = item !== null && codeFor === item.id;
+  const pageScale = item !== null && zoom?.itemId === item.id ? zoom.scale : 1;
   const revealLabel = useRevealLabel();
 
   async function save(): Promise<boolean> {
@@ -317,6 +337,17 @@ export function LibraryPreview({
       }}
       extra={
         <>
+          {body === "web" && item && !showCode && (
+            <ScaleMenu
+              label={`${Math.round(pageScale * 100)}%`}
+              value={String(pageScale)}
+              options={PAGE_SCALES.map((scale) => ({
+                value: String(scale),
+                label: `${Math.round(scale * 100)}%`,
+              }))}
+              onChange={(value) => setZoom({ itemId: item.id, scale: Number(value) })}
+            />
+          )}
           {body === "web" && item && (
             <div className="mr-1 flex items-center gap-1">
               <ViewButton label="Code" active={showCode} onClick={() => setCodeFor(item.id)}>
@@ -365,7 +396,15 @@ export function LibraryPreview({
           : {}
       }
     >
-      {item && <PreviewBody item={item} draft={draft} onDraftChange={setDraft} showCode={showCode} />}
+      {item && (
+        <PreviewBody
+          item={item}
+          draft={draft}
+          onDraftChange={setDraft}
+          showCode={showCode}
+          pageScale={pageScale}
+        />
+      )}
     </MediaViewer>
   );
 }
