@@ -2431,7 +2431,13 @@ def test_image_train_rail_matches_create_and_header():
 
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
     # The Create rail's width and clamp, so switching Create and Train keeps the divider still.
-    assert "pl-10 max-sm:pl-5 " + RAIL_WIDTH in layout
+    # The train rail keeps #11765's one extra spacing unit of air, so it carries its own
+    # length rather than riding RAIL_WIDTH, which Stays at Create's clamp.
+    assert (
+        "pl-10 max-sm:pl-5 "
+        "@[50rem]:w-[min(var(--media-rail-width,408px),calc(100%-13rem+--spacing(8)))]"
+        in layout
+    )
     assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
     assert "@container hover-scrollbar" in layout
     assert "@[50rem]:pt-[42px]" in layout
