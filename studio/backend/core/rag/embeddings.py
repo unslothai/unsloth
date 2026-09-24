@@ -1096,7 +1096,11 @@ def _llama_pooling(name: str, served = None) -> str | None:
     return None if pooling == "cls" else pooling
 
 
-def _identity(is_llama: bool, name: str, served = None) -> str:
+def _identity(
+    is_llama: bool,
+    name: str,
+    served = None,
+) -> str:
     if is_llama:
         return config.embedding_identity(
             "llama-server",
