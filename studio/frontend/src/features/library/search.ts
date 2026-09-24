@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { LIBRARY_SORTS, type LibrarySort } from "./settings-store";
+import { LIBRARY_URL_SORTS, type LibraryUrlSort } from "./settings-store";
 
 // Kept apart from the page so the route can validate its URL without loading the page chunk.
 export const LIBRARY_TABS = [
@@ -23,8 +23,8 @@ export interface LibrarySearch {
   folder?: string;
   /** Preview this item on top of whatever is showing. */
   item?: string;
-  /** Start sorted this way, e.g. by size from Settings > Library > Storage. */
-  sort?: LibrarySort;
+  /** Sorted this way instead of the Sort setting: a column click, or Settings > Library > Storage. */
+  sort?: LibraryUrlSort;
   /** Start filtered to files that are not media or models, for the Storage Files row. */
   filter?: "files";
 }
@@ -35,7 +35,9 @@ export function validateLibrarySearch(search: Record<string, unknown>): LibraryS
     ...(show ? { show } : {}),
     ...(typeof search.folder === "string" ? { folder: search.folder } : {}),
     ...(typeof search.item === "string" ? { item: search.item } : {}),
-    ...(LIBRARY_SORTS.includes(search.sort as LibrarySort) ? { sort: search.sort as LibrarySort } : {}),
+    ...(LIBRARY_URL_SORTS.includes(search.sort as LibraryUrlSort)
+      ? { sort: search.sort as LibraryUrlSort }
+      : {}),
     ...(search.filter === "files" ? { filter: "files" as const } : {}),
   };
 }

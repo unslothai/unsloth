@@ -63,11 +63,11 @@ import { useLibraryStore } from "./store";
 import {
   compareBySort,
   nextSort,
+  sortParam,
   sortState,
   useLibraryViewStore,
   includedBySettings,
   lastActivity,
-  type LibrarySortState,
   useLibrarySettingsStore,
 } from "./settings-store";
 
@@ -263,17 +263,9 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const tab: LibraryTab =
     search.show ??
     (tabVisible(preferred) ? preferred : (LIBRARY_TABS.find(tabVisible) ?? "all"));
-  // A column click (or a ?sort link) wins over the Sort setting until the view changes.
-  const [sortOverride, setSortOverride] = useState<LibrarySortState | null>(
-    search.sort ? sortState(search.sort) : null,
-  );
-  // A new ?sort link (Settings > Library > Storage) replaces a column click made before it.
-  const [linkedSort, setLinkedSort] = useState(search.sort);
-  if (search.sort !== linkedSort) {
-    setLinkedSort(search.sort);
-    setSortOverride(search.sort ? sortState(search.sort) : null);
-  }
-  const sort = sortOverride ?? sortState(settings.sort);
+  // A column click or a ?sort link wins over the Sort setting. It lives in the URL, so a Storage
+  // link always lands sorted by size, even over an earlier click on the same tab.
+  const sort = sortState(search.sort ?? settings.sort);
   const folderId = search.folder ?? null;
   const folderById = useMemo(() => new Map(folders.map((f) => [f.id, f])), [folders]);
   const currentFolder = folderId ? (folderById.get(folderId) ?? null) : null;
@@ -719,7 +711,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
             selection={selection}
             onSelectionChange={setSelection}
             sort={sort}
-            onSortChange={(key) => setSortOverride(nextSort(sort, key))}
+            onSortChange={(key) => go({ ...search, sort: sortParam(nextSort(sort, key)) }, true)}
             activity={tab === "suggested" && !folderId}
           />
         </div>

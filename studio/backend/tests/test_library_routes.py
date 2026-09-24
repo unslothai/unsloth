@@ -238,6 +238,17 @@ def test_the_listing_reports_the_library_disk(client):
     disk = client.get("/api/library").json()["disk"]
     assert disk["totalBytes"] > 0
     assert 0 <= disk["freeBytes"] <= disk["totalBytes"]
+    # Everything sits under one test home here, so every source is on the measured disk.
+    assert set(disk["sources"]) == {"upload", "attachment", "image", "video", "audio", "model", "sandbox"}
+
+
+def test_a_source_on_another_disk_is_left_out_of_the_bar(client, monkeypatch):
+    real = library._device
+    uploads = library.uploads_dir()
+    monkeypatch.setattr(
+        library, "_device", lambda path: real(uploads) if str(path) == str(uploads) else -1
+    )
+    assert client.get("/api/library").json()["disk"]["sources"] == ["upload"]
 
 
 def test_favorites_lists_only_favorite_ids(client):

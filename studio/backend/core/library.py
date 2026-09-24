@@ -86,13 +86,48 @@ def uploads_dir() -> Path:
     return ensure_dir(account_path("library"))
 
 
+def _device(path) -> Optional[int]:
+    """The filesystem holding ``path``, or its nearest existing parent."""
+    path = Path(path)
+    for candidate in (path, *path.parents):
+        try:
+            return os.stat(candidate).st_dev
+        except OSError:
+            continue
+    return None
+
+
+def _source_roots() -> dict[str, list]:
+    """Where each source keeps its bytes. Any of them can be configured onto another disk."""
+    from core.inference import audio_gallery, image_gallery, video_gallery
+    from core.inference.tools import sandbox_root
+    from utils.paths.storage_roots import exports_root, outputs_root, studio_db_path
+
+    return {
+        "upload": [uploads_dir()],
+        "attachment": [studio_db_path().parent],
+        "image": [image_gallery.gallery_dir()],
+        "video": [video_gallery.gallery_dir()],
+        "audio": [audio_gallery.gallery_dir()],
+        "model": [outputs_root(), exports_root()],
+        "sandbox": [sandbox_root()],
+    }
+
+
 def disk_usage() -> Optional[dict]:
-    """Capacity of the disk the Library's own files live on, which need not be the system disk."""
+    """Capacity of the disk the Library's own files live on, which need not be the system disk,
+    and the sources stored on it, so the bar only counts bytes that disk actually holds."""
     try:
         usage = shutil.disk_usage(uploads_dir())
+        device = _device(uploads_dir())
+        sources = [
+            source
+            for source, roots in _source_roots().items()
+            if all(_device(root) == device for root in roots)
+        ]
     except OSError:
         return None
-    return {"totalBytes": usage.total, "freeBytes": usage.free}
+    return {"totalBytes": usage.total, "freeBytes": usage.free, "sources": sources}
 
 
 def upload_path(upload_id: str) -> Optional[Path]:

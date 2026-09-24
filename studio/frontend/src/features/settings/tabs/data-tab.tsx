@@ -158,7 +158,7 @@ function LibraryDataSection() {
       </SettingsRow>
       {storage.status === "ready" && count > 0 && (
         <div className="flex flex-col gap-2 pb-3">
-          <LibraryStorageBar libraryBytes={storage.totalBytes} disk={storage.disk} />
+          <LibraryStorageBar libraryBytes={storage.diskBytes} disk={storage.disk} />
           <p className="text-xs text-muted-foreground">{largest}</p>
         </div>
       )}

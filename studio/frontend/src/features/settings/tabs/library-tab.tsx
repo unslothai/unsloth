@@ -166,7 +166,7 @@ function StorageSection() {
           <p className="text-sm font-medium text-foreground">
             {t("settings.library.storageUsed", { size: formatSize(storage.totalBytes) ?? "0 B" })}
           </p>
-          <LibraryStorageBar libraryBytes={storage.totalBytes} disk={storage.disk} />
+          <LibraryStorageBar libraryBytes={storage.diskBytes} disk={storage.disk} />
         </div>
         {storage.categories.length === 0 ? (
           <p className="pb-3 text-sm text-muted-foreground">{t("settings.library.storageEmpty")}</p>

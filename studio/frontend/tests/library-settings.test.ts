@@ -11,6 +11,7 @@ import {
   lastActivity,
   migrateLibrarySettings,
   nextSort,
+  sortParam,
   sortState,
 } from "../src/features/library/settings-store.ts";
 
@@ -60,4 +61,12 @@ test("last activity is the later of modified and opened", () => {
   assert.equal(lastActivity({ updatedAt: 5, openedAt: null }), 5);
   assert.equal(lastActivity({ updatedAt: 5, openedAt: 9 }), 9);
   assert.equal(lastActivity({ updatedAt: 9, openedAt: 5 }), 9);
+});
+
+test("every column order has a ?sort value that reads back the same", () => {
+  for (const key of ["name", "modified", "size"] as const) {
+    for (const desc of [true, false]) {
+      assert.deepEqual(sortState(sortParam({ key, desc })), { key, desc });
+    }
+  }
 });

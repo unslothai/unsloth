@@ -137,15 +137,29 @@ export interface LibrarySortState {
 
 export const LIBRARY_SORTS: readonly LibrarySort[] = ["recent", "oldest", "name", "size"];
 
-const SORT_STATES: Record<LibrarySort, LibrarySortState> = {
+/** A page's `?sort=`: the setting's four orders plus the two a column click can add. */
+export type LibraryUrlSort = LibrarySort | "name-desc" | "size-asc";
+
+const SORT_STATES: Record<LibraryUrlSort, LibrarySortState> = {
   recent: { key: "modified", desc: true },
   oldest: { key: "modified", desc: false },
   name: { key: "name", desc: false },
+  "name-desc": { key: "name", desc: true },
   size: { key: "size", desc: true },
+  "size-asc": { key: "size", desc: false },
 };
 
-export function sortState(sort: LibrarySort): LibrarySortState {
+export const LIBRARY_URL_SORTS = Object.keys(SORT_STATES) as LibraryUrlSort[];
+
+export function sortState(sort: LibraryUrlSort): LibrarySortState {
   return SORT_STATES[sort];
+}
+
+/** The `?sort=` value for a column and direction. */
+export function sortParam(state: LibrarySortState): LibraryUrlSort {
+  return LIBRARY_URL_SORTS.find(
+    (sort) => SORT_STATES[sort].key === state.key && SORT_STATES[sort].desc === state.desc,
+  )!;
 }
 
 /** Clicking a column flips it, or starts a new one in its natural direction. */

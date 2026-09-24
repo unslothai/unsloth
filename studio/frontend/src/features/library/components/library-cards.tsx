@@ -131,9 +131,15 @@ export function ItemCard({ item }: { item: LibraryItem }) {
         label={item.name}
         onOpen={() => actions.openItem(item)}
         menu={menu}
-        className="border border-border/60 bg-muted"
+        className="relative border border-border/60 bg-muted"
       >
         <ImageThumb item={item} square={square} />
+        {/* On hover, so the grid stays a wall of pictures. */}
+        {showTime && (
+          <span className="pointer-events-none absolute bottom-2 left-2 rounded-md bg-black/55 px-1.5 py-0.5 text-[12px] text-white opacity-0 transition-opacity group-hover/library-card:opacity-100">
+            {formatCardTime(item.updatedAt)}
+          </span>
+        )}
       </CardFrame>
     );
   }

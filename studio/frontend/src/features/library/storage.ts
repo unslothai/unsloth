@@ -20,6 +20,8 @@ export interface StorageUsage {
 export interface LibraryStorage {
   status: "loading" | "ready" | "error";
   totalBytes: number;
+  /** The share of totalBytes on `disk`, which the bar draws. */
+  diskBytes: number;
   categories: StorageUsage[];
   disk: LibraryDisk | null;
 }
@@ -62,8 +64,13 @@ export function useLibraryStorage(): LibraryStorage {
   }, []);
   return useMemo(() => {
     const totals = new Map<StorageCategory, { bytes: number; count: number }>();
+    const onDisk = snapshot.disk?.sources ? new Set(snapshot.disk.sources) : null;
+    let diskBytes = 0;
     for (const item of snapshot.items) {
       if (!includedBySettings(item.id, settings)) continue;
+      if (!onDisk || onDisk.has(item.id.slice(0, item.id.indexOf(":")))) {
+        diskBytes += item.sizeBytes ?? 0;
+      }
       const category = KIND_CATEGORIES[fileKind(item)] ?? "files";
       const total = totals.get(category) ?? { bytes: 0, count: 0 };
       total.bytes += item.sizeBytes ?? 0;
@@ -77,6 +84,7 @@ export function useLibraryStorage(): LibraryStorage {
     return {
       status: snapshot.status,
       totalBytes: categories.reduce((sum, entry) => sum + entry.bytes, 0),
+      diskBytes,
       categories,
       disk: snapshot.disk,
     };
