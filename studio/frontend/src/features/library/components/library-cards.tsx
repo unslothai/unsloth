@@ -133,7 +133,8 @@ function CardFrame({
       <button
         type="button"
         aria-label={label}
-        aria-pressed={select ? selected : undefined}
+        // A toggle only while selecting; otherwise the card opens its file.
+        aria-pressed={select && selecting ? selected : undefined}
         onClick={select && selecting ? () => select.toggle(selectKey) : onOpen}
         className={cn(
           // The offset only with focus: Tailwind draws it into box-shadow, so left on it rims every

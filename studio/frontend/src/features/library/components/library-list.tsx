@@ -86,12 +86,12 @@ function Row({
         visible={selecting}
         group="row"
         onCheckedChange={() => onSelectedChange(!selected)}
-        label="Select"
+        label={`Select ${target.kind === "item" ? target.item.name : target.folder.name}`}
       />
       <button
         type="button"
         onClick={onOpen}
-        className="flex min-w-0 flex-1 items-center gap-4 py-2 text-left outline-none"
+        className="flex min-w-0 flex-1 items-center gap-4 rounded-lg py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {tile}
         <span className="flex min-w-0 items-center gap-2 text-[14px] text-foreground">{name}</span>
