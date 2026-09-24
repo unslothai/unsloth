@@ -1039,3 +1039,47 @@ def test_native_int8_under_real_stream_group_offload_leaves_nothing_resident():
     torch.cuda.synchronize()
     assert out.device.type == "cuda"
     assert {b.device.type for b in model.buffers()} == {"cpu"}
+
+
+class _GateSeen(Exception):
+    pass
+
+
+@pytest.mark.parametrize(
+    "memory", [{"memory_mode": "balanced"}, {"memory_mode": "low_vram"}, {"cpu_offload": True}]
+)
+def test_image_begin_load_rechecks_with_the_offload_request(monkeypatch, memory):
+    # The route admits eager int8 under offload on the native path; begin_load's re-check must see the same request.
+    import core.inference.diffusion as d
+
+    seen = {}
+
+    def gate(self, fam, **kwargs):
+        seen.update(kwargs)
+        raise _GateSeen
+
+    monkeypatch.setattr(d.DiffusionBackend, "validate_load_request", lambda self, *a, **k: None)
+    monkeypatch.setattr(d.DiffusionBackend, "assert_precision_available", gate)
+    with pytest.raises(_GateSeen):
+        d.DiffusionBackend().begin_load(
+            "some/repo", transformer_quant = "int8", speed_mode = "eager", **memory
+        )
+    assert seen.get("memory_mode") == memory.get("memory_mode")
+    assert seen.get("cpu_offload", False) == memory.get("cpu_offload", False)
+
+
+@pytest.mark.parametrize("memory_mode", ["balanced", "low_vram"])
+def test_video_begin_load_rechecks_with_the_memory_request(monkeypatch, memory_mode):
+    import core.inference.video as v
+
+    seen = {}
+
+    def gate(fam, **kwargs):
+        seen.update(kwargs)
+        raise _GateSeen
+
+    monkeypatch.setattr(v.VideoBackend, "validate_load_request", lambda self, *a, **k: None)
+    monkeypatch.setattr(v, "assert_video_precision_available", gate)
+    with pytest.raises(_GateSeen):
+        v.VideoBackend().begin_load("some/repo", transformer_quant = "int8", memory_mode = memory_mode)
+    assert seen.get("memory_mode") == memory_mode

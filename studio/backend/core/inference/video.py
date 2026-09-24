@@ -1692,6 +1692,7 @@ class VideoBackend:
             model_kind = resolve_video_model_kind(gguf_filename, model_kind),
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
+            memory_mode = memory_mode,
             gpu_ordinal = gpu_ordinal,
         )
         # Resolved out here so the companion claim is published in the SAME locked section as _loading. begin_load
