@@ -18,7 +18,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 from packaging.version import Version as _V
 
 # The remote text-only plan needs transformers 5 key_mapping semantics; on 4.x it must decline.
-needs_tf5 = pytest.mark.skipif(_V(transformers.__version__) < _V("5.0.0"), reason = "plan declines on transformers 4.x")
+needs_tf5 = pytest.mark.skipif(
+    _V(transformers.__version__) < _V("5.0.0"), reason = "plan declines on transformers 4.x"
+)
 UTILS_PATH = REPO_ROOT / "unsloth" / "models" / "_utils.py"
 LOADER_PATH = REPO_ROOT / "unsloth" / "models" / "loader.py"
 VISION_PATH = REPO_ROOT / "unsloth" / "models" / "vision.py"
@@ -62,7 +64,7 @@ def _ns():
 
 # A repo-code composite shaped like Nemotron-3-Nano-Omni: parent config with llm_config (a stock text decoder
 # config), a vision config, and a wrapper that keeps the whole causal LM as `language_model` next to vision parts.
-_CONFIGURATION = '''
+_CONFIGURATION = """
 from transformers import PretrainedConfig, LlamaConfig
 
 
@@ -86,9 +88,9 @@ class TinyOmniConfig(PretrainedConfig):
     @property
     def text_config(self):
         return self.llm_config
-'''
+"""
 
-_MODELING = '''
+_MODELING = """
 import torch
 from torch import nn
 from transformers import PreTrainedModel, LlamaForCausalLM
@@ -108,7 +110,7 @@ class TinyOmni(PreTrainedModel):
 
     def forward(self, pixel_values, input_ids = None, **kwargs):
         return self.language_model(input_ids = input_ids, **kwargs)
-'''
+"""
 
 
 def _llama_kwargs(**extra):
@@ -127,7 +129,13 @@ def _llama_kwargs(**extra):
 
 
 def _write_repo(
-    tmp_path, *, prefix = "language_model.", drop = (), llm_extra = None, name = "tiny_omni", alias = True
+    tmp_path,
+    *,
+    prefix = "language_model.",
+    drop = (),
+    llm_extra = None,
+    name = "tiny_omni",
+    alias = True,
 ):
     # Save a remote-code composite checkpoint whose text weights sit under `prefix` (sentinel-filled).
     from safetensors.torch import save_file
@@ -216,7 +224,11 @@ def test_prefix_inference_gemma_style_split_layout_is_rejected():
     # a CausalLM's names are NOT all under one prefix in the tf5 layout, so the new branch cannot claim it.
     ns = _ns()
     expected = ["model.embed_tokens.weight", "model.layers.0.w", "lm_head.weight"]
-    ckpt = {"model.language_model.embed_tokens.weight", "model.language_model.layers.0.w", "lm_head.weight"}
+    ckpt = {
+        "model.language_model.embed_tokens.weight",
+        "model.language_model.layers.0.w",
+        "lm_head.weight",
+    }
     assert ns["_infer_text_submodel_prefix"](expected, ckpt) is None
 
 
@@ -246,11 +258,18 @@ def test_llm_config_without_text_config_alias(tmp_path):
     parent = _load_parent_config(repo)
     # get_text_config() does not see llm_config here, so the family path had nothing to offer.
     assert parent.get_text_config() is parent
-    text_config, mapping = ns["_get_remote_composite_text_only"](parent, str(repo), trust_remote_code = True)
+    text_config, mapping = ns["_get_remote_composite_text_only"](
+        parent, str(repo), trust_remote_code = True
+    )
     assert text_config.model_type == "llama"
     model, info = transformers.AutoModelForCausalLM.from_pretrained(
-        repo, config = text_config, key_mapping = mapping, trust_remote_code = True,
-        dtype = torch.float32, local_files_only = True, output_loading_info = True,
+        repo,
+        config = text_config,
+        key_mapping = mapping,
+        trust_remote_code = True,
+        dtype = torch.float32,
+        local_files_only = True,
+        output_loading_info = True,
     )
     assert not info["missing_keys"]
     assert torch.equal(model.lm_head.weight, weights["language_model.lm_head.weight"])
@@ -308,7 +327,9 @@ def test_hardcoded_flash_attention_does_not_block_the_meta_build(tmp_path):
     repo, _ = _write_repo(tmp_path)
     parent = _load_parent_config(repo)
     parent.llm_config._attn_implementation = "flash_attention_2"
-    assert ns["_get_remote_composite_text_only"](parent, str(repo), trust_remote_code = True) is not None
+    assert (
+        ns["_get_remote_composite_text_only"](parent, str(repo), trust_remote_code = True) is not None
+    )
     assert parent.llm_config._attn_implementation == "flash_attention_2"
 
 
@@ -320,7 +341,9 @@ def test_plan_loads_only_the_language_model_with_real_weights(tmp_path):
     ns = _ns()
     repo, weights = _write_repo(tmp_path)
     parent = _load_parent_config(repo)
-    text_config, mapping = ns["_get_remote_composite_text_only"](parent, str(repo), trust_remote_code = True)
+    text_config, mapping = ns["_get_remote_composite_text_only"](
+        parent, str(repo), trust_remote_code = True
+    )
     model, info = transformers.AutoModelForCausalLM.from_pretrained(
         repo,
         config = text_config,

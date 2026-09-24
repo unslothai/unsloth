@@ -1206,7 +1206,12 @@ def _is_remote_code_config(config):
     return type(config).__module__.startswith("transformers_modules")
 
 
-def _checkpoint_weight_names(model_name, token = None, revision = None, local_files_only = False):
+def _checkpoint_weight_names(
+    model_name,
+    token = None,
+    revision = None,
+    local_files_only = False,
+):
     # Tensor names stored in a safetensors checkpoint, read from the index or the file header only. None when unknown.
     import json, os
 
@@ -1220,13 +1225,11 @@ def _checkpoint_weight_names(model_name, token = None, revision = None, local_fi
         single_path = os.path.join(model_name, single_name)
         if os.path.isfile(single_path):
             from safetensors import safe_open
-
             with safe_open(single_path, framework = "pt") as f:
                 return set(f.keys())
         return None
     try:
         from huggingface_hub import hf_hub_download
-
         index_path = hf_hub_download(
             model_name,
             index_name,
@@ -1273,7 +1276,13 @@ def _infer_text_submodel_prefix(expected_names, checkpoint_names):
     return full[0]
 
 
-def _resolve_text_causal_lm_class(text_config, model_name, trust_remote_code, token = None, revision = None):
+def _resolve_text_causal_lm_class(
+    text_config,
+    model_name,
+    trust_remote_code,
+    token = None,
+    revision = None,
+):
     # The class AutoModelForCausalLM.from_pretrained(model_name, config = text_config) will build: repo code first when trusted.
     auto_map = getattr(text_config, "auto_map", None) or {}
     class_ref = auto_map.get("AutoModelForCausalLM") if isinstance(auto_map, dict) else None
@@ -1281,10 +1290,7 @@ def _resolve_text_causal_lm_class(text_config, model_name, trust_remote_code, to
         if not trust_remote_code:
             return None
         from transformers.dynamic_module_utils import get_class_from_dynamic_module
-
-        return get_class_from_dynamic_module(
-            class_ref, model_name, token = token, revision = revision
-        )
+        return get_class_from_dynamic_module(class_ref, model_name, token = token, revision = revision)
     from transformers import AutoModelForCausalLM
 
     return resolve_model_class(AutoModelForCausalLM, text_config)
@@ -1348,7 +1354,10 @@ def _get_remote_composite_text_only(
         if text_class is None:
             return None
         parent_class_names = set((getattr(model_config, "auto_map", None) or {}).values())
-        if f"{text_class.__module__.rsplit('.', 1)[-1]}.{text_class.__name__}" in parent_class_names:
+        if (
+            f"{text_class.__module__.rsplit('.', 1)[-1]}.{text_class.__name__}"
+            in parent_class_names
+        ):
             return None  # the text entry points back at the wrapper itself
         expected = _meta_parameter_names(text_class, text_config)
     except Exception:
@@ -1368,7 +1377,9 @@ def _get_remote_composite_text_only(
 def _strip_skip_module_prefix(qc, prefix):
     # llm_int8_skip_modules named from the wrapper root -> names relative to the text model.
     is_dict = isinstance(qc, dict)
-    skip = qc.get("llm_int8_skip_modules") if is_dict else getattr(qc, "llm_int8_skip_modules", None)
+    skip = (
+        qc.get("llm_int8_skip_modules") if is_dict else getattr(qc, "llm_int8_skip_modules", None)
+    )
     if not skip:
         return qc
     remapped = list(dict.fromkeys(n[len(prefix) :] if n.startswith(prefix) else n for n in skip))
