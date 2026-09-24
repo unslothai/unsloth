@@ -23204,6 +23204,42 @@ def _safe_retry_after_header(value: Any) -> Optional[str]:
     return candidate
 
 
+async def _stop_on_cancel(agen, cancel_event: threading.Event):
+    """Yield from ``agen`` until ``cancel_event`` is set, even while it waits for a frame.
+
+    A managed runtime can prefill for seconds before its first frame, and a check between frames
+    leaves a cancelled generation holding the model through a swap's teardown.
+    """
+
+    async def _cancelled() -> None:
+        while not cancel_event.is_set():
+            await asyncio.sleep(0.1)
+
+    waiter = asyncio.ensure_future(_cancelled())
+    step = None
+    try:
+        while True:
+            step = asyncio.ensure_future(agen.__anext__())
+            done, _ = await asyncio.wait({step, waiter}, return_when = asyncio.FIRST_COMPLETED)
+            if step not in done:
+                return
+            try:
+                line = step.result()
+            except StopAsyncIteration:
+                return
+            yield line
+    finally:
+        for task in (step, waiter):
+            if task is not None and not task.done():
+                # Cancelling the pending read closes the upstream response inside ``agen``.
+                task.cancel()
+                await asyncio.gather(task, return_exceptions = True)
+        try:
+            await agen.aclose()
+        except RuntimeError:
+            pass
+
+
 async def _proxy_to_external_provider(
     payload: ChatCompletionRequest,
     request: Request,
@@ -24051,14 +24087,14 @@ async def _proxy_to_external_provider(
                 stream = payload.stream,
                 **_provider_kwargs,
             )
+        if managed is not None:
+            # Stopping the read stops FastFlowLM, which a model swap is waiting on.
+            gen = _stop_on_cancel(gen, cancel_event)
         disconnect_task = asyncio.create_task(_watch_disconnect()) if run_studio_tool_loop else None
         try:
             sent_done = False
             stream_failed = False
             async for line in gen:
-                # Closing the stream cancels FastFlowLM generation.
-                if managed is not None and cancel_event.is_set():
-                    break
                 monitor_event = _monitor_openai_sse_line(monitor_id, line)
                 if monitor_event is None:
                     try:
@@ -24106,6 +24142,21 @@ async def _proxy_to_external_provider(
             if _owed is not None and not stream_failed:
                 _monitor_openai_sse_line(monitor_id, _owed)
                 yield f"{_owed}\n\n"
+            if managed is not None and cancel_event.is_set() and not sent_done:
+                # A stop (Stop button or a model swap), not a truncation: finish the reply.
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "id": f"chatcmpl-{uuid.uuid4().hex}",
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": model,
+                            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                        }
+                    )
+                    + "\n\n"
+                )
             if not sent_done:
                 if not stream_failed:
                     _monitor_openai_sse_line(monitor_id, "data: [DONE]")
@@ -24437,6 +24488,11 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
     if payload.tool_choice == "none":
         # FastFlowLM 1.0.3 ignores tool_choice and calls a tool anyway.
         payload.tools = None
+    elif payload.tools and payload.parallel_tool_calls is False:
+        # FastFlowLM takes no such limit and may return several calls.
+        _raise_unsupported_openai_parameter(
+            "parallel_tool_calls", "FastFlowLM on the NPU cannot limit a reply to one tool call."
+        )
     elif payload.tools and payload.tool_choice not in (None, "auto"):
         # "required" or a named function: nothing makes FastFlowLM honor either.
         _raise_unsupported_openai_parameter(

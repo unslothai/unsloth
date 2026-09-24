@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
@@ -98,6 +99,9 @@ class _Handler(BaseHTTPRequestHandler):
             {"body": body, "auth": self.headers.get("Authorization"), "path": self.path}
         )
         prompt = json.dumps(body.get("messages"))
+        if "SLOW" in prompt:
+            # A long prefill: nothing arrives for a while.
+            time.sleep(20)
         data = _script(prompt).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -118,6 +122,7 @@ class _FakeNpu:
 @pytest.fixture
 def flm(monkeypatch):
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    httpd.daemon_threads = True
     httpd.recorded = []
     thread = threading.Thread(target = httpd.serve_forever, daemon = True)
     thread.start()
@@ -388,6 +393,7 @@ def test_a_bare_error_line_becomes_an_error(flm):
         ({"seed": 7}, "seed"),
         ({"frequency_penalty": 0.5}, "frequency_penalty"),
         ({"tools": [_TOOL], "tool_choice": "required"}, "tool_choice"),
+        ({"tools": [_TOOL], "parallel_tool_calls": False}, "parallel_tool_calls"),
         (
             {"tools": [_TOOL], "tool_choice": {"type": "function", "function": {"name": "f"}}},
             "tool_choice",
@@ -776,3 +782,42 @@ def test_a_stop_sequence_leaves_the_monitor_row_completed(flm, stream):
     # The relay closes the upstream stream itself; its row must not stay "generating".
     assert api_monitor.active_count() == before
     assert api_monitor._entries[0].status == "completed"
+
+
+def test_a_swap_stops_an_npu_reply_still_in_prefill(flm):
+    import routes.inference as ri
+
+    flm()
+    payload = ChatCompletionRequest(messages = [{"role": "user", "content": "SLOW"}], stream = True)
+
+    async def go():
+        previous = ep_mod._http_client
+        client = httpx.AsyncClient()
+        ep_mod._http_client = client
+        try:
+            response = await ri._npu_chat_completions(payload, _request(), "tester")
+
+            async def swap_soon() -> None:
+                await asyncio.sleep(1.0)
+                # What a forced /load does to the chats it interrupts.
+                ri._raise_or_cancel_active_generations(force = True, action = "Loading a model")
+
+            swap = asyncio.create_task(swap_soon())
+            started = time.monotonic()
+            lines = []
+            async for piece in response.body_iterator:
+                text = piece.decode() if isinstance(piece, bytes) else piece
+                lines.extend(line for line in text.split("\n") if line.strip())
+            await swap
+            return lines, time.monotonic() - started
+        finally:
+            ep_mod._http_client = previous
+            await client.aclose()
+
+    lines, elapsed = asyncio.run(go())
+    # Not after the 20 s prefill: the cancel closes the upstream read itself.
+    assert elapsed < 10
+    assert lines[-1] == "data: [DONE]"
+    # A stop, not the cut-short error a dropped stream gets.
+    assert not any('"error"' in line for line in lines)
+    assert _data(lines)[-1]["choices"][0]["finish_reason"] == "stop"
