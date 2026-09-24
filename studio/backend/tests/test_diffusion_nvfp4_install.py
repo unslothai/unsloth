@@ -753,6 +753,61 @@ def test_jit_cache_step_drops_extra_index_sources_from_the_environment(env, monk
         assert name not in envs["jit"]
 
 
+def test_pip_jit_cache_step_reads_no_pip_conf_but_keeps_its_transport(env, monkeypatch):
+    # pip searches a pip.conf extra-index-url / find-links beside --index-url, so a corporate or stale
+    # flashinfer-jit-cache there could be picked over the pinned index. The main step keeps pip.conf as designed.
+    monkeypatch.setattr(inst, "_uv_executable", lambda: None)
+    monkeypatch.setenv("PIP_TIMEOUT", "30")
+    lines = [
+        "global.extra-index-url='https://corp.example/extra'",
+        "install.find-links='https://corp.example/links'",
+        "global.proxy='http://proxy.corp.example:3128'",
+        "global.cert='/etc/ssl/corp.pem'",
+        "global.trusted-host='a.corp.example\\nb.corp.example'",
+        "global.timeout='120'",
+        ":env:.timeout='30'",
+    ]
+    seen = []
+    config_run = _pip_config(env, lines)
+
+    def _run(cmd, **kwargs):
+        seen.append(([str(c) for c in cmd], kwargs.get("env")))
+        return config_run(cmd, **kwargs)
+
+    ok, reason = inst.ensure_flashinfer_for_nvfp4(0, run = _run)
+    assert ok, reason
+    installs = {
+        "main" if any(c.startswith("flashinfer-python==") for c in cmd) else "jit": (cmd, child)
+        for cmd, child in seen
+        if "install" in cmd and "uninstall" not in cmd and "config" not in cmd
+    }
+    main_cmd, main_env = installs["main"]
+    jit_cmd, jit_env = installs["jit"]
+    assert main_env is None or main_env.get("PIP_CONFIG_FILE") != os.devnull
+    assert jit_env["PIP_CONFIG_FILE"] == os.devnull
+    assert jit_cmd[jit_cmd.index("--index-url") + 1] == "https://flashinfer.ai/whl/cu130"
+    assert jit_env["PIP_PROXY"] == "http://proxy.corp.example:3128"
+    assert jit_env["PIP_CERT"] == "/etc/ssl/corp.pem"
+    assert jit_env["PIP_TRUSTED_HOST"].split() == ["a.corp.example", "b.corp.example"]
+    assert jit_env["PIP_TIMEOUT"] == "30"  # the caller's own environment still wins
+    assert not any(k in jit_env for k in ("PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS"))
+
+
+def test_uv_jit_cache_step_leaves_pip_config_alone(env, monkeypatch):
+    seen = []
+    real = env.run
+
+    def _run(cmd, **kwargs):
+        seen.append(([str(c) for c in cmd], kwargs.get("env")))
+        return real(cmd, **kwargs)
+
+    assert inst.ensure_flashinfer_for_nvfp4(0, run = _run)[0]
+    jit_env = next(
+        child for cmd, child in seen if any(c.startswith("flashinfer-jit-cache==") for c in cmd)
+    )
+    assert jit_env.get("PIP_CONFIG_FILE") == os.environ.get("PIP_CONFIG_FILE")
+
+
 def _hold_env_lock(release_after):
     filelock = pytest.importorskip("filelock")
     other = filelock.FileLock(inst._env_lock_path(), thread_local = False)

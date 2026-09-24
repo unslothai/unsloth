@@ -599,6 +599,7 @@ def _installer_config(uv: Optional[str], run: Callable[..., Any]) -> dict[str, A
         return config
 
     settings = _pip_settings(run)
+    config["pip_settings"] = settings
     # pip still installs from an extra index or find-links when pypi.org is unreachable.
     config["mirror"] = any(
         os.environ.get(v) for v in _CUSTOM_INDEX_ENVS + _PIP_EXTRA_INDEX_ENVS
@@ -728,10 +729,26 @@ _INDEX_SOURCE_ENVS = (
 )
 
 
-def _pinned_index_env() -> dict[str, str]:
+# pip settings the jit-cache step still needs once pip.conf is not read: how pip reaches the pinned index at all
+# (a corporate proxy or CA bundle), not where it looks for packages.
+_PIP_TRANSPORT_SETTINGS = ("proxy", "cert", "client-cert", "trusted-host", "timeout", "retries")
+
+
+def _pinned_index_env(pip_settings: Optional[dict[str, str]] = None) -> dict[str, str]:
+    """The jit-cache step's environment. ``pip_settings`` (the pip fallback's effective settings, None under uv): pip
+    reads ``extra-index-url`` and ``find-links`` from pip.conf and searches them beside ``--index-url``, so a matching
+    cache wheel there could win over the pinned index. PIP_CONFIG_FILE=os.devnull skips every pip configuration file
+    (global, user, site); the transport settings they held are handed over as environment variables instead."""
     env = _child_env()
     for name in _INDEX_SOURCE_ENVS:
         env.pop(name, None)
+    if pip_settings is not None:
+        env["PIP_CONFIG_FILE"] = os.devnull
+        for key in _PIP_TRANSPORT_SETTINGS:
+            name = "PIP_" + key.upper().replace("-", "_")
+            value = pip_settings.get(key)
+            if value and name not in env:
+                env[name] = value
     return env
 
 
@@ -913,7 +930,7 @@ def _install(
                         # The full local version: `==0.6.6` would accept a cache built for another CUDA.
                         f"{FLASHINFER_JIT_CACHE_PACKAGE}=={_jit_cache_version(tag)}",
                     ],
-                    _pinned_index_env(),
+                    _pinned_index_env(None if uv else config.get("pip_settings", {})),
                 )
             )
         failure = None
