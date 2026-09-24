@@ -206,6 +206,7 @@ def thumbnail(video_id: str) -> Optional[bytes]:
 def first_frame_webp(source: Union[Path, BinaryIO], width: int = _THUMBNAIL_WIDTH) -> bytes:
     """The first frame of a clip (a file or an open binary stream), at most `width` wide, as WebP."""
     import io
+
     try:
         import av
         from PIL import Image
