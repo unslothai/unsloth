@@ -72,7 +72,7 @@ def _host_ram_bytes() -> int:
     try:
         from .diffusion_memory import _cgroup_memory_limit_mib
         limit_mib = _cgroup_memory_limit_mib()
-    except Exception:  # noqa: BLE001 - no readable limit is the same answer as none
+    except Exception:  # noqa: BLE001 - unreadable means no limit
         limit_mib = None
     if limit_mib:
         limit = int(limit_mib) * 1024 * 1024
@@ -338,9 +338,8 @@ def _wrap_encode_prompt(
     return True
 
 
-# MiniMax-H3: the modular text-encoder steps call ``encoders.get_qwen3vl_prompt_embeds`` as a module global, and that
-# call is what fires the conditioner's offload hook. One process-wide shim routes each call to the cache registered for
-# its text encoder; an unregistered encoder (or a call with vision inputs) runs the original untouched.
+# MiniMax-H3 steps call this module global (which fires the offload hook). One process-wide shim routes each call to
+# its text encoder's cache; unregistered encoders and vision inputs run the original.
 _H3_MODULE = "diffusers.modular_pipelines.minimax_h3.encoders"
 _H3_FUNC = "get_qwen3vl_prompt_embeds"
 _H3_REGISTRY: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()

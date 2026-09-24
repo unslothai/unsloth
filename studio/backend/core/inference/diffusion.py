@@ -5667,7 +5667,7 @@ class DiffusionBackend:
                         te_quant = te_quant,
                         logger = logger,
                     )
-                    # In-memory sibling, outermost so a repeat never reaches the disk cache or the encoders.
+                    # Outermost, so a repeat skips both the disk cache and the encoders.
                     prompt_cache.install(
                         pipe,
                         identity = {

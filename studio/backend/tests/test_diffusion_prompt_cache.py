@@ -118,7 +118,7 @@ def test_non_plain_arguments_bypass():
 
 
 def test_lru_is_bounded_by_bytes(monkeypatch):
-    # Each entry: 1x256 float32 embeds (1024 B) + 1x256 bool mask (256 B) = 1280 B.
+    # Entry = 1024 B float32 embeds + 256 B bool mask = 1280 B.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_PROMPT_CACHE_MB", str(3000 / 1024 / 1024))
     pipe = _EncodePipe(width = 256)
     prompt_cache.install(pipe)
@@ -280,7 +280,7 @@ def test_h3_shim_caches_text_only_calls(monkeypatch):
     )
     shim(torch.nn.Linear(2, 2), None, [1, 2, 3], {}, 50, "cpu", torch.float32)
     assert calls["n"] == 4
-    # A second pipe re-uses the one shim, it does not wrap it again.
+    # A second pipe reuses the shim, no double wrap.
     other = _Modular()
     prompt_cache.install(other)
     assert module.get_qwen3vl_prompt_embeds is shim
@@ -325,7 +325,7 @@ def test_load_installs_the_prompt_cache_and_unload_releases_it(fake_runtime, tmp
 
 
 def test_budget_respects_a_cgroup_memory_limit(monkeypatch):
-    # Pinned entries are charged to memory.max, so a 2 GiB container gets RAM/64 of the limit, not of the host.
+    # Pinned entries count against memory.max, so the budget is RAM/64 of the 2 GiB limit, not the host.
     from core.inference import diffusion_memory
 
     monkeypatch.delenv(prompt_cache._ENV_BUDGET_MB, raising = False)
