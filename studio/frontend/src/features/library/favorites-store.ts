@@ -7,9 +7,19 @@ import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth";
 import { toast } from "@/lib/toast";
 import { getLibraryFavorites, updateLibraryItem } from "./api";
 
+/** What `adopt` needs to tell stars toggled since from a snapshot being fetched. */
+export interface FavoritesSnapshotStart {
+  attempts: ReadonlyMap<string, number>;
+  session: number;
+}
+
 interface FavoritesState {
   ids: ReadonlySet<string>;
   load: () => Promise<void>;
+  /** Call before fetching a snapshot of favorites. */
+  begin: () => FavoritesSnapshotStart;
+  /** Takes a snapshot fetched since `begin`, keeping stars toggled meanwhile. Returns the result. */
+  adopt: (start: FavoritesSnapshotStart, loaded: ReadonlySet<string>) => ReadonlySet<string>;
   /** Local only: the Library page mirrors its own edits here. */
   mark: (id: string, favorite: boolean) => void;
   setFavorite: (id: string, favorite: boolean) => Promise<void>;
@@ -32,22 +42,26 @@ export const useLibraryFavoritesStore = create<FavoritesState>((set, get) => {
   return {
     ids: new Set(),
     load: async () => {
-      const touchedBefore = new Map(latestAttempt);
-      const loadSession = session;
+      const start = get().begin();
       try {
-        const loaded = new Set(await getLibraryFavorites());
-        if (loadSession !== session) return;
-        // A star toggled while this was loading is newer than the snapshot; keep it.
-        const ids = get().ids;
-        for (const [id, attempt] of latestAttempt) {
-          if (touchedBefore.get(id) === attempt) continue;
-          if (ids.has(id)) loaded.add(id);
-          else loaded.delete(id);
-        }
-        set({ ids: loaded });
+        get().adopt(start, new Set(await getLibraryFavorites()));
       } catch {
         // Favorites are a convenience here; the page works without them.
       }
+    },
+    begin: () => ({ attempts: new Map(latestAttempt), session }),
+    adopt: (start, loaded) => {
+      if (start.session !== session) return get().ids;
+      // A star toggled while this was loading is newer than the snapshot; keep it.
+      const ids = get().ids;
+      const next = new Set(loaded);
+      for (const [id, attempt] of latestAttempt) {
+        if (start.attempts.get(id) === attempt) continue;
+        if (ids.has(id)) next.add(id);
+        else next.delete(id);
+      }
+      set({ ids: next });
+      return next;
     },
     mark: (id, favorite) => {
       // An attempt too, so a load already in flight keeps this mark rather than its older snapshot.
