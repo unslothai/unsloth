@@ -692,6 +692,49 @@ def test_generate_execution_error_with_cancelled_substring_is_sanitized_500(clie
     assert "cancelled" not in detail and "models" not in detail and "/home/u" not in detail
 
 
+def test_generate_memory_refusal_is_a_tagged_400_and_allow_oversized_reaches_the_backend(
+    client, monkeypatch
+):
+    # The Images page offers "Generate anyway" only for THIS refusal, so the 400 carries a tag the
+    # page can read (exposed through CORS for the desktop app), and the retry's allow_oversized has
+    # to arrive at the backend rather than be dropped by the route.
+    from core.inference.diffusion_memory import (
+        IMAGE_REFUSAL_HEADER,
+        IMAGE_REFUSAL_MEMORY_ESTIMATE,
+        ImageActivationShortfallError,
+    )
+
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+    seen = []
+
+    def _guarded(**kwargs):
+        seen.append(kwargs.get("allow_oversized"))
+        if not kwargs.get("allow_oversized"):
+            raise ImageActivationShortfallError("Generating at 2048x2048 needs about 34.00 GB")
+        return {"images": [], "seed": 1, "seeds": []}
+
+    monkeypatch.setattr(backend, "generate", _guarded)
+    refused = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert refused.status_code == 400
+    assert refused.headers.get(IMAGE_REFUSAL_HEADER) == IMAGE_REFUSAL_MEMORY_ESTIMATE
+    assert "2048x2048" in refused.json()["detail"]
+    retried = client.post(
+        "/api/inference/images/generate", json = {"prompt": "p", "allow_oversized": True}
+    )
+    assert retried.status_code == 200
+    assert seen == [False, True]
+
+    # Every other 400 stays untagged.
+    def _plain(**kwargs):
+        raise ValueError("width and height are required for this workflow.")
+
+    monkeypatch.setattr(backend, "generate", _plain)
+    other = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert other.status_code == 400
+    assert IMAGE_REFUSAL_HEADER not in other.headers
+
+
 def test_generate_user_cancellation_returns_409(client, monkeypatch):
     # The exact cancellation sentinel both engines raise is client-state (409).
     backend = diffusion_module.get_diffusion_backend()

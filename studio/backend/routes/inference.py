@@ -39448,6 +39448,11 @@ async def generate_diffusion_image(
     )
 
     from core.inference.diffusion_conditioning import LocalizedEdit
+    from core.inference.diffusion_memory import (
+        IMAGE_REFUSAL_HEADER,
+        IMAGE_REFUSAL_MEMORY_ESTIMATE,
+        ImageActivationShortfallError,
+    )
 
     backend = get_active_diffusion_engine()
     if account_access.managed_account():
@@ -39498,6 +39503,7 @@ async def generate_diffusion_image(
                     workflow = request.workflow,
                     reference_resolution = request.reference_resolution,
                     localized_edit = localized_edit,
+                    allow_oversized = request.allow_oversized,
                     loras = [(l.id, l.weight) for l in request.loras] if request.loras else None,
                     controlnet = (
                         (
@@ -39513,6 +39519,14 @@ async def generate_diffusion_image(
                     ),
                 )
             break
+        except ImageActivationShortfallError as exc:
+            # Tagged so the Images page can offer "Generate anyway" (a retry with allow_oversized) instead of a
+            # dead-end toast. Same 400 and the same reason text as every other refusal.
+            raise HTTPException(
+                status_code = 400,
+                detail = str(exc),
+                headers = {IMAGE_REFUSAL_HEADER: IMAGE_REFUSAL_MEMORY_ESTIMATE},
+            )
         except ValueError as exc:
             raise HTTPException(status_code = 400, detail = str(exc))
         except DiffusionModelReplacedError as exc:
