@@ -6,9 +6,18 @@
 // timings. Everything goes through the public load / status / chat routes.
 
 import { authFetch } from "@/features/auth";
-import { type InferenceStatusResponse, getInferenceStatus, loadModel } from "@/features/chat";
-
-type LoadModelRequest = Parameters<typeof loadModel>[0];
+import {
+  type InferenceStatusResponse,
+  getInferenceStatus,
+  loadModel,
+  useChatRuntimeStore,
+} from "@/features/chat";
+import {
+  type ChatSampling,
+  chatBaseLoad,
+  chatSampling,
+  chatSettings,
+} from "./chat-base";
 import {
   type BenchConfig,
   type BenchRun,
@@ -17,45 +26,18 @@ import {
   type VariantOutcome,
   promptsFor,
   servedMismatch,
-  userExtraArgs,
   variantLoad,
 } from "../lib/bench-math";
 
 export interface RunnerEvents {
+  /** The run as it will be saved, before its first row: model, settings and machine known. */
+  onStart: (run: BenchRun) => void;
   onOutcome: (outcome: VariantOutcome) => void;
   onResult: (result: RunResult) => void;
   onProgress: (text: string) => void;
 }
 
 export class BenchSetupError extends Error {}
-
-/** The loaded model's own settings, which every variant starts from. */
-function baseLoad(status: InferenceStatusResponse): LoadModelRequest {
-  const base: LoadModelRequest = {
-    model_path: status.active_model ?? "",
-    gguf_variant: status.gguf_variant ?? null,
-    hf_token: null,
-    load_in_4bit: false,
-    is_lora: false,
-    max_seq_length: status.requested_context_length ?? 0,
-    cache_type_kv: status.cache_type_kv ?? null,
-    // Held as served, so a KV or context sweep doesn't also change the drafting mode.
-    speculative_type: status.speculative_type ?? null,
-    spec_draft_n_max: status.spec_draft_n_max ?? null,
-    n_parallel: status.requested_parallel_slots ?? null,
-    llama_extra_args: userExtraArgs(status.requested_llama_extra_args),
-    disable_vision: status.vision_disabled_by_user ?? null,
-    tensor_parallel: status.tensor_parallel ?? null,
-  };
-  if (status.gpu_memory_mode === "manual") {
-    base.gpu_memory_mode = "manual";
-    if (status.gpu_layers !== undefined) base.gpu_layers = status.gpu_layers;
-    if (status.n_cpu_moe !== undefined) base.n_cpu_moe = status.n_cpu_moe;
-    if (status.tensor_split) base.tensor_split = status.tensor_split;
-  }
-  if (status.requested_gpu_ids?.length) base.gpu_ids = status.requested_gpu_ids;
-  return base;
-}
 
 function servedSubset(st: InferenceStatusResponse): Record<string, unknown> {
   const keys = [
@@ -76,7 +58,10 @@ function servedSubset(st: InferenceStatusResponse): Record<string, unknown> {
   return out;
 }
 
-async function getJson(path: string, signal: AbortSignal): Promise<Record<string, unknown> | null> {
+async function getJson(
+  path: string,
+  signal: AbortSignal,
+): Promise<Record<string, unknown> | null> {
   try {
     const res = await authFetch(path, { signal });
     return res.ok ? ((await res.json()) as Record<string, unknown>) : null;
@@ -86,19 +71,34 @@ async function getJson(path: string, signal: AbortSignal): Promise<Record<string
 }
 
 async function readMeta(signal: AbortSignal): Promise<RunMeta> {
-  const [llama, hw, health] = await Promise.all([
+  const [llama, hw, health, sys] = await Promise.all([
     getJson("/api/llama/backend", signal),
     getJson("/api/system/hardware", signal),
     getJson("/api/health", signal),
+    getJson("/api/system", signal),
   ]);
   const gpu = (hw?.gpu ?? null) as Record<string, unknown> | null;
+  const versions = (hw?.versions ?? null) as Record<string, unknown> | null;
+  const cpu = (sys?.cpu ?? null) as Record<string, unknown> | null;
+  const memory = (sys?.memory ?? null) as Record<string, unknown> | null;
   const str = (v: unknown) => (typeof v === "string" && v ? v : null);
+  const num = (v: unknown) =>
+    typeof v === "number" && Number.isFinite(v) ? v : null;
+  const runtime = str(versions?.rocm)
+    ? `ROCm ${str(versions?.rocm)}`
+    : str(versions?.cuda)
+      ? `CUDA ${str(versions?.cuda)}`
+      : null;
   return {
     gpu: str(gpu?.gpu_name),
-    vramGb: typeof gpu?.vram_total_gb === "number" ? gpu.vram_total_gb : null,
+    vramGb: num(gpu?.vram_total_gb),
     backend: str(llama?.backend),
+    runtime,
     llamaTag: str(llama?.installed_tag),
     studioVersion: str(health?.studio_version) ?? str(health?.version),
+    os: str(sys?.platform),
+    cpuThreads: num(cpu?.logical_count) ?? num(sys?.cpu_count),
+    ramGb: num(memory?.total_gb),
   };
 }
 
@@ -109,10 +109,61 @@ interface Completion {
   timings: Record<string, unknown>;
 }
 
+/** A load or a generation past its limit, or a row too slow to be anything but out of memory. */
+class RowLimitError extends Error {}
+
+// A row that ran out of VRAM spills to system RAM and crawls rather than failing, and on
+// Windows that spill takes the desktop with it. These limits turn that into a skipped row.
+const LOAD_LIMIT_MS = 8 * 60_000;
+const MIN_GEN_LIMIT_MS = 90_000;
+/** Below this, or below a fifth of the fastest row so far, a row is spilling, not running. */
+const FLOOR_TPS = 2;
+const FLOOR_FRACTION = 0.2;
+
+function genLimitMs(maxTokens: number): number {
+  // Room for 4 tok/s plus a slow prompt; anything slower is caught by the floor anyway.
+  return Math.max(MIN_GEN_LIMIT_MS, (maxTokens / 4) * 1000 + 30_000);
+}
+
+async function withLimit<T>(
+  ms: number,
+  signal: AbortSignal,
+  what: string,
+  fn: (s: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const ctl = new AbortController();
+  const onAbort = () => ctl.abort(signal.reason);
+  signal.addEventListener("abort", onAbort, { once: true });
+  let timedOut = false;
+  const timer = window.setTimeout(() => {
+    timedOut = true;
+    ctl.abort(new DOMException(what, "TimeoutError"));
+  }, ms);
+  try {
+    return await fn(ctl.signal);
+  } catch (err) {
+    if (timedOut && !signal.aborted)
+      throw new RowLimitError(
+        `${what} took over ${Math.round(ms / 60_000) || 1} min, so it was stopped`,
+      );
+    throw err;
+  } finally {
+    window.clearTimeout(timer);
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
+function looksOutOfMemory(message: string): boolean {
+  return /out of memory|OOM|failed to allocate|cudaMalloc|hipMalloc|ErrorOutOfDeviceMemory|not enough (video )?memory/i.test(
+    message,
+  );
+}
+
 async function streamOnce(
   model: string,
   prompt: string,
   config: BenchConfig,
+  sampling: ChatSampling,
   signal: AbortSignal,
 ): Promise<Completion> {
   const started = performance.now();
@@ -127,14 +178,16 @@ async function streamOnce(
       stream_options: { include_usage: true },
       // biome-ignore lint/style/useNamingConvention: API schema
       max_tokens: config.maxTokens,
-      temperature: config.temperature,
+      ...sampling,
       seed: config.seed,
     }),
     signal,
   });
   if (!res.ok || !res.body) {
     const text = await res.text().catch(() => "");
-    throw new Error(`Chat completion answered ${res.status}${text ? `: ${text.slice(0, 300)}` : ""}`);
+    throw new Error(
+      `Chat completion answered ${res.status}${text ? `: ${text.slice(0, 300)}` : ""}`,
+    );
   }
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -165,11 +218,18 @@ async function streamOnce(
       }
       const err = chunk.error as { message?: string } | undefined;
       if (err) throw new Error(err.message ?? "Stream error");
-      if (chunk.timings && typeof chunk.timings === "object") timings = chunk.timings as Record<string, unknown>;
-      const choices = Array.isArray(chunk.choices) ? (chunk.choices as Record<string, unknown>[]) : [];
+      if (chunk.timings && typeof chunk.timings === "object")
+        timings = chunk.timings as Record<string, unknown>;
+      const choices = Array.isArray(chunk.choices)
+        ? (chunk.choices as Record<string, unknown>[])
+        : [];
       for (const choice of choices) {
         const delta = (choice.delta ?? {}) as Record<string, unknown>;
-        const piece = [delta.content, delta.reasoning_content, delta.reasoning].find((x) => typeof x === "string" && x.length > 0);
+        const piece = [
+          delta.content,
+          delta.reasoning_content,
+          delta.reasoning,
+        ].find((x) => typeof x === "string" && x.length > 0);
         if (piece) {
           clientTokens += 1;
           if (ttftMs === null) ttftMs = performance.now() - started;
@@ -197,13 +257,39 @@ export async function runBenchmark(
   events: RunnerEvents,
   signal: AbortSignal,
 ): Promise<BenchRun> {
-  const status = await getInferenceStatus(signal);
-  if (!status.active_model) throw new BenchSetupError("Load a GGUF model in chat first. Benchmarks measure the model that is loaded.");
-  if (status.is_gguf === false) throw new BenchSetupError("Benchmarks run on GGUF models. The loaded model runs on another backend.");
+  let status = await getInferenceStatus(signal);
   const prompts = promptsFor(config.promptSet, config.customPrompt);
-  if (prompts.length === 0) throw new BenchSetupError("The custom prompt is empty.");
+  if (prompts.length === 0)
+    throw new BenchSetupError("The custom prompt is empty.");
 
-  const base = baseLoad(status);
+  // Auto-tune can name a model of its own; it loads with chat's settings so the base is the same.
+  if (config.tuneModel && config.tuneModel !== status.active_model) {
+    events.onProgress(`Loading ${config.tuneModel}`);
+    await loadModel(
+      {
+        ...chatBaseLoad({
+          ...status,
+          active_model: config.tuneModel,
+          gguf_variant: null,
+        }),
+        force_reload: true,
+      },
+      { signal, runtime: "chat" },
+    );
+    status = await getInferenceStatus(signal);
+  }
+  if (!status.active_model)
+    throw new BenchSetupError(
+      "Load a GGUF model in chat first. Benchmarks measure the model that is loaded.",
+    );
+  if (status.is_gguf === false)
+    throw new BenchSetupError(
+      "Benchmarks run on GGUF models. The loaded model runs on another backend.",
+    );
+
+  const base = chatBaseLoad(status);
+  const sampling = chatSampling(useChatRuntimeStore.getState());
+  config = { ...config, temperature: sampling.temperature };
   const run: BenchRun = {
     id: `run-${Date.now().toString(36)}`,
     createdAt: Date.now(),
@@ -214,47 +300,98 @@ export async function runBenchmark(
     context: status.context_length ?? null,
     config,
     meta: await readMeta(signal),
+    base: chatSettings(useChatRuntimeStore.getState()),
     outcomes: config.variants.map((v) => ({ label: v.label, state: "queued" })),
     results: [],
   };
+  events.onStart(run);
   const setOutcome = (o: VariantOutcome) => {
     run.outcomes = run.outcomes.map((x) => (x.label === o.label ? o : x));
     events.onOutcome(o);
   };
 
   let promptCursor = 0;
+  let fastest = 0;
+  // Once a context size runs out of memory, every larger one will too.
+  let failedContext: number | null = null;
   try {
     for (const variant of config.variants) {
       if (signal.aborted) throw abortError();
+      const ctx = variant.load.max_seq_length;
+      if (failedContext !== null && ctx !== undefined && ctx >= failedContext) {
+        setOutcome({
+          label: variant.label,
+          state: "skipped",
+          reason: `a smaller context already ran out of memory`,
+        });
+        continue;
+      }
       setOutcome({ label: variant.label, state: "loading" });
       events.onProgress(`Loading ${variant.label}`);
       const loadStarted = performance.now();
       let modelId: string;
       try {
-        const loaded = await loadModel(variantLoad(base, variant), { signal, runtime: "chat" });
+        const loaded = await withLimit(LOAD_LIMIT_MS, signal, "Loading", (s) =>
+          loadModel(variantLoad(base, variant), { signal: s, runtime: "chat" }),
+        );
         modelId = loaded.model;
       } catch (err) {
         if (signal.aborted) throw abortError();
-        setOutcome({ label: variant.label, state: "error", reason: err instanceof Error ? err.message : String(err) });
+        const message = err instanceof Error ? err.message : String(err);
+        const oom = err instanceof RowLimitError || looksOutOfMemory(message);
+        if (oom && ctx !== undefined)
+          failedContext = Math.min(failedContext ?? ctx, ctx);
+        setOutcome({
+          label: variant.label,
+          state: "error",
+          reason: oom ? `out of memory: ${message}` : message,
+        });
         continue;
       }
       const loadMs = performance.now() - loadStarted;
       const served = await getInferenceStatus(signal);
       const mismatch = servedMismatch(variant, served);
       if (mismatch) {
-        setOutcome({ label: variant.label, state: "skipped", reason: mismatch, served: servedSubset(served) });
+        setOutcome({
+          label: variant.label,
+          state: "skipped",
+          reason: mismatch,
+          served: servedSubset(served),
+        });
         continue;
       }
-      setOutcome({ label: variant.label, state: "running", served: servedSubset(served) });
+      setOutcome({
+        label: variant.label,
+        state: "running",
+        served: servedSubset(served),
+      });
       const total = config.warmup + config.repetitions;
+      let rowFailure: string | null = null;
       for (let rep = 0; rep < total; rep++) {
         if (signal.aborted) throw abortError();
         const warmup = rep < config.warmup;
         events.onProgress(
-          warmup ? `${variant.label} · warm-up ${rep + 1}/${config.warmup}` : `${variant.label} · run ${rep + 1 - config.warmup}/${config.repetitions}`,
+          warmup
+            ? `${variant.label} · warm-up ${rep + 1}/${config.warmup}`
+            : `${variant.label} · run ${rep + 1 - config.warmup}/${config.repetitions}`,
         );
-        const promptIndex = config.rotatePrompts ? promptCursor++ % prompts.length : 0;
-        const c = await streamOnce(modelId, prompts[promptIndex], config, signal);
+        const promptIndex = config.rotatePrompts
+          ? promptCursor++ % prompts.length
+          : 0;
+        let c: Completion;
+        try {
+          c = await withLimit(
+            genLimitMs(config.maxTokens),
+            signal,
+            "A generation",
+            (s) =>
+              streamOnce(modelId, prompts[promptIndex], config, sampling, s),
+          );
+        } catch (err) {
+          if (signal.aborted) throw abortError();
+          rowFailure = err instanceof Error ? err.message : String(err);
+          break;
+        }
         const t = c.timings;
         const genTokens = num(t.predicted_n);
         const decodeMs = c.ttftMs === null ? null : c.wallMs - c.ttftMs;
@@ -269,7 +406,10 @@ export async function runBenchmark(
           genTokens,
           ttftMs: c.ttftMs,
           wallMs: c.wallMs,
-          clientTps: decodeMs && decodeMs > 0 ? ((genTokens ?? c.clientTokens) / decodeMs) * 1000 : null,
+          clientTps:
+            decodeMs && decodeMs > 0
+              ? ((genTokens ?? c.clientTokens) / decodeMs) * 1000
+              : null,
           draftN: num(t.draft_n),
           draftAccepted: num(t.draft_n_accepted),
           loadMs: rep === 0 ? loadMs : null,
@@ -277,33 +417,63 @@ export async function runBenchmark(
         };
         run.results.push(result);
         events.onResult(result);
+        const rate = result.tps ?? result.clientTps ?? 0;
+        if (
+          rate > 0 &&
+          (rate < FLOOR_TPS || (fastest > 0 && rate < fastest * FLOOR_FRACTION))
+        ) {
+          rowFailure = `ran at ${rate.toFixed(1)} tok/s, far below the other rows, which means it spilled out of VRAM. Stopped to keep the machine responsive`;
+          break;
+        }
+        if (!warmup) fastest = Math.max(fastest, rate);
       }
-      setOutcome({ label: variant.label, state: "done", served: servedSubset(served) });
+      if (rowFailure) {
+        if (ctx !== undefined)
+          failedContext = Math.min(failedContext ?? ctx, ctx);
+        setOutcome({
+          label: variant.label,
+          state: "error",
+          reason: rowFailure,
+          served: servedSubset(served),
+        });
+        continue;
+      }
+      setOutcome({
+        label: variant.label,
+        state: "done",
+        served: servedSubset(served),
+      });
     }
   } catch (err) {
     if (!signal.aborted) throw err;
     for (const o of run.outcomes) {
-      if (o.state === "queued" || o.state === "loading" || o.state === "running") setOutcome({ ...o, state: "cancelled" });
+      if (
+        o.state === "queued" ||
+        o.state === "loading" ||
+        o.state === "running"
+      )
+        setOutcome({ ...o, state: "cancelled" });
     }
   } finally {
     run.finishedAt = Date.now();
     if (config.restoreAfter) {
       events.onProgress("Restoring your original settings");
-      await restore(status).catch(() => undefined);
+      await restore(status, base).catch(() => undefined);
     }
   }
   return run;
 }
 
-/** Put the model back the way the user had it before the sweep. */
-async function restore(before: InferenceStatusResponse): Promise<void> {
-  const base = baseLoad(before);
+/** Put the model back the way chat had it before the sweep. */
+async function restore(
+  before: InferenceStatusResponse,
+  base: ReturnType<typeof chatBaseLoad>,
+): Promise<void> {
   await loadModel(
     {
       ...base,
-      llama_extra_args: before.requested_llama_extra_args ?? null,
-      speculative_type: before.speculative_type ?? null,
-      spec_draft_n_max: before.spec_draft_n_max ?? null,
+      llama_extra_args:
+        before.requested_llama_extra_args ?? base.llama_extra_args,
       force_reload: true,
     },
     { runtime: "chat" },

@@ -32,6 +32,10 @@ export async function svgToPng(svg: SVGSVGElement, scale = 2): Promise<Blob> {
   ctx.scale(scale, scale);
   ctx.drawImage(img, 0, 0, width, height);
   return new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("PNG encoding failed."))), "image/png");
+    canvas.toBlob(
+      (blob) =>
+        blob ? resolve(blob) : reject(new Error("PNG encoding failed.")),
+      "image/png",
+    );
   });
 }

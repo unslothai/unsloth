@@ -11,6 +11,7 @@ export interface VariantLoad {
   cache_type_kv?: string | null;
   max_seq_length?: number;
   n_parallel?: number | null;
+  spec_draft_cache_type?: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   llama_extra_args?: string[] | null;
 }
@@ -20,29 +21,64 @@ export interface Variant {
   load: VariantLoad;
 }
 
-export type SweepKind = "spec" | "draft" | "ngram" | "kv" | "context" | "parallel";
-export const SWEEP_KINDS: SweepKind[] = ["spec", "draft", "ngram", "kv", "context", "parallel"];
+export type SweepKind =
+  | "spec"
+  | "draft"
+  | "ngram"
+  | "dspark"
+  | "kv"
+  | "context"
+  | "parallel"
+  | "tune";
+/** The sweep picker's presets. Auto-tune is its own card, not a preset. */
+export const SWEEP_KINDS: SweepKind[] = [
+  "spec",
+  "draft",
+  "ngram",
+  "dspark",
+  "kv",
+  "context",
+  "parallel",
+];
 
 export const SWEEP_TITLE: Record<SweepKind, string> = {
   spec: "Speculative decoding",
   draft: "MTP draft depth",
   ngram: "Ngram tuning",
+  dspark: "DSpark tuning",
   kv: "KV cache type",
   context: "Context length",
   parallel: "Parallel slots",
+  tune: "Auto-tune",
 };
 
 export const SWEEP_BLURB: Record<SweepKind, string> = {
   spec: "Every mode Studio offers, from off to MTP + ngram. Modes this model can't run are skipped with the reason.",
-  draft: "Speculation off against MTP at 1 to 8 draft tokens. Finds the depth where drafting stops paying.",
-  ngram: "Ngram alone, MTP alone and both together, across the ngram key length and discard floor.",
+  draft:
+    "Speculation off against MTP at 1 to 8 draft tokens. Finds the depth where drafting stops paying.",
+  ngram:
+    "Ngram alone, MTP alone and both together, across the ngram key length and discard floor.",
+  dspark:
+    "Speculation off against the DSpark drafter at 1 to 8 draft tokens, plus its draft cache at q8_0 and q4_0. Needs a model that ships one.",
   kv: "f16, q8_0 and q4_0 KV cache. Smaller caches fit more context but can cost speed.",
-  context: "The same prompt at growing context windows, with load time for each.",
-  parallel: "1, 2 and 4 decode slots. More slots serve more users, each a little slower.",
+  context:
+    "The same prompt at growing context windows, with load time for each.",
+  parallel:
+    "1, 2 and 4 decode slots. More slots serve more users, each a little slower.",
+  tune: "Off, MTP at 1 to 4 draft tokens, ngram, and MTP + ngram. Picks the fastest and hands it to chat.",
 };
 
 /** Fixed colour slot per speculative family: colour follows the mode, never its rank. */
-export const FAMILIES = ["mtp", "mtp+ngram", "ngram", "auto", "dspark", "dflash", "other", "off"] as const;
+export const FAMILIES = [
+  "mtp",
+  "mtp+ngram",
+  "ngram",
+  "auto",
+  "dspark",
+  "dflash",
+  "other",
+  "off",
+] as const;
 export type Family = (typeof FAMILIES)[number];
 
 export const FAMILY_LABEL: Record<Family, string> = {
@@ -58,11 +94,14 @@ export const FAMILY_LABEL: Record<Family, string> = {
 
 export function familyOf(load: VariantLoad): Family {
   if (load.speculative_type === undefined) return "other";
-  const raw = String(load.speculative_type ?? "auto").toLowerCase().trim();
+  const raw = String(load.speculative_type ?? "auto")
+    .toLowerCase()
+    .trim();
   if (raw === "off" || raw === "none" || raw === "disabled") return "off";
   if (raw === "mtp+ngram" || raw === "ngram+mtp") return "mtp+ngram";
   if (raw === "mtp" || raw === "draft-mtp") return "mtp";
-  if (raw === "ngram" || raw === "ngram-mod" || raw === "ngram-simple") return "ngram";
+  if (raw === "ngram" || raw === "ngram-mod" || raw === "ngram-simple")
+    return "ngram";
   if (raw === "auto" || raw === "default" || raw === "") return "auto";
   if (raw === "dspark" || raw === "draft-dspark") return "dspark";
   if (raw === "dflash" || raw === "draft-dflash") return "dflash";
@@ -71,7 +110,9 @@ export function familyOf(load: VariantLoad): Family {
 
 /** Studio's spellings folded to one, so a requested mode can be checked against the served one. */
 export function canonicalSpec(raw: string | null | undefined): string {
-  const s = String(raw ?? "").toLowerCase().trim();
+  const s = String(raw ?? "")
+    .toLowerCase()
+    .trim();
   if (!s || s === "default") return "auto";
   if (s === "none" || s === "disable" || s === "disabled") return "off";
   if (s.includes(",")) {
@@ -96,10 +137,17 @@ export interface NgramStep {
   min: number;
 }
 export const NGRAM_STOCK: NgramStep = { match: 24, min: 48 };
-const FLOOR_SWEEP: NgramStep[] = [2, 8, 16, 32, 48].map((min) => ({ match: 24, min }));
-const KEY_SWEEP: NgramStep[] = [4, 8, 12, 16, 24].map((match) => ({ match, min: 8 }));
+const FLOOR_SWEEP: NgramStep[] = [2, 8, 16, 32, 48].map((min) => ({
+  match: 24,
+  min,
+}));
+const KEY_SWEEP: NgramStep[] = [4, 8, 12, 16, 24].map((match) => ({
+  match,
+  min: 8,
+}));
 export const NGRAM_STEPS: NgramStep[] = [...FLOOR_SWEEP, ...KEY_SWEEP].filter(
-  (s, i, all) => all.findIndex((o) => o.match === s.match && o.min === s.min) === i,
+  (s, i, all) =>
+    all.findIndex((o) => o.match === s.match && o.min === s.min) === i,
 );
 
 export function ngramArgs(step: NgramStep): string[] {
@@ -118,48 +166,196 @@ function ngramTag(s: NgramStep): string {
   return `match ${s.match}, min ${s.min}${stock ? " (stock)" : ""}`;
 }
 
-const OFF: Variant = { label: "Speculation off", load: { speculative_type: "off", spec_draft_n_max: null } };
+const OFF: Variant = {
+  label: "Speculation off",
+  load: { speculative_type: "off", spec_draft_n_max: null },
+};
 
 /** The presets behind the sweep picker. Labels double as row identities. */
-export function sweepVariants(kind: SweepKind, maxContext?: number | null): Variant[] {
+export function sweepVariants(
+  kind: SweepKind,
+  maxContext?: number | null,
+): Variant[] {
   switch (kind) {
     case "spec":
       return [
         OFF,
-        { label: "Auto (Studio default)", load: { speculative_type: "auto", spec_draft_n_max: null } },
-        { label: "Ngram", load: { speculative_type: "ngram", spec_draft_n_max: null } },
-        ...[2, 3, 4].map((n) => ({ label: `MTP · ${n} draft tokens`, load: { speculative_type: "mtp", spec_draft_n_max: n } })),
+        {
+          label: "Auto (Studio default)",
+          load: { speculative_type: "auto", spec_draft_n_max: null },
+        },
+        {
+          label: "Ngram",
+          load: { speculative_type: "ngram", spec_draft_n_max: null },
+        },
+        ...[2, 3, 4].map((n) => ({
+          label: `MTP · ${n} draft tokens`,
+          load: { speculative_type: "mtp", spec_draft_n_max: n },
+        })),
         ...[2, 3, 4].map((n) => ({
           label: `MTP + ngram · ${n} draft tokens`,
           load: { speculative_type: "mtp+ngram", spec_draft_n_max: n },
         })),
-        { label: "DSpark · 3 draft tokens", load: { speculative_type: "dspark", spec_draft_n_max: 3 } },
-        { label: "DFlash · 3 draft tokens", load: { speculative_type: "dflash", spec_draft_n_max: 3 } },
+        {
+          label: "DSpark · 3 draft tokens",
+          load: { speculative_type: "dspark", spec_draft_n_max: 3 },
+        },
+        {
+          label: "DFlash · 3 draft tokens",
+          load: { speculative_type: "dflash", spec_draft_n_max: 3 },
+        },
       ];
     case "draft":
       return [
         OFF,
-        ...[1, 2, 3, 4, 6, 8].map((n) => ({ label: `MTP · ${n} draft tokens`, load: { speculative_type: "mtp", spec_draft_n_max: n } })),
+        ...[1, 2, 3, 4, 6, 8].map((n) => ({
+          label: `MTP · ${n} draft tokens`,
+          load: { speculative_type: "mtp", spec_draft_n_max: n },
+        })),
       ];
     case "ngram":
       return [
         OFF,
-        ...[2, 3, 4].map((n) => ({ label: `MTP · ${n} draft tokens`, load: { speculative_type: "mtp", spec_draft_n_max: n } })),
+        ...[2, 3, 4].map((n) => ({
+          label: `MTP · ${n} draft tokens`,
+          load: { speculative_type: "mtp", spec_draft_n_max: n },
+        })),
         ...NGRAM_STEPS.flatMap((s) => [
-          { label: `Ngram · ${ngramTag(s)}`, load: { speculative_type: "ngram", spec_draft_n_max: null, llama_extra_args: ngramArgs(s) } },
+          {
+            label: `Ngram · ${ngramTag(s)}`,
+            load: {
+              speculative_type: "ngram",
+              spec_draft_n_max: null,
+              llama_extra_args: ngramArgs(s),
+            },
+          },
           {
             label: `MTP + ngram · ${ngramTag(s)}`,
-            load: { speculative_type: "mtp+ngram", spec_draft_n_max: 3, llama_extra_args: ngramArgs(s) },
+            load: {
+              speculative_type: "mtp+ngram",
+              spec_draft_n_max: 3,
+              llama_extra_args: ngramArgs(s),
+            },
           },
         ]),
       ];
+    case "dspark":
+      return [
+        OFF,
+        ...[1, 2, 3, 4, 6, 8].map((n) => ({
+          label: `DSpark · ${n} draft token${n === 1 ? "" : "s"}`,
+          load: { speculative_type: "dspark", spec_draft_n_max: n },
+        })),
+        ...["q8_0", "q4_0"].map((t) => ({
+          label: `DSpark · 3 draft tokens · draft KV ${t}`,
+          load: {
+            speculative_type: "dspark",
+            spec_draft_n_max: 3,
+            spec_draft_cache_type: t,
+          },
+        })),
+        {
+          label: "MTP · 3 draft tokens",
+          load: { speculative_type: "mtp", spec_draft_n_max: 3 },
+        },
+      ];
     case "kv":
-      return ["f16", "q8_0", "q4_0"].map((t) => ({ label: `KV cache ${t}`, load: { cache_type_kv: t } }));
+      return ["f16", "q8_0", "q4_0"].map((t) => ({
+        label: `KV cache ${t}`,
+        load: { cache_type_kv: t },
+      }));
     case "context":
-      return contextSteps(maxContext).map((n) => ({ label: `Context ${fmtTokens(n)}`, load: { max_seq_length: n } }));
+      return contextSteps(maxContext).map((n) => ({
+        label: `Context ${fmtTokens(n)}`,
+        load: { max_seq_length: n },
+      }));
     case "parallel":
-      return [1, 2, 4].map((n) => ({ label: `${n} parallel slot${n === 1 ? "" : "s"}`, load: { n_parallel: n } }));
+      return [1, 2, 4].map((n) => ({
+        label: `${n} parallel slot${n === 1 ? "" : "s"}`,
+        load: { n_parallel: n },
+      }));
+    case "tune":
+      return [
+        OFF,
+        ...[1, 2, 3, 4].map((n) => ({
+          label: `MTP · ${n} draft token${n === 1 ? "" : "s"}`,
+          load: { speculative_type: "mtp", spec_draft_n_max: n },
+        })),
+        {
+          label: `Ngram · ${ngramTag(NGRAM_STOCK)}`,
+          load: {
+            speculative_type: "ngram",
+            spec_draft_n_max: null,
+            llama_extra_args: ngramArgs(NGRAM_STOCK),
+          },
+        },
+        ...[2, 3].map((n) => ({
+          label: `MTP + ngram · ${n} draft tokens`,
+          load: {
+            speculative_type: "mtp+ngram",
+            spec_draft_n_max: n,
+            llama_extra_args: ngramArgs(NGRAM_STOCK),
+          },
+        })),
+      ];
   }
+}
+
+/** How much a setting asks of the machine: the tie-break when two rows run alike. */
+function complexity(v: Variant | undefined): number {
+  if (!v) return 99;
+  const family = familyOf(v.load);
+  const rank: Record<Family, number> = {
+    off: 0,
+    ngram: 1,
+    mtp: 2,
+    "mtp+ngram": 3,
+    auto: 4,
+    dspark: 5,
+    dflash: 5,
+    other: 6,
+  };
+  return (
+    rank[family] * 10 +
+    (v.load.spec_draft_n_max ?? 0) +
+    (v.load.llama_extra_args?.length ? 1 : 0)
+  );
+}
+
+export interface TuneVerdict {
+  /** The row auto-tune hands to chat. */
+  pick: AggRow;
+  /** The raw fastest row, when the pick gave it up for a simpler setting inside the margin. */
+  fastest: AggRow | null;
+  off: AggRow | null;
+  /** Percent over speculation off, or null without an off row. */
+  gain: number | null;
+}
+
+/** Within 3% of the fastest, the simpler setting wins: the difference is noise, the extra work is not. */
+export const TUNE_MARGIN = 0.03;
+
+export function tuneVerdict(
+  rows: AggRow[],
+  variants: Variant[],
+): TuneVerdict | null {
+  if (rows.length === 0) return null;
+  const fastest = rows.reduce((a, b) => (b.mean > a.mean ? b : a));
+  const close = rows.filter((r) => r.mean >= fastest.mean * (1 - TUNE_MARGIN));
+  const byLabel = new Map(variants.map((v) => [v.label, v]));
+  const pick = close.reduce((a, b) =>
+    complexity(byLabel.get(b.label)) < complexity(byLabel.get(a.label)) ? b : a,
+  );
+  const off =
+    rows.find((r) => familyOf(byLabel.get(r.label)?.load ?? {}) === "off") ??
+    null;
+  return {
+    pick,
+    fastest: pick === fastest ? null : fastest,
+    off,
+    gain:
+      off && off.mean > 0 ? ((pick.mean - off.mean) / off.mean) * 100 : null,
+  };
 }
 
 /** Powers of two from 4K up to the model's window, capped at five rows. */
@@ -168,7 +364,8 @@ export function contextSteps(maxContext?: number | null): number[] {
   const out: number[] = [];
   for (let n = 4096; n <= top; n *= 2) out.push(n);
   if (out.length === 0) out.push(top);
-  else if (out[out.length - 1] !== top && top > out[out.length - 1]) out.push(top);
+  else if (out[out.length - 1] !== top && top > out[out.length - 1])
+    out.push(top);
   return out.slice(-5);
 }
 
@@ -182,7 +379,6 @@ export function defaultBaseline(variants: Variant[]): string | null {
   const off = variants.find((v) => familyOf(v.load) === "off");
   return off?.label ?? variants[0]?.label ?? null;
 }
-
 
 // --- load planning ------------------------------------------------------------
 
@@ -199,7 +395,11 @@ export interface ServedStatus {
   cache_type_kv?: string | null;
 }
 
-const NGRAM_FLAGS = ["--spec-ngram-mod-n-match", "--spec-ngram-mod-n-min", "--spec-ngram-mod-n-max"];
+const NGRAM_FLAGS = [
+  "--spec-ngram-mod-n-match",
+  "--spec-ngram-mod-n-min",
+  "--spec-ngram-mod-n-max",
+];
 
 // The backend's fallback codes, in words a user can act on.
 const FALLBACK_REASON: Record<string, string> = {
@@ -217,7 +417,9 @@ export function describeFallback(code: string): string {
 }
 
 /** The user's own extra args, minus any ngram tuning an earlier variant left behind. */
-export function userExtraArgs(args: readonly string[] | null | undefined): string[] {
+export function userExtraArgs(
+  args: readonly string[] | null | undefined,
+): string[] {
   const out: string[] = [];
   const list = args ?? [];
   for (let i = 0; i < list.length; i++) {
@@ -230,7 +432,10 @@ export function userExtraArgs(args: readonly string[] | null | undefined): strin
   return out;
 }
 
-export function variantLoad<T extends LoadPayload>(base: T, variant: Variant): T {
+export function variantLoad<T extends LoadPayload>(
+  base: T,
+  variant: Variant,
+): T {
   const { llama_extra_args: extra, ...rest } = variant.load;
   return {
     ...base,
@@ -244,15 +449,24 @@ export function variantLoad<T extends LoadPayload>(base: T, variant: Variant): T
 }
 
 /** Why a load did not give this row what it asked for, or null when it did. */
-export function servedMismatch(variant: Variant, st: ServedStatus): string | null {
+export function servedMismatch(
+  variant: Variant,
+  st: ServedStatus,
+): string | null {
   const want = variant.load.speculative_type;
   // Only rows that pick a mode can be let down by one; a KV or context row keeps whatever ran before.
-  if (want !== undefined && want !== null && st.spec_fallback_reason) return describeFallback(st.spec_fallback_reason);
+  if (want !== undefined && want !== null && st.spec_fallback_reason)
+    return describeFallback(st.spec_fallback_reason);
   if (want !== undefined && want !== null && canonicalSpec(want) !== "auto") {
     const got = canonicalSpec(st.speculative_type);
-    if (got !== canonicalSpec(want)) return `Studio served ${got} instead of ${canonicalSpec(want)}`;
+    if (got !== canonicalSpec(want))
+      return `Studio served ${got} instead of ${canonicalSpec(want)}`;
   }
-  if (variant.load.cache_type_kv && st.cache_type_kv && st.cache_type_kv !== variant.load.cache_type_kv) {
+  if (
+    variant.load.cache_type_kv &&
+    st.cache_type_kv &&
+    st.cache_type_kv !== variant.load.cache_type_kv
+  ) {
     return `Studio served KV ${st.cache_type_kv} instead of ${variant.load.cache_type_kv}`;
   }
   return null;
@@ -318,7 +532,9 @@ export function promptsFor(setId: string, custom: string): string[] {
       .filter(Boolean);
     return lines.length ? lines : [];
   }
-  return PROMPT_SETS.find((s) => s.id === setId)?.prompts ?? PROMPT_SETS[0].prompts;
+  return (
+    PROMPT_SETS.find((s) => s.id === setId)?.prompts ?? PROMPT_SETS[0].prompts
+  );
 }
 
 // --- results -------------------------------------------------------------------
@@ -345,7 +561,8 @@ export interface RunResult {
   at: number;
 }
 
-export type VariantState = "queued" | "loading" | "running" | "done" | "skipped" | "error" | "cancelled";
+export type VariantState =
+  "queued" | "loading" | "running" | "done" | "skipped" | "error" | "cancelled";
 
 export interface VariantOutcome {
   label: string;
@@ -360,12 +577,20 @@ export interface RunMeta {
   gpu?: string | null;
   vramGb?: number | null;
   backend?: string | null;
+  /** The GPU runtime torch was built against, e.g. "ROCm 7.1" or "CUDA 12.8". */
+  runtime?: string | null;
   llamaTag?: string | null;
   studioVersion?: string | null;
+  /** platform.platform(): "Windows-11-10.0.26200", "Linux-6.8...", "macOS-15.3-arm64". */
+  os?: string | null;
+  cpuThreads?: number | null;
+  ramGb?: number | null;
 }
 
 export interface BenchConfig {
   sweep: SweepKind;
+  /** Auto-tune's model, when it is not the one chat has loaded. */
+  tuneModel?: string | null;
   variants: Variant[];
   baseline: string | null;
   promptSet: string;
@@ -379,6 +604,14 @@ export interface BenchConfig {
   restoreAfter: boolean;
 }
 
+/** One Run Settings value from chat, as the page and the export print it. */
+export interface BaseSetting {
+  /** The load field it feeds, so a sweep that varies it can say so. */
+  field: string;
+  label: string;
+  value: string;
+}
+
 export interface BenchRun {
   id: string;
   createdAt: number;
@@ -389,6 +622,8 @@ export interface BenchRun {
   context: number | null;
   config: BenchConfig;
   meta: RunMeta;
+  /** Chat's Run Settings when the sweep started: every row loads these plus its own overrides. */
+  base?: BaseSetting[];
   outcomes: VariantOutcome[];
   results: RunResult[];
 }
@@ -424,7 +659,11 @@ function finite(x: number | null): x is number {
  * last. Throughput is the server's own rate; the client rate stands in only when a run
  * came back without timings, and the row says so.
  */
-export function aggregate(results: RunResult[], variants: Variant[], baseline: string | null): AggRow[] {
+export function aggregate(
+  results: RunResult[],
+  variants: Variant[],
+  baseline: string | null,
+): AggRow[] {
   const byLabel = new Map<string, RunResult[]>();
   for (const r of results) {
     if (r.warmup) continue;
@@ -453,7 +692,12 @@ export function aggregate(results: RunResult[], variants: Variant[], baseline: s
       pct: null,
       isBaseline: baseline !== null && label === baseline,
       ttftMs: mean(list.map((r) => r.ttftMs).filter(finite)),
-      loadMs: mean(results.filter((r) => r.variant === label).map((r) => r.loadMs).filter(finite)),
+      loadMs: mean(
+        results
+          .filter((r) => r.variant === label)
+          .map((r) => r.loadMs)
+          .filter(finite),
+      ),
       acceptRate: drafts > 0 ? accepted / drafts : null,
       first: rates[0] ?? null,
       clientOnly: server.length === 0,
@@ -461,9 +705,12 @@ export function aggregate(results: RunResult[], variants: Variant[], baseline: s
   }
   const base = rows.find((r) => r.isBaseline);
   if (base && base.mean > 0) {
-    for (const r of rows) if (!r.isBaseline) r.pct = ((r.mean - base.mean) / base.mean) * 100;
+    for (const r of rows)
+      if (!r.isBaseline) r.pct = ((r.mean - base.mean) / base.mean) * 100;
   }
-  rows.sort((a, b) => Number(a.isBaseline) - Number(b.isBaseline) || b.mean - a.mean);
+  rows.sort(
+    (a, b) => Number(a.isBaseline) - Number(b.isBaseline) || b.mean - a.mean,
+  );
   return rows;
 }
 
@@ -474,7 +721,8 @@ export function headline(rows: AggRow[]): string | undefined {
   if (others.length === 0) return undefined;
   const best = others[0];
   if (!base) return `${best.label} is fastest at ${fmtRate(best.mean)}.`;
-  if (best.mean <= base.mean) return `Nothing beats ${base.label.toLowerCase()} on this model.`;
+  if (best.mean <= base.mean)
+    return `Nothing beats ${base.label.toLowerCase()} on this model.`;
   const beat = others.filter((r) => r.mean > base.mean).length;
   const x = best.mean / base.mean;
   return `${best.label} runs ${x.toFixed(x >= 10 ? 0 : 1)}× ${base.label.toLowerCase()}. ${beat} of ${others.length} settings beat it.`;
@@ -491,9 +739,16 @@ export function highlights(rows: AggRow[]): Highlights {
   const baseline = rows.find((r) => r.isBaseline) ?? null;
   const others = rows.filter((r) => !r.isBaseline);
   const best = others[0] ?? baseline;
-  const speedup = best && baseline && baseline.mean > 0 && best !== baseline ? best.mean / baseline.mean : null;
+  const speedup =
+    best && baseline && baseline.mean > 0 && best !== baseline
+      ? best.mean / baseline.mean
+      : null;
   const withAccept = others.filter((r) => r.acceptRate !== null);
-  const bestAccept = withAccept.length ? withAccept.reduce((a, b) => ((b.acceptRate ?? 0) > (a.acceptRate ?? 0) ? b : a)) : null;
+  const bestAccept = withAccept.length
+    ? withAccept.reduce((a, b) =>
+        (b.acceptRate ?? 0) > (a.acceptRate ?? 0) ? b : a,
+      )
+    : null;
   return { best, baseline, speedup, bestAccept };
 }
 
@@ -502,7 +757,13 @@ export function highlights(rows: AggRow[]): Highlights {
  * is more than 1.5× the first measured run.
  */
 export function rampingRows(rows: AggRow[]): AggRow[] {
-  return rows.filter((r) => r.first !== null && r.n >= 3 && r.max > r.first * 1.5 && r.family !== "off");
+  return rows.filter(
+    (r) =>
+      r.first !== null &&
+      r.n >= 3 &&
+      r.max > r.first * 1.5 &&
+      r.family !== "off",
+  );
 }
 
 export interface RunPoint {
@@ -517,17 +778,23 @@ export interface RunSeries {
 }
 
 /** Every run of every variant in order, for the run-by-run chart. */
-export function runSeries(results: RunResult[], variants: Variant[]): RunSeries[] {
+export function runSeries(
+  results: RunResult[],
+  variants: Variant[],
+): RunSeries[] {
   const out: RunSeries[] = [];
   for (const v of variants) {
-    const list = results.filter((r) => r.variant === v.label).sort((a, b) => a.rep - b.rep);
+    const list = results
+      .filter((r) => r.variant === v.label)
+      .sort((a, b) => a.rep - b.rep);
     const points: RunPoint[] = [];
     for (const r of list) {
       const value = r.tps ?? r.clientTps;
       if (value === null || !Number.isFinite(value)) continue;
       points.push({ seq: r.rep + 1, warmup: r.warmup, value });
     }
-    if (points.length) out.push({ label: v.label, family: familyOf(v.load), points });
+    if (points.length)
+      out.push({ label: v.label, family: familyOf(v.load), points });
   }
   return out;
 }
@@ -545,13 +812,19 @@ export interface DepthSeries {
 }
 
 /** Throughput against draft depth, one line per family. Rows with no depth are left out. */
-export function depthSeries(rows: AggRow[], variants: Variant[]): DepthSeries[] {
+export function depthSeries(
+  rows: AggRow[],
+  variants: Variant[],
+): DepthSeries[] {
   const byFamily = new Map<Family, DepthPoint[]>();
   for (const r of rows) {
     const n = variants.find((v) => v.label === r.label)?.load.spec_draft_n_max;
     if (r.family === "off" || typeof n !== "number") continue;
     // Tuned ngram rows share a depth with the plain one; the depth line keeps plain rows only.
-    if (variants.find((v) => v.label === r.label)?.load.llama_extra_args?.length) continue;
+    if (
+      variants.find((v) => v.label === r.label)?.load.llama_extra_args?.length
+    )
+      continue;
     const list = byFamily.get(r.family) ?? [];
     list.push({ n, mean: r.mean, min: r.min, max: r.max, label: r.label });
     byFamily.set(r.family, list);
@@ -559,7 +832,8 @@ export function depthSeries(rows: AggRow[], variants: Variant[]): DepthSeries[] 
   const out: DepthSeries[] = [];
   for (const family of FAMILIES) {
     const points = byFamily.get(family);
-    if (points && points.length > 1) out.push({ family, points: points.sort((a, b) => a.n - b.n) });
+    if (points && points.length > 1)
+      out.push({ family, points: points.sort((a, b) => a.n - b.n) });
   }
   return out;
 }
@@ -587,7 +861,35 @@ export function modelShort(path: string | null | undefined): string {
   return tail.replace(/-GGUF$/i, "").replace(/\.gguf$/i, "");
 }
 
-const BACKEND_NAME: Record<string, string> = { cuda: "CUDA", rocm: "ROCm", vulkan: "Vulkan", metal: "Metal", cpu: "CPU", sycl: "SYCL" };
+/** The load fields a sweep changes from row to row. */
+export function variedFields(variants: Variant[]): Set<string> {
+  const out = new Set<string>();
+  for (const v of variants) for (const k of Object.keys(v.load)) out.add(k);
+  // The drafting pair moves together: a mode row resets the depth too.
+  if (out.has("speculative_type")) out.add("spec_draft_n_max");
+  return out;
+}
+
+/** Chat's settings as one footer line; the ones this sweep varies read "varied". */
+export function baseLine(
+  base: BaseSetting[] | undefined,
+  variants: Variant[],
+): string {
+  if (!base?.length) return "";
+  const varied = variedFields(variants);
+  return base
+    .map((b) => `${b.label} ${varied.has(b.field) ? "varied" : b.value}`)
+    .join(" · ");
+}
+
+const BACKEND_NAME: Record<string, string> = {
+  cuda: "CUDA",
+  rocm: "ROCm",
+  vulkan: "Vulkan",
+  metal: "Metal",
+  cpu: "CPU",
+  sycl: "SYCL",
+};
 
 /** What ran, where and on which build: the chart's footer and the export's provenance. */
 export function footerLines(run: BenchRun): string[] {
@@ -601,14 +903,37 @@ export function footerLines(run: BenchRun): string[] {
     c.rotatePrompts ? "prompts rotated" : "one prompt repeated",
   ].filter(Boolean);
   const m = run.meta;
-  const where = [
+  const machine = [
     m.gpu ? `${m.gpu}${m.vramGb ? ` ${Math.round(m.vramGb)} GB` : ""}` : "",
     m.backend ? (BACKEND_NAME[m.backend.toLowerCase()] ?? m.backend) : "",
+    m.runtime ?? "",
+    osShort(m.os),
+    m.cpuThreads ? `${m.cpuThreads} threads` : "",
+    m.ramGb ? `${Math.round(m.ramGb)} GB RAM` : "",
+  ].filter(Boolean);
+  const build = [
     m.llamaTag ? `llama.cpp ${m.llamaTag}` : "",
     m.studioVersion ? `Unsloth Studio ${m.studioVersion}` : "",
     new Date(run.createdAt).toISOString().slice(0, 10),
   ].filter(Boolean);
-  return [what.join(" · "), where.join(" · ")].filter(Boolean);
+  return [
+    what.join(" · "),
+    baseLine(run.base, run.config.variants),
+    machine.join(" · "),
+    build.join(" · "),
+  ].filter(Boolean);
+}
+
+/** "Windows-11-10.0.26200" reads as "Windows 11 (10.0.26200)"; Linux keeps its kernel, macOS its version. */
+export function osShort(os: string | null | undefined): string {
+  if (!os) return "";
+  const win = /^Windows-(\d+)-([\d.]+)/.exec(os);
+  if (win) return `Windows ${win[1]} (${win[2]})`;
+  const mac = /^macOS-([\d.]+)-(\w+)/.exec(os);
+  if (mac) return `macOS ${mac[1]} ${mac[2]}`;
+  const linux = /^Linux-([\d.]+[^-]*)/.exec(os);
+  if (linux) return `Linux ${linux[1]}`;
+  return os;
 }
 
 export function toMarkdown(run: BenchRun, rows: AggRow[]): string {
@@ -627,9 +952,32 @@ export function toMarkdown(run: BenchRun, rows: AggRow[]): string {
       } |`,
     );
   }
-  const skipped = run.outcomes.filter((o) => o.state === "skipped" || o.state === "error");
+  const skipped = run.outcomes.filter(
+    (o) => o.state === "skipped" || o.state === "error",
+  );
   if (skipped.length) {
-    lines.push("", ...skipped.map((o) => `- ${o.label}: ${o.state}${o.reason ? `, ${o.reason}` : ""}`));
+    lines.push(
+      "",
+      ...skipped.map(
+        (o) => `- ${o.label}: ${o.state}${o.reason ? `, ${o.reason}` : ""}`,
+      ),
+    );
+  }
+  if (run.base?.length) {
+    const varied = variedFields(run.config.variants);
+    lines.push(
+      "",
+      "<details><summary>Settings from chat</summary>",
+      "",
+      "| Setting | Value |",
+      "|---|---|",
+      ...run.base.map(
+        (b) =>
+          `| ${b.label} | ${varied.has(b.field) ? "*varied by this sweep*" : b.value} |`,
+      ),
+      "",
+      "</details>",
+    );
   }
   lines.push("", ...footerLines(run).map((l) => `_${l}_`));
   return lines.join("\n");
@@ -660,5 +1008,8 @@ function csvCell(v: unknown): string {
 }
 
 export function toCsv(run: BenchRun): string {
-  return [CSV_COLS.join(","), ...run.results.map((r) => CSV_COLS.map((c) => csvCell(r[c])).join(","))].join("\n");
+  return [
+    CSV_COLS.join(","),
+    ...run.results.map((r) => CSV_COLS.map((c) => csvCell(r[c])).join(",")),
+  ].join("\n");
 }

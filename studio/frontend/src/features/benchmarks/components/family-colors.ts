@@ -33,3 +33,11 @@ export function useFamilyColors(): Record<Family, string> {
   const { resolved } = useTheme();
   return SERIES[resolved === "dark" ? "dark" : "light"];
 }
+
+/** Accent washes read at half strength on a white card; at full they turn muddy. */
+export function useAccentWash(): (color: string, strength?: number) => string {
+  const { resolved } = useTheme();
+  const scale = resolved === "dark" ? 1 : 0.45;
+  return (color, strength = 20) =>
+    `color-mix(in oklab, ${color} ${Math.round(strength * scale)}%, transparent)`;
+}

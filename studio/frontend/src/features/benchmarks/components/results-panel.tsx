@@ -1,19 +1,51 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SectionCard } from "@/components/section-card";
+import {
+  type SegmentedTabOption,
+  SegmentedTabsList,
+} from "@/components/segmented-tabs";
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
+import { Tabs } from "@/components/ui/tabs";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { DownloadCancelledError, downloadFile } from "@/lib/native-files";
 import { cn } from "@/lib/utils";
-import { type ReactElement, type ReactNode, useMemo, useRef, useState } from "react";
+import {
+  type ReactElement,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
+  ArrowDown01Icon,
+  ChartAverageIcon,
+  Download04Icon,
+  StopIcon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "sonner";
 import {
   type AggRow,
   type BenchRun,
+  type VariantState,
   FAMILY_LABEL,
   type Family,
   SWEEP_TITLE,
-  type VariantState,
   aggregate,
   depthSeries,
   familyOf,
@@ -29,84 +61,41 @@ import {
   toCsv,
   toMarkdown,
 } from "../lib/bench-math";
-import { BenchChart, type ChartKind } from "./bench-chart";
+import { BenchChart, type ChartKind, type PendingRow } from "./bench-chart";
 import { svgToPng, svgToString } from "./chart-export";
 import { useFamilyColors } from "./family-colors";
 
-function Tile({ label, value, detail, accent }: { label: string; value: ReactNode; detail?: ReactNode; accent?: string }): ReactElement {
+function Tile({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: ReactNode;
+  detail?: ReactNode;
+}): ReactElement {
   return (
-    <div className="relative flex min-w-0 flex-col gap-1 overflow-hidden rounded-2xl border border-border/60 bg-card px-4 py-3.5">
-      {accent && <span className="absolute inset-y-0 left-0 w-1" style={{ background: accent }} aria-hidden={true} />}
-      <span className="text-ui-10 font-medium uppercase tracking-wider text-muted-foreground">{label}</span>
-      <span className="truncate text-ui-25 font-semibold leading-tight tracking-[-0.02em] tabular-nums text-foreground">{value}</span>
-      {detail && <span className="truncate text-ui-11 text-muted-foreground">{detail}</span>}
+    <div className={cn(CARD, "flex min-w-0 flex-col gap-1.5 px-5 py-4")}>
+      <span className="text-ui-11 font-medium tracking-nav text-muted-foreground">
+        {label}
+      </span>
+      <span className="truncate font-heading text-ui-30 font-semibold leading-tight tracking-[-0.02em] tabular-nums text-foreground">
+        {value}
+      </span>
+      {detail && (
+        <span className="truncate text-ui-11 text-muted-foreground">
+          {detail}
+        </span>
+      )}
     </div>
   );
 }
 
-const STATE_STYLE: Record<VariantState, string> = {
-  queued: "bg-muted text-muted-foreground",
-  loading: "bg-sky-500/12 text-sky-700 dark:text-sky-300",
-  running: "bg-primary/12 text-primary",
-  done: "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
-  skipped: "bg-amber-500/14 text-amber-800 dark:text-amber-300",
-  error: "bg-destructive/12 text-destructive",
-  cancelled: "bg-muted text-muted-foreground/70",
+const CHART_KIND_LABEL: Record<ChartKind, string> = {
+  bars: "Throughput",
+  runs: "Run by run",
+  depth: "By draft depth",
 };
-
-function StatePill({ state }: { state: VariantState }): ReactElement {
-  return (
-    <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-ui-10 font-semibold uppercase tracking-wide", STATE_STYLE[state])}>
-      {(state === "loading" || state === "running") && <span className="size-1.5 animate-pulse rounded-full bg-current" aria-hidden={true} />}
-      {state}
-    </span>
-  );
-}
-
-/** The queue while a sweep runs: one row per setting, with its live mean. */
-export function LiveProgress({ run, progress, onStop }: { run: BenchRun; progress: string; onStop: () => void }): ReactElement {
-  const colors = useFamilyColors();
-  const perRow = run.config.warmup + run.config.repetitions;
-  const total = run.config.variants.length * perRow;
-  const finishedRows = run.outcomes.filter((o) => o.state === "skipped" || o.state === "error").length * perRow;
-  const pct = total ? Math.min(100, ((run.results.length + finishedRows) / total) * 100) : 0;
-  const rows = useMemo(() => new Map(aggregate(run.results, run.config.variants, null).map((r) => [r.label, r])), [run]);
-  return (
-    <section className="flex flex-col gap-4 rounded-2xl border border-border/60 bg-card p-5">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex min-w-0 flex-col">
-          <span className="text-ui-15 font-semibold text-foreground">Running {SWEEP_TITLE[run.config.sweep].toLowerCase()}</span>
-          <span className="truncate text-ui-12 text-muted-foreground">{progress}</span>
-        </div>
-        <Button variant="outline" size="sm" className="h-9 rounded-full" onClick={onStop}>
-          Stop
-        </Button>
-      </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-        <div className="h-full rounded-full bg-primary transition-[width] duration-500 ease-out" style={{ width: `${pct}%` }} />
-      </div>
-      <ul className="flex flex-col divide-y divide-border/40">
-        {run.outcomes.map((o) => {
-          const variant = run.config.variants.find((v) => v.label === o.label);
-          const row = rows.get(o.label);
-          return (
-            <li key={o.label} className="flex items-center gap-3 py-2">
-              <span className="size-2.5 shrink-0 rounded-[3px]" style={{ background: colors[variant ? familyOf(variant.load) : "other"] }} aria-hidden={true} />
-              <span className="min-w-0 flex-1 truncate text-ui-13 text-foreground" title={o.reason}>
-                {o.label}
-                {o.reason && <span className="ml-2 text-ui-11 text-muted-foreground">{o.reason}</span>}
-              </span>
-              {row && <span className="text-ui-12 font-medium tabular-nums text-foreground">{fmtRate(row.mean)}</span>}
-              <StatePill state={o.state} />
-            </li>
-          );
-        })}
-      </ul>
-    </section>
-  );
-}
-
-const CHART_KIND_LABEL: Record<ChartKind, string> = { bars: "Throughput", runs: "Run by run", depth: "By draft depth" };
 
 function Legend({ families }: { families: Family[] }): ReactElement | null {
   const colors = useFamilyColors();
@@ -115,7 +104,11 @@ function Legend({ families }: { families: Family[] }): ReactElement | null {
     <ul className="flex flex-wrap items-center gap-x-4 gap-y-1 text-ui-11 text-muted-foreground">
       {families.map((f) => (
         <li key={f} className="flex items-center gap-1.5">
-          <span className="size-2.5 rounded-[3px]" style={{ background: colors[f] }} aria-hidden={true} />
+          <span
+            className="size-2.5 rounded-[3px]"
+            style={{ background: colors[f] }}
+            aria-hidden={true}
+          />
           {FAMILY_LABEL[f]}
         </li>
       ))}
@@ -126,7 +119,7 @@ function Legend({ families }: { families: Family[] }): ReactElement | null {
 function ResultsTable({ rows }: { rows: AggRow[] }): ReactElement {
   const colors = useFamilyColors();
   return (
-    <div className="overflow-x-auto rounded-2xl border border-border/60 bg-card">
+    <div className="overflow-x-auto rounded-xl">
       <table className="w-full text-ui-12">
         <thead>
           <tr className="text-left text-ui-10 uppercase tracking-wider text-muted-foreground [&>th]:px-4 [&>th]:py-2.5 [&>th]:font-medium">
@@ -141,18 +134,50 @@ function ResultsTable({ rows }: { rows: AggRow[] }): ReactElement {
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.label} className="border-t border-border/40 tabular-nums [&>td]:px-4 [&>td]:py-2">
+            <tr
+              key={r.label}
+              className="border-t border-border/40 tabular-nums [&>td]:px-4 [&>td]:py-2"
+            >
               <td className="flex items-center gap-2 text-foreground">
-                <span className="size-2 shrink-0 rounded-[2px]" style={{ background: colors[r.family] }} aria-hidden={true} />
+                <span
+                  className="size-2 shrink-0 rounded-[2px]"
+                  style={{ background: colors[r.family] }}
+                  aria-hidden={true}
+                />
                 <span className="truncate">{r.label}</span>
-                {r.clientOnly && <span className="text-ui-10 text-muted-foreground">client-timed</span>}
+                {r.clientOnly && (
+                  <span className="text-ui-10 text-muted-foreground">
+                    client-timed
+                  </span>
+                )}
               </td>
-              <td className="text-right font-semibold text-foreground">{fmtRate(r.mean)}</td>
-              <td className="text-right text-muted-foreground">{r.n > 1 ? `${r.min.toFixed(1)}–${r.max.toFixed(1)}` : "—"}</td>
-              <td className={cn("text-right", r.pct !== null && r.pct > 0 ? "text-foreground" : "text-muted-foreground")}>{r.isBaseline ? "baseline" : fmtPct(r.pct) || "—"}</td>
-              <td className="text-right text-muted-foreground">{fmtMs(r.ttftMs) || "—"}</td>
-              <td className="text-right text-muted-foreground">{fmtMs(r.loadMs) || "—"}</td>
-              <td className="text-right text-muted-foreground">{r.acceptRate === null ? "—" : `${Math.round(r.acceptRate * 100)}%`}</td>
+              <td className="text-right font-semibold text-foreground">
+                {fmtRate(r.mean)}
+              </td>
+              <td className="text-right text-muted-foreground">
+                {r.n > 1 ? `${r.min.toFixed(1)}–${r.max.toFixed(1)}` : "—"}
+              </td>
+              <td
+                className={cn(
+                  "text-right",
+                  r.pct !== null && r.pct > 0
+                    ? "text-foreground"
+                    : "text-muted-foreground",
+                )}
+              >
+                {r.isBaseline ? "baseline" : fmtPct(r.pct) || "—"}
+              </td>
+              <td className="text-right text-muted-foreground">
+                {fmtMs(r.ttftMs) || "—"}
+              </td>
+              <td className="text-right text-muted-foreground">
+                {fmtMs(r.loadMs) || "—"}
+              </td>
+              <td className="text-right text-muted-foreground">
+                {r.acceptRate === null
+                  ? "—"
+                  : `${Math.round(r.acceptRate * 100)}%`}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -161,12 +186,76 @@ function ResultsTable({ rows }: { rows: AggRow[] }): ReactElement {
   );
 }
 
-function Note({ tone, title, children }: { tone: "warn" | "info"; title: string; children: ReactNode }): ReactElement {
+const CARD =
+  "corner-squircle rounded-3xl bg-card ring-1 ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)]";
+
+const TOP_ROWS = 8;
+
+/** The fastest few plus the baseline: the chart answers "what wins" without a scroll. */
+function visibleRows(rows: AggRow[], expanded: boolean): AggRow[] {
+  if (expanded || rows.length <= TOP_ROWS + 1) return rows;
+  const base = rows.find((r) => r.isBaseline);
+  const rest = rows.filter((r) => !r.isBaseline).slice(0, TOP_ROWS);
+  return base ? [...rest, base] : rest;
+}
+
+function NoteChip({
+  tone,
+  label,
+  title,
+  children,
+}: {
+  tone: "warn" | "info";
+  label: string;
+  title: string;
+  children: ReactNode;
+}): ReactElement {
+  return (
+    <Popover>
+      <PopoverTrigger asChild={true}>
+        <button
+          type="button"
+          className={cn(
+            "inline-flex h-7 items-center gap-1.5 rounded-full px-2.5 text-ui-11p5 font-medium transition-colors",
+            tone === "warn"
+              ? "bg-amber-500/12 text-amber-800 hover:bg-amber-500/20 dark:text-amber-300"
+              : "bg-muted/60 text-muted-foreground hover:text-foreground",
+          )}
+        >
+          <span
+            className={cn(
+              "size-1.5 rounded-full",
+              tone === "warn" ? "bg-amber-500" : "bg-muted-foreground/60",
+            )}
+            aria-hidden={true}
+          />
+          {label}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-96 text-ui-12">
+        <p className="mb-1 font-medium text-foreground">{title}</p>
+        <div className="leading-relaxed text-muted-foreground">{children}</div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function Note({
+  tone,
+  title,
+  children,
+}: {
+  tone: "warn" | "info";
+  title: string;
+  children: ReactNode;
+}): ReactElement {
   return (
     <div
       className={cn(
         "flex flex-col gap-1 rounded-xl border px-4 py-3 text-ui-12",
-        tone === "warn" ? "border-amber-500/30 bg-amber-500/6" : "border-border/60 bg-muted/30",
+        tone === "warn"
+          ? "border-amber-500/30 bg-amber-500/6"
+          : "border-border/60 bg-muted/30",
       )}
     >
       <span className="font-medium text-foreground">{title}</span>
@@ -175,152 +264,403 @@ function Note({ tone, title, children }: { tone: "warn" | "info"; title: string;
   );
 }
 
-export function RunResults({ run }: { run: BenchRun }): ReactElement {
-  const [kind, setKind] = useState<ChartKind>("bars");
-  const svgRef = useRef<SVGSVGElement | null>(null);
-  const rows = useMemo(() => aggregate(run.results, run.config.variants, run.config.baseline), [run]);
-  const series = useMemo(() => runSeries(run.results, run.config.variants), [run]);
-  const depth = useMemo(() => depthSeries(rows, run.config.variants), [rows, run]);
+const LIVE_STATUS: Partial<Record<VariantState, string>> = {
+  queued: "Queued",
+  loading: "Loading…",
+  running: "Measuring…",
+};
+
+/** Its own component, so the once-a-second tick repaints one span and not the chart. */
+function Elapsed({ since }: { since: number }): ReactElement {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+  const sec = Math.max(0, Math.round((now - since) / 1000));
+  return (
+    <>
+      {Math.floor(sec / 60)}:{String(sec % 60).padStart(2, "0")}
+    </>
+  );
+}
+
+export function RunResults({
+  run,
+  live = false,
+  progress,
+  onStop,
+}: {
+  run: BenchRun;
+  live?: boolean;
+  progress?: string;
+  onStop?: () => void;
+}): ReactElement {
+  const [view, setView] = useState<ChartKind | "table">("bars");
+  const [expanded, setExpanded] = useState(false);
+  const exportRef = useRef<SVGSVGElement | null>(null);
+  const spareRef = useRef<SVGSVGElement | null>(null);
+  const rows = useMemo(
+    () => aggregate(run.results, run.config.variants, run.config.baseline),
+    [run],
+  );
+  const series = useMemo(
+    () => runSeries(run.results, run.config.variants),
+    [run],
+  );
+  const depth = useMemo(
+    () => depthSeries(rows, run.config.variants),
+    [rows, run],
+  );
   const hl = highlights(rows);
   const ramping = rampingRows(rows);
-  const skipped = run.outcomes.filter((o) => (o.state === "skipped" || o.state === "error") && o.reason);
-  const kinds: ChartKind[] = depth.length ? ["bars", "runs", "depth"] : ["bars", "runs"];
+  const skipped = run.outcomes.filter(
+    (o) => (o.state === "skipped" || o.state === "error") && o.reason,
+  );
+  const kinds: ChartKind[] = depth.length
+    ? ["bars", "runs", "depth"]
+    : ["bars", "runs"];
   const families = [...new Set(rows.map((r) => r.family))];
-  const colors = useFamilyColors();
-  const title = `${SWEEP_TITLE[run.config.sweep]} · ${modelShort(run.model)}`;
+  const title = `${SWEEP_TITLE[run.config.sweep]} · ${modelShort(run.model) || "reading the model"}`;
   const footer = footerLines(run);
-  const fileBase = `${run.config.sweep}-${modelShort(run.model) || "model"}-${new Date(run.createdAt).toISOString().slice(0, 10)}`.replace(/[^\w.-]+/g, "_");
+  const fileBase =
+    `${run.config.sweep}-${modelShort(run.model) || "model"}-${new Date(run.createdAt).toISOString().slice(0, 10)}`.replace(
+      /[^\w.-]+/g,
+      "_",
+    );
+
+  // In a live run the queue is the chart: rows still to come sit under the measured ones.
+  const measured = new Set(rows.map((r) => r.label));
+  const pending: PendingRow[] = live
+    ? run.outcomes
+        .filter((o) => LIVE_STATUS[o.state] && !measured.has(o.label))
+        .map((o) => {
+          const v = run.config.variants.find((x) => x.label === o.label);
+          return {
+            label: o.label,
+            family: v ? familyOf(v.load) : "other",
+            status: LIVE_STATUS[o.state] ?? "",
+            active: o.state !== "queued",
+          };
+        })
+    : [];
+  const perRow = run.config.warmup + run.config.repetitions;
+  const settled =
+    run.outcomes.filter((o) => o.state === "skipped" || o.state === "error")
+      .length * perRow;
+  const fraction = run.config.variants.length
+    ? Math.min(
+        1,
+        (run.results.length + settled) / (run.config.variants.length * perRow),
+      )
+    : 0;
+  const current = run.outcomes.find(
+    (o) => o.state === "loading" || o.state === "running",
+  );
+  const currentIndex = current
+    ? run.outcomes.findIndex((o) => o.label === current.label)
+    : -1;
 
   const save = async (content: string | Blob, name: string, mime: string) => {
     try {
       await downloadFile(content, name, mime);
     } catch (err) {
-      if (!(err instanceof DownloadCancelledError)) toast.error("Could not save the file", { description: err instanceof Error ? err.message : String(err) });
+      if (!(err instanceof DownloadCancelledError))
+        toast.error("Could not save the file", {
+          description: err instanceof Error ? err.message : String(err),
+        });
     }
   };
 
-  if (rows.length === 0) {
+  if (rows.length === 0 && !live) {
     return (
-      <div className="flex flex-col gap-3">
-        <Note tone="info" title="No measured runs in this sweep">
-          Every setting was skipped or failed before it could run. The reasons are below.
-        </Note>
-        {skipped.map((o) => (
-          <p key={o.label} className="text-ui-12 text-muted-foreground">
-            <span className="text-foreground">{o.label}</span>: {o.reason}
-          </p>
-        ))}
-      </div>
+      <Note tone="info" title="No measured runs in this sweep">
+        <ul className="flex flex-col gap-0.5">
+          {skipped.map((o) => (
+            <li key={o.label}>
+              <span className="text-foreground">{o.label}</span>: {o.reason}
+            </li>
+          ))}
+        </ul>
+      </Note>
     );
   }
 
+  const views: (ChartKind | "table")[] = live ? kinds : [...kinds, "table"];
+  const shownView = views.includes(view) ? view : "bars";
+  const viewOptions = views.map((k) => ({
+    value: k,
+    label: k === "table" ? "Table" : CHART_KIND_LABEL[k],
+  })) as unknown as readonly [
+    SegmentedTabOption<ChartKind | "table">,
+    SegmentedTabOption<ChartKind | "table">,
+    ...SegmentedTabOption<ChartKind | "table">[],
+  ];
+  const isTable = shownView === "table";
+  const chartKind: ChartKind = shownView === "table" ? "bars" : shownView;
+  // Live rows keep queue order, so bars never jump as a faster one lands; the ranking waits for the end.
+  const order = new Map(run.config.variants.map((v, i) => [v.label, i]));
+  const top = live
+    ? [...rows].sort(
+        (a, b) => (order.get(a.label) ?? 0) - (order.get(b.label) ?? 0),
+      )
+    : visibleRows(rows, expanded);
+  const hidden = rows.length - top.length;
+  const folded = !live && (isTable || hidden > 0);
+
   return (
     <div className="flex flex-col gap-4">
+      {live && (
+        <SectionCard
+          icon={<HugeiconsIcon icon={ChartAverageIcon} className="size-5" />}
+          title={SWEEP_TITLE[run.config.sweep]}
+          description={progress ?? "Starting"}
+          className="shadow-border border border-border/60 bg-card/90 ring-0"
+          headerAction={
+            onStop && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={onStop}
+                className="h-8 rounded-full px-3.5 text-xs shadow-sm"
+              >
+                <HugeiconsIcon icon={StopIcon} className="size-3" />
+                Stop
+              </Button>
+            )
+          }
+        >
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded-full bg-muted px-2.5 py-1 text-ui-10 font-semibold text-foreground">
+                {current ? "Running" : "Finishing"}
+              </span>
+              {current && currentIndex >= 0 && (
+                <span className="rounded-full border border-border/60 px-2.5 py-1 text-ui-10 font-medium text-foreground/80">
+                  Row {currentIndex + 1} of {run.outcomes.length}
+                </span>
+              )}
+              <span className="text-ui-10 tabular-nums text-muted-foreground">
+                <Elapsed since={run.createdAt} /> elapsed
+              </span>
+            </div>
+            <div className="flex justify-between text-xs text-muted-foreground">
+              <span>
+                {run.results.length} of {run.config.variants.length * perRow}{" "}
+                generations
+              </span>
+              <span>{Math.round(fraction * 100)}%</span>
+            </div>
+            <Progress
+              value={fraction * 100}
+              className="h-2 bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)]"
+            />
+          </div>
+        </SectionCard>
+      )}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <Tile
           label="Fastest"
           value={hl.best ? fmtRate(hl.best.mean) : "—"}
-          detail={hl.best?.label}
-          accent={hl.best ? colors[hl.best.family] : undefined}
+          detail={hl.best?.label ?? "Waiting on the first row"}
         />
         <Tile
-          label={hl.baseline ? `vs ${hl.baseline.label.toLowerCase()}` : "Speed-up"}
-          value={hl.speedup ? `${hl.speedup.toFixed(hl.speedup >= 10 ? 0 : 2)}×` : "—"}
-          detail={hl.baseline ? `baseline ${fmtRate(hl.baseline.mean)}` : "Pick a baseline row to compare against"}
+          label={
+            hl.baseline ? `vs ${hl.baseline.label.toLowerCase()}` : "Speed-up"
+          }
+          value={
+            hl.speedup
+              ? `${hl.speedup.toFixed(hl.speedup >= 10 ? 0 : 2)}×`
+              : "—"
+          }
+          detail={
+            hl.baseline
+              ? `baseline ${fmtRate(hl.baseline.mean)}`
+              : "Star a row to compare against it"
+          }
         />
         <Tile
           label="Best draft acceptance"
-          value={hl.bestAccept?.acceptRate != null ? `${Math.round(hl.bestAccept.acceptRate * 100)}%` : "—"}
-          detail={hl.bestAccept?.label ?? "No speculative rows ran"}
-          accent={hl.bestAccept ? colors[hl.bestAccept.family] : undefined}
+          value={
+            hl.bestAccept?.acceptRate != null
+              ? `${Math.round(hl.bestAccept.acceptRate * 100)}%`
+              : "—"
+          }
+          detail={hl.bestAccept?.label ?? "No speculative rows yet"}
         />
       </div>
 
-      <section className="flex flex-col gap-3 rounded-2xl border border-border/60 bg-card p-3 sm:p-4">
+      <section className={cn(CARD, "flex flex-col gap-3 p-3 sm:p-4")}>
         <div className="flex flex-wrap items-center gap-3 px-1">
-          <div className="flex items-center gap-0.5 rounded-full bg-muted/60 p-0.5 text-ui-12">
-            {kinds.map((k) => (
-              <button
-                key={k}
-                type="button"
-                onClick={() => setKind(k)}
-                className={cn(
-                  "rounded-full px-3 py-1 font-medium transition-colors",
-                  kind === k ? "bg-background text-foreground shadow-sm ring-1 ring-border/50" : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {CHART_KIND_LABEL[k]}
-              </button>
-            ))}
-          </div>
+          <Tabs
+            value={shownView}
+            onValueChange={(v) => setView(v as ChartKind | "table")}
+            className="contents"
+          >
+            <SegmentedTabsList
+              value={shownView}
+              options={viewOptions}
+              ariaLabel="Chart view"
+              size="compact"
+            />
+          </Tabs>
           <Legend families={families} />
           <div className="flex-1" />
-          <div className="flex flex-wrap items-center gap-1.5">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 rounded-full"
-              onClick={async () => {
-                if (await copyToClipboard(toMarkdown(run, rows))) toast.success("Copied as a markdown table");
-              }}
+          {ramping.length > 0 && (
+            <NoteChip
+              tone="warn"
+              label={`${ramping.length} ramping`}
+              title="Some settings kept speeding up from run to run"
             >
-              Copy markdown
-            </Button>
-            <Button variant="ghost" size="sm" className="h-8 rounded-full" onClick={() => void save(toCsv(run), `${fileBase}.csv`, "text/csv")}>
-              CSV
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 rounded-full"
-              onClick={() => svgRef.current && void save(svgToString(svgRef.current), `${fileBase}.svg`, "image/svg+xml")}
+              {ramping.map((r) => r.label).join(", ")} ran more than 1.5× faster
+              by the end than on the first measured run. That is ngram drafting
+              recognising text it has already seen. Real chats rarely repeat
+              like that, so trust the first run (
+              {ramping.map((r) => fmtRate(r.first ?? 0)).join(", ")}) more than
+              the average.
+              {!run.config.rotatePrompts &&
+                " Turning on Rotate prompts makes this much smaller."}
+            </NoteChip>
+          )}
+          {skipped.length > 0 && (
+            <NoteChip
+              tone="info"
+              label={`${skipped.length} skipped`}
+              title={`${skipped.length} setting${skipped.length === 1 ? "" : "s"} did not run`}
             >
-              SVG
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 rounded-full"
-              onClick={async () => {
-                if (!svgRef.current) return;
-                try {
-                  await save(await svgToPng(svgRef.current), `${fileBase}.png`, "image/png");
-                } catch (err) {
-                  toast.error("Could not render the PNG", { description: err instanceof Error ? err.message : String(err) });
-                }
-              }}
-            >
-              PNG
-            </Button>
+              <ul className="flex flex-col gap-0.5">
+                {skipped.map((o) => (
+                  <li key={o.label}>
+                    <span className="text-foreground">{o.label}</span>:{" "}
+                    {o.reason}
+                  </li>
+                ))}
+              </ul>
+            </NoteChip>
+          )}
+          {!live && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild={true}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 gap-1.5 rounded-full"
+                >
+                  <HugeiconsIcon
+                    icon={Download04Icon}
+                    strokeWidth={1.75}
+                    className="size-3.5"
+                  />
+                  Export
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onSelect={async () => {
+                    if (await copyToClipboard(toMarkdown(run, rows)))
+                      toast.success("Copied as a markdown table");
+                  }}
+                >
+                  Copy as markdown
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() =>
+                    void save(toCsv(run), `${fileBase}.csv`, "text/csv")
+                  }
+                >
+                  Save CSV
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() =>
+                    exportRef.current &&
+                    void save(
+                      svgToString(exportRef.current),
+                      `${fileBase}.svg`,
+                      "image/svg+xml",
+                    )
+                  }
+                >
+                  Save chart as SVG
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={async () => {
+                    if (!exportRef.current) return;
+                    try {
+                      await save(
+                        await svgToPng(exportRef.current),
+                        `${fileBase}.png`,
+                        "image/png",
+                      );
+                    } catch (err) {
+                      toast.error("Could not render the PNG", {
+                        description:
+                          err instanceof Error ? err.message : String(err),
+                      });
+                    }
+                  }}
+                >
+                  Save chart as PNG
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        </div>
+
+        {isTable ? (
+          <ResultsTable rows={rows} />
+        ) : (
+          <div className="overflow-hidden rounded-xl">
+            <BenchChart
+              kind={chartKind}
+              rows={chartKind === "bars" ? top : rows}
+              series={series}
+              depth={depth}
+              title={title}
+              subtitle={headline(rows)}
+              footer={footer}
+              pending={chartKind === "bars" ? pending : []}
+              svgRef={folded ? spareRef : exportRef}
+            />
           </div>
-        </div>
-        <div className="overflow-hidden rounded-xl">
-          <BenchChart kind={kind} rows={rows} series={series} depth={depth} title={title} subtitle={headline(rows)} footer={footer} svgRef={svgRef} />
-        </div>
+        )}
+        {!isTable &&
+          !live &&
+          chartKind === "bars" &&
+          rows.length > TOP_ROWS + 1 && (
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              className="mx-auto flex items-center gap-1.5 rounded-full px-3 py-1 text-ui-12 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+            >
+              <HugeiconsIcon
+                icon={ArrowDown01Icon}
+                strokeWidth={1.75}
+                className={cn(
+                  "size-3.5 transition-transform",
+                  expanded && "rotate-180",
+                )}
+              />
+              {expanded
+                ? `Show the top ${TOP_ROWS}`
+                : `Show all ${rows.length} settings (${hidden} more)`}
+            </button>
+          )}
+        {/* Exports always carry every row, whatever the screen is folded to. */}
+        {folded && (
+          <div className="hidden" aria-hidden={true}>
+            <BenchChart
+              kind={chartKind}
+              rows={rows}
+              series={series}
+              depth={depth}
+              title={title}
+              subtitle={headline(rows)}
+              footer={footer}
+              svgRef={exportRef}
+            />
+          </div>
+        )}
       </section>
-
-      {ramping.length > 0 && (
-        <Note tone="warn" title="Some settings kept speeding up from run to run">
-          {ramping.map((r) => r.label).join(", ")} ran more than 1.5× faster by the end than on the first measured run. That is
-          ngram drafting recognising text it has already seen. Real chats rarely repeat like that, so trust the first run (
-          {ramping.map((r) => `${fmtRate(r.first ?? 0)}`).join(", ")}) more than the average.
-          {!run.config.rotatePrompts && " Turning on Rotate prompts makes this much smaller."}
-        </Note>
-      )}
-
-      {skipped.length > 0 && (
-        <Note tone="info" title={`${skipped.length} setting${skipped.length === 1 ? "" : "s"} didn't run`}>
-          <ul className="flex flex-col gap-0.5">
-            {skipped.map((o) => (
-              <li key={o.label}>
-                <span className="text-foreground">{o.label}</span>: {o.reason}
-              </li>
-            ))}
-          </ul>
-        </Note>
-      )}
-
-      <ResultsTable rows={rows} />
     </div>
   );
 }

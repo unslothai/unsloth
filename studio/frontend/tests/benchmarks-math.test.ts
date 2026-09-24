@@ -10,6 +10,7 @@ import {
   type RunResult,
   type Variant,
   aggregate,
+  baseLine,
   canonicalSpec,
   contextSteps,
   depthSeries,
@@ -21,7 +22,9 @@ import {
   rampingRows,
   servedMismatch,
   sweepVariants,
+  osShort,
   toMarkdown,
+  tuneVerdict,
   userExtraArgs,
   variantLoad,
 } from "../src/features/benchmarks/lib/bench-math.ts";
@@ -117,7 +120,7 @@ test("families follow the mode, including legacy spellings", () => {
 });
 
 test("every preset has unique labels, since a label is a row's identity", () => {
-  for (const kind of ["spec", "draft", "ngram", "kv", "context", "parallel"] as const) {
+  for (const kind of ["spec", "draft", "ngram", "dspark", "kv", "context", "parallel", "tune"] as const) {
     const labels = sweepVariants(kind, 131072).map((v) => v.label);
     assert.equal(new Set(labels).size, labels.length, kind);
   }
@@ -206,9 +209,55 @@ test("the markdown export carries provenance and the rows that did not run", () 
   };
   assert.deepEqual(footerLines(run), [
     "Qwen3.8-27B Q4_K_M · KV q8_0 · ctx 32K · 3 measured runs per setting (+1 warm-up) · 256 max tokens · prompts rotated",
-    "AMD Radeon AI PRO R9700 32 GB · Vulkan · llama.cpp b10840 · 2026-09-10",
+    "AMD Radeon AI PRO R9700 32 GB · Vulkan",
+    "llama.cpp b10840 · 2026-09-10",
   ]);
   const md = toMarkdown(run, aggregate(run.results, run.config.variants, OFF.label));
   assert.match(md, /\| MTP · 3 draft tokens \| 56\.0 tok\/s \| \+93% \|/);
   assert.match(md, /- DFlash · 3 draft tokens: skipped, this model ships no drafter for this mode/);
+});
+
+test("chat's settings print in the footer, with the swept one marked varied", () => {
+  const base = [
+    { field: "cache_type_kv", label: "KV Cache Dtype", value: "q8_0" },
+    { field: "speculative_type", label: "Speculative Decoding", value: "MTP+Ngram" },
+    { field: "spec_draft_n_max", label: "Draft Tokens", value: "3" },
+    { field: "n_parallel", label: "Parallel Slots", value: "2" },
+  ];
+  assert.equal(baseLine(base, [OFF, MTP3]), "KV Cache Dtype q8_0 · Speculative Decoding varied · Draft Tokens varied · Parallel Slots 2");
+  const kv: Variant = { label: "KV cache f16", load: { cache_type_kv: "f16" } };
+  assert.equal(baseLine(base, [kv]), "KV Cache Dtype varied · Speculative Decoding MTP+Ngram · Draft Tokens 3 · Parallel Slots 2");
+});
+
+test("auto-tune covers off, MTP depths, ngram and the pair, and prefers the simpler row inside the margin", () => {
+  const variants = sweepVariants("tune");
+  assert.deepEqual(
+    variants.map((v) => v.load.speculative_type),
+    ["off", "mtp", "mtp", "mtp", "mtp", "ngram", "mtp+ngram", "mtp+ngram"],
+  );
+  const results: RunResult[] = [];
+  const rates: Record<string, number> = {
+    "Speculation off": 30,
+    "MTP · 1 draft token": 38,
+    "MTP · 2 draft tokens": 41.5,
+    "MTP · 3 draft tokens": 42, // fastest, but within 3% of the 2-token row
+    "MTP · 4 draft tokens": 39,
+    "Ngram · match 24, min 48 (stock)": 31,
+    "MTP + ngram · 2 draft tokens": 42.5, // fastest of all, one more knob than MTP alone
+    "MTP + ngram · 3 draft tokens": 40,
+  };
+  for (const [label, tps] of Object.entries(rates)) results.push(result(label, 0, tps));
+  const verdict = tuneVerdict(aggregate(results, variants, null), variants);
+  assert.ok(verdict);
+  assert.equal(verdict.pick.label, "MTP · 2 draft tokens");
+  assert.equal(verdict.fastest?.label, "MTP + ngram · 2 draft tokens");
+  assert.equal(verdict.off?.label, "Speculation off");
+  assert.equal(Math.round(verdict.gain ?? 0), 38);
+});
+
+test("os strings read as a person would say them", () => {
+  assert.equal(osShort("Windows-11-10.0.26200-SP0"), "Windows 11 (10.0.26200)");
+  assert.equal(osShort("macOS-15.3-arm64-arm-64bit"), "macOS 15.3 arm64");
+  assert.equal(osShort("Linux-6.8.0-45-generic-x86_64-with-glibc2.39"), "Linux 6.8.0");
+  assert.equal(osShort(null), "");
 });

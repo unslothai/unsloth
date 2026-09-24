@@ -347,6 +347,7 @@ from routes import (
     video_router,
     video_openai_router,
     youtube_router,
+    benchmarks_router,
 )
 from routes.llama import router as llama_router
 from routes.llama_compat import is_engine_probe_path, router as llama_compat_router
@@ -1638,6 +1639,7 @@ app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(skills_router, prefix = "/api/skills", tags = ["skills"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
+app.include_router(benchmarks_router, prefix = "/api/benchmarks", tags = ["benchmarks"])
 app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profile"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
