@@ -66,6 +66,7 @@ def _swap_planned_stacks(model, keys, dtype):
     plan = plan_mxfp4_keep_packed(model, keys)
     return _swap_in_stacks(plan.blocks if plan is not None else [], dtype)
 
+
 MODELING = """
 import torch
 import torch.nn as nn
@@ -284,7 +285,11 @@ def test_keep_packed_is_mxfp4_only_and_switchable(monkeypatch):
     assert not keep_mxfp4_experts_packed(_mxfp4_plan())
 
 
-def _tiny_model(name, layers = 2, source = MODELING):
+def _tiny_model(
+    name,
+    layers = 2,
+    source = MODELING,
+):
     mod = _remote_module(name, source)
     config = mod.TinyMoeConfig(num_hidden_layers = layers)
     with torch.device("meta"):
@@ -842,7 +847,9 @@ def test_packed_expert_targets_follow_the_finetune_family_flags(flags, experts, 
     model.vision_tower = nn.Module()
     model.vision_tower.attn = nn.Module()
     model.vision_tower.attn.q_proj = nn.Linear(H, H, bias = False)
-    got = _peft_target_parameters(model, monkeypatch, target_modules = ["q_proj", "w1", "w2"], **flags)
+    got = _peft_target_parameters(
+        model, monkeypatch, target_modules = ["q_proj", "w1", "w2"], **flags
+    )
     want = ["experts.gate_up_proj", "experts.down_proj"] if experts else []
     assert sorted(got or []) == sorted(want)
 
@@ -882,7 +889,9 @@ def test_only_blocks_the_remote_moe_shim_dispatches_are_stacked():
     training branch, or expert parallel) would index or iterate the stack itself, which breaks
     under an expert LoRA wrapper. Such experts stay packed one Linear each instead."""
     assert TRAINING_MODELING != MODELING
-    _, model = _tiny_model("transformers_modules.k3s_train_branch.modeling_tinymoe", source = TRAINING_MODELING)
+    _, model = _tiny_model(
+        "transformers_modules.k3s_train_branch.modeling_tinymoe", source = TRAINING_MODELING
+    )
     assert not is_remote_deepseek_moe(model.layers[0].mlp)
     plan = plan_mxfp4_keep_packed(model, _keys())
     assert plan.blocks == [] and len(plan.linears) == 2 * E * 3

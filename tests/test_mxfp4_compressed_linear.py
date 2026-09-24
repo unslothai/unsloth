@@ -848,7 +848,9 @@ def test_an_explicit_decompress_request_keeps_the_stock_route(request_kwargs, tm
         quantization_config = CompressedTensorsConfig(**request_kwargs),
     )
     assert not any(isinstance(m, Mxfp4PackedLinear) for m in model.modules())
-    reference = AutoModelForCausalLM.from_pretrained(bf16_dir, dtype = torch.bfloat16, device_map = {"": device})
+    reference = AutoModelForCausalLM.from_pretrained(
+        bf16_dir, dtype = torch.bfloat16, device_map = {"": device}
+    )
     ids = torch.randint(0, 256, (1, 12), device = device)
     with torch.no_grad():
         assert torch.equal(model(input_ids = ids).logits, reference(input_ids = ids).logits)
@@ -889,7 +891,9 @@ def test_the_sixteen_bit_route_decodes_in_the_load_dtype(tmp_path):
     packed_dir, _ = _write_tiny_mxfp4_llama(str(tmp_path))
     assert install_compressed_tensors_keep_packed()
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    model = AutoModelForCausalLM.from_pretrained(packed_dir, dtype = torch.float16, device_map = {"": device})
+    model = AutoModelForCausalLM.from_pretrained(
+        packed_dir, dtype = torch.float16, device_map = {"": device}
+    )
     packed = [m for m in model.modules() if isinstance(m, Mxfp4PackedLinear)]
     assert len(packed) == 2 * 7
     assert {m.compute_dtype for m in packed} == {torch.float16}
@@ -907,8 +911,20 @@ def test_adoption_declines_a_scheme_that_also_quantizes_activations():
     quantizes the input. Adopting such a module would silently drop that."""
     from unsloth.models.mxfp4_compressed_linear import is_mxfp4_scheme
 
-    activations = {"num_bits": 8, "type": "int", "strategy": "token", "dynamic": True, "symmetric": True}
-    groups = {"group_0": {"targets": ["Linear"], "weights": _MXFP4_WEIGHTS, "input_activations": activations}}
+    activations = {
+        "num_bits": 8,
+        "type": "int",
+        "strategy": "token",
+        "dynamic": True,
+        "symmetric": True,
+    }
+    groups = {
+        "group_0": {
+            "targets": ["Linear"],
+            "weights": _MXFP4_WEIGHTS,
+            "input_activations": activations,
+        }
+    }
     model = _ct_compressed_model(groups = groups)
     assert not is_mxfp4_scheme(model.a.quantization_scheme, "mxfp4-pack-quantized")
     reference = copy.deepcopy(model)
@@ -923,9 +939,19 @@ def test_adoption_declines_a_scheme_that_also_quantizes_activations():
 def test_adoption_declines_when_another_compressed_format_needs_the_hook():
     """An FP8 module keeps its compressed weight under `weight`; compressed-tensors' model-wide
     hook still has to decompress it, so the MXFP4 modules are not adopted either."""
-    fp8 = {"num_bits": 8, "type": "float", "strategy": "channel", "symmetric": True, "dynamic": False}
+    fp8 = {
+        "num_bits": 8,
+        "type": "float",
+        "strategy": "channel",
+        "symmetric": True,
+        "dynamic": False,
+    }
     groups = {
-        "group_0": {"targets": ["re:^a$", "re:^b$"], "weights": _MXFP4_WEIGHTS, "format": "mxfp4-pack-quantized"},
+        "group_0": {
+            "targets": ["re:^a$", "re:^b$"],
+            "weights": _MXFP4_WEIGHTS,
+            "format": "mxfp4-pack-quantized",
+        },
         "group_1": {"targets": ["re:^latent$"], "weights": fp8, "format": "float-quantized"},
     }
     model = _ct_compressed_model(groups = groups)
@@ -946,7 +972,9 @@ def test_initialisers_that_rewrite_the_base_weight_refuse_a_packed_base(init):
     peft = pytest.importorskip("peft")
     holder = nn.Sequential(_filled(32, 64))
     with pytest.raises(NotImplementedError, match = "packed in MXFP4"):
-        peft.get_peft_model(holder, peft.LoraConfig(r = 4, target_modules = ["0"], init_lora_weights = init))
+        peft.get_peft_model(
+            holder, peft.LoraConfig(r = 4, target_modules = ["0"], init_lora_weights = init)
+        )
     # The default initialisation, and the same initialiser on a dense base, are untouched.
     peft.get_peft_model(nn.Sequential(_filled(32, 64)), peft.LoraConfig(r = 4, target_modules = ["0"]))
     dense = nn.Sequential(nn.Linear(64, 32, bias = False))
@@ -962,7 +990,9 @@ def test_the_sixteen_bit_route_declines_without_the_zoo_full_save_support(tmp_pa
     packed_dir, _ = _write_tiny_mxfp4_llama(str(tmp_path))
     assert install_compressed_tensors_keep_packed()
     monkeypatch.delattr(zoo_mxfp4, "_densified_module_names")
-    model = AutoModelForCausalLM.from_pretrained(packed_dir, dtype = torch.bfloat16, device_map = {"": 0})
+    model = AutoModelForCausalLM.from_pretrained(
+        packed_dir, dtype = torch.bfloat16, device_map = {"": 0}
+    )
     assert not any(isinstance(m, Mxfp4PackedLinear) for m in model.modules())
 
 
@@ -1007,7 +1037,9 @@ def test_merge_and_unmerge_under_an_accelerate_hook():
     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
     packed_model, dense_model = _lora_pair(scale_range = (118, 134))
-    add_hook_to_module(packed_model.base_model.model[0].base_layer, AlignDevicesHook(io_same_device = True))
+    add_hook_to_module(
+        packed_model.base_model.model[0].base_layer, AlignDevicesHook(io_same_device = True)
+    )
     x = torch.randn(3, 64, generator = torch.Generator().manual_seed(0)).to(torch.bfloat16)
     with torch.no_grad():
         with_lora = packed_model(x)
@@ -1027,7 +1059,9 @@ def test_the_sixteen_bit_route_plans_only_mxfp4_checkpoints(tmp_path, monkeypatc
     from transformers import AutoModelForCausalLM
     from unsloth.models.mxfp4_compressed_linear import install_compressed_tensors_keep_packed
 
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_compressed_tensors_bnb.py")
+    path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "test_compressed_tensors_bnb.py"
+    )
     spec = importlib.util.spec_from_file_location("_k3s_ct_bnb_tests", path)
     ct_bnb_tests = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ct_bnb_tests)
@@ -1040,5 +1074,9 @@ def test_the_sixteen_bit_route_plans_only_mxfp4_checkpoints(tmp_path, monkeypatc
     AutoModelForCausalLM.from_pretrained(int4_dir, dtype = torch.bfloat16, device_map = {"": 0})
     assert calls == []
     mxfp4_dir, _ = _write_tiny_mxfp4_llama(str(tmp_path / "mxfp4"))
-    model = AutoModelForCausalLM.from_pretrained(mxfp4_dir, dtype = torch.bfloat16, device_map = {"": 0})
-    assert len(calls) == 1 and sum(isinstance(m, Mxfp4PackedLinear) for m in model.modules()) == 2 * 7
+    model = AutoModelForCausalLM.from_pretrained(
+        mxfp4_dir, dtype = torch.bfloat16, device_map = {"": 0}
+    )
+    assert (
+        len(calls) == 1 and sum(isinstance(m, Mxfp4PackedLinear) for m in model.modules()) == 2 * 7
+    )

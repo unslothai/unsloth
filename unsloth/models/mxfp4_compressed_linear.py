@@ -187,7 +187,9 @@ class Mxfp4PackedLinear(nn.Linear):
 def is_mxfp4_scheme(scheme, default_format = None) -> bool:
     # The packed forward only dequantizes the weight: a scheme that also quantizes
     # activations is not one it can run.
-    if any(getattr(scheme, f, None) is not None for f in ("input_activations", "output_activations")):
+    if any(
+        getattr(scheme, f, None) is not None for f in ("input_activations", "output_activations")
+    ):
         return False
     fmt = getattr(scheme, "format", None) or default_format
     fmt = getattr(fmt, "value", fmt)
@@ -367,7 +369,12 @@ def stack_packed_expert_linears(
         new = _new_stacked_experts(experts, dims, dtype or experts[0].w1.compute_dtype, "meta")
         empty = lambda *shape: torch.empty(shape, dtype = torch.uint8, device = device)  # noqa: E731
         for target, out_rows, in_features, projections in (
-            ("gate_up", 2 * inter, hidden, (("w1", slice(0, inter)), ("w3", slice(inter, 2 * inter)))),
+            (
+                "gate_up",
+                2 * inter,
+                hidden,
+                (("w1", slice(0, inter)), ("w3", slice(inter, 2 * inter))),
+            ),
             ("down", hidden, inter, (("w2", slice(None)),)),
         ):
             stacked_blocks = empty(E, out_rows, in_features // 32, 16)

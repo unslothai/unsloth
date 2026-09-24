@@ -173,11 +173,13 @@ def test_omni_reaches_the_vllm_guard_rather_than_the_language_model_path():
 
 def _tiny(cls):
     from transformers import LlamaConfig
-
     return cls(
         LlamaConfig(
-            hidden_size = 4, num_hidden_layers = 1, num_attention_heads = 1,
-            vocab_size = 8, intermediate_size = 8,
+            hidden_size = 4,
+            num_hidden_layers = 1,
+            num_attention_heads = 1,
+            vocab_size = 8,
+            intermediate_size = 8,
         )
     )
 
