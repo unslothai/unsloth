@@ -6049,7 +6049,7 @@ class DiffusionBackend:
                 check_cancelled()
                 if transformer is not None:
                     if scheme == TQ_NVFP4:
-                        # Autotune off the request path. Only the M = 1 modulation shapes are knowable here; resolution-dependent ones are tuned in ``GraphedForward``'s pre-capture warm-up.
+                        # Autotune off the request path. Only the M = 1 modulation shapes are knowable here; resolution-dependent ones tune on their first eager GEMM (a graph's pre-capture warm-up).
                         from .diffusion_nvfp4_linear import nvfp4_prewarm
                         nvfp4_prewarm(transformer, (1,), logger = logger)
                     pipe = self._assemble_pipe(
