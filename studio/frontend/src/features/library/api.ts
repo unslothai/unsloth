@@ -92,6 +92,17 @@ export function updateLibraryItem(
   return request;
 }
 
+/** Copies the item's file into a project's folder; the Library keeps its item. */
+export async function addLibraryItemToProject(
+  id: string,
+  projectId: string,
+): Promise<{ already: boolean }> {
+  const response = await ensureOk(
+    await authFetch("/api/library/items/project", jsonInit("POST", { id, projectId })),
+  );
+  return response.json();
+}
+
 export async function deleteLibraryItem(id: string): Promise<void> {
   await ensureOk(
     await authFetch("/api/library/items/delete", jsonInit("POST", { id })),

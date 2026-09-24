@@ -63,9 +63,8 @@ def _tmp_name(name: str) -> str:
     return f".{name}.tmp-{uuid.uuid4().hex}"
 
 
-def _copy_with_dir_fd(source: Path, sandbox: str, folder: str) -> bool:
+def _copy_with_dir_fd(source: Path, sandbox: str, folder: str, name: str) -> bool:
     """Copy into ``sandbox/folder`` by descriptor; returns whether it was already there."""
-    name = source.name
     sandbox_fd = os.open(sandbox, _DIR_FLAGS)
     try:
         try:
@@ -104,20 +103,20 @@ def _copy_with_dir_fd(source: Path, sandbox: str, folder: str) -> bool:
     return False
 
 
-def _copy_by_path(source: Path, sandbox: str, folder: str) -> bool:
+def _copy_by_path(source: Path, sandbox: str, folder: str, name: str) -> bool:
     """Fallback without dir_fd support (Windows): resolve the folder and re-check containment."""
     target = Path(sandbox) / folder
     target.mkdir(exist_ok = True)
     real = os.path.realpath(target)
     if os.path.dirname(real) != sandbox:
         raise PermissionError(f"{target} resolves outside the project sandbox")
-    dest = Path(real) / source.name
+    dest = Path(real) / name
     try:
         if not dest.is_symlink() and dest.is_file():
             return True
     except OSError:
         pass
-    tmp = Path(real) / _tmp_name(source.name)
+    tmp = Path(real) / _tmp_name(name)
     try:
         shutil.copyfile(source, tmp)
         # Without dir_fd the folder can be swapped after the check; check again before the rename.
@@ -131,13 +130,18 @@ def _copy_by_path(source: Path, sandbox: str, folder: str) -> bool:
     return False
 
 
-def copy_into_project(source: Path, project_id: str, folder: str) -> dict[str, object]:
+def copy_into_project(
+    source: Path, project_id: str, folder: str, name: str | None = None
+) -> dict[str, object]:
     """Copy ``source`` into the project's ``folder`` and return ``{"path", "already"}``.
 
-    Keyed by the gallery id, so a second add is a no-op. Written via a temp file so a failed copy
-    leaves nothing behind. Refuses a ``folder`` that leads outside the sandbox. Raises
-    ProjectNotFound or OSError."""
+    Keyed by the file name (the gallery id unless ``name`` is given), so a second add is a no-op.
+    Written via a temp file so a failed copy leaves nothing behind. Refuses a ``folder`` that leads
+    outside the sandbox. Raises ProjectNotFound, ValueError for a bad ``name``, or OSError."""
+    name = name or source.name
+    if name in (".", "..") or name.startswith(".") or any(sep in name for sep in "/\\\0"):
+        raise ValueError(f"Bad file name: {name!r}")
     sandbox = _sandbox_dir(project_id)
     copy = _copy_with_dir_fd if _USE_DIR_FD else _copy_by_path
-    already = copy(source, sandbox, folder)
-    return {"path": str(Path(sandbox) / folder / source.name), "already": already}
+    already = copy(source, sandbox, folder, name)
+    return {"path": str(Path(sandbox) / folder / name), "already": already}

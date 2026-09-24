@@ -431,6 +431,57 @@ def list_items() -> list[dict]:
     return items
 
 
+def _project_name(name: str, item_id: str) -> str:
+    """A readable name that stays unique per item, so adding it twice is a no-op."""
+    import hashlib
+
+    stem, ext = os.path.splitext(os.path.basename(name).lstrip(".") or "file")
+    return f"{stem[:80]}-{hashlib.sha1(item_id.encode()).hexdigest()[:8]}{ext[:16]}"
+
+
+def project_source(item_id: str) -> tuple[Path, str, str]:
+    """(file, project folder, file name) for copying an item into a project.
+
+    Raises LookupError when the item is gone and ValueError for items with no file of their own
+    (chat attachments live inside messages, fine-tunes are folders)."""
+    kind, _, ref = item_id.partition(":")
+    path: Optional[Path] = None
+    if kind == "upload":
+        record = library_db.get_upload(ref)
+        path = upload_path(ref)
+        if record is None or path is None or not path.is_file():
+            raise LookupError(item_id)
+        return path, "files", _project_name(record["name"], item_id)
+    if kind in ("image", "video", "audio"):
+        from core.inference import audio_gallery, image_gallery, video_gallery
+
+        owned = {
+            "image": (image_gallery.owned_image_path, "images"),
+            "video": (video_gallery.owned_video_path, "videos"),
+            "audio": (audio_gallery.owned_audio_path, "audio"),
+        }
+        resolve, folder = owned[kind]
+        path = resolve(ref)
+        if path is None:
+            raise LookupError(item_id)
+        # Same name as the gallery's own Add to project, so either one finds the other's copy.
+        return path, folder, path.name
+    if kind == "sandbox":
+        from fastapi import HTTPException
+
+        from routes.inference import _contained_sandbox_path
+
+        session_id, _, relative = ref.partition(":")
+        try:
+            _directory, resolved = _contained_sandbox_path(session_id, relative)
+        except HTTPException as exc:
+            raise LookupError(item_id) from exc
+        if not os.path.isfile(resolved) or os.path.islink(resolved):
+            raise LookupError(item_id)
+        return Path(resolved), "files", _project_name(os.path.basename(relative), item_id)
+    raise ValueError("This item cannot be added to a project.")
+
+
 def delete_item(item_id: str) -> bool:
     """Delete an item from its source. Returns False when the source no longer has it."""
     kind, _, ref = item_id.partition(":")

@@ -326,3 +326,43 @@ def test_an_empty_upload_is_refused(client):
 def test_a_client_supplied_path_keeps_only_its_last_segment(client):
     [item_id] = _upload(client, ("C:\\Users\\me\\report.txt", b"x", "text/plain"))
     assert _items(client)[0][item_id]["name"] == "report.txt"
+
+
+# ── Add to project ───────────────────────────────────────────────
+
+
+@pytest.fixture
+def project(tmp_path, monkeypatch):
+    import storage.studio_db as studio_db
+
+    root = tmp_path / "Projects" / "demo"
+    (root / "sandbox").mkdir(parents = True)
+    record = {"id": "p1", "rootPath": str(root), "sandboxPath": str(root / "sandbox")}
+    monkeypatch.setattr(
+        studio_db, "ensure_chat_project_workspace", lambda pid: record if pid == "p1" else None
+    )
+    return root / "sandbox"
+
+
+def test_an_upload_is_copied_into_a_project_under_its_own_name(client, project):
+    [note] = _upload(client, ("plan.md", b"# plan", "text/markdown"))
+    body = {"id": note, "projectId": "p1"}
+    first = client.post("/api/library/items/project", json = body)
+    assert first.status_code == 200, first.text
+    assert first.json() == {"already": False}
+    [copied] = (project / "files").iterdir()
+    assert copied.name.startswith("plan-") and copied.suffix == ".md"
+    assert copied.read_bytes() == b"# plan"
+    # Adding it again finds the copy instead of making another.
+    assert client.post("/api/library/items/project", json = body).json() == {"already": True}
+
+
+def test_add_to_project_refuses_what_it_cannot_copy(client, project):
+    post = lambda item_id, project_id = "p1": client.post(  # noqa: E731
+        "/api/library/items/project", json = {"id": item_id, "projectId": project_id}
+    )
+    [note] = _upload(client, ("plan.md", b"# plan", "text/markdown"))
+    assert post(note, "missing").status_code == 404
+    assert post("upload:0123456789abcdef0123456789abcdef").status_code == 404
+    assert post("attachment:m:a").status_code == 400
+    assert post("model:training:/tmp/run").status_code == 400

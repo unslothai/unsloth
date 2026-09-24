@@ -50,6 +50,11 @@ class ItemRef(BaseModel):
     id: str = Field(max_length = 4096)
 
 
+class ProjectCopy(BaseModel):
+    id: str = Field(max_length = 4096)
+    projectId: str = Field(max_length = 256)
+
+
 class FolderCreate(BaseModel):
     name: str = Field(min_length = 1, max_length = 255)
     parentId: Optional[str] = Field(default = None, max_length = 64)
@@ -115,6 +120,28 @@ async def delete_item(body: ItemRef, current_subject: str = Depends(get_current_
     if not deleted:
         raise HTTPException(status_code = 404, detail = "Item not found")
     return {"ok": True}
+
+
+@router.post("/items/project")
+async def add_item_to_project(
+    body: ProjectCopy, current_subject: str = Depends(get_current_subject)
+) -> dict:
+    """Copy an item's file into a chat project's folder. The Library keeps its item."""
+    from core.inference.gallery_projects import ProjectNotFound, copy_into_project
+
+    try:
+        path, folder, name = await run_in_threadpool(library.project_source, body.id)
+        result = await run_in_threadpool(copy_into_project, path, body.projectId, folder, name)
+    except ProjectNotFound:
+        raise HTTPException(status_code = 404, detail = "Project not found")
+    except LookupError:
+        raise HTTPException(status_code = 404, detail = "Item not found")
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    except OSError as exc:
+        logger.warning("library.add_to_project_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Could not copy the file into the project.")
+    return {"already": result["already"]}
 
 
 # ── Library-owned uploads ────────────────────────────────────────
