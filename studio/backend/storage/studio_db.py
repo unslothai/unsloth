@@ -80,9 +80,23 @@ def is_denied_system_path(path: str) -> bool:
     keeps Linux removable-media mounts browseable. Expects an already-resolved (realpath) path so
     symlinks cannot escape into a denied subtree.
     """
-    is_win = platform.system() == "Windows"
-    check = os.path.normcase(path) if is_win else path
+    system = platform.system()
+    if system == "Windows":
+        check = os.path.normcase(path)
+        # realpath() keeps an extended-length prefix: \\?\C:\Windows is C:\Windows, and
+        # \\?\UNC\server\share is \\server\share. Self-contained: tests lift this function out.
+        for extended, plain in (("\\\\?\\unc\\", "\\\\"), ("\\\\?\\", "")):
+            if check.startswith(extended):
+                check = plain + check[len(extended):]
+                break
+    elif system == "Darwin":
+        # APFS and HFS+ ignore case by default: /LIBRARY is /Library.
+        check = path.casefold()
+    else:
+        check = path
     for prefix in _denied_path_prefixes():
+        if system == "Darwin":
+            prefix = prefix.casefold()
         if check == prefix or check.startswith(prefix + os.sep):
             if prefix == "/run" and is_linux_run_media_path(check):
                 continue

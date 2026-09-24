@@ -153,6 +153,58 @@ def test_is_denied_system_path_windows_allows_non_system(path):
     assert is_denied(path) is False
 
 
+# realpath() keeps a Windows extended-length prefix, which must not hide the folder behind it.
+@pytest.mark.parametrize(
+    "path",
+    [r"\\?\C:\Windows\Temp\x", r"\\?\c:\program files\y", r"\\?\C:\WINDOWS"],
+)
+def test_is_denied_system_path_windows_sees_through_extended_prefixes(path, monkeypatch):
+    assert _extract_is_denied_windows()(path) is True
+    _hub_as_windows(monkeypatch)
+    assert scan_folders.is_denied_system_path(path) is True
+
+
+@pytest.mark.parametrize("path", [r"\\?\D:\models", r"\\?\UNC\server\share\Windows"])
+def test_is_denied_system_path_windows_extended_prefix_elsewhere_is_allowed(path, monkeypatch):
+    assert _extract_is_denied_windows()(path) is False
+    _hub_as_windows(monkeypatch)
+    assert scan_folders.is_denied_system_path(path) is False
+
+
+def _hub_as_windows(monkeypatch):
+    win_os = SimpleNamespace(
+        sep = "\\",
+        environ = {"SystemRoot": r"C:\Windows", "ProgramFiles": r"C:\Program Files"},
+        path = SimpleNamespace(normcase = ntpath.normcase),
+    )
+    monkeypatch.setattr(scan_folders, "os", win_os)
+    monkeypatch.setattr(scan_folders.platform, "system", lambda: "Windows")
+
+
+# macOS disks ignore case by default: /LIBRARY is /Library.
+@pytest.mark.parametrize("path", ["/LIBRARY/x", "/library", "/private/TMP/x", "/SYSTEM/Volumes"])
+def test_is_denied_system_path_macos_ignores_case(path, monkeypatch):
+    for module in (studio_db, scan_folders):
+        monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
+        assert module.is_denied_system_path(path) is True, module
+
+
+@pytest.mark.parametrize("path", ["/Users/me/Library-Backup", "/Volumes/Drive/library"])
+def test_is_denied_system_path_macos_allows_look_alikes(path, monkeypatch):
+    for module in (studio_db, scan_folders):
+        monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
+        assert module.is_denied_system_path(path) is False, module
+
+
+def test_is_within_any_compares_like_the_disk(monkeypatch):
+    monkeypatch.setattr(scan_folders.platform, "system", lambda: "Darwin")
+    assert scan_folders.is_within_any("/Users/Me/Library/CACHES/x", ["/Users/me/Library/Caches"])
+    assert not scan_folders.is_within_any("/Users/me/Library/Caches2", ["/Users/me/Library/Caches"])
+    monkeypatch.setattr(scan_folders.platform, "system", lambda: "Linux")
+    assert not scan_folders.is_within_any("/TMP/x", ["/tmp"])
+    assert scan_folders.is_within_any("/tmp", ["/tmp/"])
+
+
 # _resolve_browse_target -- real-FS integration (legacy browser)
 def _extract_resolver():
     """Extract the legacy browse resolver; its inline imports use the real storage.studio_db policy."""

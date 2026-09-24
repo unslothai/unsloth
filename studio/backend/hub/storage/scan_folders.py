@@ -58,12 +58,48 @@ def is_denied_system_path(path: str) -> bool:
     /run carve-out keeps Linux removable-media mounts browseable. Expects an
     already-resolved (realpath) path so symlinks cannot escape into a denied subtree.
     """
-    is_win = platform.system() == "Windows"
-    check = os.path.normcase(path) if is_win else path
+    check = _comparable_path(path)
     for prefix in _denied_path_prefixes():
+        prefix = _comparable_path(prefix)
         if check == prefix or check.startswith(prefix + os.sep):
             if prefix == "/run" and is_linux_run_media_path(check):
                 continue
+            return True
+    return False
+
+
+# Longest first: \\?\UNC\server\share is the share \\server\share. After normcase, so lower case.
+_EXTENDED_PREFIXES = (
+    ("\\\\?\\unc\\", "\\\\"),
+    ("\\\\.\\unc\\", "\\\\"),
+    ("\\\\?\\", ""),
+    ("\\\\.\\", ""),
+)
+
+
+def _comparable_path(path: str) -> str:
+    """``path`` spelled the way the filesystem compares it, for prefix checks. Windows and macOS
+    ignore case (/LIBRARY is /Library), and realpath() keeps a Windows extended-length prefix
+    (``\\\\?\\C:\\Windows``) that would otherwise hide the folder behind it."""
+    system = platform.system()
+    if system == "Windows":
+        check = os.path.normcase(path)
+        for extended, plain in _EXTENDED_PREFIXES:
+            if check.startswith(extended):
+                return plain + check[len(extended):]
+        return check
+    if system == "Darwin":
+        return path.casefold()
+    return path
+
+
+def is_within_any(path: str, prefixes) -> bool:
+    """True if resolved ``path`` is, or is inside, one of ``prefixes``, compared the way the
+    filesystem compares names (see ``_comparable_path``)."""
+    check = _comparable_path(path)
+    for prefix in prefixes:
+        prefix = _comparable_path(str(prefix)).rstrip(os.sep) or os.sep
+        if check == prefix or check.startswith(prefix if prefix.endswith(os.sep) else prefix + os.sep):
             return True
     return False
 
@@ -112,9 +148,9 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
         raise ValueError("Path is outside this account's workspace")
 
     is_win = platform.system() == "Windows"
-    check = os.path.normcase(normalized) if is_win else normalized
+    check = _comparable_path(normalized)
     for prefix in _denied_path_prefixes():
-        if check == prefix or check.startswith(prefix + os.sep):
+        if check == _comparable_path(prefix) or check.startswith(_comparable_path(prefix) + os.sep):
             if prefix == "/run" and is_linux_run_media_path(check):
                 continue
             raise ValueError(f"Path under {prefix} is not allowed")
