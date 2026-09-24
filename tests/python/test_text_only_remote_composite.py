@@ -646,3 +646,56 @@ def test_skip_modules_rebased_once_for_nested_prefixes(tmp_path, prefix, alias):
     modules = dict(model.named_modules())
     assert all(name in modules for name in skip[:2])
     assert parent.quantization_config["llm_int8_skip_modules"][0] == prefix + "lm_head"
+
+
+# ---------------------------------------------------------------- .bin checkpoints
+
+
+def _convert_to_sharded_bin(repo):
+    # Republish the fixture as pytorch_model shards plus pytorch_model.bin.index.json, no safetensors.
+    from safetensors.torch import load_file
+
+    weights = load_file(str(repo / "model.safetensors"))
+    (repo / "model.safetensors").unlink()
+    shard = "pytorch_model-00001-of-00001.bin"
+    torch.save(weights, str(repo / shard))
+    (repo / "pytorch_model.bin.index.json").write_text(
+        json.dumps({"metadata": {}, "weight_map": {k: shard for k in weights}})
+    )
+    return weights
+
+
+@needs_tf5
+def test_sharded_bin_checkpoint_is_probed_from_its_index(tmp_path, monkeypatch):
+    ns = _ns()
+    repo, _ = _write_repo(tmp_path, name = "bin_sharded")
+    weights = _convert_to_sharded_bin(repo)
+    assert ns["_checkpoint_weight_names"](str(repo)) == set(weights)
+    parent = _load_parent_config(repo)
+    text_config, mapping = ns["_get_remote_composite_text_only"](
+        parent, str(repo), trust_remote_code = True
+    )
+    model, info = transformers.AutoModelForCausalLM.from_pretrained(
+        repo,
+        config = text_config,
+        key_mapping = mapping,
+        trust_remote_code = True,
+        dtype = torch.float32,
+        local_files_only = True,
+        output_loading_info = True,
+    )
+    assert not info["missing_keys"]
+    assert torch.equal(model.lm_head.weight, weights["language_model.lm_head.weight"])
+    # The same checkpoint from the Hub cache, offline.
+    repo_id, _ = _cache_as_hub_repo(tmp_path, monkeypatch, repo, repo_id = "fake-org/bin-sharded")
+    assert ns["_checkpoint_weight_names"](repo_id, local_files_only = True) == set(weights)
+
+
+def test_unsharded_bin_is_never_unpickled_to_probe(tmp_path, monkeypatch):
+    ns = _ns()
+    repo, _ = _write_repo(tmp_path, name = "bin_single")
+    weights = _convert_to_sharded_bin(repo)
+    (repo / "pytorch_model.bin.index.json").unlink()
+    (repo / "pytorch_model-00001-of-00001.bin").rename(repo / "pytorch_model.bin")
+    monkeypatch.setattr(torch, "load", lambda *a, **k: pytest.fail("torch.load called"))
+    assert ns["_checkpoint_weight_names"](str(repo)) is None

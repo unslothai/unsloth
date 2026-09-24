@@ -1212,11 +1212,13 @@ def _checkpoint_weight_names(
     revision = None,
     local_files_only = False,
 ):
-    # Tensor names stored in a safetensors checkpoint, read from the index or the file header only. None when unknown.
+    # Tensor names stored in a checkpoint, read from a safetensors index or header, or a sharded .bin index. None when unknown.
+    # An unsharded pytorch_model.bin is never unpickled just to list its names.
     import json, os
 
     index_name = "model.safetensors.index.json"
     single_name = "model.safetensors"
+    bin_index_name = "pytorch_model.bin.index.json"
     if os.path.isdir(str(model_name)):
         index_path = os.path.join(model_name, index_name)
         if os.path.isfile(index_path):
@@ -1227,6 +1229,10 @@ def _checkpoint_weight_names(
             from safetensors import safe_open
             with safe_open(single_path, framework = "pt") as f:
                 return set(f.keys())
+        bin_index_path = os.path.join(model_name, bin_index_name)
+        if os.path.isfile(bin_index_path):
+            with open(bin_index_path, "r", encoding = "utf-8") as f:
+                return set(json.load(f).get("weight_map", {})) or None
         return None
     try:
         from huggingface_hub import hf_hub_download
@@ -1255,14 +1261,26 @@ def _checkpoint_weight_names(
             return set(f.keys())
     except Exception:
         pass
-    if local_files_only:
-        return None
-    try:
-        from huggingface_hub import get_safetensors_metadata
+    if not local_files_only:
+        try:
+            from huggingface_hub import get_safetensors_metadata
 
-        meta = get_safetensors_metadata(model_name, token = token, revision = revision)
-        names = set(getattr(meta, "weight_map", {}) or {})
-        return names or None
+            meta = get_safetensors_metadata(model_name, token = token, revision = revision)
+            names = set(getattr(meta, "weight_map", {}) or {})
+            if names:
+                return names
+        except Exception:
+            pass
+    try:
+        bin_index_path = hf_hub_download(
+            model_name,
+            bin_index_name,
+            token = token,
+            revision = revision,
+            local_files_only = local_files_only,
+        )
+        with open(bin_index_path, "r", encoding = "utf-8") as f:
+            return set(json.load(f).get("weight_map", {})) or None
     except Exception:
         return None
 
