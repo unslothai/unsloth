@@ -1400,6 +1400,20 @@ _RESIDENT_Q8 = {
             {**_RESIDENT_Q8, "model_identifier": "/models/Qwen3-0.6B-Q4_K_M.gguf"},
             None,
         ),
+        (
+            "Qwen3-0.6B-GGUF",
+            {
+                **_RESIDENT_Q8,
+                "active_model": "Qwen3-0.6B-GGUF",
+                "model_identifier": "/models/Qwen3-0.6B-GGUF",
+            },
+            None,
+        ),
+        (
+            "Qwen3-0.6B-GGUF",
+            {**_RESIDENT_Q8, "active_model": "Qwen3-0.6B-GGUF", "model_identifier": None},
+            "Q8_0",
+        ),
         ("unsloth/Qwen3-0.6B-GGUF", {**_RESIDENT_Q8, "is_gguf": False}, None),
         ("unsloth/Qwen3-0.6B-GGUF", None, None),
     ],

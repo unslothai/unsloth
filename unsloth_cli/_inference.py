@@ -933,10 +933,12 @@ class HttpChatBackend:
             return None
         if not isinstance(status, dict) or not status.get("is_gguf"):
             return None
-        loaded = {status.get("model_identifier"), status.get("active_model")} - {None}
-        if model in loaded or (
-            not os.path.exists(model) and model.casefold() in {str(m).casefold() for m in loaded}
-        ):
+        # Same identity the server keys the resident on: a local load's active_model is only its basename.
+        loaded = status.get("model_identifier") or status.get("active_model")
+        if not loaded:
+            return None
+        loaded = str(loaded)
+        if model == loaded or (not os.path.exists(model) and model.casefold() == loaded.casefold()):
             return status.get("gguf_variant")
         return None
 
