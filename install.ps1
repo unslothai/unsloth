@@ -4394,21 +4394,22 @@ exit 1
             $hosts['uvbin'] = @('astral', 'cernet-pypi', "$cernet/pypi/web", $null, $null)
         }
         if ($hosts.Count -eq 0) { return }
-        # VAR=URL pairs pointing a host at its mirror, the mirror first, for how its default did (slow or blocked).
+        # VAR=URL pairs pointing a host at its mirror, the URL a retry names first. unsynced is the PyPI mirror with pypi.org behind it, for what the mirror has not synced yet.
         $varsOf = {
-            param($name, $how)
-            $to = $hosts[$name][2]
+            param($name)
+            $to = if ($hosts.Contains($name)) { $hosts[$name][2] }
             switch ($name) {
                 'pypi' {
-                    # uv's unsafe-first-match fetches every index and fails outright when one is unreachable, so pypi.org stays as the second index only while it still answers.
-                    if ($useUv -and $how -eq 'slow') {
-                        "UV_INDEX=$to"; 'UV_DEFAULT_INDEX=https://pypi.org/simple'
-                        "UV_INDEX_STRATEGY=$(if ($env:UV_INDEX_STRATEGY) { $env:UV_INDEX_STRATEGY } else { 'unsafe-first-match' })"
-                    } elseif ($useUv) {
-                        "UV_DEFAULT_INDEX=$to"
-                    }
+                    if ($useUv) { "UV_DEFAULT_INDEX=$to" }
                     if ($usePip) { "PIP_INDEX_URL=$to" }
-                    if ($usePip -and $how -eq 'slow') { 'PIP_EXTRA_INDEX_URL=https://pypi.org/simple' }
+                }
+                'unsynced' {
+                    # Only for one rerun: uv's unsafe-first-match fetches every package from every index, and fails outright when one is unreachable.
+                    if ($useUv) {
+                        'UV_DEFAULT_INDEX=https://pypi.org/simple'; "UV_INDEX=$pypiMirror"
+                        "UV_INDEX_STRATEGY=$(if ($env:UV_INDEX_STRATEGY) { $env:UV_INDEX_STRATEGY } else { 'unsafe-first-match' })"
+                    }
+                    if ($usePip) { 'PIP_EXTRA_INDEX_URL=https://pypi.org/simple'; "PIP_INDEX_URL=$pypiMirror" }
                 }
                 'torch' { "UNSLOTH_PYTORCH_MIRROR=$to" }
                 'node' { "UNSLOTH_NODE_MIRROR=$to" }
@@ -4417,7 +4418,7 @@ exit 1
             }
         }
         # Each host left on its default keeps its mirror as a spare, for one retry of a step whose download from it fails (Pop-MirrorSpare).
-        $env:_UNSLOTH_MIRROR_SPARE = @($hosts.Keys | ForEach-Object { (@($_) + @(& $varsOf $_ 'blocked')) -join '|' }) -join ' '
+        $env:_UNSLOTH_MIRROR_SPARE = @($hosts.Keys | ForEach-Object { (@($_) + @(& $varsOf $_)) -join '|' }) -join ' '
         $answered = @{}
         $codeOf = { param($index, $result) if ($index -and "$($answered[$index][0])" -notmatch '^2\d\d$') { 0 } else { $result[0] } }
         # PS 5.1 may pin TLS 1.0/1.1 (every probed host refuses it; Tls|Tls12 still fails) and queues past 2 connections per host.
@@ -4455,8 +4456,10 @@ exit 1
             $how = if ("$(& $codeOf $hosts[$name][3] $default)" -match '^2\d\d$') { 'slow' } else { 'blocked' }
             $defaultBps = if ($how -eq 'slow') { $default[1] } else { [long]0 }
             if ("$(& $codeOf $hosts[$name][4] $mirror)" -notmatch '^2\d\d$' -or $defaultBps -ge $minBps -or $mirror[1] -le $defaultBps) { continue }
-            Set-MirrorEnv @(& $varsOf $name $how)
+            Set-MirrorEnv @(& $varsOf $name)
             $env:_UNSLOTH_MIRROR_SPARE = @(-split $env:_UNSLOTH_MIRROR_SPARE | Where-Object { $_ -notlike "$name|*" }) -join ' '
+            # A pypi.org that still answers can serve what the mirror has not synced.
+            if ($name -eq 'pypi' -and $how -eq 'slow') { $env:_UNSLOTH_MIRROR_SPARE = (@(-split $env:_UNSLOTH_MIRROR_SPARE) + ((@('unsynced') + @(& $varsOf 'unsynced')) -join '|')) -join ' ' }
             step "mirror" "$(Get-MirrorName $name) is $how ($($defaultBps -shr 10) KB/s, mirror $($mirror[1] -shr 10) KB/s); using $($hosts[$name][2])" "Yellow"
             $used = $true
         }
@@ -4465,7 +4468,7 @@ exit 1
 
     function Get-MirrorName {
         param([string]$Name)
-        @{ pypi = 'PyPI'; torch = 'download.pytorch.org'; node = 'nodejs.org'; npm = 'registry.npmjs.org'; uvbin = 'releases.astral.sh (uv)' }[$Name]
+        @{ pypi = 'PyPI'; unsynced = 'The PyPI mirror'; torch = 'download.pytorch.org'; node = 'nodejs.org'; npm = 'registry.npmjs.org'; uvbin = 'releases.astral.sh (uv)' }[$Name]
     }
 
     function Set-MirrorEnv {
@@ -4492,10 +4495,13 @@ exit 1
         return $pairs.Count -gt 0
     }
 
-    # The host whose transport the output shows failing: a network error, and the host's default named, or, when the output names no URL at all (a download that stalled or dropped), $Ran, the host that ran the command. A resolution or not-found failure names none.
+    # The host whose transport the output shows failing: a network error, and the host's default named, or, when the output names no URL at all (a download that stalled or dropped), $Ran, the host that ran the command. A resolution that found no such version or package is unsynced; any other failure names none.
     function Get-MirrorFailedHost {
         param([string]$Output, [string]$Ran)
-        if ($Output -notmatch 'error sending request|timed out|network timeout|idle timeout|connection (reset|refused|closed|aborted)|network aborted|broken pipe|dns error|failed to lookup address|name resolution|nodename nor servname|network is unreachable|error decoding response body|end of file before message length|unexpected eof|tls handshake|sslerror|certificate verify failed|server error|service unavailable|bad gateway|gateway time-?out|too many requests|max retries exceeded|remotedisconnected|incompleteread|econnreset|etimedout|eidletimeout|eai_again|enotfound|econnrefused|socket hang up') { return }
+        if ($Output -notmatch 'error sending request|timed out|network timeout|idle timeout|connection (reset|refused|closed|aborted)|network aborted|broken pipe|dns error|failed to lookup address|name resolution|nodename nor servname|network is unreachable|error decoding response body|end of file before message length|unexpected eof|tls handshake|sslerror|certificate verify failed|server error|service unavailable|bad gateway|gateway time-?out|too many requests|max retries exceeded|remotedisconnected|incompleteread|econnreset|etimedout|eidletimeout|eai_again|enotfound|econnrefused|socket hang up') {
+            if ($Output -match 'only \S+ (.* )?(is|are) available|no versions? of|not found in the package registry|could not find a version that satisfies|no matching distribution found') { 'unsynced' }
+            return
+        }
         if ($Output -match 'download(-r2)?\.pytorch\.org') { 'torch' }
         elseif ($Output -match 'registry\.npmjs\.org') { 'npm' }
         elseif ($Output -match 'pypi\.org|pythonhosted\.org') { 'pypi' }
@@ -4600,7 +4606,8 @@ exit 1
         $ran = if ($torchArg) { 'torch' } elseif ($pinned -or @($words) -match '^(--find-links|--no-index|--torch-backend.*|venv)$|://') { '' } else { 'pypi' }
         $failed = Get-MirrorFailedHost -Output $Output -Ran $ran
         # A pinned command drops the index vars, so only a torch URL can move to a mirror.
-        if (-not (($failed -eq 'torch' -and $torchArg) -or ($failed -eq 'pypi' -and -not $pinned))) { return $Code }
+        $ownIndex = $pinned -or @($words) -contains '--no-index'
+        if (-not (($failed -eq 'torch' -and $torchArg) -or ($failed -eq 'pypi' -and -not $pinned) -or ($failed -eq 'unsynced' -and -not $ownIndex))) { return $Code }
         $pairs = @(Pop-MirrorSpare $failed)
         if (-not $pairs) { return $Code }
         $saved = @{}

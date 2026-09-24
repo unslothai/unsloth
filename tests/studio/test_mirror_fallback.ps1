@@ -110,12 +110,13 @@ try {
     Check "blocked pypi: mirror is the only uv/pip index" ($env:UV_DEFAULT_INDEX -eq $pypiMirror -and $env:PIP_INDEX_URL -eq $pypiMirror -and -not $env:UV_INDEX -and -not $env:UV_INDEX_STRATEGY -and -not $env:PIP_EXTRA_INDEX_URL)
     Check "blocked pypi: says so with both speeds and names the opt-out" ($script:lines -contains "STEP PyPI is blocked (0 KB/s, mirror 3906 KB/s); using $pypiMirror" -and $script:lines[-1] -like 'SUBSTEP Set UNSLOTH_MIRROR_FALLBACK=0*')
     Run @{ pypi = 'slow' }
-    Check "slow pypi: mirror first, pypi.org second, unsafe-first-match" ($env:UV_INDEX -eq $pypiMirror -and $env:UV_DEFAULT_INDEX -eq 'https://pypi.org/simple' -and $env:UV_INDEX_STRATEGY -eq 'unsafe-first-match' -and $env:PIP_INDEX_URL -eq $pypiMirror -and $env:PIP_EXTRA_INDEX_URL -eq 'https://pypi.org/simple')
+    Check "slow pypi: the mirror is the only uv/pip index" ($env:UV_DEFAULT_INDEX -eq $pypiMirror -and $env:PIP_INDEX_URL -eq $pypiMirror -and -not $env:UV_INDEX -and -not $env:UV_INDEX_STRATEGY -and -not $env:PIP_EXTRA_INDEX_URL)
+    Check "slow pypi: pypi.org, which still answers, is spared behind the mirror for what it has not synced" ($env:_UNSLOTH_MIRROR_SPARE -like "* unsynced|UV_DEFAULT_INDEX=https://pypi.org/simple|UV_INDEX=$pypiMirror|UV_INDEX_STRATEGY=unsafe-first-match|PIP_EXTRA_INDEX_URL=https://pypi.org/simple|PIP_INDEX_URL=$pypiMirror")
     Check "slow pypi: the default is timed again in the race" (@($script:probed -like 'https://files.pythonhosted.org/*').Count -eq 2)
-    Run @{ pypi = 'slow' } @{ UV_INDEX_STRATEGY = 'first-index' }; Check "a user index strategy is kept" ($env:UV_INDEX_STRATEGY -eq 'first-index')
-    Run @{ pypi = 'slow'; cernet = '206 200000' }; Check "a mirror slower than the default is not used" (-not $env:UV_INDEX -and $script:lines.Count -eq 0)
+    Run @{ pypi = 'slow' } @{ UV_INDEX_STRATEGY = 'first-index' }; Check "a user index strategy is kept" ($env:_UNSLOTH_MIRROR_SPARE -like '*|UV_INDEX_STRATEGY=first-index|*')
+    Run @{ pypi = 'slow'; cernet = '206 200000' }; Check "a mirror slower than the default is not used" (-not $env:UV_DEFAULT_INDEX -and $script:lines.Count -eq 0)
     Run @{ pypi = 'blocked'; cernet = 'blocked' }; Check "a dead mirror changes and prints nothing" (-not $env:UV_DEFAULT_INDEX -and $script:lines.Count -eq 0)
-    Run @{ pypi = 'slow|206 2000000'; cernet = '206 3000000' }; Check "a default back above 1 MiB/s in the race is kept" (-not $env:UV_INDEX -and $script:lines.Count -eq 0)
+    Run @{ pypi = 'slow|206 2000000'; cernet = '206 3000000' }; Check "a default back above 1 MiB/s in the race is kept" (-not $env:UV_DEFAULT_INDEX -and $script:lines.Count -eq 0)
     Run @{ pypi = '302 0' }; Check "a redirect that stalls counts as blocked" ($env:UV_DEFAULT_INDEX -eq $pypiMirror)
     Run @{ pypi = 'slow|404 5000000'; cernet = '206 400000' }; Check "an HTTP error in the race weighs as 0 B/s" ($script:lines -contains "STEP PyPI is blocked (0 KB/s, mirror 390 KB/s); using $pypiMirror")
     Run @{ pypi = '404 0' }; Check "a default answering an HTTP error is kept, without timing the mirror" (-not $env:UV_DEFAULT_INDEX -and -not ($script:probed -like "$M/*"))
@@ -123,7 +124,7 @@ try {
     Check "torch, node and npm mirrors; healthy pypi untouched" ($env:UNSLOTH_PYTORCH_MIRROR -eq "$M/pytorch/whl" -and $env:UNSLOTH_NODE_MIRROR -eq 'https://registry.npmmirror.com/-/binary/node' -and $env:UNSLOTH_NPM_REGISTRY -eq 'https://registry.npmmirror.com' -and -not $env:PIP_INDEX_URL)
     Check "each mirror tree is timed once" (@($script:probed -match "^($([regex]::Escape($M))|https://registry\.npmmirror\.com)/.*\.(t?gz|whl)$").Count -eq 3)
     Run @{ torch = 'blocked'; node = 'blocked'; npmmirrornode = 'blocked' }; Check "torch and node are weighed against their own mirror trees" ($env:UNSLOTH_PYTORCH_MIRROR -eq "$M/pytorch/whl" -and -not $env:UNSLOTH_NODE_MIRROR)
-    Run @{ pypiindex = 'blocked' }; Check "an unreachable pypi.org means blocked mode" ($env:UV_DEFAULT_INDEX -eq $pypiMirror -and -not $env:UV_INDEX)
+    Run @{ pypiindex = 'blocked' }; Check "an unreachable pypi.org means blocked mode, with nothing spared behind the mirror" ($env:UV_DEFAULT_INDEX -eq $pypiMirror -and $env:_UNSLOTH_MIRROR_SPARE -notmatch 'unsynced')
     Run @{ torchindex = 'blocked' }; Check "an unreachable torch index switches torch" ($env:UNSLOTH_PYTORCH_MIRROR -eq "$M/pytorch/whl")
     Run @{ pypi = 'blocked'; torch = 'blocked'; astral = 'blocked'; cernetpypiindex = 'blocked' }
     Check "a mirror is used only while its own index answers; the uv wheel skips the index" (-not $env:PIP_INDEX_URL -and $env:UNSLOTH_PYTORCH_MIRROR -and $env:UNSLOTH_UV_WHEEL_MIRROR -eq "$M/pypi/web")
@@ -153,8 +154,9 @@ try {
     $npmDown = "npm error network request to https://registry.npmjs.org/react failed, reason: read ECONNRESET"
     $stall = "error: Failed to download distribution`n  Caused by: Failed to download: network timeout"
     $pipDown = "WARNING: Retrying (Retry(total=0)) after connection broken by 'ReadTimeoutError(`"HTTPSConnectionPool(host='pypi.org', port=443): Read timed out.`")': /simple/numpy/"
+    $lag = "  cause: Because only unsloth<=2026.9.9 is available and you require unsloth>=2026.9.10, we can conclude that your requirements are unsatisfiable."
     $noVersion = "error: No solution found when resolving dependencies: Because nothing==9 was not found in the package registry (https://pypi.org/simple)"
-    foreach ($case in @($uvDown, '', 'pypi'), @($torchDown, 'pypi', 'torch'), @($npmDown, '', 'npm'), @($pipDown, '', 'pypi'), @('npm error code ERESOLVE', 'npm', $null), @($stall, 'pypi', 'pypi'), @($stall, '', $null), @($noVersion, 'pypi', $null), @("$stall (see https://example.com/)", 'pypi', $null)) {
+    foreach ($case in @($uvDown, '', 'pypi'), @($torchDown, 'pypi', 'torch'), @($npmDown, '', 'npm'), @($pipDown, '', 'pypi'), @('npm error code ERESOLVE', 'npm', $null), @($stall, 'pypi', 'pypi'), @($stall, '', $null), @($noVersion, 'pypi', 'unsynced'), @($lag, '', 'unsynced'), @('ERROR: No matching distribution found for unsloth>=2026.9.10', '', 'unsynced'), @("$stall (see https://example.com/)", 'pypi', $null)) {
         Check "failed host: $($case[1]) ran, output '$($case[0].Split("`n")[-1])' -> $($case[2])" ((Get-MirrorFailedHost -Output $case[0] -Ran $case[1]) -eq $case[2])
     }
     # Invoke-InstallCommand over a fake uv that fails with $script:fail until it is pointed at a CERNET index.
@@ -174,8 +176,13 @@ try {
     foreach ($own in '--torch-backend=auto', '--find-links', 'git+https://github.com/unslothai/unsloth-zoo') {
         $rc = Retry $stall { uv pip install unsloth $own } -Once; Check "a stall in a command that picks its own source ($own) is not retried" ($rc -eq 1 -and $script:calls.Count -eq 1 -and $env:_UNSLOTH_MIRROR_SPARE -like 'pypi|*')
     }
-    $rc = Retry $noVersion { uv pip install nothing==9 }; Check "a resolution failure keeps the spare" ($rc -eq 1 -and $script:calls.Count -eq 2 -and $env:_UNSLOTH_MIRROR_SPARE -like 'pypi|*')
+    $rc = Retry $noVersion { uv pip install nothing==9 }; Check "a version not found, with nothing spared behind the mirror, keeps the spare" ($rc -eq 1 -and $script:calls.Count -eq 2 -and $env:_UNSLOTH_MIRROR_SPARE -like 'pypi|*')
     $rc = Retry $uvDown { uv pip install numpy --default-index https://corp.example/simple }; Check "a pinned index is not moved to the PyPI mirror" ($rc -eq 1 -and $script:calls.Count -eq 2)
+    function uv { $script:calls += , "$args"; if ($env:UV_INDEX) { $global:LASTEXITCODE = 0 } else { Write-Error $script:fail; $global:LASTEXITCODE = 1 } }
+    function Lag([scriptblock]$cmd) { Run @{ pypi = 'slow' }; $script:fail = $lag; $script:calls = @(); $script:lines = @(); Invoke-InstallCommand -Label t -Command $cmd }
+    $rc = Lag { uv pip install unsloth --torch-backend=auto }
+    Check "a release the mirror lacks reruns once with pypi.org behind it, kept for later steps" ($rc -eq 0 -and $script:calls.Count -eq 2 -and $env:UV_DEFAULT_INDEX -eq 'https://pypi.org/simple' -and $env:UV_INDEX -eq $pypiMirror -and $script:lines -contains 'STEP The PyPI mirror failed; retrying through https://pypi.org/simple' -and $env:_UNSLOTH_MIRROR_SPARE -notmatch 'unsynced')
+    foreach ($own in '--no-index', '--index-url') { $rc = Lag { uv pip install unsloth $own }; Check "... not for a command with its own index ($own)" ($rc -eq 1 -and $script:calls.Count -eq 1 -and $env:_UNSLOTH_MIRROR_SPARE -match 'unsynced') }
     function uv { $script:calls += , "$args"; Write-Error $script:fail; $global:LASTEXITCODE = 1 }
     $rc = Retry $uvDown { uv pip install numpy } -Once
     Check "a failed mirror rerun restores the default and spends the spare" ($rc -eq 1 -and $script:calls.Count -eq 2 -and -not $env:UV_DEFAULT_INDEX -and -not $env:PIP_INDEX_URL -and $env:_UNSLOTH_MIRROR_SPARE -notlike 'pypi|*')
