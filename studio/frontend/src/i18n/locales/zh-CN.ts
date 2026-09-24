@@ -915,7 +915,7 @@ export const zhCN = {
       hub: {
         source: "模型来源",
         sourceDescription: "模型中心搜索和下载的来源。如果你的网络无法访问 Hugging Face 或速度很慢，请选择 ModelScope。",
-        sourceFallback: "无法启动 ModelScope，当前使用 Hugging Face。请查看 Unsloth Studio 日志。",
+        sourceFallback: "无法启动 ModelScope，当前使用 Hugging Face。请查看 Unsloth 日志。",
         sectionTitle: "模型中心",
         endpoint: "Hugging Face 端点",
         endpointDescription: "模型和数据集的下载来源。留空则使用 huggingface.co，或填写镜像地址，例如 https://hf-mirror.com。",

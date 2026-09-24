@@ -937,7 +937,7 @@ export const hi = {
       hub: {
         source: "मॉडल स्रोत",
         sourceDescription: "मॉडल हब कहाँ खोजता और डाउनलोड करता है। अगर आपके नेटवर्क पर Hugging Face ब्लॉक या धीमा है तो ModelScope चुनें।",
-        sourceFallback: "ModelScope शुरू नहीं हो सका, इसलिए Hugging Face इस्तेमाल हो रहा है। Unsloth Studio के लॉग देखें।",
+        sourceFallback: "ModelScope शुरू नहीं हो सका, इसलिए Hugging Face इस्तेमाल हो रहा है। Unsloth के लॉग देखें।",
         sectionTitle: "मॉडल हब",
         endpoint: "Hugging Face एंडपॉइंट",
         endpointDescription: "मॉडल और डेटासेट यहीं से डाउनलोड होते हैं। huggingface.co के लिए खाली छोड़ें, या https://hf-mirror.com जैसा कोई मिरर डालें।",

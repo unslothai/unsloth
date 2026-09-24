@@ -121,7 +121,7 @@ export function isProxiedHubUrl(url: string): boolean {
 
 let sessionRefresh: (() => Promise<boolean>) | null = null;
 
-/** Registered by features/auth, which this module cannot import. */
+/** Registered at startup with features/auth, which this module cannot import. */
 export function setHubSessionRefresh(refresh: () => Promise<boolean>): void {
   sessionRefresh = refresh;
 }

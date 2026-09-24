@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { accountTransitionPending } from "@/lib/account-transition";
-import { setHubSessionRefresh } from "@/lib/hf-endpoint";
 import { apiUrl, getApiPort, isTauri } from "@/lib/api-base";
 import {
   clearAuthTokens,
@@ -351,8 +350,6 @@ export async function refreshSession(): Promise<boolean> {
     }
   }
 }
-
-setHubSessionRefresh(refreshSession);
 
 export async function authFetch(
   input: RequestInfo | URL,

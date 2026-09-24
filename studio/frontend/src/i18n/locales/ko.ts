@@ -931,7 +931,7 @@ export const ko = {
       hub: {
         source: "모델 소스",
         sourceDescription: "모델 허브가 검색하고 다운로드하는 곳입니다. 네트워크에서 Hugging Face가 차단되었거나 느리면 ModelScope를 선택하세요.",
-        sourceFallback: "ModelScope를 시작할 수 없어 Hugging Face를 사용하고 있습니다. Unsloth Studio 로그를 확인하세요.",
+        sourceFallback: "ModelScope를 시작할 수 없어 Hugging Face를 사용하고 있습니다. Unsloth 로그를 확인하세요.",
         sectionTitle: "모델 허브",
         endpoint: "Hugging Face 엔드포인트",
         endpointDescription: "모델과 데이터셋을 내려받는 곳입니다. 비워 두면 huggingface.co를 사용하고, 미러를 쓰려면 https://hf-mirror.com 같은 주소를 입력하세요.",
