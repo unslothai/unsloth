@@ -1171,11 +1171,24 @@ def _int8_linear(linear: Any, x: Any) -> Any:
     return out.view(*x.shape[:-1], n_out)
 
 
+def _quantize_int8_weight(w: Any, hadamard: Any) -> tuple:
+    """Per-output-channel int8 of the float32 ``w``, ConvRot-rotated first when ``hadamard`` is given."""
+    import torch
+
+    if hadamard is not None:
+        group = hadamard.shape[0]
+        w = (w.reshape(w.shape[0], -1, group) @ hadamard.T).reshape(w.shape)
+    scale = w.abs().amax(dim = 1).clamp(min = 1e-12) / 127.0
+    wq = (w / scale[:, None]).round_().clamp_(-127, 127).to(torch.int8)
+    return wq, scale.to(torch.float32).view(torch.int32)
+
+
 def _install_int8_decoder(vae: Any, *, keep_blocks: Optional[tuple] = None) -> int:
     """Quantize the decoder's transformer-block Linears to int8 (per output channel), ConvRot-rotated in
     ``H3_VAE_INT8_ROT_GROUP`` blocks when the input width allows, leaving ``keep_blocks`` (default: the first
     ``H3_VAE_INT8_FLOAT_BLOCKS``) in float. The float weight is dropped; the class is swapped so the stock decoder
-    path runs W8A8 as well. Returns the bytes freed."""
+    path runs W8A8 as well. Every weight is quantized before any module is touched, so a failure part way leaves
+    the decoder fully float. Returns the bytes freed."""
     import torch
 
     decoder = getattr(vae, "decoder", None)
@@ -1183,9 +1196,9 @@ def _install_int8_decoder(vae: Any, *, keep_blocks: Optional[tuple] = None) -> i
         return 0
     from .diffusion_convrot import build_convrot_hadamard
 
-    freed = 0
     group = H3_VAE_INT8_ROT_GROUP
-    hadamard = None
+    hadamard = rot16 = None
+    staged = []
     with torch.no_grad():
         if keep_blocks is None:
             keep_blocks = tuple(range(H3_VAE_INT8_FLOAT_BLOCKS))
@@ -1201,24 +1214,24 @@ def _install_int8_decoder(vae: Any, *, keep_blocks: Optional[tuple] = None) -> i
                 if linear.in_features % 8 or linear.out_features % 8:
                     continue
                 w = linear.weight.data.float()
-                if linear.in_features % group == 0:
-                    if hadamard is None:
-                        hadamard = build_convrot_hadamard(
-                            group, device = w.device, dtype = torch.float32
-                        )
-                    w = (w.reshape(w.shape[0], -1, group) @ hadamard.T).reshape(w.shape)
+                rotate = linear.in_features % group == 0
+                if rotate and hadamard is None:
+                    hadamard = build_convrot_hadamard(group, device = w.device, dtype = torch.float32)
                     # exact in float16: the entries are +-2^-k
-                    linear.register_buffer(
-                        "_unsloth_rot", hadamard.to(torch.float16), persistent = False
-                    )
-                scale = w.abs().amax(dim = 1).clamp(min = 1e-12) / 127.0
-                wq = (w / scale[:, None]).round_().clamp_(-127, 127).to(torch.int8)
-                freed += linear.weight.numel() * linear.weight.element_size() - wq.numel()
-                linear.register_buffer("_unsloth_wq", wq)
-                linear.register_buffer("_unsloth_ws", scale.to(torch.float32).view(torch.int32))
-                del linear.weight
-                linear.weight = None
-                linear.__class__ = _int8_linear_class()
+                    rot16 = hadamard.to(torch.float16)
+                wq, ws = _quantize_int8_weight(w, hadamard if rotate else None)
+                staged.append((linear, wq, ws, rotate))
+        cls = _int8_linear_class()
+    freed = 0
+    for linear, wq, ws, rotate in staged:
+        if rotate:
+            linear.register_buffer("_unsloth_rot", rot16, persistent = False)
+        freed += linear.weight.numel() * linear.weight.element_size() - wq.numel()
+        linear.register_buffer("_unsloth_wq", wq)
+        linear.register_buffer("_unsloth_ws", ws)
+        del linear.weight
+        linear.weight = None
+        linear.__class__ = cls
     return freed
 
 
@@ -1245,21 +1258,19 @@ def _int8_linear_class():
 def _install_decode_scope(vae: Any, *, fp16_accum: bool) -> bool:
     """Pin ``allow_fp16_accumulation`` for the duration of the decode: ON only when the plan says so, otherwise
     OFF even if a bf16 denoiser's speed layer turned the process-wide flag on (the decode is float16 autocast,
-    so the flag would change it)."""
+    so the flag would change it). The scope is shared with the speed layer's own writes, so a load or unload
+    that lands mid-decode is not undone when the decode ends."""
     import torch
 
-    matmul = torch.backends.cuda.matmul
-    if not hasattr(matmul, "allow_fp16_accumulation"):
+    from .diffusion_speed import fp16_accumulation_scope
+
+    if not hasattr(torch.backends.cuda.matmul, "allow_fp16_accumulation"):
         return False
     stock = vae.decode
 
     def decode(self, *args, **kwargs):
-        prev = matmul.allow_fp16_accumulation
-        matmul.allow_fp16_accumulation = bool(fp16_accum)
-        try:
+        with fp16_accumulation_scope(bool(fp16_accum)):
             return stock(*args, **kwargs)
-        finally:
-            matmul.allow_fp16_accumulation = prev
 
     vae.decode = types.MethodType(decode, vae)
     return True

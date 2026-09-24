@@ -709,3 +709,125 @@ def test_the_fast_path_is_for_the_h3_vae_class_only(monkeypatch):
         pytest.skip("ROCm build")
     assert not H.cuda_fast_path_available(AutoencoderKLWan())
     assert H.cuda_fast_path_available(AutoencoderKLMiniMaxH3())
+
+
+# ── shared fp16-accumulation owner, atomic int8 install ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "before, planned, mid",
+    [
+        (True, False, False),  # the bf16 model that turned it on unloads mid-decode
+        (False, False, True),  # a bf16 model loads and turns it on mid-decode
+        (True, True, False),
+        (False, True, True),
+    ],
+)
+def test_decode_scope_keeps_a_flag_write_that_lands_mid_decode(before, planned, mid):
+    from core.inference import diffusion_speed as S
+
+    matmul = torch.backends.cuda.matmul
+    if not hasattr(matmul, "allow_fp16_accumulation"):
+        pytest.skip("torch without allow_fp16_accumulation")
+    seen = {}
+
+    class _VAE:
+        def decode(self, z):
+            seen["snapshot"] = S.snapshot_backend_flags()["matmul_fp16_accum"]
+            S.restore_backend_flags({"matmul_fp16_accum": mid})
+            seen["after_write"] = matmul.allow_fp16_accumulation
+            return z
+
+    prev = matmul.allow_fp16_accumulation
+    try:
+        matmul.allow_fp16_accumulation = before
+        vae = _VAE()
+        assert H._install_decode_scope(vae, fp16_accum = planned)
+        vae.decode(0)
+        assert seen["snapshot"] is before, "a snapshot taken mid-decode must see the process value"
+        assert seen["after_write"] is planned, "the decode keeps its own value until it ends"
+        assert (
+            matmul.allow_fp16_accumulation is mid
+        ), "the write made during the decode must survive it"
+        assert not S._fp16_accum_scopes
+    finally:
+        matmul.allow_fp16_accumulation = prev
+
+
+def test_fp16_accumulation_scopes_that_close_out_of_order():
+    from core.inference import diffusion_speed as S
+
+    matmul = torch.backends.cuda.matmul
+    if not hasattr(matmul, "allow_fp16_accumulation"):
+        pytest.skip("torch without allow_fp16_accumulation")
+    prev = matmul.allow_fp16_accumulation
+    try:
+        matmul.allow_fp16_accumulation = True
+        a, b = S.fp16_accumulation_scope(False), S.fp16_accumulation_scope(True)
+        a.__enter__()
+        assert matmul.allow_fp16_accumulation is False
+        b.__enter__()
+        assert matmul.allow_fp16_accumulation is True
+        a.__exit__(None, None, None)
+        assert matmul.allow_fp16_accumulation is True, "the scope still open keeps its value"
+        b.__exit__(None, None, None)
+        assert matmul.allow_fp16_accumulation is True and not S._fp16_accum_scopes
+    finally:
+        matmul.allow_fp16_accumulation = prev
+
+
+def test_int8_install_leaves_the_decoder_float_when_quantization_fails(monkeypatch):
+    vae = _tiny_vae()
+    before = {k: v.clone() for k, v in vae.decoder.state_dict().items()}
+    real, calls = H._quantize_int8_weight, []
+
+    def flaky(w, hadamard):
+        calls.append(1)
+        if len(calls) == 3:
+            raise RuntimeError("out of host memory")
+        return real(w, hadamard)
+
+    monkeypatch.setattr(H, "_quantize_int8_weight", flaky)
+    with pytest.raises(RuntimeError):
+        H._install_int8_decoder(vae, keep_blocks = ())
+    assert len(calls) == 3
+    int8_cls = H._int8_linear_class()
+    for module in vae.decoder.modules():
+        assert type(module) is not int8_cls
+        assert not hasattr(module, "_unsloth_wq") and not hasattr(module, "_unsloth_rot")
+    after = vae.decoder.state_dict()
+    assert after.keys() == before.keys()
+    for k, v in before.items():
+        assert torch.equal(after[k], v), k
+
+
+def test_apply_reports_int8_off_and_keeps_float_weights_when_it_fails(monkeypatch):
+    monkeypatch.setattr(H, "cuda_fast_path_available", lambda vae = None: True)
+    monkeypatch.setenv(H.H3_VAE_INT8_ENV, "1")
+
+    def boom(w, hadamard):
+        raise RuntimeError("out of host memory")
+
+    monkeypatch.setattr(H, "_quantize_int8_weight", boom)
+    vae = _tiny_vae()
+    engaged = H.apply_h3_vae_speedups(
+        vae, speed_mode = "default", workflow = "t2va", consumer_gpu = False
+    )
+    assert H.LEVER_INT8_DECODER not in engaged
+    assert all(
+        m.weight is not None for m in vae.decoder.modules() if isinstance(m, torch.nn.Linear)
+    )
+
+
+def test_int8_decoder_rotated_path_stays_close(monkeypatch):
+    monkeypatch.setattr(H, "H3_VAE_INT8_ROT_GROUP", 16)
+    vae = _tiny_vae()
+    fast = copy.deepcopy(vae)
+    H._install_int8_decoder(fast, keep_blocks = ())
+    lin = fast.decoder.transformer_blocks[0].attn.to_q
+    assert lin.weight is None and lin._unsloth_rot.dtype is torch.float16
+    z = torch.randn(1, 8, 3, 4, 5)
+    with torch.no_grad():
+        ref = vae.decoder(z)
+        got = fast.decoder(z)
+    assert (got - ref).norm() / ref.norm() < 0.05
