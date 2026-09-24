@@ -19,7 +19,6 @@ import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 import {
   AiBrain01Icon,
-  ArrowRight01Icon,
   AudioWave01Icon,
   Cancel01Icon,
   FlimSlateIcon,
@@ -29,6 +28,7 @@ import {
   Image02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
+import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { StarPointedIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -471,7 +471,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       </button>
       {breadcrumb.map((folder, index) => (
         <span key={folder.id} className="flex min-w-0 items-center gap-2">
-          <HugeiconsIcon icon={ArrowRight01Icon} strokeWidth={2} className="size-5 shrink-0 text-muted-foreground" />
+          <HugeiconsIcon icon={ChevronRightStandardIcon} strokeWidth={2} className="size-5 shrink-0 text-muted-foreground" />
           {index === breadcrumb.length - 1 ? (
             <span className="truncate text-foreground">{folder.name}</span>
           ) : (
