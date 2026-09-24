@@ -101,7 +101,8 @@ import {
   catalogToModelOptions,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
-import { useDenseQuantSchemes, useHostClass } from "@/hooks/use-host-class";
+import { useDenseQuantSchemes, useHostClass, useNvfp4Diffusion } from "@/hooks/use-host-class";
+import { withNvfp4Option } from "@/lib/nvfp4-options";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -906,6 +907,8 @@ function VideoGenerator({
   const isMobileShell = useIsMobileShell();
   const hostClass = useHostClass();
   const denseQuantSchemes = useDenseQuantSchemes();
+  // The backend's NVFP4 switch: off, the Precision select does not list NVFP4.
+  const nvfp4Diffusion = useNvfp4Diffusion();
   const videoModels = useVideoModels(hostClass, denseQuantSchemes);
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   // Starts from the last prompt generated with, else a short example.
@@ -3405,12 +3408,15 @@ function VideoGenerator({
             // The explicit low-precision schemes need the dense tensor-core path, which a Mac or
             // CPU-only host cannot run, so the picker does not list what the loader would refuse.
             ...(hostOffersDensePrecision(hostClass)
-              ? ([
-                  ["fp8", "FP8"],
-                  ["int8", "INT8"],
-                  ["nvfp4", "NVFP4 (Blackwell)"],
-                  ["mxfp8", "MXFP8 (Blackwell)"],
-                ] as [string, string][])
+              ? withNvfp4Option(
+                  [
+                    ["fp8", "FP8"],
+                    ["int8", "INT8"],
+                    ["nvfp4", "NVFP4 (Blackwell)"],
+                    ["mxfp8", "MXFP8 (Blackwell)"],
+                  ] as [string, string][],
+                  nvfp4Diffusion,
+                )
               : []),
           ]}
         />

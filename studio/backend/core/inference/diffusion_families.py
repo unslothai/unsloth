@@ -20,6 +20,8 @@ from pathlib import Path, PurePosixPath
 from typing import NamedTuple, Optional, Sequence
 from utils.paths.path_utils import is_appledouble_metadata
 
+from .diffusion_nvfp4_flag import nvfp4_blocked
+
 
 # Runtime->route contract: the /images/generate route matches these messages EXACTLY for a 409 (vs a 500), so both
 # engines raise them verbatim.
@@ -1187,6 +1189,9 @@ def family_prequant_repo(
     close enough that planning around it costs nothing, since the base_model_id validation
     refuses the artifact well after the plan was made. A base whose weights really differ belongs
     in ``prequant_excluded_bases``, which returns None here instead."""
+    if nvfp4_blocked(scheme):
+        # The NVFP4 switch is off: no hosted *-NVFP4 repo exists as far as any caller can tell.
+        return None
     # Both tables are keyed on lowercased upstream ids.
     base = canonical_base(base_repo).lower()
     if base:
