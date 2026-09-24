@@ -240,16 +240,25 @@ def test_a_listed_hugging_face_pin_is_served_from_the_matching_modelscope_commit
 
 def test_every_error_reader_names_a_repo_missing_on_modelscope(hub, monkeypatch):
     from datasets.exceptions import DatasetNotFoundError
-    from huggingface_hub.utils import hf_raise_for_status
+    from huggingface_hub.errors import RepositoryNotFoundError
+    from huggingface_hub.utils import _http as hf_http, hf_raise_for_status
     from hub.utils import download_registry
     from hub.utils.hf_errors import modelscope_missing, not_on_modelscope
     from utils.utils import format_error_message
 
     sentence = not_on_modelscope("o/tiny.en-GGUF")
-    missing = pytest.raises(Exception, hf_raise_for_status, hub.get("/api/models/o/tiny.en-GGUF"))
+    answer = hub.get("/api/models/o/tiny.en-GGUF")
+    # Rebuilt on huggingface_hub's httpx: a test process can hold two, and it only converts its own.
+    response = hf_http.httpx.Response(
+        answer.status_code,
+        headers = answer.headers,
+        content = answer.content,
+        request = hf_http.httpx.Request("GET", str(answer.url)),
+    )
+    missing = pytest.raises(RepositoryNotFoundError, hf_raise_for_status, response)
     wrapped = RuntimeError("load failed")
     wrapped.__cause__, wrapped.__context__ = Exception("unrelated"), missing.value
-    assert modelscope_missing(wrapped) == sentence, repr(missing.value)
+    assert modelscope_missing(wrapped) == sentence
     wrapped.__cause__, wrapped.__context__ = missing.value, None
     assert format_error_message(wrapped, "unsloth/orpheus-3b-0.1-ft") == sentence
     assert download_registry.humanize_worker_error(f"Error: {missing.value}") == sentence
