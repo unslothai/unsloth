@@ -31,6 +31,12 @@ from typing import Any, Callable, Optional
 
 # stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
 from core._torchao_stub import is_stubbed, torch_is_rocm
+from .diffusion_nvfp4_flag import (
+    nvfp4_blocked,
+    nvfp4_diffusion_enabled,
+    nvfp4_disabled_message,
+    without_nvfp4,
+)
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 
 # Also runs in the spawned smoke-probe child, which imports this module and nothing else of the backend.
@@ -333,6 +339,8 @@ _FAMILY_TRAIN_SCHEME_DENY: dict[str, frozenset[str]] = {
 
 def _nvfp4_gate_passed(family, base_repo) -> bool:
     """Lazy import: the stdlib-only smoke-probe child imports this module whole."""
+    if not nvfp4_diffusion_enabled():
+        return False
     try:
         from .diffusion_nvfp4_gate import nvfp4_gate_passed
         return bool(nvfp4_gate_passed(family, base_repo))
@@ -342,6 +350,8 @@ def _nvfp4_gate_passed(family, base_repo) -> bool:
 
 def _nvfp4_gate_backend_ok(family, base_repo, device: Any) -> bool:
     """Whether a passing gate record was measured on the backend this device selects; failure keeps the deny."""
+    if not nvfp4_diffusion_enabled():
+        return False
     try:
         from .diffusion_nvfp4_gate import nvfp4_gate_backends
         from .diffusion_nvfp4_ops import select_nvfp4_backend
@@ -354,6 +364,8 @@ def _nvfp4_gate_backend_ok(family, base_repo, device: Any) -> bool:
 
 def _nvfp4_backend_is(device: Any, name: str) -> bool:
     """Whether ``select_nvfp4_backend`` picks ``name`` for ``device``; failure drops the head."""
+    if not nvfp4_diffusion_enabled():
+        return False
     try:
         from .diffusion_nvfp4_ops import select_nvfp4_backend
         return str(select_nvfp4_backend(device)) == str(name)
@@ -412,6 +424,8 @@ def explain_unusable_scheme(
 ) -> str:
     """Why ``select_transformer_quant_scheme`` answered None for an EXPLICIT ``scheme``: family deny,
     unusable torchao, or a GPU without the kernels (only the last is a hardware limit)."""
+    if nvfp4_blocked(scheme):
+        return nvfp4_disabled_message()
     if family_denies_scheme(family, scheme, base_repo):
         if scheme == TQ_NVFP4:
             return (
@@ -574,6 +588,9 @@ def normalize_transformer_quant(value: Optional[str]) -> Optional[str]:
         raise ValueError(
             f"Unsupported transformer_quant '{value}'. Use one of: {', '.join(TQ_MODES)}."
         )
+    # The NVFP4 switch (diffusion_nvfp4_flag) refuses the scheme at validation, never swaps it.
+    if nvfp4_blocked(normalized):
+        raise ValueError(nvfp4_disabled_message("transformer_quant"))
     return normalized
 
 
@@ -858,7 +875,7 @@ def dense_quant_host_capable(target: Any) -> bool:
     card = _smoke_cache_device_key(str(getattr(target, "device", "cuda")))
     for floor, schemes in _AUTO_LADDER:
         if cap >= floor:
-            return any(_SMOKE_CACHE.get((scheme, card), True) for scheme in schemes)
+            return any(_SMOKE_CACHE.get((scheme, card), True) for scheme in without_nvfp4(schemes))
     return False
 
 
@@ -924,6 +941,11 @@ def _auto_scheme_order(
     if not tier:
         return ()
     prefer = _FAMILY_AUTO_PREFER.get(str(family or "").strip().lower())
+    if prefer is not None and (prefer.gated or prefer.backend) and not nvfp4_diffusion_enabled():
+        # The NVFP4 switch is off, and a gated or backend-keyed row is NVFP4 machinery: drop it
+        # whole, before its gate record or backend probe (which imports flashinfer) is consulted.
+        # What remains is the family-blind ladder, which is what such a row minus nvfp4 is.
+        prefer = None
     head: tuple[str, ...] = ()
     if prefer is not None and cap >= prefer.floor:
         if prefer.consumer_ok or not _is_consumer_gpu(device):
@@ -934,7 +956,9 @@ def _auto_scheme_order(
                 if prefer.backend is None or _nvfp4_backend_is(device, prefer.backend):
                     head = prefer.schemes
     order: list[str] = []
-    for scheme in head + tier:
+    # Filtered here, so the NVFP4 switch reaches every reader of the order: the selector, both
+    # candidate lists and the /api/system ladder.
+    for scheme in without_nvfp4(head + tier):
         if scheme not in order:
             order.append(scheme)
     return tuple(order)
@@ -978,6 +1002,9 @@ def _scheme_supported(
     unproven_ok: bool = False,
 ) -> bool:
     """CUDA + (for fp8) the fp8 dtype + a cached quantise+matmul smoke test for ``scheme``."""
+    if nvfp4_blocked(scheme):
+        # Switched off: no probe (child or in-process) is spent on a scheme nothing may use.
+        return False
     try:
         import torch
         if not torch.cuda.is_available():
@@ -1075,7 +1102,14 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
             # and binds the child to this process's lifetime, so a wedged probe cannot outlive the backend.
             proc = ctx.Process(
                 target = run_without_native_path_secret,
-                args = (__name__, "_child_probe_entry", {}, device, TQ_SCHEMES, queue),
+                args = (
+                    __name__,
+                    "_child_probe_entry",
+                    {},
+                    device,
+                    without_nvfp4(TQ_SCHEMES),
+                    queue,
+                ),
                 daemon = True,
             )
             proc.start()

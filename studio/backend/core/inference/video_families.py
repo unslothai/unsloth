@@ -21,6 +21,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .diffusion_nvfp4_flag import nvfp4_blocked, without_nvfp4
+
 # The request model's ceiling on num_frames, declared HERE so the shape gate and the bound cannot drift: the gate's
 # refusal names the lattice point above the request, and suggesting one the request model would itself reject is a
 # dead end. VideoGenerateRequest imports this for its `le`.
@@ -442,6 +444,9 @@ def video_family_prequant_repo(
     the refusal path of a load request, and a table typo must not turn a legitimate pick into a
     500. A family object that predates these fields simply has no hosted checkpoint.
     """
+    if nvfp4_blocked(scheme):
+        # The NVFP4 switch is off, so the hosted *-NVFP4 denoisers are not offered or fetched.
+        return None
     base = _prequant_base_key(base_repo)
     if base:
         for entry in getattr(fam, "prequant_variant_repos", ()) or ():
@@ -461,6 +466,8 @@ def video_family_prequant_repo(
 
 def video_family_prequant_resident_gb(fam: VideoFamily, scheme: str) -> Optional[float]:
     """The MEASURED resident size in decimal GB of this family's hosted ``scheme`` denoiser."""
+    if nvfp4_blocked(scheme):
+        return None
     for entry in getattr(fam, "prequant_resident_gb_by_scheme", ()) or ():
         if not isinstance(entry, (tuple, list)) or len(entry) != 2:
             continue
@@ -537,7 +544,7 @@ def video_family_prequant_schemes(fam: VideoFamily, task: Optional[str] = None) 
             schemes.append(entry[1])
     if task:
         schemes = [s for s in schemes if video_family_prequant_available(fam, s, task = task)]
-    return tuple(schemes)
+    return without_nvfp4(schemes)
 
 
 def snap_num_frames(fam: VideoFamily, num_frames: int) -> int:

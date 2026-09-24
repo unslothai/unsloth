@@ -34,6 +34,8 @@ from dataclasses import dataclass
 from collections.abc import Sequence
 from typing import Any, Optional
 
+from .diffusion_nvfp4_flag import nvfp4_blocked
+
 # torch.save dict layout tag; bump on an on-disk change so old/foreign artifacts are rejected
 PREQUANT_FORMAT = "unsloth_prequant_transformer_state_dict_v1"
 
@@ -499,6 +501,10 @@ def resolve_prequant_source(
     checkpoints at the root, so there is no directory to prepend; a repo that nested them would 404
     on the primary AND on the fallback and the load would silently fall back to dense.
     """
+    if nvfp4_blocked(scheme):
+        # The NVFP4 switch is off: no NVFP4 checkpoint is resolved, hosted or local, so nothing is planned,
+        # sized or fetched for it and the load quantises (or stays) dense as it would without one.
+        return None
     override = (path_override or "").strip()
     if override:
         return PrequantSource(kind = "path", location = override, filename = None)

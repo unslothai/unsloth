@@ -47,6 +47,10 @@ _POLICY_STEADY_FACTOR: dict[str, float] = {
 
 def policy_steady_factor(family: Any, base_repo: Optional[str] = None) -> Optional[float]:
     """The NVFP4 POLICY steady factor for ``(family, base_repo)``, or None. Never raises."""
+    from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
+
+    if not nvfp4_diffusion_enabled():
+        return None
     try:
         from .diffusion_nvfp4_policy import resolve_policy
         policy = resolve_policy(getattr(family, "name", family), base_repo)
@@ -249,6 +253,10 @@ def estimate_dense_quant(
 ) -> Optional[DenseQuantEstimate]:
     """Estimate the candidate's footprint from the family table, or None when the
     family (or scheme factor) is unknown."""
+    from .diffusion_nvfp4_flag import nvfp4_blocked
+
+    if nvfp4_blocked(scheme):
+        return None
     components = family_bf16_components_gb(fam, base_repo)
     factor = _QUANT_STEADY_FACTOR.get(scheme)
     if scheme == "nvfp4":

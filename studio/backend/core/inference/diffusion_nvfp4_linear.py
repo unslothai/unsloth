@@ -282,6 +282,10 @@ def nvfp4_prewarm(
     logger: Any = None,
 ) -> int:
     """Autotune converted layers at these token counts BEFORE any capture, with the precision lever suspended."""
+    from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
+
+    if not nvfp4_diffusion_enabled():
+        return 0
     import torch
 
     try:
