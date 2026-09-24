@@ -1622,6 +1622,88 @@ def test_non_compile_errors_are_not_swallowed(monkeypatch, kind):
     assert ds_mod.compile_fallback_error(types.SimpleNamespace(transformer = dit)) is None
 
 
+class _Vae:
+    """A VAE whose ``decode`` is a class method, as on a diffusers AutoencoderKL."""
+
+    def __init__(self) -> None:
+        self.eager_calls = 0
+
+    def decode(self, z):
+        self.eager_calls += 1
+        return z + 1
+
+
+def _stub_lazy_compile(monkeypatch, failure):
+    """torch.compile that returns fine and fails only on the first call, like dynamo / inductor lowering."""
+    torch = _stub_torch_compile_errors(monkeypatch)
+    calls = {"compiled": 0}
+
+    def _compile(fn, **kwargs):
+        torch.compile_calls.append(kwargs)
+
+        def compiled(*args, **kw):
+            calls["compiled"] += 1
+            raise failure()
+
+        return compiled
+
+    torch.compile = _compile
+    return calls
+
+
+def test_vae_decode_compile_failure_at_first_decode_falls_back_to_eager(monkeypatch):
+    # torch.compile returned, so _compile_vae_decode's own try is long gone when inductor fails on the first decode.
+    calls = _stub_lazy_compile(
+        monkeypatch, lambda: _BackendCompilerFailed("LoweringException: no lowering for aten.foo")
+    )
+    vae = _Vae()
+    pipe = types.SimpleNamespace(vae = vae)
+    assert ds_mod._compile_vae_decode(pipe, None, max_autotune = True) is True
+    assert "decode" in vae.__dict__  # the compiled wrapper is installed
+    assert vae.decode(1) == 2  # the failing call itself is answered eagerly
+    assert vae.eager_calls == 1
+    # The original method is back, so later decodes skip the wrapper and the broken lowering is not retried.
+    assert "decode" not in vae.__dict__
+    assert vae.decode(5) == 6
+    assert calls["compiled"] == 1
+    assert "LoweringException" in vae._unsloth_compile_decode_error
+
+
+def test_vae_decode_compile_fallback_restores_an_instance_decode(monkeypatch):
+    _stub_torch_compile_errors(monkeypatch)
+    original = lambda z: z * 3  # noqa: E731 - an instance attribute, as on the SimpleNamespace fakes
+    vae = types.SimpleNamespace(decode = original)
+
+    def broken(z):
+        raise _BackendCompilerFailed("CantSplit")
+
+    vae.decode = ds_mod._guard_compiled_decode(vae, broken, original, None)
+    assert vae.decode(2) == 6
+    assert vae.decode is original
+
+
+@pytest.mark.parametrize("kind", ["runtime", "oom"])
+def test_vae_decode_non_compile_errors_are_not_swallowed(monkeypatch, kind):
+    def failure():
+        if kind == "runtime":
+            return RuntimeError("CUDA error: an illegal memory access was encountered")
+        try:
+            raise _OutOfMemory("CUDA out of memory")
+        except _OutOfMemory as oom:
+            try:
+                raise _BackendCompilerFailed("autotune ran out") from oom
+            except _BackendCompilerFailed as outer:
+                return outer
+
+    _stub_lazy_compile(monkeypatch, failure)
+    vae = _Vae()
+    assert ds_mod._compile_vae_decode(types.SimpleNamespace(vae = vae), None) is True
+    with pytest.raises((RuntimeError, _BackendCompilerFailed)):
+        vae.decode(1)
+    assert vae.eager_calls == 0
+    assert "decode" in vae.__dict__  # still compiled: a kernel error or OOM is not a reason to drop the compile
+
+
 class _TorchaoWeight:
     pass
 

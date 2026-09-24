@@ -801,6 +801,42 @@ def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
     return name in _VAE_COMPILE_ALLOW and name not in _VAE_COMPILE_DENY
 
 
+def _guard_compiled_decode(vae: Any, compiled: Any, eager: Any, logger: Any) -> Any:
+    """``compiled`` behind an eager fallback. torch.compile is lazy: dynamo / inductor run on the first ``decode``, after
+    the compile call returned, so a lowering or codegen failure there would fail the render. On a compile-time failure
+    (``is_compile_failure``; an OOM or a kernel error still raises) the original ``decode`` is put back and the same call
+    is answered eagerly, as the denoiser block guard does."""
+    had_own = "decode" in getattr(vae, "__dict__", {})
+    failed: list = []
+
+    def guarded(*args: Any, **kwargs: Any) -> Any:
+        if not failed:
+            try:
+                return compiled(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001 - reraised unless a compile-time failure
+                if not is_compile_failure(exc):
+                    raise
+                error = f"{type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}"[:300]
+                failed.append(error)
+                try:
+                    vae._unsloth_compile_decode_error = error
+                    if had_own:
+                        vae.decode = eager
+                    else:
+                        del vae.decode
+                except Exception:  # noqa: BLE001 - `failed` still routes this wrapper to eager
+                    pass
+                if logger is not None:
+                    logger.warning(
+                        "diffusion.speed: torch.compile failed on the VAE decode (%s); decoding eager", error
+                    )
+                # The handled exception pins inductor's frames (and the traced fake tensors) through the retry.
+                exc.__traceback__ = None
+        return eager(*args, **kwargs)
+
+    return guarded
+
+
 def _compile_vae_decode(
     pipe: Any,
     logger: Any,
@@ -820,7 +856,8 @@ def _compile_vae_decode(
         kwargs: dict[str, Any] = {"fullgraph": False, "dynamic": True}
         if max_autotune:
             kwargs["mode"] = "max-autotune-no-cudagraphs"
-        vae.decode = torch.compile(decode, **kwargs)
+        compiled = torch.compile(decode, **kwargs)
+        vae.decode = _guard_compiled_decode(vae, compiled, decode, logger)
         vae._unsloth_compiled_decode = True
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only
