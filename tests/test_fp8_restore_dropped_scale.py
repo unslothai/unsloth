@@ -618,8 +618,12 @@ def test_orphan_is_scaled_exactly_once():
             model.model.gate_proj = _bf16_linear(4, 4, raw_fp8.to(torch.bfloat16))
         with tempfile.TemporaryDirectory() as d:
             _write_checkpoint(d, {"model.language_model.gate_proj.weight_scale_inv": scale})
-            first = _restore_dropped_fp8_scales(model, d, local_files_only = True, dtype = torch.bfloat16)
-            second = _restore_dropped_fp8_scales(model, d, local_files_only = True, dtype = torch.bfloat16)
+            first = _restore_dropped_fp8_scales(
+                model, d, local_files_only = True, dtype = torch.bfloat16
+            )
+            second = _restore_dropped_fp8_scales(
+                model, d, local_files_only = True, dtype = torch.bfloat16
+            )
         assert first == (1, 0) and second == (0, 1), (holds, first, second)
         assert torch.equal(model.model.gate_proj.weight.data, expected), holds
 
@@ -665,14 +669,26 @@ def test_offloaded_already_dequantized_weight_is_not_scaled_again():
         model.config = _fp8_config((2, 2))
         model.anchor = _fp8_anchor()
         model.model = nn.Module()
-        model.model.gate_proj = _bf16_linear(4, 4, folded.clone() if stored == "folded" else raw_fp8.to(torch.bfloat16))
+        model.model.gate_proj = _bf16_linear(
+            4, 4, folded.clone() if stored == "folded" else raw_fp8.to(torch.bfloat16)
+        )
         with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as off:
             store = _offload(model, "model.gate_proj", off if disk else None)
             _write_checkpoint(d, {"model.language_model.gate_proj.weight_scale_inv": scale})
-            first = _restore_dropped_fp8_scales(model, d, local_files_only = True, dtype = torch.bfloat16)
-            second = _restore_dropped_fp8_scales(model, d, local_files_only = True, dtype = torch.bfloat16)
+            first = _restore_dropped_fp8_scales(
+                model, d, local_files_only = True, dtype = torch.bfloat16
+            )
+            second = _restore_dropped_fp8_scales(
+                model, d, local_files_only = True, dtype = torch.bfloat16
+            )
             assert first == ((0, 1) if stored == "folded" else (1, 0)), (stored, disk, first)
             assert second == (0, 1), (stored, disk, second)
-            assert torch.equal(store["model.gate_proj.weight"].to(torch.bfloat16), folded), (stored, disk)
+            assert torch.equal(store["model.gate_proj.weight"].to(torch.bfloat16), folded), (
+                stored,
+                disk,
+            )
             x = torch.randn(3, 4, dtype = torch.bfloat16)
-            assert torch.equal(model.model.gate_proj(x), torch.nn.functional.linear(x, folded)), (stored, disk)
+            assert torch.equal(model.model.gate_proj(x), torch.nn.functional.linear(x, folded)), (
+                stored,
+                disk,
+            )
