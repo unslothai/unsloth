@@ -313,7 +313,9 @@ def test_load_installs_the_prompt_cache_and_unload_releases_it(fake_runtime, tmp
     monkeypatch.setattr(
         diff_mod.prompt_cache, "install", lambda pipe, **k: calls["install"].append(pipe) or True
     )
-    monkeypatch.setattr(diff_mod.prompt_cache, "release", lambda pipe: calls["release"].append(pipe))
+    monkeypatch.setattr(
+        diff_mod.prompt_cache, "release", lambda pipe: calls["release"].append(pipe)
+    )
     backend = _loaded_backend(tmp_path)
     pipe = backend._state.pipe
     assert calls["install"] == [pipe]
