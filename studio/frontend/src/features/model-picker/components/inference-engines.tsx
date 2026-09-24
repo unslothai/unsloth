@@ -14,7 +14,7 @@ import { useIsAccountOwner } from "@/features/auth";
 import { SettingsRow } from "@/features/settings/components/settings-row";
 import { SettingsSection } from "@/features/settings/components/settings-section";
 import { useT } from "@/i18n";
-import { useGpuDevices } from "@/hooks/use-gpu-info";
+import { isEngineGpuDevice, useGpuDevices } from "@/hooks/use-gpu-info";
 import { useEffect, useRef, useState } from "react";
 import {
   type EngineStatus,
@@ -248,10 +248,13 @@ export function InferenceEnginePicker({
 }) {
   const { engines, error } = useEngines();
   const t = useT();
-  const devices = useGpuDevices()?.filter(
-    (device) => device.indexKind === "physical" && /nvidia/i.test(device.name),
-  );
-  const selectedGpuIds = gpuIds?.length ? gpuIds : [0];
+  const devices = useGpuDevices()?.filter(isEngineGpuDevice);
+  // The backend's default for an unpicked GPU, so a first pick cannot keep a hidden GPU 0.
+  const selectedGpuIds = gpuIds?.length
+    ? gpuIds
+    : devices?.length
+      ? [devices[0].index]
+      : [0];
   const selected = engines.find((engine) => engine.engine === value);
   const ready = value === "auto" || isEngineReady(selected);
   useEffect(() => {

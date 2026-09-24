@@ -93,6 +93,8 @@ export type StandingConfigDefaults = {
     ids: number[] | null,
     savedIndexKind: GpuIndexKind | null | undefined,
   ) => number[] | null;
+  /** `defaultEngineGpuIds`: where an optional engine loads when the config picks no GPU. */
+  defaultEngineGpuIds?: number[];
   /** `resolveLoadMaxSeqLength` bound to the inputs `performLoad` gives it, so the comparison is
    *  against the n_ctx the load would send. An unset length is not simply 0: for a GGUF re-pick
    *  it resolves to the resident context. */
@@ -605,7 +607,7 @@ export function residentRuntimeMatchesConfig(
     const requested = standing.reconcileGpuIds(
       config.selectedGpuIds ?? null,
       config.selectedGpuIndexKind,
-    ) ?? [0];
+    ) ?? standing.defaultEngineGpuIds ?? [0];
     if (
       !sameGpuPlacement(
         requested,

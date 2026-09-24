@@ -129,7 +129,7 @@ import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
 import { resolveQwenThinkingParams } from "../utils/qwen-sampling-table";
 import { refreshContextUsage } from "../utils/refresh-context-usage";
-import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
+import { defaultEngineGpuIds, ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   type CpuFallbackReason,
   type MmprojFallbackReason,
@@ -1042,6 +1042,7 @@ export function useChatModelRuntime() {
                 savedIndexKind,
                 status.is_diffusion ?? false,
               ),
+            defaultEngineGpuIds: defaultEngineGpuIds(),
             normalizeSpeculative: normalizeSpeculativeType,
           });
         if (

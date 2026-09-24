@@ -533,6 +533,18 @@ for (const engine of ["vllm", "sglang"] as const) {
 }
 
 for (const engine of ["vllm", "sglang"] as const) {
+  test(`${engine}: an unpicked GPU matches the backend's first visible GPU`, () => {
+    // Studio restricted to GPUs 2 and 3: the backend loads an unpicked engine on 2, not 0.
+    const status = { engine, is_gguf: false, requested_gpu_ids: [2], gpu_ids: [2] };
+    const config = { ...BLANK, engine };
+    const withDefault = (defaultEngineGpuIds: number[]) =>
+      matchesWithStanding(status, config, { ...STANDING, defaultEngineGpuIds });
+    assert.equal(withDefault([2]), true);
+    assert.equal(withDefault([0]), false);
+  });
+}
+
+for (const engine of ["vllm", "sglang"] as const) {
   test(`${engine}: changing a tensor-parallel GPU group requires a reload`, () => {
     const status = {
       engine,
