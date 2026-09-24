@@ -246,7 +246,16 @@ async def reveal_location(
     paths = {entry["key"]: entry["path"] for entry in await run_in_threadpool(library.locations)}
     if body.key not in paths:
         raise HTTPException(status_code = 404, detail = "Unknown location")
+    from utils.paths.relocations import chosen
+
     path = Path(paths[body.key])
+    # A chosen folder that is gone is on a drive that is not there: making it would put the next
+    # saves beneath the mount point. Only a default is made.
+    if await run_in_threadpool(lambda: chosen(body.key) is not None and not path.is_dir()):
+        raise HTTPException(
+            status_code = 409,
+            detail = f"{path} is not available. Reconnect its drive, or reset the folder.",
+        )
     await run_in_threadpool(lambda: path.mkdir(parents = True, exist_ok = True))
     await run_in_threadpool(_reveal, path)
     return {"ok": True}

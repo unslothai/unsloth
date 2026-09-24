@@ -132,14 +132,19 @@ function LibraryDataSection() {
   let summary: string;
   if (storage.status === "loading") summary = "";
   else if (storage.status === "error") summary = t("settings.library.storageError");
-  else if (count === 0) summary = t("settings.library.storageEmpty");
+  else if (storage.totalBytes === 0 && count === 0) summary = t("settings.library.storageEmpty");
   else {
+    // Hidden sources still take space, though no category counts them.
     summary = [
       t("settings.library.storageUsed", { size: formatSize(storage.totalBytes) ?? "0 B" }),
       count === 1
         ? t("settings.library.itemCountOne")
-        : t("settings.library.itemCount", { count: count.toLocaleString() }),
-    ].join(" · ");
+        : count > 0 && t("settings.library.itemCount", { count: count.toLocaleString() }),
+      storage.hiddenBytes > 0 &&
+        t("settings.library.storageHidden", { size: formatSize(storage.hiddenBytes) ?? "0 B" }),
+    ]
+      .filter(Boolean)
+      .join(" · ");
   }
 
   return (
@@ -157,10 +162,10 @@ function LibraryDataSection() {
           <HugeiconsIcon icon={ChevronRightStandardIcon} className="ml-1 size-3.5" />
         </Button>
       </SettingsRow>
-      {storage.status === "ready" && count > 0 && (
+      {storage.status === "ready" && (count > 0 || storage.totalBytes > 0) && (
         <div className="flex flex-col gap-2 pb-3">
           <LibraryStorageBar libraryBytes={storage.diskBytes} disk={storage.disk} />
-          <p className="text-xs text-muted-foreground">{largest}</p>
+          {largest && <p className="text-xs text-muted-foreground">{largest}</p>}
         </div>
       )}
     </SettingsSection>

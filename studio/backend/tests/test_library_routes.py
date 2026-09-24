@@ -972,8 +972,12 @@ def test_an_unplugged_folder_is_not_made_again(client, tmp_path):
     with pytest.raises(LocationUnavailable):
         image_gallery.gallery_dir()
     assert not drive.parent.exists()
-    # Settings still shows it, refuses to move files it cannot reach, and can reset it.
+    # Settings still shows it, will not make it to reveal it, refuses to move files it cannot
+    # reach, and can reset it.
     assert _location(client, "images")["path"] == str(drive.resolve())
+    response = client.post("/api/library/locations/reveal", json = {"key": "images"})
+    assert response.status_code == 409
+    assert not drive.parent.exists()
     assert _move(client, "images", str(tmp_path / "elsewhere")).status_code == 400
     assert _move(client, "images", None).status_code == 200
     assert _location(client, "images")["custom"] is False
