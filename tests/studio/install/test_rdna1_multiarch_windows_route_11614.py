@@ -252,3 +252,31 @@ class TestTheWindowsRepairSiteRunsForRdna1:
             f"torch[device-gfx1010]=={stack_mod._ROCM_MULTIARCH_TORCH_VERSION}+{stack_mod._ROCM_MULTIARCH_TAG}"
             in args
         )
+
+
+class TestRdna1CountsAsCoveredEverywhereItIsRouted:
+    """Two gates outside the route itself decided RDNA 1 was uncovered: the backend's
+    repairability check and setup.ps1's pre-Intel "AMD gets GPU wheels" gate."""
+
+    @pytest.mark.parametrize("name,expected", _RDNA1_NAMES)
+    def test_the_backend_can_repair_an_rdna1_card_on_windows(self, name, expected, monkeypatch):
+        import importlib.util as _ilu
+
+        spec = _ilu.spec_from_file_location("hardware_rdna1_route", _HARDWARE_PY)
+        hw = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(hw)
+        monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+        assert hw._rocm_supported_gfx_from_gpu_name(name) == expected
+        assert hw._amd_device_can_establish_a_mismatch({"name": name}) is True
+        assert hw._amd_device_can_establish_a_mismatch({"gfx": expected}) is True
+        monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+        assert hw._rocm_supported_gfx_from_gpu_name(name) is None
+        assert hw._amd_device_can_establish_a_mismatch({"gfx": expected}) is False
+
+    def test_setup_counts_rdna1_as_having_wheels(self):
+        src = _SETUP_PS1.read_text(encoding = "utf-8")
+        block = src[src.index("$_rocmWheelArches = @(") :]
+        block = block[: block.index("\n)") + 2]
+        listed = set(re.findall(r'"(gfx[0-9a-z]+)"', block))
+        assert set(stack_mod._WINDOWS_MULTIARCH_GFX) <= listed, sorted(set(stack_mod._WINDOWS_MULTIARCH_GFX) - listed)
+

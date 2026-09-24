@@ -977,19 +977,32 @@ _GPU_NAME_GFX_TABLE: "list[tuple[str, str]]" = [
     (r"RX 6950|RX 6900|RX 6850|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900", "gfx1030"),
     (r"RX 6650|RX 6600|PRO W6600|PRO W6650", "gfx1032"),
     (r"RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300", "gfx1034"),
-    # RDNA 1: routed on Windows through AMD's multi-arch nightly index (#11614).
+    # RDNA 1: routed on Windows through AMD's multi-arch index (#11614, #11755).
     (r"Radeon Pro V520|Radeon Pro 5600M", "gfx1011"),
     (r"RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700", "gfx1010"),
     (r"RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300", "gfx1012"),
 ]
 
 
+# RDNA 1 gets ROCm wheels on Windows only, from AMD's multi-arch index (#11755); the Linux
+# installers still decline it, so the platform decides whether a 5700 XT can be repaired.
+_ROCM_SUPPORTED_GFX_WINDOWS_ONLY = frozenset({"gfx1010", "gfx1011", "gfx1012"})
+
+
+def _rocm_supported_gfx_here() -> "frozenset[str]":
+    """The arches the installers ship a ROCm wheel for on THIS platform."""
+    if platform.system() == "Windows":
+        return _ROCM_SUPPORTED_GFX | _ROCM_SUPPORTED_GFX_WINDOWS_ONLY
+    return _ROCM_SUPPORTED_GFX
+
+
 def _rocm_supported_gfx_from_gpu_name(name: str) -> Optional[str]:
     """The gfx arch this marketing name maps to, when the ROCm wheels cover it."""
     if not name:
         return None
+    _supported = _rocm_supported_gfx_here()
     for pattern, arch in _GPU_NAME_GFX_TABLE:
-        if re.search(pattern, name, re.IGNORECASE) and arch in _ROCM_SUPPORTED_GFX:
+        if re.search(pattern, name, re.IGNORECASE) and arch in _supported:
             return arch
     return None
 
@@ -1010,7 +1023,7 @@ def _amd_device_can_establish_a_mismatch(device: Dict[str, Any]) -> bool:
             return True
         # Nothing NAMES the card, so ask what the installer asks: _has_rocm_gpu() falls back to the KFD topology, and a card `studio update` would repair is eligible here.
         return _linux_kfd_reports_an_amd_gpu()
-    return any(gfx in _ROCM_SUPPORTED_GFX for gfx in candidates)
+    return any(gfx in _rocm_supported_gfx_here() for gfx in candidates)
 
 
 def _expected_xpu_flavor_was_chosen() -> bool:

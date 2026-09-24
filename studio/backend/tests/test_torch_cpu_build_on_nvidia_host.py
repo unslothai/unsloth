@@ -1203,11 +1203,16 @@ def test_an_amd_card_named_only_by_its_marketing_string_establishes_a_mismatch(
     for device in covered:
         assert hw._devices_that_can_establish_a_mismatch([device]) == [device], device["name"]
 
-    # RDNA 1 is declined on purpose: a repair here would reinstall the same CPU wheel.
-    declined = [
+    # RDNA 1 is declined on Linux on purpose (a repair there would reinstall the same CPU
+    # wheel) and repairable on Windows, where the installers route it to AMD's multi-arch
+    # index since unslothai/unsloth#11755.
+    rdna1 = [
         {"vendor": "amd", "name": "AMD Radeon RX 5700 XT", "index": 0, "gfx_candidates": []}
     ]
-    assert hw._devices_that_can_establish_a_mismatch(declined) == []
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    assert hw._devices_that_can_establish_a_mismatch(rdna1) == []
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    assert hw._devices_that_can_establish_a_mismatch(rdna1) == rdna1
 
 
 def test_a_nameless_intel_card_counts_once_xpu_was_actually_chosen(monkeypatch, tmp_path):
@@ -2453,10 +2458,11 @@ def test_the_ranking_callers_still_see_an_empty_map(monkeypatch):
         ("AMD Radeon RX 7900 XT", True),
         ("AMD Radeon RX 9070 XT", True),
         ("AMD Radeon 780M Graphics", True),
-        # Polaris and RDNA 1: no wheel family covers them, so a repair could not change
-        # anything and this host is on CPU torch on purpose.
+        # Polaris: no wheel family covers it, so a repair could not change anything and
+        # this host is on CPU torch on purpose.
         ("AMD Radeon RX 580", False),
-        ("AMD Radeon RX 5700 XT", False),
+        # RDNA 1: routed on Windows through AMD's multi-arch index (unslothai/unsloth#11755).
+        ("AMD Radeon RX 5700 XT", True),
         ("", False),
     ],
 )

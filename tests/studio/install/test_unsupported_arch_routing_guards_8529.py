@@ -1040,9 +1040,22 @@ def test_the_five_unsupported_tables_agree_on_every_name():
     for source, got in answers.items():
         assert len(got) == len(names), f"{source}: {len(got)} answers for {len(names)} names"
 
+    # Since #11755 the Windows copies route RDNA 1 (no longer in their unsupported table)
+    # while the Linux copies still decline it: those names must disagree, in exactly that
+    # shape, and every other name must agree everywhere.
+    _windows_sources = {"install_python_stack.py", "install.ps1", "setup.ps1"}
+    _rdna1 = stack_mod._WINDOWS_MULTIARCH_GFX
     disagreements = []
     for i, name in enumerate(names):
         seen = {src: got[i] for src, got in answers.items()}
+        linux_answer = seen["install.sh"]
+        if linux_answer in _rdna1:
+            for src, got_arch in seen.items():
+                expected = "" if src in _windows_sources else linux_answer
+                if got_arch != expected:
+                    disagreements.append((name, seen))
+                    break
+            continue
         if len(set(seen.values())) > 1:
             disagreements.append((name, seen))
     assert not disagreements, "the unsupported-arch tables have drifted apart:\n" + "\n".join(

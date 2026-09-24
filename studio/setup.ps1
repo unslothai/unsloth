@@ -3980,10 +3980,12 @@ $_rocmWheelArches = @(
     "gfx1151", "gfx1150", "gfx1152",  # RDNA 3.5 (Strix Halo/Point, Krackan Point)
     "gfx1103", "gfx1102", "gfx1101", "gfx1100",  # RDNA 3
     "gfx1036", "gfx1035", "gfx1034", "gfx1033", "gfx1032", "gfx1031", "gfx1030",  # RDNA 2 (RX 6000)
+    "gfx1012", "gfx1011", "gfx1010",  # RDNA 1 (RX 5000): AMD's multi-arch index (unslothai#11755)
     "gfx90a", "gfx908"              # MI200 / MI100
 )
 # "AMD gets GPU wheels here", NOT "an AMD GPU is present": $HasROCm / $ROCmGfxArch are true on
-# unmapped arches (Vega, RDNA1) too, and those install CPU torch.
+# unmapped arches (Vega, Polaris) too, and those install CPU torch. In sync with $multiArchGfx
+# above: an RDNA 1 card beside an Intel Arc must count as covered here, or the Arc wins.
 $AmdHasGpuWheels = [bool]($script:ROCmGfxArch -and ($_rocmWheelArches -contains $script:ROCmGfxArch))
 
 # Mirrors the Intel scan in install.ps1 so setup does not report "none (chat-only)" right after

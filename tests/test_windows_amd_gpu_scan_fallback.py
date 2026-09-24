@@ -410,7 +410,9 @@ def test_a_mask_suppresses_the_handoff(tmp_path, var):
     resolves nothing rather than borrowing the 780M's arch. The installer scans without the mask
     and forwards that very arch, and taking it would install for a GPU the mask hides from the
     runtime entirely (ROCR filters below HIP, so masked devices never reach enumeration)."""
-    adapters = [(_R780M, 0), ("AMD Radeon RX 5700 XT", 0)]
+    # RX 580 (gfx803): the RX 5700 XT routes since #11755, so it no longer plays the
+    # unrecognized card here.
+    adapters = [(_R780M, 0), ("AMD Radeon RX 580", 0)]
     assert _run(tmp_path, adapters, env = {var: "1", HANDOFF: "gfx1103"})["arch"] is None
 
 
@@ -489,9 +491,9 @@ def test_the_installer_skips_a_disabled_adapter(tmp_path):
     right there, so the dead card got the wheels and the live unsupported one went to nothing.
     Setup filters this adapter out, so forwarding its arch also made the two disagree."""
     out = _run_installer_scan(
-        tmp_path, [("AMD Radeon RX 9070 XT", 22), ("AMD Radeon RX 5700 XT", 0)]
+        tmp_path, [("AMD Radeon RX 9070 XT", 22), ("AMD Radeon RX 580", 0)]
     )
-    assert out["label"] == "AMD Radeon RX 5700 XT"
+    assert out["label"] == "AMD Radeon RX 580"
     assert out["arch"] is None, "the active card is unsupported, so this host belongs on CPU"
 
 
