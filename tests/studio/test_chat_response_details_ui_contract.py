@@ -564,103 +564,21 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     )
 
 
-def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
-    # Stripped once, here, rather than at each lookup. Every assertion below is about what
-    # the file DOES, and commented-out code does nothing, so reading the live text is the
-    # precondition for all of them rather than a precaution for some.
+def test_reasoning_uses_continuous_transcript_without_legacy_height_cap():
     src = _without_block_comments(REASONING_TSX.read_text(encoding = "utf-8"))
-
-    assert "const [retainStreamingHeight, setRetainStreamingHeight]" in src
-    assert "setRetainStreamingHeight(false)" in src
-    assert "setRetainStreamingHeight(isReasoningStreaming)" in src
-    # Still zero while streaming, and still the animation's length once it stops. The two
-    # collapse mechanisms differ: the height keyframes animate a height captured at toggle
-    # time, so releasing the cap cannot change what they animate and ANIMATION_DURATION is
-    # right for them, while `1fr` resolves against the live content every frame and has to
-    # outlast a transition that only starts a render after this timer is armed.
-    assert "isReasoningStreaming ? 0 : closeDelay" in src
-    assert "const closeDelay = GRID_COLLAPSE_REASONING_ENABLED" in src
+    assert "retainStreamingHeight" not in src
+    assert "resolveReasoningHeightCap" not in src
+    assert "<ReasoningTranscript" in src
+    assert "useCollapseScrollLock(" in src
     assert "? ANIMATION_DURATION + CLOSE_FALLBACK_MARGIN_MS" in src
-    assert ": ANIMATION_DURATION;" in src
-    # The cap is `streaming || retained`, and #11373 moved the render down a level: the state
-    # lives here and is handed to the child as a prop, which then ORs it with its own
-    # streaming flag. Which component evaluates it is layout; that it is still ORed, and that
-    # the retained flag actually reaches the evaluation, is the claim.
-    # On the element that receives it, not anywhere in the file. The same text in a comment,
-    # or on some other element, reads identically to a file-wide search and hands nothing
-    # over; ReasoningText would then OR in its own default-false prop and the cap is lost.
-    # ReasoningBody is rendered more than once, and the one that matters is the one holding
-    # this state: it passes isStreaming={isReasoningStreaming}, the flag whose end is what
-    # the retained height is bridging. Every such call has to hand the retained flag over.
-    holders = [
-        tag
-        for tag in _opening_tags(src, "<ReasoningBody")
-        # On an attribute boundary, like the retained flag below. Both props are optional, so
-        # `data-isStreaming={isReasoningStreaming}` satisfies a substring test while
-        # ReasoningBody receives no isStreaming at all: the tag is still selected as a holder,
-        # every assertion below still passes, and the live stream is no longer capped.
-        if re.search(r"(?:^|[\s{])isStreaming=\{isReasoningStreaming\}", tag)
-    ]
-    assert holders, (
-        "no ReasoningBody receives isReasoningStreaming any more, so this guard cannot tell "
-        "which render is the one whose collapse the retained height exists to smooth"
-    )
-    # A spread can supply the same prop and, written after it, wins. Nothing here can say
-    # what is in one, so a holder that spreads is refused rather than read.
-    # BOTH props, not the retained flag alone. What is being kept is the OR of the two, so a
-    # spread that replaces `isStreaming` loses just as much: written between the two
-    # attributes, `{...{ isStreaming: false }}` leaves the retained flag untouched and this
-    # check green while ReasoningText stops seeing the live stream and renders uncapped until
-    # the retained state catches up. `isStreaming` is also what picks the holders above, so a
-    # spread overriding it makes the selection itself wrong.
-    spreading = [
-        tag
-        for tag in holders
-        if any(_spread_overrides(tag, prop) for prop in ("isStreaming", "retainStreamingHeight"))
-    ]
-    assert not spreading, (
-        f"a ReasoningBody holding this state spreads props, so whether the streaming flags it "
-        f"is handed survive depends on what the spread contains, which this guard cannot "
-        f"resolve: {spreading!r}"
-    )
-    # On an attribute boundary. Both props are optional, so `data-retainStreamingHeight=`
-    # satisfies a substring search while the component falls back on its default of false.
-    missing = [
-        tag
-        for tag in holders
-        if not re.search(r"(?:^|[\s{])retainStreamingHeight=\{retainStreamingHeight\}", tag)
-    ]
-    assert not missing, (
-        f"the retained-height flag no longer reaches the component that renders the block, "
-        f"so nothing can OR it into the streaming cap: {missing!r}"
-    )
-    # On ReasoningText specifically. It is the element that writes data-streaming and so owns
-    # the height cap; the same OR on a sibling reads identically here and caps nothing.
-    tag = _opening_tag(src, "<ReasoningText")
-    assert tag, "ReasoningText is no longer rendered, so nothing here caps the height"
-    # Same ground as the holder above, and it has to be said again here: JSX takes the last
-    # write of a prop, so a spread after `streaming=` decides the cap and the explicit text
-    # this guard reads goes on satisfying it.
-    assert not _spread_overrides(tag, "streaming"), (
-        f"ReasoningText spreads props after its streaming prop, so whether the cap it is "
-        f"given survives "
-        f"depends on what the spread contains, which this guard cannot resolve: {tag!r}"
-    )
-    # The left operand has to be the component's own streaming input. `\w+` accepted any
-    # identifier, so `streaming={somethingElse || retainStreamingHeight}` passed while an
-    # actively streaming block went uncapped whenever the retained flag was false.
-    assert re.search(r"(?:^|[\s{])streaming=\{isStreaming \|\| retainStreamingHeight\}", tag), (
-        f"ReasoningText's streaming prop no longer ORs in retainStreamingHeight, so the block "
-        f"collapses to its idle height the moment streaming stops, which is the jump this "
-        f"test exists for: {tag!r}"
-    )
+    assert ": ANIMATION_DURATION," in src
 
 
 def test_reasoning_clears_manual_open_on_a_new_stream():
     """A hand-opened block must not stay pinned open when the stream restarts.
 
-    isOpen is `(streaming && !dismissed) || manualOpen` and manualOpen is only
-    settable while idle, so the new-stream reset has to clear it too.
+    A nullable manual override outranks the visibility preference for one round;
+    the next stream must return control to that preference.
     """
     src = _without_block_comments(REASONING_TSX.read_text(encoding = "utf-8"))
 
@@ -701,29 +619,14 @@ def test_reasoning_clears_manual_open_on_a_new_stream():
 
     # It is the hand toggle that writes it. Without this the override could be some derived
     # value the reader never sets, and clearing it would say nothing about a pinned block.
-    toggle_at = src.find("resolveReasoningToggle(")
-    assert toggle_at != -1, "reasoning.tsx no longer resolves its open toggle, so nothing here "
-    handler = src[src.rfind("useCallback(", 0, toggle_at) : src.find("\n  );", toggle_at)]
-    # With the value the toggle RESOLVED, not merely called with something. `setOverride(null)`
-    # in the handler satisfies "the setter is invoked" while no hand toggle is ever remembered,
-    # which makes the new-round reset below guard nothing at all.
-    resolved = re.search(rf"{re.escape(writes)}\(\s*([A-Za-z_$][\w$.]*)\s*\)", handler)
-    assert resolved and resolved.group(1) != "null", (
-        f"the open toggle does not store the override it resolved: it writes "
-        f"{resolved.group(1) if resolved else 'something this guard cannot read'!r}. A hand "
-        f"toggle is then never remembered, and clearing the override on a new round guards "
-        f"nothing"
+    handler = re.search(
+        r"const handleOpenChange = useCallback\(\s*\(open: boolean\) => \{(.*?)\n    \}",
+        src[src.index("const [override,") :],
+        re.S,
     )
-    # Its `override`, by name. Requiring only the `next.` prefix let
-    # `setOverride(next.releaseStreamingHeight)` pass: both fields are booleans so it
-    # type-checks, but reopening a hand-closed block whose setting defaults open wants
-    # override true while releaseStreamingHeight is false, and the block stays shut.
-    answer = re.search(r"const (\w+) = resolveReasoningToggle\(", handler)
-    assert answer and resolved.group(1) == f"{answer.group(1)}.override", (
-        f"the open toggle writes {resolved.group(1)!r}, which is not the answer "
-        f"resolveReasoningToggle returned, so what the reader asked for and what is stored "
-        f"can differ"
-    )
+    assert handler and f"{writes}(open);" in handler.group(
+        1
+    ), "the hand toggle must store the requested open state directly"
 
     # And a new round clears it. Regenerate reuses this component instance, so without this a
     # block opened by hand over the last answer stays pinned open over the next one.
@@ -810,7 +713,6 @@ def test_response_details_metadata_is_persisted_without_backend_schema_change():
     assert "responseDetails: buildResponseDetails(finishedAt)" in src
     assert "toolCalls: Array.from(" in src
     assert "!isExternalRequest && supportsTools && toolsEnabled" in src
-    assert "!isExternalRequest && supportsTools && codeToolsEnabled" in src
     assert re.search(r"selectedModelSummary\?\.name\s*\|\|\s*responseModelId", src)
     assert "providerName" in src
     assert "cancelId" in src
@@ -820,6 +722,14 @@ def test_response_details_metadata_is_persisted_without_backend_schema_change():
     builder_block = src[
         src.find("const buildResponseDetails") : src.find("const externalCapabilities")
     ]
+    # #11628: Code is recorded from the placement the request actually sends, a hosted sandbox or Studio's local
+    # python/terminal/edit_file, so an external connection without a sandbox still reports Code when it runs locally.
+    # Read inside the builder: the request payload further down tests studioLocalCodeTools too.
+    assert re.search(
+        r"code:\s*hostedCodeToolsForThisTurn\.length > 0\s*\|\|\s*"
+        r"\(\s*supportsStudioToolsForThisTurn\s*&&\s*studioLocalCodeTools\.length > 0\s*\)",
+        builder_block,
+    ), "Response details no longer record Code from the hosted sandbox or Studio's local tools"
     for forbidden in [
         "encrypted_api_key",
         "externalApiKey",

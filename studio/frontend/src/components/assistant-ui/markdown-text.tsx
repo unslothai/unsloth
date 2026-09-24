@@ -496,7 +496,7 @@ function MermaidCopyButton({ source }: { source: string }) {
   );
 }
 
-function CodeBlockActions({
+export function CodeBlockActions({
   disabled,
   language,
   source,
@@ -1228,7 +1228,7 @@ const MarkdownTextSourceImpl = ({
 );
 
 export const MarkdownText = withSmoothContextProvider(MarkdownTextImpl);
-// Reasoning pages render at message-group scope, where assistant-ui deliberately
+// Reasoning fragments render at message-group scope, where assistant-ui deliberately
 // exposes no `part`. Its smooth wrapper reads that property, so the source-fed
 // renderer must stay independent of both the part adapter and that wrapper.
 export const MarkdownTextSource = MarkdownTextSourceImpl;

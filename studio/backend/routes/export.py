@@ -142,20 +142,15 @@ def _is_unquantized_full_finetune(checkpoint_path: str, hf_token: HfTokenArg = N
     Only ever used to turn 4-bit OFF, so every uncertain answer here is False and
     behaves exactly as the code did before.
     """
-    checkpoint_dir = Path(checkpoint_path)
-    config_file = checkpoint_dir / "config.json"
+    from utils.models.checkpoints import is_unquantized_full_model_dir
+
     try:
-        if config_file.is_file():
-            if (checkpoint_dir / "adapter_config.json").exists():
-                return False
-            config = json.loads(config_file.read_text(encoding = "utf-8-sig"))
-        elif checkpoint_dir.exists():
-            # A local directory without a config.json is not a full model.
-            return False
-        else:
-            config = _hub_config(checkpoint_path, hf_token)
-    except (OSError, ValueError):
+        is_local = Path(checkpoint_path).exists()
+    except OSError:
         return False
+    if is_local:
+        return is_unquantized_full_model_dir(checkpoint_path)
+    config = _hub_config(checkpoint_path, hf_token)
     return isinstance(config, dict) and "quantization_config" not in config
 
 

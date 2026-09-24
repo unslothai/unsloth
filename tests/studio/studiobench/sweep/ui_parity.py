@@ -1699,6 +1699,16 @@ def report(
             f"cell rows, so completion could not be checked"
         )
     print(f"  matched:                    {matched}")
+    # SAID, not silent: a pair that matched only once fence latch state was set aside is a weaker
+    # match than one whose every byte agreed, and a reader should be able to count them.
+    latch_normalised = sum(
+        1 for _a, _s, _c, r in results if r.get("verdict") == P.MATCH and r.get("fence_latch")
+    )
+    if latch_normalised:
+        print(
+            f"    of which fence-latch only: {latch_normalised}  (the only difference was which code "
+            f"fences each arm had scrolled past; those fences were compared on their text)"
+        )
     print(
         f"  stable actions differing:   {len(stable_bad)}"
         + (f"  (in >= {min_reps} repetitions)" if min_reps > 1 else "")

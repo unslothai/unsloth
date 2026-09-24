@@ -2885,14 +2885,9 @@ class VideoBackend:
             return None, []
         # The root name first, then the legacy scheme name: resolve_prequant_source hands back both and the load tries
         # them in that order, so the plan must stage whichever one exists.
-        wanted = [
-            n
-            for n in (
-                getattr(source, "filename", None),
-                getattr(source, "fallback_filename", None),
-            )
-            if n
-        ]
+        from core.inference.diffusion_prequant import candidate_filenames_of
+
+        wanted = list(candidate_filenames_of(source))
         try:
             info = api.model_info(source.location, files_metadata = True)
         except Exception as exc:  # noqa: BLE001 -- unavailable prequant means the dense DiT
@@ -2939,11 +2934,10 @@ class VideoBackend:
             return None
         from core.inference.diffusion import DiffusionBackend
 
-        for name in (
-            getattr(source, "filename", None),
-            getattr(source, "fallback_filename", None),
-        ):
-            if name and DiffusionBackend._hub_file_is_cached(source.location, name):
+        from core.inference.diffusion_prequant import candidate_filenames_of
+
+        for name in candidate_filenames_of(source):
+            if DiffusionBackend._hub_file_is_cached(source.location, name):
                 return source.location
         # No log here: the caller reports the same "keeping its dense denoiser shards" outcome for a miss, and logging
         # it twice would read as two separate decisions.
@@ -2959,24 +2953,63 @@ class VideoBackend:
         Only a component listed here may have its dense weights dropped from a plan or an
         estimate: an unpublished / gated / renamed artifact keeps its dense encoder, exactly as
         the load's own fallback does. Checked per source so one missing repo cannot sink the
-        whole plan."""
-        found: dict[str, list[tuple[str, int]]] = {}
-        for component, source in sources.items():
-            if getattr(source, "kind", None) != "repo" or not getattr(source, "filename", None):
-                continue
-            try:
-                info = api.model_info(source.location, files_metadata = True)
-            except Exception as exc:  # noqa: BLE001 -- unavailable pre-cast means the dense encoder
-                logger.warning("video.te_prequant_unavailable: %s: %s", source.location, exc)
-                continue
-            files = [
-                (s.rfilename, int(s.size or 0))
-                for s in (info.siblings or [])
-                if s.rfilename == source.filename
-            ]
-            if files:
-                found[component] = files
-        return found
+        whole plan.
+
+        Delegated rather than reimplemented. This was a second copy of the image-side logic
+        matching only the PRIMARY name, so the moment the resolver started preferring a
+        safetensors spelling every hosted encoder here read as absent, its dense shards went back
+        into the pull, and the load fetched the .pt on top of them. One implementation is what
+        keeps the plan and the resolver naming the same artifact."""
+        from .diffusion_te_prequant import te_prequant_hub_files
+        return te_prequant_hub_files(sources, api, logger)
+
+    @staticmethod
+    def _te_fetch_miss(exc: BaseException, *, local_files_only: bool) -> bool:
+        """Whether ``exc`` means this NAME is absent, so the next candidate is worth a try.
+
+        ``LocalEntryNotFoundError`` subclasses ``EntryNotFoundError`` and means two different things
+        depending on the mode: offline it is a cache miss, which is the only verdict there is, while
+        online huggingface_hub raises it when the Hub could not be REACHED and the entry may well
+        exist. Mirrors ``diffusion_te_prequant._resolve_checkpoint_path`` on purpose, so the prefetch
+        plan and the load agree about what counts as a miss.
+        """
+        try:
+            from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
+        except Exception:  # noqa: BLE001 - an unknown hub layout keeps today's behaviour
+            return True
+        if isinstance(exc, LocalEntryNotFoundError):
+            return bool(local_files_only)
+        if isinstance(exc, EntryNotFoundError):
+            return True
+        return VideoBackend._te_fetch_miss_by_name(exc, local_files_only = local_files_only)
+
+    # Class names the xet fallback can only hand back as TEXT. Matched on the whole leading token,
+    # so "LocalEntryNotFoundError" is never read as the remote one by a substring test.
+    _REMOTE_MISS_NAMES = frozenset({"EntryNotFoundError", "RemoteEntryNotFoundError"})
+    _LOCAL_MISS_NAMES = frozenset({"LocalEntryNotFoundError"})
+
+    @staticmethod
+    def _te_fetch_miss_by_name(exc: BaseException, *, local_files_only: bool) -> bool:
+        """The same verdict for an exception whose TYPE did not survive the download.
+
+        ``hf_hub_download_with_xet_fallback`` runs the fetch in a child process and re-raises by
+        class name, and ``unsloth_zoo`` only preserves the names it knows: huggingface_hub 1.x
+        raises ``RemoteEntryNotFoundError`` for a 404, which is not on that list, so the parent sees
+        a bare ``RuntimeError`` reading ``"RemoteEntryNotFoundError: 404 ..."``. Without this a
+        404 on the preferred safetensors name stops the walk, every ``.pt``-only repo keeps its
+        dense encoder in the base download and then fetches the ``.pt`` on top of it, which is the
+        double download the candidate list exists to avoid.
+
+        Deliberately narrow: only a RuntimeError whose message BEGINS with one of those class names,
+        which is the exact shape ``_raise_child_error`` produces.
+        """
+        if not isinstance(exc, RuntimeError):
+            return False
+        message = str(exc)
+        name = message.split(":", 1)[0].strip() if ":" in message else ""
+        if name in VideoBackend._LOCAL_MISS_NAMES:
+            return bool(local_files_only)
+        return name in VideoBackend._REMOTE_MISS_NAMES
 
     @staticmethod
     def _base_download_files(
@@ -3599,24 +3632,44 @@ class VideoBackend:
             # the dense download.
             if getattr(source, "kind", None) != "repo" or not getattr(source, "filename", None):
                 continue
-            try:
-                hf_hub_download_with_xet_fallback(
-                    source.location,
-                    source.filename,
-                    hf_token,
-                    cancel_event = cancel,
-                    reuse_other_cache_root = True,
-                    local_files_only = local_files_only,
-                )
-            except Exception as exc:  # noqa: BLE001 -- no pre-cast file just means the dense encoder
-                if cancel.is_set():
-                    raise
-                logger.warning(
-                    "video.te_prequant_fetch_failed: %s/%s: %s",
-                    source.location,
-                    source.filename,
-                    exc,
-                )
+            # Every candidate, in the resolver's order: the preferred name is now a safetensors
+            # spelling most repos do not host, so stopping at it would fail every fetch and report
+            # no skippable component, which is the dense encoder downloaded twice over.
+            from .diffusion_te_prequant import te_candidate_filenames, te_candidate_is_readable
+
+            names = [n for n in te_candidate_filenames(source) if te_candidate_is_readable(n)]
+            got = False
+            for name in names:
+                try:
+                    hf_hub_download_with_xet_fallback(
+                        source.location,
+                        name,
+                        hf_token,
+                        cancel_event = cancel,
+                        reuse_other_cache_root = True,
+                        local_files_only = local_files_only,
+                    )
+                except Exception as exc:  # noqa: BLE001 -- no pre-cast file means the dense encoder
+                    if cancel.is_set():
+                        raise
+                    logger.warning(
+                        "video.te_prequant_fetch_failed: %s/%s: %s",
+                        source.location,
+                        name,
+                        exc,
+                    )
+                    # Advance only on "this NAME is absent", the same distinction the resolver
+                    # makes. Anything else (an unreachable Hub, auth, a corrupt cache) is about the
+                    # REPO, so trying the next spelling repeats a slow failure and, worse, can
+                    # report a legacy artifact as fetched while the loader refuses to advance past
+                    # the same error: the plan would then drop the dense encoder and the load would
+                    # have neither.
+                    if not VideoBackend._te_fetch_miss(exc, local_files_only = local_files_only):
+                        break
+                    continue
+                got = True
+                break
+            if not got:
                 continue
             fetched.append(component)
         return tuple(fetched)

@@ -25,6 +25,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "gpt-5.6-sol",
             "gpt-5.6-terra",
             "gpt-6-astra",
+            "gpt-6-luna",
+            "gpt-6-sol",
         ],
         "model_capabilities": {
             "gpt-5.4": {"vision": True, "studio_tools": True},
@@ -34,6 +36,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "gpt-5.6-sol": {"vision": True, "studio_tools": True},
             "gpt-5.6-terra": {"vision": True, "studio_tools": True},
             "gpt-6-astra": {"vision": True, "studio_tools": True},
+            "gpt-6-luna": {"vision": True, "studio_tools": True},
+            "gpt-6-sol": {"vision": True, "studio_tools": True},
         },
         "supports_streaming": True,
         "supports_vision": True,
