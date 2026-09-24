@@ -93,13 +93,15 @@ def _record(
     flags: Optional[dict[str, dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     # flags are library state, not recipe: they come from the sidecar store, never the PNG chunk
+    if flags is None:
+        flags = gallery_flags.read(gallery_dir())
     return {
         **meta,
         "id": image_id,
         "url": f"/api/inference/images/gallery/{image_id}/file",
-        **gallery_flags.flags_for(
-            flags if flags is not None else gallery_flags.read(gallery_dir()), image_id
-        ),
+        **gallery_flags.flags_for(flags, image_id),
+        # Lets the client keep a dragged item in place when it re-sorts.
+        "order_at": gallery_flags.order_at(flags, image_id),
     }
 
 
@@ -176,7 +178,7 @@ def list_images(
     archived: bool = False,
 ) -> list[dict[str, Any]]:
     """A window of images for infinite scroll: pinned first (most recently pinned leading), then
-    newest-first by file mtime.
+    newest-first by file mtime (or the manual key once dragged).
 
     mtime is a cheap stat ~= generation order, so a large gallery isn't opened in full just to
     sort; only the window's recipes are read. limit=None returns everything from ``offset`` on.
@@ -197,7 +199,13 @@ def list_images(
     # Both the shelf split and the pin sort run on file stems, BEFORE any recipe is read, so they cost one dict lookup
     # per file and leave the early break below intact.
     paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
-    paths.sort(key = lambda p: (gallery_flags.pin_rank(flags, p.stem), _mtime(p)), reverse = True)
+    paths.sort(
+        key = lambda p: (
+            gallery_flags.pin_rank(flags, p.stem),
+            gallery_flags.order_rank(flags, p.stem, _mtime(p)),
+        ),
+        reverse = True,
+    )
     # Page over READABLE records, not raw files: filtering a foreign PNG out of an already-sliced window would drop
     # valid images and make has_more wrong. Known limit: this re-reads headers from newest down to `offset+limit` per
     # page, so a deep scroll is O(offset) header-opens.
@@ -232,6 +240,41 @@ def set_flags(
         if path is None:
             return None
         gallery_flags.set_flags_locked(gallery_dir(), image_id, pinned = pinned, archived = archived)
+        meta = _read_meta(path)
+    if meta is None:  # raced a delete between the guard and the read
+        return None
+    return _record(image_id, meta)
+
+
+def move(image_id: str, after_id: Optional[str]) -> Optional[dict[str, Any]]:
+    """Move an active image to just after ``after_id`` (None = front) and return its record.
+
+    None if the id is not an owned, active image. Raises KeyError if ``after_id`` is not on the shelf."""
+    with gallery_flags.exclusive(gallery_dir()):
+        path = owned_image_path(image_id)
+        if path is None:
+            return None
+        flags = gallery_flags.read(gallery_dir())
+        if gallery_flags.is_archived(flags, image_id):
+            return None
+        # Full shelf in listing order, so neighbours past the client's loaded window are known.
+        try:
+            paths = [
+                p
+                for p in gallery_dir().glob("*.png")
+                if not gallery_flags.is_archived(flags, p.stem)
+            ]
+        except OSError:
+            paths = []
+        keyed = [(p.stem, _mtime(p)) for p in paths]
+        keyed.sort(
+            key = lambda pair: (
+                gallery_flags.pin_rank(flags, pair[0]),
+                gallery_flags.order_rank(flags, pair[0], pair[1]),
+            ),
+            reverse = True,
+        )
+        gallery_flags.place_locked(gallery_dir(), image_id, keyed, after_id = after_id)
         meta = _read_meta(path)
     if meta is None:  # raced a delete between the guard and the read
         return None
