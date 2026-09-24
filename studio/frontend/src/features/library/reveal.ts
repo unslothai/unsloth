@@ -6,20 +6,22 @@ import { useIsAccountOwner } from "@/features/auth";
 import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
 import { type LibraryItem, revealLibraryItem } from "./api";
-
-const LOOPBACK_HOST = /^(localhost|127(\.\d{1,3}){3}|\[::1\]|::1)$|\.localhost$/;
+import { isLoopbackHost, revealLabelFor } from "./reveal-label";
 
 /**
  * The Reveal label, or null where Reveal cannot help. It opens the file manager of the machine
- * running Studio, so it is offered only there (the desktop app, or a browser on this machine), and
- * only to the installation owner, as the backend requires.
+ * running Studio, so it is offered only there (the desktop app, or a browser on this machine), only
+ * where that machine can show one (not a container or a headless server, as the server reports),
+ * and only to the installation owner, as the backend requires. Named as the server's platform
+ * names it.
  */
 export function useRevealLabel(): string | null {
   const owner = useIsAccountOwner();
   const deviceType = usePlatformStore((s) => s.deviceType);
-  const local = isTauri || LOOPBACK_HOST.test(window.location.hostname);
+  const fileManager = usePlatformStore((s) => s.fileManager);
+  const local = isTauri || isLoopbackHost(window.location.hostname);
   if (!owner || !local) return null;
-  return deviceType === "mac" ? "Reveal in Finder" : "Reveal in Folder";
+  return revealLabelFor(fileManager, deviceType);
 }
 
 /** Chat attachments live inside their messages, so there is no file to show. */
