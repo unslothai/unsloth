@@ -200,6 +200,13 @@ export async function fetchLibraryBlob(item: LibraryItem): Promise<Blob> {
   return blob.type === type ? blob : new Blob([blob], { type });
 }
 
+/** A video item's first frame, drawn by the backend. The version keeps a stale frame out of caches. */
+export async function fetchLibraryThumbnail(item: LibraryItem): Promise<Blob> {
+  const params = new URLSearchParams({ id: item.id, v: String(item.updatedAt) });
+  const response = await ensureOk(await authFetch(`/api/library/items/thumbnail?${params}`));
+  return response.blob();
+}
+
 /** Up to `maxBytes` of the item decoded as text; the rest of the body is never read. */
 export async function fetchLibraryTextPrefix(
   item: LibraryItem,

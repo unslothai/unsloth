@@ -3,7 +3,7 @@
 
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
-import { Folder01Icon } from "@hugeicons/core-free-icons";
+import { Folder01Icon, PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useContext, useRef, useState } from "react";
 import type { LibraryFolder, LibraryItem } from "../api";
@@ -11,11 +11,11 @@ import {
   KIND_ICONS,
   KIND_ICON_CLASS,
   fileKind,
-  hasImagePreview,
+  hasThumbnail,
   modelLabel,
 } from "../file-kind";
 import { formatCardTime, pluralize } from "../format";
-import { useColumnCount, useLibraryObjectUrl, useSeen } from "../hooks";
+import { useColumnCount, useLibraryThumbnail, useSeen } from "../hooks";
 import { useLibraryActions } from "../actions-context";
 import { CardSelectionContext } from "./card-selection";
 import { LibraryActionsMenu } from "./library-actions";
@@ -34,11 +34,18 @@ export function KindIcon({ item, className }: { item: LibraryItem; className?: s
   );
 }
 
-/** A lazily loaded image, sized by its own aspect ratio once it arrives. */
+/** A lazily loaded image or video frame, sized by its own aspect ratio once it arrives. */
 function ImageThumb({ item, className }: { item: LibraryItem; className?: string }) {
   const holder = useRef<HTMLDivElement>(null);
-  const url = useLibraryObjectUrl(item, useSeen(holder));
+  const { url, failed } = useLibraryThumbnail(item, useSeen(holder));
   const [loaded, setLoaded] = useState(false);
+  if (failed) {
+    return (
+      <div className={cn("flex aspect-square items-center justify-center", className)}>
+        <KindIcon item={item} className="h-auto w-1/4 max-w-10" />
+      </div>
+    );
+  }
   return (
     <div ref={holder} className={cn("relative overflow-hidden", className)}>
       {!loaded && <div className="aspect-square w-full animate-pulse bg-muted" />}
@@ -50,6 +57,11 @@ function ImageThumb({ item, className }: { item: LibraryItem; className?: string
           onLoad={() => setLoaded(true)}
           className={cn("block w-full", loaded ? "h-auto" : "absolute inset-0 opacity-0")}
         />
+      )}
+      {loaded && fileKind(item) === "video" && (
+        <span className="pointer-events-none absolute inset-0 m-auto flex aspect-square w-1/4 max-w-10 items-center justify-center rounded-full bg-black/45 text-white backdrop-blur-sm">
+          <HugeiconsIcon icon={PlayIcon} strokeWidth={2} className="size-1/2 [&_path]:fill-current" />
+        </span>
       )}
     </div>
   );
@@ -109,7 +121,7 @@ export function ItemCard({ item, showTime = true }: { item: LibraryItem; showTim
   const actions = useLibraryActions();
   const menu = <LibraryActionsMenu target={{ kind: "item", item }} variant="overlay" />;
 
-  if (hasImagePreview(item)) {
+  if (hasThumbnail(item)) {
     return (
       <CardFrame
         selectKey={`item:${item.id}`}
@@ -234,7 +246,7 @@ export function FolderGrid({
 
 /** Small square used by list rows: the image itself, or the type icon on a tile. */
 export function ItemTile({ item }: { item: LibraryItem }) {
-  if (hasImagePreview(item)) {
+  if (hasThumbnail(item)) {
     return (
       <div className="size-9 shrink-0 overflow-hidden rounded-xl border border-border/60 bg-muted [&_img]:size-9 [&_img]:object-cover [&_img]:object-top">
         <ImageThumb item={item} />

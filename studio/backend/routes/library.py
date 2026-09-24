@@ -7,8 +7,8 @@ models and sandbox files, plus folders, favorites and renames. See ``core.librar
 import re
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -172,6 +172,25 @@ async def reveal_item(body: ItemRef, current_subject: str = Depends(get_current_
         raise HTTPException(status_code = 400, detail = str(exc))
     await run_in_threadpool(_reveal, path)
     return {"ok": True}
+
+
+@router.get("/items/thumbnail")
+def get_item_thumbnail(
+    id: str = Query(max_length = 4096), current_subject: str = Depends(get_current_subject)
+):
+    """A video item's first frame. The client adds the item's version to the URL, so it can cache."""
+    try:
+        data = library.video_thumbnail(id)
+    except LookupError:
+        raise HTTPException(status_code = 404, detail = "Item not found")
+    except RuntimeError as exc:
+        logger.info("library.thumbnail_unavailable: %s", exc)
+        raise HTTPException(status_code = 501, detail = "No thumbnail for this video")
+    return Response(
+        content = data,
+        media_type = "image/webp",
+        headers = {"Cache-Control": "private, max-age=31536000, immutable"},
+    )
 
 
 @router.get("/locations")

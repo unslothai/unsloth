@@ -17,7 +17,7 @@ import threading
 import uuid
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, BinaryIO, Optional, Union
 
 from core.inference import gallery_flags
 from loggers import get_logger
@@ -198,10 +198,11 @@ def thumbnail(video_id: str) -> Optional[bytes]:
     path = owned_video_path(video_id)
     if path is None:
         return None
-    return _thumbnail_webp(path)
+    return first_frame_webp(path)
 
 
-def _thumbnail_webp(path: Path) -> bytes:
+def first_frame_webp(source: Union[Path, BinaryIO], width: int = _THUMBNAIL_WIDTH) -> bytes:
+    """The first frame of a clip (a file or an open binary stream), at most `width` wide, as WebP."""
     import io
     try:
         import av
@@ -209,15 +210,15 @@ def _thumbnail_webp(path: Path) -> bytes:
     except Exception as exc:  # noqa: BLE001 -- a missing decoder dependency makes thumbnails unavailable
         raise RuntimeError("Thumbnail generation needs the 'av' and 'Pillow' packages.") from exc
     try:
-        with av.open(str(path)) as src:
+        with av.open(str(source) if isinstance(source, Path) else source) as src:
             if not src.streams.video:
                 raise RuntimeError("Thumbnail generation failed: the clip has no video stream.")
             frame = next(src.decode(src.streams.video[0]), None)
             if frame is None:
                 raise RuntimeError("Thumbnail generation failed: the clip has no decodable frames.")
             image = frame.to_image()
-            if image.width > _THUMBNAIL_WIDTH:
-                scale = _THUMBNAIL_WIDTH / image.width
+            if image.width > width:
+                scale = width / image.width
                 image = image.resize(
                     (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
                     Image.LANCZOS,
