@@ -199,6 +199,69 @@ def test_unreachable_old_commit_is_verified_by_hashing(tmp_path):
     assert result.hashed_bytes == len(data)
 
 
+def _linked_snapshots(tmp_path: Path, data: bytes, n: int) -> list[str]:
+    """n older snapshots holding hard links of ONE file, as repeated README-only reuse leaves them."""
+    commits = [f"{i + 3:x}" * 40 for i in range(n)]
+    repo_dir = _copy_layout(tmp_path, {"model.safetensors": data}, commit = commits[0])
+    for commit in commits[1:]:
+        (repo_dir / "snapshots" / commit).mkdir(parents = True)
+        os.link(
+            repo_dir / "snapshots" / commits[0] / "model.safetensors",
+            repo_dir / "snapshots" / commit / "model.safetensors",
+        )
+    return commits
+
+
+def test_one_file_linked_into_many_snapshots_is_hashed_once(tmp_path):
+    old, new = _blob(20, 8192), _blob(21, 8192)  # a same-size weights update after 5 card edits
+    _linked_snapshots(tmp_path, old, 5)
+
+    result = _reuse(tmp_path, [ExpectedFile("model.safetensors", len(new), _sha256(new))])
+
+    assert result.reused == ()
+    assert result.hashed_bytes == len(old)
+
+
+def test_hub_digests_are_asked_newest_first_and_only_until_matched(tmp_path):
+    data = _blob(22, 8192)
+    commits = []
+    for i in range(4):
+        commit = f"{i + 3:x}" * 40
+        commits.append(commit)
+        _copy_layout(tmp_path, {"model.safetensors": data}, commit = commit)  # separate copies
+    calls = []
+
+    def remote(commit, paths):
+        calls.append(commit)
+        return {p: _sha256(data) for p in paths}
+
+    found = snapshot_reuse.reusable_paths(
+        "model",
+        REPO,
+        NEW,
+        {"model.safetensors": len(data)},
+        hub_cache = tmp_path / "hub",
+        remote_digests = remote,
+    )
+
+    assert found == {"model.safetensors"}
+    assert len(calls) == 2  # the target commit, then one older commit, not all four
+    assert calls[0] == NEW and calls[1] in commits
+
+
+def test_a_copy_cut_short_by_a_cancel_is_removed_by_the_next_reuse(tmp_path):
+    data = _blob(23, 8192)
+    repo_dir = _copy_layout(tmp_path, {"model.safetensors": data})
+    target = repo_dir / "snapshots" / NEW
+    target.mkdir(parents = True)
+    (target / ".model.safetensors.reuse-99999-deadbeef").write_bytes(data[:100])
+
+    result = _reuse(tmp_path, [ExpectedFile("model.safetensors", len(data), _sha256(data))])
+
+    assert result.reused == ("model.safetensors",)
+    assert sorted(p.name for p in target.iterdir()) == ["model.safetensors"]
+
+
 def test_size_mismatch_is_rejected_without_reading_the_file(tmp_path, monkeypatch):
     _copy_layout(tmp_path, {"model.safetensors": _blob(10, 1000)})
     monkeypatch.setattr(

@@ -27,6 +27,7 @@ downloads when they differ.
 
 from __future__ import annotations
 
+import glob
 import hashlib
 import json
 import os
@@ -212,6 +213,7 @@ def _other_snapshots(repo_dir: Path, commit_hash: str) -> list[Path]:
 
 def _candidates(snapshots: Iterable[Path], rel_path: str, size: int) -> list[Path]:
     found = []
+    seen: set[tuple[int, int]] = set()
     for snap in snapshots:
         candidate = snap / rel_path
         # A symlink points into blobs/, which huggingface_hub already reuses on its own; only a
@@ -219,10 +221,16 @@ def _candidates(snapshots: Iterable[Path], rel_path: str, size: int) -> list[Pat
         if not _is_regular_file(candidate):
             continue
         try:
-            if os.stat(candidate).st_size != size:
-                continue
+            st = os.stat(candidate)
         except OSError:
             continue
+        if st.st_size != size:
+            continue
+        # Each reuse hard links the same file into one more snapshot: check those bytes once.
+        inode = (st.st_dev, st.st_ino)
+        if st.st_ino and inode in seen:
+            continue
+        seen.add(inode)
         found.append(candidate)
     return found
 
@@ -233,21 +241,6 @@ def _needs_reuse(repo_dir: Path, target: Path, digest: str) -> bool:
     if os.path.exists(repo_dir / "blobs" / digest):
         return False  # huggingface_hub links or copies this blob without downloading
     return True
-
-
-def _remote_digests_by_commit(
-    remote_digests: Optional[RemoteDigests], wanted: Mapping[str, set[str]]
-) -> dict[str, Mapping[str, str]]:
-    out: dict[str, Mapping[str, str]] = {}
-    if remote_digests is None:
-        return out
-    for commit, paths in wanted.items():
-        try:
-            out[commit] = remote_digests(commit, sorted(paths)) or {}
-        except Exception as exc:  # noqa: BLE001 - squashed history, offline, 404: hash instead
-            logger.debug("remote digests unavailable for %s: %s", commit, exc)
-            out[commit] = {}
-    return out
 
 
 def find_reusable_copies(
@@ -268,32 +261,39 @@ def find_reusable_copies(
         for path, (size, digest) in expected.items()
         if size > 0 and digest_kind(digest) is not None
     }
-    wanted: dict[str, set[str]] = {}
-    for path, found in candidates.items():
-        for candidate in found:
-            wanted.setdefault(candidate.relative_to(repo_dir / "snapshots").parts[0], set()).add(
-                path
-            )
-    remote = _remote_digests_by_commit(remote_digests, wanted)
 
     matches: dict[str, Path] = {}
     hashed = 0
+    # The Hub says an older commit served the same bytes and the local copy has the full size. Good
+    # enough for a plan's estimate; the worker passes no remote_digests and hashes instead. Newest
+    # snapshot first, one request per commit, and none once every path has a match.
+    if remote_digests is not None:
+        for snap in snapshots:
+            here = {
+                path: candidate
+                for path, found in candidates.items()
+                if path not in matches
+                for candidate in found
+                if candidate == snap / path
+            }
+            if not here:
+                continue
+            try:
+                remote = remote_digests(snap.name, sorted(here)) or {}
+            except Exception as exc:  # noqa: BLE001 - squashed history, offline, 404: hash instead
+                logger.debug("remote digests unavailable for %s: %s", snap.name, exc)
+                continue
+            for path, candidate in here.items():
+                if remote.get(path) == expected[path][1]:
+                    matches[path] = candidate
     for path, found in candidates.items():
-        size, digest = expected[path]
-        kind = digest_kind(digest)
-        # The Hub says the older commit served the same bytes and the local copy has the full size.
-        # Good enough for a plan's estimate; the worker passes no remote_digests and hashes instead.
-        for candidate in found:
-            commit = candidate.relative_to(repo_dir / "snapshots").parts[0]
-            if remote.get(commit, {}).get(path) == digest:
-                matches[path] = candidate
-                break
         if path in matches:
             continue
+        kind = digest_kind(expected[path][1])
         for candidate in found:
             local, spent = cached_file_digest(candidate, kind, compute = allow_hashing)
             hashed += spent
-            if local == digest:
+            if local == expected[path][1]:
                 matches[path] = candidate
                 break
     return matches, hashed
@@ -302,6 +302,12 @@ def find_reusable_copies(
 def _place(src: Path, dst: Path, size: int) -> Optional[str]:
     """Hard link ``src`` at ``dst`` (copy when linking fails). Atomic: a temp name, then replace."""
     dst.parent.mkdir(parents = True, exist_ok = True)
+    # A cancel kills the worker, so a copy cut short never reached the cleanup below.
+    for stale in dst.parent.glob(f".{glob.escape(dst.name)}.reuse-*"):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
     tmp = dst.with_name(f".{dst.name}.reuse-{os.getpid()}-{uuid.uuid4().hex[:8]}")
     how = None
     try:
