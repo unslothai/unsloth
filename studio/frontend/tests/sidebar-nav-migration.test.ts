@@ -129,17 +129,15 @@ test("a user-arranged sidebar survives the migration", () => {
   );
 });
 
-test("an install sitting on the version-6 default picks Video up", () => {
-  // The layout this change replaces. Untouched, so it adopts the new default
-  // rather than being read as a deliberate choice to keep Video under More.
+test("an install sitting on the version-6 default adopts the current layout", () => {
   const customization = sanitizeCustomization({ sidebarNav: shippedLayouts[4] });
   const migrated = migrateShippedSidebarNavDefault(customization, 6, 8);
   assert.deepEqual(migrated.sidebarNav, DEFAULT_CUSTOMIZATION.sidebarNav);
   const ids = migrated.sidebarNav.filter((item) => item.pinned).map((i) => i.id);
-  assert.deepEqual(ids, ["hub", "projects", "library", "images", "video", "train"]);
+  assert.deepEqual(ids, ["hub", "projects", "library", "images", "train"]);
 });
 
-test("an install sitting on the version-7 default gains Library under Projects", () => {
+test("an install sitting on the version-7 default gains Library and moves Video to More", () => {
   const customization = sanitizeCustomization({ sidebarNav: shippedLayouts[5] });
   const migrated = migrateShippedSidebarNavDefault(customization, 7, 8);
   assert.deepEqual(migrated.sidebarNav, DEFAULT_CUSTOMIZATION.sidebarNav);
@@ -147,6 +145,7 @@ test("an install sitting on the version-7 default gains Library under Projects",
     migrated.sidebarNav.slice(0, 3).map((item) => item.id),
     ["hub", "projects", "library"],
   );
+  assert.equal(migrated.sidebarNav.find((item) => item.id === "video")?.pinned, false);
 });
 
 test("a shipped-looking layout chosen after migration is preserved", () => {

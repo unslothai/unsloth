@@ -3635,7 +3635,7 @@ SIDEBAR_NAV_ITEM_DEFAULTS = {
     "projects": True,
     "library": True,
     "images": True,
-    "video": True,
+    "video": False,
     "audio": False,
     "train": True,
     "recipes": False,

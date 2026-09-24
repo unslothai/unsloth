@@ -189,7 +189,7 @@ FRONTEND_SHIPPED_SIDEBAR_NAV = [
     ("projects", True),
     ("library", True),
     ("images", True),
-    ("video", True),
+    ("video", False),
     ("audio", False),
     ("train", True),
     ("recipes", False),
