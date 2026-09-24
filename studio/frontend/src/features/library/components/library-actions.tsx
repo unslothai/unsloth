@@ -27,6 +27,7 @@ import { useMemo, useState } from "react";
 import type { LibraryFolder } from "../api";
 import { isFileItem, isModelItem } from "../file-kind";
 import { type LibraryTarget, useLibraryActions } from "../actions-context";
+import { canReveal, revealInFolder, useRevealLabel } from "../reveal";
 
 // Sized and weighted as the sidebar's chat and project menus draw theirs.
 const ICON = "size-icon";
@@ -82,6 +83,7 @@ export function LibraryActionsMenu({
   const inFolder = currentFolderId(target);
   const item = target.kind === "item" ? target.item : null;
   const isFile = !item || isFileItem(item);
+  const revealLabel = useRevealLabel();
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -125,6 +127,12 @@ export function LibraryActionsMenu({
           <DropdownMenuItem onSelect={() => actions.download(item)}>
             <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className={ICON} />
             Download
+          </DropdownMenuItem>
+        )}
+        {item && revealLabel && canReveal(item) && (
+          <DropdownMenuItem onSelect={() => revealInFolder(item.id)}>
+            <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className={ICON} />
+            {revealLabel}
           </DropdownMenuItem>
         )}
         <DropdownMenuItem onSelect={() => actions.rename(target)}>

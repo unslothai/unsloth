@@ -6,6 +6,7 @@ import {
   Cancel01Icon,
   Delete02Icon,
   Download01Icon,
+  Folder01Icon,
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -34,6 +35,8 @@ export interface MediaViewerActions {
   primary?: { label: string; icon: IconSvgElement; onClick: () => void; disabled?: boolean };
   onDownload?: () => void;
   onViewChat?: () => void;
+  /** Shown only where it can work; see the Library's useRevealLabel. */
+  reveal?: { label: string; onClick: () => void };
   favorite?: boolean;
   onToggleFavorite?: () => void;
   onAddToProject?: (projectId: string) => Promise<{ already: boolean }>;
@@ -77,7 +80,11 @@ export function MediaViewer({
     media ? "text-white hover:bg-neutral-800 aria-expanded:bg-neutral-800" : "hover:bg-muted aria-expanded:bg-muted",
   );
   const hasMenu = Boolean(
-    actions.onViewChat || actions.onToggleFavorite || actions.onAddToProject || actions.onDelete,
+    actions.onViewChat ||
+      actions.reveal ||
+      actions.onToggleFavorite ||
+      actions.onAddToProject ||
+      actions.onDelete,
   );
 
   return (
@@ -139,14 +146,18 @@ export function MediaViewer({
                 className="unsloth-plus-menu sidebar-row-menu menu-flat-destructive w-56"
               >
                 {actions.onViewChat && (
-                  <>
-                    <DropdownMenuItem onClick={actions.onViewChat}>
-                      <HugeiconsIcon icon={ArrowTurnBackwardIcon} strokeWidth={1.75} className="size-icon" />
-                      View original chat
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                  </>
+                  <DropdownMenuItem onClick={actions.onViewChat}>
+                    <HugeiconsIcon icon={ArrowTurnBackwardIcon} strokeWidth={1.75} className="size-icon" />
+                    View original chat
+                  </DropdownMenuItem>
                 )}
+                {actions.reveal && (
+                  <DropdownMenuItem onClick={actions.reveal.onClick}>
+                    <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                    {actions.reveal.label}
+                  </DropdownMenuItem>
+                )}
+                {(actions.onViewChat || actions.reveal) && <DropdownMenuSeparator />}
                 {actions.onToggleFavorite && (
                   <DropdownMenuItem onClick={actions.onToggleFavorite}>
                     <HugeiconsIcon
