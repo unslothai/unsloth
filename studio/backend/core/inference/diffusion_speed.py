@@ -24,7 +24,8 @@ this). On opt-in it applies the near-lossless speedups in the diffusers-recommen
 ``default`` is the cheap always-amortising compile; ``max`` pays the larger regional tax for the
 bigger warm speedup. The compiled dequant is skipped under ``max``, which subsumes it.
 
-Knobs, safe unset: ``UNSLOTH_DIFFUSION_COMPILE_VAE=auto|0|1`` (compile the VAE decode too), and in their
+Knobs, safe unset: ``UNSLOTH_DIFFUSION_COMPILE_VAE=auto|0|1`` (compile a DiT's VAE decode too; ``auto`` does so
+on ``max`` only, since its cost is a 60-70 s longer first render; ``1`` forces it on any compiled tier), and in their
 own modules ``UNSLOTH_NVFP4_FAST_BIAS``, ``_FAST_DISPATCH``, ``_ZERO_BUFFER`` and ``_BACKEND``.
 
 The flags this flips (TF32, cudnn.benchmark) are PROCESS-WIDE, so ``snapshot_backend_flags`` /
@@ -312,7 +313,7 @@ def apply_speed_optims(
             offload_active = offload_active,
         )
 
-    if applied["compiled"] and _vae_decode_compile_allowed(pipe):
+    if applied["compiled"] and _vae_decode_compile_allowed(pipe, mode):
         applied["compiled_vae_decode"] = _compile_vae_decode(
             pipe, logger, max_autotune = mode == SPEED_MAX
         )
@@ -776,13 +777,17 @@ _VAE_COMPILE_DENY: frozenset[str] = frozenset({"AutoencoderKLQwenImage", "Autoen
 _VAE_COMPILE_ALLOW: frozenset[str] = frozenset({"AutoencoderKL"})
 
 
-def vae_decode_compile_allowed(pipe: Any) -> bool:
+def vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
     """For the compile-cache key, so a bundle saved without VAE decode artifacts is not a hit."""
-    return _vae_decode_compile_allowed(pipe)
+    return _vae_decode_compile_allowed(pipe, speed_mode)
 
 
-def _vae_decode_compile_allowed(pipe: Any) -> bool:
-    """Whether the VAE decode compile covers this pipe; U-Nets always do and ignore the env."""
+def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
+    """Whether the VAE decode compile covers this pipe; U-Nets always do and ignore the env.
+
+    ``auto`` compiles a DiT's decode on ``max`` only: its cost is compile time (the first render after a load goes
+    60-70 s slower, Z-Image 26 -> 97 s, FLUX 20 -> 83 s) for an 8-18% warm render gain, and compile-time levers
+    belong to the explicit tier. ``1`` still forces it on the default tier."""
     if _denoiser_unet(pipe) is not None:
         return True
     raw = os.environ.get(COMPILE_VAE_ENV, "").strip().lower()
@@ -790,6 +795,8 @@ def _vae_decode_compile_allowed(pipe: Any) -> bool:
         return False
     if raw in _VAE_TRUE_TOKENS:
         return True
+    if speed_mode != SPEED_MAX:
+        return False
     name = type(getattr(pipe, "vae", None)).__name__
     return name in _VAE_COMPILE_ALLOW and name not in _VAE_COMPILE_DENY
 

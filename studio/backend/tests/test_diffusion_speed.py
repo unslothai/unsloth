@@ -454,17 +454,33 @@ def test_unet_whole_compile_default_tier(monkeypatch):
     assert applied["compiled_vae_decode"] is True
 
 
-def test_dit_default_tier_keeps_fuse_off_and_compiles_the_vae_decode(monkeypatch):
+def test_dit_default_tier_keeps_fuse_off_and_leaves_the_vae_decode_eager(monkeypatch):
+    # The VAE decode compile costs a 60-70 s longer first render, so under auto it is a max-tier lever only.
     torch = _stub_torch(monkeypatch)
     monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
     pipe = _Pipe(with_compile = True, with_fuse = True)
+    assert type(pipe.vae).__name__ in ds_mod._VAE_COMPILE_ALLOW
     applied = apply_speed_optims(
         pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
     )
     assert applied["compiled"] is True
     assert applied["fused_qkv"] is False and pipe.fused is False
-    assert applied["compiled_vae_decode"] is True
+    assert applied["compiled_vae_decode"] is False
+    assert torch.compile_calls == []
+    assert ds_mod.vae_decode_compile_allowed(pipe, SPEED_DEFAULT) is False
+    assert ds_mod.vae_decode_compile_allowed(pipe, SPEED_MAX) is True
+
+
+def test_dit_default_tier_vae_decode_compile_forced_on_by_env(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "1")
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled"] is True and applied["compiled_vae_decode"] is True
     assert torch.compile_calls == [{"fullgraph": False, "dynamic": True}]
+    assert ds_mod.vae_decode_compile_allowed(pipe, SPEED_DEFAULT) is True
 
 
 def test_dit_vae_decode_compile_opts_out_by_env(monkeypatch):
@@ -472,10 +488,11 @@ def test_dit_vae_decode_compile_opts_out_by_env(monkeypatch):
     monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "0")
     pipe = _Pipe(with_compile = True)
     applied = apply_speed_optims(
-        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX
     )
     assert applied["compiled"] is True and applied["compiled_vae_decode"] is False
     assert torch.compile_calls == []
+    assert ds_mod.vae_decode_compile_allowed(pipe, SPEED_MAX) is False
 
 
 def test_dit_vae_decode_compile_deny_set_and_force(monkeypatch):
@@ -489,7 +506,7 @@ def test_dit_vae_decode_compile_deny_set_and_force(monkeypatch):
         frozenset({type(pipe.vae).__name__}),
     )
     applied = apply_speed_optims(
-        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX
     )
     assert applied["compiled_vae_decode"] is False
     monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "1")
@@ -1391,6 +1408,9 @@ def test_the_loader_keys_the_compile_bundle_on_the_vae_decode_decision():
         encoding = "utf-8"
     )
     assert src.count('"vae_decode": vae_decode_compile_allowed(') == 2
+    # The decision depends on the tier, so each key passes the tier its apply_speed_optims call runs at.
+    assert '"vae_decode": vae_decode_compile_allowed(pipe, effective_speed)' in src
+    assert '"vae_decode": vae_decode_compile_allowed(state.pipe, SPEED_DEFAULT)' in src
     assert ds_mod.vae_decode_compile_allowed is not None
 
 
