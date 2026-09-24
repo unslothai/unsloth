@@ -25,8 +25,8 @@ import {
 } from "@/features/library";
 import { useSystemInfo } from "@/hooks";
 import { type TranslationKey, useT } from "@/i18n";
+import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
-import { ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { SettingsRow } from "../components/settings-row";
@@ -195,7 +195,7 @@ function StorageSection() {
                       : t("settings.library.itemCount", { count: entry.count.toLocaleString() })}
                   </span>
                 </span>
-                <HugeiconsIcon icon={ArrowRight01Icon} className="size-4 shrink-0 text-muted-foreground" />
+                <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-4 shrink-0 text-muted-foreground" />
               </button>
             ))}
           </div>
