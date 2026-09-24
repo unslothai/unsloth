@@ -10,7 +10,10 @@ export type LibrarySource = "uploaded" | "generated";
 export interface LibraryItem {
   /** `<source>:<ref>`: upload, attachment, image, audio, model or sandbox. */
   id: string;
+  /** Shown, and changed by Rename. */
   name: string;
+  /** The file's own name, which a rename leaves alone: its type comes from this. */
+  fileName?: string;
   source: LibrarySource;
   contentType: string;
   sizeBytes: number | null;

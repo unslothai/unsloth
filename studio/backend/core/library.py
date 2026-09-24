@@ -26,7 +26,7 @@ import shutil
 import threading
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import BinaryIO, Optional, Union
 from urllib.parse import quote
 
 from loggers import get_logger
@@ -67,6 +67,8 @@ def _item(
     return {
         "id": item_id,
         "name": name,
+        # The source's own name, which a rename leaves alone, so the type never follows it.
+        "fileName": name,
         "source": source,
         "contentType": content_type,
         "sizeBytes": size_bytes,
@@ -635,11 +637,14 @@ def local_path(item_id: str) -> Path:
 
 
 # Cards are up to a few hundred CSS pixels wide, so twice that for high-density screens.
-_VIDEO_THUMBNAIL_WIDTH = 640
+_THUMBNAIL_WIDTH = 640
+# The grid crops a picture past these heights (as a share of its width), so the rest is never sent.
+_THUMBNAIL_MIN_RATIO = 2 / 3
+_THUMBNAIL_MAX_RATIO = 3 / 2
 
 
-def _attachment_clip(ref: str) -> bytes:
-    """The clip stored in a chat attachment. LookupError when it holds none."""
+def _attachment_media(ref: str) -> tuple[str, bytes]:
+    """The image or clip stored in a chat attachment, with its type. LookupError when it holds none."""
     from routes.chat_history import _decode_attachment_base64
     from storage.studio_db import get_chat_attachment
 
@@ -650,35 +655,77 @@ def _attachment_clip(ref: str) -> bytes:
             continue
         data = part.get("data")
         mime_type = str(part.get("mimeType") or attachment.get("contentType") or "").lower()
-        if isinstance(data, str) and data and mime_type.startswith("video/"):
-            return _decode_attachment_base64(data)
+        if isinstance(data, str) and data and mime_type.startswith(("image/", "video/")):
+            return mime_type, _decode_attachment_base64(data)
     raise LookupError(ref)
 
 
-def video_thumbnail(item_id: str) -> bytes:
-    """The first frame of a video item, as WebP, for its card.
+def _image_thumbnail(source: Union[Path, BinaryIO]) -> bytes:
+    """The picture cropped as a card shows it and at most `_THUMBNAIL_WIDTH` wide, as WebP."""
+    import io
 
-    LookupError when the item is gone or is not a video; RuntimeError when it cannot be decoded."""
+    try:
+        from PIL import Image, ImageOps
+    except Exception as exc:  # noqa: BLE001 -- a missing dependency makes thumbnails unavailable
+        raise RuntimeError("Thumbnail generation needs the 'Pillow' package.") from exc
+    try:
+        with Image.open(source) as opened:
+            # A JPEG decodes straight at a fraction of its size, so a huge photo stays cheap.
+            opened.draft("RGB", (_THUMBNAIL_WIDTH, _THUMBNAIL_WIDTH))
+            image = ImageOps.exif_transpose(opened)
+            width, height = image.size
+            if height > width * _THUMBNAIL_MAX_RATIO:
+                # From the top, where a screenshot or a page starts.
+                image = image.crop((0, 0, width, round(width * _THUMBNAIL_MAX_RATIO)))
+            elif height < width * _THUMBNAIL_MIN_RATIO:
+                keep = round(height / _THUMBNAIL_MIN_RATIO)
+                left = (width - keep) // 2
+                image = image.crop((left, 0, left + keep, height))
+            image.thumbnail(
+                (_THUMBNAIL_WIDTH, round(_THUMBNAIL_WIDTH * _THUMBNAIL_MAX_RATIO)), Image.LANCZOS
+            )
+            if image.mode not in ("RGB", "RGBA"):
+                transparent = "A" in image.getbands() or "transparency" in image.info
+                image = image.convert("RGBA" if transparent else "RGB")
+            buf = io.BytesIO()
+            image.save(buf, format = "WEBP", quality = 85, method = 4)
+            return buf.getvalue()
+    except Exception as exc:  # noqa: BLE001 -- surface decoder / WebP encoder failures
+        raise RuntimeError(f"Thumbnail generation failed to decode the image: {exc}") from exc
+
+
+def thumbnail(item_id: str) -> bytes:
+    """A card's picture: an image cropped and scaled down, or a video's first frame, as WebP.
+
+    LookupError when the item is gone or has no picture; RuntimeError when it cannot be decoded."""
     import io
 
     from core.inference import video_gallery
 
     kind, _, ref = item_id.partition(":")
+    source: Union[Path, BinaryIO]
     if kind == "attachment":
-        return video_gallery.first_frame_webp(
-            io.BytesIO(_attachment_clip(ref)), width = _VIDEO_THUMBNAIL_WIDTH
+        mime_type, data = _attachment_media(ref)
+        source = io.BytesIO(data)
+    elif kind in ("upload", "image", "video", "sandbox"):
+        source = project_source(item_id)[0]
+        if kind == "upload":
+            record = library_db.get_upload(ref) or {}
+            types = (str(record.get("contentType") or ""), _guess_type(str(record.get("name") or "")))
+        elif kind == "sandbox":
+            types = (_guess_type(source.name),)
+        else:
+            types = (f"{kind}/",)
+        mime_type = next(
+            (value.lower() for value in types if value.lower().startswith(("image/", "video/"))), ""
         )
-    if kind not in ("upload", "video", "sandbox"):
-        raise LookupError(item_id)
-    path = project_source(item_id)[0]
-    if kind == "upload":
-        record = library_db.get_upload(ref) or {}
-        types = (str(record.get("contentType") or ""), _guess_type(str(record.get("name") or "")))
     else:
-        types = ("video/" if kind == "video" else _guess_type(path.name),)
-    if not any(value.lower().startswith("video/") for value in types):
         raise LookupError(item_id)
-    return video_gallery.first_frame_webp(path, width = _VIDEO_THUMBNAIL_WIDTH)
+    if mime_type.startswith("video/"):
+        return video_gallery.first_frame_webp(source, width = _THUMBNAIL_WIDTH)
+    if mime_type.startswith("image/") and mime_type != "image/svg+xml":
+        return _image_thumbnail(source)
+    raise LookupError(item_id)
 
 
 def _location_resolvers() -> dict:
@@ -922,6 +969,10 @@ def _delete_upload_locked(upload_id: str, path: Path) -> bool:
     return deleted
 
 
+class DeleteIncomplete(RuntimeError):
+    """A delete that stopped part way; the item is still there to delete again."""
+
+
 def delete_item(item_id: str) -> bool:
     """Delete an item from its source. Returns False when the source no longer has it."""
     kind, _, ref = item_id.partition(":")
@@ -941,12 +992,15 @@ def delete_item(item_id: str) -> bool:
         from core.inference import video_gallery
         from routes.video import _forget_openai_job, _forget_terminal_video
 
-        deleted = video_gallery.delete(ref)
-        if deleted:
-            # Same cleanup as the Video page, so the clip does not come back as a ghost card.
-            _forget_terminal_video(ref)
+        # Only for a clip of ours, so a guessed id cannot drop a running generation's job.
+        if video_gallery.get_record(ref) is not None:
+            # The job goes first, as the Video page's cleanup, so /v1/videos never keeps a ghost
+            # of the clip. Failing there leaves the clip listed, and deleting it again finishes.
             if not _forget_openai_job(ref):
-                logger.warning("library.delete_video_job_failed: %s", ref)
+                raise DeleteIncomplete("Could not delete the video job; try again.")
+            deleted = video_gallery.delete(ref)
+            if deleted:
+                _forget_terminal_video(ref)
     elif kind == "audio":
         from core.inference import audio_gallery
         deleted = audio_gallery.delete(ref)

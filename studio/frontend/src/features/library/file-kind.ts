@@ -114,9 +114,16 @@ export function modelLabel(item: LibraryItem): string {
   return model ? (MODEL_LABELS[`${model.origin}:${model.exportType}`] ?? "Model") : "";
 }
 
-export function fileKind(item: Pick<LibraryItem, "name" | "contentType">): LibraryFileKind {
+/** The extension the file itself has. A rename changes only the name shown, never what it is. */
+function ownExtension(item: Pick<LibraryItem, "name" | "fileName">): string {
+  return fileExtension(item.fileName ?? item.name);
+}
+
+export function fileKind(
+  item: Pick<LibraryItem, "name" | "fileName" | "contentType">,
+): LibraryFileKind {
   if (item.contentType === MODEL_CONTENT_TYPE) return "model";
-  const byExtension = EXTENSION_KINDS[fileExtension(item.name)];
+  const byExtension = EXTENSION_KINDS[ownExtension(item)];
   if (byExtension) return byExtension;
   const type = item.contentType.toLowerCase();
   if (type.startsWith("image/")) return "image";
@@ -132,7 +139,7 @@ export function hasImagePreview(item: LibraryItem): boolean {
   return (
     !item.textOnly &&
     fileKind(item) === "image" &&
-    fileExtension(item.name) !== "svg"
+    ownExtension(item) !== "svg"
   );
 }
 
@@ -176,7 +183,7 @@ export function isTextPreviewable(item: LibraryItem): boolean {
   if (item.textOnly) return true;
   const kind = fileKind(item);
   if (kind === "code" || kind === "web") return true;
-  const ext = fileExtension(item.name);
+  const ext = ownExtension(item);
   return (
     item.contentType.startsWith("text/") ||
     ["md", "txt", "csv", "tsv", "log", "xml"].includes(ext)
