@@ -28,7 +28,7 @@ import {
   Globe02Icon,
   HelpCircleIcon,
   HomeWifiIcon,
-  LibraryIcon,
+  LibrariesIcon,
   PaintBrush02Icon,
   Search01Icon,
   Settings02Icon,
@@ -242,7 +242,7 @@ const TABS: TabDef[] = [
   {
     id: "library",
     labelKey: "settings.tabs.library",
-    icon: LibraryIcon,
+    icon: LibrariesIcon,
   },
   {
     id: "data",
