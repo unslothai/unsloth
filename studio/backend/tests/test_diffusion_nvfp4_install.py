@@ -703,11 +703,12 @@ def test_every_loader_commit_binds_a_reason_even_when_the_install_gate_skipped()
     import inspect
 
     from core.inference import diffusion, video
-
     for cls in (diffusion.DiffusionBackend, video.VideoBackend):
         src = inspect.getsource(cls)
         assert "if _nvfp4_install_outcome is not None" not in src
-        binds = re.findall(r"record_install_reason\(self, \*\(_nvfp4_install_outcome or \(True, None\)\)", src)
+        binds = re.findall(
+            r"record_install_reason\(self, \*\(_nvfp4_install_outcome or \(True, None\)\)", src
+        )
         assert len(binds) == (1 if cls is diffusion.DiffusionBackend else 2)
 
 

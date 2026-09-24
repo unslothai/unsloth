@@ -5156,6 +5156,7 @@ class VideoBackend:
                     raise RuntimeError("Video load was cancelled or superseded.")
                 # Every commit binds, a skipped gate included, so no stale install reason survives the swap.
                 from .diffusion_nvfp4_install import record_install_reason
+
                 record_install_reason(self, *(_nvfp4_install_outcome or (True, None)), device)
                 self._state = _VideoLoadState(
                     pipe = pipe,
@@ -5873,6 +5874,7 @@ class VideoBackend:
                 raise RuntimeError("Video load was cancelled or superseded.")
             # Every commit binds, a skipped gate included, so no stale install reason survives the swap.
             from .diffusion_nvfp4_install import record_install_reason
+
             record_install_reason(self, *(_nvfp4_install_outcome or (True, None)), device)
             self._state = _VideoLoadState(
                 pipe = pipe,

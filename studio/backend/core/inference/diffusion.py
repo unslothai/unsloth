@@ -4467,6 +4467,7 @@ class DiffusionBackend:
                 # Every commit binds, a skipped gate included: an on-the-fly load must not inherit the previous
                 # model's install or offline reason.
                 from .diffusion_nvfp4_install import record_install_reason
+
                 record_install_reason(self, *(_nvfp4_install_outcome or (True, None)), device)
 
                 # Single-file kinds resolve a checkpoint path; the pipeline kind has none.
