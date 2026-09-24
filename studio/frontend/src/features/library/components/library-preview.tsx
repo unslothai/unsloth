@@ -30,7 +30,8 @@ import {
   modelLabel,
 } from "../file-kind";
 import { formatCardTime, formatSize } from "../format";
-import { useLibraryObjectUrl } from "../hooks";
+import type { EmbeddedBody } from "../file-name";
+import { useLibraryPreviewUrl } from "../hooks";
 import { canReveal, revealInFolder, useRevealLabel } from "../reveal";
 import { KindIcon } from "./library-cards";
 
@@ -194,8 +195,9 @@ function PreviewBody({
   pageScale: number;
 }) {
   const body = bodyFor(item);
-  const needsUrl = body === "image" || body === "pdf" || body === "audio" || body === "video";
-  const { url, error: urlError } = useLibraryObjectUrl(item, needsUrl);
+  const embedded: EmbeddedBody | null =
+    body === "image" || body === "pdf" || body === "audio" || body === "video" ? body : null;
+  const { url, error: urlError } = useLibraryPreviewUrl(item, embedded);
   const { text, truncated, error: textError } = useItemText(
     item,
     body === "text" || body === "web",
@@ -205,7 +207,7 @@ function PreviewBody({
   if (error) {
     return <p className="m-auto text-sm text-muted-foreground">{error}</p>;
   }
-  if ((needsUrl && !url) || ((body === "text" || body === "web") && text === null)) {
+  if ((embedded && !url) || ((body === "text" || body === "web") && text === null)) {
     return <Spinner className="m-auto size-6" />;
   }
   switch (body) {

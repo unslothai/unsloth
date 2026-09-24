@@ -263,6 +263,23 @@ export async function fetchLibraryBlob(item: LibraryItem, type: string): Promise
   return blob.type === type ? blob : new Blob([blob], { type });
 }
 
+/**
+ * A short-lived signed link a <video> can stream a Video page clip from, with range requests,
+ * instead of buffering the whole file. Minted by the Video gallery's own route (bearer-gated to
+ * mint, HMAC to use), so no long-lived token ends up in a URL.
+ */
+export async function fetchLibraryVideoUrl(item: LibraryItem): Promise<string> {
+  const id = item.id.slice(item.id.indexOf(":") + 1);
+  const response = await ensureOk(
+    await authFetch(`/api/inference/video/gallery/${encodeURIComponent(id)}/signed-url`),
+  );
+  const { url } = (await response.json()) as { url?: string };
+  if (!url) throw new Error("The server returned no video link.");
+  // Absolute, since the element fetches it without authFetch, and under Tauri a relative path
+  // resolves against the webview.
+  return apiUrl(url);
+}
+
 /** A video item's first frame, drawn by the backend. The version keeps a stale frame out of caches. */
 export async function fetchLibraryThumbnail(item: LibraryItem): Promise<Blob> {
   const params = new URLSearchParams({ id: item.id, v: String(item.updatedAt) });
