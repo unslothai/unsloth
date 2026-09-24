@@ -859,6 +859,23 @@ def test_a_named_subfolder_linking_into_another_kinds_folder_is_refused(client, 
     assert not any(video_gallery.gallery_dir().iterdir())
 
 
+def test_a_named_subfolder_linking_into_a_credential_folder_is_refused(client, tmp_path):
+    from core.inference import image_gallery
+
+    ssh = tmp_path / "home" / ".ssh"
+    ssh.mkdir(parents = True)
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "notes.txt").write_text("mine")
+    (data / "Unsloth Images").symlink_to(ssh, target_is_directory = True)
+    (image_gallery.gallery_dir() / "a.png").write_bytes(b"png")
+    response = _move(client, "images", str(data))
+    assert response.status_code == 400
+    assert "credential" in response.json()["detail"]
+    assert not any(ssh.iterdir())
+    assert (image_gallery.gallery_dir() / "a.png").read_bytes() == b"png"
+
+
 def test_fine_tunes_and_exports_do_not_move(client, tmp_path):
     for key in ("fineTunes", "exports", "somewhere"):
         assert _move(client, key, str(tmp_path / key)).status_code == 400

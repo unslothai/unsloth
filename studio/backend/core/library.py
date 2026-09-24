@@ -719,13 +719,18 @@ def _location_default(key: str) -> Path:
     return account_path("library") if key == "uploads" else studio_root() / key
 
 
-def _move_target(raw: str) -> Path:
-    """An absolute, ordinary folder whose parent exists. Same rules as the model download folder."""
+def _refuse_denied(resolved: Path) -> None:
     from hub.storage.scan_folders import (
         contains_sensitive_path_component,
         is_denied_system_path,
     )
 
+    if is_denied_system_path(str(resolved)) or contains_sensitive_path_component(str(resolved)):
+        raise ValueError("System, credential and config folders cannot hold these files.")
+
+
+def _move_target(raw: str) -> Path:
+    """An absolute, ordinary folder whose parent exists. Same rules as the model download folder."""
     value = raw.strip()
     if not value:
         raise ValueError("Choose a folder.")
@@ -738,8 +743,7 @@ def _move_target(raw: str) -> Path:
         raise ValueError("That folder path is invalid.") from exc
     if resolved.parent == resolved:
         raise ValueError("Choose a folder inside the drive, not the drive itself.")
-    if is_denied_system_path(str(resolved)) or contains_sensitive_path_component(str(resolved)):
-        raise ValueError("System, credential and config folders cannot hold these files.")
+    _refuse_denied(resolved)
     if not resolved.parent.is_dir():
         raise ValueError("The parent folder does not exist.")
     return resolved
@@ -769,6 +773,8 @@ def _prepare_target(target: Path, key: str) -> Path:
             raise ValueError("That path is a file, not a folder.")
         if not _is_empty(target):
             target = target / _SUBFOLDERS[key]
+            # It can be a link out of the checked folder, so its destination is checked before use.
+            _refuse_denied(target.resolve(strict = False))
             target.mkdir(exist_ok = True)
             if not target.is_dir() or not _is_empty(target):
                 raise ValueError(f"{target} already holds files. Choose another folder.")

@@ -320,6 +320,11 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   }
 
   const previewItem = search.item ? (items.find((item) => item.id === search.item) ?? null) : null;
+  // Recorded whenever the preview opens, so a shared link or history entry counts, not only a click.
+  const previewId = previewItem?.id ?? null;
+  useEffect(() => {
+    if (previewId) markOpened(previewId);
+  }, [previewId, markOpened]);
 
   // ── Actions ────────────────────────────────────────────────────
 
@@ -366,10 +371,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
 
   const actions: LibraryActions = {
     folders,
-    openItem: (item) => {
-      markOpened(item.id);
-      go({ ...search, item: item.id });
-    },
+    openItem: (item) => go({ ...search, item: item.id }),
     openFolder: (id) => go({ folder: id }),
     chatAbout: (target) =>
       target.kind === "item"
