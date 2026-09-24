@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Kernel-side tests for the NVFP4 flashinfer path: the device guard and the ordering barrier.
-
-The hermetic half stubs ``torch`` and ``flashinfer``, because neither which device a launch sees nor
-the call ORDER inside the GEMM op is observable from outside an opaque custom op on one GPU.
-"""
+"""NVFP4 flashinfer device guard and ordering barrier. Stubs ``torch`` and ``flashinfer``: neither the
+launch device nor the call ORDER inside an opaque custom op is observable on one GPU."""
 
 from __future__ import annotations
 
@@ -43,8 +40,6 @@ class _FakeDevice:
 
 
 class _FakeTensor:
-    """A tensor-shaped object whose every method returns a tensor on the SAME device."""
-
     def __init__(
         self,
         shape = (1,),
@@ -120,8 +115,6 @@ class _FakeTensor:
 
 
 class _Recorder:
-    """The process-wide "current device", plus the log every assertion below reads."""
-
     def __init__(self):
         self.current = 0
         self.launches: list[tuple] = []
@@ -315,7 +308,6 @@ def test_no_guard_is_left_open_when_a_launch_raises(stub_kernels, monkeypatch):
 
 
 def test_a_layer_on_card_one_runs_correctly_while_the_current_device_is_card_zero():
-    """Unguarded, the cutlass FP4 GEMM launches against whatever context is current."""
     torch = pytest.importorskip("torch")
     if not getattr(torch, "cuda", None) or not torch.cuda.is_available():
         pytest.skip("needs CUDA")
@@ -393,7 +385,6 @@ def test_the_barrier_fill_precedes_every_gemm(stub_kernels):
 
 
 def test_the_barrier_is_not_cached_when_the_stream_is_capturing(stub_kernels, monkeypatch):
-    """An allocation made inside a capture belongs to the graph's private pool and dies with it."""
     monkeypatch.setattr(ops, "_is_capturing", lambda: True)
     _mm_once(1)
     assert ops._BARRIERS == {}
@@ -422,7 +413,6 @@ def test_the_zero_buffer_env_restores_the_full_memset(stub_kernels, monkeypatch)
     monkeypatch.setenv(ops.NVFP4_ZERO_BUFFER_ENV, "1")
     _mm_once(1)
     names = [name for name, _ in stub_kernels.launches]
-    # The M x N zeros IS the barrier in this mode: no separate fill, no buffer.
     assert "zeros" in names and "zero_" not in names
     assert ops._BARRIERS == {}
 
@@ -595,7 +585,6 @@ def test_the_kernel_declines_a_shape_or_dtype_it_does_not_cover(monkeypatch):
 
 
 def test_the_kernel_declines_below_the_size_floor_and_above_int32(monkeypatch):
-    """Below the floor the launch costs more than it saves (0.84x on B200); above int32 offsets wrap."""
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_nvfp4_bias as fb
 
@@ -613,7 +602,6 @@ def test_the_kernel_declines_below_the_size_floor_and_above_int32(monkeypatch):
 
 
 def test_the_kernel_declines_while_tracing(monkeypatch):
-    """Under tracing it falls back to ``add_``, so inductor can keep fusing the bias."""
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_nvfp4_bias as fb
 
@@ -622,7 +610,7 @@ def test_the_kernel_declines_while_tracing(monkeypatch):
     monkeypatch.setattr(fb, "_eligible", lambda *a: calls.append("eligible") or True)
     out = torch.zeros(4, 8)
     fb.fused_bias_add_(out, torch.ones(8))
-    assert calls == []  # short-circuited before eligibility was asked
+    assert calls == []
     assert float(out[0, 0]) == 1.0
 
 
@@ -657,7 +645,7 @@ def test_an_empty_output_is_left_alone():
 
 
 def test_m3_the_fused_bias_against_add_at_the_bench_shapes(capsys, monkeypatch):
-    """M3, reported rather than asserted: a timing threshold in a test file is a flake."""
+    """Reported rather than asserted: a timing threshold in a test file is a flake."""
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_nvfp4_bias as fb
 

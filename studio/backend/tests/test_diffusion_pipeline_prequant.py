@@ -375,7 +375,7 @@ def _settle_backend_walking(monkeypatch, *, artifacts: tuple, candidates: tuple)
     from core.inference import diffusion_transformer_quant as tq
 
     backend = _settle_backend(monkeypatch, scheme = candidates[0])
-    monkeypatch.setattr(tq, "auto_scheme_candidates", lambda target, family = None: candidates)
+    monkeypatch.setattr(tq, "auto_scheme_candidates", lambda target, family = None, **_k: candidates)
     monkeypatch.setattr(
         dmod,
         "denoiser_prequant_source",
@@ -421,6 +421,57 @@ def test_a_walk_with_no_resident_rung_declines(monkeypatch):
     """Every hosted rung offloads: the decline is pinned so plan and load agree."""
     backend = _settle_backend_walking(monkeypatch, artifacts = ("int8",), candidates = ("int8", "fp8"))
     assert _settle(backend) == PIPELINE_SEED_DECLINED
+
+
+def test_auto_planning_passes_the_base_and_prequant_probe(monkeypatch):
+    """Without the base and a checkpoint probe AUTO drops nvfp4, so the plan must ask like the load."""
+    from core.inference import diffusion_transformer_quant as tq
+
+    backend = _settle_backend(monkeypatch)
+    seen: dict = {}
+
+    def _select(
+        target,
+        mode,
+        family = None,
+        *,
+        base_repo = None,
+        has_prequant = None,
+        **_k,
+    ):
+        seen["select"] = base_repo
+        if base_repo == Z_IMAGE_REPO and has_prequant is not None and has_prequant("nvfp4"):
+            return "nvfp4"
+        return "mxfp8"
+
+    def _candidates(
+        target,
+        family = None,
+        *,
+        base_repo = None,
+        has_prequant = None,
+        **_k,
+    ):
+        seen["candidates"] = base_repo
+        head = ("nvfp4",) if has_prequant is not None and has_prequant("nvfp4") else ()
+        return head + ("mxfp8",)
+
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", _select)
+    monkeypatch.setattr(tq, "auto_scheme_candidates", _candidates)
+    monkeypatch.setattr(
+        dmod,
+        "usable_prequant_source",
+        lambda fam, scheme, **_k: object() if scheme == "nvfp4" else None,
+    )
+    monkeypatch.setattr(
+        dmod,
+        "denoiser_prequant_source",
+        lambda fam, scheme, **_k: ("unsloth/Z-Image-Turbo-NVFP4", "z.safetensors")
+        if scheme == "nvfp4"
+        else None,
+    )
+    assert _settle(backend) == "nvfp4"
+    assert seen == {"select": Z_IMAGE_REPO, "candidates": Z_IMAGE_REPO}
 
 
 def test_an_explicit_scheme_is_never_swapped_for_a_lower_rung(monkeypatch):

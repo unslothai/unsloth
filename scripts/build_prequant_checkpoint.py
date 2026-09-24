@@ -129,6 +129,20 @@ def upload_destination(
     return preferred
 
 
+def quant_filter_settings(scheme: str, family: Optional[str]) -> dict:
+    """Runtime ``quantize_`` filter inputs for ``scheme``; one dict feeds filter and metadata."""
+    from core.inference.diffusion_transformer_quant import (
+        _REQUIRE_BF16_SCHEMES,
+        divisible_for_scheme,
+        exclude_tokens_for_scheme,
+    )
+    return {
+        "exclude_name_tokens": list(exclude_tokens_for_scheme(scheme, family)),
+        "require_bf16": scheme in _REQUIRE_BF16_SCHEMES,
+        "require_divisible": divisible_for_scheme(scheme),
+    }
+
+
 def main(argv = None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument(
@@ -187,10 +201,8 @@ def main(argv = None) -> int:
         FP8_GRANULARITY,
         TQ_FP8,
         TQ_SCHEMES,
-        _REQUIRE_BF16_SCHEMES,
         _make_quant_config,
         _resolve_fast_accum,
-        exclude_tokens_for_scheme,
         make_filter_fn,
     )
     from torchao.quantization import quantize_
@@ -280,17 +292,16 @@ def main(argv = None) -> int:
         args.base, subfolder = "transformer", torch_dtype = torch.bfloat16, token = args.hf_token
     ).to("cuda")
     print(f"  quantising in place ({scheme}) ...", flush = True)
-    # Mirror the runtime exclusions: int8 skips the M=1 modulation projections (torch._int_mm needs M>16) plus
-    # per-family ones; family=None bakes linears the runtime rejects.
-    exclude_name_tokens = exclude_tokens_for_scheme(scheme, fam.name)
-    # fp8 / mxfp8 need bf16 weights, so skip non-bf16 Linears; nvfp4 handles fp32. Mirrors the runtime gate.
-    require_bf16 = scheme in _REQUIRE_BF16_SCHEMES
+    filter_settings = quant_filter_settings(scheme, fam.name)
+    exclude_name_tokens = tuple(filter_settings["exclude_name_tokens"])
+    require_bf16 = filter_settings["require_bf16"]
     # fp8 bakes the accumulate mode in; record it so the loader can reject a contradicting request.
     fast_accum = _resolve_fast_accum(None) if scheme == TQ_FP8 else None
     filter_fn = make_filter_fn(
         args.min_features,
         exclude_name_tokens = exclude_name_tokens,
         require_bf16 = require_bf16,
+        require_divisible = filter_settings["require_divisible"],
     )
 
     # ConvRot, BEFORE quantize_: rotating the weights is only worth anything if the quantizer then sees the rotated
@@ -332,6 +343,7 @@ def main(argv = None) -> int:
         # Let the loader reject a checkpoint that would not match the runtime path.
         "exclude_name_tokens": list(exclude_name_tokens),
         "require_bf16": require_bf16,
+        "require_divisible": filter_settings["require_divisible"],
         "fast_accum": fast_accum,
         "torch_dtype": args.dtype,
         "quant_backend": "torchao",

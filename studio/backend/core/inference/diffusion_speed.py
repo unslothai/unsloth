@@ -26,17 +26,8 @@ bigger warm speedup. The compiled dequant is skipped under ``max`` (the regional
 it; a separate compiled dequant would break that graph). ``supports_torch_compile`` + bf16/CUDA
 checks gate regional compile.
 
-NVFP4 flashinfer kernel switches live with their own modules, listed here because this is where an
-operator looks for a speed knob. All are safe to leave unset.
-
-  ``UNSLOTH_NVFP4_FAST_BIAS=auto|0|1`` the Triton bias pass over the FP4 GEMM's output, eager only,
-    bit-identical to ``add_`` and 1.6x to 3.7x faster; ``0`` restores ``add_``.
-  ``UNSLOTH_NVFP4_FAST_DISPATCH=auto|0|1`` cache FlashInfer's per-call dispatch state, 61.8 -> 18.1
-    us of host time per call, bit-identical. Off unless the installed flashinfer is on the exact
-    allowlist AND a runtime bit-identity check passes; ``1`` skips the version check, never the check.
-  ``UNSLOTH_NVFP4_ZERO_BUFFER=1`` the full M x N memset in place of the 1-element PDL ordering
-    barrier. Strictly slower, +3.9 to +97 us per GEMM.
-  ``UNSLOTH_NVFP4_BACKEND=auto|torchao|flashinfer`` which NVFP4 kernels to run at all.
+NVFP4 speed switches, all safe unset and read by their own modules: ``UNSLOTH_NVFP4_FAST_BIAS``,
+``UNSLOTH_NVFP4_FAST_DISPATCH``, ``UNSLOTH_NVFP4_ZERO_BUFFER``, ``UNSLOTH_NVFP4_BACKEND``.
 
 The flags this flips (TF32, cudnn.benchmark) are PROCESS-WIDE, so ``snapshot_backend_flags`` /
 ``restore_backend_flags`` let the caller restore prior values at unload, keeping a later ``off``
@@ -422,11 +413,11 @@ def _denoiser_dits(pipe: Any) -> list:
     return dits
 
 
-# Repeated blocks MEASURED to raise inductor's CantSplit under dynamic = True: merging the text and image streams gives two dynamic symbols and Mod never cancels an Add over an Add. ``dynamic = False`` is the only escape (mark_static is overridden, ``dynamic = None`` crashes on the second shape).
-# Stream merging is necessary but NOT sufficient, so nothing joins this set on code reading alone.
+# Blocks MEASURED to raise inductor's CantSplit under dynamic = True (merged text+image streams);
+# ``dynamic = False`` is the only escape. Merging is necessary, not sufficient: measure before adding.
 _STREAM_MERGING_BLOCKS: frozenset[str] = frozenset({"FluxSingleTransformerBlock"})
 
-# The same cat matched on source. OFF by default since it over-flags: an escape hatch for a new family that crashes before its class is named above.
+# Source match for the same cat; OFF by default since it over-flags.
 _STREAM_MERGE_DETECT_ENV = "UNSLOTH_STATIC_STREAM_MERGE_DETECT"
 _STREAM_MERGE_SOURCE = re.compile(
     r"torch\.cat\(\s*\[\s*(?:encoder_hidden_states\s*,\s*hidden_states"
@@ -436,8 +427,7 @@ _STREAM_MERGE_SOURCE = re.compile(
 
 @lru_cache(maxsize = None)
 def _class_merges_streams(cls: type, broad: bool = False) -> bool:
-    """Whether one repeated-block CLASS is known to need a static compile. ``broad`` is an argument,
-    not an env read in the body, so the memo cannot outlive it."""
+    """``broad`` is an argument, not an env read in the body, so the memo cannot outlive it."""
     if cls.__name__ in _STREAM_MERGING_BLOCKS:
         return True
     if not broad:
@@ -451,8 +441,6 @@ def _class_merges_streams(cls: type, broad: bool = False) -> bool:
 
 
 def _dits_merge_streams(dits: list) -> bool:
-    """Whether ANY denoiser DiT's repeated blocks merge the streams, forcing a static regional
-    compile. One check per distinct block class, not per instance."""
     broad = os.environ.get(_STREAM_MERGE_DETECT_ENV) == "1"
     seen: set[type] = set()
     for transformer in dits:
@@ -491,7 +479,6 @@ def _compile_repeated_blocks(
     # dynamic=False, a few % more for a longer compile and a recompile per resolution. Inductor's own cudagraph modes
     # fail on the regional block -- "accessing tensor output of CUDAGraphs that has been overwritten" -- so the tier
     # stays on -no-cudagraphs and the capture is taken one level up, at the denoiser module.
-    # The one exception to "default is dynamic": see _STREAM_MERGING_BLOCKS.
     static_shapes = max_autotune or _dits_merge_streams(dits)
     if static_shapes and not max_autotune and logger is not None:
         logger.info(

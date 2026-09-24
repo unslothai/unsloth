@@ -346,8 +346,7 @@ class _Bytes:
 
 
 class Float8Tensor:
-    """A quantized fp8 weight as far as this module cares: the class NAME keys the fingerprint's
-    payload table and the activation-floor check that tells fp8 from the 4-bit weights beside it."""
+    """The class NAME is what the fingerprint and the activation-floor check key on."""
 
     def __init__(
         self,
@@ -360,7 +359,7 @@ class Float8Tensor:
 
 
 class NVFP4Tensor:
-    """The other half of a per-layer policy checkpoint: 4-bit weights sitting in the same state dict."""
+    """The 4-bit half of a per-layer policy checkpoint."""
 
     def __init__(self, qdata = b""):
         self.qdata = _Bytes(qdata)
@@ -461,7 +460,7 @@ class _CountedBytes(_Bytes):
 
 
 def test_a_class_whose_payload_slots_all_read_none_is_not_fingerprinted():
-    # A torchao release that keeps the class name but renames every payload attribute must read as uncovered, not as the md5 of an empty stream (one digest for every weight).
+    # Renamed payload attrs must read uncovered, not as the md5 of an empty stream.
     from core.inference.diffusion_prequant import packed_weight_fingerprint
 
     renamed = Float8Tensor(b"q0")
@@ -471,6 +470,62 @@ def test_a_class_whose_payload_slots_all_read_none_is_not_fingerprinted():
     assert fingerprint["modules"] == {}
     assert fingerprint["skipped"] == ["blocks.0.attn1.to_q.weight"]
     assert fingerprint["count"] == 0
+
+
+class Int8Tensor:
+    """torchao 0.18's int8 weight, as far as the fingerprint is concerned."""
+
+    def __init__(self, qdata):
+        self.qdata = _Bytes(qdata)
+        self.scale = _Bytes(b"scale")
+        self.zero_point = None
+        self.act_quant_scale = None
+        self.act_quant_zero_point = None
+        self.act_pre_scale = None
+
+
+def test_torchao_018_int8_weights_are_fingerprinted():
+    from core.inference.diffusion_prequant import packed_weight_fingerprint
+
+    fqn = "blocks.0.attn1.to_q.weight"
+    good = packed_weight_fingerprint({fqn: Int8Tensor(b"q0")})
+    assert good["count"] == 1 and good["skipped"] == []
+    flipped = packed_weight_fingerprint({fqn: Int8Tensor(b"q1")})
+    assert flipped["modules"][fqn] != good["modules"][fqn]
+
+
+def test_real_torchao_int8_round_trip_fingerprint_catches_corruption():
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("torchao")
+    import io
+
+    from torchao.quantization import quantize_
+
+    from core.inference.diffusion_prequant import (
+        _verify_packed_fingerprint,
+        packed_weight_fingerprint,
+    )
+    from core.inference.diffusion_transformer_quant import _make_quant_config
+
+    torch.manual_seed(0)
+    model = torch.nn.Sequential(torch.nn.Linear(64, 64, bias = False)).to(torch.bfloat16)
+    quantize_(model, _make_quant_config("int8"))
+    fingerprint = packed_weight_fingerprint(model.state_dict())
+    assert fingerprint["count"] == 1, fingerprint
+    assert fingerprint["skipped"] == []
+
+    buf = io.BytesIO()
+    torch.save(model.state_dict(), buf)
+    buf.seek(0)
+    reloaded = torch.load(buf, weights_only = False)
+    assert _verify_packed_fingerprint(reloaded, {"fingerprint": fingerprint})
+
+    weight = reloaded["0.weight"]
+    inner = getattr(weight, "qdata", None)
+    if inner is None:  # torchao <= 0.17: the AffineQuantizedTensor chain
+        inner = weight.original_weight_tensor.tensor_impl.int_data
+    inner.view(-1)[0] ^= 1
+    assert not _verify_packed_fingerprint(reloaded, {"fingerprint": fingerprint})
 
 
 def test_sample_mode_hashes_only_the_weights_it_compares(monkeypatch, tmp_path):
@@ -779,7 +834,6 @@ def test_load_require_bf16_nvfp4_false_ok(monkeypatch, tmp_path):
 
 
 def test_an_nvfp4_checkpoint_is_prewarmed_by_the_shared_loader(monkeypatch, tmp_path):
-    # Video loads reach this loader without the image loader's own prewarm, so the loader tunes the M = 1 shapes.
     from core.inference import diffusion_nvfp4_linear as nl
 
     seen: list = []
@@ -2144,7 +2198,6 @@ def _policy_meta(
     family = "z-image",
     **overrides,
 ):
-    """A checkpoint metadata dict declaring the z-image policy, with fields overridable."""
     from core.inference.diffusion_nvfp4_policy import (
         NVFP4_POLICY_KEY,
         ZIMAGE_F8MOD_TOQ34,
@@ -2224,7 +2277,7 @@ def test_a_policy_checkpoint_is_validated_end_to_end():
 
 
 def test_the_fp8_invariants_cover_the_fp8_half_of_a_policy_checkpoint():
-    # A policy artifact is declared nvfp4 but is mostly Float8Tensor, so the per-row granularity and activation floor decide whether ITS fp8 layers render or go black. Gating both on scheme == fp8 skipped them all.
+    # A policy artifact is declared nvfp4 but mostly Float8Tensor; gating on scheme == fp8 skipped it.
     logger = _Recorder()
     ckpt = {
         "format": pq.PREQUANT_FORMAT_POLICY,
@@ -2274,12 +2327,7 @@ def test_an_nvfp4_install_must_be_able_to_open_the_fp8_weights_too():
 
 
 def test_the_checkpoint_is_released_before_the_device_copy(monkeypatch, tmp_path):
-    """The CPU checkpoint must be unreferenced by the time ``.to(device)`` allocates.
-
-    ``assign = True`` gives the module the checkpoint's own tensors, so ckpt/state_dict hold only a
-    second reference. On unified memory (DGX Spark) host and device copy are the same physical
-    memory, so keeping it across the move doubles the transient peak.
-    """
+    """assign=True shares the checkpoint's tensors: unreference them before ``.to(device)``."""
     import weakref
 
     seen: dict = {}

@@ -1306,21 +1306,24 @@ def _planned_quant_scheme(
     base_repo: Optional[str],
     prequant_path: Optional[str],
 ) -> Optional[str]:
-    """The scheme the load will resolve, asked with the base and the hosted-checkpoint probe that
-    gate the auto rungs: leave either out and the plan and the load pick different schemes, which
-    fetches a second denoiser inline past the plan's progress, disk and cancel staging."""
+    """The scheme the load will resolve: without the base and the checkpoint probe, plan and load
+    pick different schemes and a second denoiser is fetched inline."""
     return select_transformer_quant_scheme(
         target,
         requested,
         family = getattr(fam, "name", None),
         base_repo = base_repo,
-        has_prequant = lambda candidate: (
-            fam is not None
-            and usable_prequant_source(
-                fam, candidate, path_override = prequant_path, base_repo = base_repo
-            )
-            is not None
-        ),
+        has_prequant = _prequant_probe(fam, base_repo = base_repo, prequant_path = prequant_path),
+    )
+
+
+def _prequant_probe(
+    fam: Optional[DiffusionFamily], *, base_repo: Optional[str], prequant_path: Optional[str]
+) -> Callable[[str], bool]:
+    return lambda candidate: (
+        fam is not None
+        and usable_prequant_source(fam, candidate, path_override = prequant_path, base_repo = base_repo)
+        is not None
     )
 
 
@@ -2121,7 +2124,6 @@ class DiffusionBackend:
                 target,
                 getattr(fam, "name", None),
                 base_repo = base_repo,
-                # Same probe as the retry below, so both see the same rungs.
                 has_prequant = lambda candidate: usable_prequant_source(
                     fam, candidate, path_override = path_override, base_repo = base_repo
                 )
@@ -3002,8 +3004,12 @@ class DiffusionBackend:
                     is not None
                 ):
                     return None
-                scheme = select_transformer_quant_scheme(
-                    target, mode, family = getattr(fam, "name", None)
+                scheme = _planned_quant_scheme(
+                    fam,
+                    target,
+                    mode,
+                    base_repo = base,
+                    prequant_path = transformer_prequant_path,
                 )
                 if scheme is None or scheme == TQ_AUTO:
                     return None
@@ -3014,7 +3020,18 @@ class DiffusionBackend:
                 if auto:
                     try:
                         from .diffusion_transformer_quant import auto_scheme_candidates
-                        below = list(auto_scheme_candidates(target, getattr(fam, "name", None)))
+                        below = list(
+                            auto_scheme_candidates(
+                                target,
+                                getattr(fam, "name", None),
+                                base_repo = base,
+                                has_prequant = _prequant_probe(
+                                    fam,
+                                    base_repo = base,
+                                    prequant_path = transformer_prequant_path,
+                                ),
+                            )
+                        )
                         if scheme in below:
                             rungs.extend(below[below.index(scheme) + 1 :])
                     except Exception:  # noqa: BLE001 -- no lower rungs is just "no retry"
@@ -4490,10 +4507,20 @@ class DiffusionBackend:
                     )
                     is None
                 ):
-                    # An explicit scheme is never swapped for another
-                    transformer_quant_decline = (
-                        f"'{transformer_quant_pinned}' is not usable for family "
-                        f"'{getattr(fam, 'name', None)}' on this GPU"
+                    # An explicit scheme is never swapped for another.
+                    transformer_quant_decline = explain_unusable_scheme(
+                        getattr(fam, "name", None),
+                        transformer_quant_pinned,
+                        base_repo = base,
+                        prequant_missing = normalize_transformer_quant(transformer_quant_pinned)
+                        == TQ_NVFP4
+                        and usable_prequant_source(
+                            fam,
+                            TQ_NVFP4,
+                            path_override = transformer_prequant_path,
+                            base_repo = base,
+                        )
+                        is None,
                     )
                     transformer_quant_decline_status = RESOLVED_UNSUPPORTED
                 # The GGUF-size plan can mis-budget the fast path, so preflight the real footprint pre-eviction. Also
@@ -5475,6 +5502,7 @@ class DiffusionBackend:
                                         target,
                                         mode = transformer_quant,
                                         family = getattr(fam, "name", None),
+                                        base_repo = base,
                                         fast_accum = transformer_quant_fast_accum,
                                         logger = logger,
                                     )
@@ -5987,7 +6015,6 @@ class DiffusionBackend:
         check_cancelled()
         fetch_base = fetch_base or prefer_ungated_mirror(base, hf_token)
         # 1. Pre-quantized checkpoint, when one is configured for the resolved scheme.
-        # usable_, not resolve_: the same call every planning site makes, so plan and load agree.
         scheme = _planned_quant_scheme(
             fam, target, mode, base_repo = base, prequant_path = prequant_path
         )
@@ -6029,7 +6056,7 @@ class DiffusionBackend:
                 check_cancelled()
                 if transformer is not None:
                     if scheme == TQ_NVFP4:
-                        # Autotune off the request path: only M = 1 shapes are knowable here, the rest tune in ``GraphedForward``'s warm-up, before any capture.
+                        # Only M = 1 is knowable here; other shapes tune on their first eager GEMM.
                         from .diffusion_nvfp4_linear import nvfp4_prewarm
                         nvfp4_prewarm(transformer, (1,), logger = logger)
                     pipe = self._assemble_pipe(
@@ -7478,7 +7505,7 @@ class DiffusionBackend:
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
 
-                # EFFECTIVE denoise steps: img2img at strength < 1 denoises a fraction of `steps`, and a negative protect index must land on a step the loop reaches.
+                # EFFECTIVE steps: img2img at strength < 1 denoises a fraction of `steps`.
                 strength_applied = effective_request_strength(
                     strength,
                     init_pil is not None,
@@ -7546,7 +7573,7 @@ class DiffusionBackend:
                     # __call__, so a raised call leaves a residual the next forward trips over.
                     if state.transformer_cache:
                         self._reset_step_cache(state.pipe)
-                    # Armed per CHUNK, not per generate: a split batch restarts at step 0. Counts scheduler.step, which a step cache does not skip.
+                    # Per CHUNK: a split batch restarts at step 0.
                     protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
                     try:
                         # inference_mode is faster than no_grad and numerically identical here.
@@ -7802,7 +7829,6 @@ class DiffusionBackend:
         # Before clear_gpu_cache(), or the graph pool stays reserved for the life of the process.
         cuda_graph.uninstall_all(state.cuda_graphs)
         gguf_compile.uninstall_all()
-        # The PDL barrier belongs to this model's allocator state, never to the next capture.
         try:
             from .diffusion_nvfp4_linear import reset_nvfp4_state
             reset_nvfp4_state()
@@ -7908,9 +7934,7 @@ class DiffusionBackend:
 
 
 def _transformer_quant_backend(state: Any) -> Optional[str]:
-    """Which NVFP4 kernel path the loaded denoiser is actually running, or None. Read from the
-    MODULE TREE, not from what the load intended: the same 'nvfp4' scheme lands on either backend
-    depending on the device and the artifact. Never raises."""
+    """The NVFP4 kernel path read from the MODULE TREE, not the load's intent. Never raises."""
     if getattr(state, "transformer_quant", None) != TQ_NVFP4:
         return None
     try:

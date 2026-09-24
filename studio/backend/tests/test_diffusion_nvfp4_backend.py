@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the NVFP4 flashinfer ops module (``diffusion_nvfp4_ops.py``)."""
 
 from __future__ import annotations
 
@@ -248,8 +247,7 @@ _STREAM_BANNED = ("set_stream", "set_device", "setDevice")
 
 
 def _banned_stream_calls(source: str) -> list[tuple[int, str]]:
-    """``set_stream`` silently sets the current DEVICE too, and ``set_device`` moves what the guard
-    restores."""
+    """``set_stream`` silently sets the current DEVICE; ``set_device`` moves what the guard restores."""
     found: list[tuple[int, str]] = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Attribute) and node.attr in _STREAM_BANNED:
@@ -362,8 +360,6 @@ def _fake_blackwell(monkeypatch):
 
 
 def test_an_allocation_failure_is_answered_but_not_cached(monkeypatch):
-    """AUTO planning probes while the model the arbiter is about to evict still owns the card, so
-    an OOM here says 'not now'. Cached, it would drop nvfp4 for the rest of the process."""
     torch = _fake_blackwell(monkeypatch)
     calls: list = []
 
@@ -383,8 +379,6 @@ def test_an_allocation_failure_is_answered_but_not_cached(monkeypatch):
 
 
 def test_a_host_property_failure_stays_cached(monkeypatch):
-    """A JIT build that cannot run here is not going to start; re-probing it every selection would
-    pay the build over and over."""
     _fake_blackwell(monkeypatch)
     calls: list = []
 
@@ -426,3 +420,122 @@ def test_a_successful_probe_is_cached(monkeypatch):
 )
 def test_only_allocation_failures_read_as_transient(exc, transient):
     assert ops._transient_preflight_failure(exc) is transient
+
+
+def test_an_unprewarmed_gemm_shape_autotunes_on_its_first_eager_call_only(monkeypatch):
+    import contextlib
+    import sys
+    import types
+
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_nvfp4_linear as nl
+
+    state = {"tuning": False, "capturing": False}
+    calls = []
+
+    @contextlib.contextmanager
+    def _autotune(flag = True):
+        state["tuning"] = flag
+        try:
+            yield
+        finally:
+            state["tuning"] = False
+
+    def _mm_fp4(
+        a,
+        b,
+        a_sf,
+        b_sf,
+        alpha,
+        dtype,
+        out = None,
+        backend = None,
+    ):
+        calls.append((a.shape[0], state["tuning"]))
+        return out
+
+    fake = types.ModuleType("flashinfer")
+    fake.autotune = _autotune
+    fake.mm_fp4 = _mm_fp4
+    monkeypatch.setitem(sys.modules, "flashinfer", fake)
+    monkeypatch.setattr(ops, "_device_guard", lambda t: contextlib.nullcontext())
+    monkeypatch.setattr(ops, "_fire_barrier", lambda device: None)
+    # With no dispatch plan every call reaches mm_fp4 and is observable here.
+    from core.inference import diffusion_nvfp4_dispatch as dispatch
+
+    monkeypatch.setattr(dispatch, "enabled", lambda device: False)
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: state["capturing"])
+    nl.reset_tuned_shapes()
+    try:
+        wq = torch.zeros(64, 16, dtype = torch.uint8)  # N = 64, K = 32
+
+        def _mm(m):
+            xq = torch.zeros(m, 16, dtype = torch.uint8)
+            ops._mm_impl(xq, wq, None, wq, None, 64, "cutlass")
+
+        nl._TUNED_SHAPES.add((1, 32, 64))  # what the loader's M = 1 prewarm leaves behind
+        _mm(1)
+        _mm(4352)
+        _mm(4352)
+        state["capturing"] = True
+        _mm(8192)
+        assert calls == [(1, False), (4352, True), (4352, False), (8192, False)]
+        assert (4352, 32, 64) in nl._TUNED_SHAPES
+        # Seen under capture, so still untuned: the next eager call gets to tune it.
+        assert (8192, 32, 64) not in nl._TUNED_SHAPES
+    finally:
+        nl.reset_tuned_shapes()
+
+
+def test_the_first_call_tune_runs_before_the_cached_dispatch_plan_is_built(monkeypatch):
+    """``gemm_plan`` snapshots the tactic on its first build, so a plan before the tune pins the fallback."""
+    import contextlib
+    import sys
+    import types
+
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_nvfp4_dispatch as dispatch
+    from core.inference import diffusion_nvfp4_linear as nl
+
+    events = []
+    tuning = {"on": False}
+
+    @contextlib.contextmanager
+    def _autotune(flag = True):
+        tuning["on"] = flag
+        try:
+            yield
+        finally:
+            tuning["on"] = False
+
+    def _mm_fp4(
+        *args,
+        out = None,
+        **kwargs,
+    ):
+        events.append(("mm_fp4", tuning["on"]))
+        return out
+
+    def _plan(xq, *args, **kwargs):
+        events.append(("plan_built", tuning["on"]))
+        return (lambda inputs, tactic: events.append(("plan_run", tactic)), 7, None)
+
+    fake = types.ModuleType("flashinfer")
+    fake.autotune = _autotune
+    fake.mm_fp4 = _mm_fp4
+    monkeypatch.setitem(sys.modules, "flashinfer", fake)
+    monkeypatch.setattr(ops, "_device_guard", lambda t: contextlib.nullcontext())
+    monkeypatch.setattr(ops, "_fire_barrier", lambda device: None)
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    monkeypatch.setattr(dispatch, "enabled", lambda device: True)
+    monkeypatch.setattr(dispatch, "transposed", lambda t: t)
+    monkeypatch.setattr(dispatch, "gemm_plan", _plan)
+    nl.reset_tuned_shapes()
+    try:
+        wq = torch.zeros(64, 16, dtype = torch.uint8)
+        xq = torch.zeros(4352, 16, dtype = torch.uint8)
+        ops._mm_impl(xq, wq, None, wq, None, 64, "cutlass")
+        ops._mm_impl(xq, wq, None, wq, None, 64, "cutlass")
+        assert events == [("mm_fp4", True), ("plan_built", False), ("plan_run", 7)]
+    finally:
+        nl.reset_tuned_shapes()

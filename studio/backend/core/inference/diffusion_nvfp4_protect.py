@@ -3,11 +3,8 @@
 
 """Per-step precision for the NVFP4 backend: which denoising steps run W4A16 instead of W4A4.
 
-At a protected step the layer dequantises its own bytes to a transient bf16 weight, so there is
-never a second resident operand. The step counter wraps ``pipe.scheduler.step``, which every
-diffusers denoise loop calls once per step, after that step's forward. The protected set must be
-MEASURED per model: a set copied from another model has been observed to do worse on held-out
-prompts than protecting nothing, so the lever is off unless an operator names the steps.
+The step counter wraps ``pipe.scheduler.step`` (called once per step, after the forward). Off by
+default: the protected set must be MEASURED per model, a borrowed one can do worse than none.
 """
 
 from __future__ import annotations
@@ -20,7 +17,6 @@ from typing import Any, Optional
 
 PROTECT_STEPS_ENV = "UNSLOTH_NVFP4_PROTECT_STEPS"
 
-# ``auto``: the first ``AUTO_HEAD_FRACTION`` of the schedule, plus the last step.
 AUTO = "auto"
 AUTO_HEAD_FRACTION = 0.08
 
@@ -30,15 +26,12 @@ _OFF_TOKENS = ("", "off", "none", "0-none", "false", "no")
 
 
 def protect_steps_env() -> str:
-    """The requested schedule, verbatim and lowercased. ``""`` means the lever is off."""
     raw = os.environ.get(PROTECT_STEPS_ENV, "").strip().lower()
     return "" if raw in _OFF_TOKENS else raw
 
 
 def parse_protect_steps(spec: Any, total_steps: int) -> tuple:
-    """``spec`` resolved against ``total_steps``, as a sorted tuple. An out-of-range index is
-    dropped so one value serves any step count; a non-integer token DOES raise, since a typo that
-    silently protects nothing reads as a measured lever that never ran."""
+    """Out-of-range indices are dropped; a non-integer token DOES raise, never silently nothing."""
     total = int(total_steps)
     if total <= 0:
         return ()
@@ -74,8 +67,7 @@ def parse_protect_steps(spec: Any, total_steps: int) -> tuple:
 
 
 class NVFP4StepController:
-    """Which denoising step is running, and whether it is protected. ``protected`` is a plain
-    ``bool``, never a property: a property would make Dynamo compile one variant per STEP."""
+    """``protected`` is a plain bool, never a property: Dynamo would compile one variant per STEP."""
 
     def __init__(self, spec: Any = None) -> None:
         self.spec: str = ""
@@ -86,24 +78,20 @@ class NVFP4StepController:
         self.protected: bool = False
         self.protected_steps_seen: int = 0
         self.generations: int = 0
-        # Weak, so an unloaded model's layers stop counting on their own.
         self._layers: "weakref.WeakSet" = weakref.WeakSet()
         self.configure(protect_steps_env() if spec is None else spec)
 
     def register_layer(self, layer: Any) -> None:
-        """Record that ``layer`` can take the W4A16 branch."""
         try:
             self._layers.add(layer)
         except TypeError:  # an unweakrefable layer simply is not counted
             pass
 
     def capable_layers(self) -> int:
-        """How many live layers can take the protected branch."""
         return len(self._layers)
 
     def configure(self, spec: Any) -> "NVFP4StepController":
-        """Set the schedule. ``armed`` is read as a compile guard, so it must not move once a load
-        has traced: configure before the first forward."""
+        """``armed`` is a compile guard: configure before the first forward."""
         raw = "" if spec is None else str(spec).strip().lower()
         self.spec = "" if raw in _OFF_TOKENS else raw
         self.armed = bool(self.spec)
@@ -128,7 +116,6 @@ class NVFP4StepController:
         *,
         logger: Any = None,
     ) -> tuple:
-        """Start a generation of ``total_steps`` steps. Returns the resolved protected set."""
         self.reset()
         if not self.armed:
             return ()
@@ -152,7 +139,6 @@ class NVFP4StepController:
         return self.steps
 
     def advance(self) -> int:
-        """One denoising step finished. Returns the index of the step about to run."""
         self.index += 1
         self.protected = self.index in self.steps
         if self.protected:
@@ -160,7 +146,6 @@ class NVFP4StepController:
         return self.index
 
     def reset(self) -> "NVFP4StepController":
-        """Back to "no generation in flight", which protects nothing."""
         self.total = 0
         self.steps = ()
         self.index = 0
@@ -168,17 +153,14 @@ class NVFP4StepController:
         return self
 
 
-# One controller per process: Studio serves one generation at a time behind its load lock.
 _CONTROLLER = NVFP4StepController()
 
 
 def protect_controller() -> NVFP4StepController:
-    """The process-wide controller. Every converted layer reads this one object."""
     return _CONTROLLER
 
 
 def reset_protect_controller(spec: Any = None) -> NVFP4StepController:
-    """Re-read the environment (or take ``spec``) and clear any generation state."""
     return _CONTROLLER.configure(protect_steps_env() if spec is None else spec)
 
 
@@ -190,14 +172,14 @@ def protect_generation(
     controller: Optional[NVFP4StepController] = None,
     logger: Any = None,
 ):
-    """Drive ``controller`` across one generation of ``steps`` steps, then restore everything. A
-    no-op when the lever is off, and a pipeline with no scheduler to count protects NOTHING."""
-    ctl = controller if controller is not None else protect_controller()
+    """A no-op when the lever is off; a pipeline with no scheduler to count protects NOTHING."""
+    ctls = [controller] if controller is not None else pipeline_controllers(pipe)
+    ctl = ctls[0]
     if not ctl.armed:
         yield ctl
         return
-    if not ctl.capable_layers():
-        # Only NVFP4FlashInferLinear consults the controller: a torchao load runs W4A4 at every step and must not read as protected.
+    if not sum(c.capable_layers() for c in ctls):
+        # Only NVFP4FlashInferLinear reads the controller: a torchao load must not read as protected.
         if logger is not None:
             logger.warning(
                 "[nvfp4] protect schedule %r requested but no protect-capable NVFP4 layer is "
@@ -205,7 +187,8 @@ def protect_generation(
                 "generation",
                 ctl.spec,
             )
-        ctl.reset()
+        for c in ctls:
+            c.reset()
         yield ctl
         return
     scheduler = getattr(pipe, "scheduler", None)
@@ -216,18 +199,21 @@ def protect_generation(
                 "[nvfp4] protect schedule requested but this pipeline exposes no scheduler.step "
                 "to count denoising steps; the lever stays off for this generation"
             )
-        ctl.reset()
+        for c in ctls:
+            c.reset()
         yield ctl
         return
 
-    ctl.begin(steps, logger = logger)
+    for i, c in enumerate(ctls):
+        c.begin(steps, logger = logger if i == 0 else None)
 
     def _step(*args: Any, **kwargs: Any) -> Any:
         out = original(*args, **kwargs)
-        ctl.advance()
+        for c in ctls:
+            c.advance()
         return out
 
-    # Restoring by assignment would leave an instance attribute shadowing the class forever, so delete unless one existed before this wrap.
+    # Delete, not reassign: an instance attribute would shadow the class method forever.
     had_own = "step" in getattr(scheduler, "__dict__", {})
     scheduler.step = _step
     try:
@@ -240,14 +226,13 @@ def protect_generation(
                 del scheduler.step
             except (AttributeError, TypeError):  # noqa: PERF203 - a slotted or proxied scheduler
                 scheduler.step = original
-        ctl.reset()
+        for c in ctls:
+            c.reset()
 
 
 @contextlib.contextmanager
 def suspend_protect(modules: Any):
-    """Force every controller reachable from ``modules`` to report unarmed, then restore. The
-    prewarm MUST suspend the lever, or its forwards take the bf16 branch, tune nothing, mark the
-    shape tuned anyway, and the next capture records an untuned tactic."""
+    """The prewarm MUST suspend the lever, or it tunes the bf16 branch and marks the FP4 shape tuned."""
     seen: dict = {}
     for module in modules or ():
         ctl = getattr(module, "protect", None)
@@ -262,11 +247,13 @@ def suspend_protect(modules: Any):
             ctl.armed = armed
 
 
-def protect_graph_key(protected: Optional[bool] = None) -> tuple:
-    """The CUDA-graph cache-key suffix for the branch in flight, or ``()`` when the lever is off. A
-    captured graph records ONE branch, so without this the lever is inert under capture while the
-    numbers look like it ran."""
-    ctl = protect_controller()
+def protect_graph_key(
+    protected: Optional[bool] = None,
+    module: Any = None,
+    *,
+    controller: Optional[NVFP4StepController] = None,
+) -> tuple:
+    ctl = controller if controller is not None else module_controller(module)
     if not ctl.armed:
         return ()
     live = ctl.protected if protected is None else bool(protected)
@@ -274,7 +261,6 @@ def protect_graph_key(protected: Optional[bool] = None) -> tuple:
 
 
 def protect_layers(module: Any) -> list:
-    """``(fqn, layer)`` for every NVFP4 layer under ``module`` that can take the branch."""
     from .diffusion_nvfp4_linear import is_nvfp4_flashinfer_linear
 
     found: list = []
@@ -288,9 +274,37 @@ def protect_layers(module: Any) -> list:
 
 
 def attach_controller(module: Any, controller: NVFP4StepController) -> int:
-    """Point every NVFP4 layer under ``module`` at ``controller``. Returns how many."""
     layers = protect_layers(module)
     for _, layer in layers:
+        old = layer.protect
+        if old is not controller:
+            old._layers.discard(layer)
         layer.protect = controller
         controller.register_layer(layer)
     return len(layers)
+
+
+def attach_own_controller(module: Any) -> Optional[NVFP4StepController]:
+    """Per-model controller, so concurrent image and video renders never move each other's steps."""
+    ctl = NVFP4StepController(protect_controller().spec)
+    return ctl if attach_controller(module, ctl) else None
+
+
+def module_controller(module: Any) -> NVFP4StepController:
+    if module is not None:
+        for _, layer in protect_layers(module):
+            return layer.protect
+    return protect_controller()
+
+
+_DENOISER_ATTRS = ("transformer", "transformer_2", "unet")
+
+
+def pipeline_controllers(pipe: Any) -> list:
+    found: list = []
+    for attr in _DENOISER_ATTRS:
+        module = getattr(pipe, attr, None)
+        for _, layer in protect_layers(module) if module is not None else ():
+            if all(layer.protect is not c for c in found):
+                found.append(layer.protect)
+    return found or [protect_controller()]

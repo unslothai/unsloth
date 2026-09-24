@@ -3,11 +3,9 @@
 
 """The FlashInfer NVFP4 Linear, and the conversion that puts a hosted checkpoint onto it.
 
-ONE artifact, two backends. Nothing here requantizes: torchao's payload IS FlashInfer's, byte for
-byte, with ``per_tensor_scale == 1 / w_gsf`` and ``alpha = per_tensor_scale / a_gsf``. The
-activation global scale is BAKED, never calibrated here: learning it over the first few forwards
-is not capture-safe, is nondeterministic, and is the mechanism behind the flux black-frame latch,
-so a layer whose baked scale is absent is NOT converted.
+Nothing requantizes: torchao's payload IS FlashInfer's, with ``per_tensor_scale == 1 / w_gsf``.
+The activation scale must be BAKED: calibrating it live is not capture-safe and latched flux to
+black frames, so a layer with no baked scale is NOT converted.
 """
 
 from __future__ import annotations
@@ -30,23 +28,20 @@ ACT_SCALES_KEY = "act_global_scales"
 POLICY_KEY = "nvfp4_policy"
 POLICY_BAKED_KEY = "activation_scales_baked"
 
-# Shared across ALL instances: a per-module cache would pay the profiling pass once per layer for a tactic FlashInfer already caches per shape.
+# Process-wide, not per module: FlashInfer caches tactics per shape.
 _TUNED_SHAPES: set = set()
 
 
 def reset_tuned_shapes() -> None:
-    """Forget which GEMM shapes were autotuned. For tests and for a model unload."""
     _TUNED_SHAPES.clear()
 
 
 def reset_nvfp4_state() -> None:
-    """Drop every piece of process-wide NVFP4 state a loaded model left behind."""
     from . import diffusion_nvfp4_dispatch as _dispatch
     from . import diffusion_nvfp4_ops as _ops
 
     reset_tuned_shapes()
     _ops.reset_barriers()
-    # Holds transposed VIEWS of the weights, so keeping it would pin a freed model.
     _dispatch.reset()
     # verify() runs only in the preflight, so a memoised one would leave _VERIFIED empty next load.
     _ops.reset_preflight_cache()
@@ -54,8 +49,6 @@ def reset_nvfp4_state() -> None:
 
 @lru_cache(maxsize = 1)
 def nvfp4_linear_class():
-    """The ``NVFP4FlashInferLinear`` class, defined on first use so this module imports torch-free
-    and cached so the class object is a singleton."""
     import torch
     from torch import nn
     from torch.nn import functional as F
@@ -63,9 +56,7 @@ def nvfp4_linear_class():
     from .diffusion_nvfp4_bias import fused_bias_add_
 
     class NVFP4FlashInferLinear(nn.Module):
-        """A Linear whose weight is already NVFP4 and whose activation is quantized per call. The
-        forward keeps no host synchronize and no branch on a device value, because it runs inside
-        a captured CUDA graph."""
+        """Runs inside a captured CUDA graph: no host synchronize, no device-value branch."""
 
         def __init__(
             self,
@@ -85,13 +76,12 @@ def nvfp4_linear_class():
             self.in_features = int(in_features)
             self.out_features = int(out_features)
             self.backend = str(backend)
-            # Defaults to False so a calibrating path reads as unbaked: a capture would freeze a scale that is still moving.
             self.activation_scales_baked = bool(activation_scales_baked)
             self.register_buffer("wq", wq)
             self.register_buffer("w_sf", w_sf)
             self.register_buffer("alpha", alpha)
             self.register_buffer("a_gsf", a_gsf)
-            # A stored buffer rather than ``alpha * a_gsf``, which reconstructs it only to within a rounding: the protected step must read the weight the GEMM reads, bit for bit.
+            # Stored, not ``alpha * a_gsf``, which is off by a rounding: W4A16 must match bit for bit.
             self.register_buffer(
                 "w_scale",
                 (alpha * a_gsf) if w_scale is None else w_scale,
@@ -104,18 +94,15 @@ def nvfp4_linear_class():
         def forward(self, x):
             shape = x.shape
             flat = x.reshape(-1, self.in_features)
-            # FlashInfer's ``fp4_quantize`` raises on fp32 input while torchao's path accepts it, and Wan2.2's fp32 time embedder feeds exactly that into a quantized layer. Returning the caller's own dtype keeps nn.Linear's contract; both casts are no-ops at bf16.
+            # ``fp4_quantize`` raises on fp32, which Wan2.2's time embedder feeds in.
             out_dtype = flat.dtype
             if out_dtype not in (torch.bfloat16, torch.float16):
                 flat = flat.to(torch.bfloat16)
             if flat.shape[0] == 0:
-                # torchao's nvfp4 activation path raises on numel() == 0, and an attention trim can hand a quantized Linear an empty batch. A shape check costs no synchronize.
                 return flat.new_zeros((0, self.out_features), dtype = out_dtype).reshape(
                     *shape[:-1], self.out_features
                 )
-            # ``armed`` is fixed for the life of the load, so an unarmed load never guards on ``protected`` and compiles exactly the forward that shipped.
             if self.protect.armed and self.protect.protected:
-                # W4A16 on the SAME bytes, decoded for this call only. No flashinfer kernel here.
                 weight = dequantize_nvfp4_weight(
                     self.wq, self.w_sf, self.w_scale, dtype = torch.bfloat16
                 )
@@ -127,10 +114,9 @@ def nvfp4_linear_class():
                     out = torch.ops.unsloth_nvfp4.mm(
                         xq, self.wq, x_sf, self.w_sf, self.alpha, self.out_features, self.backend
                     )
-            # Back to the caller's dtype BEFORE the bias, so an fp32 layer adds its bias at fp32.
             out = out.to(out_dtype)
             if self.bias is not None:
-                # mm_fp4 has no bias epilogue, so the add is a separate in-place pass.
+                # mm_fp4 has no bias epilogue, so the add is a separate pass.
                 fused_bias_add_(out, self.bias)
             return out.reshape(*shape[:-1], self.out_features)
 
@@ -145,19 +131,15 @@ def nvfp4_linear_class():
 
 
 def is_nvfp4_flashinfer_linear(module: Any) -> bool:
-    """True when ``module`` already runs the FlashInfer NVFP4 path."""
     return type(module).__name__ == "NVFP4FlashInferLinear" and hasattr(module, "a_gsf")
 
 
 def is_nvfp4_tensor(t: Any) -> bool:
-    """True for torchao's ``NVFP4Tensor`` without importing torchao to ask."""
     return type(t).__name__ == "NVFP4Tensor" and hasattr(t, "qdata") and hasattr(t, "scale")
 
 
 def _as_scale_tensor(value: Any, *, device, dtype):
-    """A 1-element fp32 tensor from a float, a 0-d tensor or a 1-element tensor."""
     import torch
-
     if isinstance(value, torch.Tensor):
         return value.detach().to(device = device, dtype = dtype).reshape(1).clone()
     return torch.tensor([float(value)], device = device, dtype = dtype)
@@ -169,8 +151,6 @@ def nvfp4_linear_from_torchao(
     *,
     backend: str = DEFAULT_MM_BACKEND,
 ):
-    """Re-express one torchao NVFP4 ``nn.Linear`` as an ``NVFP4FlashInferLinear``, never a
-    requantization: every byte is the checkpoint's."""
     import torch
 
     register_ops()
@@ -193,7 +173,6 @@ def nvfp4_linear_from_torchao(
 
     scale = weight.scale
     if getattr(weight, "is_swizzled_scales", False):
-        # Same bytes in the same order, so this is a view, not a repack.
         flat = scale.reshape(-1)
         w_sf = flat if flat.dtype == torch.uint8 else flat.view(torch.uint8)
     else:
@@ -221,7 +200,6 @@ def nvfp4_linear_from_torchao(
 
 
 def _baked_activation_scales(metadata: Any) -> Optional[dict]:
-    """The per-fqn baked activation scales, or None. Keyed on the scales, not on the flag."""
     if not isinstance(metadata, dict):
         return None
     scales = metadata.get(ACT_SCALES_KEY)
@@ -231,7 +209,6 @@ def _baked_activation_scales(metadata: Any) -> Optional[dict]:
 
 
 def _declares_baked_scales(metadata: Any) -> bool:
-    """Did this artifact CLAIM to bake activation scales? Read only by the refusal message."""
     if not isinstance(metadata, dict):
         return False
     policy = metadata.get(POLICY_KEY)
@@ -247,8 +224,7 @@ def convert_nvfp4_backend(
     *,
     logger: Any = None,
 ) -> int:
-    """Move every NVFP4 Linear in ``transformer`` onto the FlashInfer path. Returns how many. All
-    or nothing: a missing baked scale anywhere leaves the whole tree untouched on torchao."""
+    """All or nothing: one missing baked scale leaves the whole tree on torchao."""
     if backend != BACKEND_FLASHINFER:
         return 0
     scales = _baked_activation_scales(metadata)
@@ -279,7 +255,6 @@ def convert_nvfp4_backend(
         return 0
 
     register_ops()
-    # Build every replacement BEFORE swapping any child in: all or nothing, as the docstring promises.
     replacements = []
     for name, module in candidates:
         try:
@@ -294,6 +269,9 @@ def convert_nvfp4_backend(
             return 0
     for name, replacement in replacements:
         _replace_child(transformer, name, replacement)
+    from .diffusion_nvfp4_protect import attach_own_controller
+
+    attach_own_controller(transformer)
     converted = len(replacements)
     _log(logger, "info", f"[nvfp4] flashinfer backend: {converted} linears converted")
     return converted
@@ -305,9 +283,7 @@ def nvfp4_prewarm(
     *,
     logger: Any = None,
 ) -> int:
-    """Autotune every converted layer at the given token counts. Returns shapes tuned. Must run
-    before any capture, which would otherwise bake in ``mm_fp4``'s default tactic, and it suspends
-    the per-step precision lever so the pass tunes the FP4 kernel rather than a bf16 forward."""
+    """Must run before any capture, which would bake in ``mm_fp4``'s default tactic."""
     import torch
 
     try:
@@ -330,11 +306,9 @@ def nvfp4_prewarm(
 
 
 def _prewarm_shapes(modules, shapes, *, logger, tuned_box) -> None:
-    """The tuning loop itself. Split out so the suspension above wraps every launch in it."""
     import torch
 
     import flashinfer
-
     for module in modules:
         for m in shapes:
             m = int(m)
@@ -359,8 +333,7 @@ def _prewarm_shapes(modules, shapes, *, logger, tuned_box) -> None:
 
 
 def _iter_linears(transformer: Any):
-    """Every leaf that looks like a Linear, keyed on the feature counts: a converted layer has no
-    ``weight``."""
+    """Keyed on feature counts: a converted layer has no ``weight``."""
     for name, module in transformer.named_modules():
         if not name:
             continue

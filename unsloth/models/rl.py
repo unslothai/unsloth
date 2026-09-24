@@ -1008,6 +1008,16 @@ def _pin_pristine_sft_loss_type(config_cls):
 
 _UNSLOTH_KBIT_PREP_GUARD_FLAG = "_unsloth_skips_kbit_prep_for_peft_models"
 
+# The one assignment of `self.aux_loss_enabled` in TRL's GRPOTrainer.__init__, whatever its right-hand
+# side. TRL 1.7.0 wrote `is_moe and args.router_aux_loss_coef != 0.0`; TRL main (#7248) reads the
+# coefficient from the model config when it is None. Anchoring on the exact expression lost the
+# fail-fast below on the first rewrite. Read without importing by tests/version_compat.
+_GRPO_AUX_LOSS_ENABLED_LINE = r"^([ \t]*)self\.aux_loss_enabled = [^\n]+$"
+_GRPO_AUX_LOSS_REJECT = (
+    'if self.aux_loss_enabled: raise NotImplementedError("Unsloth GRPO does not compute the MoE router '
+    'auxiliary loss; set router_aux_loss_coef = 0 (the Unsloth default).")'
+)
+
 
 def _guard_kbit_prep_against_peft_models():
     """Stop TRL below 0.24.0 re-preparing a model Unsloth already prepared.
@@ -2957,10 +2967,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
             if trl_version >= Version("1.7.0"):
                 # router_aux_loss_coef / aux_loss_enabled arrived in TRL 1.7.0, and the optimized GRPO forward cannot compute the MoE router aux loss, so reject an explicit opt-in at init.
-                RLTrainer_source = RLTrainer_source.replace(
-                    "self.aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0",
-                    "self.aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0\n"
-                    '        if self.aux_loss_enabled: raise NotImplementedError("Unsloth GRPO does not compute the MoE router auxiliary loss; set router_aux_loss_coef = 0 (the Unsloth default).")',
+                RLTrainer_source = re.sub(
+                    _GRPO_AUX_LOSS_ENABLED_LINE,
+                    lambda m: m.group(0) + "\n" + m.group(1) + _GRPO_AUX_LOSS_REJECT,
+                    RLTrainer_source,
+                    count = 1,
+                    flags = re.MULTILINE,
                 )
 
         elif trl_version >= Version("0.27.0"):

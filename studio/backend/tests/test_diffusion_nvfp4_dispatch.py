@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the cached FlashInfer dispatch (``diffusion_nvfp4_dispatch.py``): the version
-allowlist, the all-or-nothing private import, and the per-device bit-identity check."""
+"""Tests for the cached FlashInfer dispatch (``diffusion_nvfp4_dispatch.py``)."""
 
 from __future__ import annotations
 
@@ -40,7 +39,6 @@ def _fake_flashinfer(
     version = "0.6.6",
     drop = (),
 ):
-    """A ``flashinfer`` package tree with exactly the private symbols the module imports."""
     root = types.ModuleType("flashinfer")
     root.__version__ = version
     root.__path__ = []
@@ -148,8 +146,6 @@ def test_verify_does_not_run_the_gemm_when_the_library_is_wrong(monkeypatch):
 
 
 class _Ptr:
-    """A stand-in for a weight buffer."""
-
     def __init__(
         self,
         pointer,
@@ -291,7 +287,6 @@ def test_a_quantiser_built_for_a_failed_verify_is_never_handed_out(monkeypatch):
 
 
 def test_the_unload_reset_also_forgets_the_preflight_that_ran_verify():
-    """A reset that keeps the memoised preflight leaves the next load with the cached dispatch off."""
     from core.inference import diffusion_nvfp4_linear as nl
     try:
         ops._PREFLIGHT[0] = {"ok": True, "fast_dispatch": True}
@@ -308,7 +303,6 @@ def _block_after(source: str, marker: str, lines: int) -> str:
 
 
 def test_an_aborted_load_drops_the_caches_that_pin_the_failed_model():
-    """A failed prewarm leaves views of every warmed weight, which clear_gpu_cache() cannot free."""
     import inspect
 
     from core.inference.diffusion import DiffusionBackend
@@ -401,7 +395,6 @@ def test_the_preflight_unlocks_the_fast_dispatch_and_says_so():
 
 
 def test_a_collected_layer_takes_its_cached_weights_and_their_vram_with_it():
-    """A worker that returns at its token check never resets: the cache frees the dead layer's VRAM."""
     torch = _cuda_or_skip()
     import gc
 
@@ -439,7 +432,6 @@ def test_a_collected_layer_takes_its_cached_weights_and_their_vram_with_it():
         layer(x)
         torch.cuda.synchronize(device)
 
-    # Both weight buffers are cached, keyed on the buffers the layer holds.
     assert len(dispatch._TRANSPOSED) == 2
     assert {id(layer.wq), id(layer.w_sf)} == set(dispatch._TRANSPOSED)
     weight_bytes = layer.wq.numel() + layer.w_sf.numel()

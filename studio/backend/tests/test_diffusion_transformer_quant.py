@@ -2054,7 +2054,6 @@ def test_real_torchao_configs_carry_set_inductor_config_false():
 
 
 def _policy_stub(monkeypatch, *, policy, applied, resolved):
-    """Stand in for ``diffusion_nvfp4_policy`` so the runtime path can be tested without torchao."""
     from core.inference import diffusion_nvfp4_policy as np
 
     def _resolve(family, base_repo = None):
@@ -2077,7 +2076,6 @@ def _policy_stub(monkeypatch, *, policy, applied, resolved):
 
 
 def _nvfp4_runtime(monkeypatch, order):
-    """A stubbed Blackwell that allows nvfp4, recording the whole-model quantise and the fixups."""
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4})
     tqz = types.ModuleType("torchao.quantization")
@@ -2126,7 +2124,6 @@ def test_quantize_transformer_applies_the_policy_when_one_resolves(monkeypatch):
 
 
 def test_quantize_transformer_quantises_the_whole_model_without_a_policy(monkeypatch):
-    """No policy for this base is the unchanged path, marker included."""
     order: list = []
     _nvfp4_runtime(monkeypatch, order)
     applied: list = []
@@ -2172,7 +2169,6 @@ def test_quantize_transformer_only_asks_about_a_policy_for_nvfp4(monkeypatch):
 
 
 def test_a_policy_mismatch_fails_the_whole_quantise(monkeypatch):
-    """``quantize_with_policy`` raises when the layer set it names is not this model's."""
     order: list = []
     _nvfp4_runtime(monkeypatch, order)
     from core.inference import diffusion_nvfp4_policy as np
@@ -2217,7 +2213,6 @@ def _gate_row(family, base_repo, policy_id, **overrides):
         "policy_version": 1,
         "checkpoint_sha256": "b" * 64,
         "all_pass": True,
-        # Every checked-in record was measured here; the gated head only stands on the backend its record names.
         "backend": "flashinfer",
     }
     row.update(overrides)
@@ -2282,9 +2277,7 @@ def test_a_gated_row_is_inert_without_a_record_and_leads_with_one(monkeypatch, t
 
 
 def test_the_gated_head_stands_on_any_backend_a_passing_record_names(monkeypatch, tmp_path):
-    """Record identity carries the checkpoint digest, not the backend, so one policy can hold an RTN
-    artifact gated on flashinfer and a GPTQ one gated on torchao. Both are measured, so neither
-    device may lose nvfp4 to row order."""
+    """One policy can hold records on both backends; neither device may lose nvfp4 to row order."""
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
     _gate(
@@ -2783,3 +2776,25 @@ def test_a_later_shard_still_reveals_a_narrow_source(tmp_path):
         str(sub / "diffusion_pytorch_model-00002-of-00002.safetensors"),
     )
     assert tq.stored_denoiser_precision(str(tmp_path)) == "fp8"
+
+
+def test_a_missing_nvfp4_prequant_is_named_instead_of_the_gpu(monkeypatch):
+    monkeypatch.setattr(tq, "_TORCHAO_UNAVAILABLE", (None,))
+    monkeypatch.setattr(tq, "family_denies_scheme", lambda *a, **k: False)
+    message = tq.explain_unusable_scheme("z-image", TQ_NVFP4, prequant_missing = True)
+    assert "needs a pre-quantized checkpoint" in message and "on this GPU" not in message
+    # A gate deny still wins: that answer holds even with a checkpoint.
+    monkeypatch.setattr(tq, "family_denies_scheme", lambda *a, **k: True)
+    assert "accuracy-gate record" in tq.explain_unusable_scheme(
+        "qwen-image", TQ_NVFP4, prequant_missing = True
+    )
+
+
+def test_the_loader_decline_asks_explain_unusable_scheme():
+    import inspect
+
+    from core.inference import diffusion
+
+    src = inspect.getsource(diffusion.DiffusionBackend)
+    assert 'is not usable for family "\n' not in src
+    assert "transformer_quant_decline = explain_unusable_scheme(" in src

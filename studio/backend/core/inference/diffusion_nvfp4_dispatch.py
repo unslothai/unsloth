@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FlashInfer's per-call dispatch work, hoisted into a cache. Every private import is HERE.
-
-Fenced three ways: an EXACT version allowlist (a symbol that moves in 0.6.7 is not a bug in 0.6.7),
-every private import in ONE try so there is no partial fast path, and a runtime per-device
-``verify()``, because a symbol that still exists but means something else passes a version check.
-"""
+"""FlashInfer's per-call dispatch work, cached. Every private import is HERE, fenced by an EXACT version
+allowlist, ONE all-or-nothing try, and a per-device bit-identity ``verify()`` (a symbol can change meaning)."""
 
 from __future__ import annotations
 
@@ -29,7 +25,6 @@ _AVAILABLE: Optional[tuple] = None
 _VERIFIED: dict[int, tuple] = {}
 _QUANT_FN: dict[int, tuple] = {}
 _GEMM_PLAN: dict = {}
-# id(weight) -> (weakref to the weight, (data_ptr, shape), transposed view).
 _TRANSPOSED: dict = {}
 
 
@@ -40,7 +35,6 @@ def fast_dispatch_env() -> str:
 
 
 def _probe() -> tuple:
-    """``(ok, reason)``: is this FlashInfer one whose private dispatch layout is known here."""
     env = fast_dispatch_env()
     if env == "0":
         return False, f"{NVFP4_FAST_DISPATCH_ENV}=0"
@@ -68,7 +62,6 @@ def _probe() -> tuple:
 
 
 def available() -> tuple:
-    """``(ok, reason)``, memoised. ``reset()`` re-reads the env and the symbols."""
     global _AVAILABLE
     cached = _AVAILABLE
     if cached is not None:
@@ -80,15 +73,12 @@ def available() -> tuple:
 
 
 def enabled(device: Any) -> bool:
-    """False until ``verify(device)`` passed."""
     from .diffusion_nvfp4_ops import _device_index
-
     record = _VERIFIED.get(_device_index(device))
     return bool(record and record[0])
 
 
 def verify(device: Any) -> tuple:
-    """Run both paths on ``device`` and require bit identity. ``(ok, reason)``, once per device."""
     from .diffusion_nvfp4_ops import _device_index
 
     index = _device_index(device)
@@ -165,7 +155,6 @@ def _global_scale(t: Any):
 
 
 def quant_fn(device: Any, *, force: bool = False):
-    """The bound pybind quantiser and its ``enable_pdl`` flag for ``device``, or None."""
     from .diffusion_nvfp4_ops import _device_index
 
     # Gate before the cache read: verify() forces this entry BEFORE it knows it is bit-identical.
@@ -216,17 +205,15 @@ def _fast_quantize(
 
 
 def _drop_transposed(key: int, ref: Any) -> None:
-    """Weakref callback, lock-free: a collection can land on a thread already holding the lock, and
-    each step is one atomic dict op."""
+    """Lock-free: a collection can land on a thread already holding the lock."""
     entry = _TRANSPOSED.get(key)
     if entry is not None and entry[0] is ref:
         _TRANSPOSED.pop(key, None)
 
 
 def transposed(t: Any):
-    """A kept ``.T`` released with the weight itself: keyed on the weight object (revalidated
-    against data_ptr and shape), over ``t.detach()`` since ``t.T`` would keep ``t`` alive through
-    ``_base`` and the weakref would never fire."""
+    """A ``.T`` released with the weight. Over ``t.detach()``: ``t.T`` keeps ``t`` alive via ``_base``,
+    so the weakref would never fire."""
     key = id(t)
     stamp = (t.data_ptr(), tuple(t.shape))
     entry = _TRANSPOSED.get(key)
@@ -256,8 +243,7 @@ def gemm_plan(
     *,
     force: bool = False,
 ):
-    """``(runner, tactic, workspace)``, or None (use ``mm_fp4``), including for a COLD key under
-    capture, where ``choose_one`` may profile and bake tactics into the graph."""
+    """None (use ``mm_fp4``) for a COLD key under capture, where ``choose_one`` may profile into the graph."""
     from .diffusion_nvfp4_ops import _device_index, _is_capturing
 
     device = xq.device
@@ -309,7 +295,7 @@ def forget_availability() -> None:
 
 
 def reset() -> None:
-    """Forget everything. Called on unload: the transposed views would pin a freed model."""
+    """Called on unload: the transposed views would pin a freed model."""
     global _AVAILABLE
     with _LOCK:
         _AVAILABLE = None
@@ -320,7 +306,6 @@ def reset() -> None:
 
 
 def describe() -> dict:
-    """What the caches hold right now, for the preflight record and for tests."""
     return {
         "available": available()[0],
         "reason": available()[1],
