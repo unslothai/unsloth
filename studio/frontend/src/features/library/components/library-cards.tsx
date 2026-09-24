@@ -48,9 +48,9 @@ export function KindIcon({ item, className }: { item: LibraryItem; className?: s
 }
 
 // Thumbnails keep their own shape between these heights (as a share of the width) and crop past
-// them: 16:9 at the widest, 4:5 at the tallest.
-const MIN_THUMB_RATIO = 9 / 16;
-const MAX_THUMB_RATIO = 5 / 4;
+// them: 3:2 at the widest, 2:3 at the tallest.
+const MIN_THUMB_RATIO = 2 / 3;
+const MAX_THUMB_RATIO = 3 / 2;
 
 /** A lazily loaded image or video frame, sized by its own aspect ratio once it arrives, or cropped square. */
 function ImageThumb({
