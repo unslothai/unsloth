@@ -252,3 +252,26 @@ class TestStaleTorchaudioIsDropped:
         monkeypatch.setattr(stack_mod, "_distribution_version_string", lambda name: "2.11.0+cpu")
         monkeypatch.setattr(stack_mod, "_uninstall_distribution", lambda name: False)
         assert stack_mod._drop_torchaudio_off_the_multiarch_tag() is False
+
+
+class TestTheMarkerShortcutFinishesTheCleanup:
+    """setup.ps1 sets UNSLOTH_ROCM_TORCH_INSTALLED=1 after it installs torch itself, and
+    _ensure_rocm_torch then returns early. On a multi-arch venv that shortcut must still
+    drop a torchaudio linked against the replaced torch."""
+
+    def _run(self, monkeypatch, version):
+        monkeypatch.setenv("UNSLOTH_ROCM_TORCH_INSTALLED", "1")
+        monkeypatch.setattr(stack_mod, "_TORCH_BACKEND", None)
+        monkeypatch.setattr(stack_mod, "_explicit_unknown_family_torch_index_url", lambda: None)
+        monkeypatch.setattr(stack_mod, "_probe_torch_runtime", lambda: (True, True, version, "7.17.26374", None))
+        monkeypatch.setattr(stack_mod, "_install_bnb_windows_rocm", lambda: True)
+        calls = []
+        monkeypatch.setattr(stack_mod, "_drop_torchaudio_off_the_multiarch_tag", lambda: calls.append(1) or True)
+        stack_mod._ensure_rocm_torch()
+        return calls
+
+    def test_a_multiarch_torch_runs_the_cleanup(self, monkeypatch):
+        assert self._run(monkeypatch, f"2.12.0+{stack_mod._ROCM_MULTIARCH_TAG}") == [1]
+
+    def test_a_per_family_torch_does_not(self, monkeypatch):
+        assert self._run(monkeypatch, "2.11.0+rocm7.13.0") == []

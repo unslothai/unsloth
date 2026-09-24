@@ -5769,6 +5769,11 @@ def _ensure_rocm_torch() -> None:
             # ROCm torch is already installed, but bnb still needs the ROCm build
             # (pre-release wheel, else PyPI >=0.50.0).
             _install_bnb_windows_rocm()
+            # setup.ps1 installs the multi-arch pair itself; a torchaudio an earlier pass
+            # left is still linked against the torch it replaced. Finish that here too, so
+            # a `studio update` on such a venv is not the first thing to remove it.
+            if _ROCM_MULTIARCH_TAG in (_version or ""):
+                _drop_torchaudio_off_the_multiarch_tag()
             return
         # torch was wiped between runs; fall through to the full install path
     if IS_MACOS:

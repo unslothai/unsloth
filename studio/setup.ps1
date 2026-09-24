@@ -7879,6 +7879,16 @@ if ($ROCmIndexUrl) {
             if ($script:RocmIndexRecord) { Set-Content -LiteralPath $script:RocmIndexRecord -Value (Get-IndexIdentity $ROCmIndexUrl) -Encoding ascii -NoNewline }
         } catch { }
         substep "GPU ROCm PyTorch installed ($ROCmGfxArch) -- training and GPU inference will use the GPU" "Cyan"
+        if ($script:ROCmMultiArch) {
+            # The multi-arch index publishes no torchaudio. One left by an earlier CPU or
+            # per-family pass is linked against the torch just replaced and throws a Windows
+            # "Entry Point Not Found" dialog the first time anything imports it.
+            $_staleAudio = @(& python -m pip show torchaudio 2>$null | Select-String '^Version:' | ForEach-Object { ($_.Line -split ':\s*', 2)[1].Trim() })
+            if ($_staleAudio.Count -gt 0 -and $_staleAudio[0] -notlike "*$MultiArchTag*") {
+                substep "removing torchaudio $($_staleAudio[0]) -- built against another torch; none is published for $MultiArchTorchVersion+$MultiArchTag" "Yellow"
+                Fast-Uninstall torchaudio | Out-Null
+            }
+        }
     }
 }
 
