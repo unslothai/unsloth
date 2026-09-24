@@ -1395,6 +1395,8 @@ def _get_remote_composite_text_only(
     if getattr(text_config, "_commit_hash", None) is None:
         # A nested config carries no commit; the load runs the parent repo's code and weights, so pin to the parent's.
         text_config._commit_hash = getattr(model_config, "_commit_hash", None)
+    # Probe the commit the load is pinned to (the one the config was read at), not a branch that may have moved.
+    revision = getattr(text_config, "_commit_hash", None) or revision
     try:
         text_class = _resolve_text_causal_lm_class(
             text_config,

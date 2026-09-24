@@ -796,3 +796,28 @@ def test_bin_adapter_is_read_like_a_safetensors_one(tmp_path):
     assert not (text_adapter / "adapter_model.safetensors").exists()
     assert ns["_adapter_fits_text_model"](str(text_adapter), mapping) is True
     assert ns["_adapter_fits_text_model"](str(wrapper_adapter), mapping) is False
+
+
+@needs_tf5
+def test_probes_read_the_commit_the_config_was_resolved_at(tmp_path, monkeypatch):
+    # The config (and so the pinned load) came from an older commit; main has since moved to a
+    # checkpoint that no longer holds every text weight. The probe must read the pinned commit.
+    import shutil
+
+    ns = _ns()
+    repo, _ = _write_repo(tmp_path, name = "pinned")
+    repo_id, sha = _cache_as_hub_repo(tmp_path, monkeypatch, repo, repo_id = "fake-org/pinned")
+    parent = transformers.AutoConfig.from_pretrained(
+        repo_id, trust_remote_code = True, local_files_only = True
+    )
+    assert parent._commit_hash == sha
+    moved, _ = _write_repo(tmp_path, name = "moved", drop = ("model.layers.1.mlp.down_proj.weight",))
+    root = tmp_path / "hub_cache" / "models--fake-org--pinned"
+    new_sha = "f" * 40
+    shutil.copytree(moved, root / "snapshots" / new_sha)
+    (root / "refs" / "main").write_text(new_sha)
+    plan = ns["_get_remote_composite_text_only"](
+        parent, repo_id, trust_remote_code = True, local_files_only = True
+    )
+    assert plan is not None
+    assert plan[0]._commit_hash == sha
