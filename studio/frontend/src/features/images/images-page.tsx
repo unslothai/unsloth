@@ -13,7 +13,6 @@ import {
   Image03Icon,
   ImageAdd02Icon,
   InformationCircleIcon,
-  PinIcon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -75,7 +74,9 @@ import type {
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
-import { GalleryItemMenu } from "@/components/gallery-item-menu";
+import { GalleryItemMenu, GalleryPinBadge } from "@/components/gallery-item-menu";
+import { StripDropLine } from "@/components/gallery-strip-reorder";
+import { useStripReorder } from "@/hooks/use-strip-reorder";
 import { MediaPageLink } from "@/components/media-page-link";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
@@ -85,6 +86,7 @@ import {
   fetchWhileStable,
   hasUnknownRecord,
   mergeGenerated,
+  moveGalleryItem,
   newRecordProbeBaseline,
   nextSelectedId,
   pinnedOrder,
@@ -190,6 +192,8 @@ import {
   getGenerateProgress,
   listDiffusionControlNets,
   listDiffusionLoras,
+  addGalleryImageToProject,
+  moveGalleryImage,
   setGalleryImageFlags,
   getDiffusionDownloadPlan,
   loadDiffusionModel,
@@ -1046,12 +1050,18 @@ function RecipePopover({
           Recipe
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" side="top" className="w-80 p-0">
-        <div className="border-b border-border/60 px-4 py-2.5">
+      {/* Fits the viewport: only the settings scroll, and overflow-hidden keeps the corners round. */}
+      <PopoverContent
+        align="end"
+        side="top"
+        collisionPadding={12}
+        className="flex max-h-[var(--radix-popover-content-available-height)] w-80 flex-col gap-0 overflow-hidden p-0"
+      >
+        <div className="shrink-0 border-b border-border/60 px-4 py-2.5">
           <p className="text-sm font-semibold">Generation settings</p>
           <p className="text-ui-11 text-muted-foreground">{formatTimestamp(image.created_at)}</p>
         </div>
-        <div className="flex flex-col gap-2 px-4 py-3 text-xs">
+        <div className="flex min-h-0 flex-col gap-2 overflow-y-auto overscroll-contain px-4 py-3 text-xs">
           <RecipeRow label="Prompt" value={image.prompt} wrap />
           {image.negative_prompt ? (
             <RecipeRow label="Negative" value={image.negative_prompt} wrap />
@@ -1086,7 +1096,7 @@ function RecipePopover({
           <RecipeRow label="Guidance" value={String(image.guidance)} />
           <RecipeRow label="Seed" value={String(image.seed)} mono />
         </div>
-        <div className="border-t border-border/60 px-3 py-2.5">
+        <div className="shrink-0 border-t border-border/60 px-3 py-2.5">
           <Button size="sm" className="w-full gap-1.5" onClick={() => onRestore(image)}>
             <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="size-4" />
             Restore these settings
@@ -2005,6 +2015,64 @@ export function ImagesPage({
     },
     [resyncWindow],
   );
+
+  // Drag-to-reorder: applied optimistically, then the server's record (key and pin) is adopted.
+  const handleMove = useCallback(
+    async (id: string, afterId: string | null) => {
+      const next = moveGalleryItem(galleryCache.images, id, afterId);
+      if (next === galleryCache.images) return;
+      const guessedPinned = Boolean(next.find((i) => i.id === id)?.pinned);
+      stripEpoch.current += 1;
+      galleryCache.images = next;
+      setImages(next);
+      try {
+        // Shares the pin queue, since both rewrite the order.
+        const record = await serializeById("image-pin", () => moveGalleryImage(id, afterId));
+        setImages((prev) => {
+          const patched = prev.map((i) =>
+            i.id === id ? { ...i, pinned: record.pinned, order_at: record.order_at } : i,
+          );
+          // Re-sort only if the local pin guess was wrong.
+          const out =
+            Boolean(record.pinned) === guessedPinned ? patched : sortGalleryItems(patched);
+          galleryCache.images = out;
+          return out;
+        });
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to move image");
+        // Restore the server's order.
+        stripEpoch.current += 1;
+        const epoch = stripEpoch.current;
+        try {
+          await resyncWindow(galleryCache.images.length, () => stripEpoch.current === epoch);
+        } catch {
+          void loadGallery();
+        }
+      }
+    },
+    [resyncWindow, loadGallery],
+  );
+  // One-click download of the original PNG.
+  const handleQuickDownload = useCallback(
+    async (image: GalleryImage) => {
+      const src = srcById[image.id];
+      if (src) {
+        await downloadImage(src, image, "png");
+        return;
+      }
+      try {
+        const blob = await fetchGalleryBlob(image.url);
+        await downloadFile(blob, exportFilename(image, "png"), blob.type);
+      } catch (error) {
+        if (isDownloadCancelled(error)) return;
+        toast.error("Could not save image", {
+          description: error instanceof Error ? error.message : undefined,
+        });
+      }
+    },
+    [srcById],
+  );
+  const stripReorder = useStripReorder((id, afterId) => void handleMove(id, afterId));
 
   const handleArchive = useCallback(
     async (id: string) => {
@@ -5149,6 +5217,8 @@ export function ImagesPage({
                     }
                     onToggleArchive={() => void handleArchive(selected.id)}
                     onDelete={() => void handleDelete(selected.id)}
+                    onDownload={() => void handleQuickDownload(selected)}
+                    onAddToProject={(projectId) => addGalleryImageToProject(selected.id, projectId)}
                   />
                 </div>
               </>
@@ -5199,6 +5269,7 @@ export function ImagesPage({
           {(images.length > 0 || busy === "generating") && (
             <div
               ref={stripRef}
+              {...stripReorder.stripProps}
               // The rule spans the pane; only the thumbnail contents receive the 40px gutter.
               className="hover-scrollbar flex shrink-0 gap-2 overflow-x-auto border-t border-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] px-10 max-sm:px-5 py-3"
               onScroll={(e) => {
@@ -5221,8 +5292,16 @@ export function ImagesPage({
                 <div
                   key={image.id}
                   data-image-id={image.id}
-                  className="group relative size-16 shrink-0"
+                  {...stripReorder.tileProps(image.id)}
+                  className={cn(
+                    "group relative size-16 shrink-0",
+                    // Fade the tile being dragged.
+                    stripReorder.draggingId === image.id && "opacity-40",
+                  )}
                 >
+                  {stripReorder.cue?.id === image.id && (
+                    <StripDropLine edge={stripReorder.cue.edge} />
+                  )}
                   <button
                     type="button"
                     onClick={() => setSelectedId(image.id)}
@@ -5232,6 +5311,7 @@ export function ImagesPage({
                       <img
                         src={srcById[image.id]}
                         alt={image.prompt}
+                        draggable={false}
                         className="size-full object-cover"
                       />
                     ) : (
@@ -5244,11 +5324,13 @@ export function ImagesPage({
                       <span className="pointer-events-none absolute inset-0 rounded-[10px] border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
                     )}
                   </button>
-                  {/* Pin marker, bottom-left so it never sits under the menu. */}
+                  {/* Pin marker and Unpin button, bottom-left so it clears the menu. */}
                   {image.pinned && (
-                    <span className="pointer-events-none absolute bottom-0.5 left-0.5 rounded-full bg-background/80 p-0.5 text-foreground shadow-sm ring-1 ring-border backdrop-blur">
-                      <HugeiconsIcon icon={PinIcon} className="size-3" />
-                    </span>
+                    <GalleryPinBadge
+                      noun="image"
+                      className="bottom-0.5 left-0.5"
+                      onUnpin={() => void handleTogglePin(image.id, false)}
+                    />
                   )}
                   <div className="absolute right-0.5 top-0.5">
                     <GalleryItemMenu
@@ -5260,6 +5342,8 @@ export function ImagesPage({
                       onTogglePin={() => void handleTogglePin(image.id, !image.pinned)}
                       onToggleArchive={() => void handleArchive(image.id)}
                       onDelete={() => void handleDelete(image.id)}
+                    onDownload={() => void handleQuickDownload(image)}
+                    onAddToProject={(projectId) => addGalleryImageToProject(image.id, projectId)}
                     />
                   </div>
                 </div>

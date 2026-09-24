@@ -224,6 +224,8 @@ export interface GalleryVideo {
   // Library state, not recipe: stored beside the clip, absent on sidecars written before this existed.
   pinned?: boolean;
   archived?: boolean;
+  /** Manual sort key once dragged; unset sorts by created_at. */
+  order_at?: number | null;
 }
 
 // Acknowledgement that the job started; the saved record arrives via getVideoGenerateProgress at phase "completed".
@@ -334,6 +336,31 @@ export async function getVideoGallery(
 }
 
 /** Pin/unpin or archive/restore one clip; omitted flags are left alone. Returns the new record. */
+/** Move one video to just after `afterId` (null = front). The server also decides the pin. */
+export async function moveGalleryVideo(id: string, afterId: string | null): Promise<GalleryVideo> {
+  return parseJson(
+    await authFetch(`/api/inference/video/gallery/${id}/move`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ after_id: afterId }),
+    }),
+  );
+}
+
+/** Copy one video into a chat project's folder. */
+export async function addGalleryVideoToProject(
+  id: string,
+  projectId: string,
+): Promise<{ path: string; already: boolean }> {
+  return parseJson(
+    await authFetch(`/api/inference/video/gallery/${id}/project`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project_id: projectId }),
+    }),
+  );
+}
+
 export async function setGalleryVideoFlags(
   id: string,
   flags: { pinned?: boolean; archived?: boolean },
