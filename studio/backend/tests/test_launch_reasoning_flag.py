@@ -258,6 +258,7 @@ def _launched(
     modern,
     template,
     model_identifier = "test",
+    architecture = None,
 ):
     """The backend and argv the real ``load_model`` builds on one host, for one vintage."""
     platform, is_wsl = OSES[os_label]
@@ -270,6 +271,7 @@ def _launched(
     )
     memory = [] if vendor == "cpu" else [(0, 24_000, 24_000)]
     backend, gguf = _backend(tmp_path, vulkan = False, memory = memory)
+    backend._architecture = architecture
     monkeypatch.setattr(
         LlamaCppBackend,
         "probe_server_capabilities",
@@ -287,6 +289,12 @@ def _launched(
 
 def _argv_for(tmp_path, monkeypatch, **kwargs):
     return _launched(tmp_path, monkeypatch, **kwargs)[1]
+
+
+@pytest.fixture(autouse = True)
+def _no_inherited_reasoning(monkeypatch):
+    monkeypatch.delenv("LLAMA_ARG_REASONING", raising = False)
+    monkeypatch.delenv("LLAMA_ARG_REASONING_EFFORT", raising = False)
 
 
 def _reasoning_slice(cmd: list[str]) -> list[str]:
@@ -365,7 +373,7 @@ class TestTheRealLaunchOnEveryHost:
 
 
 class TestAnInheritedReasoningModeIsHonoured:
-    """`unsloth start --reasoning on|off` reaches Studio only as LLAMA_ARG_REASONING.
+    """`unsloth start --reasoning` and `--reasoning-effort` reach Studio only as env.
 
     The launch always emits its own default, and llama.cpp lets argv beat the env, so
     the env value has to become that default for the argv and the backend to agree.
@@ -403,18 +411,15 @@ class TestAnInheritedReasoningModeIsHonoured:
         assert backend.reasoning_default is expected
 
     @pytest.mark.parametrize("modern", [True, False], ids = ["flag", "kwargs"])
-    @pytest.mark.parametrize("value", [None, "auto", "-1", "", "yes", "OFF"])
+    @pytest.mark.parametrize("value", [None, "auto", "-1"])
     @pytest.mark.parametrize(
         "model_identifier,expected",
         [("unsloth/Qwen3.6-35B-A3B-GGUF", True), ("unsloth/Qwen3.5-9B-GGUF", False)],
     )
-    def test_auto_unset_or_unknown_keeps_the_model_default(
+    def test_auto_or_unset_keeps_the_model_default(
         self, tmp_path, monkeypatch, modern, value, model_identifier, expected
     ):
-        """llama.cpp matches these values exactly, so neither does anything else here."""
-        if value is None:
-            monkeypatch.delenv("LLAMA_ARG_REASONING", raising = False)
-        else:
+        if value is not None:
             monkeypatch.setenv("LLAMA_ARG_REASONING", value)
         backend, cmd = _launched(
             tmp_path,
@@ -440,11 +445,24 @@ class TestAnInheritedReasoningModeIsHonoured:
             ]
         assert backend.reasoning_default is expected
 
-    @pytest.mark.parametrize("value,effort", [("on", "high"), ("off", "low")])
-    def test_an_effort_ladder_maps_on_and_off_like_the_chat_toggle(
-        self, tmp_path, monkeypatch, value, effort
+    @pytest.mark.parametrize(
+        "reasoning,effort_env,effort,thinks",
+        [
+            ("on", None, "high", True),
+            ("off", None, "low", True),
+            ("off", "default", "low", True),
+            ("auto", "medium", "medium", True),
+            ("off", "medium", "medium", True),
+            ("on", "none", "none", False),
+        ],
+    )
+    def test_an_effort_ladder_takes_the_pinned_effort(
+        self, tmp_path, monkeypatch, reasoning, effort_env, effort, thinks
     ):
-        monkeypatch.setenv("LLAMA_ARG_REASONING", value)
+        """Off maps to low like the chat toggle, which still thinks; a pinned effort wins."""
+        monkeypatch.setenv("LLAMA_ARG_REASONING", reasoning)
+        if effort_env is not None:
+            monkeypatch.setenv("LLAMA_ARG_REASONING_EFFORT", effort_env)
         backend, cmd = _launched(
             tmp_path,
             monkeypatch,
@@ -455,7 +473,26 @@ class TestAnInheritedReasoningModeIsHonoured:
         )
         assert "--reasoning" not in cmd
         assert json.loads(_reasoning_slice(cmd)[1]) == {"reasoning_effort": effort}
-        assert backend.reasoning_default is (value == "on")
+        assert backend.reasoning_default is thinks
+
+    @pytest.mark.parametrize(
+        "effort_env,effort,thinks", [("medium", 0.7, True), ("none", 0.0, False)]
+    )
+    def test_an_inkling_ladder_coerces_the_pinned_effort(
+        self, tmp_path, monkeypatch, effort_env, effort, thinks
+    ):
+        monkeypatch.setenv("LLAMA_ARG_REASONING_EFFORT", effort_env)
+        backend, cmd = _launched(
+            tmp_path,
+            monkeypatch,
+            os_label = "linux",
+            vendor = "nvidia",
+            modern = True,
+            template = EFFORT_TEMPLATE,
+            architecture = "inkling",
+        )
+        assert json.loads(_reasoning_slice(cmd)[1]) == {"reasoning_effort": effort}
+        assert backend.reasoning_default is thinks
 
 
 class TestInheritedExtrasTreatBothSpellingsAlike:
