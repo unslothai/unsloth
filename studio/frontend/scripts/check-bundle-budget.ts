@@ -39,6 +39,7 @@ export const BUDGET = {
   // its own. Since that raise the eager set gained one 303-byte chunk (#11607's
   // thread-message-slot split) and otherwise grew inside chunks already eager: #11607's fork
   // boundary and #11648's UI scale, so what ran out is headroom, not laziness.
+  // The resource monitor remains eager so its frame can coordinate with overlays.
   transferBytes: 1_770_000,
   rawBytes: 5_950_000,
 };
