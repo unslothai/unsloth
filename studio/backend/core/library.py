@@ -765,6 +765,13 @@ def _move_entries(source: Path, target: Path, moved: list[tuple[Path, Path]]) ->
         moved.append((entry, dest))
 
 
+def _refuse_overlap(target: Path, resolvers) -> None:
+    for other in resolvers.values():
+        root = other().resolve()
+        if target == root or root in target.parents:
+            raise ValueError("That folder is inside another Unsloth folder.")
+
+
 def move_location(key: str, path: Optional[str]) -> None:
     """Move one kind of file to another folder, files and all, and keep saving there. `path` None
     moves it back to the default. Owner only; the caller checks.
@@ -785,13 +792,12 @@ def move_location(key: str, path: Optional[str]) -> None:
         target = _move_target(path) if path is not None else _location_default(key).resolve()
         if target == current:
             return
-        for other in resolvers.values():
-            root = other().resolve()
-            if target == root or root in target.parents:
-                raise ValueError("That folder is inside another Unsloth folder.")
+        _refuse_overlap(target, resolvers)
         target = _prepare_target(target, key)
         if target == current:
             return
+        # Again for the named subfolder, which can be another kind's folder.
+        _refuse_overlap(target, resolvers)
         previous = chosen(key)
         # A default already holding files gets a subfolder, which has to be recorded to be used.
         set_chosen(key, None if target == _location_default(key).resolve() else target)

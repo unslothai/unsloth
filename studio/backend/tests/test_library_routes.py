@@ -773,6 +773,19 @@ def test_moving_back_to_a_default_that_holds_files_keeps_them_listed(client, tmp
     assert _location(client, "images")["custom"] is True
 
 
+def test_a_named_subfolder_that_is_another_kinds_folder_is_refused(client, tmp_path):
+    from core.inference import image_gallery, video_gallery
+
+    data = tmp_path / "data"
+    data.mkdir()
+    assert _move(client, "videos", str(data / "Unsloth Images")).status_code == 200
+    (data / "notes.txt").write_text("mine")
+    (image_gallery.gallery_dir() / "a.png").write_bytes(b"png")
+    assert _move(client, "images", str(data)).status_code == 400
+    assert video_gallery.gallery_dir() == (data / "Unsloth Images").resolve()
+    assert (image_gallery.gallery_dir() / "a.png").read_bytes() == b"png"
+
+
 def test_fine_tunes_and_exports_do_not_move(client, tmp_path):
     for key in ("fineTunes", "exports", "somewhere"):
         assert _move(client, key, str(tmp_path / key)).status_code == 400
