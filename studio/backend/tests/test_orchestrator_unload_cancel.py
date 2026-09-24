@@ -1811,6 +1811,49 @@ def test_unload_cancels_gguf_load_still_downloading(monkeypatch, unload_path, ca
     assert seen_at_gate == {"cancel": cancelled, "complete": cancelled}
 
 
+@pytest.mark.parametrize("unloader, cancelled", [("acct-A", True), ("acct-B", False)])
+def test_unload_cancels_only_the_callers_own_download(monkeypatch, unloader, cancelled):
+    # Another account naming the same model must not stop this account's download.
+
+    from core.inference import llama_keepwarm
+    from models.inference import LoadRequest
+    import asyncio as _asyncio
+    import routes.inference as ri
+
+    account = {"id": "acct-A"}
+    monkeypatch.setattr(ri.account_access, "account_scope", lambda: account["id"])
+    monkeypatch.setattr(ri, "current_account_id", lambda: account["id"])
+    attempt = ri._begin_load_attempt(LoadRequest(model_path = "gguf-X"), "s")
+    account["id"] = unloader
+
+    class _Gate:
+        async def __aenter__(self):
+            raise _Stop
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _Stop(Exception):
+        pass
+
+    monkeypatch.setattr(ri.account_access, "managed_account", lambda: False)
+    monkeypatch.setattr(ri.account_access, "require_resident_control", lambda *a: None)
+    monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: _Llama())
+    monkeypatch.setattr(ri, "get_inference_backend", lambda: _Unsloth())
+    monkeypatch.setattr(ri, "is_registered_native_path_label", lambda a, b: False)
+    monkeypatch.setattr(llama_keepwarm, "inference_lifecycle_gate", lambda: _Gate())
+    with ri._scoped_load_attempts_lock:
+        ri._running_load_attempt = attempt
+    try:
+        with pytest.raises(Exception):
+            _asyncio.run(ri._unload_model_impl(ri.UnloadRequest(model_path = "gguf-X"), "s"))
+    finally:
+        with ri._scoped_load_attempts_lock:
+            ri._running_load_attempt = None
+
+    assert attempt.cancel_event.is_set() is cancelled
+
+
 @pytest.mark.parametrize("resident, recorded", [(None, False), ("gguf-X", True)])
 def test_unload_after_cancelling_download_records_only_a_real_eviction(
     monkeypatch, resident, recorded

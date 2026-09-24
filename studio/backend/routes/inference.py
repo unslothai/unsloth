@@ -18464,8 +18464,11 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
         # A downloading GGUF has no llama-server yet: cancel its load so it releases the gate.
         with _scoped_load_attempts_lock:
             running = _running_load_attempt
-        cancelled_before_server = running is not None and _names_the_loading_model(
-            running.model_path, request.model_path
+        cancelled_before_server = (
+            running is not None
+            and _names_the_loading_model(running.model_path, request.model_path)
+            # Same owner rule as the scoped cancel: one account cannot stop another's load.
+            and (account_access.account_scope() is None or running.subject == current_account_id())
         )
         if cancelled_before_server:
             running.cancel_event.set()
