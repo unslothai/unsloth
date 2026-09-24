@@ -5467,6 +5467,8 @@ class DiffusionBackend:
                                         target,
                                         mode = transformer_quant,
                                         family = getattr(fam, "name", None),
+                                        # Same policy lookup as the transformer-only path.
+                                        base_repo = base,
                                         fast_accum = transformer_quant_fast_accum,
                                         logger = logger,
                                     )
