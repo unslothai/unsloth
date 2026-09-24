@@ -56,6 +56,16 @@ from unsloth.models.compressed_tensors_bnb import _transformers_supports_weight_
 # (5.5+); on 5.4 an MXFP4 checkpoint loads through compressed-tensors' own quantizer.
 HAS_CONVERTERS = _transformers_supports_weight_converters()
 
+try:
+    from unsloth_zoo.temporary_patches import mxfp4 as _zoo_mxfp4
+    HAS_ZOO_PACKED_SAVE = hasattr(_zoo_mxfp4, "_densified_module_names")
+except Exception:
+    HAS_ZOO_PACKED_SAVE = False
+# Without the zoo save support (unsloth-zoo#1371) the packed route declines by design.
+needs_zoo_packed_save = pytest.mark.skipif(
+    not HAS_ZOO_PACKED_SAVE, reason = "needs unsloth-zoo's packed-module save support"
+)
+
 DEVICES = ["cpu"] + (["cuda"] if has_real_cuda() else [])
 _E2M1 = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
 
@@ -686,6 +696,7 @@ def _apply(marks):
     return wrap
 
 
+@needs_zoo_packed_save
 @_apply(needs_gpu_loader_any)
 @pytest.mark.parametrize("load_in_4bit", [True, False])
 def test_mxfp4_checkpoint_stays_packed_and_matches_its_bf16_decode(
@@ -743,6 +754,7 @@ def _plain_logits(path, ids):
         return model(input_ids = ids).logits
 
 
+@needs_zoo_packed_save
 @_apply(needs_gpu_loader_any)
 def test_full_and_merged_saves_reload_in_plain_transformers(tmp_path, monkeypatch):
     """A full save writes each packed Linear as its dense `weight` with no MXFP4 config, and a
@@ -803,6 +815,7 @@ def test_full_and_merged_saves_reload_in_plain_transformers(tmp_path, monkeypatc
     assert not torch.equal(merged_logits, _plain_logits(full, ids))  # the LoRA is in
 
 
+@needs_zoo_packed_save
 @_apply(needs_gpu_loader_any)
 def test_full_finetuning_keeps_the_stock_compressed_tensors_route(tmp_path, monkeypatch):
     from unsloth.models.mxfp4_compressed_linear import install_compressed_tensors_keep_packed
@@ -881,6 +894,7 @@ def test_a_dtype_cast_reaches_the_merge_and_unmerge(cast):
         assert packed_model(x.to(torch.bfloat16)).dtype == torch.bfloat16
 
 
+@needs_zoo_packed_save
 @pytest.mark.skipif(not HAS_CT, reason = "needs compressed-tensors")
 def test_the_sixteen_bit_route_decodes_in_the_load_dtype(tmp_path):
     """transformers 5.x does not hand the load dtype to the quantizer: the adopted modules take
@@ -990,13 +1004,14 @@ def test_the_sixteen_bit_route_declines_without_the_zoo_full_save_support(tmp_pa
 
     packed_dir, _ = _write_tiny_mxfp4_llama(str(tmp_path))
     assert install_compressed_tensors_keep_packed()
-    monkeypatch.delattr(zoo_mxfp4, "_densified_module_names")
+    monkeypatch.delattr(zoo_mxfp4, "_densified_module_names", raising = False)
     model = AutoModelForCausalLM.from_pretrained(
         packed_dir, dtype = torch.bfloat16, device_map = {"": 0}
     )
     assert not any(isinstance(m, Mxfp4PackedLinear) for m in model.modules())
 
 
+@needs_zoo_packed_save
 @_apply(needs_gpu_loader)
 def test_a_partly_merged_bitsandbytes_route_model_saves_and_reloads(tmp_path):
     """4-bit route, LoRA on q_proj only, merge_and_unload, full save: the merged q_proj is a
@@ -1051,6 +1066,7 @@ def test_merge_and_unmerge_under_an_accelerate_hook():
         assert torch.equal(packed_model(x), with_lora)
 
 
+@needs_zoo_packed_save
 @_apply(needs_gpu_loader_any)
 def test_the_sixteen_bit_route_plans_only_mxfp4_checkpoints(tmp_path, monkeypatch):
     """Every compressed-tensors load passes through the hook; one that is not all MXFP4 (INT4
