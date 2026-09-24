@@ -909,6 +909,9 @@ class HttpChatBackend:
             payload["speculative_type"] = speculative_type
         if spec_draft_n_max is not None:
             payload["spec_draft_n_max"] = spec_draft_n_max
+        resident_variant = self._resident_gguf_variant(model)
+        if resident_variant:
+            payload["gguf_variant"] = resident_variant
         try:
             # Read the body, don't close at the headers: a slow load commits its 200 early and pads until
             # done, so closing here would generate mid-load and discard the only report of a late failure.
@@ -919,6 +922,23 @@ class HttpChatBackend:
         except Exception as exc:
             typer.echo(f"Model load failed: {exc}", err = True)
             raise typer.Exit(code = 1)
+
+    def _resident_gguf_variant(self, model: str) -> Optional[str]:
+        if model.lower().endswith(".gguf"):
+            return None
+        try:
+            with self._request("GET", "/api/inference/status", timeout = 30) as response:
+                status = json.loads(response.read())
+        except Exception:
+            return None
+        if not isinstance(status, dict) or not status.get("is_gguf"):
+            return None
+        loaded = {status.get("model_identifier"), status.get("active_model")} - {None}
+        if model in loaded or (
+            not os.path.exists(model) and model.casefold() in {str(m).casefold() for m in loaded}
+        ):
+            return status.get("gguf_variant")
+        return None
 
     def stream(
         self,

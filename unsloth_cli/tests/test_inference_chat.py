@@ -1324,7 +1324,7 @@ def test_http_backend_load_forwards_gguf_runtime_options(monkeypatch):
         llama_extra_args = ["--top-k", "20"],
     )
 
-    assert requests == [
+    assert [r for r in requests if r[0] == "POST"] == [
         (
             "POST",
             "/api/inference/load",
@@ -1364,7 +1364,70 @@ def test_http_backend_load_sends_explicit_false_tensor_parallel(monkeypatch):
         tensor_parallel = False,
     )
 
-    assert requests[0][2]["tensor_parallel"] is False
+    assert requests[-1][2]["tensor_parallel"] is False
+
+
+class _FakeStatusResponse:
+    def __init__(self, status) -> None:
+        self._body = json.dumps(status).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> None:
+        pass
+
+    def read(self) -> bytes:
+        return self._body
+
+
+_RESIDENT_Q8 = {
+    "is_gguf": True,
+    "active_model": "unsloth/Qwen3-0.6B-GGUF",
+    "model_identifier": "unsloth/Qwen3-0.6B-GGUF",
+    "gguf_variant": "Q8_0",
+}
+
+
+@pytest.mark.parametrize(
+    ("model", "status", "expected"),
+    [
+        ("unsloth/Qwen3-0.6B-GGUF", _RESIDENT_Q8, "Q8_0"),
+        ("unsloth/qwen3-0.6b-gguf", _RESIDENT_Q8, "Q8_0"),
+        ("unsloth/Qwen3-1.7B-GGUF", _RESIDENT_Q8, None),
+        (
+            "/models/Qwen3-0.6B-Q4_K_M.gguf",
+            {**_RESIDENT_Q8, "model_identifier": "/models/Qwen3-0.6B-Q4_K_M.gguf"},
+            None,
+        ),
+        ("unsloth/Qwen3-0.6B-GGUF", {**_RESIDENT_Q8, "is_gguf": False}, None),
+        ("unsloth/Qwen3-0.6B-GGUF", None, None),
+    ],
+)
+def test_http_backend_load_keeps_the_resident_quant(monkeypatch, model, status, expected):
+    """A bare repo id lets the server auto-pick a quant, evicting the one already serving it."""
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    loads = []
+
+    def fake_request(
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
+        if path == "/api/inference/status":
+            if status is None:
+                raise OSError("status unavailable")
+            return _FakeStatusResponse(status)
+        loads.append(payload)
+        return _FakeLoadResponse()
+
+    monkeypatch.setattr(backend, "_request", fake_request)
+
+    backend.ensure_loaded(model, hf_token = None, max_seq_length = 4096, load_in_4bit = None)
+
+    assert len(loads) == 1
+    assert loads[0].get("gguf_variant") == expected
 
 
 # ── A load slower than the proxy timer (see routes/inference.py _tunnel_safe_json) ──
@@ -1967,6 +2030,7 @@ def test_server_load_sends_load_in_4bit_only_when_typed(monkeypatch, command, fl
     result = CliRunner().invoke(app, [*argv, *flags], input = "/exit\n")
 
     assert result.exit_code == 0, result.output
+    payloads = [p for p in payloads if p is not None]
     assert len(payloads) == 1
     assert payloads[0].get("load_in_4bit", "omitted") == expected
 
