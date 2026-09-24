@@ -425,3 +425,64 @@ def test_trusted_load_records_the_commit_its_repo_code_ran_at():
     assert i_trust < i_stamp
     stamp = vision[i_stamp : vision.index("\n        )\n", i_stamp)]
     assert "if trust_remote_code" in stamp and '"_commit_hash"' in stamp
+
+
+# ---------------------------------------------------------------- Hub-cached checkpoints
+
+
+def _cache_as_hub_repo(
+    tmp_path,
+    monkeypatch,
+    repo,
+    repo_id = "fake-org/tiny-omni",
+    with_index = False,
+):
+    # Lay the fixture out as a Hub cache snapshot at a fixed commit, so loads resolve a commit hash offline.
+    import shutil
+    import huggingface_hub.constants as hub_constants
+
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    cache = tmp_path / "hub_cache"
+    root = cache / ("models--" + repo_id.replace("/", "--"))
+    (root / "refs").mkdir(parents = True)
+    (root / "refs" / "main").write_text(sha)
+    snapshot = root / "snapshots" / sha
+    shutil.copytree(repo, snapshot)
+    if with_index:
+        from safetensors import safe_open
+        with safe_open(str(snapshot / "model.safetensors"), framework = "pt") as f:
+            weight_map = {k: "model.safetensors" for k in f.keys()}
+        (snapshot / "model.safetensors.index.json").write_text(
+            json.dumps({"metadata": {}, "weight_map": weight_map})
+        )
+    monkeypatch.setattr(hub_constants, "HF_HUB_CACHE", str(cache))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(hub_constants, "HF_HUB_OFFLINE", True)
+    return repo_id, sha
+
+
+@needs_tf5
+def test_text_config_keeps_the_parent_commit(tmp_path, monkeypatch):
+    # FastModel hands FastBaseModel only the text config, so the trusted-code commit stamp falls back to
+    # model.config._commit_hash; a nested sub-config has none of its own.
+    ns = _ns()
+    repo, _ = _write_repo(tmp_path, name = "commit")
+    repo_id, sha = _cache_as_hub_repo(tmp_path, monkeypatch, repo, with_index = True)
+    parent = transformers.AutoConfig.from_pretrained(
+        repo_id, trust_remote_code = True, local_files_only = True
+    )
+    assert parent._commit_hash == sha
+    text_config, mapping = ns["_get_remote_composite_text_only"](
+        parent, repo_id, trust_remote_code = True, local_files_only = True
+    )
+    assert text_config._commit_hash == sha
+    assert getattr(parent.llm_config, "_commit_hash", None) is None  # parent left untouched
+    model = transformers.AutoModelForCausalLM.from_pretrained(
+        repo_id,
+        config = text_config,
+        key_mapping = mapping,
+        trust_remote_code = True,
+        dtype = torch.float32,
+        local_files_only = True,
+    )
+    assert model.config._commit_hash == sha

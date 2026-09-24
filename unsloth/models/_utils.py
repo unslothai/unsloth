@@ -1347,6 +1347,9 @@ def _get_remote_composite_text_only(
             text_config = copy.copy(text_config)
             text_config.quantization_config = _remap_text_only_skip_modules(qc)
     text_config = copy.copy(text_config)
+    if getattr(text_config, "_commit_hash", None) is None:
+        # A nested config carries no commit; the load runs the parent repo's code and weights, so pin to the parent's.
+        text_config._commit_hash = getattr(model_config, "_commit_hash", None)
     try:
         text_class = _resolve_text_causal_lm_class(
             text_config, model_name, trust_remote_code, token = token, revision = revision
