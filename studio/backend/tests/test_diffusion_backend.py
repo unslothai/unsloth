@@ -11704,3 +11704,18 @@ def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypa
         failures
     ), "a configured prequant that is not in its repo left the plan calling itself complete"
     assert "prequant artifact missing" in str(failures[0])
+
+
+def test_load_installs_the_prompt_cache_and_unload_releases_it(fake_runtime, tmp_path, monkeypatch):
+    from core.inference import diffusion as diff_mod
+
+    calls = {"install": [], "release": []}
+    monkeypatch.setattr(
+        diff_mod.prompt_cache, "install", lambda pipe, **k: calls["install"].append(pipe) or True
+    )
+    monkeypatch.setattr(diff_mod.prompt_cache, "release", lambda pipe: calls["release"].append(pipe))
+    backend = _loaded_backend(tmp_path)
+    pipe = backend._state.pipe
+    assert calls["install"] == [pipe]
+    backend.unload()
+    assert pipe in calls["release"]
