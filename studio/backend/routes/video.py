@@ -53,6 +53,9 @@ from loggers.media_progress import (
 from models.inference import (
     DiffusionDownloadPlanResponse,
     GalleryFlagsPatch,
+    GalleryMoveRequest,
+    GalleryProjectRequest,
+    GalleryProjectResponse,
     GalleryVideo,
     VideoGalleryListResponse,
     VideoGenerateProgressResponse,
@@ -955,6 +958,51 @@ def _forget_terminal_video(video_id: Optional[str]) -> None:
         get_video_backend().forget_terminal_video(video_id)
     except Exception as e:  # noqa: BLE001 -- never fail a delete over progress bookkeeping
         logger.debug(f"Could not clear the terminal video record for {video_id!r}: {e}")
+
+
+@router.post("/video/gallery/{video_id}/move", response_model = GalleryVideo)
+async def move_gallery_video(
+    video_id: str,
+    body: GalleryMoveRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Move one video to just after ``after_id``. Dropping among pins pins it, elsewhere unpins it."""
+    from core.inference import video_gallery
+
+    try:
+        record = await asyncio.to_thread(video_gallery.move, video_id, body.after_id)
+    except KeyError:
+        # The neighbour left the shelf; the client resyncs.
+        raise HTTPException(status_code = 409, detail = "The gallery changed; try the move again.")
+    except OSError as exc:
+        logger.warning("video_gallery.move_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Could not save the new order.")
+    if record is None:
+        raise HTTPException(status_code = 404, detail = "Video not found.")
+    return GalleryVideo(**record)
+
+
+@router.post("/video/gallery/{video_id}/project", response_model = GalleryProjectResponse)
+async def add_gallery_video_to_project(
+    video_id: str,
+    body: GalleryProjectRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Copy one video into a chat project's folder."""
+    from core.inference import video_gallery
+    from core.inference.gallery_projects import ProjectNotFound, copy_into_project
+
+    path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Video not found.")
+    try:
+        result = await asyncio.to_thread(copy_into_project, path, body.project_id, "videos")
+    except ProjectNotFound:
+        raise HTTPException(status_code = 404, detail = "Project not found.")
+    except OSError as exc:
+        logger.warning("video_gallery.add_to_project_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Could not copy the video into the project.")
+    return GalleryProjectResponse(**result)
 
 
 @router.patch("/video/gallery/{video_id}", response_model = GalleryVideo)
