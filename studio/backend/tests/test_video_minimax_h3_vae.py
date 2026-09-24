@@ -785,6 +785,36 @@ def test_the_fp16_encoder_survives_diffusers_casting_the_pixels(device, stock_fa
     assert (got - ref).norm() / ref.norm() < 2e-2
 
 
+def test_the_video_backend_wires_the_layer_into_the_h3_load_only():
+    import ast
+    import pathlib
+
+    source = (pathlib.Path(H.__file__).parent / "video.py").read_text()
+    tree = ast.parse(source)
+
+    def calls(node, name):
+        return [
+            c
+            for c in ast.walk(node)
+            if isinstance(c, ast.Call)
+            and (getattr(c.func, "id", None) == name or getattr(c.func, "attr", None) == name)
+        ]
+
+    methods = {
+        n.name: n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    load = methods["_load_h3_modular_pipeline"]
+    (apply_call,) = calls(load, "apply_h3_vae_speedups")
+    assert len(calls(tree, "apply_h3_vae_speedups")) == 1, "only the H3 load engages the layer"
+    assert {k.arg for k in apply_call.keywords} >= {"speed_mode", "workflow", "logger"}
+    # after the denoiser's speed layer, whose cudnn.benchmark and flags it builds on
+    assert calls(load, "apply_speed_optims")[0].lineno < apply_call.lineno
+    # a runtime fallback is settled after every render, next to the compile fallback
+    (settle,) = calls(methods["generate"], "settle_h3_vae_fallback")
+    (compile_settle,) = calls(methods["generate"], "settle_compile_fallback")
+    assert compile_settle.lineno < settle.lineno
+
+
 # ── shared fp16-accumulation owner, atomic int8 install ───────────────────────────────────────────────────────────
 
 
