@@ -600,3 +600,16 @@ def test_loader_and_vision_forward_fast_inference_to_the_plan():
             j += 1
         call = src[i : j + 1]
         assert "fast_inference = fast_inference," in call, path.name
+
+
+@needs_tf5
+def test_sequence_valued_auto_map_entry(tmp_path):
+    # A [slow, fast] AutoTokenizer entry (a shape transformers accepts) must not make the plan decline.
+    ns = _ns()
+    repo, _ = _write_repo(tmp_path, name = "tok_pair")
+    cfg = json.loads((repo / "config.json").read_text())
+    cfg["auto_map"]["AutoTokenizer"] = ["tokenization_tiny.TinyTokenizer", None]
+    (repo / "config.json").write_text(json.dumps(cfg))
+    parent = _load_parent_config(repo)
+    assert isinstance(parent.auto_map["AutoTokenizer"], list)
+    assert ns["_get_remote_composite_text_only"](parent, str(repo), trust_remote_code = True)

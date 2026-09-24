@@ -1374,7 +1374,10 @@ def _get_remote_composite_text_only(
         )
         if text_class is None:
             return None
-        parent_class_names = set((getattr(model_config, "auto_map", None) or {}).values())
+        parent_class_names = set()
+        for ref in (getattr(model_config, "auto_map", None) or {}).values():
+            # AutoTokenizer may be a [slow, fast] pair.
+            parent_class_names.update(ref if isinstance(ref, (list, tuple)) else (ref,))
         if (
             f"{text_class.__module__.rsplit('.', 1)[-1]}.{text_class.__name__}"
             in parent_class_names
