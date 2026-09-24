@@ -9111,6 +9111,68 @@ def test_a_checkpoint_that_will_not_load_falls_back_to_the_dense_quant(fake_runt
     assert "unsloth/" not in status["resolved"]["transformer_quant"]["reason"]
 
 
+def test_a_superseded_nvfp4_load_cannot_overwrite_the_install_reason(fake_runtime, monkeypatch):
+    # An older NVFP4 load blocked in the FlashInfer install returns after a newer load committed. Its outcome must not
+    # replace the newer load's per-device reason: only the load that commits _VideoLoadState may record one.
+    import threading
+
+    import core.inference.video as video_mod
+    from core.inference import diffusion_nvfp4_install as inst
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(video_mod, "quantize_transformer", lambda *a, **k: "nvfp4")
+    _stub_denoiser_seed(monkeypatch, seeded = False)
+
+    old_entered, release_old = threading.Event(), threading.Event()
+
+    def _ensure(
+        device,
+        *,
+        logger = None,
+        local_files_only = False,
+        owner = None,
+        **kw,
+    ):
+        if threading.current_thread() is not threading.main_thread():
+            old_entered.set()
+            assert release_old.wait(timeout = 10), "test never released the old load"
+            outcome = (False, "old load: flashinfer install refused")
+        else:
+            outcome = (True, "installed flashinfer for NVFP4")
+        inst.record_install_reason(owner, *outcome, device)
+        return outcome
+
+    monkeypatch.setattr(inst, "ensure_flashinfer_for_nvfp4", _ensure)
+    inst.reset_install_state()
+    backend = VideoBackend()
+    kwargs = dict(model_kind = "pipeline", transformer_quant = "nvfp4")
+
+    old_exc = []
+
+    def _old_load():
+        try:
+            backend.load_pipeline("Wan-AI/Wan2.2-T2V-A14B-Diffusers", _load_token = 1, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - superseded by the newer load
+            old_exc.append(exc)
+
+    backend._load_token = 1
+    old = threading.Thread(target = _old_load)
+    old.start()
+    try:
+        assert old_entered.wait(timeout = 10), "old load never reached the FlashInfer install"
+        backend._load_token = 2
+        backend.load_pipeline("Wan-AI/Wan2.2-T2V-A14B-Diffusers", _load_token = 2, **kwargs)
+        committed = backend._state
+        assert inst._REASONS[backend][0] is None
+    finally:
+        release_old.set()
+        old.join(timeout = 10)
+    assert old_exc and "superseded" in str(old_exc[0])
+    assert backend._state is committed
+    assert inst._REASONS[backend][0] is None, "the superseded load relabelled the resident model"
+    inst.reset_install_state()
+
+
 def test_seeding_is_skipped_entirely_under_offload(fake_runtime, monkeypatch):
     import core.inference.video as video_mod
 

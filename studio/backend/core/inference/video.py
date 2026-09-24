@@ -4341,9 +4341,14 @@ class VideoBackend:
             _video_auto_denoiser_planned,
         ):
             from .diffusion_nvfp4_install import ensure_flashinfer_for_nvfp4
-            ensure_flashinfer_for_nvfp4(
-                device, logger = logger, local_files_only = local_files_only, owner = self
+
+            # No owner: a superseded load can return from here after a newer one committed, so the outcome is bound
+            # only at the commit below, past the token check.
+            _nvfp4_install_outcome = ensure_flashinfer_for_nvfp4(
+                device, logger = logger, local_files_only = local_files_only
             )
+        else:
+            _nvfp4_install_outcome = None
         # Video DiTs are bf16-native; fp16 overflows, so a resolved fp16 promotes to float32.
         dtype = target.dtype
         if fam.fp16_incompatible and dtype is torch.float16:
@@ -4376,6 +4381,7 @@ class VideoBackend:
                 _base_local_dir = _base_local_dir,
                 # Settled before the pull when the pull acted on it; None when it did not.
                 _h3_auto_denoiser_planned = _h3_auto_denoiser_planned,
+                _nvfp4_install_outcome = _nvfp4_install_outcome,
             )
 
         transformer_quant_requested = transformer_quant
@@ -5080,6 +5086,9 @@ class VideoBackend:
                     del pipe
                     clear_gpu_cache()
                     raise RuntimeError("Video load was cancelled or superseded.")
+                if _nvfp4_install_outcome is not None:
+                    from .diffusion_nvfp4_install import record_install_reason
+                    record_install_reason(self, *_nvfp4_install_outcome, device)
                 self._state = _VideoLoadState(
                     pipe = pipe,
                     family = fam,
@@ -5197,6 +5206,7 @@ class VideoBackend:
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
         _h3_auto_denoiser_planned: Optional[str] = None,
+        _nvfp4_install_outcome: Optional[tuple[bool, str]] = None,
         local_files_only: bool = False,
     ) -> dict[str, Any]:
         """Load MiniMax-H3 through its official Modular Diffusers workflow.
@@ -5793,6 +5803,9 @@ class VideoBackend:
                 del pipe
                 clear_gpu_cache()
                 raise RuntimeError("Video load was cancelled or superseded.")
+            if _nvfp4_install_outcome is not None:
+                from .diffusion_nvfp4_install import record_install_reason
+                record_install_reason(self, *_nvfp4_install_outcome, device)
             self._state = _VideoLoadState(
                 pipe = pipe,
                 family = fam,

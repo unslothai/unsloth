@@ -485,7 +485,7 @@ def test_video_loader_installs_after_teardown_and_outside_the_locks():
     assert body.index("self._teardown_state_locked()") < call
     # Dedented to the method body: not nested in any with-block.
     line = body[body.rindex("\n", 0, call) + 1 : call]
-    assert line == " " * 12
+    assert line == " " * 12 + "_nvfp4_install_outcome = "
     assert _flat(
         '"nvfp4" in (normalize_transformer_quant(transformer_quant), _video_auto_denoiser_planned)'
     ) in _flat(body)
@@ -677,6 +677,25 @@ def test_image_loader_binds_the_reason_only_after_the_resident_model_is_unloaded
     assert "owner" not in call
     unload_at = src.index("self._unload_locked()", ensure_at)
     assert src.index("record_install_reason(self", ensure_at) > unload_at
+
+
+def test_video_loader_binds_the_reason_only_at_the_commit():
+    # A superseded video load can return from the install after a newer load committed; only the commit may bind.
+    import inspect
+
+    from core.inference import video
+
+    src = inspect.getsource(video.VideoBackend)
+    ensure_at = src.index("ensure_flashinfer_for_nvfp4(")
+    call = src[ensure_at : src.index(")", ensure_at)]
+    assert "owner" not in call
+    commits = [m.start() for m in re.finditer(r"self\._state = _VideoLoadState\(", src)]
+    binds = [m.start() for m in re.finditer(r"record_install_reason\(self", src)]
+    assert len(binds) == 2
+    for bind in binds:
+        commit = min(c for c in commits if c > bind)
+        cancel = src.rindex("Video load was cancelled or superseded.", 0, bind)
+        assert src.index("self._state = _VideoLoadState(", cancel) == commit
 
 
 def test_install_gates_skip_kinds_the_dense_quant_path_cannot_reach():
