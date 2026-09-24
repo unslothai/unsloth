@@ -10,7 +10,12 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UTILS = os.path.join(HERE, "unsloth", "models", "_utils.py")
 
 
-def _load(*, moe = False, integrated = False, zoo = True):
+def _load(
+    *,
+    moe = False,
+    integrated = False,
+    zoo = True,
+):
     src = open(UTILS, encoding = "utf-8").read()
     mod = ast.parse(src)
     for node in mod.body:

@@ -152,6 +152,7 @@ from unsloth_zoo.patching_utils import (
     patch_compiled_autograd,
 )
 from ._uma_safetensors import is_integrated_unified_memory_gpu
+
 try:
     from unsloth_zoo.block_swap import BlockSwap, find_decoder_layers
 except ImportError:  # unsloth_zoo predates block_swap
@@ -4619,7 +4620,11 @@ def hf_login(token: Optional[str] = None) -> Optional[str]:
     return token
 
 
-def install_block_swap(model, block_swap_layers = 0, prefetch_depth = 2):
+def install_block_swap(
+    model,
+    block_swap_layers = 0,
+    prefetch_depth = 2,
+):
     """Stream the last `block_swap_layers` frozen decoder blocks from pinned host RAM.
 
     Off at 0. Refused where it cannot help or would break: MoE moves every
