@@ -745,6 +745,33 @@ export function ModelsPage() {
     });
   }, [navigate, setModelsTab]);
 
+  // A capability link opens the sorted Discover list with that filter on (the feed ignores it).
+  // The param is consumed so later filter changes stick and a repeat link re-applies.
+  const urlCapability = hubSearch.capability ?? null;
+  useEffect(() => {
+    if (!urlCapability) return;
+    setResourceType("models");
+    setQuery("");
+    setDiscoverFormat("all");
+    setCapabilityFilter(urlCapability);
+    setSortBrowseActive(true);
+    // The media pages run curated Unsloth uploads, so start there.
+    setOwnerScope("unsloth");
+    void navigate({
+      to: "/hub",
+      // Discover models, whatever tab or kind the link carried.
+      search: (prev) => ({
+        ...prev,
+        tab: "discover",
+        kind: undefined,
+        capability: undefined,
+        section: undefined,
+        model: undefined,
+      }),
+      replace: true,
+    });
+  }, [urlCapability, navigate, setOwnerScope]);
+
   const handleSortChange = useCallback(
     (next: HfSortKey) => {
       setSortBy(next);
@@ -1355,14 +1382,15 @@ export function ModelsPage() {
   ]);
 
   useEffect(() => {
-    if (!isModelDiscover || !sectionChannelId) return;
+    // A capability link clears the section itself; applying the preset would reset its filter.
+    if (!isModelDiscover || !sectionChannelId || urlCapability) return;
     const preset = findChannel(sectionChannelId);
     if (!preset) return;
     setDiscoverFormat(preset.format);
     setSortBy(preset.sort);
     setDirection("desc");
     setCapabilityFilter("all");
-  }, [isModelDiscover, sectionChannelId]);
+  }, [isModelDiscover, sectionChannelId, urlCapability]);
   const handleManageLocalFolders = useCallback(
     () => setFoldersDialogOpen(true),
     [],
