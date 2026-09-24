@@ -127,7 +127,8 @@ def _fake_torch(*, cuda = "13.0", hip = None):
 
 
 @pytest.fixture(autouse = True)
-def _clean(monkeypatch):
+def _clean(monkeypatch, tmp_path):
+    monkeypatch.setattr(inst, "_env_lock_path", lambda: str(tmp_path / "install.lock"))
     monkeypatch.delenv(inst.FLASHINFER_INSTALL_ENV, raising = False)
     monkeypatch.delenv(ops.NVFP4_BACKEND_ENV, raising = False)
     for name in inst._CUSTOM_INDEX_ENVS:
@@ -295,6 +296,36 @@ def test_uv_offline_refuses_before_any_index_probe(env, monkeypatch):
     assert not ok and "offline" in reason
     assert probes == [] and env.commands == []
     monkeypatch.delenv("UV_OFFLINE")
+    assert _ensure(env)[0]
+
+
+def test_another_process_holding_the_env_lock_blocks_the_install(env, monkeypatch):
+    filelock = pytest.importorskip("filelock")
+    monkeypatch.setattr(inst, "ENV_LOCK_TIMEOUT_S", 0.05)
+    real = inst._env_install_lock
+    monkeypatch.setattr(inst, "_env_install_lock", lambda timeout = 0.05: real(timeout))
+    # A second FileLock on its own file handle, held from a thread, stands in for another process.
+    other = filelock.FileLock(inst._env_lock_path(), thread_local = False)
+    import threading
+
+    held, release = threading.Event(), threading.Event()
+
+    def _hold():
+        with other:
+            held.set()
+            release.wait(5)
+
+    t = threading.Thread(target = _hold)
+    t.start()
+    held.wait(5)
+    try:
+        ok, reason = _ensure(env)
+    finally:
+        release.set()
+        t.join()
+    assert not ok and "another process" in reason
+    assert env.commands == []
+    # Not memoised: once the other install is done, this process installs.
     assert _ensure(env)[0]
 
 

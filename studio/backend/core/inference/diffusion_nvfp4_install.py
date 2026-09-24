@@ -18,6 +18,7 @@ only ADD packages; the result is then verified in a fresh interpreter and rolled
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import os
 import shutil
@@ -175,6 +176,41 @@ def _finish(
     _LAST_REASON = None if ok else reason
     _emit(logger, status_cb, reason, warn = (not ok) if warn is None else warn)
     return ok, reason
+
+
+ENV_LOCK_TIMEOUT_S = 900.0
+
+
+def _env_lock_path() -> str:
+    """One lock file per environment: next to its site-packages when writable, else in the temp dir."""
+    import hashlib
+
+    name = ".unsloth-flashinfer-install.lock"
+    if os.access(sys.prefix, os.W_OK):
+        return os.path.join(sys.prefix, name)
+    digest = hashlib.sha256(os.path.realpath(sys.prefix).encode()).hexdigest()[:16]
+    return os.path.join(tempfile.gettempdir(), f"{name}.{digest}")
+
+
+@contextlib.contextmanager
+def _env_install_lock(timeout: float = ENV_LOCK_TIMEOUT_S):
+    """Hold the cross-process install lock. Yields False when another process kept it past
+    ``timeout``; yields True without locking when filelock is unavailable (the old behaviour)."""
+    try:
+        from filelock import FileLock, Timeout
+    except ImportError:
+        yield True
+        return
+    lock = FileLock(_env_lock_path())
+    try:
+        lock.acquire(timeout = timeout)
+    except Timeout:
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        lock.release()
 
 
 def _import_flashinfer() -> tuple[bool, str]:
@@ -633,10 +669,21 @@ def _ensure(
             # A concurrent load may have installed it while this one waited.
             if _OUTCOME is not None:
                 return _finish(_OUTCOME[0], _OUTCOME[1], None, None)
-            present, detail = _import_flashinfer()
-            if present:
-                return _finish(True, f"flashinfer {detail} already installed", None, None)
-            ok, reason, memoise = _install(device, logger, status_cb, run)
+            # The rollback diffs installed distributions against a snapshot, so the whole transaction must
+            # also exclude another Studio process installing into the same environment.
+            with _env_install_lock() as held:
+                if not held:
+                    return _finish(
+                        False,
+                        "flashinfer not installed: another process is installing into this "
+                        "environment",
+                        logger,
+                        status_cb,
+                    )
+                present, detail = _import_flashinfer()
+                if present:
+                    return _finish(True, f"flashinfer {detail} already installed", None, None)
+                ok, reason, memoise = _install(device, logger, status_cb, run)
             if memoise:
                 _OUTCOME = (ok, reason)
         return _finish(ok, reason, logger, status_cb)
