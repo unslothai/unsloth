@@ -514,6 +514,9 @@ def test_the_nvfp4_auto_rows_are_dropped_before_any_gate_or_flashinfer_probe(mon
 def test_enabled_the_flashinfer_auto_row_leads_again(monkeypatch):
     _enable(monkeypatch)
     calls = _record_nvfp4_probes(monkeypatch)
+    monkeypatch.setattr(
+        tq, "_is_consumer_gpu", lambda device = None: False
+    )  # not the runner's own card
     order = tq._auto_scheme_order("wan2.2-t2v-a14b", "cuda", (10, 0), "Wan-AI/Wan2.2-T2V-A14B")
     assert order[0] == tq.TQ_NVFP4
     assert "backend" in calls
