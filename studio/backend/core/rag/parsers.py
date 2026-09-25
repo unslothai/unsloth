@@ -418,13 +418,42 @@ _DOCX_SKIP_RUNS_UNDER = frozenset(
 )
 
 
+def _docx_placeholder(element) -> bool:
+    # An unfilled content control holds Word's prompt ("Click or tap here to enter text."), not a value.
+    if element.tag != _W + "sdt":
+        return False
+    flag = element.find(_W + "sdtPr/" + _W + "showingPlcHdr")
+    return flag is not None and flag.get(_W + "val", "true") not in ("0", "false", "off")
+
+
 def _docx_inside(element, stop, tags) -> bool:
     node = element.getparent()
     while node is not stop:
-        if node.tag in tags:
+        if node.tag in tags or _docx_placeholder(node):
             return True
         node = node.getparent()
     return False
+
+
+def _docx_unwrap_table_controls(body) -> None:
+    # python-docx skips w:tr / w:tc wrapped in content controls (cover pages, repeating sections).
+    for wrapper in list(body.iter(_W + "sdt", _W + "customXml")):
+        parent = wrapper.getparent()
+        if parent is None or parent.tag not in (_W + "tbl", _W + "tr"):
+            continue
+        content = wrapper.find(_W + "sdtContent") if wrapper.tag == _W + "sdt" else wrapper
+        keep = (_W + "tr", _W + "tc", _W + "sdt", _W + "customXml")
+        placeholder = _docx_placeholder(wrapper)
+        idx = parent.index(wrapper)
+        for i, child in enumerate(
+            [c for c in (content if content is not None else ()) if c.tag in keep]
+        ):
+            if placeholder:  # keep the cells so columns line up, drop the prompt text
+                for tc in child.iter(_W + "tc"):
+                    for el in [e for e in tc if e.tag != _W + "tcPr"]:
+                        tc.remove(el)
+            parent.insert(idx + i, child)
+        parent.remove(wrapper)
 
 
 def _docx_blocks(element, parent):
@@ -441,7 +470,7 @@ def _docx_blocks(element, parent):
                     yield from _docx_blocks(box, parent)
         elif child.tag == _W + "tbl":
             yield Table(child, parent)
-        elif child.tag in (_W + "sdt", _W + "customXml"):
+        elif child.tag in (_W + "sdt", _W + "customXml") and not _docx_placeholder(child):
             content = child.find(_W + "sdtContent")
             yield from _docx_blocks(child if content is None else content, parent)
 
@@ -501,6 +530,7 @@ def _docx(path: str) -> list[Page]:
 
     document = docx.Document(path)
     lines: list[str] = []
+    _docx_unwrap_table_controls(document.element.body)
     # Walk body content in document order: paragraphs alone drop tables entirely.
     for block in _docx_blocks(document.element.body, document):
         if isinstance(block, Paragraph):
