@@ -183,10 +183,23 @@ def _scan_workdir(workdir: str, *, required: bool) -> tuple[str, ...]:
     return limitations
 
 
-def _runtime_read_roots(executable: str) -> list[str]:
+def _trusted_terminal_path_dirs(plan) -> list[str]:
+    """PATH entries under Program Files (admin-writable only): the Git userland tools.py adds for bash."""
+    if plan.execution_kind != "terminal":
+        return []
+    from .tools import _is_trusted_windows_program_dir
+
+    return [
+        entry
+        for entry in (plan.env.get("PATH") or "").split(os.pathsep)
+        if entry and os.path.isabs(entry) and _is_trusted_windows_program_dir(entry)
+    ]
+
+
+def _runtime_read_roots(executable: str, extra: list[str] = ()) -> list[str]:
     # Preserve the lexical executable for launch. Grants may use canonical roots,
     # but never broaden to the user profile or a drive root.
-    roots = [os.path.dirname(os.path.abspath(executable)), sys.prefix, sys.base_prefix]
+    roots = [os.path.dirname(os.path.abspath(executable)), sys.prefix, sys.base_prefix, *extra]
     roots.extend(site.getsitepackages())
     roots.append(str(Path(__file__).with_name("sandbox_site")))
     system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
@@ -302,7 +315,7 @@ def build_launch_request(plan, *, run_id: str | None = None) -> dict:
     workdir = _safe_canonical_path(plan.workdir, directory = True)
     limitations = _scan_workdir(workdir, required = required)
     selected_runtime = _selected_runtime(plan)
-    readonly = _runtime_read_roots(selected_runtime)
+    readonly = _runtime_read_roots(selected_runtime, _trusted_terminal_path_dirs(plan))
     readonly += _model_read_roots(workdir, readonly)
     _reject_grants_over_dacl_journal([workdir, *readonly])
     execution_argv = list(plan.argv)

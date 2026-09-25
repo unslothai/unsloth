@@ -114,6 +114,7 @@ def spawn(
         proc._mxc_dispatched = True
         proc._mxc_backend_tier = "unknown"
         proc._mxc_policy_hash = request["policyHash"]
+        proc._mxc_dacl = bool(fallback["allowDaclMutation"])
         proc._mxc_runtime_lease = runtime_lease
         runtime_lease = None
         return proc
@@ -150,11 +151,17 @@ def completion_result(proc) -> dict:
             stage = "completion",
             may_have_started = True,
         )
+    cleanup = "complete"
+    if reason != "finished" and getattr(proc, "_mxc_dacl", False):
+        # A forced kill skips wxc-exec's own ACE restore; replay the journal now, not at the next start.
+        cleanup = (
+            "complete" if mxc_runtime.recover_dacl_state(_control_environment()) else "uncertain"
+        )
     return {
         "exitCode": int(proc.returncode),
         "timedOut": reason == "timed_out",
         "cancelled": reason == "cancelled",
-        "cleanup": "complete",
+        "cleanup": cleanup,
         "backendTier": "unknown",
         "policyHash": getattr(proc, "_mxc_policy_hash", ""),
     }

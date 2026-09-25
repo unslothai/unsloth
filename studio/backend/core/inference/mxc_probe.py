@@ -106,7 +106,8 @@ def _terminal_probe(selected_executable: str, workdir: Path, canary: Path, outsi
             "printf ok > inside.txt; "
             f"cat {shlex.quote(str(canary))} > {shlex.quote(str(read_capture))} 2>/dev/null; "
             f"printf bad > {shlex.quote(str(outside_write))} 2>/dev/null; "
-            "printf 'UNSLOTH_MXC_TERMINAL_PROBE_OK\\n'"
+            # A missing cat would read as a denied read: the marker needs a cat that worked.
+            "cat inside.txt >/dev/null && printf 'UNSLOTH_MXC_TERMINAL_PROBE_OK\\n'"
         )
         return (selected_executable, "-c", command)
     raise ValueError(f"the selected Windows Terminal shell is not qualified for MXC: {name}")

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import os
+import shutil
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,7 +45,9 @@ def _build(monkeypatch, plan):
     monkeypatch.setattr(mxc_policy.sys, "platform", "win32")
     # Only the runtime's own dir: here sys.prefix may contain tmp_path.
     monkeypatch.setattr(
-        mxc_policy, "_runtime_read_roots", lambda executable: [str(Path(executable).parent)]
+        mxc_policy,
+        "_runtime_read_roots",
+        lambda executable, extra = (): [str(Path(executable).parent)],
     )
     monkeypatch.setattr(os_sandbox, "model_library_roots", lambda: ())
     return mxc_policy.build_launch_request(plan, run_id = "fixed")
@@ -191,3 +195,107 @@ def test_probe_cache_is_keyed_by_the_opt_in(monkeypatch, tmp_path):
     monkeypatch.setenv(OPT_IN, "1")
     mxc_probe.probe(executable)
     assert calls == [False, True]
+
+
+class _Exited:
+    _mxc_dispatched = True
+    _mxc_policy_hash = "sha256:controlled"
+    returncode = 1
+
+    def __init__(self, reason, dacl):
+        self._unsloth_completion_reason = reason
+        self._mxc_dacl = dacl
+
+    def poll(self):
+        return self.returncode
+
+
+@pytest.mark.parametrize("reason", ["timed_out", "cancelled"])
+@pytest.mark.parametrize("recovered", [True, False])
+def test_forced_dacl_exit_replays_the_journal_before_claiming_cleanup(
+    monkeypatch, reason, recovered
+):
+    # Studio's kill skips wxc-exec's own ACE restore, so "complete" must be earned.
+    calls = []
+    monkeypatch.setattr(
+        mxc_runtime, "recover_dacl_state", lambda env: calls.append(env) or recovered
+    )
+    result = mxc_adapter.completion_result(_Exited(reason, dacl = True))
+    assert result["cleanup"] == ("complete" if recovered else "uncertain")
+    assert calls and calls[0]["MXC_DACL_STATE_DIR"] == str(mxc_runtime.dacl_state_path())
+
+
+@pytest.mark.parametrize(("reason", "dacl"), [("finished", True), ("timed_out", False)])
+def test_clean_or_non_dacl_exits_need_no_replay(monkeypatch, reason, dacl):
+    monkeypatch.setattr(
+        mxc_runtime,
+        "recover_dacl_state",
+        lambda env: pytest.fail("replayed without a forced DACL exit"),
+    )
+    assert mxc_adapter.completion_result(_Exited(reason, dacl))["cleanup"] == "complete"
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stderr", "clean"),
+    [
+        (0, "", True),
+        (0, "DACL recovery: 1 file(s), 3 ACE(s) restored, 0 pruned (missing), 0 error(s)\n", True),
+        (0, "DACL recovery: 1 file(s), 2 ACE(s) restored, 0 pruned (missing), 1 error(s)\n", False),
+        (0, "DACL recovery failed: state file I/O error\n", False),
+        (1, "", False),
+    ],
+    ids = ["nothing", "restored", "restore_error", "recovery_failed", "probe_failed"],
+)
+def test_journal_replay_reads_wxc_recovery_report(monkeypatch, returncode, stderr, clean):
+    import subprocess
+    monkeypatch.setattr(
+        mxc_runtime,
+        "_run_wxc_probe",
+        lambda _root, _env: subprocess.CompletedProcess([], returncode, stdout = "{}", stderr = stderr),
+    )
+    assert mxc_runtime.recover_dacl_state({}) is clean
+
+
+def test_trusted_terminal_path_dirs_are_granted_read_only(monkeypatch, tmp_path):
+    # Git for Windows' usr\bin is on the terminal PATH; without a grant, ls/cat/grep fail inside MXC.
+    from core.inference import tools
+
+    trusted = tmp_path / "Program Files" / "Git" / "usr" / "bin"
+    untrusted = tmp_path / "Users" / "me" / "bin"
+    trusted.mkdir(parents = True)
+    untrusted.mkdir(parents = True)
+    monkeypatch.setattr(
+        tools, "_is_trusted_windows_program_dir", lambda path: "Program Files" in path
+    )
+    plan = _policy_plan(tmp_path)
+    plan = os_sandbox.ToolLaunchPlan(
+        argv = plan.argv,
+        workdir = plan.workdir,
+        env = {"PATH": os.pathsep.join([str(untrusted), str(trusted)])},
+        execution_kind = "terminal",
+    )
+    monkeypatch.setattr(mxc_policy.sys, "platform", "win32")
+    monkeypatch.setattr(os_sandbox, "model_library_roots", lambda: ())
+    # This host's venv is the workspace root, which would contain tmp_path and the journal.
+    monkeypatch.setattr(mxc_policy.sys, "prefix", str(tmp_path / "runtime"))
+    monkeypatch.setattr(mxc_policy.sys, "base_prefix", str(tmp_path / "runtime"))
+    monkeypatch.setattr(mxc_policy.site, "getsitepackages", lambda: [])
+    readonly = mxc_policy.build_launch_request(plan, run_id = "fixed")["config"]["filesystem"][
+        "readonlyPaths"
+    ]
+    assert str(trusted) in readonly
+    assert str(untrusted) not in readonly
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason = "needs bash")
+@pytest.mark.parametrize("has_cat", [True, False])
+def test_bash_probe_needs_a_working_cat_to_qualify(tmp_path, has_cat):
+    # A missing cat left the capture empty, which read as a denied read.
+    import subprocess
+
+    argv = mxc_probe._terminal_probe(
+        shutil.which("bash"), tmp_path, tmp_path / "canary", tmp_path / "outside"
+    )
+    env = {"PATH": os.environ["PATH"] if has_cat else str(tmp_path / "empty")}
+    out = subprocess.run(argv, cwd = tmp_path, env = env, capture_output = True, text = True).stdout
+    assert ("UNSLOTH_MXC_TERMINAL_PROBE_OK" in out) is has_cat

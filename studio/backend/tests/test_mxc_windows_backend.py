@@ -524,7 +524,9 @@ def test_registered_model_folders_are_granted_read_only(monkeypatch, tmp_path):
     )
     # Only the runtime's own dir: here sys.prefix may contain tmp_path and swallow the grant.
     monkeypatch.setattr(
-        mxc_policy, "_runtime_read_roots", lambda executable: [os.path.dirname(executable)]
+        mxc_policy,
+        "_runtime_read_roots",
+        lambda executable, extra = (): [os.path.dirname(executable)],
     )
     request = mxc_policy.build_launch_request(_policy_plan(workdir))
     filesystem = request["config"]["filesystem"]

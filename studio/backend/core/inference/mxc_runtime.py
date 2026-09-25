@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import subprocess
 import sys
 import threading
@@ -253,28 +254,48 @@ def acquire_host_prep(*, package_root: Path | None = None) -> RuntimeLease:
     return _acquire(selected_host_prep, package_root)
 
 
+def _run_wxc_probe(package_root: Path | None, env: dict[str, str] | None):
+    # --probe reaps orphaned ACEs first: point it at Studio's journal, not %LOCALAPPDATA%'s.
+    env = dict(os.environ if env is None else env)
+    env.setdefault("MXC_DACL_STATE_DIR", str(dacl_state_dir()))
+    with acquire_runtime(package_root = package_root) as lease:
+        return subprocess.run(
+            [str(lease.info.path), "--probe"],
+            stdin = subprocess.DEVNULL,
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            cwd = str(lease.info.path.parent),
+            env = env,
+            timeout = HOST_PREP_PROBE_SECONDS,
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            check = False,
+        )
+
+
+def recover_dacl_state(env: dict[str, str] | None = None) -> bool:
+    """Replay the DACL journal now; True only when wxc-exec reports no recovery error."""
+    try:
+        completed = _run_wxc_probe(None, env)
+    except Exception:  # noqa: BLE001 - an unknown outcome is not a clean one
+        return False
+    stderr = completed.stderr or ""
+    # main.rs prints "DACL recovery: ... N error(s)" only when there was work, or "DACL recovery failed".
+    report = re.search(r"DACL recovery: .*?(\d+) error\(s\)", stderr)
+    return (
+        completed.returncode == 0
+        and "DACL recovery failed" not in stderr
+        and (report is None or report.group(1) == "0")
+    )
+
+
 def probe_host_prep_steps(
     *, package_root: Path | None = None, env: dict[str, str] | None = None
 ) -> tuple[str, ...] | None:
     """Host preparation `wxc-exec --probe` reports missing; None when it cannot tell."""
     try:
-        # --probe reaps orphaned ACEs first: point it at Studio's journal, not %LOCALAPPDATA%'s.
-        env = dict(os.environ if env is None else env)
-        env.setdefault("MXC_DACL_STATE_DIR", str(dacl_state_dir()))
-        with acquire_runtime(package_root = package_root) as lease:
-            completed = subprocess.run(
-                [str(lease.info.path), "--probe"],
-                stdin = subprocess.DEVNULL,
-                capture_output = True,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                cwd = str(lease.info.path.parent),
-                env = env,
-                timeout = HOST_PREP_PROBE_SECONDS,
-                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                check = False,
-            )
+        completed = _run_wxc_probe(package_root, env)
         warnings = json.loads(completed.stdout).get("warnings")
     except Exception:  # noqa: BLE001 - advice only, never a capability verdict
         return None
