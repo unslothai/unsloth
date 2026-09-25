@@ -8206,6 +8206,8 @@ exit 0
     $script:NvidiaPresenceOnly = $false
     $script:NvidiaPresenceCudaFloor = $null
     $script:NvidiaPresenceDriverRelease = $null
+    # The bounded display-adapter scan is taken once per run; see Invoke-BoundedVideoControllerScan.
+    $script:VideoControllerScanResult = $null
 
     function Test-NvidiaSmiHasGpu {
         param([Parameter(Mandatory = $true)][string]$Exe)
@@ -8455,6 +8457,12 @@ exit 0
     # has an adapter. Mirrors setup.ps1's copy.
     function Invoke-BoundedVideoControllerScan {
         param([int]$TimeoutSec = 15)
+        # One scan per run, whatever it answered. The NVIDIA presence promotion and the Intel detection
+        # further down both ask, and on a host whose WMI repository hangs each ask waited out the full
+        # bound, so the stall doubled. An Ok = $false answer is cached too: that IS the hang case, and a
+        # second attempt inside one run would only hang again. Reset with the other per-run state, since
+        # under `irm | iex` the script scope is the caller's session.
+        if ($null -ne $script:VideoControllerScanResult) { return $script:VideoControllerScanResult }
         # Adapters carries the same records the Names list is built from, plus the three fields a
         # vendor-exact presence test and a driver-version floor need. Names keeps its exact old shape
         # and meaning, so every existing reader is untouched.
@@ -8478,7 +8486,47 @@ exit 0
         } finally {
             if ($job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
         }
+        $script:VideoControllerScanResult = $result
         return $result
+    }
+
+    # Defined here, above the NVIDIA presence promotion, because Test-OtherVendorAdapterPresent
+    # reconciles localized Intel names through it and PowerShell does not hoist.
+    # Registry fallback for the scan above, mirroring install_llama_prebuilt.py's
+    # windows_intel_gpu_in_registry(): the display-adapter class key, one NNNN subkey per driver
+    # config. Weaker than WMI (a config can outlive removed hardware), so it is the fallback here
+    # while that function is registry-first -- there a false positive only picks a different
+    # llama.cpp bundle, here it would install XPU torch on a host with no Arc. Mirrors setup.ps1.
+    function Get-IntelRegistryAdapterNames {
+        $names = @()
+        $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+        try {
+            $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
+        } catch { return @() }
+        foreach ($sub in $subs) {
+            # Guarded per subkey, not around the loop: one unreadable entry must not discard the
+            # adapters found after it. Matches windows_intel_gpu_in_registry()'s per-key skip.
+            try {
+                # Numeric subkeys only: "Properties" is ACL-restricted and not an adapter.
+                if ("$($sub.PSChildName)" -match '^\d+$') {
+                    $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
+                    if ($props) {
+                        $desc = "$($props.DriverDesc)"
+                        # Callers re-filter on "Intel", so a vendor-ID hit with a localized or
+                        # OEM-branded DriverDesc would be found here and dropped there. Tag it
+                        # instead; still only XPU-capable if the name says Arc / Data Center GPU.
+                        if ("$($props.MatchingDeviceId)" -match '(?i)ven_8086') {
+                            $names += if ($desc -match '(?i)intel') { $desc }
+                                      elseif ($desc) { "Intel $desc" }
+                                      else { "Intel Graphics" }
+                        } elseif ($desc -match '(?i)intel') {
+                            $names += $desc
+                        }
+                    }
+                }
+            } catch { }
+        }
+        return $names
     }
 
     # The registry fallback the Intel path already uses, for a host whose WMI repository cannot answer.
@@ -8527,6 +8575,29 @@ exit 0
         # version, which is the same "unknown" the rest of the ladder already handles.
         if ($versions.Count -ne 1) { return [pscustomobject]@{ Release = $null } }
         return [pscustomobject]@{ Release = $versions[0] }
+    }
+
+    # Is every healthy NVIDIA adapter on this machine running a driver that is not NVIDIA's. That is
+    # an NVIDIA card on Microsoft's Basic Display driver, which reports a version such as
+    # 10.0.19041.3636 instead of NVIDIA's 3x.0.1x.xxxx: the card is there, but no CUDA driver is, and
+    # CUDA wheels cannot load. Before the promotion existed such a host got CPU wheels and kept its
+    # AMD and Intel detection, so it must still get exactly that. An adapter that reports NO version is
+    # not this case, since nothing says the NVIDIA driver is missing, and one adapter with an NVIDIA
+    # version or no version is enough to answer no.
+    function Test-NvidiaAdapterWithoutNvidiaDriver {
+        param($Scan = $null)
+        if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
+        $foreign = $false
+        foreach ($adapter in @($Scan.Adapters)) {
+            if ("$($adapter.PNPDeviceID)" -notmatch '(?i)ven_10de') { continue }
+            if ($null -eq $adapter.ConfigManagerErrorCode) { continue }
+            if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
+            $version = "$($adapter.DriverVersion)"
+            if ([string]::IsNullOrWhiteSpace($version)) { return $false }
+            if ($null -ne (Get-NvidiaDriverRelease -DriverVersion $version)) { return $false }
+            $foreign = $true
+        }
+        return $foreign
     }
 
     # Is there an NVIDIA display adapter on this machine, judged by PCI vendor ID and nothing else.
@@ -8603,7 +8674,26 @@ exit 0
             # would mean duplicating that table and drifting from it. Any healthy AMD adapter still
             # blocks the promotion.
             if ("$($adapter.PNPDeviceID)" -match '(?i)ven_8086' -and
-                "$($adapter.Name)" -notmatch (Get-XpuCapableNameRegex)) { continue }
+                "$($adapter.Name)" -notmatch (Get-XpuCapableNameRegex)) {
+                # A localized or OEM-branded Arc name carries no ASCII "Intel", so the name alone says UHD.
+                # The Intel route reconciles such a name against the display class keys and reaches XPU
+                # anyway, so the same reconciliation is asked here: the registry entry whose description
+                # contains this WMI name, judged by the same pattern. Only a reconciled Arc blocks; any
+                # failure reads as not reconciled, which is the answer this check gave before.
+                $reconciledXpu = $false
+                try {
+                    $wmiName = "$($adapter.Name)"
+                    if ($wmiName) {
+                        foreach ($regName in @(Get-IntelRegistryAdapterNames)) {
+                            if ("$regName".Contains($wmiName) -and "$regName" -match (Get-XpuCapableNameRegex)) {
+                                $reconciledXpu = $true
+                                break
+                            }
+                        }
+                    }
+                } catch { $reconciledXpu = $false }
+                if (-not $reconciledXpu) { continue }
+            }
             return $true
         }
         # Mirrors Test-NvidiaAdapterPresent exactly, and it has to: that helper falls back to the
@@ -8769,6 +8859,12 @@ exit 0
     if (-not $HasNvidiaSmi) {
         $presenceScan = Invoke-BoundedVideoControllerScan
         if ((Test-NvidiaAdapterPresent -Scan $presenceScan) -and
+            (Test-NvidiaAdapterWithoutNvidiaDriver -Scan $presenceScan)) {
+            # The card is on the bus but Windows runs it on a generic driver, so there is no CUDA driver
+            # for any wheel to load. Not promoted: CPU wheels and AMD / Intel detection, exactly as
+            # before this check existed. Said once, because the fix is on the user's side.
+            Write-StudioLine "   NVIDIA GPU found without the NVIDIA driver; install the NVIDIA driver and re-run for GPU support" -ForegroundColor Yellow
+        } elseif ((Test-NvidiaAdapterPresent -Scan $presenceScan) -and
             -not (Test-OtherVendorAdapterPresent -Scan $presenceScan)) {
             $HasNvidiaSmi = $true
             $script:NvidiaPresenceOnly = $true
@@ -9275,43 +9371,6 @@ exit 0
     # "AMD gets GPU wheels here", NOT "an AMD GPU is present": $HasROCm / $ROCmGfxArch are
     # true on unmapped arches too, and those install CPU torch.
     $AmdHasGpuWheels = [bool]($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch))
-
-    # Registry fallback for the scan above, mirroring install_llama_prebuilt.py's
-    # windows_intel_gpu_in_registry(): the display-adapter class key, one NNNN subkey per driver
-    # config. Weaker than WMI (a config can outlive removed hardware), so it is the fallback here
-    # while that function is registry-first -- there a false positive only picks a different
-    # llama.cpp bundle, here it would install XPU torch on a host with no Arc. Mirrors setup.ps1.
-    function Get-IntelRegistryAdapterNames {
-        $names = @()
-        $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
-        try {
-            $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
-        } catch { return @() }
-        foreach ($sub in $subs) {
-            # Guarded per subkey, not around the loop: one unreadable entry must not discard the
-            # adapters found after it. Matches windows_intel_gpu_in_registry()'s per-key skip.
-            try {
-                # Numeric subkeys only: "Properties" is ACL-restricted and not an adapter.
-                if ("$($sub.PSChildName)" -match '^\d+$') {
-                    $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
-                    if ($props) {
-                        $desc = "$($props.DriverDesc)"
-                        # Callers re-filter on "Intel", so a vendor-ID hit with a localized or
-                        # OEM-branded DriverDesc would be found here and dropped there. Tag it
-                        # instead; still only XPU-capable if the name says Arc / Data Center GPU.
-                        if ("$($props.MatchingDeviceId)" -match '(?i)ven_8086') {
-                            $names += if ($desc -match '(?i)intel') { $desc }
-                                      elseif ($desc) { "Intel $desc" }
-                                      else { "Intel Graphics" }
-                        } elseif ($desc -match '(?i)intel') {
-                            $names += $desc
-                        }
-                    }
-                }
-            } catch { }
-        }
-        return $names
-    }
 
     # ── Intel GPU detection (Arc / Data Center GPU Max / Flex) ──
     # Runs BEFORE the report chain, not inside its final else: a WMI-named-only AMD adapter

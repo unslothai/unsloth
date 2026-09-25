@@ -51,7 +51,7 @@ $shared = @(
     "Test-OtherVendorAdapterPresent", "Get-XpuCapableNameRegex",
     "Get-NvidiaDriverRelease", "Get-NvidiaCudaFloorForRelease", "Get-NvidiaDriverCudaFloor",
     "Get-NvidiaAdapterDriverRelease", "Get-NvidiaAdapterCudaFloor",
-    "Get-NvidiaRegistryAdapter"
+    "Get-NvidiaRegistryAdapter", "Test-NvidiaAdapterWithoutNvidiaDriver"
 )
 foreach ($name in $shared) {
     Check "install.ps1 and setup.ps1 carry the same $name" (
@@ -61,8 +61,16 @@ foreach ($name in $shared) {
 foreach ($name in @("Test-NvidiaAdapterPresent", "Test-OtherVendorAdapterPresent", "Get-XpuCapableNameRegex",
                     "Get-NvidiaDriverRelease", "Get-NvidiaCudaFloorForRelease", "Get-NvidiaDriverCudaFloor",
                     "Get-NvidiaAdapterDriverRelease", "Get-NvidiaAdapterCudaFloor",
-                    "Get-NvidiaRegistryAdapter")) {
+                    "Get-NvidiaRegistryAdapter", "Test-NvidiaAdapterWithoutNvidiaDriver")) {
     Invoke-Expression (Get-FunctionText $setupPs1 $name)
+}
+# The Intel route's registry names, which the other-vendor gate reconciles a localized WMI name
+# against. Empty unless a row below sets it, so every row above keeps its old meaning.
+$script:FakeRegistryNames = @()
+$script:FakeRegistryThrows = $false
+function Get-IntelRegistryAdapterNames {
+    if ($script:FakeRegistryThrows) { throw "registry unreadable" }
+    return $script:FakeRegistryNames
 }
 
 # The scan is stubbed, not run: this host has no Win32_VideoController, and what is under test is
@@ -1018,6 +1026,170 @@ foreach ($case in @(
     Check "$($case.N) reads as driver evidence = $($case.Want)" ($got -eq $case.Want)
 }
 $script:NvidiaPresenceOnly = $false
+
+# ------------------------------------------------------ codex round: scan reuse, Basic Display, Arc
+#
+# (1) The bounded scan is taken once per run. The promotion and the Intel route both ask, and on a
+# host whose WMI hangs each ask used to wait out the full 15 s bound. The REAL function is run
+# here, with the job cmdlets replaced, so the count of Start-Job calls is the count of waits.
+foreach ($file in @($installPs1, $setupPs1)) {
+    $leaf = Split-Path -Leaf $file
+    $scanText = Get-FunctionText $file "Invoke-BoundedVideoControllerScan"
+    $r = & {
+        param($scanText, $mode)
+        $script:StartJobs = 0
+        function Start-Job { param($ScriptBlock) $script:StartJobs++; return [pscustomobject]@{ Id = 1 } }
+        function Wait-Job { param($Job, $Timeout) if ($mode -eq 'hang') { return $null } else { return $Job } }
+        function Receive-Job { param($Job, $ErrorAction)
+            [pscustomobject]@{ Name = "NVIDIA GeForce RTX 4090"; PNPDeviceID = "PCI\VEN_10DE&DEV_2684"; ConfigManagerErrorCode = 0; DriverVersion = "32.0.15.6094" } }
+        function Stop-Job { param($Job, $ErrorAction) }
+        function Remove-Job { param($Job, [switch]$Force, $ErrorAction) }
+        . ([scriptblock]::Create($scanText))
+        $script:VideoControllerScanResult = $null
+        $a = Invoke-BoundedVideoControllerScan
+        $b = Invoke-BoundedVideoControllerScan
+        $afterTwo = $script:StartJobs
+        $script:VideoControllerScanResult = $null
+        $c = Invoke-BoundedVideoControllerScan
+        [pscustomobject]@{ A = $a; B = $b; C = $c; AfterTwo = $afterTwo; AfterReset = $script:StartJobs }
+    } $scanText 'hang'
+    Check "${leaf}: a hung scan is waited out once, not twice" ($r.AfterTwo -eq 1)
+    Check "${leaf}: and the reused answer is the hang answer (Ok false)" ($r.A.Ok -eq $false -and $r.B.Ok -eq $false)
+    Check "${leaf}: a reset starts a fresh scan (bites: the cache is per run, not forever)" ($r.AfterReset -eq 2)
+    $r = & {
+        param($scanText)
+        $script:StartJobs = 0
+        function Start-Job { param($ScriptBlock) $script:StartJobs++; return [pscustomobject]@{ Id = 1 } }
+        function Wait-Job { param($Job, $Timeout) return $Job }
+        function Receive-Job { param($Job, $ErrorAction)
+            [pscustomobject]@{ Name = "NVIDIA GeForce RTX 4090"; PNPDeviceID = "PCI\VEN_10DE&DEV_2684"; ConfigManagerErrorCode = 0; DriverVersion = "32.0.15.6094" } }
+        function Stop-Job { param($Job, $ErrorAction) }
+        function Remove-Job { param($Job, [switch]$Force, $ErrorAction) }
+        . ([scriptblock]::Create($scanText))
+        $script:VideoControllerScanResult = $null
+        $a = Invoke-BoundedVideoControllerScan
+        $b = Invoke-BoundedVideoControllerScan
+        [pscustomobject]@{ A = $a; B = $b; N = $script:StartJobs }
+    } $scanText
+    Check "${leaf}: an answered scan is reused with the same adapters" (
+        $r.N -eq 1 -and $r.B.Ok -eq $true -and @($r.B.Names)[0] -eq "NVIDIA GeForce RTX 4090")
+    # The reset has to run before the first scan of a run, or `irm | iex` twice in one session
+    # would serve the first run's adapters to the second.
+    $text = [System.IO.File]::ReadAllText($file)
+    $reset = $text.IndexOf('$script:VideoControllerScanResult = $null')
+    $firstCall = $text.IndexOf('$presenceScan = Invoke-BoundedVideoControllerScan')
+    Check "$leaf resets the cached scan before the promotion takes it" ($reset -gt 0 -and $reset -lt $firstCall)
+    Check "$leaf's Intel route still goes through the (now shared) scan" (
+        $text.IndexOf('$_gpuScan = Invoke-BoundedVideoControllerScan', $firstCall) -gt $firstCall)
+}
+
+# (2) An NVIDIA card on Microsoft's Basic Display driver. The card is on the bus, the CUDA driver is
+# not, and before the promotion the host got CPU wheels with AMD / Intel detection intact. Same
+# again now, with a hint. An NVIDIA-shaped version, or no version at all, still promotes.
+foreach ($case in @(
+    @{ N = "Basic Display 10.0.19041.3636";  V = "10.0.19041.3636"; Want = $true },
+    @{ N = "Basic Display 10.0.22621.1";     V = "10.0.22621.1";    Want = $true },
+    @{ N = "an NVIDIA driver 560.94";        V = "32.0.15.6094";    Want = $false },
+    @{ N = "a pre-R450 NVIDIA driver 442.50"; V = "26.21.14.4250";  Want = $false },
+    @{ N = "no DriverVersion at all";        V = $null;             Want = $false },
+    @{ N = "an empty DriverVersion";         V = "";                Want = $false }
+)) {
+    $script:FakeAdapters = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0 $case.V)
+    Check "an NVIDIA adapter with $($case.N) reads as no-NVIDIA-driver = $($case.Want)" (
+        (Test-NvidiaAdapterWithoutNvidiaDriver) -eq $case.Want)
+}
+$script:FakeAdapters = @(
+    (Adapter "Microsoft Basic Display Adapter" "PCI\VEN_10DE&DEV_1C03" 0 "10.0.19041.3636"),
+    (Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0 "32.0.15.6094"))
+Check "one adapter on the NVIDIA driver is enough to answer no" ((Test-NvidiaAdapterWithoutNvidiaDriver) -eq $false)
+$script:FakeAdapters = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 22 "10.0.19041.3636")
+Check "a disabled Basic Display NVIDIA adapter is not counted either way" ((Test-NvidiaAdapterWithoutNvidiaDriver) -eq $false)
+$script:FakeAdapters = @(Adapter "Microsoft Basic Display Adapter" "ROOT\BASICDISPLAY" 0 "10.0.19041.3636")
+Check "a non-NVIDIA Basic Display adapter is not an NVIDIA card without its driver" ((Test-NvidiaAdapterWithoutNvidiaDriver) -eq $false)
+
+# The promotion block itself, executed from each file with the helpers above: this is what decides
+# $HasNvidiaSmi, so it is what must equal base for Basic Display.
+function Get-PromotionBlock($file) {
+    $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$null, [ref]$errors)
+    $blocks = @($ast.FindAll({ param($n)
+        $n -is [System.Management.Automation.Language.IfStatementAst] -and
+        $n.Extent.Text -match '^if \(-not \$HasNvidiaSmi\) \{\s*\$presenceScan = Invoke-BoundedVideoControllerScan' }, $true))
+    return $blocks[0].Extent.Text
+}
+function Get-NvidiaAdapterCudaFloor { param($Scan) return $null }
+foreach ($file in @($installPs1, $setupPs1)) {
+    $leaf = Split-Path -Leaf $file
+    $promo = Get-PromotionBlock $file
+    Check "$leaf's promotion block was found (bites)" ([bool]$promo)
+    foreach ($case in @(
+        @{ N = "Basic Display (10.0.19041.3636)"; A = @(Adapter "Microsoft Basic Display Adapter" "PCI\VEN_10DE&DEV_2684" 0 "10.0.19041.3636"); Want = $false; Hint = $true },
+        @{ N = "an NVIDIA driver (560.94)";        A = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0 "32.0.15.6094");   Want = $true;  Hint = $false },
+        @{ N = "no DriverVersion";                 A = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0 $null);            Want = $true;  Hint = $false },
+        @{ N = "Basic Display plus Intel UHD";     A = @((Adapter "Microsoft Basic Display Adapter" "PCI\VEN_10DE&DEV_2684" 0 "10.0.19041.3636"), (Adapter "Intel(R) UHD Graphics" "PCI\VEN_8086&DEV_9A49" 0 "31.0.101.1")); Want = $false; Hint = $true }
+    )) {
+        $got = & { param($promo, $adapters)
+            $script:FakeAdapters = $adapters; $script:FakeScanOk = $null
+            $script:Lines = @()
+            function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") $script:Lines += $Line }
+            $HasNvidiaSmi = $false
+            $script:NvidiaPresenceOnly = $false; $script:NvidiaSmiRejected = $false
+            . ([scriptblock]::Create($promo))
+            [pscustomobject]@{ Has = $HasNvidiaSmi; Only = $script:NvidiaPresenceOnly; Lines = @($script:Lines) }
+        } $promo $case.A
+        Check "$leaf, NVIDIA on $($case.N): promoted = $($case.Want)" ($got.Has -eq $case.Want -and $got.Only -eq $case.Want)
+        $hinted = [bool](@($got.Lines) -match 'without the NVIDIA driver')
+        Check "$leaf, NVIDIA on $($case.N): driver hint printed = $($case.Hint)" ($hinted -eq $case.Hint)
+    }
+}
+$script:NvidiaPresenceOnly = $false
+
+# (3) A localized or OEM-branded Arc. WMI's name carries no ASCII "Intel", so the name alone reads
+# as a non-XPU Intel part and the promotion used to fire and suppress the Intel route, which on
+# base reconciles that name through the registry and reaches XPU. The gate asks the same question.
+$script:FakeRegistryNames = @()
+# "Intel" in katakana, spelled by code point so the file stays ASCII.
+$jp = -join [char[]](0x30A4, 0x30F3, 0x30C6, 0x30EB)
+foreach ($case in @(
+    @{ N = "a Japanese Arc reconciled by the registry"; W = "$jp(R) Arc(TM) A770 Graphics";
+       R = @("Intel $jp(R) Arc(TM) A770 Graphics"); Blocks = $true },
+    @{ N = "an OEM-branded Arc reconciled by the registry"; W = "OEM Graphics A750";
+       R = @("Intel(R) UHD Graphics 770", "Intel OEM Graphics A750 (Arc)"); Blocks = $true },
+    @{ N = "a localized UHD whose registry entry is also UHD"; W = "$jp(R) UHD Graphics 770";
+       R = @("Intel $jp(R) UHD Graphics 770"); Blocks = $false },
+    @{ N = "a UHD next to a stale Arc key it does not name"; W = "Intel(R) UHD Graphics 770";
+       R = @("Intel(R) UHD Graphics 770", "Intel(R) Arc(TM) A770 Graphics"); Blocks = $false },
+    @{ N = "a localized Arc with no registry entry"; W = "$jp(R) Arc(TM) A770 Graphics"; R = @(); Blocks = $false }
+)) {
+    $script:FakeRegistryNames = $case.R
+    $script:FakeAdapters = @(
+        (Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0),
+        (Adapter $case.W "PCI\VEN_8086&DEV_56A0" 0))
+    Check "NVIDIA plus $($case.N): the gate $(if ($case.Blocks) { 'blocks' } else { 'allows' }) promotion" (
+        (Test-OtherVendorAdapterPresent) -eq $case.Blocks)
+}
+# A registry that cannot be read reads as "not reconciled", which is what the gate said before.
+$script:FakeRegistryThrows = $true
+$script:FakeRegistryNames = @("Intel $jp(R) Arc(TM) A770 Graphics")
+$script:FakeAdapters = @(
+    (Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684" 0),
+    (Adapter "$jp(R) Arc(TM) A770 Graphics" "PCI\VEN_8086&DEV_56A0" 0))
+Check "an unreadable registry does not throw out of the gate and does not block" (
+    (Test-OtherVendorAdapterPresent) -eq $false)
+$script:FakeRegistryThrows = $false
+$script:FakeRegistryNames = @()
+# The reconciliation must be the SAME one the Intel route uses: its registry helper, its pattern.
+foreach ($file in @($installPs1, $setupPs1)) {
+    $leaf = Split-Path -Leaf $file
+    $gate = Get-FunctionText $file "Test-OtherVendorAdapterPresent"
+    Check "$leaf's gate reconciles through Get-IntelRegistryAdapterNames" ($gate -match 'Get-IntelRegistryAdapterNames')
+    $text = [System.IO.File]::ReadAllText($file)
+    $def = $text.IndexOf("function Get-IntelRegistryAdapterNames")
+    $promoAt = $text.IndexOf('$presenceScan = Invoke-BoundedVideoControllerScan')
+    Check "$leaf defines Get-IntelRegistryAdapterNames before the promotion that now needs it" (
+        $def -gt 0 -and $def -lt $promoAt)
+    Check "$leaf defines it exactly once" (([regex]::Matches($text, 'function Get-IntelRegistryAdapterNames')).Count -eq 1)
+}
 
 if ($failures -gt 0) {
     Write-Host "$failures check(s) failed" -ForegroundColor Red
