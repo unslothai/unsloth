@@ -319,3 +319,23 @@ def test_an_asymmetric_legacy_weight_is_refused(monkeypatch, tmp_path):
     _write_legacy_checkpoint(monkeypatch, path, zero_point = torch.ones(8, dtype = torch.int8))
     with pytest.raises(ValueError, match = "zero point"):
         pq._load_prequant_checkpoint(str(path), map_location = "cpu")
+
+
+@_needs_rebuild
+def test_a_plain_load_that_overlaps_a_legacy_one_is_rebuilt_too(monkeypatch, tmp_path):
+    """While one thread's legacy load has the stand-ins registered, another thread's plain
+    weights_only load of an int8 pickle succeeds against them. It must not hand inert stand-ins
+    to load_state_dict."""
+    import torch
+
+    path = tmp_path / "Model-INT8.pt"
+    qdata, _ = _write_legacy_checkpoint(monkeypatch, path)
+    standins = li._standins()
+    pairs = [(obj, name) for name, obj in standins.items() if li._resolve(name) is None]
+    with torch.serialization.safe_globals(pairs):
+        raw = torch.load(str(path), weights_only = True)
+    assert isinstance(raw["state_dict"]["blk.proj.weight"], standins[li._LAQT])
+    monkeypatch.setattr(torch, "load", lambda *a, **k: raw)
+    monkeypatch.setattr(pq, "_register_prequant_safe_globals", lambda: True)
+    w = pq._torch_load_prequant(str(path), map_location = "cpu")["state_dict"]["blk.proj.weight"]
+    assert type(w).__name__ == "Int8Tensor" and torch.equal(w.qdata, qdata)

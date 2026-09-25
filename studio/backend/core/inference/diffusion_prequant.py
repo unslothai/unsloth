@@ -296,17 +296,20 @@ def _torch_load_prequant(path: str, **kwargs: Any) -> Any:
             "a pre-quant checkpoint cannot be deserialized without allowing arbitrary pickle "
             "globals"
         )
+    from .prequant_legacy_int8 import (
+        legacy_int8_decode_supported,
+        load_legacy_int8_pickle,
+        names_legacy_int8_class,
+        rebuild_stray_standins,
+    )
+
     try:
-        return torch.load(path, weights_only = True, **kwargs)
+        ckpt = torch.load(path, weights_only = True, **kwargs)
     except Exception as exc:  # noqa: BLE001 - only the deleted-int8-classes refusal is retried
-        from .prequant_legacy_int8 import (
-            legacy_int8_decode_supported,
-            load_legacy_int8_pickle,
-            names_legacy_int8_class,
-        )
         if names_legacy_int8_class(exc) and legacy_int8_decode_supported():
             return load_legacy_int8_pickle(path, **kwargs)
         raise
+    return rebuild_stray_standins(ckpt)
 
 
 def _load_prequant_checkpoint(path: str, **kwargs: Any) -> Any:

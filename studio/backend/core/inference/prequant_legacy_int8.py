@@ -193,7 +193,11 @@ def _rebuild_weight(name: str, w: Any, standins: dict, api: tuple) -> Any:
         return ValueError(f"legacy int8 weight {name!r}: {why}")
 
     state = getattr(w, "__dict__", {})
-    if state.get("input_quant_func") is not standins[_ACT_QUANT]:
+    act = state.get("input_quant_func")
+    if (
+        act is not standins[_ACT_QUANT]
+        and getattr(act, "__name__", None) != _ACT_QUANT.rsplit(".", 1)[1]
+    ):
         raise bad("activation quant is not the per-token int8 one")
     if state.get("quant_kwargs"):
         raise bad("unexpected activation quant kwargs")
@@ -235,8 +239,9 @@ def load_legacy_int8_pickle(path: str, **kwargs: Any) -> Any:
     """``torch.load(path, weights_only = True)`` with the stand-ins, legacy weights rebuilt.
 
     The stand-ins are registered only for the duration of the load and only under names this
-    torchao does not ship, so no other load in the process can resolve them. The lock keeps two
-    overlapping reads from removing each other's registration."""
+    torchao does not ship. The lock keeps two overlapping reads from removing each other's
+    registration; a plain load that lands inside the window is rebuilt the same way by
+    ``rebuild_stray_standins``."""
     import torch
 
     api = _int8_tensor_api()
@@ -247,6 +252,20 @@ def load_legacy_int8_pickle(path: str, **kwargs: Any) -> Any:
     with _LOAD_LOCK:
         with torch.serialization.safe_globals(pairs):
             ckpt = torch.load(path, weights_only = True, **kwargs)
+    return _rebuild_standins(ckpt, standins, api)
+
+
+def rebuild_stray_standins(ckpt: Any) -> Any:
+    """Rebuild stand-ins a PLAIN ``weights_only`` load picked up while another thread's legacy
+    load had them registered. A no-op in a process that never ran one."""
+    cached = _STANDINS
+    api = _int8_tensor_api() if cached is not None else None
+    if cached is None or api is None:
+        return ckpt
+    return _rebuild_standins(ckpt, cached[1], api)
+
+
+def _rebuild_standins(ckpt: Any, standins: dict, api: tuple) -> Any:
     state_dict = ckpt.get("state_dict") if isinstance(ckpt, dict) else None
     if not isinstance(state_dict, dict):
         return ckpt
