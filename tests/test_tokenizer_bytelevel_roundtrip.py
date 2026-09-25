@@ -92,7 +92,7 @@ def test_premise_transformers_v5_mangles_byte_level_llama(byte_level_llama_dir):
     tok = AutoTokenizer.from_pretrained(byte_level_llama_dir)
     if not TRANSFORMERS_V5:
         assert tok.decode(_ids(tok)) == PROBE
-        pytest.skip("transformers < 5 loads tokenizer.json as-is")
+        pytest.skip(reason = "transformers < 5 loads tokenizer.json as-is")
     assert tok.decode(_ids(tok)) != PROBE
 
 
@@ -178,7 +178,7 @@ def test_tokenizer_json_that_does_not_round_trip_is_left_alone(tmp_path):
 
 def test_repair_can_be_disabled(byte_level_llama_dir, monkeypatch):
     if not TRANSFORMERS_V5:
-        pytest.skip("nothing to repair on transformers < 5")
+        pytest.skip(reason = "nothing to repair on transformers < 5")
     monkeypatch.setenv("UNSLOTH_DISABLE_TOKENIZER_JSON_REPAIR", "1")
     tok = AutoTokenizer.from_pretrained(byte_level_llama_dir)
     tok = tu._apply_post_load_tokenizer_fixes(tok, fix_tokenizer = True)
