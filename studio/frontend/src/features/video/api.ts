@@ -77,6 +77,7 @@ export interface VideoStatus {
   } | null;
   // Dense DiT precision actually engaged ("int8" | "fp8" | ...) or null for bf16.
   transformer_quant?: string | null;
+  transformer_quant_backend?: string | null;
   // Text-encoder quant actually engaged ("fp8" | "fp8_dynamic" | "int8" | "nvfp4") or null for dense bf16.
   text_encoder_quant?: string | null;
   // Whether the loaded family produces a synchronized audio track.

@@ -3599,7 +3599,7 @@ def test_dense_quant_pulls_the_transformer_from_the_mirror(monkeypatch):
             return object()
 
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
     monkeypatch.setattr(dmod, "quantize_transformer", lambda pipe, target, **kw: "fp8")
@@ -4183,7 +4183,7 @@ def _stub_dense_quant(monkeypatch, *, scheme = "fp8"):
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     # Resolve the scheme without the GPU smoke probe, and configure no pre-quant checkpoint so the dense materialise+quantise branch runs.
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: scheme
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: scheme
     )
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
 
@@ -4395,7 +4395,7 @@ def test_transformer_quant_prequant_path_engaged(fake_runtime, tmp_path, monkeyp
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: object())
     prequant_obj = object()
@@ -4636,7 +4636,7 @@ def _stub_declining_dense_quant(backend, monkeypatch):
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
 
@@ -4981,7 +4981,7 @@ def test_dense_quant_skipped_when_dense_transformer_does_not_fit(
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     # A scheme resolves and there is no prequant, so the dense-fit re-check runs against a will-not-fit dense transformer.
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
     monkeypatch.setattr(
@@ -5026,7 +5026,7 @@ def test_dense_quant_prequant_proceeds_but_forbids_dense_fallback(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     # usable_ (not resolve_): the re-check only honours a source the loader would accept, so the fake presents a usable one.
     monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: "prequant/path")
@@ -5067,6 +5067,118 @@ def test_dense_quant_prequant_proceeds_but_forbids_dense_fallback(
     assert attempted == [False]  # ...fast path still attempted, dense fallback forbidden
 
 
+@pytest.mark.parametrize(
+    "unreachable,expected_mib,expected_fallback",
+    [
+        (("fp8",), 28_561, True),
+        ((), 22_930, False),
+    ],
+)
+def test_dense_quant_replan_sizes_an_unreachable_prequant_as_dense(
+    fake_runtime,
+    tmp_path,
+    monkeypatch,
+    allow_precision_fallback,
+    unreachable,
+    expected_mib,
+    expected_fallback,
+):
+    import dataclasses
+
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
+    )
+
+    def _candidate(*, force_dense = False, **_kw):
+        if force_dense:
+            return types.SimpleNamespace(
+                transient_transformer_mib = 28_561, companions_mib = 1, prequant = False, scheme = "fp8"
+            )
+        return types.SimpleNamespace(
+            transient_transformer_mib = 22_930, companions_mib = 1, prequant = True, scheme = "fp8"
+        )
+
+    monkeypatch.setattr(dmod, "resolve_dense_quant_candidate", _candidate)
+    sized: list = []
+    orig_plan = DiffusionBackend._plan_memory
+
+    def spy_plan(
+        self,
+        *a,
+        transformer_resident_override_mib = None,
+        **k,
+    ):
+        real = orig_plan(
+            self, *a, transformer_resident_override_mib = transformer_resident_override_mib, **k
+        )
+        if transformer_resident_override_mib is None:
+            return dataclasses.replace(real, offload_policy = "model")
+        sized.append(transformer_resident_override_mib)
+        return dataclasses.replace(real, offload_policy = "none")
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", spy_plan)
+    attempted = []
+
+    def fake_dense_load(self, *a, **k):
+        attempted.append(k.get("allow_dense_fallback"))
+        raise RuntimeError("test: stop after reaching the fast path")
+
+    monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", fake_dense_load)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    _load_m(backend, tmp_path, transformer_quant = "fp8", _prequant_unreachable = unreachable)
+    assert sized == [expected_mib]
+    assert attempted == [expected_fallback]
+
+
+def test_dense_quant_unreachable_prequant_does_not_skip_the_dense_decline(
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
+):
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
+    )
+    monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: "prequant/path")
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_dense_transformer_resident_bytes",
+        staticmethod(lambda base, staged_dir = None: 999 * 1024**3),
+    )
+    orig_plan = DiffusionBackend._plan_memory
+
+    def spy_plan(
+        self,
+        *a,
+        transformer_resident_override_mib = None,
+        **k,
+    ):
+        if transformer_resident_override_mib is not None and self is backend:
+            return types.SimpleNamespace(offload_policy = "model")
+        return orig_plan(self, *a, **k)
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", spy_plan)
+    attempted = []
+
+    def fake_dense_load(self, *a, **k):
+        attempted.append(k.get("allow_dense_fallback"))
+        return None, None
+
+    monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", fake_dense_load)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    status = _load_m(backend, tmp_path, transformer_quant = "fp8", _prequant_unreachable = ("fp8",))
+    assert attempted == []
+    assert status["transformer_quant"] is None
+    assert _FakeTransformer.last["path"]  # the GGUF build loaded
+
+
 def test_dense_quant_replan_retries_once_on_transient_free_undercount(
     fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
@@ -5079,7 +5191,7 @@ def test_dense_quant_replan_retries_once_on_transient_free_undercount(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "int8"
     )
     monkeypatch.setattr(
         dmod,
@@ -5143,7 +5255,7 @@ def test_dense_quant_replan_no_retry_when_capacity_truly_short(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "int8"
     )
     monkeypatch.setattr(
         dmod,
@@ -5192,7 +5304,7 @@ def _decline_dense_quant(backend, monkeypatch, tmp_path):
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "int8"
     )
     monkeypatch.setattr(
         dmod,
@@ -5286,7 +5398,7 @@ def test_dense_quant_lora_bake_attaches_before_quantize(fake_runtime, monkeypatc
 
     backend = DiffusionBackend()
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "int8"
     )
     prequant_consulted = []
     monkeypatch.setattr(
@@ -5551,7 +5663,7 @@ def test_dense_quant_unusable_prequant_path_runs_dense_refit(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     # The real usable_prequant_source refuses a non-allowlisted path (tested elsewhere); None pins that outcome here.
     monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: None)
@@ -5602,7 +5714,7 @@ def test_transformer_quant_unsupported_scheme_skips_dense_download(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: None
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: None
     )
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
 
@@ -5771,7 +5883,7 @@ def _stub_hosted_prequant(monkeypatch, *, cached: bool):
 
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: _HOSTED_PREQUANT)
     monkeypatch.setattr(dmod, "prequant_checkpoint_cached", lambda source, **kw: cached)
@@ -5917,7 +6029,7 @@ def test_the_dense_builder_skips_the_prequant_only_for_a_real_bake(
 
     consulted: list = []
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(
         dmod, "resolve_prequant_source", lambda *a, **k: consulted.append(1) or None
@@ -6418,6 +6530,60 @@ def test_status_reports_the_dense_build_when_it_replaced_the_gguf(
     )
     assert status["transformer_quant"] == "fp8"
     assert backend.status()["transformer_quant"] == "fp8"
+
+
+def test_status_names_the_nvfp4_kernel_backend_that_actually_ran():
+    from types import SimpleNamespace
+
+    import core.inference.diffusion as dmod
+
+    class _FlashInferLinear:
+        a_gsf = 1.0
+
+    _FlashInferLinear.__name__ = "NVFP4FlashInferLinear"
+
+    def _state(quant, modules, **kw):
+        denoiser = SimpleNamespace(modules = lambda: iter(modules), **kw)
+        return SimpleNamespace(
+            transformer_quant = quant,
+            pipe = SimpleNamespace(transformer = denoiser),
+            family = SimpleNamespace(denoiser_attr = "transformer"),
+        )
+
+    assert dmod._transformer_quant_backend(_state("nvfp4", [_FlashInferLinear()])) == "flashinfer"
+    assert dmod._transformer_quant_backend(_state("nvfp4", [object()])) == "torchao"
+    assert (
+        dmod._transformer_quant_backend(
+            _state("nvfp4", [object()], _unsloth_nvfp4_backend = "flashinfer")
+        )
+        == "flashinfer"
+    )
+    for scheme in ("fp8", "int8", "mxfp8", None):
+        assert dmod._transformer_quant_backend(_state(scheme, [_FlashInferLinear()])) is None
+
+    def _boom():
+        raise RuntimeError("no")
+
+    hostile = SimpleNamespace(
+        transformer_quant = "nvfp4",
+        pipe = SimpleNamespace(transformer = SimpleNamespace(modules = _boom)),
+        family = SimpleNamespace(denoiser_attr = "transformer"),
+    )
+    assert dmod._transformer_quant_backend(hostile) is None
+
+
+def test_the_unloaded_status_declares_the_quant_backend_key():
+    status = DiffusionBackend().status()
+    assert "transformer_quant_backend" in status
+    assert status["transformer_quant_backend"] is None
+
+
+def test_diffusion_status_response_declares_the_quant_backend():
+    from models.inference import DiffusionStatusResponse
+
+    resp = DiffusionStatusResponse(loaded = True, transformer_quant_backend = "flashinfer")
+    assert resp.model_dump()["transformer_quant_backend"] == "flashinfer"
+    assert DiffusionStatusResponse(loaded = True).model_dump()["transformer_quant_backend"] is None
 
 
 def test_status_carries_no_gguf_variant_when_nothing_is_loaded():
@@ -7016,7 +7182,7 @@ def test_dense_fit_check_runs_for_a_base_the_live_cache_root_does_not_hold(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: None)
     dense_refit_ran = []
@@ -7059,7 +7225,7 @@ def test_the_dense_builder_reads_transformer_from_the_hub_id_not_the_staged_snap
     from core.inference import diffusion as dmod
 
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda *a, **k: None)
     _no_cache(monkeypatch)
@@ -8458,7 +8624,7 @@ def test_qwen_edit_q6_auto_stays_gguf_but_explicit_quant_requests_dense_transfor
     backend = DiffusionBackend()
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "int8"
     )
     monkeypatch.setattr(
         dmod,
@@ -9655,7 +9821,7 @@ def test_auto_retries_a_lower_scheme_that_has_a_prequant(monkeypatch):
 
     monkeypatch.setattr(
         "core.inference.diffusion_transformer_quant.auto_scheme_candidates",
-        lambda target, family = None: ("fp8", "mxfp8", "int8"),
+        lambda target, family = None, **_kw: ("fp8", "mxfp8", "int8"),
     )
     have = {"int8"}
     monkeypatch.setattr(
@@ -9801,7 +9967,7 @@ def test_the_offload_retry_runs_when_the_auto_winner_had_no_candidate_at_all(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(dmod, "_uncached_prequant_repo", lambda *a, **k: None)
     monkeypatch.setattr(
@@ -9877,7 +10043,7 @@ def test_the_resident_retry_runs_when_the_dense_shards_were_never_staged(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(dmod, "_uncached_prequant_repo", lambda *a, **k: None)
     # The winner has no usable checkpoint, and no shards were staged, so no dense build either.
@@ -9947,7 +10113,7 @@ def test_the_resident_retry_declines_a_rung_that_does_not_plan_resident(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(dmod, "_uncached_prequant_repo", lambda *a, **k: None)
     monkeypatch.setattr(dmod, "usable_prequant_source", lambda *a, **k: None)
@@ -11182,7 +11348,7 @@ def test_dense_quant_candidate_replan_prices_the_streamed_encoder_tier(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "int8"
     )
     monkeypatch.setattr(
         dmod,
@@ -11452,7 +11618,7 @@ def test_unified_memory_declines_a_prequant_that_outweighs_the_gguf(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     # A hosted pre-cast checkpoint IS available, which is what skips the dense-size check.
     monkeypatch.setattr(dmod, "usable_prequant_source", lambda *a, **kw: "unsloth/Z-Image-FP8")
@@ -11487,7 +11653,7 @@ def test_unified_memory_keeps_a_prequant_that_fits(fake_runtime, monkeypatch, tm
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(dmod, "usable_prequant_source", lambda *a, **kw: "unsloth/Z-Image-FP8")
     monkeypatch.setattr(
@@ -11706,7 +11872,7 @@ def test_an_unsupported_host_is_not_told_its_shards_are_unstaged(
     # A scheme the device rules out (torchao stub, family deny list) is the same case.
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: None
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: None
     )
     backend2 = DiffusionBackend()
     _force_cuda_target(backend2, monkeypatch)
@@ -11721,7 +11887,7 @@ def test_an_unsupported_host_is_not_told_its_shards_are_unstaged(
 
     # ... and a host that CAN run it still gets the accurate unstaged-shards decline.
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     _stub_hosted_prequant(monkeypatch, cached = False)
     monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: None)
@@ -11773,6 +11939,39 @@ def test_generation_in_flight_never_builds_a_backend(fake_runtime, monkeypatch):
     assert diffusion_mod.generation_in_flight() is False
 
 
+def test_the_download_plan_resolves_the_same_nvfp4_rung_the_load_does(monkeypatch):
+    from types import SimpleNamespace
+
+    import core.inference.diffusion as dmod
+    from core.inference import diffusion_nvfp4_ops as ops
+    from core.inference import diffusion_transformer_quant as tq
+
+    fam = detect_family("black-forest-labs/FLUX.1-schnell")
+    assert fam is not None and fam.name == "flux.1"
+    base = "black-forest-labs/FLUX.1-schnell"
+
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(tq, "_capability", lambda: (10, 0))
+    monkeypatch.setattr(tq, "_is_consumer_gpu", lambda device = None: False)
+    monkeypatch.setattr(
+        tq,
+        "_scheme_supported",
+        lambda scheme, device, unproven_ok = False: scheme not in ("int8", "fp8"),
+    )
+    monkeypatch.setattr(dmod, "prequant_checkpoint_cached", lambda source, **kw: False)
+    monkeypatch.setattr(ops, "select_nvfp4_backend", lambda device = None: "flashinfer")
+
+    target = SimpleNamespace(device = "cuda", dtype = None)
+    assert (
+        dmod._planned_quant_scheme(fam, target, "auto", base_repo = base, prequant_path = None)
+        == "nvfp4"
+    )
+    assert (
+        dmod._uncached_prequant_repo(fam, target, "auto", base_repo = base, prequant_path = None)
+        == "unsloth/FLUX.1-schnell-NVFP4"
+    )
+
+
 # Pipeline dense quantisation.
 
 
@@ -11811,7 +12010,7 @@ def _stub_pipeline_dense_quant(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **kw: "fp8"
     )
     real_init = _FakePipe.__init__
 
@@ -12714,7 +12913,7 @@ def _stub_nvidia_offload_host(
 
     calls = _stub_pipeline_dense_quant(backend, monkeypatch, engages = engages)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: mode
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_: mode
     )
     monkeypatch.setattr(tq, "native_quant_host", lambda target: False)
     monkeypatch.setattr(tq, "native_offload_host", lambda target: True)
@@ -13174,7 +13373,7 @@ def _gguf_candidate_backend(monkeypatch, tmp_path, *, initial_policy, candidate_
     backend = _cuda_backend(tmp_path, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_: "int8"
     )
     monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: "prequant/path")
     monkeypatch.setattr(

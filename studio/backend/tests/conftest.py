@@ -1249,6 +1249,7 @@ _NVFP4_ENABLED_TEST_MODULES = frozenset(
         "test_diffusion_backend",
         "test_diffusion_inference_info",
         "test_diffusion_lora",
+        "test_diffusion_more_families",
         "test_diffusion_native_quant",
         "test_diffusion_pipeline_prequant",
         "test_diffusion_precision",

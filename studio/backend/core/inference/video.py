@@ -1262,13 +1262,19 @@ def _video_auto_denoiser_scheme(
         hosted = video_family_prequant_schemes(fam)
         if not hosted or (not auto and normalize_transformer_quant(requested) not in hosted):
             return None
+        from .video_denoiser_prequant import denoiser_prequant_sources
+
         scheme = select_transformer_quant_scheme(
-            target, requested, family = getattr(fam, "name", None)
+            target,
+            requested,
+            family = getattr(fam, "name", None),
+            base_repo = base_repo,
+            has_prequant = lambda candidate: (
+                denoiser_prequant_sources(fam, candidate, base_repo) is not None
+            ),
         )
         if scheme is None or scheme == TQ_AUTO:
             return None
-        from .video_denoiser_prequant import denoiser_prequant_sources
-
         # EVERY component or none: partial coverage drops shards the dense fallback then has to open.
         if denoiser_prequant_sources(fam, scheme, base_repo) is None:
             return None
@@ -1422,6 +1428,31 @@ def _transformer_names(pipe: Any, fam: VideoFamily) -> tuple[str, ...]:
     if fam.is_moe and getattr(pipe, "transformer_2", None) is not None:
         names.append("transformer_2")
     return tuple(names)
+
+
+def _video_transformer_quant_backend(state: Any) -> Optional[str]:
+    """Read from the module tree; both experts share one backend. Never raises."""
+    if getattr(state, "transformer_quant", None) != "nvfp4":
+        return None
+    try:
+        pipe = getattr(state, "pipe", None)
+        if pipe is None:
+            return None
+        from .diffusion_nvfp4_linear import is_nvfp4_flashinfer_linear
+
+        for name in _transformer_names(pipe, state.family):
+            denoiser = getattr(pipe, name, None)
+            if denoiser is None:
+                continue
+            declared = getattr(denoiser, "_unsloth_nvfp4_backend", None)
+            if declared:
+                return str(declared)
+            for module in denoiser.modules():
+                if is_nvfp4_flashinfer_linear(module):
+                    return "flashinfer"
+        return "torchao"
+    except Exception:  # noqa: BLE001 -- a poll must not fail on a probe
+        return None
 
 
 class _SecondDiTView:
@@ -6926,6 +6957,10 @@ class VideoBackend:
                     if cancel.is_set():
                         raise _VideoGenerationCancelled()
 
+                from .diffusion_nvfp4_protect import protect_generation
+
+                protect_ctx = protect_generation(pipe, steps, logger = logger)
+
                 has_step_callback = "callback_on_step_end" in call_params
                 if has_step_callback:
                     kwargs["callback_on_step_end"] = _on_step
@@ -6981,7 +7016,7 @@ class VideoBackend:
                 elif state.transformer_cache:
                     self._reset_step_cache(pipe)
                 try:
-                    with torch.inference_mode(), progress_ctx(), sigma_ctx:
+                    with torch.inference_mode(), protect_ctx, progress_ctx(), sigma_ctx:
                         output = pipe(**kwargs)
                 except _VideoGenerationCancelled:
                     # Unwinding by exception skips maybe_free_model_hooks(); under offload the onloaded modules would
@@ -7648,6 +7683,7 @@ class VideoBackend:
                 "transformer_cache": None,
                 "transformer_cache_stats": None,
                 "transformer_quant": None,
+                "transformer_quant_backend": None,
                 "text_encoder_quant": None,
                 "has_audio": False,
                 "supports_cfg": True,
@@ -7699,6 +7735,7 @@ class VideoBackend:
                 static_skip_stats(state.pipe) if state.transformer_cache == TC_STATIC else None
             ),
             "transformer_quant": state.transformer_quant,
+            "transformer_quant_backend": _video_transformer_quant_backend(state),
             "text_encoder_quant": state.text_encoder_quant,
             "has_audio": fam.has_audio,
             "supports_cfg": fam.supports_cfg,
