@@ -180,3 +180,11 @@ export function preferredGgufVariantByGroup<T extends PresentableGgufVariant>(
     }),
   );
 }
+
+/** Missing on older responses; null means this source's metadata is unknown. */
+export function ggufVariantContextLength(
+  variant: { context_length?: number | null },
+  fallback: number | null,
+): number | null {
+  return variant.context_length === undefined ? fallback : variant.context_length;
+}

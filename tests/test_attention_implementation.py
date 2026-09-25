@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 from types import SimpleNamespace
 
 import torch
@@ -15,6 +16,7 @@ class SupportsFlexAndSdpa:
 
 class SupportsFlashAndSdpa:
     _supports_flash_attn_2 = True
+    _supports_flash_attn = True  # the flag transformers >= 4.53 dispatches on
     _supports_flex_attn = False
     _supports_sdpa = True
 

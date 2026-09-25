@@ -2405,10 +2405,11 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
         '@[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"' in header
     )
     assert 'triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"' in header
-    assert "grid h-full min-w-0 grid-cols-[1fr_auto]" in header
+    assert "grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2" in header
     assert "@[50rem]:grid-cols-[1fr_auto_1fr]" in header
-    assert "col-start-2 justify-self-end pr-3" in header
-    assert "@[50rem]:justify-self-center @[50rem]:pr-0" in header
+    assert "col-start-2 justify-self-end pt-" in header
+    assert "@[50rem]:justify-self-center" in header
+    assert "col-start-3" in header and "<LibraryPageLink" in header
     assert "absolute" not in header.split("<PillTabs", 1)[0]
 
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
@@ -2622,10 +2623,11 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     (AUDIO_PAGE, "", "h", "34px", 1),
     (AUDIO_PAGE, "[&>button]:", "h", "34px", 1),
     (VIDEO_PAGE, "!", "h", "34px", 2),
-    # The chat page's 30px round controls, including the collapsed New Chat button. The
-    # header they sit in grows with the setting, so one left fixed shrinks against its own row.
+    # The chat page's 30px round controls, including the collapsed New Chat button and the
+    # save-temporary-chat button beside them. The header they sit in grows with the setting, so
+    # one left fixed shrinks against its own row.
     (CHAT_PAGE, "!", "size", "30px", 1),
-    (CHAT_PAGE, "", "size", "30px", 3),
+    (CHAT_PAGE, "", "size", "30px", 4),
 )
 
 # Where a class may begin: the start of the string it is written in, or the space after the

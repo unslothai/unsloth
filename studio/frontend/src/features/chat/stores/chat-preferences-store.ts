@@ -26,6 +26,8 @@ import {
 // expanded, see display-visibility.ts. foldToolActivityIntoThinking: on hides a round's tool calls
 // until its thinking block is opened, and has no effect while toolVisibility is "expanded".
 // pastedTextMinChars: paste length that becomes a .txt attachment; 0 is off.
+// showInlineReadAloud / showInlineEditResponse: on keeps that action in each response's action bar
+// instead of its More menu.
 export interface ChatPreferencesState {
   plainTextComposer: boolean;
   setPlainTextComposer: (value: boolean) => void;
@@ -43,6 +45,10 @@ export interface ChatPreferencesState {
   setShowModelDisclaimer: (value: boolean) => void;
   showResponseModel: boolean;
   setShowResponseModel: (value: boolean) => void;
+  showInlineReadAloud: boolean;
+  setShowInlineReadAloud: (value: boolean) => void;
+  showInlineEditResponse: boolean;
+  setShowInlineEditResponse: (value: boolean) => void;
   thinkingVisibility: DisplayVisibility;
   setThinkingVisibility: (value: DisplayVisibility) => void;
   toolVisibility: DisplayVisibility;
@@ -83,6 +89,12 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
         set({ showModelDisclaimer }),
       showResponseModel: false,
       setShowResponseModel: (showResponseModel) => set({ showResponseModel }),
+      showInlineReadAloud: false,
+      setShowInlineReadAloud: (showInlineReadAloud) =>
+        set({ showInlineReadAloud }),
+      showInlineEditResponse: false,
+      setShowInlineEditResponse: (showInlineEditResponse) =>
+        set({ showInlineEditResponse }),
       thinkingVisibility: DEFAULT_THINKING_VISIBILITY,
       setThinkingVisibility: (thinkingVisibility) =>
         set({ thinkingVisibility }),
@@ -114,6 +126,8 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           alwaysDeleteChatFiles: saved?.alwaysDeleteChatFiles ?? false,
           showModelDisclaimer: saved?.showModelDisclaimer ?? false,
           showResponseModel: saved?.showResponseModel ?? false,
+          showInlineReadAloud: saved?.showInlineReadAloud ?? false,
+          showInlineEditResponse: saved?.showInlineEditResponse ?? false,
           thinkingVisibility: migrateVisibility(
             saved?.thinkingVisibility,
             legacy?.collapseThinkingByDefault,
