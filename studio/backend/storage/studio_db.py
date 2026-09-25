@@ -102,7 +102,8 @@ _schema_lock = threading.Lock()
 _schema_ready: set[Path] = set()
 _SQLITE_IN_CHUNK_SIZE = 900
 _PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
-_CHAT_ATTACHMENT_INVENTORY_VERSION = 1
+# Bumped when what the inventory records changes, so it is rebuilt: 2 sizes video files.
+_CHAT_ATTACHMENT_INVENTORY_VERSION = 2
 
 
 def _project_slug(name: str) -> str:
@@ -4291,6 +4292,10 @@ def _blob_part_base64_len(part: dict) -> int:
         data = audio.get("data")
         if isinstance(data, str) and _is_locally_stored_blob(data):
             return len(data)
+    # A video: {"type": "file", "data", "mimeType"}, raw base64.
+    data = part.get("data")
+    if part.get("type") == "file" and isinstance(data, str) and _is_locally_stored_blob(data):
+        return len(data.rsplit(",", 1)[-1])
     return 0
 
 
@@ -4302,9 +4307,9 @@ def _attachment_content_parts(attachment: dict) -> list[dict]:
 
 
 def _chat_attachment_size_bytes(attachment: dict) -> Optional[int]:
-    """Approximate stored size of one attachment's content parts. Image and audio parts hold base64
-    payloads (decoded bytes ~= 3/4 of the encoded length); text parts count their character length.
-    None when there is no sizable content."""
+    """Approximate stored size of one attachment's content parts. Image, audio and file (video)
+    parts hold base64 payloads (decoded bytes ~= 3/4 of the encoded length); text parts count their
+    character length. None when there is no sizable content."""
     total = 0
     found = False
     for part in _attachment_content_parts(attachment):

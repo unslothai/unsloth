@@ -3090,6 +3090,7 @@ export const it = {
       attachedMany: "{count} file allegati",
       skippedTooLarge: "{count} troppo grandi per essere allegati.",
       skippedOverLimit: "Altri {count} oltre il limite di {limit} file.",
+      chatFilesWaiting: "{count} verranno allegati appena sarà caricato un modello in grado di leggerli.",
       openFilesFailed: "Impossibile aprire i file",
       speechModel: "{name} è un modello vocale",
       speechModelDescription: "Sceglilo dal menu dei modelli nella pagina Audio.",

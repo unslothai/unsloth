@@ -3089,6 +3089,7 @@ export const es = {
       attachedMany: "{count} archivos adjuntados",
       skippedTooLarge: "{count} demasiado grandes para adjuntar.",
       skippedOverLimit: "{count} más por encima del límite de {limit} archivos.",
+      chatFilesWaiting: "{count} se adjuntarán cuando se cargue un modelo que pueda leerlos.",
       openFilesFailed: "No se pudieron abrir los archivos",
       speechModel: "{name} es un modelo de voz",
       speechModelDescription: "Selecciónalo en el menú de modelos de la página Audio.",

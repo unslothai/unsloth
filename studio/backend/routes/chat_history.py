@@ -1021,7 +1021,9 @@ def get_attachment_file(
                 return Response(content = data, media_type = media_type)
         # Video parts: the video adapter stores {type: "file", data, mimeType} with raw base64.
         file_data = part.get("data")
-        mime_type = str(part.get("mimeType") or attachment_content_type or "").lower()
+        # The essence: a recorded clip's type can carry parameters (video/webm;codecs=vp9).
+        mime_type = str(part.get("mimeType") or attachment_content_type or "")
+        mime_type = mime_type.split(";", 1)[0].strip().lower()
         if (
             part.get("type") == "file"
             and isinstance(file_data, str)

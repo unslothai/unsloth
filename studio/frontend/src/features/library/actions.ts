@@ -76,8 +76,9 @@ export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> 
     for (const item of items) await downloadLibraryItem(item);
     return;
   }
-  const knownBytes = items.reduce((sum, item) => sum + (item.sizeBytes ?? 0), 0);
-  if (knownBytes > MAX_ZIP_BYTES) {
+  // A file of unknown size could be any size, so it never goes into a zip held in memory.
+  const bytes = items.reduce((sum, item) => sum + (item.sizeBytes ?? Infinity), 0);
+  if (bytes > MAX_ZIP_BYTES) {
     toast(translate("library.toast.downloadingMany", { count: items.length }), {
       description: translate("library.toast.downloadingManyDescription"),
     });

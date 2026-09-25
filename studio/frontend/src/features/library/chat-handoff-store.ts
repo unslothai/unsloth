@@ -2,17 +2,20 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
+import { AUTH_SESSION_CLEARED_EVENT } from "../auth/session-events.ts";
 
 // "Chat about this" hands files to a composer that may not be mounted yet (the chat page mounts
 // on navigation) or already is (it stays mounted off-route). Keyed by the composer's attachment
 // target, so only the fresh chat that was opened for the files picks them up. Kept free of other
-// imports: the chat thread reads it, and must not pull the Library in.
+// imports but an event name: the chat thread reads it, and must not pull the Library in.
 export interface LibraryChatHandoff {
   files: File[];
 }
 
 interface LibraryChatHandoffState {
   pending: { targetKey: string; handoff: LibraryChatHandoff } | null;
+  /** Files the composer turned away, most often for want of a loaded model that reads them. */
+  held: { targetKey: string; files: File[] } | null;
   offer: (targetKey: string, handoff: LibraryChatHandoff) => void;
   take: (targetKey: string) => LibraryChatHandoff | null;
 }
@@ -20,7 +23,8 @@ interface LibraryChatHandoffState {
 export const useLibraryChatHandoffStore = create<LibraryChatHandoffState>(
   (set, get) => ({
     pending: null,
-    offer: (targetKey, handoff) => set({ pending: { targetKey, handoff } }),
+    held: null,
+    offer: (targetKey, handoff) => set({ pending: { targetKey, handoff }, held: null }),
     take: (targetKey) => {
       const pending = get().pending;
       if (!pending || pending.targetKey !== targetKey) return null;
@@ -29,3 +33,49 @@ export const useLibraryChatHandoffStore = create<LibraryChatHandoffState>(
     },
   }),
 );
+
+/**
+ * Adds the files offered to `targetKey` with `add`, or with `retryHeld` those it refused before
+ * (call that once a model loads). What `add` refuses is held for the next try rather than lost.
+ * Returns how many are held.
+ */
+export async function attachLibraryChatFiles(
+  targetKey: string,
+  add: (file: File) => Promise<unknown>,
+  retryHeld = false,
+): Promise<number> {
+  const store = useLibraryChatHandoffStore;
+  const held = store.getState().held;
+  let files: File[];
+  if (retryHeld) {
+    if (held?.targetKey !== targetKey) return 0;
+    store.setState({ held: null });
+    files = held.files;
+  } else {
+    files = store.getState().take(targetKey)?.files ?? [];
+  }
+  const refused: File[] = [];
+  for (const file of files) {
+    try {
+      await add(file);
+    } catch {
+      // The adapter already toasted why (unsupported type, no vision model).
+      refused.push(file);
+    }
+  }
+  if (refused.length === 0) return 0;
+  store.setState(({ held: now }) => ({
+    held: {
+      targetKey,
+      files: [...(now?.targetKey === targetKey ? now.files : []), ...refused],
+    },
+  }));
+  return refused.length;
+}
+
+// Module state outlives a sign-out; the next account must not be handed these files.
+if (typeof window !== "undefined") {
+  window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
+    useLibraryChatHandoffStore.setState({ pending: null, held: null });
+  });
+}

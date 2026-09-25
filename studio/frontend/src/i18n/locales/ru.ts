@@ -3051,6 +3051,7 @@ export const ru = {
       attachedMany: "Прикреплено файлов: {count}",
       skippedTooLarge: "Слишком большие для прикрепления: {count}.",
       skippedOverLimit: "Сверх лимита в {limit} файлов: ещё {count}.",
+      chatFilesWaiting: "Будут прикреплены после загрузки модели, которая может их прочитать: {count}.",
       openFilesFailed: "Не удалось открыть файлы",
       speechModel: "{name} — модель синтеза речи",
       speechModelDescription: "Выберите её в меню моделей на странице «Аудио».",
