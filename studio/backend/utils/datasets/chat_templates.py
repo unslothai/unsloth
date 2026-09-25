@@ -26,8 +26,14 @@ DEFAULT_ALPACA_TEMPLATE = """Below is an instruction that describes a task, pair
 ### Response:
 {}"""
 
+_TEMPLATE_ERROR_COLUMN = "__chat_template_error"
+
+# Rows per batch when scanning or filtering the error column, so neither pass
+# materialises the whole column in Python.
+_ERROR_SCAN_BATCH = 10_000
+
 _CUSTOM_PROMPT_TEMPLATE_ERROR = (
-    "custom_prompt_template is deprecated and unsupported because Studio cannot persist a "
+    "custom_prompt_template is deprecated and unsupported because Unsloth Studio cannot persist a "
     "matching template for inference. Pass None to continue without a custom prompt template."
 )
 
@@ -142,7 +148,7 @@ def apply_chat_template_to_dataset(
 ):
     """Apply the chat template to a dataset based on its format, returning a dict with the dataset, success status, warnings and errors.
 
-    ``dataset_info`` is the output of format_dataset() with metadata. ``custom_prompt_template`` is deprecated and non-None values are rejected, because Studio cannot persist a matching inference template. ``add_eos_token`` appends tokenizer.eos_token to each text, ``remove_bos_prefix`` strips a leading '<bos>' (Gemma and friends), ``custom_format_mapping`` maps custom columns to the standard format, and ``batch_size`` / ``num_proc`` control processing.
+    ``dataset_info`` is the output of format_dataset() with metadata. ``custom_prompt_template`` is deprecated and non-None values are rejected, because Studio cannot persist a matching inference template. ``add_eos_token`` appends the tokenizer's eos_token to each ChatML text (Alpaca text always gets one), ``remove_bos_prefix`` strips a leading '<bos>' (Gemma and friends), ``custom_format_mapping`` maps custom columns to the standard format, and ``batch_size`` / ``num_proc`` control processing.
     """
     dataset = dataset_info["dataset"]
     final_format = dataset_info["final_format"]
@@ -162,12 +168,14 @@ def apply_chat_template_to_dataset(
             "errors": errors,
         }
 
-    eos_token = ""
-    if add_eos_token:
-        if hasattr(tokenizer, 'eos_token') and tokenizer.eos_token:
-            eos_token = tokenizer.eos_token
-        else:
-            warnings.append("add_eos_token=True but tokenizer has no eos_token")
+    # A processor (Gemma 3 on the text path) keeps eos_token on its inner tokenizer.
+    eos_token = (
+        getattr(tokenizer, 'eos_token', None)
+        or getattr(getattr(tokenizer, 'tokenizer', None), 'eos_token', None)
+        or ""
+    )
+    if not eos_token and (add_eos_token or final_format == "alpaca"):
+        warnings.append("Tokenizer has no eos_token, so EOS was not appended")
 
     # CUSTOM FORMAT MAPPING (for non-standard datasets)
     if final_format == "unknown":
@@ -286,7 +294,9 @@ def apply_chat_template_to_dataset(
                 text = DEFAULT_ALPACA_TEMPLATE.format(
                     fields["instruction"], fields["input"], fields["output"]
                 )
-                texts.append(text + eos_token)
+                if not text.endswith(eos_token):
+                    text += eos_token
+                texts.append(text)
 
             return {"text": texts}
 
@@ -333,9 +343,23 @@ def apply_chat_template_to_dataset(
         if model_name:
             tokenizer = get_tokenizer_chat_template(tokenizer, model_name)
 
+        streamed_failures = []
+
+        # Never clobber a real column: a dataset is allowed to already carry one named
+        # like our marker, and remove_columns would then delete the user's own data.
+        # A generator-backed IterableDataset reports column_names AND features as None,
+        # so resolve_column_names' first-row probe is what sees the column there.
+        from .raw_text import resolve_column_names
+
+        existing_columns = set(resolve_column_names(dataset))
+        error_column = _TEMPLATE_ERROR_COLUMN
+        while error_column in existing_columns:
+            error_column += "_"
+
         def _format_chatml(examples):
             convos = examples[chat_column]
             texts = []
+            row_errors = []
 
             for convo in convos:
                 try:
@@ -347,15 +371,22 @@ def apply_chat_template_to_dataset(
 
                     if remove_bos_prefix:
                         text = text.removeprefix('<bos>')
-                    text += eos_token
+                    if add_eos_token:
+                        text += eos_token
 
                     texts.append(text)
+                    row_errors.append("")
                 except Exception as e:
-                    if len(texts) == 0:
-                        warnings.append(f"Chat template failed: {e}")
                     texts.append("")
+                    row_errors.append(str(e) or type(e).__name__)
 
-            return {"text": texts}
+            return {"text": texts, error_column: row_errors}
+
+        def _keep_streamed_row(row_error):
+            if row_error and not streamed_failures:
+                streamed_failures.append(row_error)
+                logger.warning(f"Dropping rows whose chat template failed: {row_error}")
+            return not row_error
 
         try:
             is_iterable = is_streaming_dataset(dataset)
@@ -405,11 +436,64 @@ def apply_chat_template_to_dataset(
             if _tqdm_monitor_stop is not None:
                 _tqdm_monitor_stop.set()
 
+            dropped_rows_warning = None
+            if is_iterable:
+                formatted_dataset = formatted_dataset.filter(
+                    _keep_streamed_row, input_columns = [error_column]
+                ).remove_columns(error_column)
+            elif len(formatted_dataset):
+                # Everything here stays Arrow-side and batched. Reading the error column
+                # into a Python list, or building one index per surviving row, costs a
+                # measured 85 MB at 2M rows (70 MB of it the index list) and scales
+                # linearly, so a dataset of tens of millions of mostly valid rows could be
+                # killed during formatting.
+                n_total = len(formatted_dataset)
+                kept = formatted_dataset.filter(
+                    lambda row_errors: [not row_error for row_error in row_errors],
+                    input_columns = [error_column],
+                    batched = True,
+                    batch_size = _ERROR_SCAN_BATCH,
+                    desc = "Dropping rows whose chat template failed",
+                )
+                n_failed = n_total - len(kept)
+                if n_failed:
+                    first_error = next(
+                        (
+                            row_error
+                            for batch in formatted_dataset.select_columns(
+                                [error_column]
+                            ).iter(batch_size = _ERROR_SCAN_BATCH)
+                            for row_error in batch[error_column]
+                            if row_error
+                        ),
+                        "",
+                    )
+                if n_failed == n_total:
+                    errors.append(
+                        f"Chat template failed on all {n_total:,} rows: {first_error}"
+                    )
+                    return {
+                        "dataset": dataset,
+                        "success": False,
+                        "warnings": warnings,
+                        "errors": errors,
+                        "dropped_rows_warning": None,
+                    }
+                if n_failed:
+                    formatted_dataset = kept
+                    dropped_rows_warning = (
+                        f"Dropped {n_failed:,} of {n_total:,} rows because the "
+                        f"chat template failed: {first_error}"
+                    )
+                    warnings.append(dropped_rows_warning)
+                formatted_dataset = formatted_dataset.remove_columns(error_column)
+
             return {
                 "dataset": formatted_dataset,
                 "success": True,
                 "warnings": warnings,
-                "errors": errors
+                "errors": errors,
+                "dropped_rows_warning": dropped_rows_warning,
             }
         except Exception as e:
             errors.append(f"Failed to format ChatML dataset: {e}")

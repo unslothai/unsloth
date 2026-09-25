@@ -10,7 +10,7 @@ export const en = {
     sendShortcut: "Send shortcut",
     sendDescription: "Choose when Enter sends a prompt or inserts a new line.",
     followUp: "Follow-up behavior",
-    followUpDescription: "Choose what happens when you send during a response. Press {shortcut} to do the opposite for one message.",
+    followUpDescription: "What happens when you send during a response. Press {shortcut} to do the opposite once.",
     queue: "Queue",
     steer: "Steer",
     steerDescription: "Steer stops the current response and sends your follow-up next.",
@@ -165,6 +165,10 @@ export const en = {
       export: "Export",
       recents: "Recents",
       noChatsYet: "No chats yet",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "No chats",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "All projects pinned",
       showMore: "Show more",
       showLess: "Show less",
       settings: "Settings",
@@ -196,6 +200,7 @@ export const en = {
       unpinChats: "Unpin chats",
       archiveChats: "Archive chats",
       markUnread: "Mark as unread",
+      markRead: "Mark as read",
       deleteChats: "Delete chats",
       deleteTitle: "Delete chats",
       deleteDescription: "Delete {count} chats? This cannot be undone.",
@@ -215,11 +220,12 @@ export const en = {
       priority: "Priority",
       lastUpdated: "Last updated",
       manualOrder: "Manual order",
-      moveUp: "Move up",
-      moveDown: "Move down",
+      switchedToManual: "Sorted manually: drag rows to reorder",
       organizeChats: "Organize chats",
       organizeProjects: "Organize projects",
       sortPinnedChats: "Sort pinned chats",
+      moveUp: "Move up",
+      moveDown: "Move down",
     },
     dialog: {
       deleteChat: {
@@ -250,9 +256,19 @@ export const en = {
   settings: {
     accounts: {
       title: "Accounts",
-      description: "Create private Studio accounts. New users sign in with a one-time setup code and choose a password.",
+      description: "Create private Unsloth accounts. New users sign in with a one-time setup code and choose a password.",
       username: "Username",
       create: "Create account",
+      createDescription: "Share a setup code so they can choose their own password.",
+      actionsFor: "Manage {username}",
+      actions: "Actions",
+      search: "Search accounts",
+      noResults: "No matching accounts",
+      created: "Created",
+      status: "Status",
+      loginHint: "Sign in as {username} with this code as the password, then choose a new password.",
+      privateAccount: "Private account",
+      empty: "No other accounts yet",
       setupCode: "Setup code",
       setupFor: "Setup code for {username}",
       shownOnce: "Copy this code now and share it with the account holder. It is shown only here and can be used once within 60 minutes.",
@@ -262,13 +278,13 @@ export const en = {
       copyFailed: "Could not copy. Select and copy the setup code above.",
       dismiss: "Done",
       owner: "Installation owner",
-      active: "Active",
-      inactive: "Inactive",
+      active: "Enabled",
+      inactive: "Disabled",
       regenerate: "Regenerate setup code",
       resetTitle: "Reset {username}'s password?",
       resetDescription: "Regenerating the setup code replaces {username}'s password, signs them out and revokes their API keys. Give them the new code so they can choose a password again.",
-      deactivate: "Deactivate",
-      reactivate: "Reactivate",
+      deactivate: "Disable",
+      reactivate: "Enable",
       delete: "Delete account",
       deleteTitle: "Delete {username}?",
       deleteDescription: "This revokes {username}'s sessions and cancels their work. Their chats, settings, credentials, uploads, datasets, training runs, outputs, exports, galleries, sandboxes, projects and temporary files are retired. Directories are renamed aside, never deleted. Creating this username again starts a fresh account with none of this data.",
@@ -305,9 +321,10 @@ export const en = {
     },
     keyboardShortcuts: {
       title: "Keyboard shortcuts",
-      description:
-        "Change any shortcut, or clear one to free the chord for your browser or OS.",
       searchPlaceholder: "Search shortcuts…",
+      keystrokePlaceholder: "Press shortcut to search",
+      searchByKeystrokes: "Search by keystrokes",
+      searchByName: "Search by name",
       noResults: "No shortcuts match that search.",
       unassigned: "Unassigned",
       recording: "Press keys…",
@@ -504,6 +521,14 @@ export const en = {
           label: "Send message",
           description: "Send what is in the composer",
         },
+        queueMessage: {
+          label: "Queue message",
+          description: "Send the draft to the end of the prompt queue",
+        },
+        steerMessage: {
+          label: "Steer response",
+          description: "Stop the current response and send the draft next",
+        },
         cycleReasoningEffort: {
           label: "Cycle reasoning effort",
           description: "Step through the reasoning effort levels",
@@ -544,7 +569,16 @@ export const en = {
       sourceHint: "The model runners write their own logs, so a failed load or generation is often explained there rather than in the server log.",
       path: "Location",
       pathCopy: "Copy path",
-      refreshSection: "Refresh",
+      currentSession: "Current",
+      statusLive: "Live",
+      statusPaused: "Paused",
+      statusStale: "Stale",
+      filterPlaceholder: "Filter lines",
+      lineCount: "{count} lines",
+      filteredLineCount: "{shown} of {total} lines",
+      wrapLines: "Wrap lines",
+      jumpToLatest: "Jump to latest",
+      noMatches: "No lines match the filter.",
       mode: "Mode",
       modeLive: "Live",
       modeInterval: "Every 3 seconds",
@@ -570,7 +604,7 @@ export const en = {
       openLogsFolderFailed: "Could not open the logs folder.",
       exportFailed: "Could not download the logs.",
       exportTooOld: "Running Unsloth backend is too old to export logs. Update that backend and restart.",
-      exportForbidden: "Downloading all logs needs a signed-in Studio session. An API key is not enough.",
+      exportForbidden: "Downloading all logs needs a signed-in Unsloth session. An API key is not enough.",
       // Not rendered: extra terms the settings search matches this tab on.
       keywords: "debug debugging log logs error errors crash traceback stack trace troubleshoot diagnostics failed",
     },
@@ -857,6 +891,16 @@ export const en = {
         revoked: "All preview links revoked",
         revokeError: "Couldn't revoke preview links",
       },
+      managedProviderUrls: {
+        sectionTitle: "Managed accounts",
+        enableLabel: "Local and network connections",
+        enableDescription:
+          "Let managed accounts point their connections at local or network addresses, such as an Ollama or llama.cpp server on this computer or your LAN. Off by default, because it lets those accounts reach services running on your computer and your network.",
+        lockedByEnvironment:
+          "Set by UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 on this server, which refuses private addresses for every account.",
+        loadError: "Failed to load managed account connection settings.",
+        saveError: "Failed to save managed account connection settings.",
+      },
       permissions: {
         sectionTitle: "Permissions",
         bypassLabel: "Tool permissions",
@@ -871,6 +915,9 @@ export const en = {
         showLoadedModels: "Loaded models indicator",
         showLoadedModelsDescription:
           "Show a small card in the bottom-right corner listing every model currently in memory (chat, speech, image, video), with a button to eject each one.",
+        showWhisperUpdates: "whisper.cpp update notifications",
+        showWhisperUpdatesDescription:
+          "Notify when a newer whisper.cpp build is available for speech-to-text models. Turn off if you never transcribe audio.",
       },
       startup: {
         sectionTitle: "Startup",
@@ -1091,7 +1138,7 @@ export const en = {
       custom: {
         chatWidth: {
           label: "Chat width",
-          description: "Set the width of messages and the composer. Full width uses the space between sidebars.",
+          description: "Width of messages and the composer.",
           standard: "Standard",
           wide: "Wide",
           full: "Full width",
@@ -1164,7 +1211,6 @@ export const en = {
         },
         contrast: {
           label: "Contrast",
-          description: "Strength of borders and secondary text.",
         },
         reduceMotion: {
           label: "Reduce motion",
@@ -1194,7 +1240,7 @@ export const en = {
       sidebarNav: {
         title: "Sidebar navigation",
         description:
-          "Pin and reorder the sidebar tabs. Unpinned tabs collect in the More menu; a single unpinned tab is hidden instead of getting a menu of one. New chat stays fixed.",
+          "Pin and reorder the sidebar tabs. Unpinned tabs go to the More menu.",
         dragToReorder: "Drag to reorder",
         pinToSidebar: "Pin {name} to the sidebar",
         moreHolds: "More ({count})",
@@ -1202,7 +1248,7 @@ export const en = {
       sidebarMenu: {
         title: "Profile menu",
         description:
-          "Choose which shortcuts appear when you click your name at the bottom of the sidebar, and in what order. Settings, Help, Log out, and Shutdown always appear.",
+          "Pick and reorder the shortcuts under your name.",
         darkModeToggle: "Dark mode toggle",
         dragToReorder: "Drag to reorder",
       },
@@ -1234,7 +1280,11 @@ export const en = {
       },
       gpu: {
         title: "GPU devices",
-        ggufInference: "GGUF inference",
+        memory: "GPU memory",
+        sharedWithSystemRam: "Shared with system RAM",
+        estimatedAvailable: "Estimated available: {value}",
+        sharedEstimatedAvailable: "Shared system RAM: estimated {value} available",
+        ggufInference: "GGUF model memory",
         unavailable: "unavailable",
         detecting: "Checking for GPUs...",
         unreadable: "Could not read this server's hardware.",
@@ -1349,6 +1399,60 @@ export const en = {
         copied: "Path copied",
         openError: "Couldn't open the folder",
         copyError: "Couldn't copy the path",
+        caches: {
+          label: "Cache files",
+          description: "{size} in caches, of which {reclaimable} can be cleared now.",
+          hint: "Package downloads, compiled kernels and transfer caches that Unsloth rebuilds when it needs them. Downloaded models, projects, chats, settings and your Hugging Face token are never cleared here.",
+          // Not rendered: extra terms the settings search matches this row on.
+          keywords:
+            "cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "Measuring cache sizes...",
+          measureFailed: "Couldn't measure the caches",
+          empty: "No cache files found.",
+          detailsAction: "Details",
+          recheckAction: "Recheck",
+          hideDetailsAction: "Hide details",
+          clearAction: "Clear caches",
+          clearOneAction: "Clear",
+          clearingAction: "Clearing...",
+          confirmTitle: "Clear cached files?",
+          confirmDescription: "This frees about {size}.",
+          confirmOneTitle: "Clear {name}?",
+          safety:
+            "Unsloth rebuilds a cache the next time it needs it. Downloaded models, projects, chats, settings and your Hugging Face token are not touched.",
+          hubCost:
+            "This is the model cache. Clearing it downloads those models again the next time you use them.",
+          datasetsCost:
+            "Clearing this downloads those datasets again the next time you use them.",
+          blocked: "Not cleared: {reason}",
+          cleared: "Cleared {size}",
+          partial: "Some cache files could not be removed",
+          clearFailed: "Couldn't clear the caches",
+          names: {
+            uv: "uv package cache",
+            pip: "pip download cache",
+            npm: "npm package cache",
+            bun: "Bun package cache",
+            torchInductor: "Torch Inductor compile cache",
+            torchExtensions: "Torch extension builds",
+            triton: "Triton kernel cache",
+            cuda: "CUDA kernel cache",
+            numba: "Numba compile cache",
+            matplotlib: "Matplotlib font cache",
+            vllm: "vLLM cache",
+            unslothCompiled: "Unsloth compiled modules",
+            hfXet: "Hugging Face transfer cache",
+            hfAssets: "Hugging Face asset cache",
+            hfDatasets: "Hugging Face dataset cache",
+            hfHub: "Hugging Face model cache",
+          },
+        },
+        lowDisk: {
+          title: "Disk space is running low",
+          criticalTitle: "Disk space is critically low",
+          description: "{free} free of {total}. Clearing caches can free space.",
+          action: "Review caches",
+        },
       },
       environment: {
         title: "Environment",
@@ -1454,9 +1558,9 @@ export const en = {
         yolo: "Skip approval prompts. Use only in trusted environments.",
       },
       remote: {
-        title: "Connect to a remote Unsloth Studio",
+        title: "Connect to a remote Unsloth",
         description:
-          "Point unsloth start at an Unsloth Studio running elsewhere by setting these before launching (or pass --api-key directly):",
+          "Point unsloth start at an Unsloth instance running elsewhere by setting these before launching (or pass --api-key directly):",
       },
       passthrough: {
         title: "Passing agent arguments",
@@ -1483,16 +1587,10 @@ export const en = {
         "Override this setting from each chat's attachment menu.",
       rememberParamsPerModelHint:
         "When off, use the same settings for every model.",
-      autoCompactHint: "Uses the context length you set, not available VRAM.",
+      autoCompactHint: "Local GGUF chats only. Evicted turns are indexed so the model can search them back in, and a reset quotes back the standing instructions that fit, word for word, keeping the oldest and newest over the middle. Archiving needs a saved chat and the vector index; without them older turns are dropped. Uses the context length you set, not available VRAM.",
       pastedTextShortDescription:
-        "Pastes of {count} characters or more become .txt attachments. Shorter pastes stay in the message box.",
-      pastedTextOffDescription:
-        "All pasted text stays in the message box, regardless of length.",
-      compactionDescriptionInherit: "Follow the server's context policy.",
-      compactionDescriptionCheckpoint:
-        "Keep the latest turn and standing instructions.",
-      compactionDescriptionRolling:
-        "Drop the oldest turns to keep recent history and the selected amount of extra room.",
+        "Pastes of {count} characters or more become .txt attachments.",
+      pastedTextOffDescription: "Pasted text always stays in the message box.",
       projectsSection: "Show projects section",
       projectsSectionDescription:
         "Group project chats under Projects. When off, show them in Recents.",
@@ -1514,9 +1612,9 @@ export const en = {
         title: "Chat menu",
         description:
           "Pin items to chat's + side menu. Others move into “More”.",
-        chatWithFiles: "Chat with Files (RAG)",
+        chatWithFiles: "Chat with files (RAG)",
         mcp: "MCP",
-        skills: "Agent Skills",
+        skills: "Skills",
         savedPrompts: "Saved prompts",
         compareChat: "Compare chat",
         exportChat: "Export chat",
@@ -1538,22 +1636,20 @@ export const en = {
         "Restore each model's last-used prompt, temperature, and other settings.",
       autoCompact: "Auto-compact long chats",
       autoCompactDescription:
-        "Remove older turns when a local GGUF chat reaches its context limit.",
-      compactionStyle: "When context fills",
-      compactionStyleDescription:
-        "Use server default keeps UNSLOTH_CONTEXT_POLICY. Reset conversation keeps the latest turn and standing instructions. A sliding window drops oldest turns and can keep more recent history.",
-      compactionStyleInherit: "Use server default",
-      compactionStyleCheckpoint: "Reset conversation",
-      compactionStyleRollingDefault: "Drop oldest turns (~25% extra room)",
-      compactionStyleRolling10: "Drop oldest turns (~10% extra room)",
-      compactionStyleRolling5: "Drop oldest turns (~5% extra room)",
-      compactionStyleRollingNone: "Drop oldest turns (no extra trim)",
+        "Older turns move to a searchable archive when a chat fills its context.",
       autoCompactKeywords:
-        "compaction compact auto-compact context window truncate rolling checkpoint headroom",
+        "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search",
+      visibility: {
+        collapsed: "Collapsed",
+        auto: "Expand while running",
+        expanded: "Always expanded",
+      },
+      visibilityKeywords:
+        "collapse collapsed expand expanded open closed reasoning thinking tool calls tool activity fold group streaming",
       thinking: {
-        collapseByDefault: "Collapse Thinking by default",
-        collapseByDefaultDescription:
-          "Keep reasoning collapsed. Expand a block to read it.",
+        visibility: "Thinking",
+        visibilityDescription:
+          "How reasoning opens. You can still expand or collapse any block yourself.",
       },
       currentDate: {
         label: "Tell the model today's date",
@@ -1563,9 +1659,14 @@ export const en = {
         saveError: "Failed to update current date settings",
       },
       tools: {
-        collapseByDefault: "Collapse tool activity by default",
-        collapseByDefaultDescription:
-          "Keep tool details collapsed. Expand a row to inspect it.",
+        visibility: "Tool calls",
+        visibilityDescription:
+          "How tool activity opens. You can still expand or collapse any call yourself.",
+        foldIntoThinking: "Group tool calls under Thinking",
+        foldIntoThinkingDescription:
+          "Show a turn's tool calls inside its Thinking block instead of on their own rows.",
+        foldIntoThinkingBlocked:
+          "Unavailable while tool calls are set to Always expanded, which keeps them on their own rows.",
       },
       webSearch: {
         title: "Web search",
@@ -1863,6 +1964,7 @@ export const en = {
       expires: "Expires {value}",
       actionsFor: "Actions for {name}",
       copyPrefix: "Copy prefix",
+      copyFailed: "Could not copy",
       revokeToken: "Revoke token",
       revokeTitle: 'Revoke access token "{name}"?',
       revokeDescription:
@@ -1938,7 +2040,7 @@ export const en = {
         desktopAvailableDescription:
           "Update now and the desktop app will restart when it finishes.",
         desktopExternalServer:
-          "Run `unsloth studio update` from the terminal that started your server.",
+          "The app connected to an already-running Studio server and cannot update it. Stop that server, then quit and reopen the desktop app to update.",
         desktopManualInstall:
           "Open the release page to install the latest Linux package.",
         desktopCheckFailed: "Could not check for updates",
@@ -2659,11 +2761,11 @@ export const en = {
     tooLarge: "Larger than VRAM, will offload to CPU. A smaller quantization runs faster",
   },
   skills: {
-    title: "Agent Skills",
+    title: "Skills",
     description: "Skills are discovered from your standard agent folders. Enable them here, then type @ in chat to mention one.",
     precedence: "~/.agents/skills takes precedence over ~/.claude/skills.",
     refresh: "Refresh",
-    empty: "No Agent Skills found. Add a SKILL.md folder under ~/.agents/skills or ~/.claude/skills, then refresh.",
+    empty: "No skills found. Add a SKILL.md folder under ~/.agents/skills or ~/.claude/skills, then refresh.",
     sourceAgents: "Agents",
     sourceClaude: "Claude",
     sourceBundled: "Bundled",
@@ -2673,7 +2775,7 @@ export const en = {
     shadowedBy: "Another {source} skill with this name takes precedence.",
     enable: "Enable {name}",
     disable: "Disable {name}",
-    updateError: "Could not update Agent Skill",
-    mentions: "Agent Skills",
+    updateError: "Could not update skill",
+    mentions: "Skills",
   },
 } as const;

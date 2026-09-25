@@ -6,8 +6,9 @@
 #
 # The installer tells Explorer about each shortcut it wrote with SHChangeNotify, because the
 # global broadcast alone misses a same-name .lnk rewritten in place. That call needs a type
-# defined at runtime, which Constrained Language Mode and WDAC Dynamic Code Security both refuse,
-# and on those hosts the refresh simply did not happen: the shortcut worked, its icon was stale.
+# defined at runtime, which WDAC Dynamic Code Security refuses, and on those hosts the refresh
+# simply did not happen: the shortcut worked, its icon was stale. (Constrained Language Mode never
+# reaches it: WScript.Shell is not an allowed COM object there, so no shortcut is written.)
 #
 # This is cosmetic in both directions. A stale icon is not a broken install, and nothing in this
 # path may fail one, so every check below is as much about the rung staying silent as about it
@@ -28,8 +29,7 @@ $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPs1, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 has parse errors" }
 foreach ($name in @(
-    "Remove-StudioTrailingNewline", "Invoke-StudioEarlyPythonScript",
-    "Invoke-StudioEarlyPythonScriptViaCmdlets", "Invoke-StudioEarlyPython", "Get-StudioEarlyPython",
+    "Invoke-StudioEarlyPythonScript", "Invoke-StudioEarlyPython", "Get-StudioEarlyPython",
     "Invoke-StudioPythonShellIconRefresh"
 )) {
     $fn = $ast.FindAll({ param($n)
@@ -107,14 +107,8 @@ try {
     Check "an empty shortcut list is handled" (
         $null -ne (Invoke-StudioPythonShellIconRefresh -Paths @()))
 
-    # The fresh install, which is the case the rung exists for and the one it used to miss.
-    #
-    # Get-StudioEarlyPython latches its answer on first use, and its first use is the install
-    # lock, which runs before Python is installed. On a host that had none, that call caches $null
-    # for the whole run. Shortcuts are written much later, by which point the managed interpreter
-    # exists, and the rung would still decline on the cached miss. Resetting the cache in the
-    # checks above hides this entirely, so it is driven here in the real order instead: probe
-    # first with nothing on the host, install after, then ask for the refresh.
+    # An interpreter handed in is used even when discovery still holds a miss from before the
+    # install provided one: probe first with nothing on the host, install after, then refresh.
     $savedFinder = ${function:Get-StudioEarlyPython}
     function Get-StudioEarlyPython {
         if ($script:StudioEarlyPythonProbed) { return $script:StudioEarlyPython }
@@ -194,10 +188,12 @@ $probeText = $fnAst.Extent.Text
 # The per-item notification is the one that matters: SHCNE_UPDATEITEM with SHCNF_PATHW. The
 # global SHCNE_ASSOCCHANGED broadcast misses a same-name .lnk rewritten in place, which is what
 # an update does every single time.
-Check "the probe sends SHCNE_UPDATEITEM with SHCNF_PATHW per shortcut" (
-    $probeText -match "SHChangeNotify\(0x00002000,0x0005,p,None\)")
-Check "the probe still sends the global SHCNE_ASSOCCHANGED broadcast" (
-    $probeText -match "SHChangeNotify\(0x08000000,0,None,None\)")
+# Both carry SHCNF_FLUSH (0x1000): the child exits right after, and an unflushed notification is
+# only queued, so it can be lost with the child still answering ok.
+Check "the probe sends SHCNE_UPDATEITEM with SHCNF_PATHW per shortcut, flushed" (
+    $probeText -match "SHChangeNotify\(0x00002000,0x1005,p,None\)")
+Check "the probe still sends the global SHCNE_ASSOCCHANGED broadcast, flushed" (
+    $probeText -match "SHChangeNotify\(0x08000000,0x1000,None,None\)")
 # ctypes defaults an undeclared argument to a C int, which would truncate a pointer on 64 bit.
 Check "the probe declares SHChangeNotify's signature" (
     $probeText -match "SHChangeNotify\.argtypes" -and $probeText -match "LPCWSTR")

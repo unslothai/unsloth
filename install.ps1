@@ -7,13 +7,36 @@
 #
 # The web entry point cannot forward arguments, so it takes options as environment variables set
 # beforehand (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_ISOLATE_UV_CACHE,
-# UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME); a local run takes the equivalent flags
-# (--no-torch, --skip-autostart, --isolated-uv-cache, --python, --local).
+# UNSLOTH_INSTALL_NO_ROLLBACK, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME); a local run takes the
+# equivalent flags (--no-torch, --skip-autostart, --isolated-uv-cache, --no-rollback,
+# --python, --local).
 #
 # Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $USERPROFILE\.unsloth\studio
 #
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+# Remove-Item's -ErrorAction does not cover every failure. For a path the FileSystem provider
+# cannot resolve it raises a terminating PSArgumentException ("An object at the specified path
+# ... does not exist"), which -ErrorAction SilentlyContinue cannot suppress, so an unguarded
+# removal during a rollback aborts the rest of the cleanup it belongs to (#11290). Guard on
+# existence and catch everything, so a missing or unresolvable temp path is never fatal. Used
+# for the temp files whose names can come from an 8.3 alias.
+#
+# Top level, NOT inside Install-UnslothStudio: a nested function lives in its parent's local
+# scope and is gone once the parent returns, and the outer finally below runs after exactly
+# that. Defined there, the finally's two calls raise CommandNotFoundException and leave the
+# overrides file -- which carries the caller's UV_OVERRIDE lines -- on disk.
+# tests/studio/test_unsloth_torch_override.ps1 pins the placement.
+function Remove-UnslothTempFileQuietly {
+    param([string]$Path)
+    if (-not $Path) { return }
+    try {
+        if (-not (Test-Path -LiteralPath $Path -ErrorAction SilentlyContinue)) { return }
+        Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+    } catch { }
+}
+
 function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
 
@@ -395,7 +418,9 @@ function Install-UnslothStudio {
             } else {
                 $fso.GetFile($Path).ShortPath
             }
-            if ($short -and -not $short.Contains(" ")) { return $short }
+            # A space-free alias is not necessarily a name that resolves (#11290). This value
+            # reaches UV_OVERRIDE and --find-links, so a bogus one breaks every later uv call.
+            if ($short -and -not $short.Contains(" ") -and (Test-Path -LiteralPath $short -ErrorAction SilentlyContinue)) { return $short }
         } catch {}
         return $Path
     }
@@ -1578,6 +1603,46 @@ function Install-UnslothStudio {
             [int]$Code = 1
         )
         if ($Code -eq 0) { $Code = 1 }
+        # Here rather than at any one failure site: the largest writes are the venv and the torch
+        # install, and both exit through this function long before studio setup is reached, so a
+        # disk that filled during them used to surface as a bare exit code (#11313). Below 64 MB
+        # nothing useful unpacks, which makes it the cause rather than a coincidence. Folded into
+        # $Message as well as printed, because under --tauri nothing reaches the UI except the
+        # single line handed to Write-TauriLog.
+        $_diskSuffix = ""
+        try {
+            # Probed, not called outright: the early exits above happen before this file has
+            # defined the helper, and a command-not-found here would replace the real failure
+            # with a confusing one.
+            if ($StudioHome -and (Get-Command Get-StudioFreeSpaceBytes -CommandType Function -ErrorAction SilentlyContinue)) {
+                $_diskFree = Get-StudioFreeSpaceBytes -Path $StudioHome
+                if ($null -ne $_diskFree -and $_diskFree -lt 64MB) {
+                    $_diskMb = [math]::Round($_diskFree / 1MB)
+                    # What to advise depends on what actually happened to the old environment,
+                    # not on what was asked for. A discard that failed left a tree behind, and
+                    # deleting it is very likely what makes the retry fit; telling that user
+                    # there is nothing left to reclaim sends them away from the one thing that
+                    # would help. install.sh chooses between the same four.
+                    $_diskRemedy = if ($script:StudioVenvDiscardLeftover) {
+                        "Free some space and re-run. The previous environment could not be removed and is still at $($script:StudioVenvDiscardLeftover); deleting it will reclaim that space."
+                    } elseif ($script:StudioVenvDiscardSucceeded) {
+                        "Free some space and re-run. The previous environment was already discarded by --no-rollback, so the installer has nothing further of its own to reclaim."
+                    } elseif ($script:StudioNoRollback) {
+                        # Asked for, but nothing was there to discard: a first install, or a
+                        # failure before the replacement began.
+                        "Free some space and re-run."
+                    } else {
+                        "Free some space and re-run. --no-rollback (UNSLOTH_INSTALL_NO_ROLLBACK=1) drops the previous environment instead of keeping a copy of it during the install."
+                    }
+                    $_diskSuffix = ": $StudioHome has only $_diskMb MB free, so the disk is full, which is very likely the cause. $_diskRemedy"
+                    if (-not $TauriMode) {
+                        Write-StudioLine "        $StudioHome has only $_diskMb MB free -- the disk is full, which is very likely the cause." -ForegroundColor Red
+                        Write-StudioLine "        $_diskRemedy" -ForegroundColor Red
+                    }
+                }
+            }
+        } catch { $_diskSuffix = "" }
+        $Message = "$Message$_diskSuffix"
         Write-TauriLog "ERROR_DEFAULT" $Message
         # Under `irm | iex` the session survives a failure; a leaked handoff would re-pin it.
         Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
@@ -1924,6 +1989,19 @@ function Install-UnslothStudio {
     $SkipTorch = $false
     $SkipAutostart = $false
     $IsolateUvCache = $false
+    # Script-scoped: Start-StudioVenvRollback reads it, and tests/studio/test_install_rollback_lifecycle.ps1
+    # extracts that function on its own.
+    $script:StudioNoRollback = $false
+    # Set later by the cross-volume cache notice and read later still by Start-StudioVenvRollback.
+    # Initialised here rather than beside the other rollback state, which is reset AFTER that
+    # notice runs and would therefore clear it. Under `irm | iex` the script scope IS the caller's
+    # session, so a stale value from a previous run has to be cleared somewhere.
+    # Bounded WMI answer, taken at most once per run. Reset here for the same reason as the rest
+    # of this block: under `irm | iex` the script scope IS the caller's session.
+    $script:StudioVolumeList = $null
+    # Set by the --no-rollback discard when the environment it is about to delete reports XPU,
+    # read by the Intel scan once that tree is gone.
+    $script:StudioPreservedXpuVerdict = $false
     $ShortcutsOnly = $false
     $WithLlamaCppDir = ""
     $argList = $args
@@ -1933,6 +2011,7 @@ function Install-UnslothStudio {
             "--tauri"    { $TauriMode = $true }
             "--no-torch" { $SkipTorch = $true }
             "--isolated-uv-cache" { $IsolateUvCache = $true }
+            "--no-rollback" { $script:StudioNoRollback = $true }
             "--verbose"  { $script:UnslothVerbose = $true }
             "-v"         { $script:UnslothVerbose = $true }
             "--shortcuts-only" { $ShortcutsOnly = $true }
@@ -1959,6 +2038,7 @@ function Install-UnslothStudio {
     if ($env:UNSLOTH_NO_TORCH -in @('1', 'true', 'yes', 'on')) { $SkipTorch = $true }
     if ($env:UNSLOTH_SKIP_AUTOSTART -in @('1', 'true', 'yes', 'on')) { $SkipAutostart = $true }
     if ($env:UNSLOTH_ISOLATE_UV_CACHE -in @('1', 'true', 'yes', 'on')) { $IsolateUvCache = $true }
+    if ($env:UNSLOTH_INSTALL_NO_ROLLBACK -in @('1', 'true', 'yes', 'on')) { $script:StudioNoRollback = $true }
 
     if ($script:UnslothVerbose) {
         $env:UNSLOTH_VERBOSE = '1'
@@ -2673,64 +2753,46 @@ exit 1
         return $current
     }
 
-    # An interpreter to answer path questions with, found WITHOUT installing one.
-    #
-    # Python resolves a path the same way the native helper does: os.path.realpath on Windows
-    # calls GetFinalPathNameByHandleW, so it follows junctions, symlinks and SUBST drives, expands
-    # 8.3 names and reports the stored casing. That matters twice over, because
-    # unsloth_cli/_studio_runtime_gate.py computes the runtime lock name from os.path.realpath
-    # too: an answer from here agrees with the running Unsloth by construction rather than by two
-    # implementations happening to match.
-    #
-    # Finding one must not mutate anything, because this runs before the install lock is taken.
-    # Get-Command and Test-Path only, never Install-PythonFromPythonOrg, and never the full
-    # Find-CompatiblePython, which is defined thousands of lines below this point anyway.
+    # A Python to resolve paths with, found without installing one: this runs before the install
+    # lock, so Get-Command and Test-Path only. Path.resolve is GetFinalPathNameByHandleW on Windows
+    # and is what unsloth_cli/_studio_runtime_gate.py hashes, so both sides name the same lock.
     $script:StudioEarlyPythonProbed = $false
     $script:StudioEarlyPython = $null
+    $script:StudioEarlyPythonProbedWithoutVenv = $false
 
     function Get-StudioEarlyPython {
-        if ($script:StudioEarlyPythonProbed) { return $script:StudioEarlyPython }
-        $script:StudioEarlyPythonProbed = $true
-        # Same kill switch shape as UNSLOTH_NVIDIA_LIBRARY_PROBE: a host where spawning an
-        # interpreter is unwelcome, or a support case that needs the old behaviour back, sets this
-        # to 0 and the ladder falls through to the lexical resolver exactly as it did before.
-        if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") { return $null }
-        $candidates = @()
-        # A previous install's own interpreter first: it is the one this installer chose last
-        # time, and reaching it through $VenvDir means an alias of the root resolves to the same
-        # file without anyone canonicalising anything. $VenvDir is not set yet on the earliest
-        # calls, so read it defensively rather than assuming.
+        # $VenvDir is assigned far below the first caller (--tauri), so a miss taken before it existed
+        # is probed again once it does. A hit, or a miss taken with it known, is final.
         $venvDirValue = $null
         try { $venvDirValue = Get-Variable -Name VenvDir -ValueOnly -ErrorAction SilentlyContinue } catch {}
-        if (-not [string]::IsNullOrWhiteSpace($venvDirValue)) {
+        $venvKnown = -not [string]::IsNullOrWhiteSpace($venvDirValue)
+        if ($script:StudioEarlyPythonProbed) {
+            if (-not ($script:StudioEarlyPythonProbedWithoutVenv -and $venvKnown -and
+                      [string]::IsNullOrWhiteSpace($script:StudioEarlyPython))) {
+                return $script:StudioEarlyPython
+            }
+        }
+        $script:StudioEarlyPythonProbed = $true
+        $script:StudioEarlyPythonProbedWithoutVenv = (-not $venvKnown)
+        # 0 restores the previous ladder, like UNSLOTH_NVIDIA_LIBRARY_PROBE.
+        if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") { return $null }
+        $candidates = @()
+        if ($venvKnown) {
             $candidates += (Join-Path $venvDirValue "Scripts\python.exe")
             $candidates += (Join-Path $venvDirValue "bin/python3")
         }
         foreach ($name in @("python3", "python")) {
             try {
-                # Select-Object, not $cmd.Source. Constrained Language Mode permits property
-                # reads only on its allowed type list, and CommandInfo is not on it, so the
-                # direct spelling throws on exactly the hosts this ladder exists for. Reading it
-                # through a cmdlet keeps the access inside compiled code, where CLM does not
-                # reach. Same reason for every other Select-Object -ExpandProperty below.
-                foreach ($source in @(Get-Command $name -All -CommandType Application -ErrorAction SilentlyContinue |
-                    Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue)) {
-                    if ($source) { $candidates += $source }
+                foreach ($cmd in @(Get-Command $name -All -CommandType Application -ErrorAction SilentlyContinue)) {
+                    if ($cmd -and $cmd.Source) { $candidates += $cmd.Source }
                 }
             } catch {}
         }
         foreach ($candidate in $candidates) {
             if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
             if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
-            # The probe IS a realpath call, so an interpreter that cannot answer one is rejected
-            # here rather than passing a check and failing later. Python 2 fails it too, since its
-            # Windows realpath does not follow links.
-            # The interpreter's own directory: it exists, since the executable inside it just
-            # passed Test-Path. Not $PSScriptRoot, which is empty under `irm | iex` (no script
-            # file), and not the temp directory, which this installer relocates.
-            # Split-Path, not [System.IO.Path]::GetDirectoryName: System.IO.Path is not an
-            # allowed type under Constrained Language Mode, and a static call on it throws.
-            $probeDir = Split-Path -Parent $candidate
+            # Probe the interpreter's own directory: $PSScriptRoot is empty under `irm | iex`.
+            $probeDir = [System.IO.Path]::GetDirectoryName($candidate)
             if ([string]::IsNullOrWhiteSpace($probeDir)) { continue }
             $probe = Invoke-StudioEarlyPython -Exe $candidate -Path $probeDir
             if (-not [string]::IsNullOrWhiteSpace($probe)) {
@@ -2741,48 +2803,28 @@ exit 1
         return $null
     }
 
-    # The two launchers below must return the same string for the same child, or a caller is
-    # reading one of two subtly different programs depending on the host's language mode.
-    # They differ in exactly one way: Start-Process's redirection appends a trailing newline the
-    # child did not write. Measured, not assumed. Neither current caller can see it, since each
-    # trims or splits, but that is luck rather than a contract, so both ends are normalised here.
-    function Remove-StudioTrailingNewline {
-        param([string]$Text)
-        if ($null -eq $Text) { return $Text }
-        # Two normalisations, and the name undersells both, so they are written down.
-        #
-        # 1. CRLF is folded to LF. The two launchers otherwise disagree and the contract that
-        #    they are interchangeable is false. Measured: a child writing the bytes 61 0d 0a 62
-        #    comes back as 61 0d 0a 62 through the ProcessStartInfo launcher and as 61 0a 62
-        #    through the cmdlet launcher, whose redirection goes through a file.
-        # 2. EVERY trailing newline is removed, not one. .NET's $ matches before a final \n as
-        #    well as at the end, so -replace strips each of them: "a\n\n" measures as "a". That
-        #    is deliberate rather than tolerated. Start-Process redirection appends a newline the
-        #    child never wrote while the ProcessStartInfo launcher does not, so removing exactly
-        #    one would leave the two disagreeing whenever the child's own output ends in a
-        #    newline, which is the ordinary case for print().
-        #
-        # The cost is that a payload whose meaningful content ends in blank lines cannot be
-        # carried through here. No consumer does: the path resolver returns one line, the icon
-        # refresh compares a single token, and the process table splits on newlines and ignores
-        # empty entries. A future consumer that needs trailing blank lines must not use this.
-        return (($Text -replace "\r\n", "`n") -replace "\n$", "")
+    # Path.resolve in a bounded child. $null on anything but a clean answer.
+    function Invoke-StudioEarlyPython {
+        param(
+            [Parameter(Mandatory = $true)][string]$Exe,
+            [Parameter(Mandatory = $true)][string]$Path,
+            [int]$TimeoutMs = 10000
+        )
+        # The gate's expression (_resolved_windows_path) but strict=True: identical for any path that
+        # resolves, while a loop or dangling link raises instead of coming back unresolved.
+        # Before 3.8 Windows resolve does not follow links, so an alias would be reported as exact.
+        $script = "import pathlib,sys" + [char]10 +
+                  "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
+                  "sys.stdout.buffer.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)).encode('utf-8'))"
+        # Verbatim: Trim() would drop a trailing U+00A0, which NTFS names keep.
+        $answer = "$(Invoke-StudioEarlyPythonScript -Exe $Exe -Script $script -ScriptArgs @($Path) -TimeoutMs $TimeoutMs)"
+        if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
+        if (-not [System.IO.Path]::IsPathRooted($answer)) { return $null }
+        if (-not (Test-Path -LiteralPath $answer)) { return $null }
+        return $answer
     }
 
-    # Run a script in a bounded child and return its stdout, or $null on anything other than a
-    # clean exit. The generic half, shared by every early-Python rung.
-    #
-    # Two launchers, because the first does not work on the hosts these rungs exist for.
-    # Constrained Language Mode allows methods only on a small set of core types, and
-    # System.Diagnostics.Process is not among them: both "New-Object ProcessStartInfo" and
-    # [Process]::Start are refused there. Measured, not assumed. Since CLM is one of the two
-    # policies that also block defining a type at runtime, a launcher that only works outside CLM
-    # would miss half the population the ladder is for. Start-Process, Wait-Process and
-    # Get-Content are cmdlets and stay available, so the fallback is built from those.
-    #
-    # The first launcher stays first because it needs no temporary files and no second write of
-    # the script. The fallback is reached by the catch, so a host that merely fails to start the
-    # process once does not silently lose the answer either.
+    # A script's stdout from a bounded child, or $null on anything but a clean exit.
     function Invoke-StudioEarlyPythonScript {
         param(
             [Parameter(Mandatory = $true)][string]$Exe,
@@ -2794,26 +2836,13 @@ exit 1
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $Exe
-            # -I and -S. Isolated mode covers PYTHONPATH and the user site directory, but it
-            # implies -E, -P and -s and NOT -S, so site is still imported and a system-level
-            # sitecustomize still runs before the script below. Measured rather than assumed:
-            # under -I alone sys.flags.no_site is 0. On a corporate host that sitecustomize is
-            # instrumentation, and each thing it can do breaks a different caller of this runner:
-            # printing to stdout corrupts the single line read back, hanging burns the timeout on
-            # a working interpreter, and patching a stdlib module would let an influenced answer
-            # be taken as authoritative. Nothing routed through here needs site-packages.
+            # -S as well as -I: -I still imports site, so a sitecustomize could print or hang.
+            # ArgumentList is .NET Core only; Windows PowerShell 5.1 lacks it.
             $argv = @("-I", "-S", "-c", $Script) + $ScriptArgs
-            # ArgumentList is .NET Core only. Windows PowerShell 5.1, the host the desktop
-            # installer launches, gets ProcessStartInfo from .NET Framework where the property
-            # does not exist, so .Add() would throw and the catch below would reject every
-            # candidate while looking perfectly healthy.
             if ($null -ne $psi.PSObject.Properties["ArgumentList"]) {
                 foreach ($a in $argv) { $null = $psi.ArgumentList.Add($a) }
             } else {
-                # Quote for CommandLineToArgvW. The scripts here carry no double quote by
-                # construction and a Windows path cannot contain one, so only two things matter:
-                # wrap each argument, and double any run of trailing backslashes, since
-                # "C:\dir\" would otherwise escape its own closing quote.
+                # Quote for CommandLineToArgvW, doubling trailing backslashes so "C:\dir\" keeps its quote.
                 $psi.Arguments = (@($argv | ForEach-Object {
                     '"' + ($_ -replace '(\\+)$', '$1$1') + '"'
                 }) -join ' ')
@@ -2821,186 +2850,41 @@ exit 1
             $psi.UseShellExecute = $false
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
-            # Without this, 5.1 decodes the child's bytes with the console codepage and any
-            # non-ASCII character comes back corrupted. The corruption is silent: a path still
-            # looks like a path, and it is what gets hashed into a lock name.
+            # Otherwise 5.1 decodes with the console codepage and corrupts non-ASCII paths.
             $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
             $psi.CreateNoWindow = $true
             $proc = [System.Diagnostics.Process]::Start($psi)
             $stdout = $proc.StandardOutput.ReadToEndAsync()
             $null = $proc.StandardError.ReadToEndAsync()
-            # A wedged interpreter must not wedge an installer that has not taken its lock yet.
             if (-not $proc.WaitForExit($TimeoutMs)) {
                 try { $proc.Kill() } catch {}
                 return $null
             }
             if ($proc.ExitCode -ne 0) { return $null }
-            return (Remove-StudioTrailingNewline -Text "$($stdout.Result)")
+            return "$($stdout.Result)"
         } catch {
-            return (Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $Exe -Script $Script -ScriptArgs $ScriptArgs -TimeoutMs $TimeoutMs)
+            return $null
         } finally {
             if ($proc) { try { $proc.Dispose() } catch {} }
         }
     }
 
-    # The Constrained Language Mode launcher. Cmdlets only: no .NET method call, no New-Object,
-    # no type literal, because all four are refused there.
-    function Invoke-StudioEarlyPythonScriptViaCmdlets {
-        param(
-            [Parameter(Mandatory = $true)][string]$Exe,
-            [Parameter(Mandatory = $true)][string]$Script,
-            [string[]]$ScriptArgs = @(),
-            [int]$TimeoutMs = 10000
-        )
-        $scriptFile = $null
-        $outFile = $null
-        $errFile = $null
-        $proc = $null
-        try {
-            # The script goes to a file rather than through -c. Start-Process builds one command
-            # line out of -ArgumentList, and a -c body carrying newlines and quotes cannot survive
-            # that intact. A file path is one plain token, so the two launchers run the same
-            # program rather than nearly the same one.
-            # Plain strings, not New-TemporaryFile. That cmdlet hands back a FileInfo, and
-            # reading a path off it is a property read on a type Constrained Language Mode does
-            # not allow, so every path below would have thrown on a locked-down host. [guid] and
-            # [string] are both on the allowed list, and Join-Path is a cmdlet.
-            $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
-            $stem = Join-Path $tempRoot ("unsloth-early-" + [guid]::NewGuid().ToString("N"))
-            $scriptFile = "$stem.py"
-            $outFile = "$stem.out"
-            $errFile = "$stem.err"
-            # UTF-8 both ways. The interpreter writes its answer as UTF-8 bytes, so reading it
-            # back any other way corrupts every non-ASCII path exactly as the console codepage
-            # would, and silently: the string still looks like a path.
-            Set-Content -LiteralPath $scriptFile -Value $Script -Encoding UTF8 -NoNewline
-            # Quoted here, not handed to -ArgumentList as an array: Start-Process joins that
-            # array with spaces and quotes nothing, so a path containing a space arrives as two
-            # arguments. Same rule as the other launcher's 5.1 branch, and for the same reason:
-            # wrap each argument, and double any run of trailing backslashes, since "C:\dir\"
-            # would otherwise escape its own closing quote.
-            # -I -S, the same pair as the primary launcher. These two are asserted to return the
-            # same string byte for byte, and a sitecustomize running in one of them but not the
-            # other is exactly the kind of difference that assertion exists to catch.
-            $argv = (@(@("-I", "-S", $scriptFile) + $ScriptArgs | ForEach-Object {
-                '"' + ($_ -replace '(\\+)$', '$1$1') + '"'
-            }) -join ' ')
-            $proc = Start-Process -FilePath $Exe -ArgumentList $argv -NoNewWindow -PassThru `
-                -RedirectStandardOutput $outFile -RedirectStandardError $errFile
-            if (-not $proc) { return $null }
-            # Wait-Process takes whole seconds, so round up: a sub-second bound must not become a
-            # zero-second one, which returns immediately and kills a healthy interpreter.
-            #
-            # Arithmetic and a cast, not [math]::Ceiling. System.Math is not among the types
-            # Constrained Language Mode allows method calls on, so Ceiling throws there, and this
-            # is the one function in the file that exists to run under exactly that policy.
-            # Measured: it blocks. This rounds up and never to zero, and being a second generous
-            # on a bound this coarse costs nothing.
-            # Ceiling, done with integer arithmetic rather than the +999 idiom.
-            #
-            # That idiom is a C integer-DIVISION trick and PowerShell's / is floating point, so
-            # [int] rounds to nearest instead of truncating and every exact multiple gains a
-            # second: measured, 10000 became 11 and 20000 became 21. Wait-Process then waited a
-            # second longer than the caller asked, so the two launchers did not share a deadline.
-            #
-            # [math]::Ceiling is the obvious spelling and Constrained Language Mode refuses it,
-            # which is the whole reason this launcher exists. % and / are operators and the [int]
-            # cast is permitted there, both measured on a constrained runspace.
-            $seconds = ($TimeoutMs - ($TimeoutMs % 1000)) / 1000
-            if (($TimeoutMs % 1000) -ne 0) { $seconds = $seconds + 1 }
-            $seconds = [int]$seconds
-            if ($seconds -lt 1) { $seconds = 1 }
-            $timedOut = $false
-            Wait-Process -InputObject $proc -Timeout $seconds -ErrorAction SilentlyContinue -ErrorVariable waitError
-            if ($waitError) { $timedOut = $true }
-            if ($timedOut) {
-                Stop-Process -InputObject $proc -Force -ErrorAction SilentlyContinue
-                # Stop-Process returns when the kill has been REQUESTED, not when the process is
-                # gone, and Windows holds the redirected stdout and stderr handles until it is.
-                # Deleting those files in the finally below then fails with a sharing violation
-                # and the .out is left behind in TEMP. Measured in parity CI, where the same run
-                # passed under pwsh 7 and failed under Windows PowerShell 5.1: an install that
-                # litters is an install that is not idempotent.
-                Wait-Process -InputObject $proc -Timeout 5 -ErrorAction SilentlyContinue
-                return $null
-            }
-            # Select-Object, not $proc.ExitCode: System.Diagnostics.Process is not an allowed
-            # type under Constrained Language Mode either, so the direct read throws on the very
-            # hosts the primary launcher already could not serve.
-            $exitCode = $proc | Select-Object -ExpandProperty ExitCode -ErrorAction SilentlyContinue
-            if ($null -eq $exitCode -or $exitCode -ne 0) { return $null }
-            $answer = Get-Content -LiteralPath $outFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
-            if ($null -eq $answer) { return "" }
-            return (Remove-StudioTrailingNewline -Text ([string]$answer))
-        } catch {
-            return $null
-        } finally {
-            # Retried, and confirmed rather than assumed. A file that has just stopped being
-            # written can still be held for a moment, by the child that is on its way out or by
-            # an on-access scanner opening it, and a single silent Remove-Item that fails leaves
-            # the machine dirtier than this run found it. The loop costs nothing when the first
-            # attempt works, which is every ordinary call.
-            foreach ($f in @($scriptFile, $outFile, $errFile)) {
-                if (-not $f) { continue }
-                for ($attempt = 0; $attempt -lt 10; $attempt++) {
-                    if (-not (Test-Path -LiteralPath $f)) { break }
-                    Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
-                    if (-not (Test-Path -LiteralPath $f)) { break }
-                    Start-Sleep -Milliseconds 100
-                }
-            }
-        }
-    }
-
-    # A path resolved in a bounded child. Null on anything other than a clean answer, because
-    # every caller already treats "no exact answer" as "use the lexical one".
-    function Invoke-StudioEarlyPython {
-        param(
-            [Parameter(Mandatory = $true)][string]$Exe,
-            [Parameter(Mandatory = $true)][string]$Path,
-            [int]$TimeoutMs = 10000
-        )
-        # Deliberately the same expression unsloth_cli/_studio_runtime_gate.py's
-        # _resolved_windows_path uses, Path(...).resolve(...), not os.path.realpath. The two agree
-        # today, but this string is hashed into a lock name the running Unsloth derives from that
-        # function, so matching the expression removes a class of divergence rather than relying
-        # on two spellings staying equivalent.
-        #
-        # strict=True, unlike the gate's strict=False, and the difference is deliberate. For any
-        # path that genuinely resolves the two return the same string, so that byte-identity
-        # holds for every valid input. They part company on a symlink loop or a dangling
-        # component, where strict=False returns the path UNRESOLVED rather than raising. That is
-        # not an identity, and this rung's contract is that an answer is exact, so returning one
-        # would let a caller decide two paths are different when it cannot know. Raising means
-        # the lexical fallback with Exact = $false, which fails closed. Test-Path alone is not
-        # enough: it is true for the loop's own symlink.
-        #
-        # The version gate is load-bearing. Before 3.8, Windows path resolution did not follow
-        # junctions or symlinks, so an older interpreter would return the ALIAS spelling and this
-        # rung would mark it exact. Test-StudioPathEqual would then read an alias and its target
-        # as definitively different instead of taking both runtime locks, which is permission to
-        # install over a live managed environment. The probe cannot catch it, since it only
-        # resolves the interpreter's own ordinary directory, so the interpreter is refused here.
-        $script = "import pathlib,sys" + [char]10 +
-                  "sys.exit(2) if sys.version_info < (3,8) else None" + [char]10 +
-                  "sys.stdout.buffer.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)).encode('utf-8'))"
-        $answer = "$(Invoke-StudioEarlyPythonScript -Exe $Exe -Script $script -ScriptArgs @($Path) -TimeoutMs $TimeoutMs)".Trim()
-        if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
-        # A relative answer is not an identity, and a path that does not exist cannot be the
-        # resolution of one that does.
-        # Split-Path -IsAbsolute, not [System.IO.Path]::IsPathRooted, for the allowed-type
-        # reason above. This one guards the path the final-path resolver returns, so the static
-        # call would have thrown right where the ladder is meant to answer.
-        if (-not (Split-Path -IsAbsolute $answer)) { return $null }
-        if (-not (Test-Path -LiteralPath $answer)) { return $null }
-        return $answer
-    }
+    # One child per distinct path: the process scan asks for the same image paths repeatedly.
+    # Misses are cached too.
+    $script:StudioPythonFinalPathCache = $null
 
     function Get-StudioPythonFinalPath {
         param([Parameter(Mandatory = $true)][string]$Path)
+        if ($null -eq $script:StudioPythonFinalPathCache) { $script:StudioPythonFinalPathCache = @{} }
+        if ($script:StudioPythonFinalPathCache.ContainsKey($Path)) {
+            return $script:StudioPythonFinalPathCache[$Path]
+        }
         $exe = Get-StudioEarlyPython
+        # Not cached: the re-probe once $VenvDir is known may still find an interpreter.
         if (-not $exe) { return $null }
-        return (Invoke-StudioEarlyPython -Exe $exe -Path $Path)
+        $answer = Invoke-StudioEarlyPython -Exe $exe -Path $Path
+        $script:StudioPythonFinalPathCache[$Path] = $answer
+        return $answer
     }
 
     # Tell Explorer a shortcut was rewritten, through a child interpreter. Used only where the
@@ -3019,13 +2903,9 @@ exit 1
         # case also routed around the switch, and a host that had opted out got a child process
         # anyway. The refresh is cosmetic, so opting out costs a stale icon and nothing else.
         if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") { return $false }
-        # The caller's interpreter wins over discovery, and on the fresh-install case it is the
-        # only one that works. Get-StudioEarlyPython latches its answer on first use, and its
-        # first use is the install lock, which runs before Python is installed. On a host that
-        # had none, that call caches $null for the rest of the run, so by the time shortcuts are
-        # written the managed interpreter exists and this would still decline: exactly the
-        # first-install-under-CLM case the rung was added for. New-StudioShortcuts has already
-        # confirmed its own path exists and resolved it, so there is nothing left to check here.
+        # The caller's interpreter wins over discovery: it is the one the install just provided,
+        # and New-StudioShortcuts has already confirmed its path exists and resolved it, so there
+        # is nothing left to check here. Discovery is only the fallback for a caller without one.
         $exe = $Exe
         if ([string]::IsNullOrWhiteSpace($exe)) {
             # Inside the try, not above it. Discovery can throw, and this function promises it
@@ -3037,17 +2917,21 @@ exit 1
         }
         if (-not $exe) { return $false }
         # SHCNE_UPDATEITEM 0x00002000 with SHCNF_PATHW 0x0005 per shortcut, then SHCNE_ASSOCCHANGED
-        # 0x08000000 as the global broadcast. Same two calls, same order, same constants as the
-        # rung above: the per-item notification is the one that matters, because the global
-        # broadcast misses a same-name .lnk that was rewritten in place.
+        # 0x08000000 as the global broadcast. Same two calls, same order as the rung above: the
+        # per-item notification is the one that matters, because the global broadcast misses a
+        # same-name .lnk that was rewritten in place.
+        #
+        # Plus SHCNF_FLUSH 0x1000, which the rung above does not need. Without it SHChangeNotify
+        # only queues the notification, and this child exits straight after, so Explorer can
+        # lose it while the child still reports ok. A hung Explorer is bounded by the timeout.
         $script = "import ctypes,sys" + [char]10 +
             "from ctypes import wintypes" + [char]10 +
             "s32=ctypes.WinDLL('shell32',use_last_error=True)" + [char]10 +
             "s32.SHChangeNotify.restype=None" + [char]10 +
             "s32.SHChangeNotify.argtypes=[wintypes.LONG,wintypes.UINT,wintypes.LPCWSTR,wintypes.LPCWSTR]" + [char]10 +
             "for p in sys.argv[1:]:" + [char]10 +
-            "    s32.SHChangeNotify(0x00002000,0x0005,p,None)" + [char]10 +
-            "s32.SHChangeNotify(0x08000000,0,None,None)" + [char]10 +
+            "    s32.SHChangeNotify(0x00002000,0x1005,p,None)" + [char]10 +
+            "s32.SHChangeNotify(0x08000000,0x1000,None,None)" + [char]10 +
             "sys.stdout.write('ok')"
         try {
             $answer = Invoke-StudioEarlyPythonScript -Exe $exe -Script $script -ScriptArgs $Paths -TimeoutMs 10000
@@ -3098,12 +2982,7 @@ exit 1
             }
         }
         if ([string]::IsNullOrEmpty($resolved)) {
-            # Strictly additive: this rung only runs where the native one already gave up, so a
-            # host that resolves natively today behaves exactly as it did. Where it answers, the
-            # identity is exact for the same reason the native one is, os.path.realpath being
-            # GetFinalPathNameByHandleW on Windows, so Exact = $true is earned rather than
-            # assumed. Where there is no usable interpreter it returns null and the lexical
-            # fallback below runs, which is today's behaviour unchanged.
+            # Only reached when the native rung gave up, so hosts that resolve natively are unchanged.
             $resolved = Get-StudioPythonFinalPath -Path $existingPath
             if (-not [string]::IsNullOrWhiteSpace($resolved)) { $exact = $true }
         }
@@ -3137,6 +3016,109 @@ exit 1
     function Get-StudioFinalPath {
         param([Parameter(Mandatory = $true)][string]$Path)
         return (Resolve-StudioFinalPathInfo -Path $Path).Path
+    }
+
+    # Free space for the disk-full diagnosis (#11313), answering $null rather than guessing: a
+    # number this cannot produce is a diagnosis it does not print.
+    # A Windows volume can be mounted at a DIRECTORY, and then the drive root is the wrong answer:
+    # GetPathRoot reduces C:\studio to C:\, so two paths on different volumes compare equal.
+    # Win32_Volume lists mount points by the path they are mounted at, so the longest Name that
+    # prefixes a path names the volume really holding it; anywhere CIM cannot answer, callers fall
+    # back to the drive-root logic, which is right for a lettered volume.
+    # Known limit: Name exposes ONE access path, so a volume reached through a second one falls
+    # back to the drive root, the pre-existing answer. Closing it needs a Win32_MountPoint join on
+    # every install, for a diagnostic. Split out so the matching is testable without a mount point.
+    function Select-StudioVolumeForPath {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path,
+              [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Volumes)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+        # Unrooted means GetFullPath would anchor it to the current directory and invent a match
+        # on whichever volume that happens to be. No answer is the honest one.
+        if (-not [System.IO.Path]::IsPathRooted($Path)) { return $null }
+        $full = [System.IO.Path]::GetFullPath($Path)
+        # Name carries a trailing separator and GetFullPath does not, so a path that IS the mount
+        # point would miss its own volume. Appending one also keeps C:\studiofoo from matching a
+        # volume mounted at C:\studio.
+        if (-not $full.EndsWith([System.IO.Path]::DirectorySeparatorChar)) {
+            $full += [System.IO.Path]::DirectorySeparatorChar
+        }
+        $best = $null
+        foreach ($vol in $Volumes) {
+            if (-not $vol -or -not $vol.Name) { continue }
+            if (-not $full.StartsWith($vol.Name, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+            if ((-not $best) -or $vol.Name.Length -gt $best.Name.Length) { $best = $vol }
+        }
+        return $best
+    }
+
+    # Junctions and symlinks lie about which volume a path is on, so a studio home behind one is
+    # otherwise measured on the link's host drive. The lexical fallback keeps a resolver that
+    # cannot answer from costing the caller its measurement entirely.
+    function Resolve-StudioVolumeQueryPath {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        try {
+            $final = Get-StudioFinalPath -Path $Path
+            # Get-StudioFinalPath strips \\?\ deliberately, so a volume with no drive letter comes
+            # back as Volume{GUID}\..., which is NOT rooted: GetFullPath would then anchor it to
+            # the current directory and name an unrelated volume. Keep the caller's own path.
+            if ($final -and [System.IO.Path]::IsPathRooted($final)) { return $final }
+            return $Path
+        } catch { return $Path }
+    }
+
+    # Bounded out of process, as Invoke-BoundedVideoControllerScan documents: a degraded WMI
+    # repository blocks a CIM query indefinitely, and neither -ErrorAction nor try/catch bounds a
+    # query that never returns. Cached, timeouts included, so a broken repository costs once, and
+    # -Fresh for the free-space caller, whose cached FreeSpace would be a pre-failure snapshot.
+    function Get-StudioVolumeList {
+        param([switch]$Fresh)
+        if (-not $Fresh -and $null -ne $script:StudioVolumeList) { return $script:StudioVolumeList }
+        $script:StudioVolumeList = @()
+        $job = $null
+        try {
+            $job = Start-Job -ScriptBlock {
+                Get-CimInstance -ClassName Win32_Volume -ErrorAction SilentlyContinue |
+                    Select-Object Name, DeviceID, FreeSpace
+            }
+            if (Wait-Job -Job $job -Timeout 15) {
+                $script:StudioVolumeList = @(Receive-Job -Job $job -ErrorAction SilentlyContinue |
+                    Where-Object { $_ -and $_.Name })
+            } else {
+                Stop-Job -Job $job -ErrorAction SilentlyContinue
+            }
+        } catch {
+        } finally {
+            if ($job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
+        }
+        return $script:StudioVolumeList
+    }
+
+    function Get-StudioMountedVolume {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path,
+              [switch]$Fresh)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+        if (-not ($IsWindows -or $env:OS -eq "Windows_NT")) { return $null }
+        try {
+            return (Select-StudioVolumeForPath -Path (Resolve-StudioVolumeQueryPath -Path $Path) `
+                -Volumes (Get-StudioVolumeList -Fresh:$Fresh))
+        } catch { return $null }
+    }
+
+    # GetPathRoot on a path that does not exist yet still names the volume it would be created on.
+    function Get-StudioFreeSpaceBytes {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+        $queryPath = Resolve-StudioVolumeQueryPath -Path $Path
+        # -Fresh: this is the caller that wants a number, and a stale one is worse than none.
+        $mounted = Get-StudioMountedVolume -Path $queryPath -Fresh
+        if ($mounted -and $null -ne $mounted.FreeSpace) { return [int64]$mounted.FreeSpace }
+        try {
+            # The fallback needs the resolved path too: DriveInfo on the lexical one answers for
+            # the drive the junction lives on, not the drive it points at.
+            $root = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($queryPath))
+            if (-not $root) { return $null }
+            return ([System.IO.DriveInfo]::new($root)).AvailableFreeSpace
+        } catch { return $null }
     }
 
     # Custom Unsloth roots are not supported with --tauri (the desktop app uses
@@ -3603,7 +3585,7 @@ exit 1
             if (-not (Test-StudioUvNoCache)) {
                 Write-StudioUvCacheMarker -StudioRoot $StudioRoot -Cache $studioCache
             }
-            step "uv cache" "forced Studio cache isolation ($studioCache); already-cached packages may download again" "Yellow"
+            step "uv cache" "forced Unsloth Studio cache isolation ($studioCache); already-cached packages may download again" "Yellow"
             return
         }
 
@@ -3730,19 +3712,19 @@ exit 1
             }
             "studio" {
                 if ($chosenCache) {
-                    step "uv cache" "reusing this install's Studio cache ($selectedCache)"
+                    step "uv cache" "reusing this install's Unsloth Studio cache ($selectedCache)"
                 # Never about the directory we are falling back TO: the Studio cache is itself
                 # a candidate now, so it can be the one refused, and naming it claims a fallback
                 # that did not happen.
                 } elseif ($scanBlocked -and -not [string]::IsNullOrWhiteSpace([string]$blockedCache) -and $blockedCache -ne $selectedCache) {
-                    step "uv cache" "using new Studio-owned cache ($selectedCache); part of $blockedCache could not be read, so cached packages may download again" "Yellow"
+                    step "uv cache" "using new Unsloth Studio-owned cache ($selectedCache); part of $blockedCache could not be read, so cached packages may download again" "Yellow"
                 } elseif ($scanBlocked -and [string]::IsNullOrWhiteSpace([string]$blockedCache)) {
-                    step "uv cache" "using new Studio-owned cache ($selectedCache); the existing uv cache could not be inspected, so cached packages may download again" "Yellow"
+                    step "uv cache" "using new Unsloth Studio-owned cache ($selectedCache); the existing uv cache could not be inspected, so cached packages may download again" "Yellow"
                 # Warm and still here means the write probe refused it.
                 } elseif ($warnCache -and $warnCache -ne $selectedCache) {
-                    step "uv cache" "using new Studio-owned cache ($selectedCache); $warnCache is populated but not writable, so cached packages may download again" "Yellow"
+                    step "uv cache" "using new Unsloth Studio-owned cache ($selectedCache); $warnCache is populated but not writable, so cached packages may download again" "Yellow"
                 } else {
-                    step "uv cache" "using new Studio-owned cache ($selectedCache)"
+                    step "uv cache" "using new Unsloth Studio-owned cache ($selectedCache)"
                 }
             }
         }
@@ -4187,16 +4169,103 @@ exit 1
         param([Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$Path)
 
         if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
-        $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
-        if (-not $item) { return "" }
-        # Non-filesystem providers do not expose FileSystemInfo attributes.
-        if ($item -isnot [System.IO.FileSystemInfo]) { return "" }
-        if (-not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return "" }
-        $target = $null
-        try { $target = $item.Target } catch { $target = $null }
-        # PS 5.1 exposes .Target as a collection; PS 7 as a string.
-        if ($target) { return " (it is a link to $(@($target) -join ', '))" }
-        return " (it is a link)"
+
+        # Read attributes through the filesystem API rather than Get-Item. Getting
+        # attributes needs only FILE_READ_ATTRIBUTES, which survives the ACLs that
+        # deny reading the directory itself, so Get-Item returns nothing in exactly
+        # the case this detail is meant to describe and the caller silently loses
+        # every hint below.
+        $attrs = $null
+        try { $attrs = [System.IO.File]::GetAttributes($Path) } catch { $attrs = $null }
+        if ($null -eq $attrs) { return "" }
+
+        # Ordered by how much each one changes the fix. takeown/icacls cannot help
+        # with any of the first three, so name them before falling back to ACLs.
+        # On a directory this attribute only means new descendants are encrypted
+        # by default, so listing it never needs the key and a denial there is an
+        # ACL. Only a file's own streams are unreadable without the certificate.
+        $isDirectory = ([int]$attrs -band [int][System.IO.FileAttributes]::Directory) -ne 0
+        if (-not $isDirectory -and ($attrs -band [System.IO.FileAttributes]::Encrypted)) {
+            return " (it is EFS-encrypted, so it stays unreadable even elevated unless the encrypting account or its recovery certificate is available)"
+        }
+        # Offline plus either recall attribute is a cloud placeholder, typically
+        # OneDrive Files On-Demand that cannot hydrate.
+        # RECALL_ON_OPEN (0x40000) and RECALL_ON_DATA_ACCESS (0x400000) are absent
+        # from the FileAttributes enum on Windows PowerShell 5.1, so test the bits.
+        $offline = ([int]$attrs -band [int][System.IO.FileAttributes]::Offline) -ne 0
+        $recall = ([int]$attrs -band (0x00040000 -bor 0x00400000)) -ne 0
+        if ($offline -or $recall) {
+            return " (it is a cloud placeholder, e.g. OneDrive Files On-Demand, that cannot be hydrated right now)"
+        }
+        if ($attrs -band [System.IO.FileAttributes]::ReparsePoint) {
+            $target = $null
+            try {
+                $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+                if ($item -is [System.IO.FileSystemInfo]) { $target = $item.Target }
+            } catch { $target = $null }
+            # PS 5.1 exposes .Target as a collection; PS 7 as a string.
+            if ($target) { return " (it is a link to $(@($target) -join ', '))" }
+            return " (it is a link)"
+        }
+        return ""
+    }
+
+    # Which security software could be denying this path, as a possibility.
+    #
+    # Worth naming because takeown and icacls cannot clear a filter-driver block
+    # and elevation does not either, so a user whose antivirus is holding the
+    # folder is otherwise sent round the takeown loop for as long as they are
+    # willing. Nothing readable from here attributes the specific denial though,
+    # so this names the candidate and the log that settles it and never
+    # contradicts the ACL advice it follows.
+    #
+    # Defender's Controlled folder access modes are 0 Disabled, 1 Enabled,
+    # 2 AuditMode, 3 BlockDiskModificationOnly, 4 AuditDiskModificationOnly. Only
+    # 1 gates file access; 3 and 4 are direct disk-sector writes rather than
+    # files, so neither explains a denied folder.
+    #
+    # When Defender is not it, name whichever antivirus is registered and running
+    # instead: third-party suites ship the same protected-folders feature under
+    # their own product names, and the user cannot act on advice that does not say
+    # which product to open. Which suite ships what is recorded in
+    # tests/studio/test_installer_av_shapes.py and deliberately not repeated here,
+    # because this file is scanned in full before a line of it runs and a comment
+    # listing security products raises the score of the very file explaining it.
+    # Nothing below hard-codes a product: it reads what SecurityCenter2 registered.
+    #
+    # Answers "" whenever it cannot tell, so a machine with no Defender module
+    # and no SecurityCenter registration reads the same as one that says no.
+    function Get-SecuritySoftwareNote {
+        $mode = $null
+        try {
+            if (Get-Command Get-MpPreference -ErrorAction SilentlyContinue) {
+                $mode = [int](Get-MpPreference -ErrorAction Stop).EnableControlledFolderAccess
+            }
+        } catch { $mode = $null }
+        if ($mode -eq 1) {
+            return "Controlled folder access is ON here, and it gates writes to protected folders whatever your privileges are, so where it is the cause takeown and icacls will not clear it: Windows Defender Operational events 1123 and 1124 say whether it stopped this path, and Virus & threat protection > Ransomware protection > Allow an app is where to allow Unsloth"
+        }
+        # SecurityCenter2 is the registration every consumer antivirus makes, and
+        # it is absent on Server SKUs, so this stays best-effort. productState
+        # packs the running state in 0xF000: 0x1000 on, 0x2000 snoozed, 0 off.
+        # A product that is not running cannot be holding the folder and naming it
+        # sends the user to the wrong console; a state we cannot read proves
+        # nothing either way, so it is kept.
+        $others = @()
+        try {
+            $others = @(Get-CimInstance -Namespace "root/SecurityCenter2" -ClassName AntiVirusProduct -ErrorAction Stop |
+                Where-Object { $state = $_.productState -as [uint32]; ($null -eq $state) -or (($state -band 0xF000) -eq 0x1000) } |
+                ForEach-Object { [string]$_.displayName } |
+                Where-Object { $_ -and $_ -notmatch "Windows Defender" -and $_ -notmatch "Microsoft Defender" })
+        } catch { $others = @() }
+        if ($others.Count -gt 0) {
+            $names = ($others | Select-Object -Unique) -join ", "
+            return "$names is running here, and its ransomware or protected-folder feature can deny a path whatever your privileges are. If takeown and icacls do not clear this, look in $names for a block on this folder, and add an exclusion for it and for Unsloth"
+        }
+        if ($mode -eq 2) {
+            return "Controlled folder access is in audit mode, so it is logging rather than blocking and is not the cause here; Windows Defender Operational events 1123 and 1124 name whatever it did stop"
+        }
+        return ""
     }
 
     # Print guidance; returns the failure reason as its only pipeline output.
@@ -4225,6 +4294,10 @@ exit 1
         substep "takeown /F `"$Path`" /R /D Y" "Yellow"
         substep "icacls `"$Path`" /reset /T" "Yellow"
         substep "Antivirus or Controlled folder access can deny this path too; allow or exclude it, then retry" "Yellow"
+        # After the generic line, since this one either confirms it or rules it
+        # out, and an empty answer must leave the generic advice standing.
+        $securitySoftware = Get-SecuritySoftwareNote
+        if ($securitySoftware) { substep $securitySoftware "Yellow" }
         if ($UserSupplied) {
             return "Access denied reading $Label at $Path. Restore access with takeown/icacls, or point UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build, then re-run setup."
         }
@@ -4267,12 +4340,31 @@ exit 1
             (Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth\studio")))
     }
 
-    # Explicit staging root, shared default cache, or the custom Unsloth home's tree.
+    # The master root storage_roots.unsloth_home() reads. llama.cpp, node and whisper.cpp sit
+    # BESIDE studio\ under it, so deriving them from $StudioHome would put them one level below
+    # where every runtime resolver looks.
+    function Get-MasterRootOverride {
+        if ([string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) { return $null }
+        $value = $env:UNSLOTH_HOME.Trim()
+        if ($value -eq "~") {
+            $value = $env:USERPROFILE
+        } elseif ($value -like "~/*" -or $value -like "~\*") {
+            $value = (Join-Path $env:USERPROFILE $value.Substring(1).TrimStart('/', '\'))
+        }
+        return (Get-CanonicalDir -Path $value)
+    }
+
+    # Explicit staging root, the master root, the shared default cache, or the custom Unsloth
+    # home's tree.
     function Get-ManagedLlamaCppDir {
         param([AllowNull()][string]$StagingRoot = $null)
 
         if ($StagingRoot) {
             return (Join-Path $StagingRoot "llama.cpp")
+        }
+        $masterRoot = Get-MasterRootOverride
+        if ($masterRoot) {
+            return (Join-Path $masterRoot "llama.cpp")
         }
         if (-not (Test-StudioHomeIsCustom)) {
             return (Join-Path $env:USERPROFILE ".unsloth\llama.cpp")
@@ -4289,12 +4381,90 @@ exit 1
         $dir = Get-ManagedLlamaCppDir -StagingRoot $StagingRoot
         if ((Get-LlamaCppInstallReadState -Path $dir) -ne "Denied") { return $null }
         Write-StudioLine ""
-        # A denied custom home cannot be claimed as an Unsloth-managed cache.
-        $homeIsCustom = Test-StudioHomeIsCustom
-        # Preserve user-supplied wording when either override names this tree.
+        # A denied custom home cannot be claimed as an Unsloth-managed cache. Computed rather
+        # than read off $RuntimeRootIsCustom: this runs beside the line that defines it.
+        $homeIsCustom = (Test-StudioHomeIsCustom) -or [bool](Get-MasterRootOverride)
+        # Preserve user-supplied wording when either override names this tree, or
+        # names a build inside it: moving or deleting this folder takes that build
+        # with it, and the later --with-llama-cpp-dir check then aborts on a path
+        # we made disappear.
         $suppliedDir = if ($WithLlamaCppDir) { $WithLlamaCppDir } else { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR }
-        $userSupplied = (-not [string]::IsNullOrWhiteSpace($suppliedDir)) -and
-            ((Get-CanonicalDir -Path $suppliedDir) -eq (Get-CanonicalDir -Path $dir))
+        # Walking the ancestors beats comparing the two canonical strings: an
+        # override that does not exist yet cannot be resolved, so a prefix test
+        # would compare a resolved path against an unresolved one and miss.
+        $userSupplied = $false
+        if (-not [string]::IsNullOrWhiteSpace($suppliedDir)) {
+            $canonicalDir = [string](Get-CanonicalDir -Path $dir)
+            $probe = [string](Get-CanonicalDir -Path $suppliedDir)
+            while (-not [string]::IsNullOrWhiteSpace($probe)) {
+                if ([string](Get-CanonicalDir -Path $probe) -eq $canonicalDir) {
+                    $userSupplied = $true
+                    break
+                }
+                $parent = ""
+                try { $parent = [string](Split-Path -Parent $probe) } catch { $parent = "" }
+                if ($parent -eq $probe) { break }
+                $probe = $parent
+            }
+        }
+
+        # Only the default branch below tells the user to delete this folder, so
+        # only that case may move it. A user-supplied build is not ours to touch,
+        # and an unreadable custom home cannot be confirmed as a managed cache.
+        # Renaming needs DELETE on the folder plus write on its parent, neither of
+        # which is read access, so this recovers denials that takeown and icacls
+        # do not: the folder is a managed cache that setup reinstalls anyway.
+        # Setup never makes this a link, so a link here is something the user
+        # arranged, pointing at a build we were not told about. Moving it would
+        # silently change which tree they run without touching the one they were
+        # protecting, so it is left alone and named in the guidance instead.
+        $isLink = $false
+        try {
+            $linkAttrs = [System.IO.File]::GetAttributes($dir)
+            $isLink = ([int]$linkAttrs -band [int][System.IO.FileAttributes]::ReparsePoint) -ne 0
+        } catch {
+            # Unreadable attributes prove nothing, and "proves nothing" must not
+            # mean "movable": fall through to the guidance rather than guess.
+            $isLink = $true
+        }
+        if (-not $userSupplied -and -not $homeIsCustom -and -not $isLink) {
+            $asideDir = "$dir.denied-$(Get-Date -Format 'yyyyMMddHHmmss')"
+            $moved = $false
+            try {
+                # [System.IO.Directory]::Move, not Move-Item. Move-Item falls back to
+                # copy-then-delete when the rename fails, which creates $asideDir and then
+                # dies on the unreadable contents, leaving a stray llama.cpp.denied-* folder
+                # beside the original on every run. Directory.Move is a bare rename: it
+                # either moves the tree or throws having created nothing.
+                # Measured on windows-latest, denying each shape on the folder itself:
+                #   (OI)(CI)(RX)  rename refused, Move-Item left a stray folder
+                #   (OI)(CI)(R)   rename refused, Move-Item left a stray folder
+                #   (RX)          rename refused, Move-Item left a stray folder
+                #   (DE)          rename SUCCEEDED, both ways
+                # So on Windows a read denial always refuses the rename (the open asks for
+                # SYNCHRONIZE, which every read deny removes) and this recovery cannot fire;
+                # denying DELETE, which sounds like the blocker, does not stop it. On POSIX
+                # the rename needs only write+execute on the parent, so the recovery is real
+                # there and is why this stays rather than being deleted.
+                [System.IO.Directory]::Move($dir, $asideDir)
+                $moved = $true
+            } catch {
+                # Expected when the denial covers the rename; fall through to guidance.
+                # Nothing to clean up: Directory.Move creates nothing when it throws.
+            }
+            if ($moved) {
+                step "permissions" "llama.cpp install at $dir could not be read, so it was moved aside" "Yellow"
+                substep "Moved to $asideDir; it is a managed cache and setup reinstalls it" "Yellow"
+                substep "Delete the moved folder once access is restored, it is no longer used" "Yellow"
+                Write-StudioLine ""
+                return $null
+            }
+            # This runs before the install lock, so a second run can have moved
+            # the folder in between. Re-probe rather than report a denial for a
+            # path that is no longer there and stop an install that can proceed.
+            if ((Get-LlamaCppInstallReadState -Path $dir) -ne "Denied") { return $null }
+        }
+
         $reason = Write-PathAccessDenied -Path $dir -Label "llama.cpp install" `
             -UserSupplied:$userSupplied -OwnershipUnverified:$homeIsCustom
         substep "Stopping here, before phase 1: nothing has been downloaded or installed" "Yellow"
@@ -5282,12 +5452,13 @@ exit 0
                         # SHCNE_ASSOCCHANGED (0x08000000) global refresh (belt-and-suspenders)
                         [UnslothShellIconRefresh]::SHChangeNotify(0x08000000, 0, $null, [System.IntPtr]::Zero)
                     } catch {
-                        # Reached where the type cannot be defined in this shell, which is every
-                        # host under Constrained Language Mode or WDAC Dynamic Code Security.
-                        # Before this the refresh simply did not happen there and the icon stayed
-                        # stale until something else invalidated Explorer's cache. Same two
-                        # notifications through a child interpreter instead. Still cosmetic, and
-                        # still unable to fail the install.
+                        # Reached where the type cannot be defined in this shell, which here means
+                        # WDAC Dynamic Code Security in FullLanguage. Constrained Language Mode
+                        # never gets this far: it refuses the WScript.Shell COM object above, so
+                        # no shortcut is written. Before this the refresh simply did not happen
+                        # and the icon stayed stale until something else invalidated Explorer's
+                        # cache. Same two notifications through a child interpreter instead. Still
+                        # cosmetic, and still unable to fail the install.
                         try {
                             $null = Invoke-StudioPythonShellIconRefresh `
                                 -Paths $createdShortcutPaths -Exe $ManagedPythonPath
@@ -5937,21 +6108,14 @@ exit 0
 
     $script:StudioProcessImageTable = $null
     $script:StudioProcessImageWarned = $false
-    # PID to image path for every process this session can see, read once through ctypes in a
-    # bounded child. $null when there is no usable interpreter or the child cannot answer, which
-    # leaves the WMI rung below exactly as it was.
-    #
-    # ctypes rather than defining the type in PowerShell: the Windows call is identical, but the
-    # work happens in a child interpreter, outside the script text that is classified in full
-    # before it runs.
+    # PID -> image path for every visible process, via ctypes in one child, so no type is defined
+    # in this script. $null leaves the WMI rung exactly as it was.
     $script:StudioPythonProcessImageTable = $null
     $script:StudioPythonProcessImageProbed = $false
 
     function Get-StudioPythonProcessImageTable {
         $exe = Get-StudioEarlyPython
         if (-not $exe) { return $null }
-        # Only Windows has QueryFullProcessImageNameW. Elsewhere this rung has nothing to add over
-        # Get-Process, so it declines rather than pretending.
         if (-not ($env:OS -eq "Windows_NT")) { return $null }
         $probe = "import ctypes,sys" + [char]10 +
             "from ctypes import wintypes" + [char]10 +
@@ -5987,15 +6151,8 @@ exit 0
             if ($split -lt 1) { continue }
             $pidText = $line.Substring(0, $split)
             $path = $line.Substring($split + 1)
-            # A -match and a cast, not [int]::TryParse. Constrained Language Mode does not
-            # permit casting to [ref] at all, so the TryParse spelling throws on the hosts this
-            # rung exists for, and the whole table comes back empty. The regex is anchored, so
-            # it rejects everything the parse would have: PowerShell's [int] cast on a
-            # non-numeric string throws rather than returning zero, and on an out-of-range one
-            # it throws too, which the -match cannot let through unnoticed.
-            if ($pidText -notmatch '^\s*\d+\s*$') { continue }
             $parsed = 0
-            try { $parsed = [int]$pidText } catch { continue }
+            if (-not [int]::TryParse($pidText, [ref]$parsed)) { continue }
             if ($parsed -le 0) { continue }
             if (-not [string]::IsNullOrWhiteSpace($path)) { $table[$parsed] = $path }
         }
@@ -6023,16 +6180,8 @@ exit 0
                 if (-not [string]::IsNullOrWhiteSpace($process.Path)) { return $process.Path }
             } catch {}
         }
-        # Python, before WMI, and for the reason the native rung exists at all: ctypes can call
-        # QueryFullProcessImageNameW with PROCESS_QUERY_LIMITED_INFORMATION, which is granted
-        # where the PROCESS_VM_READ that MainModule needs is refused, and it does not need WMI.
-        # Without something in this slot a host with a broken WMI repository finds NO running
-        # processes and overwrites a venv Unsloth has open, which is the failure the comment above
-        # this ladder describes.
-        #
-        # Batched, one child for the whole run, because Get-RunningStudioVenvProcesses calls this
-        # once per process on the machine and a child process each time would be far slower than
-        # the WMI rung it sits in front of.
+        # PROCESS_QUERY_LIMITED_INFORMATION is granted where MainModule's PROCESS_VM_READ is not,
+        # and needs no WMI. One child per run: this is called once per process on the machine.
         if (-not $script:StudioPythonProcessImageProbed) {
             $script:StudioPythonProcessImageProbed = $true
             $script:StudioPythonProcessImageTable = Get-StudioPythonProcessImageTable
@@ -6041,16 +6190,8 @@ exit 0
             $script:StudioPythonProcessImageTable.ContainsKey($ProcessId)) {
             return $script:StudioPythonProcessImageTable[$ProcessId]
         }
-        # Freshness, which both table rungs share and neither used to state.
-        #
-        # Each is a snapshot taken once per run and keyed only by PID, so if a process exits and
-        # Windows reuses its PID, the answer describes the process that is gone. It is recorded
-        # here rather than fixed because the fix is the thing these rungs exist to avoid: asking
-        # per process instead of once. The consumer is Get-RunningStudioVenvProcesses, which asks
-        # about PIDs it enumerated moments earlier in the same run, so the window is short.
-        #
-        # This rung deliberately matches the WMI rung below rather than inventing a second
-        # contract; an audit read the ctypes snapshot as a new staleness, and it is not one.
+        # Both table rungs are per-run PID snapshots, so a reused PID reads stale; accepted, since
+        # the caller asks about PIDs it enumerated moments earlier.
         # Queried once per run, not once per process: this is the slow rung.
         if ($null -eq $script:StudioProcessImageTable) {
             $script:StudioProcessImageTable = @{}
@@ -7158,7 +7299,6 @@ exit 0
     # installer is a command-not-found.
     Write-StudioRootOwnerMarker -Root $StudioHome
     Set-StudioUvCacheEnvironment -StudioRoot $StudioHome -Isolated $IsolateUvCache -UvExecutable $script:UvExe
-
     # Bytecode compilation can exceed uv's 60s default on slow machines ("0" disables).
     if (-not $env:UV_COMPILE_BYTECODE_TIMEOUT) {
         $env:UV_COMPILE_BYTECODE_TIMEOUT = "180"
@@ -7186,6 +7326,13 @@ exit 0
     # The existing interpreter's platform tag, read before any rollback move takes it away.
     $script:PrevVenvPlatformTag = $null
     $script:StudioVenvRollbackActive = $false
+    # Set only by --no-rollback, so a branch that needs the previous tree can tell
+    # "already deleted on purpose" from "not moved aside yet".
+    $script:StudioVenvRollbackDiscarded = $false
+    # Set by the discard itself, so the disk-full remedy describes what happened rather than what
+    # was requested.
+    $script:StudioVenvDiscardSucceeded = $false
+    $script:StudioVenvDiscardLeftover = $null
     $script:StudioVenvRollbackPartial = $false
     # Reset per run: under `irm | iex` the script scope IS the caller's session.
     $script:PrevTorchVer = ""
@@ -7283,6 +7430,46 @@ exit 0
         return ($null -ne (Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue))
     }
 
+    # A wedged torch import or a hanging Intel driver init -- what the XPU probes below exist to
+    # detect -- would block a bare `& python -c ...` forever. ProcessStartInfo, not &, so stderr
+    # cannot trip $ErrorActionPreference; BOTH streams drain async so a noisy import cannot
+    # deadlock on a full pipe; WaitForExit bounds the wait and kills the child. Every failure
+    # (timeout, crash, exception) reads as .Ok = $false; .Error carries WHICH one, since stderr
+    # used to be drained and discarded, leaving a driver-level DLL load error and a missing torch
+    # indistinguishable. Defined above the Intel scan: PowerShell binds a function when it runs.
+    function Invoke-BoundedPythonProbe {
+        param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
+        $result = [pscustomobject]@{ Ok = $false; Output = ""; Error = "" }
+        if (-not $PythonExe -or -not $Code) { return $result }
+        try {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $PythonExe
+            $psi.Arguments = "-c `"$Code`""
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $outTask = $proc.StandardOutput.ReadToEndAsync()
+            $errTask = $proc.StandardError.ReadToEndAsync()
+            if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+                try { $proc.Kill() } catch {}
+                # Synthesised, not read back: waiting on the reader tasks of a wedged child
+                # would reintroduce the hang this helper exists to bound.
+                $result.Error = "python did not answer within $TimeoutSec seconds"
+                return $result
+            }
+            $result.Output = $outTask.GetAwaiter().GetResult()
+            # Kept, not discarded: the only place a failed probe's OSError / WinError text exists.
+            $result.Error = $errTask.GetAwaiter().GetResult()
+            $result.Ok = ($proc.ExitCode -eq 0)
+            return $result
+        } catch {
+            $result.Error = $_.Exception.Message
+            return $result
+        }
+    }
+
     function Start-StudioVenvRollback {
         param([Parameter(Mandatory = $true)][string]$ExistingDir)
         $stamp = Get-Date -Format "yyyyMMddHHmmss"
@@ -7329,13 +7516,56 @@ exit 0
             }
             throw
         }
+        # --no-rollback / UNSLOTH_INSTALL_NO_ROLLBACK: drop the old environment now instead of at
+        # commit, for the disk-constrained cross-volume case. The rename still happens first, so
+        # uv never builds into an occupied path. Clearing the state before the delete is what the
+        # commit path does too: an interrupt must not restore a half-deleted backup.
+        if ($script:StudioNoRollback) {
+            $discard = $script:StudioVenvRollbackDir
+            # The Intel scan rescues an adapter WMI cannot classify by asking the PREVIOUS
+            # environment's torch whether XPU works, and deleting that tree takes the only
+            # interpreter that can answer. Opting out must cost disk, never hardware, so the
+            # verdict is taken first and the scan reads it. Wrapped, because a probe that cannot
+            # run must not cost the rename.
+            try {
+                $_discardPy = Join-Path $discard "Scripts\python.exe"
+                if (Test-Path -LiteralPath $_discardPy -ErrorAction SilentlyContinue) {
+                    $_discardXpu = Invoke-BoundedPythonProbe -PythonExe $_discardPy `
+                        -Code 'import torch; print(torch.xpu.is_available())'
+                    if ($_discardXpu.Ok -and $_discardXpu.Output -match '(?m)^\s*True\s*$') {
+                        $script:StudioPreservedXpuVerdict = $true
+                    }
+                }
+            } catch { }
+            $script:StudioVenvRollbackActive = $false
+            $script:StudioVenvRollbackDir = $null
+            # Distinct from "never started". Inactive alone cannot tell the two apart, and the
+            # ARM64 migration below reads it to decide whether it still has a tree to move.
+            $script:StudioVenvRollbackDiscarded = $true
+            # The helper already names the reason it could not delete. What it must not do is
+            # report success anyway: a tree left behind by an open handle, a reparse point or a
+            # long path frees none of the space this flag exists to free.
+            if (Remove-StudioVenvTreeWithRetry -Path $discard -Label "previous environment" -LinkAware) {
+                $script:StudioVenvDiscardSucceeded = $true
+                substep "previous environment discarded (--no-rollback); a failed install cannot be undone"
+            } else {
+                $script:StudioVenvDiscardLeftover = $discard
+                substep "it is no longer used for rollback; remove $discard by hand to reclaim the space." "Yellow"
+            }
+            return
+        }
         substep "previous environment preserved for rollback"
     }
 
     function Remove-StudioVenvTreeWithRetry {
         param(
             [Parameter(Mandatory = $true)][string]$Path,
-            [Parameter(Mandatory = $true)][string]$Label
+            [Parameter(Mandatory = $true)][string]$Label,
+            # Only the --no-rollback discard asks for this. Test-StudioPathPresent is the stricter
+            # check and arguably the right default, but making it the default would change what
+            # this reports on installs that never passed the flag, and this change is meant to be
+            # invisible to them.
+            [switch]$LinkAware
         )
         $lastError = $null
         for ($attempt = 1; $attempt -le 3; $attempt++) {
@@ -7344,7 +7574,12 @@ exit 0
             } catch {
                 $lastError = $_.Exception.Message
             }
-            if (-not (Test-Path -LiteralPath $Path)) { return $true }
+            # Under -LinkAware, Test-Path is not enough: it follows a directory reparse point, so
+            # a dangling one that could not be unlinked reads as absent and this would report a
+            # removal that did not happen. The discard acts on that answer by clearing the
+            # rollback state and telling the user the environment is gone.
+            $stillThere = if ($LinkAware) { Test-StudioPathPresent -Path $Path } else { Test-Path -LiteralPath $Path }
+            if (-not $stillThere) { return $true }
             if ($attempt -lt 3) { Start-Sleep -Milliseconds (250 * $attempt) }
         }
         Write-StudioLine "[WARN] Could not remove $Label at $Path" -ForegroundColor Yellow
@@ -7605,8 +7840,14 @@ exit 0
         if ((Get-HostMachineArch) -eq "arm64" -and (Test-Path -LiteralPath $VenvPython -PathType Leaf)) {
             $script:PrevVenvPlatformTag = Get-PythonPlatformTag $VenvPython
         }
-        # New layout already exists -- replace only after preserving rollback copy.
-        substep "preserving existing environment for rollback..."
+        # New layout already exists -- replace only after preserving rollback copy, unless the
+        # caller asked for no copy at all, in which case this line would be contradicted by the
+        # "discarded" one Start-StudioVenvRollback prints a moment later.
+        if ($script:StudioNoRollback) {
+            substep "moving the existing environment aside..."
+        } else {
+            substep "preserving existing environment for rollback..."
+        }
         try {
             Start-StudioVenvRollback -ExistingDir $VenvDir
         } catch {
@@ -7682,10 +7923,23 @@ exit 0
         # anything the user pip-installed there is not reinstalled. The old tree is kept
         # under $StudioHome as unsloth_studio.arm64.* rather than deleted with the ordinary
         # rollback, so it can still be read: $script:StudioVenvRollbackPreserve below.
-        substep "the ARM64 environment is kept under $StudioHome as unsloth_studio.arm64.*;" "Yellow"
-        substep "re-install any extra packages you had added to it, or set UNSLOTH_ALLOW_ARM64_PYTHON=1 to keep it." "Yellow"
+        # Only when there is a tree to keep. Under --no-rollback it is either already gone or
+        # about to be, and the arms below say which; printing this as well leaves the user
+        # looking for an unsloth_studio.arm64.* that was never written, and told that packages
+        # they are about to lose are recoverable.
+        if (-not ($script:StudioVenvRollbackDiscarded -or $script:StudioNoRollback)) {
+            substep "the ARM64 environment is kept under $StudioHome as unsloth_studio.arm64.*;" "Yellow"
+            substep "re-install any extra packages you had added to it, or set UNSLOTH_ALLOW_ARM64_PYTHON=1 to keep it." "Yellow"
+        }
         try {
-            if ($script:StudioVenvRollbackActive) {
+            if ($script:StudioVenvRollbackDiscarded) {
+                # --no-rollback already deleted it. There is nothing to move and nothing to
+                # keep, and calling Start-StudioVenvRollback here would try to rename a
+                # directory that is gone, throw, and take the whole migration out through
+                # Exit-InstallFailure -- after the environment had already been destroyed.
+                substep "the previous ARM64 environment was discarded by --no-rollback, so there is" "Yellow"
+                substep "nothing to copy packages out of; the x64 environment is built fresh." "Yellow"
+            } elseif ($script:StudioVenvRollbackActive) {
                 # The ordinary reinstall already moved this environment aside; a second
                 # Start-StudioVenvRollback would try to move a directory that is no longer
                 # there and throw, taking every architecture migration out through
@@ -7694,9 +7948,18 @@ exit 0
                 $script:StudioVenvRollbackPreserve = $true
             } else {
                 Start-StudioVenvRollback -ExistingDir $VenvDir
-                # After the move, so a rollback that never started cannot leave the flag set
-                # for some later unrelated rollback to act on.
-                $script:StudioVenvRollbackPreserve = $true
+                if ($script:StudioVenvRollbackDiscarded) {
+                    # --no-rollback discarded it inside that call, so there is no tree to
+                    # preserve and setting the flag would mark one that does not exist. The
+                    # user asked for no old environments kept and that is what they get; say
+                    # so here, where a moment ago the message promised the opposite.
+                    substep "the previous ARM64 environment was discarded by --no-rollback rather than kept;" "Yellow"
+                    substep "the x64 environment is built fresh, and extra packages are not recoverable." "Yellow"
+                } else {
+                    # After the move, so a rollback that never started cannot leave the flag set
+                    # for some later unrelated rollback to act on.
+                    $script:StudioVenvRollbackPreserve = $true
+                }
             }
         } catch {
             Write-StudioLine "[ERROR] Could not move the ARM64 environment aside: $($_.Exception.Message)" -ForegroundColor Red
@@ -7730,7 +7993,14 @@ exit 0
         if ($_woaMigPlatform -ne "win-arm64") {
             $_woaMigLabel = if ($_woaMigPlatform) { $_woaMigPlatform } else { "unknown" }
             substep "windows on arm: the migrated environment is $_woaMigLabel, not win-arm64 --" "Yellow"
-            substep "rebuilding it as ARM64; the previous one is kept for rollback." "Yellow"
+            # Varied, not printed flat: the call below discards under --no-rollback, and telling
+            # the user the previous environment is recoverable when it is about to be deleted is
+            # the same promise the ARM64 mismatch branch above already had to stop making.
+            if ($script:StudioNoRollback) {
+                substep "rebuilding it as ARM64; --no-rollback discards the previous one rather than keeping it." "Yellow"
+            } else {
+                substep "rebuilding it as ARM64; the previous one is kept for rollback." "Yellow"
+            }
             try {
                 Start-StudioVenvRollback -ExistingDir $VenvDir
                 # Left set, the install step below would --no-deps into an empty venv.
@@ -9172,47 +9442,6 @@ main()
     # true on unmapped arches too, and those install CPU torch.
     $AmdHasGpuWheels = [bool]($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch))
 
-    # ── Bounded "ask the venv python" probe ──
-    # A wedged torch import or a hanging Intel driver init -- what the XPU probes below exist to
-    # detect -- would block a bare `& python -c ...` forever. ProcessStartInfo, not &, so stderr
-    # cannot trip $ErrorActionPreference; BOTH streams drain async so a noisy import cannot
-    # deadlock on a full pipe; WaitForExit bounds the wait and kills the child. Every failure
-    # (timeout, crash, exception) reads as .Ok = $false; .Error carries WHICH one, since stderr
-    # used to be drained and discarded, leaving a driver-level DLL load error and a missing torch
-    # indistinguishable. Defined above the Intel scan: PowerShell binds a function when it runs.
-    function Invoke-BoundedPythonProbe {
-        param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
-        $result = [pscustomobject]@{ Ok = $false; Output = ""; Error = "" }
-        if (-not $PythonExe -or -not $Code) { return $result }
-        try {
-            $psi = New-Object System.Diagnostics.ProcessStartInfo
-            $psi.FileName = $PythonExe
-            $psi.Arguments = "-c `"$Code`""
-            $psi.RedirectStandardOutput = $true
-            $psi.RedirectStandardError = $true
-            $psi.UseShellExecute = $false
-            $psi.CreateNoWindow = $true
-            $proc = [System.Diagnostics.Process]::Start($psi)
-            $outTask = $proc.StandardOutput.ReadToEndAsync()
-            $errTask = $proc.StandardError.ReadToEndAsync()
-            if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
-                try { $proc.Kill() } catch {}
-                # Synthesised, not read back: waiting on the reader tasks of a wedged child
-                # would reintroduce the hang this helper exists to bound.
-                $result.Error = "python did not answer within $TimeoutSec seconds"
-                return $result
-            }
-            $result.Output = $outTask.GetAwaiter().GetResult()
-            # Kept, not discarded: the only place a failed probe's OSError / WinError text exists.
-            $result.Error = $errTask.GetAwaiter().GetResult()
-            $result.Ok = ($proc.ExitCode -eq 0)
-            return $result
-        } catch {
-            $result.Error = $_.Exception.Message
-            return $result
-        }
-    }
-
     # Bounded Win32_VideoController scan: the query can block forever on a degraded WMI
     # repository, -ErrorAction only suppresses reported errors, and -OperationTimeoutSec is not
     # enforced for the local COM session this uses, so out of process with a wall-clock kill is
@@ -9327,6 +9556,13 @@ main()
         # A rerun has already moved the old venv to $script:StudioVenvRollbackDir and put an
         # empty one in its place, so probing $VenvPython would ask an interpreter with no torch.
         # Ask the preserved environment instead -- that is the migrated runtime this rescues.
+        # --no-rollback deleted that environment, so the answer was taken before it went. Same
+        # verdict, same effect: opting out of the rollback copy must not narrow the device set.
+        if ($script:StudioPreservedXpuVerdict) {
+            $HasIntelGpu = $true
+            $script:IsIntelXpu = $true
+            if (-not $IntelGpuLabel) { $IntelGpuLabel = "Intel GPU (detected by PyTorch XPU)" }
+        }
         $_xpuProbePy = $VenvPython
         if ($script:StudioVenvRollbackDir) {
             $_rollbackPy = Join-Path $script:StudioVenvRollbackDir "Scripts\python.exe"
@@ -9974,7 +10210,11 @@ main()
         if (-not $Path.Contains(" ")) { return @{ Path = $Path; Temporary = $false } }
         $short = $null
         try { $short = (New-Object -ComObject Scripting.FileSystemObject).GetFile($Path).ShortPath } catch { }
-        if ($short -and -not $short.Contains(" ")) { return @{ Path = $short; Temporary = $false } }
+        # Space-free is not sufficient: a volume can hand back an 8.3 name that does not resolve,
+        # and uv then fails to open the file it was pointed at (#11290).
+        if ($short -and -not $short.Contains(" ") -and (Test-Path -LiteralPath $short -PathType Leaf -ErrorAction SilentlyContinue)) {
+            return @{ Path = $short; Temporary = $false }
+        }
 
         # No 8.3 name: copy to a space-free directory instead. Several candidates, because %TEMP%
         # can carry the space itself (the #11012 case) and 8.3 creation is commonly disabled on
@@ -10000,7 +10240,9 @@ main()
             if ($dir.Contains(" ")) {
                 $dirShort = $null
                 try { $dirShort = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($dir).ShortPath } catch { }
-                if (-not $dirShort -or $dirShort.Contains(" ")) { continue }
+                # Space-free is not sufficient: an 8.3 name that does not resolve would be copied
+                # into and then handed to uv, which cannot open it (#11290).
+                if (-not $dirShort -or $dirShort.Contains(" ") -or -not (Test-Path -LiteralPath $dirShort -PathType Container -ErrorAction SilentlyContinue)) { continue }
                 $dir = $dirShort
             }
             # Declared before the try so the catch can clean up a Copy-Item that failed partway
@@ -10078,7 +10320,7 @@ main()
         try {
             [System.IO.File]::WriteAllText($f, (($lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
         } catch {
-            Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
+            Remove-UnslothTempFileQuietly -Path $f
             $script:TorchOverridesFile = $null
             throw
         }
@@ -10086,11 +10328,23 @@ main()
         if ($f.Contains(" ")) {
             $short = $null
             try { $short = (New-Object -ComObject Scripting.FileSystemObject).GetFile($f).ShortPath } catch { }
-            if (-not $short -or $short.Contains(" ")) {
-                # No short name: skip the freeze rather than fail.
-                substep "[WARN] the torch overrides path has a space and no 8.3 short name;" "Yellow"
+            # Space-free is not sufficient. A volume can hand back an 8.3 name that does not resolve,
+            # and this path is then both uv's --overrides argument and the file the caller deletes:
+            # uv fails to open it, and Remove-Item raises a terminating PSArgumentException that
+        # -ErrorAction SilentlyContinue on every one of these probes is the idiom at line 3277
+        # and is load-bearing: under this script's "Stop", Test-Path inside an ACL-denied
+        # directory THROWS UnauthorizedAccessException instead of returning false, and none of
+        # these guards sits inside a try. Bare, the check aborts the install on a path whose
+        # only crime is being unreadable, in functions whose contract is to fall through.
+            # -ErrorAction SilentlyContinue cannot suppress (#11290). Require a real file.
+            if (-not $short -or $short.Contains(" ") -or -not (Test-Path -LiteralPath $short -PathType Leaf -ErrorAction SilentlyContinue)) {
+                # No usable short name: skip the freeze rather than fail.
+                substep "[WARN] the torch overrides path has a space and no usable 8.3 short name;" "Yellow"
                 substep "installing unsloth without freezing the installed PyTorch." "Yellow"
-                Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
+                Remove-UnslothTempFileQuietly -Path $f
+                # Tracked above: clear it so the outer sweep is not handed a path this branch
+                # has already deleted.
+                $script:TorchOverridesFile = $null
                 return $null
             }
             $f = $short
@@ -10100,7 +10354,7 @@ main()
 
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.9.4" }
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.9.11" }
 
     if ($_Migrated) {
         Write-TauriLog "STEP" "Installing unsloth"
@@ -10108,7 +10362,10 @@ main()
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.3" }
+            # --no-deps means unsloth's own metadata is never read, so this spec IS the zoo
+            # floor for this path. Keep it equal to the unsloth_zoo floor in pyproject.toml
+            # (tests/test_installer_zoo_floor_parity.py enforces that).
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.7" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -10127,7 +10384,7 @@ main()
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.3" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.7" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -10378,7 +10635,8 @@ main()
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.3" }
+            # --no-deps: this spec IS the zoo floor here. Kept equal to pyproject.toml's.
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.7" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
@@ -10398,18 +10656,18 @@ main()
             # Freeze the trio so this with-deps resolve cannot downgrade the pinned build.
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.3" }
-                Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.7" }
+                Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
                 $script:TorchOverridesFile = $null
             } else {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.3" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.7" }
             }
         } else {
             $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile -- "$_unslothPkg" }
-                Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
+                Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
                 $script:TorchOverridesFile = $null
             } else {
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth -- "$_unslothPkg" }
@@ -10439,7 +10697,7 @@ main()
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.9.3" "$_unslothReleaseInstallSpec" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.9.7" "$_unslothReleaseInstallSpec" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -11308,11 +11566,11 @@ try {
     Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
     # The generated overrides file copies the caller's UV_OVERRIDE contents; never leave it.
     if ($script:TorchOverridesFile) {
-        Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
+        Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
         $script:TorchOverridesFile = $null
     }
     if ($script:WoaSessionOverrides) {
-        Remove-Item -LiteralPath $script:WoaSessionOverrides -Force -ErrorAction SilentlyContinue
+        Remove-UnslothTempFileQuietly -Path $script:WoaSessionOverrides
         $script:WoaSessionOverrides = $null
     }
 }

@@ -185,65 +185,6 @@ def _store_selectors(source: str) -> list:
     return out
 
 
-def _split_ternary(expression: str, guards: tuple = ()) -> list:
-    """`cond ? a : b` as `[(a, conditions), (b, conditions)]`, recursively.
-
-    Each result is paired with every condition governing whether it is the one returned, so a
-    caller can tell a constant the field decides from a constant it has no say in. Depth aware,
-    and `??` / `?.` are not ternaries.
-    """
-
-    # A wholly wrapped arm hides its own ternary at depth 1, where the scan below never looks.
-    expression = expression.strip()
-    while expression.startswith("(") and _balanced(expression, 0) == expression[1:-1]:
-        expression = expression[1:-1].strip()
-
-    depth, question = 0, -1
-    index = 0
-    while index < len(expression):
-        char = expression[index]
-        if char in "([{":
-            depth += 1
-        elif char in ")]}":
-            depth -= 1
-        elif depth == 0 and char == "?":
-            following = expression[index + 1 : index + 2]
-            if following in ("?", "."):
-                index += 2
-                continue
-            question = index
-            break
-        index += 1
-    if question == -1:
-        return [(expression.strip(), guards)]
-
-    # An unparenthesised nested ternary in the true arm owns the next colon, so count `?` here
-    # too: taking the first one at bracket depth 0 cuts `a ? b ? c : d : e` into `a ? b` and
-    # `d : e`, and a field named anywhere in that second blob would look like every arm reading it.
-    inner = guards + (expression[:question],)
-    depth, nested = 0, 0
-    index = question + 1
-    while index < len(expression):
-        char = expression[index]
-        if char in "([{":
-            depth += 1
-        elif char in ")]}":
-            depth -= 1
-        elif depth == 0 and char == "?":
-            if expression[index + 1 : index + 2] in ("?", "."):
-                index += 2
-                continue
-            nested += 1
-        elif depth == 0 and char == ":":
-            if not nested:
-                return _split_ternary(expression[question + 1 : index], inner) + _split_ternary(
-                    expression[index + 1 :], inner
-                )
-            nested -= 1
-        index += 1
-    return [(expression[question + 1 :].strip(), inner)]
-
-
 def _without_comments(source: str) -> str:
     """`//` and `/* */` removed, leaving string literals alone.
 
@@ -280,146 +221,242 @@ def _without_comments(source: str) -> str:
     return "".join(out)
 
 
-_FUNCTION_BODY_OPENS = re.compile(r"=>\s*\{|\bfunction\b[^(){};]*\([^()]*\)\s*\{")
+_RESERVED = frozenset(
+    "await break case catch class const continue debugger default delete do else export extends "
+    "finally for function if import in instanceof let new return super switch this throw try "
+    "typeof var void while with yield".split()
+)
+_LITERAL_NAMES = frozenset({"null", "undefined", "true", "false"})
+_TOKEN = re.compile(
+    r"\s*(?:(?P<string>'[^'\\\n]*'|\"[^\"\\\n]*\")"
+    r"|(?P<number>\d+(?:\.\d+)?(?![\w$.]))"
+    r"|(?P<name>[A-Za-z_$][\w$]*)"
+    r"|(?P<op>\?\?|\?\.(?!\d)|===|!==|==|!=|<=|>=|&&|\|\||[-?:()\[\].,<>!]))"
+)
+# Operators that end the value a selector hands zustand at a comparison or a branch: an arm
+# holding one at its own level returns a boolean, or picks between values unscored.
+_COLLAPSING = frozenset({"===", "!==", "==", "!=", "<", ">", "<=", ">=", "&&", "||", "!", "?"})
+_UNARY_AFTER = _COLLAPSING | {None, ":", "(", ",", "??"}
 
 
-def _nested_function_spans(block: str) -> list:
-    """Where functions declared inside this block begin and end.
+def _tokens(expression: str):
+    """`expression` as (kind, text) tokens, or None if it steps outside what is read here.
 
-    Only these are another scope. An `if` or a `for` body is the selector's own, so excluding
-    by brace depth alone would drop `if (s.enabled) { return s.other; }` and read a selector
-    that can return something else entirely as though it always returned the field.
+    Reads, calls, literals, ternaries, `??` and comparisons only. Assignment, arrow functions,
+    blocks, templates, regexes, escapes, arithmetic, optional chaining and the comma operator
+    are refused rather than modelled, which leaves nothing that can bind, write, hide a
+    statement or skip a read. Parentheses
+    come back as "call" or "group"; `s["x"]` comes back as `s.x`.
     """
-    spans, index = [], 0
-    while True:
-        match = _FUNCTION_BODY_OPENS.search(block, index)
+    raw, index, end = [], 0, len(expression.rstrip())
+    while index < end:
+        match = _TOKEN.match(expression, index)
         if match is None:
-            return spans
-        opener = block.index("{", match.start())
-        depth = 0
-        for offset in range(opener, len(block)):
-            if block[offset] == "{":
-                depth += 1
-            elif block[offset] == "}":
-                depth -= 1
-                if depth == 0:
-                    spans.append((match.start(), offset))
-                    index = offset
-                    break
-        else:
-            spans.append((match.start(), len(block)))
-            return spans
-
-
-def _own_scope_returns(block: str) -> list:
-    """The `return` expressions belonging to this block, not to a function nested in it.
-
-    A helper declared inside a selector returns its own value, which is not what zustand
-    compares, so counting it would reject `{ function n(v) { return v ?? -1; } return
-    n(s.field); }` for reading the field through a helper.
-    """
-    nested = _nested_function_spans(block)
-    out = []
-    for match in re.finditer(r"\breturn\b", block):
-        start = match.start()
-        if any(begin <= start < end for begin, end in nested):
+            return None
+        if match.group(match.lastgroup) == "?.":
+            return None
+        raw.append((match.lastgroup, match.group(match.lastgroup)))
+        index = match.end()
+    out, stack = [], []
+    index = 0
+    while index < len(raw):
+        kind, text = raw[index]
+        previous = out[-1] if out else (None, None)
+        member = previous[1] == "."
+        if kind == "name" and text in _RESERVED and not member:
+            return None
+        if text == "-":
+            # Only a sign on a number literal: arithmetic is outside the subset.
+            following = raw[index + 1] if index + 1 < len(raw) else (None, None)
+            if previous[1] not in _UNARY_AFTER or following[0] != "number":
+                return None
+            out.append(("number", "-" + following[1]))
+            index += 2
             continue
-        end = len(block)
-        for offset in range(match.end(), len(block)):
-            if block[offset] in ";}":
-                end = offset
+        if text == "[":
+            # Only `x["key"]`, a member access spelled with a string. An array is refused.
+            if index + 2 >= len(raw) or raw[index + 2][1] != "]" or raw[index + 1][0] != "string":
+                return None
+            key = raw[index + 1][1][1:-1]
+            if previous[0] != "name" and previous[1] != ")":
+                return None
+            if not re.fullmatch(r"[A-Za-z_$][\w$]*", key):
+                return None
+            out += [("op", "."), ("name", key)]
+            index += 3
+            continue
+        if text == "(":
+            callee = previous[0] == "name" and previous[1] not in _LITERAL_NAMES
+            stack.append("call" if callee or previous[1] == ")" else "group")
+            out.append((stack[-1], "("))
+        elif text == ")":
+            if not stack:
+                return None
+            out.append((stack.pop(), ")"))
+        elif text == "," and (not stack or stack[-1] != "call"):
+            return None
+        else:
+            out.append((kind, text))
+        index += 1
+    return out if not stack else None
+
+
+def _unwrapped(tokens: list) -> list:
+    """`tokens` without grouping parentheses that enclose all of them."""
+    while tokens and tokens[0] == ("group", "("):
+        depth = 0
+        for index, (kind, text) in enumerate(tokens):
+            depth += text == "(" and kind in ("call", "group")
+            depth -= text == ")" and kind in ("call", "group")
+            if depth == 0:
                 break
-        out.append(block[match.end() : end])
-    return out
+        if index != len(tokens) - 1:
+            return tokens
+        tokens = tokens[1:-1]
+    return tokens
 
 
-def _normalised(expression: str) -> str:
-    """Whitespace out and `s["x"]` written as `s.x`, so one access has one spelling.
+def _top_level(tokens: list):
+    """(index, text) of each token outside every parenthesis."""
+    depth = 0
+    for index, (kind, text) in enumerate(tokens):
+        if kind in ("call", "group"):
+            depth += 1 if text == "(" else -1
+        elif depth == 0:
+            yield index, text
 
-    Two arms are only interchangeable if they are the same expression, and the comparison is
-    textual: without this, `s.other` and `s["other"]` read as a choice the guard steers, when
-    the selector returns the same store value either way.
+
+def _paths(tokens: list, guards: tuple = ()) -> list:
+    """Each value the expression can return, with the (guard, taken) pairs that lead to it."""
+    tokens = _unwrapped(tokens)
+    marks = [index for index, text in _top_level(tokens) if text in ("?", ":")]
+    if not marks or tokens[marks[0]][1] != "?":
+        return [(tokens, guards)]
+    # The colon that closes the first `?` is the first one no nested `?` is still waiting for.
+    open_questions = 0
+    for index in marks:
+        open_questions += 1 if tokens[index][1] == "?" else -1
+        if open_questions == 0:
+            condition = tokens[: marks[0]]
+            return _paths(tokens[marks[0] + 1 : index], guards + ((condition, True),)) + _paths(
+                tokens[index + 1 :], guards + ((condition, False),)
+            )
+    return [([], guards)]
+
+
+def _value(token):
+    """What a literal token denotes, or None for anything else."""
+    kind, text = token
+    if kind == "number":
+        return float(text)
+    if kind == "string":
+        return ("string", text[1:-1])
+    return text if kind == "name" and text in _LITERAL_NAMES else None
+
+
+def _pinned(guard: list, taken: bool, access: list):
+    """The one value the field holds where `guard` went this way, or None.
+
+    `budget === -1` taken, or `budget !== -1` not taken, pins -1. Anything looser (`==`, `>`,
+    a disjunction, a negation) holds the field to more than one value and pins nothing. Zero
+    pins nothing either: `=== 0` also takes -0, which zustand's Object.is tells apart.
     """
-    # The trailing comma of the useChatRuntimeStore() argument rides along on the last arm, and
-    # an arm that differs from its twin only by that comma is the same expression.
-    collapsed = re.sub(r"\s+", "", expression).rstrip(",;")
-    return re.sub(r"\[['\"]([A-Za-z_$][\w$]*)['\"]\]", r".\1", collapsed)
+    guard = _unwrapped(guard)
+    if taken:
+        if any(text == "||" for _, text in _top_level(guard)):
+            return None
+        cuts = [-1] + [index for index, text in _top_level(guard) if text == "&&"] + [len(guard)]
+        conjuncts = [_unwrapped(guard[a + 1 : b]) for a, b in zip(cuts, cuts[1:])]
+    else:
+        conjuncts = [guard]
+    operator = "===" if taken else "!=="
+    size = len(access)
+    for conjunct in conjuncts:
+        if len(conjunct) != size + 2:
+            continue
+        if conjunct[:size] == access and conjunct[size] == ("op", operator):
+            literal = conjunct[size + 1]
+        elif conjunct[2:] == access and conjunct[1] == ("op", operator):
+            literal = conjunct[0]
+        else:
+            continue
+        value = _value(literal)
+        if value is not None and value != 0.0:
+            return value
+    return None
 
 
-def _selector_signature(selector: str, field: str):
-    """Where the selector's body starts, and the pattern that finds `field` being read in it.
+def _reads_field(arm: list, access: list) -> bool:
+    """Does `arm` return the field itself, or a call on it?
 
-    A destructured parameter is the other way to write the same subscription, so
-    `({ reasoningBudget }) => reasoningBudget` and `({ reasoningBudget: budget }) => budget`
-    are read through their local name. Returns (0, None) when the parameter is neither shape,
-    or when a destructuring does not take the field at all.
+    The field has to be read off the parameter, not off some other object, and be the value
+    itself: `.length` after it, a comparison, a logical operator or a branch anywhere in the arm
+    returns something the field does not decide. A call is the one transform taken on trust,
+    as source cannot see into it.
     """
-    plain = re.match(r"\s*\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*(?::[^=]*)?=>", selector)
-    if plain is not None:
-        return plain.end(), re.compile(rf"\b{re.escape(plain.group(1))}\.{field}\b")
-
-    destructured = re.match(r"\s*\(?\s*\{([^}]*)\}\s*\)?\s*(?::[^=]*)?=>", selector)
-    if destructured is None:
-        return 0, None
-    for entry in destructured.group(1).split(","):
-        name, _, alias = entry.partition(":")
-        if name.strip() == field:
-            local = alias.strip() or field
-            return destructured.end(), re.compile(rf"\b{re.escape(local)}\b")
-    return 0, None
+    if any(text in _COLLAPSING for _, text in arm):
+        return False
+    size = len(access)
+    for index in range(len(arm) - size + 1):
+        if arm[index : index + size] != access:
+            continue
+        before = arm[index - 1][1] if index else None
+        after = arm[index + size] if index + size < len(arm) else None
+        if before == ".":
+            continue
+        if after is None or after[1] in (",", "??") or after == ("call", ")"):
+            return True
+    return False
 
 
 def _selector_reads(selector: str, field: str) -> bool:
     """Does every value this selector can return depend on `field`?
 
-    Zustand re-renders on the RESULT, not on a property the selector happened to touch, so one
-    that tests `s.<field>` and returns something else either way tracks nothing. A result the
-    field does not appear in still counts when the field decides whether it is returned at all,
-    as in `s.<field> != null ? s.<field> : null`. The parameter name comes from the signature
-    rather than being assumed to be `s`.
-    """
+    Zustand re-renders on the RESULT, so a selector that tests the field and returns something
+    else tracks nothing. Every path has to return the field (or a call on it), or return
+    exactly the literal a guard pins the field to on that path, as in
+    `s.budget === -1 ? -1 : s.budget`.
 
+    Only the subset `_tokens` accepts is read, and anything else is refused. That is
+    deliberate: a refusal fails this test loudly and asks for a plainer spelling, while
+    modelling more JavaScript is how a stale selector slips through.
+    """
     selector = _without_comments(selector)
-    signature, read = _selector_signature(selector, field)
-    if read is None:
-        return False
-    body = selector[signature:].strip()
-    if body.startswith("{"):
-        # A block body returns what it returns; a statement that reads the field and drops it
-        # hands zustand the same value every time. Nothing to return is nothing to compare, so
-        # a body whose returns cannot be found is rejected rather than read as its own text.
-        block = _balanced(body, 0, "{", "}")
-        # Inline plain bindings, so naming the value before returning it stays a refactor:
-        # `const v = s.budget; return v ? ... : ...` reads the field through `v`.
-        # Brace-free right-hand sides only. A binding whose value is itself a function has a `;`
-        # inside its body, so a looser capture would cut it mid-body and substitute the pieces.
-        for name, expression in re.findall(r"\b(?:const|let)\s+(\w+)\s*=\s*([^;{}]+);", block):
-            block = re.sub(rf"\b{re.escape(name)}\b", f"({expression})", block)
-        results = [
-            result
-            for expression in _own_scope_returns(block)
-            for result in _split_ternary(expression)
-        ]
+    plain = re.match(r"\s*\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*(?::[^=]*)?=>", selector)
+    destructured = re.match(r"\s*\(?\s*\{([^}]*)\}\s*\)?\s*(?::[^=]*)?=>", selector)
+    if plain is not None:
+        access = [("name", plain.group(1)), ("op", "."), ("name", field)]
+        body = selector[plain.end() :]
+    elif destructured is not None:
+        locals_ = {}
+        for entry in destructured.group(1).split(","):
+            name, _, alias = entry.partition(":")
+            locals_[name.strip()] = alias.strip() or name.strip()
+        if field not in locals_:
+            return False
+        access = [("name", locals_[field])]
+        body = selector[destructured.end() :]
     else:
-        results = _split_ternary(body)
-    if not results:
         return False
-    results = [
-        (_normalised(result), tuple(_normalised(guard) for guard in guards))
-        for result, guards in results
-    ]
-    if all(read.search(result) for result, _ in results):
-        return True
-    # Some arm has to return the field. A condition alone cannot carry the subscription: it only
-    # says which arm is taken, so `s.budget > 0 ? s.other : null` holds the same result while the
-    # budget moves from 1 to 2 and the sheet never re-renders. Where one arm does return it, a
-    # guard naming the field can still account for the others, which is how
-    # `s.budget != null ? s.budget : null` stays a subscription.
-    if not any(read.search(result) for result, _ in results):
+    # The argument list's trailing comma rides along on a multi-line call.
+    body = body.strip().removesuffix(",").strip()
+    if body.startswith("{"):
+        # A single `return` only. A line break straight after `return` returns undefined.
+        match = re.fullmatch(r"\{\s*return(?![\w$])[ \t]*(?=[^\s;}])([^;{}]*?)\s*;?\s*\}", body)
+        if match is None:
+            return False
+        body = match.group(1)
+    tokens = _tokens(body)
+    if not tokens:
         return False
     return all(
-        read.search(result) or any(read.search(guard) for guard in guards)
-        for result, guards in results
+        _reads_field(arm, access)
+        or (
+            len(arm) == 1
+            and _value(arm[0]) is not None
+            and any(_pinned(guard, taken, access) == _value(arm[0]) for guard, taken in guards)
+        )
+        for arm, guards in _paths(tokens)
     )
 
 
@@ -447,58 +484,94 @@ SELECTOR_CASES = [
     ("(s) => s.reasoningBudget", True),
     ("(store) => store.reasoningBudget", True),
     ("(s: RuntimeState) => s.reasoningBudget", True),
+    ("s => s.reasoningBudget", True),
     ("(s) => (s.reasoningBudget)", True),
+    ('(s) => s["reasoningBudget"]', True),
+    ("(s) => s.reasoningBudget /* the effective one */", True),
     ("(s) => s.reasoningBudget ?? s.fallback", True),
     ("(s) => formatBudget(s.reasoningBudget)", True),
-    # A constant arm the field itself decides between still moves when the field moves.
-    ("(s) => s.reasoningBudget != null ? s.reasoningBudget : null", True),
-    # Steering between arms is not tracking: the result is the same for every non-null
-    # budget, so the sheet never re-renders on a change between two of them.
-    ("(s) => s.reasoningBudget != null ? s.other : null", False),
-    ("(s) => s.reasoningBudget > 0 ? s.other : null", False),
-    ("(s) => s.reasoningBudget === -1 ? -1 : s.reasoningBudget", True),
-    # Read but not returned: zustand compares results, so these subscribe to something else.
-    ("(s) => s.enabled ? s.reasoningBudget : s.fallback", False),
-    ("(s) => s.mode === 'x' ? (s.on ? s.reasoningBudget : s.q) : s.reasoningBudget", False),
-    # The same shape without brackets: the nested arm owns the first colon, not the outer one.
-    ("(s) => s.mode ? s.on ? s.reasoningBudget : s.q : s.reasoningBudget", False),
-    ("(s) => s.mode ? s.on ? s.reasoningBudget : s.q : s.other", False),
-    ("(s) => s.mode ? s.on ? s.reasoningBudget : s.reasoningBudget : s.reasoningBudget", True),
-    ("(s) => s.enabled ? s.other : s.fallback", False),
-    # A guard that steers nothing: every arm returns the same expression regardless.
-    ("(s) => s.reasoningBudget ? s.other : s.other", False),
-    ("(s) => s.reasoningBudget === 1 ? null : null", False),
-    ("(s) => s.reasoningBudget ? (s.on ? null : null) : null", False),
-    # Block bodies: what is returned, not what is mentioned on the way there.
+    ("(s) => formatBudget(s.reasoningBudget, 2)", True),
+    ("(s) => String(s.reasoningBudget)", True),
     ("(s) => { return s.reasoningBudget; }", True),
-    ("(s) => { const v = s.reasoningBudget; return v ? s.reasoningBudget : -1; }", True),
-    ("(s) => { void s.reasoningBudget; return null; }", False),
-    ("(s) => { s.reasoningBudget; }", False),
-    # A control block is the selector's own scope; a function declared inside it is not.
-    ("(s) => { if (s.enabled) { return s.other; } return s.reasoningBudget; }", False),
-    ("(s) => { if (s.enabled) { return s.reasoningBudget; } return s.reasoningBudget; }", True),
-    ("(s) => { for (const x of s.list) { return s.other; } return s.reasoningBudget; }", False),
-    ("(s) => { const f = (v) => { return v; }; return f(s.reasoningBudget); }", True),
-    ("(s) => s.reasoningBudgetMessage", False),
-    ("(s) => s.reasoningBudgets", False),
-    ("{ budget: state.reasoningBudget }", False),
+    ("(s) => { return s.enabled ? s.reasoningBudget : s.reasoningBudget }", True),
+    ("(s) => s.reasoningBudget,", True),
+    # The sheet's own shape. The `??` arm is accepted by the contract, not proved: while the
+    # budget equals the loaded one it returns the requested value (see the sheet test).
+    (
+        "(s) => s.reasoningBudget === s.loadedReasoningBudget "
+        "? (s.loadedReasoningBudgetRequested ?? s.reasoningBudget) : s.reasoningBudget",
+        True,
+    ),
     # A destructured parameter subscribes to exactly the same field.
     ("({ reasoningBudget }) => reasoningBudget", True),
     ("({ reasoningBudget: budget }) => budget", True),
     ("({ reasoningBudget, loaded }) => (loaded ? reasoningBudget : reasoningBudget)", True),
     ("({ loadedReasoningBudget }) => loadedReasoningBudget", False),
     ("({ reasoningBudget, other }) => other", False),
-    # One access, two spellings: the guard steers nothing if both arms mean the same read.
-    ('(s) => s.reasoningBudget ? s.other : s["other"]', False),
-    ('(s) => s["reasoningBudget"]', True),
-    # A comment is not part of the value an arm returns.
-    ("(s) => s.reasoningBudget ? s.other : /* same value */ s.other", False),
-    ("(s) => s.reasoningBudget ? s.other : s.another // differs", False),
-    ("(s) => s.reasoningBudget /* the effective one */", True),
-    ("(s) => s.enabled ? s.reasoningBudget : /* same */ s.reasoningBudget", True),
-    # A helper's own return is not what zustand compares.
-    ("(s) => { function n(v) { return v ?? -1; } return n(s.reasoningBudget); }", True),
-    ("(s) => { function n(v) { return v ?? -1; } return n(s.other); }", False),
+    ("(s) => s.reasoningBudgetMessage", False),
+    ("(s) => s.reasoningBudgets", False),
+    ("(s) => other.s.reasoningBudget", False),
+    ("({ reasoningBudget }) => s.other.reasoningBudget", False),
+    ('(s) => "s.reasoningBudget"', False),
+    ("{ budget: state.reasoningBudget }", False),
+    # Read but not returned: zustand compares results, so these subscribe to something else.
+    ("(s) => s.enabled ? s.reasoningBudget : s.fallback", False),
+    ("(s) => s.mode ? s.on ? s.reasoningBudget : s.q : s.reasoningBudget", False),
+    ("(s) => s.mode ? s.on ? s.reasoningBudget : s.reasoningBudget : s.reasoningBudget", True),
+    ("(s) => s.reasoningBudget ? s.other : s.other", False),
+    ("(s) => s.reasoningBudget > 0 ? s.other : null", False),
+    ("(s) => s.reasoningBudget !== null ? s.other : null", False),
+    ("(s) => (s.enabled ? s.other : s.reasoningBudget).toString()", False),
+    ("(s) => String(s.enabled ? s.reasoningBudget : s.nBatch)", False),
+    # A property of the field is another value: two messages of one length compare equal.
+    ("(s) => s.reasoningBudget.length", False),
+    ("(s) => s.reasoningBudget.toString()", False),
+    ("(s) => (s.reasoningBudget).length", False),
+    # `?.` can skip the rest of the chain, the read of the field included.
+    ("(s) => s.other?.format(s.reasoningBudget)", False),
+    # A constant arm counts only when a guard pins the field to that very value there.
+    ("(s) => s.reasoningBudget === -1 ? -1 : s.reasoningBudget", True),
+    ("(s) => -1 === s.reasoningBudget ? -1 : s.reasoningBudget", True),
+    ("(s) => s.reasoningBudget !== null ? s.reasoningBudget : null", True),
+    ("(s) => s.reasoningBudget === 'x' ? \"x\" : s.reasoningBudget", True),
+    ('(s) => s.reasoningBudget === -1 && s.mode === "x" ? -1 : s.reasoningBudget', True),
+    ("({ reasoningBudget: b }) => b === -1 ? -1 : b", True),
+    # -1 becoming 0 returns 0 both times.
+    ("(s) => s.reasoningBudget === -1 ? 0 : s.reasoningBudget", False),
+    # Loose, negated, disjoined or nested comparisons hold the field to more than one value.
+    ("(s) => s.reasoningBudget != null ? s.reasoningBudget : null", False),
+    ("(s) => s.reasoningBudget == 0 ? 0 : s.reasoningBudget", False),
+    ("(s) => !(s.reasoningBudget === -1) ? -1 : s.reasoningBudget", False),
+    ('(s) => s.reasoningBudget === -1 || s.mode === "x" ? -1 : s.reasoningBudget', False),
+    ("(s) => s.reasoningBudget === -1 && s.on || s.x ? -1 : s.reasoningBudget", False),
+    ("(s) => (s.reasoningBudget === -1) === false ? -1 : s.reasoningBudget", False),
+    ("(s) => defaults.reasoningBudget === -1 ? -1 : s.reasoningBudget", False),
+    # `=== 0` also takes -0, which zustand's Object.is tells apart from 0.
+    ("(s) => s.reasoningBudget === 0 ? 0 : s.reasoningBudget", False),
+    # A comparison or a logical operator returns something the field does not decide.
+    ("(s) => s.reasoningBudget > 0", False),
+    ("(s) => !s.reasoningBudget", False),
+    ("(s) => s.enabled && s.reasoningBudget", False),
+    ("(s) => s.reasoningBudget || -1", False),
+    # A line break after `return` returns undefined.
+    ("(s) => { return\ns.reasoningBudget; }", False),
+    # Outside the subset read here, so refused rather than guessed at: statements, bindings,
+    # writes, nested functions, the comma operator, templates, regexes, escapes, arithmetic,
+    # a second call argument.
+    ("(s) => { if (s.enabled) return s.reasoningBudget; return s.reasoningBudget; }", False),
+    ("(s) => { const v = s.reasoningBudget; return v; }", False),
+    ("(s) => { switch (s.mode) { default: return s.reasoningBudget; } }", False),
+    ("(s) => (s = other).reasoningBudget", False),
+    ("(s) => ((s) => s.reasoningBudget)(other)", False),
+    ("(s) => (s.reasoningBudget, s.other)", False),
+    ("(s) => `${s.reasoningBudget}`", False),
+    ("(s) => /x/.test(s.name) ? s.other : s.reasoningBudget", False),
+    ('(s) => s.reasoningBudget === "a\\nb" ? "a\\nb" : s.reasoningBudget', False),
+    ("(s) => s.reasoningBudget / 1", False),
+    ("(s) => s.reasoningBudget === 1e3 ? 1e3 : s.reasoningBudget", False),
+    ("(s) => ({ budget: s.reasoningBudget })", False),
+    ("(s) => [s.reasoningBudget][0]", False),
+    ("(s) => s.reasoningBudget, shallow", False),
 ]
 
 
@@ -544,7 +617,9 @@ def test_preset_sheet_reacts_to_a_reasoning_budget_change():
     for field in ("reasoningBudget", "reasoningBudgetMessage"):
         assert any(_selector_reads(text, field) for text in selectors), (
             f"no useChatRuntimeStore selector returns a value derived from {field}, so a "
-            "change to it does not re-render the component whose memos capture it"
+            "change to it does not re-render the component whose memos capture it. If one "
+            "does, it is spelled outside what _selector_reads reads (see its docstring): "
+            f"write it as `(s) => s.{field}` or a ternary over it"
         )
         for memo in capturing:
             assert field in dependency_lists[memo], (

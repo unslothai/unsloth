@@ -790,8 +790,12 @@ class _CollectingLogger:
         self.warnings.append(message)
 
 
-def _isolated_run_temporary_patches(patches, logger):
-    """`_run_temporary_patches` alone, with its two module globals supplied.
+def _isolated_run_temporary_patches(
+    patches,
+    logger,
+    outcomes = None,
+):
+    """`_run_temporary_patches` alone, with its module globals supplied.
 
     Loading it out of the file rather than importing unsloth.models._utils keeps
     this a test of the control flow and not of a full model-stack import.
@@ -806,7 +810,11 @@ def _isolated_run_temporary_patches(patches, logger):
     else:
         raise AssertionError("_run_temporary_patches is gone from unsloth/models/_utils.py")
 
-    namespace = {"TEMPORARY_PATCHES": patches, "logger": logger}
+    namespace = {
+        "TEMPORARY_PATCHES": patches,
+        "logger": logger,
+        "TEMPORARY_PATCH_OUTCOMES": {} if outcomes is None else outcomes,
+    }
     exec(compile(segment, str(path), "exec"), namespace)
     return namespace["_run_temporary_patches"]
 

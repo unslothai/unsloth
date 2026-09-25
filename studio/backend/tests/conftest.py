@@ -175,6 +175,11 @@ def pytest_configure(config):
         "markers",
         "allow_network: let this test make non-loopback connections (see _no_outbound_network)",
     )
+    config.addinivalue_line(
+        "markers",
+        "stages_switch_waiter: this test leaves routes.inference._auto_switch_waiters populated "
+        "on purpose (see the autouse fixture in test_openai_auto_switch.py)",
+    )
 
 
 def pytest_addoption(parser):
@@ -289,6 +294,76 @@ def _confine_prequant_registration_memo():
 
 
 @pytest.fixture(autouse = True)
+def _isolate_generation_state():
+    """Keep one test's account fences and active generations out of the next test.
+
+    ``state.active_generations`` keeps ``_ACTIVE`` and ``_FENCED`` on the module, so they are
+    process-global and survive a test. Retiring or deactivating an account fences it, and
+    staying fenced is the CORRECT end state for those tests, so none of them is at fault: what
+    was missing is the isolation, the same way a tmp dir is isolated rather than every test
+    being asked to clean up after itself.
+
+    Measured, not guessed: 15 tests across test_job_accounts.py, test_account_storage.py,
+    test_account_integration_wiring.py and test_account_retired_workspace_recreated.py end
+    with a fenced account. Whichever of them landed in an xdist worker ahead of
+    tests/multi_account/test_routing_invariance.py made its
+    ``assert active_generations._FENCED == set()`` fail with somebody else's account id, which
+    is why that test failed in CI and passed whenever it was run on its own.
+
+    Here, not per-suite, so no test can leak. Several files already call reset_for_tests()
+    around themselves; this makes that universal, and those stay as they are since resetting
+    twice costs nothing and the local call documents the intent at its own site.
+    """
+    from state import active_generations
+
+    active_generations.reset_for_tests()
+    yield
+    active_generations.reset_for_tests()
+
+
+@pytest.fixture(autouse = True)
+def _forget_the_cached_owner_identity():
+    """Drop ``process_lifetime``'s cached owner identity after each test.
+
+    ``_own_identity`` reads this process's identity once and keeps it, which is right in a server,
+    where it cannot change. A test that patches ``_pid_identity`` and then adopts a pid caches the
+    fake instead: test_concurrent_adopts_all_survive left ``id-<pid>`` behind, and the next test in
+    the same xdist worker to write a record wrote that, so the reaper read its own live owner as
+    gone and killed the child test_a_live_owner_is_never_reaped had just adopted. The cache is
+    recomputed on demand, so clearing it costs one ``ps`` at most.
+    """
+    yield
+    lifetime = sys.modules.get("utils.process_lifetime")
+    if lifetime is not None:
+        lifetime._owner_identity = None
+
+
+@pytest.fixture(autouse = True)
+def _isolate_wal_keepers():
+    """Close the WAL keepers a test opened, so the next test starts without them.
+
+    ``storage.studio_db`` holds one keeper connection per database in a module global, and
+    ``get_connection`` opens one on its own for any managed account, which is the correct
+    behaviour in a server and the reason nothing else closes them in a test. So every test that
+    touched a managed account's studio.db, tests/multi_account/test_alice_bob_matrix.py among
+    them, handed its keepers to whatever ran next in the same xdist worker, and
+    test_wal_keeper_declines_when_the_filesystem_refused_wal's ``assert not _wal_keepers``
+    failed with somebody else's account databases. Reproduced by running the matrix ahead of it.
+
+    Only what the test itself added is closed, and through ``close_wal_keeper_for`` so the
+    close listeners run exactly as they would in the product.
+    """
+    from storage import studio_db
+
+    before = set(studio_db._wal_keepers)
+    unsupported = set(studio_db._wal_unsupported)
+    yield
+    for path in set(studio_db._wal_keepers) - before:
+        studio_db.close_wal_keeper_for(path)
+    studio_db._wal_unsupported.intersection_update(unsupported)
+
+
+@pytest.fixture(autouse = True)
 def _isolate_audio_gallery(monkeypatch, tmp_path):
     """Keep generated-clip persistence out of the developer's real gallery.
 
@@ -320,6 +395,7 @@ def _no_background_model_scan(monkeypatch):
     # assertion became a 503 "still indexing". Cold-path tests reset _scan themselves;
     # _build_index is untouched so tests calling it directly still walk for real.
     monkeypatch.setattr(local_model_resolver, "_scan", (time.monotonic(), {}))
+    monkeypatch.setattr(local_model_resolver, "_misses", {})
 
 
 @pytest.fixture(scope = "session")
@@ -884,7 +960,7 @@ def stub_embeddings(monkeypatch):
 
     from core.rag import config, embeddings
 
-    # Pin the backend: "auto" reprobes the hardware (nvidia-smi) on every use.
+    # Pin the backend: "auto" probes the hardware (nvidia-smi) for each backend it builds.
     monkeypatch.setattr(config, "EMBED_BACKEND", "sentence-transformers")
     dim = 32
 
@@ -1080,3 +1156,86 @@ def _process_shutdown_latch_is_clear():
         yield
     finally:
         _reopen()
+
+
+@pytest.fixture(autouse = True)
+def _no_leaked_inventory_handles():
+    """Start every test with an empty per-request handle table.
+
+    The ContextVar a REQUEST owns is never reset between tests, so one test that resolves a
+    handle leaves the table populated for every test after it in the same worker, and a route
+    that answers a response MODEL then answers a restored dict instead.
+    """
+    try:
+        from hub.utils import host_paths
+    except Exception:  # optional deps absent on some CI legs
+        yield
+        return
+    token = host_paths._request_handles.set(None)
+    try:
+        yield
+    finally:
+        host_paths._request_handles.reset(token)
+
+
+@pytest.fixture(autouse = True)
+def _drop_the_settings_memo_between_tests():
+    """Stop one test's app settings answering another test's read.
+
+    utils.openai_auto_switch_settings memoizes every setting it reads for _CACHE_TTL_S
+    (2 seconds) in a module-level dict, which is right on a request hot path and wrong
+    across tests: suites run far faster than the TTL, so a test that reads a setting hands
+    its value to whatever runs next, and only to the tests that happen to run inside the
+    window. That is not an ordering bug a fixed test order would catch; it is a clock.
+
+    It cost a day of #11241: a leaked auto-download flag turned the withheld-model tests'
+    404 into a fetch-and-load, which then died on their own backend double and surfaced as
+    `assert 500 == 404` in the l-r shard and nowhere else.
+    """
+    from utils import openai_auto_switch_settings as _settings
+
+    _settings._cache.clear()
+    try:
+        yield
+    finally:
+        _settings._cache.clear()
+
+
+@pytest.fixture(autouse = True)
+def _drop_the_idle_reload_stash_between_tests():
+    """Stop one test's idle-unloaded model being resurrected by another test's request.
+
+    core.inference.llama_keepwarm keeps what the idle loop freed in a module-level
+    ``_last_unloaded_model`` (with its KV manifest in ``_kv_resume``) so the next request
+    can reload exactly that. The idle tests set it through a real unload and clear it only
+    on the way IN, via their own _reset_keepwarm, so whichever of them runs last in a
+    worker leaves the stash standing for every test after it, in any module.
+
+    The chat route reads that stash before it refuses anything (routes/inference.py, "Idle
+    unload may have freed the model; reload exactly what it freed"). A later test whose
+    backends are doubles then reloads a model it never mentioned: the withheld-alias test
+    went looking for unsloth/Idle-GGUF on the Hub and died on
+    ``'_B' object has no attribute 'load_model'``, reported as ``assert 500 == 404``.
+
+    That is the same symptom the settings memo above produced and a different cause, which
+    is why this clears the stash rather than widening that fixture: both hand a later test
+    an input it never set, and under xdist --dist loadgroup which tests share a worker
+    changes between runs, so it fails in one shard and nowhere else.
+
+    The two stash fields only. The counters beside them (_inflight, _pending, _last_active)
+    are live-traffic bookkeeping, and zeroing those around every test would hide exactly the
+    leak this is here to prevent.
+
+    Through _set_last_unloaded rather than by assigning the globals: the manifest names KV
+    slot files on disk, and llama_keepwarm makes whoever takes it responsible for deleting
+    them. Assigning None drops the only reference to a real snapshot and leaves the files
+    behind, so a suite that saves KV would accumulate them run after run. That call clears
+    both fields under the module lock and unlinks the slots on its way out.
+    """
+    from core.inference import llama_keepwarm as _keepwarm
+
+    _keepwarm._set_last_unloaded(None)
+    try:
+        yield
+    finally:
+        _keepwarm._set_last_unloaded(None)
