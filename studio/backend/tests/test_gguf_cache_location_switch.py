@@ -3,6 +3,7 @@
 
 import asyncio
 import os
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +19,16 @@ def cache_locations(monkeypatch, tmp_path, request):
     store = {}
     monkeypatch.setattr(hf_cache_settings, "_EXPLICIT_CACHE_ENV", {})
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    # macOS tmp_path sits under /private/var, which the download-folder guard denies.
+    from hub.storage import scan_folders
+
+    denied = scan_folders.is_denied_system_path
+    root = str(tmp_path.resolve())
+    monkeypatch.setattr(
+        scan_folders,
+        "is_denied_system_path",
+        lambda path: not str(path).startswith(root) and denied(path),
+    )
     monkeypatch.setattr(
         "storage.studio_db.get_app_setting",
         lambda key, fallback = None: store.get(key, fallback),
@@ -327,7 +338,10 @@ def test_inactive_source_uses_scoped_online_status(
     direct = next(v for v in scoped.variants if v.quant == quant)
     actual = next(v for v in merged.variants if v.quant == quant)
     assert direct.downloaded is not undersized
-    assert direct.update_available is not undersized
+    # Where the blob hash is unreadable (Windows) the cache falls back to size identity, so a
+    # full-size blob reads as current; only the merged-vs-direct parity below is cross-platform.
+    if sys.platform != "win32":
+        assert direct.update_available is not undersized
     assert (actual.downloaded, actual.partial, actual.update_available) == (
         direct.downloaded,
         direct.partial,
