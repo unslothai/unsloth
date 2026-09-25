@@ -204,12 +204,8 @@ def torch_compile_runtime_available() -> bool:
 
 
 def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
-    """Whether the denoiser's repeated block should be regionally compiled.
-
-    Only on CUDA (incl. ROCm), for a bf16 transformer, or an fp16 one on an NVIDIA Turing+ card
-    (T4 and other pre-Ampere GPUs, where Studio computes in fp16), on a compile-friendly family,
-    in a process that can run inductor. ``is_gguf`` no longer disqualifies (GGUF compiles fine and
-    ~2.3x faster); the param is kept for compat."""
+    """Whether the denoiser's repeated block should be regionally compiled: CUDA (incl. ROCm) bf16, or fp16 on NVIDIA
+    sm_75+, on a compile-friendly family with inductor available. ``is_gguf`` is kept for compat only."""
     del is_gguf
     if not torch_compile_runtime_available():
         return False
@@ -220,16 +216,14 @@ def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
     dtype = getattr(target, "dtype", None)
     if _is_bfloat16(dtype):
         return True
-    # A family flagged fp16-incompatible runs in fp32 even where the device target still says fp16 (video passes the
-    # pre-promotion target), and fp32 compile is unmeasured, so it stays eager.
+    # fp16-incompatible families run in fp32 though video passes the fp16 target; fp32 compile is unmeasured.
     if bool(getattr(family, "fp16_incompatible", False)):
         return False
     return _is_float16(dtype) and _fp16_compile_capable(target)
 
 
 def fp16_compile_explicit_only(target: Any) -> bool:
-    """fp16 compiles on an explicit default / max tier but never through the automatic profile a dense load defers to
-    its 3rd image: on a T4 the cold compile (~245 s for SDXL-Turbo) buys ~0.1 s per image."""
+    """fp16 compiles only on an explicit tier, never the deferred profile (T4 SDXL-Turbo: ~245 s for ~0.1 s/image)."""
     return _is_float16(getattr(target, "dtype", None))
 
 
@@ -249,7 +243,7 @@ def _is_float16(dtype: Any) -> bool:
         return str(dtype).endswith("float16") and not str(dtype).endswith("bfloat16")
 
 
-# fp16 regional compile was measured on sm75 (T4); Volta and older stay eager.
+# Only sm_75 (T4) was measured; Volta and older stay eager.
 _FP16_COMPILE_MIN_CAPABILITY = (7, 5)
 
 
@@ -402,9 +396,7 @@ def apply_speed_optims(
 
 
 def fp16_unet_offloaded(target: Any, pipe: Any, *, offload_active: bool) -> bool:
-    """An fp16 U-Net under offload stays eager. SDXL-Turbo on L4 in fp16 with whole-model offload rendered 5.43 s
-    compiled vs 4.86 s eager (the fused QKV the compile brings costs more transfer than the compile saves), while the
-    same U-Net resident went 0.55 to 0.39 s. bf16 keeps its existing policy."""
+    """An offloaded fp16 U-Net stays eager: fused QKV costs more transfer than compile saves (L4: 5.43 vs 4.86 s)."""
     return (
         bool(offload_active)
         and _is_float16(getattr(target, "dtype", None))

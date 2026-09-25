@@ -162,7 +162,6 @@ def _fp16_target(**kw):
 
 @pytest.mark.parametrize("cap", [(7, 5), (8, 6), (8, 9), (12, 0)])
 def test_compile_eligible_fp16_on_turing_or_newer(monkeypatch, cap):
-    # T4 (sm75) and other cards Studio runs in fp16 compile like bf16 does.
     _stub_torch_capability(monkeypatch, cap)
     assert compile_eligible(_fp16_target(), is_gguf = False, family = _family()) is True
     assert compile_eligible(_fp16_target(backend = "cuda"), is_gguf = True, family = _family()) is True
@@ -183,12 +182,9 @@ def test_compile_eligible_fp16_asks_the_selected_card(monkeypatch):
 
 def test_compile_eligible_fp16_refusals(monkeypatch):
     _stub_torch_capability(monkeypatch, (7, 5))
-    # A family that overflows fp16 runs in fp32 (video passes the pre-promotion fp16 target).
     fam = types.SimpleNamespace(supports_torch_compile = True, fp16_incompatible = True)
     assert compile_eligible(_fp16_target(), is_gguf = False, family = fam) is False
-    # Not an NVIDIA CUDA target.
     assert compile_eligible(_fp16_target(backend = "rocm"), is_gguf = False, family = _family()) is False
-    # Every other gate still applies.
     assert (
         compile_eligible(_fp16_target(), is_gguf = False, family = _family(compile_ok = False)) is False
     )
@@ -198,7 +194,6 @@ def test_compile_eligible_fp16_refusals(monkeypatch):
         )
         is False
     )
-    # fp32 (a promoted family) is not widened.
     assert compile_eligible(_target(dtype = "float32"), is_gguf = False, family = _family()) is False
 
 
@@ -213,7 +208,6 @@ def test_compile_eligible_fp16_probe_failure_stays_eager(monkeypatch):
 
 
 def test_fp16_compile_is_explicit_tier_only(monkeypatch):
-    # The automatic (deferred) profile never pays an fp16 cold compile; an explicit tier still does.
     _stub_torch_capability(monkeypatch, (7, 5))
     assert ds_mod.fp16_compile_explicit_only(_fp16_target()) is True
     assert compile_eligible(_fp16_target(), is_gguf = False, family = _family()) is True
@@ -222,7 +216,6 @@ def test_fp16_compile_is_explicit_tier_only(monkeypatch):
 
 
 def test_compile_eligible_bf16_never_probes_capability(monkeypatch):
-    # bf16 is decided exactly as before: no capability probe, no fp16-incompatible check.
     seen = []
     _stub_torch_capability(monkeypatch, (7, 0), seen)
     fam = types.SimpleNamespace(supports_torch_compile = True, fp16_incompatible = True)
@@ -280,7 +273,6 @@ def test_fp16_offloaded_dit_and_bf16_unet_still_compile(monkeypatch):
     _stub_torch_capability(monkeypatch, (7, 5))
     monkeypatch.setattr(ds_mod, "_compile_repeated_blocks", lambda *a, **k: True)
     monkeypatch.setattr(ds_mod, "_fuse_qkv", lambda *a, **k: True)
-    # A DiT under group offload compiled faster in fp16 (FLUX.2-klein on L4), so only the U-Net is held back.
     dit = apply_speed_optims(
         types.SimpleNamespace(),
         _fp16_target(),
@@ -290,7 +282,6 @@ def test_fp16_offloaded_dit_and_bf16_unet_still_compile(monkeypatch):
         offload_active = True,
     )
     assert dit["compiled"] is True
-    # bf16 keeps today's policy: an offloaded U-Net still compiles.
     bf16 = apply_speed_optims(
         _unet_pipe(),
         _target(),

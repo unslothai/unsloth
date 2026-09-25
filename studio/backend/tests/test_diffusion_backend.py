@@ -1200,8 +1200,6 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
 def test_deferred_speed_stays_off_when_only_an_explicit_tier_may_compile(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # fp16 compiles on an explicit default/max but never through the automatic 3rd-image profile, so an unset speed
-    # stays exact eager instead of engaging patches and a cold compile on the 3rd render.
     from core.inference import diffusion as dmod
 
     seen = []
