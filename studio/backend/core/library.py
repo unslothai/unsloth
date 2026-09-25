@@ -69,6 +69,7 @@ def _item(
     text_only: bool = False,
     model: Optional[dict] = None,
     archived: bool = False,
+    fingerprint: Optional[str] = None,
 ) -> dict:
     return {
         "id": item_id,
@@ -88,7 +89,24 @@ def _item(
         "model": model,
         # Off its gallery page's active shelf, so that page cannot open it.
         "archived": archived,
+        # Which file a path-derived id found; the listing takes it off before answering.
+        "_fingerprint": fingerprint,
     }
+
+
+def _fingerprint(info: os.stat_result) -> str:
+    """Which file a path-derived id (``sandbox:``, ``model:``) found at its path: the inode, the
+    file id on Windows, with the birth time where the OS keeps one. Both hold through an edit in
+    place and a model folder filling up, and change when the path is deleted and made again, so an
+    overlay row stays with the file it was made for. Not the device number, which a remount can
+    change. Linux has no birth time here and ext4 hands a freed inode to the next file, so there a
+    file recreated at once can still pass for the old one; a save that writes a copy and renames
+    it over reads as a new file everywhere."""
+    birth = getattr(info, "st_birthtime", None)
+    if birth is None and os.name == "nt":
+        # Before Python 3.12, Windows kept the creation time in st_ctime.
+        birth = info.st_ctime
+    return str(info.st_ino) if birth is None else f"{info.st_ino}:{birth!r}"
 
 
 # ── Library uploads ──────────────────────────────────────────────
@@ -495,21 +513,22 @@ def _audio_items() -> list[dict]:
 MODEL_CONTENT_TYPE = "application/x-unsloth-model"
 
 
-def _tree_stats(path: Path) -> tuple[int, float]:
-    """(total bytes, newest mtime) of a model file or directory, symlinks not followed."""
-    if path.is_file():
-        stat = path.stat()
-        return stat.st_size, stat.st_mtime
-    total, newest = 0, path.stat().st_mtime
+def _tree_stats(path: Path) -> tuple[int, float, os.stat_result]:
+    """(total bytes, newest mtime, the path's own stat) of a model file or directory, symlinks
+    not followed."""
+    info = path.stat()
+    if stat.S_ISREG(info.st_mode):
+        return info.st_size, info.st_mtime, info
+    total, newest = 0, info.st_mtime
     for root, _dirs, files in os.walk(path):
         for name in files:
             try:
-                stat = os.lstat(os.path.join(root, name))
+                entry = os.lstat(os.path.join(root, name))
             except OSError:
                 continue
-            total += stat.st_size
-            newest = max(newest, stat.st_mtime)
-    return total, newest
+            total += entry.st_size
+            newest = max(newest, entry.st_mtime)
+    return total, newest, info
 
 
 def _model_items() -> list[dict]:
@@ -535,7 +554,10 @@ def _model_items() -> list[dict]:
         if model_type == "gguf" and stats_path.is_file():
             stats_path = stats_path.parent
         try:
-            size, modified = _tree_stats(stats_path)
+            size, modified, info = _tree_stats(stats_path)
+            if stats_path != Path(path):
+                # Fingerprinted by the listed file itself, as a lookup by its id stats it.
+                info = os.stat(path)
         except OSError:
             continue
         if base_model is None and origin == "training":
@@ -558,6 +580,7 @@ def _model_items() -> list[dict]:
                     "exportType": model_type,
                     "baseModel": base_model,
                 },
+                fingerprint = _fingerprint(info),
             )
         )
     return items
@@ -625,11 +648,39 @@ def _sandbox_session_eligible(session_id: str) -> bool:
     return row is not None and _studio_project_root(row["root_path"], _project_workspaces())
 
 
+def _sandbox_names(directory: str) -> frozenset:
+    """The files one sandbox's listing holds, remembered as long as the listing's own walk, so a
+    grid of cards asking for pictures walks a sandbox once rather than once a card. The listing
+    leaves its walk here too, so a card it just listed is checked without walking again."""
+    from routes.inference import _sandbox_listing_names
+
+    key = (_account_key(), directory)
+    now = time.monotonic()
+    with _source_cache_lock:
+        hit = _sandbox_names_cache.get(key)
+        generation = _source_generation
+    if hit is not None and now - hit[0] < _SANDBOX_TTL_SECONDS:
+        return hit[1]
+    names = _sandbox_listing_names(directory) if os.path.isdir(directory) else []
+    return _remember_sandbox_names(key, now, names, generation)
+
+
+def _remember_sandbox_names(key: tuple, now: float, names: list[str], generation: int) -> frozenset:
+    listed = frozenset(names)
+    with _source_cache_lock:
+        # A write that forgot the cache while this walked leaves the answer unsaved.
+        if generation == _source_generation:
+            _sandbox_names_cache[key] = (now, listed)
+    return listed
+
+
 def _sandbox_path(ref: str) -> str:
     """The file a ``sandbox:`` id names, by the rules the listing's walk applies: an eligible
-    session, servable segments, no dotfile, not too deep, and no link anywhere on the way (the walk
-    never follows one). Checked for this one file, so a card's picture or download never lists
-    every chat. Raises LookupError otherwise, so a crafted id reaches nothing else."""
+    session, servable segments, no dotfile, not too deep, no link anywhere on the way (the walk
+    never follows one), and among the files the walk's cap lets through. The segment rules are
+    checked for this one file, so a card's picture or download never lists every chat; the cap
+    needs the walk's order, so that is this sandbox's walk alone, remembered. Raises LookupError
+    otherwise, so a crafted id reaches nothing else."""
     from core.inference.tools import (
         _MAX_SANDBOX_PATH_SEGMENTS,
         _servable_segment,
@@ -648,6 +699,9 @@ def _sandbox_path(ref: str) -> str:
         raise LookupError(ref)
     path = os.path.join(directory, *parts)
     if not same_path(os.path.realpath(path), path) or not is_path_within(path, directory):
+        raise LookupError(ref)
+    # Past the listing's cap, or skipped by its walk: never listed, so not reachable by id either.
+    if relative not in _sandbox_names(directory):
         raise LookupError(ref)
     return path
 
@@ -716,19 +770,28 @@ def _delete_sandbox_file(ref: str) -> bool:
 
 def _sandbox_items() -> list[dict]:
     from core.inference.tools import resolve_sandbox_workdir
-    from routes.inference import _sandbox_listing
+    from routes.inference import _sandbox_listing_names
 
     items = []
+    account = _account_key()
+    with _source_cache_lock:
+        generation = _source_generation
     for session_id, thread_id, title in _sandbox_sessions():
         try:
             directory = os.path.realpath(resolve_sandbox_workdir(session_id))
-            listing = _sandbox_listing(directory)
+            names = _sandbox_listing_names(directory) if os.path.isdir(directory) else []
         except Exception:
             logger.debug("library.sandbox_listing_failed", exc_info = True)
             continue
-        for entry in listing:
-            relative = entry["name"].replace(os.sep, "/")
+        _remember_sandbox_names((account, directory), time.monotonic(), names, generation)
+        for name in names:
+            relative = name.replace(os.sep, "/")
             if os.path.basename(relative).startswith("."):
+                continue
+            # The one stat the sandbox route's listing makes, kept whole for the fingerprint.
+            try:
+                info = os.stat(os.path.join(directory, relative))
+            except OSError:
                 continue
             items.append(
                 _item(
@@ -736,11 +799,12 @@ def _sandbox_items() -> list[dict]:
                     name = os.path.basename(relative),
                     source = "generated",
                     content_type = _guess_type(relative),
-                    size_bytes = entry["size"],
-                    created_at = _to_ms(entry["modified"]),
+                    size_bytes = info.st_size,
+                    created_at = _to_ms(int(info.st_mtime)),
                     file_url = f"/api/inference/sandbox/{quote(session_id, safe = '')}/{quote(relative)}",
                     thread_id = thread_id,
                     thread_title = title,
+                    fingerprint = _fingerprint(info),
                 )
             )
     return items
@@ -876,6 +940,8 @@ def upload_content_type(name: str, declared: Optional[str]) -> str:
 _SANDBOX_TTL_SECONDS = 5.0
 _MODEL_TTL_SECONDS = 60.0
 _source_cache: dict[tuple[str, str], tuple[float, object, list[dict]]] = {}
+# (account, sandbox directory) -> (when, the names its walk listed), for the per-item routes.
+_sandbox_names_cache: dict[tuple[str, str], tuple[float, frozenset]] = {}
 _source_cache_lock = threading.Lock()
 _source_generation = 0
 
@@ -885,6 +951,7 @@ def invalidate_listing() -> None:
     with _source_cache_lock:
         _source_generation += 1
         _source_cache.clear()
+        _sandbox_names_cache.clear()
 
 
 def _model_stamp() -> tuple:
@@ -962,15 +1029,45 @@ def list_items() -> list[dict]:
             _log_unavailable(exc)
         except Exception:
             logger.warning("library.source_failed: %s", source.__name__, exc_info = True)
+    adopt: list[tuple[str, str]] = []
+    stale: list[tuple[str, str]] = []
     for item in items:
         entry = overlay.get(item["id"])
+        fingerprint = item.pop("_fingerprint", None)
+        if entry and fingerprint is not None and entry["fingerprint"] != fingerprint:
+            if entry["fingerprint"] is None:
+                # Written before rows were fingerprinted: this file is taken to be the one.
+                adopt.append((item["id"], fingerprint))
+            else:
+                # Made for a file since deleted; this one only shares its path.
+                stale.append((item["id"], entry["fingerprint"]))
+                entry = None
         item["favorite"] = bool(entry and entry["favorite"])
         item["folderId"] = entry["folderId"] if entry else None
         item["openedAt"] = entry["openedAt"] if entry else None
         if entry and entry["name"]:
             item["name"] = entry["name"]
+    try:
+        library_db.reconcile_entries(adopt, stale)
+    except Exception:
+        # Answered as reconciled either way; the next listing tries the write again.
+        logger.warning("library.overlay_reconcile_failed", exc_info = True)
     items.sort(key = lambda item: item["updatedAt"], reverse = True)
     return items
+
+
+def fingerprint(item_id: str) -> Optional[str]:
+    """The fingerprint of the file a path-derived id names right now, for its overlay row. None
+    for ids never given to another file (uploads, attachments and gallery items are unique ids)
+    and for a file that is gone."""
+    kind, _, ref = item_id.partition(":")
+    if kind not in ("sandbox", "model"):
+        return None
+    try:
+        path = _sandbox_path(ref) if kind == "sandbox" else local_path(item_id)
+        return _fingerprint(os.stat(path))
+    except (LookupError, ValueError, OSError):
+        return None
 
 
 def _safe_name_parts(name: str, fallback: str) -> tuple[str, str]:
@@ -1029,16 +1126,25 @@ class ItemFile:
         self.close()
 
 
-def _gallery_path(kind: str, ref: str) -> tuple[Optional[Path], str]:
+def _gallery_file(kind: str, ref: str) -> tuple[Optional[Path], str, str]:
+    """(path, project folder, prompt) of a gallery item Studio made, path None otherwise. The
+    gallery's own ownership test (``owned_*_path``: a file with a readable recipe), with that
+    recipe read once for the prompt too: an image's sits in its PNG, which Pillow decodes whole."""
     from core.inference import audio_gallery, image_gallery, video_gallery
 
-    owned = {
-        "image": (image_gallery.owned_image_path, "images"),
-        "video": (video_gallery.owned_video_path, "videos"),
-        "audio": (audio_gallery.owned_audio_path, "audio"),
-    }
-    resolve, folder = owned[kind]
-    return resolve(ref), folder
+    if kind == "image":
+        path, folder = image_gallery.image_path(ref), "images"
+        meta = image_gallery._read_meta(path) if path is not None else None
+    else:
+        gallery, folder, resolve = {
+            "video": (video_gallery, "videos", video_gallery.video_path),
+            "audio": (audio_gallery, "audio", audio_gallery.audio_path),
+        }[kind]
+        path = resolve(ref)
+        meta = gallery._read_meta(gallery._sidecar_path(ref)) if path is not None else None
+    if path is None or meta is None:
+        return None, folder, ""
+    return path, folder, str(meta.get("prompt") or "")
 
 
 def _open_owned(path: Path, item_id: str) -> BinaryIO:
@@ -1067,11 +1173,14 @@ def open_item(item_id: str) -> ItemFile:
             _project_name(record["name"], item_id),
         )
     if kind in ("image", "video", "audio"):
-        path, folder = _gallery_path(kind, ref)
+        path, folder, prompt = _gallery_file(kind, ref)
         if path is None:
             raise LookupError(item_id)
-        # Same name as the gallery's own Add to project, so either one finds the other's copy.
-        return ItemFile(_open_owned(path, item_id), path.name, folder, path.name)
+        # Downloads are named after the prompt, the id when there is none. A project copy keeps
+        # the stored name, as the Images, Video and Audio pages copy it, so either place sees the
+        # other's copy as already there.
+        name = safe_file_name(_prompt_name(prompt, ref, path.suffix.lstrip(".")), ref)
+        return ItemFile(_open_owned(path, item_id), name, folder, path.name)
     if kind == "sandbox":
         handle, path = _open_sandbox_file(ref)
         name = os.path.basename(path)
@@ -1091,7 +1200,7 @@ def local_path(item_id: str) -> Path:
             raise LookupError(item_id)
         return path
     if kind in ("image", "video", "audio"):
-        path, _folder = _gallery_path(kind, ref)
+        path, _folder, _prompt = _gallery_file(kind, ref)
         if path is None:
             raise LookupError(item_id)
         return path
@@ -1310,19 +1419,25 @@ def thumbnail(item_id: str) -> bytes:
             raise LookupError(item_id) from None
 
 
-def item_exists(item_id: str) -> bool:
+def item_exists(item_id: str, recorded: Optional[str] = None) -> bool:
     """Whether the source still has the item, without listing the source. Errors other than its
-    absence propagate, so a store that cannot be read is never taken for an empty one."""
+    absence propagate, so a store that cannot be read is never taken for an empty one. With the
+    fingerprint an overlay row recorded, a new file at the item's path is not the item."""
     kind, _, ref = item_id.partition(":")
     try:
         if kind == "attachment":
             from storage.studio_db import get_chat_attachment
             message_id, _, attachment_id = ref.partition(":")
             return get_chat_attachment(message_id, attachment_id) is not None
-        local_path(item_id)
+        path = local_path(item_id)
     except (LookupError, ValueError):
         return False
-    return True
+    if recorded is None or kind not in ("sandbox", "model"):
+        return True
+    try:
+        return _fingerprint(os.stat(path)) == recorded
+    except OSError:
+        return False
 
 
 def _location_resolvers() -> dict:

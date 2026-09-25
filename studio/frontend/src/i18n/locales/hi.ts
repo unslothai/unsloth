@@ -3131,7 +3131,7 @@ export const hi = {
       openFilesFailed: "फ़ाइलें खोली नहीं जा सकीं",
       speechModel: "{name} एक स्पीच मॉडल है",
       speechModelDescription: "इसे ऑडियो पेज के मॉडल मेनू से चुनें।",
-      noVideoLink: "सर्वर ने कोई वीडियो लिंक नहीं लौटाया।",
+      noMediaLink: "सर्वर ने इस फ़ाइल को चलाने के लिए कोई लिंक नहीं लौटाया।",
       imageNotFound: "यह इमेज नहीं मिली",
       clipNotFound: "यह क्लिप नहीं मिली",
       notFoundDescription: "हो सकता है इसे संग्रहीत या हटा दिया गया हो।",

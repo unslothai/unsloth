@@ -3152,7 +3152,7 @@ export const ptBR = {
       openFilesFailed: "Não foi possível abrir os arquivos",
       speechModel: "{name} é um modelo de fala",
       speechModelDescription: "Escolha-o no menu de modelos da página Áudio.",
-      noVideoLink: "O servidor não retornou nenhum link de vídeo.",
+      noMediaLink: "O servidor não retornou nenhum link para reproduzir este arquivo.",
       imageNotFound: "Não foi possível encontrar esta imagem",
       clipNotFound: "Não foi possível encontrar este clipe",
       notFoundDescription: "O item pode ter sido arquivado ou excluído.",

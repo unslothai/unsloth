@@ -3204,7 +3204,7 @@ export const fr = {
       openFilesFailed: "Impossible d'ouvrir les fichiers",
       speechModel: "{name} est un modèle vocal",
       speechModelDescription: "Sélectionnez-le dans le menu des modèles de la page Audio.",
-      noVideoLink: "Le serveur n'a renvoyé aucun lien vidéo.",
+      noMediaLink: "Le serveur n'a renvoyé aucun lien pour lire ce fichier.",
       imageNotFound: "Impossible de trouver cette image",
       clipNotFound: "Impossible de trouver cet extrait",
       notFoundDescription: "Cet élément a peut-être été archivé ou supprimé.",

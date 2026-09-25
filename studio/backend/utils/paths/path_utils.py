@@ -360,8 +360,13 @@ def _wsl_reveal_in_explorer(path: Path, is_file: bool) -> bool:
         ).stdout.strip()
         if not windows_path:
             return False
-        argument = f"/select,{windows_path}" if is_file else windows_path
-        subprocess.Popen(["explorer.exe", argument])
+        # Interop quotes each argument that has a space, and Explorer misreads a quoted
+        # "/select,<path>"; "/select," then the path is the form it documents.
+        subprocess.Popen(
+            ["explorer.exe", "/select,", windows_path]
+            if is_file
+            else ["explorer.exe", windows_path]
+        )
         return True
     except (OSError, subprocess.SubprocessError):
         return False

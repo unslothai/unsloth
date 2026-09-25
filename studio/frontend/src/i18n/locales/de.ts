@@ -3193,7 +3193,7 @@ export const de = {
       openFilesFailed: "Die Dateien konnten nicht geöffnet werden",
       speechModel: "{name} ist ein Sprachmodell",
       speechModelDescription: "Wählen Sie es im Modellmenü auf der Audio-Seite aus.",
-      noVideoLink: "Der Server hat keinen Videolink zurückgegeben.",
+      noMediaLink: "Der Server hat keinen Link zum Abspielen dieser Datei zurückgegeben.",
       imageNotFound: "Dieses Bild wurde nicht gefunden",
       clipNotFound: "Dieser Clip wurde nicht gefunden",
       notFoundDescription: "Möglicherweise archiviert oder gelöscht.",

@@ -273,7 +273,11 @@ function PreviewBody({
     !mediaFailed && (body === "image" || body === "pdf" || body === "audio" || body === "video")
       ? body
       : null;
-  const { url, error: urlError } = useLibraryPreviewUrl(item, embedded);
+  const { url, error: urlError, retry } = useLibraryPreviewUrl(item, embedded);
+  // A streamed link that stopped working is minted again once before the preview gives up.
+  const handleMediaError = () => {
+    if (!retry()) onMediaError();
+  };
   const { text, truncated, readOnlyReason, error: textError } = itemText;
 
   if (mediaFailed) {
@@ -297,13 +301,13 @@ function PreviewBody({
       return <ModelDetails item={item} />;
     case "image":
       return (
-        <img src={url!} alt={item.name} onError={onMediaError} className="size-full object-contain" />
+        <img src={url!} alt={item.name} onError={handleMediaError} className="size-full object-contain" />
       );
     case "pdf":
       return <iframe title={item.name} src={url!} className="size-full rounded-xl bg-white" />;
     case "audio":
       return (
-        <audio src={url!} controls onError={onMediaError} className="m-auto w-full max-w-lg" />
+        <audio src={url!} controls onError={handleMediaError} className="m-auto w-full max-w-lg" />
       );
     case "video":
       return (
@@ -311,7 +315,7 @@ function PreviewBody({
           src={url!}
           controls
           autoPlay
-          onError={onMediaError}
+          onError={handleMediaError}
           className="size-full object-contain"
         />
       );
