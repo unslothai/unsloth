@@ -131,9 +131,12 @@ Check "the emitted rung is attempted first" `
     ($rawBlock.IndexOf("Get-NvidiaLibraryProbeType") -lt $rawBlock.IndexOf("Read-NvidiaLibraryRawViaPython"))
 Check "Python is only reached when the emitted rung returned nothing" `
     ($rawBlock -match 'if \(\$native\) \{ return \$native \}')
-# One budget, not two: a driver that wedges the full timeout inside the emitted rung must not
-# then buy a second timeout's worth of child process. Without this the worst case doubles.
-Check "both rungs share one deadline" ($rawBlock -match '\$deadline = \(Get-Date\)\.AddMilliseconds\(\$TimeoutMs\)')
+# One budget, not two: a driver that wedges both emitted readers must not then buy a further
+# child process. The budget is one per-reader bound for NVML plus one for CUDA.
+Check "both rungs share one deadline" ($rawBlock -match '\$deadline = \(Get-Date\)\.AddMilliseconds\(\$TimeoutMs \* 2\)')
+Check "each emitted reader has its own deadline" `
+    (($rawBlock -match 'foreach \(\$which in @\("nvml", "cuda"\)\)') -and ($rawBlock -match 'WaitOne\(\$TimeoutMs\)'))
+Check "the per-reader bound defaults to 30s" ($rawBlock -match 'param\(\[int\]\$TimeoutMs = 30000\)')
 Check "Python gets only what the emitted rung left" ($rawBlock -match 'Read-NvidiaLibraryRawViaPython -TimeoutMs \$remainingMs')
 Check "an exhausted budget skips the child process entirely" ($rawBlock -match 'if \(\$remainingMs -lt 2000\) \{ return "" \}')
 

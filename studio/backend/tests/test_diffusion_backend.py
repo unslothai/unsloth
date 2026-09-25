@@ -7670,6 +7670,130 @@ def test_download_plan_omits_a_cached_gguf_but_keeps_missing_companions(monkeypa
     assert plan["checkpoint_bytes"] == 7 * GB
 
 
+def test_download_plan_stages_but_does_not_count_a_file_an_older_snapshot_holds(monkeypatch):
+    """README-only commit on a no-symlink cache: the GGUF is still staged but counts no bytes."""
+    _fake_flux_hub(monkeypatch)
+    _no_cache(monkeypatch)
+    asked = []
+
+    def reusable(repo_id, names, revision, declared_sizes, hf_token):
+        asked.append((repo_id, tuple(names)))
+        return {"flux1-dev-Q4_K_M.gguf"} if repo_id == "unsloth/FLUX.1-dev-GGUF" else set()
+
+    monkeypatch.setattr(DiffusionBackend, "_reusable_from_older_snapshot", staticmethod(reusable))
+
+    plan = _flux_download_plan()
+
+    checkpoint, base = plan["entries"]
+    assert checkpoint["repo_id"] == "unsloth/FLUX.1-dev-GGUF"
+    assert checkpoint["files"] == ["flux1-dev-Q4_K_M.gguf"]
+    assert checkpoint["bytes"] == 0
+    assert checkpoint["checkpoint"] is True
+    assert base["bytes"] > 0
+    assert plan["total_bytes"] == base["bytes"]
+    assert plan["checkpoint_bytes"] == 7 * GB
+    assert ("unsloth/FLUX.1-dev-GGUF", ("flux1-dev-Q4_K_M.gguf",)) in asked
+
+
+def test_reusable_from_older_snapshot_reads_the_live_cache_without_hashing(monkeypatch, tmp_path):
+    from hub.utils import snapshot_reuse
+
+    old, new = "1" * 40, "2" * 40
+    same, changed = b"s" * 4096, b"c" * 4096
+    snap = tmp_path / "models--unsloth--Qwen-Image-2.1-FP8" / "snapshots" / old
+    (snap / "vae").mkdir(parents = True)
+    (snap / "text_encoder.safetensors").write_bytes(same)
+    (snap / "vae" / "vae.safetensors").write_bytes(changed)
+    digests = {
+        old: {"text_encoder.safetensors": "a" * 64, "vae/vae.safetensors": "b" * 64},
+        new: {"text_encoder.safetensors": "a" * 64, "vae/vae.safetensors": "c" * 64},
+    }
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        snapshot_reuse,
+        "hub_remote_digests",
+        lambda repo_type, repo_id, token: lambda commit, paths: {
+            p: digests[commit][p] for p in paths
+        },
+    )
+    monkeypatch.setattr(snapshot_reuse, "file_digest", lambda *a, **k: pytest.fail("plan hashed"))
+
+    found = DiffusionBackend._reusable_from_older_snapshot(
+        "unsloth/Qwen-Image-2.1-FP8",
+        ["text_encoder.safetensors", "vae/vae.safetensors"],
+        new,
+        {"text_encoder.safetensors": len(same), "vae/vae.safetensors": len(changed)},
+        None,
+    )
+
+    assert found == {"text_encoder.safetensors"}
+    assert not (snap.parent / new).exists()
+    assert (
+        DiffusionBackend._reusable_from_older_snapshot(
+            "unsloth/Qwen-Image-2.1-FP8", ["text_encoder.safetensors"], None, {}, None
+        )
+        == set()
+    )
+
+
+def test_reusable_from_older_snapshot_targets_the_main_ref_when_unpinned(monkeypatch, tmp_path):
+    from hub.utils import snapshot_reuse
+
+    old, new = "1" * 40, "2" * 40
+    encoder = b"s" * 4096
+    repo = tmp_path / "models--unsloth--Qwen-Image-2.1-FP8"
+    (repo / "snapshots" / old).mkdir(parents = True)
+    (repo / "snapshots" / new / "vae").mkdir(parents = True)
+    (repo / "snapshots" / old / "te.safetensors").write_bytes(encoder)
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text(new)
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path))
+    head = {"main": "a" * 64}
+    asked = []
+
+    def digests(repo_type, repo_id, token):
+        def lookup(commit, paths):
+            asked.append(commit)
+            return {p: head.get(commit, "a" * 64) for p in paths}
+
+        return lookup
+
+    monkeypatch.setattr(snapshot_reuse, "hub_remote_digests", digests)
+
+    def reusable():
+        return DiffusionBackend._reusable_from_older_snapshot(
+            "unsloth/Qwen-Image-2.1-FP8",
+            ["te.safetensors"],
+            None,
+            {"te.safetensors": len(encoder)},
+            None,
+        )
+
+    assert reusable() == {"te.safetensors"}
+    assert asked[0] == "main"  # the worker fetches the Hub head, not the cached ref
+    head["main"] = "b" * 64
+    assert reusable() == set()
+
+
+def test_reusable_from_older_snapshot_keeps_the_anonymous_token_sentinel(monkeypatch, tmp_path):
+    from hub.utils import snapshot_reuse
+
+    tokens = []
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        snapshot_reuse,
+        "hub_remote_digests",
+        lambda repo_type, repo_id, token: tokens.append(token) or (lambda commit, paths: {}),
+    )
+
+    for token in (False, "", None, "hf_x"):
+        DiffusionBackend._reusable_from_older_snapshot(
+            "unsloth/Qwen-Image-2.1-FP8", ["te.safetensors"], "2" * 40, {"te.safetensors": 1}, token
+        )
+
+    assert tokens == [False, None, None, "hf_x"]
+
+
 def test_download_plan_is_empty_when_every_required_file_is_cached(monkeypatch):
     _fake_flux_hub(monkeypatch)
     _all_cached(monkeypatch)

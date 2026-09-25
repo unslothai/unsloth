@@ -19,8 +19,8 @@ import {
   composerSubmitIntent,
   composerShortcutLabels,
 } from "./utils/composer-preferences";
-import { useT } from "@/i18n";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { BulbIcon } from "@/lib/bulb-icon";
 import { MicIcon } from "@/lib/mic-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -121,7 +121,10 @@ import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { ChatSkillsDialog } from "./components/chat-skills-dialog";
+import { ChatAudioUploadMount } from "./components/chat-audio-upload-mount";
 import { useChatProjects } from "./hooks/use-chat-projects";
+import { useChatAudioUpload } from "./hooks/use-chat-audio-upload";
+import { currentDictationEntryMode } from "./utils/dictation-entry";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   DEFAULT_MAX_SEQ_LENGTH,
@@ -165,6 +168,7 @@ import { compareModelDisplayName } from "./lib/external-model-label";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useT } from "@/i18n";
 import {
   PLUS_MENU_ORDER,
   type PlusMenuItemId,
@@ -209,6 +213,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useRef,
   useState,
   useSyncExternalStore,
@@ -595,6 +600,15 @@ export function SharedComposer({
   const textRef = useRef(text);
   const pendingImagesRef = useRef(pendingImages);
   const pendingAudioRef = useRef(pendingAudio);
+  const setCurrentText = useCallback(
+    (value: string | ((previous: string) => string)) => {
+      const next =
+        typeof value === "function" ? value(textRef.current) : value;
+      textRef.current = next;
+      setText(next);
+    },
+    [],
+  );
   useEffect(() => {
     textRef.current = text;
     pendingImagesRef.current = pendingImages;
@@ -676,7 +690,7 @@ export function SharedComposer({
 
   const skillMentions = useTextareaSkillMentions({
     text,
-    setText,
+    setText: setCurrentText,
     inputRef: textareaRef,
     composingRef,
     enabled: supportsTools,
@@ -907,9 +921,36 @@ export function SharedComposer({
   const {
     isDictating,
     isFinalizing: isDictationFinalizing,
-    start: startDictation,
+    start: startDictationSession,
     stop: stopDictation,
-  } = useDictation(setText);
+  } = useDictation(setCurrentText);
+  const chatActive = useChatActive();
+  const compareUploadInstanceId = useId();
+  const audioUploadOwner = `${compareUploadInstanceId}:${model1?.id ?? ""}:${model2?.id ?? ""}`;
+  const readAudioUploadDraft = useCallback(() => textRef.current, []);
+  const writeAudioUploadDraft = useCallback(
+    (value: string) => setCurrentText(value),
+    [setCurrentText],
+  );
+  const focusAudioUploadDraft = useCallback(() => {
+    textareaRef.current?.focus({ preventScroll: true });
+  }, []);
+  const audioUpload = useChatAudioUpload({
+    owner: audioUploadOwner,
+    chatId: null,
+    disabled: isDictating || !chatActive,
+    readDraft: readAudioUploadDraft,
+    writeDraft: writeAudioUploadDraft,
+    focusDraft: focusAudioUploadDraft,
+  });
+  const startDictation = useCallback(() => {
+    if (audioUpload.busy || !chatActive) return;
+    if (currentDictationEntryMode() === "recording-file") {
+      audioUpload.openDialog();
+      return;
+    }
+    startDictationSession();
+  }, [audioUpload, chatActive, startDictationSession]);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -944,7 +985,7 @@ export function SharedComposer({
     toast(`Prompt ${nextIndex + 1} / ${queueRef.current.length}`, {
       description: next.length > 80 ? next.slice(0, 80) + "…" : next,
     });
-    setText(next);
+    setCurrentText(next);
     setTimeout(() => { sendRef.current?.(); }, 100);
   }
 
@@ -1229,7 +1270,7 @@ export function SharedComposer({
       });
     };
     const clearSubmittedDraft = () => {
-      setText("");
+      setCurrentText("");
       setPendingImages([]);
       setPendingAudio(null);
       clearPendingAudioStore();
@@ -1303,6 +1344,7 @@ export function SharedComposer({
         keepChangedDraft();
         return;
       }
+      audioUpload.cancel();
       clearSubmittedDraft();
       // Set when an accepted transformers install unloaded the active model server-side; a later
       // failure must then clear the stale checkpoint.
@@ -1942,6 +1984,7 @@ export function SharedComposer({
           reservations.push(token);
         }
       }
+      audioUpload.cancel();
       clearSubmittedDraft();
       for (const handle of handles) {
         handle.append(content);
@@ -2000,7 +2043,6 @@ export function SharedComposer({
 
   // Compare mode swaps this composer in for the single-chat one and only one is ever on screen, so the
   // chords register in both. Both gate on the chat tab being visible: off-route the pane is hidden.
-  const chatActive = useChatActive();
   useShortcut(
     "startDictation",
     () => {
@@ -2107,7 +2149,7 @@ export function SharedComposer({
             <DropdownMenuItem
               key={p.id}
               onSelect={() => {
-                setText(p.text);
+                setCurrentText(p.text);
                 requestAnimationFrame(() => textareaRef.current?.focus());
               }}
             >
@@ -2244,12 +2286,13 @@ export function SharedComposer({
       }}
     >
       <ChatSkillsDialog open={skillsOpen} onOpenChange={setSkillsOpen} />
+      <ChatAudioUploadMount audioUpload={audioUpload} />
 
       <PromptStorageDialog
         open={promptStorageOpen}
         onOpenChange={setPromptStorageOpen}
         onUse={(t) => {
-          setText(t);
+          setCurrentText(t);
           requestAnimationFrame(() => textareaRef.current?.focus());
         }}
         onRunList={(items) => {
@@ -2276,7 +2319,7 @@ export function SharedComposer({
           toast(`Prompt 1 / ${filtered.length}`, {
             description: filtered[0].length > 80 ? filtered[0].slice(0, 80) + "…" : filtered[0],
           });
-          setText(filtered[0]);
+          setCurrentText(filtered[0]);
           setTimeout(() => { sendRef.current?.(); }, 100);
         }}
       />
@@ -2341,7 +2384,7 @@ export function SharedComposer({
           // must match the DOM at all times, else an unrelated parent re-render reconciles the textarea back
           // to the stored value mid-composition, wiping the preedit (#5318).
           setCompositionState(isNativeComposing(e.nativeEvent));
-          setText(e.target.value);
+          setCurrentText(e.target.value);
           skillMentions.update(
             e.target.value,
             e.target.selectionStart ?? e.target.value.length,
@@ -2363,7 +2406,7 @@ export function SharedComposer({
         }}
         onCompositionEnd={(e: CompositionEvent<HTMLTextAreaElement>) => {
           setCompositionState(false);
-          setText(e.currentTarget.value);
+          setCurrentText(e.currentTarget.value);
         }}
         onKeyDown={(event) => {
           if (!skillMentions.onKeyDown(event)) onKeyDown(event);
@@ -2880,17 +2923,34 @@ export function SharedComposer({
           {
             <>
               {!isDictating ? (
-                <TooltipIconButton
-                  tooltip="Dictate"
-                  side="bottom"
-                  variant="ghost"
-                  size="icon"
-                  className="size-8 rounded-full text-muted-foreground"
-                  onClick={startDictation}
-                  aria-label="Dictate"
-                >
-                  <MicIcon className="unsloth-dictate-icon size-4" />
-                </TooltipIconButton>
+                audioUpload.busy ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 gap-1.5 rounded-full px-2 text-muted-foreground"
+                    aria-label={t("settings.voice.dictation.audioUploadCancel")}
+                    title={t("settings.voice.dictation.audioUploadCancel")}
+                    onClick={audioUpload.cancel}
+                  >
+                    <Spinner className="size-3.5" />
+                    <span>{t("settings.voice.dictation.audioUploadTranscribing")}</span>
+                    <XIcon className="size-3" aria-hidden="true" />
+                  </Button>
+                ) : (
+                  <TooltipIconButton
+                    tooltip="Dictate"
+                    side="bottom"
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 rounded-full text-muted-foreground"
+                    disabled={!chatActive}
+                    onClick={startDictation}
+                    aria-label="Dictate"
+                  >
+                    <MicIcon className="unsloth-dictate-icon size-4" />
+                  </TooltipIconButton>
+                )
               ) : (
                 <TooltipIconButton
                   tooltip={

@@ -8750,18 +8750,19 @@ main()
     }
 
     # "source;cudaMajor;cudaMinor;cap,cap" from NVML, else the CUDA driver API; "" when neither
-    # answers. Versions are major*1000 + minor*10. Read in a runspace of its own under a deadline:
-    # a wedged driver can block inside the library, and the deadline leaves that runspace behind.
-    # The Python rung below spends what the emitted rung left of ONE budget, so the worst-case wall
-    # clock is unchanged: a driver that wedges the full $TimeoutMs leaves nothing and is not retried.
+    # answers. Versions are major*1000 + minor*10. One runspace + deadline per reader: a shared one let slow NVML starve CUDA.
+    # A wedged driver can block inside the library, and each deadline leaves its runspace behind.
+    # The Python rung below spends what the emitted rung left of ONE budget (a per-reader bound for
+    # NVML plus one for CUDA), so the worst-case wall clock is the emitted rung's own: a driver that
+    # wedges both readers leaves nothing and is not retried.
     function Read-NvidiaLibraryRaw {
-        param([int]$TimeoutMs = 10000)
-        $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
+        param([int]$TimeoutMs = 30000)
+        $deadline = (Get-Date).AddMilliseconds($TimeoutMs * 2)
         $native = ""
         $type = Get-NvidiaLibraryProbeType
         if ($type) {
             $reader = {
-                param($T)
+                param($T, $Which)
                 function Read-Nvml {
                     if ($T::nvmlInit_v2() -ne 0) { return "" }
                     try {
@@ -8803,20 +8804,22 @@ main()
                     return "cuda;$([int][math]::Floor($ver / 1000));$([int][math]::Floor(($ver % 1000) / 10));$($caps -join ',')"
                 }
                 $r = ""
-                try { $r = Read-Nvml } catch { $r = "" }
-                if (-not $r) { try { $r = Read-Cuda } catch { $r = "" } }
+                try { if ($Which -eq "nvml") { $r = Read-Nvml } else { $r = Read-Cuda } } catch { $r = "" }
                 return "$r"
             }
-            $ps = $null; $handle = $null
-            try {
-                $ps = [powershell]::Create()
-                $null = $ps.AddScript($reader.ToString()).AddArgument($type)
-                $handle = $ps.BeginInvoke()
-                if ($handle.AsyncWaitHandle.WaitOne($TimeoutMs)) {
-                    $native = "$(@($ps.EndInvoke($handle)) | Select-Object -Last 1)"
-                }
-            } catch { $native = "" }
-            finally { if ($ps -and $handle -and $handle.IsCompleted) { $ps.Dispose() } }
+            foreach ($which in @("nvml", "cuda")) {
+                $ps = $null; $handle = $null; $r = ""
+                try {
+                    $ps = [powershell]::Create()
+                    $null = $ps.AddScript($reader.ToString()).AddArgument($type).AddArgument($which)
+                    $handle = $ps.BeginInvoke()
+                    if ($handle.AsyncWaitHandle.WaitOne($TimeoutMs)) {
+                        $r = "$(@($ps.EndInvoke($handle)) | Select-Object -Last 1)"
+                    }
+                } catch { $r = "" }
+                finally { if ($ps -and $handle -and $handle.IsCompleted) { $ps.Dispose() } }
+                if ($r) { $native = $r; break }
+            }
         }
         if ($native) { return $native }
         $remainingMs = [int]($deadline - (Get-Date)).TotalMilliseconds
@@ -8829,7 +8832,7 @@ main()
     # host whose nvidia-smi is absent, stale or hangs (#9255). Twin of studio/nvidia_probe.py.
     # Cached. $null, or @{ Source; CudaMajor; CudaMinor; ComputeCaps ("8.9" strings); Count }.
     function Get-NvidiaLibraryInventory {
-        param([int]$TimeoutSec = 10)
+        param([int]$TimeoutSec = 30)
         if ($script:NvidiaLibraryInventoryProbed) { return $script:NvidiaLibraryInventory }
         $script:NvidiaLibraryInventoryProbed = $true
         $script:NvidiaLibraryInventory = $null
@@ -9763,6 +9766,10 @@ main()
         if ($NvidiaSmiExe) {
             try {
                 $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe
+                if ($LASTEXITCODE -eq 124) {
+                    substep "nvidia-smi did not answer within 10s; retrying with a 45s limit..." "Yellow"
+                    $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe -TimeoutSec 45
+                }
                 if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
                     $major = [int]$Matches[1]; $minor = [int]$Matches[2]
                 }
@@ -9777,6 +9784,9 @@ main()
                 return "$baseUrl/cpu"
             } else {
                 substep "could not determine CUDA version from nvidia-smi, defaulting to cu126" "Yellow"
+                $pinHint = if ($env:UNSLOTH_PYTORCH_MIRROR) { "UNSLOTH_TORCH_INDEX_FAMILY=" } else { "UNSLOTH_TORCH_INDEX_URL=$baseUrl/" }
+                substep "cu126 has no kernels for Blackwell (sm_100 / sm_120). To choose the wheel yourself, re-run with" "Yellow"
+                substep "  ${pinHint}cu128   (or cu130 on a driver that supports CUDA 13)" "Yellow"
                 return "$baseUrl/cu126"
             }
         }
