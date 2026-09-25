@@ -54,7 +54,7 @@ import {
 } from "@/features/chat";
 import {
   LibraryStorageBar,
-  type StorageCategory,
+  STORAGE_LABELS,
   formatSize,
   refreshLibraryStorage,
   useLibraryStorage,
@@ -64,7 +64,7 @@ import {
   listKnowledgeBases,
   useRagAvailabilityStore,
 } from "@/features/rag";
-import { type TranslationKey, useLocale, useT } from "@/i18n";
+import { useLocale, useT } from "@/i18n";
 
 import { isTauri } from "@/lib/api-base";
 import {
@@ -109,14 +109,6 @@ import {
 // display order, and the guard against a persisted action this build dropped.
 const FINE_TUNE_ACTIONS: FineTuneAction[] = ["export", "train", "recipes"];
 
-const LIBRARY_CATEGORY_LABELS: Record<StorageCategory, TranslationKey> = {
-  files: "settings.library.categoryFiles",
-  images: "settings.library.categoryImages",
-  videos: "settings.library.categoryVideos",
-  audio: "settings.library.categoryAudio",
-  fineTunes: "settings.library.categoryFineTunes",
-};
-
 /** Library storage at a glance. Managing it lives in the Library tab. */
 function LibraryDataSection() {
   const t = useT();
@@ -124,10 +116,11 @@ function LibraryDataSection() {
   const openDialog = useSettingsDialogStore((s) => s.openDialog);
   const storage = useLibraryStorage();
   const count = storage.categories.reduce((sum, entry) => sum + entry.count, 0);
-  const largest = [...storage.categories]
-    .sort((a, b) => b.bytes - a.bytes)
+  const size = (bytes: number) => formatSize(bytes, locale, t) ?? "";
+  // Categories come largest first.
+  const largest = storage.categories
     .slice(0, 3)
-    .map((entry) => `${t(LIBRARY_CATEGORY_LABELS[entry.category])} ${formatSize(entry.bytes, locale, t) ?? ""}`)
+    .map((entry) => `${t(STORAGE_LABELS[entry.category])} ${size(entry.bytes)}`)
     .join(" · ");
 
   let summary: string;
@@ -137,19 +130,18 @@ function LibraryDataSection() {
   else {
     // Hidden sources still take space, though no category counts them.
     summary = [
-      t("settings.library.storageUsed", { size: formatSize(storage.totalBytes, locale, t) ?? "" }),
+      t("settings.library.storageUsed", { size: size(storage.totalBytes) }),
       count === 1
         ? t("settings.library.itemCountOne")
         : count > 0 && t("settings.library.itemCount", { count: count.toLocaleString() }),
-      storage.hiddenBytes > 0 &&
-        t("settings.library.storageHidden", { size: formatSize(storage.hiddenBytes, locale, t) ?? "" }),
+      storage.hiddenBytes > 0 && t("settings.library.storageHidden", { size: size(storage.hiddenBytes) }),
     ]
       .filter(Boolean)
       .join(" · ");
   }
 
   return (
-    <SettingsSection title={t("settings.library.dataSection")}>
+    <SettingsSection title={t("shell.navigation.library")}>
       <SettingsRow
         label={t("settings.library.dataStorage")}
         description={summary || "\u00a0"}

@@ -240,7 +240,7 @@ const TABS: TabDef[] = [
   },
   {
     id: "library",
-    labelKey: "settings.tabs.library",
+    labelKey: "shell.navigation.library",
     icon: LibrariesIcon,
     badgeKey: "common.new",
   },

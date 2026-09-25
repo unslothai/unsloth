@@ -29,8 +29,9 @@ import {
   type LibrarySettings,
   type LibraryTab as LibraryTabId,
   type LibraryTabVisibility,
-  type StorageCategory,
+  STORAGE_LABELS,
   SUGGESTED_LIMITS,
+  errorMessage,
   formatSize,
   getLibraryLocations,
   moveLibraryLocation,
@@ -55,15 +56,24 @@ import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
-type ChoiceKey = {
-  [K in keyof LibrarySettings]: LibrarySettings[K] extends string ? K : never;
-}[keyof LibrarySettings];
-
 type ToggleKey = {
   [K in keyof LibrarySettings]: LibrarySettings[K] extends boolean ? K : never;
 }[keyof LibrarySettings];
 
-const CHOICES: { [K in Exclude<ChoiceKey, "lastTab">]: [LibrarySettings[K], TranslationKey][] } = {
+const TAB_LABELS: Record<LibraryTabId, TranslationKey> = {
+  suggested: "settings.library.suggested",
+  favorites: "library.tabs.favorites",
+  folders: "library.tabs.folders",
+  images: STORAGE_LABELS.images,
+  videos: STORAGE_LABELS.videos,
+  audio: STORAGE_LABELS.audio,
+  models: STORAGE_LABELS.fineTunes,
+  all: "settings.library.all",
+};
+
+const CHOICES: {
+  [K in "cardSize" | "imageLayout" | "startTab" | "sort"]: [LibrarySettings[K], TranslationKey][];
+} = {
   cardSize: [
     ["small", "settings.library.small"],
     ["medium", "settings.library.medium"],
@@ -75,28 +85,14 @@ const CHOICES: { [K in Exclude<ChoiceKey, "lastTab">]: [LibrarySettings[K], Tran
   ],
   startTab: [
     ["last", "settings.library.lastVisited"],
-    ["suggested", "settings.library.suggested"],
-    ["favorites", "settings.library.favorites"],
-    ["folders", "settings.library.folders"],
-    ["all", "settings.library.all"],
+    ...(["suggested", "favorites", "folders", "all"] as const).map((tab): [typeof tab, TranslationKey] => [tab, TAB_LABELS[tab]]),
   ],
   sort: [
     ["recent", "settings.library.recent"],
     ["oldest", "settings.library.oldest"],
     ["name", "settings.library.name"],
-    ["size", "settings.library.size"],
+    ["size", "library.preview.size"],
   ],
-};
-
-const TAB_LABELS: Record<LibraryTabId, TranslationKey> = {
-  suggested: "settings.library.suggested",
-  favorites: "settings.library.favorites",
-  folders: "settings.library.folders",
-  images: "settings.library.categoryImages",
-  videos: "settings.library.categoryVideos",
-  audio: "settings.library.categoryAudio",
-  models: "settings.library.categoryFineTunes",
-  all: "settings.library.all",
 };
 
 // These tabs can wait until they have something in them; the rest are simply on or off.
@@ -135,14 +131,6 @@ function ChoiceSelect({
   );
 }
 
-const CATEGORY_LABELS: Record<StorageCategory, TranslationKey> = {
-  files: "settings.library.categoryFiles",
-  images: "settings.library.categoryImages",
-  videos: "settings.library.categoryVideos",
-  audio: "settings.library.categoryAudio",
-  fineTunes: "settings.library.categoryFineTunes",
-};
-
 /** Library usage against the disk it lives on, and a way into each category, largest first. */
 function StorageSection() {
   const t = useT();
@@ -155,6 +143,7 @@ function StorageSection() {
   const setView = useLibraryViewStore((s) => s.setView);
   const restartLibrary = useLibraryVisitStore((s) => s.restart);
   const storage = useLibraryStorage();
+  const size = (bytes: number) => formatSize(bytes, locale, t) ?? "";
 
   // Manage storage in the Data tab lands here.
   useEffect(() => {
@@ -174,121 +163,93 @@ function StorageSection() {
     void navigate({ to: "/library", search: link });
   };
 
-  let body;
-  if (storage.status === "loading") {
-    body = <Spinner className="my-4 size-5 text-muted-foreground" />;
-  } else if (storage.status === "error") {
-    body = <p className="py-3 text-sm text-muted-foreground">{t("settings.library.storageError")}</p>;
-  } else {
-    body = (
-      <>
-        <div className="flex flex-col gap-2 py-3">
-          <p className="text-sm font-medium text-foreground">
-            {t("settings.library.storageUsed", { size: formatSize(storage.totalBytes, locale, t) ?? "" })}
-          </p>
-          <LibraryStorageBar libraryBytes={storage.diskBytes} disk={storage.disk} />
-        </div>
-        {storage.categories.length === 0 && storage.hiddenBytes === 0 ? (
-          <p className="pb-3 text-sm text-muted-foreground">{t("settings.library.storageEmpty")}</p>
-        ) : (
-          <>
-            {storage.categories.length > 0 && (
-              <div className="mb-3 flex flex-col overflow-hidden rounded-xl border border-border/60">
-                {storage.categories.map((entry) => (
-                  <button
-                    key={entry.category}
-                    type="button"
-                    onClick={() => open(entry.link)}
-                    className="flex items-center gap-3 border-border/60 px-4 py-3 text-left transition-colors not-first:border-t hover:bg-muted/60"
-                  >
-                    <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                      <span className="text-sm font-medium text-foreground">
-                        {t(CATEGORY_LABELS[entry.category])}
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        {formatSize(entry.bytes, locale, t)}
-                        {" · "}
-                        {entry.count === 1
-                          ? t("settings.library.itemCountOne")
-                          : t("settings.library.itemCount", { count: entry.count.toLocaleString() })}
-                      </span>
-                    </span>
-                    <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-4 shrink-0 text-muted-foreground" />
-                  </button>
-                ))}
-              </div>
-            )}
-            {storage.hiddenBytes > 0 && (
-              <p className="pb-3 text-xs text-muted-foreground">
-                {t("settings.library.storageHidden", { size: formatSize(storage.hiddenBytes, locale, t) ?? "" })}
-              </p>
-            )}
-          </>
-        )}
-      </>
-    );
-  }
-
   return (
     <SettingsSection
       ref={sectionRef}
       title={t("settings.library.storageSection")}
       description={t("settings.library.storageDescription")}
     >
-      {body}
+      {storage.status === "loading" ? (
+        <Spinner className="my-4 size-5 text-muted-foreground" />
+      ) : storage.status === "error" ? (
+        <p className="py-3 text-sm text-muted-foreground">{t("settings.library.storageError")}</p>
+      ) : (
+        <>
+          <div className="flex flex-col gap-2 py-3">
+            <p className="text-sm font-medium text-foreground">
+              {t("settings.library.storageUsed", { size: size(storage.totalBytes) })}
+            </p>
+            <LibraryStorageBar libraryBytes={storage.diskBytes} disk={storage.disk} />
+          </div>
+          {storage.categories.length === 0 && storage.hiddenBytes === 0 && (
+            <p className="pb-3 text-sm text-muted-foreground">{t("settings.library.storageEmpty")}</p>
+          )}
+          {storage.categories.length > 0 && (
+            <div className="mb-3 flex flex-col overflow-hidden rounded-xl border border-border/60">
+              {storage.categories.map((entry) => (
+                <button
+                  key={entry.category}
+                  type="button"
+                  onClick={() => open(entry.link)}
+                  className="flex items-center gap-3 border-border/60 px-4 py-3 text-left transition-colors not-first:border-t hover:bg-muted/60"
+                >
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="text-sm font-medium text-foreground">
+                      {t(STORAGE_LABELS[entry.category])}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {size(entry.bytes)}
+                      {" · "}
+                      {entry.count === 1
+                        ? t("settings.library.itemCountOne")
+                        : t("settings.library.itemCount", { count: entry.count.toLocaleString() })}
+                    </span>
+                  </span>
+                  <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-4 shrink-0 text-muted-foreground" />
+                </button>
+              ))}
+            </div>
+          )}
+          {storage.hiddenBytes > 0 && (
+            <p className="pb-3 text-xs text-muted-foreground">
+              {t("settings.library.storageHidden", { size: size(storage.hiddenBytes) })}
+            </p>
+          )}
+        </>
+      )}
     </SettingsSection>
   );
 }
-
-const LOCATION_LABELS: Record<LibraryLocation["key"], TranslationKey> = {
-  uploads: "settings.library.locationUploads",
-  images: "settings.library.categoryImages",
-  videos: "settings.library.categoryVideos",
-  audio: "settings.library.categoryAudio",
-  fineTunes: "settings.library.categoryFineTunes",
-  exports: "settings.library.locationExports",
-};
 
 /** Where each kind of file lives, with Reveal where Studio runs on this machine. */
 function LocationsSection() {
   const t = useT();
   const locale = useLocale();
   const revealLabel = useRevealLabel();
-  const [locations, setLocations] = useState<LibraryLocation[] | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    getLibraryLocations().then(
-      (next) => !cancelled && setLocations(next),
-      () => !cancelled && setLocations([]),
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  const open = (key: LibraryLocation["key"]) =>
-    revealLibraryLocation(key).catch((error: unknown) =>
-      toast.error(t("settings.library.revealFailed"), {
-        description: error instanceof Error ? error.message : String(error),
-      }),
-    );
-  // Moving is the owner's call, like the model download folder: other accounts keep their files
-  // in their own workspace.
+  // Moving is the owner's call, like the model folder; other accounts keep files in their workspace.
   const owner = useIsAccountOwner();
+  const [locations, setLocations] = useState<LibraryLocation[] | null>(null);
   const [moving, setMoving] = useState(false);
   const [picking, setPicking] = useState<LibraryLocation | null>(null);
   // A Reset while the folder's drive is away leaves its files there: said before it happens.
   const [resettingAway, setResettingAway] = useState<LibraryLocation | null>(null);
-  const nameOf = (location: LibraryLocation) => t(LOCATION_LABELS[location.key]);
+  useEffect(() => {
+    let cancelled = false;
+    void getLibraryLocations()
+      .catch((): LibraryLocation[] => [])
+      .then((next) => !cancelled && setLocations(next));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const nameOf = (location: LibraryLocation) => t(STORAGE_LABELS[location.key]);
   // Free space per row only when the folders span more than one disk; one disk is the bar above.
-  const devices = new Set(
-    (locations ?? []).flatMap((location) => (location.device ? [location.device] : [])),
-  );
+  const manyDisks = new Set(locations?.map((location) => location.device).filter(Boolean)).size > 1;
 
   async function move(location: LibraryLocation, path: string | null) {
     const name = nameOf(location);
     setMoving(true);
-    // A move across drives can take minutes: the toast stays up and Change and Reset stay off
-    // until the server answers.
+    // Across drives this can take minutes: the toast stays and Change and Reset stay off till done.
     const id = toast.loading(t("settings.library.locationMoving", { name }));
     try {
       const result = await moveLibraryLocation(location.key, path);
@@ -302,10 +263,7 @@ function LocationsSection() {
           : undefined,
       });
     } catch (error) {
-      toast.error(t("settings.library.locationMoveFailed", { name }), {
-        id,
-        description: error instanceof Error ? error.message : String(error),
-      });
+      toast.error(t("settings.library.locationMoveFailed", { name }), { id, description: errorMessage(error) });
     } finally {
       setMoving(false);
     }
@@ -322,7 +280,7 @@ function LocationsSection() {
         locations.map((location) => (
           <SettingsRow
             key={location.key}
-            label={t(LOCATION_LABELS[location.key])}
+            label={nameOf(location)}
             description={
               <>
                 <span className="block truncate font-mono text-[11px]" title={location.path}>
@@ -333,7 +291,7 @@ function LocationsSection() {
                     {t("settings.library.locationUnavailable")}
                   </span>
                 ) : (
-                  devices.size > 1 &&
+                  manyDisks &&
                   location.disk && (
                     <span className="block text-xs">
                       {t("settings.library.locationFree", {
@@ -367,11 +325,19 @@ function LocationsSection() {
                   disabled={moving}
                   onClick={() => setPicking(location)}
                 >
-                  {t("settings.library.locationChange")}
+                  {t("settings.resources.storage.changeAction")}
                 </Button>
               )}
               {revealLabel && (
-                <Button variant="outline" size="sm" onClick={() => void open(location.key)}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    void revealLibraryLocation(location.key).catch((error: unknown) =>
+                      toast.error(t("settings.library.revealFailed"), { description: errorMessage(error) }),
+                    )
+                  }
+                >
                   {revealLabel}
                 </Button>
               )}
@@ -454,7 +420,7 @@ export function LibraryTab() {
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-xl font-semibold font-heading">{t("settings.library.title")}</h1>
+        <h1 className="text-xl font-semibold font-heading">{t("shell.navigation.library")}</h1>
       </header>
 
       <StorageSection />
@@ -518,7 +484,7 @@ export function LibraryTab() {
         {toggle("showChatAttachments", "settings.library.showChatAttachments", "settings.library.showChatAttachmentsDescription")}
         {toggle("showChatToolFiles", "settings.library.showChatToolFiles", "settings.library.showChatToolFilesDescription")}
         {toggle("showGeneratedMedia", "settings.library.showGeneratedMedia", "settings.library.showGeneratedMediaDescription")}
-        {toggle("showFineTunes", "settings.library.showFineTunes", "settings.library.showFineTunesDescription")}
+        {toggle("showFineTunes", "settings.library.categoryFineTunes", "settings.library.showFineTunesDescription")}
       </SettingsSection>
 
       <SettingsSection title={t("settings.library.deletingSection")}>

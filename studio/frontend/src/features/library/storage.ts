@@ -1,15 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { TranslationKey } from "@/i18n";
 import { useEffect, useMemo, useState } from "react";
-import { type LibraryDisk, type LibraryItem, getLibrary } from "./api";
+import { type LibraryDisk, type LibraryItem, type LibraryLocation, getLibrary } from "./api";
 import { fileKind } from "./file-kind";
 import type { LibrarySearch } from "./search";
 import { includedBySettings, useLibrarySettingsStore } from "./settings-store";
 
-export type StorageCategory = "files" | "images" | "videos" | "audio" | "fineTunes";
+type StorageCategory = "files" | "images" | "videos" | "audio" | "fineTunes";
 
-export interface StorageUsage {
+/** Settings names for storage categories and Library locations. */
+export const STORAGE_LABELS: Record<StorageCategory | LibraryLocation["key"], TranslationKey> = {
+  files: "settings.data.filesSection",
+  uploads: "settings.library.locationUploads",
+  images: "settings.library.categoryImages",
+  videos: "settings.library.categoryVideos",
+  audio: "library.tabs.audio",
+  fineTunes: "settings.library.categoryFineTunes",
+  exports: "settings.library.locationExports",
+};
+
+interface StorageUsage {
   category: StorageCategory;
   /** Where Manage storage opens it, sorted by size. */
   link: LibrarySearch;
@@ -17,7 +29,7 @@ export interface StorageUsage {
   count: number;
 }
 
-export interface LibraryStorage {
+interface LibraryStorage {
   status: "loading" | "ready" | "error";
   /** Everything on disk, hidden sources included. */
   totalBytes: number;
@@ -57,11 +69,8 @@ export function refreshLibraryStorage(): void {
   window.dispatchEvent(new Event(STALE_EVENT));
 }
 
-/**
- * What the Library holds on disk, by category. Sources hidden in Content settings still take space,
- * so they count toward the total and the bar, but under no category: each category link lands on
- * exactly what it counted. Empty categories are left out.
- */
+/** What the Library holds on disk, by category, largest first. Hidden sources count toward the
+ *  total and the bar but no category, so each link lands on exactly what it counted. */
 export function useLibraryStorage(): LibraryStorage {
   const settings = useLibrarySettingsStore();
   const [snapshot, setSnapshot] = useState<{
