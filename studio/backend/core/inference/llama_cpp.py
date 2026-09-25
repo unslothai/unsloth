@@ -3845,9 +3845,8 @@ _DEDICATED_USAGE_KEY = "dedicated|"
 
 # The per-executable driver setting is the only way to turn the fallback off.
 _VRAM_SPILL_ADVICE = (
-    "Only {resident_gb:.1f} GB of the {expected_gb:.1f} GB this model needs is resident "
-    "in GPU memory; about {shortfall_gb:.1f} GB appears to be running from shared system "
-    "memory over PCIe, which makes generation several times slower. Windows does this "
+    "About {spilled_gb:.1f} GB of this model appears to be running from shared system "
+    "memory over PCIe instead of GPU memory, which makes generation several times slower. Windows does this "
     "instead of reporting out of memory. To fix it, either lower the context size{kv_hint}, "
     "or open NVIDIA Control Panel -> Manage 3D "
     "settings -> Program Settings, add llama-server.exe, and set "
@@ -14712,10 +14711,9 @@ class LlamaCppBackend:
         if not floor or not baseline:
             return None
         try:
-            now = {
-                int(idx): float(free_mib)
-                for idx, free_mib, _total in (self._get_gpu_memory() or ())
-            }
+            rows = list(self._get_gpu_memory() or ())
+            now = {int(idx): float(free_mib) for idx, free_mib, _total in rows}
+            totals = {int(idx): float(total or 0) for idx, _free, total in rows}
         except Exception as e:
             logger.debug(f"VRAM residency probe failed: {e}")
             return None
@@ -14738,7 +14736,15 @@ class LlamaCppBackend:
         # WDDM spills only once dedicated VRAM is exhausted, so shared growth counts only
         # when a pinned card is nearly full. Not ``shortfall > 0``: the measured delta also
         # holds the CUDA context and compute buffers, which would mask a small spill.
-        card_full = any(now[i] < _WINDOWS_SYSMEM_FALLBACK_RESERVE_MIB for i in baseline)
+        card_full = any(
+            now[i]
+            < (
+                _vram_reserve_floor_mib(totals[i], sysmem_fallback = True)
+                if totals.get(i, 0) > 0
+                else _WINDOWS_SYSMEM_FALLBACK_RESERVE_MIB
+            )
+            for i in baseline
+        )
         direct_hit = spilled is not None and spilled >= _SHARED_USAGE_DELTA_MIN_BYTES and card_full
         inferred_hit = (
             resident < floor * _RESIDENCY_SHORTFALL_RATIO
@@ -14760,10 +14766,9 @@ class LlamaCppBackend:
                 spilled / (1024**2),
                 shortfall / (1024**3),
             )
+        # The counter measures the spill itself; the floor delta is only an inference.
         message = _VRAM_SPILL_ADVICE.format(
-            resident_gb = resident / (1024**3),
-            expected_gb = floor / (1024**3),
-            shortfall_gb = shortfall / (1024**3),
+            spilled_gb = (spilled if direct_hit else shortfall) / (1024**3),
             kv_hint = " or set the KV cache to q8_0" if kv_hint else "",
         )
         if getattr(self, "_last_load_warning", None):
@@ -29718,7 +29723,7 @@ class LlamaCppBackend:
                     else:
                         self._record_load_warning(_unmeasured_ctx_notice)
 
-                if _cuda_ctx_notice:
+                if _cuda_ctx_notice and use_fit:  # slot reduction may have re-pinned it
                     if self._last_load_warning:
                         self._amend_load_warning(" " + _cuda_ctx_notice)
                     else:

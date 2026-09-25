@@ -177,6 +177,7 @@ def test_the_74_mib_case_the_inferred_floor_could_never_see(on_windows):
     _arm(backend)
     message = backend._verify_vram_residency()
     assert message is not None, "the direct counter missed a 74 MiB spill"
+    assert "About 0.1 GB" in message and "-" not in message.split("GB")[0]
     assert backend._warnings == [message]
 
 
@@ -513,3 +514,16 @@ def test_a_retry_baseline_waits_for_the_killed_child_to_release(on_windows):
     backend._last_kill_monotonic = 1234.5
     _arm(backend)
     assert backend._settle_calls == [1234.5]
+
+
+def test_a_small_card_is_full_only_below_its_own_reserve(on_windows):
+    """A 4 GiB card keeps a 512 MiB reserve, so 800 MiB free is not a full card."""
+    backend = _Backend(
+        [(0, 800.0, 4096)],
+        baseline_rows = ((0, 3800.0, 4096),),
+        baseline_shared = _shared(120),
+        shared = _shared(170, nvidia_dedicated_mib = 3000),
+    )
+    backend._arm_residency_check(3000 * MIB, [0])
+    backend._sample_residency_baseline(PIN_ARGV, {})
+    assert backend._verify_vram_residency() is None
