@@ -946,27 +946,6 @@ class TestExplicitPickWithoutTorchKernels(unittest.TestCase):
             selected, _ = prepare_gpu_selection([1], model_name = "unsloth/test")
         self.assertEqual(selected, [1])
 
-    def test_inventory_rows_say_whether_torch_has_kernels_for_them(self):
-        result = {
-            "devices": [
-                {"index": 0, "index_kind": "physical", "name": "AMD Radeon RX6500 XT"},
-                {"index": 1, "index_kind": "physical", "name": "AMD Radeon RX 5700 XT"},
-                {"index": 0, "index_kind": "vulkan", "name": "llama.cpp sees this one too"},
-            ]
-        }
-        with patch("utils.hardware.hardware.rocm_gpu_ids_without_torch_kernels", return_value = {1}):
-            stamped = _hw_module._with_torch_kernel_coverage(result)
-        self.assertIs(stamped, result)
-        self.assertTrue(result["devices"][0]["torch_kernels"])
-        self.assertFalse(result["devices"][1]["torch_kernels"])
-        self.assertNotIn("torch_kernels", result["devices"][2])
-
-    def test_an_empty_inventory_is_returned_as_is(self):
-        result = {"available": False, "devices": []}
-        with patch("utils.hardware.hardware.rocm_gpu_ids_without_torch_kernels") as gate:
-            self.assertIs(_hw_module._with_torch_kernel_coverage(result), result)
-        gate.assert_not_called()
-
 
 class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
     def test_training_backend_resolves_explicit_gpu_ids_before_spawn(self):

@@ -5470,20 +5470,6 @@ def reject_gpu_ids_without_torch_kernels(gpu_ids) -> None:
     )
 
 
-def _with_torch_kernel_coverage(result: Dict[str, Any]) -> Dict[str, Any]:
-    devices = result.get("devices") or []
-    if not devices:
-        return result
-    try:
-        uncovered = rocm_gpu_ids_without_torch_kernels()
-    except Exception:
-        uncovered = set()
-    for row in devices:
-        if row.get("index_kind") == "physical" and isinstance(row.get("index"), int):
-            row["torch_kernels"] = row["index"] not in uncovered
-    return result
-
-
 def auto_select_gpu_ids(
     model_name: str,
     *,
@@ -5963,24 +5949,22 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                 unrepaired_smi_result.get("devices") or []
             ):
                 unrepaired_smi_result["backend"] = _backend_label(device)
-                return _with_torch_kernel_coverage(unrepaired_smi_result)
+                return unrepaired_smi_result
 
-            return _with_torch_kernel_coverage(
-                {
-                    "available": True,
-                    "backend": _backend_label(device),
-                    "backend_cuda_visible_devices": _backend_visible_devices_env(),
-                    "parent_visible_gpu_ids": parent_visible_ids,
-                    "devices": devices,
-                    "index_kind": index_kind,
-                }
-            )
+            return {
+                "available": True,
+                "backend": _backend_label(device),
+                "backend_cuda_visible_devices": _backend_visible_devices_env(),
+                "parent_visible_gpu_ids": parent_visible_ids,
+                "devices": devices,
+                "index_kind": index_kind,
+            }
 
         if unrepaired_smi_result is not None:
             # Neither source could size them, but nvidia-smi found them: reporting no GPU
             # for a host that has one is worse than an unknown capacity.
             unrepaired_smi_result["backend"] = _backend_label(device)
-            return _with_torch_kernel_coverage(unrepaired_smi_result)
+            return unrepaired_smi_result
 
         return {
             "available": False,

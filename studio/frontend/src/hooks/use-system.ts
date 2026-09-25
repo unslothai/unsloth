@@ -24,8 +24,6 @@ export interface GpuDevice {
   unified_memory?: boolean;
   /** host-backed portion of the shared pool; the rest is reserved GPU memory. */
   shared_memory_host_backed_gb?: number | null;
-  /** Absent on older backends and on Vulkan rows. */
-  torch_kernels?: boolean;
 }
 
 export interface SystemGpuInfo {

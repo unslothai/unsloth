@@ -919,20 +919,10 @@ function GpuMemorySettings({
                 key={d.index}
                 className="flex items-center justify-between gap-3"
               >
-                <span
-                  className="min-w-0 truncate text-ui-12 text-muted-foreground"
-                  title={
-                    d.torchKernels === false
-                      ? "The installed PyTorch build has no kernels for this card, so a job pinned to it fails on its first tensor. Reinstall Unsloth Studio for this card to use it."
-                      : undefined
-                  }
-                >
+                <span className="min-w-0 truncate text-ui-12 text-muted-foreground">
                   GPU {d.index}: {d.name}
                   {d.memoryTotalGb
                     ? ` · ${Math.round(d.memoryTotalGb)} GiB`
-                    : ""}
-                  {d.torchKernels === false
-                    ? " · no kernels in this PyTorch build"
                     : ""}
                 </span>
                 {/* Not for diffusion: that runner drives one device and matches_gpu_ids
@@ -964,11 +954,7 @@ function GpuMemorySettings({
                   className="panel-switch shrink-0"
                   checked={isGpuChecked(d.index)}
                   onCheckedChange={() => toggleGpu(d.index)}
-                  // Uncovered cards stay switchable OFF: a saved selection may still name them.
-                  disabled={
-                    (isGpuChecked(d.index) && singleGpuInUse) ||
-                    (!isGpuChecked(d.index) && d.torchKernels === false)
-                  }
+                  disabled={isGpuChecked(d.index) && singleGpuInUse}
                 />
               </div>
             ))}

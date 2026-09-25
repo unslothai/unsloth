@@ -25,7 +25,6 @@ export interface SystemGpuDevice {
    *  not share anything, and judging it against a host-wide flag threw away the
    *  system RAM that pin can really spill into. */
   unifiedMemory?: boolean;
-  torchKernels?: boolean;
   /** Whether `index` is safe to send as gpu_ids. */
   pinnable: boolean;
   /** Whether the separate DiffusionGemma runner can use this physical ID. */
