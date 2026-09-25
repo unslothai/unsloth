@@ -100,3 +100,13 @@ def test_native_and_multimodal_models_are_untouched():
         multimodal = _model(split, 0, torch.device("cuda", 1), config = config)
         assert align(multimodal) is None
         assert multimodal._hf_hook.execution_device == 0
+
+
+def test_omni_config_with_nested_towers_is_untouched():
+    """Omni checkpoints keep vision / audio under thinker_config; they are still multimodal."""
+    align = _helper()
+    split = {"model.layers.1": 2, "model.embeddings": 1, "lm_head": 2, "model.layers.0": 0}
+    config = SimpleNamespace(thinker_config = SimpleNamespace(vision_config = SimpleNamespace()))
+    omni = _model(split, 0, torch.device("cuda", 1), config = config)
+    assert align(omni) is None
+    assert omni._hf_hook.execution_device == 0

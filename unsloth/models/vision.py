@@ -352,7 +352,14 @@ def _align_root_hook_with_input_embeddings(model):
     if "transformers_modules" not in (getattr(type(model), "__module__", "") or ""):
         return None
     config = getattr(model, "config", None)
-    if any(getattr(config, name, None) is not None for name in _MODALITY_SUB_CONFIGS):
+    # Omni configs nest the towers one level down (thinker_config.vision_config).
+    nested = [config] + [getattr(config, name, None) for name in ("thinker_config",)]
+    if any(
+        getattr(sub, name, None) is not None
+        for sub in nested
+        if sub is not None
+        for name in _MODALITY_SUB_CONFIGS
+    ):
         return None
     device_map = getattr(model, "hf_device_map", None)
     if not device_map or len(set(device_map.values())) < 2:
