@@ -871,7 +871,7 @@ export function ExportPage() {
 
   return (
     <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
-      <main className="mx-auto max-w-7xl px-5 py-8 sm:px-9">
+      <main className="mx-auto max-w-7xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] px-5 py-8 max-sm:px-4 sm:px-9">
         <GuidedTour {...tour.tourProps} />
 
         <div className="mb-8 flex flex-col gap-0.5">
@@ -1297,7 +1297,7 @@ export function ExportPage() {
                         </div>
                       )}
 
-                      <div className="rounded-xl bg-foreground/[0.04] p-3">
+                      <div className="rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] p-3">
                         <p className="text-ui-11 text-muted-foreground">
                           Direct model exports currently support GGUF only.
                         </p>
@@ -1306,7 +1306,7 @@ export function ExportPage() {
                   )}
 
                   {sourceMode === "checkpoint" && (
-                    <div className="rounded-xl bg-foreground/[0.04] p-3 flex flex-col gap-2">
+                    <div className="rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] p-3 flex flex-col gap-2">
                       <span className="text-ui-11 font-medium text-muted-foreground uppercase tracking-wider">
                         Training Info
                       </span>
@@ -1354,7 +1354,7 @@ export function ExportPage() {
                         key={step}
                         className="flex items-start gap-2 text-xs text-muted-foreground"
                       >
-                        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-foreground/10 text-ui-10 font-semibold">
+                        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] text-ui-10 font-semibold">
                           {i + 1}
                         </span>
                         {step}

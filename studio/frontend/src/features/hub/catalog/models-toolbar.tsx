@@ -207,7 +207,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
       <div
         data-tour="hub-tabs"
         className={cn(
-          "hub-menu-trigger hub-tab-toggle relative inline-flex h-9 w-full shrink-0 items-center rounded-full lg:w-[280px]",
+          "hub-menu-trigger hub-tab-toggle relative inline-flex h-9 w-full shrink-0 items-center rounded-full lg:w-[calc(280px*var(--ui-space-scale,1))]",
         )}
         role="radiogroup"
         aria-label="View"
@@ -253,7 +253,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
       <div
         ref={searchWrapRef}
         data-tour="hub-search"
-        className="relative min-w-0 flex-1 lg:min-w-[220px] lg:flex-[1_1_220px]"
+        className="relative min-w-0 flex-1 lg:min-w-[calc(220px*var(--ui-space-scale,1))] lg:flex-[1_1_220px]"
       >
         <HugeiconsIcon
           icon={Search01Icon}
@@ -314,7 +314,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             <HugeiconsIcon
               icon={CancelCircleIcon}
               strokeWidth={1.75}
-              className="size-[18px]"
+              className="size-[calc(18px*var(--ui-space-scale,1))]"
             />
           </button>
         ) : isDiscover && isLoading ? (
@@ -398,7 +398,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
               }
             }}
             ariaLabel="Format filter"
-            className={cn(triggerBase, "w-[128px]")}
+            className={cn(triggerBase, "w-[calc(128px*var(--ui-space-scale,1))]")}
           />
         )}
 
@@ -408,7 +408,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             options={capabilityOptions}
             onValueChange={onCapabilityFilterChange}
             ariaLabel="Capability filter"
-            className={cn(triggerBase, "w-[128px]")}
+            className={cn(triggerBase, "w-[calc(128px*var(--ui-space-scale,1))]")}
           />
         )}
 
@@ -418,7 +418,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             options={sortOptions}
             onValueChange={onSortChange}
             ariaLabel="Sort models"
-            className={cn(triggerBase, "w-[128px]")}
+            className={cn(triggerBase, "w-[calc(128px*var(--ui-space-scale,1))]")}
             footer={
               isDataset ? undefined : (
                 <Tooltip>

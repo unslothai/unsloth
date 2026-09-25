@@ -220,6 +220,63 @@ def arch_lacks_bf16(gcn_arch):
     return str(gcn_arch or "").split(":", 1)[0].strip().lower().startswith("gfx10")
 
 
+def arch_lacks_buffer_ops(gcn_arch):
+    """RDNA1 reads Triton's gfx10.3-layout buffer descriptors wrongly: kernels launch and write
+    nothing. gfx103x (RDNA2) is fine and must not match (#11614)."""
+    return str(gcn_arch or "").split(":", 1)[0].strip().lower().startswith("gfx101")
+
+
+_GFX101X_TRITON_WORKAROUND_APPLIED = False
+
+
+def gfx101x_triton_workaround_applied():
+    return _GFX101X_TRITON_WORKAROUND_APPLIED
+
+
+def apply_gfx101x_triton_workaround(environ = None, triton_home = None):
+    """Turn Triton's buffer ops off and give Triton and Inductor separate caches: Inductor's cache
+    key ignores the knob, so stale buffer-op kernels gave -inf/nan. A user-set value that Triton
+    reads as on is left alone; user-chosen cache dirs are kept. Returns whether ops end up off."""
+    global _GFX101X_TRITON_WORKAROUND_APPLIED
+    is_process_env = environ is None
+    environ = os.environ if environ is None else environ
+    current = environ.get("AMDGCN_USE_BUFFER_OPS")
+    # Triton's getenv_bool: only these spellings mean on, anything else is off.
+    if current is not None and current.strip().lower() in ("1", "true", "on", "yes", "y"):
+        return False
+    environ.setdefault("AMDGCN_USE_BUFFER_OPS", "0")
+    if "TRITON_CACHE_DIR" not in environ:
+        home = triton_home or environ.get("TRITON_HOME") or os.path.expanduser("~")
+        environ["TRITON_CACHE_DIR"] = os.path.join(home, ".triton", "cache-no-buffer-ops")
+    default_inductor = _default_inductor_cache_dir()
+    inductor = environ.get("TORCHINDUCTOR_CACHE_DIR")
+    # `import torch._dynamo` already wrote the shared default into os.environ; not a user choice.
+    if inductor is None or os.path.abspath(inductor) == os.path.abspath(default_inductor):
+        environ["TORCHINDUCTOR_CACHE_DIR"] = default_inductor + "_no_buffer_ops"
+    if is_process_env:
+        _GFX101X_TRITON_WORKAROUND_APPLIED = True
+    return True
+
+
+def _default_inductor_cache_dir():
+    try:
+        from torch._inductor.runtime.cache_dir_utils import default_cache_dir
+        return default_cache_dir()
+    except Exception:
+        pass
+    import getpass
+    import tempfile
+
+    # getuser raises for a uid with no passwd entry (containers); same fallback as torch.
+    try:
+        user = getpass.getuser()
+    except (KeyError, ModuleNotFoundError, OSError):
+        getuid = getattr(os, "getuid", None)
+        user = f"uid_{getuid()}" if callable(getuid) else "unknown_user"
+    user = re.sub(r'[\\/:*?"<>|]', "_", user)
+    return os.path.join(tempfile.gettempdir(), "torchinductor_" + user)
+
+
 def hip_visible_archs():
     """Guarded per device: one unreadable device must not discard the archs beside it, or a
     gfx10 keeps bf16 and dies in Triton (#7922). Only an unreadable count returns []."""

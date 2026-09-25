@@ -279,6 +279,31 @@ export const UI_FONT_SIZE_RANGE = { min: 12, max: 20, default: 15 } as const;
 export const CODE_FONT_SIZE_RANGE = { min: 10, max: 20, default: 13 } as const;
 const UI_FONT_SIZE_CSS_BASE = 16;
 
+/**
+ * What the contrast slider writes, read by `html[data-contrast-adjust]` in
+ * index.css. Exported so the reload snapshot and the tests name the same
+ * variables.
+ */
+export const CONTRAST_SURFACE_MIX_VAR = "--contrast-surface-mix";
+export const CONTRAST_LINE_MIX_VAR = "--contrast-line-mix";
+/** Control outlines and switch tracks, which fade less far than a divider. */
+export const CONTRAST_CONTROL_MIX_VAR = "--contrast-control-mix";
+/** Chips, secondary buttons and muted hovers, between the planes and the states. */
+export const CONTRAST_FILL_MIX_VAR = "--contrast-fill-mix";
+/** Hover and selection fills, which fade less far than the surface under them. */
+export const CONTRAST_STATE_MIX_VAR = "--contrast-state-mix";
+export const CONTRAST_TEXT_MIX_VAR = "--contrast-text-mix";
+/** Primary ink: how far it heads for pure black/white, or into the page. */
+export const CONTRAST_INK_MIX_VAR = "--contrast-ink-mix";
+export const CONTRAST_INK_TARGET_VAR = "--contrast-ink-target";
+/** Ink on palette surfaces (cards, menus, sidebar), which custom colors keep. */
+export const CONTRAST_PANEL_INK_TARGET_VAR = "--contrast-panel-ink-target";
+/** Surfaces, fills and lines on those palette surfaces. */
+export const CONTRAST_PANEL_TARGET_VAR = "--contrast-panel-target";
+/** Multipliers for the hand-written washes that stand in for those tokens. */
+export const CONTRAST_WASH_GAIN_VAR = "--contrast-wash-gain";
+export const CONTRAST_EDGE_GAIN_VAR = "--contrast-edge-gain";
+
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 
 export function isHexColor(value: unknown): value is string {
@@ -659,8 +684,16 @@ const PALETTE_SURFACES: Record<
   { background: string; elevated: string }
 > = {
   light: { background: "#ffffff", elevated: "#ffffff" },
-  dark: { background: "#181818", elevated: "#212121" },
+  dark: { background: "#181818", elevated: "#272727" },
 };
+
+/**
+ * Black for ink darker than its page, white for lighter. Raising pushes ink
+ * away from the surface it sits on, so a mid grey never heads into its page.
+ */
+function inkPole(ink: string, page: string): string {
+  return hexLuminance(ink) <= hexLuminance(page) ? "#000000" : "#ffffff";
+}
 
 function minimumAccentTextContrast(
   accent: string,
@@ -846,7 +879,10 @@ export function applyCustomizationToDocument(
     setVar(name, accent ? readableForeground(accent) : null);
   }
   setVar("--background", colors.background);
-  setVar("--foreground", colors.foreground);
+  // Written as the base so a custom foreground still follows the contrast curve.
+  setVar("--foreground-base", colors.foreground);
+  // Clear the token older builds wrote inline; it would pin the ink.
+  setVar("--foreground", null);
   // keep the full-width inset from making narrow panes smaller than wide.
   setVar(
     "--custom-chat-max-width",
@@ -912,14 +948,16 @@ export function applyCustomizationToDocument(
   const effectiveUiFontSize = c.uiFontSize ?? UI_FONT_SIZE_RANGE.default;
   if (effectiveUiFontSize !== UI_FONT_SIZE_RANGE.default) {
     setVar(
-      "--ui-font-scale",
+      "--ui-font-size-scale",
       String(effectiveUiFontSize / UI_FONT_SIZE_CSS_BASE),
     );
     el.setAttribute("data-ui-font-size", String(effectiveUiFontSize));
   } else {
-    setVar("--ui-font-scale", null);
+    setVar("--ui-font-size-scale", null);
     el.removeAttribute("data-ui-font-size");
   }
+  // index.css derives --ui-font-scale; clear the value older builds wrote.
+  setVar("--ui-font-scale", null);
   // Older builds scaled the root font size directly; clear any stale inline
   // value so layout never scales with the preference again.
   style.removeProperty("font-size");
@@ -933,19 +971,76 @@ export function applyCustomizationToDocument(
   }
 
   if (c.contrast !== 50) {
-    // Map |contrast - 50| ∈ (0, 50] onto a 0–40% color-mix toward the
-    // foreground (higher contrast) or background (lower contrast).
-    const mix = Math.round(Math.abs(c.contrast - 50) * 0.8);
+    // Distance from the default, then one color-mix percentage per group of
+    // tokens. Everything mixes toward --contrast-target: the foreground above
+    // 50, the background below it.
+    const distance = Math.abs(c.contrast - 50) / 50;
+    const raising = c.contrast > 50;
+    const mix = (ceiling: number) => `${Math.round(distance * ceiling)}%`;
     el.setAttribute("data-contrast-adjust", "");
-    setVar("--contrast-mix", `${mix}%`);
     setVar(
       "--contrast-target",
-      c.contrast > 50 ? "var(--foreground)" : "var(--background)",
+      raising ? "var(--foreground)" : "var(--background)",
     );
+    // Not symmetric. Lowering flattens surfaces most of the way into the page.
+    // Raising only nudges them: a card pushed far toward the foreground reads
+    // as a block. Neither floor reaches the page, so a menu stays findable.
+    setVar(CONTRAST_SURFACE_MIX_VAR, mix(raising ? 4 : 70));
+    setVar(CONTRAST_FILL_MIX_VAR, mix(raising ? 10 : 62));
+    setVar(CONTRAST_LINE_MIX_VAR, mix(raising ? 45 : 80));
+    setVar(CONTRAST_CONTROL_MIX_VAR, mix(raising ? 45 : 55));
+    // Hover and selection: steepest curve when raising, so the step to the lit
+    // row grows; short of the surfaces when lowering, so it never sinks below.
+    setVar(CONTRAST_STATE_MIX_VAR, mix(raising ? 16 : 55));
+    // Secondary text stays readable at both ends.
+    setVar(CONTRAST_TEXT_MIX_VAR, mix(raising ? 40 : 30));
+    // Primary ink heads for pure black/white raising, and into the page
+    // lowering, stopping well short so body copy stays readable at 0.
+    const palettePole = resolved === "light" ? "#000000" : "#ffffff";
+    // Palette surfaces keep their colours under a custom foreground, so they
+    // raise toward the palette pole. Unset, they share --contrast-target.
+    setVar(
+      CONTRAST_PANEL_TARGET_VAR,
+      raising && colors.foreground ? palettePole : null,
+    );
+    setVar(
+      CONTRAST_INK_TARGET_VAR,
+      raising
+        ? colors.foreground
+          ? inkPole(
+              colors.foreground,
+              colors.background ?? paletteSurfaces.background,
+            )
+          : palettePole
+        : "var(--background)",
+    );
+    setVar(
+      CONTRAST_PANEL_INK_TARGET_VAR,
+      raising ? palettePole : "var(--background)",
+    );
+    setVar(CONTRAST_INK_MIX_VAR, mix(raising ? 70 : 30));
+    // Hand-written washes multiply their alpha by these to match the tokens.
+    const gain = (span: number) =>
+      (raising ? 1 + distance * span : 1 - distance * span).toFixed(3);
+    // Lowering keeps most of a wash: tab tracks, chips and filter triggers are
+    // chrome you aim at. Raising doubles it, level with the state tokens.
+    setVar(CONTRAST_WASH_GAIN_VAR, gain(raising ? 1 : 0.4));
+    setVar(CONTRAST_EDGE_GAIN_VAR, gain(raising ? 0.9 : 0.8));
   } else {
     el.removeAttribute("data-contrast-adjust");
-    setVar("--contrast-mix", null);
     setVar("--contrast-target", null);
+    setVar(CONTRAST_SURFACE_MIX_VAR, null);
+    setVar(CONTRAST_FILL_MIX_VAR, null);
+    setVar(CONTRAST_LINE_MIX_VAR, null);
+    setVar(CONTRAST_CONTROL_MIX_VAR, null);
+    setVar(CONTRAST_STATE_MIX_VAR, null);
+    setVar(CONTRAST_TEXT_MIX_VAR, null);
+    setVar(CONTRAST_INK_TARGET_VAR, null);
+    setVar(CONTRAST_PANEL_INK_TARGET_VAR, null);
+    setVar(CONTRAST_PANEL_TARGET_VAR, null);
+    setVar(CONTRAST_INK_MIX_VAR, null);
+    setVar(CONTRAST_WASH_GAIN_VAR, null);
+    setVar(CONTRAST_EDGE_GAIN_VAR, null);
   }
 
   el.classList.toggle("pointer-cursors", c.pointerCursors);

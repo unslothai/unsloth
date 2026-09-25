@@ -12,7 +12,17 @@ import {
   CONVERSATION_MARKDOWN_LABEL,
 } from "../utils/conversation-markdown";
 import { allRecordedSandboxSessionIds } from "../utils/recorded-sandbox-session";
+import { liveThreadBranch } from "../utils/live-thread-head";
+import { forkChatThread } from "../api/chat-api";
+import { settleThreadScopedSettingsForCopy } from "../stores/chat-runtime-store";
 import type { SidebarItem } from "../hooks/use-chat-sidebar-items";
+import {
+  exportConversationCsv,
+  exportConversationMarkdown,
+  exportConversationMessagesJsonl,
+  exportConversationRawJsonl,
+  exportConversationShareGPT,
+} from "../prompt-storage/prompt-storage-dialog";
 import { listStoredChatMessages } from "../utils/chat-history-storage";
 
 export type ConversationExportFormat =
@@ -41,18 +51,17 @@ export async function exportConversationByFormat(
   threadId: string,
   format: ConversationExportFormat,
 ): Promise<void> {
-  const exports = await import("../prompt-storage/prompt-storage-dialog");
   switch (format) {
     case "raw-jsonl":
-      return exports.exportConversationRawJsonl(threadId);
+      return exportConversationRawJsonl(threadId);
     case "messages-jsonl":
-      return exports.exportConversationMessagesJsonl(threadId);
+      return exportConversationMessagesJsonl(threadId);
     case "csv":
-      return exports.exportConversationCsv(threadId);
+      return exportConversationCsv(threadId);
     case "sharegpt-jsonl":
-      return exports.exportConversationShareGPT(threadId);
+      return exportConversationShareGPT(threadId);
     case CONVERSATION_MARKDOWN_FORMAT:
-      return exports.exportConversationMarkdown(threadId);
+      return exportConversationMarkdown(threadId);
     default: {
       // Exhaustive: a new format is a build error, not a menu item that does nothing.
       const unhandled: never = format;
@@ -64,6 +73,41 @@ export async function exportConversationByFormat(
 /** The threads behind a row: a comparison is two, everything else is itself. */
 export function getSidebarItemThreadIds(item: SidebarItem): string[] {
   return item.threadIds?.length ? item.threadIds : [item.id];
+}
+
+/** A comparison is two threads with no single tip to fork from. */
+export function canForkChatRow(item: SidebarItem): boolean {
+  return item.type === "single";
+}
+
+/**
+ * Forks a chat from its last message, which is what the thread's own Fork does from the message
+ * it is on. Settings are settled first: the fork copies `settings_json` in its own transaction,
+ * so an edit still in the debounce would be left out and the copy would open on the older modes.
+ */
+export async function forkChatRow(item: SidebarItem) {
+  const messageId = liveThreadBranch(item.id)?.at(-1);
+  await settleThreadScopedSettingsForCopy(item.id);
+  try {
+    // closed chats use the transaction-selected tip; open chats keep the branch visible at invocation.
+    return await forkChatThread(item.id, {
+      messageId,
+      newThreadId: crypto.randomUUID(),
+      createdAt: Date.now(),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (message.includes("still generating")) throw forkRefused();
+    throw error;
+  }
+}
+
+/** Tagged, so the caller says this rather than reporting a failure that did not happen. */
+function forkRefused(): Error {
+  return Object.assign(
+    new Error("This chat is still generating. Fork it once it finishes."),
+    { unslothForkRefused: true },
+  );
 }
 
 /** The sandbox sessions this chat's stored tool results name, if any. */

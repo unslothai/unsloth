@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth";
 import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth/session";
 import { useEffect, useSyncExternalStore } from "react";
+import { refreshContextUsage } from "../utils/refresh-context-usage";
 
 export type SkillRecord = {
   name: string;
@@ -135,9 +136,7 @@ export async function setSkillEnabled(
     error: null,
   });
   channel?.postMessage("changed");
-  void import("../utils/refresh-context-usage").then(
-    ({ refreshContextUsage }) => refreshContextUsage({ invalidate: true }),
-  );
+  void refreshContextUsage({ invalidate: true });
   return updated;
 }
 
@@ -204,7 +203,5 @@ if (typeof window !== "undefined") {
 
 channel?.addEventListener("message", () => {
   void listSkills(true).catch(() => undefined);
-  void import("../utils/refresh-context-usage").then(
-    ({ refreshContextUsage }) => refreshContextUsage({ invalidate: true }),
-  );
+  void refreshContextUsage({ invalidate: true });
 });

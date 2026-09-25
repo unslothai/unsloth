@@ -222,7 +222,7 @@ const PastedTextAttachmentUI: FC<{
     <button
       className={cn(
         // Borderless, and in dark mode a shade under the composer surface.
-        "aui-pasted-text-chip group flex h-14 max-w-[15rem] min-w-0 cursor-pointer items-center gap-2.5 rounded-[14px] bg-muted px-3 text-left transition-colors hover:bg-muted-foreground/15 dark:bg-background dark:hover:bg-muted",
+        "aui-pasted-text-chip group flex h-14 max-w-[calc(15rem*var(--ui-space-scale,1))] min-w-0 cursor-pointer items-center gap-2.5 rounded-[14px] bg-muted px-3 text-left transition-colors hover:bg-muted-foreground/15 dark:bg-background dark:hover:bg-muted",
         // Keep the label clear of the remove button in the corner.
         isComposer && "aui-pasted-text-chip-composer pr-6",
       )}
@@ -234,7 +234,7 @@ const PastedTextAttachmentUI: FC<{
       }
       onClick={isComposer ? showInTextField : undefined}
     >
-      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-foreground/10">
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)]">
         <HugeiconsIcon
           icon={TextAlignLeft01Icon}
           strokeWidth={2}
@@ -332,7 +332,7 @@ const AttachmentUI: FC = () => {
               className={cn(
                 "aui-attachment-tile size-14 cursor-pointer overflow-hidden rounded-[14px] border bg-muted transition-opacity hover:opacity-75",
                 isComposer &&
-                  "aui-attachment-tile-composer border-foreground/20",
+                  "aui-attachment-tile-composer border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)]",
               )}
               id="attachment-tile"
               aria-label={accessibleName}
