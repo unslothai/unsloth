@@ -98,6 +98,7 @@ import {
   Globe02Icon,
   HelpCircleIcon,
   Image03Icon,
+  LibrariesIcon,
   Logout05Icon,
   MoreHorizontalIcon,
   MoreVerticalIcon,
@@ -329,15 +330,18 @@ const SELECT_WITH_META =
   /mac/i.test(navigator.platform || navigator.userAgent);
 
 // Insertion line on the landing edge, drawn inside the row: a section's collapsible clips its
-// overflow, and the first and last rows are exactly where a row is dragged to.
+// overflow, and the first and last rows are exactly where a row is dragged to. A border, not a
+// filled bar: border widths snap to whole device pixels, so the line keeps one thickness at any
+// zoom or UI scale instead of rounding differently per row.
 const DROP_CUE_BASE =
-  "before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-0.5 before:rounded-full before:bg-primary before:content-['']";
+  "before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-0 before:border-t-[1.5px] before:border-primary before:content-['']";
 const DROP_CUE_TOP = `${DROP_CUE_BASE} before:top-0`;
-const DROP_CUE_BOTTOM = `${DROP_CUE_BASE} before:bottom-0`;
-// A row dropped onto a folder or section joins it, so the whole target is tinted and outlined.
-// Kept inside the box for the same clipping reason.
+// bottom-px: on the last row, DROP_ROW_HIT's extra pixel is clipped by the list.
+const DROP_CUE_BOTTOM = `${DROP_CUE_BASE} before:bottom-px`;
+// A row dropped onto a folder or section joins it, so the whole target is tinted and outlined,
+// with the same border as the line. Kept inside the box for the same clipping reason.
 const DROP_INTO_CUE =
-  "before:pointer-events-none before:absolute before:inset-x-1 before:inset-y-0 before:rounded-2xl before:bg-primary/8 before:ring-1 before:ring-inset before:ring-primary/70 before:content-['']";
+  "before:pointer-events-none before:absolute before:inset-x-1 before:inset-y-0 before:rounded-2xl before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']";
 // The menu keeps a 1px gap between rows. A pointer resting on that gap would hit the section
 // instead, which answers with its last slot, so each row's box reaches over the gap below it.
 const DROP_ROW_HIT = "pb-px -mb-px";
@@ -355,7 +359,7 @@ function landedOrder(
 
 // A closed section has no body to light, so its header takes the tint.
 const DROP_INTO_HEADER_CUE =
-  "rounded-full bg-primary/8 ring-1 ring-inset ring-primary/70";
+  "rounded-full bg-primary/8 outline-solid outline-[length:1.5px] outline-primary -outline-offset-[1.5px]";
 
 // The sort a list is on and its setter: a reorder switches a sorted list to Manual, or the
 // sort would undo the drop.
@@ -2224,6 +2228,18 @@ export function AppSidebar() {
         </button>
       ),
     },
+    library: {
+      icon: LibrariesIcon,
+      label: t("shell.navigation.library"),
+      active: pathname === "/library",
+      onClick: () => {
+        navigate({ to: "/library" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/library" }));
+      },
+    },
     hub: {
       icon: DashboardCircleIcon,
       label: t("shell.navigation.hub"),
@@ -2356,9 +2372,11 @@ export function AppSidebar() {
   const inlineNavIds = sidebarNav
     .filter((item) => navRowPinned(item))
     .map((item) => item.id);
+  // The mobile sheet shows labels regardless of the desktop pin state.
+  const sidebarRowsLabelled = isMobile || sidebarState !== "collapsed";
   // Mirrors ImagesWorkflowList's own test: it decides which row owns the highlight.
   const imagesWorkflowsListed =
-    sidebarState !== "collapsed" &&
+    sidebarRowsLabelled &&
     !(navRows.images.active && imagesPageMode === "train");
 
   const showSidebarBrand = true;
@@ -4275,7 +4293,7 @@ export function AppSidebar() {
                     overlay={
                       id === "images" &&
                       !row.active &&
-                      sidebarState !== "collapsed" ? (
+                      sidebarRowsLabelled ? (
                         <ImagesNavDisclosure />
                       ) : undefined
                     }
@@ -4284,7 +4302,7 @@ export function AppSidebar() {
                     {id === "images" ? (
                       <ImagesWorkflowList
                         active={row.active}
-                        collapsed={sidebarState === "collapsed"}
+                        collapsed={!sidebarRowsLabelled}
                         onPick={(workflowId) => {
                           useImageWorkflowStore
                             .getState()
@@ -4412,7 +4430,9 @@ export function AppSidebar() {
         {/* Pinned: folders and chats in one list, in the order they were dropped into. */}
         {!isStudioRoute && !showTrainingRecents && pinnedRows.length > 0 && (
           <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
-            <SidebarGroup className="group/sb-section group-data-[collapsible=icon]:hidden px-0 py-0">
+            {/* While open, the next section rides up over the tail strip below, so the strip adds
+                no space. */}
+            <SidebarGroup className="group/sb-section group-data-[collapsible=icon]:hidden px-0 py-0 data-[state=open]:-mb-[calc(8px*var(--ui-space-scale,1))]">
               {/* The header takes drops too: above the first row, or into a closed section. */}
               <SidebarGroupLabel
                 className={cn(
@@ -4480,7 +4500,8 @@ export function AppSidebar() {
                     <SidebarMenuItem
                       aria-hidden
                       className={cn(
-                        "relative h-[calc(8px*var(--ui-space-scale,1))]",
+                        // z-[1]: above the next section's header, which overlaps it.
+                        "relative z-[1] h-[calc(8px*var(--ui-space-scale,1))]",
                         dropCueClass(SIDEBAR_TAIL_SCOPE, "pinned"),
                       )}
                       {...dnd.dropZoneProps({

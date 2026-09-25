@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Manager, WebviewWindow};
 
 use tauri_plugin_window_state::AppHandleExt;
@@ -109,6 +110,23 @@ fn should_restore_saved_layout(config_dir: &Path, state_file_name: &str) -> bool
     is_initialized(config_dir) || !is_setup_window_size(width, height)
 }
 
+/// Checked before the main window exists, so setup-size resize events cannot overwrite the saved state.
+/// An attached external server may run without a managed launcher; setup will resize on demand.
+pub(crate) fn should_restore_initial_window_state(
+    config_dir: &Path,
+    state_file_name: &str,
+) -> bool {
+    should_restore_saved_layout(config_dir, state_file_name)
+}
+
+pub(crate) struct NativeLayoutRestored(pub(crate) AtomicBool);
+
+/// Read once: a natively restored window has no pending events to wait for before show.
+#[tauri::command]
+pub fn take_native_layout_restored(state: tauri::State<'_, NativeLayoutRestored>) -> bool {
+    state.0.swap(false, Ordering::SeqCst)
+}
+
 fn mark_initialized(config_dir: &Path) -> Result<(), String> {
     write_marker(config_dir, INITIALIZED_MARKER)
 }
@@ -148,9 +166,23 @@ pub fn mark_app_window_layout_initialized(
 pub fn reset_app_window_layout_initialized(
     window: WebviewWindow,
     app: tauri::AppHandle,
+    native_restored: tauri::State<'_, NativeLayoutRestored>,
 ) -> Result<(), String> {
     crate::native_intents::ensure_main_window(&window)?;
-    reset_initialized(&app_config_dir(&app)?)
+    reset_initialized(&app_config_dir(&app)?)?;
+    native_restored.0.store(false, Ordering::SeqCst);
+    // Native restore may have maximized it; compact before setup can be revealed.
+    window.unmaximize().map_err(|error| error.to_string())?;
+    window
+        .set_resizable(true)
+        .map_err(|error| error.to_string())?;
+    window
+        .set_size(tauri::LogicalSize::new(
+            SETUP_WINDOW_WIDTH,
+            SETUP_WINDOW_HEIGHT,
+        ))
+        .map_err(|error| error.to_string())?;
+    window.center().map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -253,6 +285,26 @@ mod tests {
         assert!(!should_restore_saved_layout(&dir, state_file));
         mark_initialized(&dir).unwrap();
         assert!(should_restore_saved_layout(&dir, state_file));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_startup_restores_saved_full_app_layouts_without_managed_backend() {
+        let dir = temp_dir("native-startup");
+        fs::create_dir_all(&dir).unwrap();
+        let state_file = ".window-state.json";
+        let state_path = dir.join(state_file);
+        assert!(!should_restore_initial_window_state(&dir, state_file));
+        fs::write(&state_path, window_state(1200, 800, false)).unwrap();
+        assert!(should_restore_initial_window_state(&dir, state_file));
+        reset_initialized(&dir).unwrap();
+        assert!(!should_restore_initial_window_state(&dir, state_file));
+        mark_initialized(&dir).unwrap();
+        assert!(should_restore_initial_window_state(&dir, state_file));
+        fs::write(&state_path, window_state(760, 560, false)).unwrap();
+        assert!(should_restore_initial_window_state(&dir, state_file));
+        reset_initialized(&dir).unwrap();
+        assert!(!should_restore_initial_window_state(&dir, state_file));
         let _ = fs::remove_dir_all(dir);
     }
 

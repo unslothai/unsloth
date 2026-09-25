@@ -1220,6 +1220,9 @@ def test_support_is_answered_per_scheme(monkeypatch):
     monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
     monkeypatch.setattr(pq, "_RESOLVED_SAFE_GLOBALS", set())
     monkeypatch.setattr(pq, "_prequant_safe_globals", lambda: [(object(), n) for n in fp8_only])
+    import core.inference.prequant_legacy_int8 as legacy_int8
+
+    monkeypatch.setattr(legacy_int8, "legacy_int8_decode_supported", lambda: False)
 
     assert pq.restricted_prequant_load_supported("fp8") is True
     assert pq.restricted_prequant_load_supported("int8") is False

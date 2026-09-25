@@ -1765,3 +1765,44 @@ def test_the_credit_is_read_on_the_card_the_load_targets():
     import core.inference.video as vid
     assert vid._target_ordinal(types.SimpleNamespace(device = "cuda", ordinal = 3)) == 3
     assert vid._target_ordinal(types.SimpleNamespace(device = "mps", ordinal = None)) is None
+
+
+def test_unreadability_is_reported_only_when_it_is_what_kept_bfloat16(monkeypatch):
+    try:
+        import importlib
+        import importlib.metadata
+
+        importlib.metadata.version("torch")
+        assert hasattr(importlib.import_module("torch"), "Tensor")
+    except Exception:  # noqa: BLE001 - a stand-in torch in sys.modules is not an install
+        pytest.skip("needs torch installed")
+    fam, torch, vid = _shared_setup_1()
+    import core.inference.diffusion_prequant as pq
+
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
+    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda *a, **k: False)
+    fired = []
+
+    def ask(**over):
+        kw = dict(
+            target = None,
+            dtype = torch.bfloat16,
+            device = "cuda",
+            te_scheme = "int8",
+            task = "fl2va",
+            base_repo = fam.base_repo,
+            on_unreadable = lambda: fired.append(True),
+        )
+        kw.update(over)
+        return vid._h3_auto_denoiser_scheme(fam, **kw)
+
+    assert ask() is None and fired == [True]
+    fired.clear()
+    assert ask(speed_mode = "off") is None and fired == []
+    assert ask(base_repo = "someone/MiniMax-H3") is None and fired == []
+    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 10 * 1000**3)
+    assert ask() is None and fired == []
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda *a, **k: True)
+    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
+    assert ask() == vid.H3_AUTO_FALLBACK_SCHEME and fired == []
