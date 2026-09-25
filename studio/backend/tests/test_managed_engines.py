@@ -1618,3 +1618,20 @@ def test_vendored_deep_gemm_for_another_python_is_disabled(tmp_path, files, disa
         (site / name).touch()
     site.mkdir(parents = True, exist_ok = True)
     assert _deep_gemm_unloadable(str(tmp_path)) is disabled
+
+
+def test_failed_support_probe_is_not_rerun_on_every_poll(monkeypatch):
+    calls = []
+
+    def hung_smi(argv, **kwargs):
+        calls.append(argv)
+        raise install.subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(install, "_gpu_rows", {})
+    monkeypatch.setattr(install.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(install.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(install.platform, "libc_ver", lambda: ("glibc", "2.39"))
+    monkeypatch.setattr(install.subprocess, "run", hung_smi)
+    for engine in ("vllm", "sglang", "vllm"):
+        assert install.support_reason(engine) is not None
+    assert len(calls) == 1

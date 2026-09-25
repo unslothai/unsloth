@@ -207,10 +207,12 @@ _gpu_rows_lock = threading.Lock()
 
 def _driver_rows(gpu_id: int | None) -> list[list[str]] | None:
     """nvidia-smi rows, cached per process: status polls every few seconds and a loaded
-    multi-GPU host can take over 20s to answer."""
+    multi-GPU host can take over 20s to answer. A failure is retried after 5 minutes."""
     with _gpu_rows_lock:
-        if gpu_id in _gpu_rows:
-            return _gpu_rows[gpu_id]
+        cached = _gpu_rows.get(gpu_id)
+        if cached is not None and (cached[1] is not None or time.monotonic() < cached[0]):
+            return cached[1]
+        rows = None
         try:
             result = subprocess.run(
                 [
@@ -225,12 +227,11 @@ def _driver_rows(gpu_id: int | None) -> list[list[str]] | None:
                 errors = "replace",
                 timeout = 60,
             )
+            if result.returncode == 0:
+                rows = [line.split(",") for line in result.stdout.strip().splitlines()]
         except (OSError, subprocess.TimeoutExpired):
-            return None
-        if result.returncode != 0:
-            return None
-        rows = [line.split(",") for line in result.stdout.strip().splitlines()]
-        _gpu_rows[gpu_id] = rows
+            pass
+        _gpu_rows[gpu_id] = (time.monotonic() + 300, rows)
         return rows
 
 
