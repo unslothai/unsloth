@@ -3089,6 +3089,16 @@ function Install-UnslothStudio {
             if ([string]::IsNullOrEmpty($leaf) -or [string]::IsNullOrEmpty($parent)) {
                 return [pscustomobject]@{ Path = $fullPath; Exact = $false }
             }
+            # A dangling link or a link loop can read as missing here, and stripping it would hand
+            # the resolver an ordinary ancestor and call the result exact while the runtime gate
+            # follows the link. GetAttributes reads the entry itself, so any reparse point in the
+            # stripped tail keeps the answer inexact and the lock fails closed.
+            $strippedAttributes = $null
+            try { $strippedAttributes = [System.IO.File]::GetAttributes($existingPath) } catch { }
+            if ($null -ne $strippedAttributes -and
+                ($strippedAttributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+                return [pscustomobject]@{ Path = $fullPath; Exact = $false }
+            }
             $missingSegments = @($leaf) + $missingSegments
             $existingPath = $parent
         }
