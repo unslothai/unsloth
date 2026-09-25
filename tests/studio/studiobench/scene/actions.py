@@ -1639,6 +1639,36 @@ _COUNT_COMPOSER_ATTACHMENT_CONTAINERS_JS = (
 )
 
 
+#: Any open menu. The composer's "Tools and attachments" menu is a MODAL Radix dropdown, and a modal
+#: one sets `pointer-events: none` on everything outside itself for as long as it is open.
+_OPEN_MENU_JS = """() => Boolean(document.querySelector('[role="menu"]'))"""
+
+
+def _close_open_menu(ctx: ActionContext) -> Optional[bool]:
+    """Escape until no menu is open, bounded. True when one was open and is now closed, False when
+    none was, None when one is still open after the attempts.
+
+    An action that gives up must leave the page as it found it. A menu this action opened and then
+    abandoned is not this action's failure alone: the next action's click hit-tests to nothing, it
+    reports the control as unclickable, and a run that allows this action not to run still fails on
+    the one after it.
+    """
+    if _ev(ctx, _OPEN_MENU_JS) is not True:
+        return False
+    for _ in range(3):
+        ctx.page.keyboard.press("Escape")
+        ctx.page.wait_for_timeout(100)
+        if _ev(ctx, _OPEN_MENU_JS) is not True:
+            return True
+    return None
+
+
+def _left_menu_note(closed: Optional[bool]) -> str:
+    if closed is None:
+        return " (a menu it opened is still open after Escape)"
+    return " (closed the menu it opened)" if closed else ""
+
+
 @register_action(name = "image_upload", default_budget_ms = 12000)
 def image_upload(ctx: ActionContext) -> ActionResult:
     """Attach an image through the composer's file chooser.
@@ -1680,7 +1710,14 @@ def image_upload(ctx: ActionContext) -> ActionResult:
     try:
         plus.click(timeout = max(500, min(ctx.budget_ms // 3, 5000)))
     except Exception as exc:  # noqa: BLE001
-        return not_run(f"the attachments button could not be clicked: {type(exc).__name__}")
+        # A click can open the menu and still time out: Radix opens it on pointerdown. Left open, it
+        # blocked the next action's New chat button (thread_reopen NOT RUN, "no point on the control
+        # hit-tests to it") on a run that allowed only this action not to run.
+        closed = _close_open_menu(ctx)
+        return not_run(
+            f"the attachments button could not be clicked: {type(exc).__name__}"
+            + _left_menu_note(closed)
+        )
     ctx.page.wait_for_timeout(200)
     try:
         with ctx.page.expect_file_chooser(timeout = 6000) as fc:
@@ -1690,8 +1727,10 @@ def image_upload(ctx: ActionContext) -> ActionResult:
             }""")
         fc.value.set_files(png)
     except Exception as exc:  # noqa: BLE001
-        ctx.page.keyboard.press("Escape")
-        return not_run(f"the file chooser never opened: {type(exc).__name__}: {exc}")
+        closed = _close_open_menu(ctx)
+        return not_run(
+            f"the file chooser never opened: {type(exc).__name__}: {exc}" + _left_menu_note(closed)
+        )
     ctx.page.wait_for_timeout(800)
     after = _ev(ctx, _COUNT_COMPOSER_ATTACHMENTS_JS)
     elapsed = (time.monotonic() - started) * 1000
