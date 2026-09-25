@@ -719,3 +719,36 @@ def test_a_blob_a_live_peer_is_downloading_gets_no_pointer(tmp_path):
     assert not (repo_dir / "snapshots" / NEW / "model.safetensors").exists()
 
     assert _reuse(tmp_path, expected).reused == ("model.safetensors",)
+
+
+def test_hard_linked_revisions_are_counted_once_in_cache_usage(tmp_path):
+    from huggingface_hub import scan_cache_dir
+
+    from hub.services.models.cache_inventory import _repo_gguf_size_bytes
+
+    gguf = _blob(60, 8192)
+    repo_dir = _copy_layout(tmp_path, {"model-Q4_K_M.gguf": gguf, "README.md": b"v1"})
+    new = repo_dir / "snapshots" / NEW
+    new.mkdir(parents = True)
+    os.link(repo_dir / "snapshots" / OLD / "model-Q4_K_M.gguf", new / "model-Q4_K_M.gguf")
+    (new / "README.md").write_bytes(b"v2")
+
+    (repo,) = scan_cache_dir(tmp_path / "hub").repos
+    # Without symlinks each snapshot path is its own blob_path; the inode is what is stored once.
+    assert (
+        len(
+            {
+                str(f.blob_path)
+                for r in repo.revisions
+                for f in r.files
+                if f.file_name.endswith(".gguf")
+            }
+        )
+        == 2
+    )
+    assert _repo_gguf_size_bytes(repo) == len(gguf)
+
+    (new / "model-Q4_K_M.gguf").unlink()
+    (new / "model-Q4_K_M.gguf").write_bytes(gguf)  # a real second copy still counts twice
+    (repo,) = scan_cache_dir(tmp_path / "hub").repos
+    assert _repo_gguf_size_bytes(repo) == 2 * len(gguf)

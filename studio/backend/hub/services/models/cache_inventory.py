@@ -206,6 +206,19 @@ def all_hf_cache_scans():
     return hf_cache_scan.all_hf_cache_scans()
 
 
+def _blob_key(file_obj, fallback: str) -> str:
+    """One key per stored copy: without symlinks every snapshot path is its own blob_path, and
+    snapshot reuse hard links unchanged files across revisions, so key existing files by inode."""
+    blob_path = getattr(file_obj, "blob_path", None)
+    if not blob_path:
+        return fallback
+    try:
+        st = Path(blob_path).stat()
+    except OSError:
+        return str(blob_path)
+    return f"inode:{st.st_dev}:{st.st_ino}" if st.st_ino else str(blob_path)
+
+
 def _repo_gguf_size_bytes(repo_info) -> int:
     """Sum primary GGUF blob sizes across revisions, deduped by blob path (HF hardlinks shared blobs); mmproj is excluded so a vision-adapter-only repo isn't classed as GGUF."""
     unique_blobs: dict[str, int] = {}
@@ -215,12 +228,7 @@ def _repo_gguf_size_bytes(repo_info) -> int:
             # Snapshot-relative: only the directory marks an MTP/ drafter as a companion.
             name = _cached_repo_file_name(f)
             if _is_main_gguf_filename(name):
-                blob_path = getattr(f, "blob_path", None)
-                size = f.size_on_disk or 0
-                if blob_path:
-                    unique_blobs[str(blob_path)] = size
-                else:
-                    unique_blobs[f"{rev_id}:{name}"] = size
+                unique_blobs[_blob_key(f, f"{rev_id}:{name}")] = f.size_on_disk or 0
     return sum(unique_blobs.values())
 
 
@@ -834,9 +842,8 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     def _record_blob(
         target: dict[str, tuple[int, float]], file_obj, rev_id: str, file_name: str
     ) -> None:
-        blob_path = getattr(file_obj, "blob_path", None)
         size = int(file_obj.size_on_disk or 0)
-        key = str(blob_path) if blob_path else f"{rev_id}:{file_name}"
+        key = _blob_key(file_obj, f"{rev_id}:{file_name}")
         value = (size, _blob_mtime(file_obj))
         target[key] = value
         all_weight_blobs[key] = value
