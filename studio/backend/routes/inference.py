@@ -33286,6 +33286,13 @@ def _guard_anthropic_client_tool_catalog(
     )
 
 
+def _anthropic_client_tools_for_turn(openai_client_tools, openai_tool_choice, openai_messages):
+    """Withdraw a disabled catalog unless replayed history still needs its schemas."""
+    if openai_tool_choice == "none" and not _has_openai_tool_history(openai_messages):
+        return []
+    return openai_client_tools
+
+
 def _anthropic_requested_studio_tools(tools: Optional[list]) -> set[str]:
     requested: set[str] = set()
     for tool in tools or []:
@@ -33652,6 +33659,36 @@ def _validate_anthropic_client_tools(tools) -> None:
                 status_code = 400,
                 detail = "Client tool is missing required field 'name'.",
             )
+
+
+def _anthropic_response_format(
+    payload, *, require_llama_compatibility: bool = True
+) -> Optional[dict]:
+    output_config = payload.output_config if isinstance(payload.output_config, dict) else {}
+    fmt = output_config.get("format")
+    if fmt is None:
+        fmt = (payload.model_extra or {}).get("output_format")
+    if fmt is None:
+        return None
+    if not (
+        isinstance(fmt, dict)
+        and fmt.get("type") == "json_schema"
+        and isinstance(fmt.get("schema"), dict)
+    ):
+        logger.warning("Ignoring unsupported Anthropic output format: %r", fmt)
+        return None
+    schema = fmt["schema"]
+    if require_llama_compatibility and _llama_compatible_tool_schema(schema) != schema:
+        raise HTTPException(
+            status_code = 400,
+            detail = anthropic_error_body(
+                "The output format schema contains constraints that llama.cpp cannot enforce "
+                "without weakening them; use anchored patterns and supported repetition bounds.",
+                status = 400,
+                err_type = "invalid_request_error",
+            ),
+        )
+    return {"type": "json_schema", "json_schema": {"name": "response", "schema": schema}}
 
 
 def _append_to_codex_instructions(messages: list[dict], addition: str) -> list[dict]:
@@ -34288,6 +34325,8 @@ async def anthropic_count_tokens(
     # Reject malformed tools before the switch, like /messages, so an invalid
     # count request can't evict the loaded model.
     _validate_anthropic_client_tools(payload.tools)
+    # Counting compiles no output grammar, matching Anthropic's count_tokens behavior.
+    _count_response_format = _anthropic_response_format(payload, require_llama_compatibility = False)
     # Count with the requested model's tokenizer, like the sibling /messages.
     # Carry the vision guard too: an image count naming a text-only GGUF must not
     # evict a loaded vision model for a swap that can't serve the request.
@@ -34356,7 +34395,6 @@ async def anthropic_count_tokens(
     openai_messages = _sanitize_anthropic_openai_messages(openai_messages, llama_backend)
     # /apply-template fetches remote media even though token counting only needs its marker.
     _placeholder_remote_images_for_count(openai_messages)
-    openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
     # Only the client-tool passthrough is forwarded verbatim, so reproduce /messages' own
     # routing rather than "any tools": a Studio server-tool alias, or a template without
     # passthrough support, falls through to plain generation there and does carry the date.
@@ -34366,19 +34404,39 @@ async def anthropic_count_tokens(
         or anthropic_schema_client_tool_kind(t) is not None
         for t in payload.tools or []
     )
+    _count_openai_tool_choice = anthropic_tool_choice_to_openai(payload.tool_choice) or "auto"
+    _count_schema_disables_server_tools = (
+        _count_openai_tool_choice == "none" and _count_response_format is not None
+    )
     _count_server_tools = (
         _anthropic_selects_server_tools(payload, _count_studio_tools, _count_has_client_tool)
         and llama_backend.supports_tools
         and not _anthropic_request_has_image(payload, tool_results = llama_backend.is_vision)
+        and not _count_schema_disables_server_tools
     )
-    _count_openai_client_tools = [
-        tool
-        for tool in anthropic_tools_to_openai(payload.tools or [])
-        if tool.get("function", {}).get("name") not in _count_studio_tools
-    ]
+    _count_selected_server_tools = []
+    if _count_server_tools:
+        from core.inference.tools import ALL_TOOLS as _ANTHROPIC_COUNT_TOOLS
+        _count_selected_server_tools = _tools_for_search_images(
+            _select_anthropic_server_tools(
+                _ANTHROPIC_COUNT_TOOLS,
+                _count_studio_tools,
+                payload.enabled_tools,
+            )
+        )
+        _count_server_tools = bool(_count_selected_server_tools)
+    _count_openai_client_tools = _anthropic_client_tools_for_turn(
+        [
+            tool
+            for tool in anthropic_tools_to_openai(payload.tools or [])
+            if tool.get("function", {}).get("name") not in _count_studio_tools
+        ],
+        _count_openai_tool_choice,
+        openai_messages,
+    )
     _guard_anthropic_client_tool_catalog(
         _count_openai_client_tools,
-        anthropic_tool_choice_to_openai(payload.tool_choice) or "auto",
+        _count_openai_tool_choice,
         _count_server_tools,
         llama_backend,
     )
@@ -34387,6 +34445,7 @@ async def anthropic_count_tokens(
         and bool(_count_openai_client_tools)
         and getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools)
     )
+    openai_tools = _count_openai_client_tools if _count_client_tools else None
     if _count_client_tools:
         from core.inference.chat_template_helpers import (
             forced_tool_catalog,
@@ -34398,10 +34457,7 @@ async def anthropic_count_tokens(
             openai_tools, None, getattr(llama_backend, "markup_profile", None)
         )
         openai_tools = (
-            forced_tool_catalog(
-                anthropic_tool_choice_to_openai(payload.tool_choice), _count_safe_tools
-            )
-            or openai_tools
+            forced_tool_catalog(_count_openai_tool_choice, _count_safe_tools) or openai_tools
         )
     else:
         openai_messages = _prepend_current_date_to_messages(
@@ -34410,15 +34466,7 @@ async def anthropic_count_tokens(
             include_api_key = _count_server_tools,
         )
     if _count_server_tools:
-        from core.inference.tools import ALL_TOOLS as _ANTHROPIC_COUNT_TOOLS
-
-        openai_tools = _tools_for_search_images(
-            _select_anthropic_server_tools(
-                _ANTHROPIC_COUNT_TOOLS,
-                _count_studio_tools,
-                payload.enabled_tools,
-            )
-        )
+        openai_tools = _count_selected_server_tools
         _count_full_access = bool(getattr(payload, "bypass_permissions", False))
         if _count_full_access:
             # Same schemas /messages renders under Full access, or the count prices a different prompt.
@@ -34582,20 +34630,31 @@ async def anthropic_messages(
     _selects_server_tools = _anthropic_selects_server_tools(
         payload, requested_studio_tools, _has_client_tool
     )
-    _server_tools_requested_pre = _selects_server_tools and not _anthropic_top_level_image
-    if _server_tools_requested_pre:
+    _response_format = _anthropic_response_format(payload)
+    _schema_disables_server_tools = (
+        _response_format is not None
+        and anthropic_tool_choice_to_openai(payload.tool_choice) == "none"
+    )
+    _server_tools_selected_pre = (
+        _selects_server_tools
+        and not _anthropic_top_level_image
+        and not _schema_disables_server_tools
+    )
+    selected_server_tools = []
+    if _server_tools_selected_pre:
         from core.inference.tools import ALL_TOOLS as _ALL_TOOLS_PRE
-
-        _selected_pre = _tools_for_search_images(
+        selected_server_tools = _tools_for_search_images(
             _select_anthropic_server_tools(
                 _ALL_TOOLS_PRE, requested_studio_tools, payload.enabled_tools
             )
         )
+    _server_tools_requested_pre = bool(selected_server_tools)
+    if _server_tools_requested_pre:
         _perm_mode_pre = getattr(payload, "permission_mode", None)
         _confirm_opt_out_pre = getattr(payload, "confirm_tool_calls", None) is False
         _gated_tool_selected_pre = any(
             tool["function"]["name"] not in _ANTHROPIC_UNPROMPTED_SAFE_TOOLS
-            for tool in _selected_pre
+            for tool in selected_server_tools
         )
         # An explicit confirm_tool_calls=False opts out of the gate entirely (it
         # wins over the mode, mirroring _permission_mode_confirm and the GGUF path),
@@ -34737,11 +34796,15 @@ async def anthropic_messages(
     # Match /v1/chat/completions: server tools reject caller attachments but
     # accept replayed images. Check original blocks because promotion also sets
     # _has_image. Tool selection and mixed-mode rejection preceded the switch.
-    openai_client_tools = [
-        tool
-        for tool in anthropic_tools_to_openai(payload.tools or [])
-        if tool.get("function", {}).get("name") not in requested_studio_tools
-    ]
+    openai_client_tools = _anthropic_client_tools_for_turn(
+        [
+            tool
+            for tool in anthropic_tools_to_openai(payload.tools or [])
+            if tool.get("function", {}).get("name") not in requested_studio_tools
+        ],
+        openai_tool_choice,
+        openai_messages,
+    )
 
     # An Anthropic server-tool declaration implies server-tool mode, but only
     # when tools aren't explicitly disabled (CLI --disable-tools or per-request
@@ -34749,7 +34812,10 @@ async def anthropic_messages(
     # permission gate above: deciding "did this request select server tools"
     # twice is what let the gate reject requests the router then served.
     server_tools = (
-        _selects_server_tools and llama_backend.supports_tools and not _anthropic_has_image
+        bool(selected_server_tools)
+        and llama_backend.supports_tools
+        and not _anthropic_has_image
+        and not _schema_disables_server_tools
     )
     # One short-circuiting chain: a backend whose supports_tools raises must not turn a plain
     # no-tools turn into a 500.
@@ -34762,6 +34828,17 @@ async def anthropic_messages(
     _guard_anthropic_client_tool_catalog(
         openai_client_tools, openai_tool_choice, server_tools, llama_backend
     )
+
+    # Decided on the final routing: a tool request that cannot run tools (image, tool-less
+    # template, tool_choice none) still gets its schema.
+    response_format = _response_format
+    if (
+        response_format is not None
+        and (server_tools or client_tools)
+        and openai_tool_choice != "none"
+    ):
+        logger.warning("Ignoring Anthropic output format: callable tools cannot run under a schema")
+        response_format = None
 
     # Studio composes the prompt on every branch but the client-tool passthrough, which forwards
     # the caller's own request verbatim (mirrors the GGUF passthrough gate in /chat/completions).
@@ -35058,8 +35135,8 @@ async def anthropic_messages(
                 reservation.cancel()
 
     # ── Client-side pass-through path ─────────────────────────
-    if client_tools:
-        openai_tools = openai_client_tools
+    if client_tools or response_format is not None:
+        openai_tools = openai_client_tools if client_tools else []
 
         if payload.stream:
             return await _admitted_anthropic(
@@ -35085,6 +35162,7 @@ async def anthropic_messages(
                     cancel_id = payload.cancel_id,
                     disable_parallel_tool_use = _disable_parallel,
                     auto_heal_tool_calls = payload.auto_heal_tool_calls,
+                    response_format = response_format,
                     parse_think = _think_parsing_expected(llama_backend, payload),
                     **_anthropic_reasoning_args(payload),
                 )
@@ -35111,6 +35189,7 @@ async def anthropic_messages(
                 nudge_tool_calls = payload.nudge_tool_calls,
                 request = request,
                 cancel_event = cancel_event,
+                response_format = response_format,
                 parse_think = _think_parsing_expected(llama_backend, payload),
                 **_anthropic_reasoning_args(payload),
             )
@@ -35138,19 +35217,13 @@ async def anthropic_messages(
                     err_type = "invalid_request_error",
                 ),
             )
-        from core.inference.tools import ALL_TOOLS, apply_full_access_tool_descriptions
+        from core.inference.tools import apply_full_access_tool_descriptions
 
         # ask/auto (and an omitted mode selecting a gate-needing terminal/python
         # tool) were already rejected before the auto-switch above, so an invalid
         # confirm-gated request never evicts the resident model; the selection
         # here just picks the tools for the actual server-tool loop.
-        openai_tools = _tools_for_search_images(
-            _select_anthropic_server_tools(
-                ALL_TOOLS,
-                requested_studio_tools,
-                payload.enabled_tools,
-            )
-        )
+        openai_tools = selected_server_tools
         # Mirrors _select_request_tools: this path builds its own selection, so
         # the Full access swap has to be repeated rather than inherited.
         _full_access = bool(getattr(payload, "bypass_permissions", False))
@@ -36340,6 +36413,7 @@ async def _anthropic_passthrough_stream(
     cancel_id = None,
     disable_parallel_tool_use = False,
     auto_heal_tool_calls = None,
+    response_format = None,
     enable_thinking = None,
     reasoning_effort = None,
     preserve_thinking = None,
@@ -36362,6 +36436,7 @@ async def _anthropic_passthrough_stream(
         presence_penalty = presence_penalty,
         seed = seed,
         tool_choice = tool_choice,
+        response_format = response_format,
         chat_template_kwargs = _reasoning_template_kwargs(
             llama_backend, enable_thinking, reasoning_effort, preserve_thinking
         ),
@@ -36669,6 +36744,7 @@ async def _anthropic_passthrough_non_streaming(
     nudge_tool_calls = None,
     request: Optional[Request] = None,
     cancel_event = None,
+    response_format = None,
     enable_thinking = None,
     reasoning_effort = None,
     preserve_thinking = None,
@@ -36696,6 +36772,7 @@ async def _anthropic_passthrough_non_streaming(
         presence_penalty = presence_penalty,
         seed = seed,
         tool_choice = tool_choice,
+        response_format = response_format,
         chat_template_kwargs = _reasoning_template_kwargs(
             llama_backend, enable_thinking, reasoning_effort, preserve_thinking
         ),
@@ -36849,7 +36926,7 @@ async def _anthropic_passthrough_non_streaming(
                 # or no-client-tool requests. The protected helper preserves <think> rehearsal and
                 # balanced [TOOL_CALLS] prose, gated on the declared tools so an inactive
                 # NAME[ARGS]{...} example is kept.
-                if not healing_active:
+                if not healing_active and response_format is None:
                     text = _strip_tool_xml_for_display(
                         text,
                         auto_heal_tool_calls = True,
