@@ -22,6 +22,8 @@ export interface MemoryEstimate {
   weightsBytes: number;
   /** KV cache at the priced context and slot count. Meaningless unless `kvEstimable`. */
   kvBytes: number;
+  /** Host RAM checkpoints included in `kvBytes`, capped at `kvBytes`. */
+  kvCheckpointBytes: number;
   /** Compute / graph buffers, flat plus the context-linear growth. */
   computeBytes: number;
   /** A separate drafter's own cache and rollback state, on top of its file. */
@@ -86,6 +88,7 @@ const UNAVAILABLE: MemoryEstimate = {
   reason: "unsizable",
   weightsBytes: 0,
   kvBytes: 0,
+  kvCheckpointBytes: 0,
   computeBytes: 0,
   drafterRuntimeBytes: 0,
   drafterRuntimeGpuBytes: 0,
@@ -109,6 +112,7 @@ interface ApiEstimateResponse {
   reason: MemoryEstimateReason | null;
   weights_bytes: number;
   kv_bytes: number;
+  kv_checkpoint_bytes?: number;
   compute_bytes: number;
   drafter_runtime_bytes: number;
   drafter_runtime_gpu_bytes: number;
@@ -195,6 +199,7 @@ const ESTIMATE_REASONS: readonly MemoryEstimateReason[] = [
 
 function toMemoryEstimate(body: ApiEstimateResponse): MemoryEstimate {
   const drafterRuntimeBytes = finiteBytes(body.drafter_runtime_bytes, 0);
+  const kvBytes = finiteBytes(body.kv_bytes, 0);
   return {
     available: flag(body.available, false),
     // A reason the panel has no copy for is not a reason. An unknown string would reach the copy
@@ -203,7 +208,12 @@ function toMemoryEstimate(body: ApiEstimateResponse): MemoryEstimate {
       ? (body.reason as MemoryEstimateReason)
       : null,
     weightsBytes: finiteBytes(body.weights_bytes, 0),
-    kvBytes: finiteBytes(body.kv_bytes, 0),
+    kvBytes,
+    // Default to zero for older backends; clamp to avoid a negative KV cache row.
+    kvCheckpointBytes: Math.min(
+      kvBytes,
+      finiteBytes(body.kv_checkpoint_bytes, 0),
+    ),
     computeBytes: finiteBytes(body.compute_bytes, 0),
     drafterRuntimeBytes,
     // Absent on a backend predating the split: fall back to the whole term, which keeps the old

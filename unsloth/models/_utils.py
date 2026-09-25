@@ -1127,6 +1127,11 @@ def _get_text_only_config(model_config, model_name):
         text_config = getattr(model_config, "text_config", None)
     if text_config is None:
         raise ValueError(f"Cannot load {model_name} as text-only; use FastVisionModel")
+    # unsloth_zoo's Gemma-4 proxy (__slots__) refuses new attrs and resolve_model_class cannot map it; unwrap.
+    try:
+        text_config = object.__getattribute__(text_config, "_real")
+    except AttributeError:
+        pass
     # Carry over quantization_config; copy first, since get_text_config() shares the parent's object.
     qc = getattr(model_config, "quantization_config", None)
     if qc is not None and getattr(text_config, "quantization_config", None) is None:
@@ -1199,6 +1204,49 @@ def _apply_text_only_key_mapping(kwargs, parent_config, text_config):
         return
     user_mapping = kwargs.get("key_mapping", None)
     kwargs["key_mapping"] = {**mapping, **user_mapping} if user_mapping else mapping
+
+
+def _cast_text_only_prequantized_params(model, dtype):
+    # transformers>=5 keeps the checkpoint dtype for key_mapping-renamed keys on pre-quantized loads.
+    if dtype not in (torch.float16, torch.bfloat16, torch.float32):
+        return 0
+    quantizer = getattr(model, "hf_quantizer", None)
+    if quantizer is None or not getattr(quantizer, "pre_quantized", False):
+        return 0
+    # Quantizer may override the request (AWQ, FBGEMM FP8); config.dtype holds the result.
+    resolved = getattr(getattr(model, "config", None), "dtype", None)
+    if resolved in (torch.float16, torch.bfloat16, torch.float32):
+        dtype = resolved
+    keep_fp32 = []
+    get_dtype_plan = getattr(model, "_get_dtype_plan", None)
+    if callable(get_dtype_plan):
+        try:
+            keep_fp32 = [k for k, v in get_dtype_plan(dtype).items() if v == torch.float32]
+        except Exception:
+            keep_fp32 = []
+
+    def _is_quantized_storage(t):
+        if type(t) is not torch.nn.Parameter or type(t.data) is not torch.Tensor:
+            return True
+        return not t.dtype.is_floating_point or t.dtype.itemsize == 1
+
+    n_cast = 0
+    for module_name, module in model.named_modules():
+        own = list(module.named_parameters(recurse = False))
+        # Quantized modules' fp16 scales / bias are the kernel's contract (EETQ), not leftovers.
+        if any(_is_quantized_storage(t) for _, t in own):
+            continue
+        for param_name, param in own:
+            name = f"{module_name}.{param_name}" if module_name else param_name
+            # accelerate casts offloaded weights to the meta placeholder's dtype, so recasting it suffices.
+            if param.dtype not in (torch.float16, torch.bfloat16):
+                continue
+            target = torch.float32 if any(re.search(k, name) for k in keep_fp32) else dtype
+            if param.dtype == target:
+                continue
+            param.data = param.data.to(target)
+            n_cast += 1
+    return n_cast
 
 
 def resolve_attention_implementation(

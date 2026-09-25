@@ -65,6 +65,18 @@ export function interfaceScaleToZoom(scale: number): number {
   return sanitizeInterfaceScale(scale) / 100;
 }
 
+/** Zoom In and Zoom Out stops, the ones browsers use. */
+export const INTERFACE_ZOOM_STEPS = [50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200] as const;
+
+/** The next stop past `scale` in `direction`, or `scale` itself at either end. */
+export function stepInterfaceScale(scale: number, direction: 1 | -1): number {
+  const next =
+    direction > 0
+      ? INTERFACE_ZOOM_STEPS.find((step) => step > scale)
+      : [...INTERFACE_ZOOM_STEPS].reverse().find((step) => step < scale);
+  return next ?? scale;
+}
+
 interface InterfaceScaleState {
   scale: number;
   setScale: (scale: number) => void;
