@@ -47,7 +47,7 @@ def budget_bytes() -> int:
 
 
 def _host_ram_bytes() -> int:
-    """Pinned entries are charged to the cgroup, so its limit caps RAM."""
+    """Entries live in host RAM, so an enforcing cgroup limit caps the budget too."""
     try:
         total = int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
     except (AttributeError, ValueError, OSError):
@@ -111,7 +111,6 @@ def _nbytes(obj: Any) -> int:
 
 
 class PromptCache:
-
     def __init__(self, budget: Optional[int] = None) -> None:
         self.budget = budget_bytes() if budget is None else int(budget)
         self._entries: "collections.OrderedDict[str, tuple[Any, int]]" = collections.OrderedDict()
@@ -171,12 +170,9 @@ class PromptCache:
 def _store_copy(t: Any) -> Any:
     t = t.detach()
     device = t.device
+    # Not pinned: pin_memory() is a fresh cudaHostAlloc per entry (60 ms to 1.6 s for 4 MB on a busy host) to save
+    # ~0.3 ms per hit.
     stored = t.to("cpu", copy = True)
-    if device.type == "cuda":
-        try:
-            stored = stored.pin_memory()
-        except Exception:  # noqa: BLE001 - pinning is optional
-            pass
     stored._unsloth_src_device = device
     return stored
 
@@ -187,8 +183,7 @@ def _fresh(t: Any, device: Any) -> Any:
     target = torch.device(target)
     if target.type == t.device.type and (target.index is None or target.index == t.device.index):
         return t.clone()
-    non_blocking = bool(t.device.type == "cpu" and t.is_pinned())
-    return t.to(target, non_blocking = non_blocking, copy = True)
+    return t.to(target, copy = True)
 
 
 def _encoder_identity(pipe: Any) -> list:
