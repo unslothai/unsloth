@@ -85,7 +85,6 @@ def test_restore_dequantizes_orphaned_scale():
     if _FP8 is None:
         return
     torch.manual_seed(0)
-    # Raw fp8 values widened to bf16, as transformers loads an unconverted Linear.
     raw = torch.randn(4, 4).to(_FP8).to(torch.bfloat16)
     scale = torch.rand(2, 2, dtype = torch.float32) + 0.1
 
@@ -134,7 +133,6 @@ def test_skips_offloaded_meta_weight():
     """A disk-offloaded layer (weight on the meta device) is skipped without error or restore."""
     if _FP8 is None:
         return
-    # Raw fp8 values widened to bf16, as transformers loads an unconverted Linear.
     raw = torch.randn(4, 4).to(_FP8).to(torch.bfloat16)
     scale = torch.rand(2, 2, dtype = torch.float32) + 0.1
 
@@ -182,7 +180,6 @@ def test_non_block_divisible_shape():
     """Block scale is expanded then sliced to a non-divisible weight shape."""
     if _FP8 is None:
         return
-    # Raw fp8 values widened to bf16, as transformers loads an unconverted Linear.
     raw = torch.randn(3, 4).to(_FP8).to(torch.bfloat16)
     scale = torch.rand(2, 2, dtype = torch.float32) + 0.1
 
@@ -204,8 +201,7 @@ def test_transposed_scale_layout():
     """A scale stored in the transposed block grid is transposed before use."""
     if _FP8 is None:
         return
-    # Raw fp8 values widened to bf16, as transformers loads an unconverted Linear.
-    raw = torch.randn(4, 2).to(_FP8).to(torch.bfloat16)  # weight [4, 2] -> grid (2, 1)
+    raw = torch.randn(4, 2).to(_FP8).to(torch.bfloat16)
     scale_correct = torch.rand(2, 1, dtype = torch.float32) + 0.1
     scale_stored = scale_correct.t().contiguous()  # stored transposed as (1, 2)
 
@@ -227,7 +223,6 @@ def test_single_file_checkpoint_without_index():
     """Unsharded model.safetensors (no index) is still scanned for dropped scales."""
     if _FP8 is None:
         return
-    # Raw fp8 values widened to bf16, as transformers loads an unconverted Linear.
     raw = torch.randn(4, 4).to(_FP8).to(torch.bfloat16)
     scale = torch.rand(2, 2, dtype = torch.float32) + 0.1
 
@@ -251,7 +246,6 @@ def test_scalar_block_size_config():
     """A scalar weight_block_size (not a list) is handled without error."""
     if _FP8 is None:
         return
-    # Raw fp8 values widened to bf16, as transformers loads an unconverted Linear.
     raw = torch.randn(4, 4).to(_FP8).to(torch.bfloat16)
     scale = torch.rand(2, 2, dtype = torch.float32) + 0.1
 
@@ -273,7 +267,6 @@ def test_text_only_prefix_mapping():
     """Checkpoint keys with a language_model prefix match the stripped text-only module names."""
     if _FP8 is None:
         return
-    # Raw fp8 values widened to bf16, as transformers loads an unconverted Linear.
     raw = torch.randn(2, 2).to(_FP8).to(torch.bfloat16)
     scale = torch.rand(1, 1, dtype = torch.float32) + 0.1
 
@@ -297,7 +290,6 @@ def test_skips_variant_load():
     """A variant load (variant="fp8") is skipped to avoid applying default-checkpoint scales."""
     if _FP8 is None:
         return
-    # Raw fp8 values widened to bf16, as transformers loads an unconverted Linear.
     raw = torch.randn(4, 4).to(_FP8).to(torch.bfloat16)
     scale = torch.rand(2, 2, dtype = torch.float32) + 0.1
     model = nn.Module()
@@ -315,7 +307,6 @@ def test_vlm_language_model_model_alias():
     """A checkpoint key language_model.model.* matches a model.language_model.* module."""
     if _FP8 is None:
         return
-    # Raw fp8 values widened to bf16, as transformers loads an unconverted Linear.
     raw = torch.randn(2, 2).to(_FP8).to(torch.bfloat16)
     scale = torch.rand(1, 1, dtype = torch.float32) + 0.1
     model = nn.Module()
@@ -367,17 +358,14 @@ def test_noop_when_not_block_fp8():
 
 
 def _fp8_linear(out_f, in_f, raw_fp8):
-    """A plain Linear holding raw fp8 values and no scale: what a renamed (text_only) key leaves behind
-    on a pre-quantized transformers 5 load when the module was not converted to FP8Linear."""
+    """A plain Linear holding raw fp8 values and no scale (unconverted text_only key)."""
     m = nn.Linear(in_f, out_f, bias = False)
     m.weight = nn.Parameter(raw_fp8, requires_grad = False)
     return m
 
 
 def test_text_only_orphaned_fp8_weight_is_dequantized():
-    """text_only renames `model.language_model.*` to `model.*`, so an unconverted `mlp.gate_proj` keeps its raw
-    fp8 values instead of being cast to bf16. It must be dequantized into the load dtype, giving exactly what the
-    unrenamed load gives (bf16 raw values scaled in place), instead of being skipped as if it were FP8Linear."""
+    """A text_only fp8 orphan is dequantized into the load dtype, matching the unrenamed load."""
     if _FP8 is None:
         return
     torch.manual_seed(0)
@@ -410,7 +398,7 @@ def test_text_only_orphaned_fp8_weight_is_dequantized():
     expected = (raw_fp8.to(torch.float32) * _expand(scale, (2, 2), (4, 4))).to(torch.bfloat16)
     assert torch.equal(got.data, expected)
     assert torch.equal(got.data, full.model.language_model.gate_proj.weight.data)
-    # The forward that used to raise `BFloat16 != Float8_e4m3fn` now runs.
+    # Used to raise `BFloat16 != Float8_e4m3fn`.
     x = torch.randn(3, 4, dtype = torch.bfloat16)
     assert text_only.model.gate_proj(x).dtype == torch.bfloat16
 
@@ -441,8 +429,7 @@ def test_orphaned_fp8_weight_uses_requested_dtype():
 
 
 def test_fp8_module_with_scale_attr_untouched_next_to_orphan():
-    """Negative arm: in the same model a real fp8 module (scale attribute present) keeps its fp8 weight and
-    scale, while only the scale-less orphan is dequantized."""
+    """A real fp8 module keeps its weight and scale; only the scale-less orphan is dequantized."""
     if _FP8 is None:
         return
     raw_fp8 = torch.randn(4, 4).to(_FP8)
@@ -501,8 +488,7 @@ def _offload(
     module_name,
     disk_dir = None,
 ):
-    """Offload one submodule through accelerate exactly like a sequential device map does: its weight
-    becomes a meta placeholder and forward materializes it from the model-wide weights map."""
+    """Offload one submodule through accelerate like a sequential device map."""
     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
     from accelerate.utils import OffloadedWeightsLoader, PrefixedDataset, offload_state_dict
 
@@ -538,9 +524,7 @@ def _offloaded_case(raw, placeholder_dtype):
 
 
 def test_offloaded_orphans_are_restored_through_weights_map():
-    """An offloaded orphan (cpu or disk; raw fp8 from a text_only load, or raw bf16 from an unrenamed load)
-    used to be skipped: the text_only forward then raised on the fp8 weight and the unrenamed one ran
-    unscaled. The tensor accelerate materializes from is now dequantized, and the forward matches."""
+    """An offloaded orphan (cpu or disk, fp8 or bf16) is dequantized in the weights map."""
     if _FP8 is None:
         return
     import pytest
@@ -592,8 +576,7 @@ def test_offloaded_fp8_module_with_scale_is_skipped_not_counted_offloaded():
 
 
 def _raw_and_folded(scale):
-    """Raw fp8 values, and the same values with the block scale already folded in (as a load-time dequantize,
-    e.g. unsloth-zoo's uncontained-fp8 converter, leaves them) in bf16."""
+    """Raw fp8 values, and the same values with the block scale folded in, in bf16."""
     torch.manual_seed(0)
     raw_fp8 = (torch.randn(4, 4) * 100).to(_FP8)
     folded = (raw_fp8.to(torch.float32) * _expand(scale, (2, 2), (4, 4))).to(torch.bfloat16)
@@ -601,8 +584,7 @@ def _raw_and_folded(scale):
 
 
 def test_orphan_is_scaled_exactly_once():
-    """An fp8 weight (text_only) and a raw bf16 weight (full load) with an orphaned scale are scaled once; a
-    second pass over the now-dequantized weight leaves it alone instead of scaling it again."""
+    """Orphans are scaled once; a second pass leaves them alone."""
     if _FP8 is None:
         return
     scale = torch.tensor([[0.0123, 0.0456], [0.0789, 0.0321]])
@@ -629,8 +611,7 @@ def test_orphan_is_scaled_exactly_once():
 
 
 def test_already_dequantized_weight_is_not_scaled_again():
-    """A bf16 weight whose scale a load-time converter already folded in (the checkpoint still lists the scale)
-    is off the fp8 grid, so it is skipped rather than double-scaled; raw bf16 values next to it still are scaled."""
+    """A bf16 weight with its scale already folded in is skipped, never double-scaled."""
     if _FP8 is None:
         return
     scale = torch.tensor([[0.0123, 0.0456], [0.0789, 0.0321]])
@@ -655,8 +636,7 @@ def test_already_dequantized_weight_is_not_scaled_again():
 
 
 def test_offloaded_already_dequantized_weight_is_not_scaled_again():
-    """The offload path decides from the tensor accelerate materializes: a folded stored value is left as is,
-    a raw one is scaled once, and a repeat pass does not scale it again."""
+    """Offload path: folded stored value left as is, raw one scaled once, repeat pass a no-op."""
     if _FP8 is None:
         return
     import pytest

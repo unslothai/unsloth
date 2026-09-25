@@ -1292,7 +1292,6 @@ _FP8_DEQUANT_DTYPES = (torch.bfloat16, torch.float16, torch.float32)
 
 
 def _has_fp8_scale_attr(module):
-    """True when the module carries its own fp8 scale (FP8Linear, FbgemmFp8Linear), so its forward applies it."""
     return any(
         isinstance(getattr(module, name, None), torch.Tensor)
         for name in ("weight_scale_inv", "weight_scale")
@@ -1300,8 +1299,6 @@ def _has_fp8_scale_attr(module):
 
 
 def _fp8_dequant_target_dtype(model, dtype = None):
-    """The 16/32-bit dtype a plain module holding raw fp8 values is dequantized into: the requested load dtype,
-    else the config dtype, else the input embedding dtype, else bfloat16."""
     candidates = [dtype]
     config = getattr(model, "config", None)
     candidates += [getattr(config, "dtype", None), getattr(config, "torch_dtype", None)]
@@ -1318,10 +1315,7 @@ def _fp8_dequant_target_dtype(model, dtype = None):
 
 
 def _holds_raw_fp8_values(tensor, chunk_elements = 1 << 24):
-    """True when a tensor still holds unscaled fp8 values: an fp8 dtype, or a 16/32-bit tensor whose every
-    element lies exactly on the e4m3 or e5m2 grid (raw values widened on load). A weight whose block scale was
-    already folded in (e.g. dequantized by a load-time converter) is scale-multiplied and rounded, so it falls
-    off the fp8 grid and must not be scaled a second time. Checked in chunks to bound the temporary memory."""
+    """True if every value lies on the e4m3/e5m2 grid; a folded-in scale falls off it, so never scale twice."""
     if tensor.dtype in _FP8_DTYPES:
         return True
     if tensor.dtype not in _FP8_DEQUANT_DTYPES:
@@ -1338,13 +1332,11 @@ def _holds_raw_fp8_values(tensor, chunk_elements = 1 << 24):
 
 
 def _apply_fp8_block_scale(weight, scale, bs0, bs1):
-    """Multiply a 16/32-bit tensor of raw fp8 values by its [out_blocks, in_blocks] block scale; in place when
-    the shape tiles evenly, else through an expanded fp32 scale. Returns the scaled tensor."""
     out_features, in_features = weight.shape
     out_blocks = (out_features + bs0 - 1) // bs0
     in_blocks = (in_features + bs1 - 1) // bs1
     if out_features % bs0 == 0 and in_features % bs1 == 0:
-        # Memory-frugal path: multiply block views in place against the broadcast fp32 scale, avoiding a full expanded scale and fp32 copy that could OOM.
+        # In place on block views: a full expanded fp32 scale + copy can OOM.
         weight.view(out_blocks, bs0, in_blocks, bs1).mul_(scale[:, None, :, None])
         return weight
     scale_expanded = scale.repeat_interleave(bs0, dim = 0).repeat_interleave(bs1, dim = 1)[
@@ -1354,23 +1346,20 @@ def _apply_fp8_block_scale(weight, scale, bs0, bs1):
 
 
 def _accelerate_offload_store(model):
-    """The mapping accelerate materializes offloaded (cpu / disk) tensors from, keyed by full parameter name,
-    or None when nothing is offloaded through accelerate hooks."""
     for module in model.modules():
         hook = getattr(module, "_hf_hook", None)
         if hook is None:
             continue
-        for h in getattr(hook, "hooks", None) or (hook,):  # SequentialHook wraps several hooks
+        for h in getattr(hook, "hooks", None) or (hook,):
             weights_map = getattr(h, "weights_map", None)
             if weights_map is None:
                 continue
-            # PrefixedDataset(dataset, "<module name>.") over the model-wide store.
             return getattr(weights_map, "dataset", weights_map)
     return None
 
 
 def _offload_store_has(store, key):
-    # OffloadedWeightsLoader lists its keys; testing membership through it would read a disk tensor.
+    # `key in OffloadedWeightsLoader` would read the disk tensor.
     keys = getattr(store, "all_keys", None)
     if keys is not None:
         return key in keys
@@ -1381,7 +1370,7 @@ def _offload_store_has(store, key):
 
 
 def _offload_store_set(store, key, value):
-    # OffloadedWeightsLoader reads its in-memory state_dict before the disk index, so this also overrides a disk tensor.
+    # OffloadedWeightsLoader checks state_dict before the disk index, so this overrides disk tensors.
     state_dict = getattr(store, "state_dict", None)
     if isinstance(state_dict, dict):
         state_dict[key] = value
@@ -1403,7 +1392,7 @@ def _restore_dropped_fp8_scales(
     variant = None,
     dtype = None,
 ):
-    """Re-apply block-fp8 `weight_scale_inv` tensors that transformers dropped on load. On some block-scale fp8 checkpoints (e.g. Qwen3.6-27B-FP8, issue #6200) transformers fails to convert a Linear such as `mlp.gate_proj` to an fp8 module, loading the raw quantized values into a plain bf16 weight and discarding its `weight_scale_inv` as an unexpected key, so the weight is used un-scaled and the model is garbage. For every checkpoint scale whose live weight is not fp8, dequantize the orphaned weight in place; correctly converted modules keep an fp8 weight and are skipped, so a healthy checkpoint is a no-op. A renamed key (text_only strips `language_model.`) keeps its checkpoint dtype on a pre-quantized transformers 5 load, so the same unconverted Linear can instead hold the raw fp8 values with no scale attribute; it is dequantized into `dtype` (the load's compute dtype), matching what the unrenamed load produces. A 16/32-bit weight is only scaled while it still holds raw fp8 grid values, so a weight whose scale a load-time dequantize already folded in is skipped rather than scaled twice. Returns (restored, skipped)."""
+    """Re-apply block-fp8 `weight_scale_inv` tensors that transformers dropped on load. On some block-scale fp8 checkpoints (e.g. Qwen3.6-27B-FP8, issue #6200) transformers fails to convert a Linear such as `mlp.gate_proj` to an fp8 module, loading the raw quantized values into a plain bf16 weight and discarding its `weight_scale_inv` as an unexpected key, so the weight is used un-scaled and the model is garbage. For every checkpoint scale whose live weight is not fp8, dequantize the orphaned weight in place; correctly converted modules keep an fp8 weight and are skipped, so a healthy checkpoint is a no-op. A text_only-renamed key can instead leave raw fp8 values with no scale attribute; those are dequantized into `dtype`. Returns (restored, skipped)."""
     try:
         block = _fp8_block_size_from_config(model)
         if block is None or not _FP8_DTYPES:
@@ -1443,21 +1432,17 @@ def _restore_dropped_fp8_scales(
             if not isinstance(weight, torch.Tensor) or weight.ndim != 2:
                 continue
             if weight.dtype in _FP8_DTYPES and _has_fp8_scale_attr(module):
-                # Correctly converted fp8 module (on device or offloaded): its forward applies the scale.
                 skipped += 1
                 continue
             store_key = None
             if weight.device.type == "meta":
-                # Offloaded layer: the weight lives on meta until forward. Scale the tensor accelerate
-                # materializes it from (cpu, or disk via its state_dict override) when it can be found.
+                # Offloaded: scale the tensor accelerate materializes from.
                 if offload_store is _unset:
                     offload_store = _accelerate_offload_store(model)
                 store_key = f"{name_by_module.get(id(module), '')}.weight"
                 if offload_store is None or not _offload_store_has(offload_store, store_key):
                     offloaded += 1
                     continue
-            # A plain module holding raw fp8 values (renamed text_only key): widen to the compute dtype
-            # first, exact for e4m3 / e5m2 into bf16 / fp16 / fp32, then scale like any other orphan.
             orphan_fp8 = weight.dtype in _FP8_DTYPES
 
             # Errors after this point are per-tensor: warn and continue, never abort or hide them.
@@ -1495,7 +1480,7 @@ def _restore_dropped_fp8_scales(
                     orphan_fp8 = stored.dtype in _FP8_DTYPES
                 source = stored if stored is not None else weight
                 if source.is_floating_point() and not _holds_raw_fp8_values(source):
-                    # The scale is already folded in (e.g. a load-time dequantize consumed it): skip, never double-scale.
+                    # Scale already folded in: never double-scale.
                     skipped += 1
                     continue
                 target = _fp8_dequant_target_dtype(model, dtype) if orphan_fp8 else weight.dtype
@@ -1506,11 +1491,10 @@ def _restore_dropped_fp8_scales(
                         value = _apply_fp8_block_scale(value, scale.to(value.device), bs0, bs1)
                         _offload_store_set(offload_store, store_key, value)
                         if weight.dtype != target:
-                            # accelerate casts the stored value to the placeholder dtype on materialize.
+                            # accelerate casts the stored value to the placeholder dtype.
                             module.weight.data = torch.empty_like(weight, dtype = target)
                     else:
-                        # Scale a widened copy of an fp8 orphan and swap it in once, so a failure
-                        # (e.g. OOM) leaves the weight as it was rather than widened but unscaled.
+                        # Swap in once so an OOM leaves the weight untouched, not widened but unscaled.
                         value = weight.data.to(target) if orphan_fp8 else weight.data
                         module.weight.data = _apply_fp8_block_scale(
                             value, scale.to(weight.device), bs0, bs1
