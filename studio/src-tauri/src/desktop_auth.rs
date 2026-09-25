@@ -196,6 +196,7 @@ fn classify_auth_send_error(error: reqwest::Error) -> AuthError {
     }
 }
 
+// Long enough for a backend still importing its ML stack at startup.
 fn desktop_auth_client() -> Result<Client, reqwest::Error> {
     crate::loopback_http::client(Duration::from_secs(30))
 }
@@ -221,20 +222,6 @@ fn can_retry_on_discovered_port(state: &BackendState, source: PortSource) -> Res
 }
 
 async fn exchange_desktop_secret(
-    client: &Client,
-    port: u16,
-    secret: &str,
-) -> Result<Option<DesktopAuthResponse>, AuthError> {
-    match exchange_desktop_secret_once(client, port, secret).await {
-        Err(AuthError::Connectivity(_)) => {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            exchange_desktop_secret_once(client, port, secret).await
-        }
-        result => result,
-    }
-}
-
-async fn exchange_desktop_secret_once(
     client: &Client,
     port: u16,
     secret: &str,
@@ -418,8 +405,6 @@ async fn desktop_auth_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
@@ -428,6 +413,10 @@ mod tests {
     }
 
     async fn login_server_with_body(status: &str, body: &str) -> u16 {
+        delayed_login_server(status, body, Duration::ZERO).await
+    }
+
+    async fn delayed_login_server(status: &str, body: &str, delay: Duration) -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let status = status.to_string();
@@ -437,6 +426,7 @@ mod tests {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut buffer = [0; 1024];
             let _ = stream.read(&mut buffer).await.unwrap();
+            tokio::time::sleep(delay).await;
             let response = format!(
                 "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
@@ -447,105 +437,15 @@ mod tests {
         port
     }
 
-    async fn delayed_login_server(
-        responses: Vec<(&'static str, &'static str, Duration)>,
-    ) -> (u16, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let requests = Arc::new(AtomicUsize::new(0));
-        let count = Arc::clone(&requests);
-        let server = tokio::spawn(async move {
-            for (status, body, delay) in responses {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let mut buffer = [0; 4096];
-                let size = stream.read(&mut buffer).await.unwrap();
-                assert!(String::from_utf8_lossy(&buffer[..size])
-                    .starts_with("POST /api/auth/desktop-login "));
-                count.fetch_add(1, Ordering::SeqCst);
-                tokio::time::sleep(delay).await;
-                let response = format!(
-                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                let _ = stream.write_all(response.as_bytes()).await;
-            }
-        });
-        (port, requests, server)
-    }
-
-    const LOGIN_TOKENS: &str = r#"{"access_token":"access","refresh_token":"refresh"}"#;
-
     #[tokio::test]
-    async fn desktop_login_waits_for_slow_startup() {
-        let (port, requests, server) =
-            delayed_login_server(vec![("200 OK", LOGIN_TOKENS, Duration::from_secs(7))]).await;
-        let response = exchange_desktop_secret(&desktop_auth_client().unwrap(), port, "secret")
-            .await
-            .unwrap();
+    async fn desktop_login_waits_for_a_slow_response() {
+        let body = r#"{"access_token":"access","refresh_token":"refresh"}"#;
+        let port = delayed_login_server("200 OK", body, Duration::from_secs(6)).await;
+        let response =
+            exchange_desktop_secret(&desktop_auth_client().unwrap(), port, "desktop-secret")
+                .await
+                .unwrap();
         assert!(matches!(response, Some(DesktopAuthResponse::Tokens { .. })));
-        assert_eq!(requests.load(Ordering::SeqCst), 1);
-        server.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn desktop_login_retries_a_timeout_on_the_same_port() {
-        let (port, requests, server) = delayed_login_server(vec![
-            ("200 OK", LOGIN_TOKENS, Duration::from_millis(200)),
-            ("200 OK", LOGIN_TOKENS, Duration::ZERO),
-        ])
-        .await;
-        let client = crate::loopback_http::client(Duration::from_millis(50)).unwrap();
-        let response = exchange_desktop_secret(&client, port, "secret")
-            .await
-            .unwrap();
-        assert!(matches!(response, Some(DesktopAuthResponse::Tokens { .. })));
-        assert_eq!(requests.load(Ordering::SeqCst), 2);
-        server.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn desktop_login_stops_after_two_timeouts() {
-        let (port, requests, server) = delayed_login_server(vec![
-            ("200 OK", LOGIN_TOKENS, Duration::from_millis(200)),
-            ("200 OK", LOGIN_TOKENS, Duration::from_millis(200)),
-        ])
-        .await;
-        let client = crate::loopback_http::client(Duration::from_millis(50)).unwrap();
-        let result = tokio::time::timeout(
-            Duration::from_secs(2),
-            exchange_desktop_secret(&client, port, "secret"),
-        )
-        .await
-        .unwrap();
-        assert!(matches!(result, Err(AuthError::Connectivity(_))));
-        assert_eq!(requests.load(Ordering::SeqCst), 2);
-        server.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn desktop_login_does_not_retry_rejected_or_malformed_responses() {
-        for (status, body) in [
-            ("401 Unauthorized", ""),
-            ("404 Not Found", ""),
-            ("403 Forbidden", ""),
-            ("500 Internal Server Error", ""),
-            ("200 OK", "{}"),
-        ] {
-            let (port, requests, server) = delayed_login_server(vec![
-                (status, body, Duration::ZERO),
-                ("200 OK", LOGIN_TOKENS, Duration::ZERO),
-            ])
-            .await;
-            let result =
-                exchange_desktop_secret(&desktop_auth_client().unwrap(), port, "secret").await;
-            if status == "401 Unauthorized" {
-                assert!(matches!(result, Ok(None)));
-            } else {
-                assert!(result.is_err());
-            }
-            assert_eq!(requests.load(Ordering::SeqCst), 1);
-            server.abort();
-        }
     }
 
     #[tokio::test]
