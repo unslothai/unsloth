@@ -409,6 +409,29 @@ def _family_train_denied(
     )
 
 
+def nvfp4_gated_base(family: Optional[str]) -> Optional[str]:
+    """A base of ``family`` whose passing NVFP4 gate record lifts the family deny, or None. For a load whose base is
+    not known yet (a GGUF pick resolves it from its card tag at load time), so a network-free check can judge the
+    scheme the way the loader will if the pick turns out to be that base."""
+    if not family:
+        return None
+    try:
+        from .diffusion_nvfp4_gate import load_gate_records
+        records = load_gate_records()
+    except Exception:  # noqa: BLE001 -- no readable record means nothing is lifted
+        return None
+    name = str(family).strip().lower()
+    for record in records:
+        base = record.get("base_repo")
+        if (
+            str(record.get("family", "")).strip().lower() == name
+            and base
+            and _nvfp4_gate_passed(name, base)
+        ):
+            return str(base)
+    return None
+
+
 def family_denies_scheme(
     family: Optional[str],
     scheme: str,
