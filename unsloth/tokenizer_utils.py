@@ -314,6 +314,7 @@ def _repair_tokenizer_backend_from_json(
         return tokenizer
     for obj in _tokenizer_objects(tokenizer):
         if _repair_one_tokenizer_backend(obj, cache_dir = cache_dir, revision = revision):
+            obj._unsloth_tokenizer_json_repaired = True
             getattr(logger, "warning_once", logger.warning)(
                 f"Unsloth: {type(obj).__name__} for {getattr(obj, 'name_or_path', '')} did not "
                 "round-trip text (transformers v5 replaced the byte-level pre-tokenizer from "

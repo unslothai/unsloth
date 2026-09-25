@@ -183,3 +183,16 @@ def test_repair_can_be_disabled(byte_level_llama_dir, monkeypatch):
     tok = AutoTokenizer.from_pretrained(byte_level_llama_dir)
     tok = tu._apply_post_load_tokenizer_fixes(tok, fix_tokenizer = True)
     assert tok.decode(_ids(tok)) != PROBE
+
+
+def test_saved_repaired_tokenizer_reloads_with_plain_transformers(byte_level_llama_dir, tmp_path):
+    from unsloth.save import patch_saving_functions
+
+    tok = tu.load_correct_tokenizer(byte_level_llama_dir)
+    patch_saving_functions(tok)
+    tok.save_pretrained(str(tmp_path / "saved"))
+    reloaded = AutoTokenizer.from_pretrained(str(tmp_path / "saved"))
+    assert reloaded.decode(_ids(reloaded)) == PROBE
+    assert _ids(reloaded) == _reference_ids(byte_level_llama_dir)
+    assert reloaded(PROBE).input_ids == tok(PROBE).input_ids
+    assert reloaded.chat_template == tok.chat_template
