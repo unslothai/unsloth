@@ -12066,7 +12066,12 @@ def _gguf_candidate_backend(monkeypatch, tmp_path, *, initial_policy, candidate_
     )
     orig_plan = DiffusionBackend._plan_memory
 
-    def spy_plan(self, *a, transformer_resident_override_mib = None, **k):
+    def spy_plan(
+        self,
+        *a,
+        transformer_resident_override_mib = None,
+        **k,
+    ):
         real = orig_plan(
             self, *a, transformer_resident_override_mib = transformer_resident_override_mib, **k
         )
@@ -12148,8 +12153,8 @@ def test_a_resident_gguf_plan_declines_a_prequant_that_would_stream(
     status = _load_m(backend, tmp_path, transformer_quant = "int8")
     assert attempted == []
     assert status["transformer_quant"] is None
-    assert "torchao tensors cannot be offloaded" in (
-        status["resolved"]["transformer_quant"]["reason"]
+    assert (
+        "torchao tensors cannot be offloaded" in (status["resolved"]["transformer_quant"]["reason"])
     )
 
 
@@ -12161,12 +12166,12 @@ def test_candidate_overrides_price_the_encoder_the_load_opens(monkeypatch):
         staticmethod(lambda cand, fam, base, target, teq: 2_000 + int(16_000 * 0.65)),
     )
     overrides = DiffusionBackend._candidate_companion_overrides(candidate, None, "b", None, "fp8")
-    assert overrides == {
-        "companion_override_mib": 12_400,
-        "text_encoder_override_mib": 10_400,
-    }
+    assert overrides == {"companion_override_mib": 12_400, "text_encoder_override_mib": 10_400}
     # No split: the encoder term stays unknown, so the planner keeps its previous tiers.
     bare = types.SimpleNamespace(companions_mib = 18_000, text_encoders_mib = 0)
-    assert DiffusionBackend._candidate_companion_overrides(bare, None, "b", None, None)[
-        "text_encoder_override_mib"
-    ] == 0
+    assert (
+        DiffusionBackend._candidate_companion_overrides(bare, None, "b", None, None)[
+            "text_encoder_override_mib"
+        ]
+        == 0
+    )

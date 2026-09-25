@@ -1283,9 +1283,7 @@ def _torchao_offload_decline(what: str, plan: Any) -> str:
     """Why a torchao build was declined under ``plan``, quoting the floor that keeps it resident."""
     estimates = getattr(plan, "estimates", None) or {}
     floor = estimates.get("resident_transformer_floor_mib")
-    streamed = (
-        f", {floor} MiB even with the text encoders streamed" if floor is not None else ""
-    )
+    streamed = f", {floor} MiB even with the text encoders streamed" if floor is not None else ""
     return (
         f"{what} '{plan.offload_policy}' offload here "
         f"({estimates.get('resident_required_mib')} MiB required vs a "
