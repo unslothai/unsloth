@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in NVENC export (``video_nvenc.py``): off unless asked for, never probed on GPUs without an encoder, probed once
-per GPU, and libx264 whenever NVENC is unusable or fails."""
 
 from __future__ import annotations
 
