@@ -499,6 +499,26 @@ def _fix_rope_inv_freq(model):
     return model
 
 
+def _looks_like_gguf_checkpoint(model_name: str) -> bool:
+    """Whether *model_name* names a GGUF checkpoint rather than a repo AutoConfig or
+    PeftConfig can read directly. Matches the ``-GGUF`` suffix convention ``save.py``
+    already uses to build an upstream repo id (e.g. ``unsloth/<base>-GGUF``), a direct
+    ``.gguf`` file, or either with a Studio-style ``:QUANT`` suffix appended.
+    """
+    name = (model_name or "").strip().rstrip("/")
+    if not name:
+        return False
+    # A ":QUANT" suffix only ever trails the final path segment, so split on the last
+    # colon and keep the base only when nothing after it looks like a path -- a bare
+    # colon elsewhere (e.g. a Windows drive letter) must not be stripped as a quant tag.
+    head, sep, tail = name.rpartition(":")
+    if sep and "/" not in tail and "\\" not in tail:
+        name = head
+    if name.lower().endswith(".gguf"):
+        return True
+    return name.upper().endswith("-GGUF")
+
+
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
     @_offline_aware_load
@@ -850,6 +870,16 @@ class FastLanguageModel(FastLlamaModel):
                     f"This includes Llama 3.1. The minimum required version is 4.43.2\n"
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'
                     f"to obtain the latest transformers build, then restart this session."
+                )
+            if _looks_like_gguf_checkpoint(model_name):
+                raise ValueError(
+                    f"Unsloth: `{model_name}` looks like a GGUF checkpoint.\n"
+                    "`FastLanguageModel`/`FastVisionModel.from_pretrained` loads safetensors "
+                    "repos via `AutoConfig`/`PeftConfig`, not GGUF files, so neither could find "
+                    "a `config.json` or `adapter_config.json` here.\n"
+                    "Load it with a GGUF-aware runtime instead (e.g. llama.cpp, or "
+                    "`AutoModelForCausalLM.from_pretrained(..., gguf_file=<the .gguf filename>)` "
+                    "if your `transformers` version supports it)."
                 )
             combined_error = (
                 "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
@@ -1653,6 +1683,16 @@ class FastModel(FastBaseModel):
                     f"This includes Llama 3.1. The minimum required version is 4.43.2\n"
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'
                     f"to obtain the latest transformers build, then restart this session."
+                )
+            if _looks_like_gguf_checkpoint(model_name):
+                raise ValueError(
+                    f"Unsloth: `{model_name}` looks like a GGUF checkpoint.\n"
+                    "`FastLanguageModel`/`FastVisionModel.from_pretrained` loads safetensors "
+                    "repos via `AutoConfig`/`PeftConfig`, not GGUF files, so neither could find "
+                    "a `config.json` or `adapter_config.json` here.\n"
+                    "Load it with a GGUF-aware runtime instead (e.g. llama.cpp, or "
+                    "`AutoModelForCausalLM.from_pretrained(..., gguf_file=<the .gguf filename>)` "
+                    "if your `transformers` version supports it)."
                 )
             combined_error = (
                 "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
