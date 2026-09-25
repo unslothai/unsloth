@@ -292,7 +292,12 @@ def model_fingerprint(
         "dtype": str(dtype),
         "quant": str(quant) if quant is not None else "none",
         "attention_backend": str(attention_backend) if attention_backend is not None else "default",
-        "compile_kwargs": {k: compile_kwargs[k] for k in sorted(compile_kwargs)},
+        # A False vae_decode is what every load keyed before the flag existed, so it is left out of the key.
+        "compile_kwargs": {
+            k: compile_kwargs[k]
+            for k in sorted(compile_kwargs)
+            if not (k == "vae_decode" and not compile_kwargs[k])
+        },
         "shape_bucket": shape_bucket,
     }
 

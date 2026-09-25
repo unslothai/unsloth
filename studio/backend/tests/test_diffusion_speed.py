@@ -454,6 +454,19 @@ def test_unet_whole_compile_default_tier(monkeypatch):
     assert applied["compiled_vae_decode"] is True
 
 
+@pytest.mark.parametrize("tier", [SPEED_DEFAULT, SPEED_MAX])
+def test_a_unet_keeps_its_decode_recipe_and_bundle_key_on_every_tier(monkeypatch, tier):
+    # The U-Net decode was measured with this recipe, and its existing bundles carry it under the flag-less key.
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    pipe = _UNetPipe()
+    applied = apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = tier)
+    assert applied["compiled_vae_decode"] is True
+    assert {"fullgraph": False, "dynamic": True} in torch.compile_calls
+    assert not any(call.get("mode") for call in torch.compile_calls)
+    assert ds_mod.vae_decode_compile_allowed(pipe, tier) is False
+
+
 def test_dit_default_tier_keeps_fuse_off_and_leaves_the_vae_decode_eager(monkeypatch):
     # The VAE decode compile costs a 60-70 s longer first render, so under auto it is a max-tier lever only.
     torch = _stub_torch(monkeypatch)

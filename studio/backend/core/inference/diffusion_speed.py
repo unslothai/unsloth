@@ -314,8 +314,9 @@ def apply_speed_optims(
         )
 
     if applied["compiled"] and _vae_decode_compile_allowed(pipe, mode):
+        # A U-Net keeps the decode recipe its whole-module compile was measured with.
         applied["compiled_vae_decode"] = _compile_vae_decode(
-            pipe, logger, max_autotune = mode == SPEED_MAX
+            pipe, logger, max_autotune = mode == SPEED_MAX and _denoiser_unet(pipe) is None
         )
 
     if mode == SPEED_MAX:
@@ -782,8 +783,9 @@ _VAE_COMPILE_ALLOW: frozenset[str] = frozenset({"AutoencoderKL"})
 
 
 def vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
-    """For the compile-cache key, so a bundle saved without VAE decode artifacts is not a hit."""
-    return _vae_decode_compile_allowed(pipe, speed_mode)
+    """For the compile-cache key, so a bundle saved without VAE decode artifacts is not a hit. False for a U-Net,
+    whose bundles have always carried the decode, so its key is the one existing installs already saved under."""
+    return _denoiser_unet(pipe) is None and _vae_decode_compile_allowed(pipe, speed_mode)
 
 
 def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
