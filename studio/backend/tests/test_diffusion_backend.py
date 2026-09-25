@@ -11968,7 +11968,6 @@ def test_precast_text_encoder_mib_prices_an_uncached_checkpoint_from_the_family_
     assert got[0] > 8959
 
 
-
 def _resident_transformer(plan):
     """``plan`` as the tier that keeps the denoiser resident and streams only the text encoders."""
     return dataclasses.replace(

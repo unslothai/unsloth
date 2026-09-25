@@ -2482,7 +2482,6 @@ def test_pinned_host_pricing_rounds_each_tensor_to_a_power_of_two(monkeypatch):
     assert mem._module_host_mib(_M()) == 13
 
 
-
 def test_only_resident_and_encoder_only_plans_keep_the_transformer_in_place():
     from types import SimpleNamespace
 
