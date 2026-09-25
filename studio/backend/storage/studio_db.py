@@ -7,6 +7,8 @@ Like auth/storage.py (module-level functions, raw sqlite3, per-function connecti
 and PRAGMA foreign_keys = ON for CASCADE deletes.
 """
 
+import base64
+import binascii
 import hashlib
 import json
 import logging
@@ -116,8 +118,9 @@ _schema_lock = threading.Lock()
 _schema_ready: set[Path] = set()
 _SQLITE_IN_CHUNK_SIZE = 900
 _PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
-# Bumped when what the inventory records changes, so it is rebuilt: 2 sizes video files.
-_CHAT_ATTACHMENT_INVENTORY_VERSION = 2
+# Bumped when what the inventory records changes, so it is rebuilt: 2 sizes video files, 3 types
+# audio parts that name no type.
+_CHAT_ATTACHMENT_INVENTORY_VERSION = 3
 
 
 def _project_slug(name: str) -> str:
@@ -4339,6 +4342,46 @@ def _chat_attachment_size_bytes(attachment: dict) -> Optional[int]:
     return total if found else None
 
 
+_AUDIO_FORMAT_TYPES = {
+    "mp3": "audio/mpeg",
+    "wav": "audio/wav",
+    "ogg": "audio/ogg",
+    "flac": "audio/flac",
+}
+
+
+def _content_part_audio_type(audio: Any) -> Optional[str]:
+    """An audio part's type: its data URL's, its format's, or else its bytes' own header, since a
+    compare chat stores bare base64 with neither."""
+    data = audio
+    if isinstance(audio, dict):
+        known = _AUDIO_FORMAT_TYPES.get(str(audio.get("format") or "").lower())
+        if known:
+            return known
+        data = audio.get("data")
+    if not isinstance(data, str):
+        return None
+    data = data.strip()
+    if data[:5].lower() == "data:":
+        header, _, data = data.partition(",")
+        declared = header[5:].split(";", 1)[0].strip().lower()
+        if declared.startswith("audio/"):
+            return declared
+    try:
+        head = base64.b64decode(data[:16])
+    except (binascii.Error, ValueError):
+        return None
+    if head.startswith(b"RIFF") and head[8:12] == b"WAVE":
+        return "audio/wav"
+    if head.startswith(b"ID3") or (len(head) > 1 and head[0] == 0xFF and head[1] & 0xE0 == 0xE0):
+        return "audio/mpeg"
+    if head.startswith(b"OggS"):
+        return "audio/ogg"
+    if head.startswith(b"fLaC"):
+        return "audio/flac"
+    return None
+
+
 def _content_part_attachments(content_json: Optional[str]) -> list[dict]:
     """Managed local blobs stored in content_json, with stable payload ids. Exact duplicate blobs
     intentionally share one inventory id: deleting it removes every identical copy, avoiding
@@ -4359,7 +4402,9 @@ def _content_part_attachments(content_json: Optional[str]) -> list[dict]:
         kind, value = payload
         content_type = None
         part_name = part.get("name")
-        if isinstance(value, str) and value[:5].lower() == "data:":
+        if kind == "audio":
+            content_type = _content_part_audio_type(value)
+        elif isinstance(value, str) and value[:5].lower() == "data:":
             content_type = value[5:].split(";", 1)[0].split(",", 1)[0] or None
         out.append(
             {

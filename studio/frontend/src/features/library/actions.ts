@@ -99,7 +99,9 @@ export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> 
       // Signed out meanwhile: the files belong to the account that left.
       if (getAuthSessionEpoch() !== epoch) return;
     }
-    const names = uniqueFileNames(files.map((file) => file.name));
+    // fflate files entries by name in plain objects, where "__proto__" sets the prototype and the
+    // file is lost: that name counts as taken, so such a file goes in as "__proto__ (2)".
+    const names = uniqueFileNames(["__proto__", ...files.map((file) => file.name)]).slice(1);
     const entries: Record<string, Uint8Array> = {};
     for (const [index, file] of files.entries()) {
       entries[names[index]!] = new Uint8Array(await file.arrayBuffer());
