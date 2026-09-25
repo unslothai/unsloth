@@ -293,7 +293,7 @@ def test_generate_skips_the_scheduled_steps_per_cfg_branch(loop_runtime):
     computed = 2 * (STEPS - SKIPPED_PER_BRANCH)
     assert pipe.transformer.computed == computed
     stats = backend.status()["transformer_cache_stats"]
-    assert stats["planned_skips"] == 0
+    assert stats["planned_skips"] == SKIPPED_PER_BRANCH
     assert stats["stats"] == {
         "calls": 2 * STEPS,
         "computed": computed,
@@ -301,7 +301,7 @@ def test_generate_skips_the_scheduled_steps_per_cfg_branch(loop_runtime):
     }
     from utils.account_context import current_account_id
 
-    assert backend.static_skip_owner() == current_account_id()
+    assert backend.static_skip_view()[0] == current_account_id()
     backend.generate(prompt = "a sloth", steps = STEPS)
     assert pipe.transformer.computed == 2 * computed
     backend.generate(prompt = "a sloth", steps = 8)
@@ -563,13 +563,15 @@ def test_status_route_shows_skip_counts_only_to_their_producer(monkeypatch, scop
         "planned_skips": 17,
         "stats": {"calls": 100, "computed": 66, "skipped": 34},
     }
+    # The view's snapshot, not the earlier status() read, is what the caller gets.
+    fresh = {**stats, "stats": {"calls": 40, "computed": 26, "skipped": 14}}
 
     class _Backend:
         def status(self):
             return {"loaded": True, "transformer_cache": "static", "transformer_cache_stats": stats}
 
-        def static_skip_owner(self):
-            return owner
+        def static_skip_view(self):
+            return owner, fresh
 
     monkeypatch.setattr(video_mod, "get_video_backend", lambda: _Backend())
     monkeypatch.setattr(account_access, "resident_hidden", lambda *a, **k: False)
@@ -577,4 +579,4 @@ def test_status_route_shows_skip_counts_only_to_their_producer(monkeypatch, scop
     monkeypatch.setattr(routes, "current_account_id", lambda: "a")
     body = asyncio.run(routes.video_status(current_subject = "u", via_api_key = False))
     assert body.transformer_cache == "static"
-    assert body.transformer_cache_stats == (stats if shown else None)
+    assert body.transformer_cache_stats == ((fresh if scope else stats) if shown else None)

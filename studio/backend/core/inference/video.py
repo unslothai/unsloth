@@ -66,8 +66,8 @@ from .diffusion_step_skip import (
     install_static_step_skip,
     mark_step_end,
     reset_static_step_skip,
-    static_skip_owner,
     static_skip_stats,
+    static_skip_view,
     uninstall_static_step_skip,
 )
 from .diffusion_device import (
@@ -5697,10 +5697,12 @@ class VideoBackend:
     def generate_job_account(self) -> Optional[str]:
         return self._generate_job_account
 
-    def static_skip_owner(self) -> Optional[str]:
-        """Account whose clip produced ``transformer_cache_stats``; never part of status()."""
+    def static_skip_view(self) -> tuple:
+        """(owner, ``transformer_cache_stats``) from one read; the owner is never part of status()."""
         state = self._state
-        return static_skip_owner(getattr(state, "pipe", None)) if state is not None else None
+        if state is None or state.transformer_cache != TC_STATIC:
+            return None, None
+        return static_skip_view(state.pipe)
 
     def _run_generate(
         self,
