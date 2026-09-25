@@ -41,7 +41,10 @@ def _rocminfo(*arches: str) -> str:
     )
 
 
-@pytest.fixture
+# Autouse: _pick_rocm_gfx_target reads the visibility masks, so a test that forgot to ask for
+# this passed on a bare CI runner and failed wherever CUDA_VISIBLE_DEVICES is set, a GPU box
+# included. Tests that want a mask set it after this runs.
+@pytest.fixture(autouse = True)
 def unmasked(monkeypatch):
     for name in _VISIBILITY_ENV:
         monkeypatch.delenv(name, raising = False)

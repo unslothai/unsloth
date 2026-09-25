@@ -66,7 +66,12 @@ class _SSEDecoder:
         return values
 
 
-def _background_request(app: Any, run_id: str, cancel_event: threading.Event) -> Request:
+def _background_request(
+    app: Any,
+    run_id: str,
+    cancel_event: threading.Event,
+    timezone_headers: dict[str, str] | None = None,
+) -> Request:
     scope = {
         "type": "http",
         "asgi": {"version": "3.0", "spec_version": "2.3"},
@@ -80,6 +85,10 @@ def _background_request(app: Any, run_id: str, cancel_event: threading.Event) ->
             (b"x-unsloth-generation-run", run_id.encode("ascii", "ignore")),
             # Durable runs replay their event log to the UI, which needs the Unsloth control frames (see routes.inference).
             (b"x-unsloth-events", b"1"),
+            *(
+                (name.encode("latin-1"), value.encode("latin-1"))
+                for name, value in (timezone_headers or {}).items()
+            ),
         ],
         "client": ("127.0.0.1", 0),
         "server": ("127.0.0.1", 0),
@@ -739,13 +748,15 @@ class ChatGenerationSupervisor:
 
                 from routes.inference import produce_openai_chat_completions
 
-                payload = ChatCompletionRequest.model_validate(run["requestPayload"])
+                request_payload = dict(run["requestPayload"])
+                timezone_headers = request_payload.pop(db.TIMEZONE_HEADERS_FIELD, None)
+                payload = ChatCompletionRequest.model_validate(request_payload)
                 # Switching, idle reload and auto-download all happen in the call below, and llama.cpp's first-token
                 # budget only starts after it. One touch afterwards cannot cover a preparation longer than the lease
                 # itself.
                 response = await produce_openai_chat_completions(
                     payload,
-                    _background_request(self.app, run_id, cancel_event),
+                    _background_request(self.app, run_id, cancel_event, timezone_headers),
                     owner,
                     cancel_on_disconnect = False,
                 )
