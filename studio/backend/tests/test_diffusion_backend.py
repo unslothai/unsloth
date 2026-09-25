@@ -168,13 +168,24 @@ def test_pipeline_available_names_filter_the_override_selector(monkeypatch):
     import core.inference.diffusion_families as families
     monkeypatch.setattr(
         families,
-        "family_pipeline_strictly_available",
+        "family_selectable",
         lambda fam: fam.name not in {"krea-2", "flux.2-klein"},
     )
     assert set(supported_family_names()) - set(pipeline_available_family_names()) == {
         "krea-2",
         "flux.2-klein",
     }
+
+
+def test_pipeline_available_names_never_import_pipeline_classes(monkeypatch):
+    # Status polls call this; importing pipeline classes there raced the loader's own import.
+    import core.inference.diffusion_families as families
+
+    def _strict(*_a, **_k):
+        raise AssertionError("the selector must stay import-free")
+
+    monkeypatch.setattr(families, "assert_pipeline_class_available", _strict)
+    assert "flux.1" in pipeline_available_family_names()
 
 
 def test_pipeline_available_names_fail_closed_without_diffusers(monkeypatch):

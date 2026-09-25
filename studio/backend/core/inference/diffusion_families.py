@@ -1898,23 +1898,29 @@ def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
     return _installed_at_least(installed, minimum)
 
 
-def family_pipeline_strictly_available(fam: Optional[DiffusionFamily]) -> bool:
-    """Whether a selector may promise that this family can load through Diffusers here."""
-    if fam is None:
+def family_selectable(fam: Any) -> bool:
+    """Whether a Family selector may offer ``fam``: diffusers installed and new enough.
+
+    Import-free on purpose. Probing the pipeline classes from a status poll raced the loader's
+    own diffusers import ("Failed to import diffusers.models.transformers.transformer_flux") and
+    the startup warm; the load path keeps the strict class gate. Closed when diffusers is absent,
+    since an opaque pipeline cannot load without it."""
+    module = sys.modules.get("diffusers", False)
+    if module is None:
         return False
-    pipeline_class = family_probe_class(fam)
-    if not pipeline_class:
-        return False
-    try:
-        assert_pipeline_class_available(pipeline_class, fam.name, strict = True)
-    except ValueError:
-        return False
-    return True
+    if module is False:
+        try:
+            import importlib.util
+            if importlib.util.find_spec("diffusers") is None:
+                return False
+        except (ImportError, ValueError):
+            return False
+    return family_pipeline_available(fam)
 
 
 def pipeline_available_family_names() -> tuple[str, ...]:
     """Family overrides whose diffusers pipeline can be built on this host."""
-    return tuple(fam.name for fam in _FAMILIES if family_pipeline_strictly_available(fam))
+    return tuple(fam.name for fam in _FAMILIES if family_selectable(fam))
 
 
 def family_gguf_loadable(fam: DiffusionFamily) -> bool:
