@@ -1705,7 +1705,7 @@ export function ExportPage() {
                             className="text-xs text-muted-foreground"
                           >
                             Absolute path to a .dat or .gguf imatrix file on the
-                            machine running Unsloth Studio. Leave blank to
+                            machine running Unsloth. Leave blank to
                             auto-download the upstream Unsloth imatrix for the
                             base model, if one exists.
                           </p>
