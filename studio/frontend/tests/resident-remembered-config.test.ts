@@ -71,6 +71,30 @@ test("a record under the raw identifier still wins over the repo alias", () => {
   );
 });
 
+test("a cached repo loaded without a quant moves its snapshot-path record to the repo id", () => {
+  store.clear();
+  const snapshot = "/hf/models--mlx-community--Model-4bit/snapshots/abc";
+  const repo = "mlx-community/Model-4bit";
+  savePerModelConfig(snapshot, null, config(2));
+
+  // The settings panel reads the repo id alone, so both readers must settle on one record.
+  assert.equal(
+    resolveResidentInitialConfig(snapshot, null).config.nParallel,
+    2,
+  );
+  assert.equal(resolveInitialConfig(repo, null).config.nParallel, 2);
+  assert.equal(resolveInitialConfig(snapshot, null).remembered, false);
+
+  // What the panel saved under the repo id outranks the stale path record, as on a Hub handoff.
+  savePerModelConfig(snapshot, null, config(6));
+  savePerModelConfig(repo, null, config(8));
+  assert.equal(
+    resolveResidentInitialConfig(snapshot, null).config.nParallel,
+    8,
+  );
+  assert.equal(resolveInitialConfig(snapshot, null).remembered, false);
+});
+
 test("the quant still separates two variants of one cached repo", () => {
   store.clear();
   savePerModelConfig(REPO_ID, "Q4_K_M", config(4));

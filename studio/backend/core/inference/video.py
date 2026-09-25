@@ -120,14 +120,25 @@ from .diffusion_auto_policy import (
 )
 from .diffusion_transformer_quant import (
     TQ_AUTO,
+    TQ_INT8,
     dense_transformer_supported,
     dense_transformer_unsupported_reason,
     explain_unusable_scheme,
+    native_int8_act,
+    native_offload_host,
+    native_quant_host,
+    native_quant_scheme,
+    NATIVE_OFFLOAD_SCHEMES,
+    NATIVE_QUANT_SCHEMES,
     normalize_transformer_quant,
     quantize_transformer,
+    mark_source_precision,
     select_transformer_quant_scheme,
+    stored_denoiser_precision,
+    transformer_is_quantised,
 )
 from .diffusion import _memory_request_forces_offload
+from .diffusion_native_quant import native_quant_reason
 from .diffusion_batched import is_oom_error
 from .diffusion_precision import (
     effective_te_quant,
@@ -300,8 +311,23 @@ def _assert_video_precision_for_target(
                 f"the dense DiT quant applies to full-pipeline loads only, and this is a "
                 f"'{model_kind}' load, which runs the precision its checkpoint carries"
             )
+        elif (
+            pinned in NATIVE_QUANT_SCHEMES
+            and not getattr(fam, "modular_workflow", None)
+            and native_quant_host(target)
+        ):
+            # The modular workflow seeds torchao checkpoints, so it stays off the native path.
+            if native_quant_scheme(target, pinned, family = getattr(fam, "name", None)) is None:
+                reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
         elif not dense_transformer_supported(target):
             reason = dense_transformer_unsupported_reason(target)
+        elif forces_offload and pinned in NATIVE_OFFLOAD_SCHEMES and native_offload_host(target):
+            # forces_offload is already False for the modular workflow.
+            if (
+                native_quant_scheme(target, pinned, family = getattr(fam, "name", None), offload = True)
+                is None
+            ):
+                reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
         elif forces_offload:
             # balanced and low_vram name their offload policy without measuring anything, and offload hooks move modules
             # with Module.to(), which torchao tensors do not survive. load_pipeline therefore skips the dense build and
@@ -801,8 +827,10 @@ def _ensure_mp4_encoder_available() -> None:
         import av  # noqa: F401
     except Exception as exc:  # noqa: BLE001 -- any import failure means no encoder
         raise ValueError(
-            "Video generation needs the 'av' package (PyAV) to encode MP4s. "
-            "Install it with: pip install av"
+            "Video generation needs the 'av' package (PyAV) to encode MP4s, and this install "
+            "is missing it. Update Unsloth to restore it (in the desktop app: Settings, Check for "
+            "updates; from a terminal: unsloth studio update). On a plain pip install: "
+            "pip install av"
         ) from exc
 
 
@@ -1691,6 +1719,7 @@ class VideoBackend:
             model_kind = resolve_video_model_kind(gguf_filename, model_kind),
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
+            memory_mode = memory_mode,
             gpu_ordinal = gpu_ordinal,
         )
         # Resolved out here so the companion claim is published in the SAME locked section as _loading. begin_load
@@ -4144,12 +4173,15 @@ class VideoBackend:
                 kind == "pipeline"
                 and planned.offload_policy != "none"
                 and normalize_transformer_quant(transformer_quant) is not None
-                and dense_transformer_supported(target)
+                and (
+                    dense_transformer_supported(target)
+                    or native_quant_scheme(target, transformer_quant, family = fam.name) is not None
+                )
                 and components is not None
             ):
-                scheme_preview = select_transformer_quant_scheme(
+                scheme_preview = native_quant_scheme(
                     target, transformer_quant, family = fam.name
-                )
+                ) or select_transformer_quant_scheme(target, transformer_quant, family = fam.name)
                 factor = _QUANT_STEADY_FACTOR.get(scheme_preview) if scheme_preview else None
                 if factor is not None:
                     quant_mib = int((components[0] * factor + companions_gb) * mib_per_gb)
@@ -4326,6 +4358,22 @@ class VideoBackend:
         # Why the quant did not engage, in the caller's terms; threaded into `resolved`.
         transformer_quant_decline: Optional[str] = None
         transformer_quant_decline_status = RESOLVED_FELL_BACK
+        video_offload = plan.offload_policy != "none"
+        native_scheme = (
+            native_quant_scheme(
+                target, transformer_quant_pinned, family = fam.name, offload = video_offload
+            )
+            if kind == "pipeline"
+            else None
+        )
+        native_kwargs = (
+            {
+                "offload": video_offload,
+                "act_int8": native_scheme == TQ_INT8 and native_int8_act(target),
+            }
+            if native_scheme is not None
+            else {}
+        )
         # Auto quantises a video DiT only to keep it resident: with bf16 resident, int8 fails the default LPIPS bar.
         if (
             kind == "pipeline"
@@ -4348,7 +4396,11 @@ class VideoBackend:
                 f"'{kind}' load, which runs the precision its checkpoint carries"
             )
             transformer_quant_decline_status = RESOLVED_UNSUPPORTED
-        elif transformer_quant_pinned is not None and not dense_transformer_supported(target):
+        elif (
+            transformer_quant_pinned is not None
+            and native_scheme is None
+            and not dense_transformer_supported(target)
+        ):
             # Ask the helper rather than repeating its fallback: on ROCm and on the Windows torchao
             # stub it knows a truer reason, and an AMD owner reading "needs a CUDA GPU" while
             # holding a working GPU learns nothing about why it declined.
@@ -4359,6 +4411,7 @@ class VideoBackend:
             and normalize_transformer_quant(transformer_quant) is not None
             and dense_transformer_supported(target)
             and plan.offload_policy != "none"
+            and native_scheme is None
         ):
             # Offload hooks move modules with Module.to(), which torchao quantized tensors reject. Skip quant
             # (dense-under-offload beats a crash); forceable via a resident mode.
@@ -4377,7 +4430,23 @@ class VideoBackend:
         elif (
             kind == "pipeline"
             and normalize_transformer_quant(transformer_quant) is not None
-            and dense_transformer_supported(target)
+            and (dense_transformer_supported(target) or native_scheme is not None)
+            and (source_precision := stored_denoiser_precision(_base_local_dir or repo_id))
+            is not None
+        ):
+            # from_pretrained widened a narrow checkpoint to bf16; requantising compounds the loss.
+            for view in views:
+                mark_source_precision(view, source_precision)
+            transformer_quant_decline = (
+                f"its published weights are {source_precision} and were widened to bf16 on load, so "
+                "quantising them again would compound that loss"
+            )
+            transformer_quant_decline_status = RESOLVED_UNSUPPORTED
+            logger.info("video.transformer_quant: skipped (%s)", transformer_quant_decline)
+        elif (
+            kind == "pipeline"
+            and normalize_transformer_quant(transformer_quant) is not None
+            and (dense_transformer_supported(target) or native_scheme is not None)
         ):
             engaged = []
             for view in views:
@@ -4389,6 +4458,7 @@ class VideoBackend:
                     mode = transformer_quant,
                     family = fam.name,
                     logger = logger,
+                    **native_kwargs,
                 )
                 if scheme is not None:
                     engaged.append(scheme)
@@ -4399,6 +4469,20 @@ class VideoBackend:
                 raise RuntimeError(
                     f"transformer_quant={engaged[0]} engaged on only "
                     f"{len(engaged)}/{len(views)} experts; retry without quant."
+                )
+            # A part-converted view is unusable even when the precision fallback is allowed.
+            dirty = (
+                []
+                if engaged
+                else [i for i, view in enumerate(views) if transformer_is_quantised(view)]
+            )
+            if dirty:
+                del pipe
+                clear_gpu_cache()
+                raise RuntimeError(
+                    f"transformer_quant='{transformer_quant}' converted part of the denoiser and then "
+                    "failed, leaving it neither dense nor usable. Reload with Precision set to Off to "
+                    "run the checkpoint as-is."
                 )
             if engaged:
                 transformer_quant_engaged = engaged[0]
@@ -4471,7 +4555,11 @@ class VideoBackend:
         )
         # A torchao-quantised DiT must be compiled (eager is ~30x slower), so force the regional profile when quant
         # engaged but speed was off.
-        if transformer_quant_engaged is not None and effective_speed == SPEED_OFF:
+        if (
+            transformer_quant_engaged is not None
+            and native_scheme is None
+            and effective_speed == SPEED_OFF
+        ):
             logger.info(
                 "video.transformer_quant: forcing speed_mode=default "
                 "(quantized transformer must be compiled; eager is ~30x slower)"
@@ -4634,7 +4722,7 @@ class VideoBackend:
                         speed_mode,
                         effective_speed,
                         "quantized transformer requires compile"
-                        if transformer_quant_engaged is not None
+                        if transformer_quant_engaged is not None and native_scheme is None
                         else "clip denoises amortise the one-time compile within a single run"
                         if speed_mode is None
                         else "requested",
@@ -4655,7 +4743,11 @@ class VideoBackend:
                         transformer_quant_engaged or "off",
                         # Honest framing: the shipped torchao schemes cut load time and resident memory ~2x, but
                         # per-step GEMMs are at best bf16 parity.
-                        "DiT(s) quantised (halves resident weights; hosted checkpoints cut "
+                        native_quant_reason(
+                            getattr(pipe, "transformer", None), transformer_quant_engaged
+                        )
+                        if transformer_quant_engaged is not None and native_scheme is not None
+                        else "DiT(s) quantised (halves resident weights; hosted checkpoints cut "
                         "load time; per-step speed is roughly bf16 parity)"
                         if transformer_quant_engaged is not None
                         else (
