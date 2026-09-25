@@ -1,5 +1,5 @@
-# Copyright 2026 Unsloth. All rights reserved.
-# Licensed under the Apache License, Version 2.0.
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team.
 
 """Opt-in merged-column SentenceTransformer ranking loss."""
 
