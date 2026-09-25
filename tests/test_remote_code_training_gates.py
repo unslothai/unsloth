@@ -176,7 +176,6 @@ def test_wrapper_without_a_supporting_submodel_stays_false():
     assert model.supports_gradient_checkpointing is False
 
 
-# A wrapper whose forward cannot take a text batch trains its language model.
 from unsloth.models.vision import _text_trainable_core, _required_non_text_inputs
 
 
@@ -228,7 +227,6 @@ def test_omni_wrapper_trains_its_language_model():
     assert isinstance(core, _CausalLM)
     assert core._unsloth_composed_parent == "_OmniWrapper"
     assert not hasattr(model, "vision_model") and not hasattr(model, "mlp1")
-    # and the core takes a text batch
     core(input_ids = torch.tensor([[1, 2, 3]]))
 
 
@@ -327,7 +325,6 @@ def test_peft_dispatches_the_4bit_lora_layer_on_the_core():
             self.vision_model = nn.Linear(4, 4)
 
     wrapper = _Composed(_Cfg())
-    # A composed remote-code checkpoint has these on the wrapper.
     for attribute in ("is_loaded_in_4bit", "is_quantized", "quantization_method", "hf_quantizer"):
         setattr(wrapper, attribute, vars(inner).pop(attribute))
     core = _text_trainable_core(wrapper)
@@ -337,7 +334,6 @@ def test_peft_dispatches_the_4bit_lora_layer_on_the_core():
     assert isinstance(layer, lora_bnb.Linear4bit), type(layer)
 
 
-# A model whose class forgot to advertise it, built on transformers' own checkpointing layer.
 def test_model_built_on_gradient_checkpointing_layer_is_recognised():
     from transformers.modeling_layers import GradientCheckpointingLayer
 
