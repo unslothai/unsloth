@@ -269,8 +269,15 @@ def restricted_prequant_load_supported(
         return safetensors_prequant_supported()
     if not _register_prequant_safe_globals():
         return False
-    required = _SCHEME_REQUIRED_GLOBALS.get((scheme or "").strip().lower())
-    return True if required is None else required <= _RESOLVED_SAFE_GLOBALS
+    key = (scheme or "").strip().lower()
+    required = _SCHEME_REQUIRED_GLOBALS.get(key)
+    if required is None or required <= _RESOLVED_SAFE_GLOBALS:
+        return True
+    if key == "int8":
+        # torchao 0.18 deleted the v1 int8 classes every hosted INT8 pickle names; see prequant_legacy_int8.
+        from .prequant_legacy_int8 import legacy_int8_decode_supported
+        return legacy_int8_decode_supported()
+    return False
 
 
 def _torch_load_prequant(path: str, **kwargs: Any) -> Any:
@@ -289,7 +296,17 @@ def _torch_load_prequant(path: str, **kwargs: Any) -> Any:
             "a pre-quant checkpoint cannot be deserialized without allowing arbitrary pickle "
             "globals"
         )
-    return torch.load(path, weights_only = True, **kwargs)
+    try:
+        return torch.load(path, weights_only = True, **kwargs)
+    except Exception as exc:  # noqa: BLE001 - only the deleted-int8-classes refusal is retried
+        from .prequant_legacy_int8 import (
+            legacy_int8_decode_supported,
+            load_legacy_int8_pickle,
+            names_legacy_int8_class,
+        )
+        if names_legacy_int8_class(exc) and legacy_int8_decode_supported():
+            return load_legacy_int8_pickle(path, **kwargs)
+        raise
 
 
 def _load_prequant_checkpoint(path: str, **kwargs: Any) -> Any:
@@ -794,6 +811,7 @@ def load_prequantized_transformer(
     checkpoint, unsupported meta-init, or a rotation this build cannot apply exactly) so the caller
     falls back to dense-quantise. Best-effort: never raises for an unavailable artifact.
     """
+    _LAST_FAILURE.text = None
     try:
         # A request-supplied local path names arbitrary WEIGHTS, a different question from the deserialization one
         # below: allowlisted or not, the file is read weights_only.
@@ -1387,6 +1405,82 @@ def _has_meta_tensors(module: Any) -> bool:
         return False
 
 
+_LAST_FAILURE = _threading.local()
+
+
 def _warn(logger: Any, what: str, exc: Exception) -> None:
+    _LAST_FAILURE.text = f"{type(exc).__name__}: {exc}"[:300]
     if logger is not None:
         logger.warning("diffusion.prequant: %s failed: %s", what, exc)
+
+
+def last_prequant_failure() -> Optional[str]:
+    """Why the last ``load_prequantized_transformer`` on THIS thread returned None, once."""
+    text = getattr(_LAST_FAILURE, "text", None)
+    _LAST_FAILURE.text = None
+    return text
+
+
+def _unreadable_why(scheme: str) -> str:
+    """Why this install cannot open a ``scheme`` pickle, in the user's terms."""
+    try:
+        import torch
+        import torchao
+        ao = getattr(torchao, "__version__", "unknown")
+    except Exception:  # noqa: BLE001
+        return "torch or torchao is unavailable"
+    if not _tuple_safe_globals_supported():
+        return f"torch {torch.__version__} is older than 2.6"
+    try:
+        from core._torchao_stub import is_stubbed
+        if is_stubbed("torchao"):
+            return "torchao is not available on this platform"
+    except Exception:  # noqa: BLE001
+        pass
+    missing = _SCHEME_REQUIRED_GLOBALS.get(scheme, frozenset()) - _RESOLVED_SAFE_GLOBALS
+    if missing:
+        return (
+            f"torchao {ao} no longer ships {len(missing)} class(es) the checkpoint was saved with"
+        )
+    return f"torch {torch.__version__} / torchao {ao} cannot deserialize it"
+
+
+def prequant_unreadable_reason(
+    fam: Any,
+    scheme: Optional[str],
+    *,
+    base_repo: Optional[str] = None,
+    task: Optional[str] = None,
+) -> Optional[str]:
+    """A status line when ``fam`` hosts a ``scheme`` checkpoint this install cannot open, else None.
+
+    The planners treat an unreadable artifact as absent and quietly take the dense bf16 path, which
+    for the large families is a download and a resident size several times the hosted one. This is
+    the sentence that says so. Pure registry work plus the (memoised) allowlist probe; never raises."""
+    if not scheme:
+        return None
+    try:
+        src = resolve_prequant_source(fam, scheme, base_repo = base_repo, task = task)
+        if src is None or getattr(src, "kind", None) != "repo":
+            return None
+        from .prequant_safetensors import is_safetensors_checkpoint
+
+        readable = [
+            n for n in candidate_filenames_of(src) if restricted_prequant_load_supported(scheme, n)
+        ]
+        # A derived safetensors name is a guess, as in usable_prequant_source: only a declared or cached one counts.
+        if readable and all(is_safetensors_checkpoint(n) for n in readable):
+            declared = set(getattr(src, "declared_filenames", ()) or ())
+            if (
+                not declared.intersection(readable)
+                and cached_checkpoint_path(src, names = readable) is None
+            ):
+                readable = []
+        if readable:
+            return None
+        return (
+            f"the hosted {scheme} checkpoint ({src.location}) cannot be read here: "
+            f"{_unreadable_why(scheme)}"
+        )
+    except Exception:  # noqa: BLE001 - a status nicety must never break a load
+        return None

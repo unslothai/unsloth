@@ -4793,6 +4793,14 @@ class VideoBackend:
                 base_repo = base,
                 speed_mode = speed_mode,
             )
+            if auto_fallback_scheme is None:
+                from .diffusion_prequant import prequant_unreadable_reason
+                unreadable = prequant_unreadable_reason(
+                    fam, H3_AUTO_FALLBACK_SCHEME, base_repo = base, task = workflow
+                )
+                if unreadable:
+                    transformer_quant_reason = f"released bfloat16 components ({unreadable})"
+                    logger.warning("video.transformer_quant: %s", transformer_quant_reason)
             if auto_fallback_scheme is not None:
                 scheme = auto_fallback_scheme
                 logger.info(
@@ -4881,9 +4889,18 @@ class VideoBackend:
                 if transformer is None:
                     # Best-effort by contract (missing / mismatched / unreadable checkpoint), so the load continues
                     # dense rather than failing after the teardown.
+                    from .diffusion_prequant import (
+                        last_prequant_failure,
+                        prequant_unreadable_reason,
+                    )
+                    why = (
+                        prequant_unreadable_reason(fam, scheme, base_repo = base, task = workflow)
+                        or last_prequant_failure()
+                    )
                     transformer_quant_reason = (
-                        f"hosted pre-quantized {scheme} checkpoint unusable; "
-                        f"loaded the released bfloat16 denoiser instead"
+                        f"hosted pre-quantized {scheme} checkpoint unusable"
+                        + (f" ({why})" if why else "")
+                        + "; loaded the released bfloat16 denoiser instead"
                     )
                 else:
                     # Seeding is what actually saves the download: load_components(names=None) skips every component

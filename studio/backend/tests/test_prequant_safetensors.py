@@ -516,3 +516,67 @@ def test_a_field_carrying_a_real_setting_is_refused_rather_than_dropped():
         ps._header_without_unconstructible_fields(
             _unflatten, {}, header, path = "artifact.safetensors"
         )
+
+
+def test_an_all_zero_tensor_field_a_newer_torchao_added_is_dropped():
+    """torchao 0.18 writes a symmetric Int8Tensor with an all-zero ``zero_point`` TENSOR, which
+    0.16's constructor does not take: the published Qwen-Image-2.1 int8 artifact failed on torch
+    2.10 installs with ``Int8Tensor.__new__() got an unexpected keyword argument 'zero_point'``
+    and fell back to the dense download."""
+    torch = pytest.importorskip("torch")
+
+    def _unflatten(tensors, header):
+        if "zero_point" in json.loads(header["blk.w.weight"])["_tensor_data_names"]:
+            raise ValueError(
+                "Failed to create instance of Int8Tensor: Int8Tensor.__new__() got an "
+                "unexpected keyword argument 'zero_point'"
+            )
+        return {"blk.w.weight": object()}, {}
+
+    tensors = {
+        "blk.w._weight_qdata": torch.zeros(2, 4, dtype = torch.int8),
+        "blk.w._weight_scale": torch.ones(2, 1),
+        "blk.w._weight_zero_point": torch.zeros(2, 1, dtype = torch.int8),
+    }
+    header = {
+        "blk.w.weight": json.dumps(
+            {
+                "_type": "Int8Tensor",
+                "_data": {},
+                "_tensor_data_names": ["zero_point", "qdata", "scale"],
+            }
+        ),
+        ps.UNSLOTH_FORMAT_KEY: "v1",
+    }
+    pruned = ps._header_without_unconstructible_fields(
+        _unflatten, tensors, header, path = "artifact.safetensors"
+    )
+    assert json.loads(pruned["blk.w.weight"])["_tensor_data_names"] == ["qdata", "scale"]
+    assert "blk.w._weight_zero_point" not in tensors
+    assert pruned[ps.UNSLOTH_FORMAT_KEY] == "v1"
+
+
+def test_a_non_zero_tensor_field_is_refused_rather_than_dropped():
+    torch = pytest.importorskip("torch")
+
+    def _unflatten(tensors, header):
+        raise ValueError("unexpected keyword argument 'zero_point'")
+
+    tensors = {"blk.w._weight_zero_point": torch.ones(2, 1, dtype = torch.int8)}
+    header = {"blk.w.weight": json.dumps({"_data": {}, "_tensor_data_names": ["zero_point"]})}
+    with pytest.raises(ValueError, match = "zero_point"):
+        ps._header_without_unconstructible_fields(
+            _unflatten, tensors, header, path = "artifact.safetensors"
+        )
+
+
+def test_torchao_older_than_the_floor_is_not_safetensors_support(monkeypatch):
+    """torchao 0.14 has the module at the same path but no Int8Tensor and another layout: planning
+    must not count on a safetensors artifact it will fail to read."""
+    pytest.importorskip("torchao.prototype.safetensors.safetensors_support")
+    monkeypatch.setattr(ps, "_torchao_version", lambda: "0.14.0")
+    assert ps._torchao_helpers() is None
+    monkeypatch.setattr(ps, "_torchao_version", lambda: "0.16.0+cu130")
+    assert ps._torchao_helpers() is not None
+    monkeypatch.setattr(ps, "_torchao_version", lambda: None)
+    assert ps._torchao_helpers() is not None
