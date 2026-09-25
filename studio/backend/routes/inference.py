@@ -44227,6 +44227,34 @@ async def _passthrough_retry_url(llama_backend, exc):
     return f"{llama_backend.base_url}/v1/chat/completions"
 
 
+def _anthropic_passthrough_chunk_lines(
+    emitter, chunk, request, disable_parallel_tool_use: bool
+) -> tuple[list[str], bool]:
+    """One OpenAI chat chunk -> Anthropic SSE lines; True when an in-band error ended the stream."""
+    if isinstance(chunk, dict):
+        error_message = _monitor_openai_error_message(chunk)
+        if error_message:
+            # Upstream HTTP-200 SSE error payload (data: {"error": ...}):
+            # emitter.feed_chunk ignores chunks without choices, so the stream
+            # would finish cleanly and the middleware would claim a preview-owned
+            # model. Flag failed and surface an Anthropic error event instead of a
+            # silent message_stop (mirrors the OpenAI passthrough / Responses).
+            from core.inference.llama_keepwarm import mark_response_failed
+            mark_response_failed(getattr(request, "scope", None))
+            # The message alone can be count-less while the chunk still
+            # carries n_prompt_tokens/n_ctx; keep the clean message and let
+            # the formatter recover the totals from the payload.
+            return [
+                _anthropic_upstream_stream_error_event(
+                    error_message,
+                    counts_source = _json_dumps_safe(chunk.get("error", chunk)),
+                )
+            ], True
+    if disable_parallel_tool_use:
+        _drop_parallel_tool_call_deltas(chunk)
+    return emitter.feed_chunk(chunk), False
+
+
 async def _anthropic_passthrough_stream(
     request,
     cancel_event,
@@ -44494,29 +44522,13 @@ async def _anthropic_passthrough_stream(
                     chunk = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
-                if isinstance(chunk, dict):
-                    error_message = _monitor_openai_error_message(chunk)
-                    if error_message:
-                        # Upstream HTTP-200 SSE error payload (data: {"error": ...}):
-                        # emitter.feed_chunk ignores chunks without choices, so the stream
-                        # would finish cleanly and the middleware would claim a preview-owned
-                        # model. Flag failed and surface an Anthropic error event instead of a
-                        # silent message_stop (mirrors the OpenAI passthrough / Responses).
-                        from core.inference.llama_keepwarm import mark_response_failed
-
-                        mark_response_failed(getattr(request, "scope", None))
-                        # The message alone can be count-less while the chunk still
-                        # carries n_prompt_tokens/n_ctx; keep the clean message and let
-                        # the formatter recover the totals from the payload.
-                        yield _anthropic_upstream_stream_error_event(
-                            error_message,
-                            counts_source = _json_dumps_safe(chunk.get("error", chunk)),
-                        )
-                        return
-                if disable_parallel_tool_use:
-                    _drop_parallel_tool_call_deltas(chunk)
-                for line in emitter.feed_chunk(chunk):
+                lines, failed = _anthropic_passthrough_chunk_lines(
+                    emitter, chunk, request, disable_parallel_tool_use
+                )
+                for line in lines:
                     yield line
+                if failed:
+                    return
         except Exception as e:
             if not cancel_event.is_set():
                 logger.error("anthropic_messages passthrough stream error: %s", e)
@@ -44575,6 +44587,107 @@ def _sum_passthrough_attempt_stats(first: dict, retry: dict, selected: dict) -> 
     if "timings" in aggregate:
         result["timings"] = aggregate["timings"]
     return result
+
+
+def _anthropic_message_from_openai_completion(
+    data: dict,
+    message_id,
+    model_name,
+    *,
+    openai_tools,
+    allowed_tools,
+    disable_parallel_tool_use: bool,
+    response_format,
+    parse_think: bool,
+):
+    """A non-streaming OpenAI chat completion -> the Anthropic Messages JSON response."""
+    choice = (data.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    finish_reason = choice.get("finish_reason")
+
+    healing_active = bool(allowed_tools)
+    healed_events = (
+        heal_openai_message_events(message, allowed_tools, openai_tools) if healing_active else None
+    )
+
+    content_blocks = []
+    tool_calls = []
+    # Reasoning first: llama-server splits <think> into reasoning_content on any
+    # turn whose format it can parse, and Anthropic orders thinking ahead of the
+    # answer. Reading only `content` drops the trace and the model looks like it
+    # never thought.
+    reasoning = message.get("reasoning_content") or ""
+    if reasoning.strip():
+        if parse_think:
+            content_blocks.append(AnthropicResponseThinkingBlock(thinking = reasoning))
+        else:
+            # Thinking effectively off: the parser shunted a literal
+            # example into reasoning_content; reconstruct it as text.
+            content_blocks.append(AnthropicResponseTextBlock(text = f"<think>{reasoning}</think>"))
+    if healed_events:
+        emitted_tool_uses = 0
+        for kind, value in healed_events:
+            if kind == "text":
+                text = str(value).strip()
+                if text:
+                    content_blocks.append(AnthropicResponseTextBlock(text = text))
+                continue
+            if disable_parallel_tool_use and emitted_tool_uses >= 1:
+                continue
+            fn = value.get("function") or {}
+            try:
+                args = json.loads(fn.get("arguments", "{}"))
+            except json.JSONDecodeError:
+                args = {}
+            tool_calls.append(value)
+            emitted_tool_uses += 1
+            content_blocks.append(
+                AnthropicResponseToolUseBlock(
+                    id = anthropic_tool_use_id(value.get("id")),
+                    name = fn.get("name", ""),
+                    input = args,
+                )
+            )
+    else:
+        text = message.get("content") or ""
+        if text:
+            # Keep unpromoted bytes when healing is active; legacy stripping is only for opted-out
+            # or no-client-tool requests. The protected helper preserves <think> rehearsal and
+            # balanced [TOOL_CALLS] prose, gated on the declared tools so an inactive
+            # NAME[ARGS]{...} example is kept.
+            if not healing_active and response_format is None:
+                text = _strip_tool_xml_for_display(
+                    text,
+                    auto_heal_tool_calls = True,
+                    enabled_tool_names = _display_tool_name_gate(openai_tools),
+                )
+            text = text.strip()
+            if text:
+                content_blocks.append(AnthropicResponseTextBlock(text = text))
+
+        tool_calls = message.get("tool_calls") or []
+        if disable_parallel_tool_use and len(tool_calls) > 1:
+            tool_calls = tool_calls[:1]
+        for tc in tool_calls:
+            fn = tc.get("function") or {}
+            try:
+                args = json.loads(fn.get("arguments", "{}"))
+            except json.JSONDecodeError:
+                args = {}
+            content_blocks.append(
+                AnthropicResponseToolUseBlock(
+                    id = anthropic_tool_use_id(tc.get("id")),
+                    name = fn.get("name", ""),
+                    input = args,
+                )
+            )
+
+    stop_reason = openai_finish_to_anthropic_stop(finish_reason, had_tool_calls = bool(tool_calls))
+
+    usage = data.get("usage") or {}
+    return _anthropic_message_json_response(
+        message_id, model_name, content_blocks, stop_reason, usage
+    )
 
 
 async def _anthropic_passthrough_non_streaming(
@@ -44733,98 +44846,15 @@ async def _anthropic_passthrough_non_streaming(
             except (httpx.RequestError, ValueError) as exc:
                 logger.warning("tool-call nudge retry failed; keeping original: %s", exc)
 
-        choice = (data.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
-        finish_reason = choice.get("finish_reason")
-
-        healing_active = bool(_allowed_tools)
-        healed_events = (
-            heal_openai_message_events(message, _allowed_tools, openai_tools)
-            if healing_active
-            else None
-        )
-
-        content_blocks = []
-        tool_calls = []
-        # Reasoning first: llama-server splits <think> into reasoning_content on any
-        # turn whose format it can parse, and Anthropic orders thinking ahead of the
-        # answer. Reading only `content` drops the trace and the model looks like it
-        # never thought.
-        reasoning = message.get("reasoning_content") or ""
-        if reasoning.strip():
-            if parse_think:
-                content_blocks.append(AnthropicResponseThinkingBlock(thinking = reasoning))
-            else:
-                # Thinking effectively off: the parser shunted a literal
-                # example into reasoning_content; reconstruct it as text.
-                content_blocks.append(
-                    AnthropicResponseTextBlock(text = f"<think>{reasoning}</think>")
-                )
-        if healed_events:
-            emitted_tool_uses = 0
-            for kind, value in healed_events:
-                if kind == "text":
-                    text = str(value).strip()
-                    if text:
-                        content_blocks.append(AnthropicResponseTextBlock(text = text))
-                    continue
-                if disable_parallel_tool_use and emitted_tool_uses >= 1:
-                    continue
-                fn = value.get("function") or {}
-                try:
-                    args = json.loads(fn.get("arguments", "{}"))
-                except json.JSONDecodeError:
-                    args = {}
-                tool_calls.append(value)
-                emitted_tool_uses += 1
-                content_blocks.append(
-                    AnthropicResponseToolUseBlock(
-                        id = anthropic_tool_use_id(value.get("id")),
-                        name = fn.get("name", ""),
-                        input = args,
-                    )
-                )
-        else:
-            text = message.get("content") or ""
-            if text:
-                # Keep unpromoted bytes when healing is active; legacy stripping is only for opted-out
-                # or no-client-tool requests. The protected helper preserves <think> rehearsal and
-                # balanced [TOOL_CALLS] prose, gated on the declared tools so an inactive
-                # NAME[ARGS]{...} example is kept.
-                if not healing_active and response_format is None:
-                    text = _strip_tool_xml_for_display(
-                        text,
-                        auto_heal_tool_calls = True,
-                        enabled_tool_names = _display_tool_name_gate(openai_tools),
-                    )
-                text = text.strip()
-                if text:
-                    content_blocks.append(AnthropicResponseTextBlock(text = text))
-
-            tool_calls = message.get("tool_calls") or []
-            if disable_parallel_tool_use and len(tool_calls) > 1:
-                tool_calls = tool_calls[:1]
-            for tc in tool_calls:
-                fn = tc.get("function") or {}
-                try:
-                    args = json.loads(fn.get("arguments", "{}"))
-                except json.JSONDecodeError:
-                    args = {}
-                content_blocks.append(
-                    AnthropicResponseToolUseBlock(
-                        id = anthropic_tool_use_id(tc.get("id")),
-                        name = fn.get("name", ""),
-                        input = args,
-                    )
-                )
-
-        stop_reason = openai_finish_to_anthropic_stop(
-            finish_reason, had_tool_calls = bool(tool_calls)
-        )
-
-        usage = data.get("usage") or {}
-        return _anthropic_message_json_response(
-            message_id, model_name, content_blocks, stop_reason, usage
+        return _anthropic_message_from_openai_completion(
+            data,
+            message_id,
+            model_name,
+            openai_tools = openai_tools,
+            allowed_tools = _allowed_tools,
+            disable_parallel_tool_use = disable_parallel_tool_use,
+            response_format = response_format,
+            parse_think = parse_think,
         )
     finally:
         await _stop_local_disconnect_cancel_watcher(_cancel_watcher)
