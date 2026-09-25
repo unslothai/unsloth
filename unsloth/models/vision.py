@@ -1756,7 +1756,7 @@ class FastBaseModel:
                     **kwargs,
                 )
                 if text_only_decoder:
-                    # Before any offload or hook: renaming the VLM keys onto the decoder kept a pre-quantized repo's checkpoint dtype.
+                    # Must run before offload / hooks capture the weights.
                     _cast_text_only_prequantized_params(model, torch_dtype)
                 # transformers 5 leaves remote code's non-persistent buffers (RoPE inv_freq, decay slopes) uninitialised.
                 restore_remote_code_non_persistent_buffers(model)

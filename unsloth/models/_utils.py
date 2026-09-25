@@ -1202,13 +1202,13 @@ def _apply_text_only_key_mapping(kwargs, parent_config, text_config):
 
 
 def _cast_text_only_prequantized_params(model, dtype):
-    # transformers >= 5 keeps the CHECKPOINT dtype for every key a key_mapping renamed on a pre-quantized load, so the text-only remap leaves a float16 bnb repo's embeddings and skipped linears in float16 under dtype=bfloat16 while the unrenamed lm_head follows dtype (mat1/mat2 mismatch outside autocast). Cast those 16-bit leftovers to what an unrenamed load gives; quantized storage and float32 are never touched.
+    # transformers>=5 keeps the checkpoint dtype for key_mapping-renamed keys on pre-quantized loads.
     if dtype not in (torch.float16, torch.bfloat16, torch.float32):
         return 0
     quantizer = getattr(model, "hf_quantizer", None)
     if quantizer is None or not getattr(quantizer, "pre_quantized", False):
         return 0
-    # The quantizer may override the request (AWQ bf16 -> fp16 on CUDA, FBGEMM FP8 -> bf16); from_pretrained records the result on config.dtype.
+    # Quantizer may override the request (AWQ, FBGEMM FP8); config.dtype holds the result.
     resolved = getattr(getattr(model, "config", None), "dtype", None)
     if resolved in (torch.float16, torch.bfloat16, torch.float32):
         dtype = resolved
@@ -1221,7 +1221,6 @@ def _cast_text_only_prequantized_params(model, dtype):
             keep_fp32 = []
 
     def _is_quantized_storage(t):
-        # Params4bit / Int8Params and tensor subclasses (torchao) or int / 1-byte float (EETQ int8, FP8) weights.
         if type(t) is not torch.nn.Parameter or type(t.data) is not torch.Tensor:
             return True
         return not t.dtype.is_floating_point or t.dtype.itemsize == 1
@@ -1229,12 +1228,12 @@ def _cast_text_only_prequantized_params(model, dtype):
     n_cast = 0
     for module_name, module in model.named_modules():
         own = list(module.named_parameters(recurse = False))
-        # A quantized module's fp16 scales / bias are the kernel's contract (EETQ weight_scales), not leftovers.
+        # Quantized modules' fp16 scales / bias are the kernel's contract (EETQ), not leftovers.
         if any(_is_quantized_storage(t) for _, t in own):
             continue
         for param_name, param in own:
             name = f"{module_name}.{param_name}" if module_name else param_name
-            # Offloaded (cpu / disk) params are meta placeholders; accelerate casts the stored value to the placeholder's dtype when it materializes it, so recasting the placeholder covers them.
+            # accelerate casts offloaded weights to the meta placeholder's dtype, so recasting it suffices.
             if param.dtype not in (torch.float16, torch.bfloat16):
                 continue
             target = torch.float32 if any(re.search(k, name) for k in keep_fp32) else dtype
