@@ -29,7 +29,9 @@ from .os_sandbox import (
     WorkdirUnsafeError,
     editable_import_roots,
     editable_source_roots,
+    model_library_roots,
     scan_workdir_for_host_channels,
+    studio_state_roots,
 )
 
 BACKEND_NAME = "macos-seatbelt"
@@ -250,6 +252,28 @@ def _validated(path: str) -> str:
 def _within(path: str, root: str) -> bool:
     """Whether ``path`` is ``root`` or sits under it, by whole path components."""
     return path == root or path.startswith(root.rstrip("/") + "/")
+
+
+def _within_any(path: str, roots: "tuple[str, ...]") -> bool:
+    """``_within`` across every spelling both sides can have.
+
+    On macOS /var, /tmp and /etc are symlinks into /private, so the same
+    directory has two names and which one a caller holds depends on where it
+    came from: a session workdir arrives resolved, a configured Studio home
+    does not. A plain prefix compare says they are unrelated, and the
+    consequence is not a missing grant but an active denial, because the deny
+    rules are emitted in BOTH spellings while the restore list was built from
+    one. Observed on macos-15: with the Studio home under /var/folders the
+    sandboxed interpreter could not open its own script and every tool call
+    returned "Operation not permitted".
+    """
+    candidates = _sbpl_spellings(path)
+    return any(
+        _within(candidate, root_spelling)
+        for candidate in candidates
+        for root in roots
+        for root_spelling in _sbpl_spellings(root)
+    )
 
 
 def _rule(operations: str, filters: list[str]) -> str:
@@ -513,6 +537,40 @@ def runtime_paths_under(workdir: str) -> tuple[str, ...]:
     return tuple(inside)
 
 
+def _studio_state_rules(
+    runtime_paths: tuple[str, ...], developer_paths: tuple[str, ...], workdir: str, private_tmp: str
+) -> list[str]:
+    """Deny Studio's own state, then restore what the launch genuinely needs.
+
+    A blanket deny would be wrong: on a custom-home install the managed venv
+    lives under the Studio root, so the interpreter would stop being readable.
+    The restore list is the paths the profile already computed as necessary,
+    not a wider re-grant.
+    """
+    state = studio_state_roots()
+    if not state:
+        return []
+    needed = tuple(
+        path
+        for path in (*runtime_paths, *developer_paths, workdir, private_tmp)
+        if path and _within_any(path, state)
+    )
+    # file-read-DATA, not file-read*. The workdir lives UNDER the Studio root
+    # on a default install, so denying read* also denies stat on the
+    # directories leading to it; os.makedirs then decides an existing ancestor
+    # is missing, tries to create it and fails with EPERM. Observed on
+    # macos-15, where test_python_exec_mnt_data_open_is_remapped_into_workdir
+    # failed that way and passed at the merge base. A directory entry existing
+    # is not the secret. auth.db's contents are, and reading a file or listing
+    # a directory is file-read-data, which stays denied.
+    rules = [_rule("deny file-read-data file-map-executable", _path_filters(state))]
+    if needed:
+        rules.append(
+            _rule("allow file-read* file-test-existence file-map-executable", _path_filters(needed))
+        )
+    return [rule for rule in rules if rule]
+
+
 def build_profile(
     *,
     workdir: str,
@@ -528,6 +586,10 @@ def build_profile(
         *developer_paths,
         *_DEVICES,
         *runtime_paths,
+        # The model folders the approval gate already lets a tool read without
+        # asking. Without them a read from a registered folder passes the gate
+        # silently and then fails in here.
+        *model_library_roots(),
         workdir,
         private_tmp,
     )
@@ -581,6 +643,14 @@ def build_profile(
         _rule("allow file-read* file-test-existence", read_filters),
         _rule("allow file-read* file-test-existence", optional_filters),
         _rule("allow file-map-executable", read_filters),
+        # AFTER the read allowances, because Seatbelt is last-match-wins. A
+        # custom Studio home under one of the optional read roots (a Homebrew
+        # prefix, say) is otherwise recursively readable, which hands over
+        # auth/auth.db and the HS256 jwt_secret to model-authored code and
+        # walks past tools.py's literal-path guard even in `required` mode.
+        # The runtime paths inside it are restored immediately below, since on
+        # a custom-home install the interpreter itself lives there.
+        *_studio_state_rules(runtime_paths, developer_paths, workdir, private_tmp),
         _rule("allow file-write*", write_filters),
         # AFTER the allowance, because Seatbelt is last-match-wins: Studio's own
         # runtime stays read-only even when it lives under the writable workdir.
@@ -712,7 +782,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         raise WorkdirUnsafeError(f"the session workdir cannot be a filesystem root: {workdir}")
     # file-write* covers the workdir subpath, so a file hard-linked outside
     # writes through to the host inode.
-    scan_workdir_for_host_channels(workdir)
+    workdir_limitations = scan_workdir_for_host_channels(workdir)
     # /tmp, not /var/folders: the profile has to name this directory, and this
     # keeps it out of the confidential per-user container.
     private_tmp = tempfile.mkdtemp(
@@ -740,6 +810,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             timeout_seconds = plan.timeout_seconds,
             close_fds = plan.close_fds,
             terminate_descendants = plan.terminate_descendants,
+            launch_limitations = workdir_limitations,
         )
     except Exception:
         shutil.rmtree(private_tmp, ignore_errors = True)

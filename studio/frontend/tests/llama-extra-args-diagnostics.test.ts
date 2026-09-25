@@ -794,7 +794,7 @@ test("a rollback restores the previous model with its arguments", () => {
   // without the arguments it had been running.
   assert.match(
     runtime,
-    /stateBeforeUnload\.loadedLlamaExtraArgs != null \? \{ llama_extra_args: stateBeforeUnload\.loadedLlamaExtraArgs \}/,
+    /rollbackState\.loadedLlamaExtraArgs != null \? \{ llama_extra_args: rollbackState\.loadedLlamaExtraArgs \}/,
   );
   // And the snapshot is kept on every successful load, not only an explicit one,
   // taken from the server's own echo first: a reload that omits the field but sets
@@ -1375,5 +1375,170 @@ test("a managed answer from the previous binary is never published", () => {
   assert.match(
     flagsApi,
     /if \(generation === catalogGeneration\) \{ inFlightManaged = null; \}/,
+  );
+});
+
+// validate_extra_args parses -ts in EVERY gpu memory mode, so each case below is a 400 on
+// Load, on /validate and on saving an override; without the mirror the user sees only that
+// server error, with nothing inline first (#11330).
+
+const _tsError = (input: string): string | null =>
+  diagnoseExtraArgs(input, CATALOG).find((d) => d.level === "error")?.message ??
+  null;
+
+test("a tensor split the backend takes raises nothing here", () => {
+  for (const good of [
+    "-ts 2.2,1",
+    "--tensor-split 3,1",
+    // llama.cpp splits on [,/]+, so the slash form is the same instruction.
+    "--tensor-split 3/1",
+    "-ts 0,1",
+    "-ts 0.75,0.25",
+  ]) {
+    assert.equal(_tsError(good), null, good);
+    assert.ok(extraArgsAreLoadable(diagnoseExtraArgs(good, CATALOG)), good);
+  }
+});
+
+test("a bare tensor split is refused rather than left to llama-server", () => {
+  // _last_flag_value raises on a missing value, unlike an ordinary flag whose arity
+  // this side does not know.
+  assert.equal(_tsError("-ts"), "-ts needs a value after it.");
+  assert.equal(_tsError("-ts --top-k 20"), "-ts needs a value after it.");
+});
+
+test("a tensor split that is not a list of numbers is refused", () => {
+  // std::stof throws on this, so llama-server would exit at startup: better a 400,
+  // and better still an inline error.
+  assert.match(_tsError("-ts abc") ?? "", /comma- or slash-separated list of numbers/);
+});
+
+test("a negative or non-finite share is refused", () => {
+  for (const bad of ["-ts 1,-1", "--tensor-split nan,1", "--tensor-split inf,1"]) {
+    assert.equal(
+      _tsError(bad),
+      `${bad.split(" ")[0]} entries must be finite and non-negative.`,
+      bad,
+    );
+  }
+});
+
+test("a split that totals nothing is refused", () => {
+  // llama.cpp normalizes by the total, so an all-zero list divides by zero.
+  assert.match(_tsError("-ts 0,0") ?? "", /must have a positive total/);
+});
+
+test("every tensor split occurrence is judged, not only the last", () => {
+  // Same rule the value check already applies to -ngl: llama.cpp reads the LAST
+  // occurrence, so a bad second one must be caught; this side then errs on the strict
+  // side and reports a bad FIRST one too, rather than modelling last-wins and leaving
+  // a typo invisible.
+  assert.match(_tsError("-ts 3,1 -ts abc") ?? "", /list of numbers/);
+  assert.match(_tsError("-ts abc --tensor-split 3,1") ?? "", /list of numbers/);
+});
+
+test("a stored tensor split the backend now refuses is repaired, not shed", () => {
+  // drop_managed_flags would drop everything from the bad flag to the end of the
+  // list; removing just the option and its value keeps the rest working.
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(["-ts", "abc", "--top-k", "20"], CATALOG.managed),
+    ["--top-k", "20"],
+  );
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(["-ts", "2.2,1", "--top-k", "20"], CATALOG.managed),
+    ["-ts", "2.2,1", "--top-k", "20"],
+  );
+});
+
+test("the ratio mirror reads exactly what Python's float() reads", () => {
+  // Number() takes 0x/0b/0o literals float() refuses, and refuses the digit grouping PEP 515
+  // made valid, so a Number()-based check disagreed with /validate in BOTH directions.
+  for (const bad of ["0x10,1", "0b10,1", "0o17,1", "1__0,1", "_1,1", "1_,1", "1e,1"]) {
+    assert.match(_tsError(`-ts ${bad}`) ?? "", /list of numbers/, bad);
+  }
+  for (const good of ["1_0,1", "1_000.5,1", "1.,1", ".5,1", "1e1_0,1", "+1.5,1"]) {
+    assert.equal(_tsError(`-ts ${good}`), null, good);
+  }
+});
+
+test("a share llama.cpp's float array cannot hold is refused", () => {
+  // std::stof throws std::out_of_range above FLT_MAX (verified: stof("1e+39") -> out_of_range),
+  // so without this the load reaches llama-server and the server dies during startup.
+  assert.match(_tsError("-ts 1e39,1") ?? "", /32-bit float/);
+  assert.equal(_tsError("-ts 3.4e38,1"), null);
+  // The shares are prefix-summed into that same float array.
+  assert.match(_tsError("-ts 3e38,3e38") ?? "", /adds up past/);
+});
+
+test("a share that underflows std::stof is refused too", () => {
+  // libstdc++ throws out_of_range on any subnormal result, not only on a value that rounds to
+  // zero, so the floor is FLT_MIN and not the smallest denormal.
+  for (const bad of ["1e-50,1", "1e-45,1", "1e-40,1", "1e-38,1"]) {
+    assert.match(_tsError(`-ts ${bad}`) ?? "", /0 or at least/, bad);
+  }
+  // 1.1754943508222874e-38 is NOT here: it rounds up to FLT_MIN as a float but is emitted at
+  // six significant digits as a subnormal, which the next test pins.
+  for (const good of ["0,1", "1.2e-38,1", "1e-30,1"]) {
+    assert.equal(_tsError(`-ts ${good}`), null, good);
+  }
+});
+
+test("the mirror judges the share the launcher will write, and totals it in float32", () => {
+  // Both halves of the round-3 review: six-significant-digit emission can move a value out of
+  // range after validation, and a single float64 reduction disagrees with llama.cpp's stepwise
+  // float32 prefix sum near the top of the range.
+  // gpuLayers: 49, because only a manual load with a resolved count of 0 or more rewrites the
+  // ratio, and the rewritten text is what these cases are about.
+  const manual = (input: string) =>
+    diagnoseExtraArgs(input, CATALOG, {
+      manualGpuMemory: true,
+      gpuLayers: 49,
+    }).find((d) => d.level === "error")?.message ?? null;
+  assert.match(manual("-ts 1.1754943508222874e-38,1") ?? "", /0 or at least/);
+  assert.equal(manual("-ts 1.2e-38,1"), null);
+  // Real libstdc++ sums the emitted text to 3.40282e+38, which fits, so this must NOT be refused.
+  assert.equal(
+    manual("-ts 2.0829609943909916e38,7.170581961838338e37,6.028042758104631e37"),
+    null,
+  );
+  assert.match(manual("-ts 3e38,3e38") ?? "", /adds up past/);
+});
+
+test("the ratio rounding follows the mode, and each share rounds before it is added", () => {
+  const err = (input: string, manualGpuMemory: boolean) =>
+    diagnoseExtraArgs(input, CATALOG, { manualGpuMemory, gpuLayers: 49 }).find(
+      (d) => d.level === "error",
+    )?.message ?? null;
+  // Pass-through hands llama-server the user's own text, which std::stof accepts; only the
+  // manual promotion rewrites it at six significant digits.
+  assert.equal(err("-ts 1.1754943508222874e-38,1", false), null);
+  assert.match(err("-ts 1.1754943508222874e-38,1", true) ?? "", /0 or at least/);
+  // Each share is a float before it joins the total, as `sum += std::stof(token)` does.
+  for (const manual of [false, true]) {
+    assert.match(
+      err("-ts 3.17817e38,1.54601e37,7.00525e36", manual) ?? "",
+      /adds up past/,
+    );
+  }
+});
+
+test("only a manual load that will rewrite the split judges the rewritten text", () => {
+  // At Auto layers the launcher drops both copies rather than reserializing either, so the
+  // six-digit rendering is never produced and refusing it would 400 a flag with no effect.
+  const at = (input: string, ctx: object) =>
+    diagnoseExtraArgs(input, CATALOG, ctx).find((d) => d.level === "error")
+      ?.message ?? null;
+  const v = "-ts 1.1754943508222874e-38,1";
+  assert.match(at(v, { manualGpuMemory: true, gpuLayers: 49 }) ?? "", /0 or at least/);
+  assert.equal(at(v, { manualGpuMemory: true, gpuLayers: -1 }), null);
+  assert.equal(at(v, { manualGpuMemory: false, gpuLayers: 49 }), null);
+  // The RESOLVED count decides, so an -ngl in the extras wins over the control either way.
+  assert.equal(
+    at(`-ngl -1 ${v}`, { manualGpuMemory: true, gpuLayers: 49 }),
+    null,
+  );
+  assert.match(
+    at(`-ngl 49 ${v}`, { manualGpuMemory: true, gpuLayers: -1 }) ?? "",
+    /0 or at least/,
   );
 });

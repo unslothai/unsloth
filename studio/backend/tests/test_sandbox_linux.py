@@ -436,7 +436,7 @@ def test_a_hard_link_wholly_inside_the_workdir_is_allowed(tmp_path):
     os.link(str(tmp_path / "a"), str(tmp_path / "b"))
     (tmp_path / "nested").mkdir()
     os.link(str(tmp_path / "a"), str(tmp_path / "nested" / "c"))
-    assert sandbox_linux._validate_workdir(str(tmp_path)) == os.path.realpath(tmp_path)
+    assert sandbox_linux._validate_workdir(str(tmp_path)) == (os.path.realpath(tmp_path), ())
 
 
 def test_a_nested_host_mount_under_the_workdir_is_refused(tmp_path, monkeypatch):
@@ -455,17 +455,50 @@ def test_the_workdir_itself_being_a_mount_point_is_allowed(tmp_path, monkeypatch
     monkeypatch.setattr(
         os.path, "ismount", lambda path: os.path.samefile(path, tmp_path) or real(path)
     )
-    assert sandbox_linux._validate_workdir(str(tmp_path)) == os.path.realpath(tmp_path)
+    assert sandbox_linux._validate_workdir(str(tmp_path)) == (os.path.realpath(tmp_path), ())
 
 
-def test_a_workdir_too_large_to_check_is_refused_rather_than_accepted_unchecked(
+def test_a_workdir_too_large_to_check_still_launches_and_says_it_was_not_checked(
     tmp_path, monkeypatch
 ):
+    # Refusing here ended the chat: the workdir only grows, and the scan is also
+    # what must run before a tool could delete anything, so once an ordinary pip
+    # install crossed the cap every later Python and Terminal call was refused
+    # with no way back. The call is confined either way, so the sandbox is still
+    # built and the record carries what was not established.
     monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 2)
     for name in ("a", "b", "c", "d"):
         (tmp_path / name).write_text("")
-    with pytest.raises(SandboxUnavailableError, match = "too large"):
+    resolved, limitations = sandbox_linux._validate_workdir(str(tmp_path))
+    assert resolved == os.path.realpath(tmp_path)
+    assert limitations == ("workdir_scan_incomplete",)
+
+
+def test_an_overrun_does_not_stop_a_real_finding_from_refusing(tmp_path, monkeypatch):
+    # The budget is a cost guard, not a boundary. A hazard found inside the
+    # budget must still be fatal, or the fix above would have removed the check.
+    os.mkfifo(str(tmp_path / "channel"))
+    with pytest.raises(SandboxUnavailableError, match = "device or IPC node"):
         sandbox_linux._validate_workdir(str(tmp_path))
+
+
+def test_an_incomplete_scan_reaches_the_execution_record(tmp_path, monkeypatch):
+    # A limitation nobody can read is not a disclosure.
+    monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 2)
+    for name in ("a", "b", "c", "d"):
+        (tmp_path / name).write_text("")
+    prepared = sandbox_linux.prepare(
+        os_sandbox.ToolLaunchPlan(
+            argv = (sys.executable, "-c", "pass"),
+            workdir = str(tmp_path),
+            env = {},
+            requested_mode = "required",
+        )
+    )
+    try:
+        assert "workdir_scan_incomplete" in prepared.launch_limitations
+    finally:
+        prepared.cleanup()
 
 
 def test_a_workdir_that_is_not_a_directory_is_refused(tmp_path):
@@ -479,7 +512,7 @@ def test_a_symlinked_directory_under_the_workdir_is_not_followed(tmp_path):
     # Following it would scan /dev and refuse every launch; the bind does
     # not follow it either, so the link dangles inside the jail.
     (tmp_path / "escape").symlink_to("/dev")
-    assert sandbox_linux._validate_workdir(str(tmp_path)) == os.path.realpath(tmp_path)
+    assert sandbox_linux._validate_workdir(str(tmp_path)) == (os.path.realpath(tmp_path), ())
 
 
 def test_every_interpreter_path_this_python_imports_from_is_bound(prepared, tmp_path):
@@ -1064,7 +1097,9 @@ def test_a_wedged_cache_mount_drops_the_cache_instead_of_hanging_the_launch(tmp_
         time.sleep(30)
         raise AssertionError("the caller should not have waited for this")
 
-    monkeypatch.setattr(sandbox_linux, "_inspect_cache_component", lambda name, path: wedged(path))
+    monkeypatch.setattr(
+        sandbox_linux, "_inspect_cache_component", lambda name, path, witness = None: wedged(path)
+    )
     monkeypatch.setattr(sandbox_linux, "_CACHE_INSPECT_SECONDS", 1.0)
     started = time.monotonic()
     binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
@@ -1105,7 +1140,11 @@ def test_a_wedged_cache_path_is_not_re_scanned_by_every_later_launch(tmp_path, m
     _share_cache_paths(monkeypatch, cache)
     started: list[str] = []
 
-    def wedged(name, path):
+    def wedged(
+        name,
+        path,
+        witness = None,
+    ):
         started.append(path)
         time.sleep(30)
 
@@ -1159,7 +1198,11 @@ def test_concurrent_launches_start_one_cache_worker_and_never_raise(tmp_path, mo
     started: list[str] = []
     gate = threading.Event()
 
-    def wedged(name, path):
+    def wedged(
+        name,
+        path,
+        witness = None,
+    ):
         started.append(path)
         gate.wait(30)
 
@@ -1398,6 +1441,19 @@ def test_a_nested_bind_mount_in_the_cache_is_caught_by_the_mount_table(tmp_path,
     assert "hub" not in sandbox_linux._model_cache_binds(str(tmp_path / "session"))
 
 
+def test_a_nested_bind_mount_is_caught_through_a_symlinked_cache(tmp_path, monkeypatch):
+    """The mount table lists canonical paths, so a cache reached through a
+    symlinked ~/.cache must be compared in its resolved form."""
+    real = tmp_path / "volume" / "huggingface"
+    (real / "hub" / "nested").mkdir(parents = True)
+    (tmp_path / "cache-link").symlink_to(tmp_path / "volume")
+    _real_cache(monkeypatch, tmp_path / "cache-link" / "huggingface")
+    monkeypatch.setattr(
+        sandbox_linux, "_host_mount_points", lambda: (str(real / "hub" / "nested"),)
+    )
+    assert "hub" not in sandbox_linux._model_cache_binds(str(tmp_path / "session"))
+
+
 def _fake_editable(
     tmp_path,
     monkeypatch,
@@ -1571,3 +1627,723 @@ def test_an_editable_namespace_package_is_granted_without_an_init(tmp_path, monk
         assert str(source) not in granted, granted
     finally:
         os_sandbox.editable_source_roots.cache_clear()
+
+
+def test_the_cache_verdict_is_memoized_between_launches(tmp_path, monkeypatch):
+    """The walk is O(entries) and was re-paid on every launch.
+
+    Without this the memo can be removed and every suite still passes, which is
+    how it shipped unguarded: measured 2.1ms against an empty cache and 44.2ms
+    at 15,000 entries, re-paid per call.
+    """
+    calls = []
+    real = sandbox_linux._cache_hazard_uncached
+    monkeypatch.setattr(
+        sandbox_linux,
+        "_cache_hazard_uncached",
+        lambda name, path: (calls.append(path), real(name, path))[1],
+    )
+    sandbox_linux.reset_cache_verdicts()
+    component = tmp_path / "hub"
+    component.mkdir()
+    (component / "a.bin").write_text("")
+
+    first = sandbox_linux._cache_hazard_within_deadline("hub", str(component))
+    walked_once = len(calls)
+    second = sandbox_linux._cache_hazard_within_deadline("hub", str(component))
+
+    assert second == first
+    assert len(calls) == walked_once, "the second launch re-walked the cache"
+
+
+def test_a_changed_cache_is_re_inspected_rather_than_trusted(tmp_path, monkeypatch):
+    """The memo key is the component root's identity and mtime, so a change made
+    through the root must invalidate it. A memo that never expires is a stale
+    security verdict, not an optimisation."""
+    calls = []
+    real = sandbox_linux._cache_hazard_uncached
+    monkeypatch.setattr(
+        sandbox_linux,
+        "_cache_hazard_uncached",
+        lambda name, path: (calls.append(path), real(name, path))[1],
+    )
+    sandbox_linux.reset_cache_verdicts()
+    component = tmp_path / "hub"
+    component.mkdir()
+    sandbox_linux._cache_hazard_within_deadline("hub", str(component))
+    before = len(calls)
+
+    # A new model directory changes the root's mtime.
+    os.utime(component, (0, 0))
+    (component / "models--org--new").mkdir()
+    sandbox_linux._cache_hazard_within_deadline("hub", str(component))
+
+    assert len(calls) > before, "a changed cache reused its old verdict"
+
+
+def test_a_failed_launch_drops_every_cache_verdict(tmp_path, monkeypatch):
+    """tools.py calls this when a launch dies, for the same reason it drops the
+    capability probe: a failed launch is the one signal that something the
+    planner believed about this host has changed."""
+    calls = []
+    real = sandbox_linux._cache_hazard_uncached
+    monkeypatch.setattr(
+        sandbox_linux,
+        "_cache_hazard_uncached",
+        lambda name, path: (calls.append(path), real(name, path))[1],
+    )
+    sandbox_linux.reset_cache_verdicts()
+    component = tmp_path / "hub"
+    component.mkdir()
+    sandbox_linux._cache_hazard_within_deadline("hub", str(component))
+    before = len(calls)
+
+    sandbox_linux.reset_cache_verdicts()
+    sandbox_linux._cache_hazard_within_deadline("hub", str(component))
+
+    assert len(calls) > before, "reset_cache_verdicts did not invalidate the memo"
+
+
+def test_the_studio_state_directory_is_never_a_system_bind(monkeypatch, tmp_path):
+    """/opt is a system root and the Docker layout puts Studio's state in it.
+
+    docker/run.sh mounts the Studio volume at /opt/unsloth-studio and
+    studio_launch.sh exports UNSLOTH_STUDIO_HOME to match, so binding /opt
+    whole hands auth/auth.db to model-authored code read-only. That database
+    holds the HS256 jwt_secret, and tools.py's literal-path guard is bypassed
+    by building the path dynamically, so the disclosure survives `required`
+    mode. Everything else under the root must still be readable.
+    """
+    from core.inference import sandbox_linux
+
+    opt = tmp_path / "opt"
+    state = opt / "unsloth-studio"
+    (state / "auth").mkdir(parents = True)
+    (state / "auth" / "auth.db").write_text("secret")
+    toolchain = opt / "some-toolchain"
+    toolchain.mkdir()
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
+
+    kept = sandbox_linux._without_studio_state((str(opt),))
+
+    assert str(state) not in kept
+    assert not any(
+        sandbox_linux._within(str(state), path) for path in kept
+    ), "a bind source still contains the Studio auth database"
+    assert str(toolchain) in kept, "unrelated /opt software stopped being readable"
+
+
+def test_a_system_root_without_studio_state_is_still_bound_whole(monkeypatch, tmp_path):
+    """The descent must only happen where it is needed, or every launch pays
+    a listdir of /usr and binds hundreds of paths."""
+    from core.inference import sandbox_linux
+
+    opt = tmp_path / "opt"
+    (opt / "some-toolchain").mkdir(parents = True)
+    elsewhere = tmp_path / "home" / "studio"
+    elsewhere.mkdir(parents = True)
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(elsewhere))
+
+    assert sandbox_linux._without_studio_state((str(opt),)) == (str(opt),)
+
+
+def test_a_deeply_nested_studio_state_root_is_refused_not_restored(monkeypatch, tmp_path):
+    """The descent is bounded, and the bound must fail CLOSED.
+
+    Restoring an ancestor known to contain the state directory would hand over
+    auth/auth.db for a home buried deeper than the cutoff, which is the exact
+    opposite of what the descent exists to do.
+    """
+    from core.inference import sandbox_linux
+
+    opt = tmp_path / "opt"
+    state = opt / "a" / "b" / "c" / "d" / "studio"
+    (state / "auth").mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
+
+    kept = sandbox_linux._without_studio_state((str(opt),), depth = 0)
+
+    assert kept == (), "an ancestor of the Studio auth database was bound anyway"
+
+
+def test_a_symlinked_sibling_is_not_promoted_to_a_bind_source(monkeypatch, tmp_path):
+    """Splitting a system root must not mount what the whole-root bind did not.
+
+    Inside a whole-root bind a symlink is dormant: it resolves inside the jail,
+    where its target is not mounted. Named as a bind source it resolves on the
+    HOST, so /opt/private -> /home/operator/private would become readable to
+    model-authored code precisely because the root was split.
+    """
+    from core.inference import sandbox_linux
+
+    opt = tmp_path / "opt"
+    state = opt / "unsloth-studio"
+    (state / "auth").mkdir(parents = True)
+    private = tmp_path / "home" / "operator" / "private"
+    private.mkdir(parents = True)
+    (opt / "private").symlink_to(private)
+    (opt / "toolchain").mkdir()
+    # A symlink that stays inside the root is still useful and still safe.
+    (opt / "inside-link").symlink_to(opt / "toolchain")
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
+
+    kept = sandbox_linux._without_studio_state((str(opt),))
+
+    assert str(opt / "private") not in kept, "a symlink out of the root became a bind source"
+    assert str(opt / "toolchain") in kept
+    assert str(opt / "inside-link") in kept
+
+
+def test_a_cache_holding_studio_state_is_not_shared_writable(monkeypatch, tmp_path):
+    """HF_HUB_CACHE at or above the Studio root would bind auth/auth.db in
+    WRITABLE, and the hazard scan would not object: an ordinary file is not a
+    host channel."""
+    from core.inference import sandbox_linux
+
+    state = tmp_path / "studio"
+    (state / "auth").mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
+
+    assert sandbox_linux._holds_studio_state(str(state)) is True
+    assert (
+        sandbox_linux._holds_studio_state(str(tmp_path)) is True
+    ), "an ancestor of the Studio root was not recognised"
+    assert sandbox_linux._holds_studio_state(str(tmp_path / "elsewhere")) is False
+
+
+def test_the_cache_bind_itself_drops_a_component_holding_studio_state(monkeypatch, tmp_path):
+    """Through _model_cache_binds, not just the predicate: the guard is only
+    worth anything if the bind list is what changes.
+
+    HF_HUB_CACHE pointed at the Studio root is the concrete case. The bind is
+    WRITABLE, and the hazard scan does not object, because an ordinary file is
+    not a host channel.
+    """
+    import types
+
+    from core.inference import sandbox_linux
+
+    state = tmp_path / "studio"
+    (state / "auth").mkdir(parents = True)
+    elsewhere = tmp_path / "models"
+    for name in ("xet", "datasets", "assets"):
+        (elsewhere / name).mkdir(parents = True, exist_ok = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
+
+    settings = types.ModuleType("utils.hf_cache_settings")
+    settings.get_hf_cache_paths = lambda: types.SimpleNamespace(
+        cache_home = str(elsewhere),
+        hub_cache = str(state),  # the Studio root itself
+        xet_cache = str(elsewhere / "xet"),
+    )
+    monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", settings)
+    monkeypatch.setattr(sandbox_linux, "_cache_hazard_within_deadline", lambda name, path: None)
+
+    binds = sandbox_linux._model_cache_binds(str(tmp_path / "work"))
+
+    assert "hub" not in binds, "the Studio root was shared into the sandbox as the hub cache"
+    # The unrelated components are untouched: this is a targeted refusal.
+    assert binds.get("xet") == str(elsewhere / "xet")
+
+
+def test_a_cache_configured_as_a_home_directory_is_not_shared(monkeypatch, tmp_path):
+    """HF_HUB_CACHE pointed at a home is a misconfiguration; the consequence
+    is not. The component is mounted WRITABLE and the host-channel scan passes
+    it, because ordinary credential files are not host channels, so a tool call
+    in `required` mode could read, change or delete the user's home."""
+    import types
+
+    from core.inference import sandbox_linux
+
+    home = tmp_path / "home" / "alice"
+    (home / ".ssh").mkdir(parents = True)
+    (home / ".ssh" / "id_ed25519").write_text("private")
+    models = tmp_path / "models"
+    for name in ("xet", "datasets", "assets"):
+        (models / name).mkdir(parents = True, exist_ok = True)
+
+    monkeypatch.setenv("HOME", str(home))
+    settings = types.ModuleType("utils.hf_cache_settings")
+    settings.get_hf_cache_paths = lambda: types.SimpleNamespace(
+        cache_home = str(models),
+        hub_cache = str(home),  # the home itself
+        xet_cache = str(models / "xet"),
+    )
+    monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", settings)
+    monkeypatch.setattr(sandbox_linux, "_cache_hazard_within_deadline", lambda name, path: None)
+
+    binds = sandbox_linux._model_cache_binds(str(tmp_path / "work"))
+
+    assert "hub" not in binds, "the user's home was shared into the sandbox writable"
+    assert binds.get("xet") == str(models / "xet"), "an ordinary cache stopped working"
+
+
+def test_a_filesystem_root_is_never_a_cache(monkeypatch, tmp_path):
+    """Cheap, and the worst case of the same mistake."""
+    from core.inference import sandbox_linux
+
+    monkeypatch.setenv("HOME", str(tmp_path / "somewhere-else"))
+
+    assert sandbox_linux._too_broad_for_a_cache("/") is True
+    assert sandbox_linux._too_broad_for_a_cache("/home") is True
+    assert sandbox_linux._too_broad_for_a_cache(str(tmp_path / "models" / "hub")) is False
+
+
+def _stub_capable_backend(monkeypatch, limitations):
+    """An available capability and a backend that builds, so the test is about
+    prepare_tool_launch's decision rather than about this host's bwrap."""
+    from core.inference import os_sandbox, sandbox_linux
+
+    capability = os_sandbox.SandboxCapability(
+        backend = "stub",
+        available = True,
+        reason = "stub",
+        environment = "linux",
+        protection_state = "qualified",
+        profile_id = "stub",
+        limitations = (),
+    )
+    monkeypatch.setattr(os_sandbox, "capability_snapshot", lambda *a, **k: capability)
+
+    def build(plan):
+        return os_sandbox.PreparedSandboxLaunch(
+            argv = plan.argv,
+            workdir = plan.workdir,
+            env = dict(plan.env),
+            preexec_fn = None,
+            backend = "stub",
+            launch_limitations = limitations,
+        )
+
+    monkeypatch.setattr(sandbox_linux, "prepare", build)
+
+
+def test_required_refuses_a_workdir_it_could_not_finish_checking(monkeypatch, tmp_path):
+    """`auto` degrades here on purpose, and `required` must not.
+
+    The budget exists so one pip install cannot end a chat, but the unvisited
+    part of the walk could hold an external hard link or a host socket. Saying
+    so in the execution record does not keep a boundary the caller asked to be
+    guaranteed.
+    """
+    from core.inference import os_sandbox
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    for i in range(8):
+        (workdir / f"f{i}").write_text("")
+
+    monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 3)
+
+    limitations = os_sandbox.scan_workdir_for_host_channels(str(workdir))
+    assert limitations == (
+        os_sandbox.WORKDIR_SCAN_INCOMPLETE,
+    ), "the budget did not trip, so this test proves nothing"
+    _stub_capable_backend(monkeypatch, limitations)
+
+    plan = os_sandbox.ToolLaunchPlan(
+        argv = ("/bin/true",),
+        workdir = str(workdir),
+        env = {},
+        requested_mode = "required",
+        timeout_seconds = 10,
+    )
+
+    with pytest.raises(os_sandbox.WorkdirUnsafeError, match = "too large to check"):
+        os_sandbox.prepare_tool_launch(plan)
+
+
+def test_auto_still_launches_on_the_same_workdir(monkeypatch, tmp_path):
+    """The other half of the same decision: the brick fix must survive."""
+    from core.inference import os_sandbox
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    for i in range(8):
+        (workdir / f"f{i}").write_text("")
+
+    monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 3)
+    _stub_capable_backend(monkeypatch, (os_sandbox.WORKDIR_SCAN_INCOMPLETE,))
+
+    plan = os_sandbox.ToolLaunchPlan(
+        argv = ("/bin/true",),
+        workdir = str(workdir),
+        env = {},
+        requested_mode = "auto",
+        timeout_seconds = 10,
+    )
+
+    prepared = os_sandbox.prepare_tool_launch(plan)
+    try:
+        assert prepared.execution_record is not None
+        assert os_sandbox.WORKDIR_SCAN_INCOMPLETE in prepared.execution_record.limitations
+    finally:
+        prepared.cleanup()
+
+
+def test_a_registered_model_folder_is_bound_read_only(monkeypatch, tmp_path):
+    """The same disagreement on Linux: silent at the approval gate, absent from
+    the binds, so the read fails inside the jail."""
+    from core.inference import os_sandbox
+
+    # Outside the workdir on purpose: a folder inside it is already writable,
+    # and the grant would be about nothing.
+    library = tmp_path / "library" / "models"
+    library.mkdir(parents = True)
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    monkeypatch.setattr(os_sandbox, "model_library_roots", lambda: (str(library),))
+
+    from core.inference import sandbox_linux
+
+    if sandbox_linux.shutil.which("bwrap") is None:
+        pytest.skip("bubblewrap is not installed on this host")
+    monkeypatch.setattr(sandbox_linux, "model_library_roots", lambda: (str(library),))
+
+    launch = sandbox_linux.prepare(_plan(workdir))
+    try:
+        pairs = _pairs(launch.argv, "--ro-bind-try")
+    finally:
+        launch.cleanup()
+
+    assert (str(library), str(library)) in pairs, "the registered model folder was not bound"
+
+
+def test_a_model_folder_that_is_a_system_directory_is_refused(monkeypatch):
+    """A registered folder that is really /etc or a home is a misconfiguration,
+    and binding it would undo the rest of the profile."""
+    from core.inference import os_sandbox, tool_path_approval
+
+    monkeypatch.setattr(tool_path_approval, "_scan_folder_roots", lambda: ("/etc", "/"))
+    monkeypatch.setattr(
+        "utils.paths.storage_roots.well_known_model_dirs",
+        lambda: (os.path.expanduser("~"),),
+        raising = False,
+    )
+
+    assert os_sandbox.model_library_roots() == ()
+
+
+def _bind_unix_socket(path):
+    """Create a bound AF_UNIX socket at *path*.
+
+    Bound from inside the parent directory: sun_path is 108 bytes, and a
+    pytest tmp_path is long enough on its own to overrun it.
+    """
+    import socket
+
+    here = os.getcwd()
+    os.chdir(os.path.dirname(path))
+    try:
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            listener.bind(os.path.basename(path))
+        finally:
+            listener.close()
+    finally:
+        os.chdir(here)
+
+
+def test_a_stale_tool_socket_does_not_brick_the_session(tmp_path):
+    """A crashed tool's leftover listener must not end the chat.
+
+    `<workdir>/unsloth-tmp` is Studio's own scratch directory and the child's
+    TMPDIR. A tool that used multiprocessing and was killed leaves an AF_UNIX
+    listener there; the scan then refused every later call, and the scan is
+    also what has to run before a tool could delete it.
+    """
+    from core.inference import os_sandbox
+
+    workdir = tmp_path / "work"
+    scratch = workdir / os_sandbox.TOOL_TEMP_DIRNAME / "pymp-abc"
+    scratch.mkdir(parents = True)
+    os.chmod(scratch.parent, 0o700)
+    _bind_unix_socket(str(scratch / "listener-0"))
+    assert (scratch / "listener-0").exists(), "the stale socket was not created"
+
+    assert os_sandbox.scan_workdir_for_host_channels(str(workdir)) == ()
+    assert not (scratch / "listener-0").exists(), "the stale socket was left in place"
+
+
+def test_a_socket_outside_the_scratch_directory_still_fails_the_call(tmp_path):
+    """The sweep is an exemption for one Studio-owned directory, not a way past
+    the check: a socket anywhere else in the workdir is still fatal."""
+    from core.inference import os_sandbox
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    _bind_unix_socket(str(workdir / "planted"))
+
+    with pytest.raises(os_sandbox.WorkdirUnsafeError, match = "device or IPC node"):
+        os_sandbox.scan_workdir_for_host_channels(str(workdir))
+
+
+def test_a_scratch_entry_that_cannot_be_removed_still_fails_the_call(tmp_path):
+    """Fails closed: what the sweep could not unlink is still a finding."""
+    from core.inference import os_sandbox
+
+    if os.geteuid() == 0:
+        pytest.skip("root ignores the directory permissions this test relies on")
+
+    workdir = tmp_path / "work"
+    scratch = workdir / os_sandbox.TOOL_TEMP_DIRNAME
+    held = scratch / "held"
+    held.mkdir(parents = True)
+    os.chmod(scratch, 0o700)
+    _bind_unix_socket(str(held / "listener-0"))
+    # Unlinkable only by making its directory read-only: the sweep itself is
+    # allowed to run, and what it cannot remove must still stop the launch.
+    os.chmod(held, 0o500)
+    try:
+        with pytest.raises(os_sandbox.WorkdirUnsafeError, match = "device or IPC node"):
+            os_sandbox.scan_workdir_for_host_channels(str(workdir))
+    finally:
+        os.chmod(held, 0o700)
+
+
+def test_a_workdir_scan_that_blocks_is_given_up_on_rather_than_waited_out(monkeypatch, tmp_path):
+    """The budget is checked between entries, which is only a deadline while the
+    walk is running. A stalled NFS or FUSE mount blocks inside one uninterruptible
+    scandir, and the call hung for the mount's timeout instead of five seconds."""
+    import threading
+    import time
+
+    from core.inference import os_sandbox
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    released = threading.Event()
+
+    def wedged(root, max_entries, seconds):
+        released.wait(8)
+        return None
+
+    monkeypatch.setattr(os_sandbox, "_host_channel_hazard", wedged)
+    monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_SECONDS", 0.3)
+
+    started = time.monotonic()
+    try:
+        limitations = os_sandbox.scan_workdir_for_host_channels(str(workdir))
+        waited = time.monotonic() - started
+    finally:
+        released.set()
+
+    assert limitations == (os_sandbox.WORKDIR_SCAN_INCOMPLETE,)
+    assert waited < 5, f"the caller waited {waited:.1f}s on a wedged scan"
+
+
+def test_a_windows_drive_root_is_not_a_model_library():
+    """`C:\\` is not os.sep, so the filesystem-root check missed it and a folder
+    registered as the whole system drive was granted read access."""
+    import ntpath
+    import posixpath
+
+    from core.inference import os_sandbox
+
+    assert os_sandbox._is_filesystem_root("C:\\", ntpath)
+    assert os_sandbox._is_filesystem_root("\\\\server\\share\\", ntpath)
+    assert not os_sandbox._is_filesystem_root("C:\\Models", ntpath)
+    assert os_sandbox._is_filesystem_root("/", posixpath)
+    assert not os_sandbox._is_filesystem_root("/models", posixpath)
+
+
+def test_a_windows_system_directory_is_not_a_model_library(monkeypatch, tmp_path):
+    """The Windows system directories are not fixed paths, so they are read from
+    the environment rather than spelled in a POSIX-only table."""
+    from core.inference import os_sandbox, tool_path_approval
+
+    windows = tmp_path / "Windows"
+    windows.mkdir()
+    monkeypatch.setenv("SystemRoot", str(windows))
+    monkeypatch.setattr(tool_path_approval, "_scan_folder_roots", lambda: (str(windows),))
+    monkeypatch.setattr(
+        "utils.paths.storage_roots.well_known_model_dirs",
+        lambda: (),
+        raising = False,
+    )
+
+    assert os_sandbox.model_library_roots() == ()
+
+
+def test_the_directory_holding_every_home_is_not_a_model_library(monkeypatch, tmp_path):
+    """/home and /Users were listed literally; the Windows equivalent is
+    C:\\Users under whichever drive Windows was installed on."""
+    from core.inference import os_sandbox, tool_path_approval
+
+    homes = tmp_path / "homes"
+    (homes / "someone").mkdir(parents = True)
+    monkeypatch.setenv("HOME", str(homes / "someone"))
+    monkeypatch.setattr(tool_path_approval, "_scan_folder_roots", lambda: (str(homes),))
+    monkeypatch.setattr(
+        "utils.paths.storage_roots.well_known_model_dirs",
+        lambda: (),
+        raising = False,
+    )
+
+    assert os_sandbox.model_library_roots() == ()
+
+
+def test_a_live_listener_in_the_scratch_directory_is_not_removed(tmp_path):
+    """Two tool calls can share the scratch directory, so "left behind" has to
+    be proved: a listener the other call is still using must survive."""
+    import socket
+
+    from core.inference import os_sandbox
+
+    workdir = tmp_path / "work"
+    scratch = workdir / os_sandbox.TOOL_TEMP_DIRNAME
+    scratch.mkdir(parents = True)
+    os.chmod(scratch, 0o700)
+
+    here = os.getcwd()
+    os.chdir(scratch)
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        listener.bind("listener-0")
+        listener.listen(1)
+        os.chdir(here)
+        assert os_sandbox.clear_stale_tool_ipc(str(workdir)) == ()
+        assert (scratch / "listener-0").exists(), "a live listener was unlinked"
+    finally:
+        os.chdir(here)
+        listener.close()
+
+
+def test_a_scratch_directory_studio_did_not_create_is_left_alone(tmp_path):
+    """_sandbox_temp_dir adopts an existing unsloth-tmp rather than failing, so
+    a project that already had one must not have its own endpoints swept."""
+    from core.inference import os_sandbox
+
+    workdir = tmp_path / "work"
+    scratch = workdir / os_sandbox.TOOL_TEMP_DIRNAME
+    scratch.mkdir(parents = True)
+    os.chmod(scratch, 0o755)
+    _bind_unix_socket(str(scratch / "theirs"))
+
+    assert os_sandbox.clear_stale_tool_ipc(str(workdir)) == ()
+    assert (scratch / "theirs").exists(), "a directory Studio did not create was swept"
+
+
+def test_a_dormant_fifo_is_never_swept(tmp_path):
+    """A FIFO with no reader is at rest, not abandoned: it is meant to outlive
+    the processes at its ends, and 0700 plus ownership is evidence of who made
+    the directory rather than proof. The launch is refused instead, as before."""
+    from core.inference import os_sandbox
+
+    workdir = tmp_path / "work"
+    scratch = workdir / os_sandbox.TOOL_TEMP_DIRNAME
+    scratch.mkdir(parents = True)
+    os.chmod(scratch, 0o700)
+    os.mkfifo(scratch / "theirs", 0o600)
+
+    assert os_sandbox.clear_stale_tool_ipc(str(workdir)) == ()
+    assert (scratch / "theirs").exists(), "an idle named pipe was deleted"
+    with pytest.raises(os_sandbox.WorkdirUnsafeError, match = "device or IPC node"):
+        os_sandbox.scan_workdir_for_host_channels(str(workdir))
+
+
+def test_the_stale_ipc_sweep_runs_inside_the_scan_budget(monkeypatch, tmp_path):
+    """The sweep walks the same workdir, so it can block on the same wedged
+    mount. Doing it on the caller's thread put back the hang the bounded scan
+    exists to remove."""
+    import threading
+    import time
+
+    from core.inference import os_sandbox
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    released = threading.Event()
+
+    def wedged_sweep(_workdir, _deadline = None):
+        released.wait(8)
+        return ()
+
+    monkeypatch.setattr(os_sandbox, "clear_stale_tool_ipc", wedged_sweep)
+    monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_SECONDS", 0.3)
+
+    started = time.monotonic()
+    try:
+        limitations = os_sandbox.scan_workdir_for_host_channels(str(workdir))
+        waited = time.monotonic() - started
+    finally:
+        released.set()
+
+    assert limitations == (os_sandbox.WORKDIR_SCAN_INCOMPLETE,)
+    assert waited < 5, f"the caller waited {waited:.1f}s on a wedged sweep"
+
+
+def test_the_sweep_stops_at_its_deadline(tmp_path):
+    """Past the deadline it leaves the rest for the walk to refuse rather than
+    spending the call's time on a directory it may never finish."""
+    import time
+
+    from core.inference import os_sandbox
+
+    workdir = tmp_path / "work"
+    scratch = workdir / os_sandbox.TOOL_TEMP_DIRNAME
+    scratch.mkdir(parents = True)
+    os.chmod(scratch, 0o700)
+    _bind_unix_socket(str(scratch / "listener-0"))
+
+    assert os_sandbox.clear_stale_tool_ipc(str(workdir), time.monotonic() - 1) == ()
+    assert (scratch / "listener-0").exists()
+    assert os_sandbox.clear_stale_tool_ipc(str(workdir)) == (str(scratch / "listener-0"),)
+
+
+def test_a_channel_planted_deep_inside_a_cached_component_invalidates_its_verdict(
+    monkeypatch, tmp_path
+):
+    """The memo made the walk cheap and made invalidation wrong: a socket
+    created inside an existing nested directory leaves the component root's
+    mtime alone, so a clean verdict could be reused over exactly the channel
+    the scan exists to reject."""
+    from core.inference import sandbox_linux
+
+    cache = tmp_path / "hostcache"
+    nested = cache / "hub" / "models--org--name" / "snapshots" / "abc"
+    nested.mkdir(parents = True)
+    (nested / "config.json").write_text("{}")
+    _share_cache_paths(monkeypatch, cache)
+    sandbox_linux.reset_cache_verdicts()
+
+    session = str(tmp_path / "session")
+    assert "hub" in sandbox_linux._model_cache_binds(session), "the clean cache was not shared"
+
+    _bind_unix_socket(str(nested / "planted"))
+    binds = sandbox_linux._model_cache_binds(session)
+
+    assert "hub" not in binds, "a cached verdict was reused over a newly planted socket"
+
+
+def test_an_unchanged_cache_is_not_walked_again(monkeypatch, tmp_path):
+    """The other half: revalidation has to stay cheaper than the walk it
+    replaces, or the memo is pointless."""
+    from core.inference import sandbox_linux
+
+    cache = tmp_path / "hostcache"
+    (cache / "hub" / "models--org--name").mkdir(parents = True)
+    (cache / "hub" / "models--org--name" / "config.json").write_text("{}")
+    _share_cache_paths(monkeypatch, cache)
+    sandbox_linux.reset_cache_verdicts()
+
+    session = str(tmp_path / "session")
+    assert "hub" in sandbox_linux._model_cache_binds(session)
+
+    walks: list[str] = []
+    real = sandbox_linux._inspect_cache_component
+
+    def counted(
+        name,
+        path,
+        witness = None,
+    ):
+        walks.append(path)
+        return real(name, path, witness)
+
+    monkeypatch.setattr(sandbox_linux, "_inspect_cache_component", counted)
+    assert "hub" in sandbox_linux._model_cache_binds(session)
+    assert walks == [], f"the unchanged cache was walked again: {walks}"

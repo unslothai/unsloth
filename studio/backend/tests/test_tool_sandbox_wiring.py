@@ -35,6 +35,9 @@ _SESSION = "__LOCALID_sandbox_wiring"
 
 class _PassthroughAccountConfinement:
     preexec = None
+    # Stands in for a real account boundary. tools.py only takes the managed
+    # path when `confines` is true, so an owner placeholder cannot pass as one.
+    confines = True
 
     @staticmethod
     def wrap(argv):
@@ -730,3 +733,142 @@ def test_the_shipped_sitecustomize_is_found_before_the_session_packages(tmp_path
     assert entries.index(tools._SANDBOX_SITE_DIR) < entries.index(
         str(workdir / os_sandbox.SESSION_PACKAGES_RELPATH)
     )
+
+
+def test_a_seatbelt_launch_failure_also_drops_the_cached_verdict(monkeypatch):
+    """A rejected Seatbelt profile is reported as `sandbox-exec:`, not `bwrap:`.
+
+    Matching only the bubblewrap prefix left macOS launching a backend already
+    known to be broken for the whole positive TTL, instead of re-probing and
+    letting `auto` fall back.
+    """
+    reset = []
+    monkeypatch.setattr(
+        "core.inference.sandbox_probe.reset_probe_cache", lambda: reset.append(True)
+    )
+    prepared = PreparedSandboxLaunch(
+        argv = ("/usr/bin/sandbox-exec",),
+        workdir = "/work",
+        env = {},
+        preexec_fn = None,
+        backend = "macos-seatbelt",
+    )
+
+    tools._forget_sandbox_capability_if_the_backend_failed(
+        prepared, "Exit code 1:\nsandbox-exec: sandbox_apply: Operation not permitted\n"
+    )
+    assert reset == [True]
+
+    # A payload that failed inside a sandbox that was built correctly says
+    # nothing about the host, and must not cost a re-probe.
+    tools._forget_sandbox_capability_if_the_backend_failed(
+        prepared, "Exit code 1:\nTraceback (most recent call last):\n"
+    )
+    assert reset == [True]
+
+
+def test_an_unknown_execution_mode_is_refused_whatever_the_account(monkeypatch):
+    """A managed account's confinement is the outer launch contract and skips
+    the planner, which was the only place the mode was checked. So whether an
+    unknown mode was refused depended on which account ran the call."""
+    import pytest
+
+    with pytest.raises(os_sandbox.SandboxUnavailableError) as refusal:
+        tools._requested_execution_mode("nonsense", False)
+
+    assert "TOOL_EXECUTION_MODE_INVALID" in str(refusal.value)
+    assert tools._requested_execution_mode("auto", False) == "auto"
+    assert tools._requested_execution_mode("required", False) == "required"
+    assert tools._requested_execution_mode("auto", True) == "full"
+
+
+def test_the_unconfined_placeholder_is_not_treated_as_a_boundary():
+    """`unconfined-by-owner` records that the owner ALLOWED unconfined tools on
+    a host that cannot confine them. It carries neither a pre-exec nor a
+    wrapper, so a caller reading "not None" as "boundary present" would skip
+    the generic sandbox and run the call unisolated even in `required` mode.
+    """
+    from core.inference.tool_confinement import Confinement
+
+    assert Confinement(mechanism = "unconfined-by-owner").confines is False
+    assert Confinement(mechanism = "landlock", preexec = lambda: None).confines is True
+    assert Confinement(mechanism = "sandbox-exec", wrapper = ("sandbox-exec",)).confines is True
+
+
+def test_a_managed_account_without_confinement_still_refuses_required(monkeypatch):
+    """The whole point of `required`: no boundary means no execution."""
+    from core.inference.tool_confinement import Confinement
+
+    monkeypatch.setattr(
+        tools,
+        "_account_confinement",
+        lambda: Confinement(mechanism = "unconfined-by-owner"),
+    )
+    _declining_backend(
+        monkeypatch, "bubblewrap (bwrap) is not installed on this host", unsafe = False
+    )
+
+    result = tools._python_exec("print(1)", None, 60, _SESSION, tool_execution_mode = "required")
+
+    assert "1" not in result.splitlines()[:1], f"the call ran unisolated: {result!r}"
+    assert "Execution error" in result or "OS_ISOLATION_UNAVAILABLE" in result
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        lambda **kw: tools._python_exec(
+            "import os\nprint('ran', os.path.exists('/srv/pr-approved/data.csv'))",
+            None,
+            60,
+            _SESSION,
+            **kw,
+        ),
+        lambda **kw: tools._bash_exec(
+            "ls /srv/pr-approved/data.csv; echo ran", None, 60, _SESSION, **kw
+        ),
+    ],
+    ids = ["python", "terminal"],
+)
+@pytest.mark.parametrize(
+    "approved, mode, jailed",
+    [
+        # The user approved a call that names a host path the jail does not bind.
+        (True, "auto", False),
+        # Nobody approved it: the jail stays, whatever the path.
+        (False, "auto", True),
+        # `required` is a promise about the boundary, so an approval does not lift it.
+        (True, "required", True),
+    ],
+)
+def test_an_approved_host_path_call_runs_as_it_does_without_the_jail(
+    monkeypatch, run, approved, mode, jailed
+):
+    planned: list = []
+
+    def prepare(plan):
+        planned.append(plan)
+        return _echoing_prepare(_Recorder())(plan)
+
+    monkeypatch.setattr(os_sandbox, "prepare_tool_launch", prepare)
+    tools._last_tool_execution_record = None
+    out = run(host_access_approved = approved, tool_execution_mode = mode)
+    assert "ran" in out
+    assert bool(planned) is jailed
+    if not jailed:
+        record = tools._last_tool_execution_record
+        assert record.effective_mode == "software_safeguards"
+        assert "user_approved_host_access" in record.limitations
+
+
+def test_an_approval_does_not_lift_the_jail_for_a_call_that_needs_no_host_path(monkeypatch):
+    planned: list = []
+
+    def prepare(plan):
+        planned.append(plan)
+        return _echoing_prepare(_Recorder())(plan)
+
+    monkeypatch.setattr(os_sandbox, "prepare_tool_launch", prepare)
+    # "ask" mode approves every call; only one that reaches the host may leave the jail.
+    assert "3" in tools._python_exec("print(1 + 2)", None, 60, _SESSION, host_access_approved = True)
+    assert len(planned) == 1

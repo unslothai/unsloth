@@ -805,3 +805,168 @@ def test_a_path_that_cannot_be_encoded_is_refused_rather_than_carried():
     # guard would be undoing the fix it is protecting.
     assert backend._validated("/tmp/session-café") == "/tmp/session-café"
     assert "\\u00" not in backend._sbpl_string("/tmp/session-café")
+
+
+def test_studio_state_under_an_optional_read_root_is_denied(monkeypatch, tmp_path):
+    """A Homebrew-prefixed Studio home is inside a recursive read root.
+
+    Without a later deny, a sandboxed script builds the path to auth/auth.db
+    and reads the HS256 jwt_secret, walking past tools.py's literal-path guard
+    in the mode that exists to stop exactly that.
+    """
+    from core.inference import sandbox_macos
+
+    state = tmp_path / "Cellar" / "unsloth-studio"
+    (state / "auth").mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
+
+    rules = sandbox_macos._studio_state_rules((), (), str(tmp_path / "work"), str(tmp_path / "tmp"))
+
+    assert rules, "no rule was emitted for a Studio home inside a read root"
+    assert rules[0].startswith("(deny file-read-data")
+    assert str(state) in rules[0]
+
+
+def test_the_runtime_inside_a_custom_studio_home_is_restored(monkeypatch, tmp_path):
+    """A blanket deny would break a custom-home install: the managed venv lives
+    under the Studio root, so the interpreter itself would stop being readable.
+    """
+    from core.inference import sandbox_macos
+
+    state = tmp_path / "studio"
+    venv = state / "unsloth_studio" / "lib"
+    venv.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
+
+    rules = sandbox_macos._studio_state_rules(
+        (str(venv),), (), str(tmp_path / "work"), str(tmp_path / "tmp")
+    )
+
+    assert len(rules) == 2, "the runtime under the Studio home was not restored"
+    assert rules[1].startswith("(allow file-read*")
+    assert str(venv) in rules[1]
+
+
+def test_the_studio_state_deny_keeps_path_traversal_working(monkeypatch, tmp_path):
+    """The workdir lives under the Studio root on a default install.
+
+    Denying file-read* on the state root also denies stat on the directories
+    leading to the workdir, and os.makedirs then decides an existing ancestor
+    is missing and tries to create it, which fails with EPERM. Observed on
+    macos-15: test_python_exec_mnt_data_open_is_remapped_into_workdir failed
+    that way and did not fail at the merge base.
+    """
+    from core.inference import sandbox_macos
+
+    state = tmp_path / "studio"
+    (state / "auth").mkdir(parents = True)
+    workdir = state / "sandbox" / "_default"
+    workdir.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
+
+    rules = sandbox_macos._studio_state_rules((), (), str(workdir), str(tmp_path / "tmp"))
+
+    assert rules[0].startswith("(deny file-read-data"), rules[0][:60]
+    # Stat is not denied, so path traversal to the workdir still works.
+    assert "file-read-metadata" not in rules[0]
+    assert "file-test-existence" not in rules[0]
+    # Reading a file, and listing a directory, both remain denied.
+    assert "file-read-data" in rules[0]
+    assert str(state) in rules[0]
+
+
+def test_a_registered_model_folder_is_readable(monkeypatch, tmp_path):
+    """The approval gate treats registered model folders as read-silent, so a
+    read from one never prompts. Without granting them here the two halves of
+    the product disagree: the call is allowed and then fails in the sandbox."""
+    from core.inference import os_sandbox, sandbox_macos
+
+    library = tmp_path / "models"
+    library.mkdir()
+    monkeypatch.setattr(sandbox_macos, "model_library_roots", lambda: (str(library),))
+    monkeypatch.setattr(os_sandbox, "model_library_roots", lambda: (str(library),))
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    private_tmp = tmp_path / "tmp"
+    private_tmp.mkdir()
+
+    profile = sandbox_macos.build_profile(
+        workdir = str(workdir),
+        private_tmp = str(private_tmp),
+        runtime_paths = (),
+    )
+
+    assert str(library) in profile
+
+
+@_darwin_only
+def test_a_hard_link_to_a_readable_file_cannot_be_created_in_the_workdir(tmp_path, monkeypatch):
+    """The workdir is writable and the model folders are readable, both on one
+    volume. If link(2) is permitted, a tool can alias a readable external file
+    into the workdir and write through it, which is outside the boundary this
+    profile advertises. file-link is its own SBPL operation rather than part of
+    file-write*, so (deny default) should already refuse it; this is the
+    measurement that says whether it does, on the host that decides.
+
+    The link is made on the host first: a link that fails for an unrelated
+    reason, a different volume most of all, would prove nothing.
+    """
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    library = tmp_path / "library"
+    library.mkdir()
+    external = library / "weights.bin"
+    external.write_text("UNSLOTH_EXTERNAL_INODE", encoding = "utf-8")
+    monkeypatch.setattr(backend, "model_library_roots", lambda: (str(library),))
+
+    control = workdir / "host-alias"
+    os.link(external, control)
+    assert control.stat().st_ino == external.stat().st_ino, (
+        "the host could not hard-link across these two paths, so the negative "
+        "control below would prove nothing"
+    )
+    control.unlink()
+
+    argv = ("/bin/ln", str(external), str(workdir / "alias"))
+    prepared = backend.prepare(
+        ToolLaunchPlan(argv = argv, workdir = str(workdir), env = {"PATH": "/usr/bin:/bin"})
+    )
+    try:
+        result = subprocess.run(
+            prepared.argv, capture_output = True, text = True, timeout = 60, check = False
+        )
+    finally:
+        prepared.cleanup()
+
+    assert result.returncode != 0, (
+        "a hard link to a readable file outside the workdir was created inside it, "
+        "so a tool can write to that file through the alias"
+    )
+    assert not (workdir / "alias").exists()
+
+
+def test_a_workdir_spelled_differently_from_the_studio_home_is_still_readable(
+    monkeypatch, tmp_path
+):
+    """The deny rules are emitted in every spelling a path has, so the restore
+    list has to be built the same way. It was not. On macOS /var, /tmp and /etc
+    are symlinks into /private, a session workdir arrives resolved and a
+    configured Studio home does not, and with the home under /var/folders the
+    sandboxed interpreter could not open its own script: every tool call came
+    back Operation not permitted. Reproduced here with a symlink, which is the
+    same shape without needing a Darwin kernel."""
+    real_home = tmp_path / "private" / "studio-home"
+    workdir = real_home / "sandbox" / "_default"
+    workdir.mkdir(parents = True)
+    (tmp_path / "alias").symlink_to(tmp_path / "private")
+    aliased_home = tmp_path / "alias" / "studio-home"
+
+    monkeypatch.setattr(backend, "studio_state_roots", lambda: (str(aliased_home),))
+
+    rules = backend._studio_state_rules((), (), str(workdir.resolve()), "")
+
+    assert rules, "the state deny was not emitted, so this test proves nothing"
+    restored = [rule for rule in rules if rule.startswith("(allow")]
+    assert restored, "the workdir under the Studio home was never restored"
+    assert any(str(workdir.resolve()) in rule for rule in restored)

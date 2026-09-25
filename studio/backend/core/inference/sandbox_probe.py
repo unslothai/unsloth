@@ -36,8 +36,22 @@ _SENTINEL_TOKEN = "unsloth-host-sentinel-must-not-be-readable"
 _OUTSIDE_WRITE_TOKEN = "unsloth-sandbox-escaped-to-the-host"
 
 PROBE_TIMEOUT_SECONDS = 30.0
-# Short enough that installing the AppArmor profile takes effect without a restart.
-_CACHE_TTL_SECONDS = 60.0
+# Long enough that an idle chat does not pay the 353ms cold probe again on its
+# next message, which 60s did: a call 70s after the last one cost 1.24s against
+# 0.040s unsandboxed. Correctness does not rest on the TTL. The key already
+# carries the runtime identity, so a changed interpreter or venv re-probes
+# immediately, and a launch that fails invalidates the entry outright
+# (tools.py's _note_launch_failure), which is what actually covers installing
+# the AppArmor profile without a restart.
+_CACHE_TTL_SECONDS = 900.0
+# An UNAVAILABLE verdict keeps the old, short TTL, because it is the one the
+# user is actively trying to change: the remediation text tells them to install
+# bubblewrap or load the AppArmor profile, and neither moves the cache key, so a
+# 900s negative entry would leave `auto` unisolated and `required` refusing for
+# up to 15 minutes after they did exactly what they were told. The saving the
+# long TTL bought was on the hot path, where the verdict is available and the
+# host is not changing underneath it, so nothing is given back here.
+_CACHE_TTL_UNAVAILABLE_SECONDS = 60.0
 _CACHE_MAX_ENTRIES = 8
 
 # ``sun_path`` is 108 bytes and multiprocessing appends about 32 of its own, so a
@@ -69,7 +83,8 @@ def _cache_get(key: tuple[str, str]) -> tuple[bool, str] | None:
 
 def _cache_put(key: tuple[str, str], available: bool, reason: str) -> None:
     with _cache_lock:
-        _cache[key] = (time.monotonic() + _CACHE_TTL_SECONDS, available, reason)
+        ttl = _CACHE_TTL_SECONDS if available else _CACHE_TTL_UNAVAILABLE_SECONDS
+        _cache[key] = (time.monotonic() + ttl, available, reason)
         while len(_cache) > _CACHE_MAX_ENTRIES:
             _cache.pop(next(iter(_cache)))
 

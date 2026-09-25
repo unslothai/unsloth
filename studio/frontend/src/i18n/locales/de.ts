@@ -167,6 +167,8 @@ export const de = {
       noChatsYet: "Noch keine Chats",
       // Shown under an empty project folder in the sidebar.
       noChats: "Keine Chats",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "Alle Projekte angepinnt",
       showMore: "Mehr anzeigen",
       showLess: "Weniger anzeigen",
       settings: "Einstellungen",
@@ -197,6 +199,7 @@ export const de = {
       unpinChats: "Chats lösen",
       archiveChats: "Chats archivieren",
       markUnread: "Als ungelesen markieren",
+      markRead: "Als gelesen markieren",
       deleteChats: "Chats löschen",
       deleteTitle: "Chats löschen",
       deleteDescription: "{count} Chats löschen? Das lässt sich nicht rückgängig machen.",
@@ -215,11 +218,12 @@ export const de = {
       priority: "Priorität",
       lastUpdated: "Zuletzt aktualisiert",
       manualOrder: "Manuelle Reihenfolge",
-      moveUp: "Nach oben",
-      moveDown: "Nach unten",
+      switchedToManual: "Manuell sortiert: Zeilen zum Umordnen ziehen",
       organizeChats: "Chats organisieren",
       organizeProjects: "Projekte organisieren",
       sortPinnedChats: "Angeheftete Chats sortieren",
+      moveUp: "Nach oben",
+      moveDown: "Nach unten",
     },
     dialog: {
       deleteChat: {
@@ -564,7 +568,16 @@ export const de = {
       sourceHint: "Die Modell-Runner schreiben eigene Protokolle. Ein fehlgeschlagener Ladevorgang oder eine fehlgeschlagene Generierung wird deshalb oft dort erklärt und nicht im Server-Protokoll.",
       path: "Speicherort",
       pathCopy: "Pfad kopieren",
-      refreshSection: "Aktualisierung",
+      currentSession: "Aktuell",
+      statusLive: "Live",
+      statusPaused: "Pausiert",
+      statusStale: "Veraltet",
+      filterPlaceholder: "Zeilen filtern",
+      lineCount: "{count} Zeilen",
+      filteredLineCount: "{shown} von {total} Zeilen",
+      wrapLines: "Zeilen umbrechen",
+      jumpToLatest: "Zum Ende springen",
+      noMatches: "Keine Zeilen passen zum Filter.",
       mode: "Modus",
       modeLive: "Live",
       modeInterval: "Alle 3 Sekunden",
@@ -898,6 +911,18 @@ export const de = {
         revoked: "Alle Vorschaulinks widerrufen",
         revokeError: "Vorschaulinks konnten nicht widerrufen werden",
       },
+      managedProviderUrls: {
+        sectionTitle: "Verwaltete Konten",
+        enableLabel: "Lokale und Netzwerkverbindungen",
+        enableDescription:
+          "Verwaltete Konten dürfen ihre Verbindungen auf lokale oder Netzwerkadressen richten, etwa einen Ollama- oder llama.cpp-Server auf diesem Computer oder in Ihrem LAN. Standardmäßig aus, denn damit erreichen diese Konten Dienste, die auf Ihrem Computer und in Ihrem Netzwerk laufen.",
+        lockedByEnvironment:
+          "Durch UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 auf diesem Server festgelegt, das private Adressen für alle Konten ablehnt.",
+        loadError:
+          "Verbindungseinstellungen für verwaltete Konten konnten nicht geladen werden.",
+        saveError:
+          "Verbindungseinstellungen für verwaltete Konten konnten nicht gespeichert werden.",
+      },
       notifications: {
         sectionTitle: "Benachrichtigungen",
         showLlamaUpdates: "llama.cpp-Update-Benachrichtigungen",
@@ -1140,7 +1165,7 @@ export const de = {
       custom: {
         chatWidth: {
           label: "Chatbreite",
-          description: "Breite von Nachrichten und Eingabefeld festlegen. Volle Breite nutzt den Platz zwischen den Seitenleisten.",
+          description: "Breite von Nachrichten und Eingabefeld.",
           standard: "Standard",
           wide: "Breit",
           full: "Volle Breite",
@@ -1213,7 +1238,6 @@ export const de = {
         },
         contrast: {
           label: "Kontrast",
-          description: "Intensität von Rahmen und sekundärem Text.",
         },
         reduceMotion: {
           label: "Bewegung reduzieren",
@@ -1243,7 +1267,7 @@ export const de = {
       sidebarNav: {
         title: "Seitenleisten-Navigation",
         description:
-          "Tabs der Seitenleiste anheften und neu anordnen. Nicht angeheftete Tabs sammeln sich im Menü „Mehr“; ein einzelner nicht angehefteter Tab wird ausgeblendet, statt ein Menü mit nur einem Eintrag zu erhalten. „Neuer Chat“ bleibt fest.",
+          "Tabs der Seitenleiste anheften und neu anordnen. Nicht angeheftete Tabs landen im Menü „Mehr“.",
         dragToReorder: "Zum Neuanordnen ziehen",
         pinToSidebar: "{name} an die Seitenleiste anheften",
         moreHolds: "Mehr ({count})",
@@ -1251,7 +1275,7 @@ export const de = {
       sidebarMenu: {
         title: "Seitenleistenmenü",
         description:
-          "Elemente im Profilmenü der Seitenleiste anzeigen, ausblenden und neu anordnen. Einstellungen, Hilfe, Abmelden und Herunterfahren bleiben an ihrem Platz.",
+          "Verknüpfungen im Profilmenü auswählen und neu anordnen.",
         darkModeToggle: "Umschalter für den dunklen Modus",
         dragToReorder: "Zum Neuanordnen ziehen",
       },
@@ -1406,6 +1430,61 @@ export const de = {
         copied: "Pfad kopiert",
         openError: "Der Ordner konnte nicht geöffnet werden",
         copyError: "Der Pfad konnte nicht kopiert werden",
+        caches: {
+          label: "Cache-Dateien",
+          description:
+            "{size} in Caches, davon können {reclaimable} jetzt geleert werden.",
+          hint: "Paket-Downloads, kompilierte Kernel und Übertragungs-Caches, die Unsloth bei Bedarf neu aufbaut. Heruntergeladene Modelle, Projekte, Chats, Einstellungen und Ihr Hugging Face-Token werden hier nie geleert.",
+          keywords:
+            "Cache Caches leeren löschen bereinigen aufräumen Speicherplatz freigeben Festplatte temporär kompiliert cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "Cache-Größen werden ermittelt...",
+          measureFailed: "Die Caches konnten nicht gemessen werden",
+          empty: "Keine Cache-Dateien gefunden.",
+          detailsAction: "Details",
+          recheckAction: "Erneut prüfen",
+          hideDetailsAction: "Details ausblenden",
+          clearAction: "Caches leeren",
+          clearOneAction: "Leeren",
+          clearingAction: "Wird geleert...",
+          confirmTitle: "Zwischengespeicherte Dateien leeren?",
+          confirmDescription: "Das gibt etwa {size} frei.",
+          confirmOneTitle: "{name} leeren?",
+          safety:
+            "Unsloth baut einen Cache beim nächsten Bedarf neu auf. Heruntergeladene Modelle, Projekte, Chats, Einstellungen und Ihr Hugging Face-Token bleiben unberührt.",
+          hubCost:
+            "Das ist der Modell-Cache. Wenn Sie ihn leeren, werden diese Modelle beim nächsten Verwenden erneut heruntergeladen.",
+          datasetsCost:
+            "Wenn Sie das leeren, werden diese Datensätze beim nächsten Verwenden erneut heruntergeladen.",
+          blocked: "Nicht geleert: {reason}",
+          cleared: "{size} geleert",
+          partial: "Einige Cache-Dateien konnten nicht entfernt werden",
+          clearFailed: "Die Caches konnten nicht geleert werden",
+          names: {
+            uv: "uv-Paket-Cache",
+            pip: "pip-Download-Cache",
+            npm: "npm-Paket-Cache",
+            bun: "Bun-Paket-Cache",
+            torchInductor: "Torch Inductor-Kompilierungs-Cache",
+            torchExtensions: "Torch-Erweiterungs-Builds",
+            triton: "Triton-Kernel-Cache",
+            cuda: "CUDA-Kernel-Cache",
+            numba: "Numba-Kompilierungs-Cache",
+            matplotlib: "Matplotlib-Schriften-Cache",
+            vllm: "vLLM-Cache",
+            unslothCompiled: "Kompilierte Unsloth-Module",
+            hfXet: "Hugging Face-Übertragungs-Cache",
+            hfAssets: "Hugging Face-Asset-Cache",
+            hfDatasets: "Hugging Face-Datensatz-Cache",
+            hfHub: "Hugging Face-Modell-Cache",
+          },
+        },
+        lowDisk: {
+          title: "Der Speicherplatz wird knapp",
+          criticalTitle: "Der Speicherplatz ist kritisch knapp",
+          description:
+            "{free} frei von {total}. Das Leeren der Caches kann Speicherplatz freigeben.",
+          action: "Caches ansehen",
+        },
       },
       environment: {
         title: "Umgebung",
@@ -1520,9 +1599,9 @@ export const de = {
           "Überspringt Bestätigungsabfragen. Nur in vertrauenswürdigen Umgebungen verwenden.",
       },
       remote: {
-        title: "Mit einem entfernten Unsloth Studio verbinden",
+        title: "Mit einem entfernten Unsloth verbinden",
         description:
-          "Richten Sie unsloth start auf ein anderswo laufendes Unsloth Studio aus, indem Sie diese Variablen vor dem Aufruf setzen (oder --api-key direkt übergeben):",
+          "Richten Sie unsloth start auf ein anderswo laufendes Unsloth aus, indem Sie diese Variablen vor dem Aufruf setzen (oder --api-key direkt übergeben):",
       },
       passthrough: {
         title: "Argumente an den Agenten übergeben",
@@ -1550,16 +1629,11 @@ export const de = {
       rememberParamsPerModelHint:
         "Wenn deaktiviert, verwenden alle Modelle dieselben Einstellungen.",
       autoCompactHint:
-        "Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM.",
+        "Nur lokale GGUF-Chats. Verdrängte Runden werden indexiert, sodass das Modell sie zurückholen kann, und ein Reset zitiert die dauerhaft geltenden Anweisungen, die hineinpassen, wortgetreu und mit Vorrang für die ältesten und neuesten vor allem dazwischen. Archivieren setzt einen gespeicherten Chat und den Vektorindex voraus; ohne sie werden ältere Runden verworfen. Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM.",
       pastedTextShortDescription:
         "Eingefügter Text ab {count} Zeichen wird als .txt-Datei angehängt. Kürzerer Text bleibt im Nachrichtenfeld.",
       pastedTextOffDescription:
         "Eingefügter Text bleibt unabhängig von seiner Länge im Nachrichtenfeld.",
-      compactionDescriptionInherit: "Folgt der Kontextrichtlinie des Servers.",
-      compactionDescriptionCheckpoint:
-        "Behält den letzten Austausch und die dauerhaft geltenden Anweisungen bei.",
-      compactionDescriptionRolling:
-        "Entfernt die ältesten Gesprächsrunden und behält neuere Inhalte mit dem gewählten zusätzlichen Freiraum.",
       projectsSection: "Projektbereich anzeigen",
       projectsSectionDescription:
         "Gruppiert Projekt-Chats unter einer Überschrift für Projekte. Deaktiviere dies, um sie stattdessen unter den zuletzt verwendeten Chats aufzulisten.",
@@ -1583,7 +1657,7 @@ export const de = {
           "Elemente im seitlichen Plus-Menü des Chats anheften. Die übrigen werden unter „Mehr“ angezeigt.",
         chatWithFiles: "Chat mit Dateien (RAG)",
         mcp: "MCP",
-        skills: "Agentenfähigkeiten",
+        skills: "Fähigkeiten",
         savedPrompts: "Gespeicherte Prompts",
         compareChat: "Chats vergleichen",
         exportChat: "Chat exportieren",
@@ -1606,26 +1680,20 @@ export const de = {
         "Stellt den zuletzt verwendeten Prompt, die Temperatur und weitere Einstellungen pro Modell wieder her.",
       autoCompact: "Lange Chats automatisch komprimieren",
       autoCompactDescription:
-        "Entfernt ältere Gesprächsrunden, wenn ein lokaler GGUF-Chat sein Kontextlimit erreicht.",
-      compactionStyle: "Wenn der Kontext voll ist",
-      compactionStyleDescription:
-        "Die Servervorgabe behält UNSLOTH_CONTEXT_POLICY bei. Gespräch zurücksetzen behält die letzte Runde und dauerhafte Anweisungen. Ein gleitendes Fenster verwirft die ältesten Runden und kann mehr aktuellen Verlauf behalten.",
-      compactionStyleInherit: "Servervorgabe verwenden",
-      compactionStyleCheckpoint: "Gespräch zurücksetzen",
-      compactionStyleRollingDefault:
-        "Älteste Runden verwerfen (~25 % zusätzlicher Platz)",
-      compactionStyleRolling10:
-        "Älteste Runden verwerfen (~10 % zusätzlicher Platz)",
-      compactionStyleRolling5:
-        "Älteste Runden verwerfen (~5 % zusätzlicher Platz)",
-      compactionStyleRollingNone:
-        "Älteste Runden verwerfen (keine zusätzliche Kürzung)",
+        "Ältere Runden wandern in ein durchsuchbares Archiv, wenn ein Chat voll läuft.",
       autoCompactKeywords:
-        "Komprimierung automatisch Kontext Fenster kürzen gleitend Prüfpunkt Reserve compaction rolling checkpoint headroom",
+        "Komprimierung automatisch Kontext Fenster kürzen gleitend Prüfpunkt Reserve Archiv Abruf Suche compaction rolling checkpoint headroom archive retrieval rag",
+      visibility: {
+        collapsed: "Eingeklappt",
+        auto: "Während der Ausführung ausklappen",
+        expanded: "Immer ausgeklappt",
+      },
+      visibilityKeywords:
+        "einklappen eingeklappt ausklappen ausgeklappt offen geschlossen Denken Reasoning Tool-Aufrufe Tool-Aktivität gruppieren Streaming",
       thinking: {
-        collapseByDefault: "Denken standardmäßig einklappen",
-        collapseByDefaultDescription:
-          "Das Denken bleibt eingeklappt, während das Modell denkt, statt automatisch aufzuklappen. Zum Lesen einen Block ausklappen.",
+        visibility: "Denken",
+        visibilityDescription:
+          "Wie das Denken geöffnet wird. Einzelne Blöcke lassen sich weiterhin selbst aus- und einklappen.",
       },
       currentDate: {
         label: "Dem Modell das heutige Datum mitteilen",
@@ -1635,9 +1703,14 @@ export const de = {
         saveError: "Einstellungen zum aktuellen Datum konnten nicht aktualisiert werden",
       },
       tools: {
-        collapseByDefault: "Tool-Aktivität standardmäßig einklappen",
-        collapseByDefaultDescription:
-          "Tool-Eingaben und -Ausgaben bleiben während der Ausführung eingeklappt. Zum Prüfen eine Tool-Zeile ausklappen.",
+        visibility: "Tool-Aufrufe",
+        visibilityDescription:
+          "Wie die Tool-Aktivität geöffnet wird. Einzelne Aufrufe lassen sich weiterhin selbst aus- und einklappen.",
+        foldIntoThinking: "Tool-Aufrufe unter Denken gruppieren",
+        foldIntoThinkingDescription:
+          "Die Tool-Aufrufe eines Zuges im Denken-Block statt in eigenen Zeilen anzeigen.",
+        foldIntoThinkingBlocked:
+          "Nicht verfügbar, solange Tool-Aufrufe auf „Immer ausgeklappt“ stehen, dann bleiben sie in eigenen Zeilen.",
       },
       webSearch: {
         title: "Websuche",
@@ -1944,6 +2017,7 @@ export const de = {
       expires: "Läuft {value} ab",
       actionsFor: "Aktionen für {name}",
       copyPrefix: "Präfix kopieren",
+      copyFailed: "Kopieren fehlgeschlagen",
       revokeToken: "Token widerrufen",
       revokeTitle: "Zugriffstoken „{name}“ widerrufen?",
       revokeDescription:
@@ -2775,11 +2849,11 @@ export const de = {
     tooLarge: "Größer als der VRAM, wird auf die CPU ausgelagert. Eine kleinere Quantisierung läuft schneller",
   },
   skills: {
-    title: "Agentenfähigkeiten",
+    title: "Fähigkeiten",
     description: "Fähigkeiten werden aus deinen Standard-Agentenordnern erkannt. Aktiviere sie hier und tippe dann @ im Chat, um eine zu erwähnen.",
     precedence: "~/.agents/skills hat Vorrang vor ~/.claude/skills.",
     refresh: "Aktualisieren",
-    empty: "Keine Agentenfähigkeiten gefunden. Lege einen SKILL.md-Ordner unter ~/.agents/skills oder ~/.claude/skills an und aktualisiere dann.",
+    empty: "Keine Fähigkeiten gefunden. Lege einen SKILL.md-Ordner unter ~/.agents/skills oder ~/.claude/skills an und aktualisiere dann.",
     sourceAgents: "Agents",
     sourceClaude: "Claude",
     sourceBundled: "Mitgeliefert",
@@ -2789,7 +2863,7 @@ export const de = {
     shadowedBy: "Eine andere Fähigkeit ({source}) mit diesem Namen hat Vorrang.",
     enable: "{name} aktivieren",
     disable: "{name} deaktivieren",
-    updateError: "Agentenfähigkeit konnte nicht aktualisiert werden",
-    mentions: "Agentenfähigkeiten",
+    updateError: "Fähigkeit konnte nicht aktualisiert werden",
+    mentions: "Fähigkeiten",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

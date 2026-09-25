@@ -54,9 +54,6 @@ TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
 # cannot close the gap, and paid once per run.
 RAPID_FIRST_TURN_HOLD_S = 3.0
 
-# Wall-clock cap for the whole script (healthy run is 5-9 min).
-WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
-
 PERMISSION_ONLY = os.environ.get("STUDIO_UI_PERMISSION_ONLY", "0") == "1"
 
 # Default stays Chromium for CI. Local runs can select firefox/webkit or a Chromium channel such as chrome/msedge.
@@ -72,15 +69,49 @@ CPU_THROTTLE = float(os.environ.get("STUDIO_UI_CPU_THROTTLE", "0") or 0)
 FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_FETCH_TIMEOUT_MS", "30000"))
 LOAD_FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_LOAD_TIMEOUT_MS", "180000"))
 
+# Budget for ONE wait, restarted by `wall_kick()`. It must outlast the longest single wait
+# or it hard-exits mid-wait and the run says only "wedged somewhere". All three candidates
+# are env vars, so take the max of all three rather than whichever wins at today's values:
+# the rapid-submit settle at 2x the turn timeout (1080s where studio-mac-ui-smoke.yml sets
+# 540000, against the 720s this was pinned at), the load fetch (600s on the Kaggle lane),
+# and the ordinary fetch. Not a total: `send_and_wait` budgets 4x the turn timeout across
+# seven turns. Linux, raising none of them, keeps its 720s floor.
+_WALL_FLOOR_S = 720.0
+_LONGEST_WAIT_S = max(
+    (TURN_TIMEOUT_MS / 1000) * 2,
+    LOAD_FETCH_TIMEOUT_MS / 1000,
+    FETCH_TIMEOUT_MS / 1000,
+)
+WALL_TIMEOUT_S = float(
+    os.environ.get(
+        "STUDIO_UI_WALL_TIMEOUT_S",
+        max(_WALL_FLOOR_S, _LONGEST_WAIT_S + 120),
+    )
+)
+# Off by default, so the run has no total; see `_WallClockWatchdog`. Set by the callers
+# that must size an outer bound around this process: tests/kaggle/studio_gpu and
+# .github/scripts/run-studio-permission-browser.sh.
+TOTAL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_TOTAL_TIMEOUT_S", "0")) or None
+
 _n = [0]
+
+_watchdog = None  # armed below; everything above it runs before there is one
+
+
+def wall_kick():
+    """Restart the budget. Call after a bounded wait, or the next inherits its leftover."""
+    if _watchdog is not None:
+        _watchdog.kick()
 
 
 def step(s):
     print(f"[ui] STEP {s}", flush = True)
+    wall_kick()
 
 
 def info(s):
     print(f"[ui] {s}", flush = True)
+    wall_kick()
 
 
 def fail(m):
@@ -411,6 +442,150 @@ def login_via_api(pw):
         return exc.code
 
 
+# How long a Recents click may take to show the thread's turns. Opening a chat runs its history
+# loader, which awaits four requests in a row (the thread, its active runs, its messages, its
+# research state) before anything renders. On a Windows runner shared by two lanes that took
+# 300-700 ms, so a fixed 500 ms read found an empty thread in about one run in four.
+RECENTS_LOAD_TIMEOUT_MS = 20_000
+
+
+def open_recent_thread_with_our_prompts(
+    page,
+    sent_prompts,
+    shoot,
+    our_thread_id = "",
+):
+    """Click this run's chat in Recents and prove it opens with the turns it sent.
+
+    The entry is chosen by title, since a chat's title is its first prompt: the most recent row
+    is not necessarily ours. Then the check waits for the thread to render rather than reading
+    once: turns only appear once the history loader has finished.
+
+    *our_thread_id*, read while this run's chat was open, is the identity when known: the prompts
+    are fixed, so on a reused Studio home an earlier run's chat can carry the same title and turns.
+    That row is opened and must show our turns.
+
+    Without it, a row whose title is one of our prompts is ours, so it must show our turns or the
+    step fails.
+    When no title matches (auto-titling renames a chat), the rows are tried in listed order until
+    one opens with our turns: a row that loads someone else's turns, or none, is not ours, and
+    the next is tried. Only a click error or a row that is not ours moves on; the step fails if
+    none of the candidates is.
+    """
+    wanted = [" ".join(p.lower().split()) for p in sent_prompts]
+    threads = page.locator('[data-testid="recent-thread"]')
+    try:
+        threads.first.wait_for(state = "visible", timeout = 5_000)
+    except Exception as _wait_err:
+        info(f"WARN no recent-thread testid surfaced within 5s: {_wait_err!s}")
+    n_threads = threads.count()
+    titles = [(threads.nth(i).text_content() or "").strip() for i in range(min(n_threads, 20))]
+    ours = [i for i, t in enumerate(titles) if " ".join(t.lower().split()) in wanted]
+    if not ours:
+        info(f"WARN no Recents title matches a prompt we sent; titles={titles[:5]!r}")
+    # (row, label, strict): a strict row is known to be ours, so it must show our turns.
+    candidates = [(threads.nth(i), titles[i], i in ours) for i in ours] + [
+        (threads.nth(i), titles[i], False) for i in range(len(titles)) if i not in ours
+    ]
+    if our_thread_id:
+        # By id, over every row: pinned and project chats share the testid and can sit ahead.
+        row = page.locator(f'[data-testid="recent-thread"][data-thread-id="{our_thread_id}"]').first
+        if row.count() == 0:
+            soft_fail(f"this run's chat {our_thread_id!r} is not in the sidebar")
+            return
+        candidates = [(row, (row.text_content() or "").strip(), True)]
+
+    def shown_user_turns():
+        return (
+            robust_evaluate(
+                page,
+                """() => Array.from(document.querySelectorAll('[data-role="user"]'))
+                .map((el) => (el.innerText || "").toLowerCase().split(/\\s+/).join(" "))""",
+            )
+            or []
+        )
+
+    def landed(thread_id, before, before_thread):
+        """ "ours" once the thread shows one of our prompts, "other" once it has loaded user
+        turns and none is ours, None if neither within the timeout.
+
+        *before* is what the page showed before the click. The chat keeps one runtime while the
+        next thread loads, so the previous thread's turns stay on screen after the URL changes:
+        turns identical to *before* are not this thread's yet, whether or not they are ours, unless
+        the row clicked is the thread that was already open (*before_thread*)."""
+        try:
+            handle = page.wait_for_function(
+                """([threadId, wanted, before, beforeThread]) => {
+                    const params = new URLSearchParams(location.search);
+                    if (threadId && params.get("thread") !== threadId
+                            && params.get("compare") !== threadId) {
+                        return false;
+                    }
+                    const users = Array.from(document.querySelectorAll('[data-role="user"]'))
+                        .map((el) => (el.innerText || "").toLowerCase().split(/\\s+/).join(" "));
+                    const stale = users.length > 0 && threadId !== beforeThread
+                        && JSON.stringify(users) === JSON.stringify(before);
+                    if (stale) return false;
+                    if (users.some((text) => wanted.some((prompt) => text.includes(prompt)))) {
+                        return "ours";
+                    }
+                    return users.length ? "other" : false;
+                }""",
+                arg = [thread_id, wanted, before, before_thread],
+                timeout = RECENTS_LOAD_TIMEOUT_MS,
+            )
+            return handle.json_value()
+        except Exception:
+            return None
+
+    deadline = time.monotonic() + 60
+    clicked = 0
+    thread_id = ""
+    for i, (entry, title, strict) in enumerate(candidates[:5]):
+        if time.monotonic() > deadline:
+            break
+        before = shown_user_turns()
+        before_thread = robust_evaluate(
+            page, "() => new URLSearchParams(location.search).get('thread') || ''"
+        )
+        try:
+            thread_id = entry.get_attribute("data-thread-id") or ""
+            entry.scroll_into_view_if_needed()
+            entry.click(timeout = 5_000)
+        except Exception as _click_err:
+            info(f"recent-thread click {i} failed: {_click_err!s}")
+            continue
+        clicked += 1
+        info(f"OK clicked recent entry: {title[:60]!r}")
+        started = time.monotonic()
+        verdict = landed(thread_id, before, before_thread)
+        if verdict == "ours":
+            shoot("15d-recent-clicked")
+            info(
+                "OK landed on a thread that includes our prompts "
+                f"({(time.monotonic() - started) * 1000:.0f} ms after the click)"
+            )
+            return
+        if strict:
+            break  # known to be ours, by id or by title: it must show our turns
+        info(f"recent entry {i} is not this run's chat ({verdict or 'no turns'}); trying the next")
+    if not clicked:
+        soft_fail(f"no Recents entry was clickable within 60s deadline (n_threads={n_threads})")
+        return
+    turns_text = robust_evaluate(
+        page,
+        """() => Array.from(
+            document.querySelectorAll('[data-role="user"], [data-role="assistant"]')
+        ).map((e) => (e.innerText || "").toLowerCase()).join(" ")""",
+    )
+    shoot("15d-recent-clicked")
+    soft_fail(
+        "Recents-clicked thread doesn't contain any of our sent prompts after "
+        f"{RECENTS_LOAD_TIMEOUT_MS} ms; url={page.url!r} thread={thread_id!r} "
+        f"turns_text={turns_text[:120]!r}"
+    )
+
+
 def parse_rgb(s):
     m = re.search(r"rgba?\((\d+),\s*(\d+),\s*(\d+)", s or "")
     return tuple(int(x) for x in m.groups()) if m else None
@@ -674,6 +849,7 @@ with sync_playwright() as p:
         WALL_TIMEOUT_S,
         label = "ui",
         info = info,
+        total_deadline_s = TOTAL_TIMEOUT_S,
     )
     # Pre-flight: macos-14 can surface a 200 /api/health while the auth DB is still migrating;
     # this 30s probe catches that gap before we sink 60s into a change-password timeout.
@@ -766,6 +942,9 @@ with sync_playwright() as p:
     # page/reload between tries so a mid-try rerender doesn't poison the next.
     form_err: Exception | None = None
     for _form_attempt in range(3):
+        # Forward progress that reports itself with bare print(), so nothing else here
+        # resets the budget: two failed attempts spend the whole Linux 720s.
+        wall_kick()
         try:
             page.goto(f"{BASE}/change-password", wait_until = "domcontentloaded", timeout = 60_000)
             try:
@@ -855,6 +1034,7 @@ with sync_playwright() as p:
     composer = page.locator('textarea[aria-label="Message input"]')
     last_err: Exception | None = None
     for _attempt in range(2):
+        wall_kick()  # as in the change-password loop: the retry logs with bare print()
         try:
             composer.wait_for(state = "visible", timeout = 60_000)
             last_err = None
@@ -1118,6 +1298,7 @@ with sync_playwright() as p:
             state = "attached",
             timeout = TURN_TIMEOUT_MS,
         )
+        wall_kick()
         try:
             page.wait_for_selector(
                 'button[aria-label="Stop generating"]',
@@ -1131,6 +1312,7 @@ with sync_playwright() as p:
                 state = "detached",
                 timeout = TURN_TIMEOUT_MS,
             )
+        wall_kick()
 
         # 2. Snapshot total bubble count before send; we wait for it to grow by exactly 1. We do NOT require
         #    non-empty text: an empty assistant response is legitimate (gemma-3-270m does this at temp 0), and the
@@ -1165,6 +1347,7 @@ with sync_playwright() as p:
             arg = bubbles_before + 1,
             timeout = TURN_TIMEOUT_MS,
         )
+        wall_kick()
 
         # 4. Wait for this turn's streaming to finish. Stop may never appear (gemma-3-270m can finish before it
         #    paints), so its appearance is best-effort; then wait for it to detach.
@@ -1176,6 +1359,7 @@ with sync_playwright() as p:
             )
         except Exception:
             pass
+        wall_kick()
         try:
             page.wait_for_selector(
                 'button[aria-label="Stop generating"]',
@@ -1362,6 +1546,8 @@ with sync_playwright() as p:
     # Settle before the five-turn sequence below: two bubbles, nothing streaming, nothing queued.
     # What the turns SAID is not checked here and never was;
     # the queue behaviour this step exists to prove is `state.queueSeen` above.
+    # The longest single wait in the script, so it starts on a full budget.
+    wall_kick()
     page.wait_for_function(
         """(want) => {
             const replies = Array.from(
@@ -1445,6 +1631,19 @@ with sync_playwright() as p:
         before_count = len(page.locator('[data-role="assistant"]').all())
         send_and_wait(p_, before_count + 1)
     shoot("06-after-extra-turns")
+    # This run's chat by id, read while it is open, so the Recents step reopens THIS chat and not
+    # one an earlier run left with the same fixed prompts.
+    our_thread_id = (
+        robust_evaluate(
+            page,
+            """() => new URLSearchParams(location.search).get("thread")
+                || document.querySelector('[data-testid="recent-thread"][data-active="true"]')
+                    ?.getAttribute("data-thread-id")
+                || ''""",
+        )
+        or ""
+    )
+    info(f"this run's chat: {our_thread_id or 'no thread id on the page'}")
 
     # ─────────────────────────────────────────────────────
     # 7. Composer toggle buttons. Each aria-label flips between
@@ -1548,9 +1747,11 @@ with sync_playwright() as p:
                 return {
                     // The scale the size tokens are multiplied by: index.css sets the 15px
                     // product default, and the appearance store overrides it inline as
-                    // preference / 16 for any other size.
-                    uiFontScale: getComputedStyle(root)
-                        .getPropertyValue('--ui-font-scale').trim(),
+                    // preference / 16 for any other size. Resolved through a length rather
+                    // than read as a property: since #11648 it is a calc() of the size and
+                    // interface scales, and an unregistered custom property reads back as
+                    // that expression, not a number.
+                    uiFontScale: (() => { const probe = document.createElement('div'); probe.style.cssText = 'position:absolute;visibility:hidden;width:calc(10000px * var(--ui-font-scale, 1))'; document.body.appendChild(probe); const px = parseFloat(getComputedStyle(probe).width); probe.remove(); return String(px / 10000); })(),
                     actualRenderLinux: root.classList.contains('render-linux'),
                     isDesktopLinux: ua.includes('linux') && !ua.includes('android'),
                     isDark: root.classList.contains('dark'),
@@ -1904,60 +2105,16 @@ with sync_playwright() as p:
     composer.wait_for(state = "visible", timeout = 60_000)
 
     # ─────────────────────────────────────────────────────
-    # 11c. Recents: click the most-recent thread (we persisted one
-    # via the turns above). Guards the thread-history loader / route.
+    # 11c. Recents: open the thread the turns above persisted, from the
+    # sidebar. Guards the thread-history loader / route.
     # ─────────────────────────────────────────────────────
     step("Recents: click previous chat in sidebar")
-    # The persisted thread title is usually a snippet of the first user message, so accept any of our prompt keywords.
-    PROMPT_KEYWORDS = ("hello", "world", "tree", "yes", "1+1", "2+2")
-    # Use the structural data-testid (thread-sidebar.tsx): the old
-    # text-filtered selector matched coalesced nav text and burned
-    # 13-23 min per platform. Also bound the whole step at 30s so a
-    # misbehaving selector can't blow up wallclock.
-    threads = page.locator('[data-testid="recent-thread"]')
-    deadline = time.monotonic() + 30
-    clicked_recent = False
-    try:
-        threads.first.wait_for(state = "visible", timeout = 5_000)
-    except Exception as _wait_err:
-        info(f"WARN no recent-thread testid surfaced within 5s: {_wait_err!s}")
-    n_threads = threads.count()
-    for i in range(min(n_threads, 5)):
-        if time.monotonic() > deadline:
-            break
-        try:
-            t = (threads.nth(i).text_content() or "").strip()
-            threads.nth(i).scroll_into_view_if_needed()
-            threads.nth(i).click(timeout = 5_000)
-            page.wait_for_timeout(500)
-            shoot("15d-recent-clicked")
-            info(f"OK clicked recent entry: {t[:60]!r}")
-            # The landed thread must include at least one of our prompts.
-            turns_text = robust_evaluate(
-                page,
-                """() => {
-                const els = document.querySelectorAll(
-                    '[data-role="user"], [data-role="assistant"]'
-                );
-                return Array.from(els).map(e => (e.innerText || '')
-                    .toLowerCase()).join(' ');
-            }""",
-            )
-            clicked_recent = True
-            if any(k in turns_text for k in PROMPT_KEYWORDS):
-                info("OK landed on a thread that includes our prompts")
-                break
-            else:
-                soft_fail(
-                    "Recents-clicked thread doesn't contain any of our "
-                    f"sent prompts; turns_text={turns_text[:120]!r}"
-                )
-                break
-        except Exception as _click_err:
-            info(f"recent-thread click {i} failed: {_click_err!s}")
-            continue
-    if not clicked_recent:
-        soft_fail(f"no Recents entry was clickable within 30s deadline (n_threads={n_threads})")
+    open_recent_thread_with_our_prompts(
+        page,
+        ["Reply with exactly: rapid-first", "Reply with exactly: rapid-second", *prompts, *extra],
+        shoot,
+        our_thread_id = our_thread_id,
+    )
     page.goto(f"{BASE}/chat")
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)

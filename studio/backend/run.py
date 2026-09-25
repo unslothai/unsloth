@@ -2116,13 +2116,17 @@ def _terminal_password_gate(
             return False, False
         # The public page will not auto-fill the bootstrap credential and the seeded file may already be gone,
         # so point recovery at a terminal-attached run / reset-password instead of reading it from disk.
+        # The ABSOLUTE form here: this line is stderr on the host, where naming the install is the point and
+        # a bare `unsloth` may not be on PATH. The 401 body deliberately carries only the PATH form.
+        from routes.auth import _reset_password_command
+
         print(
             "  WARNING: the default admin password is still active while "
             "Unsloth is about to be published on a public Cloudflare URL, and "
             "no terminal is attached to change it here. The public page will "
             "NOT auto-fill the bootstrap credential. Set a new password by "
             "running `unsloth studio` locally with a terminal attached, or "
-            "`unsloth studio reset-password`. Unsloth shuts down after the "
+            f"`{_reset_password_command()}`. Unsloth shuts down after the "
             "bootstrap deadline (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT, default 1h) "
             "unless the password is changed.",
             file = sys.stderr,
@@ -2186,10 +2190,12 @@ def _terminal_password_gate(
             "(UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0), so nothing will stop it "
             "serving that credential."
         )
+    from routes.auth import _reset_password_command
+
     print(
         "  WARNING: continuing with the auto-generated admin password on a bind "
         f"that is reachable from the network. {tail} Change it by logging in, or "
-        "with `unsloth studio reset-password`.",
+        f"with `{_reset_password_command()}`.",
         file = sys.stderr,
         flush = True,
     )
@@ -2302,6 +2308,27 @@ def _drops_its_marker_on_failure(start):
             raise
 
     return started
+
+
+def _repair_pinned_diffusers(silent: bool) -> None:
+    """Repair before importing the app; exit if packages may still be half replaced at timeout."""
+    echo = (lambda _line: None) if silent else (lambda line: print(line, flush = True))
+    try:
+        from utils.diffusers_repair import (
+            InstallInterrupted,
+            PeerInstallInProgress,
+            repair_diffusers_before_imports,
+        )
+    except Exception as exc:  # noqa: BLE001 -- a self-heal must never block startup
+        echo(f"  - diffusers self-heal skipped: {exc}")
+        return
+    try:
+        repair_diffusers_before_imports(echo)
+    except (PeerInstallInProgress, InstallInterrupted) as exc:
+        print(f"Error: {exc}", file = sys.stderr, flush = True)
+        sys.exit(1)
+    except Exception as exc:  # noqa: BLE001 -- a self-heal must never block startup
+        echo(f"  - diffusers self-heal skipped: {exc}")
 
 
 @_drops_its_marker_on_failure
@@ -2445,6 +2472,10 @@ def run_server(
             "Loading Unsloth Studio, please wait... (this can take a few minutes)",
             flush = True,
         )
+
+    _repair_pinned_diffusers(silent)
+
+    if not silent:
         print("  - loading PyTorch, Unsloth and Transformers...", flush = True)
 
     import_started = time.perf_counter()

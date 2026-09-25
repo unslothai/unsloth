@@ -343,6 +343,91 @@ def test_restore_inductor_dir(monkeypatch, tmp_path, fake_megacache):
     assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == "/tmp/prior-inductor"  # restored
 
 
+def test_the_import_fallback_matches_the_resolver(monkeypatch):
+    """The fallback runs when a CLI entry point reaches this module without studio/backend on
+    sys.path. Narrowed to whitespace it made the same path refused or accepted depending only on
+    sys.path, which is routing that depends on import order. Swept so the copy cannot drift."""
+    import builtins
+    import string
+
+    from utils.paths.storage_roots import toolchain_path_unparseable
+
+    real_import = builtins.__import__
+
+    def no_storage_roots(name, *args, **kwargs):
+        if name == "utils.paths.storage_roots":
+            raise ImportError("simulated: studio/backend is not on sys.path")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_storage_roots)
+
+    disagreed = []
+    for char in list(string.printable) + [" ", "é"]:
+        path = f"/srv/unsloth{char}root/cache/diffusion_compile_cache/key/inductor"
+        if cc._toolchain_path_unparseable(path) != toolchain_path_unparseable(path):
+            disagreed.append(char)
+
+    assert disagreed == [], "the fallback and the resolver disagree on: " + ", ".join(
+        repr(c) for c in disagreed
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param("my studio", id = "a space"),
+        pytest.param("o'brien", id = "an apostrophe"),
+    ],
+)
+def test_an_unparseable_cache_root_never_pins_the_unparseable_path(
+    name, monkeypatch, tmp_path, fake_megacache
+):
+    """Startup declines to pin TORCHINDUCTOR_CACHE_DIR into a root the C++ builders cannot
+    parse, and this assignment used to overwrite that decision on the first compiled diffusion
+    run. Checking the environment just after launch would not have caught it.
+
+    What replaces it has to stay PER KEY. Simply keeping whatever startup left would keep the
+    one process-wide fallback, and save_cache_artifacts then serialises that shared cache into
+    every fingerprinted bundle, so each model accumulates the others'."""
+    import os
+
+    root = tmp_path / name
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.setenv(cc._ENV_DIR, str(root))
+    monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising = False)
+
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+
+    published = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+    assert published != str(ctx.dir / "inductor")
+    if published is not None:
+        assert not cc._toolchain_path_unparseable(published)
+        assert not published.startswith(str(root))
+    # The bundle is unaffected either way: only the Inductor pin moves.
+    assert ctx.dir.is_dir() and ctx.dir.is_relative_to(root)
+
+
+def test_two_models_under_an_unparseable_root_do_not_share_one_inductor_cache(
+    monkeypatch, tmp_path, fake_megacache
+):
+    """The isolation the per-key directory exists for has to survive the substitution."""
+    import os
+
+    root = tmp_path / "o'brien"
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.setenv(cc._ENV_DIR, str(root))
+    monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising = False)
+
+    first = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    one = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+    other = dict(_BEGIN_KW, shape_bucket = "512x512")
+    second = cc.begin(transformer = _transformer(), **other)
+    two = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+
+    assert first.key != second.key
+    assert one and two and one != two
+
+
 # -------------------------------------------------------------------------- legacy root
 def _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache) -> tuple:
     """Write a bundle under a fake pre-relocation root, then hand back an upgraded install:
@@ -1048,3 +1133,38 @@ def test_a_temp_file_left_by_a_killed_save_is_collected(monkeypatch, tmp_path, m
     assert cc._collect_superseded(ctx.dir, None) == [stranded.name]
     assert not stranded.exists()
     assert ctx.bundle.exists()
+
+
+def test_mark_recompiled_dirties_a_context_whose_shape_is_already_registered(tmp_path):
+    # Automatic dynamic recompiles on the first new text length at an unchanged (width, height, batch); register_shape
+    # sees no new key, so the recompiled graphs only reach disk if the context is re-dirtied explicitly.
+    ctx = cc.CacheContext(
+        key = "abc",
+        dir = tmp_path / "abc",
+        bundle = tmp_path / "abc" / "cache.bin",
+        manifest_path = tmp_path / "abc" / "manifest.json",
+        env_fp = "e",
+        model_fp = "m",
+        mode = "auto",
+    )
+    cc.register_shape(ctx, (1024, 1024, 1), static = True)
+    ctx.saved = True
+    seq = ctx.dirty_seq
+    cc.register_shape(ctx, (1024, 1024, 1), static = True)
+    assert ctx.saved is True and ctx.dirty_seq == seq
+    cc.mark_recompiled(ctx)
+    assert ctx.saved is False and ctx.dirty_seq == seq + 1
+    cc.mark_recompiled(None)  # no context, no error
+
+
+def test_a_failed_or_cancelled_render_still_dirties_the_bundle_after_a_recompile():
+    # The exception path marks the context too: a later render reusing the generalised graph compiles nothing.
+    import inspect
+
+    from core.inference import diffusion
+
+    src = inspect.getsource(diffusion.DiffusionBackend)
+    before = src.index("graphs_before = dynamo_graph_count()")
+    handler = src.index("except BaseException:", before)
+    reraise = src.index("raise\n", handler)
+    assert "compile_cache.mark_recompiled(state.compile_cache_ctx)" in src[handler:reraise]

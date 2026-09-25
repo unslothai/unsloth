@@ -26,6 +26,7 @@ import {
   pinKey,
   usePinnedModelsStore,
 } from "@/features/model-picker";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { cn, formatCompact } from "@/lib/utils";
 import {
   Download01Icon,
@@ -41,6 +42,7 @@ import {
   memo,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -318,7 +320,7 @@ function StatusDot({
     <span
       role="img"
       aria-label={label}
-      className={cn("inline-block size-[5px] shrink-0 rounded-full", toneClass)}
+      className={cn("inline-block size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full", toneClass)}
     />
   );
 }
@@ -471,8 +473,8 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
           className="size-8 rounded-[11px]"
           remote={false}
         />
-        <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
-          <div className="flex h-[18px] min-w-0 items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-1 flex-col gap-[calc(3px*var(--ui-space-scale,1))]">
+          <div className="flex h-[calc(18px*var(--ui-space-scale,1))] min-w-0 items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2 pr-2">
               <p className="truncate text-ui-12 font-medium leading-ui-18 tracking-[-0.005em] text-foreground">
                 {row.repo}
@@ -486,7 +488,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
                 <span
                   role="img"
                   aria-label="GGUF"
-                  className="inline-block size-[5px] shrink-0 rounded-full bg-format-gguf"
+                  className="inline-block size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-format-gguf"
                 />
               )}
               {unsupported && (
@@ -510,7 +512,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
               />
             </div>
           </div>
-          <div className="flex h-[16px] min-w-0 items-center justify-between gap-2 text-ui-11p5 leading-ui-16 text-muted-foreground/85">
+          <div className="flex h-[calc(16px*var(--ui-space-scale,1))] min-w-0 items-center justify-between gap-2 text-ui-11p5 leading-ui-16 text-muted-foreground/85">
             <span className="flex min-w-0 items-center gap-1">
               <span className="truncate">{row.owner}</span>
               {row.owner.toLowerCase() === "unsloth" && (
@@ -537,6 +539,7 @@ export const InventoryRow = memo(function InventoryRow({
   dimmed,
   deviceType,
   compact = false,
+  showFormatDot = true,
   onSelect,
   onChange,
 }: {
@@ -547,6 +550,7 @@ export const InventoryRow = memo(function InventoryRow({
   deviceType: string | null;
   /** Narrow split master pane: drop the capability column so the name fits. */
   compact?: boolean;
+  showFormatDot?: boolean;
   onSelect: (id: string) => void;
   onChange?: () => void;
 }) {
@@ -597,8 +601,8 @@ export const InventoryRow = memo(function InventoryRow({
       : (row.repoId ?? row.loadId)
     : undefined;
   const tooltip = buildRowStatusTooltip({
-    isGguf: row.isGguf,
-    isAdapter: row.modelFormat === "adapter",
+    isGguf: showFormatDot && row.isGguf,
+    isAdapter: showFormatDot && row.modelFormat === "adapter",
     isAvailableOnDevice: !partialRepoId,
     partialRepoId,
     unsupported,
@@ -638,18 +642,18 @@ export const InventoryRow = memo(function InventoryRow({
 
   const statusMarkers = (
     <>
-      {row.isGguf && (
+      {showFormatDot && row.isGguf && (
         <span
           role="img"
           aria-label="GGUF"
-          className="inline-block size-[5px] shrink-0 rounded-full bg-format-gguf"
+          className="inline-block size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-format-gguf"
         />
       )}
-      {row.modelFormat === "adapter" && (
+      {showFormatDot && row.modelFormat === "adapter" && (
         <span
           role="img"
           aria-label="Adapter"
-          className="inline-block size-[5px] shrink-0 rounded-full bg-format-adapter"
+          className="inline-block size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-format-adapter"
         />
       )}
       {partialRepoId ? (
@@ -863,7 +867,7 @@ export const InventoryRow = memo(function InventoryRow({
 
         {metaChips}
 
-        <div className="flex w-[96px] shrink-0 items-center justify-end text-right">
+        <div className="flex w-[calc(96px*var(--ui-space-scale,1))] shrink-0 items-center justify-end text-right">
           {row.kind === "cache" ? (
             <CachedSizeChip
               repoId={row.repoId}
@@ -892,6 +896,8 @@ export const InventoryRow = memo(function InventoryRow({
 });
 
 export const CATALOG_ROW_HEIGHT_PX = 57;
+/** Gutter between lanes, shared with the hand-laid grids beside these rows. */
+export const CATALOG_COLUMN_GAP_PX = 12;
 
 export function VirtualRows<T>({
   items,
@@ -902,7 +908,7 @@ export function VirtualRows<T>({
   columns = 1,
   rowHeight = CATALOG_ROW_HEIGHT_PX,
   cellHeight = rowHeight,
-  columnGap = 12,
+  columnGap = CATALOG_COLUMN_GAP_PX,
 }: {
   items: readonly T[];
   scrollElement: HTMLDivElement | null;
@@ -916,11 +922,17 @@ export function VirtualRows<T>({
 }) {
   const lanes = Math.max(1, columns);
   const rowCount = Math.ceil(items.length / lanes);
+  // The rows inside these slots scale with the UI font size, so the slots do
+  // too, or tall rows run into the next absolutely positioned one.
+  const scale = useUiSpaceScale();
+  const slotHeight = Math.round(rowHeight * scale);
+  const slotCellHeight = Math.round(cellHeight * scale);
+  const laneGap = Math.round(columnGap * scale);
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: rowCount,
     getScrollElement: () => scrollElement,
-    estimateSize: () => rowHeight,
+    estimateSize: () => slotHeight,
     overscan: 10,
     scrollMargin,
     getItemKey: (rowIndex) => {
@@ -928,6 +940,11 @@ export function VirtualRows<T>({
       return item ? getKey(item, rowIndex * lanes) : `row-${rowIndex}`;
     },
   });
+
+  // Sizes are cached from estimateSize, so a new scale has to invalidate them.
+  useEffect(() => {
+    virtualizer.measure();
+  }, [virtualizer, slotHeight]);
 
   return (
     <ul
@@ -952,7 +969,7 @@ export function VirtualRows<T>({
               transform: `translateY(${virtualRow.start - scrollMargin}px)`,
               // Fixed height matching estimateSize (no measureElement ref): dynamic per-row
               // measurement churns virtualizer state and causes visible jumps as new rows arrive.
-              height: `${rowHeight}px`,
+              height: `${slotHeight}px`,
               contain: "layout",
             }}
           >
@@ -960,8 +977,8 @@ export function VirtualRows<T>({
               style={{
                 display: "grid",
                 gridTemplateColumns: `repeat(${lanes}, minmax(0, 1fr))`,
-                columnGap: `${columnGap}px`,
-                height: `${cellHeight}px`,
+                columnGap: `${laneGap}px`,
+                height: `${slotCellHeight}px`,
               }}
             >
               {Array.from({ length: lanes }, (_, lane) => {
