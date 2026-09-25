@@ -266,6 +266,16 @@ def _cn_literals(source: str, anchor: str) -> str | None:
     return " ".join(pieces)
 
 
+_STRING_LITERAL = re.compile(
+    r"""(?:"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)""", re.S
+)
+
+
+def _without_strings(text: str) -> str:
+    """`text` with every quoted literal emptied, so words inside a string are not read as code."""
+    return _STRING_LITERAL.sub(lambda m: m.group(0)[0] * 2, text)
+
+
 def _opening_tags(source: str, marker: str) -> list[str]:
     """Every opening JSX tag beginning at `marker`, brace-aware."""
     tags, at = [], source.find(marker)
@@ -287,13 +297,21 @@ def _opening_tag(source: str, marker: str) -> str | None:
     if opens == -1:
         return None
     depth = 0
-    for index in range(opens, len(source)):
-        if source[index] == "{":
+    index = opens
+    while index < len(source):
+        char = source[index]
+        # A quoted `>` or brace (`title="a > b"`, `track("}")`) is text, not tag syntax.
+        literal = _STRING_LITERAL.match(source, index) if char in "\"'`" else None
+        if literal:
+            index = literal.end()
+            continue
+        if char == "{":
             depth += 1
-        elif source[index] == "}":
+        elif char == "}":
             depth -= 1
-        elif source[index] == ">" and depth == 0:
+        elif char == ">" and depth == 0:
             return _without_comments(source[opens : index + 1])
+        index += 1
     return None
 
 
@@ -432,6 +450,8 @@ def _calls_show_details(value: str | None) -> bool:
     """
     if value is None:
         return False
+    # `analytics("onShowDetails()")` names the call inside a string without making it.
+    value = _without_strings(value)
     return bool(
         re.fullmatch(r"\s*onShowDetails\s*", value)
         or re.search(r"\bonShowDetails\s*(?:\?\.)?\(", value)
@@ -461,7 +481,14 @@ def _details_item_opens_sheet(menu: str) -> bool:
     """
     for at in re.finditer(r"<[A-Za-z][\w.]*", menu):
         tag = _opening_tag(menu[at.start() :], at.group(0))
-        if tag and _names_details(tag) and _calls_show_details(_prop_value(tag, "onSelect")):
+        if (
+            tag
+            and _names_details(tag)
+            and _calls_show_details(_prop_value(tag, "onSelect"))
+            # A later `{...props}` can replace either prop, so the explicit ones prove nothing.
+            and not _spread_overrides(tag, "aria-label")
+            and not _spread_overrides(tag, "onSelect")
+        ):
             return True
     return False
 
@@ -567,6 +594,26 @@ def test_the_callback_reader_follows_a_named_callback_to_its_end(value, source, 
         ),
         ('<Item onSelect={onShowDetails} aria-label="Copy">', False),
         ('<Item data-aria-label="See response details" onSelect={onShowDetails}>', False),
+        (
+            '<Item title="Open > details" aria-label="See response details" onSelect={onShowDetails}>',
+            True,
+        ),
+        (
+            '<Item onSelect={() => { track("}"); onShowDetails(); }} aria-label="See response details">',
+            True,
+        ),
+        (
+            '<Item onSelect={() => analytics("onShowDetails()")} aria-label="See response details">',
+            False,
+        ),
+        (
+            '<Item aria-label="See response details" onSelect={onShowDetails} {...itemProps}>',
+            False,
+        ),
+        (
+            '<Item {...itemProps} aria-label="See response details" onSelect={onShowDetails}>',
+            True,
+        ),
     ],
 )
 def test_the_details_item_must_carry_both_the_label_and_the_call(menu, opens):
