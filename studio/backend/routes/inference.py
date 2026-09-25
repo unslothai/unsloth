@@ -42065,6 +42065,77 @@ async def chat_count_tokens(
     )
 
 
+def _anthropic_chat_fields(payload: AnthropicMessagesRequest, *, reads_images: bool) -> dict:
+    """The chat request fields a /v1/messages request becomes on an in-process model.
+
+    Tool intent is stated for chat: a client catalog or tool history already keeps the
+    launcher's tools default out of it, and a request with neither sends tool_choice "none",
+    so chat never opens a tool loop the Messages route did not select.
+    """
+    messages = _named_anthropic_tool_results(
+        anthropic_messages_to_openai(
+            [m.model_dump() for m in payload.messages],
+            payload.system,
+            # Kept for the template to decide, as for a chat caller replaying reasoning_content.
+            preserve_thinking = payload.preserve_thinking is not False,
+            tool_result_images = reads_images,
+        )
+    )
+    studio_tools = _anthropic_requested_studio_tools(payload.tools)
+    tool_choice = anthropic_tool_choice_to_openai(payload.tool_choice) or "auto"
+    tools = _anthropic_client_tools_for_turn(
+        [
+            tool
+            for tool in anthropic_tools_to_openai(payload.tools or [])
+            if tool.get("function", {}).get("name") not in studio_tools
+        ],
+        tool_choice,
+        messages,
+    )
+    fields = {
+        "messages": messages,
+        "tools": tools or None,
+        "tool_choice": tool_choice if tools else "none",
+        **_anthropic_reasoning_args(payload),
+    }
+    if "model" in payload.model_fields_set:
+        fields["model"] = payload.model
+    if payload.auto_heal_tool_calls is not None:
+        fields["auto_heal_tool_calls"] = payload.auto_heal_tool_calls
+    return fields
+
+
+def _anthropic_server_tools_need_gguf(payload) -> str:
+    return (
+        f"Unsloth server tools on /v1/messages need a GGUF model, and '{payload.model}' is not one."
+    )
+
+
+async def _anthropic_in_process_count(
+    payload, request, current_subject, *, server_tools: bool
+) -> Optional[JSONResponse]:
+    """Count on a resident MLX model through the chat count route, or None if none is serving."""
+    backend = await asyncio.to_thread(get_inference_backend)
+    active = getattr(backend, "active_model_name", None)
+    entry = (getattr(backend, "models", {}) or {}).get(active) or {}
+    if not active or not entry.get("is_mlx"):
+        return None
+    if server_tools:
+        raise HTTPException(
+            status_code = 400,
+            detail = anthropic_error_body(
+                _anthropic_server_tools_need_gguf(payload),
+                status = 400,
+                err_type = "invalid_request_error",
+            ),
+        )
+    chat_payload = ChatCountTokensRequest(
+        **_anthropic_chat_fields(payload, reads_images = bool(entry.get("is_vision")))
+    )
+    counted = await chat_count_tokens(chat_payload, current_subject, request)
+    return JSONResponse(content = {"input_tokens": json.loads(counted.body)["input_tokens"]})
+
+
 @router.post("/messages/count_tokens")
 async def anthropic_count_tokens(
     payload: AnthropicMessagesRequest,
@@ -42075,14 +42146,48 @@ async def anthropic_count_tokens(
 
     Translates the Anthropic request to OpenAI form (the same translation the
     /messages handler uses), counts prompt tokens with the loaded GGUF model's
-    tokenizer, and returns ``{"input_tokens": int}`` only. Unlike /messages,
-    max_tokens is NOT required here.
+    tokenizer, or a resident MLX model's through the chat count route, and returns
+    ``{"input_tokens": int}`` only. Unlike /messages, max_tokens is NOT required here.
     """
     # Reject malformed tools before the switch, like /messages, so an invalid
     # count request can't evict the loaded model.
     _validate_anthropic_client_tools(payload.tools)
     # Counting compiles no output grammar, matching Anthropic's count_tokens behavior.
     _count_response_format = _anthropic_response_format(payload, require_llama_compatibility = False)
+    _count_studio_tools = _anthropic_requested_studio_tools(payload.tools)
+    _count_has_client_tool = any(
+        (t if isinstance(t, dict) else t.model_dump()).get("input_schema") is not None
+        or anthropic_schema_client_tool_kind(t) is not None
+        for t in payload.tools or []
+    )
+    _count_openai_tool_choice = anthropic_tool_choice_to_openai(payload.tool_choice) or "auto"
+    _count_schema_disables_server_tools = (
+        _count_openai_tool_choice == "none" and _count_response_format is not None
+    )
+    _count_selects_server_tools = (
+        _anthropic_selects_server_tools(payload, _count_studio_tools, _count_has_client_tool)
+        and not _count_schema_disables_server_tools
+    )
+    from core.inference.tools import ALL_TOOLS as _ANTHROPIC_COUNT_TOOLS
+    from utils.hardware import DeviceType, get_device
+
+    _count_requests_server_tools = _count_selects_server_tools and bool(
+        _select_anthropic_server_tools(
+            _ANTHROPIC_COUNT_TOOLS, _count_studio_tools, payload.enabled_tools
+        )
+    )
+    # Only an MLX model counts in process, and only what the chat count route prices, so any
+    # other non-GGUF target is refused before it loads.
+    _in_process_refusal = None
+    # A replayed MCP envelope is an image to a vision target, which the chat count refuses.
+    _count_replay = _anthropic_chat_fields(payload, reads_images = True)["messages"]
+    if _anthropic_request_has_image(payload) or (
+        _messages_mention_mcp_images(_count_replay)
+        and await asyncio.to_thread(_messages_have_promotable_mcp_images, _count_replay)
+    ):
+        _in_process_refusal = "Cannot count tokens for messages containing images."
+    elif _count_requests_server_tools:
+        _in_process_refusal = _anthropic_server_tools_need_gguf(payload)
     # Count with the requested model's tokenizer, like the sibling /messages.
     # Carry the vision guard too: an image count naming a text-only GGUF must not
     # evict a loaded vision model for a swap that can't serve the request.
@@ -42094,11 +42199,22 @@ async def anthropic_count_tokens(
         # count_tokens only tokenizes (no generation), so it must not adopt the resident
         # model; the middleware likewise excludes count_tokens from its claim.
         claim_resident = False,
-        gguf_only = True,
+        gguf_only = (
+            _in_process_refusal is not None or await asyncio.to_thread(get_device) != DeviceType.MLX
+        ),
+        gguf_only_reason = _in_process_refusal,
     )
 
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
+        _in_process_count = await _anthropic_in_process_count(
+            payload,
+            request,
+            current_subject,
+            server_tools = _count_requests_server_tools,
+        )
+        if _in_process_count is not None:
+            return _in_process_count
         _status, _detail = await _no_model_loaded_error(
             "No GGUF model loaded. Load a GGUF model first.",
             _switch_model_for_payload(payload),
@@ -42154,25 +42270,13 @@ async def anthropic_count_tokens(
     # Only the client-tool passthrough is forwarded verbatim, so reproduce /messages' own
     # routing rather than "any tools": a Studio server-tool alias, or a template without
     # passthrough support, falls through to plain generation there and does carry the date.
-    _count_studio_tools = _anthropic_requested_studio_tools(payload.tools)
-    _count_has_client_tool = any(
-        (t if isinstance(t, dict) else t.model_dump()).get("input_schema") is not None
-        or anthropic_schema_client_tool_kind(t) is not None
-        for t in payload.tools or []
-    )
-    _count_openai_tool_choice = anthropic_tool_choice_to_openai(payload.tool_choice) or "auto"
-    _count_schema_disables_server_tools = (
-        _count_openai_tool_choice == "none" and _count_response_format is not None
-    )
     _count_server_tools = (
-        _anthropic_selects_server_tools(payload, _count_studio_tools, _count_has_client_tool)
+        _count_selects_server_tools
         and llama_backend.supports_tools
         and not _anthropic_request_has_image(payload, tool_results = llama_backend.is_vision)
-        and not _count_schema_disables_server_tools
     )
     _count_selected_server_tools = []
     if _count_server_tools:
-        from core.inference.tools import ALL_TOOLS as _ANTHROPIC_COUNT_TOOLS
         _count_selected_server_tools = _tools_for_search_images(
             _select_anthropic_server_tools(
                 _ANTHROPIC_COUNT_TOOLS,

@@ -6757,3 +6757,130 @@ def test_the_anthropic_count_refusal_is_name_aware():
     assert _messages_have_promotable_mcp_images(
         [{"role": "tool", "tool_call_id": "x", "content": "out\n" + mcp_images.SENTINEL + envelope}]
     )
+
+
+_COUNT_TOOL = {"name": "lookup", "description": "d", "input_schema": {"type": "object"}}
+_COUNT_OPENAI_TOOL = {
+    "type": "function",
+    "function": {"name": "lookup", "description": "d", "parameters": {"type": "object"}},
+}
+_COUNT_USER = {"role": "user", "content": "hi"}
+_COUNT_OTHER = {"name": "other", "input_schema": {"type": "object"}}
+_COUNT_OPENAI_OTHER = {
+    "type": "function",
+    "function": {"name": "other", "description": "", "parameters": {"type": "object"}},
+}
+_COUNT_FORCED = {"type": "function", "function": {"name": "lookup"}}
+
+
+class TestInProcessCountTokens:
+    """/v1/messages/count_tokens on a resident MLX model prices what chat's count prices."""
+
+    def _count(
+        self,
+        monkeypatch,
+        route,
+        payload,
+        *,
+        is_mlx = True,
+    ):
+        from starlette.requests import Request
+        import routes.inference as inf
+
+        calls = []
+
+        class _Resident:
+            active_model_name = "mlx/m"
+            load_generation = 0
+            models = {"mlx/m": {"is_mlx": is_mlx, "is_vision": False}}
+
+            def count_chat_tokens(self, messages, system, **kwargs):
+                calls.append((messages, system, kwargs))
+                return 7, "mlx/m"
+
+        async def _switch(*_args, **_kwargs):
+            return None
+
+        monkeypatch.setattr(inf, "get_inference_backend", lambda: _Resident())
+        monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False))
+        monkeypatch.setattr(inf, "_maybe_auto_switch_model", _switch)
+        monkeypatch.setattr(
+            inf, "_detect_safetensors_features", lambda *a, **k: {"supports_tools": True}
+        )
+        scope = {"type": "http", "method": "POST", "path": "/", "headers": [], "query_string": b""}
+        response = asyncio.run(route(payload = payload, request = Request(scope), current_subject = "t"))
+        return json.loads(response.body), calls
+
+    @pytest.mark.parametrize("policy", [None, True])
+    @pytest.mark.parametrize(
+        "anthropic, chat, tools",
+        [
+            (
+                {"system": "be brief", "messages": [{"role": "user", "content": "hi"}]},
+                {
+                    "messages": [
+                        {"role": "system", "content": "be brief"},
+                        {"role": "user", "content": "hi"},
+                    ],
+                    "tool_choice": "none",
+                },
+                None,
+            ),
+            (
+                {
+                    "messages": [_COUNT_USER],
+                    "tools": [_COUNT_TOOL, _COUNT_OTHER],
+                    "tool_choice": {"type": "tool", "name": "lookup"},
+                },
+                {
+                    "messages": [_COUNT_USER],
+                    "tools": [_COUNT_OPENAI_TOOL, _COUNT_OPENAI_OTHER],
+                    "tool_choice": _COUNT_FORCED,
+                },
+                [_COUNT_OPENAI_TOOL],
+            ),
+        ],
+        ids = ["plain", "forced_client_tool"],
+    )
+    def test_counts_what_chat_counts_for_the_translated_request(
+        self, monkeypatch, policy, anthropic, chat, tools
+    ):
+        import routes.inference as inf
+        from models.inference import ChatCountTokensRequest
+
+        set_tool_policy(policy)
+        try:
+            body, calls = self._count(
+                monkeypatch, inf.anthropic_count_tokens, AnthropicMessagesRequest(**anthropic)
+            )
+            _, chat_calls = self._count(
+                monkeypatch, inf.chat_count_tokens, ChatCountTokensRequest(**chat)
+            )
+        finally:
+            reset_tool_policy()
+        assert body == {"input_tokens": 7}
+        assert calls == chat_calls
+        # A hard --enable-tools policy prices no catalog the Messages route did not select.
+        assert calls[0][2]["tools"] == tools
+
+    @pytest.mark.parametrize(
+        "fields, is_mlx, status, detail",
+        [
+            (
+                {"enable_tools": True},
+                True,
+                400,
+                "Unsloth server tools on /v1/messages need a GGUF model",
+            ),
+            ({"enable_tools": True}, False, 503, "No GGUF model loaded"),
+        ],
+        ids = ["server_tools", "not_mlx"],
+    )
+    def test_what_it_cannot_price_is_refused(self, monkeypatch, fields, is_mlx, status, detail):
+        import routes.inference as inf
+
+        payload = AnthropicMessagesRequest(messages = [{"role": "user", "content": "hi"}], **fields)
+        with pytest.raises(HTTPException) as exc:
+            self._count(monkeypatch, inf.anthropic_count_tokens, payload, is_mlx = is_mlx)
+        assert exc.value.status_code == status
+        assert detail in json.dumps(exc.value.detail)
