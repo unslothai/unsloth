@@ -314,7 +314,9 @@ Exit-StudioInstallMutex -Mutex $mutex
     assert _lines(result, "EQUAL:") == ["EQUAL:True"], result.stdout
     assert _lines(result, "LOCK:") == ["LOCK:True"]
     degraded = [l for l in result.stdout.splitlines() if "Could not resolve a path exactly" in l]
-    identity = [l for l in result.stdout.splitlines() if "Could not resolve Unsloth path identity" in l]
+    identity = [
+        l for l in result.stdout.splitlines() if "Could not resolve Unsloth path identity" in l
+    ]
     if warns:
         assert len(degraded) == 1, result.stdout
         assert len(identity) == 1, result.stdout
