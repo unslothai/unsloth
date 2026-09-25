@@ -101,7 +101,9 @@ ZIMG_RG76 = NVFP4Policy(
         Rule(suffix = "attention.to_q", precision = PRECISION_NVFP4, expect = 34),
         Rule(suffix = "attention.to_k", precision = PRECISION_NVFP4, expect = 34),
         *_per_block("feed_forward.w1", "layers", (0, 1, 2, 3, 4, 5)),
-        Rule(suffix = "feed_forward.w1", precision = PRECISION_NVFP4, expect = 2, prefix = "noise_refiner."),
+        Rule(
+            suffix = "feed_forward.w1", precision = PRECISION_NVFP4, expect = 2, prefix = "noise_refiner."
+        ),
     ),
     admit = (Admit(suffix = "adaLN_modulation.0", shape = (256, 15360), expect = 32),),
     # The two ``t_embedder.mlp`` layers cannot be swapped at all and stay dense.
