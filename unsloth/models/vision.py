@@ -1179,6 +1179,28 @@ def _construct_vlm_processor_fallback(
     return None, _fb_err
 
 
+def _mxfp4_lora_keeps_experts_packed(quant_method, full_finetuning = False):
+    """Whether a LoRA load of an MXFP4 checkpoint should take unsloth_zoo's packed-experts path.
+
+    That path (Mxfp4Config(dequantize = True) with unsloth_zoo's keep_mxfp4_experts_packed) keeps
+    the experts MXFP4 in memory and decodes one layer at a time inside a differentiable forward.
+    The native Mxfp4GptOssExperts forward runs triton_kernels' matmul_ogs, which has no backward:
+    Unsloth's copy raises "Backwards pass using MXFP4 is still under construction", and the
+    transformers one returns an output detached from the graph, so LoRA below every MoE layer
+    silently gets the gradient of the residual stream only. Off when unsloth_zoo has no packed
+    path, for full finetuning, and with UNSLOTH_MXFP4_KEEP_PACKED=0."""
+    if full_finetuning or str(quant_method).lower() != "mxfp4":
+        return False
+    try:
+        from unsloth_zoo.temporary_patches.mxfp4 import keep_mxfp4_experts_packed
+    except Exception:
+        return False
+    try:
+        return bool(keep_mxfp4_experts_packed())
+    except Exception:
+        return False
+
+
 def _get_total_transformer_layers(model):
     """Best-effort total transformer block count across HF model shapes; None if not determinable, in which case the caller skips the conversion."""
     cfg = getattr(model, "config", None)
@@ -1695,7 +1717,12 @@ class FastBaseModel:
                     pass
                 else:
                     # Cannot dequantize, since gpt-oss-20b MXFP4 would become gpt-oss-20b-BF16.
-                    if load_in_16bit and "dequantize" in inspect.signature(quantizer).parameters:
+                    # The one exception is a LoRA load that unsloth_zoo keeps packed: its experts
+                    # stay MXFP4 and, unlike the native kernels, it has a backward pass.
+                    if (
+                        load_in_16bit
+                        or _mxfp4_lora_keeps_experts_packed(quant_method, full_finetuning)
+                    ) and "dequantize" in inspect.signature(quantizer).parameters:
                         quantizer_kwargs["dequantize"] = True
                     try:
                         quantization_config = quantizer.from_dict(
