@@ -34316,6 +34316,17 @@ async def anthropic_count_tokens(
         and not _anthropic_request_has_image(payload, tool_results = llama_backend.is_vision)
         and not _count_schema_disables_server_tools
     )
+    _count_selected_server_tools = []
+    if _count_server_tools:
+        from core.inference.tools import ALL_TOOLS as _ANTHROPIC_COUNT_TOOLS
+        _count_selected_server_tools = _tools_for_search_images(
+            _select_anthropic_server_tools(
+                _ANTHROPIC_COUNT_TOOLS,
+                _count_studio_tools,
+                payload.enabled_tools,
+            )
+        )
+        _count_server_tools = bool(_count_selected_server_tools)
     _count_openai_client_tools = _anthropic_client_tools_for_turn(
         [
             tool
@@ -34357,15 +34368,7 @@ async def anthropic_count_tokens(
             include_api_key = _count_server_tools,
         )
     if _count_server_tools:
-        from core.inference.tools import ALL_TOOLS as _ANTHROPIC_COUNT_TOOLS
-
-        openai_tools = _tools_for_search_images(
-            _select_anthropic_server_tools(
-                _ANTHROPIC_COUNT_TOOLS,
-                _count_studio_tools,
-                payload.enabled_tools,
-            )
-        )
+        openai_tools = _count_selected_server_tools
         _count_full_access = bool(getattr(payload, "bypass_permissions", False))
         if _count_full_access:
             # Same schemas /messages renders under Full access, or the count prices a different prompt.
@@ -34534,24 +34537,26 @@ async def anthropic_messages(
         _response_format is not None
         and anthropic_tool_choice_to_openai(payload.tool_choice) == "none"
     )
-    _server_tools_requested_pre = (
+    _server_tools_selected_pre = (
         _selects_server_tools
         and not _anthropic_top_level_image
         and not _schema_disables_server_tools
     )
-    if _server_tools_requested_pre:
+    selected_server_tools = []
+    if _server_tools_selected_pre:
         from core.inference.tools import ALL_TOOLS as _ALL_TOOLS_PRE
-
-        _selected_pre = _tools_for_search_images(
+        selected_server_tools = _tools_for_search_images(
             _select_anthropic_server_tools(
                 _ALL_TOOLS_PRE, requested_studio_tools, payload.enabled_tools
             )
         )
+    _server_tools_requested_pre = bool(selected_server_tools)
+    if _server_tools_requested_pre:
         _perm_mode_pre = getattr(payload, "permission_mode", None)
         _confirm_opt_out_pre = getattr(payload, "confirm_tool_calls", None) is False
         _gated_tool_selected_pre = any(
             tool["function"]["name"] not in _ANTHROPIC_UNPROMPTED_SAFE_TOOLS
-            for tool in _selected_pre
+            for tool in selected_server_tools
         )
         # An explicit confirm_tool_calls=False opts out of the gate entirely (it
         # wins over the mode, mirroring _permission_mode_confirm and the GGUF path),
@@ -34710,7 +34715,7 @@ async def anthropic_messages(
     # permission gate above: deciding "did this request select server tools"
     # twice is what let the gate reject requests the router then served.
     server_tools = (
-        _selects_server_tools
+        bool(selected_server_tools)
         and llama_backend.supports_tools
         and not _anthropic_has_image
         and not _schema_disables_server_tools
@@ -35115,19 +35120,13 @@ async def anthropic_messages(
                     err_type = "invalid_request_error",
                 ),
             )
-        from core.inference.tools import ALL_TOOLS, apply_full_access_tool_descriptions
+        from core.inference.tools import apply_full_access_tool_descriptions
 
         # ask/auto (and an omitted mode selecting a gate-needing terminal/python
         # tool) were already rejected before the auto-switch above, so an invalid
         # confirm-gated request never evicts the resident model; the selection
         # here just picks the tools for the actual server-tool loop.
-        openai_tools = _tools_for_search_images(
-            _select_anthropic_server_tools(
-                ALL_TOOLS,
-                requested_studio_tools,
-                payload.enabled_tools,
-            )
-        )
+        openai_tools = selected_server_tools
         # Mirrors _select_request_tools: this path builds its own selection, so
         # the Full access swap has to be repeated rather than inherited.
         _full_access = bool(getattr(payload, "bypass_permissions", False))

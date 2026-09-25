@@ -310,6 +310,25 @@ def test_format_kept_when_requested_server_tools_cannot_run(monkeypatch, overrid
     assert sent["response_format"] == _EXPECTED
 
 
+@pytest.mark.parametrize("enabled_tools", [[], ["unavailable_tool"]])
+def test_format_kept_when_server_tool_selection_is_empty(monkeypatch, enabled_tools):
+    calls, upstream = _install(monkeypatch)
+
+    status, _body = _run(
+        _payload(
+            enable_tools = True,
+            enabled_tools = enabled_tools,
+            output_config = {"format": {"type": "json_schema", "schema": _SCHEMA}},
+        )
+    )
+
+    assert status == 200
+    assert calls == []
+    [sent] = upstream
+    assert sent["response_format"] == _EXPECTED
+    assert "tools" not in sent
+
+
 def test_format_kept_when_server_tools_are_disabled_by_tool_choice(monkeypatch):
     calls, upstream = _install(monkeypatch)
 
@@ -409,6 +428,38 @@ def test_count_tokens_omits_server_tool_date_for_schema_only_api_key(monkeypatch
             _payload(
                 enable_tools = True,
                 tool_choice = {"type": "none"},
+                output_config = {"format": {"type": "json_schema", "schema": _SCHEMA}},
+            ),
+            request = _Request(),
+            current_subject = "t",
+        )
+    )
+
+    assert response.status_code == 200
+    [(messages, tools)] = counted
+    assert tools is None
+    assert messages == [{"role": "user", "content": "Name a scientist."}]
+
+
+def test_count_tokens_omits_server_tool_date_when_selection_is_empty(monkeypatch):
+    counted = []
+
+    def _count(messages, _template, tools, **_kwargs):
+        counted.append((messages, tools))
+        return 2
+
+    _install(monkeypatch, count_chat_tokens = _count)
+    monkeypatch.setattr(
+        inf_mod, "current_date_prompt_line", lambda **_kwargs: "Current date: 2026-09-25"
+    )
+    monkeypatch.setattr(inf_mod, "_request_has_api_key", lambda _request: True)
+    monkeypatch.setattr(inf_mod, "_request_is_internal_workflow", lambda _request: False)
+
+    response = asyncio.run(
+        inf_mod.anthropic_count_tokens(
+            _payload(
+                enable_tools = True,
+                enabled_tools = [],
                 output_config = {"format": {"type": "json_schema", "schema": _SCHEMA}},
             ),
             request = _Request(),
