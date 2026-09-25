@@ -62,9 +62,13 @@ def _decode(literal: str) -> str:
     """
     body = literal[1:-1]
     out = []
+    interpolated = False
     index = 0
     while index < len(body):
         char = body[index]
+        if char == "$" and body[index + 1 : index + 2] == "{" and literal.startswith("`"):
+            # Reached outside an escape, so this `${` is a live placeholder, not `\${`.
+            interpolated = True
         if char == "\\" and index + 1 < len(body):
             nxt = body[index + 1]
             if (
@@ -81,7 +85,7 @@ def _decode(literal: str) -> str:
         out.append(char)
         index += 1
     value = "".join(out)
-    if literal.startswith("`") and "${" in body:
+    if interpolated:
         return _Interpolated(value)
     return value
 
@@ -138,3 +142,13 @@ def en_string(key: str, catalog: Path = EN_LOCALE_TS) -> str:
             f"{key!r} is a template with ${{...}} in it, not a fixed label ({catalog})"
         )
     return str(value)
+
+
+def aria_label_selector(label: str) -> str:
+    """A CSS selector for `[aria-label="<label>"]`, with the label quoted as a CSS string.
+
+    Catalog text is data: English that holds a `"` or a `\\` would otherwise end the attribute
+    value early or read as an escape, and the selector would be invalid or match something else.
+    """
+    quoted = label.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\a ")
+    return f'[aria-label="{quoted}"]'

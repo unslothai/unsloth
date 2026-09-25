@@ -11,7 +11,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import SessionNotCreatedException
-from _en_catalog import en_string
+from _en_catalog import aria_label_selector, en_string
 from _playwright_robust import (
     open_session_with_retry,
     start_vite,
@@ -40,7 +40,7 @@ def main():
 
         def label(name):
             return wait.until(
-                EC.visibility_of_element_located((By.CSS_SELECTOR, f'[aria-label="{name}"]'))
+                EC.visibility_of_element_located((By.CSS_SELECTOR, aria_label_selector(name)))
             )
 
         def order(ids):

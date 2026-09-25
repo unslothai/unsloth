@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from _en_catalog import EN_LOCALE_TS, en_string
+from _en_catalog import EN_LOCALE_TS, aria_label_selector, en_string
 
 HERE = Path(__file__).resolve().parent
 
@@ -37,6 +37,7 @@ export const en = {
       escaped: 'It\\'s here',
       tick: `Run \\`unsloth\\` now`,
       templated: `Hello ${name}`,
+      literalDollar: `Type \\${name} as written`,
     },
   },
 };
@@ -62,6 +63,7 @@ def sample(tmp_path):
         ("settings.chat.single", 'Delete "{name}"?'),
         ("settings.chat.escaped", "It's here"),
         ("settings.chat.tick", "Run `unsloth` now"),
+        ("settings.chat.literalDollar", "Type ${name} as written"),
     ],
 )
 def test_a_key_resolves_by_its_full_path(sample, key, expected):
@@ -76,6 +78,19 @@ def test_a_missing_key_fails_naming_it(sample):
 def test_a_template_with_placeholders_is_refused(sample):
     with pytest.raises(ValueError, match = "templated"):
         en_string("settings.chat.templated", sample)
+
+
+@pytest.mark.parametrize(
+    "label, selector",
+    [
+        ("Plain text", '[aria-label="Plain text"]'),
+        ('Delete "{name}"?', '[aria-label="Delete \\"{name}\\"?"]'),
+        ("C:\\models", '[aria-label="C:\\\\models"]'),
+        ("two\nlines", '[aria-label="two\\a lines"]'),
+    ],
+)
+def test_a_label_is_quoted_as_a_css_string(label, selector):
+    assert aria_label_selector(label) == selector
 
 
 def test_a_comment_is_not_read_as_a_key(sample):
