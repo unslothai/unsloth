@@ -61,9 +61,6 @@ def test_registration_is_idempotent_and_never_overwrites_diffusers_own():
 
 
 def test_step_cache_probe_refuses_unregistered_blocks():
-    """LTX-2 and HunyuanVideo-1.5 ship blocks diffusers never registered, so enable_cache raises
-    on every attempt. The probe must say so up front, or auto keeps the per-generation toggle live
-    (fullgraph dropped, a warning per render) on a model that can never cache."""
     registry, _ = _registry_and_block()
     import torch
     from diffusers.hooks._helpers import TransformerBlockMetadata

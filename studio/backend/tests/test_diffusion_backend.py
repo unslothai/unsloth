@@ -11712,8 +11712,6 @@ def _record_step_cache(
     supported = True,
     engages = True,
 ):
-    """Stub the image loader's step-cache calls: record every engage / toggle and report the mode
-    engaged, so the auto policy is observable on the fake (transformer-less) pipe."""
     calls = {"apply": [], "toggle": []}
 
     def _apply(pipe, *, mode, **kwargs):
@@ -11734,8 +11732,6 @@ def _record_step_cache(
 
 @pytest.mark.parametrize("speed_mode", [None, "off", "eager", "default"])
 def test_image_step_cache_auto_stays_off_below_max(fake_runtime, tmp_path, monkeypatch, speed_mode):
-    # FBCache costs LPIPS ~0.08-0.11, so auto leaves it off on every tier but max, even on a 20-step default, and the
-    # toggle stays disarmed (compile keeps fullgraph, no per-generation retry).
     calls = _record_step_cache(monkeypatch)
     backend = _loaded_backend(tmp_path, family_override = "qwen-image", speed_mode = speed_mode)
     status = backend.status()
@@ -11777,7 +11773,6 @@ def test_image_explicit_step_cache_is_honoured_on_the_default_tier(
 def test_image_auto_toggle_armed_only_where_the_cache_can_engage(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # max + a 20-step default whose engage failed: the model cannot cache, so do not arm the toggle.
     _record_step_cache(monkeypatch, engages = False)
     backend = _loaded_backend(tmp_path, family_override = "qwen-image", speed_mode = "max")
     assert backend._state.cache_auto is False
@@ -11787,7 +11782,6 @@ def test_image_auto_toggle_armed_only_where_the_cache_can_engage(
     )
     backend.unload()
 
-    # max + a few-step default: armed only when the probe says a later 20+ step render could engage.
     turbo = dict(
         gguf_filename = "z-image-turbo-Q4_K_M.gguf",
         base_repo = "Tongyi-MAI/Z-Image-Turbo",

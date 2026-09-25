@@ -1317,7 +1317,6 @@ def test_the_hook_probe_sees_the_names_the_low_level_api_installs(monkeypatch):
         assert _first_block_cache_is_hooked(hooked) is True
 
 
-# ── auto policy: max tier only ─────────────────────────────────────────────────────
 
 
 def test_auto_tier_is_the_speed_layers_max():
@@ -1327,7 +1326,6 @@ def test_auto_tier_is_the_speed_layers_max():
 
 @pytest.mark.parametrize("tier", ["off", "eager", "default", None])
 def test_auto_resolves_uncached_below_max(tier):
-    # LPIPS ~0.08-0.11 is too visible for a default, so auto stays off on every tier but max.
     assert not dc.auto_step_cache_allowed(tier)
     assert dc.resolve_auto_step_cache(tier, 50) is None
 
@@ -1342,6 +1340,5 @@ def test_step_cache_supported_mirrors_the_engage_refusals(monkeypatch):
     assert dc.step_cache_supported(_pipe(_MixinTransformer()))
     assert not dc.step_cache_supported(_pipe(_NonCacheMixinTransformer()))
     assert not dc.step_cache_supported(_NoCtxPipe(_MixinTransformer()))
-    # Auto never passes length_changes_ok, so a prefix-KV family can never engage through it.
     assert not dc.step_cache_supported(_PrefixKVPipe(_PrefixKVTransformer()))
     assert not dc.step_cache_supported(types.SimpleNamespace(transformer = None))

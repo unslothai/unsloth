@@ -1832,8 +1832,6 @@ def test_video_speed_off_suppresses_auto_dtype_quant(fake_runtime, monkeypatch):
 
 
 def test_video_step_cache_auto_from_default_schedule(fake_runtime, tmp_path):
-    # Unset step cache is AUTO: on the max tier, from the model's default schedule (Wan's 50-step default engages
-    # FBCache, LTX's 8-step does not).
     backend = VideoBackend()
     status = backend.load_pipeline(
         "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "max"
@@ -1857,8 +1855,6 @@ def test_video_step_cache_auto_from_default_schedule(fake_runtime, tmp_path):
 
 @pytest.mark.parametrize("speed_mode", [None, "default", "eager", "off"])
 def test_video_step_cache_auto_stays_off_below_max(fake_runtime, speed_mode):
-    # FBCache costs LPIPS ~0.08-0.11, so auto never engages it below max, not even on Wan's 50-step default, and the
-    # generation-time toggle is not armed (so compile keeps fullgraph).
     backend = VideoBackend()
     status = backend.load_pipeline(
         "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = speed_mode
@@ -1886,8 +1882,6 @@ def test_video_explicit_step_cache_is_honoured_on_the_default_tier(fake_runtime)
 
 
 def test_video_auto_toggle_not_armed_when_the_dit_cannot_cache(fake_runtime, tmp_path, monkeypatch):
-    # LTX-2 / HunyuanVideo-1.5 blocks carry no first-block-cache metadata: arming the toggle there only dropped
-    # fullgraph and retried (and warned) every generation.
     monkeypatch.setattr(
         "core.inference.video.step_cache_supported", lambda pipe, logger = None: False
     )

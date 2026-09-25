@@ -952,9 +952,9 @@ class _LoadState:
     attention_backend: Optional[str] = None
     # Caller original attention request, so deferred engagement re-runs the same selection.
     attention_request: Optional[str] = None
-    # Step cache engaged ("fbcache") or None. Explicit request, or auto on the max tier for many-step models.
+    # Step cache engaged ("fbcache") or None.
     transformer_cache: Optional[str] = None
-    # AUTO on max where FBCache can engage: generate() toggles it across FBCACHE_MIN_STEPS; explicit never toggles
+    # Auto only: generate() toggles it across FBCACHE_MIN_STEPS; explicit never toggles
     cache_auto: bool = False
     # Inputs the generation-time toggle re-applies (quantised threshold + override).
     cache_quant_active: bool = False
@@ -5494,8 +5494,7 @@ class DiffusionBackend:
                     )
                     self._raise_if_load_cancelled(_load_token)
                     # Step caching (First-Block-Cache), also before compile: reuses the transformer tail across steps and
-                    # drops compile fullgraph. Tri-state: off/fbcache pinned on every tier; unset/auto engages only on
-                    # the max tier (LPIPS ~0.08-0.11 is too visible for a default), then by FBCACHE_MIN_STEPS.
+                    # drops compile fullgraph. Tri-state: off/fbcache pinned; unset/auto only on max, by FBCACHE_MIN_STEPS.
                     cache_request = normalize_transformer_cache(transformer_cache)
                     cache_auto = transformer_cache is None or cache_request == TC_AUTO
                     cache_auto_live = cache_auto and auto_step_cache_allowed(effective_speed)
@@ -5520,8 +5519,7 @@ class DiffusionBackend:
                         logger = logger,
                     )
                     self._raise_if_load_cancelled(_load_token)
-                    # An auto decision can flip at generation time, but only on max and only where FBCache can
-                    # actually engage: a live toggle drops fullgraph and retries the cache every generation.
+                    # Arm only where FBCache can engage: a live toggle drops fullgraph and retries every generation.
                     cache_may_toggle = cache_auto_live and (
                         cache_engaged is not None
                         or (cache_request is None and step_cache_supported(pipe, logger = logger))

@@ -822,8 +822,7 @@ class _VideoLoadState:
     backend_flags: Optional[dict] = None
     attention_backend: Optional[str] = None
     transformer_cache: Optional[str] = None
-    # AUTO on the max tier where FBCache can engage: generate() toggles it across FBCACHE_MIN_STEPS; an explicit request
-    # is never toggled.
+    # Auto only: generate() toggles it across FBCACHE_MIN_STEPS; explicit never toggles.
     cache_auto: bool = False
     # Inputs the generation-time toggle re-applies (quantised threshold + override).
     cache_quant_active: bool = False
@@ -4422,8 +4421,7 @@ class VideoBackend:
                 "(quantized transformer must be compiled; eager is ~30x slower)"
             )
             effective_speed = SPEED_DEFAULT
-        # Step cache tri-state: "off"/"fbcache" pinned on every tier; unset/"auto" engages only on the max tier, then by
-        # FBCACHE_MIN_STEPS (re-checked per generation). Run per expert.
+        # "off"/"fbcache" pinned; unset/"auto" only on max, by FBCACHE_MIN_STEPS. Run per expert.
         cache_request = normalize_transformer_cache(transformer_cache)
         cache_auto = transformer_cache is None or cache_request == TC_AUTO
         cache_auto_live = cache_auto and auto_step_cache_allowed(effective_speed)
@@ -4446,8 +4444,7 @@ class VideoBackend:
             )
             if view is pipe:
                 cache_engaged = engaged
-        # The auto decision can flip at generation time, but only on max and only where FBCache can actually engage: a
-        # live toggle drops fullgraph and retries the cache every generation (LTX-2 / HunyuanVideo-1.5 never can).
+        # Arm only where FBCache can engage: a live toggle drops fullgraph and retries every generation.
         cache_may_toggle = cache_auto_live and (
             cache_engaged is not None
             or (cache_request is None and step_cache_supported(pipe, logger = logger))
