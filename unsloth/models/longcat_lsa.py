@@ -212,15 +212,26 @@ def _classes():
                 nn.Linear(emb_dim, config.hidden_size, bias = False) for _ in range(num_embedders)
             )
 
-        def _shifted(self, context, shift):
-            """``context`` shifted right within each EOS-terminated segment, zero outside it."""
+        def _shifted(
+            self,
+            context,
+            shift,
+            resets = None,
+        ):
+            """``context`` shifted right within each segment, zero outside it. A segment ends at an
+            EOS or a -1 history mark, and starts again where ``resets`` is set."""
             length = context.shape[-1]
             positions = torch.arange(length, device = context.device)
             ends = torch.where(
-                context == self.eos_token_id, positions + 1, torch.zeros_like(positions)
+                (context == self.eos_token_id) | (context < 0),
+                positions + 1,
+                torch.zeros_like(positions),
             )
             starts = torch.cummax(ends, dim = -1).values
             starts = torch.cat([torch.zeros_like(starts[..., :1]), starts[..., :-1]], dim = -1)
+            if resets is not None:
+                reset_starts = torch.where(resets, positions, torch.zeros_like(positions))
+                starts = torch.maximum(starts, torch.cummax(reset_starts, dim = -1).values)
             source = positions - shift
             valid = source >= starts
             gathered = torch.gather(
@@ -233,14 +244,23 @@ def _classes():
             word_embeds,
             input_ids,
             ngram_context = None,
+            resets = None,
         ):
             seq_len = input_ids.shape[-1]
             context = input_ids
             if ngram_context is not None:
                 context = torch.cat([ngram_context[..., -(self.n - 1) :], input_ids], dim = -1)
+                if resets is not None:
+                    resets = torch.cat(
+                        [
+                            resets.new_zeros(resets.shape[:-1] + (context.shape[-1] - seq_len,)),
+                            resets,
+                        ],
+                        dim = -1,
+                    )
             x = word_embeds
             context = context.long()
-            shifted = {i: self._shifted(context, i - 1) for i in range(2, self.n + 1)}
+            shifted = {i: self._shifted(context, i - 1, resets) for i in range(2, self.n + 1)}
             for i in range(2, self.n + 1):
                 for j in range(self.k):
                     index = (i - 2) * self.k + j
@@ -321,11 +341,19 @@ def _classes():
                 history = getattr(past_key_values, "_unsloth_ngram_history", None)
                 keep = self.ngram_embeddings.n - 1
                 context = None if history is None else history[..., -keep:]
+                # A position_ids restart (padding-free packing, left padding) starts a new sequence,
+                # which the n-gram must not read across, as transformers' packed mask does for attention.
+                resets = None
+                if position_ids is not None and position_ids.shape[-1] == input_ids.shape[-1]:
+                    pos = position_ids.expand(input_ids.shape[0], -1)
+                    resets = torch.diff(pos, prepend = pos[..., :1] - 1, dim = -1) != 1
                 inputs_embeds = self.ngram_embeddings(
-                    self.embed_tokens(input_ids), input_ids, context
+                    self.embed_tokens(input_ids), input_ids, context, resets
                 )
+                # Training never reads a cache, and one here would switch off transformers'
+                # packed-sequence mask (it only checks position_ids when past_key_values is None).
                 if use_cache is None:
-                    use_cache = getattr(self.config, "use_cache", False)
+                    use_cache = getattr(self.config, "use_cache", False) and not self.training
                 if use_cache and past_key_values is None:
                     from transformers.cache_utils import DynamicCache
                     try:
@@ -335,6 +363,17 @@ def _classes():
                 if past_key_values is not None:
                     # Id history rides on the cache so beam reorders and crops move it.
                     seen = input_ids if history is None else torch.cat([history, input_ids], dim = -1)
+                    if resets is not None:
+                        # Mark ids before each row's last restart -1 so later decode steps skip them.
+                        offset = seen.shape[-1] - input_ids.shape[-1]
+                        idx = torch.arange(input_ids.shape[-1], device = resets.device) + offset
+                        last = torch.where(resets, idx, torch.zeros_like(idx)).amax(
+                            -1, keepdim = True
+                        )
+                        before = torch.arange(seen.shape[-1], device = seen.device) < last.to(
+                            seen.device
+                        )
+                        seen = seen.masked_fill(before, -1)
                     past_key_values._unsloth_ngram_history = seen
                     cache_class = type(past_key_values)
                     if cache_class not in _NGRAM_TRACKING_CACHES.values():

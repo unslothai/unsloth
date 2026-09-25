@@ -448,6 +448,35 @@ def test_cached_decode_matches_full_forward(tiny):
     torch.testing.assert_close(torch.cat(steps), full, atol = 1e-4, rtol = 1e-4)
 
 
+def test_packed_training_rows_do_not_see_each_other(tiny):
+    # Padding-free packing: no cache in training, so transformers' packed mask applies, and the
+    # n-gram restarts with position_ids.
+    path, cfg, sd = tiny
+    model = _load(path).train()
+    a, b = _tokens(cfg, 2, 12, seed = 3)
+    b[0] = a[-1]  # b's first n-grams would read a's tail if the n-gram crossed the boundary
+    packed = torch.cat([a, b])[None]
+    position_ids = torch.cat([torch.arange(12), torch.arange(12)])[None]
+    with torch.no_grad():
+        out = model(input_ids = packed, position_ids = position_ids)
+        alone = model(input_ids = b[None]).logits[0]
+    assert out.past_key_values is None
+    torch.testing.assert_close(out.logits[0, 12:], alone, atol = 1e-4, rtol = 1e-4)
+
+
+def test_left_padded_generation_matches_unpadded(tiny):
+    path, cfg, sd = tiny
+    model = _load(path).eval()
+    ids = _tokens(cfg, 1, 10, seed = 4)
+    padded = torch.cat([torch.full((1, 3), 7), ids], dim = -1)
+    mask = torch.cat([torch.zeros(1, 3, dtype = torch.long), torch.ones_like(ids)], dim = -1)
+    kwargs = dict(max_new_tokens = 5, do_sample = False, pad_token_id = 0)
+    with torch.no_grad():
+        want = model.generate(input_ids = ids, **kwargs)[0, 10:]
+        got = model.generate(input_ids = padded, attention_mask = mask, **kwargs)[0, 13:]
+    assert got.tolist() == want.tolist()
+
+
 def test_ngram_history_follows_beam_reorder_and_crop(tiny):
     # Beam reorder and crop must move the n-gram history with the KV cache.
     path, cfg, sd = tiny
