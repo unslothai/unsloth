@@ -1335,6 +1335,7 @@ def _resolve_text_causal_lm_class(
     revision = None,
     local_files_only = False,
     cache_dir = None,
+    code_revision = None,
 ):
     # The class AutoModelForCausalLM.from_pretrained(model_name, config = text_config) will build: repo code first when trusted.
     auto_map = getattr(text_config, "auto_map", None) or {}
@@ -1353,6 +1354,8 @@ def _resolve_text_causal_lm_class(
             model_name,
             token = token,
             revision = revision,
+            # from_pretrained reads repo code at code_revision when given, else at revision.
+            code_revision = code_revision,
             local_files_only = local_files_only,
             cache_dir = cache_dir,
         )
@@ -1388,6 +1391,7 @@ def _get_remote_composite_text_only(
     device_map = None,
     variant = None,
     cache_dir = None,
+    code_revision = None,
 ):
     # Text-only load plan for a repo-code composite (Nemotron-Omni: llm_config + vision/sound) whose text sub-model is a whole causal LM stored under one prefix.
     # Returns (text_config, key_mapping) or None; None keeps the previous full-model load.
@@ -1439,6 +1443,7 @@ def _get_remote_composite_text_only(
             revision = revision,
             local_files_only = local_files_only,
             cache_dir = cache_dir,
+            code_revision = code_revision,
         )
         if text_class is None:
             return None

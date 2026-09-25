@@ -1926,6 +1926,7 @@ class FastModel(FastBaseModel):
                         device_map = device_map,
                         variant = kwargs.get("variant"),
                         cache_dir = kwargs.get("cache_dir"),
+                        code_revision = kwargs.get("code_revision"),
                     )
                 if (
                     remote_text_only is not None

@@ -1065,3 +1065,68 @@ def test_loader_and_vision_forward_variant_and_cache_dir_to_the_plan():
             j += 1
         for arg in ('variant = kwargs.get("variant"),', 'cache_dir = kwargs.get("cache_dir"),'):
             assert arg in src[i : j + 1], (path.name, arg)
+
+
+# ---------------------------------------------------------------- code_revision
+
+
+@needs_tf5
+def test_nested_text_class_is_resolved_at_code_revision(tmp_path, monkeypatch):
+    # The weights and config come from main, the repo code from code_revision (what from_pretrained runs);
+    # main's modeling file no longer defines the nested text class.
+    import shutil
+
+    ns = _ns()
+    repo, weights = _write_repo(
+        tmp_path, name = "code_rev", text_auto_map = "modeling_tiny_omni.TinyTextLM"
+    )
+    code = tmp_path / "code_rev_snapshot"
+    shutil.copytree(repo, code)
+    modeling = repo / "modeling_tiny_omni.py"
+    modeling.write_text(modeling.read_text().replace("class TinyTextLM(", "class OtherTextLM("))
+    repo_id, _ = _cache_as_hub_repo(tmp_path, monkeypatch, repo, repo_id = "fake-org/code-rev")
+    root = tmp_path / "hub_cache" / "models--fake-org--code-rev"
+    code_sha = "c" * 40
+    shutil.copytree(code, root / "snapshots" / code_sha)
+    (root / "refs" / "code-branch").write_text(code_sha)
+    parent = transformers.AutoConfig.from_pretrained(
+        repo_id, trust_remote_code = True, local_files_only = True
+    )
+    assert (
+        ns["_get_remote_composite_text_only"](
+            parent, repo_id, trust_remote_code = True, local_files_only = True
+        )
+        is None
+    )
+    text_config, mapping = ns["_get_remote_composite_text_only"](
+        parent,
+        repo_id,
+        trust_remote_code = True,
+        local_files_only = True,
+        code_revision = "code-branch",
+    )
+    model, info = transformers.AutoModelForCausalLM.from_pretrained(
+        repo_id,
+        config = text_config,
+        key_mapping = mapping,
+        code_revision = "code-branch",
+        trust_remote_code = True,
+        dtype = torch.float32,
+        local_files_only = True,
+        output_loading_info = True,
+    )
+    assert type(model).__name__ == "TinyTextLM"
+    assert not info["missing_keys"]
+
+
+def test_loader_and_vision_forward_code_revision_to_the_plan():
+    for path in (LOADER_PATH, VISION_PATH):
+        src = path.read_text(encoding = "utf-8")
+        i = src.index("_get_remote_composite_text_only(\n")
+        depth, j = 0, i
+        while True:
+            depth += {"(": 1, ")": -1}.get(src[j], 0)
+            if src[j] == ")" and depth == 0:
+                break
+            j += 1
+        assert 'code_revision = kwargs.get("code_revision"),' in src[i : j + 1], path.name
