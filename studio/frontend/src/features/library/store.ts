@@ -2,9 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
 import { AUTH_SESSION_CLEARED_EVENT, getAuthSessionEpoch } from "@/features/auth";
-import { emitChatAttachmentDeleted } from "@/features/chat";
+import { deleteFineTunedModel, emitChatAttachmentDeleted } from "@/features/chat";
 import { translate } from "@/i18n";
 import { type GalleryKind, notifyGalleryChanged } from "@/lib/gallery-flags";
 import {
@@ -16,6 +15,7 @@ import {
   deleteLibraryItem,
   errorMessage,
   getLibrary,
+  markLibraryItemOpened,
   updateLibraryFolder,
   updateLibraryItem,
   uploadLibraryFiles,
@@ -34,6 +34,7 @@ interface LibraryState {
   refresh: () => Promise<void>;
   patchItem: (id: string, patch: ItemPatch) => Promise<void>;
   removeItem: (id: string, fingerprint: string | undefined) => Promise<void>;
+  markOpened: (id: string) => void;
   upload: (batch: LibraryUploadBatch, folderId: string | null) => Promise<string[]>;
   addFolder: (name: string, parentId: string | null) => Promise<LibraryFolder>;
   patchFolder: (id: string, patch: FolderPatch) => Promise<void>;
@@ -181,11 +182,26 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
     },
     // The fingerprint the confirmation was opened on: a refresh since may list a replacement file.
     removeItem: (id, fingerprint) => {
+      const model = get().items.find((item) => item.id === id)?.model;
+      const star = useLibraryFavoritesStore.getState().mark(id, false);
       return optimistic(
         (state) => ({ items: state.items.filter((item) => item.id !== id) }),
         async () => {
           const epoch = getAuthSessionEpoch();
-          await deleteLibraryItem(id, fingerprint);
+          try {
+            if (model) {
+              await deleteFineTunedModel({
+                modelPath: model.path,
+                source: model.origin,
+                exportType: model.exportType,
+              });
+              return;
+            }
+            await deleteLibraryItem(id, fingerprint);
+          } finally {
+            star.settle();
+          }
+          // Signed in as another account meanwhile: its chats can hold an attachment of this id.
           if (getAuthSessionEpoch() !== epoch) return;
           const [kind, messageId, ...rest] = id.split(":");
           const gallery = GALLERIES[kind];
@@ -197,7 +213,15 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
             });
           }
         },
+        star.undo,
       );
+    },
+    markOpened: (id) => {
+      const openedAt = Date.now();
+      set((state) => ({
+        items: state.items.map((item) => (item.id === id ? { ...item, openedAt } : item)),
+      }));
+      void markLibraryItemOpened(id).catch(() => undefined);
     },
     upload: async (batch, folderId) => {
       try {
@@ -263,17 +287,3 @@ if (typeof window !== "undefined") {
   });
 }
 
-export type LibraryView = "grid" | "list";
-
-export const useLibraryViewStore = create<{
-  view: LibraryView;
-  setView: (view: LibraryView) => void;
-}>()(
-  persist(
-    (set) => ({
-      view: "grid",
-      setView: (view) => set({ view }),
-    }),
-    { name: "unsloth_library_view" },
-  ),
-);

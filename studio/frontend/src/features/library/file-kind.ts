@@ -90,6 +90,10 @@ export function isFileItem(item: LibraryItem): boolean {
   return !isModelItem(item);
 }
 
+export function isDeletable(item: LibraryItem): boolean {
+  return item.model?.exportType !== "gguf";
+}
+
 const MODEL_LABELS = {
   "training:lora": "library.modelKind.lora",
   "training:merged": "library.modelKind.fullFineTune",

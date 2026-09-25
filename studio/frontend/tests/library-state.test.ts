@@ -203,6 +203,7 @@ function loadStore(
       getAuthSessionEpoch: () => session.epoch,
     },
     "@/features/chat": {
+      deleteFineTunedModel: async () => {},
       emitChatAttachmentDeleted: (event: unknown) => emitted.push(event),
     },
     "@/i18n": { translate: (key: string) => key },
@@ -397,6 +398,7 @@ function loadDownloads(
     "./file-kind": {},
     "./file-name": { hasOwnFile: () => true, ...fileNames },
     "./chat-handoff-store": {},
+    "./start-chat": {},
   }).downloadLibraryItems;
 }
 

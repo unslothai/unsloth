@@ -158,8 +158,15 @@ async def get_library(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ) -> dict:
+    from hub.utils.host_paths import redact_inventory_host_paths
+
     items = await run_in_threadpool(library.list_items)
-    return {"items": _items_for_caller(items, via_api_key), "folders": library_db.list_folders()}
+    disk = await run_in_threadpool(library.disk_usage)
+    return {
+        "items": _items_for_caller(items, via_api_key),
+        "folders": library_db.list_folders(),
+        "disk": redact_inventory_host_paths(disk, via_api_key = via_api_key),
+    }
 
 
 @router.get("/favorites")
@@ -202,6 +209,15 @@ def patch_item(body: ItemPatch, current_subject: str = Depends(get_current_subje
         )
     except KeyError:
         raise HTTPException(status_code = 404, detail = "Folder not found")
+    return {"ok": True}
+
+
+@router.post("/items/opened")
+def mark_item_opened(body: ItemRef, current_subject: str = Depends(get_current_subject)) -> dict:
+    # Only an item that is there, and kept for the file it is now: an open landing after a delete
+    # must not leave a row that a file made at the same path later would take for its own.
+    if not library.mark_opened(body.id):
+        raise HTTPException(status_code = 404, detail = "Item not found")
     return {"ok": True}
 
 
@@ -537,13 +553,46 @@ async def reveal_location(
     account_access.require_installation_owner()
     from pathlib import Path
 
-    paths = {entry["key"]: entry["path"] for entry in await run_in_threadpool(library.locations)}
-    if body.key not in paths:
+    entries = {entry["key"]: entry for entry in await run_in_threadpool(library.locations)}
+    if body.key not in entries:
         raise HTTPException(status_code = 404, detail = "Unknown location")
-    path = Path(paths[body.key])
+    path = Path(entries[body.key]["path"])
+    # A chosen folder that is gone is on a drive that is not there: making it would put the next
+    # saves beneath the mount point. Only a default is made.
+    if not entries[body.key]["available"]:
+        raise HTTPException(
+            status_code = 409,
+            detail = f"{path} is not available. Reconnect its drive, or reset the folder.",
+        )
     await run_in_threadpool(lambda: path.mkdir(parents = True, exist_ok = True))
     await run_in_threadpool(_reveal, path)
     return {"ok": True}
+
+
+class LocationMove(BaseModel):
+    key: str = Field(max_length = 32)
+    path: Optional[str] = Field(default = None, max_length = 4096)
+
+
+@router.post("/locations/move")
+async def move_location(
+    body: LocationMove, current_subject: str = Depends(get_current_subject)
+) -> dict:
+    """Move one kind of file to another folder, files and all. Installation owner only, like the
+    other storage settings: other accounts keep their files in their own workspace. `leftBehind`
+    names the folder whose files stayed on an unplugged drive when a Reset let go of it."""
+    account_access.require_installation_owner()
+    try:
+        left_behind = await run_in_threadpool(library.move_location, body.key, body.path)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    except RuntimeError as exc:
+        logger.warning("library.move_location_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = str(exc))
+    return {
+        "locations": await run_in_threadpool(library.locations),
+        "leftBehind": left_behind,
+    }
 
 
 def _chunks(stream, name: str):

@@ -35,7 +35,7 @@ import { ChevronDownIcon } from "lucide-react";
 import type { LibrarySource } from "../api";
 import type { LibraryTypeFilter } from "../file-kind";
 import { EMPTY_FILTERS, type LibraryFilters, filtersActive } from "../filters";
-import type { LibraryView } from "../store";
+import type { LibraryView } from "../settings-store";
 
 const ICON = "size-icon";
 const ROUND_BUTTON =

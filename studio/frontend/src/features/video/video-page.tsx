@@ -3,6 +3,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  ArrowExpand01Icon,
   Cancel01Icon,
   Delete02Icon,
   Download01Icon,
@@ -16,13 +17,20 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import { GalleryItemMenu, GalleryPinBadge } from "@/components/gallery-item-menu";
 import { MediaRailResizeHandle } from "@/components/media-rail-resize-handle";
+import { MediaViewer } from "@/components/media-viewer";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-width";
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
 import { ImageDropzone } from "@/components/image-dropzone";
 import { LibraryPageLink } from "@/components/media-page-link";
-import { translate } from "@/i18n";
-import { useLibraryFavorites } from "@/features/library";
+import { translate, useT } from "@/i18n";
+import {
+  chatAboutMedia,
+  revealInFolder,
+  useLibraryFavorites,
+  useRevealLabel,
+} from "@/features/library";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { videoTourSteps } from "./tour";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
@@ -199,6 +207,7 @@ import {
   loadVideoModel,
   unloadVideoModel,
 } from "./api";
+import { type Playback, fetchWithFreshLink, playWithMutedFallback, readPlayback } from "./viewer";
 import { videoThumbnailQueue, withThumbnailRetries } from "./thumbnail-request-queue";
 
 /** Placeholder hint until the prompt box is first focused. */
@@ -298,6 +307,8 @@ const VIDEO_LINK_REFRESH_MS = 6 * 60 * 60 * 1000;
 
 // Videos loaded per infinite-scroll page.
 const PAGE_SIZE = 50;
+
+const INLINE_PLAYBACK: Playback = { time: 0, playing: false, muted: true, volume: 1 };
 
 // Passes a window resync may make before giving up: each extra pass only happens when
 // pagination moved while it was fetching.
@@ -913,6 +924,7 @@ function VideoGenerator({
   active?: boolean;
   onInitialReady?: () => void;
 }) {
+  const t = useT();
   const initialReadySent = useRef(false);
   // Clear the floating sidebar toggle on mobile.
   const isMobileShell = useIsMobileShell();
@@ -1160,6 +1172,48 @@ function VideoGenerator({
     [videos, selectedId],
   );
   const selectedSrc = selected ? srcById[selected.id] : undefined;
+  const [viewer, setViewer] = useState<{ id: string; from: Playback } | null>(null);
+  const viewerVideoRef = useRef<HTMLVideoElement | null>(null);
+  const viewerPositioned = useRef(false);
+  const handback = useRef<{ id: string; playback: Playback } | null>(null);
+  const navigateToChat = useNavigate();
+  const revealLabel = useRevealLabel();
+  const viewerVideo = viewer ? (videos.find((video) => video.id === viewer.id) ?? null) : null;
+  const viewerSrc = viewerVideo ? srcById[viewerVideo.id] : undefined;
+  if (viewer && (!active || !viewerVideo)) setViewer(null);
+  const openViewer = () => {
+    if (!selected || !selectedSrc) return;
+    const inline = previewRef.current;
+    viewerPositioned.current = false;
+    handback.current = null;
+    setViewer({ id: selected.id, from: readPlayback(inline, INLINE_PLAYBACK) });
+    inline?.pause();
+  };
+  const recordViewer = (video: HTMLVideoElement) => {
+    if (!viewer || video !== viewerVideoRef.current) return;
+    handback.current = {
+      id: viewer.id,
+      playback: readPlayback(video, viewer.from, viewerPositioned.current),
+    };
+  };
+  const closeViewer = () => {
+    if (viewerVideoRef.current) recordViewer(viewerVideoRef.current);
+    setViewer(null);
+  };
+  const shownId = selected?.id;
+  useEffect(() => {
+    const last = handback.current;
+    if (viewer || !last || last.id !== shownId) return;
+    const inline = previewRef.current;
+    if (!selectedSrc || !inline) return;
+    handback.current = null;
+    const { playback } = last;
+    inline.currentTime = playback.time;
+    inline.muted = playback.muted;
+    inline.volume = playback.volume;
+    if (playback.playing && activeRef.current) void playWithMutedFallback(inline);
+    else inline.pause();
+  }, [viewer, shownId, selectedSrc]);
 
   // The resolution presets + temporal lattice for the loaded family, or the fallbacks before anything is loaded.
   const resolutionPresets = useMemo<Array<[number, number]>>(() => {
@@ -4245,6 +4299,66 @@ function VideoGenerator({
           data-tour="video-preview"
           className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden pl-2 lg:min-h-0"
         >
+          {viewer && viewerVideo && viewerSrc && (
+            <MediaViewer
+              open={true}
+              onOpenChange={(open) => !open && closeViewer()}
+              title={viewerVideo.prompt || t("library.viewer.untitledVideo")}
+              meta={`Generated · ${viewerVideo.width} × ${viewerVideo.height} · ${Math.round(viewerVideo.duration_s)}s`}
+              media={true}
+              noun="video"
+              actions={{
+                primary: {
+                  label: t("library.menu.chatAboutThis"),
+                  icon: MessageCircleIcon,
+                  onClick: () =>
+                    void chatAboutMedia(
+                      navigateToChat,
+                      () => fetchWithFreshLink(viewerSrc, () => fetchGalleryVideoSignedUrl(viewerVideo.id)),
+                      viewerVideo.prompt,
+                      "video",
+                    ),
+                },
+                onDownload: () => void handleQuickDownload(viewerVideo),
+                reveal: revealLabel
+                  ? { label: revealLabel, onClick: () => revealInFolder(`video:${viewerVideo.id}`) }
+                  : undefined,
+                favorite: isFavorite(`video:${viewerVideo.id}`),
+                onToggleFavorite: () => toggleFavorite(`video:${viewerVideo.id}`),
+                onAddToProject: (projectId) => addGalleryVideoToProject(viewerVideo.id, projectId),
+                onDelete: () => {
+                  viewerVideoRef.current?.pause();
+                  handback.current = null;
+                  setViewer(null);
+                  void handleDelete(viewerVideo.id);
+                },
+              }}
+            >
+              <video
+                ref={viewerVideoRef}
+                src={viewerSrc}
+                controls
+                playsInline
+                muted={viewer.from.muted}
+                onLoadedMetadata={(event) => {
+                  const video = event.currentTarget;
+                  if (viewer.from.time) video.currentTime = viewer.from.time;
+                  video.volume = viewer.from.volume;
+                  viewerPositioned.current = true;
+                  if (viewer.from.playing) void playWithMutedFallback(video);
+                }}
+                onTimeUpdate={(event) => recordViewer(event.currentTarget)}
+                onVolumeChange={(event) => recordViewer(event.currentTarget)}
+                onError={(event) => {
+                  const from = readPlayback(event.currentTarget, viewer.from, viewerPositioned.current);
+                  viewerPositioned.current = false;
+                  setViewer((current) => current && { ...current, from });
+                  remintSrc(viewerVideo);
+                }}
+                className="size-full object-contain"
+              />
+            </MediaViewer>
+          )}
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6">
             {selected && selectedSrc ? (
               <>
@@ -4255,7 +4369,8 @@ function VideoGenerator({
                   ref={previewRef}
                   src={selectedSrc}
                   controls
-                  autoPlay
+                  // A clip finishing behind the open viewer is selected, but must not play under it.
+                  autoPlay={viewer === null}
                   muted
                   playsInline
                   onPlay={() => {
@@ -4280,6 +4395,21 @@ function VideoGenerator({
                 {/* Actions grouped in one glass toolbar so they stay legible over any clip. */}
                 {/* No button borders: focus returning from a menu would draw one. Keyboard focus tints instead. */}
                 <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
+                  {/* Not a click on the clip itself: Chrome's ⋮ menu, WebKit's centred play button and the
+                      first click of a double-click to fullscreen all land on the frame, above the controls. */}
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label={t("library.viewer.openVideo")}
+                    title={t("library.viewer.openVideo")}
+                    onClick={(event) => {
+                      // Safari does not focus a clicked button, and the viewer returns focus to what had it.
+                      event.currentTarget.focus();
+                      openViewer();
+                    }}
+                  >
+                    <HugeiconsIcon icon={ArrowExpand01Icon} className="size-4" />
+                  </Button>
                   <RecipePopover video={selected} onRestore={restoreSettings} active={active} />
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild={true}>

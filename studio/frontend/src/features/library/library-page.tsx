@@ -47,7 +47,13 @@ import {
   downloadLibraryItems,
 } from "./actions";
 import { type LibraryFolder, type LibraryItem, type LibraryUploadBatch, errorMessage } from "./api";
-import { fileKind, isFileItem, isModelItem } from "./file-kind";
+import {
+  type LibraryTypeFilter,
+  fileKind,
+  isDeletable,
+  isFileItem,
+  isModelItem,
+} from "./file-kind";
 import {
   type LibraryActions,
   LibraryActionsProvider,
@@ -62,7 +68,18 @@ import { LibraryHeader } from "./components/library-header";
 import { LibraryToolbar, type NewAction } from "./components/library-toolbar";
 import { EMPTY_FILTERS, type LibraryFilters, filtersActive, matchesFilters } from "./filters";
 import { LIBRARY_TABS, type LibrarySearch, type LibraryTab } from "./search";
-import { useLibraryStore, useLibraryViewStore } from "./store";
+import { useLibraryStore } from "./store";
+import {
+  SORT_STATES,
+  compareBySort,
+  includedBySettings,
+  lastActivity,
+  nextSort,
+  sortParam,
+  useLibrarySettingsStore,
+  useLibraryViewStore,
+  useLibraryVisitStore,
+} from "./settings-store";
 
 const TAB_LABELS: Record<LibraryTab, TranslationKey> = {
   suggested: "library.tabs.suggested",
@@ -100,8 +117,6 @@ const KIND_TABS: Partial<Record<LibraryTab, (item: LibraryItem) => boolean>> = {
   models: isModelItem,
 };
 
-const SUGGESTED_LIMIT = 40;
-
 const DELETE_NOTES: Record<string, TranslationKey> = {
   upload: "library.dialog.deleteUpload",
   attachment: "library.dialog.deleteAttachment",
@@ -109,6 +124,7 @@ const DELETE_NOTES: Record<string, TranslationKey> = {
   video: "library.dialog.deleteVideo",
   audio: "library.dialog.deleteAudio",
   sandbox: "library.dialog.deleteSandbox",
+  model: "library.dialog.deleteModel",
 };
 
 type NameDialogState =
@@ -123,8 +139,6 @@ const BAR_PILL =
   "flex h-9 items-center gap-2 rounded-full px-4 text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
 const BAR_ROUND =
   "flex size-9 items-center justify-center rounded-full outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring";
-
-const KIND_ONLY_TABS = new Set<LibraryTab>(["images", "videos", "audio", "models"]);
 
 function EmptyState({
   icon,
@@ -161,9 +175,12 @@ function LoadingGrid() {
   );
 }
 
+const FILE_TYPES: LibraryTypeFilter[] = ["documents", "spreadsheets", "presentations", "pdfs"];
+
 export function LibraryPage() {
   const search = useSearch({ from: "/library" });
   const refresh = useLibraryStore((s) => s.refresh);
+  const visit = useLibraryVisitStore((s) => s.visit);
 
   useEffect(() => {
     void refresh();
@@ -172,26 +189,52 @@ export function LibraryPage() {
     return () => window.removeEventListener("focus", onFocus);
   }, [refresh]);
 
-  return <LibraryView key={`${search.show ?? ""}:${search.folder ?? ""}`} search={search} />;
+  return (
+    <LibraryView
+      key={`${visit}:${search.show ?? ""}:${search.folder ?? ""}:${search.filter ?? ""}`}
+      search={search}
+    />
+  );
 }
 
 function LibraryView({ search }: { search: LibrarySearch }) {
   const t = useT();
   const navigate = useNavigate();
-  const { items, folders, status, error, refresh, patchItem, removeItem, upload, addFolder, patchFolder, removeFolder } =
+  const { items: allItems, folders, status, error, refresh, patchItem, removeItem, upload, addFolder, patchFolder, removeFolder, markOpened } =
     useLibraryStore();
+  const settings = useLibrarySettingsStore();
+  const items = useMemo(
+    () => allItems.filter((item) => includedBySettings(item.id, settings)),
+    [allItems, settings],
+  );
   const view = useLibraryViewStore((s) => s.view);
   const setView = useLibraryViewStore((s) => s.setView);
   const openSettings = useSettingsDialogStore((s) => s.openDialog);
 
   const [query, setQuery] = useState("");
-  const [filters, setFilters] = useState<LibraryFilters>(EMPTY_FILTERS);
+  const [filters, setFilters] = useState<LibraryFilters>(() =>
+    search.filter === "files" ? { sources: new Set(), types: new Set(FILE_TYPES) } : EMPTY_FILTERS,
+  );
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [nameDialog, setNameDialog] = useState<NameDialogState | null>(null);
   const [pendingDelete, setPendingDelete] = useState<LibraryTarget[] | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
-  const tab: LibraryTab = search.show ?? "suggested";
+  const loaded = status === "ready";
+  // "auto" tabs count as shown until the listing lands, so a start tab is not swapped mid-load.
+  const tabVisible = (entry: LibraryTab) => {
+    const visibility = settings.tabs[entry] ?? "always";
+    if (visibility === "hidden" || (entry === "models" && !settings.showFineTunes)) return false;
+    return visibility === "always" || !loaded || items.some(KIND_TABS[entry] ?? (() => true));
+  };
+  // Read once: changing Open on in settings must not move a Library that is already open.
+  const [preferred] = useState(() =>
+    settings.startTab === "last" ? settings.lastTab : settings.startTab,
+  );
+  const tab: LibraryTab =
+    search.show ??
+    (tabVisible(preferred) ? preferred : (LIBRARY_TABS.find(tabVisible) ?? "all"));
+  const sort = SORT_STATES[search.sort ?? settings.sort];
   const folderId = search.folder ?? null;
   const folderById = useMemo(() => new Map(folders.map((f) => [f.id, f])), [folders]);
   const currentFolder = folderId ? (folderById.get(folderId) ?? null) : null;
@@ -226,14 +269,12 @@ function LibraryView({ search }: { search: LibrarySearch }) {
 
   const kindFilter = folderId ? undefined : KIND_TABS[tab];
 
-  const shownTabs = useMemo(
-    () =>
-      LIBRARY_TABS.filter(
-        (entry) =>
-          !KIND_ONLY_TABS.has(entry) || entry === tab || items.some(KIND_TABS[entry]!),
-      ),
-    [items, tab],
-  );
+  const shownTabs = LIBRARY_TABS.filter((entry) => entry === tab || tabVisible(entry));
+
+  const setLibrarySettings = settings.set;
+  useEffect(() => {
+    if (!folderId) setLibrarySettings({ lastTab: tab });
+  }, [tab, folderId, setLibrarySettings]);
   const visibleItems = useMemo(() => {
     let pool = items;
     if (folderId) pool = pool.filter((item) => item.folderId === folderId);
@@ -243,10 +284,13 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     pool = pool.filter(
       (item) => nameMatches(item.name, needle) && matchesFilters(item, filters, !kindFilter),
     );
-    return tab === "suggested" && !folderId && !needle && !filtersActive(filters)
-      ? pool.slice(0, SUGGESTED_LIMIT)
-      : pool;
-  }, [items, folderId, tab, needle, filters, kindFilter]);
+    if (tab === "suggested" && !folderId) {
+      const byActivity = [...pool].sort((a, b) => lastActivity(b) - lastActivity(a));
+      pool = needle || filtersActive(filters) ? byActivity : byActivity.slice(0, settings.suggestedLimit);
+      if (sort.key === "modified") return sort.desc ? pool : pool.reverse();
+    }
+    return [...pool].sort(compareBySort(sort));
+  }, [items, folderId, tab, needle, filters, kindFilter, settings.suggestedLimit, sort]);
 
   const visibleFolders = useMemo(() => {
     const showsFolders = folderId || tab === "folders" || tab === "all";
@@ -254,11 +298,11 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     return folders
       .filter((folder) => folder.parentId === folderId)
       .filter((folder) => nameMatches(folder.name, needle))
-      .sort((a, b) => b.updatedAt - a.updatedAt);
-  }, [folders, folderId, tab, needle, filters]);
+      .sort(compareBySort(sort.key === "size" ? { key: "name", desc: false } : sort));
+  }, [folders, folderId, tab, needle, filters, sort]);
 
-  // A search or filter that hides a selected entry deselects it, so bulk actions only ever act on
-  // what is on screen and clearing the filter never brings a selection back.
+  // A search, filter or Content setting that hides a selected entry deselects it, so bulk actions
+  // only ever act on what is on screen and clearing the filter never brings a selection back.
   const visibleKeys = useMemo(
     () =>
       new Set([
@@ -272,6 +316,10 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   }
 
   const previewItem = search.item ? (items.find((item) => item.id === search.item) ?? null) : null;
+  const previewId = previewItem?.id ?? null;
+  useEffect(() => {
+    if (previewId) markOpened(previewId);
+  }, [previewId, markOpened]);
 
   const router = useRouter();
   const pushedPreview = useRef<string | null>(null);
@@ -372,7 +420,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     moveTo: (target, destination) => void moveAll([target], destination),
     moveToNewFolder: (target) =>
       setNameDialog({ mode: "create", parentId: folderId, thenMove: target }),
-    remove: (target) => setPendingDelete([target]),
+    remove: (target) => requestDelete([target]),
   };
 
   async function uploadBatch(batch: LibraryUploadBatch, count: number, label: string) {
@@ -474,6 +522,9 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     }
   }
 
+  const requestDelete = (targets: LibraryTarget[]) =>
+    settings.confirmDelete ? setPendingDelete(targets) : void confirmDelete(targets);
+
   async function confirmDelete(targets: LibraryTarget[]) {
     setPendingDelete(null);
     setSelection(new Set());
@@ -550,7 +601,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   }
 
   const title = folderId ? (
-    <nav className="flex min-w-0 items-center gap-2 text-ui-25 font-semibold tracking-[-0.028em]" aria-label={t("library.breadcrumb")}>
+    <nav className="flex min-w-0 items-center gap-2 text-[calc(1.6875rem*var(--ui-font-scale,1))] font-semibold tracking-[-0.028em]" aria-label={t("library.breadcrumb")}>
       <button
         type="button"
         onClick={() => go({ show: "folders" })}
@@ -576,7 +627,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       ))}
     </nav>
   ) : (
-    <h1 className="text-ui-25 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground">
+    <h1 className="text-[calc(1.6875rem*var(--ui-font-scale,1))] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground">
       {t("shell.navigation.library")}
     </h1>
   );
@@ -709,6 +760,9 @@ function LibraryView({ search }: { search: LibrarySearch }) {
             counts={counts}
             selection={selection}
             onSelectionChange={setSelection}
+            sort={sort}
+            onSortChange={(key) => go({ ...search, sort: sortParam(nextSort(sort, key)) }, true)}
+            activity={tab === "suggested" && !folderId}
           />
         </div>
       );
@@ -769,7 +823,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     setSelection(new Set());
   };
   const deletableSelection = () =>
-    selectedTargets().filter((t) => t.kind === "folder" || isFileItem(t.item));
+    selectedTargets().filter((t) => t.kind === "folder" || isDeletable(t.item));
   const deleteText = pendingDelete ? deleteCopy(pendingDelete) : null;
 
   return (
@@ -802,7 +856,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               onSearchChange={setQuery}
               searchPlaceholder={t(folderId ? "library.searchFolder" : "library.searchLibrary")}
               onNew={handleNew}
-              onSettings={() => openSettings("data")}
+              onSettings={() => openSettings("library")}
             />
           }
           tabs={
@@ -815,7 +869,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
                 }
           }
         />
-        {renderBody()}
+        <div className="pl-3">{renderBody()}</div>
 
         {dragging && (
           <div className="pointer-events-none fixed inset-0 z-40 flex items-center justify-center bg-background/70 backdrop-blur-sm">
@@ -859,7 +913,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
             <button
               type="button"
               disabled={deletableSelection().length === 0}
-              onClick={() => setPendingDelete(deletableSelection())}
+              onClick={() => requestDelete(deletableSelection())}
               className={cn(
                 BAR_PILL,
                 "border border-red-500/70 text-red-600 transition-colors hover:bg-red-500/15 dark:text-red-400",

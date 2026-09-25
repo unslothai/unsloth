@@ -3049,6 +3049,22 @@ def _active_video_backend():
         return None
 
 
+def _forget_gone_library_entries(source: str, folder: Path) -> None:
+    """Drop the Library's name, folder and star for models that were in `folder` and are gone now,
+    so they never land on a new model saved to the same path. A GGUF export is listed by one of
+    its files, so deleting that variant ends its entry. The files are gone already, so a failure
+    here only logs."""
+    try:
+        from storage import library_db
+        prefix = f"model:{source}:"
+        for item_id in library_db.list_entries():
+            path = item_id[len(prefix) :] if item_id.startswith(prefix) else ""
+            if path and not os.path.lexists(path) and _is_path_under(Path(path), folder):
+                library_db.delete_entry(item_id)
+    except Exception as e:
+        logger.warning("Could not clear the Library entries under %s: %s", folder, e)
+
+
 def _prune_empty_parents(start: Path, stop_at: Path) -> None:
     """Remove empty ancestors of ``start`` up to (not including) ``stop_at``, so the enclosing run dir
     does not linger as an empty entry in scan results."""
@@ -3383,6 +3399,7 @@ async def delete_finetuned_model(
                     _prune_empty_parents(target_path, allowed_root)
             except OSError:
                 pass
+            _forget_gone_library_entries(source, target_path)
             await _invalidate_local_scans()
             logger.info(
                 "Deleted %s GGUF file(s) for exported model at %s variant %s (%0.1f MB freed)",
@@ -3409,6 +3426,7 @@ async def delete_finetuned_model(
             )
 
         _prune_empty_parents(target_path, allowed_root)
+        _forget_gone_library_entries(source, target_path)
 
         await _invalidate_local_scans()
         logger.info("Deleted fine-tuned model at %s", target_path)

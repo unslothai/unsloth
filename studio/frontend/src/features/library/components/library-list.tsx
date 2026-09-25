@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Checkbox } from "@/components/ui/checkbox";
-import { useLocale, useT } from "@/i18n";
+import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { Folder01Icon } from "@hugeicons/core-free-icons";
 import { StarPointedIcon } from "@/lib/hugeicons-derived";
@@ -10,7 +10,9 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
 import type { LibraryFolder, LibraryItem } from "../api";
 import { modelLabelKey } from "../file-kind";
-import { formatActivityTime, formatItemCount } from "../format";
+import { formatActivityTime, formatCardTime, formatItemCount, formatSize } from "../format";
+import type { LibrarySortKey, LibrarySortState } from "../settings-store";
+import { ArrowDownIcon, ArrowUpIcon } from "lucide-react";
 import { type LibraryTarget, useLibraryActions } from "../actions-context";
 import { LibraryActionsMenu } from "./library-actions";
 import { ItemTile } from "./library-cards";
@@ -19,7 +21,51 @@ function targetKey(target: LibraryTarget): string {
   return target.kind === "item" ? `item:${target.item.id}` : `folder:${target.folder.id}`;
 }
 
-const ROW_INSET = "pl-4 pr-3";
+const ROW_INSET = "pl-4 pr-6";
+
+const CELL = "hidden text-ui-13 text-muted-foreground sm:block";
+const ACTIVITY_COLUMN = "w-48 shrink-0";
+const MODIFIED_COLUMN = "w-40 shrink-0";
+const SIZE_COLUMN = "w-28 shrink-0";
+const ACTIVITY_COLUMNS: [LibrarySortKey, TranslationKey, string][] = [
+  ["modified", "library.list.lastActivity", ACTIVITY_COLUMN],
+];
+const COLUMNS: [LibrarySortKey, TranslationKey, string][] = [
+  ["modified", "library.list.modifiedColumn", MODIFIED_COLUMN],
+  ["size", "library.preview.size", SIZE_COLUMN],
+];
+
+function SortHeader({
+  column,
+  label,
+  sort,
+  onSortChange,
+  className,
+}: {
+  column: LibrarySortKey;
+  label: string;
+  sort: LibrarySortState;
+  onSortChange: (key: LibrarySortKey) => void;
+  className?: string;
+}) {
+  const active = sort.key === column;
+  const Arrow = sort.desc ? ArrowDownIcon : ArrowUpIcon;
+  return (
+    <button
+      type="button"
+      onClick={() => onSortChange(column)}
+      aria-sort={active ? (sort.desc ? "descending" : "ascending") : undefined}
+      className={cn(
+        "flex items-center gap-1 text-left transition-colors hover:text-foreground",
+        active && "text-foreground",
+        className,
+      )}
+    >
+      {label}
+      {active && <Arrow className="size-3.5" strokeWidth={2} />}
+    </button>
+  );
+}
 
 function GutterCheckbox({
   checked,
@@ -60,6 +106,9 @@ function Row({
   onOpen,
   tile,
   name,
+  modified,
+  opened,
+  size,
   activity,
 }: {
   target: LibraryTarget;
@@ -69,13 +118,17 @@ function Row({
   onOpen: () => void;
   tile: ReactNode;
   name: ReactNode;
-  activity: string;
+  modified: number;
+  opened?: number | null;
+  size?: number | null;
+  activity: boolean;
 }) {
   const t = useT();
+  const locale = useLocale();
   return (
     <div
       className={cn(
-        "group/library-row relative flex items-center gap-4 rounded-xl transition-colors hover:bg-muted dark:hover:bg-muted/60",
+        "group/library-row relative flex items-center gap-4 rounded-[14px] transition-colors hover:bg-muted dark:hover:bg-muted/60",
         ROW_INSET,
         selected && "bg-muted dark:bg-muted/60",
       )}
@@ -96,9 +149,18 @@ function Row({
       >
         {tile}
         <span className="flex min-w-0 items-center gap-2 text-ui-14 text-foreground">{name}</span>
-        <span className="ml-auto hidden w-44 shrink-0 text-ui-13 text-muted-foreground sm:block">
-          {activity}
-        </span>
+        {activity ? (
+          <span className={cn(ACTIVITY_COLUMN, CELL, "ml-auto")}>
+            {(opened ?? 0) > modified
+              ? t("library.list.opened", { time: formatActivityTime(opened!, locale, t) })
+              : t("library.list.modified", { time: formatActivityTime(modified, locale, t) })}
+          </span>
+        ) : (
+          <>
+            <span className={cn(MODIFIED_COLUMN, CELL, "ml-auto")}>{formatCardTime(modified, locale)}</span>
+            <span className={cn(SIZE_COLUMN, CELL)}>{formatSize(size ?? null, locale, t)}</span>
+          </>
+        )}
       </button>
       <LibraryActionsMenu target={target} variant="row" />
     </div>
@@ -111,18 +173,21 @@ export function LibraryList({
   counts,
   selection,
   onSelectionChange,
+  sort,
+  onSortChange,
+  activity,
 }: {
   folders: LibraryFolder[];
   items: LibraryItem[];
   counts: Map<string, number>;
   selection: Set<string>;
   onSelectionChange: (next: Set<string>) => void;
+  sort: LibrarySortState;
+  onSortChange: (key: LibrarySortKey) => void;
+  activity: boolean;
 }) {
   const t = useT();
-  const locale = useLocale();
   const actions = useLibraryActions();
-  const modified = (ts: number) =>
-    t("library.list.modified", { time: formatActivityTime(ts, locale, t) });
   const targets: LibraryTarget[] = [
     ...folders.map((folder) => ({ kind: "folder" as const, folder })),
     ...items.map((item) => ({ kind: "item" as const, item })),
@@ -140,7 +205,7 @@ export function LibraryList({
   return (
     <div>
       {/* The padding sits outside the row, so the checkbox centers on the column titles. */}
-      <div className="border-b border-border/60 pb-2">
+      <div className="pb-2">
         <div
           className={cn(
             "group/library-head relative flex items-center gap-4 text-ui-13 text-muted-foreground",
@@ -157,8 +222,19 @@ export function LibraryList({
             }
             label={t("library.list.selectAll")}
           />
-          <span className="flex-1">{t("library.list.name")}</span>
-          <span className="hidden w-44 shrink-0 sm:block">{t("library.list.lastActivity")}</span>
+          <span className="flex-1">
+            <SortHeader column="name" label={t("library.list.name")} sort={sort} onSortChange={onSortChange} />
+          </span>
+          {(activity ? ACTIVITY_COLUMNS : COLUMNS).map(([column, label, width]) => (
+            <SortHeader
+              key={column}
+              column={column}
+              label={t(label)}
+              sort={sort}
+              onSortChange={onSortChange}
+              className={cn(width, "hidden sm:flex")}
+            />
+          ))}
           <span className="w-8 shrink-0" />
         </div>
       </div>
@@ -172,7 +248,7 @@ export function LibraryList({
             onSelectedChange={(selected) => setSelected({ kind: "folder", folder }, selected)}
             onOpen={() => actions.openFolder(folder.id)}
             tile={
-              <div className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-border/60">
+              <div className="flex size-9 shrink-0 items-center justify-center rounded-[10px] border border-border/60">
                 <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.5} className="size-5" />
               </div>
             }
@@ -184,7 +260,8 @@ export function LibraryList({
                 </span>
               </>
             }
-            activity={modified(folder.updatedAt)}
+            modified={folder.updatedAt}
+            activity={activity}
           />
         ))}
         {items.map((item) => (
@@ -214,7 +291,10 @@ export function LibraryList({
                 )}
               </>
             }
-            activity={modified(item.updatedAt)}
+            modified={item.updatedAt}
+            opened={item.openedAt}
+            size={item.sizeBytes}
+            activity={activity}
           />
         ))}
       </div>
