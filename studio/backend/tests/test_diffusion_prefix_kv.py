@@ -39,7 +39,6 @@ def _prefill_like_inductor(
     seq = 64,
     prefix = 3,
 ):
-    """What the compiled prefill leaves behind: the stored prefix is a view of the full K/V buffer."""
     for layer in cache.layer_caches:
         full_k = torch.randn(1, seq, 4, 8)
         full_v = torch.randn(1, seq, 4, 8)
@@ -70,8 +69,6 @@ def test_a_cache_that_is_already_compact_is_left_alone():
 
 
 def test_other_cache_layouts_are_walked_too():
-    """FLUX.2 klein keeps two lists of ``k_ref`` / ``v_ref`` layers; empty layers are skipped."""
-
     class _RefLayer:
         def __init__(
             self,
@@ -122,7 +119,6 @@ def test_the_hook_compacts_after_the_prefill_call_only():
     layer = cache.layer_caches[0]
     assert layer.k.untyped_storage().nbytes() == layer.k.numel() * layer.k.element_size()
 
-    # A cached step must not pay for a walk it does not need: plant a view and check it survives.
     planted = torch.randn(1, 64, 4, 8)[:, :3]
     layer.k = planted
     module(x, kv_cache = cache, kv_cache_mode = "cached")
@@ -130,8 +126,6 @@ def test_the_hook_compacts_after_the_prefill_call_only():
 
 
 class _ReturnsItsCache(torch.nn.Module):
-    """FLUX.2 klein: the extract call gets no cache, builds one and returns it."""
-
     def __init__(self, as_tuple):
         super().__init__()
         self.as_tuple = as_tuple
@@ -194,7 +188,6 @@ def test_the_real_qwen_image_21_cache_is_compacted():
 
 
 def test_inductor_really_stores_the_clone_as_a_view_of_the_full_buffer():
-    """The premise: a compiled ``k[:, :prefix].clone()`` keeps the whole buffer alive."""
     if not hasattr(torch, "compile"):
         pytest.skip("torch.compile unavailable")
 
