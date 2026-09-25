@@ -3974,9 +3974,48 @@ def apply_accepts_loss_kwargs_fix(model):
 
     value, reason = _find_concrete_accepts_loss_kwargs(model)
     if value is None:
+        if _forward_ignores_num_items_in_batch(model):
+            _shadow_accepts_loss_kwargs(model, False)
+            return "False (forward takes **kwargs but computes its own mean loss)"
         return f"default (signature inspection, {reason})"
     _shadow_accepts_loss_kwargs(model, value)
     return f"{value} ({reason})"
+
+
+_OWN_CE_LOSS = re.compile(r"\bCrossEntropyLoss\s*\(|\bcross_entropy\s*\(")
+
+
+def _forward_ignores_num_items_in_batch(model):
+    # HF reads any **kwargs on forward as "consumes num_items_in_batch" and then skips the 1/GA
+    # scaling. Remote code such as NemotronH keeps **kwargs only for generate and returns a
+    # plain CrossEntropyLoss mean, so the logged loss and the gradients come out GA times too large.
+    seen = set()
+    m = model
+    for _ in range(6):
+        if m is None or id(m) in seen:
+            return False
+        seen.add(id(m))
+        name = type(m).__name__
+        if "CausalLM" in name or "ForConditionalGeneration" in name:
+            break
+        nxt = getattr(m, "base_model", None)
+        if nxt is None or nxt is m:
+            nxt = getattr(m, "model", None)
+        m = nxt
+    else:
+        return False
+    forward = getattr(type(m), "forward", None)
+    forward = inspect.unwrap(forward) if forward is not None else None
+    try:
+        params = inspect.signature(forward).parameters.values()
+        source = inspect.getsource(forward)
+    except Exception:
+        return False
+    if not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
+        return False
+    if "num_items_in_batch" in source or "loss_function" in source:
+        return False
+    return _OWN_CE_LOSS.search(source) is not None
 
 
 def patch_tokenizer(model, tokenizer):
