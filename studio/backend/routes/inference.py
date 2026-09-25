@@ -40084,17 +40084,17 @@ async def diffusion_status(
     if account_access.resident_hidden("diffusion", status_dict.get("repo_id")):
         return account_access.hidden_resident_response()
     # Step-skip counters trace a render as it runs, which generate-progress hides from other accounts:
-    # shown only to the account whose generation produced them (a successor's own run rebinds them).
+    # shown only to the account whose generation produced them, from one owner-then-stats read.
     if (
         status_dict.get("transformer_cache_stats") is not None
         and account_access.account_scope() is not None
     ):
         from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
-        owner_of = getattr(get_active_diffusion_engine(), "static_skip_owner", None)
-        owner = owner_of() if callable(owner_of) else None
-        if owner is not None and owner != current_account_id():
-            status_dict = {**status_dict, "transformer_cache_stats": None}
+        view = getattr(get_active_diffusion_engine(), "static_skip_view", None)
+        owner, stats = view() if callable(view) else (None, status_dict["transformer_cache_stats"])
+        visible = owner is None or owner == current_account_id()
+        status_dict = {**status_dict, "transformer_cache_stats": stats if visible else None}
     # Answered long after the resolving request ended, so no handle is in context.
     return redact_host_paths(DiffusionStatusResponse(**status_dict), via_api_key = via_api_key)
 

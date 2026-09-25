@@ -932,26 +932,37 @@ def test_status_route_shows_skip_counts_only_to_their_producer(monkeypatch, scop
         "active_status",
         lambda: {"loaded": True, "transformer_cache": "static", "transformer_cache_stats": stats},
     )
-    engine = types.SimpleNamespace(static_skip_owner = lambda: owner)
+    # The view's snapshot, not the earlier status() read, is what the caller gets.
+    fresh = {**stats, "stats": {"calls": 30, "computed": 19, "skipped": 11}}
+    engine = types.SimpleNamespace(static_skip_view = lambda: (owner, fresh))
     monkeypatch.setattr(diffusion_engine_router, "get_active_diffusion_engine", lambda: engine)
     monkeypatch.setattr(account_access, "resident_hidden", lambda *a, **k: False)
     monkeypatch.setattr(account_access, "account_scope", lambda: scope)
     monkeypatch.setattr(routes, "current_account_id", lambda: "a")
     body = asyncio.run(routes.diffusion_status(current_subject = "u", via_api_key = False))
     assert body.transformer_cache == "static"
-    assert body.transformer_cache_stats == (stats if shown else None)
+    assert body.transformer_cache_stats == ((fresh if scope else stats) if shown else None)
 
 
 def test_a_new_owner_never_inherits_the_previous_owners_counts():
     pipe = _installed()
     _run(pipe, 25, owner = "a")
     ss.reset_static_step_skip(pipe, None)
-    assert ss.static_skip_owner(pipe) == "a"
-    assert ss.static_skip_stats(pipe)["stats"]["skipped"] > 0
+    owner, stats = ss.static_skip_view(pipe)
+    assert owner == "a" and stats["stats"]["skipped"] > 0
     ss.reset_static_step_skip(pipe, 25, owner = "b")
-    assert ss.static_skip_owner(pipe) == "b"
-    assert ss.static_skip_stats(pipe)["stats"] == {"calls": 0, "computed": 0, "skipped": 0}
+    owner, stats = ss.static_skip_view(pipe)
+    assert owner == "b"
+    assert stats["stats"] == {"calls": 0, "computed": 0, "skipped": 0}
     # The same owner's next generation keeps its last counts visible until it calls.
     ss.reset_static_step_skip(pipe, None)
     ss.reset_static_step_skip(pipe, 25, owner = "b")
-    assert ss.static_skip_owner(pipe) == "b"
+    assert ss.static_skip_view(pipe)[0] == "b"
+
+
+def test_planned_skips_survive_the_post_render_reset():
+    pipe = _installed()
+    _run(pipe, 25)
+    ss.reset_static_step_skip(pipe, None)
+    stats = ss.static_skip_stats(pipe)
+    assert stats["stats"]["skipped"] == stats["planned_skips"] == 9
