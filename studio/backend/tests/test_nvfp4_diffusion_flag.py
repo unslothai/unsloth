@@ -91,6 +91,9 @@ def test_only_nvfp4_is_blocked():
 
 def _blackwell(monkeypatch, *, supported = ("int8", "fp8", "nvfp4", "mxfp8")):
     """A datacenter sm_100 host whose smoke probe passes ``supported``, nothing allocated."""
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(tq, "_capability", lambda: (10, 0))
     monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(tq, "_is_consumer_gpu", lambda device = None: False)
