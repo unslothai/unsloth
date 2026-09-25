@@ -1616,12 +1616,17 @@ def _loaded_models(base: str, key: str) -> list:
         _fail_request(exc, "Couldn't list models")
 
 
-def _model_still_loaded(base: str, key: str, model_id: object) -> bool:
+def _model_loaded_state(base: str, key: str, model_id: object) -> Optional[bool]:
+    """Return whether the model is loaded, or None if the listing is unavailable."""
     try:
         models = _loaded_models_response(base, key, timeout = 5).get("data", [])
     except Exception:
-        return False
+        return None
     return any(m.get("id") == model_id and m.get("loaded") is not False for m in models)
+
+
+def _model_still_loaded(base: str, key: str, model_id: object) -> bool:
+    return _model_loaded_state(base, key, model_id) is True
 
 
 _HF_REPO_ID_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -1670,6 +1675,18 @@ def _public_model_id(value: Optional[str]) -> Optional[str]:
     if name.lower().endswith(".gguf"):
         name = name[: -len(".gguf")]
     return name or None
+
+
+def _public_model_ids(value: Optional[str]) -> set:
+    """Return a path's basename ID and HF cache repo ID for old and current servers."""
+    ids = {_public_model_id(value)} - {None}
+    if ids:
+        parts = value.replace("\\", "/").split("/")
+        for index, part in enumerate(parts):
+            if part.startswith("models--") and parts[index + 1 : index + 2] == ["snapshots"]:
+                ids.add(part[len("models--") :].replace("--", "/"))
+                break
+    return ids
 
 
 def _model_id_matches(
@@ -1908,8 +1925,8 @@ def _resolve_model(
         if preload_check is not None:
             # An explicit knob forces match to None so the server's disk-free dedupe can answer already_loaded; gating it would reject a second session for the model already serving, whose file may have moved. Only the quant is checked below: any other run knob changes the runtime intent, a real reload nothing dedupes.
             other_overrides = bool(overrides - {"gguf_variant"})
-            # The loaded listing shows a path-loaded GGUF under its basename, so match that spelling too, or a second session reruns the gate.
-            wanted_ids = {requested, _public_model_id(requested)} - {None}
+            # Match public path IDs before deciding whether to rerun the gate.
+            wanted_ids = {requested} | _public_model_ids(requested)
             resident_serves_request = not other_overrides and any(
                 m.get("loaded") is not False
                 and any(
@@ -1953,6 +1970,9 @@ def _resolve_model(
                 preload_check(base, key, requested, load.gguf_variant)
         active_id = active.get("id") if active else None
         announced_switch = False
+        # Public IDs can collide, and status hides paths from API keys.
+        # Wait for the load result to distinguish reuse from replacement.
+        switch_unknown = False
         if attach_public_id is not None:
             # An inferred attach never switches model, so the comparison below would misreport a switch and print the server's path.
             if inferred_differs:
@@ -1964,9 +1984,15 @@ def _resolve_model(
             requested,
             allow_casefold = allow_casefold,
         ):
-            typer.echo(f"Switching the Unsloth server from {active_id} to {requested}.")
-            typer.echo("This unloads the current model for every attached session.")
-            announced_switch = True
+            if any(
+                _model_id_matches(active_id, listed, allow_casefold = allow_casefold)
+                for listed in _public_model_ids(requested)
+            ):
+                switch_unknown = True
+            else:
+                typer.echo(f"Switching the Unsloth server from {active_id} to {requested}.")
+                typer.echo("This unloads the current model for every attached session.")
+                announced_switch = True
         elif active_id and load.gguf_variant:
             # Same repo id but an explicit quant still replaces the resident weights; the loaded listing does not carry a variant for every resident model, so ask the status endpoint.
             try:
@@ -2042,13 +2068,20 @@ def _resolve_model(
             # The warning above promised an unload; if the server refused the load before evicting anything, say so. Not BaseException: Ctrl+C must stay immediate, without a probe or a survivor claim.
             if announced_switch and _model_still_loaded(base, key, active_id):
                 typer.echo(f"Nothing was unloaded; {active_id} is still serving.", err = True)
+            # Report an unannounced eviction only if the listing confirms it.
+            if switch_unknown and _model_loaded_state(base, key, active_id) is False:
+                typer.echo(f"{active_id} was unloaded for every attached session.", err = True)
             raise
         if loaded.get("status") == "already_loaded":
             # Show the public id on the inferred path; `requested` may be a server path.
             shown = attach_public_id or requested
             typer.echo(f"Reusing loaded model: {_display_model_spec(shown, load.gguf_variant)}")
-        # Unsloth registers the model under a canonical id (resolved identifier, casing) that the loaded listing echoes but which may differ from the path we passed; match on the id the load reports so we do not silently fall through to models[0] and connect to a different loaded model. attach_public_id: our _public_model_id only strips a basename, while the server also maps an HF cache path to its repo id, so the two can disagree.
-        wanted = {requested, _public_model_id(requested), attach_public_id} - {None}
+        elif switch_unknown:
+            typer.echo(f"Loaded {requested} in place of {active_id}.")
+            typer.echo("This unloaded the previous model for every attached session.")
+        # Match public IDs and load-response names, since the listing may omit paths.
+        # Keep attach_public_id for inferred requests using opaque identifiers.
+        wanted = ({requested, attach_public_id} - {None}) | _public_model_ids(requested)
         if isinstance(loaded, dict):
             wanted |= {loaded.get("model"), loaded.get("display_name")} - {None}
         models = _loaded_models(base, key)
@@ -3534,7 +3567,9 @@ def _refresh_windows_path() -> None:
 def _managed_node_tools() -> Optional[tuple[Path, Path, bool]]:
     # Best-effort: any failure here means "no managed Node", never a broken launch.
     try:
-        ensure_studio_backend_path()
+        # Discovery only: this answers "is there a managed Node", including for a launch aimed
+        # at a remote server, so it must not create the cache tree on the way past.
+        ensure_studio_backend_path(seed_cache_env = False)
         from utils.node_runtime import managed_node_binary, resolve_node_executable
         node = Path(managed_node_binary())
     except (ImportError, OSError, RuntimeError, TypeError, ValueError):

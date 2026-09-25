@@ -764,7 +764,7 @@ def test_status_loaded_shape():
 def test_generate_returns_images_and_seed():
     eng = _FakeEngine()
     b = _loaded_backend(engine = eng)
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 8, seed = 123, batch_size = 2)
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 8, seed = 123, batch_size = 2)
     assert out["seed"] == 123
     assert out["repo_id"] == "unsloth/Z-Image-Turbo-GGUF"
     assert len(out["images"]) == 2
@@ -938,7 +938,7 @@ def test_generate_publishes_progress_before_lora_resolution(monkeypatch):
 
     monkeypatch.setattr(diffusion_lora, "resolve_specs", _resolve)
 
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 8, loras = [("some/lora", 1.0)])
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 8, loras = [("some/lora", 1.0)])
     assert out["images"]
     assert seen["progress"]["active"] is True
     assert seen["progress"]["total_steps"] == 8
@@ -1287,6 +1287,8 @@ def test_offload_device_pin_is_probed_against_the_binary_it_is_given(monkeypatch
         return "CUDA0\tA\nCUDA1\tB\n" if binary == "/new/sd-cli" else "CPU\tRyzen\n"
 
     monkeypatch.setattr(bk, "_sd_cpp_probe_output", _probe)
+    # Pinned so this case is about the binary, not whatever card the test host has.
+    monkeypatch.setattr(bk, "physical_card_name", lambda ordinal: (None, None))
     base = ["--offload-to-cpu"]
     # The pre-upgrade CPU-only build enumerates no CUDA device, so nothing is pinned.
     assert bk._offload_with_device_pin_impl(base, "/old/sd-cli", 1) == base
@@ -1473,7 +1475,7 @@ def test_server_generate_uses_one_request_for_whole_batch(monkeypatch):
     b = SdCppDiffusionBackend()
     servers: list = []
     _run_server_load(monkeypatch, b, servers)
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 8, seed = 7, batch_size = 3)
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 8, seed = 7, batch_size = 3)
     assert len(out["images"]) == 3
     assert all(isinstance(im, Image.Image) for im in out["images"])
     # ONE job for the whole batch (no per-image model reload), unlike the one-shot path.
@@ -1500,7 +1502,7 @@ def test_server_generation_restarts_on_the_cpu_backend_after_a_ggml_abort(monkey
     _run_server_load(monkeypatch, b, servers, device = "mps")
     servers[0].img_gen_error = RuntimeError(_GGML_ABORT)
 
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 3)
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 4, seed = 3)
 
     assert len(out["images"]) == 1  # the retry produced the image
     assert len(servers) == 2 and servers[0].stopped is True
@@ -1556,7 +1558,7 @@ def test_server_generate_splits_batches_above_server_limit(monkeypatch):
     b = SdCppDiffusionBackend()
     servers: list = []
     _run_server_load(monkeypatch, b, servers)
-    out = b.generate(prompt = "x", width = 64, height = 64, steps = 4, seed = 100, batch_size = 10)
+    out = b.generate(prompt = "x", width = 256, height = 256, steps = 4, seed = 100, batch_size = 10)
     assert len(out["images"]) == 10
     counts = [p["batch_count"] for p in servers[0].payloads]
     assert counts == [bk._MAX_SERVER_BATCH, 10 - bk._MAX_SERVER_BATCH]  # [8, 2]
@@ -1576,7 +1578,7 @@ def test_server_generate_masks_large_seed(monkeypatch):
     b = SdCppDiffusionBackend()
     servers: list = []
     _run_server_load(monkeypatch, b, servers)
-    out = b.generate(prompt = "x", width = 64, height = 64, steps = 4, seed = 2**64 - 1, batch_size = 1)
+    out = b.generate(prompt = "x", width = 256, height = 256, steps = 4, seed = 2**64 - 1, batch_size = 1)
     assert servers[0].payloads[0]["seed"] <= (1 << 63) - 1
     assert all(s <= (1 << 63) - 1 for s in out["seeds"])
 
@@ -2208,7 +2210,7 @@ def test_generate_reports_the_build_the_recipe_persists():
         gguf_filename = "z-image-turbo-Q4_K_M.gguf",
         offload_flags = ("--vae-on-cpu", "--clip-on-cpu"),
     )
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 4, seed = 1)
     assert out["model_kind"] == "gguf"
     assert out["gguf_filename"] == "z-image-turbo-Q4_K_M.gguf"
     assert out["offload_policy"] == "active"
@@ -2235,11 +2237,11 @@ def test_a_completed_native_generation_stops_advertising_itself_as_cancellable(m
 
     monkeypatch.setattr(b, "_generate_oneshot", _oneshot)
     with pytest.raises(RuntimeError, match = "cancelled"):
-        b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+        b.generate(prompt = "a fox", width = 256, height = 256, steps = 4, seed = 1)
 
     # And once a run completes, the event is gone before the result is handed back.
     b2 = _loaded_backend()
-    out = b2.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+    out = b2.generate(prompt = "a fox", width = 256, height = 256, steps = 4, seed = 1)
     assert out["images"]
     seen.append(b2.cancel_generate())
     assert seen == [False]
@@ -2284,7 +2286,7 @@ def test_a_card_pick_is_not_reported_as_an_offload():
     status = b.status()
     assert status["cpu_offload"] is False
     assert status["offload_policy"] == "none"
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 4, seed = 1)
     assert out["offload_policy"] == "none"
 
 
@@ -2409,7 +2411,7 @@ def test_generation_in_flight_tracks_a_generation(monkeypatch):
     monkeypatch.setattr(diffusion_lora, "resolve_specs", _resolve)
 
     assert bk.generation_in_flight() is False
-    b.generate(prompt = "a fox", width = 64, height = 64, steps = 8, loras = [("some/lora", 1.0)])
+    b.generate(prompt = "a fox", width = 256, height = 256, steps = 8, loras = [("some/lora", 1.0)])
     assert (
         seen["in_flight"] is True
     ), "liveness cannot tell this backend from a dead one while the native engine renders"
@@ -2424,3 +2426,86 @@ def test_generation_in_flight_never_builds_a_backend(monkeypatch):
         lambda *a, **k: pytest.fail("liveness constructed a native diffusion backend"),
     )
     assert bk.generation_in_flight() is False
+
+
+# ── the architecture marker scan ─────────────────────────────────────────────
+
+
+def test_the_marker_is_found_even_when_it_straddles_a_read_boundary(tmp_path):
+    # The scan reads in 8 MiB blocks, and a literal landing across the seam is exactly the case a
+    # naive loop misses: it would report a current build as incapable and quietly send every load
+    # of the family to diffusers. Placed so the first block ends mid-literal.
+    marker = "qwen_image_2_1"
+    chunk = 8 << 20
+    path = tmp_path / "sd-cli"
+    body = bytearray(b"\0" * (chunk + len(marker) * 2))
+    body[chunk - len(marker) // 2 : chunk - len(marker) // 2 + len(marker)] = marker.encode()
+    path.write_bytes(bytes(body))
+    assert bk.binary_carries_marker(str(path), marker) is True
+    assert bk.binary_carries_marker(str(path), "wan_2_2_no_such_arch") is False
+
+
+def test_an_unreadable_binary_and_an_unmarked_family_both_leave_the_route_alone(tmp_path):
+    # Two "no claim" cases that must not become a refusal. A family with no marker asks nothing of
+    # the build, and a path that cannot be stat-ed or opened is not evidence about its contents:
+    # refusing there would take the native engine away on a host where it works.
+    present = tmp_path / "sd-cli"
+    present.write_bytes(b"nothing interesting")
+    assert bk.binary_carries_marker(str(present), None) is True
+    assert bk.binary_carries_marker(str(tmp_path / "missing"), "qwen_image_2_1") is True
+    assert bk.binary_carries_marker(None, "qwen_image_2_1") is False
+    assert bk.sd_cpp_binary_runs_family(str(present), detect_family("z-image")) is True
+    assert bk.sd_cpp_binary_runs_family(str(present), detect_family("qwen-image-2.1")) is False
+
+
+def test_the_scan_is_redone_when_the_binary_on_that_path_changes(tmp_path):
+    # An upgrade writes a new build to the SAME path, so a result memoised on the path alone would
+    # keep reporting the old answer for the life of the process and the upgrade would never take
+    # effect. Keyed on size and mtime as well.
+    path = tmp_path / "sd-cli"
+    path.write_bytes(b"an old build")
+    assert bk.binary_carries_marker(str(path), "qwen_image_2_1") is False
+    path.write_bytes(b"a new build with qwen_image_2_1 in it")
+    assert bk.binary_carries_marker(str(path), "qwen_image_2_1") is True
+
+
+def test_a_cached_engine_is_re_checked_against_the_family_now_loading(tmp_path):
+    # _engine is resolved lazily and never cleared, so it outlives the load that created it. An
+    # sd-cli cached by an older family's one-shot load would otherwise be handed straight back for
+    # a family it cannot run, and the load would report ready and die on the first generation,
+    # which is the failure the gate exists to prevent.
+    old = tmp_path / "sd-cli-old"
+    old.write_bytes(b"a build from before the family landed")
+    backend = SdCppDiffusionBackend.__new__(SdCppDiffusionBackend)
+    backend._engine = types.SimpleNamespace(binary = str(old), is_available = lambda: True)
+    backend._engine_injected = False
+
+    # A family the cached build does carry is still served from the cache, unchanged.
+    backend._loading_family = detect_family("z-image")
+    assert backend._resolve_engine() is backend._engine
+
+    backend._loading_family = detect_family("qwen-image-2.1")
+    with pytest.raises(RuntimeError, match = "predates qwen-image-2.1 support"):
+        backend._resolve_engine()
+
+
+def test_a_rejected_concurrent_load_cannot_move_the_family_the_worker_validates_against():
+    # begin_load assigns the family BEFORE taking _lock to refuse a second load, so on shared state
+    # a request refused a line later would still have replaced the family the running worker checks
+    # its binaries against, and could refuse a good build or accept an incapable one.
+    backend = SdCppDiffusionBackend.__new__(SdCppDiffusionBackend)
+    worker_family = detect_family("qwen-image-2.1")
+    backend._loading_family = worker_family
+    seen = {}
+    started = threading.Event()
+
+    def _other_request():
+        backend._loading_family = detect_family("z-image")
+        started.set()
+
+    other = threading.Thread(target = _other_request)
+    other.start()
+    started.wait(timeout = 5)
+    other.join(timeout = 5)
+    seen["worker"] = backend._loading_family
+    assert seen["worker"] is worker_family, "another thread's family reached this worker"

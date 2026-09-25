@@ -13,6 +13,7 @@ from typing import Any, Callable, Optional
 
 import structlog
 
+from utils.auth_safe import auth_safe_open
 from utils.update_status import update_checks_disabled
 
 logger = structlog.get_logger(__name__)
@@ -130,7 +131,7 @@ def _fetch_newest_published_release_blocking(
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, headers = headers)
     try:
-        with urllib.request.urlopen(req, timeout = timeout) as resp:
+        with auth_safe_open(req, timeout = timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except (
         urllib.error.URLError,
