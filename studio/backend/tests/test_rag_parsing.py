@@ -342,8 +342,6 @@ def _parse_html(tmp_path, body):
 
 
 def test_html_keeps_inline_elements_in_their_line(tmp_path):
-    # Each text node used to become its own line, so a sentence broke at every <b> or <a>
-    # and a word styled in the middle was cut into pieces.
     text = _parse_html(
         tmp_path,
         '<p>The <b>quick</b> brown fox jumps over the <a href="#">lazy</a> dog.</p>'

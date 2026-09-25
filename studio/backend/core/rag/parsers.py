@@ -49,8 +49,7 @@ def _page(text: str, page_number: int | None) -> Page:
 
 
 _HTML_SKIP_TAGS = frozenset(("script", "style", "template"))
-# Elements that start a new line. Anything else (b, a, code, span, ...) is inline:
-# its text runs on in the line it sits in, so a word or sentence is not cut apart.
+# Block elements start a new line; all other tags are inline and do not split text.
 _HTML_BLOCK_TAGS = frozenset(
     "address article aside blockquote br caption dd details dialog div dl dt fieldset"
     " figcaption figure footer form h1 h2 h3 h4 h5 h6 header hr li main nav ol p pre"
@@ -59,7 +58,7 @@ _HTML_BLOCK_TAGS = frozenset(
 
 
 class _Stripper(HTMLParser):
-    """Collect visible text, one line per block element, skipping <script>/<style>/<template>."""
+    """Collect visible text, one line per block element."""
 
     def __init__(self) -> None:
         super().__init__()
