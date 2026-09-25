@@ -136,11 +136,14 @@ Write-Host "=== the rung stays underneath the emitted one ==="
 
 $rawBlock = & $strip $setupParts[3]
 # ONE rung. The emitted UnslothNvidiaProbeV2 type is gone, so there is no first rung to sit
-# behind and no leftover budget to pass on. $TimeoutMs is a per-reader bound (30s, one for NVML
-# and one for the CUDA driver API), and the one child that runs both readers gets the two of them:
-# NVML answering within its bound still leaves CUDA a whole bound, as with separate readers.
+# behind and no leftover budget to pass on. $TimeoutMs is a per-reader bound (30s): one child
+# reads NVML then CUDA under it, and only a child killed at that bound earns a second, CUDA-only
+# child under a bound of its own. The behaviour is driven below; these pin the shape.
 Check "the reader delegates straight to the Python rung" `
-    ($rawBlock -match 'Read-NvidiaLibraryRawViaPython -TimeoutMs \(\$TimeoutMs \* 2\)')
+    ($rawBlock -match '\$raw = Read-NvidiaLibraryRawViaPython -TimeoutMs \$TimeoutMs\b')
+Check "only a timed-out first child earns the CUDA-only retry" `
+    (($rawBlock -match 'if \(-not \$script:NvidiaPythonProbeTimedOut\) \{ return \$raw \}') -and
+     ($rawBlock -match 'Read-NvidiaLibraryRawViaPython -TimeoutMs \$TimeoutMs -SkipNvml'))
 Check "the per-reader bound defaults to 30s" ($rawBlock -match 'param\(\[int\]\$TimeoutMs = 30000\)')
 Check "the whole budget goes to it, not a remainder" ($rawBlock -notmatch 'remainingMs')
 Check "there is no emitted rung left to attempt first" ($rawBlock -notmatch 'Get-NvidiaLibraryProbeType|\$native')
@@ -550,6 +553,103 @@ if (-not $python) {
     $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
     $litter = @(Get-ChildItem -LiteralPath $tempRoot -Filter "unsloth-nvprobe-*" -ErrorAction SilentlyContinue)
     Check "the launcher leaves no scratch files behind" ($litter.Count -eq 0)
+}
+
+Write-Host ""
+Write-Host "=== a hung NVML earns one CUDA-only child, and nothing else does ==="
+
+# The embedded probe honours the switch, so the retry really skips NVML.
+Check "the embedded probe skips NVML only when the switch is 1" `
+    ($installProbe -match 'if os\.environ\.get\("UNSLOTH_NVIDIA_PROBE_SKIP_NVML", ""\) != "1":')
+Check "the launcher sets the switch only for a -SkipNvml child" `
+    (($pyCode -match 'if \(\$SkipNvml\) \{ \$env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML = "1" \}') -and
+     ($pyCode -match 'finally \{[\s\S]*Remove-Item Env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML'))
+
+# Stubbed launcher: the real Read-NvidiaLibraryRaw resolves the stub through dynamic scope.
+function Invoke-RawWithStub($outcomes) {
+    $script:StubCalls = @()
+    $script:StubOutcomes = [System.Collections.ArrayList]@($outcomes)
+    return & {
+        function Read-NvidiaLibraryRawViaPython {
+            param([int]$TimeoutMs = 10000, [switch]$SkipNvml)
+            $script:StubCalls += , @{ TimeoutMs = $TimeoutMs; SkipNvml = [bool]$SkipNvml }
+            $next = $script:StubOutcomes[0]; $script:StubOutcomes.RemoveAt(0)
+            $script:NvidiaPythonProbeTimedOut = ($next -eq "TIMEOUT")
+            if ($next -eq "TIMEOUT") { return "" }
+            return $next
+        }
+        Read-NvidiaLibraryRaw -TimeoutMs 30000
+    }
+}
+$got = Invoke-RawWithStub @("TIMEOUT", "cuda;12;8;8.9")
+Check "stub: a timed-out first child is followed by exactly one more" ($script:StubCalls.Count -eq 2)
+Check "stub: the first child reads NVML, the second skips it" `
+    ($script:StubCalls.Count -eq 2 -and -not $script:StubCalls[0].SkipNvml -and $script:StubCalls[1].SkipNvml)
+Check "stub: each child gets the whole 30s per-reader bound" `
+    ($script:StubCalls.Count -eq 2 -and $script:StubCalls[0].TimeoutMs -eq 30000 -and $script:StubCalls[1].TimeoutMs -eq 30000)
+Check "stub: the CUDA-only answer is returned" ($got -eq "cuda;12;8;8.9")
+$got = Invoke-RawWithStub @("")
+Check "stub: an empty answer spawns no second child" ($script:StubCalls.Count -eq 1 -and $got -eq "")
+$got = Invoke-RawWithStub @("nvml;13;0;12.0")
+Check "stub: an answer spawns no second child" ($script:StubCalls.Count -eq 1 -and $got -eq "nvml;13;0;12.0")
+$got = Invoke-RawWithStub @("TIMEOUT", "TIMEOUT")
+Check "stub: a CUDA-only child that also hangs ends the search" ($script:StubCalls.Count -eq 2 -and $got -eq "")
+
+# End to end through the real launcher, with a fake interpreter that logs the switch it sees and
+# hangs like a wedged NVML unless the switch is set. POSIX sh only: a .cmd stand-in would leave its
+# sleeping child holding the output file on Windows.
+if ($IsWindows -or $env:OS -eq "Windows_NT") {
+    Write-Host "  SKIP  the fake-interpreter rows need a POSIX shell"
+} else {
+    $fakeDir = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-fakepy-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $fakeDir | Out-Null
+    $fakePy = Join-Path $fakeDir "python"
+    $fakeLog = Join-Path $fakeDir "calls.log"
+    $fakeBody = @(
+        '#!/bin/sh'
+        'cat > /dev/null'
+        'echo "skip=${UNSLOTH_NVIDIA_PROBE_SKIP_NVML:-unset}" >> "$UNSLOTH_FAKE_PY_LOG"'
+        'if [ "$UNSLOTH_NVIDIA_PROBE_SKIP_NVML" = "1" ]; then printf "cuda;12;8;8.9"; exit 0; fi'
+        'if [ "$UNSLOTH_FAKE_PY_MODE" = "hang" ]; then exec sleep 30; fi'
+        'exit 0'
+    ) -join "`n"
+    [System.IO.File]::WriteAllText($fakePy, "$fakeBody`n")
+    & chmod +x $fakePy
+    $savedPy = $script:PythonExe
+    $savedSkipEnv = $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML
+    try {
+        $script:PythonExe = $fakePy
+        $env:UNSLOTH_FAKE_PY_LOG = $fakeLog
+        # A value already in this shell must reach no first child and must survive the calls.
+        $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML = "caller"
+
+        $env:UNSLOTH_FAKE_PY_MODE = "hang"
+        Remove-Item -LiteralPath $fakeLog -ErrorAction SilentlyContinue
+        $got = Read-NvidiaLibraryRaw -TimeoutMs 2000
+        $seen = @(Get-Content -LiteralPath $fakeLog -ErrorAction SilentlyContinue)
+        Check "live: a first child killed at its bound triggers exactly one more" ($seen.Count -eq 2)
+        Check "live: the first child saw no switch, the second saw 1" (($seen -join ",") -eq "skip=unset,skip=1")
+        Check "live: the CUDA-only answer is returned" ($got -eq "cuda;12;8;8.9")
+        Check "live: the caller's switch value is restored" ($env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML -eq "caller")
+
+        $env:UNSLOTH_FAKE_PY_MODE = "empty"
+        Remove-Item -LiteralPath $fakeLog -ErrorAction SilentlyContinue
+        $got = Read-NvidiaLibraryRaw -TimeoutMs 2000
+        $seen = @(Get-Content -LiteralPath $fakeLog -ErrorAction SilentlyContinue)
+        Check "live: a first child that answers empty spawns no second" ($seen.Count -eq 1 -and $got -eq "")
+        Check "live: the switch is still restored after a single child" ($env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML -eq "caller")
+
+        Remove-Item Env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML -ErrorAction SilentlyContinue
+        $env:UNSLOTH_FAKE_PY_MODE = "hang"
+        $null = Read-NvidiaLibraryRaw -TimeoutMs 2000
+        Check "live: an unset switch is left unset" ($null -eq $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML)
+    } finally {
+        $script:PythonExe = $savedPy
+        if ($null -eq $savedSkipEnv) { Remove-Item Env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML -ErrorAction SilentlyContinue }
+        else { $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML = $savedSkipEnv }
+        Remove-Item Env:UNSLOTH_FAKE_PY_LOG, Env:UNSLOTH_FAKE_PY_MODE -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $fakeDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 Write-Host ""

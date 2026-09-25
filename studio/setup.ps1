@@ -1661,7 +1661,10 @@ function Get-NvidiaNvmlLibraryPath {
 # Get-NvidiaProbePythonExe is deliberately per-file. The installer has its early read-only
 # interpreter ladder; setup.ps1 has the venv a previous run already built.
 function Read-NvidiaLibraryRawViaPython {
-    param([int]$TimeoutMs = 10000)
+    param([int]$TimeoutMs = 10000, [switch]$SkipNvml)
+    # Set only when the child is killed at the deadline, so a caller can tell a hung driver from
+    # an empty answer. Reset first: every early return below is an answer, not a timeout.
+    $script:NvidiaPythonProbeTimedOut = $false
     if ("$($env:UNSLOTH_NVIDIA_PYTHON_PROBE)".Trim() -eq "0") { return "" }
     $exe = ""
     try { $exe = "$(Get-NvidiaProbePythonExe)" } catch { return "" }
@@ -1785,10 +1788,12 @@ def main():
     nvml_hint = os.environ.get("UNSLOTH_NVML_HINT", "")
     cuda_hint = os.environ.get("UNSLOTH_CUDA_HINT", "")
     answer = ""
-    try:
-        answer = read_nvml(nvml_hint)
-    except Exception:
-        answer = ""
+    # Set only for the CUDA-only retry that follows a child NVML held past its deadline.
+    if os.environ.get("UNSLOTH_NVIDIA_PROBE_SKIP_NVML", "") != "1":
+        try:
+            answer = read_nvml(nvml_hint)
+        except Exception:
+            answer = ""
     if not answer:
         try:
             answer = read_cuda(cuda_hint)
@@ -1824,8 +1829,12 @@ main()
         # library hints in the environment; the only arguments left are -I -S -B and a bare dash.
         $savedNvml = $env:UNSLOTH_NVML_HINT
         $savedCuda = $env:UNSLOTH_CUDA_HINT
+        $savedSkip = $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML
         $env:UNSLOTH_NVML_HINT = $nvmlHint
         $env:UNSLOTH_CUDA_HINT = $cudaHint
+        # The switch reaches this child only. An inherited value must not make a first child skip NVML.
+        if ($SkipNvml) { $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML = "1" }
+        else { Remove-Item Env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML -ErrorAction SilentlyContinue }
         try {
             $proc = Start-Process -FilePath $exe -ArgumentList @("-I", "-S", "-B", "-") -NoNewWindow -PassThru `
                 -RedirectStandardInput $scriptFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
@@ -1834,6 +1843,8 @@ main()
             else { $env:UNSLOTH_NVML_HINT = $savedNvml }
             if ($null -eq $savedCuda) { Remove-Item Env:UNSLOTH_CUDA_HINT -ErrorAction SilentlyContinue }
             else { $env:UNSLOTH_CUDA_HINT = $savedCuda }
+            if ($null -eq $savedSkip) { Remove-Item Env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML -ErrorAction SilentlyContinue }
+            else { $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML = $savedSkip }
         }
         if (-not $proc) { return "" }
         # -InputObject and an error variable, never $proc.Id or $proc.HasExited. Constrained
@@ -1844,6 +1855,7 @@ main()
         $waitError = $null
         Wait-Process -InputObject $proc -Timeout $seconds -ErrorAction SilentlyContinue -ErrorVariable waitError
         if ($waitError) {
+            $script:NvidiaPythonProbeTimedOut = $true
             try { Stop-Process -InputObject $proc -Force -ErrorAction SilentlyContinue } catch { }
             return ""
         }
@@ -1868,11 +1880,16 @@ main()
 # driver calls, returns the identical string, and is not blocked by the policies that stopped
 # the emitted rung being defined at all. Those policies are exactly where an NVIDIA GPU used to
 # go unnoticed, so this is the wider source, not the narrower one.
-# $TimeoutMs is a per-reader bound. The one child reads NVML and then the CUDA driver API, so it
-# gets both: an NVML read within its bound still leaves CUDA a whole bound of its own.
+# $TimeoutMs is a per-reader bound. One child reads NVML and then the CUDA driver API. Only when
+# that child is killed at the bound (a hung NVML) does a second child read the CUDA driver API
+# alone, under a bound of its own. A host whose NVML answers or is absent spawns one child, a
+# hung NVML no longer starves CUDA, and the worst case is two bounds.
 function Read-NvidiaLibraryRaw {
     param([int]$TimeoutMs = 30000)
-    try { return (Read-NvidiaLibraryRawViaPython -TimeoutMs ($TimeoutMs * 2)) } catch { return "" }
+    $raw = ""
+    try { $raw = Read-NvidiaLibraryRawViaPython -TimeoutMs $TimeoutMs } catch { return "" }
+    if (-not $script:NvidiaPythonProbeTimedOut) { return $raw }
+    try { return (Read-NvidiaLibraryRawViaPython -TimeoutMs $TimeoutMs -SkipNvml) } catch { return "" }
 }
 
 # NVIDIA inventory from the driver's own libraries (NVML, then the CUDA driver API), for a
