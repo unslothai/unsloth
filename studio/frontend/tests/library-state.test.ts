@@ -139,6 +139,18 @@ test("an upload's grants from before a sign-in are not sent under it", async () 
   assert.deepEqual(await uploadLibraryFiles(now, null), ["upload:x"]);
 });
 
+test("a batch of more than 1000 files goes as several requests", async () => {
+  const perRequest: number[] = [];
+  const { uploadLibraryFiles } = loadApi({ epoch: 1 }, async (_url, init) => {
+    const files = (init?.body as FormData).getAll("files");
+    perRequest.push(files.length);
+    return new Response(JSON.stringify({ ids: files.map((_, i) => `upload:${i}`) }));
+  });
+  const files = Array.from({ length: 2500 }, (_, i) => new File(["x"], `${i}.txt`));
+  assert.equal((await uploadLibraryFiles({ files, sessionEpoch: 1 }, null)).length, 2500);
+  assert.deepEqual(perRequest, [1000, 1000, 500]);
+});
+
 test("the next account's edit does not wait behind one the account that left never finished", { timeout: 2000 }, async () => {
   const session = { epoch: 1 };
   const sent: string[] = [];
