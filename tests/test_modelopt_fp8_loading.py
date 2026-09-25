@@ -669,6 +669,9 @@ def test_both_loaders_hand_the_planner_the_rewritten_plan():
 
 
 @needs_per_tensor_fp8
+@pytest.mark.skipif(
+    not has_real_cuda(), reason = "transformers dequantizes fp8 to bf16 without an accelerator"
+)
 def test_the_planner_sizes_a_modelopt_checkpoint_from_the_rewritten_plan(tmp_path):
     from transformers import AutoConfig, LlamaConfig
     from unsloth.models.loader_utils import planner_quantization_kwargs
