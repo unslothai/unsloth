@@ -40,6 +40,8 @@ _NAMES = {
     "_OWN_CE_LOSS",
     "_instance_accepts_loss_kwargs",
     "_ce_calls_all_mean",
+    "_CE_PARAMS",
+    "_is_const",
     "apply_accepts_loss_kwargs_fix",
 }
 
@@ -310,6 +312,10 @@ def test_repeated_calls_keep_the_first_answer(tmp_path):
         "CrossEntropyLoss(size_average=False)(logits, labels)",
         "CrossEntropyLoss(reduce=False)(logits, labels)",
         "CrossEntropyLoss(*loss_args)(logits, labels)",
+        "CrossEntropyLoss(None, False)(logits, labels)",
+        "CrossEntropyLoss(None, None, -100, False)(logits, labels)",
+        "torch.nn.functional.cross_entropy(logits, labels, None, False)",
+        "torch.nn.functional.cross_entropy(logits, labels, None, None, -100, False)",
     ],
 )
 def test_non_mean_reductions_in_any_spelling_keep_the_hf_default(call):
@@ -332,3 +338,13 @@ def test_mean_reductions_in_any_spelling_count_as_a_mean(call):
     ns = _load()
     source = f"def forward(self, logits, labels, **kwargs):\n    return {call}\n"
     assert ns["_ce_calls_all_mean"](source) is True
+
+
+def test_a_mention_without_a_call_is_not_a_mean_loss():
+    ns = _load()
+    source = (
+        "def forward(self, logits, labels, **kwargs):\n"
+        '    """Unlike CrossEntropyLoss() this returns a sum."""\n'
+        "    return (logits - labels).abs().sum()\n"
+    )
+    assert ns["_ce_calls_all_mean"](source) is False

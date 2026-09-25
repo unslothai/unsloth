@@ -4011,36 +4011,61 @@ def _instance_accepts_loss_kwargs(model):
     return None
 
 
+_CE_PARAMS = {
+    "CrossEntropyLoss": (
+        "weight",
+        "size_average",
+        "ignore_index",
+        "reduce",
+        "reduction",
+        "label_smoothing",
+    ),
+    "cross_entropy": (
+        "input",
+        "target",
+        "weight",
+        "size_average",
+        "ignore_index",
+        "reduce",
+        "reduction",
+        "label_smoothing",
+    ),
+}
+
+
+def _is_const(node, allowed):
+    return isinstance(node, ast.Constant) and node.value in allowed
+
+
 def _ce_calls_all_mean(source):
-    # A sum / "none" reduction is the model's own objective, not a micro-batch mean; only the default mean counts.
+    # A sum / "none" reduction (modern or legacy, keyword or positional) is the model's own objective, not a micro-batch mean.
     try:
         tree = ast.parse(textwrap.dedent(source))
     except SyntaxError:
         return False
+    found = False
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
         name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
-        if name not in ("CrossEntropyLoss", "cross_entropy"):
+        params = _CE_PARAMS.get(name)
+        if params is None:
             continue
-        # reduction is positional index 4 of CrossEntropyLoss and 6 of F.cross_entropy.
-        pos_reduction = 4 if name == "CrossEntropyLoss" else 6
-        if len(node.args) > pos_reduction or any(isinstance(a, ast.Starred) for a in node.args):
+        if len(node.args) > len(params) or any(isinstance(x, ast.Starred) for x in node.args):
             return False
-        for kw in node.keywords:
-            if kw.arg is None:
+        if any(kw.arg is None for kw in node.keywords):
+            return False
+        bound = dict(zip(params, node.args))
+        bound.update((kw.arg, kw.value) for kw in node.keywords)
+        if "reduction" in bound and not _is_const(bound["reduction"], ("mean",)):
+            return False
+        for legacy in ("size_average", "reduce"):
+            if legacy in bound and not _is_const(bound[legacy], (None, True)):
                 return False
-            if kw.arg == "reduction" and not (
-                isinstance(kw.value, ast.Constant) and kw.value.value == "mean"
-            ):
-                return False
-            # Legacy size_average / reduce also switch off the mean.
-            if kw.arg in ("size_average", "reduce") and not (
-                isinstance(kw.value, ast.Constant) and kw.value.value in (None, True)
-            ):
-                return False
-    return True
+        found = True
+    # A mention in a comment or docstring is not a call.
+    return found
 
 
 def _forward_ignores_num_items_in_batch(model):
