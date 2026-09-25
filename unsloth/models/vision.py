@@ -1493,6 +1493,7 @@ class FastBaseModel:
             rewrite_modelopt = not (fast_inference and is_vLLM_available()),
         )
         from .modelopt_fp8 import (
+            keep_fp8_scale_names_on_save,
             keep_task_heads_unquantized,
             modelopt_planner_quantization_config,
             modelopt_rewritten,
@@ -1904,6 +1905,8 @@ class FastBaseModel:
         finally:
             raise_handler.remove()
             os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
+        if _modelopt_rewritten:
+            keep_fp8_scale_names_on_save(model)
 
         if os.environ.get("UNSLOTH_HIGH_PRECISION_LAYERNORM", "0") == "1":
             for jj, (name, module) in enumerate(model.named_modules()):

@@ -2607,6 +2607,7 @@ class FastLlamaModel:
         )
         # The ModelOpt rewrite lives on model_config, so weights must load against it.
         from .modelopt_fp8 import (
+            keep_fp8_scale_names_on_save,
             keep_task_heads_unquantized,
             modelopt_planner_quantization_config,
             modelopt_rewritten,
@@ -2910,6 +2911,8 @@ class FastLlamaModel:
         finally:
             raise_handler.remove()
             os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
+        if _modelopt_rewritten:
+            keep_fp8_scale_names_on_save(model)
 
         # Counteract saved tokenizers.
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name

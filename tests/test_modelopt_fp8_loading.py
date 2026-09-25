@@ -888,3 +888,35 @@ print("CHECK", q.dtype, w_rel, float((got - want).norm() / want.norm()))
     assert float(w_rel) < 1e-2, w_rel
     # Loose: the in-memory model also rounds activations to e4m3 (raw bytes give ~1.4).
     assert float(rel) < 0.2, rel
+
+
+def test_fp8_linear_forward_patch_adds_the_bias():
+    from unsloth.kernels.fp8 import module_forward_patch
+
+    forward = module_forward_patch(lambda X, weight, scale: X @ weight.t(), "weight_scale_inv")
+    biased, plain = nn.Linear(4, 3), nn.Linear(4, 3, bias = False)
+    for module in (biased, plain):
+        module.weight_scale_inv = torch.ones(())
+    # fbgemm keeps its bias in fp32; the output must stay in the activation dtype.
+    biased.bias.data = biased.bias.data.float()
+    X = torch.randn(2, 4, dtype = torch.bfloat16)
+    biased.weight.data, plain.weight.data = (m.weight.data.bfloat16() for m in (biased, plain))
+    out = forward(biased, X)
+    assert out.dtype == torch.bfloat16
+    torch.testing.assert_close(out, X @ biased.weight.t() + biased.bias.bfloat16())
+    assert torch.equal(forward(plain, X), X @ plain.weight.t())
+
+
+def test_save_keeps_transformers_fp8_scale_names():
+    core = pytest.importorskip("transformers.core_model_loading")
+    from unsloth.models.modelopt_fp8 import keep_fp8_scale_names_on_save
+
+    ours = [
+        core.WeightRenaming(source_patterns = k, target_patterns = v)
+        for k, v in MODELOPT_FP8_KEY_MAPPING.items()
+    ]
+    other = core.WeightRenaming(source_patterns = r"^model\.old\.", target_patterns = "model.new.")
+    model = nn.Module()
+    model._weight_conversions = [other, *ours]
+    keep_fp8_scale_names_on_save(model)
+    assert model._weight_conversions == [other]

@@ -33,6 +33,7 @@ __all__ = [
     "modelopt_rewritten",
     "keep_task_heads_unquantized",
     "modelopt_planner_quantization_config",
+    "keep_fp8_scale_names_on_save",
 ]
 
 UNSLOTH_MODELOPT_KEY_MAPPING_ATTR = "_unsloth_modelopt_key_mapping"
@@ -232,6 +233,28 @@ def _dequantize_modelopt_on_merged_save() -> None:
 
     _is_fp8_quant_config._unsloth_modelopt = True
     zoo_saving._is_fp8_quant_config = _is_fp8_quant_config
+
+
+def keep_fp8_scale_names_on_save(model) -> None:
+    """save_pretrained reverses the load-time key_mapping, which would write ModelOpt scale names
+    beside the rewritten fp8 config and leave a checkpoint neither format reloads. Drop just those
+    two renames so a plain save writes transformers' own fp8 names."""
+    ours = set(MODELOPT_FP8_KEY_MAPPING)
+    for module in model.modules():
+        conversions = getattr(module, "_weight_conversions", None)
+        if not isinstance(conversions, list):
+            continue
+        kept = [
+            c
+            for c in conversions
+            if not (
+                type(c).__name__ == "WeightRenaming"
+                and set(getattr(c, "_original_source_patterns", None) or ()) <= ours
+                and getattr(c, "_original_source_patterns", None)
+            )
+        ]
+        if len(kept) != len(conversions):
+            module._weight_conversions = kept
 
 
 def _class_checkpoint_mapping(model_class) -> dict:
