@@ -35,6 +35,7 @@ def test_record_and_query_events(isolated_db):
         started_at = time.time(),
         updated_at = time.time(),
         provider_type = "openai",
+        subject = "alice",
     )
     entry.prompt_tokens = 10
     entry.completion_tokens = 20
@@ -49,6 +50,7 @@ def test_record_and_query_events(isolated_db):
     assert e["source"] == "api"
     assert e["provider"] == "openai"
     assert e["total_tokens"] == 30
+    assert e["session_id"] == "alice"
 
     # Test filters
     assert len(query_events(model = "llama3")) == 1
@@ -135,3 +137,77 @@ def test_retention(isolated_db):
 
     assert count_events() == 1
     assert query_events()[0]["id"] == "new1"
+
+
+def test_session_id_scoping(isolated_db):
+    """Events from different users are isolated by session_id filter."""
+    for user, model in [("alice", "gpt4"), ("bob", "llama3"), ("alice", "llama3")]:
+        entry = ApiMonitorEntry(
+            id = f"{user}-{model}",
+            endpoint = "/chat",
+            method = "POST",
+            model = model,
+            prompt = "hi",
+            status = "completed",
+            started_at = time.time(),
+            updated_at = time.time(),
+            subject = user,
+        )
+        entry.total_tokens = 10
+        record_event(entry)
+
+    # Unscoped: all 3 events
+    assert count_events() == 3
+
+    # Scoped: only alice's events
+    assert count_events(session_id = "alice") == 2
+    assert count_events(session_id = "bob") == 1
+    assert count_events(session_id = "charlie") == 0
+
+    # query_events respects session_id
+    alice_events = query_events(session_id = "alice")
+    assert len(alice_events) == 2
+    assert all(e["session_id"] == "alice" for e in alice_events)
+
+    # aggregate_usage respects session_id
+    agg = aggregate_usage(granularity = "day", session_id = "bob")
+    assert len(agg) == 1
+    assert agg[0]["total_tokens"] == 10
+
+    # sum_tokens_in_window respects session_id
+    since = int((time.time() - 3600) * 1000)
+    assert sum_tokens_in_window(since_ts = since, session_id = "alice") == 20
+    assert sum_tokens_in_window(since_ts = since, session_id = "bob") == 10
+
+
+def test_retention_mode_forever(isolated_db):
+    """enforce_retention is a no-op when mode=forever."""
+    entry = ApiMonitorEntry(
+        id = "old_forever",
+        endpoint = "/chat",
+        method = "POST",
+        model = "llama3",
+        prompt = "hi",
+        status = "completed",
+        started_at = time.time() - (365 * 24 * 3600),
+        updated_at = time.time() - (365 * 24 * 3600),
+    )
+    record_event(entry)
+
+    upsert_app_settings({"usage_retention_policy": {"mode": "forever", "value": None}})
+    enforce_retention()
+
+    assert count_events() == 1
+
+
+def test_aggregate_invalid_granularity(isolated_db):
+    """aggregate_usage raises ValueError on invalid granularity."""
+    with pytest.raises(ValueError, match = "Invalid granularity"):
+        aggregate_usage(granularity = "hour")
+
+
+def test_sum_tokens_empty(isolated_db):
+    """sum_tokens_in_window returns 0 when no events match."""
+    since = int((time.time() - 3600) * 1000)
+    assert sum_tokens_in_window(since_ts = since) == 0
+    assert sum_tokens_in_window(since_ts = since, session_id = "nobody") == 0
