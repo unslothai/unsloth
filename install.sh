@@ -2680,8 +2680,7 @@ _nvidia_library_inventory() {
     fi
     _NVIDIA_LIBRARY_INVENTORY_STATE="none"
     _NVIDIA_LIBRARY_INVENTORY_VALUE=""
-    # One deadline per reader, not one for both: on a congested driver NVML alone took ~23s
-    # (8x B200), and a shared 10s bound meant the CUDA driver API reader never ran.
+    # One deadline per reader: a shared bound let slow NVML starve the CUDA driver API reader.
     for _nli_reader in nvml cuda; do
         case "$_nli_reader" in nvml) _nli_secs=30 ;; *) _nli_secs=20 ;; esac
         _NVIDIA_LIBRARY_INVENTORY_VALUE=$(_run_bounded --secs "$_nli_secs" "$_nli_py" -I - "$_nli_reader" 2>/dev/null <<'PY'
@@ -2764,11 +2763,9 @@ PY
     printf '%s\n' "$_NVIDIA_LIBRARY_INVENTORY_VALUE"
 }
 
-# "<major>.<minor>" CUDA version of the installed NVIDIA driver when the inventory above cannot
-# answer, or exit 1. cuDriverGetVersion needs no cuInit, so it answers in milliseconds even where
-# cuInit took ~90s (8x B200, congested driver); failing that, the kernel module's version in
-# /proc/driver/nvidia/version bounds the CUDA version (studio/nvidia_probe.py _DRIVER_MAJOR_CUDA).
-# Only for picking a wheel family: it proves no GPU and reads no compute capability.
+# Driver CUDA "<major>.<minor>" when the inventory cannot answer, else exit 1: cuDriverGetVersion
+# (no cuInit), then the /proc kernel module version bound (studio/nvidia_probe.py _DRIVER_MAJOR_CUDA).
+# Picks a wheel family only: proves no GPU, reads no compute capability.
 _nvidia_driver_cuda_version() {
     [ "${UNSLOTH_NVIDIA_LIBRARY_PROBE:-1}" != "0" ] || return 1
     if command -v python3 >/dev/null 2>&1; then _ndv_py=python3
@@ -5290,7 +5287,6 @@ get_torch_index_url() {
         echo "$_base/cpu"; return
     fi
     # CUDA version from nvidia-smi: accept "CUDA Version:" and the newer "CUDA UMD Version:".
-    # A timeout gets one retry with a longer bound: a congested driver took ~28s (8x B200).
     _smi_rc=0
     _smi_out=$(export LC_ALL=C; _run_bounded "$_smi" 2>/dev/null) || _smi_rc=$?
     if [ "$_smi_rc" = "124" ]; then
@@ -5307,7 +5303,7 @@ get_torch_index_url() {
         | head -1)
     _inventory_caps=""
     _cuda_from_driver=""
-    # How to pin the wheel by hand; a mirror base can carry credentials, so name only the leaf.
+    # A mirror base can carry credentials, so name only the leaf.
     if [ -n "${UNSLOTH_PYTORCH_MIRROR:-}" ]; then _pin_hint="UNSLOTH_TORCH_INDEX_FAMILY="
     else _pin_hint="UNSLOTH_TORCH_INDEX_URL=$_base/"
     fi
@@ -5335,8 +5331,7 @@ get_torch_index_url() {
     else echo "$_base/cpu"; return; fi
     _cuda_tag=$(_cap_cuda_family_for_pre_turing "$_cuda_tag" "$_smi" "$_inventory_caps")
     if [ -n "$_cuda_from_driver" ]; then
-        # The GPU is there but nothing read its compute capability, so the driver alone decides:
-        # say so, since pre-Turing cards need cu126 and cu126 has no Blackwell kernels.
+        # Capability unread: pre-Turing needs cu126, which has no Blackwell kernels.
         echo "[WARN] nvidia-smi and the NVIDIA driver libraries did not answer in time; the driver supports CUDA $_cuda_ver." >&2
         echo "[WARN] Selecting the $_cuda_tag PyTorch wheels from the driver version alone. If that is wrong for this GPU, re-run with" >&2
         echo "[WARN]   ${_pin_hint}cu126   (Maxwell to Hopper, sm_50-90)" >&2
@@ -7454,12 +7449,9 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
     fi
 fi
 
-# ── Check the CUDA torch just installed has kernels for this GPU ──
-# A wrong family installs cleanly and fails only at the first kernel launch ("no kernel image is
-# available for execution on the device"), e.g. cu126 on Blackwell when detection fell back.
-# Neither read initialises CUDA: the arch list is compiled into torch, the capabilities come from
-# NVML (cuInit alone took 100-190s on a congested 8x B200 driver, NVML 12-23s), and torch is asked
-# only when NVML is missing. Physical GPUs, like the family choice itself; a hidden GPU skips it.
+# Check the installed CUDA torch has kernels for this GPU: a wrong family fails only at first launch.
+# Never cuInit (minutes on a congested driver): arch list from torch, capabilities from NVML, torch only
+# without NVML. Physical GPUs, like the family choice; a hidden GPU skips it.
 if [ "$SKIP_TORCH" = false ] && ! _cvd_hides_nvidia; then
     case "${_expected_torch_tag:-}" in
         cu[0-9]*)

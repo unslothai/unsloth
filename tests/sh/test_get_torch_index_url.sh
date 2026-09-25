@@ -326,9 +326,7 @@ if [ -n "$_prime" ] && [ -n "$_assign" ] && [ "$_prime" -lt "$_assign" ]; then _
 assert_eq "presence check primes the inventory before the index substitution" "ordered" "$_result"
 assert_eq "the prime is skipped for a pinned index or no torch" 'if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ]; then' "$_guard"
 
-# 8i) nvidia-smi and the library inventory cannot answer (a congested driver): the CUDA
-# driver API's cuDriverGetVersion still names the version, with no cuInit, so Blackwell does
-# not land on cu126. The mock answers only the version-only call (-c), not the inventory (-).
+# 8i) Only cuDriverGetVersion answers (mock answers -c, not the inventory): Blackwell avoids cu126.
 _dir=$(mktemp -d)
 cat > "$_dir/nvidia-smi" <<'MOCK'
 #!/bin/sh
@@ -362,8 +360,7 @@ case "$_err" in *"defaulting to cu126"*"UNSLOTH_TORCH_INDEX_URL=https://download
 assert_eq "cu126 default names the override" "warned" "$_result"
 rm -rf "$_dir"
 
-# 8l) nvidia-smi timing out once is retried with a longer bound before any fallback. A fake
-# `timeout` reports 124 for the first 10s banner call and runs every other call.
+# 8l) nvidia-smi timing out once is retried with a longer bound. Fake `timeout`: 124 on the first 10s call.
 _dir=$(make_mock_smi "13.0" "10.0")
 cat > "$_dir/timeout" <<MOCK
 #!/bin/sh

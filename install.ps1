@@ -8260,10 +8260,8 @@ exit 0
     }
 
     # "source;cudaMajor;cudaMinor;cap,cap" from NVML, else the CUDA driver API; "" when neither
-    # answers. Versions are major*1000 + minor*10. Each reader runs in a runspace of its own under
-    # its own deadline: a wedged driver can block inside the library, and the deadline leaves that
-    # runspace behind. One shared deadline let a slow NVML (~23s on a congested 8x B200 driver)
-    # use up the time the CUDA driver API needed.
+    # answers. Versions are major*1000 + minor*10. Each reader gets its own runspace and deadline
+    # (a wedged driver blocks inside the library; a shared deadline let slow NVML starve the CUDA reader).
     function Read-NvidiaLibraryRaw {
         param([int]$TimeoutMs = 30000)
         $type = Get-NvidiaLibraryProbeType
@@ -9269,7 +9267,6 @@ exit 0
             try {
                 $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe
                 if ($LASTEXITCODE -eq 124) {
-                    # One retry with a longer bound: a congested driver took ~28s (8x B200).
                     substep "nvidia-smi did not answer within 10s; retrying with a 45s limit..." "Yellow"
                     $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe -TimeoutSec 45
                 }
@@ -9287,7 +9284,6 @@ exit 0
                 return "$baseUrl/cpu"
             } else {
                 substep "could not determine CUDA version from nvidia-smi, defaulting to cu126" "Yellow"
-                # cu126 has no Blackwell kernels, and nothing else will say so until training fails.
                 $pinHint = if ($env:UNSLOTH_PYTORCH_MIRROR) { "UNSLOTH_TORCH_INDEX_FAMILY=" } else { "UNSLOTH_TORCH_INDEX_URL=$baseUrl/" }
                 substep "cu126 has no kernels for Blackwell (sm_100 / sm_120). To choose the wheel yourself, re-run with" "Yellow"
                 substep "  ${pinHint}cu128   (or cu130 on a driver that supports CUDA 13)" "Yellow"

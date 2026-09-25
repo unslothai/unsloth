@@ -1301,10 +1301,8 @@ function Get-NvidiaLibraryProbeType {
 }
 
 # "source;cudaMajor;cudaMinor;cap,cap" from NVML, else the CUDA driver API; "" when neither
-# answers. Versions are major*1000 + minor*10. Each reader runs in a runspace of its own under
-# its own deadline: a wedged driver can block inside the library, and the deadline leaves that
-# runspace behind. One shared deadline let a slow NVML (~23s on a congested 8x B200 driver)
-# use up the time the CUDA driver API needed.
+# answers. Versions are major*1000 + minor*10. Each reader gets its own runspace and deadline
+# (a wedged driver blocks inside the library; a shared deadline let slow NVML starve the CUDA reader).
 function Read-NvidiaLibraryRaw {
     param([int]$TimeoutMs = 30000)
     $type = Get-NvidiaLibraryProbeType
