@@ -32,10 +32,8 @@ _TEMPLATE_ERROR_COLUMN = "__chat_template_error"
 # materialises the whole column in Python.
 _ERROR_SCAN_BATCH = 10_000
 
-# Maximum conversations used to compare templates.
 _TEMPLATE_PROBE_ROWS = 8
 
-# Reuse the chosen template across splits.
 _CHOSEN_TEMPLATE_ATTR = "_unsloth_studio_chat_template_choice"
 
 _CUSTOM_PROMPT_TEMPLATE_ERROR = (
@@ -115,10 +113,7 @@ def get_tokenizer_chat_template(tokenizer, model_name):
 
 
 def _set_chat_template(tokenizer, chat_template):
-    """Set the template on both the processor and its tokenizer.
-
-    Does not undo EOS remapping by ``get_chat_template`` (Gemma 1/2).
-    """
+    """Set on processor and tokenizer; does not undo ``get_chat_template`` EOS remapping (Gemma 1/2)."""
     tokenizer.chat_template = chat_template
     inner = getattr(tokenizer, "tokenizer", None)
     if inner is not None and inner is not tokenizer and hasattr(inner, "chat_template"):
@@ -162,10 +157,7 @@ def _sample_conversations(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
 
 
 def keep_renderable_chat_template(tokenizer, dataset, chat_column, own_template):
-    """Restore the checkpoint template if it renders more sampled rows; return a log note.
-
-    Sampling can miss incompatible rows, which the caller drops and reports.
-    """
+    """Restore the checkpoint template if it renders more sampled rows; return a log note."""
     override = getattr(tokenizer, "chat_template", None)
     if not own_template or override == own_template:
         return None
@@ -180,7 +172,6 @@ def keep_renderable_chat_template(tokenizer, dataset, chat_column, own_template)
 
     _set_chat_template(tokenizer, own_template)
     if _count_renderable(tokenizer, conversations) <= rendered_by_override:
-        # Keep the override unless the checkpoint template renders more rows.
         _set_chat_template(tokenizer, override)
         return None
 
@@ -192,10 +183,7 @@ def keep_renderable_chat_template(tokenizer, dataset, chat_column, own_template)
 
 
 def resolve_dataset_chat_template(tokenizer, model_name, dataset, chat_column):
-    """Choose on the first split and reuse for evaluation and saving.
-
-    Return ``(tokenizer, note_to_log)``. Incompatible eval rows are dropped and reported.
-    """
+    """Choose on the first split and reuse for evaluation and saving."""
     remembered = getattr(tokenizer, _CHOSEN_TEMPLATE_ATTR, None)
     if remembered is not None and remembered[0] == model_name:
         _set_chat_template(tokenizer, remembered[1])

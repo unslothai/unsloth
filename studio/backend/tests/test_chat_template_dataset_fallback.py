@@ -25,7 +25,6 @@ class _TemplatedTokenizer:
             raise ValueError("Invalid content type")
         if self.chat_template == OVERRIDE and any(turn["role"] == "tool" for turn in conversation):
             raise ValueError("Conversation roles must alternate user/assistant/user/assistant/...")
-        # Expose the selected template in the output for assertions.
         turns = "\n".join(f"{turn['role']}: {turn['content']}" for turn in conversation)
         return f"[{self.chat_template}] {turns}"
 
@@ -156,7 +155,6 @@ def test_tool_rows_between_the_sampled_rows_are_still_dropped(monkeypatch):
 
 
 def test_a_separate_eval_split_renders_with_the_template_training_chose(monkeypatch):
-    # Training, evaluation, and saving share one tokenizer.
     tokenizer = _TemplatedTokenizer()
 
     train = _format(_dataset_info(_agentic_convo), tokenizer, monkeypatch)
