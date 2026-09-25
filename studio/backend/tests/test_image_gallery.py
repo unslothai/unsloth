@@ -523,3 +523,12 @@ def test_archiving_during_a_clear_never_leaves_a_deleted_image_reported_as_archi
     # Either the archive won (reported success, file kept) or the clear won (reported gone, file
     # deleted). "Reported success but deleted" is the outcome this must never produce.
     assert said_ok == survived
+
+
+def test_save_looks_up_the_folder_after_encoding(tmp_path, monkeypatch):
+    order = []
+    encode = gallery._png_bytes
+    monkeypatch.setattr(gallery, "_png_bytes", lambda *a: order.append("encode") or encode(*a))
+    monkeypatch.setattr(gallery, "gallery_dir", lambda: order.append("dir") or tmp_path)
+    gallery.save(Image.new("RGB", (4, 4)), {"prompt": "p"})
+    assert order[:2] == ["encode", "dir"]

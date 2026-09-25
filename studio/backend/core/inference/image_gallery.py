@@ -71,13 +71,16 @@ def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
 def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
     """Persist a PIL image with its recipe embedded; return the gallery record."""
     image_id = uuid.uuid4().hex
+    # Encoded before the folder is looked up: a Settings move during the encode would otherwise
+    # finish first, and the image land in the folder it left.
+    data = _png_bytes(image, meta)
     directory = gallery_dir()
     final_path = directory / f"{image_id}.png"
     # Write to a dotted temp (skipped by the *.png glob) then atomically rename, so a crash mid-write never leaves a
     # truncated {id}.png in the listing.
     tmp_path = directory / f".{image_id}.png.tmp"
     try:
-        tmp_path.write_bytes(_png_bytes(image, meta))
+        tmp_path.write_bytes(data)
         os.replace(tmp_path, final_path)
     except BaseException:
         try:
