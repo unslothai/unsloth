@@ -1238,9 +1238,7 @@ def test_save_evicts_other_keys_but_never_its_own(monkeypatch, tmp_path, fake_me
     monkeypatch.delenv(cc._ENV_SAVE, raising = False)
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
     stale = _key_dir(tmp_path, "d" * 32, 4096, age_s = 30 * 86400)
-    monkeypatch.setenv(
-        cc._ENV_MAX_GB, str(1024 / (1 << 30))
-    )
+    monkeypatch.setenv(cc._ENV_MAX_GB, str(1024 / (1 << 30)))
     ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     try:
         assert cc.save(ctx) is True
