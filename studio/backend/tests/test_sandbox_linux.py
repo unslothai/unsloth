@@ -1431,6 +1431,19 @@ def test_a_nested_bind_mount_in_the_cache_is_caught_by_the_mount_table(tmp_path,
     assert "hub" not in sandbox_linux._model_cache_binds(str(tmp_path / "session"))
 
 
+def test_a_nested_bind_mount_is_caught_through_a_symlinked_cache(tmp_path, monkeypatch):
+    """The mount table lists canonical paths, so a cache reached through a
+    symlinked ~/.cache must be compared in its resolved form."""
+    real = tmp_path / "volume" / "huggingface"
+    (real / "hub" / "nested").mkdir(parents = True)
+    (tmp_path / "cache-link").symlink_to(tmp_path / "volume")
+    _real_cache(monkeypatch, tmp_path / "cache-link" / "huggingface")
+    monkeypatch.setattr(
+        sandbox_linux, "_host_mount_points", lambda: (str(real / "hub" / "nested"),)
+    )
+    assert "hub" not in sandbox_linux._model_cache_binds(str(tmp_path / "session"))
+
+
 def _fake_editable(
     tmp_path,
     monkeypatch,

@@ -622,7 +622,9 @@ def _model_cache_binds(workdir: str) -> dict[str, str]:
         home = os.path.join(user_home, _MODEL_CACHE_RELPATH)
         resolved = {}
     for name in _MODEL_CACHE_SUBDIRS:
-        path = os.path.abspath(resolved.get(name) or os.path.join(home, name))
+        # Canonical, as _validate_workdir does: the mount table lists real paths,
+        # so a cache reached through a symlinked ~/.cache would miss a nested bind.
+        path = os.path.realpath(resolved.get(name) or os.path.join(home, name))
         if _within(path, workdir):
             continue
         # A cache configured at, or above, the Studio root would share
