@@ -3101,7 +3101,7 @@ export const es = {
       openFilesFailed: "No se pudieron abrir los archivos",
       speechModel: "{name} es un modelo de voz",
       speechModelDescription: "Selecciónalo en el menú de modelos de la página Audio.",
-      noVideoLink: "El servidor no devolvió ningún enlace de vídeo.",
+      noMediaLink: "El servidor no devolvió ningún enlace para reproducir este archivo.",
       imageNotFound: "No se encontró esta imagen",
       clipNotFound: "No se encontró este clip",
       notFoundDescription: "Puede que se haya archivado o eliminado.",

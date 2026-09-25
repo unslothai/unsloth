@@ -2983,7 +2983,7 @@ export const ja = {
       openFilesFailed: "ファイルを開けませんでした",
       speechModel: "{name} は音声モデルです",
       speechModelDescription: "音声ページのモデルメニューから選択してください。",
-      noVideoLink: "サーバーから動画のリンクが返されませんでした。",
+      noMediaLink: "サーバーからこのファイルを再生するためのリンクが返されませんでした。",
       imageNotFound: "この画像が見つかりませんでした",
       clipNotFound: "このクリップが見つかりませんでした",
       notFoundDescription: "アーカイブまたは削除された可能性があります。",

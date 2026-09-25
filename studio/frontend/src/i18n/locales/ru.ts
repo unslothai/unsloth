@@ -3063,7 +3063,7 @@ export const ru = {
       openFilesFailed: "Не удалось открыть файлы",
       speechModel: "{name} — модель синтеза речи",
       speechModelDescription: "Выберите её в меню моделей на странице «Аудио».",
-      noVideoLink: "Сервер не вернул ссылку на видео.",
+      noMediaLink: "Сервер не вернул ссылку для воспроизведения этого файла.",
       imageNotFound: "Не удалось найти это изображение",
       clipNotFound: "Не удалось найти этот клип",
       notFoundDescription: "Возможно, элемент архивирован или удалён.",

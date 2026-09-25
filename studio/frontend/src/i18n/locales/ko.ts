@@ -3029,7 +3029,7 @@ export const ko = {
       openFilesFailed: "파일을 열지 못했습니다",
       speechModel: "{name}은(는) 음성 모델입니다",
       speechModelDescription: "오디오 페이지의 모델 메뉴에서 선택하세요.",
-      noVideoLink: "서버가 동영상 링크를 반환하지 않았습니다.",
+      noMediaLink: "서버가 이 파일을 재생할 링크를 반환하지 않았습니다.",
       imageNotFound: "이 이미지를 찾을 수 없습니다",
       clipNotFound: "이 클립을 찾을 수 없습니다",
       notFoundDescription: "보관되었거나 삭제되었을 수 있습니다.",

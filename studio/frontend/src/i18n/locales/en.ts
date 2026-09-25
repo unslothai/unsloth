@@ -3033,7 +3033,7 @@ export const en = {
       openFilesFailed: "Could not open the files",
       speechModel: "{name} is a speech model",
       speechModelDescription: "Pick it from the model menu on the Audio page.",
-      noVideoLink: "The server returned no video link.",
+      noMediaLink: "The server returned no link to play this file.",
       // A Library "View in" link to a gallery entry that is no longer listed.
       imageNotFound: "Could not find this image",
       clipNotFound: "Could not find this clip",

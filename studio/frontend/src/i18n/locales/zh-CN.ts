@@ -2943,7 +2943,7 @@ export const zhCN = {
       openFilesFailed: "无法打开这些文件",
       speechModel: "{name} 是语音模型",
       speechModelDescription: "请在音频页面的模型菜单中选择它。",
-      noVideoLink: "服务器未返回视频链接。",
+      noMediaLink: "服务器未返回用于播放此文件的链接。",
       imageNotFound: "找不到此图像",
       clipNotFound: "找不到此片段",
       notFoundDescription: "它可能已被归档或删除。",

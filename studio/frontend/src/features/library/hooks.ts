@@ -6,50 +6,59 @@ import { type RefObject, useEffect, useState } from "react";
 import {
   type LibraryItem,
   fetchLibraryBlob,
+  fetchLibraryStreamUrl,
   fetchLibraryThumbnail,
-  fetchLibraryVideoUrl,
 } from "./api";
 import { type EmbeddedBody, embeddedBlobType } from "./file-name";
 import { acquireObjectUrl } from "./object-url-cache";
+import { shouldRemint, streamsPreview } from "./stream-source";
 
 // Past this a preview is not buffered into memory as a blob: the file is a download away.
 export const MAX_BUFFERED_PREVIEW_BYTES = 256 * 1024 * 1024;
 
-type PreviewSource = { url: string; revoke: boolean };
+type PreviewSource = { url: string; revoke: boolean; streamed: boolean };
 
 /**
- * Where the preview element loads the item from. A Video page clip streams from a short-lived
- * signed link, so it plays and seeks without the whole file in memory first. Everything else is
- * auth-fetched into a blob typed for the element it goes in (see embeddedBlobType); a file too
- * large for that refuses rather than pinning hundreds of MB.
+ * Where the preview element loads the item from. Audio and video with a file of their own stream
+ * from a short-lived signed link, so they play and seek without the whole file in memory first,
+ * whatever their size. Everything else, and those too when no link can be minted (an older
+ * server), is auth-fetched into a blob typed for the element it goes in (see embeddedBlobType); a
+ * file too large for that refuses rather than pinning hundreds of MB.
  */
 async function previewSource(item: LibraryItem, body: EmbeddedBody): Promise<PreviewSource> {
-  if (body === "video" && item.id.startsWith("video:")) {
+  if (streamsPreview(item.id, body)) {
     try {
-      return { url: await fetchLibraryVideoUrl(item), revoke: false };
+      return { url: await fetchLibraryStreamUrl(item), revoke: false, streamed: true };
     } catch {
-      // An older server, or a clip it no longer lists: the blob below still plays it.
+      // An older server without the route: the blob below still plays it.
     }
   }
   if (item.sizeBytes !== null && item.sizeBytes > MAX_BUFFERED_PREVIEW_BYTES) {
     throw new Error(translate("library.preview.tooLargeToPreview"));
   }
   const blob = await fetchLibraryBlob(item, embeddedBlobType(body, item.contentType));
-  return { url: URL.createObjectURL(blob), revoke: true };
+  return { url: URL.createObjectURL(blob), revoke: true, streamed: false };
 }
 
 /**
  * A URL the preview's `body` element can load the item from once `enabled`, null until then;
  * `error` once it cannot load. Not cached: a preview's file is released as soon as it closes.
+ * `retry` is for the element's error: a streamed link gets minted afresh once (it expired, or the
+ * backend restarted), and it says whether it did; otherwise the error stands.
  */
 export function useLibraryPreviewUrl(
   item: LibraryItem,
   body: EmbeddedBody | null,
-): { url: string | null; error: string | null } {
-  const key = `${item.id}@${item.updatedAt}:${body ?? ""}`;
+): { url: string | null; error: string | null; retry: () => boolean } {
+  const baseKey = `${item.id}@${item.updatedAt}:${body ?? ""}`;
+  // Tagged with the preview it was for, so another file (or version) starts from none.
+  const [remint, setRemint] = useState<{ key: string; count: number } | null>(null);
+  const remints = remint?.key === baseKey ? remint.count : 0;
+  const key = `${baseKey}#${remints}`;
   const [state, setState] = useState<{
     key: string;
     url: string | null;
+    streamed?: boolean;
     error?: string;
   } | null>(null);
   useEffect(() => {
@@ -57,7 +66,7 @@ export function useLibraryPreviewUrl(
     let cancelled = false;
     const next = previewSource(item, body);
     next.then(
-      ({ url }) => !cancelled && setState({ key, url }),
+      ({ url, streamed }) => !cancelled && setState({ key, url, streamed }),
       (err: unknown) =>
         !cancelled &&
         setState({ key, url: null, error: err instanceof Error ? err.message : String(err) }),
@@ -70,7 +79,12 @@ export function useLibraryPreviewUrl(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
   const current = body && state?.key === key ? state : null;
-  return { url: current?.url ?? null, error: current?.error ?? null };
+  const retry = () => {
+    if (!current?.url || !shouldRemint(current.streamed ?? false, remints)) return false;
+    setRemint({ key: baseKey, count: remints + 1 });
+    return true;
+  };
+  return { url: current?.url ?? null, error: current?.error ?? null, retry };
 }
 
 /** A card's picture once `enabled`: a bounded thumbnail of the image, or a video's first frame,

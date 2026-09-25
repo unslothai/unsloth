@@ -3035,7 +3035,7 @@ export const ar = {
       openFilesFailed: "تعذّر فتح الملفات",
       speechModel: "{name} نموذج كلام",
       speechModelDescription: "اختره من قائمة النماذج في صفحة الصوت.",
-      noVideoLink: "لم يُرجع الخادم أي رابط للفيديو.",
+      noMediaLink: "لم يُرجع الخادم أي رابط لتشغيل هذا الملف.",
       imageNotFound: "تعذّر العثور على هذه الصورة",
       clipNotFound: "تعذّر العثور على هذا المقطع",
       notFoundDescription: "ربما تمت أرشفته أو حذفه.",
