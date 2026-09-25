@@ -16,9 +16,10 @@ import {
 } from "../src/app/window-layout.ts";
 import {
   finalizeAppWindowLayout,
-  shouldFinishWindowLayoutWait,
   measureWindowLayout,
   observeDevicePixelRatio,
+  prepareSetupWindow,
+  shouldFinishWindowLayoutWait,
 } from "../src/app/window-layout-lifecycle.ts";
 
 // A work area is the panel minus the taskbar, in logical pixels.
@@ -33,6 +34,35 @@ function workArea(
     height: (height - taskbar) / scaleFactor,
   };
 }
+
+test("repair setup unmaximizes before sizing or locking the window", async () => {
+  const events: string[] = [];
+  const done = Promise.resolve();
+  let maximized = true;
+  const completed = await prepareSetupWindow({
+    resetLayout: () => {
+      events.push("reset");
+      return done;
+    },
+    unmaximize: () => {
+      maximized = false;
+      events.push("unmaximize");
+      return done;
+    },
+    clearConstraints: () => {
+      events.push("clear");
+      return done;
+    },
+    disableResize: () => {
+      events.push("fixed");
+      return done;
+    },
+    isCurrent: () => true,
+  });
+  assert.equal(completed, true);
+  assert.equal(maximized, false);
+  assert.deepEqual(events, ["reset", "unmaximize", "clear", "fixed"]);
+});
 
 test("waits for the first native restore event before settling", () => {
   assert.equal(shouldFinishWindowLayoutWait(false), false);

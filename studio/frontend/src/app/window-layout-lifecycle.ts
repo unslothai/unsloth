@@ -10,6 +10,31 @@ import {
 
 export type WindowLayoutGuard = () => boolean;
 
+/** Clear native layout state before showing the compact repair/setup window. */
+export async function prepareSetupWindow(options: {
+  resetLayout: () => Promise<unknown>;
+  unmaximize: () => Promise<void>;
+  clearConstraints: () => Promise<void>;
+  disableResize: () => Promise<void>;
+  isCurrent: WindowLayoutGuard;
+}): Promise<boolean> {
+  const {
+    resetLayout,
+    unmaximize,
+    clearConstraints,
+    disableResize,
+    isCurrent,
+  } = options;
+  await resetLayout();
+  if (!isCurrent()) return false;
+  await unmaximize();
+  if (!isCurrent()) return false;
+  await clearConstraints();
+  if (!isCurrent()) return false;
+  await disableResize();
+  return isCurrent();
+}
+
 type WorkAreaMonitor = {
   scaleFactor: number;
   workArea: {
