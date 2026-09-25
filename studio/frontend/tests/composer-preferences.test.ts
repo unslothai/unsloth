@@ -74,45 +74,45 @@ for (const blocked of [
   });
 }
 for (const key of ["metaKey", "ctrlKey"] as const) {
-test(`${key}: mod-enter-multiline is Enter for one line and mod-enter once the draft has a line break`, () => {
-  const mod = { ...enter, [key]: true };
-  // One line: Enter sends, Shift+Enter breaks the line.
-  assert.equal(composerSubmitIntent(enter, "mod-enter-multiline", "hi"), "default");
-  assert.equal(composerSubmitIntent({ ...enter, shiftKey: true }, "mod-enter-multiline", "hi"), null);
-  assert.equal(composerSubmitIntent(enter, "mod-enter-multiline"), "default");
-  // Several lines: Enter adds another, the modifier sends.
-  assert.equal(composerSubmitIntent(enter, "mod-enter-multiline", "a\nb"), null);
-  assert.equal(composerSubmitIntent(mod, "mod-enter-multiline", "a\nb"), "default");
-  assert.equal(
-    composerSubmitIntent({ ...mod, shiftKey: true }, "mod-enter-multiline", "a\nb"),
-    "opposite",
-  );
-  // The other two ignore the draft.
-  assert.equal(composerSubmitIntent(enter, "enter", "a\nb"), "default");
-  assert.equal(composerSubmitIntent(enter, "mod-enter", "hi"), null);
-  assert.equal(effectiveSendShortcut("mod-enter-multiline", "a\nb"), "mod-enter");
-  assert.equal(effectiveSendShortcut("mod-enter-multiline", ""), "enter");
-  assert.deepEqual(composerShortcutLabels("mod-enter-multiline", true, "a\nb"), {
-    send: "⌘Enter",
-    opposite: "⇧⌘Enter",
+  test(`${key}: mod-enter-multiline is Enter for one line and mod-enter once the draft has a line break`, () => {
+    const mod = { ...enter, [key]: true };
+    // One line: Enter sends, Shift+Enter breaks the line.
+    assert.equal(composerSubmitIntent(enter, "mod-enter-multiline", "hi"), "default");
+    assert.equal(composerSubmitIntent({ ...enter, shiftKey: true }, "mod-enter-multiline", "hi"), null);
+    assert.equal(composerSubmitIntent(enter, "mod-enter-multiline"), "default");
+    // Several lines: Enter adds another, the modifier sends.
+    assert.equal(composerSubmitIntent(enter, "mod-enter-multiline", "a\nb"), null);
+    assert.equal(composerSubmitIntent(mod, "mod-enter-multiline", "a\nb"), "default");
+    assert.equal(
+      composerSubmitIntent({ ...mod, shiftKey: true }, "mod-enter-multiline", "a\nb"),
+      "opposite",
+    );
+    // The other two ignore the draft.
+    assert.equal(composerSubmitIntent(enter, "enter", "a\nb"), "default");
+    assert.equal(composerSubmitIntent(enter, "mod-enter", "hi"), null);
+    assert.equal(effectiveSendShortcut("mod-enter-multiline", "a\nb"), "mod-enter");
+    assert.equal(effectiveSendShortcut("mod-enter-multiline", ""), "enter");
+    assert.deepEqual(composerShortcutLabels("mod-enter-multiline", true, "a\nb"), {
+      send: "⌘Enter",
+      opposite: "⇧⌘Enter",
+    });
+    assert.deepEqual(composerShortcutLabels("mod-enter-multiline", true, "hi"), {
+      send: "Enter",
+      opposite: "⌘Enter",
+    });
+    assert.deepEqual(composerShortcutLabels("mod-enter-multiline", false, "a\nb"), {
+      send: "Ctrl+Enter",
+      opposite: "Ctrl+Shift+Enter",
+    });
+    assert.deepEqual(composerShortcutLabels("mod-enter-multiline", false, "hi"), {
+      send: "Enter",
+      opposite: "Ctrl+Enter",
+    });
+    assert.equal(
+      normalizeComposerPreferences({ sendShortcut: "mod-enter-multiline" }).sendShortcut,
+      "mod-enter-multiline",
+    );
   });
-  assert.deepEqual(composerShortcutLabels("mod-enter-multiline", true, "hi"), {
-    send: "Enter",
-    opposite: "⌘Enter",
-  });
-  assert.deepEqual(composerShortcutLabels("mod-enter-multiline", false, "a\nb"), {
-    send: "Ctrl+Enter",
-    opposite: "Ctrl+Shift+Enter",
-  });
-  assert.deepEqual(composerShortcutLabels("mod-enter-multiline", false, "hi"), {
-    send: "Enter",
-    opposite: "Ctrl+Enter",
-  });
-  assert.equal(
-    normalizeComposerPreferences({ sendShortcut: "mod-enter-multiline" }).sendShortcut,
-    "mod-enter-multiline",
-  );
-});
 }
 test("one-message override flips both preferences without changing the default", () => {
   assert.equal(composerFollowUpBehavior("queue", "default"), "queue");
