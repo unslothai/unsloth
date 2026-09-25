@@ -573,18 +573,12 @@ def test_a_non_zero_tensor_field_is_refused_rather_than_dropped():
 def test_torchao_older_than_the_floor_is_not_safetensors_support(monkeypatch):
     """torchao 0.14 has the module at the same path but no Int8Tensor and another layout: planning
     must not count on a safetensors artifact it will fail to read."""
-    import types
-
-    import core._torchao_stub as stub
-
-    helpers = types.ModuleType("torchao.prototype.safetensors.safetensors_support")
-    helpers.flatten_tensor_state_dict = lambda sd: (sd, {})
-    helpers.unflatten_tensor_state_dict = lambda t, m: (t, {})
-    monkeypatch.setitem(sys.modules, helpers.__name__, helpers)
-    monkeypatch.setattr(stub, "is_stubbed", lambda package: False)
+    assert ps._version_tuple("0.14.0") < ps.MIN_TORCHAO_VERSION
+    assert ps._version_tuple("0.16.0+cu130") >= ps.MIN_TORCHAO_VERSION
+    assert ps._version_tuple("0.19.0+git492be6c") >= ps.MIN_TORCHAO_VERSION
+    # Unparseable reads as new enough: the feature import decides, as before.
+    assert ps._version_tuple(None) >= ps.MIN_TORCHAO_VERSION
+    assert ps._version_tuple("dev") >= ps.MIN_TORCHAO_VERSION
     monkeypatch.setattr(ps, "_torchao_version", lambda: "0.14.0")
     assert ps._torchao_helpers() is None
-    monkeypatch.setattr(ps, "_torchao_version", lambda: "0.16.0+cu130")
-    assert ps._torchao_helpers() is not None
-    monkeypatch.setattr(ps, "_torchao_version", lambda: None)
-    assert ps._torchao_helpers() is not None
+    assert ps.safetensors_prequant_supported() is False
