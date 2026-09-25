@@ -331,9 +331,10 @@ const SELECT_WITH_META =
 // Insertion line on the landing edge, drawn inside the row: a section's collapsible clips its
 // overflow, and the first and last rows are exactly where a row is dragged to.
 const DROP_CUE_BASE =
-  "before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-0.5 before:rounded-full before:bg-primary before:content-['']";
+  "before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-[1.5px] before:rounded-full before:bg-primary before:content-['']";
 const DROP_CUE_TOP = `${DROP_CUE_BASE} before:top-0`;
-const DROP_CUE_BOTTOM = `${DROP_CUE_BASE} before:bottom-0`;
+// bottom-px: on the last row, DROP_ROW_HIT's extra pixel is clipped by the list.
+const DROP_CUE_BOTTOM = `${DROP_CUE_BASE} before:bottom-px`;
 // A row dropped onto a folder or section joins it, so the whole target is tinted and outlined.
 // Kept inside the box for the same clipping reason.
 const DROP_INTO_CUE =

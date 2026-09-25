@@ -16,6 +16,7 @@ import {
   planKey,
   planSidebarDrop,
   rowKey,
+  SIDEBAR_TAIL_SCOPE,
   STAY,
   type DropEdge,
   type SidebarDragItem,
@@ -84,38 +85,49 @@ function zonesUnder(x: number, y: number): ZoneHit[] {
 /** Max distance between a row's bottom and the next row's top for them to share a gap. */
 const ADJACENT_PX = 3;
 
-/** The row drawn directly under row `key`. Header zones are skipped. */
-function rowBelow(key: string): ZoneHit | null {
+/** The row drawn directly below or above the row, or section tail, that `key` names. */
+function rowNextTo(key: string, side: "below" | "above"): ZoneHit | null {
   if (typeof document === "undefined") return null;
   const rows: ZoneHit[] = [];
+  let self: ZoneHit | null = null;
   for (const element of document.querySelectorAll(`[${DROP_ZONE_ATTR}]`)) {
     try {
       const parsed = JSON.parse(element.getAttribute(DROP_ZONE_ATTR) ?? "") as {
         zone: SidebarDropZone;
         closed?: boolean;
       };
-      if (!parsed.zone.row || parsed.zone.header) continue;
-      rows.push({
-        zone: parsed.zone,
+      const { zone } = parsed;
+      const hit: ZoneHit = {
+        zone,
         closed: Boolean(parsed.closed),
         rect: element.getBoundingClientRect(),
-      });
+      };
+      // A section tail has no row but draws its line under its blockEnd key.
+      if (!zone.row && zone.blockEnd?.scope === SIDEBAR_TAIL_SCOPE) {
+        if (rowKey(SIDEBAR_TAIL_SCOPE, zone.blockEnd.id) === key) self = hit;
+        continue;
+      }
+      if (!zone.row || zone.header) continue;
+      if (rowKey(zone.row.scope, zone.row.id) === key) self = hit;
+      rows.push(hit);
     } catch {
       // Unreadable zones are not rows.
     }
   }
-  const self = rows.find(
-    (hit) => hit.zone.row && rowKey(hit.zone.row.scope, hit.zone.row.id) === key,
-  );
   if (!self) return null;
-  let below: ZoneHit | null = null;
+  const from = self.rect;
+  const gapTo = (rect: DOMRect) =>
+    side === "below" ? rect.top - from.bottom : from.top - rect.bottom;
+  let best: ZoneHit | null = null;
   for (const hit of rows) {
-    if (hit === self || hit.rect.top <= self.rect.top) continue;
-    if (Math.abs(hit.rect.top - self.rect.bottom) > ADJACENT_PX) continue;
-    if (hit.rect.right <= self.rect.left || hit.rect.left >= self.rect.right) continue;
-    if (!below || hit.rect.top < below.rect.top) below = hit;
+    if (hit === self) continue;
+    const beyond =
+      side === "below" ? hit.rect.top > from.top : hit.rect.bottom < from.bottom;
+    if (!beyond || Math.abs(gapTo(hit.rect)) > ADJACENT_PX) continue;
+    if (hit.rect.right <= from.left || hit.rect.left >= from.right) continue;
+    if (!best || Math.abs(gapTo(hit.rect)) < Math.abs(gapTo(best.rect))) best = hit;
   }
-  return below;
+  return best;
 }
 
 /** The list the row scrolls while it is carried: the nearest ancestor that actually scrolls. */
@@ -222,17 +234,19 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
           context,
         );
         if (!outcome) continue;
-        // One line per gap: if the row below lands the drop identically, draw its top line
-        // instead of this row's bottom one. Different drops (a folder's last chat vs the next
-        // row) keep their own lines.
-        if (
-          outcome !== STAY &&
-          "line" in outcome.cue &&
-          outcome.cue.line.edge === "bottom"
-        ) {
-          const below = rowBelow(outcome.cue.line.rowKey);
-          const alt = below
-            ? planSidebarDrop(dragged, below.zone, "top", context)
+        // One line per gap: a bottom line defers to the row below's top, and a section tail's
+        // line to the row above's bottom, when that lands the drop identically. Different drops
+        // (a folder's last chat vs the next row) keep their own lines.
+        if (outcome !== STAY && "line" in outcome.cue) {
+          const { rowKey: key, edge } = outcome.cue.line;
+          const tail = key.startsWith(`${SIDEBAR_TAIL_SCOPE}:`);
+          const next = tail
+            ? rowNextTo(key, "above")
+            : edge === "bottom"
+              ? rowNextTo(key, "below")
+              : null;
+          const alt = next
+            ? planSidebarDrop(dragged, next.zone, tail ? "bottom" : "top", context)
             : null;
           if (
             alt &&

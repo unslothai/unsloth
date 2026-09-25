@@ -905,7 +905,8 @@ test("rows cover the gap between them, so the section never answers for it", () 
 test("every drop cue is drawn inside its row", () => {
   for (const cue of [
     "${DROP_CUE_BASE} before:top-0",
-    "${DROP_CUE_BASE} before:bottom-0",
+    // A pixel up: the last row's extra hit pixel is clipped by the list.
+    "${DROP_CUE_BASE} before:bottom-px",
     "before:inset-x-1 before:inset-y-0 ",
     // A ring is drawn outside its box unless inset, and the first row's box ends at the clip.
     "before:ring-1 before:ring-inset",
@@ -1347,7 +1348,30 @@ test("the two edges of one gap are one drop, and draw one line", () => {
   );
   assert.ok(!equivalentDrop(intoHome, overMisc));
 
+  // Pinned's tail and its last chat's bottom edge both land last: one drop.
+  const pinnedCtx = context({
+    pinnedChatIds: new Set(["p1", "p2", "p3"]),
+    orders: { ...context().orders, pinned: ["p1", "p2", "p3"] },
+  });
+  const pinnedDrag = chat("p1", "pinned", PINNED_ORDER_SCOPE, null);
+  const tail = plannedDrop(
+    planSidebarDrop(
+      pinnedDrag,
+      { section: "pinned", blockEnd: { scope: SIDEBAR_TAIL_SCOPE, id: "pinned" } },
+      "bottom",
+      pinnedCtx,
+    ),
+  );
+  const underLast = plannedDrop(
+    planSidebarDrop(pinnedDrag, chatRow("pinned", PINNED_ORDER_SCOPE, "p3"), "bottom", pinnedCtx),
+  );
+  assert.notDeepEqual(tail.cue, underLast.cue);
+  assert.ok(equivalentDrop(tail, underLast));
+
   // The hook only swaps lines for equivalent drops.
-  assert.match(HOOK, /planSidebarDrop\(dragged, below\.zone, "top", context\)/);
+  assert.match(
+    HOOK,
+    /planSidebarDrop\(dragged, next\.zone, tail \? "bottom" : "top", context\)/,
+  );
   assert.match(HOOK, /equivalentDrop\(alt, outcome\)/);
 });
