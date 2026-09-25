@@ -1363,7 +1363,6 @@ class ExternalProviderClient:
     ):
         self.provider_type = provider_type
         self.api_type = api_type if provider_type == "custom" else "chat_completions"
-        # Validate caller-controlled destinations; Studio's own loopback runtime is exempt.
         from core.inference.providers import validate_provider_base_url
 
         self.base_url = (
@@ -1915,7 +1914,6 @@ class ExternalProviderClient:
                                                         continue
                                                     for ann in envelope.get("annotations") or []:
                                                         _record_or_url_citation(ann)
-                        # Wrap FastFlowLM's bare JSON errors as SSE so clients see the failure.
                         if self.provider_type == "lemonade" and line.startswith("{"):
                             line = _bare_json_error_as_sse(line) or line
                         # Verbatim relay, minus Unsloth's own UI control protocol: the frames this server writes to

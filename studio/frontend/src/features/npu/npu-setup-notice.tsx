@@ -7,7 +7,6 @@ import { AlertCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { NpuCatalog } from "./use-npu-catalog";
 
-/** The NPU group's header block in Recommended: setup, its errors, and attribution. */
 export function NpuSetupNotice({ catalog }: { catalog: NpuCatalog }) {
   const { status, ready, models, listError, enabling, enable } = catalog;
   const problems = status.validation?.problems ?? [];

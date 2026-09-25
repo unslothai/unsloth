@@ -111,7 +111,6 @@ def test_install_verifies_and_pins_fastflowlm(tmp_path, served):
     assert versions["checksums"]["github"]["ROCm/FastFlowLM"]["v1.0.3"] == {
         "fastflowlm.tar.gz": "sha256:" + "ab" * 32
     }
-    # What lemond already pinned stays.
     assert "other/repo" in versions["checksums"]["github"]
 
 

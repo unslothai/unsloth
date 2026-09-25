@@ -161,7 +161,6 @@ def main() -> None:
                     return
                 progress = 'data: {"file":"model.q4nx","file_index":2,"total_files":4,"percent":40,"bytes_downloaded":4,"bytes_total":10}\n\n'
                 if pull == "truncated":
-                    # The connection drops before lemond's complete event.
                     events = progress.encode()
                 else:
                     downloaded.add(name)
@@ -175,13 +174,11 @@ def main() -> None:
                 self.end_headers()
                 self.wfile.write(events)
             elif self.path == "/v1/load":
-                # A load FastFlowLM takes this long to answer, to exercise cancelling one.
                 time.sleep(float(os.environ.get("FAKE_LEMOND_LOAD_SECONDS", "0")))
                 if name not in downloaded:
                     self._send(404, {"error": {"message": f"Model '{name}' was not found."}})
                     return
                 if name == os.environ.get("FAKE_LEMOND_LOAD_FAILS_FOR"):
-                    # Refused without unloading what is resident.
                     self._send(500, {"error": {"message": "flm failed to start"}})
                     return
                 loaded.clear()

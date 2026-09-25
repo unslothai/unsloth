@@ -8906,7 +8906,6 @@ async def _no_model_loaded_error(
     _npu = peek_npu_backend()
     _npu_model = _npu.loaded_model if _npu is not None else None
     if _npu_model is not None:
-        # Not "nothing is loaded": the NPU model is, and it serves chat completions only.
         return 400, (
             f"The loaded NPU model ({_npu_model.model_path}) serves "
             "/v1/chat/completions only. Load a GGUF model to use this endpoint."
@@ -9452,7 +9451,6 @@ async def _reject_unservable_model(
     if is_npu_model_path(requested_model) and not await asyncio.to_thread(
         _loaded_satisfies, requested_model
     ):
-        # Another NPU model: nothing else serves that name, and no request switch loads one.
         message = f"The NPU model '{requested_model}' is not loaded. Load it in Unsloth Studio."
         path = getattr(getattr(fastapi_request, "url", None), "path", None)
         raise HTTPException(
@@ -15894,14 +15892,12 @@ async def _load_npu_model(
     ):
         account_access.join_resident("chat")
         return _npu_load_response(resident, "already_loaded")
-    # A target load() would refuse must not cost the resident model.
     try:
         await asyncio.to_thread(npu.loadable_model, model_id)
     except NpuError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
     if load_cancel_event is not None and load_cancel_event.is_set():
         raise HTTPException(status_code = 409, detail = "Model load cancelled")
-    # Point of no return: stop (or refuse over) the chats this swap interrupts.
     if on_reload_confirmed is not None:
         on_reload_confirmed(cancel = True)
         if request.force_cancel_active:
@@ -15926,10 +15922,8 @@ async def _load_npu_model(
         raise HTTPException(status_code = 409, detail = "Model load cancelled") from None
     except NpuError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
-    # Records the owner as the loader, so resident_hidden keeps the model from managed accounts.
     resident = npu.resident()
     if resident is None:
-        # Unloaded or stopped between the load returning and here.
         raise HTTPException(status_code = 409, detail = "Model load cancelled")
     account_access.publish_resident("chat", request.model_path)
     api_monitor.record_lifecycle(event = "load", model = request.model_path)
@@ -18575,7 +18569,6 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 # Only the named model: another tab may have replaced it since.
                 npu_model = npu.loaded_model if npu is not None else None
                 if npu_model is not None and npu_model.id == requested_id:
-                    # Same order as the llama-server eject below.
                     _raise_or_cancel_active_generations(
                         force = request.force_cancel_active, action = "Unloading the model"
                     )
@@ -19367,7 +19360,6 @@ async def get_status(current_subject: str):
         if _npu_resident is not None:
             _npu_model = _npu_resident.model
             return InferenceStatusResponse(
-                # Display id, then the loadable one, as the GGUF branch reports them.
                 active_model = _npu_model.id,
                 model_identifier = _npu_model.model_path,
                 is_npu = True,
@@ -19376,7 +19368,6 @@ async def get_status(current_subject: str):
                 loaded = [_npu_model.model_path],
                 inference = load_inference_config(_npu_model.id),
                 context_length = _npu_resident.context_length,
-                # What the load asked for (None for Auto), so the UI can tell a pin from Auto.
                 requested_context_length = _npu_resident.requested_context_length,
                 max_context_length = _npu_model.max_context_length,
                 native_context_length = _npu_model.max_context_length,
@@ -23373,7 +23364,6 @@ async def _proxy_to_external_provider(
         # native translator, so entering the loop for them would advertise tools
         # the model is never shown and finish as if none were selected.
         provider_model_runs_local_tools(provider_type, payload.external_model or payload.model)
-        # An NPU model without the tool-calling label ignores a tool schema.
         and (managed is None or managed.supports_tools)
         and payload.stream is True
         and _explicit_studio_tool_loop_requested(payload)
@@ -23423,7 +23413,6 @@ async def _proxy_to_external_provider(
                 param = "confirm_tool_calls",
             ),
         )
-    # Reject unknown types and caller-supplied routing for managed providers.
     _provider_info_entry = get_provider_info(provider_type)
     if _provider_info_entry is None or (managed is None and _provider_info_entry.get("managed")):
         raise HTTPException(
@@ -23984,7 +23973,6 @@ async def _proxy_to_external_provider(
         provider_type == "custom" and api_type == "responses" and payload.stream is False
     )
 
-    # Read explicit fields before mutation so omitted values keep provider defaults.
     # Always send defaults to FastFlowLM, which otherwise reuses the previous request's values.
     _always_send = managed is not None
     _top_p_explicit = payload.top_p if _always_send or "top_p" in payload.model_fields_set else None
@@ -24234,7 +24222,6 @@ async def _proxy_to_external_provider(
                 yield _fail_cut_short()
                 stream_failed = True
             if managed is not None and cancel_event.is_set() and not sent_done:
-                # A stop (Stop button or a model swap), not a truncation: finish the reply.
                 yield (
                     "data: "
                     + json.dumps(
@@ -24256,7 +24243,6 @@ async def _proxy_to_external_provider(
             api_monitor.finish(monitor_id, "cancelled")
             raise
         except GeneratorExit:
-            # aclose() by the consumer, e.g. the NPU relay ending on a stop sequence.
             api_monitor.finish(
                 monitor_id, early_close_status() if early_close_status else "cancelled"
             )
@@ -24295,7 +24281,6 @@ async def _proxy_to_external_provider(
             await client.close()
 
     def _tracked_stream():
-        # Track tool loops and local managed streams so model swaps can cancel them.
         if not run_studio_tool_loop and managed is None:
             return _stream()
 
@@ -24365,7 +24350,6 @@ async def _proxy_to_external_provider(
     )
 
 
-# ── AMD NPU (FastFlowLM through a managed Lemonade) ──────────────
 
 
 _NPU_CUT_SHORT_ERROR = {
@@ -24484,7 +24468,6 @@ class _NpuStreamRelay:
                 delta["content"] = visible
                 if self.stopped:
                     self.finish_reason = "stop"
-                    # The chunk below finishes the reply, so this one must not as well.
                     choice["finish_reason"] = None
                     out.append("data: " + json.dumps(chunk))
                     out.append(self._chunk({}, "stop"))
@@ -24550,7 +24533,6 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
         _raise_unsupported_openai_parameter(
             "seed", "FastFlowLM on the NPU does not take a sampling seed."
         )
-    # Neither reaches FastFlowLM through the provider proxy.
     if getattr(payload, "frequency_penalty", 0.0):
         _raise_unsupported_openai_parameter(
             "frequency_penalty", "FastFlowLM on the NPU does not take a frequency penalty."
@@ -24580,12 +24562,10 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
         # FastFlowLM 1.0.3 ignores tool_choice and calls a tool anyway.
         payload.tools = None
     elif payload.tools and payload.parallel_tool_calls is False:
-        # FastFlowLM takes no such limit and may return several calls.
         _raise_unsupported_openai_parameter(
             "parallel_tool_calls", "FastFlowLM on the NPU cannot limit a reply to one tool call."
         )
     elif payload.tools and payload.tool_choice not in (None, "auto"):
-        # "required" or a named function: nothing makes FastFlowLM honor either.
         _raise_unsupported_openai_parameter(
             "tool_choice", "FastFlowLM on the NPU chooses its own tool; use auto or none."
         )
@@ -24600,13 +24580,11 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
             ),
         )
 
-    # As for the other local backends; the managed proxy sends every sampling field.
     _fill_recommended_sampling_openai(payload, upstream.model)
     _normalize_chat_reasoning_controls(payload)
     if not upstream.supports_reasoning:
         payload.enable_thinking = False
     elif payload.enable_thinking is None:
-        # Thinking on unless asked off, like a local GGUF's own template default.
         payload.enable_thinking = payload.reasoning_effort != "none"
 
     wants_stream = bool(payload.stream)
@@ -24617,7 +24595,6 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
         request,
         current_subject,
         managed = upstream,
-        # The relay closes the stream itself once a stop sequence ends the reply.
         early_close_status = lambda: "completed" if relay.stopped else "cancelled",
     )
 
@@ -24630,7 +24607,6 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
                     if line.strip():
                         yield line
         finally:
-            # Close promptly to stop FastFlowLM and release the tracked generation.
             await body.aclose()
 
     if wants_stream:

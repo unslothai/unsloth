@@ -13,7 +13,6 @@ import {
   listNpuModels,
 } from "./api";
 
-/** What the model picker needs to list NPU models beside the others. */
 export interface NpuPickerSource {
   status: NpuStatus;
   onStatusChange: (status: NpuStatus) => void;
@@ -25,15 +24,12 @@ export interface NpuCatalog {
   models: NpuModel[] | null;
   listError: string | null;
   enabling: boolean;
-  /** Download progress by model id: a percent, or null before the first report. */
   downloads: Record<string, number | null>;
   enable: () => Promise<void>;
-  /** Resolves true once the model is on disk. */
   download: (model: NpuModel) => Promise<boolean>;
   remove: (model: NpuModel) => Promise<void>;
 }
 
-/** The FastFlowLM catalog and the actions on it, or null without a supported NPU. */
 export function useNpuCatalog(
   source: NpuPickerSource | undefined,
 ): NpuCatalog | null {
@@ -85,7 +81,6 @@ export function useNpuCatalog(
       toast.error("Could not enable the NPU", {
         description: error instanceof Error ? error.message : String(error),
       });
-      // The failed state carries the reason and the retry, so show it now.
       await getNpuStatus().then(onStatusChange, () => undefined);
     } finally {
       setEnabling(false);

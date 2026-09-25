@@ -23,7 +23,6 @@ from hub.services.models import account_access
 
 router = APIRouter()
 
-# What a managed account sees: NPU models are the owner's alone, so no NPU and none of its state.
 _MANAGED_ACCOUNT_STATUS = {
     "supported": False,
     "hardware": {"present": False, "supported": False},

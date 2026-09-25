@@ -32,7 +32,6 @@ export interface NpuStatus {
   runtime_installed: boolean;
   runtime_running: boolean;
   state: string;
-  /** Validated now, or by an earlier Enable of this install. */
   ready: boolean;
   error: string | null;
   validation: NpuValidation | null;
@@ -55,7 +54,6 @@ export interface NpuModel {
   max_context_length: number | null;
 }
 
-/** The NPU rows a picker section shows: downloaded ones on device, all of them to browse. */
 export function npuRowsFor(
   models: NpuModel[] | null,
   {
@@ -130,7 +128,6 @@ export async function deleteNpuModel(id: string): Promise<void> {
   }
 }
 
-/** Download a model, reporting each progress event. Resolves on `complete`, rejects on `error`. */
 export async function downloadNpuModel(
   id: string,
   onProgress: (event: NpuDownloadEvent) => void,

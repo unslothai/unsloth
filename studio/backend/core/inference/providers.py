@@ -411,7 +411,6 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "lemonade": {
         "display_name": "AMD NPU (FastFlowLM)",
-        # Studio-owned loopback runtime; catalog labels determine each model's capabilities.
         "base_url": "",
         "default_models": [],
         "supports_streaming": True,

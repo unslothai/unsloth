@@ -25,7 +25,6 @@ function client(response: () => Response) {
   return { api, requests };
 }
 
-/** An SSE body delivered in the given chunks, so frames can straddle reads. */
 function sse(chunks: string[]): Response {
   const encoder = new TextEncoder();
   return new Response(

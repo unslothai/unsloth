@@ -180,7 +180,6 @@ def test_the_validator_is_tracked_while_it_runs(npu, monkeypatch):
     monkeypatch.setattr(nb, "adopt_pid", adopted.append)
     monkeypatch.setattr(nb, "forget_pid", forgotten.append)
     npu.enable()
-    # Recorded for the crash sweep, then dropped once reaped.
     assert len(adopted) == 1 and forgotten == adopted
 
 
@@ -202,7 +201,6 @@ def test_load_reports_the_context_lemond_started_with(npu, monkeypatch):
     assert load == {"model_name": "qwen3-0.6b-FLM", "ctx_size": 8192, "save_options": False}
 
     npu.load("qwen3-0.6b-FLM", 100_000)
-    # Clamped to the model's own window.
     assert npu.loaded_context_length == 40960
     upstream = npu.upstream()
     assert upstream.model == "qwen3-0.6b-FLM"
@@ -215,7 +213,6 @@ def test_the_resident_reports_what_its_load_asked_for(npu):
     npu.enable()
     list(npu.download("qwen3-0.6b-FLM"))
     npu.load("qwen3-0.6b-FLM")
-    # Auto: the default window, and no request to echo back as a pin.
     assert npu.resident().context_length == nb.DEFAULT_CONTEXT_LENGTH
     assert npu.resident().requested_context_length is None
     npu.load("qwen3-0.6b-FLM", 16384)
@@ -266,13 +263,11 @@ def test_unload_then_delete(npu):
 def test_a_rejected_unload_stops_lemond(npu, monkeypatch, failure):
     # "200": lemond's HTTP 200 answer with an error body.
     monkeypatch.setenv("FAKE_LEMOND_UNLOAD_FAILS", failure)
-    # Survives the restart, as the files on disk would.
     monkeypatch.setenv("FAKE_LEMOND_DOWNLOADED", '["qwen3-0.6b-FLM"]')
     npu.enable()
     npu.load("qwen3-0.6b-FLM")
     process = npu._server._process
     assert npu.unload() == "lemonade:qwen3-0.6b-FLM"
-    # The model cannot outlive a reported unload: its server is gone.
     assert process.poll() is not None
     assert not npu.is_loaded
     npu.load("qwen3-0.6b-FLM")
@@ -317,7 +312,6 @@ def test_shutdown_does_not_wait_for_enable(npu, monkeypatch, phase):
         original = npu.installer.install
 
         def _slow_download(root, cancel = None):
-            # install_lemonade_prebuilt checks the event between chunks.
             assert cancel is not None and cancel.wait(60)
             raise RuntimeError("Lemonade download cancelled.")
 
@@ -363,7 +357,6 @@ def test_readiness_survives_a_restart_only_after_validation(npu, monkeypatch):
     with pytest.raises(nb.NpuError):
         restarted.enable()
     restarted.shutdown()
-    # A failed validation is not forgotten by the next start.
     assert nb.LemonadeNpuBackend(root = npu.root).status()["ready"] is False
 
 
@@ -375,7 +368,6 @@ def test_a_failed_replacement_leaves_nothing_on_the_npu(npu, monkeypatch):
     process = npu._server._process
     with pytest.raises(nb.NpuError, match = "flm failed to start"):
         npu.load("gemma3-4b-FLM")
-    # Studio records no model, so lemond must hold none: it is stopped with the old one.
     assert not npu.is_loaded
     assert process.poll() is not None
     npu.load("qwen3-0.6b-FLM")
@@ -399,7 +391,6 @@ def test_a_cancel_during_the_final_health_check_wins(npu, monkeypatch):
 
     def _cancelled_meanwhile(server, model_id):
         ctx = resident_context(server, model_id)
-        # Stop loading lands after the health report, before the load records the model.
         assert npu.cancel_load(model_id) is True
         return ctx
 
@@ -410,7 +401,6 @@ def test_a_cancel_during_the_final_health_check_wins(npu, monkeypatch):
     assert npu.loading_model is None
     del npu._resident_context
     npu.load("qwen3-0.6b-FLM")
-    # Once the model is recorded there is nothing left to cancel.
     assert npu.cancel_load("qwen3-0.6b-FLM") is False
     assert npu.is_loaded
 
@@ -431,7 +421,6 @@ def test_a_restarted_runtime_reports_nothing_loaded(npu):
     npu._server._process.kill()
     npu._server._process.wait()
     assert not npu.is_loaded
-    # The next operation starts a fresh lemond; the old load does not come back.
     assert npu.catalog()
     assert npu.status()["loaded_model"] is None
 

@@ -44,7 +44,6 @@ _VALIDATED_MARKER = "npu_validated.json"
 # and a single-turn ("flash") model answers only the first message of a conversation.
 _EXCLUDED_LABELS = frozenset({"embeddings", "transcription", "single-turn"})
 
-# `flm validate --json` fields and the fix each one names.
 _VALIDATE_PROBLEMS = (
     ("amd_device_found", "No AMD XDNA 2 NPU was found."),
     ("npu_driver_ok", "The AMD NPU driver is missing or too old."),
@@ -129,7 +128,6 @@ class ManagedUpstream:
 class _Loaded:
     model: NpuModel
     context_length: Optional[int]
-    # What the load asked for; None when it left the length to the default.
     requested_context_length: Optional[int]
 
 
@@ -219,7 +217,6 @@ class LemonadeNpuBackend:
         self._load_cancelled = threading.Event()
         # Makes cancel_load and a load's commit exclusive, so a cancel either wins or finds nothing.
         self._commit_lock = threading.Lock()
-        # Set by shutdown() to interrupt enable()'s install download and validator.
         self._closing = threading.Event()
         self._validate_process: Optional[subprocess.Popen] = None
         self._hardware: Optional[dict[str, Any]] = None
@@ -294,7 +291,6 @@ class LemonadeNpuBackend:
         hardware = self.hardware()
         binary = self._installed_lemond()
         installed = binary is not None
-        # A restart resets the state to idle; the marker says this install already validated.
         ready = self._state == "ready" or (
             self._state == "idle" and installed and self._validated_install() == str(binary)
         )
@@ -450,7 +446,6 @@ class LemonadeNpuBackend:
         return {"ready": ready, "problems": problems, "report": report}
 
     def shutdown(self) -> None:
-        # Interrupt the downloads, requests and validator load() and enable() hold the lock across.
         self._closing.set()
         self.cancel_load()
         server = self._server
@@ -612,7 +607,6 @@ class LemonadeNpuBackend:
                 self._error = None
                 return model
             except LemonadeUnavailable as exc:
-                # cancel_load stops lemond under the in-flight request.
                 self._raise_if_load_cancelled(model_id)
                 raise NpuError(f"Loading {model_id} failed: {exc}") from exc
             finally:
@@ -673,7 +667,6 @@ class LemonadeNpuBackend:
                 except LemonadeUnavailable as exc:
                     failure = str(exc)
                 if failure is not None:
-                    # Stopping lemond is the unload that cannot fail; the next load restarts it.
                     logger.warning(
                         "Unloading %s from Lemonade failed: %s", loaded.model.id, failure
                     )

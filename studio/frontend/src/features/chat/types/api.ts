@@ -212,7 +212,6 @@ export function isMultimodalResponse(
 
 export interface LoadModelResponse {
   is_mlx?: boolean;
-  /** Served by FastFlowLM on the AMD NPU through Unsloth's managed Lemonade. */
   is_npu?: boolean;
   status: string;
   model: string;

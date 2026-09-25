@@ -45,7 +45,6 @@ export function isRecommendableFormat(
 }
 
 /** Format filter for the listing toggle. "safetensors" means anything that is neither GGUF nor MLX. */
-// "npu" is FastFlowLM's own catalog, listed apart from the Hub rows this filters.
 export type FormatFilter = "all" | "gguf" | "mlx" | "safetensors" | "npu";
 
 export function matchesFormatFilter(

@@ -3409,7 +3409,6 @@ export function useChatModelRuntime() {
     ],
   );
 
-  /** Load a downloaded NPU model directly; read its capabilities from /status. */
   const loadNpuModel = useCallback(
     async (
       modelPath: string,
@@ -3441,7 +3440,6 @@ export function useChatModelRuntime() {
         return;
       }
       loadLifecycleLeaseRef.current = lease;
-      // A local pick still in its preflight must yield to this one.
       modelSelectionIntentEpoch += 1;
       const displayName = modelDisplayName(
         modelPath.slice(modelPath.indexOf(":") + 1),
@@ -3471,7 +3469,6 @@ export function useChatModelRuntime() {
         useChatRuntimeStore.getState().setLoadingModelPick(pickOf(loadInfo));
         setLoadProgress({ percent: null, label: null, phase: "starting" });
         toastId = toast.loading(`Loading ${displayName} on the NPU`);
-        // Stop loading dismisses it through cancelLoading.
         loadToastIdRef.current = toastId;
         const previous = useChatRuntimeStore.getState();
         const previousCheckpoint = previous.params.checkpoint;
@@ -3487,7 +3484,6 @@ export function useChatModelRuntime() {
           force_reload: reload?.forceReload === true,
           force_cancel_active: stopDecision.forceCancelActive,
         });
-        // Stop loading unloads it; cancelLoading reports that.
         if (signal.aborted) return;
         const status = await getInferenceStatus();
         useChatRuntimeStore.getState().setCheckpoint(modelPath, null);
@@ -3514,7 +3510,6 @@ export function useChatModelRuntime() {
           closeButton: true,
           duration: 8000,
         });
-        // The previous model may be gone even though this one did not load.
         await syncInferenceStatusToStore().catch(() => {});
       } finally {
         resetLoadingUi();

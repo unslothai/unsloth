@@ -4,7 +4,6 @@
 import { useEffect, useState } from "react";
 import { type NpuStatus, getNpuStatus } from "./api";
 
-// Cache hardware detection; callers update runtime status after changes.
 let cached: NpuStatus | null = null;
 let pending: Promise<NpuStatus | null> | null = null;
 
@@ -21,7 +20,6 @@ function fetchOnce(): Promise<NpuStatus | null> {
   return pending;
 }
 
-/** The NPU status, or null until known (and on a backend without the route). */
 export function useNpuStatus(
   active = true,
 ): [NpuStatus | null, (next: NpuStatus) => void] {

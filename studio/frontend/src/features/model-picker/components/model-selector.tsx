@@ -392,7 +392,6 @@ function ModelSelectorContent({
     [loraModels],
 
   );
-  // NPU models are chat's alone, listed only on a machine with a supported AMD NPU.
   const [npuStatus, setNpuStatus] = useNpuStatus(open && !task);
   const npu =
     !task && npuStatus?.supported === true

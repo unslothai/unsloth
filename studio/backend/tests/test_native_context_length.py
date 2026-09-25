@@ -431,7 +431,6 @@ class TestRouteCompleteness:
         block that leaves them off now defaults them to None and blanks the control.
         """
         blocks = self._find_construction_blocks("LoadResponse")
-        # The NPU model's window comes from FastFlowLM's catalog, not the worker's _model_info.
         npu = [b for b in blocks if "is_npu = True" in b]
         non_gguf = [
             b

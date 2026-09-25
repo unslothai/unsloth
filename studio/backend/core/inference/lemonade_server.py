@@ -42,7 +42,6 @@ _TRANSPORT_ERRORS = (
     httpx.WriteError,
 )
 
-# Disable LAN discovery and automatic updates for the private runtime.
 _CONFIG_OVERRIDES: dict[str, Any] = {
     "broadcast": False,
     "auto_check_model_updates": False,

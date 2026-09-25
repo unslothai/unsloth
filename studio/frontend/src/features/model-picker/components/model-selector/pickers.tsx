@@ -2788,7 +2788,6 @@ export function HubModelPicker({
   /** Also surface community models carrying `task`'s pipeline tags, below the unsloth rows.
    *  Opt-in, since the runtime has to load an arbitrary publisher's checkpoint: true of audio. */
   communityModelPolicy?: CommunityModelPolicy;
-  /** A supported AMD NPU: FastFlowLM's catalog joins the rows, under its own format. */
   npu?: NpuPickerSource;
 }) {
   const gpu = useGpuInfo();
@@ -3442,9 +3441,7 @@ export function HubModelPicker({
   const [customSort, setCustomSort] = useState<LocalSortKey>("recent");
   // Format filter toggle for the Unsloth listing.
   const [chosenFormatFilter, setFormatFilter] = useState<FormatFilter>("all");
-  // FastFlowLM's catalog and actions; null unless chat runs on a machine with a supported NPU.
   const npuCatalog = useNpuCatalog(npu);
-  // The NPU format goes with the NPU, so a filter left on it falls back to all formats.
   const formatFilter: FormatFilter =
     chosenFormatFilter === "npu" && !npuCatalog ? "all" : chosenFormatFilter;
   const [npuOnDeviceCollapsed, setNpuOnDeviceCollapsed] = useState(false);
@@ -4403,7 +4400,6 @@ export function HubModelPicker({
     formatFilter,
     loadTimes,
   ]);
-  // NPU rows sit beside the Hub's under the "All" and "NPU" formats only.
   const npuModels = npuCatalog?.models ?? null;
   const npuListed =
     npuCatalog !== null && (formatFilter === "all" || formatFilter === "npu");
@@ -6239,7 +6235,6 @@ export function HubModelPicker({
     );
   };
 
-  // A click on a model not yet downloaded fetches it first, as a Hub row's does.
   const renderNpuRow = (model: NpuModel, onDevice: boolean) => {
     if (!npuCatalog) return null;
     const optionKey = makeModelOptionKey(
@@ -6314,7 +6309,6 @@ export function HubModelPicker({
     );
   };
 
-  // Folded unless the NPU filter or a search makes it what the list is about.
   const npuBrowseForcedOpen = formatFilter === "npu" || showHfSection;
   const npuBrowseFolded = !npuBrowseForcedOpen && npuBrowseCollapsed;
   const showNpuBrowse =

@@ -52,7 +52,6 @@ def _script(prompt: str) -> str:
             + "data: [DONE]\n\n"
         )
     if "CUT" in prompt:
-        # FastFlowLM exits mid-reply: content, then the stream closes with no finish.
         return _chunk({"content": "par"}) + "data: [DONE]\n\n"
     if "TOOL" in prompt:
         call = {
@@ -65,7 +64,6 @@ def _script(prompt: str) -> str:
             _chunk({"tool_calls": [call]}) + _chunk({}, "tool_calls", _USAGE) + "data: [DONE]\n\n"
         )
     if "FINAL" in prompt:
-        # Content on the finishing chunk itself.
         return (
             _chunk({"content": "hello E"})
             + _chunk({"content": "ND hidden"}, "stop", _USAGE)
@@ -100,7 +98,6 @@ class _Handler(BaseHTTPRequestHandler):
         )
         prompt = json.dumps(body.get("messages"))
         if "SLOW" in prompt:
-            # A long prefill: nothing arrives for a while.
             time.sleep(20)
         data = _script(prompt).encode()
         self.send_response(200)
@@ -223,14 +220,10 @@ def test_the_body_fastflowlm_receives(flm):
     body = sent["body"]
     assert sent["auth"] == "Bearer secret-key"
     assert body["model"] == "qwen3-0.6b-FLM"
-    # Always streamed upstream, whatever the caller asked for.
     assert body["stream"] is True
-    # Thinking is explicit: FastFlowLM decides for itself otherwise.
     assert body["think"] is True
     assert "chat_template_kwargs" not in body
-    # min_p is parsed into an integer by FastFlowLM 1.0.3, so it is never sent.
     assert "min_p" not in body
-    # The sampler values FastFlowLM would otherwise inherit from the previous chat.
     assert {"top_p", "top_k", "repetition_penalty", "temperature"} <= set(body)
 
 
@@ -310,7 +303,6 @@ def test_stop_is_enforced_across_chunks(flm, stream):
 
 def test_a_partial_stop_match_is_released(flm):
     flm()
-    # "sev" starts "seventy" but the stop never completes, so nothing may be lost.
     _, body = _call(stream = False, stop = ["seventy"])
     assert body["choices"][0]["message"]["content"] == "one two seven eight"
 
@@ -320,7 +312,6 @@ def test_a_partial_stop_match_is_released(flm):
     "stop, expected",
     [
         (["END"], "hello "),
-        # A partial match held back at the end is released in order, not after the last chunk.
         (["END hiddenness"], "hello END hidden"),
     ],
 )
@@ -621,7 +612,6 @@ def test_npu_status_hides_the_owner_runtime_from_managed_accounts(tmp_path, monk
     assert asyncio.run(npu_routes.npu_status("owner")) == real
     hidden = asyncio.run(arun_as(AccountContext("b" * 32, "bob"), npu_routes.npu_status("bob")))
     assert hidden["supported"] is False and hidden["loaded_model"] is None
-    # Same shape as the real status, so a client reads it the same way.
     assert hidden.keys() == real.keys()
 
 
@@ -653,7 +643,6 @@ def test_an_unload_naming_another_npu_model_keeps_the_resident(monkeypatch):
     def _unload(model_path):
         return asyncio.run(routes._unload_model_impl(UnloadRequest(model_path = model_path), "owner"))
 
-    # A stale tab ejecting the model this one replaced.
     _unload("lemonade:qwen3-0.6b-FLM")
     assert npu.unloads == 0
     _unload("lemonade:gemma3-4b-FLM")
@@ -781,7 +770,6 @@ def test_a_stop_sequence_leaves_the_monitor_row_completed(flm, stream):
     flm()
     before = api_monitor.active_count()
     _call(stream = stream, stop = ["seven"])
-    # The relay closes the upstream stream itself; its row must not stay "generating".
     assert api_monitor.active_count() == before
     assert api_monitor._entries[0].status == "completed"
 
@@ -801,7 +789,6 @@ def test_a_swap_stops_an_npu_reply_still_in_prefill(flm):
 
             async def swap_soon() -> None:
                 await asyncio.sleep(1.0)
-                # What a forced /load does to the chats it interrupts.
                 ri._raise_or_cancel_active_generations(force = True, action = "Loading a model")
 
             swap = asyncio.create_task(swap_soon())
@@ -815,10 +802,8 @@ def test_a_swap_stops_an_npu_reply_still_in_prefill(flm):
             ep_mod._http_client = previous
             await client.aclose()
 
-    # Well inside the 20 s prefill: the cancel closes the upstream read itself.
     lines = asyncio.run(asyncio.wait_for(go(), 15))
     assert lines[-1] == "data: [DONE]"
-    # A stop, not the cut-short error a dropped stream gets.
     assert not any('"error"' in line for line in lines)
     assert _data(lines)[-1]["choices"][0]["finish_reason"] == "stop"
 
@@ -832,7 +817,6 @@ def test_a_dropped_progress_stream_does_not_stop_the_download(monkeypatch):
     class _Npu:
         def download(self, model_id):
             yield {"event": "progress", "percent": 40}
-            # The browser goes away here.
             assert release.wait(10)
             yield {"event": "complete", "model": model_id, "percent": 100}
             finished.set()
@@ -881,7 +865,6 @@ def test_a_reply_cut_short_is_recorded_failed(flm, stream):
         pytest.skip("API monitor disabled")
     flm()
     _call(stream = stream, messages = [{"role": "user", "content": "CUT"}])
-    # Failed before [DONE] could mark it completed.
     assert api_monitor._entries[0].status == "error"
     assert "before finishing" in api_monitor._entries[0].error
 
@@ -926,7 +909,6 @@ def test_a_request_naming_another_npu_model_is_refused(monkeypatch):
     from routes import inference as routes
 
     model = _npu_resident(monkeypatch)
-    # The resident one is served.
     asyncio.run(routes._reject_unservable_model(model.model_path, None))
     with pytest.raises(HTTPException) as caught:
         asyncio.run(routes._reject_unservable_model("lemonade:gemma3-4b-FLM", None))
@@ -960,6 +942,5 @@ def test_a_collected_reply_stops_when_the_caller_leaves(flm):
             ep_mod._http_client = previous
             await client.aclose()
 
-    # Well inside the 20 s prefill: the upstream read stops when the caller goes.
     response = asyncio.run(asyncio.wait_for(go(), 15))
     assert response.status_code == 499
