@@ -5417,7 +5417,6 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
 
 
 def _torch_kernel_arch_tokens() -> list[str]:
-    """The gfx targets the installed torch carries kernels for, or [] when torch cannot say."""
     try:
         import torch
         return sorted(
@@ -5432,7 +5431,7 @@ def _torch_kernel_arch_tokens() -> list[str]:
 
 
 def _describe_rocm_gpus(gpu_ids) -> list[str]:
-    """Labels like "GPU 1 (AMD Radeon RX 5700 XT, gfx1010)" per PHYSICAL id, falling back to "GPU 1" when torch cannot be asked. Best effort for an error message, never a gate."""
+    """Best-effort labels keyed by PHYSICAL id, for an error message only; never a gate."""
     wanted = {int(gpu_id) for gpu_id in gpu_ids}
     labels: Dict[int, str] = {}
     try:
@@ -5457,14 +5456,7 @@ def _describe_rocm_gpus(gpu_ids) -> list[str]:
 
 
 def reject_gpu_ids_without_torch_kernels(gpu_ids) -> None:
-    """Refuse an explicit pick of a ROCm card the installed torch has no kernels for.
-
-    Auto-selection has skipped these since #8792, but an explicit ``gpu_ids`` went straight to the
-    worker, which died on its first tensor with hipErrorInvalidImage ("device kernel image is
-    invalid"). Two discrete AMD cards from different generations (an RX 6500 XT next to an
-    RX 5700 XT) look identical in the picker, and the one with more free VRAM is the one a
-    person reaches for. Raising here turns that into the same 400 an out-of-range id gets.
-    """
+    """Explicit picks bypass the #8792 auto-select skip; without this the worker dies with hipErrorInvalidImage."""
     uncovered = sorted(
         set(int(gpu_id) for gpu_id in gpu_ids) & rocm_gpu_ids_without_torch_kernels()
     )
@@ -5479,7 +5471,6 @@ def reject_gpu_ids_without_torch_kernels(gpu_ids) -> None:
 
 
 def _with_torch_kernel_coverage(result: Dict[str, Any]) -> Dict[str, Any]:
-    """Stamp each physical device row with ``torch_kernels``: False when the installed torch has no kernels for it. The picker and the System panel otherwise show such a card exactly like a usable one."""
     devices = result.get("devices") or []
     if not devices:
         return result

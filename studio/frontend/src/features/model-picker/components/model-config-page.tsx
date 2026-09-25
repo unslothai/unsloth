@@ -964,8 +964,7 @@ function GpuMemorySettings({
                   className="panel-switch shrink-0"
                   checked={isGpuChecked(d.index)}
                   onCheckedChange={() => toggleGpu(d.index)}
-                  // A card torch has no kernels for cannot be switched ON; it can still be
-                  // switched off if a saved selection named it before the wheels changed.
+                  // Uncovered cards stay switchable OFF: a saved selection may still name them.
                   disabled={
                     (isGpuChecked(d.index) && singleGpuInUse) ||
                     (!isGpuChecked(d.index) && d.torchKernels === false)

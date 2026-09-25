@@ -902,10 +902,6 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
 
 
 class TestExplicitPickWithoutTorchKernels(unittest.TestCase):
-    """An explicit gpu_ids naming a ROCm card the installed torch has no kernels for is refused
-    at the route, with the card and the wheel's arch list in the message. Auto-selection has
-    skipped such cards since #8792; the explicit path let them through to the worker."""
-
     def test_an_uncovered_card_is_rejected_with_the_arch_list(self):
         with (
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
@@ -963,7 +959,6 @@ class TestExplicitPickWithoutTorchKernels(unittest.TestCase):
         self.assertIs(stamped, result)
         self.assertTrue(result["devices"][0]["torch_kernels"])
         self.assertFalse(result["devices"][1]["torch_kernels"])
-        # Vulkan ordinals are llama.cpp's space, not torch's: no verdict is offered for them.
         self.assertNotIn("torch_kernels", result["devices"][2])
 
     def test_an_empty_inventory_is_returned_as_is(self):

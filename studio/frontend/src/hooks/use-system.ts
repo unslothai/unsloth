@@ -24,9 +24,7 @@ export interface GpuDevice {
   unified_memory?: boolean;
   /** host-backed portion of the shared pool; the rest is reserved GPU memory. */
   shared_memory_host_backed_gb?: number | null;
-  /** False when the installed PyTorch build carries no kernels for this card (a ROCm
-   *  gfx1010 next to gfx103X wheels): a training job pinned to it dies on its first
-   *  tensor. Absent on older backends and on non-torch (Vulkan) rows. */
+  /** Absent on older backends and on Vulkan rows. */
   torch_kernels?: boolean;
 }
 

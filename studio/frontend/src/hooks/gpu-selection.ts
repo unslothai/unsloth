@@ -25,9 +25,6 @@ export interface SystemGpuDevice {
    *  not share anything, and judging it against a host-wide flag threw away the
    *  system RAM that pin can really spill into. */
   unifiedMemory?: boolean;
-  /** False when the installed PyTorch has no kernels for this card. The backend refuses
-   *  such a pick with a 400 and auto-selection skips it; the picker shows why rather than
-   *  hiding the row, so a second card that needs a reinstall is not mistaken for a dead one. */
   torchKernels?: boolean;
   /** Whether `index` is safe to send as gpu_ids. */
   pinnable: boolean;
