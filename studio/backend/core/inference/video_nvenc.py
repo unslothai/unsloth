@@ -19,6 +19,7 @@ import io
 import os
 import re
 import threading
+import time
 from typing import Any, Optional
 
 ENCODER_ENV = "UNSLOTH_STUDIO_VIDEO_ENCODER"
@@ -48,7 +49,10 @@ _NO_NVENC_GPUS = (
     "B300",
     "GB200",
     "GB300",
+    "GH200",
 )
+# A failed probe may be transient (another process holding the GeForce session limit), so it is retried after this.
+_PROBE_RETRY_S = 600.0
 
 _probe_lock = threading.Lock()
 _probed: dict = {}
@@ -98,7 +102,8 @@ def _probe(gpu: int) -> bool:
 
 
 def nvenc_gpu(device: Any = None, logger: Any = None) -> Optional[int]:
-    """The CUDA ordinal to encode on when NVENC was asked for and works here, else None. Probed once per GPU."""
+    """The CUDA ordinal to encode on when NVENC was asked for and works here, else None. Probed once per GPU; a failed
+    probe is retried after ``_PROBE_RETRY_S``."""
     if not nvenc_requested():
         return None
     try:
@@ -114,20 +119,22 @@ def nvenc_gpu(device: Any = None, logger: Any = None) -> Optional[int]:
         return None
     key = (index, name, os.environ.get("CUDA_VISIBLE_DEVICES"))
     with _probe_lock:
-        if key not in _probed:
+        cached = _probed.get(key)
+        if cached is None or (cached[1] is not None and time.monotonic() - cached[1] >= _PROBE_RETRY_S):
             if set(re.split(r"[\s\-_/]+", name.upper())) & set(_NO_NVENC_GPUS):
-                _probed[key] = False
+                ok, failed_at = False, None
             else:
-                _probed[key] = _probe(index)
-            if logger is not None:
+                ok = _probe(index)
+                failed_at = None if ok else time.monotonic()
+            _probed[key] = (ok, failed_at)
+            if logger is not None and (cached is None or cached[0] != ok):
                 logger.info(
                     "video.encoder: %s on %s (%s)",
-                    "h264_nvenc" if _probed[key] else "libx264",
+                    "h264_nvenc" if ok else "libx264",
                     name,
-                    f"{ENCODER_ENV}=nvenc"
-                    + ("" if _probed[key] else "; NVENC unavailable, keeping libx264"),
+                    f"{ENCODER_ENV}=nvenc" + ("" if ok else "; NVENC unavailable, keeping libx264"),
                 )
-        return index if _probed[key] else None
+        return index if _probed[key][0] else None
 
 
 def _uint8_frames(video: Any) -> Any:

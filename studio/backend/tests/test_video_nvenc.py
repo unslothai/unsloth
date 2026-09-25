@@ -50,7 +50,7 @@ def test_off_unless_requested(monkeypatch):
 
 @pytest.mark.parametrize(
     "name",
-    ["NVIDIA B200", "NVIDIA A100-SXM4-40GB", "NVIDIA H100 80GB HBM3", "NVIDIA GB200", "NVIDIA H20"],
+    ["NVIDIA B200", "NVIDIA A100-SXM4-40GB", "NVIDIA H100 80GB HBM3", "NVIDIA GB200", "NVIDIA H20", "NVIDIA GH200 480GB"],
 )
 def test_gpus_without_an_encoder_are_never_probed(monkeypatch, name):
     monkeypatch.setenv(vn.ENCODER_ENV, "nvenc")
@@ -64,6 +64,23 @@ def test_probed_once_per_gpu(monkeypatch):
     assert vn.nvenc_gpu() == 0
     assert vn.nvenc_gpu() == 0
     assert probes == [0]
+
+
+def test_a_failed_probe_is_retried_after_the_window(monkeypatch):
+    monkeypatch.setenv(vn.ENCODER_ENV, "nvenc")
+    _fake_cuda(monkeypatch, "NVIDIA GeForce RTX 4090")
+    results = iter([False, True])
+    probes: list = []
+    monkeypatch.setattr(vn, "_probe", lambda gpu: probes.append(gpu) or next(results))
+    now = [1000.0]
+    monkeypatch.setattr(vn.time, "monotonic", lambda: now[0])
+    assert vn.nvenc_gpu() is None
+    now[0] += vn._PROBE_RETRY_S - 1
+    assert vn.nvenc_gpu() is None and probes == [0]
+    now[0] += 1
+    assert vn.nvenc_gpu() == 0 and probes == [0, 0]
+    now[0] += 10 * vn._PROBE_RETRY_S
+    assert vn.nvenc_gpu() == 0 and probes == [0, 0]
 
 
 def test_rocm_is_never_tried(monkeypatch):
