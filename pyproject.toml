@@ -215,15 +215,8 @@ huggingfacenotorch = [
     # release to export `grpo_vision_chunks`, which both vision GRPO logprob paths in
     # unsloth/models/rl_replacements.py refuse to run without.
     #
-    # This branch widens the transformers, trl and datasets ranges below, and unsloth_zoo
-    # publishes its own window for each. pip intersects the two, so a widened range reaches
-    # users only once a zoo release carries the same ceiling. The three are not in one state:
-    #   trl          SATISFIED: 2026.9.5 shipped unslothai/unsloth-zoo#1260, `trl<=1.13.0`.
-    #   transformers SATISFIED: 2026.9.7 says `transformers<=5.17.0` off Apple Silicon.
-    #   datasets     NOT SATISFIED: 2026.9.7 still says `datasets<4.4.0`, so that widen is
-    #                advertised rather than delivered until a zoo release carries it.
-    # A floor no published release satisfies makes unsloth uninstallable, so the floor never
-    # leads the release.
+    # pip intersects these ranges with unsloth_zoo's: 2026.9.7 carries the trl and transformers
+    # ceilings but still says `datasets<4.4.0`. The floor never leads a published release.
     "unsloth_zoo>=2026.9.7",
     "wheel>=0.42.0",
     "packaging",
