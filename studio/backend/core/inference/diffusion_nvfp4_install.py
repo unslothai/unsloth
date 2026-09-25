@@ -857,6 +857,7 @@ def _rollback(
     logger: Any,
     own_index: bool = False,
     reported: Optional[set[str]] = None,
+    unreported_step: bool = False,
 ) -> str:
     """Remove what this install added and put back anything it moved. Returns a one-line summary.
 
@@ -866,8 +867,9 @@ def _rollback(
     after = installed_distributions()
     new = set(after) - set(before)
     ours = set(reported or ()) & new
-    if not ours:
-        ours = _requirement_closure({FLASHINFER_PACKAGE, FLASHINFER_JIT_CACHE_PACKAGE}, new)
+    if not ours or unreported_step:
+        # A step that died without its summary may have half-installed what no report names.
+        ours |= _requirement_closure({FLASHINFER_PACKAGE, FLASHINFER_JIT_CACHE_PACKAGE}, new)
     added = sorted(ours)
     if new - ours and logger is not None:
         logger.info(
@@ -875,6 +877,10 @@ def _rollback(
             ", ".join(sorted(new - ours)),
         )
     moved = _drift(before, after)
+    if reported and not unreported_step:
+        # Put back only what this transaction's installer says it changed: a package another installer (the built-in
+        # terminal) upgraded meanwhile is that user's change, not ours to revert.
+        moved = {name: change for name, change in moved.items() if name in reported}
     notes = []
     if added:
         ok, output = _run(run, _uninstall_cmd(uv, added), _VERIFY_TIMEOUT_S)
@@ -970,21 +976,10 @@ def _install(
     )
     reported: set[str] = set()
     try:
-        steps = [
-            # Constrained, not --no-deps: flashinfer cannot import without apache-tvm-ffi and friends,
-            # and the constraints make every package already here immovable, torch included.
-            (
-                _installer_prefix(uv, own_index = config["own_index"])
-                + [
-                    "--only-binary",
-                    ":all:",
-                    "-c",
-                    constraints,
-                    f"{FLASHINFER_PACKAGE}=={FLASHINFER_VERSION}",
-                ],
-                None,
-            ),
-        ]
+        steps = []
+        # The jit-cache goes in FIRST: flashinfer-python imports without it, so a process killed between the two steps
+        # would otherwise leave an importable flashinfer that every later load reads as "already installed" and never
+        # completes. Cache first, an interrupted install leaves nothing importable and the next load finishes it.
         if tag is not None:
             steps.append(
                 (
@@ -999,12 +994,30 @@ def _install(
                     _pinned_index_env(None if uv else config.get("pip_settings", {})),
                 )
             )
+        steps.append(
+            # Constrained, not --no-deps: flashinfer cannot import without apache-tvm-ffi and friends,
+            # and the constraints make every package already here immovable, torch included.
+            (
+                _installer_prefix(uv, own_index = config["own_index"])
+                + [
+                    "--only-binary",
+                    ":all:",
+                    "-c",
+                    constraints,
+                    f"{FLASHINFER_PACKAGE}=={FLASHINFER_VERSION}",
+                ],
+                None,
+            )
+        )
         failure = None
+        unreported_step = False
         for cmd, step_env in steps:
             ok, output = _run(run, cmd, _INSTALL_TIMEOUT_S, step_env)
-            reported |= _reported_installs(output)
+            step_reported = _reported_installs(output)
+            reported |= step_reported
             if not ok:
                 failure = "the installer failed: " + " ".join(output.split())[-400:]
+                unreported_step = not step_reported
                 break
     finally:
         try:
@@ -1036,7 +1049,9 @@ def _install(
                 failure = detail
 
     if failure is not None:
-        rolled = _rollback(run, uv, before, logger, config["own_index"], reported)
+        rolled = _rollback(
+            run, uv, before, logger, config["own_index"], reported, unreported_step = unreported_step
+        )
         return False, f"flashinfer install rolled back ({rolled}): {failure}", True
 
     # The dispatch fast path memoises "flashinfer missing"; forget it now that it is not.

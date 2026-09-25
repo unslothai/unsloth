@@ -66,6 +66,7 @@ class _FakeEnv:
         self.torch_version = self.dists["torch"]
         self.importable = False
         self.fail_install = fail_install
+        self.fail_verify = False
         self.install_moves = install_moves or {}
         self.install_delay = install_delay
         # What another installer (the built-in terminal) adds to the venv while this install runs.
@@ -82,9 +83,8 @@ class _FakeEnv:
         with self.lock:
             self.commands.append(cmd)
         if cmd[1:3] == ["-c", cmd[2]] and "import flashinfer" in cmd[2]:
-            return _Result(
-                0 if self.importable else 1, "0.6.6" if self.importable else "ImportError"
-            )
+            good = self.importable and not self.fail_verify
+            return _Result(0 if good else 1, "0.6.6" if good else "ImportError")
         if "uninstall" in cmd:
             for name in cmd[cmd.index("uninstall") + 1 :]:
                 self.dists.pop(name, None)
@@ -107,10 +107,14 @@ class _FakeEnv:
                     if name == "torch":
                         self.torch_version = version
                 self.importable = not self.install_moves
+                # uv reports an upgrade or downgrade as `- name==old` then `+ name==new`, like an addition.
                 return _Result(
                     0,
                     f"Installed {len(_ADDED_BY_INSTALL)} packages in 1.2s\n"
-                    + "\n".join(f" + {n}=={v}" for n, v in _ADDED_BY_INSTALL.items()),
+                    + "\n".join(
+                        f" + {n}=={v}"
+                        for n, v in {**_ADDED_BY_INSTALL, **self.install_moves}.items()
+                    ),
                 )
             elif any(a.startswith("flashinfer-jit-cache==") for a in cmd):
                 spec = next(a for a in cmd if a.startswith("flashinfer-jit-cache=="))
@@ -184,6 +188,13 @@ def env(monkeypatch):
     return fake
 
 
+def _steps(installs):
+    """``(main, jit)`` by content, whichever order the transaction runs them in."""
+    main = next(c for c in installs if "flashinfer-python==0.6.6" in c)
+    jit = next(c for c in installs if any(a.startswith("flashinfer-jit-cache==") for a in c))
+    return main, jit
+
+
 def _ensure(fake, device = 0):
     return inst.ensure_flashinfer_for_nvfp4(device, run = fake.run)
 
@@ -193,7 +204,7 @@ def test_installs_pinned_flashinfer_and_matching_jit_cache_when_missing(env):
     assert ok, reason
     installs = env.installs()
     assert len(installs) == 2
-    main, jit = installs
+    main, jit = _steps(installs)
     assert "flashinfer-python==0.6.6" in main and "--only-binary" in main
     assert "--no-deps" not in main  # tvm-ffi and friends are real import deps
     # The full local version: `==0.6.6` would be satisfied by a cache built for another CUDA.
@@ -289,7 +300,7 @@ def test_failed_jit_cache_step_rolls_back_the_first_step(env):
 
 def test_rollback_leaves_packages_another_installer_added_meanwhile(env):
     # The built-in terminal does not take the env lock; what it installed during this transaction must survive.
-    env.fail_install = True
+    env.fail_verify = True
     env.concurrent_add = {"requests": "2.32.3", "rich": "14.0.0"}
     ok, reason = _ensure(env)
     assert not ok and "rolled back" in reason
@@ -723,7 +734,7 @@ def test_a_pip_only_mirror_is_handed_to_uv(env, monkeypatch):
     monkeypatch.setenv("PIP_INDEX_URL", "https://pip-mirror.example/simple")
     assert _ensure(env)[0]
     installs = [c for c in env.commands if c[:3] == ["uv", "pip", "install"]]
-    assert installs and "https://pip-mirror.example/simple" in installs[0]
+    assert installs and "https://pip-mirror.example/simple" in _steps(installs)[0]
     # uv's own setting wins and is left to uv.
     monkeypatch.setenv("UV_INDEX_URL", "https://uv-mirror.example/simple")
     assert "--index-url" not in inst._installer_prefix("uv")
@@ -753,7 +764,7 @@ def test_a_pip_only_mirror_never_gives_uv_two_index_urls(env, monkeypatch):
     # uv rejects a repeated --index-url; the jit-cache step's own index replaces the mirror.
     monkeypatch.setenv("PIP_INDEX_URL", "https://pip-mirror.example/simple")
     assert _ensure(env)[0]
-    main, jit = env.installs()
+    main, jit = _steps(env.installs())
     assert main.count("--index-url") == 1
     assert main[main.index("--index-url") + 1] == "https://pip-mirror.example/simple"
     assert jit.count("--index-url") == 1
@@ -1267,7 +1278,7 @@ def test_a_pip_conf_mirror_is_not_overridden_by_a_uv_one(env, monkeypatch):
     monkeypatch.setenv("UV_INDEX_URL", "https://uv-mirror.example/simple")
     run = _pip_config(env, ["install.index-url='https://corp.example/simple'"])
     assert inst.ensure_flashinfer_for_nvfp4(0, run = run)[0]
-    main = env.installs()[0]
+    main = _steps(env.installs())[0]
     assert "--index-url" not in main  # pip reads its own pip.conf mirror
 
 
@@ -1442,3 +1453,77 @@ def test_reachability_counts_a_tls_failure_as_a_route(monkeypatch):
     for exc, expected in cases:
         monkeypatch.setattr(urllib.request, "urlopen", _raise(exc))
         assert inst._reachable("https://pypi.org/simple/flashinfer-python/") is expected
+
+
+def test_an_install_killed_between_its_steps_completes_on_the_next_load(env):
+    # The server dies (closed, OOM-killed) after the first installer step and before the second. The next load must
+    # finish the install, not treat an importable flashinfer-python with no jit-cache as done: without the cache every
+    # kernel JIT-compiles, and without nvcc the preflight fails for the life of the environment.
+    real_run = env.run
+    calls = {"n": 0}
+
+    def dies_on_second_install(cmd, **kwargs):
+        if "install" in cmd and "uninstall" not in cmd:
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise SystemExit("killed mid-install")
+        return real_run(cmd, **kwargs)
+
+    with pytest.raises(SystemExit):
+        inst.ensure_flashinfer_for_nvfp4(0, run = dies_on_second_install)
+    # A fresh process: real flashinfer-python imports with or without its jit-cache.
+    inst.reset_install_state()
+    env.importable = "flashinfer-python" in env.dists
+    ok, reason = inst.ensure_flashinfer_for_nvfp4(0, run = env.run)
+    assert ok, reason
+    assert env.dists.get("flashinfer-python") == "0.6.6"
+    assert env.dists.get("flashinfer-jit-cache") == "0.6.6+cu130", reason
+
+
+@pytest.mark.parametrize("model", ["DiffusionStatusResponse", "VideoStatusResponse"])
+def test_the_status_reason_hides_host_paths_from_api_key_callers(model):
+    # The reason quotes installer and flashinfer JIT output, which names the environment and cache directories. The
+    # status routes redact host paths for API-key callers; the new field must not bypass that.
+    from hub.utils.host_paths import redact_host_paths
+    from models import inference as models
+
+    secret = "/home/alice/.unsloth/studio/venv"
+    reason = f"flashinfer install rolled back: the installer failed: Using Python environment at: {secret} error"
+    status = getattr(models, model)(
+        loaded = True, transformer_quant_backend = "torchao", transformer_quant_backend_reason = reason
+    )
+    seen = redact_host_paths(status, via_api_key = True)
+    seen = seen if isinstance(seen, dict) else seen.model_dump()
+    assert secret not in str(seen["transformer_quant_backend_reason"])
+    assert "rolled back" in seen["transformer_quant_backend_reason"]
+    own = redact_host_paths(status, via_api_key = False)
+    own = own if isinstance(own, dict) else own.model_dump()
+    assert secret in own["transformer_quant_backend_reason"]
+
+
+def test_a_concurrent_upgrade_by_another_installer_is_not_reverted(env):
+    # The built-in terminal does not take the env lock. An upgrade it makes during this transaction is the user's; the
+    # drift check still fails this install, but its rollback must not downgrade what it did not touch.
+    env.concurrent_add = {"packaging": "26.0"}
+    ok, reason = _ensure(env)
+    assert not ok and "rolled back" in reason
+    assert env.dists["packaging"] == "26.0", reason
+    assert not [c for c in env.commands if "packaging==25.0" in c]
+
+
+def test_a_later_step_that_dies_unreported_is_still_rolled_back(env):
+    # One step reports, the next writes its files and then times out with no summary: both must be removed, or the
+    # half install imports next time and reads as done.
+    real_run = env.run
+
+    def run(cmd, **kwargs):
+        result = real_run(cmd, **kwargs)
+        steps = [c for c in env.installs() if any(a.startswith("flashinfer") for a in c)]
+        if "install" in cmd and "uninstall" not in cmd and len(steps) == 2:
+            return _Result(1, "")
+        return result
+
+    ok, reason = inst.ensure_flashinfer_for_nvfp4(0, run = run)
+    assert not ok and "rolled back" in reason
+    assert "flashinfer-python" not in env.dists, reason
+    assert "flashinfer-jit-cache" not in env.dists, reason
