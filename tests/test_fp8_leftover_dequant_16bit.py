@@ -385,7 +385,6 @@ def test_a_transposed_block_grid_is_turned_around_by_the_configured_block_size()
 
 
 def test_generic_out_of_memory_runtime_errors_defer_to_the_cpu(monkeypatch):
-    """Some backends raise a plain RuntimeError with "out of memory" in the text."""
     from unsloth.models import loader_utils
 
     model, tensors, expected = _build()

@@ -1504,7 +1504,6 @@ class FP8LeftoverOffloadedError(RuntimeError):
 
 
 def _restore_parked_fp8(module, attr, device):
-    """Move a CPU-parked fp8 stack back to its planned device when pass 2 could not finish it."""
     try:
         stranded = module._parameters.get(attr)
         if (
