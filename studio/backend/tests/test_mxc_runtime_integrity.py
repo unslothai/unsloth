@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -133,3 +135,73 @@ def test_corrupt_managed_wxc_is_never_executed(runtime, monkeypatch):
     }
     with pytest.raises(mxc_adapter.MxcAdapterError, match = "size|digest"):
         mxc_adapter.spawn(request)
+
+
+_HOST_PREP = b"official-host-prep-test-payload"
+
+
+@pytest.fixture
+def host_prep(runtime, monkeypatch):
+    (runtime / "wxc-host-prep.exe").write_bytes(_HOST_PREP)
+    monkeypatch.setattr(mxc_runtime, "WXC_HOST_PREP_SIZE", len(_HOST_PREP))
+    monkeypatch.setattr(
+        mxc_runtime, "WXC_HOST_PREP_SHA256", hashlib.sha256(_HOST_PREP).hexdigest()
+    )
+    return runtime
+
+
+def test_host_prep_is_pinned_like_wxc(host_prep):
+    with mxc_runtime.acquire_host_prep(package_root = host_prep) as lease:
+        assert lease.info.path == (host_prep / "wxc-host-prep.exe").resolve()
+    (host_prep / "wxc-host-prep.exe").write_bytes(b"y" * len(_HOST_PREP))
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "wxc-host-prep.exe digest"):
+        mxc_runtime.acquire_host_prep(package_root = host_prep)
+
+
+def test_missing_host_prep_never_affects_the_wxc_runtime(runtime):
+    mxc_runtime.selected_runtime(package_root = runtime)
+    with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "missing"):
+        mxc_runtime.selected_host_prep(package_root = runtime)
+
+
+_BOTH_WARNINGS = [
+    "AppContainer + DACL tier selected: ... Run `wxc-host-prep prepare-system-drive` (elevated)",
+    "AppContainer + DACL tier selected: ... Run `wxc-host-prep prepare-null-device` (elevated)",
+]
+
+
+@pytest.mark.parametrize(
+    ("stdout", "returncode", "expected"),
+    [
+        (json.dumps({"tier": "appcontainer-dacl", "warnings": _BOTH_WARNINGS}), 0,
+         ("prepare-system-drive", "prepare-null-device")),
+        (json.dumps({"tier": "appcontainer-dacl", "warnings": _BOTH_WARNINGS[1:]}), 0,
+         ("prepare-null-device",)),
+        (json.dumps({"tier": "base-container", "warnings": []}), 0, ()),
+        ("not json", 0, None),
+        (json.dumps(["warnings"]), 0, None),
+        (json.dumps({"warnings": _BOTH_WARNINGS}), 1, None),
+    ],
+    ids = ["both", "null_device", "prepared", "garbage", "not_object", "failed"],
+)
+def test_host_prep_probe_reads_wxc_probe_warnings(runtime, monkeypatch, stdout, returncode, expected):
+    seen: dict = {}
+
+    def run(argv, **kwargs):
+        seen.update(argv = argv, env = kwargs.get("env"), timeout = kwargs.get("timeout"))
+        return subprocess.CompletedProcess(argv, returncode, stdout = stdout, stderr = "")
+
+    monkeypatch.setattr(mxc_runtime.subprocess, "run", run)
+    env = {"SYSTEMROOT": "C:\\Windows"}
+    assert mxc_runtime.probe_host_prep_steps(package_root = runtime, env = env) == expected
+    assert seen["argv"] == [str((runtime / "wxc-exec.exe").resolve()), "--probe"]
+    assert seen["env"] is env
+    assert seen["timeout"] == mxc_runtime.HOST_PREP_PROBE_SECONDS
+
+
+def test_host_prep_probe_timeout_is_not_a_verdict(runtime, monkeypatch):
+    def run(argv, **_kwargs):
+        raise subprocess.TimeoutExpired(argv, 1)
+
+    monkeypatch.setattr(mxc_runtime.subprocess, "run", run)
+    assert mxc_runtime.probe_host_prep_steps(package_root = runtime) is None

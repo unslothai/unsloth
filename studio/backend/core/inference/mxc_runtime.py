@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import subprocess
 import sys
 import threading
 
@@ -25,8 +26,15 @@ RELEASE_ARCHIVE_SHA256 = "5c3a27073ba18eddf97efb4caad0f8b201c40a18d17b70f3a1e384
 RELEASE_MEMBER = "x64/wxc-exec.exe"
 WXC_EXEC_SIZE = 9_478_968
 WXC_EXEC_SHA256 = "6049c64723af1173c3739dc6cd6b2f33f6c021bb2832c4216233cba7f71aee9a"
+# Tier 3 host preparation, elevated; never needed by the BaseContainer path.
+RELEASE_HOST_PREP_MEMBER = "x64/wxc-host-prep.exe"
+WXC_HOST_PREP_SIZE = 913_728
+WXC_HOST_PREP_SHA256 = "a9b8b14a11a1c5888641297c26abca547c2afa4435085c03ccfebd1deface310"
+HOST_PREP_STEPS = ("prepare-system-drive", "prepare-null-device")
+HOST_PREP_PROBE_SECONDS = 10.0
 
 _WXC_EXEC_NAME = "wxc-exec.exe"
+_WXC_HOST_PREP_NAME = "wxc-host-prep.exe"
 _lock = threading.RLock()
 
 
@@ -128,25 +136,35 @@ def _expected_architecture() -> str:
     return "x86_64"
 
 
-def _validate_runtime(package_root: Path) -> RuntimeInfo:
+def _validate_artifact(package_root: Path, name: str, size: int, sha256: str) -> RuntimeInfo:
     root = _require_plain_directory(package_root)
-    executable = root / _WXC_EXEC_NAME
+    executable = root / name
     if not executable.is_file() or executable.is_symlink():
-        raise MxcRuntimeUnavailable("the managed wxc-exec.exe is missing or is not a regular file")
+        raise MxcRuntimeUnavailable(f"the managed {name} is missing or is not a regular file")
     try:
         metadata = executable.stat()
     except OSError as exc:
-        raise MxcRuntimeUnavailable("the managed wxc-exec.exe is unreadable") from exc
+        raise MxcRuntimeUnavailable(f"the managed {name} is unreadable") from exc
     if getattr(metadata, "st_nlink", 1) != 1:
         raise MxcRuntimeUnavailable(
-            "the managed wxc-exec.exe has an unapproved hard link",
+            f"the managed {name} has an unapproved hard link",
         )
-    if metadata.st_size != WXC_EXEC_SIZE:
-        raise MxcRuntimeUnavailable("the managed wxc-exec.exe size is not approved")
+    if metadata.st_size != size:
+        raise MxcRuntimeUnavailable(f"the managed {name} size is not approved")
     digest = _sha256_file(executable)
-    if digest != WXC_EXEC_SHA256:
-        raise MxcRuntimeUnavailable("the managed wxc-exec.exe digest is not approved")
+    if digest != sha256:
+        raise MxcRuntimeUnavailable(f"the managed {name} digest is not approved")
     return RuntimeInfo(path = executable.resolve(), sha256 = digest)
+
+
+def _validate_runtime(package_root: Path) -> RuntimeInfo:
+    return _validate_artifact(package_root, _WXC_EXEC_NAME, WXC_EXEC_SIZE, WXC_EXEC_SHA256)
+
+
+def _validate_host_prep(package_root: Path) -> RuntimeInfo:
+    return _validate_artifact(
+        package_root, _WXC_HOST_PREP_NAME, WXC_HOST_PREP_SIZE, WXC_HOST_PREP_SHA256
+    )
 
 
 def selected_runtime(*, package_root: Path | None = None) -> RuntimeInfo:
@@ -154,6 +172,13 @@ def selected_runtime(*, package_root: Path | None = None) -> RuntimeInfo:
         raise MxcRuntimeUnavailable("the MXC runtime is Windows-only")
     _expected_architecture()
     return _validate_runtime(package_root or _installed_package_root())
+
+
+def selected_host_prep(*, package_root: Path | None = None) -> RuntimeInfo:
+    if sys.platform != "win32":
+        raise MxcRuntimeUnavailable("MXC host preparation is Windows-only")
+    _expected_architecture()
+    return _validate_host_prep(package_root or _installed_package_root())
 
 
 def wxc_path() -> Path:
@@ -200,18 +225,59 @@ def _open_artifact_guard(path: Path) -> object:
     handle = create_file(str(path), 0x80000000, 0x1, None, 3, 0x80, None)
     invalid = ctypes.c_void_p(-1).value
     if handle in (None, invalid):
-        raise MxcRuntimeUnavailable("the managed wxc-exec.exe could not be locked for launch")
+        raise MxcRuntimeUnavailable(f"the managed {path.name} could not be locked for launch")
     return _WindowsHandleGuard(int(handle))
 
 
-def acquire_runtime(*, package_root: Path | None = None) -> RuntimeLease:
+def _acquire(select, package_root: Path | None) -> RuntimeLease:
     with _lock:
-        info = selected_runtime(package_root = package_root)
+        info = select(package_root = package_root)
         guard = _open_artifact_guard(info.path)
         try:
-            if selected_runtime(package_root = package_root) != info:
-                raise MxcRuntimeUnavailable("the managed wxc-exec.exe changed during acquisition")
+            if select(package_root = package_root) != info:
+                raise MxcRuntimeUnavailable(f"the managed {info.path.name} changed during acquisition")
         except Exception:
             guard.close()
             raise
         return RuntimeLease(info = info, _guard = guard)
+
+
+def acquire_runtime(*, package_root: Path | None = None) -> RuntimeLease:
+    return _acquire(selected_runtime, package_root)
+
+
+def acquire_host_prep(*, package_root: Path | None = None) -> RuntimeLease:
+    """Pinned wxc-host-prep held deny-write, so the elevated launch runs the verified bytes."""
+    return _acquire(selected_host_prep, package_root)
+
+
+def probe_host_prep_steps(
+    *, package_root: Path | None = None, env: dict[str, str] | None = None
+) -> tuple[str, ...] | None:
+    """Host preparation `wxc-exec --probe` reports missing; None when it cannot tell."""
+    try:
+        with acquire_runtime(package_root = package_root) as lease:
+            completed = subprocess.run(
+                [str(lease.info.path), "--probe"],
+                stdin = subprocess.DEVNULL,
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                cwd = str(lease.info.path.parent),
+                env = env,
+                timeout = HOST_PREP_PROBE_SECONDS,
+                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                check = False,
+            )
+        warnings = json.loads(completed.stdout).get("warnings")
+    except Exception:  # noqa: BLE001 - advice only, never a capability verdict
+        return None
+    if completed.returncode != 0 or not isinstance(warnings, list):
+        return None
+    # MXC names the verb in each Tier 3 warning (fallback_detector.rs push_host_prep_warnings).
+    return tuple(
+        step
+        for step in HOST_PREP_STEPS
+        if any(isinstance(item, str) and f"wxc-host-prep {step}" in item for item in warnings)
+    )

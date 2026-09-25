@@ -89,6 +89,44 @@ def test_windows_terminal_uses_its_own_capability_identity(monkeypatch, tmp_path
     assert observed == [(str(tmp_path / "cmd.exe"), "terminal")]
 
 
+@pytest.mark.parametrize(
+    ("steps", "advised"),
+    [(("prepare-system-drive", "prepare-null-device"), True), ((), False), (None, False)],
+    ids = ["missing", "prepared", "unknown"],
+)
+def test_unavailable_capability_names_the_host_prep_command(monkeypatch, tmp_path, steps, advised):
+    from core.inference import mxc_probe, sandbox_windows_mxc
+
+    monkeypatch.setattr(sandbox_windows_mxc.sys, "platform", "win32")
+    monkeypatch.setattr(mxc_probe, "_host_prep_cache", {})
+    monkeypatch.setattr(sandbox_windows_mxc.mxc_probe, "probe", lambda *_a, **_k: (False, "no"))
+    monkeypatch.setattr(sandbox_windows_mxc.mxc_runtime, "installation_identity", lambda: "runner")
+    monkeypatch.setattr(mxc_probe.mxc_runtime, "probe_host_prep_steps", lambda **_kwargs: steps)
+    capability = sandbox_windows_mxc.capability_snapshot(
+        execution_kind = "python", selected_executable = str(tmp_path / "python.exe")
+    )
+    assert ("--prepare-host" in capability.remediation) is advised
+    assert ("every reboot" in capability.remediation) is advised
+    assert "install_mxc_prebuilt.py" in capability.remediation or not advised
+
+
+def test_available_capability_never_runs_the_host_prep_probe(monkeypatch, tmp_path):
+    from core.inference import mxc_probe, sandbox_windows_mxc
+
+    monkeypatch.setattr(sandbox_windows_mxc.sys, "platform", "win32")
+    monkeypatch.setattr(sandbox_windows_mxc.mxc_probe, "probe", lambda *_a, **_k: (True, "ok"))
+    monkeypatch.setattr(sandbox_windows_mxc.mxc_runtime, "installation_identity", lambda: "runner")
+    monkeypatch.setattr(
+        mxc_probe.mxc_runtime,
+        "probe_host_prep_steps",
+        lambda **_kwargs: pytest.fail("a qualified host was probed for host preparation"),
+    )
+    capability = sandbox_windows_mxc.capability_snapshot(
+        execution_kind = "python", selected_executable = str(tmp_path / "python.exe")
+    )
+    assert "--prepare-host" not in capability.remediation
+
+
 @pytest.mark.parametrize("name", ["powershell.exe", "pwsh.exe"])
 def test_terminal_probe_supports_powershell_argv(name, tmp_path):
     from core.inference import mxc_probe

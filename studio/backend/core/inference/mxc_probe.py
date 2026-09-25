@@ -24,9 +24,47 @@ POSITIVE_TTL = 300.0
 NEGATIVE_TTL = 30.0
 
 
+_host_prep_cache: dict[str, tuple[float, str | None]] = {}
+
+
 def invalidate_cache() -> None:
     with _lock:
         _cache.clear()
+        _host_prep_cache.clear()
+
+
+def host_prep_remediation() -> str | None:
+    """Name the elevated command when MXC reports Tier 3 host preparation missing."""
+    try:
+        identity = mxc_runtime.installation_identity()
+    except Exception:  # noqa: BLE001 - no runtime, nothing to prepare
+        return None
+    with _lock:
+        cached = _host_prep_cache.get(identity)
+        if cached is not None and time.monotonic() < cached[0]:
+            return cached[1]
+    steps = mxc_runtime.probe_host_prep_steps(env = mxc_adapter._control_environment())
+    advice = None
+    if steps:
+        command = subprocess.list2cmdline(
+            [
+                sys.executable,
+                str(Path(__file__).resolve().parents[3] / "install_mxc_prebuilt.py"),
+                "--prepare-host",
+                "--install-dir",
+                str(mxc_runtime._installed_package_root()),
+            ]
+        )
+        reboot = " (prepare-null-device is undone by every reboot)" if (
+            "prepare-null-device" in steps
+        ) else ""
+        advice = (
+            f"MXC reports missing host preparation: {', '.join(steps)}{reboot}. "
+            f"Run {command} and approve the administrator prompt."
+        )
+    with _lock:
+        _host_prep_cache[identity] = (time.monotonic() + NEGATIVE_TTL, advice)
+    return advice
 
 
 def _terminal_probe(selected_executable: str, workdir: Path, canary: Path, outside_write: Path):

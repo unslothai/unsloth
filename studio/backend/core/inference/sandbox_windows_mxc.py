@@ -88,6 +88,10 @@ def capability_snapshot(
             "tier: it adds temporary permission entries to the granted host folders, removed "
             "on exit, and needs a one-time administrator host preparation plus one per reboot."
         )
+    # Only in DACL mode: a bare --probe allows the fallback, so it warns on hosts Studio never uses it on.
+    host_prep = mxc_probe.host_prep_remediation() if dacl and not available else None
+    if host_prep:
+        remediation = f"{remediation} {host_prep}"
     return SandboxCapability(
         backend = "mxc-processcontainer",
         available = available,
