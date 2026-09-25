@@ -964,6 +964,16 @@ def test_unrelated_gpu_errors_are_not_retried_on_cpu(monkeypatch, gpu_agent):
     assert agent.device.type == "cuda" and agent.model.moved_to == []
 
 
+@pytest.mark.parametrize("where", ["mx", "mx.metal", None])
+def test_release_memory_clears_the_mlx_cache_under_either_name(monkeypatch, where):
+    cleared = []
+    clear = SimpleNamespace(clear_cache = lambda: cleared.append(where))
+    mx = {"mx": clear, "mx.metal": SimpleNamespace(metal = clear), None: SimpleNamespace()}[where]
+    monkeypatch.setitem(sys.modules, "mlx.core", mx)
+    laya_runtime._release_memory()
+    assert cleared == ([where] if where else [])
+
+
 def test_mlx_out_of_memory_falls_back_to_cpu(monkeypatch, gpu_agent):
     import torch
 

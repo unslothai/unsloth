@@ -264,9 +264,13 @@ def download_plan(checkpoint: Checkpoint) -> dict[str, Any]:
 
 def _release_memory() -> None:
     gc.collect()
-    # MLX keeps freed buffers in its allocator cache until told otherwise.
+    # MLX keeps freed buffers in its allocator cache until told otherwise; mlx below 0.24.1 names it mx.metal.clear_cache.
     if (mx := sys.modules.get("mlx.core")) is not None:
-        mx.clear_cache()
+        clear = getattr(mx, "clear_cache", None) or getattr(
+            getattr(mx, "metal", None), "clear_cache", None
+        )
+        if clear is not None:
+            clear()
 
 
 def _evict() -> None:
