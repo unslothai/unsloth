@@ -2403,6 +2403,7 @@ def test_the_pin_env_overrides_the_ram_gate(monkeypatch, value, pinned):
 def test_the_pin_budget_leaves_the_reserve_free(monkeypatch):
     import core.inference.diffusion_memory as mem
 
+    monkeypatch.setattr(mem, "_cgroup_memory_limit_mib", lambda: None)
     monkeypatch.setattr(mem, "_system_memory_mib", lambda: (65_536, 30_000))
     monkeypatch.setattr(mem, "_available_system_memory_mib", lambda: 30_000)
     assert mem._pin_budget_mib() == 30_000 - int(65_536 * 0.15)
@@ -2411,6 +2412,19 @@ def test_the_pin_budget_leaves_the_reserve_free(monkeypatch):
     assert mem._pin_budget_mib() == 0
     monkeypatch.setattr(mem, "_system_memory_mib", lambda: (None, None))
     assert mem._pin_budget_mib() is None
+
+
+def test_the_pin_reserve_is_sized_from_the_container_not_the_host(monkeypatch):
+    """A 64 GiB container on a 512 GiB host: 15% of the host would eat the whole allowance."""
+    import core.inference.diffusion_memory as mem
+
+    monkeypatch.setattr(mem, "_system_memory_mib", lambda: (524_288, 400_000))
+    monkeypatch.setattr(mem, "_available_system_memory_mib", lambda: 60_000)
+    monkeypatch.setattr(mem, "_cgroup_memory_limit_mib", lambda: 65_536)
+    assert mem._pin_budget_mib() == 60_000 - int(65_536 * 0.15)
+    # A limit above the host total changes nothing.
+    monkeypatch.setattr(mem, "_cgroup_memory_limit_mib", lambda: 10_000_000)
+    assert mem._pin_budget_mib() == max(0, 60_000 - int(524_288 * 0.15))
 
 
 def test_a_late_encoder_refusal_streams_the_transformer_before_placing_the_encoder(monkeypatch):

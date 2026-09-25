@@ -12019,6 +12019,43 @@ def test_a_pipeline_quantises_where_only_the_encoders_stream(fake_runtime, tmp_p
     backend.unload()
 
 
+def test_a_pipeline_quant_replan_prices_the_encoder_the_load_opens(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """The in-place replan hands the planner the same encoder pricing as the other candidate
+    replans, not the dense family-table encoder."""
+    backend = DiffusionBackend()
+    _stub_pipeline_dense_quant(backend, monkeypatch)
+    priced = {"companion_override_mib": 1234, "text_encoder_override_mib": 567}
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_candidate_companion_overrides",
+        staticmethod(lambda *args, **kwargs: dict(priced)),
+    )
+    real_plan = DiffusionBackend._plan_memory
+    seen = []
+
+    def _plan(self, *args, **kwargs):
+        plan = real_plan(self, *args, **kwargs)
+        if kwargs.get("transformer_resident_override_mib") is not None:
+            seen.append(kwargs)
+            return _resident_transformer(plan)
+        return dataclasses.replace(plan, offload_policy = "group")
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _plan)
+    _record_placement(monkeypatch)
+    backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        transformer_quant = "fp8",
+        _base_local_dir = str(tmp_path),
+    )
+    assert seen
+    assert seen[-1]["companion_override_mib"] == 1234
+    assert seen[-1]["text_encoder_override_mib"] == 567
+    backend.unload()
+
+
 def test_a_pipeline_whose_quantised_plan_still_streams_the_transformer_stays_dense(
     fake_runtime, tmp_path, monkeypatch
 ):

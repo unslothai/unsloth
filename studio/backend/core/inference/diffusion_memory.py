@@ -1222,6 +1222,10 @@ def _pin_budget_mib() -> Optional[int]:
     available = _available_system_memory_mib()
     if total is None or available is None:
         return None
+    limit = _cgroup_memory_limit_mib()
+    if limit is not None:
+        # available is already capped by the cgroup; size the reserve from the same capacity.
+        total = min(int(total), int(limit))
     reserve = max(_PIN_RESERVE_MIN_MIB, int(int(total) * _PIN_RESERVE_FRACTION))
     return max(0, int(available) - reserve)
 
