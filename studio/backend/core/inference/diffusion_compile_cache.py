@@ -30,6 +30,11 @@ first compiled forward); ``save`` writes the bundle + manifest after the warmup 
 (on by default, a hit skips the rewrite); ``restore`` resets the inductor dir on unload.
 All env-gated and best-effort; torch imported lazily.
 
+DISK: every key keeps its own inductor dir next to its bundle, so the root is bounded by
+``UNSLOTH_DIFFUSION_COMPILE_CACHE_MAX_GB`` (20 GB by default): after a save, the least
+recently used keys are deleted until it fits, never one this process has open or one used
+in the last hour.
+
 The generate path calls ``save_async``, not ``save``: the write is pure bookkeeping for
 the NEXT process, so making a user wait on it buys them nothing. Measured on a B200
 (Z-Image-Turbo, speed=max, torch 2.11): a 42.7 MB bundle costs 0.088 s to serialise plus
@@ -71,10 +76,14 @@ from typing import Any, Optional
 # UNSLOTH_DIFFUSION_COMPILE_CACHE_SAVE: 0 disables the auto save (load-only); 1 keeps it.
 # UNSLOTH_DIFFUSION_COMPILE_CACHE_SYNC: 1 makes save_async write inline on the calling thread, as it did before the
 # background worker existed. For tests and for debugging a save that looks like it never ran.
+# UNSLOTH_DIFFUSION_COMPILE_CACHE_MAX_GB: disk budget for the whole cache root (every key's bundle, manifest and
+# inductor dir). Past it, the least recently used keys are deleted after a save. 0 disables the eviction.
 _ENV_MODE = "UNSLOTH_DIFFUSION_COMPILE_CACHE"
 _ENV_DIR = "UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR"
 _ENV_SAVE = "UNSLOTH_DIFFUSION_COMPILE_CACHE_SAVE"
 _ENV_SYNC = "UNSLOTH_DIFFUSION_COMPILE_CACHE_SYNC"
+_ENV_MAX_GB = "UNSLOTH_DIFFUSION_COMPILE_CACHE_MAX_GB"
+_DEFAULT_MAX_GB = 20.0
 
 _LEGACY_ROOT = Path.home() / ".cache" / "unsloth" / "diffusion_compile_cache"
 
@@ -87,6 +96,14 @@ _BUNDLE_SUFFIX = ".bin"
 # What _atomic_write names its in-progress file, as a suffix: ".<final name>.<random>.tmp".
 _TEMP_SUFFIX = ".tmp"
 _FORMAT_VERSION = 1
+
+# Touched on every begin and (throttled) on use; the eviction orders keys by it. A key without one falls back to its
+# manifest's mtime.
+_LAST_USED_NAME = "last_used"
+_TOUCH_INTERVAL_SECONDS = 600.0
+# A key used this recently is never evicted, whoever is using it: another process may be compiling into its inductor
+# dir right now, and the throttled touch above keeps a key in use inside this window.
+_EVICT_GRACE_SECONDS = 3600.0
 
 # A bundle file this new is NOT collectable even when the manifest does not name it: another process may have just
 # published it and not yet committed its manifest, and the whole point of the split is that the loser of that race
@@ -332,6 +349,8 @@ class CacheContext:
     # digest, so the shortcut would leave the corrupt bytes in place under a manifest that names
     # them, and every future start would reject the cache again with no way back.
     rejected_bundle: Optional[str] = None
+    # When this context last marked its key as used (time.time()), so a long session keeps it out of the eviction.
+    last_touch: float = 0.0
 
 
 def begin(
@@ -430,6 +449,9 @@ def begin(
     published = _read_manifest(ctx.manifest_path)
     if published is not None:
         ctx.bundle = _manifest_bundle(cdir, published)
+
+    _register_live(cdir)
+    _touch_last_used(ctx)
 
     # Collect here as well as after a save, because the grace window can otherwise leak a bundle for
     # good: two saves for one key inside 60 s leave the first one too young to collect, and the
@@ -744,6 +766,7 @@ def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
         )
         ctx.bundle = bundle
         _collect_superseded(ctx.dir, logger)
+        evict(logger = logger)
         with _dirty_lock:
             # A shape registered while this ran is NOT in the bundle just written, so leave the context dirty for
             # the save its own register_shape queued.
@@ -821,7 +844,11 @@ def save_async(ctx: Optional[CacheContext], *, logger: Any = None) -> bool:
     registered up to that point. A context whose save is IN FLIGHT does get queued again,
     since the running save cannot contain what was registered after it started.
     """
-    if ctx is None or not _save_enabled(ctx.mode) or ctx.saved:
+    if ctx is None:
+        return False
+    if time.time() - ctx.last_touch > _TOUCH_INTERVAL_SECONDS:
+        _touch_last_used(ctx)
+    if not _save_enabled(ctx.mode) or ctx.saved:
         return False
     if sync_saves():
         return _write_bundle(ctx, logger)
@@ -852,7 +879,10 @@ def wait_for_saves(timeout: float = _SAVE_JOIN_TIMEOUT) -> bool:
 
 def restore(ctx: Optional[CacheContext], *, logger: Any = None) -> None:
     """Restore ``TORCHINDUCTOR_CACHE_DIR`` to its pre-load value. Call on unload."""
-    if ctx is None or not ctx.prev_inductor_dir_set:
+    if ctx is None:
+        return
+    _unregister_live(ctx.dir)
+    if not ctx.prev_inductor_dir_set:
         return
     # Before the env var moves: save_cache_artifacts() reads the inductor cache this load pointed at, so a save
     # still running when the dir is handed back would be collecting against a directory that is about to mean
@@ -869,6 +899,135 @@ def restore(ctx: Optional[CacheContext], *, logger: Any = None) -> None:
             os.environ["TORCHINDUCTOR_CACHE_DIR"] = ctx.prev_inductor_dir
     except Exception:  # noqa: BLE001
         pass
+
+
+# Key dirs a context in THIS process has open, refcounted (an image and a video load can share a key only in theory,
+# but a reload of the same model overlaps its predecessor's teardown). Never evicted while listed.
+_live_lock = threading.Lock()
+_live_dirs: dict[str, int] = {}
+
+
+def _register_live(cdir: Path) -> None:
+    with _live_lock:
+        _live_dirs[str(cdir)] = _live_dirs.get(str(cdir), 0) + 1
+
+
+def _unregister_live(cdir: Path) -> None:
+    with _live_lock:
+        count = _live_dirs.get(str(cdir), 0) - 1
+        if count > 0:
+            _live_dirs[str(cdir)] = count
+        else:
+            _live_dirs.pop(str(cdir), None)
+
+
+def _touch_last_used(ctx: CacheContext) -> None:
+    """Mark the key as used now. Never raises: a read-only cache root just evicts by manifest age."""
+    ctx.last_touch = time.time()
+    try:
+        path = ctx.dir / _LAST_USED_NAME
+        path.touch(exist_ok = True)
+        os.utime(path, None)
+    except OSError:
+        pass
+
+
+def max_cache_bytes() -> Optional[int]:
+    """The disk budget for the cache root in bytes, or None when eviction is off."""
+    raw = (os.environ.get(_ENV_MAX_GB) or "").strip()
+    try:
+        gb = float(raw) if raw else _DEFAULT_MAX_GB
+    except ValueError:
+        gb = _DEFAULT_MAX_GB
+    if not gb > 0:
+        return None
+    return int(gb * (1 << 30))
+
+
+def _is_key_dir(path: Path) -> bool:
+    """Only directories named like a ``cache_key`` are ever evicted, so nothing else under the root is touched."""
+    name = path.name
+    return len(name) == 32 and all(c in "0123456789abcdef" for c in name)
+
+
+def _dir_bytes(path: Path) -> int:
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(path, followlinks = False):
+        for name in filenames:
+            try:
+                total += os.lstat(os.path.join(dirpath, name)).st_size
+            except OSError:
+                continue
+    return total
+
+
+def _last_used(path: Path) -> float:
+    for name in (_LAST_USED_NAME, _MANIFEST_NAME):
+        try:
+            return (path / name).stat().st_mtime
+        except OSError:
+            continue
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _remove_key_dir(path: Path) -> None:
+    # The manifest first: it is the commit point, so a removal that dies halfway leaves a miss, never a manifest
+    # naming a bundle that is gone or half of an inductor dir it still claims.
+    try:
+        (path / _MANIFEST_NAME).unlink()
+    except OSError:
+        pass
+    shutil.rmtree(path, ignore_errors = True)
+
+
+def evict(
+    *,
+    root: Optional[Path] = None,
+    max_bytes: Optional[int] = None,
+    logger: Any = None,
+) -> list[str]:
+    """Delete least recently used keys until the cache root fits its budget. Returns the keys removed.
+
+    Never removes a key a context in this process has open, nor one used inside the grace window
+    (another process may be compiling into it), so the budget is a target, not a hard cap. Never
+    raises."""
+    removed: list[str] = []
+    try:
+        root = root if root is not None else cache_root()
+        budget = max_bytes if max_bytes is not None else max_cache_bytes()
+        if budget is None or not root.is_dir():
+            return removed
+        entries = []
+        for child in root.iterdir():
+            if child.is_symlink() or not child.is_dir() or not _is_key_dir(child):
+                continue
+            entries.append((_last_used(child), child, _dir_bytes(child)))
+        total = sum(size for _, _, size in entries)
+        if total <= budget:
+            return removed
+        with _live_lock:
+            live = set(_live_dirs)
+        cutoff = time.time() - _EVICT_GRACE_SECONDS
+        for used, path, size in sorted(entries, key = lambda e: e[0]):
+            if total <= budget:
+                break
+            if str(path) in live or used > cutoff:
+                continue
+            _remove_key_dir(path)
+            total -= size
+            removed.append(path.name)
+        if removed:
+            _info(
+                logger,
+                f"compile-cache: evicted {len(removed)} least recently used key(s); "
+                f"{total / (1 << 30):.2f} GB of {budget / (1 << 30):.2f} GB now in use",
+            )
+    except Exception as exc:  # noqa: BLE001 - housekeeping must never fail a save
+        _warn(logger, f"compile-cache: eviction failed: {exc}")
+    return removed
 
 
 def _warn(logger: Any, msg: str) -> None:

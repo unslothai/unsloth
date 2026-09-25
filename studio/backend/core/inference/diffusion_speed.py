@@ -700,6 +700,19 @@ def dynamo_graph_count() -> int:
         return 0
 
 
+def fresh_compile_count() -> int:
+    """Graphs inductor compiled from scratch in this process: FX graph cache misses (0 when unavailable).
+
+    A render that grows it made artifacts no compile-cache bundle holds yet. ``dynamo_graph_count`` also grows when a
+    restarted process re-traces a graph the cache then serves, so keying the bundle's dirty bit on it rewrote an
+    unchanged bundle on every warm start of an automatic-dynamic load."""
+    try:
+        from torch._dynamo.utils import counters
+        return int(counters["inductor"]["fxgraph_cache_miss"])
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def compile_fallback_error(pipe: Any) -> Optional[str]:
     """The compile failure a guarded DiT fell back from, or None while every compiled DiT still runs compiled."""
     for transformer in _guarded_dits(pipe):

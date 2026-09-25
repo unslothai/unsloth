@@ -1164,7 +1164,132 @@ def test_a_failed_or_cancelled_render_still_dirties_the_bundle_after_a_recompile
     from core.inference import diffusion
 
     src = inspect.getsource(diffusion.DiffusionBackend)
-    before = src.index("graphs_before = dynamo_graph_count()")
+    before = src.index("graphs_before = fresh_compile_count()")
     handler = src.index("except BaseException:", before)
     reraise = src.index("raise\n", handler)
     assert "compile_cache.mark_recompiled(state.compile_cache_ctx)" in src[handler:reraise]
+
+
+# ---------------------------------------------------------------------------- eviction
+def _key_dir(root: Path, name: str, size: int, age_s: float) -> Path:
+    import os
+    import time
+
+    d = root / name
+    (d / "inductor").mkdir(parents = True)
+    (d / "inductor" / "blob").write_bytes(b"x" * size)
+    (d / cc._MANIFEST_NAME).write_text("{}")
+    used = d / cc._LAST_USED_NAME
+    used.write_text("")
+    t = time.time() - age_s
+    os.utime(used, (t, t))
+    return d
+
+
+def test_max_cache_bytes_env(monkeypatch):
+    monkeypatch.delenv(cc._ENV_MAX_GB, raising = False)
+    assert cc.max_cache_bytes() == int(cc._DEFAULT_MAX_GB * (1 << 30))
+    monkeypatch.setenv(cc._ENV_MAX_GB, "0.5")
+    assert cc.max_cache_bytes() == 1 << 29
+    monkeypatch.setenv(cc._ENV_MAX_GB, "0")
+    assert cc.max_cache_bytes() is None
+    monkeypatch.setenv(cc._ENV_MAX_GB, "not-a-number")
+    assert cc.max_cache_bytes() == int(cc._DEFAULT_MAX_GB * (1 << 30))
+
+
+def test_evict_removes_least_recently_used_keys_until_under_budget(tmp_path):
+    old = _key_dir(tmp_path, "a" * 32, 1000, age_s = 3 * 86400)
+    mid = _key_dir(tmp_path, "b" * 32, 1000, age_s = 2 * 86400)
+    new = _key_dir(tmp_path, "c" * 32, 1000, age_s = 1 * 86400)
+    removed = cc.evict(root = tmp_path, max_bytes = 2500)
+    assert removed == ["a" * 32]
+    assert not old.exists() and mid.exists() and new.exists()
+
+
+def test_evict_is_a_noop_under_budget_or_disabled(monkeypatch, tmp_path):
+    d = _key_dir(tmp_path, "a" * 32, 1000, age_s = 86400)
+    assert cc.evict(root = tmp_path, max_bytes = 10_000) == []
+    monkeypatch.setenv(cc._ENV_MAX_GB, "0")
+    assert cc.evict(root = tmp_path) == []
+    assert d.exists()
+
+
+def test_evict_spares_live_recent_and_foreign_dirs(tmp_path):
+    live = _key_dir(tmp_path, "a" * 32, 1000, age_s = 5 * 86400)
+    recent = _key_dir(tmp_path, "b" * 32, 1000, age_s = 60)
+    foreign = tmp_path / "not-a-key"
+    foreign.mkdir()
+    (foreign / "big").write_bytes(b"x" * 5000)
+    cc._register_live(live)
+    try:
+        assert cc.evict(root = tmp_path, max_bytes = 1) == []
+    finally:
+        cc._unregister_live(live)
+    assert live.exists() and recent.exists() and foreign.exists()
+    # Once the load that held it restores, the old key is fair game.
+    assert cc.evict(root = tmp_path, max_bytes = 1) == ["a" * 32]
+    assert foreign.exists()
+
+
+def test_save_evicts_other_keys_but_never_its_own(monkeypatch, tmp_path, fake_megacache):
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.delenv(cc._ENV_SAVE, raising = False)
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
+    stale = _key_dir(tmp_path, "d" * 32, 4096, age_s = 30 * 86400)
+    monkeypatch.setenv(
+        cc._ENV_MAX_GB, str(1024 / (1 << 30))
+    )  # 1 KiB: everything but the live key must go
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    try:
+        assert cc.save(ctx) is True
+        assert not stale.exists()
+        assert ctx.dir.exists() and ctx.manifest_path.exists() and ctx.bundle.exists()
+    finally:
+        cc.restore(ctx)
+
+
+def test_begin_touches_last_used_and_restore_releases_the_key(
+    monkeypatch, tmp_path, fake_megacache
+):
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert (ctx.dir / cc._LAST_USED_NAME).exists()
+    assert str(ctx.dir) in cc._live_dirs
+    cc.restore(ctx)
+    assert str(ctx.dir) not in cc._live_dirs
+
+
+def test_removed_key_reads_as_a_miss_not_a_broken_pair(monkeypatch, tmp_path, fake_megacache):
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert cc.save(ctx) is True
+    cc.restore(ctx)
+    cc._remove_key_dir(ctx.dir)
+    ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    try:
+        assert ctx2.hit is False
+    finally:
+        cc.restore(ctx2)
+
+
+def test_fresh_compile_count_ignores_a_retrace_the_cache_serves():
+    """A restarted process re-traces every graph (dynamo's count grows) while inductor serves it from the cache; only
+    an FX graph cache miss is new work a compile-cache bundle lacks."""
+    from torch._dynamo.utils import counters
+
+    from core.inference import diffusion_speed as ds_mod
+
+    graphs, misses = ds_mod.dynamo_graph_count(), ds_mod.fresh_compile_count()
+    counters["stats"]["unique_graphs"] += 3
+    counters["inductor"]["fxgraph_cache_hit"] += 3
+    try:
+        assert ds_mod.dynamo_graph_count() == graphs + 3
+        assert ds_mod.fresh_compile_count() == misses
+        counters["inductor"]["fxgraph_cache_miss"] += 1
+        assert ds_mod.fresh_compile_count() == misses + 1
+    finally:
+        counters["stats"]["unique_graphs"] -= 3
+        counters["inductor"]["fxgraph_cache_hit"] -= 3
+        counters["inductor"]["fxgraph_cache_miss"] -= 1
