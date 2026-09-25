@@ -12387,6 +12387,94 @@ def test_precast_text_encoder_mib_prices_an_uncached_checkpoint_from_the_family_
     assert got[0] > 8959
 
 
+def _stub_amd_weight_only_host(backend, monkeypatch):
+    """ROCm / torchao-stub host; records the quantise calls."""
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_transformer_quant as tq
+
+    calls: list = []
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: False)
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: False)
+    monkeypatch.setattr(dmod, "native_quant_host", lambda target: True)
+    monkeypatch.setattr(tq, "native_quant_host", lambda target: True)
+    real_init = _FakePipe.__init__
+
+    def _init(self):
+        real_init(self)
+        self.transformer = _FakeDenoiser()
+
+    monkeypatch.setattr(_FakePipe, "__init__", _init)
+
+    def _quantize(
+        pipe,
+        target,
+        *,
+        mode,
+        family = None,
+        **kwargs,
+    ):
+        scheme = tq.native_quant_scheme(target, mode, family = family)
+        if scheme is None:
+            raise AssertionError("the torchao path must not run on an AMD weight-only host")
+        calls.append({"module": pipe.transformer, "scheme": scheme})
+        return scheme
+
+    monkeypatch.setattr(dmod, "quantize_transformer", _quantize)
+    monkeypatch.setattr(dmod, "transformer_is_quantised", lambda module: bool(calls))
+    return calls
+
+
+@pytest.mark.parametrize("scheme", ["int8", "fp8"])
+def test_an_explicit_scheme_on_amd_runs_weight_only(fake_runtime, tmp_path, monkeypatch, scheme):
+    backend = DiffusionBackend()
+    calls = _stub_amd_weight_only_host(backend, monkeypatch)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        transformer_quant = scheme,
+        _base_local_dir = str(tmp_path),
+    )
+    assert [c["scheme"] for c in calls] == [scheme]
+    assert calls[0]["module"] is backend._state.pipe.transformer
+    assert status["transformer_quant"] == scheme
+    resolved = status["resolved"]["transformer_quant"]
+    assert resolved["value"] == scheme
+    assert resolved["source"] == "explicit" and resolved["status"] == "applied"
+    assert "weight-only" in resolved["reason"] and "bf16 compute" in resolved["reason"]
+    assert "requires compile" not in status["resolved"]["speed_mode"]["reason"]
+    backend.unload()
+
+
+def test_auto_on_amd_stays_bf16(fake_runtime, tmp_path, monkeypatch):
+    backend = DiffusionBackend()
+    calls = _stub_amd_weight_only_host(backend, monkeypatch)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert calls == []
+    assert status["transformer_quant"] is None
+    assert status["resolved"]["transformer_quant"]["value"] == "off"
+    backend.unload()
+
+
+def test_an_explicit_scheme_on_nvidia_keeps_the_torchao_path_and_its_wording(
+    fake_runtime, tmp_path, monkeypatch
+):
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        transformer_quant = "fp8",
+        _base_local_dir = str(tmp_path),
+    )
+    assert len(calls) == 1
+    assert status["transformer_quant"] == "fp8"
+    assert "weight-only" not in status["resolved"]["transformer_quant"]["reason"]
+    backend.unload()
+
+
 def _record_step_cache(
     monkeypatch,
     *,

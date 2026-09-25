@@ -9864,6 +9864,123 @@ def test_the_boundary_marker_waits_out_a_busy_capture_lock(fake_runtime, monkeyp
     assert at_decode.get("phase") == "decode"
 
 
+@pytest.mark.parametrize("scheme", ["int8", "fp8"])
+def test_an_explicit_video_scheme_on_amd_runs_weight_only_without_forcing_compile(
+    fake_runtime, monkeypatch, scheme
+):
+    """An explicit int8 / fp8 video DiT engages the native branch on AMD, honouring speed=off."""
+    import core.inference.video as video_mod
+    from core.inference import diffusion_transformer_quant as tq
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: False)
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: False)
+    monkeypatch.setattr(video_mod, "native_quant_host", lambda target: True)
+    monkeypatch.setattr(tq, "native_quant_host", lambda target: True)
+    calls: list = []
+
+    def _quantize(
+        view,
+        target,
+        *,
+        mode,
+        family = None,
+        **kw,
+    ):
+        assert tq.native_quant_scheme(target, mode, family = family) == scheme
+        calls.append(mode)
+        return scheme
+
+    monkeypatch.setattr(video_mod, "quantize_transformer", _quantize)
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        model_kind = "pipeline",
+        transformer_quant = scheme,
+        speed_mode = "off",
+    )
+    assert calls and set(calls) == {scheme}
+    assert status["transformer_quant"] == scheme
+    assert status["speed_mode"] == "off"
+    assert "requires compile" not in status["resolved"]["speed_mode"]["reason"]
+    assert "weight-only" in status["resolved"]["transformer_quant"]["reason"]
+    backend.unload()
+
+
+@pytest.mark.parametrize("fallback", ["0", "1"])
+def test_a_video_checkpoint_stored_narrow_is_not_quantised_again(
+    fake_runtime, monkeypatch, fallback
+):
+    """A bf16-widened fp8 checkpoint is declined without calling the quantiser."""
+    import core.inference.video as video_mod
+    from core.inference import diffusion_transformer_quant as tq
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", fallback)
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: False)
+    monkeypatch.setattr(video_mod, "native_quant_host", lambda target: True)
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: False)
+    monkeypatch.setattr(tq, "native_quant_host", lambda target: True)
+    monkeypatch.setattr(video_mod, "stored_denoiser_precision", lambda local_dir: "fp8")
+
+    def _quantize(view, target, **kw):
+        raise AssertionError("a narrow-stored DiT must not be quantised again")
+
+    monkeypatch.setattr(video_mod, "quantize_transformer", _quantize)
+    backend = VideoBackend()
+    if fallback == "0":
+        with pytest.raises(RuntimeError, match = "widened to bf16"):
+            backend.load_pipeline(
+                "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", transformer_quant = "int8"
+            )
+        return
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", transformer_quant = "int8"
+    )
+    resolved = status["resolved"]["transformer_quant"]
+    assert resolved["status"] == "unsupported" and "widened to bf16" in resolved["reason"]
+    backend.unload()
+
+
+@pytest.mark.parametrize("fallback", ["0", "1"])
+def test_a_partly_converted_video_denoiser_is_refused_even_with_the_fallback_allowed(
+    fake_runtime, monkeypatch, fallback
+):
+    """A part-converted weight-only DiT is refused even with the precision fallback."""
+    import core.inference.video as video_mod
+    from core.inference import diffusion_transformer_quant as tq
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", fallback)
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: False)
+    monkeypatch.setattr(video_mod, "native_quant_host", lambda target: True)
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: False)
+    monkeypatch.setattr(tq, "native_quant_host", lambda target: True)
+    monkeypatch.setattr(video_mod, "quantize_transformer", lambda view, target, **kw: None)
+    monkeypatch.setattr(video_mod, "transformer_is_quantised", lambda view: True)
+    backend = VideoBackend()
+    with pytest.raises(RuntimeError, match = "neither dense nor usable"):
+        backend.load_pipeline(
+            "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", transformer_quant = "int8"
+        )
+    assert backend._state is None
+
+
+def test_a_clean_video_decline_under_the_fallback_still_loads_dense(fake_runtime, monkeypatch):
+    import core.inference.video as video_mod
+    from core.inference import diffusion_transformer_quant as tq
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: False)
+    monkeypatch.setattr(video_mod, "native_quant_host", lambda target: True)
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: False)
+    monkeypatch.setattr(tq, "native_quant_host", lambda target: True)
+    monkeypatch.setattr(video_mod, "quantize_transformer", lambda view, target, **kw: None)
+    monkeypatch.setattr(video_mod, "transformer_is_quantised", lambda view: False)
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", transformer_quant = "int8"
+    )
+    assert status["transformer_quant"] in (None, "none", "off")
+
+
 def test_video_auto_below_max_names_an_uncacheable_dit(fake_runtime, monkeypatch):
     monkeypatch.setattr(
         "core.inference.video.step_cache_supported", lambda pipe, logger = None: False
