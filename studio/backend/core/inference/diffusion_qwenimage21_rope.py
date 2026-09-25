@@ -243,6 +243,8 @@ def install(logger: Any = None, device: Any = None) -> bool:
     inductor would not round like the complex kernel, or when ``device`` (default: the current CUDA
     device) multiplies complex numbers in neither fused form. Run before the first compiled forward."""
     if real_rope_disabled() or not inductor_addcmul_is_fma():
+        # A wrapper left by an earlier load would otherwise outlive the kill switch.
+        uninstall()
         return False
     _NEEDS_EMULATE[0] = _addcmul_lowering()[1]
     try:

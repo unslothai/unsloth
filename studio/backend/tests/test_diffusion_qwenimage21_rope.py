@@ -215,6 +215,16 @@ def test_kill_switch_and_non_fma_inductor_keep_the_complex_form(monkeypatch):
     assert qmod.apply_rotary_emb_qwen is stock
 
 
+def test_kill_switch_on_a_later_load_restores_the_stock_function(monkeypatch):
+    _fake_fusion(monkeypatch)
+    stock = qmod.apply_rotary_emb_qwen
+    assert rope.install()
+    assert qmod.apply_rotary_emb_qwen is not stock
+    monkeypatch.setenv(rope.REAL_ROPE_ENV, "0")
+    assert rope.install() is False
+    assert qmod.apply_rotary_emb_qwen is stock and not rope.is_installed()
+
+
 def test_addcmul_probe_reads_the_lowering():
     rope._addcmul_lowering.cache_clear()
     try:
