@@ -3977,7 +3977,7 @@ def apply_accepts_loss_kwargs_fix(model):
         causal_lm = _forward_ignores_num_items_in_batch(model)
         if causal_lm is not None:
             _shadow_accepts_loss_kwargs(model, False)
-            # transformers 5 reads the flag off get_base_model(), which the base_model walk above can step past under PEFT.
+            # transformers 5 reads the flag off get_base_model(), which the walk above can skip under PEFT.
             _shadow_accepts_loss_kwargs(causal_lm, False)
             return "False (forward takes **kwargs but computes its own mean loss)"
         return f"default (signature inspection, {reason})"
@@ -3989,13 +3989,10 @@ _OWN_CE_LOSS = re.compile(r"\bCrossEntropyLoss\s*\(|\bcross_entropy\s*\(")
 
 
 def _forward_ignores_num_items_in_batch(model):
-    # HF reads any **kwargs on forward as "consumes num_items_in_batch" and then skips the 1/GA
-    # scaling. Remote code such as NemotronH keeps **kwargs only for generate and returns a
-    # plain CrossEntropyLoss mean, so the logged loss and the gradients come out GA times too large.
-    # Returns that causal LM module, else None.
+    # HF treats **kwargs as consuming num_items_in_batch and skips 1/GA; remote code (NemotronH) keeps **kwargs for generate yet returns a CrossEntropyLoss mean, so loss + grads come out GA x too large.
     m = model
     try:
-        # PeftModelForCausalLM has "CausalLM" in its own name; look at the model it wraps instead.
+        # PeftModelForCausalLM itself matches "CausalLM".
         if hasattr(m, "get_base_model"):
             m = m.get_base_model()
     except Exception:

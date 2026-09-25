@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # This program is free software: you can redistribute it and/or modify
@@ -12,17 +13,8 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""A forward that takes **kwargs but returns its own CrossEntropyLoss mean must not
-count as consuming num_items_in_batch.
-
-HF Trainer reads any **kwargs on forward as "the model normalises by num_items_in_batch"
-and then skips the 1/GA scaling in training_step. Remote code such as NemotronH
-(Nemotron-Labs-Teacher) keeps **kwargs only for generate, so with GA=4 the logged loss
-was 4x the eval loss (4.22 vs 0.84 on the real checkpoint) and the gradients 4x too.
-
-The helpers are pulled out of unsloth/models/_utils.py by AST, so this runs on CPU
-without importing unsloth.
-"""
+"""**kwargs forward returning its own CrossEntropyLoss mean must not count as consuming
+num_items_in_batch (NemotronH, GA=4: logged loss 4.22 vs eval 0.84). Helpers loaded by AST, CPU only."""
 
 import ast
 import inspect
@@ -66,7 +58,7 @@ def _load():
     return ns
 
 
-# The model files have to exist on disk for inspect.getsource, like a real remote module.
+# On disk so inspect.getsource works, like a real remote module.
 _MODELS = '''
 import torch
 from torch import nn
@@ -127,7 +119,6 @@ class NoKwargsForCausalLM(nn.Module):
 '''
 
 
-# A real PreTrainedModel, so peft can wrap it the way get_peft_model does in training scripts.
 _PRETRAINED_MODELS = """
 import torch
 from torch import nn
@@ -177,12 +168,9 @@ def _models(
 
 
 class _PeftLike(nn.Module):
-    """PeftModelForCausalLM -> LoraModel -> base model, as the Trainer sees it."""
-
     def __init__(self, inner):
         super().__init__()
         self.base_model = types.SimpleNamespace(model = inner)
-        # LoraModel exposes the wrapped model as .model as well
         self.base_model.base_model = None
 
     def forward(self, *args, **kwargs):
@@ -194,7 +182,6 @@ def test_remote_mean_loss_forward_is_not_a_loss_kwargs_consumer(tmp_path):
     mods = _models(tmp_path)
     model = mods.NemotronHForCausalLM()
     ns["apply_accepts_loss_kwargs_fix"](model)
-    # HF Trainer reads hasattr(unwrapped_model, "accepts_loss_kwargs") first.
     assert getattr(model, "accepts_loss_kwargs", None) is False
 
 
@@ -214,7 +201,6 @@ def test_consumers_keep_the_hf_default(tmp_path):
     for cls in (mods.NativeForCausalLM, mods.HandRolledForCausalLM, mods.NoKwargsForCausalLM):
         model = cls()
         ns["apply_accepts_loss_kwargs_fix"](model)
-        # Untouched: HF falls back to its own signature inspection, as before.
         assert not hasattr(model, "accepts_loss_kwargs"), cls.__name__
 
 
@@ -231,8 +217,6 @@ def test_explicit_class_attribute_still_wins(tmp_path):
 
 
 def test_remote_mean_loss_under_a_real_peft_model(tmp_path):
-    # PeftModelForCausalLM has "CausalLM" in its own name and a **kwargs forward with no loss, so
-    # the walk has to look past it, and transformers 5 reads the flag off get_base_model().
     peft = pytest.importorskip("peft")
     ns = _load()
     mods = _models(tmp_path, _PRETRAINED_MODELS, "remote_pretrained_for_ga_test")
