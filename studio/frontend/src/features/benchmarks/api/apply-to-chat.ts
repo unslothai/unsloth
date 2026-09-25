@@ -32,11 +32,23 @@ export async function applyVariantToChat(
       };
   const payload = variantLoad(base, variant);
   // The sheet's own fields move first, so a poll landing mid-load cannot revert them.
+  const prev = useChatRuntimeStore.getState();
+  const rollback = {
+    speculativeType: prev.speculativeType,
+    specDraftNMax: prev.specDraftNMax,
+    loadedLlamaExtraArgs: prev.loadedLlamaExtraArgs,
+  };
   useChatRuntimeStore.setState({
     speculativeType: payload.speculative_type ?? null,
     specDraftNMax: payload.spec_draft_n_max ?? null,
     loadedLlamaExtraArgs: payload.llama_extra_args ?? [],
   });
-  await loadModel(payload, { runtime: "chat" });
+  try {
+    await loadModel(payload, { runtime: "chat" });
+  } catch (err) {
+    // The load failed, so the server still runs the old settings: put the sheet back.
+    useChatRuntimeStore.setState(rollback);
+    throw err;
+  }
   applyActiveModelStatusToStore(await getInferenceStatus());
 }
