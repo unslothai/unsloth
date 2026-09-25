@@ -56,6 +56,7 @@ export const useLibraryFavoritesStore = create<FavoritesState>((set, get) => {
       try {
         get().adopt(start, new Set(await getLibraryFavorites()));
       } catch {
+        // Favorites are a convenience here; the page works without them.
       }
     },
     begin: () => ({ attempts: new Map(latestAttempt), pending: new Set(pending.keys()), session }),
