@@ -6855,8 +6855,6 @@ class VideoBackend:
             )
             del state
             clear_gpu_cache()
-            # Return the freed host staging pages too (see reclaim_host_memory); a Wan-class pipeline
-            # otherwise leaves 7+ GiB of host RSS behind after unload.
             reclaim_host_memory(logger = logger)
 
     def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:

@@ -123,13 +123,8 @@ def reclaim_offload_host_memory(offload_policy: str, logger: Any = None) -> bool
 
 
 def reclaim_host_memory(logger: Any = None) -> bool:
-    """Return freed allocator pages to the OS now, whatever the offload policy.
-
-    For unload and teardown. Loading a pipeline stages every weight through host memory, and once
-    the model is dropped glibc keeps those freed pages mapped: a few GiB per load of an SDXL-class
-    model, growing across load / unload cycles, until the process is trimmed. Same allocator call
-    and the same once-only logging as reclaim_offload_host_memory; it never touches live tensors,
-    Python GC or device caches. Unsupported allocators and failures are non-fatal."""
+    """Return freed allocator pages to the OS regardless of offload policy (unload / teardown).
+    Best effort: unsupported allocators and failures return False."""
     global _host_memory_reclaim_warning_logged
     global _host_memory_reclaim_unsupported_logged
     try:

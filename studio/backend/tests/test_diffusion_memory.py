@@ -168,15 +168,12 @@ def test_host_memory_reclaimer_is_policy_scoped_and_best_effort(monkeypatch):
 
 
 def test_reclaim_host_memory_ignores_the_offload_policy(monkeypatch):
-    """Unload and teardown trim whatever the policy: a GPU-resident load stages every weight
-    through host memory too, and glibc keeps those pages after the model is dropped."""
     calls = []
     monkeypatch.setattr(
         diffusion_memory, "_resolve_host_memory_reclaimer", lambda: lambda: calls.append(0)
     )
     assert diffusion_memory.reclaim_host_memory() is True
     assert calls == [0]
-    # The generate-time helper keeps its policy gate.
     for policy in (OFFLOAD_NONE, OFFLOAD_GROUP, OFFLOAD_SEQUENTIAL):
         assert diffusion_memory.reclaim_offload_host_memory(policy) is False
     assert calls == [0]

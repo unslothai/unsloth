@@ -7754,8 +7754,7 @@ class DiffusionBackend:
         self._state = None
         del state
         clear_gpu_cache()
-        # clear_gpu_cache() ran gc, so the pipeline's host staging buffers are freed but still mapped by
-        # the allocator; return them, or host RSS grows by several GiB per load / unload cycle.
+        # Must follow clear_gpu_cache() (runs gc) so the freed staging buffers can be returned.
         reclaim_host_memory(logger = logger)
 
     def status(self) -> dict[str, Any]:
