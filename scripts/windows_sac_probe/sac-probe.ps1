@@ -555,6 +555,12 @@ function Start-Studio([string] $python, [int] $port, [string] $logPath) {
     # sys.path so a stray unsloth_cli folder cannot shadow the package.
     # Not $args: that is a PowerShell automatic variable.
     $cliArgs = @('-X', 'utf8', '-I', '-m', 'unsloth_cli', 'studio', '-p', "$port")
+    # One record, so one probe Studio at a time. A prepare retried after a
+    # launch that never answered would otherwise overwrite the record of a
+    # still-running elevated instance, and revert could no longer stop it.
+    if (-not (Stop-ProbeStudio (Get-RunDir))) {
+        throw "the Studio this probe started earlier (see probe-studio.json under $(Get-RunDir)) is still running and could not be stopped; stop it by hand and run this stage again."
+    }
     $proc = Start-Process -FilePath $python -ArgumentList $cliArgs `
         -RedirectStandardOutput $logPath -RedirectStandardError "$logPath.err" `
         -WindowStyle Hidden -PassThru
@@ -952,6 +958,10 @@ function Invoke-Prepare {
             Update-MpSignature -ErrorAction Stop
         } catch { Write-Warning "Update-MpSignature failed: $_" }
     }
+    # Always cleared, so the transcript in the run directory describes this
+    # pass: a label reused after revert without -UpgradePackages would
+    # otherwise archive the previous run's upgrades as this run's.
+    Remove-Item -LiteralPath (Join-Path $dir 'winget-upgrade.log') -Force -ErrorAction SilentlyContinue
     if ($UpgradePackages) {
         # Opt-in: this changes every winget-managed package on the machine and
         # revert cannot put them back, so it is not part of the reversible run.
@@ -1222,6 +1232,16 @@ function Get-SignatureInventory([string] $root) {
 function Invoke-Run {
     Assert-Elevated
     $dir = Get-RunDir
+
+    # Before anything else. Get-RunDir creates the directory, so a new or
+    # mistyped label arrives here empty, and every guard below is keyed on a
+    # baseline that is not there: run would start an elevated Studio that no
+    # revert can stop (revert refuses a label with no baseline) and measure a
+    # window nobody opened.
+    if (-not (Test-Path -LiteralPath (Join-Path $dir 'baseline.json')) -or
+        -not (Test-Path -LiteralPath (Join-Path $dir 'window-start.txt'))) {
+        throw "label '$Label' has no baseline.json and window-start.txt under ${dir}: prepare did not complete for it, so there is nothing to run against. Check the -Label, or run prepare for it first."
+    }
 
     # The policy is re-verified here rather than trusted from prepare. A reboot
     # between the two stages is supported and is itself part of what is being
@@ -1559,9 +1579,21 @@ function Invoke-Collect {
     $venvTail = Get-ScopeTail (Resolve-VenvDir $dir)
     $shaped = @($events | ForEach-Object {
         $msg = $_.Message
+        $data = Get-EventDataMap $_
+        # The evaluated file, not the whole message. A 3076/3077 message names
+        # the requesting process AND the file ("a process (%4) attempted to load
+        # %2"), and Microsoft documents File Name as the file blocked and
+        # Process Name as its parent, so matching the message scoped a venv
+        # python.exe starting an unsigned interpreter outside the venv as a
+        # venv block. Message only when the event carries no file name (3089
+        # and the context events), which the ActivityID pass below then fixes.
+        $subject = $msg
+        foreach ($field in @('File Name', 'FileNameBuffer')) {
+            if ($data.Contains($field) -and $data[$field]) { $subject = [string]$data[$field]; break }
+        }
         $scope =
-            if ($msg -like "*$tail*") { 'llama.cpp' }
-            elseif ($msg -like "*$venvTail*") { 'venv' }
+            if ($subject -like "*$tail*") { 'llama.cpp' }
+            elseif ($subject -like "*$venvTail*") { 'venv' }
             else { 'other' }
         [pscustomobject]@{
             TimeCreated = $_.TimeCreated.ToString('o')
@@ -1586,7 +1618,7 @@ function Invoke-Collect {
             # only in EventData, so keeping Message alone makes the ActivityID
             # correlation this script exists to support impossible from the
             # JSON, and sends the reader back to the raw evtx.
-            EventData   = (Get-EventDataMap $_)
+            EventData   = $data
         }
     })
     # 3089 carries no path: its rendered message is the fixed string

@@ -1895,3 +1895,63 @@ exit 0
         capture_output = True, text = True, timeout = 120,
     )
     assert proc.returncode == 0, proc.stdout[-1500:] + proc.stderr[-1500:]
+
+
+def test_run_refuses_a_label_that_was_never_prepared():
+    """Get-RunDir creates the directory, so a new or mistyped -Label reached run
+    empty and skipped every baseline-keyed guard: run started an elevated Studio
+    that revert, which refuses a label with no baseline, could never stop."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    run = ps1[ps1.index("function Invoke-Run") : ps1.index("function Invoke-Collect")]
+    guard = run.index("-not (Test-Path -LiteralPath (Join-Path $dir 'baseline.json'))")
+    assert "-not (Test-Path -LiteralPath (Join-Path $dir 'window-start.txt'))" in run
+    assert guard < run.index("throw \"label '$Label' has no baseline.json")
+    # Ahead of every piece of work, the Studio start above all.
+    assert guard < run.index("Initialize-Studio $dir $false")
+    assert guard < run.index("Write-Section 'Venv signature inventory'")
+
+
+def test_a_second_studio_launch_stops_the_first_probe_studio():
+    """probe-studio.json holds one record. A prepare retried after a launch that
+    never answered overwrote the record of a still-running elevated Studio, so
+    revert stopped only the newer one and reported success."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    fn = ps1[ps1.index("function Start-Studio") : ps1.index("function Stop-Studio")]
+    stop = fn.index("if (-not (Stop-ProbeStudio (Get-RunDir))) {")
+    assert stop < fn.index("$proc = Start-Process")
+    assert stop < fn.index("'probe-studio.json'")
+    assert "throw" in fn[stop : fn.index("$proc = Start-Process")]
+
+
+def test_a_reused_label_never_archives_an_earlier_upgrade_transcript():
+    """collect stages the whole run directory, and the stale sweep runs after the
+    winget block, so a label reused without -UpgradePackages archived the
+    previous run's irreversible upgrades as if this run had made them."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    prepare = ps1[
+        ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")
+    ]
+    clear = prepare.index(
+        "Remove-Item -LiteralPath (Join-Path $dir 'winget-upgrade.log')"
+    )
+    # Before the block that writes it, and not conditional on the switch.
+    assert clear < prepare.index("if ($UpgradePackages) {")
+    assert clear < prepare.index("Tee-Object -FilePath (Join-Path $dir 'winget-upgrade.log')")
+
+
+def test_events_are_scoped_by_the_evaluated_file_not_the_requesting_process():
+    """A 3076/3077 message names both the requesting process and the file ("a
+    process (%4) attempted to load %2"). Matching the whole message scoped an
+    unsigned file outside our trees as ours whenever the process was inside
+    them. Microsoft documents File Name as the blocked file."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
+    shaped = collect[collect.index("$shaped = @($events") : collect.index("$scopeByActivity = @{}")]
+    assert "foreach ($field in @('File Name', 'FileNameBuffer'))" in shaped
+    assert 'if ($subject -like "*$tail*")' in shaped
+    assert 'elseif ($subject -like "*$venvTail*")' in shaped
+    assert '$msg -like' not in shaped
+    # The message stays the fallback for events with no file name, and the
+    # EventData map is read once and exported as before.
+    assert "$subject = $msg" in shaped
+    assert "EventData   = $data" in shaped
