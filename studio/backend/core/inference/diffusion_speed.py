@@ -283,6 +283,30 @@ def fp16_compile_explicit_only(target: Any) -> bool:
     return _is_float16(getattr(target, "dtype", None))
 
 
+def family_compiles_regionally(family: Any) -> bool:
+    """False only for an EMPTY ``_repeated_blocks`` (``compile_repeated_blocks`` raises); unknown reads True."""
+    if getattr(family, "denoiser_attr", "transformer") != "transformer":
+        return True
+    name = getattr(family, "transformer_class", None)
+    if not isinstance(name, str) or not name:
+        return True
+    # Called before load_pipeline's guard; `import diffusers` imports torch._dynamo, so wait for the torch warm.
+    try:
+        from loggers import get_logger
+        from utils.torch_warmup import close_dynamo_import_window
+        close_dynamo_import_window(get_logger(__name__))
+    except Exception:  # noqa: BLE001, S110 - optimisation only
+        pass
+    try:
+        import diffusers
+        cls = getattr(diffusers, name, None)
+    except Exception:  # noqa: BLE001 - an unanswerable probe keeps today's behaviour
+        return True
+    if cls is None or not hasattr(cls, "_repeated_blocks"):
+        return True
+    return bool(cls._repeated_blocks)
+
+
 def _is_bfloat16(dtype: Any) -> bool:
     try:
         import torch
@@ -587,6 +611,12 @@ def _compile_repeated_blocks(
         dit_kwargs["dynamic"] = compile_dynamic(transformer, kwargs["dynamic"])
         # Read by auto_dynamic_active: the generalising recompile on a new text length must reach the bundle.
         transformer._unsloth_auto_dynamic = dit_kwargs["dynamic"] is None
+        if type(transformer).__name__ == "QwenImage21Transformer2DModel":
+            try:
+                from .diffusion_qwenimage21_rope import install as install_real_rope
+                install_real_rope(logger)
+            except Exception as exc:  # noqa: BLE001 - optimisation only
+                _warn(logger, "qwen-image-2.1 real rope", exc)
         try:
             transformer.compile_repeated_blocks(**dit_kwargs)
             engaged = True
@@ -925,6 +955,15 @@ def _enable_fp16_accumulation(
 
 
 def _fuse_qkv(pipe: Any, logger: Any) -> bool:
+    from .diffusion_native_quant import is_native_quantised
+
+    # Fusing reads each projection's .weight, which a native layer dequantises: a dense to_qkv beside the int8 buffers.
+    if any(is_native_quantised(dit) for dit in _denoiser_dits(pipe)):
+        if logger is not None:
+            logger.info(
+                "diffusion.speed: fuse_qkv skipped (native quantised projections stay unfused)"
+            )
+        return False
     # Prefer the pipe-level fuse (covers every component); else fuse each denoiser DiT so a dual-DiT family fuses BOTH
     # experts.
     fn = getattr(pipe, "fuse_qkv_projections", None)

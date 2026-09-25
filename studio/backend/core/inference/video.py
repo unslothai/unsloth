@@ -55,12 +55,22 @@ from .diffusion_attention import (
 from .diffusion_cache import (
     FBCACHE_MIN_STEPS,
     TC_AUTO,
+    TC_STATIC,
     apply_step_cache,
     auto_step_cache_allowed,
+    cache_breaks_graph,
     maybe_toggle_step_cache,
     normalize_transformer_cache,
     resolve_auto_step_cache,
     step_cache_supported,
+)
+from .diffusion_step_skip import (
+    install_static_step_skip,
+    mark_step_end,
+    reset_static_step_skip,
+    static_skip_stats,
+    static_skip_view,
+    uninstall_static_step_skip,
 )
 from .diffusion_device import (
     DiffusionDeviceTarget,
@@ -110,14 +120,25 @@ from .diffusion_auto_policy import (
 )
 from .diffusion_transformer_quant import (
     TQ_AUTO,
+    TQ_INT8,
     dense_transformer_supported,
     dense_transformer_unsupported_reason,
     explain_unusable_scheme,
+    native_int8_act,
+    native_offload_host,
+    native_quant_host,
+    native_quant_scheme,
+    NATIVE_OFFLOAD_SCHEMES,
+    NATIVE_QUANT_SCHEMES,
     normalize_transformer_quant,
     quantize_transformer,
+    mark_source_precision,
     select_transformer_quant_scheme,
+    stored_denoiser_precision,
+    transformer_is_quantised,
 )
 from .diffusion import _memory_request_forces_offload
+from .diffusion_native_quant import native_quant_reason
 from .diffusion_batched import is_oom_error
 from .diffusion_precision import (
     effective_te_quant,
@@ -290,8 +311,23 @@ def _assert_video_precision_for_target(
                 f"the dense DiT quant applies to full-pipeline loads only, and this is a "
                 f"'{model_kind}' load, which runs the precision its checkpoint carries"
             )
+        elif (
+            pinned in NATIVE_QUANT_SCHEMES
+            and not getattr(fam, "modular_workflow", None)
+            and native_quant_host(target)
+        ):
+            # The modular workflow seeds torchao checkpoints, so it stays off the native path.
+            if native_quant_scheme(target, pinned, family = getattr(fam, "name", None)) is None:
+                reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
         elif not dense_transformer_supported(target):
             reason = dense_transformer_unsupported_reason(target)
+        elif forces_offload and pinned in NATIVE_OFFLOAD_SCHEMES and native_offload_host(target):
+            # forces_offload is already False for the modular workflow.
+            if (
+                native_quant_scheme(target, pinned, family = getattr(fam, "name", None), offload = True)
+                is None
+            ):
+                reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
         elif forces_offload:
             # balanced and low_vram name their offload policy without measuring anything, and offload hooks move modules
             # with Module.to(), which torchao tensors do not survive. load_pipeline therefore skips the dense build and
@@ -791,8 +827,10 @@ def _ensure_mp4_encoder_available() -> None:
         import av  # noqa: F401
     except Exception as exc:  # noqa: BLE001 -- any import failure means no encoder
         raise ValueError(
-            "Video generation needs the 'av' package (PyAV) to encode MP4s. "
-            "Install it with: pip install av"
+            "Video generation needs the 'av' package (PyAV) to encode MP4s, and this install "
+            "is missing it. Update Unsloth to restore it (in the desktop app: Settings, Check for "
+            "updates; from a terminal: unsloth studio update). On a plain pip install: "
+            "pip install av"
         ) from exc
 
 
@@ -825,6 +863,7 @@ class _VideoLoadState:
     speed_optims: tuple = ()
     backend_flags: Optional[dict] = None
     attention_backend: Optional[str] = None
+    # Only fbcache breaks the graph (cache_breaks_graph); static keeps fullgraph and CUDA-graph eligibility.
     transformer_cache: Optional[str] = None
     # Auto only: generate() toggles it across FBCACHE_MIN_STEPS; explicit never toggles.
     cache_auto: bool = False
@@ -1263,6 +1302,13 @@ def _denoiser_view(pipe: Any, component: str) -> Any:
     return pipe if component == "transformer" else _NamedDiTView(pipe, component)
 
 
+def _is_static_cache_request(value: Optional[str]) -> bool:
+    try:
+        return normalize_transformer_cache(value) == TC_STATIC
+    except ValueError:
+        return False
+
+
 def _views_for(pipe: Any, fam: VideoFamily) -> tuple[Any, ...]:
     """The pipe view(s) to pass through the ``getattr(pipe, "transformer")`` helpers so
     they cover every denoiser: the real pipe (its ``transformer``), plus a
@@ -1673,6 +1719,7 @@ class VideoBackend:
             model_kind = resolve_video_model_kind(gguf_filename, model_kind),
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
+            memory_mode = memory_mode,
             gpu_ordinal = gpu_ordinal,
         )
         # Resolved out here so the companion claim is published in the SAME locked section as _loading. begin_load
@@ -1988,6 +2035,8 @@ class VideoBackend:
         hf_token: Optional[str] = None,
         memory_mode: Optional[str] = None,
         gpu_ordinal: Optional[int] = None,
+        # NAMED so a static step-skip ask can be recorded as declined: sd.cpp runs every step itself.
+        transformer_cache: Optional[str] = None,
         # NAMED, not left to the ``**_`` swallow below: an API-initiated load hands this in through _run_load's kwargs,
         # and swallowed it meant the four-file bundle, the sizing metadata and the sd-cli install were all fetched by a
         # load that promised no downloads.
@@ -2410,6 +2459,18 @@ class VideoBackend:
                                     None,
                                     "flash",
                                     "sd.cpp diffusion flash attention",
+                                ),
+                                **(
+                                    {
+                                        "transformer_cache": (
+                                            transformer_cache,
+                                            "off",
+                                            "static step skip is not supported by the native sd.cpp runtime",
+                                            RESOLVED_UNSUPPORTED,
+                                        )
+                                    }
+                                    if _is_static_cache_request(transformer_cache)
+                                    else {}
                                 ),
                             }
                         ),
@@ -3914,6 +3975,7 @@ class VideoBackend:
                 # Carried, not defaulted: load_pipeline is also reached directly (no _run_load), and dropping it here
                 # would let an offline load fetch the four-file bundle.
                 local_files_only = local_files_only,
+                transformer_cache = transformer_cache,
             )
             return self.status()
 
@@ -3996,6 +4058,7 @@ class VideoBackend:
                 _base_local_dir = _base_local_dir,
                 # Settled before the pull when the pull acted on it; None when it did not.
                 _h3_auto_denoiser_planned = _h3_auto_denoiser_planned,
+                transformer_cache = transformer_cache,
             )
 
         transformer_quant_requested = transformer_quant
@@ -4110,12 +4173,15 @@ class VideoBackend:
                 kind == "pipeline"
                 and planned.offload_policy != "none"
                 and normalize_transformer_quant(transformer_quant) is not None
-                and dense_transformer_supported(target)
+                and (
+                    dense_transformer_supported(target)
+                    or native_quant_scheme(target, transformer_quant, family = fam.name) is not None
+                )
                 and components is not None
             ):
-                scheme_preview = select_transformer_quant_scheme(
+                scheme_preview = native_quant_scheme(
                     target, transformer_quant, family = fam.name
-                )
+                ) or select_transformer_quant_scheme(target, transformer_quant, family = fam.name)
                 factor = _QUANT_STEADY_FACTOR.get(scheme_preview) if scheme_preview else None
                 if factor is not None:
                     quant_mib = int((components[0] * factor + companions_gb) * mib_per_gb)
@@ -4292,6 +4358,22 @@ class VideoBackend:
         # Why the quant did not engage, in the caller's terms; threaded into `resolved`.
         transformer_quant_decline: Optional[str] = None
         transformer_quant_decline_status = RESOLVED_FELL_BACK
+        video_offload = plan.offload_policy != "none"
+        native_scheme = (
+            native_quant_scheme(
+                target, transformer_quant_pinned, family = fam.name, offload = video_offload
+            )
+            if kind == "pipeline"
+            else None
+        )
+        native_kwargs = (
+            {
+                "offload": video_offload,
+                "act_int8": native_scheme == TQ_INT8 and native_int8_act(target),
+            }
+            if native_scheme is not None
+            else {}
+        )
         # Auto quantises a video DiT only to keep it resident: with bf16 resident, int8 fails the default LPIPS bar.
         if (
             kind == "pipeline"
@@ -4314,7 +4396,11 @@ class VideoBackend:
                 f"'{kind}' load, which runs the precision its checkpoint carries"
             )
             transformer_quant_decline_status = RESOLVED_UNSUPPORTED
-        elif transformer_quant_pinned is not None and not dense_transformer_supported(target):
+        elif (
+            transformer_quant_pinned is not None
+            and native_scheme is None
+            and not dense_transformer_supported(target)
+        ):
             # Ask the helper rather than repeating its fallback: on ROCm and on the Windows torchao
             # stub it knows a truer reason, and an AMD owner reading "needs a CUDA GPU" while
             # holding a working GPU learns nothing about why it declined.
@@ -4325,6 +4411,7 @@ class VideoBackend:
             and normalize_transformer_quant(transformer_quant) is not None
             and dense_transformer_supported(target)
             and plan.offload_policy != "none"
+            and native_scheme is None
         ):
             # Offload hooks move modules with Module.to(), which torchao quantized tensors reject. Skip quant
             # (dense-under-offload beats a crash); forceable via a resident mode.
@@ -4343,7 +4430,23 @@ class VideoBackend:
         elif (
             kind == "pipeline"
             and normalize_transformer_quant(transformer_quant) is not None
-            and dense_transformer_supported(target)
+            and (dense_transformer_supported(target) or native_scheme is not None)
+            and (source_precision := stored_denoiser_precision(_base_local_dir or repo_id))
+            is not None
+        ):
+            # from_pretrained widened a narrow checkpoint to bf16; requantising compounds the loss.
+            for view in views:
+                mark_source_precision(view, source_precision)
+            transformer_quant_decline = (
+                f"its published weights are {source_precision} and were widened to bf16 on load, so "
+                "quantising them again would compound that loss"
+            )
+            transformer_quant_decline_status = RESOLVED_UNSUPPORTED
+            logger.info("video.transformer_quant: skipped (%s)", transformer_quant_decline)
+        elif (
+            kind == "pipeline"
+            and normalize_transformer_quant(transformer_quant) is not None
+            and (dense_transformer_supported(target) or native_scheme is not None)
         ):
             engaged = []
             for view in views:
@@ -4355,6 +4458,7 @@ class VideoBackend:
                     mode = transformer_quant,
                     family = fam.name,
                     logger = logger,
+                    **native_kwargs,
                 )
                 if scheme is not None:
                     engaged.append(scheme)
@@ -4365,6 +4469,20 @@ class VideoBackend:
                 raise RuntimeError(
                     f"transformer_quant={engaged[0]} engaged on only "
                     f"{len(engaged)}/{len(views)} experts; retry without quant."
+                )
+            # A part-converted view is unusable even when the precision fallback is allowed.
+            dirty = (
+                []
+                if engaged
+                else [i for i, view in enumerate(views) if transformer_is_quantised(view)]
+            )
+            if dirty:
+                del pipe
+                clear_gpu_cache()
+                raise RuntimeError(
+                    f"transformer_quant='{transformer_quant}' converted part of the denoiser and then "
+                    "failed, leaving it neither dense nor usable. Reload with Precision set to Off to "
+                    "run the checkpoint as-is."
                 )
             if engaged:
                 transformer_quant_engaged = engaged[0]
@@ -4437,7 +4555,11 @@ class VideoBackend:
         )
         # A torchao-quantised DiT must be compiled (eager is ~30x slower), so force the regional profile when quant
         # engaged but speed was off.
-        if transformer_quant_engaged is not None and effective_speed == SPEED_OFF:
+        if (
+            transformer_quant_engaged is not None
+            and native_scheme is None
+            and effective_speed == SPEED_OFF
+        ):
             logger.info(
                 "video.transformer_quant: forcing speed_mode=default "
                 "(quantized transformer must be compiled; eager is ~30x slower)"
@@ -4454,18 +4576,41 @@ class VideoBackend:
             default_cache_steps, _ = default_video_generation_params(gguf_filename, repo_id, base)
             cache_request = resolve_auto_step_cache(effective_speed, default_cache_steps)
         cache_engaged = None
-        for view in views:
-            engaged = apply_step_cache(
-                view,
-                mode = cache_request,
-                threshold = transformer_cache_threshold,
-                # A quantized transformer's residuals are larger, so both engaged quant and GGUF need the higher FBCache
-                # threshold.
-                quant_active = cache_quant_active,
-                logger = logger,
-            )
-            if view is pipe:
-                cache_engaged = engaged
+        static_decline: Optional[str] = None
+        if cache_request == TC_STATIC:
+            # One denoiser only: a dual-expert MoE hands part of the trajectory to transformer_2, unseen by the history.
+            if len(views) > 1 or getattr(pipe, "transformer_2", None) is not None:
+                static_decline = (
+                    "static step skip needs a single denoiser; this family runs two experts "
+                    "(transformer_2), so it runs uncached"
+                )
+                logger.warning("video.step_skip: %s", static_decline)
+            elif getattr(fam, "has_audio", False):
+                # Engaged on LTX-2's joint (video, audio) denoiser it would report static while every call computed.
+                static_decline = (
+                    "static step skip reuses one noise prediction per call; this family's denoiser "
+                    "returns joint video and audio predictions, so it runs uncached"
+                )
+                logger.warning("video.step_skip: %s", static_decline)
+            else:
+                cache_engaged = install_static_step_skip(pipe, logger = logger)
+                if cache_engaged is None:
+                    static_decline = (
+                        "static step skip is unavailable for this pipeline; it runs uncached"
+                    )
+        else:
+            for view in views:
+                engaged = apply_step_cache(
+                    view,
+                    mode = cache_request,
+                    threshold = transformer_cache_threshold,
+                    # Quantized residuals are larger: engaged quant and GGUF need the higher FBCache threshold.
+                    quant_active = cache_quant_active,
+                    logger = logger,
+                )
+                if view is pipe:
+                    cache_engaged = engaged
+        cache_graph_break = cache_breaks_graph(cache_engaged)
         # Arm only where FBCache can engage: a live toggle drops fullgraph and retries every generation.
         cache_may_toggle = cache_auto_live and (
             cache_engaged is not None
@@ -4492,7 +4637,7 @@ class VideoBackend:
                     f"{FBCACHE_MIN_STEPS}; re-checked per generation"
                 )
         else:
-            cache_reason = "requested"
+            cache_reason = static_decline or "requested"
         attention_engaged = None
         # HunyuanVideo-1.5 only, and once for the whole pipe (the installer fans out over every denoiser DiT itself).
         # Before apply_attention_backend below, so the requested kernel pins onto the new processors. Held off on
@@ -4530,7 +4675,7 @@ class VideoBackend:
                 speed_mode = effective_speed,
                 # An auto cache that could still engage also drops fullgraph (FBCache under a fullgraph-compiled DiT
                 # crashes)
-                cache_active = cache_engaged is not None or cache_may_toggle,
+                cache_active = cache_graph_break or cache_may_toggle,
                 offload_active = plan.offload_policy != "none",
                 cuda_graph_default = False,
             )
@@ -4577,7 +4722,7 @@ class VideoBackend:
                         speed_mode,
                         effective_speed,
                         "quantized transformer requires compile"
-                        if transformer_quant_engaged is not None
+                        if transformer_quant_engaged is not None and native_scheme is None
                         else "clip denoises amortise the one-time compile within a single run"
                         if speed_mode is None
                         else "requested",
@@ -4591,13 +4736,18 @@ class VideoBackend:
                         None if cache_auto else transformer_cache,
                         cache_engaged or "off",
                         cache_reason,
+                        RESOLVED_UNSUPPORTED if static_decline else None,
                     ),
                     "transformer_quant": (
                         transformer_quant_requested,
                         transformer_quant_engaged or "off",
                         # Honest framing: the shipped torchao schemes cut load time and resident memory ~2x, but
                         # per-step GEMMs are at best bf16 parity.
-                        "DiT(s) quantised (halves resident weights; hosted checkpoints cut "
+                        native_quant_reason(
+                            getattr(pipe, "transformer", None), transformer_quant_engaged
+                        )
+                        if transformer_quant_engaged is not None and native_scheme is not None
+                        else "DiT(s) quantised (halves resident weights; hosted checkpoints cut "
                         "load time; per-step speed is roughly bf16 parity)"
                         if transformer_quant_engaged is not None
                         else (
@@ -4765,6 +4915,7 @@ class VideoBackend:
         _base_local_dir: Optional[str] = None,
         _h3_auto_denoiser_planned: Optional[str] = None,
         local_files_only: bool = False,
+        transformer_cache: Optional[str] = None,
     ) -> dict[str, Any]:
         """Load MiniMax-H3 through its official Modular Diffusers workflow.
 
@@ -5364,7 +5515,16 @@ class VideoBackend:
                     attention_engaged or "native",
                     "cuDNN fused attention on NVIDIA when a speed profile is active",
                 ),
-                "transformer_cache": (None, "off", "not supported by this modular workflow"),
+                "transformer_cache": (
+                    (
+                        transformer_cache,
+                        "off",
+                        "static step skip is not supported by this modular workflow",
+                        RESOLVED_UNSUPPORTED,
+                    )
+                    if _is_static_cache_request(transformer_cache)
+                    else (None, "off", "not supported by this modular workflow")
+                ),
                 "cuda_graph": (
                     None,
                     "on" if "cuda_graph" in speed_optims else "off",
@@ -5719,6 +5879,13 @@ class VideoBackend:
 
     def generate_job_account(self) -> Optional[str]:
         return self._generate_job_account
+
+    def static_skip_view(self) -> tuple:
+        """(owner, ``transformer_cache_stats``) from one read; the owner is never part of status()."""
+        state = self._state
+        if state is None or state.transformer_cache != TC_STATIC:
+            return None, None
+        return static_skip_view(state.pipe)
 
     def _run_generate(
         self,
@@ -6296,7 +6463,11 @@ class VideoBackend:
                         return
                     _report(ticker.completed())
 
+                static_skip = state.transformer_cache == TC_STATIC
+
                 def _on_step(p, step_index, timestep, callback_kwargs):
+                    if static_skip:
+                        mark_step_end(pipe)
                     # diffusers calls this at the END of a loop iteration, after scheduler.step, so
                     # the step's latent update is already submitted when the marker goes down.
                     if cancel.is_set():
@@ -6359,7 +6530,12 @@ class VideoBackend:
                                 + ("reaches" if toggled else "is below")
                                 + f" {FBCACHE_MIN_STEPS}"
                             )
-                if state.transformer_cache:
+                if static_skip:
+                    # Without a step callback (HunyuanVideo-1.5) steps count per CFG branch from cache_context names.
+                    reset_static_step_skip(
+                        pipe, steps, step_signal = has_step_callback, owner = current_account_id()
+                    )
+                elif state.transformer_cache:
                     self._reset_step_cache(pipe)
                 try:
                     with torch.inference_mode(), progress_ctx(), sigma_ctx:
@@ -6379,6 +6555,9 @@ class VideoBackend:
                     # must not keep reporting it compiled (a forced-compile quantised load runs ~30x slower eager),
                     # whether this render finished, was cancelled or failed.
                     settle_compile_fallback(state, pipe, logger)
+                    if static_skip:
+                        logger.debug("video.step_skip: %s", static_skip_stats(pipe))
+                        reset_static_step_skip(pipe, None)
                     if fam.modular_workflow:
                         from .video_minimax_h3_vae import settle_h3_vae_fallback
                         settle_h3_vae_fallback(state, pipe)
@@ -6960,6 +7139,7 @@ class VideoBackend:
             diffusion_cuda_graph.uninstall_all(
                 getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or ()
             )
+            uninstall_static_step_skip(getattr(state, "pipe", None))
             del state
             try:
                 clear_gpu_cache()
@@ -7023,6 +7203,7 @@ class VideoBackend:
                 "speed_optims": [],
                 "attention_backend": None,
                 "transformer_cache": None,
+                "transformer_cache_stats": None,
                 "transformer_quant": None,
                 "text_encoder_quant": None,
                 "has_audio": False,
@@ -7071,6 +7252,9 @@ class VideoBackend:
             "speed_optims": speed_optims,
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
+            "transformer_cache_stats": (
+                static_skip_stats(state.pipe) if state.transformer_cache == TC_STATIC else None
+            ),
             "transformer_quant": state.transformer_quant,
             "text_encoder_quant": state.text_encoder_quant,
             "has_audio": fam.has_audio,
