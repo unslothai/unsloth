@@ -154,7 +154,12 @@ def test_resident_embedding_gguf_checks_dimensions_against_its_width(
     forwarded = []
 
     class _Client:
-        async def post(self, *_args, json = None, **_kwargs):
+        async def post(
+            self,
+            *_args,
+            json = None,
+            **_kwargs,
+        ):
             forwarded.append(json)
             # llama-server ignores `dimensions` and always returns its full width
             vector = [0.5, 0.5]

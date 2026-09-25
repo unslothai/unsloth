@@ -30973,11 +30973,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         finally:
             _direct_llama_request_finished()
             _tracker.__exit__(None, None, None)
-    if (
-        resp.status_code == 200
-        and dimensions is not None
-        and dimensions != _embedding_width(resp)
-    ):
+    if resp.status_code == 200 and dimensions is not None and dimensions != _embedding_width(resp):
         detail = f"'dimensions' is not supported by {_llama_public_model_id(llama_backend)}."
         api_monitor.fail(monitor_id, detail)
         raise HTTPException(status_code = 400, detail = detail)
