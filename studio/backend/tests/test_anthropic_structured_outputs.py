@@ -347,6 +347,27 @@ def test_format_with_tool_choice_none_does_not_require_server_tool_permission(mo
     assert "tools" not in sent
 
 
+def test_schema_only_server_tool_request_does_not_add_date_for_api_key(monkeypatch):
+    _calls, upstream = _install(monkeypatch)
+    monkeypatch.setattr(
+        inf_mod, "current_date_prompt_line", lambda **_kwargs: "Current date: 2026-09-25"
+    )
+    monkeypatch.setattr(inf_mod, "_request_has_api_key", lambda _request: True)
+    monkeypatch.setattr(inf_mod, "_request_is_internal_workflow", lambda _request: False)
+
+    status, _body = _run(
+        _payload(
+            enable_tools = True,
+            tool_choice = {"type": "none"},
+            output_config = {"format": {"type": "json_schema", "schema": _SCHEMA}},
+        )
+    )
+
+    assert status == 200
+    [sent] = upstream
+    assert sent["messages"] == [{"role": "user", "content": "Name a scientist."}]
+
+
 @pytest.mark.parametrize("with_format", [False, True])
 def test_count_tokens_matches_schema_routing_under_tool_choice_none(monkeypatch, with_format):
     counted = []
@@ -367,6 +388,38 @@ def test_count_tokens_matches_schema_routing_under_tool_choice_none(monkeypatch,
     assert response.status_code == 200
     [(_messages, tools)] = counted
     assert bool(tools) is not with_format
+
+
+def test_count_tokens_omits_server_tool_date_for_schema_only_api_key(monkeypatch):
+    counted = []
+
+    def _count(messages, _template, tools, **_kwargs):
+        counted.append((messages, tools))
+        return 2
+
+    _install(monkeypatch, count_chat_tokens = _count)
+    monkeypatch.setattr(
+        inf_mod, "current_date_prompt_line", lambda **_kwargs: "Current date: 2026-09-25"
+    )
+    monkeypatch.setattr(inf_mod, "_request_has_api_key", lambda _request: True)
+    monkeypatch.setattr(inf_mod, "_request_is_internal_workflow", lambda _request: False)
+
+    response = asyncio.run(
+        inf_mod.anthropic_count_tokens(
+            _payload(
+                enable_tools = True,
+                tool_choice = {"type": "none"},
+                output_config = {"format": {"type": "json_schema", "schema": _SCHEMA}},
+            ),
+            request = _Request(),
+            current_subject = "t",
+        )
+    )
+
+    assert response.status_code == 200
+    [(messages, tools)] = counted
+    assert tools is None
+    assert messages == [{"role": "user", "content": "Name a scientist."}]
 
 
 @pytest.mark.parametrize("replayed_history", [False, True])

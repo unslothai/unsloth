@@ -34306,12 +34306,16 @@ async def anthropic_count_tokens(
         or anthropic_schema_client_tool_kind(t) is not None
         for t in payload.tools or []
     )
+    _count_openai_tool_choice = anthropic_tool_choice_to_openai(payload.tool_choice) or "auto"
+    _count_schema_disables_server_tools = (
+        _count_openai_tool_choice == "none" and _anthropic_response_format(payload) is not None
+    )
     _count_server_tools = (
         _anthropic_selects_server_tools(payload, _count_studio_tools, _count_has_client_tool)
         and llama_backend.supports_tools
         and not _anthropic_request_has_image(payload, tool_results = llama_backend.is_vision)
+        and not _count_schema_disables_server_tools
     )
-    _count_openai_tool_choice = anthropic_tool_choice_to_openai(payload.tool_choice) or "auto"
     _count_openai_client_tools = _anthropic_client_tools_for_turn(
         [
             tool
@@ -34352,12 +34356,7 @@ async def anthropic_count_tokens(
             request,
             include_api_key = _count_server_tools,
         )
-    # /messages answers a schema request with tool_choice none without the tool catalog.
-    _count_schema_only = (
-        anthropic_tool_choice_to_openai(payload.tool_choice) == "none"
-        and _anthropic_response_format(payload) is not None
-    )
-    if _count_server_tools and not _count_schema_only:
+    if _count_server_tools:
         from core.inference.tools import ALL_TOOLS as _ANTHROPIC_COUNT_TOOLS
 
         openai_tools = _tools_for_search_images(
@@ -34711,7 +34710,10 @@ async def anthropic_messages(
     # permission gate above: deciding "did this request select server tools"
     # twice is what let the gate reject requests the router then served.
     server_tools = (
-        _selects_server_tools and llama_backend.supports_tools and not _anthropic_has_image
+        _selects_server_tools
+        and llama_backend.supports_tools
+        and not _anthropic_has_image
+        and not _schema_disables_server_tools
     )
     # One short-circuiting chain: a backend whose supports_tools raises must not turn a plain
     # no-tools turn into a 500.
