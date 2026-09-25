@@ -199,6 +199,11 @@ def validate_model(
     return options
 
 
+# Engine silence, not total startup time: an uncached Hub model downloads inside the engine.
+STARTUP_STALL_S = 900
+STARTUP_LIMIT_S = 4 * 3600
+
+
 class ManagedEngine:
     def __init__(self, engine: str):
         self.engine = engine
@@ -212,6 +217,7 @@ class ManagedEngine:
         self._lease = None
         self._reader = None
         self._tail = deque(maxlen = 200)
+        self._last_output = time.monotonic()
         self.base_url = ""
         # A URL-safe token can start with '-', which CLI parsers read as an option.
         self.key = "studio-" + secrets.token_urlsafe(32)
@@ -342,10 +348,13 @@ class ManagedEngine:
             except Exception:
                 self.stop()
                 raise
-        deadline = time.monotonic() + 900
+        started = self._last_output = time.monotonic()
         try:
             with httpx.Client(trust_env = False, timeout = 2) as client:
-                while time.monotonic() < deadline:
+                while (
+                    time.monotonic() - self._last_output < STARTUP_STALL_S
+                    and time.monotonic() - started < STARTUP_LIMIT_S
+                ):
                     if self._cancel.is_set() or (
                         cancel_event is not None and cancel_event.is_set()
                     ):
@@ -375,6 +384,7 @@ class ManagedEngine:
         from utils.log_redaction import redact_log_text
         from utils.native_path_leases import redact_native_paths
         for line in proc.stdout:
+            self._last_output = time.monotonic()
             stage = self.adapter.progress(line)
             if stage and self.phase != "ready":
                 self.phase = stage

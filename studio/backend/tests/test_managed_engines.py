@@ -1553,3 +1553,42 @@ def test_memory_and_fp8_probes_wait_for_a_slow_driver(tmp_path, monkeypatch):
         SimpleNamespace(is_local = True, path = str(tmp_path)), engine = "vllm", precision = "fp8"
     )
     assert options["disable_cuda_graph"] is False
+
+
+@pytest.mark.parametrize("chatty", [True, False])
+def test_startup_deadline_counts_engine_silence(isolated, monkeypatch, chatty):
+    import os
+    import sys
+    from types import SimpleNamespace
+    from core.inference import managed_engine
+
+    active(isolated)
+    monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda _: 0.8)
+    monkeypatch.setattr(managed_engine, "STARTUP_STALL_S", 1.0)
+    engine = ManagedEngine("vllm")
+
+    def command(python, model, port, key, context, memory, tensor_parallel_size):
+        code = (
+            "import time, sys\n"
+            "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+            f"for i in range(30):\n print('Downloading shard', i, flush = True) if {chatty} else None; time.sleep(0.1)\n"
+            "class Handler(BaseHTTPRequestHandler):\n"
+            " def do_GET(self):\n"
+            "  self.send_response(200); self.end_headers()\n"
+            " def log_message(self, *args): pass\n"
+            f"HTTPServer(('127.0.0.1', {port}), Handler).serve_forever()\n"
+        )
+        return [sys.executable, "-u", "-c", code]
+
+    engine.adapter = SimpleNamespace(
+        command = command, progress = lambda _: None, environment = lambda _: {}
+    )
+    try:
+        if chatty:
+            engine.start("model", 2048, [0], dict(os.environ))
+            assert engine.phase == "ready"
+        else:
+            with pytest.raises(RuntimeError, match = "timed out"):
+                engine.start("model", 2048, [0], dict(os.environ))
+    finally:
+        engine.stop()
