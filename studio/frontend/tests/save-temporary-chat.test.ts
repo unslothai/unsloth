@@ -88,7 +88,7 @@ test("the button shows only in a temporary single chat and waits for a finished 
   assert.match(button, /\? "Nothing to save yet"\s*: target\.running\s*\? "Wait for the response to finish"/);
 });
 
-test("Don't show this again is remembered only once a save succeeds", () => {
+test("Don't show again is remembered only once a save succeeds", () => {
   const save = button.slice(button.indexOf("const save = async () => {"), button.indexOf("return (\n"));
   assert.ok(save.indexOf("await target.save()") < save.indexOf("if (dontShowAgain) rememberSkipConfirm()"));
   assert.doesNotMatch(save.slice(save.indexOf("catch")), /rememberSkipConfirm/);
