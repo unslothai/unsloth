@@ -792,7 +792,7 @@ def test_the_fast_path_asks_the_windows_triton_toolchain(monkeypatch, platform, 
 def test_the_fp16_encoder_survives_diffusers_casting_the_pixels(device, stock_fallback):
     # diffusers 0.40.0's encode() casts the pixels to get_parameter_dtype(encoder), float16 once the encoder is cast,
     # and hands the encoder output to a float32 quant_conv
-    from diffusers.models.modeling_utils import get_parameter_dtype
+    get_parameter_dtype = pytest.importorskip("diffusers.models.modeling_utils").get_parameter_dtype
 
     vae = _tiny_vae().to(device)
     ref_vae = copy.deepcopy(vae)
@@ -811,7 +811,7 @@ def test_the_video_backend_wires_the_layer_into_the_h3_load_only():
     import ast
     import pathlib
 
-    source = (pathlib.Path(H.__file__).parent / "video.py").read_text()
+    source = (pathlib.Path(H.__file__).parent / "video.py").read_text(encoding = "utf-8")
     tree = ast.parse(source)
 
     def calls(node, name):
