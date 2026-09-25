@@ -306,7 +306,6 @@ export function MemoryEstimateRow({
           note={estimate.kvEstimable ? kvNote : undefined}
           muted={!estimate.kvEstimable}
         />
-        {/* Checkpoint bytes are a ceiling, allocated as conversations grow. */}
         {estimate.kvEstimable && estimate.kvCheckpointBytes > 0 && (
           <MemoryBreakdownLine
             label="Context checkpoints"

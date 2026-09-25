@@ -314,7 +314,6 @@ test("a field arriving as a string or a non-finite number does not become a figu
 });
 
 test("the checkpoint share defaults to none and never exceeds the cache", async () => {
-  // Older backends omit the field.
   answer(() => json(FULL));
   assert.equal((await fetchMemoryEstimate(REQUEST)).kvCheckpointBytes, 0);
   answer(() => json({ ...FULL, kv_checkpoint_bytes: 1024 ** 3 }));

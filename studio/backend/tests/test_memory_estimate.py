@@ -1935,7 +1935,6 @@ class TestLaunchShapedPricing:
         assert many.gpu_bytes == none.gpu_bytes
 
     def test_the_panel_route_reports_the_checkpoint_share(self, swa, monkeypatch):
-        """Expose checkpoint bytes so the panel can separate them from KV cache."""
         config = SimpleNamespace(
             identifier = "local/swa",
             gguf_file = swa,
@@ -1954,7 +1953,6 @@ class TestLaunchShapedPricing:
         assert none.kv_checkpoint_bytes == 0
         assert many.kv_checkpoint_bytes > 0
         assert many.kv_checkpoint_bytes == many.kv_bytes - none.kv_bytes
-        # Checkpoints add host RAM usage, not GPU usage.
         assert (many.total_bytes - many.gpu_bytes) - (
             none.total_bytes - none.gpu_bytes
         ) == many.kv_checkpoint_bytes
