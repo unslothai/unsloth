@@ -684,14 +684,18 @@ def test_an_upload_is_copied_into_a_project_under_its_own_name(client, project, 
         ("line\nbreak\ttab.md", "line break tab.md"),
         ("...", "file"),
         ("C:\\Users\\me\\x.txt", "x.txt"),
+        # Cut by UTF-8 bytes, a whole character at a time: 80 sloths are 320.
+        pytest.param("\U0001f9a5" * 80 + ".txt", "\U0001f9a5" * 50 + ".txt", id = "sloths"),
     ],
 )
 def test_names_written_to_disk_are_valid_on_windows(name, safe):
-    from core.inference.gallery_projects import _bad_name
+    from core.inference.gallery_projects import _bad_name, _tmp_name
 
     assert library.safe_file_name(name) == safe
     project_name = library.safe_file_name(name, item_id = "upload:x")
     assert not _bad_name(project_name), project_name
+    # Add to project writes its copy under a longer temp name first.
+    assert len(_tmp_name(project_name).encode()) <= 255
 
 
 def test_items_download_as_attachments_under_the_name_they_were_given(client, monkeypatch):
