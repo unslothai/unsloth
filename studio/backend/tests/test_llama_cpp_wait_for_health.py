@@ -1667,6 +1667,9 @@ class TestHealthWaitMeasuresStalls:
         monkeypatch.setattr(httpx, "get", probe)
         try:
             ok = b._wait_for_health(timeout = timeout, interval = 0.02)
+            # Taken before the teardown, which is not part of the wait: killing and reaping the
+            # worker on a loaded runner is what pushed a correct wait past a tight bound.
+            elapsed = time.monotonic() - started
         finally:
             import psutil
 
@@ -1674,7 +1677,7 @@ class TestHealthWaitMeasuresStalls:
                 descendant.kill()
             b._process.kill()
             b._process.wait()
-        return b, ok, time.monotonic() - started
+        return b, ok, elapsed
 
     def test_a_load_that_keeps_working_outlives_the_timeout(self, monkeypatch):
         b, ok, elapsed = self._wait_on_child(monkeypatch, [self._WORKER, "3.0"], healthy_after = 2.5)
@@ -1700,7 +1703,12 @@ class TestHealthWaitMeasuresStalls:
             "subprocess.Popen([sys.executable, '-c', sys.argv[1], '3.0'])\n"
             "time.sleep(60)\n"
         )
-        b, ok, elapsed = self._wait_on_child(monkeypatch, [shim, self._WORKER], healthy_after = 2.5)
+        # A second interpreter has to start before the descendant does any work, and on a loaded runner that
+        # alone outlasted the 0.6s default: the wait gave up on a load that was about to make progress. 1.5s
+        # still sits well under healthy_after, so only descendant work can carry the wait to 2.5s.
+        b, ok, elapsed = self._wait_on_child(
+            monkeypatch, [shim, self._WORKER], healthy_after = 2.5, timeout = 1.5
+        )
         assert ok is True
         assert elapsed >= 2.5
 
@@ -1713,8 +1721,25 @@ class TestHealthWaitMeasuresStalls:
         with open(model, "wb") as f:
             for _ in range(512):
                 f.write(os.urandom(64 << 10))
+        # A longer stall window than its siblings use, and the asymmetry is the reason.
+        #
+        # _made_startup_progress measures CPU as MIN_CPU_FRACTION * elapsed, so a CPU-driven
+        # child that loses the scheduler needs proportionally less CPU to still count as
+        # progressing: the tests above are starvation-proof by construction. Page faults are
+        # compared against a flat MIN_PAGE_FAULTS, so the same starvation lowers the count
+        # without lowering the bar, and this is the only test where faults are the sole signal
+        # because the other two are deliberately disabled above.
+        #
+        # At the 0.6s the others use, one window where this child is not scheduled ends the
+        # wait. Reproduced on a 2-CPU cpuset against 8 competing busy loops: 2 failures in 12
+        # runs, both `assert ok is True` at this line, which is the shape seen in Backend CI
+        # (Python 3.13, l-r) where 18,747 tests share four workers.
+        #
+        # 1.5s keeps the claim intact rather than widening it. Without page-fault progress the
+        # wait still dies at 1.5s, well before the 2.5s health flip, so the test still fails if
+        # the signal stops working; it only stops failing when the machine is busy.
         b, ok, elapsed = self._wait_on_child(
-            monkeypatch, [self._MMAP_WORKER, str(model), "3.0"], healthy_after = 2.5
+            monkeypatch, [self._MMAP_WORKER, str(model), "3.0"], healthy_after = 2.5, timeout = 1.5
         )
         assert ok is True
         assert elapsed >= 2.5
@@ -1737,7 +1762,12 @@ class TestHealthWaitMeasuresStalls:
         )
         b, ok, elapsed = self._wait_on_child(monkeypatch, [self._WORKER, "0.0"], timeout = 1.5)
         assert ok is False
-        assert elapsed < 1.95
+        # Measured correctly, the wait ends one timeout after it began, about 1.5s. Measured
+        # from the unreadable samples instead, the 20 ms reads as progress when the tenth
+        # sample lands, and samples are at least 0.1s apart, so the deadline moves to no
+        # earlier than 0.9 + 1.5 = 2.4s. The bound sits below that floor rather than halfway,
+        # which left a correct wait 0.45s of headroom and a loaded runner used it up.
+        assert elapsed < 2.3
 
     def test_resident_memory_regained_after_eviction_is_not_progress(self):
         peak = (10.0, 500 << 20, 0, 0)

@@ -159,7 +159,11 @@ def _install_fake_environment(
         if name == "hf_xet":
             if import_error is not None:
                 raise import_error
-            return object()
+            # A real module, not a bare object: __file__ is what separates an installed package
+            # from the empty namespace shell the confirm step has to reject.
+            loaded = types.ModuleType("hf_xet")
+            loaded.__file__ = "/site-packages/hf_xet/__init__.py"
+            return loaded
         return importlib.import_module(name, package)
 
     monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
@@ -256,7 +260,9 @@ def test_an_imported_hf_xet_short_circuits_before_any_lookup(monkeypatch):
     find_spec would not show it either since the lookup sits inside an `except Exception: return`.
     So the lookups are recorded and the assertion is that there were none."""
     monkeypatch.delenv("HF_HUB_DISABLE_XET", raising = False)
-    monkeypatch.setitem(IF.sys.modules, "hf_xet", types.ModuleType("hf_xet"))
+    working = types.ModuleType("hf_xet")
+    working.__file__ = "/site-packages/hf_xet/__init__.py"  # a bare ModuleType is a shell
+    monkeypatch.setitem(IF.sys.modules, "hf_xet", working)
 
     lookups = []
 
@@ -272,6 +278,106 @@ def test_an_imported_hf_xet_short_circuits_before_any_lookup(monkeypatch):
     IF.fix_broken_hf_xet_wheel()
     assert lookups == []
     assert "HF_HUB_DISABLE_XET" not in IF.os.environ
+
+
+def test_fires_when_hf_xet_is_only_an_empty_namespace_package(monkeypatch, caplog, tmp_path):
+    """REGRESSION. An hf_xet/ directory with no __init__.py and no extension is a NAMESPACE
+    package: it imports cleanly and defines nothing, so confirming with a bare import cleared a
+    suspicion that was correct. huggingface_hub does `from hf_xet import PyXetDownloadInfo,
+    download_files`, which still fails. Reproduced against huggingface_hub 0.36.2 with the package
+    contents deleted and the directory and dist-info left: find_spec returned a namespace spec,
+    `import hf_xet` succeeded, and every download still went to Xet and died with
+    "cannot import name 'PyXetDownloadInfo' from 'hf_xet' (unknown location)".
+    """
+    monkeypatch.delenv("HF_HUB_DISABLE_XET", raising = False)
+    monkeypatch.delitem(IF.sys.modules, "hf_xet", raising = False)
+    monkeypatch.setattr(IF, "_hf_xet_distribution_is_installed", lambda: True)
+    monkeypatch.setattr(IF, "_hf_xet_wheel_platform_tags", lambda: ())
+
+    package = tmp_path / "hf_xet"
+    package.mkdir()  # no __init__.py, no extension: exactly what makes it a namespace package
+    spec = importlib.machinery.ModuleSpec("hf_xet", None, is_package = True)
+    spec.submodule_search_locations = [str(package)]
+
+    real_find_spec = importlib.util.find_spec
+
+    def fake_find_spec(name, package = None):
+        if name == "huggingface_hub":
+            return importlib.machinery.ModuleSpec("huggingface_hub", None)
+        if name == "hf_xet":
+            return spec
+        return real_find_spec(name, package)
+
+    namespace_module = types.ModuleType("hf_xet")
+    namespace_module.__file__ = None  # what CPython gives a namespace package
+
+    def fake_import_module(name, package = None):
+        if name == "hf_xet":
+            IF.sys.modules["hf_xet"] = namespace_module
+            return namespace_module
+        return importlib.import_module(name, package)
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+    monkeypatch.setattr(IF.importlib, "import_module", fake_import_module)
+
+    assert (
+        IF._hf_xet_extension_is_missing(spec) is True
+    ), "the suspicion itself must still be raised"
+
+    with caplog.at_level("WARNING", logger = IF.logger.name):
+        IF.fix_broken_hf_xet_wheel()
+
+    assert IF.os.environ.get("HF_HUB_DISABLE_XET") == "1"
+    assert "namespace package" in caplog.records[0].getMessage()
+    # The shell must not be left behind for the next importer to trip over.
+    assert "hf_xet" not in IF.sys.modules
+
+
+def test_fires_when_the_hub_already_cached_the_namespace_shell(monkeypatch, caplog, tmp_path):
+    """REGRESSION. huggingface_hub's own `from hf_xet import PyXetDownloadInfo, download_files`
+    leaves hf_xet in sys.modules even when those symbols are missing, because the PACKAGE imported
+    fine and only the attribute lookup failed. A cached module is therefore not proof of a working
+    one, and short-circuiting on its mere presence left the user broken. Reproduced against
+    huggingface_hub 0.36.2, Hub used before unsloth: the import raised "cannot import name
+    'PyXetDownloadInfo' from 'hf_xet' (unknown location)", the shell stayed cached with
+    __file__ None, and routes_to_xet was still True afterwards.
+    """
+    monkeypatch.delenv("HF_HUB_DISABLE_XET", raising = False)
+    monkeypatch.setattr(IF, "_hf_xet_distribution_is_installed", lambda: True)
+    monkeypatch.setattr(IF, "_hf_xet_wheel_platform_tags", lambda: ())
+
+    package = tmp_path / "hf_xet"
+    package.mkdir()
+    spec = importlib.machinery.ModuleSpec("hf_xet", None, is_package = True)
+    spec.submodule_search_locations = [str(package)]
+
+    shell = types.ModuleType("hf_xet")
+    shell.__file__ = None  # what the Hub left behind
+    monkeypatch.setitem(IF.sys.modules, "hf_xet", shell)
+
+    real_find_spec = importlib.util.find_spec
+
+    def fake_find_spec(name, package = None):
+        if name == "huggingface_hub":
+            return importlib.machinery.ModuleSpec("huggingface_hub", None)
+        if name == "hf_xet":
+            return spec
+        return real_find_spec(name, package)
+
+    def fake_import_module(name, package = None):
+        if name == "hf_xet":
+            IF.sys.modules["hf_xet"] = shell
+            return shell
+        return importlib.import_module(name, package)
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+    monkeypatch.setattr(IF.importlib, "import_module", fake_import_module)
+
+    with caplog.at_level("WARNING", logger = IF.logger.name):
+        IF.fix_broken_hf_xet_wheel()
+
+    assert IF.os.environ.get("HF_HUB_DISABLE_XET") == "1"
+    assert "hf_xet" not in IF.sys.modules, "the shell must not be left cached"
 
 
 def test_fires_when_only_the_distribution_metadata_survives(monkeypatch, caplog):

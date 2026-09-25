@@ -25,7 +25,8 @@ import {
   PermissionModeMenuItems,
 } from "./permission-mode-select";
 
-// Tool permissions entry for the composer "+" menu.
+// Dictation-only "+" menu fallback: the composer pill is the normal control, but it is hidden
+// while recording, so this is the sole way to reach permission mode then.
 export function BypassPermissionsMenuItem() {
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
   const setBypassConfirmOpen = useChatRuntimeStore(
@@ -42,10 +43,10 @@ export function BypassPermissionsMenuItem() {
         <HugeiconsIcon icon={ShieldBanIcon} strokeWidth={2} />
         Tool permissions
       </DropdownMenuSubTrigger>
-      <DropdownMenuSubContent className="unsloth-plus-menu w-[300px]">
+      <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(300px*var(--ui-space-scale,1))]">
         <PermissionModeMenuItems
-          // Defer past Radix's menu-close focus restoration: opening the dialog synchronously here lets the
-          // dropdown grab focus back and breaks the dialog's focus trap.
+          // Defer past Radix's menu-close focus restoration, or the dropdown grabs focus back
+          // and breaks the dialog's focus trap.
           onRequestFullAccess={() =>
             setTimeout(() => setBypassConfirmOpen(true), 0)
           }

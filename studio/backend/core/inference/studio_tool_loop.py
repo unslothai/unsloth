@@ -55,6 +55,32 @@ from core.inference.tool_call_parser import (
     reprompt_to_act_message,
     strip_tool_markup,
 )
+from core.inference.mcp_images import append_image_turn as append_mcp_image_turn
+
+
+def _append_mcp_images_owned(
+    conversation,
+    results,
+    owned,
+    lead = None,
+):
+    """append_image_turn with the loop's own part list, for asyncio.to_thread.
+
+    Reserving here and not on the GGUF loop: this one talks to a remote provider that
+    applies its own per-request image cap in document order, so an attachment beside a
+    full allowance of tool results silently loses the newest result -- the one the
+    model just asked for. llama-server is local and answers to the context window.
+    """
+    append_mcp_image_turn(
+        conversation,
+        results,
+        per_result = True,
+        owned = owned,
+        reserve_caller_images = True,
+        **({"lead": lead} if lead else {}),
+    )
+
+
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     awaiting_approval_status,
@@ -71,9 +97,12 @@ from core.inference.tool_stream_exec import (
 )
 from core.inference.tools import build_rag_autoinject, execute_tool, is_high_risk_tool_call
 from state.tool_approvals import (
+    DECISION_EXPIRED,
+    TOOL_APPROVAL_EXPIRED_MESSAGE,
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
     begin_tool_decision,
+    decision_reason,
     new_approval_id,
     wait_tool_decision,
 )
@@ -339,6 +368,11 @@ class ToolLoopRun:
     model: str | None = None
     tool_choice: Any = None
     continue_final_message: bool = False
+    supports_vision: bool = False
+    # Image parts an earlier promotion already put in `messages`. The loop's cap
+    # counts these too: starting from zero lets a resumed image-heavy chat carry a
+    # full history through and then add a whole batch on top.
+    promoted_image_parts: tuple = ()
 
 
 @dataclass(frozen = True)
@@ -514,6 +548,7 @@ class _Turn:
     round: int = 0
     healed: list[dict[str, Any]] = field(default_factory = list)
     text: list[str] = field(default_factory = list)
+    reasoning: list[str] = field(default_factory = list)
     reasoning_extra: dict[str, Any] | None = None
     finish_reason: str | None = None
     # Results from tools the PROVIDER ran this turn, keyed by call id so a repeated end event cannot record the same
@@ -1180,6 +1215,10 @@ async def stream_with_studio_tools(
 ) -> AsyncIterator[str]:
     """Stream a provider, execute requested Unsloth tools, continue to a final answer."""
     conversation = [dict(message) for message in run.messages]
+    # The image parts this run appends, so its cap never counts a caller's own
+    # attachments. Run-scoped, not turn-scoped: the cap is across the whole loop,
+    # and seeded with what promotion already put in the conversation.
+    loop_mcp_image_parts: list = list(run.promoted_image_parts)
     # Kept before the loop appends anything: this is the branch the request is on.
     request_branch = list(run.messages)
     remaining = policy.max_calls
@@ -1325,6 +1364,9 @@ async def stream_with_studio_tools(
 
                 delta = choice.get("delta")
                 delta = delta if isinstance(delta, dict) else {}
+                reasoning = delta.get("reasoning_content")
+                if getattr(transport, "preserves_reasoning", False) and isinstance(reasoning, str):
+                    turn.reasoning.append(reasoning)
                 content = delta.get("content")
                 raw_calls = delta.get("tool_calls")
                 extra = delta.get("extra_content")
@@ -1545,6 +1587,9 @@ async def stream_with_studio_tools(
         assistant_tool_calls: list[dict[str, Any]] = []
         tool_messages: list[dict[str, Any]] = []
         noop_messages: list[dict[str, Any]] = []
+        # One entry per tool result, not flattened: the per-result image quota
+        # would otherwise be spent entirely on the first call of a parallel batch.
+        turn_mcp_images: list[list[dict[str, Any]]] = []
         turn_executed_real_tool = False
 
         for call in calls:
@@ -1643,6 +1688,7 @@ async def stream_with_studio_tools(
                 )
                 yield _sse(start_event)
                 verdict = None
+                denied_reason = None
                 if decision_slot is not None:
                     waiter = asyncio.ensure_future(
                         asyncio.to_thread(
@@ -1665,6 +1711,9 @@ async def stream_with_studio_tools(
                             waiter.cancel()
                     verdict = waiter.result() if waiter.done() else None
                 if verdict == "deny":
+                    # Read before decision_slot is dropped below: the slot is where the waiter says
+                    # whether this was the user's refusal or an approval nobody answered.
+                    denied_reason = decision_reason(decision_slot)
                     decision_slot = None
                     denied = True
                 elif verdict is not None:
@@ -1676,19 +1725,27 @@ async def stream_with_studio_tools(
                     abort_tool_decision(decision_slot, approval_id)
 
             if denied:
+                # An approval nobody answered is not the user's decision, and this string is the only
+                # account of the call both the model and the reopened card get: the buttons are gone
+                # by the time it lands. Saying "the user declined" there is simply false.
+                denied_text = (
+                    TOOL_APPROVAL_EXPIRED_MESSAGE
+                    if denied_reason == DECISION_EXPIRED
+                    else TOOL_REJECTED_MESSAGE
+                )
                 yield _sse(
                     {
                         "type": "tool_end",
                         "tool_name": name,
                         "tool_call_id": card_id,
-                        "result": TOOL_REJECTED_MESSAGE,
+                        "result": denied_text,
                         "provenance": decision.provenance,
                     }
                 )
                 denied_message: dict[str, Any] = {
                     "role": "tool",
                     "name": name,
-                    "content": TOOL_REJECTED_MESSAGE,
+                    "content": denied_text,
                 }
                 if call_id:
                     denied_message["tool_call_id"] = call_id
@@ -1790,6 +1847,13 @@ async def stream_with_studio_tools(
             last_reprompt_text = ""
             yield _sse(completion.tool_end_event())
             tool_messages.append(completion.tool_message())
+            # Only for a target that reads them, and off the loop: the envelope is
+            # a 12 MB json-load, and a text-only run discards the result anyway.
+            _completion_images = (
+                await asyncio.to_thread(completion.mcp_images) if run.supports_vision else []
+            )
+            if _completion_images:
+                turn_mcp_images.append(_completion_images)
 
         yield _status_sse("")
 
@@ -1811,6 +1875,8 @@ async def stream_with_studio_tools(
                 if assistant_message["content"]
                 else hosted_text
             )
+        if turn.reasoning:
+            assistant_message["reasoning_content"] = "".join(turn.reasoning)
         if turn.reasoning_extra:
             assistant_message["extra_content"] = turn.reasoning_extra
         if assistant_tool_calls:
@@ -1828,6 +1894,20 @@ async def stream_with_studio_tools(
             conversation,
             "\n\n".join(dict.fromkeys(message["content"] for message in noop_messages)),
         )
+        if turn_mcp_images and run.supports_vision:
+            # One block after the whole batch. With a single result "the tool call
+            # above" is exact; with several it names whichever ran last, which may
+            # have returned no picture at all, so the block says so instead.
+            from core.inference.mcp_images import DETACHED_IMAGE_TURN_TEXT
+            _lead = DETACHED_IMAGE_TURN_TEXT if len(tool_messages) != 1 else None
+            # Off the event loop: each image is decoded and re-encoded.
+            await asyncio.to_thread(
+                _append_mcp_images_owned,
+                conversation,
+                turn_mcp_images,
+                loop_mcp_image_parts,
+                _lead,
+            )
 
         if turn_executed_real_tool:
             max_reprompts = _MAX_POST_TOOL_REPROMPTS

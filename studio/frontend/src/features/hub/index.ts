@@ -7,6 +7,7 @@ export {
   finishExternalJob,
   jobKeyOf,
   pendingDrafterPresentation,
+  type StagedDownloadProgress,
   startExternalJob,
   subscribeJobListeners,
   type TransportMode,
@@ -24,6 +25,7 @@ export {
   useHubModelSearch,
 } from "./hooks/use-hub-model-search";
 export { useHubInfiniteScroll } from "./hooks/use-hub-infinite-scroll";
+export type { CapabilityKey } from "./lib/model-capabilities";
 export { useLatestRef } from "./hooks/use-latest-ref";
 export { useOnlineStatus } from "./hooks/use-online-status";
 export {
