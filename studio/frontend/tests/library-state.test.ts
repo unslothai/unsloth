@@ -165,6 +165,7 @@ function loadStore(
   api: Record<string, unknown>,
   emitted: unknown[] = [],
   session: { epoch: number } = { epoch: 0 },
+  starsUndone: string[] = [],
 ) {
   return loadWithStubs<{
     useLibraryStore: zustand.UseBoundStore<
@@ -190,7 +191,11 @@ function loadStore(
     "./api": { errorMessage: String, ...api },
     "./favorites-store": {
       useLibraryFavoritesStore: {
-        getState: () => ({ begin: () => ({}), adopt: (_: unknown, ids: unknown) => ids, mark: () => () => {} }),
+        getState: () => ({
+          begin: () => ({}),
+          adopt: (_: unknown, ids: unknown) => ids,
+          mark: (id: string) => ({ settle: () => {}, undo: () => starsUndone.push(id) }),
+        }),
       },
     },
     "./object-url-cache": { clearCachedObjectUrls: () => {} },
@@ -253,6 +258,71 @@ test("an edit still pending at sign-out does not hold back the next account's Li
   fireWindowEvent(SIGNED_OUT, {});
   await store.getState().refresh();
   assert.deepEqual(store.getState().items, [item("upload:b")]);
+});
+
+test("a star that fails offline is undone where Images and Video read it too", async () => {
+  const starsUndone: string[] = [];
+  let online = true;
+  const store = loadStore(
+    {
+      getLibrary: async () => {
+        if (!online) throw new Error("offline");
+        return { items: [item("image:a")], folders: [] };
+      },
+      updateLibraryItem: async () => {
+        throw new Error("offline");
+      },
+    },
+    [],
+    { epoch: 0 },
+    starsUndone,
+  );
+  await store.getState().refresh();
+  online = false;
+  await assert.rejects(store.getState().patchItem("image:a", { favorite: true }));
+  assert.deepEqual(starsUndone, ["image:a"]);
+  assert.equal(store.getState().items[0]!.favorite, false);
+});
+
+test("undoing a mirrored star leaves a newer toggle of it alone", () => {
+  const { useLibraryFavoritesStore } = loadWithStubs<{
+    useLibraryFavoritesStore: zustand.StoreApi<{
+      ids: ReadonlySet<string>;
+      mark: (id: string, favorite: boolean) => { settle: () => void; undo: () => void };
+    }>;
+  }>(new URL("../src/features/library/favorites-store.ts", import.meta.url), {
+    react: { useEffect: () => {} },
+    zustand,
+    "@/features/auth": { AUTH_SESSION_CLEARED_EVENT: SIGNED_OUT },
+    "@/i18n": { translate: (key: string) => key },
+    "@/lib/toast": { toast: {} },
+    "./api": {},
+  });
+  const stars = useLibraryFavoritesStore.getState();
+  const failed = stars.mark("image:a", true);
+  failed.undo();
+  assert.equal(useLibraryFavoritesStore.getState().ids.has("image:a"), false);
+  const first = stars.mark("image:b", true);
+  stars.mark("image:b", false);
+  first.undo();
+  assert.equal(useLibraryFavoritesStore.getState().ids.has("image:b"), false);
+  stars.mark("image:b", true).settle();
+  first.undo();
+  assert.equal(useLibraryFavoritesStore.getState().ids.has("image:b"), true);
+});
+
+test("a sandbox file is deleted as the file it was listed as", async () => {
+  const deleted: unknown[] = [];
+  const store = loadStore({
+    getLibrary: async () => ({
+      items: [{ ...item("sandbox:t:a.png"), fingerprint: "7:1.5" }],
+      folders: [],
+    }),
+    deleteLibraryItem: async (...args: unknown[]) => void deleted.push(args),
+  });
+  await store.getState().refresh();
+  await store.getState().removeItem("sandbox:t:a.png");
+  assert.deepEqual(deleted, [["sandbox:t:a.png", "7:1.5"]]);
 });
 
 test("deleting a chat attachment tells an open chat to drop it", async () => {

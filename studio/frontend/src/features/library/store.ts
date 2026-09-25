@@ -92,9 +92,11 @@ let undos: (() => void)[] = [];
 
 // Edits apply locally first so menus feel instant, and roll back to the server's view on failure.
 export const useLibraryStore = create<LibraryState>((set, get) => {
+  /** `undoElsewhere` puts back what the edit changed outside this store, when it is undone here. */
   async function optimistic(
     apply: (state: LibraryState) => Partial<LibraryState>,
     request: () => Promise<void>,
+    undoElsewhere?: () => void,
   ): Promise<void> {
     const before = get();
     const after = apply(before);
@@ -115,6 +117,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
             items: undoEdit(state.items, before.items, after.items),
             folders: undoEdit(state.folders, before.folders, after.folders),
           }));
+          undoElsewhere?.();
         });
       }
       throw error;
@@ -175,8 +178,9 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
       }
     },
     patchItem: (id, patch) => {
-      // Settled with the request, before a failure's refresh reads the server's value back.
-      const settle =
+      // Mirrored where Images and Video read stars. Settled with the request, before a failure's
+      // refresh reads the server's value back; undone with the rest if that refresh fails too.
+      const star =
         patch.favorite !== undefined
           ? useLibraryFavoritesStore.getState().mark(id, patch.favorite)
           : undefined;
@@ -186,15 +190,17 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
             item.id === id ? { ...item, ...patch } : item,
           ),
         }),
-        () => updateLibraryItem(id, patch).finally(settle),
+        () => updateLibraryItem(id, patch).finally(star?.settle),
+        star?.undo,
       );
     },
-    removeItem: (id) =>
-      optimistic(
+    removeItem: (id) => {
+      const fingerprint = get().items.find((item) => item.id === id)?.fingerprint;
+      return optimistic(
         (state) => ({ items: state.items.filter((item) => item.id !== id) }),
         async () => {
           const epoch = getAuthSessionEpoch();
-          await deleteLibraryItem(id);
+          await deleteLibraryItem(id, fingerprint);
           // Signed in as another account meanwhile: its chats can hold an attachment of this id.
           if (getAuthSessionEpoch() !== epoch) return;
           // Those pages stay mounted off-screen and would keep showing it; an open chat would
@@ -210,7 +216,8 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
             });
           }
         },
-      ),
+      );
+    },
     upload: async (batch, folderId) => {
       try {
         return await uploadLibraryFiles(batch, folderId);

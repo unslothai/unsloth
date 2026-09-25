@@ -23,9 +23,9 @@ interface FavoritesState {
   begin: () => FavoritesSnapshotStart;
   /** Takes a snapshot fetched since `begin`, keeping stars toggled meanwhile. Returns the result. */
   adopt: (start: FavoritesSnapshotStart, loaded: ReadonlySet<string>) => ReadonlySet<string>;
-  /** Local only: the Library page mirrors its own edits here, and calls the returned `settle` once
-   *  its request has. */
-  mark: (id: string, favorite: boolean) => () => void;
+  /** Local only: the Library page mirrors its own edits here, calls the returned `settle` once
+   *  its request has, and `undo` if it failed with no snapshot to put the star right. */
+  mark: (id: string, favorite: boolean) => { settle: () => void; undo: () => void };
   setFavorite: (id: string, favorite: boolean) => Promise<void>;
 }
 
@@ -86,9 +86,18 @@ export const useLibraryFavoritesStore = create<FavoritesState>((set, get) => {
     },
     mark: (id, favorite) => {
       // An attempt too, so a load already in flight keeps this mark rather than its older snapshot.
-      latestAttempt.set(id, (latestAttempt.get(id) ?? 0) + 1);
+      const attempt = (latestAttempt.get(id) ?? 0) + 1;
+      latestAttempt.set(id, attempt);
+      const was = get().ids.has(id);
+      const markedSession = session;
       apply(id, favorite);
-      return track(id);
+      return {
+        settle: track(id),
+        // Only while no newer toggle owns the star.
+        undo: () => {
+          if (markedSession === session && latestAttempt.get(id) === attempt) apply(id, was);
+        },
+      };
     },
     setFavorite: async (id, favorite) => {
       const attempt = (latestAttempt.get(id) ?? 0) + 1;
