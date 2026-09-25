@@ -573,7 +573,6 @@ export function SharedComposer({
 }): ReactElement {
   const t = useT();
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
-  const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform());
   const navigate = useNavigate();
   // Exit compare: parent's restore handler, or fresh chat if opened by URL.
   const handleExitCompare = useCallback(() => {
@@ -584,6 +583,7 @@ export function SharedComposer({
     navigate({ to: "/chat" });
   }, [navigate, onExitCompare]);
   const [text, setText] = useState("");
+  const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform(), text);
   const [running, setRunning] = useState(false);
   const [comparing, setComparing] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
@@ -1981,7 +1981,7 @@ export function SharedComposer({
       }
       setCompositionState(false);
     }
-    if (composerSubmitIntent(e, sendShortcut)) {
+    if (composerSubmitIntent(e, sendShortcut, text)) {
       e.preventDefault();
       if (!busy && !isDictating) {
         send();
