@@ -98,16 +98,19 @@ def embedding_identity(
     model: str,
     *,
     gguf_repo: str | None = None,
+    pooling: str | None = None,
 ) -> str:
     """Tagged identity for ``documents.embedding_model``.
 
     The configured model comes first so a row written before identities carried a tag
     still compares equal on it. llama-server appends the GGUF repo it actually embeds
-    through, which is the part that can differ from the model's ST form."""
+    through, which is the part that can differ from the model's ST form, and any pooling
+    other than the CLS it once forced on every GGUF."""
     model = _escape_identity_segment(model)
     if gguf_repo is None:
         return f"{backend}:{model}"
-    return f"{backend}:{model}:{_escape_identity_segment(gguf_repo)}"
+    identity = f"{backend}:{model}:{_escape_identity_segment(gguf_repo)}"
+    return identity if pooling is None else f"{identity}:{pooling}"
 
 
 def embedding_identity_model(identity: str | None) -> str | None:

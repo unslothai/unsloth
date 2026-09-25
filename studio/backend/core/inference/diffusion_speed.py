@@ -700,6 +700,15 @@ def dynamo_graph_count() -> int:
         return 0
 
 
+def fresh_compile_count() -> int:
+    """FX graph cache misses. Not ``dynamo_graph_count``: it also grows on cache-served retraces, rewriting bundles."""
+    try:
+        from torch._dynamo.utils import counters
+        return int(counters["inductor"]["fxgraph_cache_miss"])
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def compile_fallback_error(pipe: Any) -> Optional[str]:
     """The compile failure a guarded DiT fell back from, or None while every compiled DiT still runs compiled."""
     for transformer in _guarded_dits(pipe):
@@ -728,6 +737,12 @@ def _compile_vae_decode(pipe: Any, logger: Any) -> bool:
 def _enable_cudnn_benchmark(logger: Any) -> bool:
     try:
         import torch
+
+        from core._torchao_stub import _module_is_rocm
+
+        # On ROCm this is MIOpen's exhaustive search: a first VAE decode tuned for 10 to 23 minutes and crashed a gfx1030.
+        if _module_is_rocm(torch):
+            return False
         torch.backends.cudnn.benchmark = True
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only
