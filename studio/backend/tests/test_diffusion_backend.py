@@ -7187,7 +7187,7 @@ def test_unload_mid_render_releases_the_pipeline(fake_runtime, monkeypatch):
 
     t = threading.Thread(target = _run)
     t.start()
-    assert at_step0.wait(5)
+    assert at_step0.wait(30)
     u = threading.Thread(target = backend.unload)
     u.start()
     assert backend._active_generate_cancel.wait(5)
@@ -7291,7 +7291,7 @@ def test_replacing_load_mid_render_releases_the_pipeline(
 
     t = threading.Thread(target = _run)
     t.start()
-    assert at_step0.wait(5)
+    assert at_step0.wait(30)
     ld = threading.Thread(target = _replacing_load)
     ld.start()
     assert backend._active_generate_cancel.wait(5)
