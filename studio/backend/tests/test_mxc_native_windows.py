@@ -413,18 +413,15 @@ def test_native_mxc_concurrent_python_and_terminal_runs_are_isolated(monkeypatch
     assert "concurrent-terminal" in results[2]
 
     cancel = threading.Event()
-    timer = threading.Timer(0.5, cancel.set)
-    timer.start()
-    try:
-        cancelled = tools._python_exec(
-            "import time; print('cancel-started', flush=True); time.sleep(30)",
-            cancel,
-            30,
-            "__LOCALID_native_mxc",
-            tool_execution_mode = "required",
-        )
-    finally:
-        timer.cancel()
+    # Stop once the workload runs: the DACL tier spends seconds before dispatch, where a fixed 0.5 s timer lands.
+    cancelled = tools._python_exec(
+        "import time; print('cancel-started', flush=True); time.sleep(30)",
+        cancel,
+        30,
+        "__LOCALID_native_mxc",
+        output_callback = lambda chunk: "cancel-started" in chunk and cancel.set(),
+        tool_execution_mode = "required",
+    )
     assert cancelled == "Execution cancelled."
     assert tools._last_tool_execution_record.completion_status == "cancelled"
     assert tools._last_tool_execution_record.cleanup_status == "complete"
@@ -534,12 +531,11 @@ def test_native_mxc_pip_install_lands_in_the_session_and_imports_next_call():
     """The interpreter is read-only in the container, so pip has to target the session packages."""
     _require_native_mxc()
     session = "__LOCALID_native_mxc_pip"
+    # In process: the code gate refuses a subprocess argv it cannot read as literal.
     installed = tools._python_exec(
-        "import subprocess, sys\n"
-        "r = subprocess.run([sys.executable, '-m', 'pip', 'install', '--no-deps', "
-        "'--disable-pip-version-check', 'six==1.16.0'], capture_output=True, text=True)\n"
-        "print('PIP_EXIT', r.returncode)\n"
-        "print(r.stdout[-400:], r.stderr[-800:])\n",
+        "from pip._internal.cli.main import main\n"
+        "rc = main(['install', '--no-deps', '--disable-pip-version-check', 'six==1.16.0'])\n"
+        "print('PIP_EXIT', rc)\n",
         None,
         240,
         session,
