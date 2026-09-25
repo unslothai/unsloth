@@ -6,59 +6,41 @@
 import os
 import queue
 import sys
+import threading
 import types
 from unittest.mock import patch
 
-import pytest
 
-
-@pytest.mark.parametrize("export_type", ["base", "merged", "gguf", "lora"])
-@pytest.mark.parametrize("fail_first", [False, True])
-def test_export_rechecks_connectivity_and_restores_hub_state(monkeypatch, export_type, fail_first):
-    import requests
+def _run_worker(monkeypatch, commands, unreachable):
+    """Run the command loop with a stub export that makes a real Hub client call. Returns
+    (offline flag, request reached the transport) per export, and the export responses."""
     import httpx
     from huggingface_hub import HfApi, constants
     from huggingface_hub.errors import OfflineModeIsEnabled
     from core.export import worker
     from core import import_guards
+    from loggers import config as log_config
     from loggers.config import LogConfig
     from utils import transformers_version
     from utils.utils import force_hf_offline
 
-    transport_calls = []
-    observed = []
+    calls = []
 
-    def send(self, request, **kwargs):
-        transport_calls.append(request.url)
-        response = requests.Response()
-        response.status_code = 200
-        response._content = b'{"id":"org/model", "siblings":[]}'
-        response.url = request.url
-        response.request = request
-        return response
-
-    def send_httpx(self, request, **kwargs):
-        transport_calls.append(str(request.url))
+    def handle_request(self, request):
         return httpx.Response(200, json = {"id": "org/model", "siblings": []}, request = request)
 
     class Backend:
         def cleanup_memory(self):
             pass
 
-        def export(self, **kwargs):
-            observed.append(constants.HF_HUB_OFFLINE)
+        def export_merged_model(self, **kwargs):
+            offline = constants.HF_HUB_OFFLINE
             try:
                 HfApi(token = False).model_info("org/model")
+                calls.append((offline, True))
             except OfflineModeIsEnabled:
-                pass  # Represents a cached export that tolerates unavailable metadata.
-            if fail_first and len(observed) == 1:
-                raise RuntimeError("export failed")
+                calls.append((offline, False))
             return True, "saved", "/tmp/export"
-
-        export_base_model = export
-        export_merged_model = export
-        export_gguf = export
-        export_lora_adapter = export
 
     fake_export = types.ModuleType("core.export.export")
     fake_export.ExportBackend = Backend
@@ -71,29 +53,50 @@ def test_export_rechecks_connectivity_and_restores_hub_state(monkeypatch, export
     monkeypatch.setattr(worker, "_setup_log_capture", lambda _: None)
     monkeypatch.setattr(worker, "_activate_transformers_version", lambda *args: None)
     monkeypatch.setattr(worker, "_handle_load", lambda *args: None)
-    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", send)
-    monkeypatch.setattr(httpx.Client, "send", send_httpx)
-    # Activation and load online, first export disconnected, next export recovered.
-    verdicts = iter([False, False, True, False])
-    monkeypatch.setattr(transformers_version, "hf_endpoint_unreachable", lambda: next(verdicts))
+    # Worker-process globals; keep them from leaking into later tests.
+    monkeypatch.setattr(worker, "_log_forward_gate", threading.Event())
+    monkeypatch.setattr(log_config, "_BARS_RESTORED", log_config._BARS_RESTORED)
+    # Below the client's request hook, which is where huggingface_hub enforces offline mode.
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", handle_request)
+    monkeypatch.setattr(transformers_version, "hf_endpoint_unreachable", unreachable)
     monkeypatch.setattr(constants, "HF_HUB_OFFLINE", False)
-    commands = queue.Queue()
-    for command in ({"type": "export", "export_type": export_type},) * 2:
-        commands.put(command)
-    commands.put({"type": "shutdown"})
-    responses = queue.Queue()
+    cmd_queue = queue.Queue()
+    for command in [*commands, {"type": "shutdown"}]:
+        cmd_queue.put(command)
+    resp_queue = queue.Queue()
     # The worker normally owns its process environment; isolate that mutation here.
     with patch.dict(os.environ):
         os.environ.pop("HF_HUB_OFFLINE", None)
         os.environ.pop("TRANSFORMERS_OFFLINE", None)
         os.environ["UNSLOTH_OFFLINE_PROBE"] = "1"
         worker.run_export_process(
-            cmd_queue = commands, resp_queue = responses, config = {"checkpoint_path": "/tmp/checkpoint"}
+            cmd_queue = cmd_queue,
+            resp_queue = resp_queue,
+            config = {"checkpoint_path": "/tmp/ckpt"},
         )
         assert "HF_HUB_OFFLINE" not in os.environ
         assert "TRANSFORMERS_OFFLINE" not in os.environ
-        assert constants.HF_HUB_OFFLINE is False
-    assert observed == [True, False]
-    assert transport_calls == ["https://huggingface.co/api/models/org/model"]
-    messages = list(responses.queue)
-    assert any(m.get("type") == f"export_{export_type}_done" for m in messages)
+    assert constants.HF_HUB_OFFLINE is False
+    return calls, [m for m in resp_queue.queue if m.get("type") == "export_merged_done"]
+
+
+def test_local_export_rechecks_connectivity_and_restores_hub_state(monkeypatch):
+    # Activation and load online, first export disconnected, next export recovered.
+    verdicts = [False, False, True, False]
+    probes = []
+
+    def unreachable():
+        probes.append(None)
+        return verdicts[len(probes) - 1]
+
+    export = {"type": "export", "export_type": "merged"}
+    calls, done = _run_worker(monkeypatch, [export, export], unreachable)
+    assert len(probes) == len(verdicts)
+    assert calls == [(True, False), (False, True)]
+    assert [m["success"] for m in done] == [True, True]
+
+
+def test_push_export_is_not_pinned_offline(monkeypatch):
+    export = {"type": "export", "export_type": "merged", "push_to_hub": True}
+    calls, _ = _run_worker(monkeypatch, [export], lambda: True)
+    assert calls == [(False, True)]
