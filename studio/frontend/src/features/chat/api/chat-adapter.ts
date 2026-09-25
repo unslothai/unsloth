@@ -145,6 +145,7 @@ import {
   codexLocalToolRoundId,
   codexReasoningForToolCalls,
   readCodexReasoning,
+  readOpenAIResponsesReasoning,
   shouldReplayAssistantReasoning,
   startsNewCodexToolRound,
   type CodexReasoningLedger,
@@ -186,6 +187,7 @@ import {
   getGroundedExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
+  providerSupportsPreserveThinking,
   getProviderCapabilities,
   isGeminiCustomOpenAICompatBase,
   providerHostsCodeExecution,
@@ -299,6 +301,7 @@ import {
   hasRenderableContent,
   incompleteLabel,
   type IncompleteReason,
+  noteRunStartedThisSession,
   readIncompleteInfo,
   resolveIncompleteReason,
   readContinuationRequest,
@@ -1198,6 +1201,20 @@ function setAssistantCodexReasoning(
   message.extra_content = { ...extra, openai_codex_reasoning: reasoning };
 }
 
+function setAssistantOpenAIResponsesReasoning(
+  message: SerializedMessage,
+  reasoning: unknown[] | undefined,
+): void {
+  if (!reasoning) return;
+  const extra =
+    message.extra_content &&
+    typeof message.extra_content === "object" &&
+    !Array.isArray(message.extra_content)
+      ? (message.extra_content as Record<string, unknown>)
+      : {};
+  message.extra_content = { ...extra, openai_responses_reasoning: reasoning };
+}
+
 function attachAssistantThoughtSignature(
   messages: SerializedMessage[],
   thoughtSignature: string | undefined,
@@ -1238,6 +1255,9 @@ function serializeAssistantReplayMessages(
   const imageParts = collectImageParts(message);
 
   const codexReasoning = readCodexReasoning(
+    (message as { metadata?: unknown }).metadata,
+  );
+  const openAIResponsesReasoning = readOpenAIResponsesReasoning(
     (message as { metadata?: unknown }).metadata,
   );
   const messages: SerializedMessage[] = [];
@@ -1294,6 +1314,13 @@ function serializeAssistantReplayMessages(
         assistantMessage,
         codexReasoningForToolCalls(
           codexReasoning,
+          pendingToolCalls.map((call) => call.id),
+        ),
+      );
+      setAssistantOpenAIResponsesReasoning(
+        assistantMessage,
+        codexReasoningForToolCalls(
+          openAIResponsesReasoning,
           pendingToolCalls.map((call) => call.id),
         ),
       );
@@ -1484,8 +1511,8 @@ function isAbandonedAssistantTurn(
 ): boolean {
   if (message.role !== "assistant") return false;
   if (assistantTurnCarriesPayload(message)) return false;
-  // A turn that finished on reasoning alone is a reply, even though external requests strip
-  // reasoning and serialise it empty.
+  // A turn that finished on reasoning alone is a reply, even when the selected provider
+  // omits reasoning and serialises it empty.
   if (
     !assistantTurnEndedEarly(message) &&
     (message.content ?? []).some((part) => part.type === "reasoning")
@@ -4848,6 +4875,7 @@ export function createOpenAIStreamAdapter(
             externalProvider.providerType,
             externalSelection.modelId,
             externalProvider.baseUrl,
+            externalProvider.apiType,
           ),
       );
       // Per-model Search/Code allowances live in providerSupportsBuiltin*; this flag only signals image-mode.
@@ -4873,6 +4901,7 @@ export function createOpenAIStreamAdapter(
             externalProvider.providerType,
             externalSelection.modelId,
             externalProvider.baseUrl,
+            externalProvider.apiType,
           ),
       );
       // Fetch is independent of Search (Anthropic bills web_fetch separately); forced off in
@@ -4896,6 +4925,8 @@ export function createOpenAIStreamAdapter(
         hostedCodeExecutionForThisTurn: codeExecEnabledForThisTurn,
         providerHostsCodeExecution: providerHostsCodeExecution(
           externalProvider?.providerType,
+          externalProvider?.baseUrl,
+          externalProvider?.apiType,
         ),
       });
 
@@ -4930,14 +4961,15 @@ export function createOpenAIStreamAdapter(
         readsImages: targetReadsImages,
         localMarkers: mcpImagesLocalMarkers,
       });
-      const survivingMessages = pruneOutboundHistory(
-        messages,
-        !isExternalRequest,
+      const replayReasoning = !isExternalRequest || (
+        providerSupportsPreserveThinking(externalProvider?.providerType) &&
+        runtime.preserveThinking
       );
+      const survivingMessages = pruneOutboundHistory(messages, replayReasoning);
       // toOpenAIMessages emits assistant tool_calls plus role="tool" follow-ups; the backend Gemini
       // translator rebuilds the functionCall/functionResponse parts.
       let outboundMessages = survivingMessages
-        .flatMap((message) => toOpenAIMessages(message, !isExternalRequest))
+        .flatMap((message) => toOpenAIMessages(message, replayReasoning))
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
         );
@@ -5423,6 +5455,9 @@ export function createOpenAIStreamAdapter(
       // Every streamed yield carries the repaired text: assistant-ui drops whatever is yielded after
       // an abort, so on Stop the last STREAMED yield is what gets saved.
       let codexReasoningLedger: CodexReasoningLedger = { byToolCall: {} };
+      let openAIResponsesReasoningLedger: CodexReasoningLedger = {
+        byToolCall: {},
+      };
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
 
@@ -5435,6 +5470,7 @@ export function createOpenAIStreamAdapter(
       const liveCustom = () => ({
         ...reasoningDurationTracker.metadata(),
         openaiCodexReasoning: codexReasoningLedger,
+        openaiResponsesReasoning: openAIResponsesReasoningLedger,
         contextTruncation,
         // A legacy (browser-tool / attachment / incognito) run that ends because you closed the tab has no
         // server-side run to resume from, so its last streamed yield is what persists. Mark it an interruption
@@ -5815,6 +5851,7 @@ export function createOpenAIStreamAdapter(
               {
                 isReasoningProvider: externalProvider.isReasoningModel === true,
                 baseUrl: externalProvider.baseUrl ?? null,
+                apiType: externalProvider.apiType,
               },
             )
           : {
@@ -6074,6 +6111,9 @@ export function createOpenAIStreamAdapter(
         });
         const externalCapabilities = getProviderCapabilities(
           externalProvider?.providerType,
+          externalProvider?.apiType,
+          externalSelection?.modelId,
+          externalProvider?.baseUrl,
         );
         const buildRequestPayload = async (
           forceRefreshPublicKey = false,
@@ -6196,7 +6236,11 @@ export function createOpenAIStreamAdapter(
             return {
               model: externalSelection.modelId,
               messages: outboundMessages,
+              ...(providerSupportsPreserveThinking(externalProvider?.providerType)
+                ? { preserve_thinking: runtime.preserveThinking }
+                : {}),
               stream: true,
+              stream_options: { include_usage: true },
               // Never forwarded upstream (the proxy sends an explicit field list); the trailing assistant
               // turn is what asks a provider to continue.
               ...(continuation ? { continue_final_message: true } : {}),
@@ -6359,6 +6403,7 @@ export function createOpenAIStreamAdapter(
                   }
                 : {}),
               provider_base_url: externalProvider.baseUrl || null,
+              provider_api_type: externalProvider.apiType ?? "chat_completions",
               ...(openaiCodeExecContainerId
                 ? {
                     openai_code_exec_container_id: openaiCodeExecContainerId,
@@ -7277,6 +7322,19 @@ export function createOpenAIStreamAdapter(
                   );
                   replayStateChanged = true;
                 }
+                const openAIResponsesReasoning =
+                  extraRecord.openai_responses_reasoning;
+                if (
+                  Array.isArray(openAIResponsesReasoning) &&
+                  openAIResponsesReasoning.length > 0
+                ) {
+                  openAIResponsesReasoningLedger = addCodexReasoning(
+                    openAIResponsesReasoningLedger,
+                    openAIResponsesReasoning,
+                    codexRoundToolCallIds,
+                  );
+                  replayStateChanged = true;
+                }
               }
 
               if (chunk.choices?.[0]?.finish_reason) {
@@ -8067,6 +8125,7 @@ export function createOpenAIStreamAdapter(
               // Persisted so Continue survives a reload; cleared on a normal end.
 
               openaiCodexReasoning: codexReasoningLedger,
+              openaiResponsesReasoning: openAIResponsesReasoningLedger,
               contextTruncation,
               incomplete: finalIncompleteReason
                 ? { reason: finalIncompleteReason }
@@ -8319,6 +8378,8 @@ export function createOpenAIStreamAdapter(
   } satisfies ChatModelAdapter;
   return {
     async *run(args) {
+      // Only runs started here may auto-continue a Max Tokens cut.
+      noteRunStartedThisSession(args.unstable_assistantMessageId);
       invalidateMinPRecoveries();
       const preStreamThreadIds = preStreamRunThreadIdsForAdapter(
         args.unstable_threadId,

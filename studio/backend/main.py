@@ -351,6 +351,7 @@ from routes import (
 from routes.llama import router as llama_router
 from routes.llama_compat import is_engine_probe_path, router as llama_compat_router
 from routes.whisper import router as whisper_router
+from routes.npu import router as npu_router
 from routes.preview import router as preview_router
 from hub.routes import (
     inventory_router as hub_inventory_router,
@@ -365,6 +366,7 @@ from hub.utils.download_registry import (
     terminate_active_downloads as terminate_hub_downloads,
 )
 from routes.settings import router as settings_router
+from routes.systemone import router as systemone_router
 from routes.prompts import router as prompts_router
 from routes.profile_stats import router as profile_stats_router
 from auth import policy as auth_policy, storage
@@ -662,11 +664,7 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     if _post_warm_retired(generation):
         return
     try:
-        from utils.diffusers_repair import diffusers_repair_in_flight
-
-        # Importing the release now would pin it in this process for the whole session.
-        if not diffusers_repair_in_flight():
-            prewarm_diffusers_if_image_models_exist()
+        prewarm_diffusers_if_image_models_exist()
     except Exception as _prewarm_exc:  # noqa: BLE001 -- latency work must never end the worker
         import structlog as _structlog
         _structlog.get_logger(__name__).debug("diffusers prewarm skipped: %s", _prewarm_exc)
@@ -881,14 +879,6 @@ async def lifespan(app: FastAPI):
             )
             + "\n"
         )
-
-    # Before the socket binds, or a first diffusion load can import the release the repair is replacing.
-    # A metadata read and a thread start; the install itself runs on that thread.
-    try:
-        from utils.diffusers_repair import start_diffusers_autorepair_if_needed
-        start_diffusers_autorepair_if_needed()
-    except Exception as _diffusers_exc:  # noqa: BLE001 -- a self-heal must never block startup
-        _lifespan_log.warning("diffusers autorepair skipped: %s", _diffusers_exc)
 
     # Last, so it never contends for the GIL: the socket binds as soon as this returns, so the login
     # screen is up while torch/transformers/datasets load.
@@ -1625,6 +1615,7 @@ app.include_router(video_openai_router, prefix = "/api/inference", tags = ["infe
 app.include_router(video_openai_router, prefix = "/v1", tags = ["openai-compat"])
 
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
+app.include_router(systemone_router, prefix = "/v1", tags = ["systemone"])
 # llama-server / Ollama discovery probes. Declares its own full paths (/props, /version, /api/tags, ...) so it
 # needs no prefix, and must be registered ahead of the SPA catch-all in serve_frontend() or /props and /version
 # go on resolving to index.html with a 200.
@@ -1643,6 +1634,7 @@ app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
 app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])
+app.include_router(npu_router, prefix = "/api/npu", tags = ["npu"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])

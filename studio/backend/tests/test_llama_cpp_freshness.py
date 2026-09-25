@@ -162,6 +162,14 @@ def test_read_install_marker_handles_invalid_json(tmp_path):
     assert fr.read_install_marker(str(bin_path)) is None
 
 
+def test_read_install_marker_handles_non_utf8(tmp_path):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir(parents = True)
+    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_bytes(b'{"runtime_line": "\xff\xfecuda13"}')
+    bin_path = _fake_binary(install_dir, layout = "root")
+    assert fr.read_install_marker(str(bin_path)) is None
+
+
 @pytest.mark.parametrize(
     "payload",
     ["[]", '["cpu"]', '"cuda"', "123", "true", "null"],
