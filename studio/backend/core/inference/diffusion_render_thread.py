@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Run every denoise of a backend on ONE persistent thread.
-
-cuDNN caches conv benchmarks and SDPA plans per THREAD (``thread_local`` in ATen Conv_v8.cpp / MHA.cpp), and
-``asyncio.to_thread`` rotates workers, so a fresh thread re-benchmarks everything (B200, Qwen-Image-2.1 1024px:
-VAE decode 0.22-0.30 s -> 4.8-10.6 s).
-
-Only the pipeline call hops, carrying context vars, CUDA device and inference mode; locks, cancellation and
-admission stay on the caller. CUDA only (ROCm runs inline). Kill switch: ``UNSLOTH_DIFFUSION_RENDER_THREAD=0``.
+"""Run each backend's denoise on one persistent thread per card: cuDNN caches conv benchmarks and SDPA plans
+per thread (ATen Conv_v8.cpp / MHA.cpp), and ``asyncio.to_thread`` rotates workers. CUDA only.
 """
 
 from __future__ import annotations
@@ -53,12 +47,10 @@ def _executor(name: str) -> ThreadPoolExecutor:
 
 
 def run(name: str, fn: Callable[[], Any]) -> Any:
-    """Run ``fn()`` on render thread ``name``, blocking; inline when disabled or already on it."""
     if threading.get_ident() in _RENDER_THREAD_IDS or not enabled():
         return fn()
     import torch  # noqa: PLC0415
 
-    # One thread per card so two GPUs never queue on each other.
     device = torch.cuda.current_device()
     inference = torch.is_inference_mode_enabled()
     grad = torch.is_grad_enabled()
