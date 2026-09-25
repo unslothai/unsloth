@@ -8360,8 +8360,23 @@ if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
     $_mxcInstallDir = Join-Path $StudioHome "mxc-runtime\windows-x86_64"
     if (Test-Path -LiteralPath $_mxcInstaller -PathType Leaf) {
         substep "installing Windows MXC Preview runtime..."
-        $_mxcOutput = & python $_mxcInstaller --install-dir $_mxcInstallDir 2>&1 | Out-String
-        $_mxcExit = $LASTEXITCODE
+        # Optional, so a nonzero exit or stderr line must reach the fallback below, not stop setup.
+        $_mxcPrevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        $_mxcRestoreNative = $PSVersionTable.PSVersion.Major -ge 7
+        if ($_mxcRestoreNative) {
+            $_mxcPrevNative = $PSNativeCommandUseErrorActionPreference
+            $PSNativeCommandUseErrorActionPreference = $false
+        }
+        try {
+            $_mxcOutput = & python $_mxcInstaller --install-dir $_mxcInstallDir 2>&1 | Out-String
+            $_mxcExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $_mxcPrevEAP
+            if ($_mxcRestoreNative) {
+                $PSNativeCommandUseErrorActionPreference = $_mxcPrevNative
+            }
+        }
         if ($_mxcExit -eq 0) {
             if ($_mxcOutput -match "already matches") {
                 step "MXC Preview" "prebuilt up to date and validated"
