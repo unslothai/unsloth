@@ -49,7 +49,6 @@ def _page(text: str, page_number: int | None) -> Page:
 
 
 _HTML_SKIP_TAGS = frozenset(("script", "style", "template"))
-# Block elements start a new line; all other tags are inline and do not split text.
 _HTML_BLOCK_TAGS = frozenset(
     "address article aside blockquote br caption center dd details dialog dir div dl dt"
     " fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 header hgroup hr legend li"
