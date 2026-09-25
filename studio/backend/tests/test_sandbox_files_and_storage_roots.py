@@ -771,6 +771,66 @@ def test_a_read_does_not_answer_from_inside_a_legacy_move_s_staging_window(
     assert (result["workdir"] / "data.csv").is_file(), f"{result['workdir']} lost its files"
 
 
+def test_a_read_that_waited_out_a_stranded_move_finds_the_staging_tree(tmp_path, monkeypatch):
+    """A move whose rename and rollback both fail leaves the only copy in its marked staging tree.
+
+    A read whose first scan ran before the staging tree was marked waits the move out at the
+    legacy lookup, finds the legacy folder gone, and must look for the staging tree again rather
+    than hand back a destination that will never exist.
+    """
+    fake_home = tmp_path / "userprofile"
+    fake_home.mkdir()
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
+
+    session = fake_home / "studio_sandbox" / "__LOCALID_stranded"
+    session.mkdir(parents = True)
+    (session / "data.csv").write_text("a\n")
+
+    tools = _shared_setup_6()
+
+    staged = threading.Event()
+    release = threading.Event()
+    real_move = shutil.move
+    real_rename = os.rename
+
+    def gated_move(source, destination, *args, **kwargs):
+        moved = real_move(source, destination, *args, **kwargs)
+        if tools._STAGING_SUFFIX in os.path.basename(destination):
+            staged.set()  # in staging and not yet marked
+            release.wait(10)
+        return moved
+
+    def failing_rename(source, destination, *args, **kwargs):
+        if tools._STAGING_SUFFIX in os.path.basename(os.fspath(source)):
+            raise OSError("rename refused")  # both the rename into place and the rollback
+        return real_rename(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(tools.shutil, "move", gated_move)
+    monkeypatch.setattr(tools.os, "rename", failing_rename)
+
+    mover = tools.migrate_legacy_sandbox_in_background()
+    assert staged.wait(10), "the migration never reached the staging window"
+
+    result = {}
+    reader = threading.Thread(
+        target = lambda: result.update(
+            workdir = Path(tools.resolve_sandbox_workdir("__LOCALID_stranded")),
+        ),
+        daemon = True,
+    )
+    reader.start()
+    reader.join(1.0)
+    returned_early = not reader.is_alive()
+    release.set()
+    reader.join(10)
+    mover.join(10)
+
+    assert not returned_early, "the read answered from inside the staging window"
+    assert "workdir" in result, "the read never returned"
+    assert tools._STAGING_SUFFIX in result["workdir"].name, result["workdir"]
+    assert (result["workdir"] / "data.csv").is_file(), f"{result['workdir']} lost its files"
+
+
 def test_the_migration_is_serialised(tmp_path, monkeypatch):
     """Two chats running their first tool call at once must not strand files."""
     import threading

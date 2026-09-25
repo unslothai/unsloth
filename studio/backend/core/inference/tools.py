@@ -10579,6 +10579,22 @@ def _legacy_names(session_id: str) -> "list[str]":
     return names
 
 
+def _marked_sandbox_after_moves(root: str, session_id: str) -> "str | None | bool":
+    """_marked_sandbox_in with every legacy move of this session held off, or False when no move of
+    it ever started. Under whichever name it was moved from: a chat whose id starts with the
+    derived prefix moves under the literal id, and its staging tree is marked with the derived one."""
+    locks = [_legacy_lock_peek(name) for name in _legacy_names(session_id)]
+    locks = [lock for lock in locks if lock is not None]
+    if not locks:
+        return False
+    # All at once, so no move can start between the wait and the look. A mover only ever holds one of these, so taking
+    # several in a fixed order cannot deadlock against it.
+    with contextlib.ExitStack() as held:
+        for lock in locks:
+            held.enter_context(lock)
+        return _marked_sandbox_in(root, session_id)
+
+
 def _legacy_session_dir(session_id: str) -> "str | None":
     """This session's directory at the legacy root, while one is still there.
 
@@ -10978,17 +10994,9 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
             # which the rename is about to take away. Movers hold the session's lock for the whole move, so once it is
             # free a staging tree that is still there is a stranded one, and one that landed or rolled back is found
             # where it went.
-            # Under whichever name it was moved from: a chat whose id starts with the derived prefix moves under the
-            # literal id, and its staging tree is still marked with the derived one.
-            locks = [_legacy_lock_peek(name) for name in _legacy_names(session_id)]
-            locks = [lock for lock in locks if lock is not None]
-            if locks:
-                # All at once, so no move can start between the wait and the look. A mover only ever holds one of
-                # these, so taking several in a fixed order cannot deadlock against it.
-                with contextlib.ExitStack() as held:
-                    for lock in locks:
-                        held.enter_context(lock)
-                    ours = _marked_sandbox_in(root, session_id)
+            settled = _marked_sandbox_after_moves(root, session_id)
+            if settled is not False:
+                ours = settled
         if ours:
             return ours
         # Right after an upgrade the files can still be at the legacy root: the move runs in the background and can
@@ -10996,6 +11004,13 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
         legacy = _legacy_session_dir(session_id)
         if legacy:
             return legacy
+        if not os.path.isdir(workdir):
+            # The lookup above can have waited out a move the first scan ran ahead of. One whose rename and rollback
+            # both failed leaves the only copy in a marked staging tree, which that scan never saw. Only a session a
+            # move has touched pays for the second listing.
+            ours = _marked_sandbox_after_moves(root, session_id)
+            if ours:
+                return ours
     if not _root_is_ours() and not _owned_by_session(workdir, session_id):
         # In a root the user pointed us at this chat can be in a fallback whose name nothing recomputes, and a read
         # that stops here shows an empty sandbox and 404s the file cards already in the transcript.
