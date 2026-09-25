@@ -998,3 +998,66 @@ def test_a_collected_reply_stops_when_the_caller_leaves(flm):
 
     response = asyncio.run(asyncio.wait_for(go(), 15))
     assert response.status_code == 499
+
+
+def test_an_early_scoped_npu_cancel_cancels_the_load_it_names():
+    import routes.inference as ri
+    from models.inference import LoadRequest, UnloadRequest
+
+    asyncio.run(
+        ri._unload_model_impl(
+            UnloadRequest(model_path = "lemonade:qwen3-0.6b-FLM", cancel_load_request_id = "npu-r1"),
+            "owner",
+        )
+    )
+    attempt = ri._begin_load_attempt(
+        LoadRequest(model_path = "lemonade:qwen3-0.6b-FLM", load_request_id = "npu-r1"), "owner"
+    )
+    try:
+        assert attempt.cancel_event.is_set()
+    finally:
+        ri._finish_load_attempt(attempt)
+
+
+def test_a_cancel_racing_the_npu_load_unloads_what_landed(monkeypatch):
+    import routes.inference as ri
+    from models.inference import LoadRequest
+
+    cancel = threading.Event()
+    calls = []
+    model = nb.NpuModel("m", "", 0.5, True, ("chat",), 4096)
+
+    class RacingNpu:
+        def resident(self):
+            return None
+
+        def loadable_model(self, model_id):
+            return model
+
+        def load(self, model_id, ctx):
+            # The Stop click lands here, before lemond reports the load in flight.
+            cancel.set()
+            calls.append("load")
+
+        def unload(self):
+            calls.append("unload")
+
+    monkeypatch.setattr(nb, "get_npu_backend", lambda: RacingNpu())
+
+    async def noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(ri, "_unload_llama_before_standard_load", noop)
+    monkeypatch.setattr(ri, "_peek_inference_backend", lambda: None)
+    monkeypatch.setattr(ri, "release_chat_gpu_claim", lambda: True)
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(
+            ri._load_npu_model(
+                LoadRequest(model_path = "lemonade:m"),
+                current_request_counted = False,
+                on_reload_confirmed = None,
+                load_cancel_event = cancel,
+            )
+        )
+    assert err.value.status_code == 409
+    assert calls == ["load", "unload"]

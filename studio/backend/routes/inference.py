@@ -15916,12 +15916,18 @@ async def _load_npu_model(
     # Nothing to reload once idle: this model is not the one the idle stash names.
     note_model_unloaded()
     await asyncio.to_thread(release_chat_gpu_claim)
+    if load_cancel_event is not None and load_cancel_event.is_set():
+        raise HTTPException(status_code = 409, detail = "Model load cancelled")
     try:
         await asyncio.to_thread(npu.load, model_id, requested_ctx)
     except NpuLoadCancelled:
         raise HTTPException(status_code = 409, detail = "Model load cancelled") from None
     except NpuError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
+    if load_cancel_event is not None and load_cancel_event.is_set():
+        # Cancelled before npu.load marked itself in flight, so cancel_load found nothing to stop.
+        await asyncio.to_thread(npu.unload)
+        raise HTTPException(status_code = 409, detail = "Model load cancelled")
     resident = npu.resident()
     if resident is None:
         raise HTTPException(status_code = 409, detail = "Model load cancelled")
@@ -18561,6 +18567,16 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 raise HTTPException(status_code = 404, detail = "Model not found")
             npu = peek_npu_backend()
             requested_id = request.model_path[len(MODEL_PREFIX) :].strip()
+            if request.cancel_load_request_id is not None:
+                # Bound to that attempt: an early cancel leaves a tombstone, a stale one stops nothing newer.
+                attempt, is_running = _cancel_scoped_load_attempt(request, current_subject)
+                if attempt is not None and is_running:
+                    try:
+                        if npu is not None and await asyncio.to_thread(npu.cancel_load, requested_id):
+                            logger.info(f"Cancelled scoped in-flight NPU load: {request.model_path}")
+                    finally:
+                        attempt.cancel_complete.set()
+                return UnloadResponse(status = "unloaded", model = request.model_path)
             # "Stop loading": /load holds the lifecycle gate until /v1/load returns.
             if npu is not None and await asyncio.to_thread(npu.cancel_load, requested_id):
                 logger.info(f"Cancelled in-flight NPU load: {request.model_path}")
