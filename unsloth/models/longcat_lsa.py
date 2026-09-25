@@ -150,6 +150,7 @@ def _classes():
             index_n_heads = None,
             index_head_dim = None,
             index_topk = None,
+            oe_ngram_vocab_size = None,
             **kwargs,
         ):
             if oe_vocab_size_ratio is None:
@@ -172,6 +173,8 @@ def _classes():
             if "head_dim" not in kwargs and "qk_rope_head_dim" in kwargs:
                 kwargs["head_dim"] = kwargs["qk_rope_head_dim"]
             super().__init__(**kwargs)
+            # The n-gram hash radix and table sizes; kept apart from vocab_size so a resized vocab reloads.
+            self.oe_ngram_vocab_size = oe_ngram_vocab_size or self.vocab_size
 
     class _FrozenWeight(nn.Module):
         """Bare ``weight``, not a Linear, so LoRA all-linear and bitsandbytes skip it."""
@@ -197,8 +200,8 @@ def _classes():
 
         def __init__(self, config):
             super().__init__()
-            self.vocab_size = config.vocab_size
-            self.m = int(config.oe_vocab_size_ratio * config.vocab_size)
+            self.vocab_size = getattr(config, "oe_ngram_vocab_size", None) or config.vocab_size
+            self.m = int(config.oe_vocab_size_ratio * self.vocab_size)
             self.k = int(config.oe_split_num)
             self.n = int(config.oe_neighbor_num)
             eos = config.eos_token_id
@@ -344,8 +347,15 @@ def _classes():
                 # A position_ids restart (padding-free packing, left padding) starts a new sequence,
                 # which the n-gram must not read across, as transformers' packed mask does for attention.
                 resets = None
-                if position_ids is not None and position_ids.shape[-1] == input_ids.shape[-1]:
-                    pos = position_ids.expand(input_ids.shape[0], -1)
+                pos = position_ids
+                if pos is None and attention_mask is not None and attention_mask.dim() == 2:
+                    # Same positions generate() derives from the mask; only the n-gram uses them.
+                    mask = attention_mask.long()
+                    pos = (mask.cumsum(-1) - 1).masked_fill(mask == 0, 0)[
+                        ..., -input_ids.shape[-1] :
+                    ]
+                if pos is not None and pos.shape[-1] == input_ids.shape[-1]:
+                    pos = pos.expand(input_ids.shape[0], -1)
                     resets = torch.diff(pos, prepend = pos[..., :1] - 1, dim = -1) != 1
                 inputs_embeds = self.ngram_embeddings(
                     self.embed_tokens(input_ids), input_ids, context, resets

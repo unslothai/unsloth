@@ -477,6 +477,31 @@ def test_left_padded_generation_matches_unpadded(tiny):
     assert got.tolist() == want.tolist()
 
 
+def test_left_padded_mask_without_position_ids_matches_unpadded(tiny):
+    path, cfg, sd = tiny
+    model = _load(path).eval()
+    ids = _tokens(cfg, 1, 10, seed = 4)
+    padded = torch.cat([torch.full((1, 3), 7), ids], dim = -1)
+    mask = torch.cat([torch.zeros(1, 3, dtype = torch.long), torch.ones_like(ids)], dim = -1)
+    with torch.no_grad():
+        want = model(input_ids = ids).logits[0]
+        got = model(input_ids = padded, attention_mask = mask).logits[0, 3:]
+    torch.testing.assert_close(got, want, atol = 1e-4, rtol = 1e-4)
+
+
+def test_resized_vocab_saves_and_reloads(tiny, tmp_path):
+    path, cfg, sd = tiny
+    model = _load(path).eval()
+    model.resize_token_embeddings(cfg["vocab_size"] + 8)
+    model.save_pretrained(str(tmp_path))
+    reloaded = _load(str(tmp_path)).eval()
+    ids = _tokens(cfg, 1, 12, seed = 5)
+    with torch.no_grad():
+        torch.testing.assert_close(
+            reloaded(input_ids = ids).logits, model(input_ids = ids).logits, atol = 1e-5, rtol = 1e-5
+        )
+
+
 def test_ngram_history_follows_beam_reorder_and_crop(tiny):
     # Beam reorder and crop must move the n-gram history with the KV cache.
     path, cfg, sd = tiny
