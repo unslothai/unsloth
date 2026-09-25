@@ -109,7 +109,6 @@ def _quantize_impl(x: Any, global_sf: Any):
 
     from . import diffusion_nvfp4_dispatch as dispatch
     with _device_guard(x):
-        # Both branches inside the SAME guard: the fast one reaches the same pybind entry point.
         xq, sf = dispatch._fast_quantize(x, global_sf)
         if xq is not None:
             return xq, sf
@@ -117,15 +116,10 @@ def _quantize_impl(x: Any, global_sf: Any):
 
 
 def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend: str):
-    """NVFP4 GEMM. Takes the weight row-major ``[N, K/2]`` and transposes inside, since a custom
-    op's inputs are functionalised and a ``.T`` view is an alias Dynamo has to reason about.
+    """NVFP4 GEMM on a row-major ``[N, K/2]`` weight (a ``.T`` input would be an alias Dynamo must track).
 
-    **A kernel MUST run between the activation quantiser and this GEMM**, or the GEMM reads
-    operands the quantiser has not finished writing (cutlass is launched with PDL while the
-    ``griddepcontrol`` instructions that make PDL safe are compiled out of its build, and
-    ``enable_pdl = False`` reaches only the cute-dsl runner). A kernel EXISTING is what protects
-    it, so a one-element fill works and ``torch.empty`` alone does NOT. The persistent barrier is
-    never read, so it cannot carry a stale NaN forward.
+    A kernel MUST run between the activation quantiser and this GEMM: cutlass launches with PDL but its
+    ``griddepcontrol`` is compiled out, so ``torch.empty`` alone is NOT enough; a one-element fill is.
     """
     import flashinfer
     import torch
@@ -140,8 +134,6 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
             out = torch.empty(m, n, device = xq.device, dtype = torch.bfloat16)
             _fire_barrier(xq.device)
         if _claim_first_call_tune(m, xq.shape[1] * 2, n):
-            # A shape nothing prewarmed (a video's token count, a graphed Z-Image's unified
-            # sequence) would otherwise run the fallback tactic for the life of the load.
             # Before the dispatch plan, which caches whatever tactic FlashInfer holds on its first build.
             try:
                 with flashinfer.autotune(True):
@@ -150,7 +142,6 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
                     )
             except Exception:  # noqa: BLE001 - claimed, so it is not retried; run it untuned
                 pass
-        # Same tactic the AutoTuner would choose, minus the per-call runner rebuild.
         if dispatch.enabled(xq.device):
             wq_t, w_sf_t = dispatch.transposed(wq), dispatch.transposed(w_sf)
             plan = dispatch.gemm_plan(xq, wq_t, x_sf, w_sf_t, alpha, out, n, backend)

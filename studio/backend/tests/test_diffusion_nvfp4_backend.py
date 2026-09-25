@@ -460,7 +460,6 @@ def test_an_unprewarmed_gemm_shape_autotunes_on_its_first_eager_call_only(monkey
     monkeypatch.setitem(sys.modules, "flashinfer", fake)
     monkeypatch.setattr(ops, "_device_guard", lambda t: contextlib.nullcontext())
     monkeypatch.setattr(ops, "_fire_barrier", lambda device: None)
-    # With no dispatch plan every call reaches mm_fp4 and is observable here.
     from core.inference import diffusion_nvfp4_dispatch as dispatch
 
     monkeypatch.setattr(dispatch, "enabled", lambda device: False)

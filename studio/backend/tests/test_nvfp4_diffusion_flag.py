@@ -568,9 +568,6 @@ def test_the_per_layer_policy_factor_is_not_applied(monkeypatch):
     assert policy_steady_factor("z-image", "Tongyi-MAI/Z-Image-Turbo") is not None
 
 
-# ---------------------------------------------------------------------------------------------
-# flashinfer kernel dispatch (studio-nvfp4-kernels): reached only through the preflight and the
-# NVFP4 layers, so the switch keeps it cold.
 
 
 def test_the_fast_dispatch_is_never_probed_or_verified(monkeypatch):

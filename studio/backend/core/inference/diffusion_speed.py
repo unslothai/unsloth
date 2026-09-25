@@ -26,9 +26,6 @@ bigger warm speedup. The compiled dequant is skipped under ``max`` (the regional
 it; a separate compiled dequant would break that graph). ``supports_torch_compile`` + bf16/CUDA
 checks gate regional compile.
 
-NVFP4 speed switches, all safe unset and read by their own modules: ``UNSLOTH_NVFP4_FAST_BIAS``,
-``UNSLOTH_NVFP4_FAST_DISPATCH``, ``UNSLOTH_NVFP4_ZERO_BUFFER``, ``UNSLOTH_NVFP4_BACKEND``.
-
 The flags this flips (TF32, cudnn.benchmark) are PROCESS-WIDE, so ``snapshot_backend_flags`` /
 ``restore_backend_flags`` let the caller restore prior values at unload, keeping a later ``off``
 load bit-identical. torch imported lazily.
