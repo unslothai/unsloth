@@ -6347,7 +6347,9 @@ class DiffusionBackend:
         base_local_dir: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
     ) -> Any:
-        """``plan`` re-priced when the table lowers it (cached shards wider than bf16); HiDream always, as no cached plan counts its text_encoder_4."""
+        """``plan`` re-priced when the table lowers it (cached shards wider than bf16).
+
+        HiDream always: no cached plan counts its separately loaded text_encoder_4."""
         if kind != "pipeline":
             return plan
         if (
