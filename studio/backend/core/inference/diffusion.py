@@ -160,12 +160,14 @@ from .diffusion_batched import (
 from .diffusion_cache import (
     FBCACHE_MIN_STEPS,
     TC_AUTO,
-    TC_FBCACHE,
     apply_step_cache,
+    auto_step_cache_allowed,
     effective_denoise_steps,
     effective_request_strength,
     maybe_toggle_step_cache,
     normalize_transformer_cache,
+    resolve_auto_step_cache,
+    step_cache_supported,
 )
 from .diffusion_precision import (
     TE_QUANT_FP8,
@@ -957,9 +959,8 @@ class _LoadState:
     attention_backend: Optional[str] = None
     # Caller original attention request, so deferred engagement re-runs the same selection.
     attention_request: Optional[str] = None
-    # Step cache engaged ("fbcache") or None. Opt-in, for many-step models.
     transformer_cache: Optional[str] = None
-    # AUTO: generate() toggles FBCache across FBCACHE_MIN_STEPS; an explicit request never toggles
+    # Auto only: generate() toggles it across FBCACHE_MIN_STEPS; explicit never toggles
     cache_auto: bool = False
     # Inputs the generation-time toggle re-applies (quantised threshold + override).
     cache_quant_active: bool = False
@@ -5595,9 +5596,10 @@ class DiffusionBackend:
                     )
                     self._raise_if_load_cancelled(_load_token)
                     # Step caching (First-Block-Cache), also before compile: reuses the transformer tail across steps and
-                    # drops compile fullgraph. Tri-state: unset/auto -> FBCACHE_MIN_STEPS policy; off/fbcache pinned.
+                    # drops compile fullgraph. Tri-state: off/fbcache pinned; unset/auto only on max, by FBCACHE_MIN_STEPS.
                     cache_request = normalize_transformer_cache(transformer_cache)
                     cache_auto = transformer_cache is None or cache_request == TC_AUTO
+                    cache_auto_live = cache_auto and auto_step_cache_allowed(effective_speed)
                     cache_quant_active = transformer_quant_engaged is not None or bool(
                         gguf_filename
                     )
@@ -5606,7 +5608,7 @@ class DiffusionBackend:
                         default_steps, _ = default_generation_params(
                             gguf_filename, repo_id, base, fam.name
                         )
-                        cache_request = TC_FBCACHE if default_steps >= FBCACHE_MIN_STEPS else None
+                        cache_request = resolve_auto_step_cache(effective_speed, default_steps)
                     cache_engaged = apply_step_cache(
                         pipe,
                         mode = cache_request,
@@ -5619,17 +5621,25 @@ class DiffusionBackend:
                         logger = logger,
                     )
                     self._raise_if_load_cancelled(_load_token)
-                    # An auto decision can flip at generation time, but only on a cache-capable transformer
-                    cache_may_toggle = cache_auto and callable(
-                        getattr(getattr(pipe, "transformer", None), "enable_cache", None)
+                    # Arm only where FBCache can engage: a live toggle drops fullgraph and retries every generation.
+                    cache_may_toggle = cache_auto_live and (
+                        cache_engaged is not None
+                        or (cache_request is None and step_cache_supported(pipe, logger = logger))
                     )
                     if cache_auto:
-                        if cache_engaged:
+                        if not cache_auto_live:
+                            # Only name the max tier where it would help: SDXL / LTX-2 never cache on any tier.
+                            cache_reason = (
+                                "auto: step caching engages on the max speed tier only"
+                                if step_cache_supported(pipe, logger = logger)
+                                else "auto: model does not support step caching"
+                            )
+                        elif cache_engaged:
                             cache_reason = (
                                 f"auto: {default_steps}-step default schedule reaches "
                                 f"{FBCACHE_MIN_STEPS}; re-checked per generation"
                             )
-                        elif cache_request is not None:
+                        elif cache_request is not None or not cache_may_toggle:
                             cache_reason = "auto: model does not support step caching"
                         else:
                             cache_reason = (

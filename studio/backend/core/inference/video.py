@@ -55,10 +55,12 @@ from .diffusion_attention import (
 from .diffusion_cache import (
     FBCACHE_MIN_STEPS,
     TC_AUTO,
-    TC_FBCACHE,
     apply_step_cache,
+    auto_step_cache_allowed,
     maybe_toggle_step_cache,
     normalize_transformer_cache,
+    resolve_auto_step_cache,
+    step_cache_supported,
 )
 from .diffusion_device import (
     DiffusionDeviceTarget,
@@ -824,8 +826,7 @@ class _VideoLoadState:
     backend_flags: Optional[dict] = None
     attention_backend: Optional[str] = None
     transformer_cache: Optional[str] = None
-    # AUTO on a cache-capable DiT: generate() toggles FBCache across FBCACHE_MIN_STEPS; an explicit request is never
-    # toggled.
+    # Auto only: generate() toggles it across FBCACHE_MIN_STEPS; explicit never toggles.
     cache_auto: bool = False
     # Inputs the generation-time toggle re-applies (quantised threshold + override).
     cache_quant_active: bool = False
@@ -4442,16 +4443,16 @@ class VideoBackend:
                 "(quantized transformer must be compiled; eager is ~30x slower)"
             )
             effective_speed = SPEED_DEFAULT
-        # Step cache tri-state: unset/"auto" -> FBCACHE_MIN_STEPS policy (re-checked per generation); "off"/"fbcache"
-        # pinned. Run per expert.
+        # "off"/"fbcache" pinned; unset/"auto" only on max, by FBCACHE_MIN_STEPS. Run per expert.
         cache_request = normalize_transformer_cache(transformer_cache)
         cache_auto = transformer_cache is None or cache_request == TC_AUTO
+        cache_auto_live = cache_auto and auto_step_cache_allowed(effective_speed)
         # GGUF and torchao-quantised DiTs need the higher threshold to trigger over quant noise
         cache_quant_active = kind == "gguf" or transformer_quant_engaged is not None
         default_cache_steps: Optional[int] = None
         if cache_auto:
             default_cache_steps, _ = default_video_generation_params(gguf_filename, repo_id, base)
-            cache_request = TC_FBCACHE if default_cache_steps >= FBCACHE_MIN_STEPS else None
+            cache_request = resolve_auto_step_cache(effective_speed, default_cache_steps)
         cache_engaged = None
         for view in views:
             engaged = apply_step_cache(
@@ -4465,17 +4466,25 @@ class VideoBackend:
             )
             if view is pipe:
                 cache_engaged = engaged
-        # The auto decision can flip at generation time, but only on a cache-capable DiT.
-        cache_may_toggle = cache_auto and callable(
-            getattr(getattr(pipe, "transformer", None), "enable_cache", None)
+        # Arm only where FBCache can engage: a live toggle drops fullgraph and retries every generation.
+        cache_may_toggle = cache_auto_live and (
+            cache_engaged is not None
+            or (cache_request is None and step_cache_supported(pipe, logger = logger))
         )
         if cache_auto:
-            if cache_engaged:
+            if not cache_auto_live:
+                # Only name the max tier where it would help: SDXL / LTX-2 never cache on any tier.
+                cache_reason = (
+                    "auto: step caching engages on the max speed tier only"
+                    if step_cache_supported(pipe, logger = logger)
+                    else "auto: model does not support step caching"
+                )
+            elif cache_engaged:
                 cache_reason = (
                     f"auto: {default_cache_steps}-step default schedule reaches "
                     f"{FBCACHE_MIN_STEPS}; re-checked per generation"
                 )
-            elif cache_request is not None:
+            elif cache_request is not None or not cache_may_toggle:
                 cache_reason = "auto: model does not support step caching"
             else:
                 cache_reason = (
