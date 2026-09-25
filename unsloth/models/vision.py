@@ -343,7 +343,15 @@ def _lift_endpoint_hooks_onto_adapters(model):
     return lifted
 
 
-_MODALITY_SUB_CONFIGS = ("vision_config", "audio_config", "speech_config", "sound_config")
+_MODALITY_SUB_CONFIGS = (
+    "vision_config",
+    "audio_config",
+    "speech_config",
+    "sound_config",
+    "vision_encoder_config",
+    "audio_encoder_config",
+    "encoder_config",
+)
 
 
 def _align_root_hook_with_input_embeddings(model):
