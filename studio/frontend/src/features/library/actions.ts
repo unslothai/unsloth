@@ -4,7 +4,7 @@
 import type { useNavigate } from "@tanstack/react-router";
 import { zipSync } from "fflate";
 import { getAuthSessionEpoch } from "@/features/auth";
-import { clearNewChatDraft, listLoras, useChatRuntimeStore } from "@/features/chat";
+import { listLoras } from "@/features/chat";
 import {
   clearModelConfigHandoff,
   createModelConfigHandoffRequestId,
@@ -25,16 +25,12 @@ import {
 } from "./api";
 import { fileKind } from "./file-kind";
 import { hasOwnFile, libraryFileName, uniqueFileNames } from "./file-name";
-import {
-  type LibraryChatHandoff,
-  useLibraryChatHandoffStore,
-} from "./chat-handoff-store";
+import { MAX_IMAGE_OR_TEXT_BYTES, resetToNewChat, startLibraryChat } from "./start-chat";
 
 type Navigate = ReturnType<typeof useNavigate>;
 
 export const MAX_CHAT_FILES = 10;
 
-const MAX_IMAGE_OR_TEXT_BYTES = 20 * 1024 * 1024;
 const MAX_DOCUMENT_BYTES = 50 * 1024 * 1024;
 
 function chatSizeLimit(item: LibraryItem): number {
@@ -126,24 +122,6 @@ export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> 
   } finally {
     toast.dismiss(progress);
   }
-}
-
-function resetToNewChat(): void {
-  clearNewChatDraft();
-  const runtime = useChatRuntimeStore.getState();
-  runtime.setActiveThreadId(null);
-  runtime.setActiveProjectId(null);
-  runtime.setIncognito(false);
-}
-
-function startLibraryChat(
-  navigate: Navigate,
-  handoff: LibraryChatHandoff,
-): void {
-  const nonce = createModelConfigHandoffRequestId();
-  resetToNewChat();
-  useLibraryChatHandoffStore.getState().offer(`single:${nonce}`, handoff);
-  void navigate({ to: "/chat", search: { new: nonce } });
 }
 
 export async function chatAboutItems(

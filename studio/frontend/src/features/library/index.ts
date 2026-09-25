@@ -3,6 +3,8 @@
 
 export { useLibraryChatHandoffStore } from "./chat-handoff-store";
 export { useLibraryFavorites } from "./favorites-store";
+export { chatAboutMedia } from "./start-chat";
+export { revealInFolder, useRevealLabel } from "./reveal";
 export { LIBRARY_TABS, validateLibrarySearch, type LibrarySearch, type LibraryTab } from "./search";
 export {
   LIBRARY_SETTINGS_STORAGE_KEY,
@@ -25,4 +27,3 @@ export {
   moveLibraryLocation,
   revealLibraryLocation,
 } from "./api";
-export { useRevealLabel } from "./reveal";

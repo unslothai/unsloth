@@ -398,6 +398,7 @@ function loadDownloads(
     "./file-kind": {},
     "./file-name": { hasOwnFile: () => true, ...fileNames },
     "./chat-handoff-store": {},
+    "./start-chat": {},
   }).downloadLibraryItems;
 }
 

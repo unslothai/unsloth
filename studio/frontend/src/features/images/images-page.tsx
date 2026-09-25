@@ -12,6 +12,7 @@ import {
   useState,
 } from "react";
 import {
+  ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
   ArrowReloadHorizontalIcon,
@@ -23,7 +24,9 @@ import {
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { MediaViewer } from "@/components/media-viewer";
+import { shortPrompt } from "@/lib/prompt-text";
 
 import { ImageDropzone } from "@/components/image-dropzone";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
@@ -87,8 +90,13 @@ import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
 import { LibraryPageLink } from "@/components/media-page-link";
-import { translate } from "@/i18n";
-import { useLibraryFavorites } from "@/features/library";
+import { translate, useT } from "@/i18n";
+import {
+  chatAboutMedia,
+  revealInFolder,
+  useLibraryFavorites,
+  useRevealLabel,
+} from "@/features/library";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
   type NewRecordProbeBaseline,
@@ -202,6 +210,7 @@ import {
   cancelDiffusionGeneration,
   deleteGalleryImage,
   fetchGalleryBlob,
+  fetchGalleryResponse,
   fetchGalleryObjectUrl,
   generateDiffusionImage,
   getDiffusionLoadProgress,
@@ -1247,6 +1256,11 @@ type LoadAdvanced = Pick<
   | "gpu_ids"
 >;
 
+function openImageLabel(t: ReturnType<typeof useT>, prompt: string): string {
+  const text = shortPrompt(prompt);
+  return text ? t("library.viewer.openImageNamed", { prompt: text }) : t("library.viewer.openImage");
+}
+
 export function ImagesPage({
   active = true,
   onInitialReady,
@@ -1254,6 +1268,7 @@ export function ImagesPage({
   active?: boolean;
   onInitialReady?: () => void;
 }) {
+  const t = useT();
   const initialReadySent = useRef(false);
   const [rememberedModel, setRememberedModel] = useState(readImageModel);
   const pendingRecalledGeneration = useRef<{ model: RememberedImageModel; load: number; workflow: WorkflowId; allowOversized?: boolean } | null>(null);
@@ -1773,6 +1788,18 @@ export function ImagesPage({
     [images, selectedId],
   );
   const selectedSrc = selected ? srcById[selected.id] : undefined;
+  const [viewerId, setViewerId] = useState<string | null>(null);
+  const viewerImage = viewerId ? (images.find((image) => image.id === viewerId) ?? null) : null;
+  const viewerSrc = viewerImage ? srcById[viewerImage.id] : undefined;
+  if (viewerId && (!active || !viewerImage)) setViewerId(null);
+  // Pruning below must not revoke the image on screen.
+  const viewerIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    viewerIdRef.current = viewerId;
+  }, [viewerId]);
+  const openViewer = () => selected && selectedSrc && setViewerId(selected.id);
+  const navigateToChat = useNavigate();
+  const revealLabel = useRevealLabel();
 
   // Fetch (once) the object URL for a record's PNG; cached across remounts.
   const ensureSrc = useCallback(async (image: GalleryImage) => {
@@ -1787,7 +1814,12 @@ export function ImagesPage({
       galleryCache.srcById.set(image.id, url, bytes);
       // Evict the coldest off-screen images this one pushed over budget; on-screen and open tiles are protected.
       const evicted = galleryCache.srcById.prune(
-        new Set([image.id, ...visibleIds.current, galleryCache.selectedId ?? ""]),
+        new Set([
+          image.id,
+          ...visibleIds.current,
+          galleryCache.selectedId ?? "",
+          viewerIdRef.current ?? "",
+        ]),
       );
       setSrcById((prev) => {
         const next = { ...prev, [image.id]: url };
@@ -5315,6 +5347,43 @@ export function ImagesPage({
           data-tour="images-preview"
           className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0"
         >
+          {viewerImage && viewerSrc && (
+            <MediaViewer
+              open={true}
+              onOpenChange={(open) => !open && setViewerId(null)}
+              title={viewerImage.prompt || t("library.viewer.untitledImage")}
+              meta={`Generated · ${viewerImage.width} × ${viewerImage.height}`}
+              media={true}
+              noun="image"
+              actions={{
+                primary: {
+                  label: t("library.menu.chatAboutThis"),
+                  icon: MessageCircleIcon,
+                  onClick: () =>
+                    void chatAboutMedia(
+                      navigateToChat,
+                      // The authenticated original: WebKit shows the object URL but cannot refetch it.
+                      () => fetchGalleryResponse(viewerImage.url),
+                      viewerImage.prompt,
+                      "image",
+                    ),
+                },
+                onDownload: () => void handleQuickDownload(viewerImage),
+                reveal: revealLabel
+                  ? { label: revealLabel, onClick: () => revealInFolder(`image:${viewerImage.id}`) }
+                  : undefined,
+                favorite: isFavorite(`image:${viewerImage.id}`),
+                onToggleFavorite: () => toggleFavorite(`image:${viewerImage.id}`),
+                onAddToProject: (projectId) => addGalleryImageToProject(viewerImage.id, projectId),
+                onDelete: () => {
+                  setViewerId(null);
+                  void handleDelete(viewerImage.id);
+                },
+              }}
+            >
+              <img src={viewerSrc} alt={viewerImage.prompt} className="size-full object-contain" />
+            </MediaViewer>
+          )}
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]">
             {selected && selectedSrc ? (
               <>
@@ -5322,12 +5391,35 @@ export function ImagesPage({
                   src={selectedSrc}
                   alt={selected.prompt}
                   style={TRANSPARENCY_CHECKER}
-                  className="max-h-full max-w-full object-contain shadow-sm"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={openImageLabel(t, selected.prompt)}
+                  onClick={openViewer}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      openViewer();
+                    }
+                  }}
+                  className="max-h-full max-w-full cursor-zoom-in object-contain shadow-sm"
                 />
                 {/* Actions grouped in one glass toolbar so they stay legible over any image. Size and seed
                     live in the Recipe popover. */}
                 {/* No button borders: focus returning from a menu would draw one. Keyboard focus tints instead. */}
                 <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label={t("library.viewer.openImage")}
+                    title={t("library.viewer.openImage")}
+                    onClick={(event) => {
+                      // Safari does not focus a clicked button, and the viewer returns focus to what had it.
+                      event.currentTarget.focus();
+                      openViewer();
+                    }}
+                  >
+                    <HugeiconsIcon icon={ArrowExpand01Icon} className="size-4" />
+                  </Button>
                   <RecipePopover image={selected} onRestore={restoreSettings} active={active} />
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild={true}>

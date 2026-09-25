@@ -3105,6 +3105,11 @@ export const en = {
       moreActionsVideo: "More actions for this video",
       moreActionsClip: "More actions for this clip",
       moreActionsFile: "More actions for this file",
+      openImage: "Open image",
+      openImageNamed: "Open image: {prompt}",
+      openVideo: "Open video",
+      untitledImage: "Untitled image",
+      untitledVideo: "Untitled video",
     },
     // The Project submenu that copies a file into a project.
     project: {
@@ -3174,6 +3179,14 @@ export const en = {
       imageNotFound: "Could not find this image",
       clipNotFound: "Could not find this clip",
       notFoundDescription: "It may be archived or deleted.",
+      imageTooLarge: "This image is too large to attach",
+      videoTooLarge: "This video is too large to attach",
+      attachmentLimit: "Chat attachments are limited to {size} MB.",
+      attachingImage: "Attaching the image…",
+      attachingVideo: "Attaching the video…",
+      readImageFailed: "Could not read the image ({status}).",
+      readVideoFailed: "Could not read the video ({status}).",
+      openFileFailed: "Could not open the file",
     },
   },
 } as const;
