@@ -1370,8 +1370,20 @@ def _offload_store_has(store, key):
 
 
 def _offload_store_set(store, key, value):
-    # OffloadedWeightsLoader checks state_dict before the disk index, so this overrides disk tensors.
     state_dict = getattr(store, "state_dict", None)
+    index = getattr(store, "index", None)
+    save_folder = getattr(store, "save_folder", None)
+    if (
+        save_folder
+        and isinstance(index, dict)
+        and key in index
+        and not (isinstance(state_dict, dict) and key in state_dict)
+    ):
+        # Disk-offloaded: write a new .dat (the index entry may point at the read-only checkpoint), never RAM.
+        from accelerate.utils import offload_weight
+        offload_weight(value.detach().cpu(), key, save_folder, index = index)
+        return
+    # OffloadedWeightsLoader checks state_dict before the disk index, so this overrides cpu tensors.
     if isinstance(state_dict, dict):
         state_dict[key] = value
     elif isinstance(store, dict):

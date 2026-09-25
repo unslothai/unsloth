@@ -670,3 +670,51 @@ def test_offloaded_already_dequantized_weight_is_not_scaled_again():
                 stored,
                 disk,
             )
+
+
+def test_disk_offloaded_orphan_stays_on_disk():
+    """A disk-offloaded orphan (index pointing at the checkpoint, as transformers dispatches it) is written to a new
+    .dat in the offload folder, not held in RAM, and the checkpoint file is left untouched."""
+    if _FP8 is None:
+        return
+    import pytest
+
+    pytest.importorskip("accelerate")
+    from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+    from accelerate.utils import OffloadedWeightsLoader, PrefixedDataset
+
+    torch.manual_seed(0)
+    raw_fp8 = (torch.randn(4, 4) * 100).to(_FP8)
+    scale = torch.rand(2, 2, dtype = torch.float32) + 0.1
+    model = nn.Module()
+    model.config = _fp8_config((2, 2))
+    model.anchor = _fp8_anchor()
+    model.model = nn.Module()
+    model.model.gate_proj = _fp8_linear(4, 4, raw_fp8.clone())
+    key = "model.gate_proj.weight"
+    with tempfile.TemporaryDirectory() as ck, tempfile.TemporaryDirectory() as off:
+        ck_file = os.path.join(ck, "weights.safetensors")
+        save_file({key: raw_fp8}, ck_file)
+        before = open(ck_file, "rb").read()
+        index = {key: {"safetensors_file": ck_file, "weight_name": key}}
+        store = OffloadedWeightsLoader(save_folder = off, index = index)
+        add_hook_to_module(
+            model.model.gate_proj,
+            AlignDevicesHook(
+                execution_device = "cpu",
+                offload = True,
+                weights_map = PrefixedDataset(store, "model.gate_proj."),
+            ),
+        )
+        _write_checkpoint(ck, {"model.language_model.gate_proj.weight_scale_inv": scale})
+        assert _restore_dropped_fp8_scales(
+            model, ck, local_files_only = True, dtype = torch.bfloat16
+        ) == (1, 0)
+        assert key not in store.state_dict
+        assert store.index[key] == {"dtype": "bfloat16", "shape": [4, 4]}
+        assert os.path.exists(os.path.join(off, key + ".dat"))
+        assert open(ck_file, "rb").read() == before
+        expected = (raw_fp8.to(torch.float32) * _expand(scale, (2, 2), (4, 4))).to(torch.bfloat16)
+        assert torch.equal(store[key], expected)
+        x = torch.randn(3, 4, dtype = torch.bfloat16)
+        assert torch.equal(model.model.gate_proj(x), torch.nn.functional.linear(x, expected))
