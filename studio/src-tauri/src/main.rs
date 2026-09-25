@@ -2122,6 +2122,9 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(window_state.build())
+        .manage(app_layout::NativeLayoutRestored(
+            std::sync::atomic::AtomicBool::new(restore_initial_layout),
+        ))
         .manage(diagnostics::new_diagnostics_state())
         .manage(install::new_install_state())
         .manage(new_training_activity_state())
@@ -2139,6 +2142,7 @@ fn main() {
             app_layout::has_initialized_app_window_layout,
             app_layout::mark_app_window_layout_initialized,
             app_layout::reset_app_window_layout_initialized,
+            app_layout::take_native_layout_restored,
             commands::check_install_status,
             commands::desktop_preflight,
             commands::start_install,

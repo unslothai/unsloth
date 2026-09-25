@@ -4,7 +4,6 @@
 import {
   DEFAULT_APP_WINDOW_SIZE_BOUNDS,
   type LogicalWindowSize,
-  PREFERRED_SETUP_WINDOW_SIZE,
   type WindowSizeBounds,
   calculateWindowSizeBounds,
 } from "./window-layout.ts";
@@ -125,27 +124,8 @@ export async function measureWindowLayout<Monitor extends WorkAreaMonitor>(
 
 export function shouldFinishWindowLayoutWait(
   sawNativeChange: boolean,
-  alreadyRestored = false,
 ): boolean {
-  return sawNativeChange || alreadyRestored;
-}
-
-/** A non-setup-sized hidden window has already received native startup restoration. */
-export function hasRestoredStartupGeometry(
-  innerSize: LogicalWindowSize,
-  scaleFactor: number,
-  maximized: boolean,
-): boolean {
-  if (maximized) return true;
-  if (!(scaleFactor > 0)) return false;
-  return (
-    Math.abs(
-      innerSize.width / scaleFactor - PREFERRED_SETUP_WINDOW_SIZE.width,
-    ) > 2 ||
-    Math.abs(
-      innerSize.height / scaleFactor - PREFERRED_SETUP_WINDOW_SIZE.height,
-    ) > 2
-  );
+  return sawNativeChange;
 }
 
 type ResolutionQuery = {
@@ -188,6 +168,8 @@ export function observeDevicePixelRatio(
 }
 type FinalizeAppWindowLayoutOptions<Monitor extends WorkAreaMonitor> = {
   restored: boolean;
+  /** Geometry was restored natively while hidden; settle after the reveal instead. */
+  nativeRestored?: boolean;
   measured: MeasuredWindowLayout<Monitor>;
   show: () => Promise<boolean>;
   waitForSettled?: () => Promise<void>;
@@ -200,6 +182,7 @@ type FinalizeAppWindowLayoutOptions<Monitor extends WorkAreaMonitor> = {
 /** Reveals the settled app window, then applies bounds from the visible monitor. */
 export async function finalizeAppWindowLayout<Monitor extends WorkAreaMonitor>({
   restored,
+  nativeRestored = false,
   measured,
   show,
   waitForSettled,
@@ -210,7 +193,7 @@ export async function finalizeAppWindowLayout<Monitor extends WorkAreaMonitor>({
 }: FinalizeAppWindowLayoutOptions<Monitor>): Promise<void> {
   if (!isCurrent()) return;
   // restoreState returns before native resize lands; showing now flashes the setup size.
-  if (restored) {
+  if (restored && !nativeRestored) {
     await waitForSettled?.();
     if (!isCurrent()) return;
   }
@@ -221,6 +204,8 @@ export async function finalizeAppWindowLayout<Monitor extends WorkAreaMonitor>({
   if (restored && !shown) return;
   // Showing can change the resolved monitor (e.g. a compact secondary).
   if (restored) {
+    // A hidden GTK window only refreshes its cached size once mapped.
+    if (nativeRestored) await waitForSettled?.();
     if (!isCurrent()) return;
     measured = (await measure()) ?? measured;
     if (!isCurrent()) return;

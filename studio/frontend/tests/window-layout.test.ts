@@ -6,7 +6,6 @@ import test from "node:test";
 
 import {
   finalizeAppWindowLayout,
-  hasRestoredStartupGeometry,
   measureWindowLayout,
   observeDevicePixelRatio,
   prepareSetupWindow,
@@ -80,33 +79,9 @@ test("repair setup unmaximizes before sizing or locking the window", async () =>
   ]);
 });
 
-test("native-restored geometry need not wait for a new event", () => {
-  assert.equal(shouldFinishWindowLayoutWait(false, true), true);
-  assert.equal(shouldFinishWindowLayoutWait(false, false), false);
-  assert.equal(shouldFinishWindowLayoutWait(true, false), true);
-});
-
-test("only an un-restored setup-sized window needs a native restore event", () => {
-  assert.equal(
-    hasRestoredStartupGeometry({ width: 760, height: 560 }, 1, false),
-    false,
-  );
-  assert.equal(
-    hasRestoredStartupGeometry({ width: 761, height: 559 }, 1, false),
-    false,
-  );
-  assert.equal(
-    hasRestoredStartupGeometry({ width: 1520, height: 1120 }, 2, false),
-    false,
-  );
-  assert.equal(
-    hasRestoredStartupGeometry({ width: 1440, height: 890 }, 1, false),
-    true,
-  );
-  assert.equal(
-    hasRestoredStartupGeometry({ width: 760, height: 560 }, 1, true),
-    true,
-  );
+test("waits for the first native restore event before settling", () => {
+  assert.equal(shouldFinishWindowLayoutWait(false), false);
+  assert.equal(shouldFinishWindowLayoutWait(true), true);
 });
 test("keeps the nominal minimum and preferred size on a roomy work area", () => {
   const bounds = calculateWindowSizeBounds({ width: 1920, height: 1040 });
@@ -505,6 +480,50 @@ test("restored geometry settles before the window becomes visible", async () => 
     "enforce",
   ]);
   assert.deepEqual(currentSize, { width: 1200, height: 800 });
+});
+
+test("a natively restored window is shown without waiting, then settles", async () => {
+  const events: string[] = [];
+  const measured = {
+    bounds: {
+      minimum: { width: 900, height: 600 },
+      maximum: { width: 1920, height: 1040 },
+    },
+    monitor: null,
+    frameSize: { width: 0, height: 0 },
+  };
+
+  await finalizeAppWindowLayout({
+    restored: true,
+    nativeRestored: true,
+    measured,
+    show: async () => {
+      events.push("show");
+      return true;
+    },
+    waitForSettled: async () => {
+      events.push("settled");
+    },
+    measure: async () => {
+      events.push("measure");
+      return measured;
+    },
+    setMinimumConstraints: async () => {
+      events.push("constraints");
+    },
+    enforceBounds: async () => {
+      events.push("enforce");
+    },
+    isCurrent: () => true,
+  });
+
+  assert.deepEqual(events, [
+    "show",
+    "settled",
+    "measure",
+    "constraints",
+    "enforce",
+  ]);
 });
 
 test("preserves restored geometry while an autostart window stays hidden", async () => {

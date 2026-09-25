@@ -72,7 +72,6 @@ import {
   type PixelRatioSource,
   type WindowLayoutGuard,
   finalizeAppWindowLayout,
-  hasRestoredStartupGeometry,
   measureWindowLayout,
   observeDevicePixelRatio,
   prepareSetupWindow,
@@ -136,7 +135,6 @@ function delay(milliseconds: number): Promise<void> {
 async function observeWindowLayout(
   win: TauriWindow,
   isCurrent: WindowLayoutGuard,
-  alreadyRestored: boolean,
 ): Promise<WindowLayoutObserver | null> {
   let revision = 0;
   const noteChange = () => {
@@ -172,7 +170,7 @@ async function observeWindowLayout(
           sawNativeChange = true;
           continue;
         }
-        if (shouldFinishWindowLayoutWait(sawNativeChange, alreadyRestored)) {
+        if (shouldFinishWindowLayoutWait(sawNativeChange)) {
           return;
         }
       }
@@ -354,29 +352,22 @@ async function applyAppWindowLayout(
 
   let requestedSize: LogicalWindowSize | undefined;
   let restored = false;
+  let nativeRestored = false;
   let layoutObserver: WindowLayoutObserver | null = null;
   try {
     if (hasInitializedAppLayout && hasSavedState) {
       restored = true;
-      // A non-setup-sized window already has native restoration applied.
-      // The subsequent restoreStateCurrent can be a no-op with no native event.
-      const [initialSize, initialScale, initialMaximized] = await Promise.all([
-        win.innerSize(),
-        win.scaleFactor(),
-        win.isMaximized(),
-      ]);
+      nativeRestored = await invoke<boolean>("take_native_layout_restored");
       if (!isCurrent()) return;
       // Subscribe before restoring so native events cannot race listener setup.
-      layoutObserver = await observeWindowLayout(
-        win,
-        isCurrent,
-        hasRestoredStartupGeometry(initialSize, initialScale, initialMaximized),
-      );
+      layoutObserver = await observeWindowLayout(win, isCurrent);
       if (!layoutObserver) return;
-      await restoreStateCurrent(
-        StateFlags.SIZE | StateFlags.POSITION | StateFlags.MAXIMIZED,
-      );
-      if (!isCurrent()) return;
+      if (!nativeRestored) {
+        await restoreStateCurrent(
+          StateFlags.SIZE | StateFlags.POSITION | StateFlags.MAXIMIZED,
+        );
+        if (!isCurrent()) return;
+      }
     } else {
       const cssSafeLogicalWidth = measured.monitor
         ? Math.round(
@@ -395,6 +386,7 @@ async function applyAppWindowLayout(
     if (!isCurrent()) return;
     await finalizeAppWindowLayout({
       restored,
+      nativeRestored,
       measured,
       show: async () => {
         if (hiddenAtLaunch) return false;
