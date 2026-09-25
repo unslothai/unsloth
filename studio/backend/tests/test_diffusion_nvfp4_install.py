@@ -1544,3 +1544,24 @@ def test_a_failed_install_does_not_quote_index_credentials(env):
     ok, reason = inst.ensure_flashinfer_for_nvfp4(0, run = run)
     assert not ok and "the installer failed" in reason
     assert "SECRET" not in reason
+
+
+def test_an_unreported_failure_does_not_revert_a_concurrent_upgrade(env):
+    # A step that dies with no summary gives the rollback no report to filter by. The constraints still held every
+    # installed package, so an upgrade made meanwhile by the built-in terminal is the user's and must stay.
+    env.concurrent_add = {"packaging": "26.0"}
+    real_run = env.run
+
+    def run(cmd, **kwargs):
+        result = real_run(cmd, **kwargs)
+        if "install" in cmd and "uninstall" not in cmd and any(
+            a.startswith("flashinfer-python==") for a in cmd
+        ):
+            return _Result(1, "")
+        return result
+
+    ok, reason = inst.ensure_flashinfer_for_nvfp4(0, run = run)
+    assert not ok and "rolled back" in reason
+    assert "flashinfer-python" not in env.dists, reason
+    assert env.dists["packaging"] == "26.0", reason
+    assert not [c for c in env.commands if "packaging==25.0" in c]

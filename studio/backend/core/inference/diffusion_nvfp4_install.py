@@ -690,22 +690,26 @@ def _uninstall_cmd(uv: Optional[str], names: list[str]) -> list[str]:
     return [sys.executable, "-m", "pip", "uninstall", "-y", *names]
 
 
-def _write_constraints(pins: dict[str, str]) -> str:
-    """Every installed distribution at its exact version. Versions that are not PEP 440 are left
-    out rather than handed to a resolver that would reject the whole file."""
+def _pinnable(dists: dict[str, str]) -> dict[str, str]:
+    """The distributions a constraints file can hold: versions that are not PEP 440 are left out rather than
+    handed to a resolver that would reject the whole file."""
     try:
         from packaging.version import InvalidVersion, Version
     except Exception:  # noqa: BLE001
-        Version = None
-        InvalidVersion = Exception
-    lines = []
-    for name, version in sorted(pins.items()):
-        if Version is not None:
-            try:
-                Version(version)
-            except InvalidVersion:
-                continue
-        lines.append(f"{name}=={version}\n")
+        return dict(dists)
+    pins = {}
+    for name, version in dists.items():
+        try:
+            Version(version)
+        except InvalidVersion:
+            continue
+        pins[name] = version
+    return pins
+
+
+def _write_constraints(pins: dict[str, str]) -> str:
+    """Every installed distribution at its exact version (see ``_pinnable``)."""
+    lines = [f"{name}=={version}\n" for name, version in sorted(_pinnable(pins).items())]
     fd, path = tempfile.mkstemp(prefix = "unsloth_flashinfer_", suffix = ".txt")
     with os.fdopen(fd, "w", encoding = "utf-8") as fh:
         fh.writelines(lines)
@@ -887,6 +891,11 @@ def _rollback(
         # Put back only what this transaction's installer says it changed: a package another installer (the built-in
         # terminal) upgraded meanwhile is that user's change, not ours to revert.
         moved = {name: change for name, change in moved.items() if name in reported}
+    elif unreported_step:
+        # No report to go by, but the constraints held every pinned package where it was, so drift there is another
+        # installer's; only a package the constraints could not pin can have been moved by this one.
+        pinned = _pinnable(before)
+        moved = {name: change for name, change in moved.items() if name not in pinned}
     notes = []
     if added:
         ok, output = _run(run, _uninstall_cmd(uv, added), _VERIFY_TIMEOUT_S)
