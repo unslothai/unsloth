@@ -2091,6 +2091,23 @@ fn main() {
 
     let mut context = tauri::generate_context!();
     extend_csp_with_hf_endpoints(&mut context);
+    // Restore a previously usable app layout while the native window is still
+    // hidden. Otherwise its initial setup dimensions can overwrite the plugin
+    // cache before the renderer gets a chance to restore the saved size.
+    // A missing backend still starts in the small setup window.
+    let restore_initial_layout = dirs::config_dir().is_some_and(|dir| {
+        app_layout::should_restore_initial_window_state(
+            &dir.join(&context.config().identifier),
+            tauri_plugin_window_state::DEFAULT_FILENAME,
+            process::find_unsloth_binary().is_some(),
+        )
+    });
+    info!("Native saved app layout restore enabled: {restore_initial_layout}");
+    let mut window_state = tauri_plugin_window_state::Builder::new()
+        .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED);
+    if !restore_initial_layout {
+        window_state = window_state.skip_initial_state("main");
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -2108,12 +2125,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(
-            tauri_plugin_window_state::Builder::new()
-                .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
-                .skip_initial_state("main")
-                .build(),
-        )
+        .plugin(window_state.build())
         .manage(diagnostics::new_diagnostics_state())
         .manage(install::new_install_state())
         .manage(new_training_activity_state())

@@ -91,9 +91,9 @@ export async function measureWindowLayout<Monitor extends WorkAreaMonitor>(
 }
 
 export function shouldFinishWindowLayoutWait(
-  sawPostShowChange: boolean,
+  sawNativeChange: boolean,
 ): boolean {
-  return sawPostShowChange;
+  return sawNativeChange;
 }
 
 type ResolutionQuery = {
@@ -145,7 +145,7 @@ type FinalizeAppWindowLayoutOptions<Monitor extends WorkAreaMonitor> = {
   isCurrent: WindowLayoutGuard;
 };
 
-/** Shows the app window, then applies bounds from the visible monitor. */
+/** Reveals the settled app window, then applies bounds from the visible monitor. */
 export async function finalizeAppWindowLayout<Monitor extends WorkAreaMonitor>({
   restored,
   measured,
@@ -157,16 +157,20 @@ export async function finalizeAppWindowLayout<Monitor extends WorkAreaMonitor>({
   isCurrent,
 }: FinalizeAppWindowLayoutOptions<Monitor>): Promise<void> {
   if (!isCurrent()) return;
+  // The plugin returns before native restore events necessarily apply its size.
+  // Revealing now can expose the hidden setup-sized window for one frame.
+  if (restored) {
+    await waitForSettled?.();
+    if (!isCurrent()) return;
+  }
   const shown = await show();
   if (!isCurrent()) return;
   // A restored hidden autostart cannot reliably resolve its saved monitor yet.
   // Keep the plugin-restored geometry untouched until native tray reveal.
   if (restored && !shown) return;
-
-  // Native restore calls complete before GTK/Cocoa move and resize events have
-  // necessarily updated Tauri's cached geometry.
+  // Showing can change the resolved monitor (e.g. a compact secondary), so
+  // remeasure before applying its bounds without exposing the old geometry.
   if (restored) {
-    await waitForSettled?.();
     if (!isCurrent()) return;
     measured = (await measure()) ?? measured;
     if (!isCurrent()) return;

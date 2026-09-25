@@ -109,6 +109,16 @@ fn should_restore_saved_layout(config_dir: &Path, state_file_name: &str) -> bool
     is_initialized(config_dir) || !is_setup_window_size(width, height)
 }
 
+/// Decide before Tauri constructs the main window: plugin resize events can
+/// replace its saved size while the renderer is still checking the backend.
+pub(crate) fn should_restore_initial_window_state(
+    config_dir: &Path,
+    state_file_name: &str,
+    backend_installed: bool,
+) -> bool {
+    backend_installed && should_restore_saved_layout(config_dir, state_file_name)
+}
+
 fn mark_initialized(config_dir: &Path) -> Result<(), String> {
     write_marker(config_dir, INITIALIZED_MARKER)
 }
@@ -253,6 +263,25 @@ mod tests {
         assert!(!should_restore_saved_layout(&dir, state_file));
         mark_initialized(&dir).unwrap();
         assert!(should_restore_saved_layout(&dir, state_file));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn native_startup_restores_only_installed_full_app_layouts() {
+        let dir = temp_dir("native-startup");
+        fs::create_dir_all(&dir).unwrap();
+        let state_file = ".window-state.json";
+        let state_path = dir.join(state_file);
+        assert!(!should_restore_initial_window_state(&dir, state_file, true));
+        fs::write(&state_path, window_state(1200, 800, false)).unwrap();
+        assert!(!should_restore_initial_window_state(
+            &dir, state_file, false
+        ));
+        assert!(should_restore_initial_window_state(&dir, state_file, true));
+        reset_initialized(&dir).unwrap();
+        assert!(!should_restore_initial_window_state(&dir, state_file, true));
+        mark_initialized(&dir).unwrap();
+        assert!(should_restore_initial_window_state(&dir, state_file, true));
         let _ = fs::remove_dir_all(dir);
     }
 

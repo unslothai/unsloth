@@ -155,8 +155,9 @@ async function observeWindowLayout(
 
   return {
     waitForSettled: async () => {
-      let observedRevision = revision;
-      let sawPostShowChange = false;
+      // Include restore events that arrived before this wait started.
+      let observedRevision = 0;
+      let sawNativeChange = revision > 0;
       for (
         let elapsed = 0;
         elapsed < WINDOW_LAYOUT_TIMEOUT_MS && isCurrent();
@@ -165,10 +166,10 @@ async function observeWindowLayout(
         await delay(WINDOW_LAYOUT_POLL_MS);
         if (revision !== observedRevision) {
           observedRevision = revision;
-          sawPostShowChange = true;
+          sawNativeChange = true;
           continue;
         }
-        if (shouldFinishWindowLayoutWait(sawPostShowChange)) {
+        if (shouldFinishWindowLayoutWait(sawNativeChange)) {
           return;
         }
       }
@@ -363,16 +364,18 @@ async function applyAppWindowLayout(
       await placeWindow(win, windowModule, measured, requestedSize, isCurrent);
     }
     // Apply work-area constraints after restore to preserve the saved size.
+    const hiddenAtLaunch = await wasLaunchedHidden();
+    if (!isCurrent()) return;
     await finalizeAppWindowLayout({
       restored,
       measured,
       show: async () => {
-        if (await wasLaunchedHidden()) return false;
+        if (hiddenAtLaunch) return false;
         if (!isCurrent()) return false;
         await win.show();
         return true;
       },
-      waitForSettled: layoutObserver?.waitForSettled,
+      waitForSettled: hiddenAtLaunch ? undefined : layoutObserver?.waitForSettled,
       measure: () => measureTauriWindowLayout(windowModule, win, isCurrent),
       setMinimumConstraints: (minimum) =>
         win.setSizeConstraints({

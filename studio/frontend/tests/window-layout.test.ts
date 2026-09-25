@@ -389,7 +389,7 @@ test("remeasures a restored window after show on its compact secondary", async (
   assert.deepEqual(savedSize, { width: 900, height: 556 });
 });
 
-test("waits for restored geometry before enforcing its minimum", async () => {
+test("restored geometry settles before the window becomes visible", async () => {
   const events: string[] = [];
   let currentSize = { width: 760, height: 560 };
   const measured = {
@@ -406,6 +406,7 @@ test("waits for restored geometry before enforcing its minimum", async () => {
     measured,
     show: async () => {
       events.push("show");
+      assert.deepEqual(currentSize, { width: 1200, height: 800 });
       return true;
     },
     waitForSettled: async () => {
@@ -427,8 +428,8 @@ test("waits for restored geometry before enforcing its minimum", async () => {
   });
 
   assert.deepEqual(events, [
-    "show",
     "settled",
+    "show",
     "measure",
     "constraints",
     "enforce",
@@ -453,9 +454,6 @@ test("preserves restored geometry while an autostart window stays hidden", async
     show: async () => {
       events.push("show");
       return false;
-    },
-    waitForSettled: async () => {
-      events.push("settled");
     },
     measure: async () => {
       events.push("measure");
