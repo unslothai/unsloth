@@ -3568,7 +3568,6 @@ const Composer: FC<{
   const focusAudioUploadDraft = useCallback(() => {
     inputRef.current?.focus({ preventScroll: true });
   }, []);
-  // Old upload trigger's send/attachment gates must not leak into Dictate.
   const dictationEntryDisabled = !chatActive;
   const audioUpload = useChatAudioUpload({
     owner: composerIdentity,
