@@ -56,6 +56,7 @@ export {
   type Preset,
 } from "./chat-settings-sheet";
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
+export { openFolderAsProject, useOpeningFolder } from "./utils/open-folder-as-project";
 export {
   hydrateModelDisclaimerPreference,
   refreshModelDisclaimerPreference,
@@ -135,7 +136,12 @@ export {
   type SidebarDropZone,
   type SidebarSection,
 } from "./lib/sidebar-drag";
-export { useSidebarDrag, SPRING_OPEN_DELAY_MS } from "./hooks/use-sidebar-drag";
+export {
+  useSidebarDrag,
+  SPRING_OPEN_DELAY_MS,
+  DRAG_THRESHOLD_PX,
+  DRAGGING_BODY_CLASS,
+} from "./hooks/use-sidebar-drag";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export {
@@ -471,6 +477,7 @@ export {
   composerSubmitIntent,
   composerFollowUpBehavior,
   composerShortcutLabels,
+  effectiveSendShortcut,
   followUpSubmitIntent,
   steeringInsertionIndex,
   type ComposerSendShortcut,
