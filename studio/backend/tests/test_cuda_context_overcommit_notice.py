@@ -227,3 +227,16 @@ def test_no_context_is_offered_when_the_weights_alone_overflow(tmp_path, monkeyp
     """40 GB of weights on a 24 GB card: no context fits, so none may be offered."""
     warning = _launch_explicit_ctx(tmp_path, monkeypatch, model_gb = 40, n_ctx = 32768)
     assert "The largest that fits is" not in warning
+
+
+def test_windows_wording_follows_the_cuda_build(tmp_path, monkeypatch):
+    """A Vulkan or HIP build on Windows has no CUDA sysmem fallback to describe."""
+    monkeypatch.setattr(
+        LlamaCppBackend, "_sysmem_fallback_risk", staticmethod(lambda b = None: False)
+    )
+    warning = _launch_explicit_ctx(tmp_path, monkeypatch, model_gb = 18, n_ctx = 131072)
+    assert "NVIDIA Control Panel" not in warning
+    monkeypatch.setattr(LlamaCppBackend, "_sysmem_fallback_risk", staticmethod(lambda b = None: True))
+    (tmp_path / "cuda").mkdir()
+    warning = _launch_explicit_ctx(tmp_path / "cuda", monkeypatch, model_gb = 18, n_ctx = 131072)
+    assert "NVIDIA Control Panel" in warning

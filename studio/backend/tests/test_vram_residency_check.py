@@ -52,8 +52,6 @@ class _Backend:
     _shared_usage_growth_bytes = LlamaCppBackend.__dict__["_shared_usage_growth_bytes"]
     _sample_residency_baseline = LlamaCppBackend.__dict__["_sample_residency_baseline"]
     _verify_vram_residency = LlamaCppBackend.__dict__["_verify_vram_residency"]
-    _start_residency_check = LlamaCppBackend.__dict__["_start_residency_check"]
-    _take_residency_state = LlamaCppBackend.__dict__["_take_residency_state"]
 
     def _shared_gpu_memory_bytes(self):
         self._shared_reads += 1
@@ -390,37 +388,6 @@ def test_state_is_disarmed_after_one_read(on_windows):
     assert backend._verify_vram_residency() is None, "a second read re-reported the load"
 
 
-def test_start_spawns_no_thread_when_unarmed(on_windows, monkeypatch):
-    """No thread and no probe on the overwhelming majority of loads."""
-    started = []
-    monkeypatch.setattr(
-        mod.threading,
-        "Thread",
-        lambda *a, **k: started.append(k.get("name")) or _NeverStarts(),
-    )
-
-    def _probe_threads():
-        return [n for n in started if n == "vram-residency-check"]
-
-    backend = _Backend([(0, 1.0, 16384)])  # never armed
-    backend._start_residency_check()
-    assert _probe_threads() == [], "an unarmed load still spawned the probe thread"
-
-    _arm(backend)
-    backend._start_residency_check()
-    assert _probe_threads() == ["vram-residency-check"], "an armed load did not spawn the probe"
-
-
-class _NeverStarts:
-    """Stands in for threading.Thread: started and joined, but never runs."""
-
-    def start(self):
-        pass
-
-    def join(self, timeout = None):
-        pass
-
-
 def test_an_igpu_growing_shared_memory_is_not_the_nvidia_spill(on_windows):
     """Optimus: the display iGPU's shared usage moves on its own; only the loaded card counts."""
     used_mib = (QWEN3_VL_8B_FLOOR / MIB) - 300  # benign: tok_embd stays on the host
@@ -453,38 +420,66 @@ def test_not_armed_for_a_non_cuda_build(on_windows):
     assert backend._pin_resident_floor_bytes is None
 
 
-def test_a_check_for_a_replaced_process_records_nothing(on_windows):
-    """A reload before the probe finishes must not inherit the old model's warning."""
-    backend = _Backend([(0, 16384.0 - 3000.0, 16384)])
-    old_process, new_process = object(), object()
-    backend._process = old_process
+def test_the_advice_offers_q8_0_only_for_an_f16_cache(on_windows):
+    for cache, offered in (("f16", True), (None, True), ("q8_0", False), ("q4_0", False)):
+        backend = _Backend([(0, 16384.0 - 11469.0, 16384)])
+        backend._arm_residency_check(QWEN3_VL_8B_FLOOR, [0], None, cache)
+        backend._sample_residency_baseline(PIN_ARGV, {})
+        message = backend._verify_vram_residency()
+        assert ("q8_0" in message) is offered, cache
+
+
+def test_a_spill_is_appended_to_an_earlier_notice(on_windows):
+    backend = _Backend([(0, 16384.0 - 11469.0, 16384)])
+    backend._last_load_warning = "Earlier notice."
+    backend._amend_load_warning = lambda note: setattr(
+        backend, "_last_load_warning", backend._last_load_warning + note
+    )
     _arm(backend)
-    state = backend._take_residency_state()
-    backend._process = new_process
-    assert backend._verify_vram_residency(state, old_process) is None
-    assert backend._warnings == []
+    message = backend._verify_vram_residency()
+    assert backend._last_load_warning == "Earlier notice. " + message
 
 
-def test_the_thread_gets_a_snapshot_so_a_rearm_cannot_steal_it(on_windows, monkeypatch):
-    started = []
+def test_growth_counts_only_as_many_adapters_as_were_pinned():
+    """Another dGPU app growing dedicated and shared memory is not this one-card load."""
+    other = "luid_0x00000000_0x0000beef_phys_0"
+    before = {NVIDIA_LUID: 0, other: 0, "dedicated|" + NVIDIA_LUID: 0, "dedicated|" + other: 0}
+    after = {
+        NVIDIA_LUID: 0,
+        other: 500 * MIB,
+        "dedicated|" + NVIDIA_LUID: 12000 * MIB,
+        "dedicated|" + other: 800 * MIB,
+    }
+    assert LlamaCppBackend._shared_usage_growth_bytes(before, after, 1) == 0
+    assert LlamaCppBackend._shared_usage_growth_bytes(before, after, 2) == 500 * MIB
 
-    class _Capture:
-        def __init__(
-            self,
-            target,
-            args = (),
-            **kw,
-        ):
-            started.append((target, args))
 
-        def start(self):
-            pass
+def test_fallback_risk_is_cached_per_resolved_binary(monkeypatch):
+    monkeypatch.setattr(mod.sys, "platform", "win32")
+    monkeypatch.setattr(LlamaCppBackend, "_SYSMEM_FALLBACK_RISK", {})
+    libs = {"/vulkan/llama-server": {"vulkan"}, "/cuda/llama-server": {"cuda"}}
+    selected = ["/vulkan/llama-server"]
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_find_llama_server_binary",
+        staticmethod(lambda include_denied = False: selected[0]),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda binary = None: frozenset(libs[binary or selected[0]])),
+    )
+    assert LlamaCppBackend._sysmem_fallback_risk() is False
+    selected[0] = "/cuda/llama-server"
+    assert LlamaCppBackend._sysmem_fallback_risk() is True
 
-    backend = _Backend([(0, 16384.0 - 3000.0, 16384)])
-    backend._process = object()
-    _arm(backend)
-    monkeypatch.setattr(mod.threading, "Thread", _Capture)
-    backend._start_residency_check()
-    assert backend._pin_resident_floor_bytes is None, "state left armed for the next load"
-    ((_target, args),) = started
-    assert args[0][0] == QWEN3_VL_8B_FLOOR and args[1] is backend._process
+
+def test_the_check_runs_before_the_load_returns(tmp_path, monkeypatch):
+    """A verdict recorded after the load response is never shown, so it must come first."""
+    from test_llama_cpp_placement import _backend as _placement_backend, _launch
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    backend, gguf = _placement_backend(tmp_path, vulkan = False, memory = [(0, 24_576, 24_576)])
+    backend._verify_vram_residency = lambda: backend._record_load_warning("SPILL")
+    _launch(backend, gguf, n_ctx = 2048)
+    assert "SPILL" in (backend.last_load_warning or "")
