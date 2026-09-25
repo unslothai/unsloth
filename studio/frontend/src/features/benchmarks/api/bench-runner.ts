@@ -277,6 +277,10 @@ export async function runBenchmark(
   events: RunnerEvents,
   signal: AbortSignal,
 ): Promise<BenchRun> {
+  // Chat settings hydrate asynchronously at app mount; on a cold load of /benchmarks the model
+  // status can make Run ready first, so wait for them before the chatBaseLoad snapshot below,
+  // or the sweep and the restore would run on the store's pre-hydration defaults.
+  await useChatRuntimeStore.getState().hydratePersistedSettings();
   let status = await getInferenceStatus(signal);
   // Chat's model before the sweep; a run that names its own model still restores this one.
   const original = status;

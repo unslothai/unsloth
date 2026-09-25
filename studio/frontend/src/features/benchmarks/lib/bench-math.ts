@@ -512,17 +512,54 @@ export function userExtraArgs(
   return out;
 }
 
+// Offload flags an inherited extra arg could carry (llama_server_args._OFFLOAD_SHADOWING_FLAGS).
+// The value flags last-wins-promote into the manual layer count on /load, so an offload row's
+// requested placement would be silently replaced by the chat model's pass-through -ngl.
+const OFFLOAD_VALUE_FLAGS = [
+  "-ngl",
+  "--gpu-layers",
+  "--n-gpu-layers",
+  "-ncmoe",
+  "--n-cpu-moe",
+  "-cmoe",
+  "--cpu-moe",
+];
+const OFFLOAD_BOOL_FLAGS = ["-fit", "--fit"];
+
+/** Drop inherited GPU-offload flags: the offload sweep owns placement, so its rows set it themselves. */
+function stripOffloadArgs(args: readonly string[] | null | undefined): string[] {
+  const out: string[] = [];
+  const list = args ?? [];
+  for (let i = 0; i < list.length; i++) {
+    const eq = list[i].indexOf("=");
+    const name = eq >= 0 ? list[i].slice(0, eq) : list[i];
+    if (OFFLOAD_VALUE_FLAGS.includes(name)) {
+      if (eq < 0) i++; // its value is a separate token
+      continue;
+    }
+    if (OFFLOAD_BOOL_FLAGS.includes(name)) continue;
+    out.push(list[i]);
+  }
+  return out;
+}
+
 export function variantLoad<T extends LoadPayload>(
   base: T,
   variant: Variant,
 ): T {
   const { llama_extra_args: extra, ...rest } = variant.load;
+  // A row that owns GPU placement (the offload sweep) must not inherit chat's -ngl / --n-cpu-moe,
+  // which /load would promote over the row's requested layer count.
+  const baseArgs =
+    variant.load.gpu_memory_mode !== undefined
+      ? stripOffloadArgs(base.llama_extra_args)
+      : (base.llama_extra_args ?? []);
   return {
     ...base,
     ...rest,
     // Always explicit: omitted, Studio re-applies the model's stored args, which after
     // an ngram row would carry that row's tuning into the next one.
-    llama_extra_args: [...(base.llama_extra_args ?? []), ...(extra ?? [])],
+    llama_extra_args: [...baseArgs, ...(extra ?? [])],
     // A fresh server per row: timings include the load, and no drafter cache carries over.
     force_reload: true,
   };
