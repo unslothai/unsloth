@@ -214,7 +214,9 @@ from .diffusion_transformer_quant import (
     dense_transformer_unsupported_reason,
     denoiser_modules,
     explain_unusable_scheme,
+    family_denies_scheme,
     mark_source_precision,
+    nvfp4_gated_base,
     normalize_transformer_quant,
     quantize_transformer,
     select_transformer_quant_scheme,
@@ -1798,6 +1800,17 @@ class DiffusionBackend:
         """The body of ``assert_precision_available``, run with the selected card current."""
         if pinned is not None and pinned != TQ_AUTO:
             reason = None
+            family_name = getattr(fam, "name", None)
+            if (
+                not base_repo
+                and model_kind != "pipeline"
+                and pinned == TQ_NVFP4
+                and family_denies_scheme(family_name, pinned)
+            ):
+                # A GGUF pick without an explicit base takes it from its card tag, resolved over the network at load.
+                # This gate stays network-free, so judge the scheme on a base whose gate record lifts the family deny,
+                # as the loader will if the pick is that base; the loader still refuses any other base.
+                base_repo = nvfp4_gated_base(family_name)
             if not dense_quant_supported_kind(model_kind):
                 reason = dense_quant_unsupported_kind_reason(model_kind)
             elif getattr(fam, "denoiser_attr", "transformer") != "transformer":
