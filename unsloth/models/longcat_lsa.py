@@ -344,8 +344,7 @@ def _classes():
                 history = getattr(past_key_values, "_unsloth_ngram_history", None)
                 keep = self.ngram_embeddings.n - 1
                 context = None if history is None else history[..., -keep:]
-                # A position_ids restart (padding-free packing, left padding) starts a new sequence,
-                # which the n-gram must not read across, as transformers' packed mask does for attention.
+                # position_ids restarts (packing, left padding) begin a new n-gram segment.
                 resets = None
                 pos = position_ids
                 if pos is None and attention_mask is not None and attention_mask.dim() == 2:
@@ -360,8 +359,7 @@ def _classes():
                 inputs_embeds = self.ngram_embeddings(
                     self.embed_tokens(input_ids), input_ids, context, resets
                 )
-                # Training never reads a cache, and one here would switch off transformers'
-                # packed-sequence mask (it only checks position_ids when past_key_values is None).
+                # No cache in training: transformers' packed mask needs past_key_values None.
                 if use_cache is None:
                     use_cache = getattr(self.config, "use_cache", False) and not self.training
                 if use_cache and past_key_values is None:

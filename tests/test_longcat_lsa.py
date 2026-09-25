@@ -449,8 +449,6 @@ def test_cached_decode_matches_full_forward(tiny):
 
 
 def test_packed_training_rows_do_not_see_each_other(tiny):
-    # Padding-free packing: no cache in training, so transformers' packed mask applies, and the
-    # n-gram restarts with position_ids.
     path, cfg, sd = tiny
     model = _load(path).train()
     a, b = _tokens(cfg, 2, 12, seed = 3)
@@ -503,7 +501,6 @@ def test_resized_vocab_saves_and_reloads(tiny, tmp_path):
 
 
 def test_ngram_history_follows_beam_reorder_and_crop(tiny):
-    # Beam reorder and crop must move the n-gram history with the KV cache.
     path, cfg, sd = tiny
     model = _load(path).eval()
     ids = _tokens(cfg, 2, 14)
@@ -521,7 +518,6 @@ def test_ngram_history_follows_beam_reorder_and_crop(tiny):
 
 
 def test_cache_reset_clears_the_ngram_history(tiny):
-    # A reset() static cache must not leak the previous prompt into n-gram ids.
     import transformers
     from transformers.cache_utils import StaticCache
 
