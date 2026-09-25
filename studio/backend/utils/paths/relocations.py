@@ -26,11 +26,11 @@ _SETTING = "library.locations"
 _lock = threading.Lock()
 # Keyed by the owner's database, so a test or a relaunch on another root never reads a stale map.
 # Each choice is {"path", "mount"}: `mount` is the drive or share the folder was on when picked.
+# One saved before mount points were recorded is its bare path, and is marked `bare` until its
+# folder is there to ask (while it is not, the drive is what it would name).
 _cache: dict[str, dict[str, dict]] = {}
-
-
-# Resolving the owner's database path walks the filesystem, and the galleries ask on every file
-# lookup. It only moves when the variables that place Studio's home do, so it is kept per them.
+# Resolving the database path walks the filesystem, and the galleries ask on every file lookup.
+# It only moves with the variables that place Studio's home (or a test swapping the function).
 _HOME_VARIABLES = ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME", "UNSLOTH_HOME")
 _db_keys: dict[tuple, str] = {}
 
@@ -38,27 +38,36 @@ _db_keys: dict[tuple, str] = {}
 def _db_key() -> str:
     from utils.paths import storage_roots
 
-    # The function itself too, so a test that swaps it is not answered from before.
     placed = (
         *(os.environ.get(name) for name in _HOME_VARIABLES),
         id(storage_roots.studio_db_path),
     )
-    key = _db_keys.get(placed)
-    if key is None:
-        key = str(storage_roots.studio_db_path())
+    if placed not in _db_keys:
         _db_keys.clear()
-        _db_keys[placed] = key
-    return key
+        _db_keys[placed] = str(storage_roots.studio_db_path())
+    return _db_keys[placed]
 
 
 def _entry(value) -> Optional[dict]:
-    # Before mount points were recorded a choice was its bare path.
     if isinstance(value, str) and value:
-        return {"path": value, "mount": None}
+        if not Path(value).is_dir():
+            return {"path": value, "mount": None, "bare": True}
+        return {"path": value, "mount": mount_point(Path(value))}
     if isinstance(value, dict) and isinstance(value.get("path"), str) and value["path"]:
         mount = value.get("mount")
         return {"path": value["path"], "mount": mount if isinstance(mount, str) and mount else None}
     return None
+
+
+def _save(chosen: dict[str, dict]) -> None:
+    from storage.studio_db import upsert_app_settings
+    stored = {
+        kind: entry["path"]
+        if entry.get("bare")
+        else {"path": entry["path"], "mount": entry["mount"]}
+        for kind, entry in chosen.items()
+    }
+    upsert_app_settings({_SETTING: stored}, read_back = False)
 
 
 def _load() -> dict[str, dict]:
@@ -66,43 +75,21 @@ def _load() -> dict[str, dict]:
     with _lock:
         if key in _cache:
             return _cache[key]
-    from storage.studio_db import get_app_setting, upsert_app_settings
+    from storage.studio_db import get_app_setting
 
     raw = get_app_setting(_SETTING, {})
-    chosen = {}
-    upgraded = False
-    if isinstance(raw, dict):
-        for kind, value in raw.items():
-            entry = _entry(value) if kind in MOVABLE else None
-            if entry is None:
-                continue
-            # A choice saved before mount points were recorded learns its own the first time its
-            # folder is there to ask. While it is not, it waits: the drive is what it would name.
-            if isinstance(value, str) and Path(entry["path"]).is_dir():
-                entry["mount"] = mount_point(Path(entry["path"]))
-                upgraded = True
-            chosen[kind] = entry
-    if upgraded:
+    raw = raw if isinstance(raw, dict) else {}
+    chosen = {kind: _entry(value) for kind, value in raw.items() if kind in MOVABLE}
+    chosen = {kind: entry for kind, entry in chosen.items() if entry is not None}
+    # A bare path whose folder is there now learned its mount: saved, so it is asked once.
+    if any(isinstance(raw[kind], str) and not entry.get("bare") for kind, entry in chosen.items()):
         try:
-            upsert_app_settings({_SETTING: _stored(raw, chosen)}, read_back = False)
+            _save(chosen)
         except (sqlite3.Error, OSError):
             pass
     with _lock:
         _cache[key] = chosen
     return chosen
-
-
-def _stored(raw: dict, chosen: dict[str, dict]) -> dict:
-    """What to save for `chosen`: a choice still waiting for its drive keeps its bare path, so it
-    is upgraded once the drive is back."""
-    return {
-        kind: raw[kind]
-        if isinstance(raw.get(kind), str)
-        and entry["mount"] is None
-        and not Path(entry["path"]).is_dir()
-        else entry
-        for kind, entry in chosen.items()
-    }
 
 
 def _chosen_entry(key: str) -> Optional[dict]:
@@ -119,11 +106,6 @@ def chosen(key: str) -> Optional[Path]:
     """The folder the owner picked for `key`, or None for the default."""
     entry = _chosen_entry(key)
     return Path(entry["path"]) if entry else None
-
-
-def relocated(key: str, default: Path) -> Path:
-    """Where `key`'s files live: the owner's chosen folder, else `default`."""
-    return chosen(key) or default
 
 
 class LocationUnavailable(OSError):
@@ -182,19 +164,12 @@ def set_chosen(key: str, path: Optional[Path]) -> None:
     """Record `path` for `key`; None goes back to the default. Owner context only."""
     if key not in MOVABLE:
         raise ValueError(f"{key} files cannot move")
-    from storage.studio_db import upsert_app_settings
-
-    from storage.studio_db import get_app_setting
-
     updated = dict(_load())
     if path is None:
         updated.pop(key, None)
     else:
         updated[key] = {"path": str(path), "mount": mount_point(path)}
-    raw = get_app_setting(_SETTING, {})
-    upsert_app_settings(
-        {_SETTING: _stored(raw if isinstance(raw, dict) else {}, updated)}, read_back = False
-    )
+    _save(updated)
     with _lock:
         _cache[_db_key()] = updated
 
