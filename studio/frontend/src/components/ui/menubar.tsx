@@ -243,7 +243,7 @@ function MenubarSubTrigger({
       <HugeiconsIcon
         icon={ChevronRightStandardIcon}
         strokeWidth={1.5}
-        className="ml-auto size-[12px]"
+        className="ml-auto size-[calc(12px*var(--ui-space-scale,1))]"
       />
     </MenubarPrimitive.SubTrigger>
   );

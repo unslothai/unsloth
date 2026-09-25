@@ -130,7 +130,7 @@ export function ExampleDatasetCards({
               </Tooltip>
               <Tooltip>
                 <TooltipTrigger asChild={true}>
-                  <span className="max-w-[110px] shrink truncate rounded-full bg-secondary px-2 py-0.5 text-ui-10 font-normal text-secondary-foreground">
+                  <span className="max-w-[calc(110px*var(--ui-space-scale,1))] shrink truncate rounded-full bg-secondary px-2 py-0.5 text-ui-10 font-normal text-secondary-foreground">
                     {ex.license}
                   </span>
                 </TooltipTrigger>

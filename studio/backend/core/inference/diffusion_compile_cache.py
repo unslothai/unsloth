@@ -529,6 +529,20 @@ def register_shape(ctx: Optional[CacheContext], shape: Any, *, static: bool) -> 
         pass
 
 
+def mark_recompiled(ctx: Optional[CacheContext]) -> None:
+    """A render compiled new graphs for a shape the bundle already covers (automatic dynamic re-specialises on the
+    first new text length, keyed by nothing ``register_shape`` sees), so the bundle on disk lacks them: clear
+    ``saved`` so the next ``save`` rewrites it. Never raises."""
+    if ctx is None:
+        return
+    try:
+        with _dirty_lock:
+            ctx.saved = False
+            ctx.dirty_seq += 1
+    except Exception:  # noqa: BLE001 - bookkeeping only
+        pass
+
+
 def _try_load(
     ctx: CacheContext,
     logger: Any,

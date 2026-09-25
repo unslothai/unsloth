@@ -6,11 +6,17 @@ export const en = {
     title: "Composer",
     plainText: "Plain text composer",
     plainTextDescription: "Keep code, Markdown, and links as literal text. Turn off to show a formatted preview.",
-    showContext: "Show context window usage",
+    showContext: "Context window usage",
     sendShortcut: "Send shortcut",
-    sendDescription: "Choose when Enter sends a prompt or inserts a new line.",
+    sendMultiline: "{mod} + Enter for multiline prompts",
+    sendAlways: "{mod} + Enter always",
+    sendEnterDescription: "Enter sends. Shift + Enter adds a new line.",
+    sendMultilineDescription:
+      "Enter sends a one-line prompt. Once it has more than one line, Enter adds a new line and {mod} + Enter sends.",
+    sendAlwaysDescription: "{mod} + Enter sends. Enter adds a new line.",
     followUp: "Follow-up behavior",
     followUpDescription: "What happens when you send during a response. Press {shortcut} to do the opposite once.",
+    followUpMultilineShortcut: "{shortcut} ({multiline} in a multiline prompt)",
     queue: "Queue",
     steer: "Steer",
     steerDescription: "Steer stops the current response and sends your follow-up next.",
@@ -104,6 +110,8 @@ export const en = {
     error: "Error",
     export: "Export",
     help: "Help",
+    todayAt: "Today, {time}",
+    yesterdayAt: "Yesterday, {time}",
     loading: "Loading...",
     new: "New",
     rename: "Rename",
@@ -1265,7 +1273,7 @@ export const en = {
         summary: "Live requests, errors, and token usage",
         status: "{active} active · {recent} recent · {model}",
         noModelLoaded: "no model loaded",
-        autoOpen: "Show the floating monitor automatically",
+        autoOpen: "Floating monitor opens automatically",
         autoOpenDescription: "Opens a small panel when API traffic arrives.",
         cpu: "CPU",
         ram: "RAM",
@@ -1591,7 +1599,7 @@ export const en = {
       pastedTextShortDescription:
         "Pastes of {count} characters or more become .txt attachments.",
       pastedTextOffDescription: "Pasted text always stays in the message box.",
-      projectsSection: "Show projects section",
+      projectsSection: "Projects section",
       projectsSectionDescription:
         "Group project chats under Projects. When off, show them in Recents.",
       title: "Chat",
@@ -1601,10 +1609,10 @@ export const en = {
         expandQuantizations: "Expand quantizations",
         expandQuantizationsDescription:
           "Show GGUF quantizations in On Device without opening each model.",
-        showAllQuantizations: "Show all quantizations",
+        showAllQuantizations: "All quantizations",
         showAllQuantizationsDescription:
           "Include quantizations that are not downloaded in On Device.",
-        showMemoryBar: "Show VRAM usage bar",
+        showMemoryBar: "VRAM usage bar",
         showMemoryBarDescription:
           "Show estimated VRAM for model weights, context, and speculative decoding.",
       },
@@ -1622,10 +1630,16 @@ export const en = {
       pastedTextThreshold: "Condense long pastes",
       pastedTextThresholdDescription: "Press {shortcut} to paste directly into the message box.",
       pastedTextThresholdOff: "Off",
-      showResponseModel: "Show response model",
+      showResponseModel: "Response model",
       showResponseModelDescription:
         "Show model details in assistant responses.",
-      modelDisclaimer: "Show model disclaimer",
+      inlineReadAloud: "Read aloud on responses",
+      inlineReadAloudDescription:
+        "Keep Read aloud on every response, instead of in the More menu.",
+      inlineEditResponse: "Edit response on responses",
+      inlineEditResponseDescription:
+        "Keep Edit response on every response, instead of in the More menu.",
+      modelDisclaimer: "Model disclaimer",
       modelDisclaimerDescription:
         'Show "LLMs can make mistakes" under the chat box.',
       projectAttachments: "Share files across a project",
@@ -1670,7 +1684,7 @@ export const en = {
       },
       webSearch: {
         title: "Web search",
-        images: "Show images from web search",
+        images: "Images from web search",
         imagesDescription:
           "Include images in search results.",
       },
@@ -1964,6 +1978,7 @@ export const en = {
       expires: "Expires {value}",
       actionsFor: "Actions for {name}",
       copyPrefix: "Copy prefix",
+      copyFailed: "Could not copy",
       revokeToken: "Revoke token",
       revokeTitle: 'Revoke access token "{name}"?',
       revokeDescription:

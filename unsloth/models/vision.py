@@ -79,10 +79,12 @@ from ._utils import (
     _config_get,
     _is_flash_attention_requested,
     _apply_text_only_key_mapping,
+    _cast_text_only_prequantized_params,
     _select_moe_detection_targets,
     set_task_config_attr,
 )
 from ._utils import *
+from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
 from ._custom_dtype import resolve_dtype, trusted_custom_dtype
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
@@ -881,12 +883,13 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     if do_bfloat16_mixed_precision:
         dtype = torch.bfloat16
 
+    # text_only configs have architectures=None.
+    architectures = getattr(self.config, "architectures", None) or [type(self).__name__]
     is_vlm = any(
-        x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
-        for x in self.config.architectures
+        x.endswith(("ForConditionalGeneration", "ForVisionText2Text")) for x in architectures
     )
     is_vlm = is_vlm or hasattr(self.config, "vision_config")
-    arch = self.config.architectures[0]
+    arch = architectures[0]
 
     # Removing token_type_ids is WRONG for Gemma 3, which uses bidirectional attention.
     if hasattr(self, "generate") and hasattr(self, "forward"):
@@ -1753,6 +1756,11 @@ class FastBaseModel:
                     trust_remote_code = trust_remote_code,
                     **kwargs,
                 )
+                if text_only_decoder:
+                    # Must run before offload / hooks capture the weights.
+                    _cast_text_only_prequantized_params(model, torch_dtype)
+                # transformers 5 leaves remote code's non-persistent buffers (RoPE inv_freq, decay slopes) uninitialised.
+                restore_remote_code_non_persistent_buffers(model)
                 # Must precede _attach_bnb_multidevice_hooks: it returns early while offload_embedding is True.
                 offload_embedding = _resolve_offload_embedding(
                     model,

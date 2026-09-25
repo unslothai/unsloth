@@ -69,6 +69,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.custom.pointerCursors.label",
     "settings.appearance.custom.reduceMotion.label",
     "settings.appearance.custom.uiFontSize.label",
+    "settings.appearance.custom.interfaceScale.label",
     "settings.appearance.custom.codeFontSize.label",
     "settings.appearance.custom.fontSmoothing.label",
     "settings.appearance.layout.compactSidebar",
@@ -122,6 +123,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.artifacts.allowNetworkAccess",
     "settings.chat.webSearch.images",
     "settings.chat.modelDisclaimer",
+    "settings.chat.inlineReadAloud",
+    "settings.chat.inlineEditResponse",
     "settings.chat.projectsSection",
     "settings.chat.groups.menu.title",
   ],
@@ -286,10 +289,6 @@ export function createSettingsSearchIndex({
       // whose PyTorch cannot use its GPUs says to "use Repair installation in Settings",
       // and searching Settings for "repair" answered "No settings found."
       "settings.general.repairInstall.label",
-    ],
-    appearance: [
-      ...SETTINGS_SEARCH_INDEX.appearance,
-      "settings.appearance.custom.interfaceScale.label",
     ],
     about: SETTINGS_SEARCH_INDEX.about.filter(
       (key) => key !== "settings.about.updates",
