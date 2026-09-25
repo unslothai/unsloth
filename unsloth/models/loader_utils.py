@@ -1433,6 +1433,10 @@ def check_and_disable_bitsandbytes_loading(
     if quant_method is None or quant_method == "bitsandbytes":
         return load_in_4bit, load_in_8bit, quant_method
 
+    if str(quant_method).lower() == "modelopt":
+        # Whoever loads the weights (vLLM included), a merged_16bit save must dequantize them.
+        from .modelopt_fp8 import enable_modelopt_merged_save
+        enable_modelopt_merged_save(model_config)
     if rewrite_modelopt and str(quant_method).lower() == "modelopt":
         from .modelopt_fp8 import arm_modelopt_fp8_loading
         if arm_modelopt_fp8_loading(model_config, verbose = verbose) is not None:

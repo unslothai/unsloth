@@ -1063,3 +1063,23 @@ def test_save_keeps_fp8_scale_names_without_original_pattern_copies():
     model._weight_conversions = [other, *renames]
     keep_fp8_scale_names_on_save(model)
     assert model._weight_conversions == [other]
+
+
+@needs_per_tensor_fp8
+def test_merged_save_is_armed_on_the_vllm_path(tmp_path, monkeypatch):
+    zoo_saving = pytest.importorskip("unsloth_zoo.saving_utils")
+    for name in ("_is_fp8_quant_config", "check_model_quantization_status"):
+        fn = getattr(zoo_saving, name)
+        monkeypatch.setattr(zoo_saving, name, getattr(fn, "__wrapped__", fn))
+    if zoo_saving._is_fp8_quant_config(_sarvam_quant()):
+        pytest.skip("this unsloth_zoo already dequantizes ModelOpt FP8 on a merged save")
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "llama", "quantization_config": _sarvam_quant()})
+    )
+    assert zoo_saving.check_model_quantization_status(str(tmp_path)) == (False, None)
+    config = SimpleNamespace(quantization_config = _sarvam_quant())
+    check_and_disable_bitsandbytes_loading(
+        config, load_in_4bit = True, verbose = False, rewrite_modelopt = False
+    )
+    assert config.quantization_config["quant_method"] == "modelopt"
+    assert zoo_saving.check_model_quantization_status(str(tmp_path)) == (True, "fp8")

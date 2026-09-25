@@ -39,6 +39,7 @@ __all__ = [
     "keep_fp8_scale_names_on_save",
     "attach_hf_quant_config",
     "move_config_overrides_onto_config",
+    "enable_modelopt_merged_save",
 ]
 
 UNSLOTH_MODELOPT_KEY_MAPPING_ATTR = "_unsloth_modelopt_key_mapping"
@@ -342,6 +343,15 @@ def arm_modelopt_fp8_loading(config, verbose: bool = True) -> Optional[dict]:
             "fp8 checkpoint (weight_scale -> weight_scale_inv, input_scale -> activation_scale)."
         )
     return plan
+
+
+def enable_modelopt_merged_save(config) -> bool:
+    """Install the merged-save dequantization for a ModelOpt FP8 checkpoint, also when the rewrite
+    is skipped because vLLM reads the weights."""
+    if modelopt_fp8_plan(config) is None:
+        return False
+    _dequantize_modelopt_on_merged_save()
+    return True
 
 
 def _dequantize_modelopt_on_merged_save() -> None:
