@@ -104,16 +104,13 @@ const EMPTY_COPY: Record<LibraryTab, EmptyCopy> = {
   all: [Upload01Icon, "library.empty.suggestedTitle", "library.empty.suggestedDescription"],
 };
 
-// Where an empty media tab sends you to make something for it.
 const EMPTY_LINKS = {
   videos: ["/video", "library.empty.generateVideo"],
   audio: ["/audio", "library.empty.generateAudio"],
   models: ["/studio", "library.empty.trainModel"],
 } as const;
 
-/** What each single-kind tab holds. Only the Source filter means anything on these. */
 const KIND_TABS: Partial<Record<LibraryTab, (item: LibraryItem) => boolean>> = {
-  // Every image, SVG included; hasImagePreview only picks how its card draws.
   images: (item) => fileKind(item) === "image",
   videos: (item) => fileKind(item) === "video",
   audio: (item) => fileKind(item) === "audio",
@@ -138,7 +135,6 @@ function nameMatches(name: string, needle: string): boolean {
   return !needle || name.toLowerCase().includes(needle);
 }
 
-// The selection bar's labelled buttons, and its round icon ones.
 const BAR_PILL =
   "flex h-9 items-center gap-2 rounded-full px-4 text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
 const BAR_ROUND =
@@ -179,7 +175,6 @@ function LoadingGrid() {
   );
 }
 
-// Everything but media and models: the Storage Files row.
 const FILE_TYPES: LibraryTypeFilter[] = ["documents", "spreadsheets", "presentations", "pdfs"];
 
 export function LibraryPage() {
@@ -189,14 +184,11 @@ export function LibraryPage() {
 
   useEffect(() => {
     void refresh();
-    // Files land in the Library from chats and the Images page, so look again on return.
     const onFocus = () => void refresh();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [refresh]);
 
-  // Search, filters and selection belong to the view they were made in, so each tab and folder
-  // gets a fresh one, as does a link from Settings.
   return (
     <LibraryView
       key={`${visit}:${search.show ?? ""}:${search.folder ?? ""}:${search.filter ?? ""}`}
@@ -211,7 +203,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const { items: allItems, folders, status, error, refresh, patchItem, removeItem, upload, addFolder, patchFolder, removeFolder, markOpened } =
     useLibraryStore();
   const settings = useLibrarySettingsStore();
-  // Sources switched off in settings are left out everywhere, folder counts included.
   const items = useMemo(
     () => allItems.filter((item) => includedBySettings(item.id, settings)),
     [allItems, settings],
@@ -243,7 +234,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const tab: LibraryTab =
     search.show ??
     (tabVisible(preferred) ? preferred : (LIBRARY_TABS.find(tabVisible) ?? "all"));
-  // A column click or ?sort link (in the URL, so a Storage link always lands by size) beats the setting.
   const sort = SORT_STATES[search.sort ?? settings.sort];
   const folderId = search.folder ?? null;
   const folderById = useMemo(() => new Map(folders.map((f) => [f.id, f])), [folders]);
@@ -255,8 +245,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     [navigate],
   );
 
-  // A folder that is not there (a stale link, or deleted from another tab) has nothing to show and
-  // takes no uploads: back to where it was, or to Folders.
   const [parentOfOpen, setParentOfOpen] = useState<string | null>(null);
   if (currentFolder && currentFolder.parentId !== parentOfOpen) {
     setParentOfOpen(currentFolder.parentId);
@@ -268,7 +256,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     go({ folder: parent, show: "folders" }, true);
   }, [folderGone, parentOfOpen, folderById, go]);
 
-  // ── Derived views ──────────────────────────────────────────────
 
   const counts = useMemo(() => {
     const map = new Map<string, number>();
@@ -282,7 +269,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
 
   const kindFilter = folderId ? undefined : KIND_TABS[tab];
 
-  // The open tab always shows, so a link straight to a hidden or empty one still lands somewhere.
   const shownTabs = LIBRARY_TABS.filter((entry) => entry === tab || tabVisible(entry));
 
   const setLibrarySettings = settings.set;
@@ -298,7 +284,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     pool = pool.filter(
       (item) => nameMatches(item.name, needle) && matchesFilters(item, filters, !kindFilter),
     );
-    // Suggested is the most recently active slice, where opening a file counts as activity.
     if (tab === "suggested" && !folderId) {
       const byActivity = [...pool].sort((a, b) => lastActivity(b) - lastActivity(a));
       pool = needle || filtersActive(filters) ? byActivity : byActivity.slice(0, settings.suggestedLimit);
@@ -313,7 +298,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     return folders
       .filter((folder) => folder.parentId === folderId)
       .filter((folder) => nameMatches(folder.name, needle))
-      // Folders have no size of their own.
       .sort(compareBySort(sort.key === "size" ? { key: "name", desc: false } : sort));
   }, [folders, folderId, tab, needle, filters, sort]);
 
@@ -332,17 +316,13 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   }
 
   const previewItem = search.item ? (items.find((item) => item.id === search.item) ?? null) : null;
-  // Recorded whenever the preview opens, so a shared link or history entry counts, not only a click.
   const previewId = previewItem?.id ?? null;
   useEffect(() => {
     if (previewId) markOpened(previewId);
   }, [previewId, markOpened]);
 
-  // Opening a file pushes a history entry; closing one this view opened goes back off it, so Back
-  // afterwards leaves the Library instead of landing on the same page again.
   const router = useRouter();
   const pushedPreview = useRef<string | null>(null);
-  // Closed here but still in the URL until Back lands: not a missing file.
   const [closingPreview, setClosingPreview] = useState<string | null>(null);
   if (!search.item && closingPreview !== null) setClosingPreview(null);
   useEffect(() => {
@@ -363,8 +343,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     }
   };
 
-  // A link to a file that has since gone (deleted, or another account's) says so. The snapshot
-  // may just predate it (a note that was just made), so look once more first.
   const missingItem =
     search.item && status === "ready" && !previewItem && closingPreview !== search.item
       ? search.item
@@ -387,13 +365,10 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     };
   }, [missingItem, refresh, navigate, t]);
 
-  // ── Actions ────────────────────────────────────────────────────
 
   const fail = (message: string) => (err: unknown) =>
     toast.error(message, { description: errorMessage(err) });
 
-  // Every file under the folder, subfolders included. Only files can be attached; a model in the
-  // folder stays behind.
   const filesInFolder = (id: string) => {
     const inside = new Set([id]);
     for (let grew = true; grew; ) {
@@ -413,7 +388,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const chatAbout = (item: LibraryItem) =>
     void (item.model ? chatWithModel(navigate, item) : chatAboutItems(navigate, [item]));
 
-  // One toast for the batch, however many moved.
   const moveAll = async (targets: LibraryTarget[], destination: string | null) => {
     const folder = destination
       ? (folderById.get(destination)?.name ?? t("library.toast.folderFallback"))
@@ -470,8 +444,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const uploadFiles = (files: File[]) =>
     uploadBatch({ files }, files.length, files[0]?.name ?? "");
 
-  // Desktop drops arrive as paths. The webview can only read media back, so each path is traded for
-  // a signed grant and the backend reads the file itself.
   async function uploadNativeDrops(intents: NativeIntent[]) {
     // The grants are the signed-in account's: one who signs in meanwhile must not upload them.
     const sessionEpoch = getAuthSessionEpoch();
@@ -489,7 +461,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     }
   }
 
-  // Anywhere on the page takes a file drop, the desktop app's native drops included.
   const { ref: dropRef, dragging, dragHandlers } = useNativeFileDrop({
     onFiles: uploadFiles,
     onNativeIntents: uploadNativeDrops,
@@ -519,11 +490,9 @@ function LibraryView({ search }: { search: LibrarySearch }) {
         void navigate({ to: "/video" });
         break;
       case "audio":
-        // Speak mode, where generated clips are made and listed.
         void navigate({ to: "/audio", search: { task: "text-to-speech" } });
         break;
       case "model":
-        // A model is made by training one.
         void navigate({ to: "/studio" });
         break;
       case "folder":
@@ -559,16 +528,16 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   async function confirmDelete(targets: LibraryTarget[]) {
     setPendingDelete(null);
     setSelection(new Set());
-    // The open file is going: close it first, so it is not reported as missing.
     if (targets.some((t) => t.kind === "item" && t.item.id === search.item)) closePreview();
     const results = await Promise.allSettled(
       targets.map((target) =>
-        target.kind === "item" ? removeItem(target.item.id) : removeFolder(target.folder.id),
+        target.kind === "item"
+          ? removeItem(target.item.id, target.item.fingerprint)
+          : removeFolder(target.folder.id),
       ),
     );
     const failed = results.find((result) => result.status === "rejected");
     if (failed) fail(t("library.toast.deleteFailed"))(failed.reason);
-    // A folder being viewed that was just deleted leaves nothing to show.
     if (folderId && targets.some((t) => t.kind === "folder" && t.folder.id === folderId)) {
       go({ folder: currentFolder?.parentId ?? undefined, show: "folders" }, true);
     }
@@ -617,7 +586,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     return out;
   };
 
-  // A selected folder can't move into itself or anything under it.
   const bulkDestinations = () =>
     folders.filter((folder) => {
       for (let at: LibraryFolder | undefined = folder; at; at = at.parentId ? folderById.get(at.parentId) : undefined)
@@ -625,7 +593,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       return true;
     });
 
-  // ── Header ─────────────────────────────────────────────────────
 
   const breadcrumb: LibraryFolder[] = [];
   for (let at = currentFolder; at; at = at.parentId ? (folderById.get(at.parentId) ?? null) : null) {
@@ -665,7 +632,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     </h1>
   );
 
-  // ── Body ───────────────────────────────────────────────────────
 
   const uploadButton = (
     <Button variant="muted" className="rounded-full px-5" onClick={() => fileInput.current?.click()}>
@@ -682,7 +648,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       />
     );
     if (folderId || tab === "all") {
-      // All heads each section; a folder just lists its subfolders above its files.
       const sectioned = !folderId;
       return (
         <>
@@ -826,7 +791,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
         };
 
   const selectedCount = selection.size;
-  // Selected files and the files in selected folders, each once.
   const selectedFiles = () => {
     const out = new Map<string, LibraryItem>();
     for (const target of selectedTargets()) {
@@ -838,7 +802,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     }
     return [...out.values()];
   };
-  // A lone fine-tune opens with its run settings, as its own menu does.
   const selectedModel = () => {
     const targets = selectedTargets();
     const only = targets.length === 1 ? targets[0] : undefined;
@@ -922,8 +885,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
         )}
 
         {selectedCount > 0 && (
-          // The side menu's color with the dropdowns' shadow: the composer's in light mode, the page
-          // color in dark.
           <div className="fixed bottom-8 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full bg-sidebar py-2 pl-6 pr-2 text-sidebar-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_8px_28px_-6px_var(--background)]">
             <span className="mr-4 whitespace-nowrap text-sm font-medium">
               {t("shell.selection.countSelected", { count: selectedCount })}
@@ -941,7 +902,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               type="button"
               disabled={selectedFiles().length === 0}
               onClick={bulkDownload}
-              // Dark mode: borderless, filled like the model picker's search field.
               className={cn(
                 BAR_PILL,
                 "border border-border transition-colors hover:bg-sidebar-accent dark:border-transparent dark:bg-accent/60 dark:hover:bg-accent",

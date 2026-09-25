@@ -5,7 +5,6 @@ import { useLocale, useT } from "@/i18n";
 import type { LibraryDisk } from "../api";
 import { formatSize } from "../format";
 
-/** The Library, then everything else on its disk, then free space. Nothing when the disk is unknown. */
 export function LibraryStorageBar({
   libraryBytes,
   disk,
@@ -20,7 +19,6 @@ export function LibraryStorageBar({
   const share = (bytes: number) => `${(bytes / disk.totalBytes) * 100}%`;
   return (
     <>
-      {/* Only the track is rounded, so the segments join flush. */}
       <div className="flex h-2 overflow-hidden rounded-full bg-muted">
         <div className="min-w-1 bg-foreground" style={{ width: share(libraryBytes) }} />
         <div className="bg-muted-foreground/35" style={{ width: share(otherBytes) }} />

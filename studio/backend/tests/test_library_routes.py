@@ -30,7 +30,6 @@ import hub.storage.scan_folders as _scan_folders  # noqa: E402
 
 from .test_rag_native_drop_upload import SECRET, _sign  # noqa: E402
 
-# Before a fixture swaps them for tests that use temp folders.
 _REAL_DENIED = _scan_folders.is_denied_system_path
 _REAL_SCRATCH = library._scratch_and_system_folders
 
@@ -51,7 +50,6 @@ def _app(subject) -> TestClient:
 
 @pytest.fixture
 def client(monkeypatch):
-    # Only the Library's own uploads: the other sources read stores a test seeds for itself.
     monkeypatch.setattr(library, "_SOURCES", (library._upload_items,))
     library.invalidate_listing()
     library._THUMBNAILS.forget()
@@ -190,13 +188,10 @@ def _thumbnail_size(client, item_id):
 def test_uploads_are_listed_and_typed_by_their_extension_not_the_client(client, monkeypatch):
     import mimetypes
 
-    # (as sent, listed name, stored type)
     uploads = [
         (("note.md", b"# hi", "text/markdown"), "note.md", "text/markdown"),
-        # A client path keeps its last segment.
         (("C:\\Users\\me\\notes.txt", b"<script>", "text/html"), "notes.txt", "text/plain"),
         (("report.pdf", b"%PDF-1.7", "text/html"), "report.pdf", "application/pdf"),
-        # A list of types, or one a browser would run, is not stored for an unknown extension.
         (("track.xyz", b"x", "audio/x, text/html"), "track.xyz", "application/octet-stream"),
         (("data.bin2", b"x", "application/xhtml+xml"), "data.bin2", "application/octet-stream"),
     ]
@@ -209,8 +204,6 @@ def test_uploads_are_listed_and_typed_by_their_extension_not_the_client(client, 
     note = items[ids[0]]
     assert note["source"] == "uploaded" and note["sizeBytes"] == 4
     assert note["favorite"] is False and note["folderId"] is None
-    # By a fixed map, whatever the OS registry says: Windows apps remap types, and mimetypes calls
-    # .ts a video.
     monkeypatch.setattr(mimetypes, "guess_type", lambda *_a, **_k: ("video/mp2t", None))
     types = ("app.ts", "view.tsx", "mod.mts", "photo.JPG", "mystery.xyz")
     assert [library._guess_type(name) for name in types] == [
@@ -251,18 +244,15 @@ def test_rename_favorite_and_folders_are_an_overlay(client):
     _patch(client, id = image, name = "photo.txt", favorite = True, folderId = folder)
     item = _items(client)[0][image]
     assert (item["name"], item["favorite"], item["folderId"]) == ("photo.txt", True, folder)
-    # Opening it records when, for Suggested's Last activity, and leaves the rest be.
     assert item["openedAt"] is None
     assert _post(client, "items/opened", id = image).status_code == 200
     item = _items(client)[0][image]
     assert item["createdAt"] <= item["openedAt"] and item["favorite"] is True
-    # An open landing after a delete, or naming nothing, leaves no row behind.
     for missing in ("upload:gone", "sandbox:t-lib:gone.txt"):
         assert _post(client, "items/opened", id = missing).status_code == 404
     assert "upload:gone" not in library_db.list_entries()
     # The type follows the file's own name, so a binary renamed to .txt never opens as text.
     assert item["fileName"] == "photo.png"
-    # Leaving the key off leaves it where it is; an explicit null moves it back out.
     _patch(client, id = image, favorite = False)
     assert _items(client)[0][image]["folderId"] == folder
     _patch(client, id = image, folderId = None)
@@ -284,7 +274,6 @@ def test_rename_favorite_and_folders_are_an_overlay(client):
 
 
 def test_notes_are_saved_in_their_own_encoding_and_deletable(client):
-    # Windows PowerShell 5 writes UTF-16LE with a BOM and CRLF endings.
     [note] = _upload(client, ("log.txt", "\ufeffold\r\n".encode("utf-16le"), "text/plain"))
     url = f"/api/library/uploads/{_ref(note)}/text"
     response = client.put(url, json = {"text": "\ufeffnew\r\n", "encoding": "utf-16le"})
@@ -307,7 +296,6 @@ def test_chat_attachments_holding_bytes_are_known_by_their_type_in_any_case(clie
     def attachment(attachment_id, content_type):
         return {"messageId": "m", "id": attachment_id, "type": "file", "contentType": content_type}
 
-    # A compare chat's audio part is typed by the inventory at best, and may carry no type at all.
     voice = {"messageId": "m:1", "id": "voice", "type": "audio", "contentType": None}
     monkeypatch.setattr(library, "_SOURCES", (library._attachment_items,))
     monkeypatch.setattr(
@@ -323,7 +311,6 @@ def test_chat_attachments_holding_bytes_are_known_by_their_type_in_any_case(clie
     clip, words = items["attachment:m:clip"], items["attachment:m:words"]
     assert (clip["contentType"], clip["textOnly"]) == ("video/webm", False)
     assert (words["contentType"], words["textOnly"]) == ("text/plain", True)
-    # Any string is a message id: encoded, so the colon in it is not the one after it.
     assert items["attachment:m%3A1:voice"]["textOnly"] is False
     deleted = []
     monkeypatch.setattr(studio_db, "delete_chat_attachment", lambda *ids: deleted.append(ids) or 1)
@@ -352,7 +339,6 @@ def test_a_gallery_file_that_cannot_be_deleted_keeps_its_name_star_and_folder(cl
     monkeypatch.setattr(library, "_SOURCES", (library._audio_items,))
     item_id = f"audio:{_gallery_audio('Kept')}"
     _patch(client, id = item_id, name = "Renamed", favorite = True)
-    # As on Windows while another app has it open: the gallery keeps it for another try.
     monkeypatch.setattr(audio_gallery, "delete", lambda _ref: False)
     assert _delete(client, item_id) == 500
     item = _items(client)[0][item_id]
@@ -375,8 +361,6 @@ def test_a_sandbox_delete_takes_only_the_file_it_was_listed_as(client, signed_in
     monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
     _directory, path = _sandbox_chat("a.txt", b"listed")
     listed = _items(client)[0][_SANDBOX_A]["fingerprint"]
-    # A tool makes the file again at the same path before the delete is confirmed. Held open
-    # meanwhile, so Linux, which fingerprints by inode alone, cannot hand its inode to the new one.
     with open(path, "rb"):
         os.unlink(path)
         _sandbox_chat("a.txt", b"made since")
@@ -438,12 +422,10 @@ def test_generated_audio_and_video_are_listed_and_deleted(client, monkeypatch):
     assert (item["source"], item["createdAt"]) == ("generated", 1_700_000_000_000)
     item = items[f"video:{video}"]
     assert (item["name"], item["contentType"]) == ("A calm sea.mp4", "video/mp4")
-    # Off the Video page's shelf, still the Library's.
     assert (item["archived"], items[f"video:{shelved}"]["archived"]) == (False, True)
     assert _delete(client, f"audio:{audio}") == 200
     assert audio_gallery.audio_path(audio) is None
 
-    # A clip whose job cannot be dropped stays listed, to delete again.
     forgotten = []
     monkeypatch.setattr(video_routes, "_forget_terminal_video", forgotten.append)
     monkeypatch.setattr(video_routes, "_forget_openai_job", lambda ref: False)
@@ -453,7 +435,6 @@ def test_generated_audio_and_video_are_listed_and_deleted(client, monkeypatch):
     monkeypatch.setattr(video_routes, "_forget_openai_job", lambda ref: forgotten.append(ref) or 1)
     assert _delete(client, f"video:{video}") == 200
     assert video_gallery.video_path(video) is None
-    # Same cleanup as the Video page, so no ghost card comes back.
     assert forgotten == [video, video]
 
 
@@ -467,17 +448,14 @@ def test_the_listing_reports_the_library_disk_and_the_sources_on_it(client, monk
         assert 0 <= disk["freeBytes"] <= disk["totalBytes"] and disk["totalBytes"] > 0
         return set(disk["sources"])
 
-    # Everything sits under one test home here, so every source is on the measured disk.
     every = {"upload", "attachment", "image", "video", "audio", "sandbox"}
     every |= {"model:training", "model:exported"}
     assert sources() == every
     real, exports, uploads = library._device, str(exports_root()), str(library.uploads_dir())
-    # Fine-tunes and exports are placed apart; a root that cannot be found leaves the rest.
     monkeypatch.setattr(library, "_device", lambda path: -1 if str(path) == exports else real(path))
     assert sources() == every - {"model:exported"}
     monkeypatch.setitem(library._SOURCE_ROOTS, "sandbox", _fail)
     assert sources() == every - {"model:exported", "sandbox"}
-    # A source on another disk is left out of the bar.
     monkeypatch.setattr(library, "_device", lambda path: 1 if str(path) == uploads else -1)
     assert sources() == {"upload"}
 
@@ -492,13 +470,10 @@ def test_favorites_list_only_stars_the_source_still_has(client, monkeypatch):
     reads = []
     real = image_gallery._read_meta
     monkeypatch.setattr(image_gallery, "_read_meta", lambda path: reads.append(path) or real(path))
-    # Deleted by its gallery, not the Library: the star stays in the overlay but is not listed.
     assert set(_favorites(client)) == {starred, image}
-    # The gallery pages ask this for every star each time they open, so no PNG is decoded.
     assert reads == []
     image_gallery.image_path(_ref(image)).unlink()
     assert _favorites(client) == [starred]
-    # A delete drops the item's row, even when its source had already lost it.
     assert (_delete(client, starred), _delete(client, "image:gone")) == (200, 404)
     assert set(library_db.list_entries()) == {plain, image}
     assert _delete(client, "elsewhere:x") == 400
@@ -511,7 +486,6 @@ def test_leftovers_of_a_crash_are_swept_from_the_uploads_folder(client):
         client, ("k.txt", b"k", "text/plain"), ("i.txt", b"i", "text/plain")
     )
     directory = library.uploads_dir()
-    # A delete that stopped after setting its file aside: the row still lists it.
     aside = directory / f".{_ref(interrupted)}.deleting"
     os.replace(directory / _ref(interrupted), aside)
     stale = [directory / ".0123.tmp", directory / f".{'a' * 32}.deleting"]
@@ -541,26 +515,22 @@ def test_fine_tuned_models_are_listed_but_not_deleted_here(client, monkeypatch):
     run.mkdir()
     (run / "adapter_config.json").write_text('{"base_model_name_or_path": "unsloth/base"}')
     (run / "adapter_model.safetensors").write_bytes(b"x" * 10)
-    # A GGUF export is listed by one of its files, but every quantization beside it is on disk.
     gguf.mkdir(parents = True)
     (gguf / "model.Q4_K_M.gguf").write_bytes(b"x" * 10)
     (gguf / "model.Q8_0.gguf").write_bytes(b"x" * 20)
     try:
-        # A new run changes the stamp the remembered listing is kept by.
         assert library._model_stamp() != stamp
         items = {item["name"]: item for item in _items(client)[0].values()}
         item, export = items[run.name], items[gguf.name]
         assert item["contentType"] == library.MODEL_CONTENT_TYPE
         assert (item["model"]["origin"], item["model"]["exportType"]) == ("training", "lora")
         assert item["sizeBytes"] >= 10 and export["sizeBytes"] == 30
-        # The export's star is kept by the listed file, which a lookup by its id checks.
         for starred in (item, export):
             _patch(client, id = starred["id"], favorite = True)
         assert _items(client)[0][export["id"]]["favorite"] is True
         assert set(_favorites(client)) == {item["id"], export["id"]}
         assert _delete(client, item["id"]) == 400
         assert run.is_dir()
-        # Once the models route has deleted it, the Library forgets its favorite too.
         shutil.rmtree(run)
         assert _delete(client, item["id"]) == 200
         assert _favorites(client) == [export["id"]]
@@ -583,7 +553,6 @@ def test_the_slow_sources_are_remembered_briefly_and_forgotten_on_a_write(client
         raise RuntimeError("gallery unreadable")
 
     monkeypatch.setattr(library, "_sandbox_items", walked)
-    # A failing source is skipped rather than emptying the Library.
     monkeypatch.setattr(library, "_SOURCES", (library._remembered("_sandbox_items", 60), broken))
     # Listed only, never written: the star is kept for the file it would find.
     monkeypatch.setattr(library, "fingerprint", lambda _item_id: "1:1")
@@ -606,19 +575,16 @@ def test_an_overlay_row_stays_with_the_file_it_was_made_for(client, monkeypatch,
     _directory, path = _sandbox_chat("report.txt", b"v1")
 
     def make_again():
-        # Moved aside rather than unlinked, so no filesystem can hand the new file the old inode.
         os.replace(path, tmp_path / f"old-{len(os.listdir(tmp_path))}")
         Path(path).write_bytes(b"new")
         library.invalidate_listing()
 
-    # A row from before fingerprints is adopted by the file at its path.
     library_db.update_entry(_SANDBOX_ID, favorite = True)
     assert library_db.list_entries()[_SANDBOX_ID]["fingerprint"] is None
     item = _items(client)[0][_SANDBOX_ID]
     assert item["favorite"] is True and "_fingerprint" not in item
     assert library_db.list_entries()[_SANDBOX_ID]["fingerprint"] == library.fingerprint(_SANDBOX_ID)
 
-    # Edited in place, as a tool appending to its output: still the same file.
     _patch(client, id = _SANDBOX_ID, name = "Q3")
     with open(path, "ab") as handle:
         handle.write(b" and v2")
@@ -627,14 +593,12 @@ def test_an_overlay_row_stays_with_the_file_it_was_made_for(client, monkeypatch,
     assert (item["favorite"], item["name"]) == (True, "Q3")
     assert _favorites(client) == [_SANDBOX_ID]
 
-    # Made again at the path: the star is not the new file's, and a write drops the old row first.
     make_again()
     assert _favorites(client) == []
     _patch(client, id = _SANDBOX_ID, folderId = None)
     entry = library_db.list_entries()[_SANDBOX_ID]
     assert (entry["name"], entry["favorite"]) == (None, False)
 
-    # Nor does a listing carry it over: it prunes the row.
     _patch(client, id = _SANDBOX_ID, favorite = True, name = "Old")
     make_again()
     item = _items(client)[0][_SANDBOX_ID]
@@ -652,10 +616,8 @@ def test_an_older_database_is_upgraded_and_checked_once(client, monkeypatch, tmp
     conn.execute("INSERT INTO library_entries (item_id, favorite, updated_at) VALUES ('x', 1, 1)")
     conn.commit()
     conn.close()
-    # A home reached through a link: the unresolved path is not the key the schema was saved as.
     (tmp_path / "link").symlink_to(tmp_path / "real", target_is_directory = True)
     monkeypatch.setattr(library_db, "studio_db_path", lambda: tmp_path / "link" / "studio.db")
-    # Its rows are kept and gain the opened and fingerprint columns.
     assert library_db.list_entries()["x"] == {
         "name": None,
         "favorite": True,
@@ -674,11 +636,8 @@ def test_an_older_database_is_upgraded_and_checked_once(client, monkeypatch, tmp
 def test_a_failed_write_leaves_the_uploads_as_they_were(client, monkeypatch):
     [note] = _upload(client, ("n.md", b"old", "text/markdown"))
     for name, call in (
-        # The note's row cannot be updated: the old note goes back.
         ("touch_upload", lambda: library.write_upload_text(_ref(note), "new")),
-        # The file is set aside but its row cannot be dropped: the file comes back.
         ("delete_upload", lambda: library.delete_item(note)),
-        # A new upload's row cannot be written: its file goes.
         ("insert_upload", lambda: library.save_upload("a.txt", "text/plain", [b"hi"])),
     ):
         with monkeypatch.context() as patched:
@@ -709,7 +668,6 @@ def test_a_file_held_open_on_windows_answers_409(client, monkeypatch):
     monkeypatch.setattr(library.os, "replace", broken)
     for response in (client.put(url, json = {"text": "new"}), _post(client, "items/delete", id = note)):
         assert response.status_code == 500 and "/secret" not in response.text
-    # A save that failed leaves the previous text and nothing staged.
     assert [path.name for path in library.uploads_dir().iterdir()] == [_ref(note)]
     assert library.upload_path(_ref(note)).read_bytes() == b"old"
 
@@ -770,12 +728,10 @@ def test_a_desktop_drop_is_read_from_its_signed_path_once_the_whole_batch_checks
 ):
     lease = _sign(_file(tmp_path / "Quarterly report.pdf", "%PDF-1.7 report"))
     forged = _sign(_file(tmp_path / "other.txt", "hi"), secret = b"x" * 32)
-    # One bad grant refuses the batch before any grant is spent or any file kept.
     response = _send(
         client, [("kept.md", b"# hi", "text/markdown")], nativePathLeases = [lease, forged]
     )
     assert response.status_code == 400
-    # A generic reason: the grant's own can name a path in the workspace.
     assert response.json()["detail"] == "The dropped file could not be read. Drop it again."
     assert _items(client)[0] == {} and list(library.uploads_dir().iterdir()) == []
     folder = _folder(client, "Work", None)
@@ -810,7 +766,6 @@ def test_a_failed_batch_keeps_nothing_and_gives_its_grants_back(
         with pytest.raises(OSError):
             _send(client, [], nativePathLeases = leases)
     assert _items(client)[0] == {}
-    # A folder deleted meanwhile undoes the batch too.
     folder = _folder(client, "Work", None)
     with monkeypatch.context() as patched:
         patched.setattr(library_db, "update_entry", gone)
@@ -818,10 +773,8 @@ def test_a_failed_batch_keeps_nothing_and_gives_its_grants_back(
         response = _send(client, [plan], nativePathLeases = leases, folderId = folder)
         assert response.status_code == 404
     assert _items(client)[0] == {}
-    # The same grants work on a retry: nothing a failed batch spent stays spent.
     response = _send(client, [], nativePathLeases = leases)
     assert response.status_code == 200 and len(response.json()["ids"]) == 2
-    # And a grant that was used is still single use.
     assert _send(client, [], nativePathLeases = leases[:1]).status_code == 400
 
 
@@ -835,7 +788,6 @@ def test_an_oversized_desktop_drop_is_refused_before_copying(client, monkeypatch
         raise AssertionError("copied an oversized drop")
 
     monkeypatch.setattr(library, "save_upload", copied)
-    # Refused by the batch's check, before any grant is spent, and again when read, if it grew.
     for size in (10, 1):
         monkeypatch.setattr(
             library, "check_native_upload", lambda lease, size = size: ("big.bin", size)
@@ -867,13 +819,11 @@ def test_an_upload_is_copied_into_a_project_under_its_own_name(client, project, 
     [copied] = (project / "files").iterdir()
     assert copied.name.startswith("plan-") and copied.suffix == ".md"
     assert copied.read_bytes() == b"# plan"
-    # Adding it again finds the copy instead of making another.
     assert add(note, "p1").json() == {"already": True}
     assert add(note, "missing").status_code == 404
     assert add("upload:0123456789abcdef0123456789abcdef", "p1").status_code == 404
     assert add("attachment:m:a", "p1").status_code == 400
     assert add("model:training:/tmp/run", "p1").status_code == 400
-    # A name Windows cannot hold is refused on every OS; an open file copies from its descriptor.
     source = _file(tmp_path / "x.txt", "x")
     for bad in ("a:b.txt", "CON.txt", "trailing.", "tab\there.txt"):
         with pytest.raises(ValueError):
@@ -895,7 +845,6 @@ def test_an_upload_is_copied_into_a_project_under_its_own_name(client, project, 
         ("line\nbreak\ttab.md", "line break tab.md"),
         ("...", "file"),
         ("C:\\Users\\me\\x.txt", "x.txt"),
-        # Cut by UTF-8 bytes, a whole character at a time: 80 sloths are 320.
         pytest.param("\U0001f9a5" * 80 + ".txt", "\U0001f9a5" * 50 + ".txt", id = "sloths"),
     ],
 )
@@ -905,19 +854,16 @@ def test_names_written_to_disk_are_valid_on_windows(name, safe):
     assert library.safe_file_name(name) == safe
     project_name = library.safe_file_name(name, item_id = "upload:x")
     assert not _bad_name(project_name), project_name
-    # Add to project writes its copy under a longer temp name first.
     assert len(_tmp_name(project_name).encode()) <= 255
 
 
 def test_items_download_as_attachments_under_the_name_they_were_given(client, monkeypatch):
     [upload] = _upload(client, ("re:port*q3?.html", b"<script>1</script>", "text/html"))
-    # Checks its own credentials, header or query, rather than the overridden dependency.
     assert _download(client, upload).status_code == 401
     monkeypatch.setattr(library_routes, "subject_for_header_or_query_token", _signed_in_subject)
     response = _download(client, upload)
     assert (response.status_code, response.content) == (200, b"<script>1</script>")
     assert response.headers["content-type"] == "application/octet-stream"
-    # Stored as a bare id, so the header names it after the upload, not the file on disk.
     disposition = response.headers["content-disposition"]
     assert disposition.startswith('attachment; filename="re port q3.html"')
     assert response.headers["content-length"] == "18"
@@ -938,7 +884,6 @@ def test_generated_media_download_under_their_prompt(client, signed_in, project)
 
     image = _gallery_image('A red fox: "at dawn"')
     assert disposition(f"image:{image}").startswith('attachment; filename="A red fox at dawn.png"')
-    # The UTF-8 name rides along for a prompt ASCII cannot hold.
     image = _gallery_image("Café ☕ at noon")
     assert f"filename*=UTF-8''{quote('Café ☕ at noon.png')}" in disposition(f"image:{image}")
     # No prompt: the id, never an empty name.
@@ -946,8 +891,6 @@ def test_generated_media_download_under_their_prompt(client, signed_in, project)
     assert f'filename="{image}.png"' in disposition(f"image:{image}")
     assert 'filename="Hello there.wav"' in disposition(f"audio:{_gallery_audio('Hello there')}")
 
-    # A project copy keeps the stored name, as the Images page's own Add to project does, so
-    # adding from either place finds the other's copy; two alike stay two files.
     first, second = _gallery_image("Same prompt"), _gallery_image("Same prompt")
     for image in (first, second):
         response = _post(client, "items/project", id = f"image:{image}", projectId = "p1")
@@ -964,7 +907,6 @@ def test_a_sandbox_file_is_reachable_by_id_only_as_the_listing_walks_it(
     import routes.inference as inference
 
     monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
-    # The walk counts dotfiles too, which the Library then hides: .env, a.txt, b.txt.
     monkeypatch.setattr(inference, "_MAX_SNAPSHOT_FILES", 3)
     directory, _path = _sandbox_chat("a.txt", b"mine")
     for name in ("b.txt", "c.txt", ".env", "d1/d2/d3/d4/deep.txt"):
@@ -986,12 +928,10 @@ def test_a_sandbox_file_is_reachable_by_id_only_as_the_listing_walks_it(
         assert response.content == b"mine"
         assert 'filename="a.txt"' in response.headers["content-disposition"]
         assert status("b.txt") == 200 and len(walks) == 1
-        # Past the cap, hidden, too deep, outside, or in no chat.
         for name in ("c.txt", ".env", "d1/d2/d3/d4/deep.txt", "../x", ".hidden"):
             assert status(name) == 404, name
         assert _download(client, "sandbox:nope:a.txt").status_code == 404
     assert set(_items(client)[0]) == {"sandbox:t-lib:a.txt", "sandbox:t-lib:b.txt"}
-    # The listing leaves its walk for the per-item routes.
     library.invalidate_listing()
     _items(client)
     walks.clear()
@@ -1002,6 +942,30 @@ def test_a_sandbox_file_is_reachable_by_id_only_as_the_listing_walks_it(
     assert os.path.exists(os.path.join(directory, "c.txt"))
     assert _delete(client, "sandbox:t-lib:a.txt") == 200
     assert not os.path.exists(os.path.join(directory, "a.txt"))
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "no FIFOs on this OS")
+def test_a_file_swapped_for_a_fifo_is_refused_without_waiting_for_a_writer(tmp_path):
+    import threading
+
+    fifo = tmp_path / "out.png"
+    os.mkfifo(fifo)
+    outcome = []
+
+    def open_it():
+        try:
+            library._open_regular(str(fifo)).close()
+            outcome.append("opened")
+        except LookupError:
+            outcome.append("refused")
+
+    worker = threading.Thread(target = open_it, daemon = True)
+    worker.start()
+    worker.join(5)
+    if worker.is_alive():
+        # Unblock the stuck open so the thread ends, then fail.
+        os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+    assert outcome == ["refused"]
 
 
 @pytest.mark.parametrize("route", ["download", "stream"])
@@ -1020,7 +984,6 @@ def test_a_sandbox_file_swapped_for_a_link_after_the_check_is_not_read(
     def swap_after_check(ref):
         checked = real(ref)
         if not swapped:
-            # Tool code racing the route: the name checked is a link by the time it is opened.
             os.unlink(path)
             os.symlink(secret, path)
             swapped.append(ref)
@@ -1049,7 +1012,6 @@ def test_a_projects_own_files_are_listed(client, monkeypatch, tmp_path):
     item = _items(client)[0]["sandbox:project-p-lib:files/notes.txt"]
     assert item["threadTitle"] == "Research"
 
-    # One pointed at a folder of the user's own keeps its files out of the Library.
     own = tmp_path / "My code"
     conn = studio_db.get_connection()
     conn.execute("UPDATE chat_projects SET root_path = ? WHERE id = 'p-lib'", (str(own),))
@@ -1057,9 +1019,6 @@ def test_a_projects_own_files_are_listed(client, monkeypatch, tmp_path):
     conn.close()
     assert not library._studio_project_root(str(own))
     assert "sandbox:project-p-lib:files/notes.txt" not in _items(client)[0]
-
-
-# ── Moving a kind of file ────────────────────────────────────────
 
 
 @pytest.fixture(autouse = True)
@@ -1159,12 +1118,10 @@ def test_images_move_to_a_new_folder_and_back(client, tmp_path):
     assert _files(old) == ["a.json", "a.png"] and _images() == old
     assert _location(client, "images")["custom"] is False
 
-    # A folder that holds files gets a named folder made inside it.
     (new / "holiday.jpg").write_bytes(b"jpg")
     assert _move(client, "images", str(new)).status_code == 200
     assert _images() == (new / "Unsloth Images").resolve()
     assert _files(new) == ["Unsloth Images/a.json", "Unsloth Images/a.png", "holiday.jpg"]
-    # So does a default that holds files by then, and a second Reset keeps to it.
     (old / "stray.txt").write_text("left behind")
     for _ in range(2):
         response = _move(client, "images", None)
@@ -1216,24 +1173,18 @@ def _studio(sub = ""):
         ("images", lambda _: "/etc/unsloth-images", "System"),
         ("images", lambda tmp: tmp / "missing" / "deeper", "parent folder"),
         ("images", _read_only, "cannot write"),
-        # A same-named "Unsloth Images" with files in it.
         (
             "images",
             lambda tmp: _made(tmp / "full" / "Unsloth Images", "keep").parent,
             "holds files",
         ),
-        # Inside another kind's folder, where its listing would pick the files up, or a chat
-        # sandbox, whose listing would show them and whose chat would take them when cleared.
         ("images", lambda _: _videos() / "images", "inside another Unsloth folder"),
         ("uploads", lambda _: _made(_sandbox() / "chat-1") / "uploads", "inside another Unsloth"),
         ("images", lambda _: _sandbox(), "inside another Unsloth folder"),
-        # Inside the current folder, or Unsloth's own.
         ("images", lambda _: _images() / "sub", "inside another Unsloth folder"),
         ("images", lambda _: _images() / "new", "inside another Unsloth folder"),
         ("images", lambda _: _studio(), "Unsloth's own folder"),
         ("images", lambda _: _studio("elsewhere"), "Unsloth's own folder"),
-        # The named folder made inside a folder with files: another kind's, a link to one, or a
-        # link out to a credential folder.
         ("images", _named_folder, "inside another Unsloth folder"),
         ("images", lambda tmp: _named_folder(tmp, _videos()), "inside another Unsloth folder"),
         ("images", lambda tmp: _named_folder(tmp, _made(tmp / "home" / ".ssh")), "credential"),
@@ -1244,7 +1195,6 @@ def _studio(sub = ""):
 )
 def test_a_folder_that_cannot_take_the_files_is_refused(client, tmp_path, key, target, detail):
     def tree():
-        # Folders too, so none is made; the database's own files come and go.
         return {
             str(path)
             for root in (tmp_path, _studio())
@@ -1254,13 +1204,41 @@ def test_a_folder_that_cannot_take_the_files_is_refused(client, tmp_path, key, t
 
     _fill(_images())
     (_images() / "sub").mkdir()
-    # The folders are listed first, which makes each default.
     target, folders = str(target(tmp_path)), _location(client)
     before = tree()
     response = _move(client, key, target)
     assert response.status_code == 400
     assert detail in response.json()["detail"]
     assert (tree(), _location(client)) == (before, folders)
+
+
+def test_a_flag_set_during_a_move_keeps_the_ones_set_before(client, tmp_path, monkeypatch):
+    from core.inference import gallery_flags, image_gallery
+
+    kept = _gallery_image("archived long ago")
+    image_gallery.set_flags(kept, archived = True)
+    fresh = _gallery_image("archived during the move")
+
+    # The images first and the store last, the order that loses it (directory order is the OS's).
+    def store_last(
+        source,
+        target,
+        log,
+        only = None,
+    ):
+        for entry in sorted(source.iterdir(), key = lambda p: p.name.startswith(".")):
+            if (only is None or only(entry)) and not library._inside(target, entry):
+                if entry.name == ".flags.json":
+                    assert image_gallery.set_flags(fresh, archived = True) is not None
+                library._move_entry(entry, target / entry.name, log)
+
+    monkeypatch.setattr(library, "_move_entries", store_last)
+    assert _move(client, "images", str(tmp_path / "Pics")).status_code == 200
+    flags = gallery_flags.read(_images())
+    assert gallery_flags.is_archived(flags, kept) and gallery_flags.is_archived(flags, fresh)
+    assert not list(_images().glob(".flags (*"))
+    image_gallery.clear()
+    assert {p.stem for p in _images().glob("*.png")} == {kept, fresh}
 
 
 def test_only_the_installation_owner_can_move(client, tmp_path, monkeypatch):
@@ -1284,11 +1262,9 @@ def test_an_unplugged_folder_is_not_made_again_and_can_be_reset(
     _mounted(monkeypatch, mounts)
     assert _move(client, "images", str(drive)).status_code == 200
     assert _move(client, "uploads", str(tmp_path / "Uploads")).status_code == 200
-    # A mount point gets a named folder, so the drive's own top level stays the user's.
     folder = (drive / "Unsloth Images" if mount_point else drive).resolve()
     assert _images() == folder
 
-    # Unplugged: gone, or its mount point an ordinary empty folder on the system disk again.
     if mount_point:
         mounts.clear()
     else:
@@ -1297,7 +1273,6 @@ def test_an_unplugged_folder_is_not_made_again_and_can_be_reset(
     with pytest.raises(LocationUnavailable):
         _images()
     assert drive.exists() is mount_point
-    # Each folder is logged once, though every listing asks, and the bar measures Studio's disk.
     logged = []
     for level in ("debug", "info", "warning"):
         monkeypatch.setattr(
@@ -1307,8 +1282,6 @@ def test_an_unplugged_folder_is_not_made_again_and_can_be_reset(
         assert client.get("/api/library").json()["disk"]["totalBytes"] > 0
     assert len(logged) == len(set(logged)) == 2
     assert all("location_unavailable" in line for line in logged)
-    # Settings still shows it, will not make it to reveal it, refuses to move files it cannot
-    # reach, and can reset it.
     location = _location(client, "images")
     assert (location["path"], location["available"], location["disk"]) == (str(folder), False, None)
     assert _post(client, "locations/reveal", key = "images").status_code == 409
@@ -1337,7 +1310,6 @@ def test_a_failed_move_puts_everything_back(client, tmp_path, monkeypatch, failu
     copies = []
 
     def filling_copy(src, dst, **kwargs):
-        # The second copy runs out of space part way, leaving half a file behind it.
         copies.append(src)
         if len(copies) == 2:
             Path(dst).write_bytes(b"par")
@@ -1345,14 +1317,12 @@ def test_a_failed_move_puts_everything_back(client, tmp_path, monkeypatch, failu
         return real_copy(src, dst, **kwargs)
 
     def locked(path):
-        # Windows copies an open file but will not delete it (ERROR_SHARING_VIOLATION).
         if Path(path).name == "open.png":
             exc = PermissionError(errno.EACCES, "The process cannot access the file")
             exc.winerror = 32
             raise exc
         real_unlink(path)
 
-    # Another drive: nothing renames, so every entry is copied.
     monkeypatch.setattr(library, "_rename", _cross_device)
     if failure == "full":
         monkeypatch.setattr(library.shutil, "copy2", filling_copy)
@@ -1362,7 +1332,6 @@ def test_a_failed_move_puts_everything_back(client, tmp_path, monkeypatch, failu
     target = tmp_path / "other-drive"
     response = _move(client, "images", str(target))
     assert response.status_code == 500 and detail in response.json()["detail"]
-    # Everything back with what was saved into the new folder meanwhile, and no copy left there.
     assert _files(old) == ["0.png", "1.png", "2.png", "d/open.png", "saved-meanwhile.png"]
     assert (old / "1.png").read_bytes() == b"png1" and _files(target) == []
     assert _images() == old and _location(client, "images")["custom"] is False
@@ -1389,7 +1358,6 @@ def test_another_spelling_of_a_folder_is_that_folder(client, tmp_path, monkeypat
 
     # The current folder under another name: nothing moves (a move onto itself would empty it).
     assert _move(client, "images", str(alias(images))).status_code == 200
-    # Another kind's folder under another name: refused.
     assert _move(client, "images", str(alias(videos))).status_code == 400
     assert _files(images) == ["0.png", "1.png", "2.png"] and _files(videos) == ["v.mp4"]
     assert _images() == images
@@ -1416,7 +1384,6 @@ def test_a_move_across_drives_merges_skips_and_waits(client, tmp_path, monkeypat
     (old / ".late.mp4.tmp").write_text("late")
 
     def save(new):
-        # A video job and two files saved into the new folder before the move reaches them.
         (new / ".jobs").mkdir()
         (new / ".jobs" / "new.json").write_text("running job")
         (new / "same.txt").write_text("same")
@@ -1424,13 +1391,11 @@ def test_a_move_across_drives_merges_skips_and_waits(client, tmp_path, monkeypat
 
     def rename(src, dst):
         if Path(src).name == "gone.mp4":
-            # Deleted from the Library just before the move reached it.
             Path(src).unlink()
             raise FileNotFoundError(2, "No such file or directory")
         _cross_device(src, dst)
 
     def finish():
-        # A gallery save still writing when the move starts.
         time.sleep(0.5)
         os.replace(old / ".late.mp4.tmp", old / "late.mp4")
 
@@ -1441,7 +1406,6 @@ def test_a_move_across_drives_merges_skips_and_waits(client, tmp_path, monkeypat
     new = tmp_path / "videos"
     assert _move(client, "videos", str(new)).status_code == 200
     writer.join()
-    # Never overwritten: an identical file lets the original go, a different one keeps both.
     assert {name: (new / name).read_text() for name in _files(new)} == {
         ".jobs/new.json": "running job",
         ".jobs/old.json": "old job",
@@ -1460,7 +1424,6 @@ def test_an_upload_finishing_during_a_move_lands_in_the_new_folder(client, tmp_p
 
     def chunks():
         yield b"first half, "
-        # Moved while the upload is still writing to the old folder.
         library.move_location("uploads", str(new))
         yield b"second half"
 
@@ -1566,7 +1529,6 @@ def test_a_named_folder_linked_onto_a_full_drive_is_refused_up_front(client, tmp
 def test_temporary_and_cache_folders_cannot_hold_library_files(monkeypatch):
     import tempfile
 
-    # The real lists, temp folders and all.
     monkeypatch.setattr(_scan_folders, "is_denied_system_path", _REAL_DENIED)
     monkeypatch.setattr(
         library, "_scratch_and_system_folders", lambda: [*_REAL_SCRATCH(), "/scratch-for-test"]
@@ -1574,7 +1536,6 @@ def test_temporary_and_cache_folders_cannot_hold_library_files(monkeypatch):
     for folder in (Path(tempfile.gettempdir()) / "images", Path("/var/tmp/images")):
         with pytest.raises(ValueError, match = "cannot hold these files"):
             library._refuse_denied(folder.resolve())
-    # Library-only: the model download folder's check lets it be.
     assert not _REAL_DENIED("/scratch-for-test/images")
     with pytest.raises(ValueError, match = "Temporary"):
         library._refuse_denied(Path("/scratch-for-test/images"))
@@ -1593,11 +1554,9 @@ def test_a_folder_chosen_before_mount_points_learns_its_mount_once_present(
     _mounted(monkeypatch, mounts)
     upsert_app_settings({"library.locations": {"images": str(folder)}}, read_back = False)
     forget_cache()
-    # Its drive is out: nothing to learn yet, so the bare path is kept as it was.
     with pytest.raises(LocationUnavailable):
         _images()
     assert get_app_setting("library.locations", {})["images"] == str(folder)
-    # Back in: it resolves, and its mount is recorded, and saved.
     folder.mkdir(parents = True)
     mounts.add(mount)
     forget_cache()
@@ -1606,7 +1565,6 @@ def test_a_folder_chosen_before_mount_points_learns_its_mount_once_present(
         "path": str(folder),
         "mount": mount,
     }
-    # Unplugged again, its empty mount point left behind: now that is caught.
     mounts.clear()
     forget_cache()
     with pytest.raises(LocationUnavailable):
@@ -1619,7 +1577,6 @@ def test_uploads_left_on_a_reset_drive_are_hidden_until_their_files_are_back(cli
     assert _move(client, "uploads", str(drive)).status_code == 200
     drive.rename(tmp_path / "unplugged")
     assert _move(client, "uploads", None).status_code == 200
-    # Its file stayed on the drive: no broken card, and no bytes counted toward the default disk.
     assert _items(client)[0] == {}
     (tmp_path / "unplugged" / _ref(upload)).rename(library.uploads_dir() / _ref(upload))
     assert set(_items(client)[0]) == {upload}
@@ -1667,23 +1624,17 @@ def test_a_move_cut_short_waits_for_the_drive_it_was_moving_onto(client, tmp_pat
     old, new = _images(), tmp_path / "Pictures"
     _fill(old)
     _crash_moving(monkeypatch, "images", new)
-    # Started again with that drive unplugged: the old folder stands in, and the move stays open.
     shutil.move(new, tmp_path / "unplugged")
     forget_cache()
     assert _images() == old and len(_files(old)) == 2
     assert _location(client, "images")["available"] is True
     assert "moving_from" in str(get_app_setting("library.locations", {}))
-    # Plugged back in, the old folder stays in use until the move is taken up again: the new one
-    # alone would hide what the old one holds.
     shutil.move(tmp_path / "unplugged", new)
     assert _images() == old and len(_files(old)) == 2
-    # The next start brings the rest over.
     forget_cache()
     assert _images() == new.resolve() and len(_files(new)) == 3
     assert "moving_from" not in str(get_app_setting("library.locations", {}))
 
-    # Choosing the folder standing in is a choice to stay: the move is dropped, and the folder
-    # still holding files is named.
     _crash_moving(monkeypatch, "images", tmp_path / "Other")
     shutil.move(tmp_path / "Other", tmp_path / "unplugged")
     forget_cache()
@@ -1718,7 +1669,6 @@ def test_a_copy_across_drives_cut_short_leaves_no_partial_file_for_the_next_star
     monkeypatch.setattr(library.shutil, "copy2", real_copy)
     monkeypatch.setattr(library, "_discard", real_discard)
     forget_cache()
-    # Each file once, whole, under its own name; nothing half-copied is left.
     assert _images() == new.resolve()
     assert _files(new) == ["0.png", "1.png", "2.png"]
     assert (new / "0.png").read_bytes() == b"png0"
@@ -1732,7 +1682,6 @@ def test_an_open_cannot_land_between_a_delete_and_its_row(client, monkeypatch):
     real = library.item_exists
 
     def a_delete_meanwhile(item_id, *args):
-        # The item is there when the open looks; a delete then gets as far as it can in a moment.
         found = real(item_id, *args)
         deleting = threading.Thread(target = library.delete_item, args = (upload,))
         deleting.start()
@@ -1759,10 +1708,8 @@ def test_a_new_move_finishes_one_cut_short_first_or_waits_for_its_drive(
     _crash_moving(monkeypatch, "images", new)
     shutil.move(new, tmp_path / "unplugged")
     forget_cache()
-    # While the drive is out, a move from the folder standing in would leave its file behind.
     response = _move(client, "images", str(other))
     assert response.status_code == 400 and str(new.resolve()) in response.text
-    # Plugged back in without a restart: the move cut short is finished before the new one.
     shutil.move(tmp_path / "unplugged", new)
     assert _move(client, "images", str(other)).status_code == 200
     assert _images() == other.resolve() and len(_files(other)) == 3
@@ -1783,13 +1730,11 @@ def test_a_move_cut_short_waits_for_the_drive_it_was_leaving(client, tmp_path, m
     assert _move(client, "images", str(source)).status_code == 200
     _fill(_images())
     _crash_moving(monkeypatch, "images", target)
-    # Started again with the drive unplugged: what is on it is not given up for moved.
     shutil.move(source, tmp_path / "unplugged")
     mounts.clear()
     forget_cache()
     assert _images() == target.resolve() and len(_files(target)) == 1
     assert "moving_from" in str(get_app_setting("library.locations", {}))
-    # Plugged back in, the next start brings the rest.
     shutil.move(tmp_path / "unplugged", source)
     mounts.add(str(drive))
     forget_cache()
@@ -1837,12 +1782,10 @@ def test_a_folder_choice_that_cannot_be_read_fails_rather_than_saving_to_the_def
 
         return read
 
-    # A lock held too long: a save must not land in the default, out of sight once it clears.
     monkeypatch.setattr(studio_db, "get_app_setting", failing("database is locked"))
     forget_cache()
     with pytest.raises(sqlite3.OperationalError):
         _images()
-    # A database without the settings table never had a folder moved.
     monkeypatch.setattr(studio_db, "get_app_setting", failing("no such table: app_settings"))
     forget_cache()
     assert _images() == _studio("images")
@@ -1874,7 +1817,6 @@ def revealed(monkeypatch):
     import utils.paths.path_utils as path_utils
 
     calls = []
-    # CI runs on a headless Linux, where no file manager is reported.
     monkeypatch.setattr(file_manager, "file_manager_kind", lambda: "files")
     monkeypatch.setattr(path_utils, "reveal_in_file_manager", lambda path: calls.append(str(path)))
     return calls
@@ -1885,7 +1827,6 @@ def test_reveal_opens_an_items_own_file_or_a_location_by_key(client, revealed):
     [note] = _upload(client, ("plan.md", b"# plan", "text/markdown"))
     assert reveal("attachment:m:a") == 400
     assert reveal("upload:0123456789abcdef0123456789abcdef") == 404
-    # A model id carries its path, so one outside the outputs and exports roots is not opened.
     assert reveal("model:training:/etc") == 404
     assert _post(client, "locations/reveal", key = "/etc").status_code == 404
     assert revealed == []
@@ -1915,7 +1856,6 @@ def test_reveal_is_refused_to_a_managed_account_and_where_no_file_manager_is(
     assert reveal() == (503, 503)
     assert revealed == []
 
-    # Popen not finding xdg-open raises what a vanished file would; the file is there, so 503.
     def no_launcher(path):
         raise FileNotFoundError(2, "No such file or directory: 'xdg-open'")
 
@@ -1926,12 +1866,21 @@ def test_reveal_is_refused_to_a_managed_account_and_where_no_file_manager_is(
     assert response.json()["detail"] == "No file manager is available on this machine"
 
 
+def _os_named(name):
+    # A copy of os for one module: setting the real os.name to "nt" breaks pathlib in pytest itself.
+    import types
+
+    fake = types.ModuleType("os")
+    fake.__dict__.update(os.__dict__)
+    fake.name = name
+    return fake
+
+
 @pytest.mark.parametrize(
     "platform, os_name, wsl, container, display, expected",
     [
         ("darwin", "posix", False, False, None, "finder"),
         ("win32", "nt", False, False, None, "explorer"),
-        # WSL reveals in the Windows host's Explorer.
         ("linux", "posix", True, False, None, "explorer"),
         ("linux", "posix", False, False, None, None),
         ("linux", "posix", False, False, "WAYLAND_DISPLAY", "files"),
@@ -1945,7 +1894,7 @@ def test_file_manager_is_named_only_where_a_window_can_appear(
     from utils.paths import file_manager, path_utils
 
     monkeypatch.setattr(file_manager.sys, "platform", platform)
-    monkeypatch.setattr(file_manager.os, "name", os_name)
+    monkeypatch.setattr(file_manager, "os", _os_named(os_name))
     monkeypatch.setattr(path_utils, "_IS_WSL", wsl)
     monkeypatch.setattr(file_manager, "_in_container", lambda: container)
     for name in ("DISPLAY", "WAYLAND_DISPLAY"):
@@ -1968,11 +1917,9 @@ def test_explorer_gets_the_documented_select_command(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", lambda command, *args, **kwargs: calls.append(command))
     with monkeypatch.context() as windows:
         windows.setattr(path_utils.sys, "platform", "win32")
-        windows.setattr(path_utils.os, "name", "nt")
+        windows.setattr(path_utils, "os", _os_named("nt"))
         path_utils.reveal_in_file_manager(target)
-    # One string: a list quotes "/select,<path>" whole, which Explorer misreads when it has a space.
     assert calls.pop() == f'explorer /select,"{target}"'
-    # WSL interop quotes each argument itself, so there the switch and the path go apart.
     windows_path = "C:\\Users\\me\\a b\\c.txt"
     monkeypatch.setattr(path_utils, "_IS_WSL", True)
     monkeypatch.setattr(
@@ -2030,7 +1977,6 @@ def _clip(width, height) -> bytes:
 
 
 def test_a_tall_clip_thumbnail_is_bounded_in_height_too(client):
-    # Small to decode, but a card showing it at full height would hold every row.
     [clip] = _upload(client, ("tall.mp4", _clip(32, 4000), "video/mp4"))
     assert _thumbnail_size(client, clip) == (8, 960)
 
@@ -2098,7 +2044,6 @@ def test_a_video_thumbnail_reads_its_container_by_type(client, monkeypatch):
         (True, "mp4"),
     ]
     assert seen[0][1]["max_pixels"] == library._THUMBNAIL_MAX_PIXELS
-    # A container with no demuxer on the list has no picture.
     assert _thumbnail(client, flv).status_code == 404
 
 
@@ -2106,7 +2051,6 @@ def test_an_attachment_is_read_for_its_thumbnail_only_within_the_decodes_count(c
     free = []
 
     def media(_ref):
-        # A 64 MiB clip and its base64 are held from here, so this has to wait its turn too.
         free.append(library._THUMBNAIL_DECODES._value)
         return "image/png", _png(8, 8, "RGB")
 
@@ -2127,9 +2071,7 @@ def test_thumbnails_are_cached_by_version_and_attachments_have_them_too(client, 
     for _ in range(3):
         assert _thumbnail_size(client, image) == (40, 30)
     assert calls == ["image/png"]
-    # Another account can have an item of the same id and version: its sign-in keys it apart.
     assert _thumbnail(client, image).headers["vary"] == "Authorization"
-    # A new version of the file is a new size and mtime, so a new picture.
     library.upload_path(_ref(image)).write_bytes(_png(30, 20, "RGB"))
     assert _thumbnail_size(client, image) == (30, 20)
     assert len(calls) == 2
@@ -2192,7 +2134,6 @@ def test_audio_and_video_stream_from_a_signed_link_with_ranges(client):
         assert (response.status_code, response.content) == (206, body), header
         assert response.headers["content-range"] == content_range, header
         assert response.headers["content-length"] == str(len(body)), header
-    # Several ranges, a malformed one, or an If-Range with nothing to match may be ignored.
     for headers in (
         {"Range": "bytes=0-1,5-6"},
         {"Range": "bytes=5-1"},
@@ -2208,7 +2149,6 @@ def test_audio_and_video_stream_from_a_signed_link_with_ranges(client):
         assert response.headers["content-range"] == "bytes */100"
     head = stream.head(url, headers = {"Range": "bytes=0-9"})
     assert (head.status_code, head.content, head.headers["content-length"]) == (206, b"", "10")
-    # Audio, and generated media under its gallery's type.
     for item_id, content_type, body in (
         (song, "audio/mpeg", b"ID3" + b"x" * 7),
         (f"video:{_gallery_video('A calm sea')}", "video/mp4", b"\0\0\0\x18ftypmp42"),
@@ -2227,7 +2167,6 @@ def test_only_audio_and_video_items_get_a_stream_link(client):
         # A declared type the extension map does not know is stored, but never streamed.
         ("clip.xyz", b"x", "video/x-custom"),
     )
-    # A sandbox file, too, streams only under an audio or video name.
     _sandbox_chat("notes.txt", b"text")
     mint = lambda item_id: _mint(client, item_id).status_code  # noqa: E731
     for item_id in (note, image, unknown, "sandbox:t-lib:notes.txt", "attachment:m:a"):
@@ -2238,7 +2177,6 @@ def test_only_audio_and_video_items_get_a_stream_link(client):
     # A link can never be made for one, so the stream refuses it even with a valid signature.
     response = _stream(note, library_routes._sign_stream_id(note))
     assert response.status_code == 404 and b"# hi" not in response.content
-    # Minted only for a caller signed in with the UI or a key.
     assert _mint(_app(None), note).status_code in (401, 403)
     client.app.dependency_overrides[request_admitted_without_credential] = lambda: True
     assert mint(note) == 403
@@ -2255,13 +2193,13 @@ def test_a_tampered_expired_foreign_or_other_kind_of_link_is_refused(client, mon
     target, expires, signature = token.rsplit(".", 2)
     for bad in (
         f"{target}.{expires}.{'0' * len(signature)}",
+        f"{target}.{expires}." + "\u00e9" * len(signature),
         f"{target}.{int(expires) + 60}.{signature}",
         f"{library_routes._sign_stream_id(other).rsplit('.', 2)[0]}.{expires}.{signature}",
         "nonsense",
         "",
     ):
         assert _stream(clip, bad).status_code in (401, 422), bad
-    # Names one item: another's id with it reads nothing.
     response = _stream(other, token)
     assert response.status_code == 401 and b"other" not in response.content
 
@@ -2275,7 +2213,6 @@ def test_a_tampered_expired_foreign_or_other_kind_of_link_is_refused(client, mon
     assert _stream(f"video:{video}", video_token).status_code == 401
     library_token = library_routes._sign_stream_id(video)
     assert video_page(signed_url, params = {"token": library_token}).status_code == 401
-    # Each on its own route still plays.
     assert video_page(signed_url, params = {"token": video_token}).status_code == 200
 
     monkeypatch.setattr(library_routes, "_STREAM_LINK_TTL", -1)
@@ -2329,13 +2266,10 @@ def test_a_stream_link_reads_only_its_own_accounts_item(client, two_accounts):
     sign = lambda account, item_id: run_as(account, library_routes._sign_stream_id, item_id)  # noqa: E731
     with _account_client(alice) as as_alice, _account_client(bob) as as_bob:
         url = _stream_url(as_alice, mine_id)
-        # Bob cannot mint a link to Alice's item, however he spells it.
         assert _mint(as_bob, mine_id).status_code == 404
-    # The link is the credential: it plays Alice's file for whoever holds it, in her account.
     response = _app(None).get(url)
     assert (response.status_code, response.content) == (200, b"alice")
     response = _stream(theirs_id, sign(alice, theirs_id))
     assert response.status_code == 404 and b"bob" not in response.content
     assert _stream(theirs_id, sign(alice, mine_id)).status_code == 401
-    # An owner's link resolves in the owner's own Library, where Alice's upload is not.
     assert _stream(mine_id, sign(OWNER, mine_id)).status_code == 404

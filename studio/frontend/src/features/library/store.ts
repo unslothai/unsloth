@@ -33,7 +33,7 @@ interface LibraryState {
   error: string | null;
   refresh: () => Promise<void>;
   patchItem: (id: string, patch: ItemPatch) => Promise<void>;
-  removeItem: (id: string) => Promise<void>;
+  removeItem: (id: string, fingerprint: string | undefined) => Promise<void>;
   markOpened: (id: string) => void;
   upload: (batch: LibraryUploadBatch, folderId: string | null) => Promise<string[]>;
   addFolder: (name: string, parentId: string | null) => Promise<LibraryFolder>;
@@ -41,18 +41,11 @@ interface LibraryState {
   removeFolder: (id: string) => Promise<void>;
 }
 
-/** The gallery page behind each generated item's id prefix. */
 const GALLERIES: Record<string, GalleryKind> = { image: "images", video: "videos", audio: "audio" };
 
-// Bumped by every refresh and by sign-out, so only the newest request may commit its snapshot.
 let refreshGeneration = 0;
-// Bumped each time a snapshot lands, so a caller can tell whether its refresh brought one.
 let snapshots = 0;
 
-/**
- * `now`, with what an edit changed (`before` it, `after` it) put back: each field still holding the
- * edit's value, so a later edit that landed keeps its own, and each entry the edit removed.
- */
 function undoEdit<T extends { id: string }>(now: T[], before: T[], after: T[] | undefined): T[] {
   if (!after) return now;
   const edited = new Map(after.map((entry) => [entry.id, entry]));
@@ -88,12 +81,9 @@ let session = 0;
 let inFlight = 0;
 let edits = 0;
 let stale = false;
-// Failed edits, undone by hand if the refresh that should replace them brings nothing (an outage).
 let undos: (() => void)[] = [];
 
-// Edits apply locally first so menus feel instant, and roll back to the server's view on failure.
 export const useLibraryStore = create<LibraryState>((set, get) => {
-  /** `undoElsewhere` puts back what the edit changed outside this store, when it is undone here. */
   async function optimistic(
     apply: (state: LibraryState) => Partial<LibraryState>,
     request: () => Promise<void>,
@@ -112,7 +102,6 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
       if (started === session) {
         stale = true;
         undos.push(() => {
-          // Signed out meanwhile: the store is the next account's now.
           if (getAuthSessionEpoch() !== epoch) return;
           set((state) => ({
             items: undoEdit(state.items, before.items, after.items),
@@ -130,7 +119,6 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
         undos = [];
         const landed = snapshots;
         await get().refresh();
-        // Latest first, so an entry edited twice ends as it was before either.
         if (snapshots === landed) for (const undo of pending.reverse()) undo();
       }
     }
@@ -154,7 +142,6 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
           return;
         }
         if (edits !== editsBefore) return get().refresh();
-        // A star toggled on Images or Video meanwhile is newer than this snapshot.
         const favorites = useLibraryFavoritesStore.getState().adopt(
           favoritesStart,
           new Set(items.filter((item) => item.favorite).map((item) => item.id)),
@@ -179,8 +166,6 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
       }
     },
     patchItem: (id, patch) => {
-      // Mirrored where Images and Video read stars. Settled with the request, before a failure's
-      // refresh reads the server's value back; undone with the rest if that refresh fails too.
       const star =
         patch.favorite !== undefined
           ? useLibraryFavoritesStore.getState().mark(id, patch.favorite)
@@ -195,15 +180,12 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
         star?.undo,
       );
     },
-    removeItem: (id) => {
-      const listed = get().items.find((item) => item.id === id);
-      const model = listed?.model;
-      const fingerprint = listed?.fingerprint;
+    // The fingerprint the confirmation was opened on: a refresh since may list a replacement file.
+    removeItem: (id, fingerprint) => {
+      const model = get().items.find((item) => item.id === id)?.model;
       const star = useLibraryFavoritesStore.getState().mark(id, false);
       return optimistic(
         (state) => ({ items: state.items.filter((item) => item.id !== id) }),
-        // Fine-tunes go through the models route, which refuses while one is training or loaded,
-        // and drops the Library's name, folder and star with the files.
         async () => {
           const epoch = getAuthSessionEpoch();
           try {
@@ -221,13 +203,10 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
           }
           // Signed in as another account meanwhile: its chats can hold an attachment of this id.
           if (getAuthSessionEpoch() !== epoch) return;
-          // Those pages stay mounted off-screen and would keep showing it; an open chat would
-          // keep an attachment, and write it back with its next save.
           const [kind, messageId, ...rest] = id.split(":");
           const gallery = GALLERIES[kind];
           if (gallery) notifyGalleryChanged(gallery);
           if (kind === "attachment" && messageId && rest.length > 0) {
-            // The message id is encoded, since any string can be one.
             emitChatAttachmentDeleted({
               messageId: decodeURIComponent(messageId),
               attachmentId: rest.join(":"),
@@ -237,7 +216,6 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
         star.undo,
       );
     },
-    // Best effort: a lost open only leaves Last activity a little stale.
     markOpened: (id) => {
       const openedAt = Date.now();
       set((state) => ({
@@ -249,18 +227,15 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
       try {
         return await uploadLibraryFiles(batch, folderId);
       } finally {
-        // A large batch goes as several requests, so a failure can follow some that landed.
         await get().refresh();
       }
     },
     addFolder: async (name, parentId) => {
       const epoch = getAuthSessionEpoch();
       const folder = await createLibraryFolder(name, parentId);
-      // Signed out meanwhile: it belongs to the account that left, not the one here now.
       if (getAuthSessionEpoch() !== epoch) {
         throw new Error(translate("library.toast.signedOutBeforeFolder"));
       }
-      // A refresh started before it landed would drop it; the count sends that one back for more.
       edits += 1;
       set((state) => ({
         folders: [folder, ...state.folders.filter((f) => f.id !== folder.id)],
@@ -278,7 +253,6 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
         }),
         () => updateLibraryFolder(id, patch),
       ),
-    // What the folder held moves up to its parent, mirroring the backend.
     removeFolder: (id) =>
       optimistic(
         (state) => {

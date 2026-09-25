@@ -96,7 +96,6 @@ const CHOICES: {
   ],
 };
 
-// These tabs can wait until they have something in them; the rest are simply on or off.
 const CONTENT_TABS = new Set<LibraryTabId>(["images", "videos", "audio", "models"]);
 
 const TAB_VISIBILITY: [LibraryTabVisibility, TranslationKey][] = [
@@ -132,7 +131,6 @@ function ChoiceSelect({
   );
 }
 
-/** Library usage against the disk it lives on, and a way into each category, largest first. */
 function StorageSection() {
   const t = useT();
   const locale = useLocale();
@@ -146,7 +144,6 @@ function StorageSection() {
   const storage = useLibraryStorage();
   const size = (bytes: number) => formatSize(bytes, locale, t) ?? "";
 
-  // Manage storage in the Data tab lands here.
   useEffect(() => {
     if (scrollTarget !== "library-storage") return;
     const frame = window.requestAnimationFrame(() => {
@@ -222,17 +219,14 @@ function StorageSection() {
   );
 }
 
-/** Where each kind of file lives, with Reveal where Studio runs on this machine. */
 function LocationsSection() {
   const t = useT();
   const locale = useLocale();
   const revealLabel = useRevealLabel();
-  // Moving is the owner's call, like the model folder; other accounts keep files in their workspace.
   const owner = useIsAccountOwner();
   const [locations, setLocations] = useState<LibraryLocation[] | null>(null);
   const [moving, setMoving] = useState(false);
   const [picking, setPicking] = useState<LibraryLocation | null>(null);
-  // A Reset while the folder's drive is away leaves its files there: said before it happens.
   const [resettingAway, setResettingAway] = useState<LibraryLocation | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -244,19 +238,15 @@ function LocationsSection() {
     };
   }, []);
   const nameOf = (location: LibraryLocation) => t(STORAGE_LABELS[location.key]);
-  // Free space per row only when the folders span more than one disk; one disk is the bar above.
   const manyDisks = new Set(locations?.map((location) => location.device).filter(Boolean)).size > 1;
 
   async function move(location: LibraryLocation, path: string | null) {
     const name = nameOf(location);
     setMoving(true);
-    // Across drives this can take minutes: the toast stays and Change and Reset stay off till done.
     const id = toast.loading(t("settings.library.locationMoving", { name }));
     try {
       const result = await moveLibraryLocation(location.key, path);
       setLocations(result.locations);
-      // The files may now sit on another disk, which the storage bar measures, and the pages
-      // already showing them read them again from where they are now.
       refreshLibraryStorage();
       if (location.key === "images" || location.key === "videos" || location.key === "audio") {
         notifyGalleryChanged(location.key);
@@ -360,7 +350,6 @@ function LocationsSection() {
         onSelect={(path) => {
           if (picking) void move(picking, path);
         }}
-        // Start beside the current folder, where a new one usually goes.
         initialPath={picking ? parentFolder(picking.path) : undefined}
         title={picking ? t("settings.library.locationMoveTitle", { name: nameOf(picking) }) : ""}
         description={t("settings.library.locationMoveDescription")}

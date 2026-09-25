@@ -11,7 +11,6 @@ const MAX_CACHED_BYTES = 128 * 1024 * 1024;
 interface Entry {
   url: Promise<string>;
   bytes: number;
-  /** Cards holding the URL; only an entry nobody holds may go. */
   users: number;
 }
 
@@ -22,7 +21,6 @@ function revoke(entry: Entry): void {
   void entry.url.then((url) => URL.revokeObjectURL(url), () => {});
 }
 
-/** Drop every cached URL, so a sign-out leaves nothing of the last account's files. */
 export function clearCachedObjectUrls(): void {
   objectUrls.forEach(revoke);
   objectUrls.clear();
@@ -37,7 +35,6 @@ function evict(key: string): void {
   revoke(entry);
 }
 
-/** Oldest first, skipping what is in use, until both budgets hold again. */
 function trim(): void {
   for (const [key, entry] of objectUrls) {
     if (objectUrls.size <= MAX_CACHED_URLS && cachedBytes <= MAX_CACHED_BYTES) return;
@@ -45,14 +42,12 @@ function trim(): void {
   }
 }
 
-/** The object URL cached under `key`, loaded with `load` on a miss. It stays valid until `release`. */
 export function acquireObjectUrl(
   key: string,
   load: () => Promise<Blob>,
 ): { url: Promise<string>; release: () => void } {
   let entry = objectUrls.get(key);
   if (entry) {
-    // Most recently used goes last, so eviction takes what has gone unseen longest.
     objectUrls.delete(key);
   } else {
     const created: Entry = { url: Promise.resolve(""), bytes: 0, users: 0 };
@@ -82,7 +77,6 @@ export function acquireObjectUrl(
   };
 }
 
-/** For tests: how many URLs are cached. */
 export function cachedObjectUrlCount(): number {
   return objectUrls.size;
 }

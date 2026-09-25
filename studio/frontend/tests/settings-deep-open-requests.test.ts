@@ -136,7 +136,6 @@ test("consuming a scroll target clears it", () => {
 test("canvas network and Library storage land on their tab and stay until it reads them", () => {
   for (const [tab, target, from] of [
     ["chat", "chat-canvas-network", null],
-    // Manage storage in Data moves the open dialog.
     ["library", "library-storage", "data"],
   ] as const) {
     reset();

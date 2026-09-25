@@ -20,7 +20,6 @@ export const Route = createRoute({
     ...(typeof search.ggufQuant === "string"
       ? { ggufQuant: search.ggufQuant }
       : {}),
-    // A Library "View in" link: the gallery item to select.
     ...(typeof search.item === "string" ? { item: search.item } : {}),
   }),
   beforeLoad: () => requireAuth(),

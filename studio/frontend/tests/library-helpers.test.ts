@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Library's pure rules: file naming and typing, note encodings, preview streaming, Reveal, the
-// thumbnail URL cache, card times, folder paths and the Library settings.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -37,7 +35,6 @@ import {
 } from "../src/features/library/settings-store.ts";
 import { readSrc } from "./helpers/kit.ts";
 
-/** One test that checks `run(...args)` against `expected` for each [args, expected] row. */
 function table<A extends unknown[], O>(name: string, run: (...args: A) => O, rows: [A, O][]) {
   test(name, () => {
     for (const [args, expected] of rows) assert.deepEqual(run(...args), expected, String(args));
@@ -48,28 +45,22 @@ const fileName = (name: string, file?: string, textOnly?: boolean) =>
   libraryFileName({ name, fileName: file, textOnly });
 
 table("a renamed item saves under a name every OS takes, with its file's extension", fileName, [
-  // A rename that dropped the extension gets it back.
   [["Q3 report", "report.pdf"], "Q3 report.pdf"],
   [["notes.v2", "notes.md"], "notes.v2.md"],
   [["script.PY", "script.py"], "script.PY"],
-  // Characters Windows refuses, and controls, become "_"; trailing dots and spaces go.
   [['a<b>c:d"e/f\\g|h?i*j', "x.txt"], "a_b_c_d_e_f_g_h_i_j.txt"],
   [["tab\there\u0007", "x.md"], "tab_here_.md"],
   [["draft. . .", "draft.md"], "draft.md"],
   [["../../etc/passwd", "a.txt"], ".._.._etc_passwd.txt"],
-  // Reserved device names are prefixed, whatever follows them.
   [["CON", "con.txt"], "_CON.txt"],
   [["nul.backup", "x.txt"], "_nul.backup.txt"],
   [["com1", "a.py"], "_com1.py"],
   [["console", "a.py"], "console.py"],
-  // An empty or dot-only name still saves; a dotfile keeps its name.
   [["", "image.png"], "file.png"],
   [["...", "image.png"], "file.png"],
   [[".env", ".env"], ".env"],
-  // Text-only chat uploads say so with .txt.
   [["paper.pdf", undefined, true], "paper.pdf.txt"],
   [["notes.txt", undefined, true], "notes.txt"],
-  // A very long name is cut to 200 bytes of UTF-8, keeping its extension and whole characters.
   [["x".repeat(400), "a.jsonl"], `${"x".repeat(194)}.jsonl`],
   [["字".repeat(200), "a.txt"], `${"字".repeat(65)}.txt`],
   [["😀".repeat(100), "a.png"], `${"😀".repeat(49)}.png`],
@@ -124,7 +115,6 @@ test("audio and video with a file of their own stream; the rest keep a blob", ()
   for (const id of ["upload:abc", "audio:a1", "video:v1", "sandbox:t-1:out/song.mp3"]) {
     assert.ok(streamsPreview(id, "audio") && streamsPreview(id, "video"), id);
   }
-  // Attachments live inside their message; images and PDFs are small enough to buffer.
   for (const [id, body] of [
     ["attachment:m:a", "video"], ["upload:abc", "image"], ["upload:abc", "pdf"], ["upload:abc", null],
     ["model:training:/x", "video"], ["upload", "video"], [":upload", "video"],
@@ -135,18 +125,14 @@ test("audio and video with a file of their own stream; the rest keep a blob", ()
 
 const utf8 = (text: string) => new TextEncoder().encode(text);
 const bytes = (...values: number[]) => new Uint8Array(values);
-// UTF-16LE with its BOM, as Notepad and PowerShell write it.
 const utf16le = (text: string) =>
   bytes(0xff, 0xfe, ...[...text].flatMap((c) => [c.charCodeAt(0) & 0xff, c.charCodeAt(0) >> 8]));
 
 test("notes decode by their BOM and save back in the same shape", () => {
-  // [bytes, text shown, encoding, bom, eol, an edit, what saving it writes]
   const cases: [Uint8Array, string, string, boolean, string, string, string][] = [
     [utf8("héllo\nworld\n"), "héllo\nworld\n", "utf-8", false, "\n", "héllo\n", "héllo\n"],
-    // CRLF shows as LF and goes back as CRLF; a pasted CRLF is not doubled.
     [utf8("a\r\nb\r\nc"), "a\nb\nc", "utf-8", false, "\r\n", "a\nb\r\nc", "a\r\nb\r\nc"],
     [bytes(0xef, 0xbb, 0xbf, ...utf8("hi")), "hi", "utf-8", true, "\n", "hi!", "\uFEFFhi!"],
-    // The server writes the leading U+FEFF in the note's own encoding.
     [utf16le("Write-Host\r\n"), "Write-Host\n", "utf-16le", true, "\r\n", "x\n", "\uFEFFx\r\n"],
     [bytes(0xfe, 0xff, 0x00, 0x41, 0x00, 0x42), "AB", "utf-16be", true, "\n", "AB", "\uFEFFAB"],
   ];
@@ -158,11 +144,9 @@ test("notes decode by their BOM and save back in the same shape", () => {
 });
 
 test("a note that would not save back as it was opens read-only", () => {
-  // A BOM, then a lone high surrogate; "café" in windows-1252.
   assert.equal(decodeNote(bytes(0xff, 0xfe, 0x00, 0xd8)).readOnlyReason, "utf16");
   const legacy = decodeNote(bytes(0x63, 0x61, 0x66, 0xe9));
   assert.ok(legacy.readOnlyReason === "notUtf8" && legacy.text.startsWith("caf"));
-  // A prefix cut inside a character is not a bad encoding.
   const cut = decodeNote(utf8("ab€").subarray(0, 4), true);
   assert.deepEqual([cut.text, cut.readOnlyReason], ["ab", null]);
 });
@@ -179,7 +163,6 @@ test("every spelling of this machine counts as local, and nothing else does", ()
 table("Reveal is named by the server's file manager, else by its platform", revealLabelFor, [
   [["finder", "mac"], "library.reveal.finder"],
   [["explorer", "windows"], "library.reveal.explorer"],
-  // WSL reports linux, but reveals in the Windows host's Explorer.
   [["explorer", "linux"], "library.reveal.explorer"],
   [["files", "linux"], "library.reveal.files"],
   [[null, "linux"], null],
@@ -196,7 +179,6 @@ URL.revokeObjectURL = (url: string) => {
   realRevoke(url);
 };
 const blob = () => Promise.resolve(new Blob(["x"]));
-/** Acquires and releases `count` fresh entries, pushing older ones toward eviction. */
 async function fill(prefix: string, count: number) {
   for (let i = 0; i < count; i++) {
     const held = acquireObjectUrl(`${prefix}-${i}`, blob);
@@ -207,7 +189,6 @@ async function fill(prefix: string, count: number) {
 
 test("a held URL survives the count cap, and goes once released", async () => {
   clearCachedObjectUrls();
-  // Held while still loading, as a card waiting on its thumbnail is.
   let finish!: (value: Blob) => void;
   const pending = acquireObjectUrl("pending", () => new Promise((resolve) => (finish = resolve)));
   await fill("item", 310);
@@ -215,7 +196,6 @@ test("a held URL survives the count cap, and goes once released", async () => {
   const url = await pending.url;
   assert.ok(!revoked.has(url) && cachedObjectUrlCount() <= 300);
   pending.release();
-  // Released and now the oldest, so the next miss past the cap takes it.
   await fill("one-more", 1);
   assert.ok(revoked.has(url));
 });
@@ -257,13 +237,11 @@ table("the folder picker starts in the folder above, drive and share roots inclu
   [["/Users/me/Pictures/Unsloth Images"], "/Users/me/Pictures"],
   [["/Unsloth Images"], "/"],
   [["/Users/me/Pictures/"], "/Users/me"],
-  // `D:` alone is drive D's current folder, not its root.
   [["D:\\Unsloth Images"], "D:\\"],
   [["D:/Unsloth Images"], "D:/"],
   [["C:\\Users\\me\\Unsloth"], "C:\\Users\\me"],
   [["\\\\server\\share\\Unsloth Images"], "\\\\server\\share\\"],
   [["\\\\server\\share\\a\\b"], "\\\\server\\share\\a"],
-  // A root has nothing above it to start from.
   [["/"], undefined],
   [["D:\\"], undefined],
   [["\\\\server\\share"], undefined],

@@ -21,14 +21,12 @@ function targetKey(target: LibraryTarget): string {
   return target.kind === "item" ? `item:${target.item.id}` : `folder:${target.folder.id}`;
 }
 
-// Row content lines up with the tab labels (px-4); the checkbox hangs in the margin to its left.
 const ROW_INSET = "pl-4 pr-6";
 
 const CELL = "hidden text-[13px] text-muted-foreground sm:block";
 const ACTIVITY_COLUMN = "w-48 shrink-0";
 const MODIFIED_COLUMN = "w-40 shrink-0";
 const SIZE_COLUMN = "w-28 shrink-0";
-// Suggested shows one relative Last activity column instead of Modified and Size.
 const ACTIVITY_COLUMNS: [LibrarySortKey, TranslationKey, string][] = [
   ["modified", "library.list.lastActivity", ACTIVITY_COLUMN],
 ];
@@ -69,7 +67,6 @@ function SortHeader({
   );
 }
 
-/** The checkbox in the page margin: shown on hover, or on every row once anything is selected. */
 function GutterCheckbox({
   checked,
   visible,
@@ -90,7 +87,6 @@ function GutterCheckbox({
         onCheckedChange={onCheckedChange}
         aria-label={label}
         className={cn(
-          // A shade darker than the input border in light mode, which vanished on white.
           "rounded-full border-neutral-300 opacity-0 transition-opacity focus-visible:opacity-100 dark:border-input",
           group === "row"
             ? "group-hover/library-row:opacity-100"

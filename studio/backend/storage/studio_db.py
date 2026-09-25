@@ -120,8 +120,6 @@ _schema_lock = threading.Lock()
 _schema_ready: set[Path] = set()
 _SQLITE_IN_CHUNK_SIZE = 900
 _PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
-# Bumped when what the inventory records changes, so it is rebuilt: 2 sizes video files, 3 types
-# audio parts that name no type.
 _CHAT_ATTACHMENT_INVENTORY_VERSION = 3
 
 
@@ -4311,7 +4309,6 @@ def _blob_part_base64_len(part: dict) -> int:
         data = audio.get("data")
         if isinstance(data, str) and _is_locally_stored_blob(data):
             return len(data)
-    # A video: {"type": "file", "data", "mimeType"}, raw base64.
     data = part.get("data")
     if part.get("type") == "file" and isinstance(data, str) and _is_locally_stored_blob(data):
         return len(data.rsplit(",", 1)[-1])

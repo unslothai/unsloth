@@ -26,15 +26,11 @@ import {
 
 type Navigate = ReturnType<typeof useNavigate>;
 
-// More than this and the composer turns into a wall of chips; the rest can be added by hand.
 export const MAX_CHAT_FILES = 10;
 
-// The composer's image and text limit.
 const MAX_IMAGE_OR_TEXT_BYTES = 20 * 1024 * 1024;
-// Its PDF, DOCX and OpenDocument limit, and the most any other adapter takes, so the ceiling for the rest.
 const MAX_DOCUMENT_BYTES = 50 * 1024 * 1024;
 
-/** The most the composer would accept for this item. Checked before any download. */
 function chatSizeLimit(item: LibraryItem): number {
   const kind = fileKind(item);
   if (kind === "audio") return MAX_AUDIO_SIZE;
@@ -49,16 +45,12 @@ function fitsInChat(item: LibraryItem): boolean {
   return item.sizeBytes === null || item.sizeBytes <= chatSizeLimit(item);
 }
 
-/** Saves the item's file. `epoch` is the session the item came from: one signed in meanwhile
- *  could have an item of the same id, and its link would carry that account's token. */
 export async function downloadLibraryItem(
   item: LibraryItem,
   epoch = getAuthSessionEpoch(),
 ): Promise<void> {
   if (getAuthSessionEpoch() !== epoch) return;
   try {
-    // The desktop app streams to the chosen path: a Blob plus its IPC copy would hold the file
-    // in memory twice.
     if (isTauri && !item.textOnly && hasOwnFile(item.id)) {
       const url = await libraryDownloadUrl(item);
       if (getAuthSessionEpoch() !== epoch) return;
@@ -76,15 +68,8 @@ export async function downloadLibraryItem(
   }
 }
 
-// A browser download bundle is built in memory, so it stays well short of what a tab can hold.
 const MAX_ZIP_BYTES = 256 * 1024 * 1024;
 
-/**
- * Several files at once. The desktop app saves each through its own dialog. A browser gets one
- * zip: separate downloads started one by one after each fetch look to Chrome like a page spamming
- * downloads, which it holds behind a prompt, or blocks silently once that was dismissed. Past what
- * a zip can hold in memory they go one by one, and the user is told what the browser may ask.
- */
 export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> {
   const epoch = getAuthSessionEpoch();
   if (items.length <= 1 || isTauri) {
@@ -105,19 +90,14 @@ export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> 
     const files: File[] = [];
     for (const item of items) {
       files.push(await libraryItemFile(item));
-      // Signed out meanwhile: the files belong to the account that left.
       if (getAuthSessionEpoch() !== epoch) return;
     }
-    // fflate files entries by name in plain objects, where "__proto__" sets the prototype and the
-    // file is lost: that name counts as taken, so such a file goes in as "__proto__ (2)".
     const names = uniqueFileNames(["__proto__", ...files.map((file) => file.name)]).slice(1);
     const entries: Record<string, Uint8Array> = {};
     for (const [index, file] of files.entries()) {
       entries[names[index]!] = new Uint8Array(await file.arrayBuffer());
     }
-    // Stored, not deflated: most of a Library is media that is compressed already.
     const archive = zipSync(entries, { level: 0 });
-    // Each read above awaits too: an account signed in meanwhile gets nothing of this one's.
     if (getAuthSessionEpoch() !== epoch) return;
     await downloadFile(
       new Blob([archive], { type: "application/zip" }),
@@ -138,12 +118,10 @@ function resetToNewChat(): void {
   runtime.setIncognito(false);
 }
 
-/** Open a fresh chat with these files attached in the composer. */
 function startLibraryChat(
   navigate: Navigate,
   handoff: LibraryChatHandoff,
 ): void {
-  // A UUID, or a fallback where plain http to the LAN has no crypto.randomUUID.
   const nonce = createModelConfigHandoffRequestId();
   resetToNewChat();
   useLibraryChatHandoffStore.getState().offer(`single:${nonce}`, handoff);
@@ -171,7 +149,6 @@ export async function chatAboutItems(
     return;
   }
   const chosen = fitting.slice(0, MAX_CHAT_FILES);
-  // A sign-out while the files download would hand them to the next account's chat.
   const epoch = getAuthSessionEpoch();
   try {
     // One at a time, so a folder never holds ten downloads in flight at once.
@@ -200,15 +177,12 @@ export async function chatAboutItems(
   }
 }
 
-/** Open a fresh chat with this fine-tuned model's run settings up, as the model picker does. */
 export async function chatWithModel(
   navigate: Navigate,
   item: LibraryItem,
 ): Promise<void> {
   const model = item.model;
   if (!model) return;
-  // Only the picker's scan reads a checkpoint's tokenizer; a speech model belongs on the Audio page,
-  // since chat cannot serve it.
   const epoch = getAuthSessionEpoch();
   const scanned = await listLoras()
     .then(({ loras }) => loras.find((lora) => lora.adapter_path === model.path))
@@ -231,7 +205,6 @@ export async function chatWithModel(
       source: model.origin === "exported" ? "exported" : "lora",
       isLora: model.exportType === "lora",
       isDownloaded: true,
-      // An exported GGUF is listed by its first weights file, which loads directly.
       isGguf: model.exportType === "gguf",
     },
   });

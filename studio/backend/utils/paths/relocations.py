@@ -109,14 +109,12 @@ def _load() -> dict[str, dict]:
         # Written meanwhile: what was read is older than what that write cached.
         if _generation != generation:
             return _cache.get(key, chosen)
-        # A bare path whose folder is there now learned its mount: saved, so it is asked once.
         if learned:
             try:
                 _save(chosen)
             except (sqlite3.Error, OSError):
                 pass
         _cache[key] = chosen
-    # Loaded once per database, so a move cut short is finished before its folder is used.
     interrupted = [kind for kind, entry in chosen.items() if entry.get("moving_from")]
     if interrupted and resume_move is not None:
         for kind in interrupted:
@@ -180,7 +178,6 @@ def _source_available(entry: dict) -> bool:
     mount = entry.get("moving_mount")
     if mount:
         return os.path.ismount(mount)
-    # A drive with a letter or volume of its own goes away whole.
     anchor = Path(entry["moving_from"]).anchor
     return not anchor or os.path.isdir(anchor)
 

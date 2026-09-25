@@ -109,7 +109,6 @@ import {
 // display order, and the guard against a persisted action this build dropped.
 const FINE_TUNE_ACTIONS: FineTuneAction[] = ["export", "train", "recipes"];
 
-/** Library storage at a glance. Managing it lives in the Library tab. */
 function LibraryDataSection() {
   const t = useT();
   const locale = useLocale();
@@ -117,7 +116,6 @@ function LibraryDataSection() {
   const storage = useLibraryStorage();
   const count = storage.categories.reduce((sum, entry) => sum + entry.count, 0);
   const size = (bytes: number) => formatSize(bytes, locale, t) ?? "";
-  // Categories come largest first.
   const largest = storage.categories
     .slice(0, 3)
     .map((entry) => `${t(STORAGE_LABELS[entry.category])} ${size(entry.bytes)}`)
@@ -128,7 +126,6 @@ function LibraryDataSection() {
   else if (storage.status === "error") summary = t("settings.library.storageError");
   else if (storage.totalBytes === 0 && count === 0) summary = t("settings.library.storageEmpty");
   else {
-    // Hidden sources still take space, though no category counts them.
     summary = [
       t("settings.library.storageUsed", { size: size(storage.totalBytes) }),
       count === 1
@@ -540,7 +537,6 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
       const result = await clearAllChats({
         deleteFiles: deleteFilesOnClear,
       });
-      // Their attachments and tool files were Library items too.
       refreshLibraryStorage();
       const clearedCount = result.deletedThreadIds.length;
       // A sandbox the backend could not remove, asked for or not.

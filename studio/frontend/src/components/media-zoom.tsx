@@ -17,7 +17,6 @@ export type MediaZoom = "fit" | number;
 
 // A video's own controls sit along its bottom edge; a drag never starts there.
 const VIDEO_CONTROLS_PX = 56;
-// Movement before a press counts as a drag, so a plain click still plays or pauses.
 const DRAG_SLOP_PX = 4;
 
 type Size = { width: number; height: number };
@@ -30,10 +29,6 @@ function clamp(value: number, limit: number): number {
   return Math.max(-limit, Math.min(limit, value));
 }
 
-/**
- * One image or video, shown at `zoom`. Fit scales it to the stage; any other zoom is its natural size
- * times that, and once it overflows it can be dragged to pan. `onFitScale` reports what Fit works out to.
- */
 export function MediaZoomStage({
   zoom,
   onFitScale,
@@ -55,7 +50,6 @@ export function MediaZoomStage({
     ox: number;
     oy: number;
     moved: boolean;
-    /** Where the drag has reached; written to the layer each frame, committed on release. */
     next: { x: number; y: number };
     frame: number;
   } | null>(null);
@@ -113,7 +107,6 @@ export function MediaZoomStage({
             }
           : null;
     if (!size || !size.width || !size.height) return;
-    // A different file starts centred.
     if (size.src !== natural?.src) setOffset({ x: 0, y: 0 });
     setNatural(size);
   }
@@ -143,8 +136,6 @@ export function MediaZoomStage({
   function onPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
     const current = drag.current;
     if (!current || current.id !== event.pointerId) return;
-    // Released outside the stage before the drag captured the pointer, so no pointerup came here;
-    // without this, moving back over the stage would pan with no button held.
     if ((event.buttons & 1) === 0) {
       endDrag(current);
       return;
@@ -157,7 +148,6 @@ export function MediaZoomStage({
       setGrabbing(true);
       event.currentTarget.setPointerCapture(event.pointerId);
     }
-    // Straight to the layer once a frame: a render per pointer event lagged behind the cursor.
     current.next = {
       x: clamp(current.ox + dx, slack.x),
       y: clamp(current.oy + dy, slack.y),

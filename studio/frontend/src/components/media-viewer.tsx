@@ -36,12 +36,9 @@ import { type MediaZoom, MediaZoomStage } from "./media-zoom";
 import { type MediaNoun, useProjectSubmenu } from "./project-submenu";
 
 export interface MediaViewerActions {
-  /** The white pill, e.g. Chat about this. */
   primary?: { label: string; icon: IconSvgElement; onClick: () => void; disabled?: boolean };
   onDownload?: () => void;
-  /** Where the file came from: its chat, or the page that generated it. */
   viewOriginal?: { label: string; onClick: () => void };
-  /** Shown only where it can work; see the Library's useRevealLabel. */
   reveal?: { label: string; onClick: () => void };
   favorite?: boolean;
   onToggleFavorite?: () => void;
@@ -64,8 +61,6 @@ function percent(scale: number, locale: string): string {
   );
 }
 
-/** The header's scale pill: the current scale, and a menu of `scales`, after Fit when the frame's
- *  `fitScale` is given. */
 export function ScaleMenu({
   value,
   scales,
@@ -109,10 +104,6 @@ export function ScaleMenu({
   );
 }
 
-/**
- * One file, nearly as tall as the window. Images and videos can be scaled and, once larger than the
- * frame, dragged. Page-agnostic, so any page that shows files can open them the same way.
- */
 export function MediaViewer({
   open,
   onOpenChange,
@@ -129,12 +120,9 @@ export function MediaViewer({
   onOpenChange: (open: boolean) => void;
   title: string;
   meta?: ReactNode;
-  /** Images and videos: adds the scale menu. */
   media: boolean;
-  /** Used in labels and messages, e.g. "image". */
   noun: MediaNoun;
   actions: MediaViewerActions;
-  /** Anything else for the header, before the actions (e.g. Save). */
   extra?: ReactNode;
   onKeyDown?: KeyboardEventHandler<HTMLDivElement>;
   children: ReactNode;
@@ -143,14 +131,11 @@ export function MediaViewer({
   const [menuOpen, setMenuOpen] = useState(false);
   const [zoom, setZoom] = useState<MediaZoom>("fit");
   const [fitScale, setFitScale] = useState<number | null>(null);
-  // Every opening starts at Fit.
   const [wasOpen, setWasOpen] = useState(open);
   if (open !== wasOpen) {
     setWasOpen(open);
     if (open) setZoom("fit");
   }
-  // Opened from a card, a row or a link rather than a DialogTrigger, so Radix has nothing to return
-  // focus to on close and would drop it on <body>. Whatever had focus when it opened gets it back.
   const returnFocus = useRef<HTMLElement | null>(null);
   const project = useProjectSubmenu({ noun, onAddToProject: actions.onAddToProject });
   const iconButton =
