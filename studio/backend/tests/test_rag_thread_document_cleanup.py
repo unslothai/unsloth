@@ -321,23 +321,38 @@ def test_a_fork_without_documents_needs_no_warning_without_vec(client, monkeypat
     assert _fork(client, "source", "m1", "fork")["containerSnapshotWarning"] is None
 
 
-def test_a_fork_warns_when_an_upload_is_still_pending(client):
-    _create_thread(client, "source")
-    _add_message(client, "source", "m1")
+def _add_document(thread_id, status):
     conn = rag_db.get_connection()
     try:
         store.create_document(
             conn,
-            scope = store.thread_scope("source"),
-            thread_id = "source",
-            filename = "pending.txt",
-            sha256 = "pending-upload",
-            status = "pending",
+            scope = store.thread_scope(thread_id),
+            thread_id = thread_id,
+            filename = f"{status}.txt",
+            sha256 = f"{status}-upload",
+            status = status,
         )
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize("status", ["pending", "running"])
+def test_a_fork_warns_when_an_upload_is_still_indexing(client, status):
+    _create_thread(client, "source")
+    _add_message(client, "source", "m1")
+    _add_document("source", status)
     warning = _fork(client, "source", "m1", "fork")["containerSnapshotWarning"]
     assert "not copied" in (warning or "")
+
+
+@pytest.mark.parametrize("vec", [True, False])
+def test_a_fork_does_not_warn_about_failed_uploads(client, monkeypatch, vec):
+    _create_thread(client, "source")
+    _add_message(client, "source", "m1")
+    _add_document("source", "failed")
+    if not vec:
+        monkeypatch.setattr(rag_db, "rag_available", lambda: False)
+    assert _fork(client, "source", "m1", "fork")["containerSnapshotWarning"] is None
 
 
 def test_a_fork_copies_files_before_taking_the_rag_write_lock(client, monkeypatch):

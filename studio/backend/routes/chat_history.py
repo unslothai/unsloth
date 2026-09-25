@@ -866,6 +866,8 @@ def _remove_thread_rag_data(thread_ids, *, cutoff: "str | None" = None) -> None:
 
 
 def _copy_thread_rag_documents(source_thread_id: str, thread_id: str) -> bool:
+    """Copy the source's uploads into the fork. False when the fork should warn that some were
+    left behind."""
     try:
         from core.rag import conversation_archive
         from storage import rag_db
