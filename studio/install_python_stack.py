@@ -195,8 +195,7 @@ def _strix_needs_amd_arch_index(ver: tuple[int, int]) -> bool:
     return key is None or key < _ROCM_ARCH_INDEX_FLOOR
 
 
-# Arches rerouted to AMD's per-arch index below the 7.13 floor: Strix, and RDNA 4, whose
-# generic wheels carry the null HIP _grouped_mm kernel (TheRock #5284). Mirrors install.sh.
+# Rerouted to AMD's per-arch index below 7.13 (RDNA 4: TheRock #5284). Mirrors install.sh.
 _AMD_ARCH_INDEX_FLOOR_GFX: frozenset[str] = frozenset(
     {"gfx1151", "gfx1150", "gfx1152", "gfx1200", "gfx1201"}
 )
@@ -5960,7 +5959,6 @@ def _ensure_rocm_torch() -> None:
             )
             return
         _strix_gfx = _AMD_ARCH_INDEX_FLOOR_GFX
-        # Only the Strix / RDNA 4 reroute has a ROCm-version floor.
         _detected_strix = (
             _strix_gfx.intersection(gfx_codes) if _strix_needs_amd_arch_index(ver) else set()
         )

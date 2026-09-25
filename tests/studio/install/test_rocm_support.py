@@ -1173,7 +1173,6 @@ class TestEnsureRocmTorch:
         assert "torch>=2.11.0,<2.12.0" in torch_call
 
     def test_rocm_714_rdna3_stays_on_generic_cap(self):
-        """Control: gfx1100 has no such floor, so the same host stays on rocm7.2."""
         mock_pip, _ = run_ensure_rocm_torch(
             "",
             _has_rocm_gpu = True,
@@ -1939,8 +1938,7 @@ class TestGfx906LegacyReroute:
 # the first family carrying gfx1102/gfx1200/gfx1201, so gfx1102 floors at 6.3; gfx1200 and
 # gfx1201 floor at 6.4 to match _GENERIC_WHEEL_GFX_MIN_ROCM and AMD's production matrix.
 _GFX_FLOOR_TAG = {"gfx1102": "rocm6.3", "gfx1200": "rocm6.4", "gfx1201": "rocm6.4"}
-# RDNA 4 on any generic leaf below 7.13 is rerouted to AMD's per-arch index, so a mask
-# that selects the gfx120X card shows up as this leaf rather than as the rocm6.4 floor.
+# RDNA 4 below 7.13 lands here instead of the rocm6.4 floor.
 _RDNA4_LEAF = "gfx120x-all"
 
 
@@ -2084,7 +2082,6 @@ class TestGfx1102Rocm64Floor:
         assert "torch>=2.11.0,<2.12.0" in torch_call
 
     def test_rdna4_already_on_amd_arch_wheel_is_left_alone(self, monkeypatch):
-        """No churn: the AMD gfx120X-all build is what the reroute would install."""
         pip = self._ensure_for_gfx(
             "gfx1201",
             monkeypatch,
@@ -2095,7 +2092,6 @@ class TestGfx1102Rocm64Floor:
         pip.assert_not_called()
 
     def test_rdna4_pinned_index_stays_authoritative(self, monkeypatch):
-        """An explicit index pin still wins over the RDNA 4 reroute."""
         torch_call = str(
             self._ensure_for_gfx("gfx1201", monkeypatch, pinned = True).call_args_list[0]
         )
@@ -2362,8 +2358,7 @@ class TestGfx1102Rocm64Floor:
     @pytest.mark.parametrize(
         ("gfx", "leaf", "expected_leaf", "expected_target"),
         (
-            # RDNA 4 below 7.13 goes to AMD's per-arch build whatever generic leaf it had,
-            # and the floor target stays set for the migrated repair either way
+            # RDNA 4 below 7.13 always reroutes; the floor target stays set
             ("gfx1200", "rocm6.4", _RDNA4_LEAF, "true"),
             ("gfx1200", "rocm7.2", _RDNA4_LEAF, "true"),
             ("gfx1200", "rocm6.1", _RDNA4_LEAF, "true"),
@@ -2493,7 +2488,7 @@ class TestGfx1102Rocm64Floor:
         (
             ("gfx1201", "rocm7.2", _RDNA4_LEAF),
             ("gfx1200", "rocm7.2", _RDNA4_LEAF),
-            # controls: a generic leaf at the 7.13 fix, and an arch without the kernel bug
+            # controls
             ("gfx1201", "rocm7.13", "rocm7.13"),
             ("gfx1100", "rocm7.2", "rocm7.2"),
         ),

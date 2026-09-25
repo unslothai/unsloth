@@ -6208,10 +6208,8 @@ case "$_torch_index_leaf" in
                 echo "  [WARN] (~/.bashrc, ~/.profile) as well, or the next terminal restores it." >&2
             fi
         fi
-        # RDNA 4 has the same null HIP _grouped_mm kernel below ROCm 7.13 (TheRock #5284), so
-        # generic rocm7.2-and-older wheels make the trainer swap in a Python fallback. AMD's
-        # gfx120X-all index serves the fixed 2.11+rocm7.13 build; install.ps1 already routes
-        # Windows there. The leaf is rewritten too, so the rocm6.4 floor below cannot undo it.
+        # RDNA 4 generic wheels below 7.13 have a null HIP _grouped_mm (TheRock #5284); use
+        # gfx120X-all. Leaf is rewritten so the rocm6.4 floor below cannot undo it.
         _rdna4_gfx=""
         if [ "$_gfx906_env" != "gfx906" ]; then
             case "$_runtime_gfx" in

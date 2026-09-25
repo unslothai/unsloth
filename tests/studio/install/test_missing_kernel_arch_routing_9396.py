@@ -231,8 +231,7 @@ def test_the_mirror_override_is_honoured():
 # ── the neighbours this must not disturb ─────────────────────────────────────
 
 
-# Not RDNA 4: its generic wheels below 7.13 carry the null _grouped_mm kernel, so it is
-# rerouted like Strix (test_rocm_support.py covers that route).
+# Not RDNA 4: rerouted below 7.13 (see test_rdna4_takes_the_amd_index_at_every_generic_tag).
 @pytest.mark.parametrize("gfx", ["gfx1100", "gfx1102", "gfx1030", "gfx1101"])
 def test_a_supported_arch_keeps_the_generic_index(gfx):
     calls = _run_install(gfx_devices = (gfx,))
@@ -1226,8 +1225,7 @@ def test_generic_kernel_support_is_keyed_by_the_tag_the_version_selects(rocm_ver
 @pytest.mark.parametrize("gfx", ["gfx1200", "gfx1201"])
 @pytest.mark.parametrize("rocm_version", [(6, 0), (6, 3), (6, 4), (7, 1)])
 def test_rdna4_takes_the_amd_index_at_every_generic_tag(gfx, rocm_version):
-    """RDNA 4 lacks kernels below rocm6.4 and a working _grouped_mm below 7.13, so every
-    generic tag goes to gfx120X-all."""
+    """RDNA 4 lacks a working _grouped_mm below 7.13."""
     calls = _run_install(gfx_devices = (gfx,), rocm_version = rocm_version)
     assert f"{_AMD}/gfx120X-all/" in calls, calls
 
