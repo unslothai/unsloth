@@ -577,10 +577,27 @@ def _make_cache_mountpoints(workdir: str, names: tuple[str, ...]) -> None:
                 pass
 
 
+def _untrusted_reason(path: str) -> "str | None":
+    """Why *path* or its directory could be replaced by a non-root user, or None."""
+    for target in (path, os.path.dirname(path)):
+        try:
+            info = os.stat(target)
+        except OSError as exc:
+            return f"{target} cannot be inspected: {exc}"
+        if info.st_uid != 0 or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            return f"{target} is not root-owned and writable only by root"
+    return None
+
+
 def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
-    bwrap = shutil.which("bwrap")
-    if bwrap is None:
+    found = shutil.which("bwrap")
+    if found is None:
         raise SandboxUnavailableError("bubblewrap (bwrap) is not installed on this host")
+    # It runs on the host, unconfined, before any isolation exists: a bwrap planted earlier on PATH would own Studio.
+    bwrap = os.path.realpath(found)
+    untrusted = _untrusted_reason(bwrap)
+    if untrusted is not None:
+        raise SandboxUnavailableError(f"refusing the bubblewrap on PATH: {untrusted}")
     if not plan.argv:
         raise SandboxUnavailableError("a sandboxed launch needs a command to run")
     workdir, workdir_limitations = _validate_workdir(plan.workdir)
