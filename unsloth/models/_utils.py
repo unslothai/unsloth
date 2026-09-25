@@ -4025,7 +4025,15 @@ def _is_guess(d):
 
 
 def _clear_guessed_accepts_loss_kwargs(model):
-    for m in _loss_kwargs_chain(model):
+    chain = list(_loss_kwargs_chain(model))
+    # Under PEFT the walk skips the causal head that get_base_model() returns (and transformers 5 reads).
+    try:
+        head = model.get_base_model() if hasattr(model, "get_base_model") else None
+    except Exception:
+        head = None
+    if head is not None and all(head is not m for m in chain):
+        chain.append(head)
+    for m in chain:
         d = getattr(m, "__dict__", {})
         if _is_guess(d):
             d.pop("accepts_loss_kwargs", None)
@@ -4072,11 +4080,6 @@ _CE_PARAMS = {
 }
 
 
-_TORCH_CE_OWNERS = frozenset(
-    ("nn", "torch.nn", "F", "functional", "nn.functional", "torch.nn.functional")
-)
-
-
 def _dotted_name(node):
     parts = []
     while isinstance(node, ast.Attribute):
@@ -4093,7 +4096,9 @@ def _is_const(node, allowed):
 
 
 def _ce_calls_all_mean(source, namespace = None):
-    all_mean, found = _scan_ce_calls(source, namespace)
+    all_mean, found = _scan_ce_calls(
+        source, _DEFAULT_CE_NAMESPACE if namespace is None else namespace
+    )
     # A mention in a comment or docstring is not a call.
     return all_mean and found
 
@@ -4102,6 +4107,31 @@ _TORCH_CE = {
     "CrossEntropyLoss": torch.nn.CrossEntropyLoss,
     "cross_entropy": torch.nn.functional.cross_entropy,
 }
+
+
+# The usual imports, for callers that have source but no module to resolve it in.
+_DEFAULT_CE_NAMESPACE = {
+    "torch": torch,
+    "nn": torch.nn,
+    "F": torch.nn.functional,
+    "functional": torch.nn.functional,
+    **_TORCH_CE,
+}
+
+
+def _resolve_ce_callee(func, namespace):
+    # Name of the PyTorch cross-entropy op this callee is bound to in namespace, else None.
+    dotted = _dotted_name(func)
+    if dotted is None or not namespace:
+        return None
+    head, *rest = dotted.split(".")
+    obj = namespace.get(head)
+    for attr in rest:
+        obj = getattr(obj, attr, None)
+    for name, target in _TORCH_CE.items():
+        if obj is target:
+            return name
+    return None
 
 
 def _scan_ce_calls(source, namespace = None):
@@ -4115,18 +4145,8 @@ def _scan_ce_calls(source, namespace = None):
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        func = node.func
-        if isinstance(func, ast.Attribute):
-            # Only the PyTorch spellings; a model's own helper named cross_entropy may reduce however it likes.
-            if _dotted_name(func.value) not in _TORCH_CE_OWNERS:
-                continue
-            name = func.attr
-        else:
-            name = getattr(func, "id", None)
-            # A bare name counts only if the forward's module binds it to the PyTorch op.
-            if namespace is not None and name in _TORCH_CE:
-                if namespace.get(name) is not _TORCH_CE[name]:
-                    continue
+        # Only callees the forward's module binds to the PyTorch op; a model's own helper may reduce however it likes.
+        name = _resolve_ce_callee(node.func, namespace)
         params = _CE_PARAMS.get(name)
         if params is None:
             continue
@@ -4192,7 +4212,7 @@ def _forward_ignores_num_items_in_batch(model):
     ]
     if any(sub.reduction != "mean" for sub in used):
         return None
-    namespace = getattr(getattr(forward, "__func__", forward), "__globals__", None)
+    namespace = getattr(getattr(forward, "__func__", forward), "__globals__", None) or {}
     all_mean, found = _scan_ce_calls(source, namespace)
     if not all_mean or not (found or used):
         return None

@@ -41,7 +41,8 @@ _NAMES = {
     "_ce_calls_all_mean",
     "_CE_PARAMS",
     "_is_const",
-    "_TORCH_CE_OWNERS",
+    "_DEFAULT_CE_NAMESPACE",
+    "_resolve_ce_callee",
     "_dotted_name",
     "_scan_ce_calls",
     "_GUESSED_LOSS_KWARGS",
@@ -556,3 +557,69 @@ def test_a_bare_name_bound_inside_forward_is_not_the_torch_op(tmp_path):
     model = mods.LocalHelperForCausalLM()
     ns["apply_accepts_loss_kwargs_fix"](model)
     assert not hasattr(model, "accepts_loss_kwargs")
+
+
+_OWN_F_MODEL = """
+import torch
+from torch import nn
+
+
+class _Helpers:
+    @staticmethod
+    def cross_entropy(logits, labels):
+        return torch.nn.functional.cross_entropy(logits, labels, reduction="sum")
+
+
+F = _Helpers()
+
+
+class OwnFForCausalLM(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.model = nn.Identity()
+
+    def forward(self, input_ids=None, labels=None, **kwargs):
+        logits = torch.zeros(1, 2)
+        return F.cross_entropy(logits, labels)
+"""
+
+
+def test_a_qualifier_bound_to_a_model_helper_is_not_the_torch_op(tmp_path):
+    ns = _load()
+    mods = _models(tmp_path, _OWN_F_MODEL, "own_f_for_ga_test")
+    model = mods.OwnFForCausalLM()
+    ns["apply_accepts_loss_kwargs_fix"](model)
+    assert not hasattr(model, "accepts_loss_kwargs")
+
+
+def test_a_guess_on_the_peft_causal_head_is_cleared_when_forward_changes(tmp_path):
+    peft = pytest.importorskip("peft")
+    ns = _load()
+    # base_model_prefix = "model", as in real checkpoints, so .base_model walks past the causal head.
+    source = _PRETRAINED_MODELS.replace(
+        "    config_class = RemoteMeanLossConfig\n",
+        '    config_class = RemoteMeanLossConfig\n    base_model_prefix = "model"\n',
+    ).replace(
+        "        self.proj = nn.Linear(4, 4)\n",
+        "        self.proj = nn.Linear(4, 4)\n        self.model = nn.Linear(4, 4)\n",
+    )
+    mods = _models(tmp_path, source, "remote_prefixed_for_ga_test")
+    inner = mods.RemoteMeanLossForCausalLM(mods.RemoteMeanLossConfig())
+    assert inner.base_model is not inner
+    ns["apply_accepts_loss_kwargs_fix"](inner)
+    assert inner.accepts_loss_kwargs is False
+    wrapped = peft.get_peft_model(
+        inner, peft.LoraConfig(r = 2, target_modules = ["proj"], task_type = "CAUSAL_LM")
+    )
+
+    def consuming_forward(
+        input_ids = None,
+        labels = None,
+        num_items_in_batch = None,
+        **kwargs,
+    ):
+        return None
+
+    wrapped.get_base_model().forward = consuming_forward
+    ns["apply_accepts_loss_kwargs_fix"](wrapped)
+    assert "accepts_loss_kwargs" not in wrapped.get_base_model().__dict__
