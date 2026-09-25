@@ -214,8 +214,7 @@ def _fix_gemma4_base_bos_token(tokenizer, config = None):
     return tokenizer
 
 
-# transformers v5 gives byte-level BPE repos declaring LlamaTokenizerFast a Metaspace pre_tokenizer/decoder,
-# dropping every space (e.g. Mistral-Large-3). Upstream: huggingface/transformers#45488, #48206.
+# v5 loads byte-level BPE repos declaring LlamaTokenizerFast with Metaspace, dropping spaces (transformers#45488, #48206).
 _BACKEND_ROUNDTRIP_PROBE = "Hello world, this is a test."
 _BACKEND_IDS_PROBE = "Hello world! def f(x): return x**2  # code\n你好 éè Αβγ 12345.678"
 
@@ -278,7 +277,6 @@ def _repair_one_tokenizer_backend(
     ref_ok, _ = _backend_roundtrip(reference, _BACKEND_ROUNDTRIP_PROBE)
     if not ref_ok:
         return False
-    # Only swap when the base vocab is identical, so no token id can move.
     try:
         if backend.get_vocab(with_added_tokens = False) != reference.get_vocab(
             with_added_tokens = False
@@ -331,7 +329,7 @@ def _apply_post_load_tokenizer_fixes(
     cache_dir = None,
     revision = None,
 ):
-    # Runs even with fix_tokenizer = False: a tokenizer that drops spaces is never what the caller wants.
+    # Runs even with fix_tokenizer = False: a tokenizer dropping spaces is never wanted.
     tokenizer = _repair_tokenizer_backend_from_json(
         tokenizer, cache_dir = cache_dir, revision = revision
     )
