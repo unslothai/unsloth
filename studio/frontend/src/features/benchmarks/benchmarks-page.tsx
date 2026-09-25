@@ -433,8 +433,21 @@ export function BenchmarksPage(): ReactElement {
   // Offload and context rows are scaled to the picked model; block Run until its header
   // resolves so the sweep can't start on the resident model's shape or window.
   const rowsPending = pickedPending && (offloadSweep || contextSweep);
+  // A picked model whose header resolved without a context window would otherwise fall back
+  // to the resident model's window (maxContext above), building the context rows for the
+  // wrong model. Block Run and offer a retry instead.
+  const pickedContextMissing =
+    Boolean(config.tuneModel) &&
+    contextSweep &&
+    !pickedPending &&
+    !shapeError &&
+    pickedContext === null;
   const rowsError =
-    shapeError && (offloadSweep || contextSweep) ? shapeError : null;
+    shapeError && (offloadSweep || contextSweep)
+      ? shapeError
+      : pickedContextMissing
+        ? "Couldn't read this model's context window. Retry, or pick another model."
+        : null;
   const preview = (
     <RunPreviewCard
       status={status}

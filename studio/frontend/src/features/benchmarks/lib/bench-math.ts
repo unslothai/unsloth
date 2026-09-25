@@ -769,8 +769,9 @@ export function aggregate(
   for (const [label, list] of byLabel) {
     list.sort((a, b) => a.rep - b.rep);
     const server = list.map((r) => r.tps).filter(finite);
-    const client = list.map((r) => r.clientTps).filter(finite);
-    const rates = server.length ? server : client;
+    // Fall back to the client rate per completion, not per row, so one run that came back
+    // without server timings doesn't drop out of the mean, range and sample count.
+    const rates = list.map((r) => r.tps ?? r.clientTps).filter(finite);
     if (!rates.length) continue;
     const drafts = list.reduce((a, r) => a + (r.draftN ?? 0), 0);
     const accepted = list.reduce((a, r) => a + (r.draftAccepted ?? 0), 0);
