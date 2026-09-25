@@ -822,6 +822,28 @@ def test_explorer_gets_the_documented_select_command(tmp_path, monkeypatch):
     assert calls == [f'explorer /select,"{target}"']
 
 
+def test_wsl_hands_explorer_the_select_switch_and_path_apart(tmp_path, monkeypatch):
+    import subprocess
+    from types import SimpleNamespace
+
+    import utils.paths.path_utils as path_utils
+
+    target = tmp_path / "a b" / "c.txt"
+    target.parent.mkdir()
+    target.write_text("x")
+    calls = []
+
+    def fake_run(command, *args, **kwargs):
+        return SimpleNamespace(stdout = "C:\\Users\\me\\a b\\c.txt\n")
+
+    monkeypatch.setattr(path_utils, "_IS_WSL", True)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", lambda command, *args, **kwargs: calls.append(command))
+    assert path_utils._wsl_reveal_in_explorer(target, is_file = True)
+    assert calls == [["explorer.exe", "/select,", "C:\\Users\\me\\a b\\c.txt"]]
+    assert subprocess.list2cmdline(calls[0]) == 'explorer.exe /select, "C:\\Users\\me\\a b\\c.txt"'
+
+
 @pytest.mark.parametrize(
     "path, root, inside",
     [
