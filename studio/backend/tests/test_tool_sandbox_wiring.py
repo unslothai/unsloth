@@ -836,3 +836,24 @@ def test_an_approval_does_not_lift_the_jail_for_a_call_that_needs_no_host_path(m
     monkeypatch.setattr(os_sandbox, "prepare_tool_launch", prepare)
     assert "3" in tools._python_exec("print(1 + 2)", None, 60, _SESSION, host_access_approved = True)
     assert len(planned) == 1
+
+
+@pytest.mark.parametrize("executor", ["python", "terminal"])
+def test_a_stop_during_the_sandbox_probe_reads_as_a_cancel(monkeypatch, executor):
+    # The Windows DACL probe takes seconds; a stop that lands in it is not a sandbox error.
+    import threading
+
+    cancel = threading.Event()
+
+    def probe_then_stop(**_kwargs):
+        cancel.set()
+        return os_sandbox.SandboxCapability(
+            backend = "test", available = True, reason = "ok", environment = sys.platform
+        )
+
+    monkeypatch.setattr(os_sandbox, "capability_snapshot", probe_then_stop)
+    if executor == "python":
+        out = tools._python_exec("print('never')", cancel, 60, _SESSION)
+    else:
+        out = tools._bash_exec("echo never", cancel, 60, _SESSION)
+    assert out == "Execution cancelled."

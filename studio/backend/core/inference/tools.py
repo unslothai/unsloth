@@ -19749,6 +19749,9 @@ def _python_exec(
         return result
 
     except os_sandbox.SandboxUnavailableError as e:
+        if cancel_event is not None and cancel_event.is_set():
+            # A stop during the (on Windows DACL, multi-second) probe is a cancel, not a sandbox error.
+            return "Execution cancelled."
         return _sandbox_refusal(e)
     except Exception as e:
         # An exception message carries whatever the failure put in it, so it is capped like the result would have
@@ -19956,6 +19959,9 @@ def _bash_exec(
         return result
 
     except os_sandbox.SandboxUnavailableError as e:
+        if cancel_event is not None and cancel_event.is_set():
+            # A stop during the (on Windows DACL, multi-second) probe is a cancel, not a sandbox error.
+            return "Execution cancelled."
         return _sandbox_refusal(e)
     except Exception as e:
         # An exception message carries whatever the failure put in it, so it is capped like the result would have
