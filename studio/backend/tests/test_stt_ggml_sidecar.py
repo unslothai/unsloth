@@ -562,7 +562,6 @@ def _make_cuda_bundle(
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "Linux loader path only")
 def test_child_env_appends_vendored_cuda_runtime(monkeypatch, tmp_path):
-    # Same gap as llama-server: a bundle whose only libcudart is in a private dir.
     import utils.prebuilt.runtime_libs as rl
     from utils.whisper_cpp_freshness import reset_caches
 
@@ -577,8 +576,6 @@ def test_child_env_appends_vendored_cuda_runtime(monkeypatch, tmp_path):
     reset_caches()
     monkeypatch.setattr(rl, "python_runtime_dirs", lambda: [str(wheel_dir)])
     monkeypatch.setattr(rl, "_VENDORED_CUDA_ROOTS", ((tmp_path / "ollama", "cuda_v{major}"),))
-    # The host's loader may already carry this CUDA major, which correctly
-    # withholds the dir; pin the answer so the append itself is under test.
     monkeypatch.setattr(rl, "_loader_already_provides_runtime", lambda _major: False)
     env = ggml_module._whisper_server_child_env(str(bindir / _SERVER_NAME))
     reset_caches()
@@ -591,7 +588,6 @@ def test_child_env_appends_vendored_cuda_runtime(monkeypatch, tmp_path):
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "Linux loader path only")
 def test_child_env_keeps_vendored_runtime_off_a_resolvable_runtime(monkeypatch, tmp_path):
-    # A runtime the loader already finds is never displaced by the private one.
     import utils.prebuilt.runtime_libs as rl
     from utils.whisper_cpp_freshness import reset_caches
 
@@ -613,8 +609,6 @@ def test_child_env_keeps_vendored_runtime_off_a_resolvable_runtime(monkeypatch, 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "Linux loader path only")
 def test_slim_child_env_reads_vendored_cuda_runtime_from_paired_llama(monkeypatch, tmp_path):
-    # A slim bundle hardlinks the CUDA module from llama.cpp, so its own marker can
-    # carry linked_from without a runtime_line; the paired marker has the line.
     import utils.prebuilt.runtime_libs as rl
     from utils.llama_cpp_freshness import reset_caches as reset_llama_caches
     from utils.whisper_cpp_freshness import reset_caches as reset_whisper_caches
@@ -644,7 +638,6 @@ def test_slim_child_env_reads_vendored_cuda_runtime_from_paired_llama(monkeypatc
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "Linux loader path only")
 def test_child_env_omits_vendored_cuda_runtime_for_cpu_bundle(monkeypatch, tmp_path):
-    # No libggml-cuda.so beside the binary -> nothing needs a CUDA runtime.
     import utils.prebuilt.runtime_libs as rl
     from utils.whisper_cpp_freshness import reset_caches
 

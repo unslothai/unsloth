@@ -15432,8 +15432,7 @@ class LlamaCppBackend:
                 if os.path.isdir(cuda_lib):
                     lib_dirs.append(cuda_lib)
 
-            # Last, deliberately: the build's CUDA major may have been qualified
-            # by Torch, so this only rescues hosts with no other copy.
+            # Vendored dirs go last: rescue only, never displace a runtime already found.
             from utils.llama_cpp_freshness import read_install_marker
             from utils.prebuilt.runtime_libs import vendored_cuda_runtime_dirs
 

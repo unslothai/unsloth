@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CUDA runtime dirs the dynamic linker does not find on its own, for the managed
-servers' child envs: Python wheels, and dirs another application ships privately.
+"""CUDA runtime dirs the loader does not find on its own (Python wheels, privately vendored dirs).
 
 Kept in sync with install_llama_prebuilt.py's python_runtime_dirs and
 prebuilt_core.py's linux_runtime_dirs_for_required_libraries; the backend cannot
@@ -44,24 +43,11 @@ def dedupe_existing_dirs(paths: Iterable[str | Path]) -> list[str]:
     return unique
 
 
-# Debian, Ubuntu and their derivatives put every library in an architecture
-# subdirectory and bake that directory into ld.so's own search path: glibc prints
-# /lib/x86_64-linux-gnu and /usr/lib/x86_64-linux-gnu ahead of /lib and /usr/lib as
-# its first system dirs, with no ldconfig involved. The glob is used rather than
-# the machine name because that is what these layouts are actually named, on every
-# architecture, and a layout that is not installed cannot hold a runtime anyway.
+# Debian multiarch dirs are built into ld.so's default search path, no ldconfig needed.
 _MULTIARCH_LIB_GLOBS: tuple[str, ...] = ("/lib/*-linux-gnu*", "/usr/lib/*-linux-gnu*")
 
 
 def _multiarch_lib_dirs() -> list[str]:
-    """The arch-specific dirs this host's loader searches without being asked.
-
-    Counted alongside the generic defaults below, because prebuilt_core.py's
-    linux_runtime_dirs_for_required_libraries already counts them when it picks a
-    runtime line: a system CUDA runtime in one of them is not absent just because
-    no ``ldconfig -p`` can be read, and calling it absent would add the vendored
-    dir over the top of the very runtime the loader probe exists to protect.
-    """
     found: list[str] = []
     for pattern in _MULTIARCH_LIB_GLOBS:
         try:
@@ -76,13 +62,12 @@ _LOADER_DEFAULT_LIB_DIRS: tuple[str, ...] = (
     "/lib64",
     "/usr/lib",
     "/usr/lib64",
-    # ld.so searches the architecture-specific dirs below ahead of these generic dirs.
     *_multiarch_lib_dirs(),
 )
 
 
 def _ld_cache_entries() -> tuple[tuple[str, str, str], ...] | None:
-    """Cached (soname, ABI, path) entries, or None when ldconfig cannot be read."""
+    """(soname, ABI, path) entries, or None when ldconfig cannot be read."""
     for candidate in ("ldconfig", "/sbin/ldconfig", "/usr/sbin/ldconfig"):
         exe = shutil.which(candidate) if "/" not in candidate else candidate
         if not exe or not os.path.exists(exe):
@@ -112,7 +97,7 @@ def _ld_cache_entries() -> tuple[tuple[str, str, str], ...] | None:
 
 
 def _loader_resolves_sonames(sonames: tuple[str, ...]) -> bool:
-    """Ask the dynamic loader in a child process, without loading CUDA into Studio."""
+    """Probe in a child process so CUDA never loads into Studio."""
     script = "import ctypes, sys; [ctypes.CDLL(name) for name in sys.argv[1:]]"
     try:
         result = subprocess.run(
@@ -140,11 +125,7 @@ _NATIVE_LOADER_ABIS: dict[str, frozenset[str]] = {
 
 
 def _loader_already_provides_runtime(major: str) -> bool:
-    """Whether the loader finds this CUDA major's pair without the vendored dir.
-
-    LD_LIBRARY_PATH outranks both the cache and default dirs, so never add the
-    vendored pair if either source already provides both native-ABI libraries.
-    """
+    """LD_LIBRARY_PATH outranks ld.so.cache and default dirs: never shadow a native pair they provide."""
     sonames = (f"libcudart.so.{major}", f"libcublas.so.{major}")
     cached = _ld_cache_entries()
     if cached is None and _loader_resolves_sonames(sonames):
@@ -177,13 +158,10 @@ _VENDORED_CUDA_ROOTS: tuple[tuple[Path, str], ...] = (
 def vendored_cuda_runtime_dirs(
     marker: object, *, roots: Optional[Iterable[tuple[Path, str]]] = None
 ) -> list[str]:
-    """CUDA runtime dirs an installed build selects from a private root.
+    """Vendored dirs holding libcudart + libcublas for the marker's ``runtime_line`` major.
 
-    ``marker`` is the build's install marker; its ``runtime_line`` ("cuda13")
-    picks the CUDA major. A dir qualifies only with both libcudart and libcublas
-    for that exact major, and is yielded only while the loader cannot already
-    find that pair. Callers place the result last: it rescues hosts with no
-    other copy of the runtime, and must never displace the one the build picked.
+    Empty when the loader already finds that pair. Callers append the result LAST
+    so it never displaces the runtime the build picked.
     """
     if not sys.platform.startswith("linux"):
         return []

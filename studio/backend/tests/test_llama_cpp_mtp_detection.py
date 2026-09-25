@@ -892,16 +892,12 @@ def test_llama_server_env_appends_vendored_cuda_runtime(tmp_path, monkeypatch):
 
     def _loader_dirs(roots: tuple[tuple[Path, str], ...]) -> list[str]:
         monkeypatch.setattr(runtime_libs, "_VENDORED_CUDA_ROOTS", roots)
-        # The host's loader may already carry this CUDA major, which correctly
-        # withholds the dir; pin the answer so the append itself is under test.
         monkeypatch.setattr(runtime_libs, "_loader_already_provides_runtime", lambda _major: False)
         reset_caches()
         env = LlamaCppBackend._llama_server_env_for_binary(str(binary))
         reset_caches()
         return env["LD_LIBRARY_PATH"].split(os.pathsep)
 
-    # Host-independent: both runs see whatever /usr/local/cuda* this host has, and
-    # differ only in whether a runtime the marker selects is on disk to be added.
     absent = _loader_dirs(((tmp_path / "nonexistent", "cuda_v{major}"),))
     present = _loader_dirs(((tmp_path / "ollama", "cuda_v{major}"),))
 

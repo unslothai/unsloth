@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for locating a CUDA runtime another application ships privately.
-
-The installer counts those dirs when it picks a runtime line, so the launchers
-must put the matching one back on LD_LIBRARY_PATH. Pins the match rule (exact
-CUDA major, complete runtime) and the refusals.
-"""
+"""Tests for rescuing a privately vendored CUDA runtime onto LD_LIBRARY_PATH."""
 
 from __future__ import annotations
 
@@ -21,8 +16,6 @@ from utils.prebuilt.runtime_libs import vendored_cuda_runtime_dirs
 
 import utils.prebuilt.runtime_libs as runtime_libs
 
-# The list as this host builds it, read before the autouse fixture below masks it:
-# the multiarch arms assert on the shipped value, not on a pinned one.
 _REAL_LOADER_DEFAULT_LIB_DIRS = runtime_libs._LOADER_DEFAULT_LIB_DIRS
 _REAL_LD_CACHE_ENTRIES = runtime_libs._ld_cache_entries
 _REAL_LOADER_RESOLVES = runtime_libs._loader_resolves_sonames
@@ -62,8 +55,6 @@ def _roots(tmp_path):
 
 @pytest.fixture(autouse = True)
 def _host_loader_unknown(monkeypatch):
-    # The match rule is what these pin, and the loader probe is host state; the
-    # arms that need it pin their own answer.
     monkeypatch.setattr(runtime_libs, "_ld_cache_entries", lambda: None)
     monkeypatch.setattr(runtime_libs, "_LOADER_DEFAULT_LIB_DIRS", ())
     monkeypatch.setattr(runtime_libs, "_loader_resolves_sonames", lambda _sonames: False)
@@ -160,8 +151,6 @@ def test_missing_root_is_not_an_error(tmp_path):
 
 
 def test_withholds_the_runtime_when_the_loader_already_finds_it(tmp_path, monkeypatch):
-    # The dir would join LD_LIBRARY_PATH, which outranks the loader's cache and
-    # its defaults, so a runtime the loader resolves must not be displaced.
     import utils.prebuilt.runtime_libs as runtime_libs
 
     runtime_dir = _make_runtime(tmp_path, "cuda_v13")
@@ -180,7 +169,6 @@ def test_withholds_the_runtime_when_the_loader_already_finds_it(tmp_path, monkey
         ),
     )
     assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = _roots(tmp_path)) == []
-    # Only the pair counts: the loader cannot link the build without both, so
     monkeypatch.setattr(
         runtime_libs,
         "_ld_cache_entries",
@@ -192,9 +180,6 @@ def test_withholds_the_runtime_when_the_loader_already_finds_it(tmp_path, monkey
 
 
 def test_ignores_cache_entries_with_missing_targets(tmp_path, monkeypatch):
-    # ldconfig can retain SONAME/ABI records after a library target is removed.
-    # That stale pair cannot satisfy the dynamic loader, so the usable vendored
-    # pair must still be added.
     import utils.prebuilt.runtime_libs as runtime_libs
 
     runtime_dir = _make_runtime(tmp_path, "cuda_v13")
@@ -246,7 +231,6 @@ def test_unreadable_loader_default_files_do_not_block_the_vendored_rescue(tmp_pa
         library.write_bytes(b"inaccessible regular file")
         library.chmod(0)
 
-    # Exercise actual filesystem permissions rather than mocking access checks.
     assert all(
         library.is_file() and not os.access(library, os.R_OK) for library in system_libraries
     )
@@ -337,8 +321,6 @@ def test_recognizes_aarch64_ldconfig_abi_spelling_case_insensitively(tmp_path, m
 
 
 def test_an_unreadable_cache_still_rescues_from_the_default_dirs(tmp_path, monkeypatch):
-    # No ldconfig is ignorance, not absence: the default dirs answer, and the
-    # dir is added when they have nothing either.
     import utils.prebuilt.runtime_libs as runtime_libs
 
     runtime_dir = _make_runtime(tmp_path, "cuda_v13")
@@ -426,10 +408,6 @@ def test_uses_the_dynamic_loader_cache_without_ldconfig(monkeypatch):
 
 
 def test_the_multiarch_dirs_are_discovered_not_assumed(tmp_path, monkeypatch):
-    # The dirs come from what is installed, so a layout nobody wrote down (a
-    # multilib host, riscv64, a container with only one of the pair) is still
-    # covered. Pinned against a fixed layout here, where the real one would make
-    # the test say nothing on a host that has neither.
     import utils.prebuilt.runtime_libs as runtime_libs
 
     for name in ("lib/x86_64-linux-gnu", "usr/lib/x86_64-linux-gnu", "usr/lib/riscv64-linux-gnu"):
@@ -449,10 +427,6 @@ def test_the_multiarch_dirs_are_discovered_not_assumed(tmp_path, monkeypatch):
 
 
 def test_the_default_dirs_cover_the_hosts_multiarch_paths():
-    # The real list, not a pinned one: the finding is about an actual Debian/Ubuntu
-    # host, where a distro CUDA runtime sits in the arch-specific dir and no
-    # ldconfig can be read. The triple comes from the interpreter rather than from
-    # the module, so this cannot pass by agreeing with the implementation.
     triple = sysconfig.get_config_var("MULTIARCH")
     if not triple:
         pytest.skip("this interpreter records no MULTIARCH triple")
@@ -472,8 +446,6 @@ def test_usr_local_is_not_assumed_without_a_readable_cache(tmp_path, monkeypatch
     runtime_dir = _make_runtime(tmp_path, "cuda_v13")
     monkeypatch.setattr(runtime_libs, "_ld_cache_entries", lambda: None)
 
-    # /usr/local is usually admitted through ld.so.conf/cache, not glibc's
-    # built-in defaults. Without a readable cache it must not mask the rescue.
     assert not any(
         directory.rstrip("/") in {"/usr/local/lib", "/usr/local/lib64"}
         for directory in _REAL_LOADER_DEFAULT_LIB_DIRS

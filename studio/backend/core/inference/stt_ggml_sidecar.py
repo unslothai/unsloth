@@ -360,7 +360,6 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
     env = scrub_env(os.environ)
     isolate_home(env, str(_managed_whisper_cpp_dir() / ".child_home"))
     bin_dir = str(Path(binary).parent)
-
     # A CUDA bundle needs the CUDA-from-PyTorch wheel dirs so libcudart/libcublas resolve at launch when they live only
     # in site-packages/nvidia/*/lib. Placed after bin_dir so co-located libs still win; empty for other bundles.
     cuda_runtime_dirs: list[str] = []
@@ -370,7 +369,6 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
         for pattern in ("libggml-cuda.so*", "ggml-cuda*.dll")
         for path in bundle_dir.glob(pattern)
     )
-    # Same rescue as the llama-server launcher; appended last (see the helper).
     vendored_cuda_dirs: list[str] = []
     if has_cuda_module:
         try:
@@ -383,8 +381,7 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
             from utils.prebuilt.runtime_libs import vendored_cuda_runtime_dirs
 
             marker = _whisper_install_marker(binary)
-            # Slim bundles hardlink the CUDA module from their paired llama.cpp
-            # install, whose marker records the runtime that selected it.
+            # Slim bundles hardlink CUDA from their paired llama.cpp install; its marker holds the runtime.
             linked_from = marker.get("linked_from") if isinstance(marker, dict) else None
             paired_marker = (
                 read_llama_install_marker(linked_from)
