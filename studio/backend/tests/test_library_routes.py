@@ -30,6 +30,7 @@ from .test_rag_native_drop_upload import SECRET, _sign  # noqa: E402
 
 _CLIP = bytes(range(100))
 _SANDBOX_ID = "sandbox:t-lib:report.txt"
+_SANDBOX_A = "sandbox:t-lib:a.txt"
 
 
 def _app(subject) -> TestClient:
@@ -343,6 +344,18 @@ def test_a_gallery_file_that_cannot_be_deleted_keeps_its_name_star_and_folder(cl
     assert (item["name"], item["favorite"]) == ("Renamed", True)
 
 
+def test_a_sandbox_file_that_is_gone_takes_no_rename_a_later_file_would_inherit(
+    client, signed_in, monkeypatch
+):
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    _directory, path = _sandbox_chat("a.txt", b"first")
+    os.unlink(path)
+    response = client.patch("/api/library/items", json = {"id": _SANDBOX_A, "name": "Old"})
+    assert response.status_code == 404
+    _sandbox_chat("a.txt", b"another file at the same path")
+    assert _items(client)[0][_SANDBOX_A]["name"] == "a.txt"
+
+
 def test_a_sandbox_file_of_a_chat_whose_id_has_a_colon_is_reachable(client, signed_in, monkeypatch):
     monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
     _sandbox_chat("a.txt", b"mine", thread = "imported:1")
@@ -485,6 +498,8 @@ def test_the_slow_sources_are_remembered_briefly_and_forgotten_on_a_write(client
     monkeypatch.setattr(library, "_sandbox_items", walked)
     # A failing source is skipped rather than emptying the Library.
     monkeypatch.setattr(library, "_SOURCES", (library._remembered("_sandbox_items", 60), broken))
+    # Listed only, never written: the star is kept for the file it would find.
+    monkeypatch.setattr(library, "fingerprint", lambda _item_id: "1:1")
     _patch(client, id = "sandbox:t:a.txt", favorite = True)
     for _ in range(2):
         assert _items(client)[0]["sandbox:t:a.txt"]["favorite"] is True

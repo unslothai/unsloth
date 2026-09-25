@@ -70,18 +70,14 @@ test("a sign-out mid-handoff stops it, and keeps nothing for the next account", 
   assert.equal(useLibraryChatHandoffStore.getState().held, null);
 });
 
-test("an upload's grants from before a sign-in are not sent under it", async () => {
-  let epoch = 1;
-  let requests = 0;
-  const { uploadLibraryFiles } = loadWithStubs<{
+function loadApi(session: { epoch: number }, authFetch: (url: string, init?: RequestInit) => unknown) {
+  return loadWithStubs<{
     uploadLibraryFiles: (batch: object, folderId: string | null) => Promise<string[]>;
+    updateLibraryItem: (id: string, patch: { name?: string }) => Promise<void>;
   }>(new URL("../src/features/library/api.ts", import.meta.url), {
     "@/features/auth": {
-      authFetch: async () => {
-        requests += 1;
-        return new Response(JSON.stringify({ ids: ["upload:x"] }));
-      },
-      getAuthSessionEpoch: () => epoch,
+      authFetch,
+      getAuthSessionEpoch: () => session.epoch,
       getAuthToken: () => null,
     },
     "@/i18n": { translate: (key: string) => key },
@@ -90,16 +86,45 @@ test("an upload's grants from before a sign-in are not sent under it", async () 
     "./file-name": {},
     "./note-text": {},
   });
-  const batch = { nativePathLeases: ["lease"], sessionEpoch: epoch };
-  epoch += 1;
+}
+
+test("an upload's grants from before a sign-in are not sent under it", async () => {
+  const session = { epoch: 1 };
+  let requests = 0;
+  const { uploadLibraryFiles } = loadApi(session, async () => {
+    requests += 1;
+    return new Response(JSON.stringify({ ids: ["upload:x"] }));
+  });
+  const batch = { nativePathLeases: ["lease"], sessionEpoch: session.epoch };
+  session.epoch += 1;
   await assert.rejects(uploadLibraryFiles(batch, null), /signedOutBeforeUpload/);
   assert.equal(requests, 0);
-  assert.deepEqual(await uploadLibraryFiles({ ...batch, sessionEpoch: epoch }, null), ["upload:x"]);
+  const now = { ...batch, sessionEpoch: session.epoch };
+  assert.deepEqual(await uploadLibraryFiles(now, null), ["upload:x"]);
+});
+
+test("the next account's edit does not wait behind one the account that left never finished", { timeout: 2000 }, async () => {
+  const session = { epoch: 1 };
+  const sent: string[] = [];
+  const { updateLibraryItem } = loadApi(session, (_url, init) => {
+    const { name } = JSON.parse(String(init?.body)) as { name: string };
+    sent.push(name);
+    return name === "A's" ? new Promise(() => {}) : Promise.resolve(new Response("{}"));
+  });
+  void updateLibraryItem("attachment:m:a", { name: "A's" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  session.epoch += 1;
+  await updateLibraryItem("attachment:m:a", { name: "B's" });
+  assert.deepEqual(sent, ["A's", "B's"]);
 });
 
 type Item = { id: string; name: string; favorite: boolean; folderId: string | null };
 
-function loadStore(api: Record<string, unknown>, emitted: unknown[] = []) {
+function loadStore(
+  api: Record<string, unknown>,
+  emitted: unknown[] = [],
+  session: { epoch: number } = { epoch: 0 },
+) {
   return loadWithStubs<{
     useLibraryStore: zustand.UseBoundStore<
       zustand.StoreApi<{
@@ -112,7 +137,10 @@ function loadStore(api: Record<string, unknown>, emitted: unknown[] = []) {
   }>(new URL("../src/features/library/store.ts", import.meta.url), {
     zustand,
     "zustand/middleware": zustandMiddleware,
-    "@/features/auth": { AUTH_SESSION_CLEARED_EVENT: SIGNED_OUT, getAuthSessionEpoch: () => 0 },
+    "@/features/auth": {
+      AUTH_SESSION_CLEARED_EVENT: SIGNED_OUT,
+      getAuthSessionEpoch: () => session.epoch,
+    },
     "@/features/chat": {
       emitChatAttachmentDeleted: (event: unknown) => emitted.push(event),
     },
@@ -239,6 +267,24 @@ function loadDownloads(
     "./start-chat": {},
   }).downloadLibraryItems;
 }
+
+test("an attachment deleted as another account signs in is not dropped from its chats", async () => {
+  const emitted: unknown[] = [];
+  const session = { epoch: 1 };
+  const store = loadStore(
+    {
+      getLibrary: async () => ({ items: [item("attachment:m:a")], folders: [] }),
+      deleteLibraryItem: async () => {
+        session.epoch += 1;
+      },
+    },
+    emitted,
+    session,
+  );
+  await store.getState().refresh();
+  await store.getState().removeItem("attachment:m:a");
+  assert.deepEqual(emitted, []);
+});
 
 test("a browser download with a file of unknown size goes one by one, never as a zip", async () => {
   const saved: File[] = [];
