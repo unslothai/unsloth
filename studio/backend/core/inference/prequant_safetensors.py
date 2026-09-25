@@ -321,7 +321,13 @@ def _header_without_inert_tensor_field(
         module_fqn, weight_name = key.rsplit(".", 1)
         flat_key = f"{module_fqn}._{weight_name}_{name}"
         tensor = tensors.get(flat_key)
-        if tensor is not None and bool(torch.any(tensor != 0)):
+        if tensor is None:
+            # Absent is not all-zero: the value it held is unknown, so the file is incomplete.
+            raise ValueError(
+                f"{path} lists {name!r} for {key} but has no {flat_key!r} tensor; the checkpoint "
+                "is incomplete or was edited"
+            )
+        if bool(torch.any(tensor != 0)):
             raise ValueError(
                 f"{path} records a non-zero {name!r} for {key}, which this torchao "
                 f"({_torchao_version() or 'unknown'}) cannot construct. Upgrade torchao to read "

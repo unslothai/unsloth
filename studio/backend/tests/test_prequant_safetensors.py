@@ -570,6 +570,27 @@ def test_a_non_zero_tensor_field_is_refused_rather_than_dropped():
         )
 
 
+def test_a_missing_tensor_field_is_refused_rather_than_read_as_zero():
+    """One weight carries its all-zero ``zero_point`` (so 0.16 asks for the field to go) while
+    another lists one but its tensor is gone: that one's value is unknown, not zero."""
+    torch = pytest.importorskip("torch")
+
+    def _unflatten(tensors, header):
+        raise ValueError("unexpected keyword argument 'zero_point'")
+
+    names = json.dumps({"_data": {}, "_tensor_data_names": ["zero_point", "qdata", "scale"]})
+    tensors = {
+        "a.w._weight_zero_point": torch.zeros(2, 1, dtype = torch.int8),
+        "b.w._weight_qdata": torch.zeros(2, 4, dtype = torch.int8),
+        "b.w._weight_scale": torch.ones(2, 1),
+    }
+    header = {"a.w.weight": names, "b.w.weight": names}
+    with pytest.raises(ValueError, match = "b.w._weight_zero_point"):
+        ps._header_without_unconstructible_fields(
+            _unflatten, tensors, header, path = "artifact.safetensors"
+        )
+
+
 def test_torchao_older_than_the_floor_is_not_safetensors_support(monkeypatch):
     """torchao 0.14 has the module at the same path but no Int8Tensor and another layout: planning
     must not count on a safetensors artifact it will fail to read."""
