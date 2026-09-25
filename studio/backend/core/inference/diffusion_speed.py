@@ -701,11 +701,7 @@ def dynamo_graph_count() -> int:
 
 
 def fresh_compile_count() -> int:
-    """Graphs inductor compiled from scratch in this process: FX graph cache misses (0 when unavailable).
-
-    A render that grows it made artifacts no compile-cache bundle holds yet. ``dynamo_graph_count`` also grows when a
-    restarted process re-traces a graph the cache then serves, so keying the bundle's dirty bit on it rewrote an
-    unchanged bundle on every warm start of an automatic-dynamic load."""
+    """FX graph cache misses. Not ``dynamo_graph_count``: it also grows on cache-served retraces, rewriting bundles."""
     try:
         from torch._dynamo.utils import counters
         return int(counters["inductor"]["fxgraph_cache_miss"])

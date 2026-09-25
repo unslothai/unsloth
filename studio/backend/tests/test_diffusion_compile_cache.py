@@ -1196,7 +1196,6 @@ def test_max_cache_bytes_env(monkeypatch):
     monkeypatch.setenv(cc._ENV_MAX_GB, "not-a-number")
     assert cc.max_cache_bytes() == int(cc._DEFAULT_MAX_GB * (1 << 30))
     for raw in ("nan", "inf", "-inf"):
-        # float() accepts these; none of them may silently switch the bound off or make it infinite.
         monkeypatch.setenv(cc._ENV_MAX_GB, raw)
         assert cc.max_cache_bytes() == int(cc._DEFAULT_MAX_GB * (1 << 30))
 
@@ -1230,7 +1229,6 @@ def test_evict_spares_live_recent_and_foreign_dirs(tmp_path):
     finally:
         cc._unregister_live(live)
     assert live.exists() and recent.exists() and foreign.exists()
-    # Once the load that held it restores, the old key is fair game.
     assert cc.evict(root = tmp_path, max_bytes = 1) == ["a" * 32]
     assert foreign.exists()
 
@@ -1242,7 +1240,7 @@ def test_save_evicts_other_keys_but_never_its_own(monkeypatch, tmp_path, fake_me
     stale = _key_dir(tmp_path, "d" * 32, 4096, age_s = 30 * 86400)
     monkeypatch.setenv(
         cc._ENV_MAX_GB, str(1024 / (1 << 30))
-    )  # 1 KiB: everything but the live key must go
+    )
     ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     try:
         assert cc.save(ctx) is True
@@ -1279,8 +1277,6 @@ def test_removed_key_reads_as_a_miss_not_a_broken_pair(monkeypatch, tmp_path, fa
 
 
 def test_fresh_compile_count_ignores_a_retrace_the_cache_serves():
-    """A restarted process re-traces every graph (dynamo's count grows) while inductor serves it from the cache; only
-    an FX graph cache miss is new work a compile-cache bundle lacks."""
     pytest.importorskip("torch")
     from torch._dynamo.utils import counters
 
@@ -1301,7 +1297,6 @@ def test_fresh_compile_count_ignores_a_retrace_the_cache_serves():
 
 
 def test_a_render_marks_its_key_used_before_it_compiles(monkeypatch, tmp_path):
-    """Another process's eviction must not take a key whose render is compiling into it right now."""
     import os
     import time
 
@@ -1320,7 +1315,7 @@ def test_a_render_marks_its_key_used_before_it_compiles(monkeypatch, tmp_path):
     assert time.time() - os.stat(d / cc._LAST_USED_NAME).st_mtime < 60
     assert cc.evict(root = tmp_path, max_bytes = 1) == []
     stamp = os.stat(d / cc._LAST_USED_NAME).st_mtime
-    cc.note_use(ctx)  # throttled: a second call inside the interval does not touch the disk
+    cc.note_use(ctx)
     assert os.stat(d / cc._LAST_USED_NAME).st_mtime == stamp
     cc.note_use(None)
 
@@ -1337,7 +1332,6 @@ def test_generate_marks_the_key_used_before_the_render():
 
 
 def test_evict_rereads_last_used_before_deleting(monkeypatch, tmp_path):
-    """A key another process opens after the scan read its timestamp must survive the eviction pass."""
     import os
     import time
 
@@ -1349,7 +1343,7 @@ def test_evict_rereads_last_used_before_deleting(monkeypatch, tmp_path):
         size = real_dir_bytes(path)
         if path == old:
             now = time.time()
-            os.utime(old / cc._LAST_USED_NAME, (now, now))  # another process's begin() lands here
+            os.utime(old / cc._LAST_USED_NAME, (now, now))
         return size
 
     monkeypatch.setattr(cc, "_dir_bytes", dir_bytes_then_claim)
@@ -1358,7 +1352,6 @@ def test_evict_rereads_last_used_before_deleting(monkeypatch, tmp_path):
 
 
 def test_evict_counts_only_what_it_actually_removed(monkeypatch, tmp_path):
-    """A key whose files cannot go (held open on Windows, permissions) must not count as freed space."""
     import shutil
 
     stuck = _key_dir(tmp_path, "a" * 32, 1000, age_s = 5 * 86400)
@@ -1368,14 +1361,13 @@ def test_evict_counts_only_what_it_actually_removed(monkeypatch, tmp_path):
 
     def rmtree_keeps_the_oldest(path, *args, **kwargs):
         if str(path).startswith(str(stuck)) or "a" * 32 in str(path):
-            return  # ignore_errors swallowed a failure: nothing went
+            return
         return real_rmtree(path, *args, **kwargs)
 
     monkeypatch.setattr(shutil, "rmtree", rmtree_keeps_the_oldest)
     cc.evict(root = tmp_path, max_bytes = 2500)
     assert not nxt.exists() and keep.exists()
     assert cc._dir_bytes(tmp_path) <= 2500
-    # Once the files can go, the leftover is collected rather than leaked outside the budget's view.
     monkeypatch.setattr(shutil, "rmtree", real_rmtree)
     cc.evict(root = tmp_path, max_bytes = 2500)
     assert sorted(p.name for p in tmp_path.iterdir()) == ["c" * 32]
@@ -1399,8 +1391,6 @@ def test_evict_skips_a_key_it_cannot_take_and_moves_on(monkeypatch, tmp_path):
 
 
 def test_a_warm_hit_enforces_the_budget_without_a_save(monkeypatch, tmp_path, fake_megacache):
-    """A cache already over budget (an upgrade from the unbounded cache, or a lowered limit) must shrink even when
-    every load is a clean hit that never rewrites its bundle."""
     monkeypatch.setenv(cc._ENV_MODE, "auto")
     monkeypatch.delenv(cc._ENV_SAVE, raising = False)
     monkeypatch.setenv(cc._ENV_SYNC, "1")
@@ -1410,7 +1400,6 @@ def test_a_warm_hit_enforces_the_budget_without_a_save(monkeypatch, tmp_path, fa
     cc.restore(ctx)
     stale = _key_dir(tmp_path, "d" * 32, 4096, age_s = 30 * 86400)
     monkeypatch.setenv(cc._ENV_MAX_GB, str(1024 / (1 << 30)))
-    # Load-only promises a read-only cache: nothing is deleted.
     monkeypatch.setenv(cc._ENV_SAVE, "0")
     ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     cc.restore(ctx)
@@ -1427,12 +1416,11 @@ def test_a_warm_hit_enforces_the_budget_without_a_save(monkeypatch, tmp_path, fa
 
 
 def test_max_cache_bytes_overflowing_value_keeps_the_default(monkeypatch):
-    monkeypatch.setenv(cc._ENV_MAX_GB, "1e300")  # finite, but not once converted to bytes
+    monkeypatch.setenv(cc._ENV_MAX_GB, "1e300")
     assert cc.max_cache_bytes() == int(cc._DEFAULT_MAX_GB * (1 << 30))
 
 
 def test_evict_counts_a_key_another_evictor_took(monkeypatch, tmp_path):
-    """Losing the race for a key to a concurrent eviction still frees its bytes, so no extra key goes for it."""
     import os
     import shutil
 

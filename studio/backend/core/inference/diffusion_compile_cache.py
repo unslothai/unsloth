@@ -30,10 +30,7 @@ first compiled forward); ``save`` writes the bundle + manifest after the warmup 
 (on by default, a hit skips the rewrite); ``restore`` resets the inductor dir on unload.
 All env-gated and best-effort; torch imported lazily.
 
-DISK: every key keeps its own inductor dir next to its bundle, so the root is bounded by
-``UNSLOTH_DIFFUSION_COMPILE_CACHE_MAX_GB`` (20 GB by default): on load and after a save, the least
-recently used keys are deleted until it fits, never one this process has open or one used
-in the last hour.
+DISK: LRU keys are evicted past ``UNSLOTH_DIFFUSION_COMPILE_CACHE_MAX_GB``, never one open here or used in the last hour.
 
 The generate path calls ``save_async``, not ``save``: the write is pure bookkeeping for
 the NEXT process, so making a user wait on it buys them nothing. Measured on a B200
@@ -78,8 +75,7 @@ from typing import Any, Optional
 # UNSLOTH_DIFFUSION_COMPILE_CACHE_SAVE: 0 disables the auto save (load-only); 1 keeps it.
 # UNSLOTH_DIFFUSION_COMPILE_CACHE_SYNC: 1 makes save_async write inline on the calling thread, as it did before the
 # background worker existed. For tests and for debugging a save that looks like it never ran.
-# UNSLOTH_DIFFUSION_COMPILE_CACHE_MAX_GB: disk budget for the whole cache root (every key's bundle, manifest and
-# inductor dir). Past it, the least recently used keys are deleted on load and after a save. 0 disables the eviction.
+# UNSLOTH_DIFFUSION_COMPILE_CACHE_MAX_GB: cache root budget in GB (default 20); 0 disables eviction.
 _ENV_MODE = "UNSLOTH_DIFFUSION_COMPILE_CACHE"
 _ENV_DIR = "UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR"
 _ENV_SAVE = "UNSLOTH_DIFFUSION_COMPILE_CACHE_SAVE"
@@ -99,14 +95,10 @@ _BUNDLE_SUFFIX = ".bin"
 _TEMP_SUFFIX = ".tmp"
 _FORMAT_VERSION = 1
 
-# Touched on every begin and (throttled) on use; the eviction orders keys by it. A key without one falls back to its
-# manifest's mtime.
 _LAST_USED_NAME = "last_used"
 _TOUCH_INTERVAL_SECONDS = 600.0
-# A key used this recently is never evicted, whoever is using it: another process may be compiling into its inductor
-# dir right now, and the throttled touch above keeps a key in use inside this window.
+# Must exceed _TOUCH_INTERVAL_SECONDS: another process may be compiling into a key touched this recently.
 _EVICT_GRACE_SECONDS = 3600.0
-# A key being deleted is first renamed to ``<key>.<pid>.<rand>`` plus this, so it is never half there under its name.
 _TOMBSTONE_SUFFIX = ".evicting"
 
 # A bundle file this new is NOT collectable even when the manifest does not name it: another process may have just
@@ -353,7 +345,6 @@ class CacheContext:
     # digest, so the shortcut would leave the corrupt bytes in place under a manifest that names
     # them, and every future start would reject the cache again with no way back.
     rejected_bundle: Optional[str] = None
-    # When this context last marked its key as used (time.time()), so a long session keeps it out of the eviction.
     last_touch: float = 0.0
 
 
@@ -484,8 +475,7 @@ def begin(
         # Loaded artifacts == on-disk artifacts, so nothing to save. A new static-compile shape
         # re-dirties via register_shape; mode "on" keeps saving.
         ctx.saved = True
-    # Here, not only after a save: a load that hits never saves, so a cache already over the budget (an upgrade from
-    # the unbounded one, or a lowered limit) would otherwise never shrink.
+    # A hit never saves, so an over-budget cache would otherwise never shrink.
     if _save_enabled(mode):
         _evict_soon(logger)
     return ctx
@@ -908,8 +898,7 @@ def restore(ctx: Optional[CacheContext], *, logger: Any = None) -> None:
         pass
 
 
-# Key dirs a context in THIS process has open, refcounted (an image and a video load can share a key only in theory,
-# but a reload of the same model overlaps its predecessor's teardown). Never evicted while listed.
+# Refcounted: a reload of the same model overlaps its predecessor's teardown.
 _live_lock = threading.Lock()
 _live_dirs: dict[str, int] = {}
 
@@ -929,16 +918,12 @@ def _unregister_live(cdir: Path) -> None:
 
 
 def note_use(ctx: Optional[CacheContext]) -> None:
-    """Keep ``ctx``'s key out of other processes' eviction while it is in use. Throttled; never raises.
-
-    Called before a render as well as after it: a render can compile into the key's inductor dir for
-    minutes, and a key last touched over the grace window ago would otherwise be fair game meanwhile."""
+    """Throttled touch keeping ``ctx``'s key out of other processes' eviction; call before a render too."""
     if ctx is not None and time.time() - ctx.last_touch > _TOUCH_INTERVAL_SECONDS:
         _touch_last_used(ctx)
 
 
 def _touch_last_used(ctx: CacheContext) -> None:
-    """Mark the key as used now. Never raises: a read-only cache root just evicts by manifest age."""
     ctx.last_touch = time.time()
     try:
         path = ctx.dir / _LAST_USED_NAME
@@ -949,7 +934,6 @@ def _touch_last_used(ctx: CacheContext) -> None:
 
 
 def max_cache_bytes() -> Optional[int]:
-    """The disk budget for the cache root in bytes, or None when eviction is off."""
     raw = (os.environ.get(_ENV_MAX_GB) or "").strip()
     try:
         gb = float(raw) if raw else _DEFAULT_MAX_GB
@@ -963,7 +947,6 @@ def max_cache_bytes() -> Optional[int]:
 
 
 def _is_key_dir(path: Path) -> bool:
-    """Only directories named like a ``cache_key`` are ever evicted, so nothing else under the root is touched."""
     name = path.name
     return len(name) == 32 and all(c in "0123456789abcdef" for c in name)
 
@@ -997,11 +980,7 @@ def _is_tombstone(path: Path) -> bool:
 
 
 def _remove_key_dir(path: Path) -> Optional[int]:
-    """Take ``path`` out of the key namespace, then delete it. Returns the bytes left behind, or None if not taken.
-
-    The rename is atomic, so a process opening the key afterwards sees a clean miss and compiles into a fresh dir under
-    the same name instead of into files being deleted under it. Windows refuses it while a file inside is open, which
-    is exactly the key that must be skipped."""
+    """Atomic rename then delete, so a concurrent open sees a clean miss. Returns bytes left, None if not taken."""
     tomb = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}{_TOMBSTONE_SUFFIX}")
     try:
         os.rename(path, tomb)
@@ -1012,7 +991,6 @@ def _remove_key_dir(path: Path) -> Optional[int]:
 
 
 def _evict_soon(logger: Any) -> None:
-    """Run ``evict`` off the load path (inline under the SYNC env). Never raises."""
     if sync_saves():
         evict(logger = logger)
         return
@@ -1033,11 +1011,7 @@ def evict(
     max_bytes: Optional[int] = None,
     logger: Any = None,
 ) -> list[str]:
-    """Delete least recently used keys until the cache root fits its budget. Returns the keys removed.
-
-    Never removes a key a context in this process has open, nor one used inside the grace window
-    (another process may be compiling into it), so the budget is a target, not a hard cap. Never
-    raises."""
+    """Delete LRU keys until the root fits its budget (a target: live and recent keys are spared). Never raises."""
     removed: list[str] = []
     try:
         root = root if root is not None else cache_root()
@@ -1050,7 +1024,6 @@ def evict(
             if child.is_symlink() or not child.is_dir():
                 continue
             if _is_tombstone(child):
-                # An earlier eviction that could not finish: retry, and count what still stands against the budget.
                 shutil.rmtree(child, ignore_errors = True)
                 leftover += _dir_bytes(child) if child.exists() else 0
             elif _is_key_dir(child):
@@ -1064,13 +1037,12 @@ def evict(
         for used, path, size in sorted(entries, key = lambda e: e[0]):
             if total <= budget:
                 break
-            # Re-read the stamp: another process may have opened the key since the scan.
             if str(path) in live or used > cutoff or _last_used(path) > cutoff:
                 continue
             left = _remove_key_dir(path)
             if left is None:
                 if not path.exists():
-                    total -= size  # a concurrent eviction took it: gone all the same
+                    total -= size
                 continue
             total -= size - left
             removed.append(path.name)
