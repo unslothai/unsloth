@@ -430,7 +430,6 @@ _DOCX_WRAPPERS = {
 
 
 def _docx_content(el) -> bool:
-    # A content control showing its prompt ("Click or tap here to enter text.") has no value yet.
     flag = el.find(_W + "sdtPr/" + _W + "showingPlcHdr") if el.tag == _W + "sdt" else None
     return el.tag in _DOCX_WRAPPERS and (
         flag is None or flag.get(_W + "val", "true") in ("0", "false", "off")
@@ -454,7 +453,6 @@ def _docx_text(el) -> str:
 
 
 def _docx_unwrap_table_controls(body) -> None:
-    # python-docx skips rows/cells wrapped in content controls (cover pages, repeating sections).
     for wrapper in list(body.iter(_W + "sdt", _W + "customXml")):
         parent = wrapper.getparent()
         if parent is None or parent.tag not in (_W + "tbl", _W + "tr"):

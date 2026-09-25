@@ -377,7 +377,6 @@ def test_docx_keeps_text_in_content_controls_and_tracked_insertions(tmp_path):
 
 
 def test_docx_keeps_rows_and_cells_wrapped_in_content_controls(tmp_path):
-    # Word cover pages and repeating sections wrap whole w:tc / w:tr elements in w:sdt.
     document, docx, parsers = _shared_setup_1()
     from docx.oxml import parse_xml
     from docx.oxml.ns import nsdecls
@@ -455,7 +454,6 @@ def test_docx_skips_placeholder_text_and_keeps_field_and_bidi_runs(tmp_path):
 
 
 def test_docx_skips_placeholder_rows_and_cells_but_keeps_columns(tmp_path):
-    # An unfilled control wrapping a whole w:tc / w:tr keeps its slot but not its prompt text.
     document, docx, parsers = _shared_setup_1()
     from docx.oxml import parse_xml
     from docx.oxml.ns import nsdecls
