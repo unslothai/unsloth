@@ -27,8 +27,7 @@ TOOL_EXECUTION_MODES = ("auto", "required", "full")
 
 PROFILE_VERSION = "unsloth-sandbox-v1"
 
-# tools.py re-adds this to an UNISOLATED launch only if it already exists, which
-# keeps a host that never isolates byte-identical to main.
+# tools.py re-adds this only to an UNISOLATED launch, and only if it already exists.
 SESSION_PACKAGES_RELPATH = ".unsloth-packages"
 
 _SOFTWARE_SAFEGUARDS = (
@@ -62,20 +61,16 @@ class SandboxUnavailableError(RuntimeError):
 
 
 class WorkdirUnsafeError(SandboxUnavailableError):
-    """Distinguished by TYPE, not by re-probing: a transient probe failure must
-    not re-open the very channel the workdir scan just found."""
+    """Distinguished by type: a transient probe failure must not re-open the channel the scan found."""
 
 
 class SandboxBuildError(SandboxUnavailableError):
-    """The probe passed but this launch could not be built. Refused, not fallen
-    back: the errno is reachable from inside the jail, so a tool call that fills
-    the disk could otherwise buy itself an unisolated launch."""
+    """Refused, never fallen back: the errno is reachable from inside the jail."""
 
 
 @dataclass(frozen = True)
 class SandboxCapability:
-    """``available`` is never inferred from a binary being on disk: an installed
-    bwrap on a host that denies user namespaces looks identical until you try."""
+    """``available`` is never inferred from the binary existing: user namespaces may still be denied."""
 
     backend: str
     available: bool
@@ -102,7 +97,6 @@ class ToolExecutionRecord:
     os_isolation: bool
     retained_safeguards: tuple[str, ...]
     limitations: tuple[str, ...] = ()
-    # Always "unrestricted": this confines the filesystem, not the network.
     network_policy: str = "unrestricted"
 
     def as_dict(self) -> dict[str, object]:
@@ -150,8 +144,6 @@ class PreparedSandboxLaunch:
     terminate_descendants: bool = True
     cleanup_callbacks: list[Callable[[], None]] = field(default_factory = list)
     cleanup_diagnostics: list[str] = field(default_factory = list)
-    # Earned by THIS launch, on top of the backend's static set: what was true
-    # of this call and may not be true of the next one.
     launch_limitations: tuple[str, ...] = ()
 
     def cleanup(self) -> None:
@@ -183,42 +175,20 @@ def spawn_prepared_launch(prepared: PreparedSandboxLaunch, **popen_kwargs: Any) 
     return subprocess.Popen(prepared.argv, **popen_kwargs)
 
 
-# Recorded when the walk ran out of budget before it could reach a verdict.
-# `auto` carries it and launches; `required` refuses on it. Named rather than
-# spelled twice, because the two readers must agree.
+# `auto` launches on this, `required` refuses; one name so both readers agree.
 WORKDIR_SCAN_INCOMPLETE = "workdir_scan_incomplete"
 WORKDIR_SCAN_ENTRIES = 50_000
 WORKDIR_SCAN_SECONDS = 5.0
-# The shared cache is walked per launch, so its budget is tighter than the
-# workdir's; a cache too big to check in it is simply not shared.
 CACHE_SCAN_ENTRIES = 50_000
 CACHE_SCAN_SECONDS = 3.0
-# How much longer than its own budget a scan is given to come back before the
-# caller stops waiting. Small: it only covers the walk noticing its deadline and
-# returning, so a scan that is merely slow still reports its own message.
 _SCAN_JOIN_GRACE_SECONDS = 0.5
 
-# The scratch directory tools.py creates inside the workdir and points TMPDIR
-# at. Defined here because both sides need the same spelling: tools.py creates
-# it, and the scan below has to know which entries under the workdir Studio
-# itself owns.
 TOOL_TEMP_DIRNAME = "unsloth-tmp"
-# How tools.py creates that directory: os.mkdir(path, 0o700), as the user
-# Studio runs as. An adopted directory that came from the user's own tree is
-# almost never both, and nothing may be swept out of one that is not.
 TOOL_TEMP_MODE = 0o700
 
 
 class _ScanBudgetExceeded(Exception):
-    """The walk ran out of entries or time before it could reach a verdict.
-
-    Distinct from a hazard, because the two call for opposite answers. A hazard
-    is a finding about the tree; this is only a statement about the scan's cost,
-    and the tree may be perfectly safe. Treating the two alike is what let an
-    ordinary `pip install` end a chat: past the entry cap every later Python and
-    Terminal call was refused, and since the scan is also what must run before a
-    tool can delete anything, the chat could never clean itself up.
-    """
+    """The walk ran out of budget: not a hazard, so it must not refuse an `auto` launch."""
 
 
 def directory_signature(path: str) -> tuple:
@@ -231,20 +201,7 @@ def directory_signature(path: str) -> tuple:
 
 
 def directory_witness_matches(witness: "list[tuple]") -> bool:
-    """Whether every directory a finished scan visited is still as it left it.
-
-    A verdict about a tree is only reusable while the tree is unchanged, and
-    the root's own mtime says nothing about what happened three levels down.
-    Adding, removing or replacing an entry updates the mtime of the directory
-    holding it, so re-statting the directories the scan visited catches a
-    socket, a FIFO or a new link planted anywhere inside it, at one stat per
-    directory rather than one lstat per entry.
-
-    What it does not catch is a link created OUTSIDE the tree to a file inside
-    it, which changes that file's link count and no directory's mtime. That
-    needs host-side write access to the tree's own files, which is access
-    enough to change them directly, so it is not a step up for anyone.
-    """
+    """Whether every directory a finished scan visited is still as it left it."""
     return all(directory_signature(entry[0]) == entry for entry in witness)
 
 
@@ -254,18 +211,10 @@ def _host_channel_hazard(
     seconds: float,
     witness: "list[tuple] | None" = None,
 ) -> str | None:
-    """Return a host-access hazard under *root*, or None.
-
-    Reject sockets, devices, FIFOs, external hard links and nested mounts.
-    Tool-created entries cannot be distinguished from host entries. The root
-    itself may be a mount point. Raises ``_ScanBudgetExceeded`` if the walk
-    cannot finish inside its budget; callers decide what an unfinished scan means
-    for them, because it is not a finding.
-    """
+    """Return a host-access hazard under *root*, or None."""
     deadline = time.monotonic() + seconds
     entries = 0
-    # Refusing every st_nlink > 1 would refuse any tree built by `cp -al`,
-    # `git clone --local` or pip; only an unaccounted link leads outside.
+    # Only an unaccounted hard link leads outside; cp -al, git clone --local and pip make nlink > 1.
     links: dict[tuple[int, int], list] = {}
     unreadable: list[str] = []
 
@@ -318,25 +267,7 @@ def _hazard_within_wall_clock(
     seconds: float,
     prepare: "Callable[[float], None] | None" = None,
 ) -> str | None:
-    """``_host_channel_hazard`` with a deadline that holds even when it cannot.
-
-    The walk checks the clock between entries, which is only a deadline while
-    the walk is running. ``os.walk``'s own ``scandir`` and the ``lstat`` per
-    entry are uninterruptible, so a stalled NFS or FUSE mount under the workdir
-    blocks inside a single syscall and the budget is never consulted again: the
-    tool call hangs for the mount's timeout, not for five seconds. Running the
-    walk on a worker makes the budget a wall-clock one.
-
-    Raises ``_ScanBudgetExceeded`` when the walk did not come back in time, so a
-    wedged mount reads as an unfinished scan rather than as a clean one. The
-    worker is left to finish on its own; it holds no lock and owns nothing, and
-    a second one is not started for the same root while the first is stuck.
-
-    ``prepare`` runs on the same worker, under the same budget, and is given
-    the deadline. Work done before the walk is exactly as able to block on a
-    wedged mount as the walk is, so doing it on the caller's thread would put
-    back the hang this exists to remove.
-    """
+    """Scan on a worker so the budget is wall-clock: scandir/lstat on a stalled mount cannot be interrupted."""
     with _scan_lock:
         pending = _scan_pending.get(root)
         if pending is not None:
@@ -356,8 +287,6 @@ def _hazard_within_wall_clock(
             try:
                 if prepare is not None:
                     prepare(deadline)
-                # What is LEFT of the budget, not a fresh copy of it: the walk
-                # and anything before it share one deadline.
                 answer.append(
                     _host_channel_hazard(root, max_entries, max(0.1, deadline - time.monotonic()))
                 )
@@ -367,8 +296,7 @@ def _hazard_within_wall_clock(
                 budget.append(f"could not be checked for host channels: {exc}")
 
         worker = threading.Thread(target = inspect, name = "unsloth-workdir-scan", daemon = True)
-        # Registered under the lock, or a concurrent caller replaces a worker
-        # that has not started yet and both walks run.
+        # Register under the lock, or a concurrent caller starts a second walk.
         _scan_pending[root] = worker
         worker.start()
 
@@ -387,14 +315,7 @@ def _hazard_within_wall_clock(
 
 
 def _looks_like_our_scratch_dir(path: str) -> bool:
-    """Whether this directory was created the way tools.py creates one.
-
-    0700 and owned by the user Studio runs as. Not proof of authorship, and it
-    is not asked to be: it is the cheap half of a two-part test whose other
-    half, that the endpoint itself is dead, is the one doing the work. On
-    Windows the mode is not meaningful and neither are the endpoints this
-    sweeps, so only the ownership half applies there.
-    """
+    """Whether this directory was created the way tools.py creates one."""
     try:
         info = os.stat(path)
     except OSError:
@@ -407,17 +328,10 @@ def _looks_like_our_scratch_dir(path: str) -> bool:
 
 
 def _ipc_endpoint_is_dead(path: str) -> bool:
-    """Whether nothing is listening on this socket, proved rather than assumed.
-
-    False for anything the probe cannot settle, including an unexpected errno
-    and a name the probe cannot express, because the cost of being wrong is one
-    refused launch in one direction and a broken running tool call in the other.
-    """
+    """Whether nothing is listening on this socket; False for anything the probe cannot settle."""
     verdict = _unix_socket_is_refused(path)
     if verdict is None:
-        # sun_path is 108 bytes and a session workdir can be longer than that,
-        # so the endpoint gets a short alias through a temporary symlink to its
-        # directory rather than being declared undecidable on path length.
+        # sun_path is 108 bytes: reach long paths through a temporary symlink alias.
         import tempfile
         alias_dir = None
         try:
@@ -444,9 +358,7 @@ def _unix_socket_is_refused(path: str) -> bool | None:
     except OSError as exc:
         if exc.errno == errno.ECONNREFUSED:
             return True
-        # errno is None for "AF_UNIX path too long", which CPython raises from
-        # its own length check before the syscall, so a long session workdir
-        # must not read as a live endpoint.
+        # errno None is CPython's own path-too-long check, not a live endpoint.
         if exc.errno is None or exc.errno in (errno.ENAMETOOLONG, errno.ENOENT):
             return None
         return False
@@ -456,59 +368,7 @@ def _unix_socket_is_refused(path: str) -> bool | None:
 
 
 def clear_stale_tool_ipc(workdir: str, deadline: "float | None" = None) -> tuple[str, ...]:
-    """Remove dead listening sockets left behind in Studio's own scratch directory.
-
-    A socket under the workdir is a genuine hazard and stays fatal, with one
-    exception this handles. ``<workdir>/unsloth-tmp`` is created by Studio, is
-    the child's TMPDIR, and nothing else writes there: a tool that used
-    multiprocessing, torch.distributed or any AF_UNIX server and was killed or
-    timed out leaves its listener behind. The next launch then finds a socket,
-    refuses, and since the scan is also what must run before a tool can delete
-    anything, every later Python and Terminal call in that chat is refused with
-    no way back. One `Ctrl+C` bricked the session.
-
-    Two things are proved before anything is removed, because "left behind" is
-    the whole justification and neither half can be assumed.
-
-    That the directory is ours. ``_sandbox_temp_dir`` ADOPTS an existing
-    ``unsloth-tmp`` rather than failing, so a project that already had a
-    directory by that name would otherwise have its own endpoints swept. Only a
-    directory created the way Studio creates one, 0700 and owned by the user
-    Studio runs as, is touched. This is evidence rather than a marker file on
-    purpose: the scratch directory is required to be empty when a call ends,
-    and residue in it would show up as a file card on every call.
-
-    That the endpoint is dead. Two tool calls can run in one session and share
-    this directory, so a live listener here may belong to a call that is still
-    running. A socket is removed only when connecting to it is refused, and a
-    FIFO only when opening it for writing reports no reader. Anything live, or
-    anything the probe could not settle, is left alone, and the walk then
-    refuses this launch, which ends when the other call does rather than
-    lasting the rest of the chat.
-
-    Sockets only, and this is the reason FIFOs are not swept with them. A bound
-    AF_UNIX path that nothing is listening on is garbage by construction: bind
-    refuses an existing path, so a server has to unlink it before it can be
-    used again. A FIFO is the opposite. It is meant to outlive the processes at
-    its ends, having no reader right now is its ordinary resting state, and the
-    directory being 0700 and ours is evidence rather than proof of who created
-    it. Deleting a user's idle named pipe just because a tool call started is
-    not a trade worth making, so a FIFO here is left alone and the walk refuses
-    the launch, exactly as before.
-
-    Unlinking is not a way past the check: the entry is gone before the walk
-    runs, so nothing in the sandbox can reach it, and a hard link to a host
-    socket loses its link here too. Anything that will not unlink is left alone
-    and the scan still refuses it. A device node or a nested mount in there is
-    not something a crashed tool leaves, and it stays fatal.
-
-    ``deadline`` is a ``time.monotonic`` stamp to stop at. The scratch directory
-    can be large or can sit on the same stalled mount as everything else under
-    the workdir, so this runs inside the scan's wall-clock budget rather than
-    ahead of it; stopping early simply leaves the rest for the walk to refuse.
-
-    Returns what was removed, for the log.
-    """
+    """Remove dead sockets from Studio's own 0700 scratch dir; FIFOs are never swept (idle is their normal state)."""
     scratch = os.path.join(workdir, TOOL_TEMP_DIRNAME)
     removed: list[str] = []
     try:
@@ -531,9 +391,7 @@ def clear_stale_tool_ipc(workdir: str, deadline: "float | None" = None) -> tuple
                 if not stat.S_ISSOCK(mode):
                     continue
                 if entry.st_nlink > 1:
-                    # Another name for the same endpoint exists somewhere, and
-                    # the walk's hard-link rule is the one that should answer
-                    # for it. Removing this name would hide the finding.
+                    # Another link exists: removing this name would hide the walk's hard-link finding.
                     continue
                 if not _ipc_endpoint_is_dead(path):
                     logger.info(
@@ -557,21 +415,7 @@ def clear_stale_tool_ipc(workdir: str, deadline: "float | None" = None) -> tuple
 
 
 def scan_workdir_for_host_channels(workdir: str) -> tuple[str, ...]:
-    """The writable session workdir. A hazard here fails the call.
-
-    Returns the per-launch limitations the scan earned, so an unfinished scan is
-    reported rather than silently treated as a clean one.
-
-    A scan that overruns its budget does NOT fail the call. Refusing looked
-    conservative and was not: the call it refused was a confined one, and the
-    user was left with no working tool rather than with a weaker boundary. The
-    sandbox is still built, and the record says the workdir was not fully
-    inspected. Genuine findings above remain fatal, so a planted socket or an
-    external hard link still stops the launch, with the one exception cleared
-    by ``clear_stale_tool_ipc`` first: Studio's own scratch directory, where a
-    killed tool's leftover listener is removed rather than held against the
-    next call.
-    """
+    """Scan the writable workdir: a hazard fails the call, an overrun budget is recorded, not refused."""
     try:
         hazard = _hazard_within_wall_clock(
             workdir,
@@ -588,16 +432,7 @@ def scan_workdir_for_host_channels(workdir: str) -> tuple[str, ...]:
 
 
 def cache_share_hazard(path: str, witness: "list[tuple] | None" = None) -> str | None:
-    """Return a reason not to share this writable cache component, or None.
-
-    Apply the workdir's host-access checks: sockets and hard links can expose
-    host resources. Unsafe components are omitted, not launch failures, so a
-    planted socket cannot disable later calls. Missing caches are re-downloaded.
-
-    Unlike the workdir, a cache that overruns its budget IS a reason not to share
-    it: the component is simply omitted and re-downloaded inside, which costs
-    bandwidth and nothing else.
-    """
+    """Return a reason not to share this writable cache component, or None."""
     try:
         return _host_channel_hazard(path, CACHE_SCAN_ENTRIES, CACHE_SCAN_SECONDS, witness)
     except _ScanBudgetExceeded as exc:
@@ -610,8 +445,7 @@ _FALLBACK_NOTE = "Python and Terminal still run, with software safeguards only a
 
 @functools.lru_cache(maxsize = 1)
 def _linux_userns_blocked_by_apparmor() -> bool:
-    """Whether Ubuntu 23.10+'s ``apparmor_restrict_unprivileged_userns`` denies the
-    user namespace bwrap needs. Cached: it forks, and every snapshot reaches it."""
+    """Whether Ubuntu's apparmor_restrict_unprivileged_userns denies bwrap's user namespace (cached)."""
     try:
         with open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", encoding = "utf-8") as f:
             if f.read().strip() != "1":
@@ -669,24 +503,7 @@ def editable_source_roots() -> tuple[str, ...]:
 
 
 def model_library_roots() -> tuple[str, ...]:
-    """The model folders a tool is already allowed to read without asking.
-
-    tool_path_approval treats the folders the user registered with Studio, and
-    the well-known LM Studio and Ollama locations, as read-silent: "these hold
-    weights, not documents, and reading them is the point of the app". Without
-    granting them the two halves of the product disagree, because a read from
-    a registered folder passes the approval gate silently, as designed, and
-    then fails inside the sandbox on every `auto` launch.
-
-    Deliberately NOT the whole read-silent set. That also carries /etc and
-    other system directories, where staying silent at the approval gate is
-    reasonable and binding the directory into the jail is not: it would hand
-    over /etc/ssl/private, which the bind list excludes one file at a time.
-
-    Read only; the write-silent set is not consulted, since the sandbox keeps
-    writes to the session workdir. Degraded to nothing rather than raising,
-    because a launch must not fail over this.
-    """
+    """Registered model folders the approval gate reads silently; NOT the whole read-silent set, which has /etc."""
     try:
         from . import tool_path_approval
         from utils.paths.storage_roots import well_known_model_dirs
@@ -703,9 +520,7 @@ def model_library_roots() -> tuple[str, ...]:
         if not path or not os.path.isabs(path):
             continue
         real = os.path.realpath(path)
-        # A registered folder that IS a filesystem root, a home, the parent of
-        # every home, or a system directory is a misconfiguration, and granting
-        # it would undo the rest of the profile.
+        # Refuse a registered folder that is a root, a home, the homes parent, or a system directory.
         if _is_filesystem_root(real) or not os.path.isdir(real):
             continue
         if os.path.normcase(real) in forbidden:
@@ -718,24 +533,10 @@ def model_library_roots() -> tuple[str, ...]:
 
 
 def _is_filesystem_root(path: str, pathmod: Any = None) -> bool:
-    """Whether *path* is the top of a filesystem.
-
-    Not ``path == os.sep``. That is true of POSIX ``/`` and of nothing on
-    Windows, where a drive root is ``C:\\`` and a share root is
-    ``\\\\server\\share\\``: a folder registered as ``C:\\``, which is what
-    "scan my whole drive for models" produces, passed the check and granted the
-    entire system drive. ``dirname`` is its own parent at exactly the roots, on
-    every platform.
-
-    ``pathmod`` is a parameter for the same reason ``_path_from_file_url``
-    takes ``is_windows``: the Windows rule has to be exercisable from any host.
-    """
+    """Whether *path* is a filesystem root; not ``path == os.sep``, which misses Windows drive roots."""
     return (pathmod or os.path).dirname(path) == path
 
 
-# POSIX system directories. The Windows equivalents are not spelled here
-# because they are not fixed: the system drive can be any letter and Program
-# Files can be redirected, so they are read from the environment below.
 _NEVER_A_MODEL_LIBRARY = (
     "/",
     "/etc",
@@ -762,14 +563,7 @@ _WINDOWS_SYSTEM_VARS = (
 
 
 def _never_a_model_library() -> frozenset[str]:
-    """Normcased real paths no registered folder may grant, root included.
-
-    The user's home is here, and so is its parent: ``/home`` and ``/Users``
-    were listed literally, but the Windows parent is ``C:\\Users`` under
-    whichever drive Windows was installed on, and deriving it from the home
-    covers every platform without a table. Windows system directories come
-    from the environment for the same reason.
-    """
+    """Normcased real paths no registered folder may grant, root included."""
     paths = list(_NEVER_A_MODEL_LIBRARY)
     try:
         home = os.path.realpath(os.path.expanduser("~"))
@@ -794,20 +588,7 @@ def _paths_overlap(first: str, second: str) -> bool:
 
 
 def studio_state_roots() -> tuple[str, ...]:
-    """Where Studio keeps ``auth/auth.db`` and the rest of its persisted state.
-
-    The default lives under ``$HOME``, which no backend grants, but a custom
-    home can sit anywhere, including inside a directory a backend DOES grant:
-    the shipped Docker layout puts it at ``/opt/unsloth-studio`` (docker/run.sh
-    mounts the volume there, studio_launch.sh exports it) and ``/opt`` is a
-    Linux read root, while a macOS install under a Homebrew prefix lands inside
-    an optional read root. That database holds the HS256 jwt_secret, and
-    tools.py guards the literal path, so a path built at run time walks past the
-    guard and the sandbox must not be the thing that hands the file over.
-
-    Not cached: the resolution reads the environment, and a test or a restarted
-    Studio with a different home must not inherit an earlier answer.
-    """
+    """Studio's persisted-state home (auth.db); denied because it may sit under a granted root such as Docker's /opt."""
     roots: list[str] = []
     try:
         from utils.paths.storage_roots import studio_root
@@ -853,10 +634,7 @@ def _within_root(path: str, root: str) -> bool:
 def _importable_entries(
     project_root: str, declared: frozenset[str] = frozenset()
 ) -> tuple[str, ...]:
-    """Grant package entries, never the checkout's .env, .git or unrelated fixtures.
-
-    Use the installer's sys.path root when present; an unconfirmed import gets no grant.
-    """
+    """Grant package entries, never the checkout's .env, .git or unrelated fixtures."""
     import_roots = [
         entry
         for entry in sys.path
@@ -866,8 +644,7 @@ def _importable_entries(
             or os.path.abspath(entry).startswith(project_root + os.sep)
         )
     ]
-    # A PEP 660 finder puts nothing on sys.path, so fall back to the two layouts
-    # that cover almost everything published.
+    # A PEP 660 finder puts nothing on sys.path, so fall back to the common layouts.
     guessed = [
         fallback
         for fallback in (project_root, os.path.join(project_root, "src"))
@@ -885,7 +662,6 @@ def _importable_entries(
             entry = os.path.join(import_root, name)
             declared_here = name in declared or name.removesuffix(".py") in declared
             if import_root in guessed and not declared_here:
-                # A guessed layout may include unrelated deploy.py or tests/ packages.
                 continue
             # Both backends grant resolved targets, so a declared symlink must stay in the checkout.
             if not _within_root(entry, project_root):
@@ -919,8 +695,7 @@ def linux_unavailable_remediation() -> str:
 
 
 def _runtime_identity() -> str:
-    """Changes when the interpreter or this module changes, so swapping the venv
-    under a running Studio re-probes instead of reusing a stale verdict."""
+    """Changes with the interpreter or this module, so a swapped venv re-probes."""
     digest = hashlib.sha256()
     for path in (sys.executable, __file__):
         resolved = os.path.realpath(path)
@@ -1018,8 +793,6 @@ def _record(
 
 
 def _software_only_limitations() -> tuple[str, ...]:
-    # Teardown is killpg on the captured group, which a tool that calls setsid
-    # and closes stdout survives.
     limitations = ["no_os_isolation", "host_files_readable", "unrestricted_network"]
     if sys.platform != "win32":
         limitations.append("detached_descendant_cleanup_unverified")
@@ -1097,12 +870,7 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         if plan.requested_mode == "required" and WORKDIR_SCAN_INCOMPLETE in (
             prepared.launch_limitations
         ):
-            # `auto` degrades here on purpose: a big session workdir must not
-            # end a chat, and the alternative was a permanent refusal that no
-            # retry recovered from. `required` is a different promise. The
-            # unvisited part of the walk could hold an external hard link or a
-            # host socket, and saying so in the record does not keep a boundary
-            # the caller asked to be guaranteed, so this one fails closed.
+            # `auto` degrades on an overrun scan; `required` fails closed, since the unvisited part may hold a hazard.
             prepared.cleanup()
             raise WorkdirUnsafeError(
                 "the session workdir is too large to check for host channels, "
@@ -1110,8 +878,7 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
                 "Start a new chat, or use `auto` to run with software safeguards."
             )
     except OSError as exc:
-        # Must be typed: raw, this reaches tools.py's general `except Exception`,
-        # which answers `auto` by running with software safeguards.
+        # Must be typed: raw, tools.py's general except would fall back to software safeguards.
         raise SandboxBuildError(f"the sandbox could not be built on this host: {exc}") from exc
     prepared.execution_record = _record(
         plan,

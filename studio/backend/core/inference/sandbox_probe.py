@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Validate isolation against controls first verified on the host.
-
-Check outside writes from the host: a private tmpfs may accept a write without
-changing host files, so requiring an exception would reject valid isolation.
-"""
+"""Validate isolation against controls first verified on the host; outside writes are checked from the host."""
 
 from __future__ import annotations
 import ctypes
@@ -36,26 +32,13 @@ _SENTINEL_TOKEN = "unsloth-host-sentinel-must-not-be-readable"
 _OUTSIDE_WRITE_TOKEN = "unsloth-sandbox-escaped-to-the-host"
 
 PROBE_TIMEOUT_SECONDS = 30.0
-# Long enough that an idle chat does not pay the 353ms cold probe again on its
-# next message, which 60s did: a call 70s after the last one cost 1.24s against
-# 0.040s unsandboxed. Correctness does not rest on the TTL. The key already
-# carries the runtime identity, so a changed interpreter or venv re-probes
-# immediately, and a launch that fails invalidates the entry outright
-# (tools.py's _note_launch_failure), which is what actually covers installing
-# the AppArmor profile without a restart.
+# Correctness does not rest on the TTL: the key carries the runtime identity and a failed launch invalidates.
 _CACHE_TTL_SECONDS = 900.0
-# An UNAVAILABLE verdict keeps the old, short TTL, because it is the one the
-# user is actively trying to change: the remediation text tells them to install
-# bubblewrap or load the AppArmor profile, and neither moves the cache key, so a
-# 900s negative entry would leave `auto` unisolated and `required` refusing for
-# up to 15 minutes after they did exactly what they were told. The saving the
-# long TTL bought was on the hot path, where the verdict is available and the
-# host is not changing underneath it, so nothing is given back here.
+# UNAVAILABLE keeps a short TTL: the user fixing their host does not move the cache key.
 _CACHE_TTL_UNAVAILABLE_SECONDS = 60.0
 _CACHE_MAX_ENTRIES = 8
 
-# ``sun_path`` is 108 bytes and multiprocessing appends about 32 of its own, so a
-# longer scratch root fails a POSITIVE control for a reason unrelated to isolation.
+# ``sun_path`` is 108 bytes and multiprocessing appends about 32.
 _MAX_PROBE_BASE_LEN = 59
 
 _cache_lock = threading.Lock()
@@ -105,10 +88,7 @@ def must_raise(label, fn):
 def _negative_controls(
     sentinel: str, escape: str, outside: str, interpreter_writable: bool, abstract: "bytes | None"
 ) -> str:
-    """Attempt direct and symlink sentinel reads, an outside write, and socket access.
-
-    The host checks write escapes; the socket check verifies applied Landlock scope.
-    """
+    """Attempt direct and symlink sentinel reads, an outside write, and socket access."""
     interpreter_leg = ""
     if interpreter_writable:
         interpreter_leg = (
@@ -183,8 +163,7 @@ def _payload(
     interpreter_writable: bool,
     abstract: "bytes | None",
 ) -> str:
-    """Passed as source on the command line, not as a workdir file, so the probe
-    does not depend on how the backend exposes the workdir."""
+    """Passed as source on the command line, independent of how the backend exposes the workdir."""
     return (
         _PREAMBLE
         + _negative_controls(sentinel, escape, outside, interpreter_writable, abstract)
@@ -194,8 +173,7 @@ def _payload(
 
 
 def _no_new_privs() -> None:
-    """Logged rather than swallowed: failing to set it makes the probe MORE
-    permissive than the launch it stands in for."""
+    """Logged, not swallowed: failing to set it makes the probe MORE permissive than the launch."""
     if _libc is None:
         return
     if _libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
@@ -203,8 +181,7 @@ def _no_new_privs() -> None:
 
 
 def _abstract_control() -> "tuple[bytes | None, Any]":
-    """Nothing where there is no scope to test, and nothing when the host cannot
-    connect to its own socket, since a refusal inside would then prove nothing."""
+    """Nothing without a scope to test, or when the host cannot reach its own socket."""
     if sys.platform != "linux":
         return None, None
     from . import sandbox_landlock
@@ -229,8 +206,7 @@ def _abstract_control() -> "tuple[bytes | None, Any]":
 
 
 def _host_saw_the_write(outside: str) -> bool:
-    """The only honest form of the escape check: a private tmpfs makes the write
-    succeed inside while nothing arrives here."""
+    """Checked on the host: a private tmpfs lets the write succeed inside while nothing arrives here."""
     try:
         with open(outside, encoding = "utf-8") as handle:
             return _OUTSIDE_WRITE_TOKEN in handle.read()
@@ -243,12 +219,8 @@ def _host_payload(workdir: str) -> str:
 
 
 def _probe_base() -> str:
-    """A scratch root short enough for the fd-passing control's AF_UNIX address;
-    failing that, the host control below reports the problem."""
-    # Private roots FIRST, the environment-derived default last. TMPDIR can point
-    # inside a directory the backend deliberately exposes (/opt/tmp is enough),
-    # which puts the host sentinel under a read-only bind: the negative read then
-    # succeeds and a working backend is reported unavailable.
+    """A scratch root short enough for the fd-passing control's AF_UNIX address."""
+    # Private roots FIRST: TMPDIR may sit under a read-only bind and fail the negative read control.
     roots: list[str | None] = [root for root in ("/tmp", "/var/tmp") if os.path.isdir(root)]
     roots.append(None)  # None = the platform default
     fallback = None
@@ -271,8 +243,7 @@ def _probe_base() -> str:
 
 
 def _host_positive_controls(workdir: str, sentinel: str, outside: str, env: dict[str, str]) -> str:
-    """Prove on the host that every control would otherwise come out the other
-    way. Returns "" when the host is sane, else why the probe cannot conclude."""
+    """Prove every control would come out the other way on the host; returns why not, or ""."""
     try:
         with open(sentinel, encoding = "utf-8") as handle:
             if handle.read() != _SENTINEL_TOKEN:
@@ -307,8 +278,7 @@ def _host_positive_controls(workdir: str, sentinel: str, outside: str, env: dict
 
 
 def probe(backend: Any, *, force: bool = False) -> tuple[bool, str]:
-    """Never raises: every failure becomes ``(False, reason)``, since the caller
-    either falls back or refuses."""
+    """Never raises: every failure becomes ``(False, reason)``."""
     backend_name = str(getattr(backend, "BACKEND_NAME", "unknown"))
     try:
         from .os_sandbox import ToolLaunchPlan, _runtime_identity
@@ -327,9 +297,7 @@ def probe(backend: Any, *, force: bool = False) -> tuple[bool, str]:
 
 
 def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, str]:
-    """The verdict is reached INSIDE the try: the escape check reads a host file
-    the process may have written, and a cleanup that ran first would report every
-    escape as a pass."""
+    """The verdict is reached INSIDE the try: cleanup first would report every escape as a pass."""
     base = None
     prepared = None
     abstract_listener = None
@@ -358,8 +326,7 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
         if blocked:
             return False, blocked
 
-        # Asking a confined process to fail at appending to a file the host
-        # cannot write either proves nothing, so that leg is dropped, not passed.
+        # A leg the host cannot fail either proves nothing, so it is dropped, not passed.
         interpreter_writable = os.access(sys.executable, os.W_OK)
         # Proven reachable from out here first, so a refusal inside is the scope.
         abstract, abstract_listener = _abstract_control()
@@ -374,9 +341,7 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
             ),
             workdir = workdir,
             env = env,
-            # A setuid bwrap cannot raise privileges once no_new_privs is set,
-            # so without this the probe qualifies a backend whose every real
-            # launch dies after Popen, where auto can no longer fall back.
+            # A setuid bwrap dies under no_new_privs, so without this the probe qualifies a launch that fails after Popen.
             preexec_fn = _no_new_privs,
             requested_mode = "required",
             execution_kind = "python",

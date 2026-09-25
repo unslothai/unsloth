@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Default-deny Seatbelt profiles for sandbox-exec.
-
-IP egress is unrestricted. AF_UNIX needs separate rules because file rules do
-not block socket connections. SBPL grammar is tested on Darwin.
-"""
+"""Default-deny Seatbelt profiles for sandbox-exec; file rules do not block AF_UNIX connect, so sockets get their own."""
 
 from __future__ import annotations
 import json
@@ -46,8 +42,7 @@ LIMITATIONS = (
     "posix_semaphore_namespace_shared",
     # kern.proc.pid./pgrp. leak host kinfo_proc, but that sysctl is how ps works.
     "host_process_metadata_readable",
-    # Only RootDomainUserClient: the user clients Metal needs are too large an
-    # authority to grant untested, so MPS cannot initialise.
+    # Only RootDomainUserClient: Metal's user clients stay ungranted, so MPS cannot initialise.
     "gpu_devices_hidden",
 )
 
@@ -113,7 +108,6 @@ _OPTIONAL_READ_ROOTS = (
 # Homebrew prefixes are user-owned; check target containment rather than ownership.
 _OPTIONAL_ROOT_PREFIXES = ("/usr/local", "/opt/homebrew")
 # Allow missing optional files so git gets ENOENT, not a fatal EPERM.
-# Existence-filtered rules would omit these paths.
 _OPTIONAL_READ_LITERALS = (
     "/etc/gitconfig",
     "/etc/gitattributes",
@@ -135,8 +129,7 @@ _DENIED_EXECUTABLES = (
 _DEVICES = ("/dev/null", "/dev/zero", "/dev/random", "/dev/urandom")
 # connect() to a unix socket is network-outbound, not a file operation.
 _MDNSRESPONDER_SOCKET = "/private/var/run/mDNSResponder"
-# com.apple.SecurityServer is deliberately ABSENT: with it the login Keychain is
-# readable through Security.framework despite /usr/bin/security being exec-denied.
+# com.apple.SecurityServer is deliberately ABSENT: it would expose the login Keychain.
 _MACH_SERVICES = (
     "com.apple.system.opendirectoryd.libinfo",
     "com.apple.PowerManagement.control",
@@ -225,11 +218,7 @@ def available() -> tuple[bool, str]:
 
 
 def _sbpl_string(value: str) -> str:
-    r"""An SBPL string literal, non-ASCII left RAW: SBPL is TinyScheme, which knows
-    \", \n, \r, \t and \xDD and no \u, so json's default turned /Users/José into a
-    rule matching nothing and every macOS home with an accent lost isolation
-    silently. The profile is an argv string, so the raw character arrives as the
-    same UTF-8 bytes the path has."""
+    """An SBPL string literal with non-ASCII left RAW: TinyScheme has no u-escape, so json's default breaks accented paths."""
     return json.dumps(value, ensure_ascii = False)
 
 
@@ -255,18 +244,7 @@ def _within(path: str, root: str) -> bool:
 
 
 def _within_any(path: str, roots: "tuple[str, ...]") -> bool:
-    """``_within`` across every spelling both sides can have.
-
-    On macOS /var, /tmp and /etc are symlinks into /private, so the same
-    directory has two names and which one a caller holds depends on where it
-    came from: a session workdir arrives resolved, a configured Studio home
-    does not. A plain prefix compare says they are unrelated, and the
-    consequence is not a missing grant but an active denial, because the deny
-    rules are emitted in BOTH spellings while the restore list was built from
-    one. Observed on macos-15: with the Studio home under /var/folders the
-    sandboxed interpreter could not open its own script and every tool call
-    returned "Operation not permitted".
-    """
+    """``_within`` across both /private alias spellings; a miss is an active denial, not a missing grant."""
     candidates = _sbpl_spellings(path)
     return any(
         _within(candidate, root_spelling)
@@ -277,9 +255,7 @@ def _within_any(path: str, roots: "tuple[str, ...]") -> bool:
 
 
 def _rule(operations: str, filters: list[str]) -> str:
-    """A filterless rule is UNCONDITIONAL, so ``(allow file-write* )`` grants the
-    whole filesystem. Every rule meant to be unconditional is written literally,
-    so reaching here empty always means a list collapsed."""
+    """A filterless rule is UNCONDITIONAL, so reaching here empty means a list collapsed."""
     if not filters:
         raise SandboxUnavailableError(
             f"the Seatbelt profile would apply {operations!r} unconditionally: no paths survived"
@@ -288,11 +264,7 @@ def _rule(operations: str, filters: list[str]) -> str:
 
 
 def _sbpl_spellings(path: str, *, resolve: bool = True) -> tuple[str, ...]:
-    """Include both /private aliases even when the symlink is absent.
-
-    Seatbelt needs both spellings. ``resolve = False`` excludes symlink targets,
-    preventing an /etc/gitconfig link from granting access to home files.
-    """
+    """Both /private aliases even when absent; ``resolve = False`` keeps symlink targets out."""
     selected = [posixpath.abspath(_validated(path))]
     if resolve:
         # Validated: a newline in a symlink target would end up inside a quoted string.
@@ -312,8 +284,7 @@ def _sbpl_spellings(path: str, *, resolve: bool = True) -> tuple[str, ...]:
 def _path_filters(paths: tuple[str, ...]) -> list[str]:
     """``(literal ...)`` per spelling, plus ``(subpath ...)`` for directories."""
     filters: list[str] = []
-    # Keyed by kind: a file and a directory can share a resolved spelling, and
-    # one set would let the file's literal suppress the directory's subpath.
+    # Keyed by kind, so a file's literal cannot suppress a directory's subpath.
     seen: set[tuple[str, str]] = set()
     for path in paths:
         if not os.path.exists(path):
@@ -342,10 +313,7 @@ def _literal_filters(paths: tuple[str, ...], *, resolve: bool = True) -> list[st
 
 
 def _ancestor_filters(spellings: tuple[str, ...]) -> list[str]:
-    """Allow ancestor metadata for path resolution, without directory listing.
-
-    Accept caller-resolved spellings; use posixpath for Windows-hosted tests.
-    """
+    """Allow ancestor metadata for path resolution, without directory listing."""
     filters: list[str] = []
     seen: set[str] = set()
     for spelling in spellings:
@@ -374,8 +342,7 @@ def _trusted_system_dir(path: str) -> bool:
 
 
 def _developer_paths() -> tuple[str, ...]:
-    """Versioned on many hosts (/Applications/Xcode_16.4.app), so the static list
-    above cannot name it."""
+    """Versioned on many hosts (/Applications/Xcode_16.4.app), so the static list cannot name it."""
     global _developer_paths_cache
     with _developer_paths_lock:
         if _developer_paths_cache is not None:
@@ -413,26 +380,17 @@ def _developer_paths() -> tuple[str, ...]:
 
 
 def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
-    """Exclude candidates under either workdir spelling before resolving them.
-
-    Otherwise a venv/lib symlink could grant reads of an external target such as
-    ~/.ssh. sys.prefix may retain either spelling, independently of the caller.
-    """
+    """Exclude candidates under either workdir spelling BEFORE resolving, or a venv/lib symlink grants ~/.ssh."""
     candidates: list[str] = [
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site"),
     ]
-    # Subdirectories, never the prefix: ``python -m venv .`` at a project root
-    # makes sys.prefix the project root, and the network is open, so a readable
-    # .env is an exportable one. All four prefixes, because for a uv-managed
-    # interpreter base_prefix and base_exec_prefix differ and lib-dynload hangs
-    # off the alias spelling.
+    # Subdirectories, never the prefix (``python -m venv .`` would expose .env); all four prefixes for uv.
     for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
         candidates.extend(
             posixpath.join(prefix, name)
             for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg", "ssl")
         )
-        # A python.org framework build loads its dyld image from <prefix>/Python, a
-        # FILE at the top of the prefix and under no read root.
+        # A framework build loads its dyld image from the FILE <prefix>/Python.
         candidates.append(posixpath.join(prefix, "Python"))
     try:
         paths = sysconfig.get_paths()
@@ -443,16 +401,14 @@ def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
         )
     except (KeyError, OSError):
         pass
-    # Same as the Linux backend: an editable install's source root is outside
-    # site-packages, and a candidate here inherits every guard below.
+    # Editable source roots are outside site-packages; candidates inherit every guard below.
     candidates.extend(editable_source_roots())
-    # Keep argv[0]'s spelling without granting its possibly private parent directory.
-    # Last so existing prefix/bin grants cover ordinary venv, conda and uv layouts.
+    # Keep argv[0]'s spelling without granting its possibly private parent.
     candidates.append(sys.executable)
     try:
         candidates.extend(site.getsitepackages())
     except AttributeError:
-        pass  # some virtualenv layouts omit getsitepackages; sysconfig covers them
+        pass
 
     selected: list[str] = []
     for candidate in candidates:
@@ -463,8 +419,6 @@ def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
             _within(written, root) for root in (workdir, os.path.realpath(workdir))
         ):
             continue
-        # Both spellings: a venv reached through a symlink needs the link's own path
-        # as well as the directory it lands on.
         for path in (posixpath.abspath(candidate), os.path.realpath(candidate)):
             # "/" or "/usr" as a read ROOT hands back most of the host.
             if path in ("/", "/usr") or not os.path.exists(path):
@@ -475,12 +429,7 @@ def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
 
 
 def _contained_optional_roots() -> tuple[str, ...]:
-    """Optional search roots whose target stays inside an approved prefix.
-
-    Dropped rather than un-resolved: the whole point of a search root is that
-    Homebrew's /usr/local/bin entries are symlinks into ../Cellar, so refusing to
-    follow them would grant a directory of dangling names.
-    """
+    """Optional search roots whose resolved target stays inside an approved prefix."""
     kept: list[str] = []
     for root in _OPTIONAL_READ_ROOTS:
         resolved = os.path.realpath(root)
@@ -493,10 +442,7 @@ def _contained_optional_roots() -> tuple[str, ...]:
 
 
 def runtime_paths_under(workdir: str) -> tuple[str, ...]:
-    """Protect Studio's runtime under every writable spelling of the workdir.
-
-    Resolved containment handles aliases in sys.prefix. External targets stay ungranted.
-    """
+    """Protect Studio's runtime under every writable spelling of the workdir."""
     roots: list[str] = []
     for root in (posixpath.abspath(workdir), os.path.realpath(workdir)):
         if root not in roots:
@@ -540,13 +486,7 @@ def runtime_paths_under(workdir: str) -> tuple[str, ...]:
 def _studio_state_rules(
     runtime_paths: tuple[str, ...], developer_paths: tuple[str, ...], workdir: str, private_tmp: str
 ) -> list[str]:
-    """Deny Studio's own state, then restore what the launch genuinely needs.
-
-    A blanket deny would be wrong: on a custom-home install the managed venv
-    lives under the Studio root, so the interpreter would stop being readable.
-    The restore list is the paths the profile already computed as necessary,
-    not a wider re-grant.
-    """
+    """Deny Studio's own state, then restore only paths the profile already needs (the venv may live there)."""
     state = studio_state_roots()
     if not state:
         return []
@@ -555,14 +495,7 @@ def _studio_state_rules(
         for path in (*runtime_paths, *developer_paths, workdir, private_tmp)
         if path and _within_any(path, state)
     )
-    # file-read-DATA, not file-read*. The workdir lives UNDER the Studio root
-    # on a default install, so denying read* also denies stat on the
-    # directories leading to it; os.makedirs then decides an existing ancestor
-    # is missing, tries to create it and fails with EPERM. Observed on
-    # macos-15, where test_python_exec_mnt_data_open_is_remapped_into_workdir
-    # failed that way and passed at the merge base. A directory entry existing
-    # is not the secret. auth.db's contents are, and reading a file or listing
-    # a directory is file-read-data, which stays denied.
+    # file-read-data, NOT file-read*: denying stat on the workdir's ancestors breaks os.makedirs.
     rules = [_rule("deny file-read-data file-map-executable", _path_filters(state))]
     if needed:
         rules.append(
@@ -586,16 +519,13 @@ def build_profile(
         *developer_paths,
         *_DEVICES,
         *runtime_paths,
-        # The model folders the approval gate already lets a tool read without
-        # asking. Without them a read from a registered folder passes the gate
-        # silently and then fails in here.
+        # Model folders the approval gate already reads silently.
         *model_library_roots(),
         workdir,
         private_tmp,
     )
     read_filters = ['(literal "/")', *_path_filters(readable_paths)]
-    # The optional literals may not exist but their parents still need stat, and
-    # so does mDNSResponder's socket, resolved before the network rule applies.
+    # Optional literals and mDNSResponder's socket still need parent stat.
     metadata_filters = _ancestor_filters(
         tuple(
             spelling
@@ -610,19 +540,14 @@ def build_profile(
     )
     write_filters = _path_filters((workdir, private_tmp))
     device_filters = _path_filters(_DEVICES)
-    # The workdir too, since TMPDIR points into it and an AF_UNIX bind is
-    # network-bind, not a file operation.
+    # The workdir too: an AF_UNIX bind is network-bind, not a file operation.
     tmp_subpaths = tuple(
         f"(subpath {_sbpl_string(spelling)})"
         for path in (private_tmp, workdir)
         for spelling in _sbpl_spellings(path)
     )
     mdns_filters = _literal_filters((_MDNSRESPONDER_SOCKET,))
-    # resolve = False so an /etc/gitconfig symlinked into the home does not turn
-    # a config read allowance into a home one.
-    # The editable import roots ride here rather than in read_filters because a
-    # literal grants the directory itself, which is all a listing needs, while
-    # _path_filters would add the subpath and hand back the whole checkout.
+    # resolve = False: a symlinked /etc/gitconfig must not grant the home. Editable roots as literals, not subpaths.
     optional_filters = _literal_filters(
         _OPTIONAL_READ_LITERALS + editable_import_roots(), resolve = False
     )
@@ -643,61 +568,42 @@ def build_profile(
         _rule("allow file-read* file-test-existence", read_filters),
         _rule("allow file-read* file-test-existence", optional_filters),
         _rule("allow file-map-executable", read_filters),
-        # AFTER the read allowances, because Seatbelt is last-match-wins. A
-        # custom Studio home under one of the optional read roots (a Homebrew
-        # prefix, say) is otherwise recursively readable, which hands over
-        # auth/auth.db and the HS256 jwt_secret to model-authored code and
-        # walks past tools.py's literal-path guard even in `required` mode.
-        # The runtime paths inside it are restored immediately below, since on
-        # a custom-home install the interpreter itself lives there.
+        # AFTER the read allowances (Seatbelt is last-match-wins), or a Studio home under a read root leaks auth.db.
         *_studio_state_rules(runtime_paths, developer_paths, workdir, private_tmp),
         _rule("allow file-write*", write_filters),
-        # AFTER the allowance, because Seatbelt is last-match-wins: Studio's own
-        # runtime stays read-only even when it lives under the writable workdir.
-        # See runtime_paths_under.
+        # AFTER the allowance (last-match-wins): Studio's runtime stays read-only even under the workdir.
         *(
             [_rule("deny file-write*", _path_filters(runtime_under))]
             if (runtime_under := runtime_paths_under(workdir))
             else []
         ),
         _rule("allow file-read* file-test-existence file-write-data", device_filters),
-        # bash process substitution hands the child /dev/fd/63, and opening it dups
-        # a descriptor already held.
+        # bash process substitution opens /dev/fd/63.
         '(allow file-read* (regex #"^/dev/fd/[0-9]+$"))',
         '(allow file-write* (regex #"^/dev/fd/[0-9]+$"))',
         _rule("allow file-ioctl", device_filters),
         "(allow ipc-posix-sem)",
-        # write-data, here and below: libomp writes its registration into the segment
-        # and OpenMP init fails without it. The probe loads no OpenMP.
+        # write-data: libomp writes its registration into the segment.
         "(allow ipc-posix-shm-read-data ipc-posix-shm-write-create "
         "ipc-posix-shm-write-data ipc-posix-shm-write-unlink "
         '(ipc-posix-name-regex #"^/__KMP_REGISTERED_LIB_[0-9]+$"))',
         "(allow ipc-posix-shm-read-data ipc-posix-shm-write-create "
         "ipc-posix-shm-write-data ipc-posix-shm-write-unlink "
         '(ipc-posix-name-regex #"^/torch_[0-9]+_[0-9]+_[0-9]+$"))',
-        # SharedMemory names its segment "/psm_" + token_hex(4), which the probe,
-        # passing only descriptors, misses.
         "(allow ipc-posix-shm-read-data ipc-posix-shm-write-create "
         "ipc-posix-shm-write-data ipc-posix-shm-write-unlink "
         '(ipc-posix-name-regex #"^/psm_[0-9a-f]+$"))',
-        # Gates socket() itself, unfiltered because a configd-backed resolver creates
-        # route and AF_SYSTEM sockets. That admits raw and kernel-control sockets:
-        # authority over the network, never over the filesystem.
+        # Unfiltered: configd resolvers create route and AF_SYSTEM sockets; network authority only, never filesystem.
         "(allow system-socket)",
-        # IP only: an unfiltered bind covers AF_UNIX, creating a socket at a path no
-        # file rule governs.
+        # IP only: an unfiltered bind covers AF_UNIX at paths no file rule governs.
         '(allow network-bind (local ip "*:*"))',
         "(allow network-inbound)",
-        # Filtered to ip because an unfiltered outbound covers AF_UNIX, and a
-        # connect() to /var/run/docker.sock starts an unconfined container with host
-        # bind mounts. "*:*" still leaves TCP and UDP, v4 and v6, open.
+        # Filtered to ip: an unfiltered outbound covers AF_UNIX, e.g. /var/run/docker.sock.
         '(allow network-outbound (remote ip "*:*"))',
-        # The AF_UNIX destinations the ip filter no longer covers.
-        # Each endpoint takes one path filter; combining paths breaks multiprocessing on macOS 15.
+        # One path filter per endpoint; combining paths breaks multiprocessing on macOS 15.
         *(f"(allow network-bind (local unix-socket {path}))" for path in tmp_subpaths),
         *(f"(allow network-outbound (remote unix-socket {path}))" for path in tmp_subpaths),
-        # Both filter forms are accepted and which one a macOS release matches is
-        # untestable here, while a missed DNS socket looks like a resolver bug.
+        # Both filter forms: which one a macOS release matches is untestable here.
         _rule("allow network-outbound", mdns_filters),
         *(f"(allow network-outbound (remote unix-socket {path}))" for path in mdns_filters),
         _rule("allow sysctl-read", sysctl_filters),
@@ -710,8 +616,7 @@ def build_profile(
 
 
 def _tmpdir(env: dict[str, str], workdir: str, private_tmp: str) -> str:
-    """The caller's TMPDIR when it is inside the workdir: ``private_tmp`` is
-    deleted when the call ends, dropping what ``tempfile`` wrote."""
+    """The caller's TMPDIR when inside the workdir: ``private_tmp`` is deleted when the call ends."""
     requested = env.get("TMPDIR") or ""
     if requested and _within(posixpath.abspath(requested), workdir):
         return requested
@@ -719,9 +624,7 @@ def _tmpdir(env: dict[str, str], workdir: str, private_tmp: str) -> str:
 
 
 def _sandbox_environment(env: dict[str, str], workdir: str, private_tmp: str) -> dict[str, str]:
-    """HOME and TMPDIR must point inside the sandbox: the real HOME is unreadable
-    and the per-user /var/folders tmp unwritable. DYLD_* is the dynamic-linker
-    injection surface."""
+    """HOME and TMPDIR must point inside the sandbox; DYLD_* is the linker-injection surface."""
     sanitized = {
         key: value
         for key, value in env.items()
@@ -746,9 +649,7 @@ def _sandbox_environment(env: dict[str, str], workdir: str, private_tmp: str) ->
             "TEMP": tmpdir,
             "XDG_RUNTIME_DIR": private_tmp,
             "PIP_TARGET": packages,
-            # <target>/bin holds pip's console entry points. LAST, since it is writable
-            # by the tool call and a planted binary must not shadow a bare command the
-            # approval logic treats as safe.
+            # <target>/bin LAST: it is tool-writable and must not shadow a command approval treats as safe.
             "PATH": os.pathsep.join(
                 part for part in (env.get("PATH") or "", posixpath.join(packages, "bin")) if part
             ),
@@ -767,8 +668,7 @@ def _sandbox_environment(env: dict[str, str], workdir: str, private_tmp: str) ->
 def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     ok, reason = available()
     if not ok:
-        # argv[0] is about to be the launcher; a user-writable one must not reach a
-        # Popen even if the probe should have caught it.
+        # A user-writable argv[0] must not reach Popen even if the probe missed it.
         raise SandboxUnavailableError(reason)
     try:
         workdir = _validated(os.path.abspath(plan.workdir))
@@ -780,16 +680,13 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     if posixpath.dirname(workdir) == workdir:
         # "/" would make the entire filesystem the writable set.
         raise WorkdirUnsafeError(f"the session workdir cannot be a filesystem root: {workdir}")
-    # file-write* covers the workdir subpath, so a file hard-linked outside
-    # writes through to the host inode.
+    # file-write* on the workdir writes through external hard links to the host inode.
     workdir_limitations = scan_workdir_for_host_channels(workdir)
-    # /tmp, not /var/folders: the profile has to name this directory, and this
-    # keeps it out of the confidential per-user container.
+    # /tmp, not /var/folders, keeping it out of the confidential per-user container.
     private_tmp = tempfile.mkdtemp(
         prefix = "us-seatbelt-", dir = "/tmp" if sys.platform == "darwin" else None
     )
     try:
-        # Passed in so the drop happens by origin as well as by target.
         runtime_paths = tuple(
             path for path in runtime_read_paths(workdir) if not _within(path, workdir)
         )

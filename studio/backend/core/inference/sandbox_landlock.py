@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Landlock ABI 6 scoping, which blocks host abstract AF_UNIX sockets.
-
-Those live in the shared network namespace, so no mount or bind rule hides them
-and seccomp cannot close it either (the address is behind a pointer). Best
-effort: on a pre-6.12 kernel nothing is applied and ``LIMITATIONS`` says so.
-"""
+"""Landlock ABI 6 scoping to block host abstract AF_UNIX sockets; best effort, pre-6.12 kernels record a limitation."""
 
 from __future__ import annotations
 
@@ -22,8 +17,7 @@ _NR_LANDLOCK_CREATE_RULESET = 444
 _NR_LANDLOCK_RESTRICT_SELF = 446
 _LANDLOCK_CREATE_RULESET_VERSION = 1 << 0
 _LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET = 1 << 0
-# struct landlock_ruleset_attr; the third member is ABI 6's, so this size is
-# itself the version check -- an older kernel answers E2BIG.
+# The size is the version check: an older kernel answers E2BIG.
 _RULESET_ATTR = struct.pack("=QQQ", 0, 0, _LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET)
 _PR_SET_NO_NEW_PRIVS = 38
 # Built at import, never in the forked child: see apply_abstract_scope.
@@ -31,37 +25,25 @@ _RULESET_ATTR_BUFFER = ctypes.create_string_buffer(_RULESET_ATTR, len(_RULESET_A
 _RULESET_ATTR_REF = ctypes.byref(_RULESET_ATTR_BUFFER)
 _RULESET_ATTR_SIZE = ctypes.c_size_t(len(_RULESET_ATTR))
 _ZERO_FLAGS = ctypes.c_uint32(0)
-# The child binds one socket and calls two syscalls, so this is a hang budget,
-# not a work budget.
 _PROBE_TIMEOUT_SECONDS = 5.0
 
 try:
-    # Resolved at import, never in the forked child, where an import can
-    # deadlock on a lock a thread held at fork time.
+    # Resolved at import, never in the forked child, where an import can deadlock.
     _libc = ctypes.CDLL(None, use_errno = True)
     _libc.syscall.restype = ctypes.c_long
 except (OSError, TypeError, AttributeError):  # pragma: no cover
-    # TypeError is Windows: CDLL(None) means "the running process" only where
-    # dlopen has that convention, and ctypes there tests the name for a
-    # separator before anything else. Importing this module raised, which is not
-    # something a Linux-only helper should do on a platform that never calls it.
+    # TypeError is Windows, where CDLL(None) is not the running process.
     _libc = None
 
 
 @functools.lru_cache(maxsize = 1)
 def abstract_scope_supported() -> bool:
-    """Cache whether a child can apply the scope, not just query its ABI.
-
-    Outer sandboxes and nesting limits can deny application. Probe in a child
-    because restrict_self is irreversible. Failure retains the abstract-socket
-    limitation without disabling filesystem and PID isolation.
-    """
+    """Cache whether a child can apply the scope; probed in a child because restrict_self is irreversible."""
     if _libc is None:
         return False
     if not _abi_reports_scope():
         return False
-    # Bind in the unscoped parent: the child may reach its own sockets, but must
-    # not reach sockets outside its Landlock domain.
+    # Bind in the unscoped parent, so the child must not reach it once scoped.
     import socket as _socket
 
     name = b"\0unsloth-scope-" + os.urandom(6).hex().encode()
@@ -96,8 +78,7 @@ def abstract_scope_supported() -> bool:
     os.close(write_fd)
     answer = b""
     try:
-        # A forked child can deadlock on inherited locks. Bound the read and kill
-        # a stalled child; timeout leaves the scope unproven, not tools disabled.
+        # Bound the read and kill a stalled child; a timeout leaves the scope unproven.
         if select.select([read_fd], [], [], _PROBE_TIMEOUT_SECONDS)[0]:
             answer = os.read(read_fd, 1)
     except OSError:
@@ -110,8 +91,7 @@ def abstract_scope_supported() -> bool:
 
 
 def _reap(pid: int) -> None:
-    """SIGKILL then wait. Harmless for a child that already exited: it is a
-    zombie until reaped, so the signal lands on nothing and the wait returns."""
+    """SIGKILL then wait; harmless for an already-exited child."""
     try:
         os.kill(pid, signal.SIGKILL)
     except OSError:
@@ -139,11 +119,7 @@ def _abi_reports_scope() -> bool:
 
 
 def apply_abstract_scope() -> None:
-    """Apply in the forked child without raising or logging; the probe checks success.
-
-    Reuse import-time allocations to reduce inherited-lock deadlocks before
-    exec, when Popen's timeout has not started. This is not async-signal-safe.
-    """
+    """Apply in the forked child without raising or logging; the probe checks success."""
     if _libc is None:
         return
     ctypes.set_errno(0)
@@ -156,8 +132,7 @@ def apply_abstract_scope() -> None:
     if ruleset < 0:
         return
     try:
-        # Required before restrict_self for an unprivileged caller. Set again
-        # here so this does not depend on which pre-exec it was composed with.
+        # Required before restrict_self for an unprivileged caller; set here too.
         _libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
         _libc.syscall(_NR_LANDLOCK_RESTRICT_SELF, ctypes.c_int(int(ruleset)), _ZERO_FLAGS)
     finally:

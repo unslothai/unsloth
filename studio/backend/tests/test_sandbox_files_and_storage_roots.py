@@ -1279,8 +1279,6 @@ def test_the_executor_leaves_nothing_in_the_sandbox(tmp_path, monkeypatch):
     tools = _shared_setup_1(monkeypatch, tmp_path)
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_scratch"))
     tools._python_exec("print('hi')", session_id = "__LOCALID_scratch")
-    # .cache is the sandbox's own model-cache mount point: a dot directory that
-    # holds nothing, which is why the removal below still goes through.
     assert sorted(p.name for p in workdir.iterdir() if p.name != ".cache") == [
         tools._SANDBOX_MARKER,
         tools._SANDBOX_TEMP_DIRNAME,
