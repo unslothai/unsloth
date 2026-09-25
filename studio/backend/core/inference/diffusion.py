@@ -4488,7 +4488,6 @@ class DiffusionBackend:
             )
         ):
             from .diffusion_nvfp4_install import ensure_flashinfer_for_nvfp4
-
             _nvfp4_install_outcome = ensure_flashinfer_for_nvfp4(
                 device, logger = logger, local_files_only = local_files_only
             )

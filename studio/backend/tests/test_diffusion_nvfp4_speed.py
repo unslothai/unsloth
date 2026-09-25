@@ -266,7 +266,6 @@ def test_the_preflight_enters_the_probed_device(stub_kernels):
 
 def test_the_prewarm_enters_each_layers_device(stub_kernels):
     class NVFP4FlashInferLinear:
-
         def __init__(self):
             self.in_features = 1536
             self.out_features = 12288
