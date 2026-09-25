@@ -111,6 +111,7 @@ from .diffusion_memory import (
     normalize_memory_mode,
     plan_diffusion_memory,
     plan_fits_total_capacity,
+    plan_keeps_transformer_resident,
     raise_on_image_activation_shortfall,
     raise_on_unified_memory_shortfall,
     reclaimable_snapshot_device_memory,
@@ -1339,6 +1340,19 @@ def _no_recast_pipeline_class(pipe_cls: Any) -> Any:
 
 
 _NO_WEIGHT = object()
+
+
+def _torchao_offload_decline(what: str, plan: Any) -> str:
+    """Why a torchao build was declined under ``plan``, quoting the floor that keeps it resident."""
+    estimates = getattr(plan, "estimates", None) or {}
+    floor = estimates.get("resident_transformer_floor_mib")
+    streamed = f", {floor} MiB even with the text encoders streamed" if floor is not None else ""
+    return (
+        f"{what} '{plan.offload_policy}' offload here "
+        f"({estimates.get('resident_required_mib')} MiB required vs a "
+        f"{estimates.get('safe_device_budget_mib')} MiB budget{streamed}), "
+        "and torchao tensors cannot be offloaded"
+    )
 
 
 def _has_active_lora(loras: Any) -> bool:
@@ -3347,15 +3361,16 @@ class DiffusionBackend:
                         repo_id = repo_id,
                         fetch_base = fetch_base,
                         transformer_resident_override_mib = candidate.steady_transformer_mib,
-                        companion_override_mib = candidate.companions_mib,
-                        text_encoder_override_mib = candidate.text_encoders_mib,
+                        **self._candidate_companion_overrides(
+                            candidate, fam, base or repo_id or "", target, text_encoder_quant
+                        ),
                         device_memory_override = replace(memory, free_mib = memory.total_mib),
                     )
-                    if planned.offload_policy != OFFLOAD_NONE:
+                    if not plan_keeps_transformer_resident(planned):
                         logger.info(
-                            "diffusion.denoiser_prequant: an artifact-sized plan for %s still offloads "
-                            "on this card, and offload moves the denoiser via Module.to(), so the "
-                            "released shards are kept",
+                            "diffusion.denoiser_prequant: an artifact-sized plan for %s streams the "
+                            "denoiser on this card, and offload moves the denoiser via Module.to(), "
+                            "so the released shards are kept",
                             rung,
                         )
                         declined = True
@@ -4819,14 +4834,15 @@ class DiffusionBackend:
                             transformer_resident_override_mib = (
                                 seed_estimate.steady_transformer_mib
                             ),
-                            companion_override_mib = seed_estimate.companions_mib,
-                            text_encoder_override_mib = seed_estimate.text_encoders_mib,
+                            **self._candidate_companion_overrides(
+                                seed_estimate, fam, base, target, text_encoder_quant
+                            ),
                             text_encoder_quant = text_encoder_quant,
                         )
                         if seed_estimate is not None
                         else None
                     )
-                    if seeded_plan is None or seeded_plan.offload_policy != OFFLOAD_NONE:
+                    if seeded_plan is None or not plan_keeps_transformer_resident(seeded_plan):
                         # Offload hooks use Module.to(), which torchao tensors reject, and live free
                         # memory can undercut the CAPACITY the plan settled this against.
                         logger.info(
@@ -5137,13 +5153,10 @@ class DiffusionBackend:
                                 transformer_resident_override_mib = (
                                     candidate.transient_transformer_mib
                                 ),
-                                # Pass the companion estimate so prefetched base shards aren't double-counted.
-                                companion_override_mib = candidate.companions_mib,
-                                # ... and its text-encoder share, so the planner can still price the streamed-encoder
-                                # group tier on this path. getattr: a candidate without the split passes None and
-                                # keeps the previous decision.
-                                text_encoder_override_mib = getattr(
-                                    candidate, "text_encoders_mib", None
+                                # Companion estimate avoids double-counting prefetched shards; its encoder share
+                                # keeps the streamed-encoder tiers priceable.
+                                **self._candidate_companion_overrides(
+                                    candidate, fam, base, target, text_encoder_quant
                                 ),
                                 text_encoder_quant = text_encoder_quant,
                             )
@@ -5159,7 +5172,7 @@ class DiffusionBackend:
                         if candidate is not None:
                             replanned = _replan_candidate()
                             if (
-                                replanned.offload_policy != OFFLOAD_NONE
+                                not plan_keeps_transformer_resident(replanned)
                                 # Explicit balanced/low_vram picks offload BY MODE, so a fresh snapshot cannot change
                                 # it.
                                 and normalize_memory_mode(memory_mode)
@@ -5170,7 +5183,7 @@ class DiffusionBackend:
                                 # (settled) and replan once rather than letting a transient foreign allocation force
                                 # the GGUF fallback.
                                 replanned = _replan_candidate()
-                            if replanned.offload_policy != OFFLOAD_NONE:
+                            if not plan_keeps_transformer_resident(replanned):
                                 logger.info(
                                     "diffusion.transformer_quant_declined: required=%s MiB "
                                     "budget=%s MiB free=%s MiB policy=%s (%s)",
@@ -5180,15 +5193,10 @@ class DiffusionBackend:
                                     replanned.offload_policy,
                                     "; ".join(replanned.reasons),
                                 )
-                                transformer_quant_decline = (
-                                    f"the quantised build still needs '{replanned.offload_policy}' "
-                                    f"offload here ("
-                                    f"{replanned.estimates.get('resident_required_mib')} MiB "
-                                    f"required vs a "
-                                    f"{replanned.estimates.get('safe_device_budget_mib')} MiB "
-                                    "budget), and torchao tensors cannot be offloaded"
+                                transformer_quant_decline = _torchao_offload_decline(
+                                    "the quantised build still needs", replanned
                                 )
-                            if replanned.offload_policy == OFFLOAD_NONE:
+                            if plan_keeps_transformer_resident(replanned):
                                 quant_plan = replanned
                                 # The GGUF plan declined resident; a prequant-sized replan says nothing about the
                                 # dense build
@@ -5230,7 +5238,7 @@ class DiffusionBackend:
                             if retry_candidate is not None:
                                 candidate = retry_candidate
                                 retry_plan = _replan_candidate()
-                                if retry_plan.offload_policy == OFFLOAD_NONE:
+                                if plan_keeps_transformer_resident(retry_plan):
                                     logger.info(
                                         "diffusion.transformer_quant: auto's pick does not fit "
                                         "resident; retrying at %s, whose checkpoint is cached",
@@ -5398,6 +5406,55 @@ class DiffusionBackend:
                                     "loading the GGUF",
                                     prequant_candidate.transient_transformer_mib,
                                 )
+                        # The INT8 artifact outweighs the GGUF, so plan it on its own; a plan streaming the
+                        # transformer cannot carry torchao.
+                        if (
+                            prequant is not None
+                            and not dense_declined
+                            and getattr(plan.device_memory, "memory_kind", None) != "unified_memory"
+                        ):
+                            sized_candidate = resolve_dense_quant_candidate(
+                                fam = fam,
+                                target = target,
+                                requested = transformer_quant,
+                                base_repo = base,
+                                prequant_path = transformer_prequant_path,
+                                force_dense = False,
+                                logger = logger,
+                            )
+                            if sized_candidate is not None and sized_candidate.prequant:
+                                sized_plan = self._plan_memory(
+                                    target,
+                                    single_file_path,
+                                    base,
+                                    fam,
+                                    memory_mode,
+                                    cpu_offload,
+                                    kind = kind,
+                                    repo_id = repo_id,
+                                    fetch_base = fetch_base,
+                                    transformer_resident_override_mib = (
+                                        sized_candidate.transient_transformer_mib
+                                    ),
+                                    **self._candidate_companion_overrides(
+                                        sized_candidate, fam, base, target, text_encoder_quant
+                                    ),
+                                    text_encoder_quant = text_encoder_quant,
+                                )
+                                if plan_keeps_transformer_resident(sized_plan):
+                                    quant_plan = sized_plan
+                                    if sized_plan.offload_policy != OFFLOAD_NONE:
+                                        dense_fallback_allowed = False
+                                else:
+                                    dense_declined = True
+                                    dense_fallback_allowed = False
+                                    transformer_quant_decline = _torchao_offload_decline(
+                                        "the pre-quantised transformer needs", sized_plan
+                                    )
+                                    logger.info(
+                                        "diffusion.transformer_quant_declined: %s",
+                                        transformer_quant_decline,
+                                    )
                         # A dense misfit with a prequant source only forbids the dense fallback; with none, auto could
                         # still have picked a DIFFERENT scheme that does have a hosted checkpoint. auto returns one
                         # winner, and a winner with no published prequant that also cannot build dense would drop the
@@ -5445,7 +5502,7 @@ class DiffusionBackend:
                                         retry_candidate.transient_transformer_mib
                                     ),
                                     # Same pre-cast encoder pricing as the fit check above.
-                                    companion_override_mib = self._precast_scaled_companions_mib(
+                                    **self._candidate_companion_overrides(
                                         retry_candidate,
                                         fam,
                                         base,
@@ -5458,7 +5515,7 @@ class DiffusionBackend:
                             )
                             if (
                                 retry_plan is not None
-                                and retry_plan.offload_policy == OFFLOAD_NONE
+                                and plan_keeps_transformer_resident(retry_plan)
                                 # Same unified caveat as above: 'none' is not a fit there, so the rung being retried
                                 # has to be sized explicitly before it is pinned.
                                 and unified_memory_shortfall_message(
@@ -5928,21 +5985,25 @@ class DiffusionBackend:
                                         transformer_resident_override_mib = (
                                             estimate.steady_transformer_mib
                                         ),
-                                        companion_override_mib = estimate.companions_mib,
-                                        text_encoder_override_mib = estimate.text_encoders_mib,
+                                        **self._candidate_companion_overrides(
+                                            estimate, fam, base, target, text_encoder_quant
+                                        ),
                                         text_encoder_quant = text_encoder_quant,
                                     )
-                                    if replanned.offload_policy == OFFLOAD_NONE:
+                                    if plan_keeps_transformer_resident(replanned):
                                         logger.info(
                                             "diffusion.transformer_quant: %s fits resident (%d MiB "
-                                            "steady); dropping the bf16 plan's '%s' offload",
+                                            "steady, encoders streamed=%s); replacing the bf16 plan's "
+                                            "'%s' offload",
                                             preview_scheme,
                                             estimate.steady_transformer_mib,
+                                            replanned.offload_policy != OFFLOAD_NONE,
                                             plan.offload_policy,
                                         )
                                         plan = replanned
+                            keeps_resident = plan_keeps_transformer_resident(plan)
                             if (
-                                plan.offload_policy != OFFLOAD_NONE
+                                not keeps_resident
                                 and native_scheme is None
                                 and native_offload_scheme is not None
                             ):
@@ -5953,7 +6014,7 @@ class DiffusionBackend:
                                     native_scheme,
                                     plan.offload_policy,
                                 )
-                            if plan.offload_policy != OFFLOAD_NONE and native_scheme is None:
+                            if not keeps_resident and native_scheme is None:
                                 logger.info(
                                     "diffusion.transformer_quant: skipped (the memory plan picked '%s' "
                                     "offload, which moves the transformer via Module.to())",
@@ -6955,6 +7016,29 @@ class DiffusionBackend:
             return False
         except Exception:  # noqa: BLE001 -- unreadable cache: treat the shards as missing
             return False
+
+    @staticmethod
+    def _candidate_companion_overrides(
+        candidate: Any,
+        fam: DiffusionFamily,
+        base: str,
+        target: Any,
+        text_encoder_quant: Optional[str],
+    ) -> dict[str, Optional[int]]:
+        """``_plan_memory`` overrides for a dense-quant candidate, pricing the encoder the load actually opens."""
+        companions = DiffusionBackend._precast_scaled_companions_mib(
+            candidate, fam, base, target, text_encoder_quant
+        )
+        encoders = getattr(candidate, "text_encoders_mib", None)
+        if encoders and companions is not None:
+            raw = getattr(candidate, "companions_mib", None)
+            if raw is not None:
+                # companions - VAE is the priced encoder share; the VAE term is unscaled in both.
+                encoders = max(0, int(encoders) - (int(raw) - int(companions)))
+        return {
+            "companion_override_mib": companions,
+            "text_encoder_override_mib": encoders,
+        }
 
     @staticmethod
     def _precast_scaled_companions_mib(
