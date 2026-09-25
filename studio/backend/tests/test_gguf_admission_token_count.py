@@ -13,6 +13,12 @@ from core.inference.llama_admission import LlamaAdmissionQueue
 import routes.inference as inference
 
 
+def _llama_httpx():
+    # Patch the module llama_cpp resolves: another test can swap sys.modules["httpx"].
+    from core.inference import llama_cpp
+    return llama_cpp.httpx
+
+
 def _backend(count):
     return SimpleNamespace(
         base_url = "test-token-count",
@@ -136,7 +142,7 @@ def test_tool_recost_keeps_the_model_count(monkeypatch):
 
 @pytest.mark.parametrize("failed_path", ["legacy", "native", "unsupported", "invalid", "timeout"])
 def test_exact_count_endpoint_failover_preserves_short_chat_concurrency(monkeypatch, failed_path):
-    import httpx
+    httpx = _llama_httpx()
     from types import MethodType
     from core.inference.llama_cpp import LlamaCppBackend
 
@@ -203,7 +209,7 @@ def test_exact_count_endpoint_failover_preserves_short_chat_concurrency(monkeypa
 
 
 def test_native_count_preserves_rendering_options_and_tools(monkeypatch):
-    import httpx
+    httpx = _llama_httpx()
     import json
     from types import MethodType
     from core.inference.llama_cpp import LlamaCppBackend
@@ -251,7 +257,7 @@ def test_native_count_preserves_rendering_options_and_tools(monkeypatch):
 
 
 def test_all_count_endpoints_unavailable_still_reserves_pool(monkeypatch):
-    import httpx
+    httpx = _llama_httpx()
     from types import MethodType
     from core.inference.llama_cpp import LlamaCppBackend
 
@@ -485,7 +491,8 @@ def test_cancelled_tool_round_does_not_count_or_recost(cancel_during_count):
 
 def test_stop_after_native_count_failure_skips_fallback(monkeypatch):
     import threading
-    import httpx
+
+    httpx = _llama_httpx()
     from types import MethodType
     from core.inference.llama_cpp import LlamaCppBackend
 
