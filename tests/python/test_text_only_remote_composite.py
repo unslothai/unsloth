@@ -719,6 +719,58 @@ def test_loader_and_vision_rebase_the_caller_quantization_config():
         ), path.name
 
 
+def _from_pretrained_node(path, cls):
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    klass = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == cls)
+    return next(
+        n for n in klass.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained"
+    )
+
+
+def _qc_reads_after_rebase(fn, name):
+    # Line numbers where `name` is (re)bound from kwargs["quantization_config"] after the rebase call.
+    rebase = min(
+        n.lineno
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call)
+        and getattr(n.func, "id", None) == "_rebase_user_quantization_config"
+    )
+    reads = []
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == name for t in n.targets
+        ):
+            if (
+                n.lineno > rebase
+                and "quantization_config" in ast.unparse(n.value)
+                and "kwargs" in ast.unparse(n.value)
+            ):
+                reads.append(n.lineno)
+    return rebase, reads
+
+
+def test_post_load_quantization_config_stamp_uses_the_rebased_config():
+    # FastModel stamps its local quantization_config into model.config after the load. That local is read
+    # from kwargs before the text-only plan rebases the caller's skip names, so it must be re-read after the
+    # rebase, or a saved standalone decoder keeps composite skip names and quantizes excluded modules on reload.
+    fn = _from_pretrained_node(LOADER_PATH, "FastModel")
+    rebase, reads = _qc_reads_after_rebase(fn, "quantization_config")
+    assert reads, "FastModel keeps the pre-rebase quantization_config for the post-load stamp"
+    stamp = max(
+        n.lineno
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call)
+        and ast.unparse(n).startswith(
+            "model.config.update({'quantization_config': quantization_config"
+        )
+    )
+    assert rebase < min(reads) < stamp
+    # FastBaseModel reads the caller's config only after its own rebase.
+    fn = _from_pretrained_node(VISION_PATH, "FastBaseModel")
+    rebase, reads = _qc_reads_after_rebase(fn, "user_quantization_config")
+    assert reads
+
+
 # ---------------------------------------------------------------- .bin checkpoints
 
 

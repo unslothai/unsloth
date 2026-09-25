@@ -1953,6 +1953,8 @@ class FastModel(FastBaseModel):
                     )
                     _merge_key_mapping(kwargs, _text_key_mapping)
                     _rebase_user_quantization_config(kwargs, _text_key_mapping)
+                    # The post-load stamp writes this into model.config; use the rebased copy the load used.
+                    quantization_config = kwargs.get("quantization_config", quantization_config)
                     model_config = text_config
                     is_vlm = False
                     text_only_decoder = True
