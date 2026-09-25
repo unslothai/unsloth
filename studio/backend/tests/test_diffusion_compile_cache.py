@@ -1334,3 +1334,93 @@ def test_generate_marks_the_key_used_before_the_render():
     before = src.index("graphs_before = fresh_compile_count()")
     render = src.index("pending = list(chunks)", before)
     assert "compile_cache.note_use(state.compile_cache_ctx)" in src[before:render]
+
+
+def test_evict_rereads_last_used_before_deleting(monkeypatch, tmp_path):
+    """A key another process opens after the scan read its timestamp must survive the eviction pass."""
+    import os
+    import time
+
+    old = _key_dir(tmp_path, "a" * 32, 1000, age_s = 5 * 86400)
+    other = _key_dir(tmp_path, "b" * 32, 1000, age_s = 4 * 86400)
+    real_dir_bytes = cc._dir_bytes
+
+    def dir_bytes_then_claim(path):
+        size = real_dir_bytes(path)
+        if path == old:
+            now = time.time()
+            os.utime(old / cc._LAST_USED_NAME, (now, now))  # another process's begin() lands here
+        return size
+
+    monkeypatch.setattr(cc, "_dir_bytes", dir_bytes_then_claim)
+    assert cc.evict(root = tmp_path, max_bytes = 1500) == ["b" * 32]
+    assert old.exists() and not other.exists()
+
+
+def test_evict_counts_only_what_it_actually_removed(monkeypatch, tmp_path):
+    """A key whose files cannot go (held open on Windows, permissions) must not count as freed space."""
+    import shutil
+
+    stuck = _key_dir(tmp_path, "a" * 32, 1000, age_s = 5 * 86400)
+    nxt = _key_dir(tmp_path, "b" * 32, 1000, age_s = 4 * 86400)
+    keep = _key_dir(tmp_path, "c" * 32, 1000, age_s = 3 * 86400)
+    real_rmtree = shutil.rmtree
+
+    def rmtree_keeps_the_oldest(path, *args, **kwargs):
+        if str(path).startswith(str(stuck)) or "a" * 32 in str(path):
+            return  # ignore_errors swallowed a failure: nothing went
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", rmtree_keeps_the_oldest)
+    cc.evict(root = tmp_path, max_bytes = 2500)
+    assert not nxt.exists() and keep.exists()
+    assert cc._dir_bytes(tmp_path) <= 2500
+    # Once the files can go, the leftover is collected rather than leaked outside the budget's view.
+    monkeypatch.setattr(shutil, "rmtree", real_rmtree)
+    cc.evict(root = tmp_path, max_bytes = 2500)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["c" * 32]
+
+
+def test_evict_skips_a_key_it_cannot_take_and_moves_on(monkeypatch, tmp_path):
+    import os
+
+    held = _key_dir(tmp_path, "a" * 32, 1000, age_s = 5 * 86400)
+    nxt = _key_dir(tmp_path, "b" * 32, 1000, age_s = 4 * 86400)
+    real_rename = os.rename
+
+    def rename_refuses_held(src, dst):
+        if str(src) == str(held):
+            raise PermissionError("in use by another process")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(os, "rename", rename_refuses_held)
+    assert cc.evict(root = tmp_path, max_bytes = 1500) == ["b" * 32]
+    assert held.exists() and (held / cc._MANIFEST_NAME).exists() and not nxt.exists()
+
+
+def test_a_warm_hit_enforces_the_budget_without_a_save(monkeypatch, tmp_path, fake_megacache):
+    """A cache already over budget (an upgrade from the unbounded cache, or a lowered limit) must shrink even when
+    every load is a clean hit that never rewrites its bundle."""
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.delenv(cc._ENV_SAVE, raising = False)
+    monkeypatch.setenv(cc._ENV_SYNC, "1")
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert cc.save(ctx) is True
+    cc.restore(ctx)
+    stale = _key_dir(tmp_path, "d" * 32, 4096, age_s = 30 * 86400)
+    monkeypatch.setenv(cc._ENV_MAX_GB, str(1024 / (1 << 30)))
+    # Load-only promises a read-only cache: nothing is deleted.
+    monkeypatch.setenv(cc._ENV_SAVE, "0")
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    cc.restore(ctx)
+    assert stale.exists()
+    monkeypatch.delenv(cc._ENV_SAVE)
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    try:
+        assert ctx.hit is True and ctx.saved is True
+        assert cc.save_async(ctx) is False
+        assert not stale.exists()
+        assert ctx.manifest_path.exists() and ctx.bundle.exists()
+    finally:
+        cc.restore(ctx)

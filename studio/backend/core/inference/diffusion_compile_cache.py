@@ -31,7 +31,7 @@ first compiled forward); ``save`` writes the bundle + manifest after the warmup 
 All env-gated and best-effort; torch imported lazily.
 
 DISK: every key keeps its own inductor dir next to its bundle, so the root is bounded by
-``UNSLOTH_DIFFUSION_COMPILE_CACHE_MAX_GB`` (20 GB by default): after a save, the least
+``UNSLOTH_DIFFUSION_COMPILE_CACHE_MAX_GB`` (20 GB by default): on load and after a save, the least
 recently used keys are deleted until it fits, never one this process has open or one used
 in the last hour.
 
@@ -67,6 +67,7 @@ import shutil
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -78,7 +79,7 @@ from typing import Any, Optional
 # UNSLOTH_DIFFUSION_COMPILE_CACHE_SYNC: 1 makes save_async write inline on the calling thread, as it did before the
 # background worker existed. For tests and for debugging a save that looks like it never ran.
 # UNSLOTH_DIFFUSION_COMPILE_CACHE_MAX_GB: disk budget for the whole cache root (every key's bundle, manifest and
-# inductor dir). Past it, the least recently used keys are deleted after a save. 0 disables the eviction.
+# inductor dir). Past it, the least recently used keys are deleted on load and after a save. 0 disables the eviction.
 _ENV_MODE = "UNSLOTH_DIFFUSION_COMPILE_CACHE"
 _ENV_DIR = "UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR"
 _ENV_SAVE = "UNSLOTH_DIFFUSION_COMPILE_CACHE_SAVE"
@@ -105,6 +106,8 @@ _TOUCH_INTERVAL_SECONDS = 600.0
 # A key used this recently is never evicted, whoever is using it: another process may be compiling into its inductor
 # dir right now, and the throttled touch above keeps a key in use inside this window.
 _EVICT_GRACE_SECONDS = 3600.0
+# A key being deleted is first renamed to ``<key>.<pid>.<rand>`` plus this, so it is never half there under its name.
+_TOMBSTONE_SUFFIX = ".evicting"
 
 # A bundle file this new is NOT collectable even when the manifest does not name it: another process may have just
 # published it and not yet committed its manifest, and the whole point of the split is that the loser of that race
@@ -481,6 +484,10 @@ def begin(
         # Loaded artifacts == on-disk artifacts, so nothing to save. A new static-compile shape
         # re-dirties via register_shape; mode "on" keeps saving.
         ctx.saved = True
+    # Here, not only after a save: a load that hits never saves, so a cache already over the budget (an upgrade from
+    # the unbounded one, or a lowered limit) would otherwise never shrink.
+    if _save_enabled(mode):
+        _evict_soon(logger)
     return ctx
 
 
@@ -984,14 +991,40 @@ def _last_used(path: Path) -> float:
         return 0.0
 
 
-def _remove_key_dir(path: Path) -> None:
-    # The manifest first: it is the commit point, so a removal that dies halfway leaves a miss, never a manifest
-    # naming a bundle that is gone or half of an inductor dir it still claims.
+def _is_tombstone(path: Path) -> bool:
+    name = path.name
+    return name.endswith(_TOMBSTONE_SUFFIX) and name[32:33] == "." and _is_key_dir(Path(name[:32]))
+
+
+def _remove_key_dir(path: Path) -> Optional[int]:
+    """Take ``path`` out of the key namespace, then delete it. Returns the bytes left behind, or None if not taken.
+
+    The rename is atomic, so a process opening the key afterwards sees a clean miss and compiles into a fresh dir under
+    the same name instead of into files being deleted under it. Windows refuses it while a file inside is open, which
+    is exactly the key that must be skipped."""
+    tomb = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}{_TOMBSTONE_SUFFIX}")
     try:
-        (path / _MANIFEST_NAME).unlink()
+        os.rename(path, tomb)
     except OSError:
+        return None
+    shutil.rmtree(tomb, ignore_errors = True)
+    return _dir_bytes(tomb) if tomb.exists() else 0
+
+
+def _evict_soon(logger: Any) -> None:
+    """Run ``evict`` off the load path (inline under the SYNC env). Never raises."""
+    if sync_saves():
+        evict(logger = logger)
+        return
+    try:
+        threading.Thread(
+            target = evict,
+            kwargs = {"logger": logger},
+            name = "unsloth-compile-cache-evict",
+            daemon = True,
+        ).start()
+    except Exception:  # noqa: BLE001
         pass
-    shutil.rmtree(path, ignore_errors = True)
 
 
 def evict(
@@ -1012,11 +1045,17 @@ def evict(
         if budget is None or not root.is_dir():
             return removed
         entries = []
+        leftover = 0
         for child in root.iterdir():
-            if child.is_symlink() or not child.is_dir() or not _is_key_dir(child):
+            if child.is_symlink() or not child.is_dir():
                 continue
-            entries.append((_last_used(child), child, _dir_bytes(child)))
-        total = sum(size for _, _, size in entries)
+            if _is_tombstone(child):
+                # An earlier eviction that could not finish: retry, and count what still stands against the budget.
+                shutil.rmtree(child, ignore_errors = True)
+                leftover += _dir_bytes(child) if child.exists() else 0
+            elif _is_key_dir(child):
+                entries.append((_last_used(child), child, _dir_bytes(child)))
+        total = leftover + sum(size for _, _, size in entries)
         if total <= budget:
             return removed
         with _live_lock:
@@ -1025,10 +1064,13 @@ def evict(
         for used, path, size in sorted(entries, key = lambda e: e[0]):
             if total <= budget:
                 break
-            if str(path) in live or used > cutoff:
+            # Re-read the stamp: another process may have opened the key since the scan.
+            if str(path) in live or used > cutoff or _last_used(path) > cutoff:
                 continue
-            _remove_key_dir(path)
-            total -= size
+            left = _remove_key_dir(path)
+            if left is None:
+                continue
+            total -= size - left
             removed.append(path.name)
         if removed:
             _info(
