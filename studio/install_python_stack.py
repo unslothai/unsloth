@@ -323,6 +323,17 @@ def _is_windows_multiarch_gfx(gfx_arch: "str | None") -> bool:
     return _bare_gfx(gfx_arch) in _WINDOWS_MULTIARCH_GFX
 
 
+def _multiarch_device_pack_installed(gfx_arch: "str | None") -> bool:
+    """Whether the venv carries AMD's amd-torch-device-<gfx> kernel pack for this card."""
+    try:
+        from importlib import metadata
+
+        metadata.distribution(f"amd-torch-device-{_bare_gfx(gfx_arch)}")
+        return True
+    except Exception:
+        return False
+
+
 def _windows_multiarch_torch_pkg_specs(gfx_arch: str) -> tuple[str, str, str]:
     gfx = _bare_gfx(gfx_arch)
     return (
@@ -5747,6 +5758,18 @@ def _ensure_rocm_torch() -> None:
         # now resolves elsewhere (dGPU added, or the #7776 repick) would keep the old family
         # forever. setup.ps1 force-reinstalls every run, so this only bites standalone
         # `studio update`. Act only on a family read back positively, never on a guess.
+        # A per-family build has no kernels for a multi-arch card: its device pack decides.
+        if (
+            _torch_already_rocm
+            and _win_rocm_pin is None
+            and _is_windows_multiarch_gfx(gfx_arch)
+            and not _multiarch_device_pack_installed(gfx_arch)
+        ):
+            _safe_print(
+                f"   installed ROCm torch has no {gfx_arch} device pack -- reinstalling from "
+                "AMD's multi-arch index"
+            )
+            _torch_already_rocm = False
         if _torch_already_rocm and _win_rocm_pin is None:
             _want = (_GFX_TO_AMD_INDEX_ARCH.get(gfx_arch or "") or "").lower()
             _have = _installed_rocm_wheel_family()

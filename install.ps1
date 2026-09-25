@@ -8777,7 +8777,7 @@ exit 0
         if (-not $ROCmGfxArch) {
             # 1. Manual override: set UNSLOTH_ROCM_GFX_ARCH=gfx1151 before running.
             if ($env:UNSLOTH_ROCM_GFX_ARCH) {
-                $ROCmGfxArch = $env:UNSLOTH_ROCM_GFX_ARCH.Trim().ToLower()
+                $ROCmGfxArch = ($env:UNSLOTH_ROCM_GFX_ARCH.Trim().ToLower() -split ':')[0]  # drop HIP feature suffixes (gfx1010:xnack-)
                 $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
                 substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $ROCmGfxArch" "Cyan"
             }
