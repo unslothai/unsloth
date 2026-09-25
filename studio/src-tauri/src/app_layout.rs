@@ -163,9 +163,14 @@ pub fn reset_app_window_layout_initialized(
     // The initial native restore may still be maximized when repair starts.
     // Compact it before the frontend can reveal setup or a fallback window.
     window.unmaximize().map_err(|error| error.to_string())?;
-    window.set_resizable(true).map_err(|error| error.to_string())?;
     window
-        .set_size(tauri::LogicalSize::new(SETUP_WINDOW_WIDTH, SETUP_WINDOW_HEIGHT))
+        .set_resizable(true)
+        .map_err(|error| error.to_string())?;
+    window
+        .set_size(tauri::LogicalSize::new(
+            SETUP_WINDOW_WIDTH,
+            SETUP_WINDOW_HEIGHT,
+        ))
         .map_err(|error| error.to_string())?;
     window.center().map_err(|error| error.to_string())
 }

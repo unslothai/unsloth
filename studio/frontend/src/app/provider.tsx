@@ -276,7 +276,11 @@ async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
       clearConstraints: () => win.setSizeConstraints(null),
       enableResize: () => win.setResizable(true),
       resizeForSetup: async () => {
-        const measured = await measureTauriWindowLayout(windowModule, win, isCurrent);
+        const measured = await measureTauriWindowLayout(
+          windowModule,
+          win,
+          isCurrent,
+        );
         if (!measured) return false;
         const setupSize = fitWindowSize(
           PREFERRED_SETUP_WINDOW_SIZE,

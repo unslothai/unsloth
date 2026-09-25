@@ -69,7 +69,14 @@ test("repair setup unmaximizes before sizing or locking the window", async () =>
   });
   assert.equal(completed, true);
   assert.equal(maximized, false);
-  assert.deepEqual(events, ["reset", "unmaximize", "clear", "unlocked", "sized", "fixed"]);
+  assert.deepEqual(events, [
+    "reset",
+    "unmaximize",
+    "clear",
+    "unlocked",
+    "sized",
+    "fixed",
+  ]);
 });
 
 test("waits for the first native restore event before settling", () => {
