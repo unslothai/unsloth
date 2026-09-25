@@ -108,6 +108,65 @@ test("recalling a quantized model carries the selected adapters into its load", 
       undefined,
     );
   }
+
+  // An opaque pipeline loaded under an explicit family recalls with it after a restart (UI at Auto).
+  const opaque = {
+    repoId: "/cache/models--org--custom/snapshots/abc",
+    kind: "pipeline",
+    familyOverride: "flux.1",
+  };
+  const loads: unknown[][] = [];
+  const scope = {
+    useCallback: (fn: unknown) => fn,
+    lastLoad: { current: null },
+    status: { loaded: false, repo_id: null },
+    loras: [],
+    familyOverride: "auto",
+    familyOverrideForPick,
+    cpuOffload: false,
+    speedMode: "auto",
+    transformerQuant: "auto",
+    textEncoderQuant: "auto",
+    attentionBackend: "auto",
+    memoryMode: "auto",
+    transformerCache: "auto",
+    selectedGpu: "auto",
+    gpuChoices: [],
+    busy: null,
+    imagePresets: { hydrated: true },
+    prompt: "a teapot",
+    rememberedModel: opaque,
+    pendingRecalledGeneration: { current: null },
+    loadSeq: { current: 3 },
+    workflow: "txt2img",
+    handleGenerate: () => {
+      throw new Error("generation must wait for the load");
+    },
+    handleLoad: async (...args: unknown[]) => {
+      loads.push(args);
+      return true;
+    },
+  };
+  const callbacks = new Function(...Object.keys(scope), outputText)(
+    ...Object.values(scope),
+  );
+  await callbacks.handleGenerateWithRecall();
+  assert.equal(
+    (loads[0][2] as { family_override?: string }).family_override,
+    "flux.1",
+  );
+});
+
+test("recall keeps an explicit family and drops Auto", () => {
+  const model = {
+    repoId: "/cache/models--org--custom/snapshots/abc",
+    kind: "pipeline" as const,
+    familyOverride: "flux.1",
+  };
+  rememberImageModel(model);
+  assert.deepEqual(readImageModel(), model);
+  rememberImageModel({ ...model, familyOverride: "auto" });
+  assert.equal(readImageModel()?.familyOverride, undefined);
 });
 
 test("recall keeps the exact GGUF artifact", () => {

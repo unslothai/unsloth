@@ -234,6 +234,19 @@ import {
 } from "./train/train-base-selector";
 
 /** Whether this pick may receive a transformer precision request. Unknown repos defer to the backend. */
+function withEngagedFamily(
+  model: RememberedImageModel,
+  status: Pick<DiffusionStatus, "resolved">,
+): RememberedImageModel {
+  const family = resolvedFamilyOverrideSelection(status.resolved?.family_override);
+  return {
+    repoId: model.repoId,
+    kind: model.kind,
+    ...(model.filename ? { filename: model.filename } : {}),
+    ...(family && family !== "auto" ? { familyOverride: family } : {}),
+  };
+}
+
 function sendsTransformerQuant(kind: string | null | undefined, repoId: string): boolean {
   return (
     isDenseQuantKind(kind) &&
@@ -2378,8 +2391,9 @@ export function ImagesPage({
         setStatusIfNewest(ticket, loaded);
         toast.success("Model loaded");
         if (lastLoad.current && matchesRememberedModel(lastLoad.current, loaded)) {
-          rememberImageModel(lastLoad.current);
-          setRememberedModel(lastLoad.current);
+          const remembered = withEngagedFamily(lastLoad.current, loaded);
+          rememberImageModel(remembered);
+          setRememberedModel(remembered);
         }
         setBusy(null);
         // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.
@@ -3166,7 +3180,7 @@ export function ImagesPage({
       // retires nothing: it fetches files, and a staged load already in flight still owns the page.
       const downloadOnly = modelSelectionAction === "download";
       const token = downloadOnly ? 0 : pickGuard.claim();
-      const downloadSnapshot = downloadOnly ? currentLoadAdvanced(repoId) : undefined;
+      const downloadSnapshot = downloadOnly ? currentLoadAdvanced(repoId, false) : undefined;
       const isCurrent = () => isMounted.current &&
         (downloadOnly || pickGuard.holds(token));
       // onResolved skips the label for a download-only pick, so this snapshot is never installed
@@ -4237,11 +4251,14 @@ export function ImagesPage({
         (kind === "pipeline" ||
           ((kind === "gguf" || kind === "single_file") && status.gguf_filename))
       ) {
-        const model: RememberedImageModel = {
-          repoId: status.repo_id,
-          kind,
-          filename: status.gguf_filename ?? undefined,
-        };
+        const model = withEngagedFamily(
+          {
+            repoId: status.repo_id,
+            kind,
+            filename: status.gguf_filename ?? undefined,
+          },
+          status,
+        );
         rememberImageModel(model);
         setRememberedModel(model);
       }
@@ -4264,7 +4281,12 @@ export function ImagesPage({
     const started = await handleLoad(
       rememberedModel.repoId,
       { kind: rememberedModel.kind, filename: rememberedModel.filename },
-      currentLoadAdvanced(rememberedModel.repoId, true, true),
+      {
+        ...currentLoadAdvanced(rememberedModel.repoId, true, true),
+        ...(rememberedModel.familyOverride
+          ? { family_override: rememberedModel.familyOverride }
+          : {}),
+      },
     );
     if (!started) pendingRecalledGeneration.current = null;
   }, [

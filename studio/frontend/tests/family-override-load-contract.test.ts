@@ -161,3 +161,15 @@ test("a pinned Hub pipeline keeps Hub planning separate from its physical load t
     assert.ok(/stage\((?:entriesToStage|entries)\)/.test(text), file);
   }
 });
+
+test("image GGUF download-only snapshot never carries the family override", () => {
+  const text = source("../src/features/images/images-page.tsx");
+  assert.ok(
+    text.includes(
+      "const downloadSnapshot = downloadOnly ? currentLoadAdvanced(repoId, false) : undefined;",
+    ),
+  );
+  assert.ok(
+    !text.includes("downloadOnly ? currentLoadAdvanced(repoId) : undefined"),
+  );
+});
