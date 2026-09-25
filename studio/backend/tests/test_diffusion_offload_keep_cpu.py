@@ -341,10 +341,8 @@ def _fake_cgroup(
         (1, 64 << 30, 24 << 30, 400 << 30, True),
         # 24 GiB left: 8 GiB would remain, under the container's 9.6 GiB reserve.
         (2, 64 << 30, 40 << 30, 400 << 30, False),
-        # A limit above the host changes nothing.
         (2, 1 << 50, 0, 400 << 30, True),
         (2, 1 << 50, 0, 90 << 30, False),
-        # No limit: the host reading, as before.
         (2, None, 0, 400 << 30, True),
         (2, None, 0, 90 << 30, False),
     ],
@@ -359,7 +357,7 @@ def test_the_ram_gate_is_sized_from_the_container(
         "virtual_memory",
         lambda: types.SimpleNamespace(total = 512 << 30, available = host_available),
     )
-    # 16 GiB of weights (a power of two, so no chunk rounding), never allocated: the gate only reads sizes, and the first allocation is refused.
+    # 16 GiB (power of two, no rounding): the gate refuses before any allocation.
     data = types.SimpleNamespace(
         nbytes = 16 << 30, is_contiguous = lambda: True, is_pinned = lambda: False
     )
