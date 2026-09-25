@@ -72,11 +72,13 @@ def reset_schema_state_for_tests() -> None:
 def get_connection() -> sqlite3.Connection:
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
+    # One key for the check and the add, or a home reached through a link never finds its entry
+    # and runs the schema again on every connection.
+    schema_path = db_path.resolve()
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    if db_path not in _schema_ready:
+    if schema_path not in _schema_ready:
         with _schema_lock:
-            schema_path = db_path.resolve()
             if schema_path not in _schema_ready:
                 try:
                     _ensure_schema(conn)

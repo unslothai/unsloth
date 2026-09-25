@@ -10,7 +10,7 @@ import {
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { type KeyboardEventHandler, type ReactNode, useState } from "react";
+import { type KeyboardEventHandler, type ReactNode, useRef, useState } from "react";
 
 import {
   Dialog,
@@ -28,11 +28,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { StarPointedIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import { type MediaZoom, MediaZoomStage } from "./media-zoom";
-import { useProjectSubmenu } from "./project-submenu";
+import { type MediaNoun, useProjectSubmenu } from "./project-submenu";
 
 export interface MediaViewerActions {
   /** The white pill, e.g. Chat about this. */
@@ -50,8 +51,17 @@ export interface MediaViewerActions {
 
 const MEDIA_ZOOMS = [0.25, 0.5, 0.75, 1, 1.25, 1.5] as const;
 
-function percent(scale: number): string {
-  return `${Math.round(scale * 100)}%`;
+const MORE_ACTIONS: Record<MediaNoun, TranslationKey> = {
+  image: "library.viewer.moreActionsImage",
+  video: "library.viewer.moreActionsVideo",
+  clip: "library.viewer.moreActionsClip",
+  file: "library.viewer.moreActionsFile",
+};
+
+function percent(scale: number, locale: string): string {
+  return new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 0 }).format(
+    scale,
+  );
 }
 
 /** The header's scale pill: the current scale, and a menu of the ones on offer. */
@@ -66,12 +76,13 @@ export function ScaleMenu({
   options: { value: string; label: string }[];
   onChange: (value: string) => void;
 }) {
+  const t = useT();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild={true}>
         <button
           type="button"
-          aria-label="Scale"
+          aria-label={t("library.viewer.scale")}
           className="mr-1 flex h-9 shrink-0 items-center gap-1 rounded-full bg-muted px-3.5 text-sm tabular-nums outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
         >
           {label}
@@ -93,7 +104,7 @@ export function ScaleMenu({
 
 /**
  * One file, nearly as tall as the window. Images and videos can be scaled and, once larger than the
- * frame, dragged. Shared by the Library and the Images and Video pages, so a file opens the same way everywhere.
+ * frame, dragged. Page-agnostic, so any page that shows files can open them the same way.
  */
 export function MediaViewer({
   open,
@@ -114,13 +125,15 @@ export function MediaViewer({
   /** Images and videos: adds the scale menu. */
   media: boolean;
   /** Used in labels and messages, e.g. "image". */
-  noun: string;
+  noun: MediaNoun;
   actions: MediaViewerActions;
   /** Anything else for the header, before the actions (e.g. Save). */
   extra?: ReactNode;
   onKeyDown?: KeyboardEventHandler<HTMLDivElement>;
   children: ReactNode;
 }) {
+  const t = useT();
+  const locale = useLocale();
   const [menuOpen, setMenuOpen] = useState(false);
   const [zoom, setZoom] = useState<MediaZoom>("fit");
   const [fitScale, setFitScale] = useState<number | null>(null);
@@ -130,6 +143,9 @@ export function MediaViewer({
     setWasOpen(open);
     if (open) setZoom("fit");
   }
+  // Opened from a card, a row or a link rather than a DialogTrigger, so Radix has nothing to return
+  // focus to on close and would drop it on <body>. Whatever had focus when it opened gets it back.
+  const returnFocus = useRef<HTMLElement | null>(null);
   const project = useProjectSubmenu({ noun, onAddToProject: actions.onAddToProject });
   const iconButton =
     "flex size-9 shrink-0 items-center justify-center rounded-full outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-muted";
@@ -146,6 +162,16 @@ export function MediaViewer({
       <DialogContent
         showCloseButton={false}
         onKeyDown={onKeyDown}
+        onOpenAutoFocus={() => {
+          const active = document.activeElement;
+          returnFocus.current = active instanceof HTMLElement && active !== document.body ? active : null;
+        }}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          const target = returnFocus.current;
+          returnFocus.current = null;
+          if (target?.isConnected) target.focus({ preventScroll: true });
+        }}
         className="flex h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] w-[min(92vw,1200px)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none"
       >
         <div className="flex items-center gap-2 py-3 pl-6 pr-4">
@@ -158,11 +184,14 @@ export function MediaViewer({
           {extra}
           {media && fitScale !== null && (
             <ScaleMenu
-              label={percent(zoom === "fit" ? fitScale : zoom)}
+              label={percent(zoom === "fit" ? fitScale : zoom, locale)}
               value={String(zoom)}
               options={[
-                { value: "fit", label: "Fit" },
-                ...MEDIA_ZOOMS.map((scale) => ({ value: String(scale), label: percent(scale) })),
+                { value: "fit", label: t("library.viewer.fit") },
+                ...MEDIA_ZOOMS.map((scale) => ({
+                  value: String(scale),
+                  label: percent(scale, locale),
+                })),
               ]}
               onChange={(value) => setZoom(value === "fit" ? "fit" : Number(value))}
             />
@@ -181,8 +210,8 @@ export function MediaViewer({
           {actions.onDownload && (
             <button
               type="button"
-              aria-label="Download"
-              title="Download"
+              aria-label={t("library.viewer.download")}
+              title={t("library.viewer.download")}
               onClick={actions.onDownload}
               className={iconButton}
             >
@@ -192,7 +221,7 @@ export function MediaViewer({
           {hasMenu && (
             <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
               <DropdownMenuTrigger asChild={true}>
-                <button type="button" aria-label={`More actions for this ${noun}`} className={iconButton}>
+                <button type="button" aria-label={t(MORE_ACTIONS[noun])} className={iconButton}>
                   <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-5" />
                 </button>
               </DropdownMenuTrigger>
@@ -220,21 +249,25 @@ export function MediaViewer({
                       strokeWidth={1.75}
                       className={cn("size-icon", actions.favorite && "[&_path]:fill-current")}
                     />
-                    {actions.favorite ? "Remove from Favorites" : "Add to Favorites"}
+                    {t(
+                      actions.favorite
+                        ? "library.menu.removeFromFavorites"
+                        : "library.menu.addToFavorites",
+                    )}
                   </DropdownMenuItem>
                 )}
                 {project.submenu}
                 {actions.onDelete && (
                   <DropdownMenuItem variant="destructive" onClick={actions.onDelete}>
                     <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-                    Delete
+                    {t("common.delete")}
                   </DropdownMenuItem>
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
           )}
           <DialogClose asChild={true}>
-            <button type="button" aria-label="Close" className={iconButton}>
+            <button type="button" aria-label={t("library.viewer.close")} className={iconButton}>
               <HugeiconsIcon icon={Cancel01Icon} strokeWidth={1.75} className="size-5" />
             </button>
           </DialogClose>

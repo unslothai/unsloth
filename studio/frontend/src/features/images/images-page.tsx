@@ -20,7 +20,6 @@ import {
   Image03Icon,
   ImageAdd02Icon,
   InformationCircleIcon,
-  LibrariesIcon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -87,7 +86,8 @@ import { MediaRailResizeHandle } from "@/components/media-rail-resize-handle";
 import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-width";
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
-import { MediaPageLink } from "@/components/media-page-link";
+import { LibraryPageLink } from "@/components/media-page-link";
+import { translate } from "@/i18n";
 import { useLibraryFavorites } from "@/features/library";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
@@ -3268,7 +3268,9 @@ export function ImagesPage({
       if (found) {
         setSelectedId(routedItem);
       } else {
-        toast("Could not find this image", { description: "It may be archived or deleted." });
+        toast(translate("library.toast.imageNotFound"), {
+          description: translate("library.toast.notFoundDescription"),
+        });
       }
     });
   }, [routedItem, navigateSelf, loadGallery, loadMore]);
@@ -4543,11 +4545,8 @@ export function ImagesPage({
           </div>
           <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-2">
-              <MediaPageLink
-                to="/library"
-                libraryTab="images"
-                label="Library"
-                icon={LibrariesIcon}
+              <LibraryPageLink
+                tab="images"
                 labelClassName="hidden @[50rem]:inline"
                 arrowClassName="hidden @[50rem]:block"
               />

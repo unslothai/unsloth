@@ -20,6 +20,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { useT } from "@/i18n";
 import { useEffect, useRef, useState } from "react";
 
 interface NameDialogProps {
@@ -59,6 +60,7 @@ function NameForm({
   setBusy: (busy: boolean) => void;
   onClose: () => void;
 }) {
+  const t = useT();
   const [value, setValue] = useState(initialValue);
   const input = useRef<HTMLInputElement>(null);
 
@@ -98,11 +100,11 @@ function NameForm({
         value={value}
         maxLength={255}
         onChange={(event) => setValue(event.target.value)}
-        aria-label="Name"
+        aria-label={t("library.dialog.name")}
       />
       <DialogFooter className="mt-5">
         <Button type="button" variant="ghost" onClick={onClose}>
-          Cancel
+          {t("common.cancel")}
         </Button>
         <Button type="submit" disabled={!trimmed || busy}>
           {submitLabel}
@@ -127,6 +129,7 @@ export function ConfirmDeleteDialog({
   onConfirm: () => void;
   onOpenChange: (open: boolean) => void;
 }) {
+  const t = useT();
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
@@ -135,10 +138,46 @@ export function ConfirmDeleteDialog({
           <AlertDialogDescription>{description}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
           <AlertDialogAction variant="destructive" onClick={onConfirm}>
             {confirmLabel}
           </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+/** A note that could not be saved on the way out: try again, keep editing, or close without it. */
+export function UnsavedChangesDialog({
+  error,
+  onRetry,
+  onDiscard,
+  onKeepEditing,
+}: {
+  /** Why the save failed; the dialog shows while this is set. */
+  error: string | null;
+  onRetry: () => void;
+  onDiscard: () => void;
+  onKeepEditing: () => void;
+}) {
+  const t = useT();
+  const reason = error && !/[.!?。！？؟।]$/.test(error) ? `${error}.` : error;
+  return (
+    <AlertDialog open={error !== null} onOpenChange={(open) => !open && onKeepEditing()}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{t("library.dialog.unsavedTitle")}</AlertDialogTitle>
+          <AlertDialogDescription>
+            {t("library.dialog.unsavedDescription", { reason })}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>{t("library.dialog.keepEditing")}</AlertDialogCancel>
+          <AlertDialogAction variant="destructive" onClick={onDiscard}>
+            {t("library.dialog.discardChanges")}
+          </AlertDialogAction>
+          <AlertDialogAction onClick={onRetry}>{t("library.dialog.tryAgain")}</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

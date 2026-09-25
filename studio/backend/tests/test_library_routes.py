@@ -30,6 +30,8 @@ def client(monkeypatch):
     # Only the Library's own uploads: the other sources read chat, gallery and sandbox stores this
     # test does not seed.
     monkeypatch.setattr(library, "_SOURCES", (library._upload_items,))
+    library.invalidate_listing()
+    library._thumbnail_cache.clear()
     app = FastAPI()
     app.dependency_overrides[get_current_subject] = lambda: "unsloth"
     app.include_router(library_routes.router, prefix = "/api/library")
@@ -145,6 +147,23 @@ def test_deleting_a_folder_moves_its_contents_up(client):
         outer["id"]: None,
         child["id"]: outer["id"],
     }
+
+
+def test_a_utf16_note_is_saved_back_as_utf16(client):
+    # Windows PowerShell 5 writes UTF-16LE with a BOM and CRLF endings.
+    [note] = _upload(client, ("log.txt", "\ufeffold\r\n".encode("utf-16le"), "text/plain"))
+    upload_id = note.removeprefix("upload:")
+    response = client.put(
+        f"/api/library/uploads/{upload_id}/text",
+        json = {"text": "\ufeffnew\r\n", "encoding": "utf-16le"},
+    )
+    assert response.status_code == 200
+    items, _ = _items(client)
+    assert client.get(items[note]["fileUrl"]).content == b"\xff\xfen\x00e\x00w\x00\r\x00\n\x00"
+    response = client.put(
+        f"/api/library/uploads/{upload_id}/text", json = {"text": "x", "encoding": "latin-1"}
+    )
+    assert response.status_code == 422
 
 
 def test_notes_are_editable_and_deletable(client):
@@ -338,9 +357,50 @@ def test_a_video_whose_job_cannot_be_dropped_stays_to_delete_again(client, monke
 
 
 def test_favorites_lists_only_favorite_ids(client):
-    client.patch("/api/library/items", json = {"id": "image:abc", "favorite": True})
-    client.patch("/api/library/items", json = {"id": "image:def", "favorite": False})
-    assert client.get("/api/library/favorites").json() == {"ids": ["image:abc"]}
+    [starred, plain] = _upload(client, ("a.txt", b"a", "text/plain"), ("b.txt", b"b", "text/plain"))
+    client.patch("/api/library/items", json = {"id": starred, "favorite": True})
+    client.patch("/api/library/items", json = {"id": plain, "favorite": False})
+    # Deleted by its gallery, not the Library: the star stays in the overlay but is not listed.
+    client.patch("/api/library/items", json = {"id": "image:gone", "favorite": True})
+    assert client.get("/api/library/favorites").json() == {"ids": [starred]}
+
+
+def test_deleting_an_item_drops_its_overlay_row(client):
+    from storage import library_db
+
+    [note] = _upload(client, ("n.txt", b"n", "text/plain"))
+    client.patch("/api/library/items", json = {"id": note, "favorite": True})
+    client.patch("/api/library/items", json = {"id": "image:gone", "favorite": True})
+    assert client.post("/api/library/items/delete", json = {"id": note}).status_code == 200
+    # Already gone from its source: the delete still clears what the Library kept about it.
+    assert client.post("/api/library/items/delete", json = {"id": "image:gone"}).status_code == 404
+    assert library_db.list_entries() == {}
+
+
+def test_leftovers_of_a_crash_are_swept_from_the_uploads_folder(client):
+    import os
+    import time
+
+    [kept, interrupted] = _upload(
+        client, ("k.txt", b"k", "text/plain"), ("i.txt", b"i", "text/plain")
+    )
+    directory = library.uploads_dir()
+    interrupted_id = interrupted.split(":", 1)[1]
+    # A delete that stopped after setting its file aside: the row still lists it.
+    os.replace(directory / interrupted_id, directory / f".{interrupted_id}.deleting")
+    stale = [directory / ".0123.tmp", directory / f".{'a' * 32}.deleting"]
+    fresh = directory / ".4567.tmp"
+    for path in (*stale, fresh):
+        path.write_bytes(b"x")
+    old = time.time() - 2 * library._LEFTOVER_AGE_SECONDS
+    for path in (*stale, directory / f".{interrupted_id}.deleting"):
+        os.utime(path, (old, old))
+    library._swept_at.clear()
+    items = _items(client)[0]
+    assert {kept, interrupted} <= set(items)
+    names = {path.name for path in directory.iterdir()}
+    assert names == {kept.split(":", 1)[1], interrupted_id, fresh.name}
+    assert client.get(items[interrupted]["fileUrl"]).content == b"i"
 
 
 def test_fine_tuned_models_are_listed_but_not_deleted_here(client, monkeypatch):
@@ -494,7 +554,11 @@ def test_add_to_project_refuses_what_it_cannot_copy(client, project):
 def revealed(monkeypatch):
     import utils.paths.path_utils as path_utils
 
+    import utils.paths.file_manager as file_manager
+
     calls = []
+    # CI runs on a headless Linux, where no file manager is reported.
+    monkeypatch.setattr(file_manager, "file_manager_kind", lambda: "files")
     monkeypatch.setattr(path_utils, "reveal_in_file_manager", lambda path: calls.append(str(path)))
     return calls
 
@@ -588,6 +652,12 @@ def test_an_oversized_desktop_drop_is_refused_before_copying(client, monkeypatch
         raise AssertionError("copied an oversized drop")
 
     monkeypatch.setattr(library, "save_upload", copied)
+    # Refused by the batch's check, before any grant is spent...
+    monkeypatch.setattr(library, "check_native_upload", lambda lease: ("big.bin", 10))
+    response = client.post("/api/library/uploads", data = {"nativePathLeases": ["lease"]})
+    assert response.status_code == 413
+    # ...and again when read, for a file that grew since.
+    monkeypatch.setattr(library, "check_native_upload", lambda lease: ("big.bin", 1))
     response = client.post("/api/library/uploads", data = {"nativePathLeases": ["lease"]})
     assert response.status_code == 413
 
@@ -1446,6 +1516,9 @@ def test_an_unplugged_folder_is_reported_once_and_the_bar_falls_back(client, tmp
     logged = []
 
     class Logger:
+        def debug(self, message, *args, **kwargs):
+            logged.append(message % args)
+
         def info(self, message, *args, **kwargs):
             logged.append(message % args)
 
@@ -1483,3 +1556,488 @@ def test_folders_on_a_disk_without_file_ids_compare_by_spelling(tmp_path, monkey
     assert not library._inside(b / "x", a)
     assert library._same_folder(a, tmp_path / "a")
     assert library._inside(a / "x", a)
+
+
+# ── Second review ────────────────────────────────────────────────
+
+
+def test_explorer_gets_the_documented_select_command(tmp_path, monkeypatch):
+    import subprocess
+
+    import utils.paths.path_utils as path_utils
+
+    target = tmp_path / "a b" / "c.txt"
+    target.parent.mkdir()
+    target.write_text("x")
+    calls = []
+    monkeypatch.setattr(subprocess, "Popen", lambda command, *args, **kwargs: calls.append(command))
+    monkeypatch.setattr(path_utils.sys, "platform", "win32")
+    monkeypatch.setattr(path_utils.os, "name", "nt")
+    path_utils.reveal_in_file_manager(target)
+    monkeypatch.undo()
+    # One string: a list quotes "/select,<path>" whole, which Explorer misreads when it has a space.
+    assert calls == [f'explorer /select,"{target}"']
+
+
+@pytest.mark.parametrize(
+    "path, root, inside",
+    [
+        (r"\\?\C:\Users\me\Studio\library\x", r"C:\Users\me\Studio", True),
+        (r"C:\Users\me\Studio\library\x", r"\\?\c:\users\ME\studio", True),
+        (r"\\?\UNC\server\share\Studio\x", r"\\server\share\Studio", True),
+        (r"C:\Users\me\Studio2\x", r"C:\Users\me\Studio", False),
+        (r"D:\Studio\x", r"C:\Studio", False),
+        (r"C:\Studio", r"C:\Studio", False),
+        ("C:\\x", "C:\\", True),
+    ],
+)
+def test_containment_ignores_the_windows_long_path_prefix(path, root, inside):
+    import ntpath
+
+    from utils.paths.path_utils import is_path_within
+    assert is_path_within(path, root, pathmod = ntpath) is inside
+
+
+def test_a_projects_own_files_are_listed(client, monkeypatch, tmp_path):
+    import os
+
+    from core.inference.tools import resolve_sandbox_workdir
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects home"))
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    project = studio_db.upsert_chat_project(
+        {"id": "p-lib", "name": "Research", "createdAt": 1, "updatedAt": 1}
+    )
+    # Studio gives every project a folder of its own, so the column is never empty.
+    assert project["rootPath"]
+    directory = resolve_sandbox_workdir("project-p-lib")
+    os.makedirs(os.path.join(directory, "files"), exist_ok = True)
+    with open(os.path.join(directory, "files", "notes.txt"), "w") as handle:
+        handle.write("x")
+    item = _items(client)[0]["sandbox:project-p-lib:files/notes.txt"]
+    assert item["threadTitle"] == "Research"
+
+    # One pointed at a folder of the user's own keeps its files out of the Library.
+    own = tmp_path / "My code"
+    conn = studio_db.get_connection()
+    conn.execute("UPDATE chat_projects SET root_path = ? WHERE id = 'p-lib'", (str(own),))
+    conn.commit()
+    conn.close()
+    assert not library._studio_project_root(str(own), library._project_workspaces())
+    assert "sandbox:project-p-lib:files/notes.txt" not in _items(client)[0]
+
+
+def test_types_come_from_a_fixed_extension_map(client, monkeypatch):
+    import mimetypes
+
+    # Whatever the OS registry says: Windows apps remap types, and mimetypes calls .ts a video.
+    monkeypatch.setattr(mimetypes, "guess_type", lambda *_a, **_k: ("video/mp2t", None))
+    for name in ("app.ts", "view.tsx", "mod.mts"):
+        assert library._guess_type(name) == "text/typescript", name
+    assert library._guess_type("photo.JPG") == "image/jpeg"
+    assert library._guess_type("mystery.xyz") == "application/octet-stream"
+
+
+def test_an_upload_is_typed_by_its_extension_not_the_client(client):
+    [page, pdf, odd, blob] = _upload(
+        client,
+        ("notes.txt", b"<script>1</script>", "text/html"),
+        ("report.pdf", b"%PDF-1.7", "text/html"),
+        ("track.xyz", b"x", "audio/x, text/html"),
+        ("data.bin2", b"x", "application/xhtml+xml"),
+    )
+    items, _ = _items(client)
+    assert items[page]["contentType"] == "text/plain"
+    assert items[pdf]["contentType"] == "application/pdf"
+    # A list of types, or a type a browser would run, is not stored for an unknown extension.
+    assert items[odd]["contentType"] == "application/octet-stream"
+    assert items[blob]["contentType"] == "application/octet-stream"
+
+
+def test_only_an_exact_media_type_is_served_inline(client, monkeypatch):
+    from storage import library_db
+
+    [clip] = _upload(client, ("clip.xyz", b"x", "application/octet-stream"))
+    upload_id = clip.split(":", 1)[1]
+    url = f"/api/library/uploads/{upload_id}/file"
+    conn = library_db.get_connection()
+    for stored, inline in (
+        ("audio/x, text/html", False),
+        ("audio/mpeg", True),
+        ("image/png; charset=binary", True),
+        ("image/svg+xml", False),
+    ):
+        conn.execute(
+            "UPDATE library_uploads SET content_type = ? WHERE id = ?", (stored, upload_id)
+        )
+        conn.commit()
+        response = client.get(url)
+        assert response.headers["x-content-type-options"] == "nosniff", stored
+        disposition = response.headers.get("content-disposition", "")
+        assert ("attachment" not in disposition) is inline, stored
+        if not inline:
+            assert response.headers["content-type"] == "application/octet-stream"
+    conn.close()
+
+
+def test_a_failed_batch_gives_its_desktop_grants_back(client, lease_secret, tmp_path, monkeypatch):
+    from .test_rag_native_drop_upload import _sign
+
+    first, second = tmp_path / "a.txt", tmp_path / "b.txt"
+    first.write_text("a")
+    second.write_text("b")
+    leases = [_sign(first), _sign(second)]
+    original = library.save_upload
+    calls = []
+
+    def fail_second(*args):
+        calls.append(args[0])
+        if len(calls) == 2:
+            raise OSError("disk full")
+        return original(*args)
+
+    monkeypatch.setattr(library, "save_upload", fail_second)
+    with pytest.raises(OSError):
+        client.post("/api/library/uploads", data = {"nativePathLeases": leases})
+    assert _items(client)[0] == {}
+    # The same grants work on a retry: nothing the failed batch spent stays spent.
+    monkeypatch.setattr(library, "save_upload", original)
+    response = client.post("/api/library/uploads", data = {"nativePathLeases": leases})
+    assert response.status_code == 200, response.text
+    assert len(response.json()["ids"]) == 2
+    # And a grant that was used is still single use.
+    response = client.post("/api/library/uploads", data = {"nativePathLeases": leases[:1]})
+    assert response.status_code == 400
+
+
+def test_a_bad_grant_refuses_the_batch_before_any_grant_is_spent(client, lease_secret, tmp_path):
+    from .test_rag_native_drop_upload import _sign
+
+    good = tmp_path / "good.txt"
+    good.write_text("x")
+    lease = _sign(good)
+    forged = _sign(good, secret = b"x" * 32)
+    response = client.post("/api/library/uploads", data = {"nativePathLeases": [lease, forged]})
+    assert response.status_code == 400
+    # A generic reason: the grant's own can name a path in the workspace.
+    assert response.json()["detail"] == "The dropped file could not be read. Drop it again."
+    response = client.post("/api/library/uploads", data = {"nativePathLeases": [lease]})
+    assert response.status_code == 200, response.text
+
+
+@pytest.fixture
+def signed_in(monkeypatch):
+    async def subject(_request, _token):
+        return "unsloth"
+
+    monkeypatch.setattr(library_routes, "subject_for_header_or_query_token", subject)
+
+
+def test_an_upload_downloads_under_the_name_it_was_given(client, signed_in):
+    # Stored as a bare id, so the header names it after the upload, not the file on disk.
+    [upload] = _upload(client, ("re:port*q3?.csv", b"a,b", "text/csv"))
+    response = client.get("/api/library/items/download", params = {"id": upload})
+    assert response.status_code == 200
+    assert response.content == b"a,b"
+    disposition = response.headers["content-disposition"]
+    assert disposition.startswith('attachment; filename="re port q3.csv"')
+    assert response.headers["content-length"] == "3"
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.parametrize(
+    "name, safe",
+    [
+        ("report.csv", "report.csv"),
+        ("a<b>c:d|e?.txt", "a b c d e.txt"),
+        ("CON.txt", "_CON.txt"),
+        ("lpt1", "_lpt1"),
+        ("notes. . .", "notes"),
+        (".env", "env"),
+        ("line\nbreak\ttab.md", "line break tab.md"),
+        ("...", "file"),
+        ("C:\\Users\\me\\x.txt", "x.txt"),
+    ],
+)
+def test_names_written_to_disk_are_valid_on_windows(name, safe):
+    assert library.safe_file_name(name) == safe
+    project_name = library._project_name(name, "upload:x")
+    from core.inference.gallery_projects import _bad_name
+
+    assert not _bad_name(project_name), project_name
+
+
+def test_add_to_project_refuses_a_name_windows_cannot_hold(tmp_path, monkeypatch, project):
+    from core.inference import gallery_projects as gp
+
+    source = tmp_path / "x.txt"
+    source.write_text("x")
+    for bad in ("a:b.txt", "CON.txt", "trailing.", "tab\there.txt"):
+        with pytest.raises(ValueError):
+            gp.copy_into_project(source, "p1", "files", bad)
+    # An open file copies from its descriptor, under the name it is given.
+    with open(source, "rb") as handle:
+        result = gp.copy_into_project(handle, "p1", "files", "x-1.txt")
+    assert Path(result["path"]).read_text() == "x"
+
+
+def test_an_image_attachment_has_a_thumbnail(client, monkeypatch):
+    import base64
+
+    import storage.studio_db as studio_db
+
+    data = base64.b64encode(_png(120, 90)).decode("ascii")
+    attachment = {
+        "type": "image",
+        "contentType": "image/png",
+        "content": [{"type": "image", "image": f"data:image/png;base64,{data}"}],
+    }
+    monkeypatch.setattr(
+        studio_db, "get_chat_attachment", lambda message_id, attachment_id: attachment
+    )
+    assert _thumbnail_size(client, "attachment:m:a") == (120, 90)
+    attachment["content"] = [{"type": "text", "text": "just words"}]
+    library._thumbnail_cache.clear()
+    response = client.get("/api/library/items/thumbnail", params = {"id": "attachment:m:a"})
+    assert response.status_code == 404
+
+
+def test_thumbnails_open_only_raster_formats(client):
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8)).save(buf, format = "PPM")
+    # A format Pillow knows but a card does not need is never handed to its decoder.
+    [ppm] = _upload(client, ("pic.png", buf.getvalue(), "image/png"))
+    eps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 8 8\nshowpage\n"
+    [ps] = _upload(client, ("pic.jpg", eps, "image/jpeg"))
+    for item_id in (ppm, ps):
+        response = client.get("/api/library/items/thumbnail", params = {"id": item_id})
+        assert response.status_code == 501, item_id
+
+
+def test_a_video_thumbnail_reads_its_container_by_type(client, monkeypatch):
+    from core.inference import video_gallery
+
+    seen = []
+    monkeypatch.setattr(
+        video_gallery,
+        "first_frame_webp",
+        lambda source, **kwargs: seen.append((hasattr(source, "read"), kwargs)) or b"webp",
+    )
+    [clip] = _upload(client, ("clip.webm", b"x", "video/webm"))
+    [playlist] = _upload(client, ("clip.m3u8", b"#EXTM3U", "video/mp4"))
+    [avi] = _upload(client, ("clip.flv", b"x", "video/x-flv"))
+    for item_id in (clip, playlist):
+        assert client.get("/api/library/items/thumbnail", params = {"id": item_id}).status_code == 200
+    # A descriptor, never a name to reopen, and a demuxer forced rather than probed, so a playlist
+    # sent as mp4 is read as mp4 and never followed as HLS.
+    assert [(is_stream, kwargs["container"]) for is_stream, kwargs in seen] == [
+        (True, "webm"),
+        (True, "mp4"),
+    ]
+    assert seen[0][1]["max_pixels"] == library._THUMBNAIL_MAX_PIXELS
+    # A container with no demuxer on the list has no picture.
+    assert client.get("/api/library/items/thumbnail", params = {"id": avi}).status_code == 404
+
+
+def test_thumbnails_are_cached_by_version_and_decoded_a_few_at_a_time(client, monkeypatch):
+    calls = []
+    real = library._picture
+
+    def counted(mime_type, source):
+        calls.append(mime_type)
+        return real(mime_type, source)
+
+    monkeypatch.setattr(library, "_picture", counted)
+    [image] = _upload(client, ("a.png", _png(40, 30), "image/png"))
+    for _ in range(3):
+        assert _thumbnail_size(client, image) == (40, 30)
+    assert calls == ["image/png"]
+    # A new version of the file is a new size and mtime, so a new picture.
+    library.upload_path(image.split(":", 1)[1]).write_bytes(_png(30, 20))
+    assert _thumbnail_size(client, image) == (30, 20)
+    assert len(calls) == 2
+
+
+def _sandbox_chat(
+    monkeypatch,
+    name = "report.txt",
+    body = b"x",
+):
+    import os
+
+    from core.inference.tools import resolve_sandbox_workdir
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread(
+        {"id": "t-lib", "title": "T", "modelType": "base", "modelId": "m", "createdAt": 1}
+    )
+    directory = resolve_sandbox_workdir("t-lib")
+    os.makedirs(directory, exist_ok = True)
+    path = os.path.join(directory, name)
+    with open(path, "wb") as handle:
+        handle.write(body)
+    return directory, path
+
+
+def test_a_sandbox_file_swapped_for_a_link_after_the_check_is_not_read(
+    client, signed_in, monkeypatch, tmp_path
+):
+    import os
+
+    secret = tmp_path / "secret.txt"
+    secret.write_text("secret")
+    directory, path = _sandbox_chat(monkeypatch, body = b"mine")
+    real = library._sandbox_path
+    swapped = []
+
+    def swap_after_check(ref):
+        checked = real(ref)
+        if not swapped:
+            # Tool code racing the route: the name checked is a link by the time it is opened.
+            os.unlink(path)
+            os.symlink(secret, path)
+            swapped.append(ref)
+        return checked
+
+    monkeypatch.setattr(library, "_sandbox_path", swap_after_check)
+    response = client.get("/api/library/items/download", params = {"id": "sandbox:t-lib:report.txt"})
+    assert response.status_code == 404
+    assert b"secret" not in response.content
+
+
+def test_a_sandbox_file_is_found_without_listing_every_chat(client, signed_in, monkeypatch):
+    directory, _path = _sandbox_chat(monkeypatch, body = b"mine")
+
+    def listed(*_args):
+        raise AssertionError("a per-item route listed the sandboxes")
+
+    monkeypatch.setattr(library, "_sandbox_sessions", listed)
+    response = client.get("/api/library/items/download", params = {"id": "sandbox:t-lib:report.txt"})
+    assert response.status_code == 200
+    assert response.content == b"mine"
+    assert 'filename="report.txt"' in response.headers["content-disposition"]
+    for crafted in ("sandbox:t-lib:../x", "sandbox:t-lib:.hidden", "sandbox:nope:report.txt"):
+        response = client.get("/api/library/items/download", params = {"id": crafted})
+        assert response.status_code == 404, crafted
+
+
+def test_a_file_held_open_on_windows_answers_409(client, monkeypatch):
+    [note] = _upload(client, ("n.md", b"old", "text/markdown"))
+    upload_id = note.split(":", 1)[1]
+
+    def held(*_args):
+        raise PermissionError(13, "The process cannot access the file")
+
+    monkeypatch.setattr(library.os, "replace", held)
+    response = client.put(f"/api/library/uploads/{upload_id}/text", json = {"text": "new"})
+    assert response.status_code == 409
+    assert response.json()["detail"] == "The file is in use. Close it and try again."
+    response = client.post("/api/library/items/delete", json = {"id": note})
+    assert response.status_code == 409
+
+    def broken(*_args):
+        raise OSError(5, "I/O error", "/secret/path")
+
+    monkeypatch.setattr(library.os, "replace", broken)
+    response = client.post("/api/library/items/delete", json = {"id": note})
+    assert response.status_code == 500
+    assert "/secret" not in response.text
+
+
+def test_a_missing_file_manager_is_not_a_missing_file(client, monkeypatch):
+    import utils.paths.file_manager as file_manager
+    import utils.paths.path_utils as path_utils
+
+    monkeypatch.setattr(file_manager, "file_manager_kind", lambda: "files")
+
+    def no_launcher(path):
+        raise FileNotFoundError(2, "No such file or directory: 'xdg-open'")
+
+    monkeypatch.setattr(path_utils, "reveal_in_file_manager", no_launcher)
+    [note] = _upload(client, ("plan.md", b"# plan", "text/markdown"))
+    response = client.post("/api/library/items/reveal", json = {"id": note})
+    assert response.status_code == 503
+    assert response.json()["detail"] == "No file manager is available on this machine"
+
+
+def test_a_host_with_no_file_manager_refuses_to_reveal(client, revealed, monkeypatch):
+    import utils.paths.file_manager as file_manager
+
+    monkeypatch.setattr(file_manager, "file_manager_kind", lambda: None)
+    [note] = _upload(client, ("plan.md", b"# plan", "text/markdown"))
+    response = client.post("/api/library/items/reveal", json = {"id": note})
+    assert response.status_code == 503
+    response = client.post("/api/library/locations/reveal", json = {"key": "images"})
+    assert response.status_code == 503
+    assert revealed == []
+
+
+def test_the_slow_sources_are_remembered_briefly_and_forgotten_on_a_write(client, monkeypatch):
+    calls = []
+
+    def walked():
+        calls.append(1)
+        return [
+            library._item(
+                "sandbox:t:a.txt",
+                name = "a.txt",
+                source = "generated",
+                content_type = "text/plain",
+                size_bytes = 1,
+                created_at = 1,
+                file_url = "",
+            )
+        ]
+
+    monkeypatch.setattr(library, "_sandbox_items", walked)
+    remembered = library._remembered("_sandbox_items", 60)
+    monkeypatch.setattr(library, "_SOURCES", (remembered,))
+    client.patch("/api/library/items", json = {"id": "sandbox:t:a.txt", "favorite": True})
+    assert _items(client)[0]["sandbox:t:a.txt"]["favorite"] is True
+    assert _items(client)[0]["sandbox:t:a.txt"]["favorite"] is True
+    assert len(calls) == 1
+    # Another account's listing is never this one's.
+    account = ["other"]
+    monkeypatch.setattr(library, "_account_key", lambda: account[0])
+    _items(client)
+    assert len(calls) == 2
+    _items(client)
+    assert len(calls) == 2
+    library.invalidate_listing()
+    _items(client)
+    assert len(calls) == 3
+
+
+def test_a_new_fine_tune_changes_the_model_stamp(client):
+    import shutil
+
+    from utils.paths.storage_roots import outputs_root
+
+    outputs_root().mkdir(parents = True, exist_ok = True)
+    before = library._model_stamp()
+    run = outputs_root() / "stamp-run"
+    run.mkdir()
+    try:
+        assert library._model_stamp() != before
+    finally:
+        shutil.rmtree(run)
+
+
+def test_the_schema_is_checked_once_per_database(client, monkeypatch, tmp_path):
+    from storage import library_db
+
+    # A home reached through a link: the unresolved path is not the key the schema was saved as.
+    (tmp_path / "real").mkdir()
+    (tmp_path / "link").symlink_to(tmp_path / "real", target_is_directory = True)
+    monkeypatch.setattr(library_db, "studio_db_path", lambda: tmp_path / "link" / "studio.db")
+    library_db.get_connection().close()
+    runs = []
+    monkeypatch.setattr(library_db, "_ensure_schema", lambda conn: runs.append(conn))
+    for _ in range(3):
+        library_db.get_connection().close()
+    assert runs == []

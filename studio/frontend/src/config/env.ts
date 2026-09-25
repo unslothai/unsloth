@@ -21,6 +21,9 @@ export const env = {
 
 export type DeviceType = "mac" | "windows" | "linux" | string;
 
+/** What Reveal opens on the server's host; null where it can open nothing anyone would see. */
+export type FileManager = "finder" | "explorer" | "files" | null;
+
 interface PlatformState {
   deviceType: DeviceType;
   // Unified memory: GPU and system draw on one pool, so an over-committed load has
@@ -28,6 +31,9 @@ interface PlatformState {
   // deviceType === "mac", which includes Intel Macs with a discrete GPU, where spilling
   // to system RAM is exactly what happens. Mirrors the backend's is_apple_silicon gate.
   appleSilicon: boolean;
+  // From /api/health (authed), beside deviceType: undefined until reported, or from a backend
+  // too old to say.
+  fileManager: FileManager | undefined;
   chatOnly: boolean;
   // Why chatOnly is set (null when training is enabled), from /api/health.
   // e.g. "mlx_unavailable" on Apple Silicon -> the UI explains the greyed-out
@@ -69,6 +75,7 @@ const localDeviceType = detectLocalPlatform();
 export const usePlatformStore = create<PlatformState>()((_, get) => ({
   deviceType: localDeviceType,
   appleSilicon: false,
+  fileManager: undefined,
   // A guess from the user agent, kept only as the pre-measurement fallback for the redirects
   // that must decide something before /api/health answers. Capability gating must read
   // capabilitiesUnknown() first and hold, not gray a tab out on this.
@@ -160,6 +167,7 @@ export async function fetchDeviceType(options?: {
       const data = (await res.json()) as {
         device_type?: string;
         apple_silicon?: boolean;
+        file_manager?: FileManager;
         chat_only?: boolean;
         chat_only_reason?: string | null;
         hardware_detecting?: boolean;
@@ -194,6 +202,13 @@ export async function fetchDeviceType(options?: {
       // on an Intel Mac, and on a Mac browser pointed at a Linux host.
       const appleSilicon =
         data.apple_silicon ?? (keepPlatform ? previous.appleSilicon : false);
+      // Same terms: it describes the host device_type names.
+      const fileManager =
+        data.device_type !== undefined
+          ? data.file_manager
+          : keepPlatform
+            ? previous.fileManager
+            : undefined;
       // A still-provisional reply keeps the stored verdict: see resolveVerdict.
       const { chatOnly, chatOnlyReason, chatOnlyDetail } = resolveVerdict(
         data,
@@ -205,6 +220,7 @@ export async function fetchDeviceType(options?: {
       usePlatformStore.setState({
         deviceType,
         appleSilicon,
+        fileManager,
         chatOnly,
         chatOnlyReason,
         chatOnlyDetail,

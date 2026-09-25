@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useT } from "@/i18n";
+import { useLocale, useT } from "@/i18n";
 import type { LibraryDisk } from "../api";
 import { formatSize } from "../format";
 
@@ -14,6 +14,7 @@ export function LibraryStorageBar({
   disk: LibraryDisk | null;
 }) {
   const t = useT();
+  const locale = useLocale();
   if (!disk || disk.totalBytes <= 0) return null;
   const otherBytes = Math.max(0, disk.totalBytes - disk.freeBytes - libraryBytes);
   const share = (bytes: number) => `${(bytes / disk.totalBytes) * 100}%`;
@@ -26,8 +27,8 @@ export function LibraryStorageBar({
       </div>
       <p className="text-xs text-muted-foreground">
         {t("settings.library.storageDisk", {
-          free: formatSize(disk.freeBytes) ?? "",
-          total: formatSize(disk.totalBytes) ?? "",
+          free: formatSize(disk.freeBytes, locale, t) ?? "",
+          total: formatSize(disk.totalBytes, locale, t) ?? "",
         })}
       </p>
     </>

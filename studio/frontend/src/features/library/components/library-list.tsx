@@ -2,15 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Checkbox } from "@/components/ui/checkbox";
-import { useLocale } from "@/i18n";
+import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { Folder01Icon } from "@hugeicons/core-free-icons";
 import { StarPointedIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
 import type { LibraryFolder, LibraryItem } from "../api";
-import { modelLabel } from "../file-kind";
-import { formatCardTime, formatRelativeTime, formatSize, pluralize } from "../format";
+import { modelLabelKey } from "../file-kind";
+import { formatActivityTime, formatCardTime, formatItemCount, formatSize } from "../format";
 import type { LibrarySortKey, LibrarySortState } from "../settings-store";
 import { ArrowDownIcon, ArrowUpIcon } from "lucide-react";
 import { type LibraryTarget, useLibraryActions } from "../actions-context";
@@ -120,6 +120,7 @@ function Row({
   /** Suggested shows one relative Last activity column instead of Modified and Size. */
   activity: boolean;
 }) {
+  const t = useT();
   const locale = useLocale();
   return (
     <div
@@ -134,25 +135,27 @@ function Row({
         visible={selecting}
         group="row"
         onCheckedChange={() => onSelectedChange(!selected)}
-        label="Select"
+        label={t("library.selectItem", {
+          name: target.kind === "item" ? target.item.name : target.folder.name,
+        })}
       />
       <button
         type="button"
         onClick={onOpen}
-        className="flex min-w-0 flex-1 items-center gap-4 py-2 text-left outline-none"
+        className="flex min-w-0 flex-1 items-center gap-4 rounded-lg py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {tile}
         <span className="flex min-w-0 items-center gap-2 text-[14px] text-foreground">{name}</span>
         {activity ? (
           <span className={cn(ACTIVITY_COLUMN, CELL, "ml-auto")}>
             {(opened ?? 0) > modified
-              ? `Opened ${formatRelativeTime(opened!)}`
-              : `Modified ${formatRelativeTime(modified)}`}
+              ? t("library.list.opened", { time: formatActivityTime(opened!, locale, t) })
+              : t("library.list.modified", { time: formatActivityTime(modified, locale, t) })}
           </span>
         ) : (
           <>
             <span className={cn(MODIFIED_COLUMN, CELL, "ml-auto")}>{formatCardTime(modified, locale)}</span>
-            <span className={cn(SIZE_COLUMN, CELL)}>{formatSize(size)}</span>
+            <span className={cn(SIZE_COLUMN, CELL)}>{formatSize(size, locale, t)}</span>
           </>
         )}
       </button>
@@ -180,6 +183,7 @@ export function LibraryList({
   onSortChange: (key: LibrarySortKey) => void;
   activity: boolean;
 }) {
+  const t = useT();
   const actions = useLibraryActions();
   const targets: LibraryTarget[] = [
     ...folders.map((folder) => ({ kind: "folder" as const, folder })),
@@ -213,15 +217,15 @@ export function LibraryList({
             onCheckedChange={() =>
               onSelectionChange(allSelected ? new Set() : new Set(targets.map(targetKey)))
             }
-            label="Select all"
+            label={t("library.list.selectAll")}
           />
           <span className="flex-1">
-            <SortHeader column="name" label="Name" sort={sort} onSortChange={onSortChange} />
+            <SortHeader column="name" label={t("library.list.name")} sort={sort} onSortChange={onSortChange} />
           </span>
           {activity ? (
             <SortHeader
               column="modified"
-              label="Last activity"
+              label={t("library.list.lastActivity")}
               sort={sort}
               onSortChange={onSortChange}
               className={cn(ACTIVITY_COLUMN, "hidden sm:flex")}
@@ -230,14 +234,14 @@ export function LibraryList({
             <>
               <SortHeader
                 column="modified"
-                label="Modified"
+                label={t("library.list.modifiedColumn")}
                 sort={sort}
                 onSortChange={onSortChange}
                 className={cn(MODIFIED_COLUMN, "hidden sm:flex")}
               />
               <SortHeader
                 column="size"
-                label="Size"
+                label={t("library.list.sizeColumn")}
                 sort={sort}
                 onSortChange={onSortChange}
                 className={cn(SIZE_COLUMN, "hidden sm:flex")}
@@ -265,7 +269,7 @@ export function LibraryList({
               <>
                 <span className="truncate">{folder.name}</span>
                 <span className="shrink-0 text-muted-foreground text-sm">
-                  {pluralize(counts.get(folder.id) ?? 0, "item")}
+                  {formatItemCount(counts.get(folder.id) ?? 0, t)}
                 </span>
               </>
             }
@@ -288,12 +292,14 @@ export function LibraryList({
               <>
                 <span className="truncate">{item.name}</span>
                 {item.model && (
-                  <span className="shrink-0 text-muted-foreground text-sm">{modelLabel(item)}</span>
+                  <span className="shrink-0 text-muted-foreground text-sm">
+                    {t(modelLabelKey(item)!)}
+                  </span>
                 )}
                 {item.favorite && (
                   <HugeiconsIcon
                     icon={StarPointedIcon}
-                    aria-label="Favorite"
+                    aria-label={t("library.list.favorite")}
                     strokeWidth={1.75}
                     className="size-3.5 shrink-0 text-muted-foreground [&_path]:fill-current"
                   />

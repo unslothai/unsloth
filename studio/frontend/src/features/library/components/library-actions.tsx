@@ -11,6 +11,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
   Delete02Icon,
@@ -75,6 +76,7 @@ export function LibraryActionsMenu({
   variant: "overlay" | "row";
   className?: string;
 }) {
+  const t = useT();
   const actions = useLibraryActions();
   const [open, setOpen] = useState(false);
   const destinations = useMemo(
@@ -90,7 +92,7 @@ export function LibraryActionsMenu({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          aria-label="More actions"
+          aria-label={t("library.menu.moreActions")}
           data-open={open || undefined}
           onClick={(event) => event.stopPropagation()}
           className={cn(
@@ -114,7 +116,7 @@ export function LibraryActionsMenu({
       >
         <DropdownMenuItem onSelect={() => actions.chatAbout(target)}>
           <HugeiconsIcon icon={MessageCircleIcon} strokeWidth={1.75} className={ICON} />
-          {item && isModelItem(item) ? "Chat with this model" : "Chat about this"}
+          {t(item && isModelItem(item) ? "library.menu.chatWithModel" : "library.menu.chatAboutThis")}
         </DropdownMenuItem>
         {item && (
           <DropdownMenuItem onSelect={() => actions.toggleFavorite(item)}>
@@ -123,13 +125,13 @@ export function LibraryActionsMenu({
               strokeWidth={1.75}
               className={cn(ICON, item.favorite && "[&_path]:fill-current")}
             />
-            {item.favorite ? "Remove from Favorites" : "Add to Favorites"}
+            {t(item.favorite ? "library.menu.removeFromFavorites" : "library.menu.addToFavorites")}
           </DropdownMenuItem>
         )}
         {item && isFileItem(item) && (
           <DropdownMenuItem onSelect={() => actions.download(item)}>
             <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className={ICON} />
-            Download
+            {t("library.menu.download")}
           </DropdownMenuItem>
         )}
         {item && revealLabel && canReveal(item) && (
@@ -140,22 +142,22 @@ export function LibraryActionsMenu({
         )}
         <DropdownMenuItem onSelect={() => actions.rename(target)}>
           <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className={ICON} />
-          Rename
+          {t("common.rename")}
         </DropdownMenuItem>
         <DropdownMenuSub>
           <DropdownMenuSubTrigger className="gap-2.5">
             <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className={ICON} />
-            Add to folder
+            {t("library.menu.addToFolder")}
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent className="max-h-[min(--spacing(80),var(--radix-dropdown-menu-content-available-height))] w-56">
             <DropdownMenuItem onSelect={() => actions.moveToNewFolder(target)}>
               <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className={ICON} />
-              New folder
+              {t("library.menu.newFolder")}
             </DropdownMenuItem>
             {inFolder && (
               <DropdownMenuItem onSelect={() => actions.moveTo(target, null)}>
                 <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className={ICON} />
-                Library (no folder)
+                {t("library.menu.noFolder")}
               </DropdownMenuItem>
             )}
             {destinations.length > 0 && <DropdownMenuSeparator />}
@@ -175,7 +177,7 @@ export function LibraryActionsMenu({
         {(!item || isDeletable(item)) && (
           <DropdownMenuItem variant="destructive" onSelect={() => actions.remove(target)}>
             <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className={ICON} />
-            {target.kind === "folder" ? "Delete folder" : "Delete"}
+            {target.kind === "folder" ? t("library.menu.deleteFolder") : t("common.delete")}
           </DropdownMenuItem>
         )}
       </DropdownMenuContent>

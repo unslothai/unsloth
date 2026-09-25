@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Checkbox } from "@/components/ui/checkbox";
-import { useLocale } from "@/i18n";
+import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { Folder01Icon, PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -14,7 +14,7 @@ import {
   fileKind,
   hasThumbnail,
 } from "../file-kind";
-import { formatCardTime, pluralize } from "../format";
+import { formatCardTime, formatItemCount } from "../format";
 import { useColumnCount, useLibraryThumbnail, useSeen } from "../hooks";
 import { useLibraryActions } from "../actions-context";
 import { CARD_COLUMNS, useLibrarySettingsStore } from "../settings-store";
@@ -134,6 +134,7 @@ function CardFrame({
   /** Over a picture: frosted controls, since the picture can match any solid fill. */
   glass?: boolean;
 }) {
+  const t = useT();
   const select = useContext(CardSelectionContext);
   const selected = select?.selection.has(selectKey) ?? false;
   // Once anything is selected, a click adds to the selection instead of opening.
@@ -143,7 +144,8 @@ function CardFrame({
       <button
         type="button"
         aria-label={label}
-        aria-pressed={select ? selected : undefined}
+        // A toggle only while selecting; otherwise the card opens its file.
+        aria-pressed={select && selecting ? selected : undefined}
         onClick={select && selecting ? () => select.toggle(selectKey) : onOpen}
         className={cn(
           // The offset only with focus: Tailwind draws it into box-shadow, so left on it rims every
@@ -159,7 +161,7 @@ function CardFrame({
         <Checkbox
           checked={selected}
           onCheckedChange={() => select.toggle(selectKey)}
-          aria-label={`Select ${label}`}
+          aria-label={t("library.selectItem", { name: label })}
           className={cn(
             // Level with the date line, as ChatGPT's sits. Same fill as the ⋯ button.
             OVERLAY_CONTROL,
@@ -242,6 +244,7 @@ export function FolderCard({
   folder: LibraryFolder;
   itemCount: number;
 }) {
+  const t = useT();
   const actions = useLibraryActions();
   return (
     <div>
@@ -262,7 +265,7 @@ export function FolderCard({
         className="mt-2 block w-full px-1 text-left"
       >
         <p className="truncate font-medium text-[14px] text-foreground">{folder.name}</p>
-        <p className="text-[13px] text-muted-foreground">{pluralize(itemCount, "item")}</p>
+        <p className="text-[13px] text-muted-foreground">{formatItemCount(itemCount, t)}</p>
       </button>
     </div>
   );

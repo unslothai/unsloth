@@ -41,11 +41,11 @@ import {
   useLibraryStorage,
   useLibraryViewStore,
   useLibraryVisitStore,
-  useRevealPlatform,
+  useRevealLabel,
 } from "@/features/library";
 import { useIsAccountOwner } from "@/features/auth";
 import { FolderBrowser } from "@/features/model-picker";
-import { type TranslationKey, useT } from "@/i18n";
+import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -146,6 +146,7 @@ const CATEGORY_LABELS: Record<StorageCategory, TranslationKey> = {
 /** Library usage against the disk it lives on, and a way into each category, largest first. */
 function StorageSection() {
   const t = useT();
+  const locale = useLocale();
   const navigate = useNavigate();
   const closeDialog = useSettingsDialogStore((s) => s.closeDialog);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
@@ -183,7 +184,7 @@ function StorageSection() {
       <>
         <div className="flex flex-col gap-2 py-3">
           <p className="text-sm font-medium text-foreground">
-            {t("settings.library.storageUsed", { size: formatSize(storage.totalBytes) ?? "0 B" })}
+            {t("settings.library.storageUsed", { size: formatSize(storage.totalBytes, locale, t) ?? "" })}
           </p>
           <LibraryStorageBar libraryBytes={storage.diskBytes} disk={storage.disk} />
         </div>
@@ -205,7 +206,7 @@ function StorageSection() {
                         {t(CATEGORY_LABELS[entry.category])}
                       </span>
                       <span className="text-xs text-muted-foreground">
-                        {formatSize(entry.bytes)}
+                        {formatSize(entry.bytes, locale, t)}
                         {" · "}
                         {entry.count === 1
                           ? t("settings.library.itemCountOne")
@@ -219,7 +220,7 @@ function StorageSection() {
             )}
             {storage.hiddenBytes > 0 && (
               <p className="pb-3 text-xs text-muted-foreground">
-                {t("settings.library.storageHidden", { size: formatSize(storage.hiddenBytes) ?? "0 B" })}
+                {t("settings.library.storageHidden", { size: formatSize(storage.hiddenBytes, locale, t) ?? "" })}
               </p>
             )}
           </>
@@ -251,7 +252,8 @@ const LOCATION_LABELS: Record<LibraryLocation["key"], TranslationKey> = {
 /** Where each kind of file lives, with Reveal where Studio runs on this machine. */
 function LocationsSection() {
   const t = useT();
-  const reveal = useRevealPlatform();
+  const locale = useLocale();
+  const revealLabel = useRevealLabel();
   const [locations, setLocations] = useState<LibraryLocation[] | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -335,7 +337,7 @@ function LocationsSection() {
                   location.disk && (
                     <span className="block text-xs">
                       {t("settings.library.locationFree", {
-                        free: formatSize(location.disk.freeBytes) ?? "",
+                        free: formatSize(location.disk.freeBytes, locale, t) ?? "",
                       })}
                     </span>
                   )
@@ -368,9 +370,9 @@ function LocationsSection() {
                   {t("settings.library.locationChange")}
                 </Button>
               )}
-              {reveal && (
+              {revealLabel && (
                 <Button variant="outline" size="sm" onClick={() => void open(location.key)}>
-                  {t(reveal === "finder" ? "settings.library.revealInFinder" : "settings.library.revealInFolder")}
+                  {revealLabel}
                 </Button>
               )}
             </div>

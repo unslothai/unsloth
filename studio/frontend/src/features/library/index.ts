@@ -42,4 +42,4 @@ export {
   moveLibraryLocation,
   revealLibraryLocation,
 } from "./api";
-export { revealInFolder, useRevealLabel, useRevealPlatform } from "./reveal";
+export { revealInFolder, useRevealLabel } from "./reveal";

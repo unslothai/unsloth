@@ -205,7 +205,8 @@ const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
     { id: "recipes", pinned: false },
     { id: "export", pinned: false },
     { id: "api", pinned: false },
-  ],  [
+  ],
+  [
     { id: "hub", pinned: true },
     { id: "projects", pinned: true },
     { id: "images", pinned: true },

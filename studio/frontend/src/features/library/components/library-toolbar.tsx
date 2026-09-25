@@ -27,6 +27,7 @@ import {
   Tick02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
+import { type TranslationKey, useT } from "@/i18n";
 import { SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -41,19 +42,25 @@ const ICON = "size-icon";
 const ROUND_BUTTON =
   "flex size-9 shrink-0 items-center justify-center rounded-full text-foreground outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring data-[active=true]:bg-white data-[active=true]:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:data-[active=true]:bg-card dark:data-[active=true]:shadow-none data-open:bg-muted";
 
-const SOURCE_OPTIONS: { value: LibrarySource; label: string; icon: IconSvgElement }[] = [
-  { value: "uploaded", label: "Uploaded", icon: Upload01Icon },
-  { value: "generated", label: "Generated", icon: AiEditingIcon },
+interface MenuOption<T extends string> {
+  value: T;
+  label: TranslationKey;
+  icon: IconSvgElement;
+}
+
+const SOURCE_OPTIONS: MenuOption<LibrarySource>[] = [
+  { value: "uploaded", label: "library.toolbar.uploaded", icon: Upload01Icon },
+  { value: "generated", label: "library.toolbar.generated", icon: AiEditingIcon },
 ];
 
-const TYPE_OPTIONS: { value: LibraryTypeFilter; label: string; icon: IconSvgElement }[] = [
-  { value: "images", label: "Images", icon: Image02Icon },
-  { value: "videos", label: "Videos", icon: FlimSlateIcon },
-  { value: "audio", label: "Audio", icon: AudioWave01Icon },
-  { value: "documents", label: "Documents", icon: File02Icon },
-  { value: "spreadsheets", label: "Spreadsheets", icon: SheetIcon },
-  { value: "presentations", label: "Presentations", icon: Presentation01Icon },
-  { value: "pdfs", label: "PDFs", icon: Pdf01Icon },
+const TYPE_OPTIONS: MenuOption<LibraryTypeFilter>[] = [
+  { value: "images", label: "library.tabs.images", icon: Image02Icon },
+  { value: "videos", label: "library.tabs.videos", icon: FlimSlateIcon },
+  { value: "audio", label: "library.tabs.audio", icon: AudioWave01Icon },
+  { value: "documents", label: "library.toolbar.documents", icon: File02Icon },
+  { value: "spreadsheets", label: "library.toolbar.spreadsheets", icon: SheetIcon },
+  { value: "presentations", label: "library.toolbar.presentations", icon: Presentation01Icon },
+  { value: "pdfs", label: "library.toolbar.pdfs", icon: Pdf01Icon },
 ];
 
 function toggled<T>(set: Set<T>, value: T): Set<T> {
@@ -72,8 +79,9 @@ function FilterMenu({
   onChange: (next: LibraryFilters) => void;
   showTypes: boolean;
 }) {
+  const t = useT();
   const option = (
-    { value, label, icon }: { value: string; label: string; icon: IconSvgElement },
+    { value, label, icon }: MenuOption<string>,
     checked: boolean,
     toggle: () => void,
   ) => (
@@ -86,7 +94,7 @@ function FilterMenu({
       }}
     >
       <HugeiconsIcon icon={icon} strokeWidth={1.75} className={ICON} />
-      <span className="flex-1">{label}</span>
+      <span className="flex-1">{t(label)}</span>
       {checked && <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-4" />}
     </DropdownMenuItem>
   );
@@ -96,7 +104,7 @@ function FilterMenu({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          aria-label="Filter"
+          aria-label={t("library.toolbar.filter")}
           data-active={filtersActive(filters)}
           className={ROUND_BUTTON}
         >
@@ -105,7 +113,7 @@ function FilterMenu({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-48">
         <DropdownMenuLabel className="px-3 pb-1 pt-2 text-muted-foreground font-normal">
-          Source
+          {t("library.toolbar.source")}
         </DropdownMenuLabel>
         {SOURCE_OPTIONS.map((entry) =>
           option(entry, filters.sources.has(entry.value), () =>
@@ -116,7 +124,7 @@ function FilterMenu({
           <>
             <DropdownMenuSeparator className="mx-3" />
             <DropdownMenuLabel className="px-3 pb-1 pt-2 text-muted-foreground font-normal">
-              File type
+              {t("library.toolbar.fileType")}
             </DropdownMenuLabel>
             {TYPE_OPTIONS.map((entry) =>
               option(entry, filters.types.has(entry.value), () =>
@@ -129,7 +137,9 @@ function FilterMenu({
           <>
             <DropdownMenuSeparator className="mx-3" />
             <DropdownMenuItem onSelect={() => onChange(EMPTY_FILTERS)}>
-              <span className="pl-[calc(26px*var(--ui-space-scale,1))] text-muted-foreground">Clear filters</span>
+              <span className="pl-[calc(26px*var(--ui-space-scale,1))] text-muted-foreground">
+                {t("library.toolbar.clearFilters")}
+              </span>
             </DropdownMenuItem>
           </>
         )}
@@ -147,16 +157,17 @@ export type NewAction =
   | "folder"
   | "upload";
 
-const NEW_OPTIONS: { value: NewAction; label: string; icon: IconSvgElement }[] = [
-  { value: "note", label: "Note", icon: Note01Icon },
-  { value: "image", label: "Image", icon: Image02Icon },
-  { value: "video", label: "Video", icon: FlimSlateIcon },
-  { value: "audio", label: "Audio", icon: AudioWave01Icon },
-  { value: "model", label: "Model", icon: TestTubeOutlineIcon },
-  { value: "folder", label: "Folder", icon: Folder01Icon },
+const NEW_OPTIONS: MenuOption<NewAction>[] = [
+  { value: "note", label: "library.create.note", icon: Note01Icon },
+  { value: "image", label: "library.create.image", icon: Image02Icon },
+  { value: "video", label: "library.create.video", icon: FlimSlateIcon },
+  { value: "audio", label: "library.create.audio", icon: AudioWave01Icon },
+  { value: "model", label: "library.create.model", icon: TestTubeOutlineIcon },
+  { value: "folder", label: "library.create.folder", icon: Folder01Icon },
 ];
 
 function NewMenu({ onSelect }: { onSelect: (action: NewAction) => void }) {
+  const t = useT();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -164,7 +175,7 @@ function NewMenu({ onSelect }: { onSelect: (action: NewAction) => void }) {
           type="button"
           className="flex h-9 shrink-0 items-center gap-1.5 rounded-full bg-foreground pl-4 pr-3 font-medium text-[14px] text-background outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring"
         >
-          New
+          {t("common.new")}
           <ChevronDownIcon className="size-4" strokeWidth={2} />
         </button>
       </DropdownMenuTrigger>
@@ -172,13 +183,13 @@ function NewMenu({ onSelect }: { onSelect: (action: NewAction) => void }) {
         {NEW_OPTIONS.map(({ value, label, icon }) => (
           <DropdownMenuItem key={value} onSelect={() => onSelect(value)}>
             <HugeiconsIcon icon={icon} strokeWidth={1.75} className={ICON} />
-            {label}
+            {t(label)}
           </DropdownMenuItem>
         ))}
         <DropdownMenuSeparator className="mx-3" />
         <DropdownMenuItem onSelect={() => onSelect("upload")}>
           <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.75} className={ICON} />
-          Upload files
+          {t("library.create.uploadFiles")}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -210,6 +221,7 @@ export function LibraryToolbar({
   onNew: (action: NewAction) => void;
   onSettings: () => void;
 }) {
+  const t = useT();
   return (
       <div className="flex min-w-0 items-center gap-2">
         {filterMode !== "none" && (
@@ -224,8 +236,9 @@ export function LibraryToolbar({
         )}
         <button
           type="button"
-          aria-label="Grid view"
+          aria-label={t("library.toolbar.gridView")}
           data-active={view === "grid"}
+          aria-pressed={view === "grid"}
           onClick={() => onViewChange("grid")}
           className={ROUND_BUTTON}
         >
@@ -233,8 +246,9 @@ export function LibraryToolbar({
         </button>
         <button
           type="button"
-          aria-label="List view"
+          aria-label={t("library.toolbar.listView")}
           data-active={view === "list"}
+          aria-pressed={view === "list"}
           onClick={() => onViewChange("list")}
           className={ROUND_BUTTON}
         >
@@ -258,7 +272,7 @@ export function LibraryToolbar({
         <NewMenu onSelect={onNew} />
         <button
           type="button"
-          aria-label="Library settings"
+          aria-label={t("library.toolbar.settings")}
           onClick={onSettings}
           className={cn(ROUND_BUTTON, "text-muted-foreground hover:text-foreground dark:text-foreground")}
         >
