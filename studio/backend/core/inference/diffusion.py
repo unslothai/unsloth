@@ -4510,6 +4510,7 @@ class DiffusionBackend:
                     and dense_quant_supported_kind(kind)
                     and dense_transformer_supported(target)
                     and not (kind == "gguf" and _has_active_lora(loras))
+                    and not family_compiles_regionally(fam)
                     and (
                         eager_reason := _auto_quant_eager_reason(
                             fam,

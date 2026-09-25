@@ -379,9 +379,9 @@ def _settle_backend_walking(monkeypatch, *, artifacts: tuple, candidates: tuple)
     monkeypatch.setattr(
         dmod,
         "denoiser_prequant_source",
-        lambda fam, scheme, **_k: ("unsloth/Qwen-Image-FP8", f"{scheme}.pt")
-        if scheme in artifacts
-        else None,
+        lambda fam, scheme, **_k: (
+            ("unsloth/Qwen-Image-FP8", f"{scheme}.pt") if scheme in artifacts else None
+        ),
     )
     monkeypatch.setattr(
         dmod,
@@ -517,9 +517,11 @@ def _run_load_backend(
     monkeypatch.setattr(
         DiffusionBackend,
         "_dit_prequant_plan_source",
-        lambda *_a, **_k: (PREQUANT_REPO, PREQUANT_FILE, PREQUANT_BYTES)
-        if verified and planned not in (None, PIPELINE_SEED_DECLINED)
-        else None,
+        lambda *_a, **_k: (
+            (PREQUANT_REPO, PREQUANT_FILE, PREQUANT_BYTES)
+            if verified and planned not in (None, PIPELINE_SEED_DECLINED)
+            else None
+        ),
     )
     fetched: list = []
     monkeypatch.setattr(
@@ -1023,6 +1025,21 @@ def test_an_uncompilable_family_loads_auto_unquantised(fake_runtime, monkeypatch
     assert "cannot be regionally compiled" in resolved["reason"]
 
 
+def test_a_compilable_family_loads_without_the_bf16_replan(fake_runtime, monkeypatch):
+    backend, spy = _load_backend(monkeypatch)
+    monkeypatch.setattr(dmod, "family_compiles_regionally", lambda _fam: True)
+    replans = []
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_bf16_resident_plan",
+        lambda self, plan, *a, **k: replans.append(1) or plan,
+    )
+    _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+
+    assert replans == []
+    assert spy.quantised == ["auto"]
+
+
 def test_an_uncompilable_family_quantises_auto_when_bf16_would_offload(fake_runtime, monkeypatch):
     backend, spy = _load_backend(monkeypatch)
     _uncompilable(monkeypatch)
@@ -1237,11 +1254,11 @@ def test_hidreams_pre_cast_fourth_encoder_is_priced_in_the_bf16_plan(monkeypatch
     monkeypatch.setattr(
         teq,
         "te_prequant_sources_for_base",
-        lambda _fam, _base, *, te_quant_mode, target, components = (), **_k: {
-            "text_encoder_4": object()
-        }
-        if te_quant_mode == "fp8" and tuple(components) == ("text_encoder_4",)
-        else {},
+        lambda _fam, _base, *, te_quant_mode, target, components = (), **_k: (
+            {"text_encoder_4": object()}
+            if te_quant_mode == "fp8" and tuple(components) == ("text_encoder_4",)
+            else {}
+        ),
     )
     seen: list = []
     monkeypatch.setattr(DiffusionBackend, "_plan_memory", lambda _s, *_a, **k: seen.append(k) or k)
