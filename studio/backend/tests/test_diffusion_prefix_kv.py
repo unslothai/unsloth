@@ -4,6 +4,7 @@
 """The prefix KV cache a compiled denoiser keeps across steps holds only the prefix bytes."""
 
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -126,6 +127,41 @@ def test_the_hook_compacts_after_the_prefill_call_only():
     layer.k = planted
     module(x, kv_cache = cache, kv_cache_mode = "cached")
     assert layer.k is planted
+
+
+class _ReturnsItsCache(torch.nn.Module):
+    """FLUX.2 klein: the extract call gets no cache, builds one and returns it."""
+
+    def __init__(self, as_tuple):
+        super().__init__()
+        self.as_tuple = as_tuple
+
+    def forward(
+        self,
+        hidden_states,
+        kv_cache = None,
+        kv_cache_mode = None,
+    ):
+        if kv_cache_mode != "extract":
+            return (hidden_states,)
+        cache = _Cache(2)
+        _prefill_like_inductor(cache)
+        if self.as_tuple:
+            return (hidden_states, cache)
+        return types.SimpleNamespace(sample = hidden_states, kv_cache = cache)
+
+
+@pytest.mark.parametrize("as_tuple", [True, False])
+def test_a_cache_returned_by_the_prefill_call_is_compacted(as_tuple):
+    module = _ReturnsItsCache(as_tuple)
+    install_prefix_kv_compaction(module)
+
+    out = module(torch.zeros(1), kv_cache_mode = "extract")
+
+    cache = out[1] if as_tuple else out.kv_cache
+    for layer in cache.layer_caches:
+        assert layer.k.untyped_storage().nbytes() == layer.k.numel() * layer.k.element_size()
+        assert layer.v.untyped_storage().nbytes() == layer.v.numel() * layer.v.element_size()
 
 
 def test_install_is_idempotent_and_skips_denoisers_without_a_prefix_cache():

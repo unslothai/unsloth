@@ -53,6 +53,15 @@ def compact_prefix_kv_cache(cache: Any) -> int:
     return released
 
 
+def _returned_cache(output: Any) -> Any:
+    # FLUX.2 builds the cache inside an extract forward and returns it: ``(sample, kv_cache)`` or
+    # an output with a ``kv_cache`` field.
+    cache = getattr(output, "kv_cache", None)
+    if cache is None and isinstance(output, tuple):
+        cache = next((o for o in output[1:] if o is not None and not hasattr(o, "shape")), None)
+    return cache
+
+
 def install_prefix_kv_compaction(transformer: Any, logger: Any = None) -> bool:
     """Hook ``transformer`` so its prefix KV cache is compacted after the prefill forward. No-op for
     a denoiser without a prefix KV cache, and idempotent."""
@@ -63,6 +72,8 @@ def install_prefix_kv_compaction(transformer: Any, logger: Any = None) -> bool:
         if kwargs.get("kv_cache_mode") != "extract":
             return None
         cache = kwargs.get("kv_cache")
+        if cache is None:
+            cache = _returned_cache(_output)
         if cache is not None:
             compact_prefix_kv_cache(cache)
         return None
