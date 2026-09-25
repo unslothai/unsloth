@@ -7136,7 +7136,9 @@ def test_unload_mid_render_releases_the_pipeline(fake_runtime, monkeypatch):
 
     backend = DiffusionBackend()
     # Skip the real hardware probe (nvidia-smi can take >10 s on a busy host) so step 0 arrives promptly.
-    monkeypatch.setattr(backend, "_pick_device_and_dtype", lambda: ("cpu", sys.modules["torch"].float32))
+    monkeypatch.setattr(
+        backend, "_pick_device_and_dtype", lambda: ("cpu", sys.modules["torch"].float32)
+    )
     at_step0 = threading.Event()
     resume = threading.Event()
 
@@ -7213,7 +7215,9 @@ def test_replacing_load_mid_render_releases_the_pipeline(
 
     backend = DiffusionBackend()
     # Skip the real hardware probe (nvidia-smi can take >10 s on a busy host) so step 0 arrives promptly.
-    monkeypatch.setattr(backend, "_pick_device_and_dtype", lambda: ("cpu", sys.modules["torch"].float32))
+    monkeypatch.setattr(
+        backend, "_pick_device_and_dtype", lambda: ("cpu", sys.modules["torch"].float32)
+    )
     at_step0 = threading.Event()
     resume = threading.Event()
     teardown_cleared = threading.Event()
