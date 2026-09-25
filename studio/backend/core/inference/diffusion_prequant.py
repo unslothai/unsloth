@@ -590,16 +590,6 @@ def local_prequant_scheme(path: str) -> Optional[str]:
     return scheme
 
 
-def read_prequant_metadata(path: str) -> dict:
-    """Pre-quant artifact metadata read as a load would; raises ``ValueError`` (offline tools)."""
-    import os
-
-    obj = _torch_load_prequant(os.path.expanduser(path), map_location = "meta", mmap = True)
-    if not isinstance(obj, dict) or obj.get("format") not in PREQUANT_FORMATS:
-        raise ValueError(f"{path} is not a pre-quant checkpoint (format {type(obj).__name__})")
-    return dict(obj.get("metadata") or {})
-
-
 def hosted_nvfp4_repo_ids() -> frozenset:
     """Every repo id an image or video family registers for the NVFP4 scheme, lowercased.
 
