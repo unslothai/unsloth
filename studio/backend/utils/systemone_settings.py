@@ -12,7 +12,6 @@ from typing import Any
 ENABLED_KEY = "systemone_enabled"
 MODEL_KEY = "systemone_model"
 DEVICE_KEY = "systemone_device"
-RAG_RERANK_KEY = "systemone_rag_rerank"
 DEFAULT_MODEL = "laya-multilingual"
 DEVICES = ("cpu", "gpu")
 
@@ -87,16 +86,11 @@ def get_device() -> str:
     return stored if stored in DEVICES else "cpu"
 
 
-def get_rag_rerank() -> bool:
-    return _owner_setting(RAG_RERANK_KEY) is True
-
-
 def validate(
     *,
     enabled: bool | None = None,
     model: str | None = None,
     device: str | None = None,
-    rag_rerank: bool | None = None,
 ) -> dict[str, Any]:
     from core.systemone.catalog import CHECKPOINTS
 
@@ -119,8 +113,6 @@ def validate(
         if device not in DEVICES:
             raise ValueError("Device must be cpu or gpu.")
         values[DEVICE_KEY] = device
-    if rag_rerank is not None:
-        values[RAG_RERANK_KEY] = bool(rag_rerank)
     return values
 
 

@@ -17,7 +17,6 @@ TOP_K_LEXICAL = int(os.environ.get("RAG_TOP_K_LEXICAL", "30"))
 TOP_K_DENSE = int(os.environ.get("RAG_TOP_K_DENSE", "30"))
 TOP_K_HYBRID = int(os.environ.get("RAG_TOP_K_HYBRID", "10"))
 RRF_K = int(os.environ.get("RAG_RRF_K", "60"))
-RERANK_CANDIDATES = int(os.environ.get("RAG_RERANK_CANDIDATES", "20"))
 
 # Whole-document context: a file under this budget is injected in full instead of top-K retrieval.
 THREAD_WHOLE_DOC = os.environ.get("RAG_THREAD_WHOLE_DOC", "1") == "1"

@@ -1965,8 +1965,6 @@ export const ja = {
         deviceDescription: "GPU の方が高速ですが、再起動するまでメモリを確保し続けます。",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
-        ragRerank: "ドキュメント検索を並べ替える",
-        ragRerankDescription: "チャットに渡す前に、このモデルでドキュメントの抜粋を並べ替えます。CPU では検索ごとに数秒かかります。",
         checking: "確認中…",
         notDownloaded: "未ダウンロード · {size}",
         downloading: "ダウンロード中…",

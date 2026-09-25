@@ -2001,8 +2001,6 @@ export const hi = {
         deviceDescription: "GPU तेज़ जवाब देता है, लेकिन रीस्टार्ट होने तक अपनी मेमोरी आरक्षित रखता है।",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
-        ragRerank: "दस्तावेज़ खोज को फिर से क्रमित करें",
-        ragRerankDescription: "चैट तक पहुँचने से पहले आपके दस्तावेज़ों के अंशों को इस मॉडल से फिर से क्रमित करता है। CPU पर हर खोज में कुछ सेकंड जुड़ते हैं।",
         checking: "जाँच हो रही है…",
         notDownloaded: "डाउनलोड नहीं हुआ · {size}",
         downloading: "डाउनलोड हो रहा है…",

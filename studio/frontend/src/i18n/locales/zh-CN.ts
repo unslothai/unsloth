@@ -1945,8 +1945,6 @@ export const zhCN = {
         deviceDescription: "GPU 响应更快，但在重启前会一直占用显存。",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
-        ragRerank: "重新排序文档搜索结果",
-        ragRerankDescription: "在内容进入对话前，用此模型重新排序文档中的段落。在 CPU 上每次搜索会多花几秒。",
         checking: "正在检查…",
         notDownloaded: "未下载 · {size}",
         downloading: "正在下载…",

@@ -1988,8 +1988,6 @@ export const ko = {
         deviceDescription: "GPU가 더 빠르지만 다시 시작할 때까지 메모리를 계속 차지합니다.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
-        ragRerank: "문서 검색 재정렬",
-        ragRerankDescription: "채팅에 전달하기 전에 이 모델로 문서의 구절을 다시 정렬합니다. CPU에서는 검색마다 몇 초가 더 걸립니다.",
         checking: "확인 중…",
         notDownloaded: "다운로드 안 됨 · {size}",
         downloading: "다운로드 중…",

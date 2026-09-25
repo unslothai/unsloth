@@ -590,68 +590,6 @@ def _probabilities(agent, row, k: int, qtype: int):
     return p / p.sum()
 
 
-def _warm(checkpoint: Checkpoint) -> None:
-    # Never downloads or installs: that stays with the owner's switch and the Decision API itself.
-    if not package_available() or not is_cached(checkpoint):
-        return
-    try:
-        _ensure_loading(checkpoint)
-    except Unavailable:
-        pass
-
-
-def score_noul(
-    question: dict[str, Any],
-    states: list[str],
-    batch_size: int = 8,
-) -> list[float] | None:
-    from . import catalog
-
-    checkpoint = catalog.default_checkpoint()
-    with _state_lock:
-        agent = _agent if _loaded == checkpoint else None
-        idle = _agent is None
-    if agent is None:
-        # Never evicts a checkpoint a Decision API client asked for by name.
-        if idle:
-            _warm(checkpoint)
-        return None
-    # A search never queues behind Decision API traffic; it keeps its retrieval order instead.
-    if not _run_lock.acquire(blocking = False):
-        return None
-    try:
-        if _agent is not agent:
-            return None
-        from laya.common import QTYPES
-
-        max_len = int(agent.cfg.get("max_len", 512))
-        ids, markers, internal = _head(
-            agent, question, max_len, int(agent.cfg.get("head_max_len", 192))
-        )
-        room = max(0, max_len - len(ids))
-        items = []
-        for state in states:
-            state_ids, cut = _state_ids(agent.tok, state, room)
-            if cut:
-                raise ValueError("state exceeds the Laya context window")
-            items.append(
-                {
-                    "ids": ids[:-1] + state_ids + ids[-1:],
-                    "markers": markers,
-                    "qtype": QTYPES["noul"],
-                }
-            )
-        scores = []
-        for start in range(0, len(items), batch_size):
-            logits, _ = _forward(agent, items[start : start + batch_size])
-            scores.extend(
-                float(_probabilities(agent, row, len(markers), QTYPES["noul"])[1]) for row in logits
-            )
-        return scores
-    finally:
-        _run_lock.release()
-
-
 def _wire_answer(answer: dict[str, Any]) -> dict[str, Any]:
     kind = answer["type"]
     if kind == "noul":

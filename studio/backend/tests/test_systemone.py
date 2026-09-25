@@ -417,15 +417,6 @@ def test_changing_settings_drops_the_resident_model(client, runtime):
     assert runtime == ["laya-multilingual", "laya-english"]
 
 
-def test_document_rerank_switch_keeps_the_resident_model(client, runtime):
-    _post(client)
-    assert client.get("/api/settings/systemone").json()["rag_rerank"] is False
-    body = client.put("/api/settings/systemone", json = {"rag_rerank": True}).json()
-    assert (body["rag_rerank"], body["loaded_model"]) == (True, "laya-multilingual")
-    assert systemone_settings.get_rag_rerank() is True
-    assert runtime == ["laya-multilingual"]
-
-
 def test_turning_it_off_unloads_and_refuses(client, runtime):
     _post(client)
     body = client.put("/api/settings/systemone", json = {"enabled": False}).json()

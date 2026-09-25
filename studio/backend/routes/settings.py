@@ -637,14 +637,12 @@ class SystemOneSettingsResponse(BaseModel):
     loading_model: Optional[str] = None
     installing: bool = False
     error: Optional[str] = None
-    rag_rerank: bool = False
 
 
 class SystemOneSettingsPayload(BaseModel):
     enabled: Optional[bool] = None
     model: Optional[str] = None
     device: Optional[str] = None
-    rag_rerank: Optional[bool] = None
 
 
 class SystemOneDownloadPlan(BaseModel):
@@ -1365,7 +1363,6 @@ def _systemone_response() -> SystemOneSettingsResponse:
         loading_model = runtime["loading_model"],
         installing = runtime["installing"],
         error = error,
-        rag_rerank = systemone_settings.get_rag_rerank(),
     )
 
 
@@ -1392,13 +1389,13 @@ def update_systemone_settings(
             event = "settings.update_systemone_failed",
             log = logger,
         ) from exc
-    if set(values) - {systemone_settings.RAG_RERANK_KEY}:
+    if values:
         # The resident model was built from the old settings; drop it so the next request uses the new ones.
         try:
             laya_runtime.unload()
         except laya_runtime.Unavailable as exc:
             raise HTTPException(status_code = 409, detail = exc.message) from None
-    systemone_settings.save(values)
+        systemone_settings.save(values)
     return _systemone_response()
 
 

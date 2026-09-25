@@ -423,19 +423,6 @@ export function DecisionApiSection(): ReactElement | null {
             </SelectContent>
           </Select>
         </SettingsRow>
-
-        <SettingsRow
-          label={t("settings.apiKeys.decisionApi.ragRerank")}
-          description={t("settings.apiKeys.decisionApi.ragRerankDescription")}
-          alignTop={true}
-        >
-          <Switch
-            checked={settings.ragRerank}
-            disabled={busy || !enabled}
-            onCheckedChange={(on) => void apply({ rag_rerank: on }, false)}
-            aria-label={t("settings.apiKeys.decisionApi.ragRerank")}
-          />
-        </SettingsRow>
       </div>
     </section>
   );

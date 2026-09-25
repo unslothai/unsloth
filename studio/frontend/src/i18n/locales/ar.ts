@@ -1995,8 +1995,6 @@ export const ar = {
         deviceDescription: "وحدة GPU أسرع في الإجابة، لكنها تحتفظ بذاكرتها محجوزة حتى إعادة التشغيل.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
-        ragRerank: "إعادة ترتيب نتائج البحث في المستندات",
-        ragRerankDescription: "يعيد ترتيب المقاطع من مستنداتك باستخدام هذا النموذج قبل أن تصل إلى المحادثة. يضيف بضع ثوانٍ لكل بحث على CPU.",
         checking: "جارٍ التحقق…",
         notDownloaded: "غير مُنزَّل · {size}",
         downloading: "جارٍ التنزيل…",

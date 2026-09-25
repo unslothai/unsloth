@@ -26,7 +26,6 @@ export type SystemOneSettings = {
   loadingModel: string | null;
   installing: boolean;
   error: string | null;
-  ragRerank: boolean;
 };
 
 export type SystemOneDownloadPlan = {
@@ -59,8 +58,6 @@ type ApiSystemOneSettings = {
   loading_model: string | null;
   installing: boolean;
   error: string | null;
-  // biome-ignore lint/style/useNamingConvention: API schema
-  rag_rerank: boolean;
 };
 
 type ApiSystemOneDownloadPlan = {
@@ -93,7 +90,6 @@ function fromApi(settings: ApiSystemOneSettings): SystemOneSettings {
     loadingModel: settings.loading_model,
     installing: settings.installing,
     error: settings.error,
-    ragRerank: settings.rag_rerank,
   };
 }
 
@@ -115,8 +111,6 @@ export async function updateSystemOneSettings(patch: {
   enabled?: boolean;
   model?: string;
   device?: SystemOneDevice;
-  // biome-ignore lint/style/useNamingConvention: API schema
-  rag_rerank?: boolean;
 }): Promise<SystemOneSettings> {
   return readSettings(
     await authFetch(SETTINGS_PATH, {
