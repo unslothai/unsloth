@@ -112,6 +112,13 @@ import {
   resolveProjectId,
   sentAudioNames,
 } from "@/features/chat/api/chat-adapter";
+import { requestVoiceToggle } from "@/features/chat/voice/voice-loop-bridge";
+import {
+  useVoiceAvailable,
+  VoiceControlButton,
+  VoiceEngine,
+} from "@/features/chat/voice/voice-engine";
+import { VoiceOrb } from "@/components/assistant-ui/voice-orb";
 import {
   PromptStorageDialog,
   exportConversationShareGPT,
@@ -544,6 +551,17 @@ function resetPromptQueues() {
   clearPromptQueuePumpTimer();
   stopPromptQueueSubscription();
   syncPromptQueueUI();
+}
+
+// Drop the queued prompts of ONE thread and nothing else. The voice loop calls
+// this when a spoken utterance supersedes that thread's queue; a global reset
+// there would silently discard prompts queued in background chats too. Delete
+// only, no target cancel, matching resetPromptQueues -- the caller has already
+// cancelled the run it means to cancel.
+export function resetPromptQueuesForThread(threadId: string) {
+  for (const run of getPromptQueueRunsForThreadIds([threadId])) {
+    deletePromptQueueRun(run);
+  }
 }
 
 function requestPromptQueuePumpIfReady(delay = 0) {
@@ -1905,6 +1923,15 @@ export const Thread: FC<{
   const { ref: viewportRef, context: autoScrollContext } =
     useIntentAwareAutoScroll();
 
+  // Force the docked composer (and suppress the centered welcome) only once the
+  // full orb is ACTIVE -- including its warmup -- so the empty-thread orb view
+  // always has a bottom input bar above it (z-40) instead of the orb-covered
+  // welcome composer. Deliberately NOT keyed on merely "configuring": pressing the
+  // Voice toggle should leave you in the normal chat/welcome with a grey mini orb;
+  // opening the full orb is exclusively the mini-orb button's job.
+  const voiceActive = useChatRuntimeStore((s) => s.voiceMode === "active");
+  const effectiveHideWelcome = hideWelcome || voiceActive;
+
   const isComposerAttachPending = useAuiState(({ threads }) =>
     targetThreadId ? threads.mainThreadId !== targetThreadId : false,
   );
@@ -2151,7 +2178,7 @@ export const Thread: FC<{
                   "pt-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))]",
             )}
           >
-            {!hideWelcome && (
+            {!effectiveHideWelcome && (
               <AuiIf
                 condition={({ thread }) => thread.isEmpty && !thread.isLoading}
               >
@@ -2174,7 +2201,7 @@ export const Thread: FC<{
             {/* Bottom slack so the last message has room above the sticky
             scroll-to-bottom button (and floating composer in single mode),
             instead of butting against the footer. */}
-            <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
+            <AuiIf condition={({ thread }) => effectiveHideWelcome || !thread.isEmpty}>
               <div
                 ref={spacerRef}
                 className={cn(
@@ -2189,7 +2216,7 @@ export const Thread: FC<{
               />
             </AuiIf>
 
-            <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
+            <AuiIf condition={({ thread }) => effectiveHideWelcome || !thread.isEmpty}>
               <ThreadPrimitive.ViewportFooter
                 className={cn(
                   "aui-thread-viewport-footer pointer-events-none sticky z-20 flex w-full justify-center bg-transparent",
@@ -2215,9 +2242,10 @@ export const Thread: FC<{
             hideComposer={hideComposer}
             bottomOffsetPx={footerBottomPx}
           />
+          <VoiceOrb />
 
           {!hideComposer && (
-            <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
+            <AuiIf condition={({ thread }) => effectiveHideWelcome || !thread.isEmpty}>
               <ThreadComposerDock
                 disabled={isComposerAttachPending}
                 threadId={threadId}
@@ -2345,6 +2373,7 @@ const ThreadComposerDock: FC<{
   onHeightChange?: (height: number | null) => void;
 }> = ({ disabled, threadId, onHeightChange }) => {
   const { overlay } = useGeneratedImageOverlay();
+  const voiceOrbActive = useChatRuntimeStore((s) => s.voiceOrbState !== null);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadListItemId = useAuiState(
     ({ threadListItem }) => threadListItem.id,
@@ -2393,7 +2422,7 @@ const ThreadComposerDock: FC<{
         // Inset both sides, not just the right: the offset keeps the bottom
         // fade off the scrollbar, and a one-sided one also moves the centre.
         "aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:left-[calc(10px*var(--ui-space-scale,1))] md:right-[calc(10px*var(--ui-space-scale,1))]",
-        overlay ? "z-40" : "z-20",
+        overlay || voiceOrbActive ? "z-40" : "z-20",
       )}
     >
       {/* Fade the top edge so scrolling text is not cut off by a hard line. */}
@@ -2632,6 +2661,13 @@ const Composer: FC<{
 }> = ({ disabled, threadId, menuSide, disableQueue }) => {
   const aui = useAui();
   const isDictating = useAuiState((s) => s.composer.dictation != null);
+  // In voice mode the orb is the entire mic interface. The loop keeps a dictation
+  // session open continuously, so the composer's recording bar would sit there
+  // counting from the moment voice starts -- reading as "recording you" during
+  // every pause and every reply. The session is real and must stay open; only its
+  // UI is wrong here, so hide the presentation and leave the state alone.
+  const voiceEngaged = useChatRuntimeStore((s) => s.voiceMode !== "off");
+  const showDictationUi = isDictating && !voiceEngaged;
   const pageDragging = useContext(PageDragContext);
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
   const setImageToolsEnabled = useChatRuntimeStore(
@@ -5208,7 +5244,7 @@ const Composer: FC<{
 
   const composerContent = (
     <>
-      {!isDictating ? (
+      {!showDictationUi ? (
         <>
           <ComposerAttachments />
           <PendingAudioChip />
@@ -5216,20 +5252,20 @@ const Composer: FC<{
       ) : null}
       {/* Keep indexing state subscribed while dictating, but hide its chips so
           the waveform stays the composer's only status indicator. */}
-      <div className={isDictating ? "hidden" : "contents"}>
+      <div className={showDictationUi ? "hidden" : "contents"}>
         <ThreadDocumentsBar
           threadId={referenceThreadId}
           onIndexingChange={handleIndexingChange}
         />
       </div>
       {!isDictating ? <ComposerDraftPreview text={composerText} /> : null}
-      {!isDictating ? <ToolStatusDisplay /> : null}
+      {!showDictationUi ? <ToolStatusDisplay /> : null}
       <div
         className="unsloth-composer-line"
         // The permission pill is always visible, so keep the two-row layout
         // expanded whenever not dictating; dictation collapses to the bar.
-        data-expanded={!isDictating ? "true" : "false"}
-        data-dictating={isDictating ? "true" : undefined}
+        data-expanded={!showDictationUi ? "true" : "false"}
+        data-dictating={showDictationUi ? "true" : undefined}
       >
         <div
           ref={pillRowRef}
@@ -5262,7 +5298,7 @@ const Composer: FC<{
             </>
           ) : null}
         </div>
-        {isDictating ? (
+        {showDictationUi ? (
           // The recording UI replaces the input and send controls; only the
           // left plus stays visible alongside it.
           <ChatDictationBar
@@ -6315,6 +6351,8 @@ const ComposerToolsMenu: FC<{
 }> = ({ side = "bottom", researchAvailable }) => {
   const t = useT();
   const navigate = useNavigate();
+  const voiceMode = useChatRuntimeStore((s) => s.voiceMode);
+  const voiceAvailable = useVoiceAvailable();
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const codeToolsEnabled = useChatRuntimeStore(codeToolsOn);
@@ -6819,6 +6857,27 @@ const ComposerToolsMenu: FC<{
             ) : null}
           </DropdownMenuItem>
         )}
+        {voiceAvailable && (
+          <DropdownMenuItem
+            className={voiceMode !== "off" ? "text-primary font-medium" : undefined}
+            onSelect={() => requestVoiceToggle()}
+          >
+            <MicIcon className="size-[18px]" />
+            Voice
+            {voiceMode === "active" ? (
+              <HugeiconsIcon
+                icon={Tick02Icon}
+                strokeWidth={2}
+                className="ml-auto"
+              />
+            ) : voiceMode === "configuring" ? (
+              <span
+                className="ml-auto size-2 rounded-full bg-amber-500"
+                aria-hidden
+              />
+            ) : null}
+          </DropdownMenuItem>
+        )}
         <DropdownMenuSeparator />
         {isDictating ? <BypassPermissionsMenuItem /> : null}
         {pinnedPlusItems.map((id) => (
@@ -6987,23 +7046,35 @@ const ComposerRightControls: FC<{
     }
     if (isQueueRunning) onStopClick?.();
   };
+  // While voice mode is engaged, the mini orb is the mic control; hide the raw
+  // Dictate / Stop-dictation buttons (the loop drives dictation internally via
+  // the composer runtime's startDictation()/stopDictation(), not by clicking
+  // these). Kept mounted (display:none) only so composer state stays consistent.
+  const voiceEngaged = useChatRuntimeStore((s) => s.voiceMode !== "off");
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
+      <VoiceEngine />
+      <VoiceControlButton />
       {/* Starts dictation; the recording bar then covers the input row and owns
-          the stop and send actions. */}
-      <ComposerPrimitive.If dictation={false}>
-        <TooltipIconButton
-          tooltip="Dictate"
-          aria-label="Dictate"
-          type="button"
-          variant="ghost"
-          className="size-9 rounded-full text-foreground"
-          onClick={onDictateClick}
-        >
-          <MicIcon className="unsloth-dictate-icon size-6" />
-        </TooltipIconButton>
-      </ComposerPrimitive.If>
+          the stop and send actions. Hidden while voice mode is engaged: the mini
+          orb is the mic control there, and the loop drives dictation through the
+          composer runtime rather than by clicking this. Kept mounted so composer
+          state stays consistent across entering and leaving voice mode. */}
+      <div className={cn(voiceEngaged ? "hidden" : "contents")}>
+        <ComposerPrimitive.If dictation={false}>
+          <TooltipIconButton
+            tooltip="Dictate"
+            aria-label="Dictate"
+            type="button"
+            variant="ghost"
+            className="size-9 rounded-full text-foreground"
+            onClick={onDictateClick}
+          >
+            <MicIcon className="unsloth-dictate-icon size-6" />
+          </TooltipIconButton>
+        </ComposerPrimitive.If>
+      </div>
       <AuiIf
         condition={({ thread }) =>
           !thread.isRunning && !isQueueRunning && !isResearchActive

@@ -382,6 +382,14 @@
 	   action bar so the leftmost icon lines up with the message text edge.
 	   The button is 8 spacing steps, the glyph tracks --icon-size. */
 	--icon-btn-inset: calc((2rem * var(--ui-space-scale, 1) - var(--icon-size)) / 2);
+
+	/* Voice orb at rest (loop open, not started). Neutral on purpose -- every
+	   running state owns a hue -- but carrying the primary's green cast so it
+	   reads as part of the app rather than a grey blob dropped on the surface.
+	   Light: a pale pearl that still shows against the off-white page. */
+	--voice-orb-idle-from: #e8ebe9;
+	--voice-orb-idle-to: #b4bcb8;
+	--voice-orb-idle-glow: rgb(148 163 158 / 0.28);
 }
 
 .dark {
@@ -408,6 +416,12 @@
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
 	--bypass: #ffd60a;
+	/* Idle orb on dark: a slate that sits a clear step above the #181818 page,
+	   same green cast as the light pair so the resting state reads as one
+	   object across themes. */
+	--voice-orb-idle-from: #5a6360;
+	--voice-orb-idle-to: #2b312f;
+	--voice-orb-idle-glow: rgb(90 99 96 / 0.35);
 	/* --border / --input one step lighter than --muted so outlines and form
 	   borders stay visible on muted surfaces (right config panel, export
 	   tiles, quant chips) and keep subtle contrast on card. Matches the

@@ -242,6 +242,41 @@ def test_only_resident_requests_use_the_pre_switch_budget(monkeypatch, named):
     assert str(error.value) == "reached the switch" if named else error.value.status_code == 400
 
 
+@pytest.mark.parametrize("named", [False, True])
+def test_a_loaded_voice_slot_serves_only_the_resident_model_form(monkeypatch, named):
+    """The voice slot owns speech when the caller names no model, which is what the
+    conversation loop sends. A caller that names one keeps main's switch path exactly,
+    voice slot or not: the switch is that request, so it must be reached."""
+
+    async def _switch(_model, *_a, **kw):
+        assert kw["require_speech"] is True
+        raise RuntimeError("reached the switch")
+
+    def _picked_voice(_backend):
+        raise RuntimeError("reached the voice slot")
+
+    voice_backend = SimpleNamespace(is_loaded = True, _is_audio = True, _audio_type = "snac")
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice_backend)
+    monkeypatch.setattr(routes_module, "_maybe_auto_switch_model", _switch)
+    monkeypatch.setattr(routes_module, "_llama_public_model_id", _picked_voice)
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 2048)
+    monkeypatch.setattr(routes_module, "_prompt_token_estimate", lambda _t: 8)
+    payload = SimpleNamespace(audio_instructions = None, audio_language = None)
+    request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
+    model = "org/B-GGUF" if named else routes_module._RELOAD_ONLY_MODEL
+    with pytest.raises(RuntimeError) as error:
+        asyncio.run(
+            routes_module._generate_tts_wav(
+                "hi",
+                payload,
+                request,
+                "tester",
+                requested_model = model,
+            )
+        )
+    assert str(error.value) == ("reached the switch" if named else "reached the voice slot")
+
+
 def test_the_shared_core_guards_before_generating():
     """Wired in _generate_tts_wav so /audio/generate inherits it, not only /audio/speech."""
     import inspect
@@ -1002,3 +1037,75 @@ def test_an_ordinary_model_id_is_still_recorded_verbatim(monkeypatch):
             == 400
         )
         assert api_monitor.snapshot(include_details = False)[0]["model"] == requested
+
+
+def test_voice_load_applies_the_managed_account_gate_before_resolving(monkeypatch):
+    """A managed account may only load a model within its grants, and an absent token is
+    the account's own, never the installation's ambient Hub credential. /load and
+    /validate apply both before resolving; /voice/load resolved the caller's identifier
+    with the caller's token first, which made the voice slot a second door past both."""
+    from hub.services.models import account_access
+    from utils import models as models_module
+
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+
+    def _resolve_before_gate(*_a, **_k):
+        raise AssertionError("resolved the model before the access check")
+
+    monkeypatch.setattr(models_module.ModelConfig, "from_identifier", _resolve_before_gate)
+
+    def _deny(reference, repo_type = "model"):
+        raise HTTPException(status_code = 403, detail = f"no grant for {reference}")
+
+    monkeypatch.setattr(account_access, "require_model_access", _deny)
+    monkeypatch.setattr(account_access, "account_hf_token", lambda token: "account-token")
+    request = routes_module._VoiceLoadRequest(model_path = "org/private-voice-GGUF")
+    with pytest.raises(HTTPException) as denied:
+        asyncio.run(routes_module.voice_load_model(request, "tester"))
+    assert denied.value.status_code == 403
+
+
+def test_voice_load_resolves_with_the_account_token_not_the_callers(monkeypatch):
+    from hub.services.models import account_access
+    from utils import models as models_module
+
+    seen = {}
+
+    def _resolve(**kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("stop after resolve")
+
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(account_access, "require_model_access", lambda *a, **k: None)
+    monkeypatch.setattr(account_access, "account_hf_token", lambda token: "account-token")
+    monkeypatch.setattr(models_module.ModelConfig, "from_identifier", staticmethod(_resolve))
+    request = routes_module._VoiceLoadRequest(
+        model_path = "org/voice-GGUF", hf_token = "callers-own-token"
+    )
+    with pytest.raises(HTTPException) as failed:
+        asyncio.run(routes_module.voice_load_model(request, "tester"))
+    assert failed.value.status_code == 400  # the route wraps the resolve failure
+    assert seen["hf_token"] == "account-token"
+
+
+def test_voice_load_rejects_a_context_above_the_requestable_ceiling():
+    """/voice/load models its load as a chat LoadRequest for the training-coexistence
+    guard, and that model caps max_seq_length at MAX_REQUESTABLE_CONTEXT. Without the
+    same bound on n_ctx, an oversized value passed validation and then blew up inside
+    the handler as a 500, after the HF resolve, instead of a 422 up front."""
+    from pydantic import ValidationError
+
+    from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
+
+    with pytest.raises(ValidationError):
+        routes_module._VoiceLoadRequest(
+            model_path = "unsloth/orpheus-3b-0.1-ft-GGUF", n_ctx = MAX_REQUESTABLE_CONTEXT + 1
+        )
+    assert (
+        routes_module._VoiceLoadRequest(
+            model_path = "unsloth/orpheus-3b-0.1-ft-GGUF", n_ctx = MAX_REQUESTABLE_CONTEXT
+        ).n_ctx
+        == MAX_REQUESTABLE_CONTEXT
+    )
+    # 0 keeps meaning "model default".
+    assert routes_module._VoiceLoadRequest(model_path = "x.gguf", n_ctx = 0).n_ctx == 0
