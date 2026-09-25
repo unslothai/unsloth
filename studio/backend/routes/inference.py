@@ -43581,6 +43581,85 @@ async def anthropic_messages(
     )
 
 
+class _AnthropicToolEventRules:
+    """What the server-tool stream does with each tool-loop event, whatever produced it."""
+
+    def __init__(self, emitter, openai_tools, disable_parallel_tool_use, think_provenance) -> None:
+        self._emitter = emitter
+        # Gate the display strip on the declared tools: an inactive NAME[ARGS]{...} in a final
+        # answer is prose and must survive in the delivered text.
+        self._display_names = _display_tool_name_gate(openai_tools)
+        self._disable_parallel_tool_use = disable_parallel_tool_use
+        self._finish_reason = None
+        # Response ends on a pending tool_use block rather than final text; a server tool
+        # that keeps generating flips this back to False.
+        self._ends_on_tool_use = False
+        self._tool_blocks_emitted = 0
+        self._drop_until_tool_end = False
+        self._span_guard = _ReasoningSpanGuard(think_provenance)
+        # Last drop-branch keepalive, seeded to stream start so a chatty tool busy past the
+        # stall window still gets one though its events are dropped.
+        self._last_drop_keepalive = time.monotonic()
+
+    def feed(self, event: dict) -> list:
+        etype = event.get("type")
+        if etype == "heartbeat":
+            # Tool-wrapper heartbeat -> SSE keepalive, checked BEFORE the drop skip:
+            # a dropped tool still runs and suppresses the stall keepalive.
+            return [_OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
+        if etype in ("tool_output", "tool_args"):
+            # No Anthropic Messages equivalent (the full call/result follow in tool_use /
+            # tool_result), so drop them. They suppress the stall keepalive, so emit a
+            # rate-limited one instead of going silent past the ~100s proxy cap.
+            _now = time.monotonic()
+            if _now - self._last_drop_keepalive >= _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S:
+                self._last_drop_keepalive = _now
+                return [_OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
+            return []
+        if self._drop_until_tool_end:
+            # disable_parallel_tool_use: skip every event until (and
+            # including) this dropped tool call's tool_end.
+            if etype == "tool_end":
+                self._drop_until_tool_end = False
+            return []
+        if etype == "metadata":
+            _fr = event.get("finish_reason")
+            if _fr is not None:
+                self._finish_reason = _fr
+        # Strip leaked tool-call XML first, so a purely-tool-XML content event doesn't
+        # count as text. The protected helper keeps <think> rehearsal and balanced
+        # [TOOL_CALLS] trailing prose, which a raw sub corrupts.
+        if etype == "content":
+            event = dict(event)
+            event["text"] = self._span_guard.strip(
+                event["text"],
+                auto_heal_tool_calls = True,
+                enabled_tool_names = self._display_names,
+            )
+        # disable_parallel_tool_use: keep only the first tool_use block, dropping
+        # later tool_start/tool_end pairs (by state, not id: ids may be empty).
+        if etype == "tool_start":
+            if self._disable_parallel_tool_use and self._tool_blocks_emitted >= 1:
+                self._drop_until_tool_end = True
+                return []
+            self._ends_on_tool_use = True
+        elif etype == "tool_end":
+            self._tool_blocks_emitted += 1
+            self._span_guard.tool_end()
+            # Unsloth ran the tool server-side, so the response no longer ends on a pending
+            # client action; otherwise stop_reason "tool_use" tells the client to run it again.
+            self._ends_on_tool_use = False
+        elif etype == "content" and event.get("text"):
+            self._ends_on_tool_use = False
+        return self._emitter.feed(event)
+
+    def finish(self) -> list:
+        stop_reason = openai_finish_to_anthropic_stop(
+            self._finish_reason, had_tool_calls = self._ends_on_tool_use
+        )
+        return self._emitter.finish(stop_reason = stop_reason, stop_sequence = None)
+
+
 async def _anthropic_tool_stream(
     request,
     cancel_event,
@@ -43597,10 +43676,6 @@ async def _anthropic_tool_stream(
 ):
     """Streaming response for the tool-calling path."""
     _sentinel = object()
-
-    # Gate the display strip on the declared tools: an inactive NAME[ARGS]{...} in a final
-    # answer is prose and must survive in the delivered text.
-    _display_names = _display_tool_name_gate(openai_tools)
 
     # Prompt-token count for message_start.usage.input_tokens. count_chat_tokens
     # makes blocking HTTP calls to llama-server, so run it off the event loop.
@@ -43632,17 +43707,9 @@ async def _anthropic_tool_stream(
             )
             for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
                 yield line
-
-            captured_finish_reason = None
-            # Response ends on a pending tool_use block rather than final text; a server tool
-            # that keeps generating flips this back to False.
-            ends_on_tool_use = False
-            tool_blocks_emitted = 0
-            drop_until_tool_end = False
-            _span_guard = _ReasoningSpanGuard(think_provenance)
-            # Last drop-branch keepalive, seeded to stream start so a chatty tool busy past the
-            # stall window still gets one though its events are dropped.
-            _last_drop_keepalive = time.monotonic()
+            rules = _AnthropicToolEventRules(
+                emitter, openai_tools, disable_parallel_tool_use, think_provenance
+            )
 
             # See the GGUF tool stream: this loop drives the same tool generator, and its
             # respawn refit records the refusal from inside the worker thread, so the slot
@@ -43679,57 +43746,7 @@ async def _anthropic_tool_stream(
                     _next_task = None
                     if event is _sentinel:
                         break
-                    etype = event.get("type")
-                    if etype == "heartbeat":
-                        # Tool-wrapper heartbeat -> SSE keepalive, checked BEFORE the drop skip:
-                        # a dropped tool still runs and suppresses the stall keepalive.
-                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                        continue
-                    if etype in ("tool_output", "tool_args"):
-                        # No Anthropic Messages equivalent (the full call/result follow in tool_use /
-                        # tool_result), so drop them. They suppress the stall keepalive, so emit a
-                        # rate-limited one instead of going silent past the ~100s proxy cap.
-                        _now = time.monotonic()
-                        if _now - _last_drop_keepalive >= _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S:
-                            _last_drop_keepalive = _now
-                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                        continue
-                    if drop_until_tool_end:
-                        # disable_parallel_tool_use: skip every event until (and
-                        # including) this dropped tool call's tool_end.
-                        if etype == "tool_end":
-                            drop_until_tool_end = False
-                        continue
-                    if etype == "metadata":
-                        _fr = event.get("finish_reason")
-                        if _fr is not None:
-                            captured_finish_reason = _fr
-                    # Strip leaked tool-call XML first, so a purely-tool-XML content event doesn't
-                    # count as text. The protected helper keeps <think> rehearsal and balanced
-                    # [TOOL_CALLS] trailing prose, which a raw sub corrupts.
-                    if etype == "content":
-                        event = dict(event)
-                        event["text"] = _span_guard.strip(
-                            event["text"],
-                            auto_heal_tool_calls = True,
-                            enabled_tool_names = _display_names,
-                        )
-                    # disable_parallel_tool_use: keep only the first tool_use block, dropping
-                    # later tool_start/tool_end pairs (by state, not id: ids may be empty).
-                    if etype == "tool_start":
-                        if disable_parallel_tool_use and tool_blocks_emitted >= 1:
-                            drop_until_tool_end = True
-                            continue
-                        ends_on_tool_use = True
-                    elif etype == "tool_end":
-                        tool_blocks_emitted += 1
-                        _span_guard.tool_end()
-                        # Unsloth ran the tool server-side, so the response no longer ends on a pending
-                        # client action; otherwise stop_reason "tool_use" tells the client to run it again.
-                        ends_on_tool_use = False
-                    elif etype == "content" and event.get("text"):
-                        ends_on_tool_use = False
-                    for line in emitter.feed(event):
+                    for line in rules.feed(event):
                         yield line
             except Exception as e:
                 logger.error("anthropic_messages stream error: %s", e)
@@ -43750,10 +43767,7 @@ async def _anthropic_tool_stream(
                     except (RuntimeError, ValueError):
                         pass
 
-            stop_reason = openai_finish_to_anthropic_stop(
-                captured_finish_reason, had_tool_calls = ends_on_tool_use
-            )
-            for line in emitter.finish(stop_reason = stop_reason, stop_sequence = None):
+            for line in rules.finish():
                 yield line
         finally:
             _tracker.__exit__(None, None, None)
