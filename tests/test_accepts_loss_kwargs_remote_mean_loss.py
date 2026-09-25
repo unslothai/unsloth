@@ -33,6 +33,7 @@ import sys
 import textwrap
 import types
 
+import pytest
 import torch
 from torch import nn
 from torch.nn import CrossEntropyLoss
@@ -50,7 +51,7 @@ _NAMES = {
 
 
 def _load():
-    src = _UTILS.read_text()
+    src = _UTILS.read_text(encoding = "utf-8")
     tree = ast.parse(src)
     keep = []
     for node in tree.body:
@@ -61,7 +62,7 @@ def _load():
         ):
             keep.append(node)
     ns = {"re": re, "inspect": inspect, "os": os}
-    exec(compile(ast.Module(body=keep, type_ignores=[]), str(_UTILS), "exec"), ns)
+    exec(compile(ast.Module(body = keep, type_ignores = []), str(_UTILS), "exec"), ns)
     return ns
 
 
@@ -126,13 +127,50 @@ class NoKwargsForCausalLM(nn.Module):
 '''
 
 
-def _models(tmp_path):
-    p = tmp_path / "remote_models_for_ga_test.py"
-    p.write_text(_MODELS)
+# A real PreTrainedModel, so peft can wrap it the way get_peft_model does in training scripts.
+_PRETRAINED_MODELS = """
+import torch
+from torch import nn
+from torch.nn import CrossEntropyLoss
+from transformers import GenerationMixin, PretrainedConfig, PreTrainedModel
+
+
+class RemoteMeanLossConfig(PretrainedConfig):
+    model_type = "remote_mean_loss_for_ga_test"
+
+
+class RemoteMeanLossForCausalLM(PreTrainedModel, GenerationMixin):
+    config_class = RemoteMeanLossConfig
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.proj = nn.Linear(4, 4)
+        self.post_init()
+
+    def _init_weights(self, module):
+        pass
+
+    def forward(self, input_ids=None, labels=None, **kwargs):  # for now we need this for generation
+        logits = self.proj(torch.zeros(1, 4))
+        loss = None
+        if labels is not None:
+            loss_fct = CrossEntropyLoss()
+            loss = loss_fct(logits, labels.view(-1))
+        return loss
+"""
+
+
+def _models(
+    tmp_path,
+    source = _MODELS,
+    name = "remote_models_for_ga_test",
+):
+    p = tmp_path / f"{name}.py"
+    p.write_text(source, encoding = "utf-8")
     sys.path.insert(0, str(tmp_path))
     try:
         import importlib
-        mod = importlib.import_module("remote_models_for_ga_test")
+        mod = importlib.import_module(name)
         return importlib.reload(mod)
     finally:
         sys.path.remove(str(tmp_path))
@@ -140,9 +178,10 @@ def _models(tmp_path):
 
 class _PeftLike(nn.Module):
     """PeftModelForCausalLM -> LoraModel -> base model, as the Trainer sees it."""
+
     def __init__(self, inner):
         super().__init__()
-        self.base_model = types.SimpleNamespace(model=inner)
+        self.base_model = types.SimpleNamespace(model = inner)
         # LoraModel exposes the wrapped model as .model as well
         self.base_model.base_model = None
 
@@ -189,3 +228,19 @@ def test_explicit_class_attribute_still_wins(tmp_path):
     model = Declared()
     ns["apply_accepts_loss_kwargs_fix"](model)
     assert model.accepts_loss_kwargs is True
+
+
+def test_remote_mean_loss_under_a_real_peft_model(tmp_path):
+    # PeftModelForCausalLM has "CausalLM" in its own name and a **kwargs forward with no loss, so
+    # the walk has to look past it, and transformers 5 reads the flag off get_base_model().
+    peft = pytest.importorskip("peft")
+    ns = _load()
+    mods = _models(tmp_path, _PRETRAINED_MODELS, "remote_pretrained_for_ga_test")
+    inner = mods.RemoteMeanLossForCausalLM(mods.RemoteMeanLossConfig())
+    wrapped = peft.get_peft_model(
+        inner, peft.LoraConfig(r = 2, target_modules = ["proj"], task_type = "CAUSAL_LM")
+    )
+    assert "CausalLM" in type(wrapped).__name__
+    ns["apply_accepts_loss_kwargs_fix"](wrapped)
+    assert getattr(wrapped.get_base_model(), "accepts_loss_kwargs", None) is False
+    assert getattr(wrapped, "accepts_loss_kwargs", None) is False
