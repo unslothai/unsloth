@@ -3811,7 +3811,9 @@ class DiffusionBackend:
                 reusable_paths,
             )
 
-            # Unpinned entries (pre-cast text encoder, DiT prequant) were probed against the local main ref.
+            # Unpinned entries (pre-cast text encoder, DiT prequant) were probed against the local main ref,
+            # but the worker downloads the Hub head, so compare against the head's digests.
+            digest_revision = None if revision else "main"
             revision = revision or cached_ref_commit("model", repo_id, hub_cache_dir())
             if not revision:
                 return set()
@@ -3822,6 +3824,7 @@ class DiffusionBackend:
                 {name: int(declared_sizes.get(name) or 0) for name in names},
                 hub_cache = hub_cache_dir(),
                 remote_digests = hub_remote_digests("model", repo_id, hf_token or None),
+                digest_revision = digest_revision,
             )
         except Exception:  # noqa: BLE001 -- counting the bytes is the conservative answer
             return set()

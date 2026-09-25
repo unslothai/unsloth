@@ -100,14 +100,15 @@ def _read_digest_cache(cache_path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _remember_digest(key: str, digest: str) -> None:
+def _remember_digests(entries: Mapping[str, str]) -> None:
     cache_path = _digest_cache_path()
-    if cache_path is None:
+    if cache_path is None or not entries:
         return
     with _digest_cache_lock:
         data = _read_digest_cache(cache_path)
-        data.pop(key, None)
-        data[key] = digest
+        for key, digest in entries.items():
+            data.pop(key, None)
+            data[key] = digest
         while len(data) > _DIGEST_CACHE_LIMIT:
             data.pop(next(iter(data)))
         tmp = cache_path.with_name(f".{cache_path.name}.tmp-{uuid.uuid4().hex[:8]}")
@@ -128,6 +129,7 @@ def cached_file_digest(
     kind: str,
     *,
     compute: bool = True,
+    learned: Optional[dict] = None,
 ) -> tuple[Optional[str], int]:
     """(digest, bytes hashed). Stat metadata cannot prove unchanged bytes, so the persisted cache only serves ``compute=False`` estimates."""
     try:
@@ -148,7 +150,10 @@ def cached_file_digest(
         return None, 0
     if (after.st_size, after.st_mtime_ns) != (st.st_size, st.st_mtime_ns):
         return None, st.st_size
-    _remember_digest(key, digest)
+    if learned is None:
+        _remember_digests({key: digest})
+    else:
+        learned[key] = digest  # the caller persists a whole pass in one write
     return digest, st.st_size
 
 
@@ -267,16 +272,20 @@ def find_reusable_copies(
             for path, candidate in here.items():
                 if remote.get(path) == expected[path][1]:
                     matches[path] = candidate
+    learned: dict[str, str] = {}
     for path, found in candidates.items():
         if path in matches:
             continue
         kind = digest_kind(expected[path][1])
         for candidate in found:
-            local, spent = cached_file_digest(candidate, kind, compute = allow_hashing)
+            local, spent = cached_file_digest(
+                candidate, kind, compute = allow_hashing, learned = learned
+            )
             hashed += spent
             if local == expected[path][1]:
                 matches[path] = candidate
                 break
+    _remember_digests(learned)
     return matches, hashed
 
 
@@ -373,8 +382,13 @@ def reuse_unchanged_snapshot_files(
             allow_hashing = allow_hashing,
         )
         reused, linked, copied, reused_bytes = [], 0, 0, 0
+        from hub.utils.hf_cache_state import blob_download_lock_held
+
         for path, src in matches.items():
             size, digest = pending[path]
+            # Rechecked here, not only at launch: a peer may have started on this blob while we hashed.
+            if blob_download_lock_held(repo_dir, digest):
+                continue
             how = _place(src, target_root / path, size)
             if how is None:
                 continue
@@ -449,6 +463,7 @@ def reusable_paths(
     hub_cache: Optional[str | Path] = None,
     remote_digests: Optional[RemoteDigests] = None,
     allow_hashing: bool = False,
+    digest_revision: Optional[str] = None,
 ) -> set[str]:
     """Read-only plan estimate: no network unless a same-size local copy exists."""
     try:
@@ -472,7 +487,8 @@ def reusable_paths(
         ]
         if not local or remote_digests is None:
             return set()
-        target = remote_digests(commit, sorted(local)) or {}
+        # digest_revision names what the worker will fetch when commit_hash is only the local ref.
+        target = remote_digests(digest_revision or commit, sorted(local)) or {}
         expected = {
             path: (int(sizes[path]), target[path])
             for path in local

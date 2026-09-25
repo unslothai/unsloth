@@ -7749,21 +7749,32 @@ def test_reusable_from_older_snapshot_targets_the_main_ref_when_unpinned(monkeyp
     (repo / "refs").mkdir()
     (repo / "refs" / "main").write_text(new)
     monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path))
-    monkeypatch.setattr(
-        snapshot_reuse,
-        "hub_remote_digests",
-        lambda repo_type, repo_id, token: lambda commit, paths: {p: "a" * 64 for p in paths},
-    )
+    head = {"main": "a" * 64}
+    asked = []
 
-    found = DiffusionBackend._reusable_from_older_snapshot(
-        "unsloth/Qwen-Image-2.1-FP8",
-        ["te.safetensors"],
-        None,
-        {"te.safetensors": len(encoder)},
-        None,
-    )
+    def digests(repo_type, repo_id, token):
+        def lookup(commit, paths):
+            asked.append(commit)
+            return {p: head.get(commit, "a" * 64) for p in paths}
 
-    assert found == {"te.safetensors"}
+        return lookup
+
+    monkeypatch.setattr(snapshot_reuse, "hub_remote_digests", digests)
+
+    def reusable():
+        return DiffusionBackend._reusable_from_older_snapshot(
+            "unsloth/Qwen-Image-2.1-FP8",
+            ["te.safetensors"],
+            None,
+            {"te.safetensors": len(encoder)},
+            None,
+        )
+
+    assert reusable() == {"te.safetensors"}
+    assert asked[0] == "main"  # the worker fetches the Hub head, not the cached ref
+    # The Hub head moved past refs/main and changed the encoder: keep counting it.
+    head["main"] = "b" * 64
+    assert reusable() == set()
 
 
 def test_download_plan_is_empty_when_every_required_file_is_cached(monkeypatch):

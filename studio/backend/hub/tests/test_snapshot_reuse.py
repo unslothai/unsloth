@@ -308,7 +308,7 @@ def test_a_stale_cached_digest_does_not_carry_changed_bytes_forward(tmp_path):
     repo_dir = _copy_layout(tmp_path, {"model.safetensors": bad})
     candidate = repo_dir / "snapshots" / OLD / "model.safetensors"
     key = snapshot_reuse._digest_cache_key(candidate, "sha256", os.stat(candidate))
-    snapshot_reuse._remember_digest(key, _sha256(good))
+    snapshot_reuse._remember_digests({key: _sha256(good)})
 
     result = _reuse(tmp_path, [ExpectedFile("model.safetensors", len(good), _sha256(good))])
 
@@ -684,3 +684,38 @@ def test_a_corrupted_same_size_copy_is_downloaded_again_not_carried_forward(tmp_
     assert (NEW, "vae/vae.safetensors") not in fake_hub.downloaded
     snap = old_encoder.parent.parent / NEW
     assert (snap / "text_encoder.safetensors").read_bytes() == _UNCHANGED
+
+
+def test_a_reuse_pass_persists_its_digests_in_one_write(tmp_path, monkeypatch):
+    files = {f"shard-{i}.bin": _blob(40 + i, 2048) for i in range(5)}
+    repo_dir = _copy_layout(tmp_path, files)
+    writes = []
+    monkeypatch.setattr(
+        snapshot_reuse, "_remember_digests", lambda entries: writes.append(dict(entries))
+    )
+
+    matches, _ = snapshot_reuse.find_reusable_copies(
+        repo_dir, NEW, {p: (len(d), _sha256(d)) for p, d in files.items()}
+    )
+
+    assert set(matches) == set(files)
+    assert len(writes) == 1 and len(writes[0]) == len(files)
+
+
+def test_a_blob_a_live_peer_is_downloading_gets_no_pointer(tmp_path):
+    from filelock import FileLock
+
+    data = _blob(50, 4096)
+    digest = _sha256(data)
+    repo_dir = _copy_layout(tmp_path, {"model.safetensors": data})
+    lock = tmp_path / "hub" / ".locks" / repo_dir.name / f"{digest}.lock"
+    lock.parent.mkdir(parents = True)
+    expected = [ExpectedFile("model.safetensors", len(data), digest)]
+
+    with FileLock(str(lock)):
+        # A peer that started after launch is not in protected_blob_hashes; its lock still counts.
+        held = _reuse(tmp_path, expected)
+    assert held.reused == ()
+    assert not (repo_dir / "snapshots" / NEW / "model.safetensors").exists()
+
+    assert _reuse(tmp_path, expected).reused == ("model.safetensors",)
