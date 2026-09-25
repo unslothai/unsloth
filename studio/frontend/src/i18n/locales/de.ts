@@ -180,6 +180,7 @@ export const de = {
       showLess: "Weniger anzeigen",
       settings: "Einstellungen",
       api: "API",
+      benchmarks: "Benchmarks",
       lightMode: "Heller Modus",
       darkMode: "Dunkler Modus",
       guidedTour: "Geführte Tour",

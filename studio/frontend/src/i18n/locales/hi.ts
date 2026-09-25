@@ -180,6 +180,7 @@ export const hi = {
       showLess: "कम दिखाएं",
       settings: "सेटिंग्स",
       api: "API",
+      benchmarks: "बेंचमार्क",
       lightMode: "लाइट मोड",
       darkMode: "डार्क मोड",
       guidedTour: "गाइडेड टूर",

@@ -179,6 +179,7 @@ export const ja = {
       showLess: "表示を減らす",
       settings: "設定",
       api: "API",
+      benchmarks: "ベンチマーク",
       lightMode: "ライトモード",
       darkMode: "ダークモード",
       guidedTour: "ガイドツアー",

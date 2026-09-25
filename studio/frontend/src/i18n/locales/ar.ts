@@ -177,6 +177,7 @@ export const ar = {
       showLess: "عرض أقل",
       settings: "الإعدادات",
       api: "API",
+      benchmarks: "المقاييس",
       lightMode: "الوضع الفاتح",
       darkMode: "الوضع الداكن",
       guidedTour: "جولة إرشادية",

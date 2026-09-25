@@ -257,6 +257,8 @@ const CHAT_ONLY_ALLOWED = new Set([
   // Chat-only hosts serve the API like any other, so the monitor must be reachable there
   // or the overlay's "Expand" and the Settings API card redirect to /chat.
   "/api-monitor",
+  // Inference only: a sweep reloads the chat model, which chat-only hosts run like any other.
+  "/benchmarks",
 ]);
 
 // Paths that render their own "still checking" state and self-gate once the verdict lands.

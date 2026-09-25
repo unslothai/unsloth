@@ -194,6 +194,7 @@ FRONTEND_SHIPPED_SIDEBAR_NAV = [
     ("recipes", False),
     ("export", False),
     ("api", False),
+    ("benchmarks", False),
 ]
 
 
@@ -234,6 +235,7 @@ def test_customization_sidebar_nav_preserves_order_and_normalizes():
         ("recipes", False),
         ("export", False),
         ("api", False),
+        ("benchmarks", False),
     ]
 
 
@@ -529,6 +531,7 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                     {"id": "recipes", "pinned": False},
                     {"id": "export", "pinned": False},
                     {"id": "api", "pinned": False},
+                    {"id": "benchmarks", "pinned": False},
                 ],
                 # This layout was arranged by hand, so no row is left on a rule.
                 "sidebarNavAuto": [],
