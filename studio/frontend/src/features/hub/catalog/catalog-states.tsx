@@ -81,7 +81,7 @@ export function NetworkErrorState({
   const icon = offlineLike ? WifiDisconnected02Icon : CloudOffIcon;
 
   return (
-    <div className="flex min-h-[260px] flex-col items-center justify-center gap-3 px-6 text-center">
+    <div className="flex min-h-[calc(260px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-3 px-6 text-center">
       <div className="inline-flex size-11 items-center justify-center rounded-[12px] bg-amber-500/10 text-amber-700 dark:text-amber-300">
         <HugeiconsIcon icon={icon} strokeWidth={1.6} className="size-5" />
       </div>
@@ -135,7 +135,7 @@ export function DiscoverFetchMoreState({
   onClearFilters: () => void;
 }) {
   return (
-    <div className="flex min-h-[260px] flex-col items-center justify-center gap-3 px-6 text-center">
+    <div className="flex min-h-[calc(260px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-3 px-6 text-center">
       <div className="inline-flex size-11 items-center justify-center rounded-[12px] bg-muted text-muted-foreground">
         <HugeiconsIcon icon={FilterIcon} strokeWidth={1.5} className="size-5" />
       </div>
@@ -236,7 +236,7 @@ export function InventoryErrorState({
   onRetry: () => void;
 }) {
   return (
-    <div className="flex min-h-[260px] flex-col items-center justify-center gap-3 px-6 text-center">
+    <div className="flex min-h-[calc(260px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-3 px-6 text-center">
       <div className="inline-flex size-11 items-center justify-center rounded-[12px] bg-amber-500/10 text-amber-700 dark:text-amber-300">
         <HugeiconsIcon icon={CloudOffIcon} strokeWidth={1.6} className="size-5" />
       </div>
@@ -274,7 +274,7 @@ export function EmptyState({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex min-h-[220px] flex-col items-center justify-center gap-3 px-6 text-center">
+    <div className="flex min-h-[calc(220px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-3 px-6 text-center">
       <div className="inline-flex size-11 items-center justify-center rounded-[12px] bg-muted text-muted-foreground">
         <HugeiconsIcon icon={icon} strokeWidth={1.5} className="size-5" />
       </div>

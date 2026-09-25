@@ -57,6 +57,7 @@ from backend.utils.wheel_utils import (
     install_wheel,
     probe_torch_wheel_env,
     url_exists,
+    xformers_torch_requirement_unmet,
 )
 from backend.utils.uv_path_safety import uv_safe_path as _uv_safe_path
 
@@ -249,9 +250,10 @@ def _torch_below_211(installed_ver: str) -> bool:
 
 
 # AMD per-arch leaves needing the torch 2.11 floor (the _grouped_mm <2.11 bug).
-# Mirrors *FloorMap in install.ps1 / setup.ps1; other arches ship <2.11 and stay bare.
+# Mirrors *FloorMap in install.ps1 / setup.ps1 (unslothai/unsloth#11814).
+# gfx908 / gfx90a stay bare on purpose: no Windows wheels; Linux floors them via the rocm7.2 index.
 _ROCM_GFX_TORCH211_LEAVES: frozenset[str] = frozenset(
-    {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152"}
+    {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152", "gfx103x-all", "gfx110x-all"}
 )
 
 # rocmX.Y indexes KNOWN to ship torch 2.11; never floor an unknown newer rocm.
@@ -285,6 +287,17 @@ _WINDOWS_ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
     "gfx1151": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
     "gfx1150": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
     "gfx1152": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1030": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1031": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1032": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1033": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1034": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1035": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1036": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1100": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1101": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1102": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1103": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
 }
 # Bound companion versions for ABI compatibility while retaining older per-arch mirror builds.
 _ROCM_ARCH_INDEX_TORCH_PKG_SPEC: tuple[str, str, str] = (
@@ -3995,7 +4008,7 @@ def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
         # Decisive the other way too, on leaves with no floor. The heuristic below reads any
         # 2.11 build as a mismatch, since that is what a build from some OTHER index looks
         # like -- but these leaves serve 2.11 as well, and the family says this one came from
-        # the pinned index. Without it a correctly pinned gfx110X host force-reinstalls under
+        # the pinned index. Without it a correctly pinned gfx90a host force-reinstalls under
         # the legacy torch<2.11 cap on every update.
         if _family is not None and _inst_is_perarch:
             return False
@@ -7196,6 +7209,25 @@ def _evict_xformers_built_for_another_torch() -> bool:
     return True
 
 
+def _evict_xformers_requiring_another_torch() -> bool:
+    """Remove an xFormers whose torch requirement is unmet, even if torch is unchanged (--overrides, #11545)."""
+    mismatch = xformers_torch_requirement_unmet()
+    if mismatch is None:
+        return False
+    xformers_version, requirement, torch_version = mismatch
+    if not _uninstall_distribution("xformers"):
+        _safe_print(
+            f"   [WARN] xformers {xformers_version} requires torch{requirement}, not "
+            f"{torch_version}, and could not be removed; diffusers cannot import it."
+        )
+        return False
+    _note(
+        f"xformers {xformers_version} requires torch{requirement}, not {torch_version} "
+        "-- removed; attention uses torch SDPA"
+    )
+    return True
+
+
 WINDOWS_ARM64_PUBLIC_INDEX_WHEELS: "dict[str, dict[str, str]]" = {
     "llvmlite": {"cp314": "0.49.0"},
     "numba": {"cp314": "0.67.0"},
@@ -9523,6 +9555,51 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
 # -- Main install sequence ---------------------------------------------
 
 
+# Apple's Command Line Tools shim, which pops a GUI install dialog when run without a toolchain.
+_CLT_GIT_SHIM = "/usr/bin/git"
+
+
+def _apple_silicon_hardware() -> bool:
+    """Whether the MACHINE is Apple Silicon, even when this Python runs under Rosetta.
+
+    install.sh's _MAC_ROSETTA: an x86_64 shell on an arm64 Mac reports x86_64, while
+    hw.optional.arm64 stays 1. Intel Macs keep probing /usr/bin/git by running it, as install.sh
+    does, because a CI Intel image ships a working one there.
+    """
+    if not IS_MACOS:
+        return False
+    if platform.machine() == "arm64":
+        return True
+    try:
+        answer = subprocess.run(
+            ["sysctl", "-in", "hw.optional.arm64"],
+            capture_output = True,
+            text = True,
+            timeout = 10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return answer.strip() == "1"
+
+
+def _is_unarmed_clt_git_shim(exe: str) -> bool:
+    """`exe` is Apple Silicon's /usr/bin/git shim and `xcode-select -p` names no toolchain."""
+    if exe != _CLT_GIT_SHIM or not _apple_silicon_hardware():
+        return False
+    try:
+        return (
+            subprocess.run(
+                ["xcode-select", "-p"],
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+                timeout = 30,
+            ).returncode
+            != 0
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+
+
 def _has_working_git() -> bool:
     """Match install.sh's _has_working_git: on PATH *and* actually runnable.
 
@@ -9532,6 +9609,12 @@ def _has_working_git() -> bool:
     """
     exe = shutil.which("git")
     if exe is None:
+        return False
+    # Without the Command Line Tools, Apple Silicon's /usr/bin/git is Apple's shim, and running it
+    # raises the "install the command line developer tools" dialog: the probe would fire the very
+    # prompt it exists to avoid. Answer from the path, as install.sh does. Only that exact shim with
+    # no toolchain selected; a Homebrew or Xcode.app git is real and is still run.
+    if _is_unarmed_clt_git_shim(exe):
         return False
     try:
         return (
@@ -10607,10 +10690,34 @@ def _diffusers_main_supersedes_release() -> bool:
     return _diffusers_main_requested() and _diffusers_main_resident()
 
 
+_ARCHIVE_SHA256_RE = re.compile(r"#\s*archive-sha256:\s*([0-9a-fA-F]{64})")
+
+
+def _archive_sha256_in_requirements(req: Path) -> "str | None":
+    """The ``# archive-sha256:`` digest *req* pins for its zip, or None unless exactly one."""
+    try:
+        text = req.read_text(encoding = "utf-8-sig")
+    except (OSError, ValueError):
+        return None
+    found = [
+        m.group(1).lower()
+        for m in (_ARCHIVE_SHA256_RE.fullmatch(line.strip()) for line in text.splitlines())
+        if m
+    ]
+    return found[0] if len(found) == 1 else None
+
+
 def _diffusers_main_archive(req: Path) -> "str | None":
-    """The zip route 11c takes on a host with no working git, or None when it has none."""
+    """The hash-pinned zip route 11c takes with no working git, or None when it has none.
+
+    pip and uv record the URL without the ``#sha256=`` fragment, so residency still matches it.
+    """
     wanted = _direct_reference_in_requirements(req)
-    return _github_archive_url(*wanted) if wanted is not None else None
+    archive = _github_archive_url(*wanted) if wanted is not None else None
+    digest = _archive_sha256_in_requirements(req)
+    if archive is None or digest is None:
+        return None
+    return f"{archive}#sha256={digest}"
 
 
 def _diffusers_main_needs_dependency_pass() -> bool:
@@ -10642,6 +10749,115 @@ def _diffusers_main_needs_dependency_pass() -> bool:
     except Exception:  # noqa: BLE001 - an unreadable manifest is no record of a failed try
         last = None
     return last != "failed"
+
+
+# The backend's startup repair records its failure here, read by the repair alone so an explicit
+# update still retries; that pass rewrites the manifest without it.
+_DIFFUSERS_MAIN_REPAIR_KEY = "diffusers_main_repair"
+
+
+def _startup_repair_failed() -> bool:
+    try:
+        return (install_manifest.read_manifest() or {}).get(_DIFFUSERS_MAIN_REPAIR_KEY) == "failed"
+    except Exception:  # noqa: BLE001 - an unreadable manifest is no record of a failed try
+        return False
+
+
+_REPAIR_LOCK_POLL_S = 5
+
+
+def _repair_diffusers_main() -> int:
+    """11c on its own, for the backend's startup self-heal: 0 installed, 1 nothing to do, 2 failed.
+
+    An update from a release that predates 11c runs that release's installer, which never installs
+    the build; the backend that starts afterwards is the first new code such a host runs.
+    """
+    import time
+
+    global USE_UV, _STEP, _TOTAL
+    while True:
+        with install_manifest.pass_lock() as uncontended:
+            # Every "nothing to do" answer waits for the lock too: until a sibling backend's repair or an
+            # update leaves the pass it may be rewriting diffusers, and returning would let the backend
+            # that started this import it.
+            if uncontended:
+                if (
+                    not _diffusers_main_requested()
+                    or not _diffusers_main_needs_dependency_pass()
+                    or _startup_repair_failed()
+                ):
+                    return 1
+                USE_UV = _bootstrap_uv()
+                _STEP, _TOTAL = 0, 1
+                _diffusers_main_step()
+                if _diffusers_main_resident():
+                    return 0
+                # Or every start retries a fetch this host cannot make, refusing diffusion loads meanwhile.
+                install_manifest.update_manifest(**{_DIFFUSERS_MAIN_REPAIR_KEY: "failed"})
+                return 2
+        time.sleep(_REPAIR_LOCK_POLL_S)
+
+
+_PREFETCH_SCRATCH_PREFIX = "unsloth-diffusers-prefetch-"
+
+
+def _prefetch_diffusers_main() -> int:
+    """For the startup repair: fetch and build the pinned build into uv's cache, installing nothing.
+
+    The backend stops this at its deadline, which is safe only because ``--target`` points uv at a
+    scratch directory, so site-packages is never touched; the ``--repair-diffusers-main`` that
+    follows then installs from the cache in about a second. 0 fetched, 1 nothing to fetch (pip keeps
+    no cache here, so it fetches during the install), 2 failed.
+    """
+    import time
+
+    global USE_UV
+    req = REQ_ROOT / "diffusers-main.txt"
+    if (
+        not req.is_file()
+        or not _diffusers_main_requested()
+        or not _diffusers_main_needs_dependency_pass()
+        or _startup_repair_failed()
+    ):
+        return 1
+    USE_UV = _bootstrap_uv()
+    if not USE_UV:
+        return 1
+    # A prefetch stopped at the deadline cannot clean up after itself.
+    for stale in Path(tempfile.gettempdir()).glob(f"{_PREFETCH_SCRATCH_PREFIX}*"):
+        try:
+            if time.time() - stale.stat().st_mtime > 3600:
+                shutil.rmtree(stale, ignore_errors = True)
+        except OSError:
+            pass
+    # The same source _diffusers_main_step will install from, so the install hits this cache entry.
+    archive = None if _has_working_git() else _diffusers_main_archive(req)
+    scratch = Path(tempfile.mkdtemp(prefix = _PREFETCH_SCRATCH_PREFIX))
+    temp_reqs: list[Path] = []
+    try:
+        args = ("--no-deps", "--target", str(scratch))
+        if archive is not None:
+            cmd = _build_uv_cmd((*args, f"diffusers @ {archive}"))
+        else:
+            actual_req, temp_reqs = _effective_requirements(req)
+            cmd = _build_uv_cmd(args) + ["-r", _uv_safe_path(actual_req)]
+        cmd, env = _pinned_cmd_and_env(cmd)
+        result = subprocess.run(
+            cmd,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            env = env,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    finally:
+        for temp_req in temp_reqs:
+            temp_req.unlink(missing_ok = True)
+        shutil.rmtree(scratch, ignore_errors = True)
+    if result.returncode != 0:
+        if result.stdout:
+            _safe_print(_redact_install_output(result.stdout))
+        return 2
+    return 0
 
 
 def _diffusers_main_step() -> None:
@@ -11606,6 +11822,7 @@ def install_python_stack() -> int:
                 f"{_torch_after_repair} during the repair -- re-selecting torchao"
             )
             _install_torchao_for_torch(_torch_after_repair)
+        _evict_xformers_requiring_another_torch()
 
     # 13w. Windows torch flavor invariant, separate from step 13's Linux-shaped repair set
     # but in the same position: last, after the with-deps steps re-resolved torch.
@@ -11929,6 +12146,10 @@ if __name__ == "__main__":
     if sys.argv[1:] == ["--missing-torch-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
         sys.exit(0 if _missing_torch_needs_dependency_pass() else 1)
+    if sys.argv[1:] == ["--repair-diffusers-main"]:
+        sys.exit(_repair_diffusers_main())
+    if sys.argv[1:] == ["--prefetch-diffusers-main"]:
+        sys.exit(_prefetch_diffusers_main())
     if sys.argv[1:] == ["--diffusers-main-needs-dependency-pass"]:
         # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
         sys.exit(0 if _diffusers_main_needs_dependency_pass() else 1)

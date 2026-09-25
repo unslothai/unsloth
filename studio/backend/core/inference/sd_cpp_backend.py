@@ -18,6 +18,7 @@ selecting it on a CPU box does not drag the heavy GPU stack into the process.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import logging
 import os
@@ -1573,7 +1574,12 @@ def _superseded_legacy_server(binary: Optional[str], accelerator: str) -> bool:
 _ARCH_MARKER_CACHE: dict[tuple[str, int, int, str], bool] = {}
 
 
-def binary_carries_marker(binary: Optional[str], marker: Optional[str]) -> bool:
+def binary_carries_marker(
+    binary: Optional[str],
+    marker: Optional[str],
+    *,
+    unreadable: bool = True,
+) -> bool:
     """Whether the sd.cpp executable at ``binary`` contains the literal ``marker``.
 
     An architecture upstream has not implemented leaves no trace in the build, so this answers
@@ -1584,7 +1590,8 @@ def binary_carries_marker(binary: Optional[str], marker: Optional[str]) -> bool:
     No marker means no claim, so an unmarked family is True and nothing changes for it. An
     unreadable binary is True as well: refusing a load because a stat failed would take the native
     route away on a host where it works, and the old behaviour (attempt, fail, surface the error)
-    is no worse than what this replaces.
+    is no worse than what this replaces. An optional capability passes ``unreadable = False`` to fail
+    closed instead.
 
     Scanned in chunks with an overlap, since the literal can straddle a boundary, and memoised on
     (path, size, mtime) so a reinstall is noticed while repeated loads read 100+ MB once.
@@ -1597,7 +1604,7 @@ def binary_carries_marker(binary: Optional[str], marker: Optional[str]) -> bool:
         st = os.stat(binary)
         key = (str(binary), int(st.st_size), int(st.st_mtime_ns), marker)
     except OSError:
-        return True
+        return unreadable
     hit = _ARCH_MARKER_CACHE.get(key)
     if hit is not None:
         return hit
@@ -1616,9 +1623,81 @@ def binary_carries_marker(binary: Optional[str], marker: Optional[str]) -> bool:
                     break
                 tail = block[-(len(needle) - 1) :] if len(needle) > 1 else b""
     except OSError:
-        return True
+        return unreadable
     _ARCH_MARKER_CACHE[key] = found
     return found
+
+
+def _native_output_image(fam: Any, im: Any) -> Any:
+    """A rendered image as the gallery keeps it: alpha for a family that generates transparency, as
+    the diffusers engine returns it, else RGB."""
+    if getattr(fam, "condition_image_mode", "RGB") == "RGBA" and im.mode in ("RGBA", "LA", "P"):
+        return im.convert("RGBA")
+    return im.convert("RGB")
+
+
+# Carried only by sd.cpp builds that keep reference alpha (upstream e112ab5) and no longer centre-crop references
+# on sd-server (78557f8 / e012065). The pinned build predates all three.
+_REFERENCE_FIDELITY_MARKER = "error: allocate memory for channel promotion"
+
+
+def _native_condition_images(
+    fam: Any,
+    init_image: str,
+    reference_images: Optional[list[str]],
+    localized_edit: Any,
+    width: Optional[int],
+    height: Optional[int],
+    *,
+    full_fidelity: bool,
+    pad_to_output: bool,
+) -> tuple[int, int, list[bytes]]:
+    """(width, height, ordered PNG bytes) for one native reference / edit call, decoded through
+    the diffusers engine's helper. A ``full_fidelity`` build gets every image as decoded. An older
+    build reads references as RGB, so each is flattened over white first (else transparent pixels
+    become noise), and its sd-server centre-crops references to the output aspect, so with
+    ``pad_to_output`` each is padded to it instead: white for images, black for a separate mask.
+    """
+    import io
+
+    from PIL import Image
+
+    from core.inference.diffusion_conditioning import (
+        check_output_size,
+        decode_condition_images,
+        match_source_size,
+    )
+
+    images = decode_condition_images(fam, init_image, reference_images, localized_edit)
+    if width is None or height is None:
+        width, height = match_source_size(fam, images[0].size, 1024)
+    check_output_size(fam, int(width), int(height))
+    target = float(width) / float(height)
+    mask_index = 1 if getattr(localized_edit, "mode", None) == "mask" else None
+    blobs: list[bytes] = []
+    for index, img in enumerate(images):
+        if full_fidelity:
+            img = img if img.mode in ("RGB", "RGBA") else img.convert("RGBA")
+        elif img.mode in ("RGBA", "LA", "P"):
+            rgba = img.convert("RGBA")
+            flat = Image.new("RGB", rgba.size, (255, 255, 255))
+            flat.paste(rgba, mask = rgba.getchannel("A"))
+            img = flat
+        else:
+            img = img.convert("RGB")
+        if pad_to_output and not full_fidelity:
+            iw, ih = img.size
+            ratio = iw / float(ih)
+            if abs(ratio - target) > 0.01 * target:
+                pw, ph = (round(ih * target), ih) if ratio < target else (iw, round(iw / target))
+                fill = (0, 0, 0) if index == mask_index else (255, 255, 255)
+                canvas = Image.new("RGB", (max(pw, iw), max(ph, ih)), fill)
+                canvas.paste(img, ((canvas.width - iw) // 2, (canvas.height - ih) // 2))
+                img = canvas
+        buf = io.BytesIO()
+        img.save(buf, format = "PNG")
+        blobs.append(buf.getvalue())
+    return int(width), int(height), blobs
 
 
 def sd_cpp_binary_runs_family(binary: Optional[str], fam: Any) -> bool:
@@ -2583,6 +2662,7 @@ class SdCppDiffusionBackend:
                 clip_g = paths.get("clip_g"),
                 t5xxl = paths.get("t5xxl"),
                 llm = paths.get("llm"),
+                llm_vision = paths.get("llm_vision"),
                 qwen2vl = paths.get("qwen2vl"),
             )
             device = resolve_diffusion_device_target().device
@@ -3181,6 +3261,14 @@ class SdCppDiffusionBackend:
                     # (unreachable) online case rather than relabelled, so nothing changes when the flag is off.
                     if not local_files_only:
                         raise
+                    if kind == "llm_vision":
+                        # Only editing reads the projector, and edit is offered only when it is loaded. A
+                        # Qwen-Image-2.1 GGUF cached before the projector was listed still loads for
+                        # text-to-image; opening it from the Images page fetches the projector.
+                        logger.info(
+                            "sd_cpp.llm_vision_not_cached: %s/%s, editing unavailable", repo, fn
+                        )
+                        continue
                     raise RuntimeError(
                         f"'{fn}' is not in the local cache for '{repo}', and this load may not "
                         f"download (it was not user-initiated). Open the model from the Images "
@@ -3250,13 +3338,41 @@ class SdCppDiffusionBackend:
             )
             return _with_mirrors(repos)
 
+    def _native_binary(self, state: _SdState) -> Optional[str]:
+        """The sd.cpp binary this load runs: the resident server's, else the one-shot engine's."""
+        binary = getattr(state.server, "binary", None) if state.server is not None else None
+        return binary or getattr(getattr(self, "_engine", None), "binary", None)
+
+    def _native_reference_fidelity(self, state: Optional[_SdState]) -> bool:
+        """Whether this load's build reads reference images with their alpha and their own size."""
+        if state is None:
+            return False
+        binary = self._native_binary(state)
+        return bool(binary) and binary_carries_marker(
+            binary, _REFERENCE_FIDELITY_MARKER, unreadable = False
+        )
+
+    def _native_edit_ready(self, state: Optional[_SdState]) -> bool:
+        """Whether this load can run the unified edit workflow natively: a unified-edit family, its
+        vision projector loaded, and a build carrying the family's edit marker."""
+        if state is None:
+            return False
+        fam = state.family
+        marker = getattr(fam, "sd_cpp_edit_marker", None)
+        if not (getattr(fam, "unified_edit", False) and marker and state.files.llm_vision):
+            return False
+        binary = self._native_binary(state)
+        if not binary:
+            return False
+        return binary_carries_marker(binary, marker, unreadable = False)
+
     def generate(
         self,
         *,
         prompt: str,
         negative_prompt: Optional[str] = None,
-        width: int = 1024,
-        height: int = 1024,
+        width: Optional[int] = 1024,
+        height: Optional[int] = 1024,
         steps: int = 9,
         guidance: float = 0.0,
         seed: Optional[int] = None,
@@ -3271,6 +3387,9 @@ class SdCppDiffusionBackend:
         strength: Optional[float] = None,
         upscale: Optional[float] = None,  # needs an init image; rejected by the guard below
         reference_images: Optional[list[str]] = None,  # GPU/diffusers-only (FLUX.2)
+        workflow: Optional[str] = None,
+        reference_resolution: Optional[int] = None,
+        localized_edit: Any = None,
         # LoRA (id, weight) pairs; resolved up front then applied per path: prompt tags for one-shot sd-cli,
         # structured `lora` for sd-server.
         loras: Optional[list[tuple[str, float]]] = None,
@@ -3278,6 +3397,8 @@ class SdCppDiffusionBackend:
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
         # load_identity() of the caller's status() read; refuse rather than run a different load (#9448)
         expected_load: Optional[LoadIdentity] = None,
+        # Interface parity only: the activation guard is diffusers-only.
+        allow_oversized: bool = False,
     ) -> dict[str, Any]:
         import tempfile
 
@@ -3285,10 +3406,23 @@ class SdCppDiffusionBackend:
 
         from core.inference import diffusion_lora
 
-        if (
+        conditioned = workflow in ("edit", "reference")
+        if conditioned:
+            if init_image is None:
+                raise ValueError(f"The {workflow} workflow requires a source image (init_image).")
+            if reference_resolution is not None:
+                # No such control natively: sd.cpp sizes every input image to the output area itself.
+                raise ValueError(
+                    "Reference detail is not adjustable on the native sd.cpp engine: it resizes "
+                    "each input image to the output area. Leave reference_resolution unset."
+                )
+        elif (
             init_image is not None
             or mask_image is not None
             or reference_images
+            or workflow is not None
+            or reference_resolution is not None
+            or localized_edit is not None
             or (upscale is not None and upscale > 1)
         ):
             raise ValueError(
@@ -3337,6 +3471,39 @@ class SdCppDiffusionBackend:
                 # idle while this holds _generate_lock.
                 self._gen = _SdGen(total_steps = int(steps))
             try:
+                ref_pngs: list[bytes] = []
+                if conditioned:
+                    from core.inference.diffusion_conditioning import check_conditioned_fields
+
+                    check_conditioned_fields(
+                        workflow,
+                        state.family,
+                        mask_image = mask_image,
+                        strength = strength,
+                        upscale = upscale,
+                        controlnet = controlnet,
+                        localized_edit = localized_edit,
+                    )
+                    if not self._native_edit_ready(state):
+                        raise ValueError(
+                            f"Image editing is not available for '{state.family.name}' on the native "
+                            "sd.cpp engine with this build and its assets."
+                        )
+                    width, height, ref_pngs = _native_condition_images(
+                        state.family,
+                        init_image,
+                        reference_images,
+                        localized_edit,
+                        width,
+                        height,
+                        full_fidelity = self._native_reference_fidelity(state),
+                        pad_to_output = state.mode == "server" and state.server is not None,
+                    )
+                elif width is None or height is None:
+                    raise ValueError("width and height are required for this workflow.")
+                else:
+                    from core.inference.diffusion_conditioning import check_output_size
+                    check_output_size(state.family, int(width), int(height))
                 if seed is None:
                     seed = int.from_bytes(os.urandom(6), "big") & ((1 << 53) - 1)
                 else:
@@ -3378,6 +3545,7 @@ class SdCppDiffusionBackend:
                             flux_guidance = flux_guidance,
                             lora_resolved = lora_resolved,
                             cancel = cancel,
+                            ref_pngs = ref_pngs,
                         )
                     else:
                         images, seeds = self._generate_oneshot(
@@ -3393,6 +3561,7 @@ class SdCppDiffusionBackend:
                             flux_guidance = flux_guidance,
                             lora_resolved = lora_resolved,
                             cancel = cancel,
+                            ref_pngs = ref_pngs,
                         )
                 except RuntimeError as exc:
                     # The mid-render hipBLAS death the video path records too; not a cancellation.
@@ -3440,6 +3609,11 @@ class SdCppDiffusionBackend:
                     "offload_policy": (
                         "active" if without_device_backend_flags(state.offload_flags) else "none"
                     ),
+                    "workflow": workflow if conditioned else "txt2img",
+                    "reference_resolution": None,
+                    "localized_edit": getattr(localized_edit, "mode", None)
+                    if conditioned
+                    else None,
                 }
             except SdCppCancelled as exc:
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
@@ -3465,6 +3639,7 @@ class SdCppDiffusionBackend:
         flux_guidance: Optional[float],
         lora_resolved: list,
         cancel: threading.Event,
+        ref_pngs: Optional[list[bytes]] = None,
     ) -> tuple[list, list[int]]:
         """Generate via the resident sd-server (no model reload).
 
@@ -3533,6 +3708,10 @@ class SdCppDiffusionBackend:
                     cfg_scale = cfg_scale,
                     distilled_guidance = flux_guidance,
                     lora = lora_payload,
+                    ref_images = [
+                        "data:image/png;base64," + base64.b64encode(b).decode("ascii")
+                        for b in ref_pngs or []
+                    ],
                 )
                 try:
                     blobs = state.server.img_gen(
@@ -3562,7 +3741,9 @@ class SdCppDiffusionBackend:
                     raise RuntimeError(
                         f"sd-server returned {len(blobs)} of {count} requested images in the batch."
                     )
-                images.extend(Image.open(io.BytesIO(b)).convert("RGB") for b in blobs)
+                images.extend(
+                    _native_output_image(state.family, Image.open(io.BytesIO(b))) for b in blobs
+                )
                 # sd.cpp advances the seed per image within a job, so report chunk_seed+i.
                 seeds.extend((chunk_seed + i) & ((1 << 63) - 1) for i in range(len(blobs)))
         finally:
@@ -3644,6 +3825,7 @@ class SdCppDiffusionBackend:
         flux_guidance: Optional[float],
         lora_resolved: list,
         cancel: threading.Event,
+        ref_pngs: Optional[list[bytes]] = None,
     ) -> tuple[list, list[int]]:
         """Fallback path: re-run one-shot sd-cli per image (reloads the model each time). LoRA on
         the one-shot path uses sd-cli's own mechanism: materialize the selected adapters into a
@@ -3675,6 +3857,12 @@ class SdCppDiffusionBackend:
                 )
                 eff_prompt = diffusion_lora.inject_prompt_tags(prompt, materialized)
                 lora_dir = str(Path(tmpdir) / "loras")
+            # Inside the run's temporary directory, so every exit path removes them.
+            ref_paths: list[str] = []
+            for i, blob in enumerate(ref_pngs or []):
+                ref_path = Path(tmpdir) / f"ref_{i + 1:02d}.png"
+                ref_path.write_bytes(blob)
+                ref_paths.append(str(ref_path))
             for index in range(max(1, int(batch_size))):
                 if cancel.is_set():
                     raise RuntimeError(DIFFUSION_CANCELLED_MSG)
@@ -3695,6 +3883,7 @@ class SdCppDiffusionBackend:
                     batch_count = 1,
                     lora_dir = lora_dir,
                     lora_apply_mode = "auto" if lora_dir else None,
+                    ref_images = tuple(ref_paths),
                 )
                 # Each sd-cli run executes out of the managed tree, so hold installs off for its duration (and wait
                 # here if one is already extracting). getattr: an INJECTED engine is the unit-test seam / escape hatch
@@ -3732,7 +3921,7 @@ class SdCppDiffusionBackend:
                         cancel_event = cancel,
                     )
                 with Image.open(out_path) as im:
-                    images.append(im.copy())
+                    images.append(_native_output_image(state.family, im.copy()))
                 seeds.append(seed_i)
         return images, seeds
 
@@ -3872,9 +4061,36 @@ class SdCppDiffusionBackend:
                 "supports_lora": False,
                 "supports_controlnet": False,
                 "workflows": [],
+                "conditioning": None,
             }
         from core.inference import diffusion_lora
+        from core.inference.diffusion_conditioning import conditioning_capabilities
         from hub.utils.gguf import extract_quant_token
+
+        workflows = ["txt2img"]
+        if self._native_edit_ready(state):
+            workflows += ["reference", "edit"]
+        conditioning = conditioning_capabilities(state.family, workflows)
+        # No reference detail natively: sd.cpp sizes inputs to the output area.
+        conditioning["reference_resolutions"] = []
+        full_fidelity = self._native_reference_fidelity(state)
+        conditioning["alpha"] = full_fidelity
+        notes: list[str] = []
+        if "edit" in workflows:
+            if not full_fidelity:
+                notes.append(
+                    "Transparent parts of input images are filled with white on this native build."
+                )
+                if state.mode == "server":
+                    notes.append(
+                        "Input images with a different shape from the output are padded to its "
+                        "aspect ratio on this native build."
+                    )
+            # Measured with upstream c92d73c: 3.7% of pixels stayed transparent at guidance 1, 47.1% at 6.
+            notes.append(
+                "For transparent output on the native engine, raise Guidance above 1 (upstream uses 6)."
+            )
+        conditioning["notes"] = notes
 
         return {
             "loaded": True,
@@ -3912,8 +4128,9 @@ class SdCppDiffusionBackend:
             "supports_controlnet": False,
             # "server" = resident sd-server (load once); "oneshot" = legacy per-image sd-cli.
             "native_mode": state.mode,
-            # Native supports txt2img only; advertise it so the UI doesn't disable the Create tab.
-            "workflows": ["txt2img"],
+            # txt2img always; reference and edit only where this build and its loaded assets run them.
+            "workflows": workflows,
+            "conditioning": conditioning,
         }
 
 

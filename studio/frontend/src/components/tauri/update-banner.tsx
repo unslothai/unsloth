@@ -107,9 +107,9 @@ export function UpdateBanner({
           transition={{ duration: 0.35, ease: EASE_OUT_QUART }}
           className={cn(
             positioned
-              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
+              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
               : cn(
-                  "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[448px] shrink-0 flex-col",
+                  "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] shrink-0 flex-col",
                   // Only rendered notes may shrink in the capped rail.
                   "has-[[data-slot=update-release-notes]]:min-h-[calc(117px+93px*var(--ui-font-scale,1))] has-[[data-slot=update-release-notes]]:shrink max-[383px]:has-[[data-slot=update-release-notes]]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]",
                 ),

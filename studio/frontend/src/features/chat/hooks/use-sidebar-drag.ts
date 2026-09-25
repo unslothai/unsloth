@@ -12,9 +12,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   dropEdgeAt,
+  equivalentDrop,
+  litRingKey,
   planKey,
   planSidebarDrop,
   rowKey,
+  SIDEBAR_TAIL_SCOPE,
   STAY,
   type DropEdge,
   type SidebarDragItem,
@@ -78,6 +81,40 @@ function zonesUnder(x: number, y: number): ZoneHit[] {
     }
   }
   return hits;
+}
+
+/** Max distance between a row's bottom and the next row's top for them to share a gap. */
+const ADJACENT_PX = 3;
+
+/** Marks the row, or section tail, a line can be drawn on with its row key, so a neighbour
+ *  lookup finds it directly instead of scanning every zone. */
+const ROW_KEY_ATTR = "data-sidebar-row-key";
+
+/** The row drawn directly below or above the row, or section tail, that `key` names. Probes
+ *  just past its edge, so the cost does not grow with the list. */
+function rowNextTo(key: string, side: "below" | "above"): ZoneHit | null {
+  if (typeof document === "undefined") return null;
+  const self = document.querySelector(`[${ROW_KEY_ATTR}="${CSS.escape(key)}"]`);
+  if (!self) return null;
+  const from = self.getBoundingClientRect();
+  // Rows overlap by a pixel (DROP_ROW_HIT), so step two in to land inside the neighbour.
+  const y = side === "below" ? from.bottom + 1 : from.top - 2;
+  for (const element of document.elementsFromPoint(from.left + from.width / 2, y)) {
+    if (element === self || !element.hasAttribute(ROW_KEY_ATTR)) continue;
+    const raw = element.getAttribute(DROP_ZONE_ATTR);
+    if (!raw) continue;
+    try {
+      const parsed = JSON.parse(raw) as { zone: SidebarDropZone; closed?: boolean };
+      if (!parsed.zone.row) continue;
+      const rect = element.getBoundingClientRect();
+      const gap = side === "below" ? rect.top - from.bottom : from.top - rect.bottom;
+      if (Math.abs(gap) > ADJACENT_PX) return null;
+      return { zone: parsed.zone, closed: Boolean(parsed.closed), rect };
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 /** The list the row scrolls while it is carried: the nearest ancestor that actually scrolls. */
@@ -183,23 +220,46 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
           dropEdgeAt(hit.rect, y),
           context,
         );
-        if (outcome) return { hit, outcome };
+        if (!outcome) continue;
+        // One line per gap: a bottom line defers to the row below's top, and a section tail's
+        // line to the row above's bottom, when that lands the drop identically. Different drops
+        // (a folder's last chat vs the next row) keep their own lines.
+        if (outcome !== STAY && "line" in outcome.cue) {
+          const { rowKey: key, edge } = outcome.cue.line;
+          const tail = key.startsWith(`${SIDEBAR_TAIL_SCOPE}:`);
+          const next = tail
+            ? rowNextTo(key, "above")
+            : edge === "bottom"
+              ? rowNextTo(key, "below")
+              : null;
+          const alt = next
+            ? planSidebarDrop(dragged, next.zone, tail ? "bottom" : "top", context)
+            : null;
+          if (
+            alt &&
+            alt !== STAY &&
+            "line" in alt.cue &&
+            equivalentDrop(alt, outcome)
+          ) {
+            // Only the painted line moves: the original `place` is what a slow move re-aims by.
+            return { hit, outcome: { ...outcome, cue: alt.cue } };
+          }
+        }
+        return { hit, outcome };
       }
       return null;
     },
     [],
   );
 
-  /** One step of the edge scroll, true when the list actually moved. Driven by the frame loop,
-   *  not by pointermove: a pointer resting on the edge sends no moves and would stall. */
-  const edgeScroll = useCallback((y: number): boolean => {
+  /** One step of the edge scroll. Driven by the frame loop, not by pointermove: a pointer resting
+   *  on the edge sends no moves and would stall. */
+  const edgeScroll = useCallback((y: number) => {
     const list = scroller.current;
-    if (!list) return false;
+    if (!list) return;
     const rect = list.getBoundingClientRect();
-    const before = list.scrollTop;
     if (y < rect.top + EDGE_PX) list.scrollTop -= EDGE_STEP_PX;
     else if (y > rect.bottom - EDGE_PX) list.scrollTop += EDGE_STEP_PX;
-    return list.scrollTop !== before;
   }, []);
 
   const track = useCallback(
@@ -270,8 +330,10 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
             document.body.releasePointerCapture(pointerId);
           }
         };
-        // Scrolling moves the rows, not the pointer, so the frame that scrolls re-aims too or
-        // the cue would sit on whichever row has slid out from under the pointer.
+        // The rows move under the pointer, not the other way about: the list edge-scrolls, a
+        // folder springs open under a pointer that by definition is resting. So every frame
+        // re-aims, not only the ones that scroll, or the cue would describe the layout as it was
+        // when the pointer last moved while the release hit-tests the layout as it is.
         const onFrame = () => {
           // Self-terminating, so an unmount mid-drag cannot leave the loop running.
           if (!sidebarDragSource()) {
@@ -279,7 +341,8 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
             return;
           }
           frame = requestAnimationFrame(onFrame);
-          if (edgeScroll(at.y)) track(at.x, at.y);
+          edgeScroll(at.y);
+          track(at.x, at.y);
         };
         // Abandons this gesture whole, for a drop that never came: the same as a cancel.
         const self = {
@@ -379,11 +442,21 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
   );
 
   const dropZoneProps = useCallback(
-    (zone: SidebarDropZone, zoneOptions?: { closed?: boolean }) => ({
-      [DROP_ZONE_ATTR]: JSON.stringify(
-        zoneOptions?.closed ? { zone, closed: true } : { zone },
-      ),
-    }),
+    (zone: SidebarDropZone, zoneOptions?: { closed?: boolean }) => {
+      const props: Record<string, string> = {
+        [DROP_ZONE_ATTR]: JSON.stringify(
+          zoneOptions?.closed ? { zone, closed: true } : { zone },
+        ),
+      };
+      const key =
+        zone.row && !zone.header
+          ? rowKey(zone.row.scope, zone.row.id)
+          : !zone.row && zone.blockEnd?.scope === SIDEBAR_TAIL_SCOPE
+            ? rowKey(SIDEBAR_TAIL_SCOPE, zone.blockEnd.id)
+            : null;
+      if (key) props[ROW_KEY_ATTR] = key;
+      return props;
+    },
     [],
   );
 
@@ -398,8 +471,7 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
   );
 
   const ringLit = useCallback(
-    (key: string): boolean =>
-      Boolean(plan && "ring" in plan.cue && plan.cue.ring === key),
+    (key: string): boolean => litRingKey(plan) === key,
     [plan],
   );
 

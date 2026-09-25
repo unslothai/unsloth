@@ -69,6 +69,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.custom.pointerCursors.label",
     "settings.appearance.custom.reduceMotion.label",
     "settings.appearance.custom.uiFontSize.label",
+    "settings.appearance.custom.interfaceScale.label",
     "settings.appearance.custom.codeFontSize.label",
     "settings.appearance.custom.fontSmoothing.label",
     "settings.appearance.layout.compactSidebar",
@@ -122,8 +123,28 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.artifacts.allowNetworkAccess",
     "settings.chat.webSearch.images",
     "settings.chat.modelDisclaimer",
+    "settings.chat.inlineReadAloud",
+    "settings.chat.inlineEditResponse",
     "settings.chat.projectsSection",
     "settings.chat.groups.menu.title",
+  ],
+  library: [
+    "settings.library.storageSection",
+    "settings.library.locationsSection",
+    "settings.library.cardSize",
+    "settings.library.imageLayout",
+    "settings.library.showCardDates",
+    "settings.library.startTab",
+    "settings.library.sort",
+    "settings.library.suggestedLimit",
+    "settings.library.tabsSection",
+    "settings.library.contentSection",
+    "settings.library.showChatAttachments",
+    "settings.library.showChatToolFiles",
+    "settings.library.showGeneratedMedia",
+    "settings.library.categoryFineTunes",
+    "settings.library.confirmDelete",
+    "settings.library.reset",
   ],
   // Chat data management moved to the Data tab; keep these rows findable there.
   data: [
@@ -138,6 +159,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.data.archivedVideos",
     "settings.data.archivedAudio",
     "settings.data.uploadedFiles",
+    "settings.library.dataStorage",
     "settings.chat.exportHistory",
     "settings.chat.exportConversations",
     "settings.chat.importChats",
@@ -147,6 +169,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.apiKeys.title",
     "settings.apiKeys.description",
     "settings.apiKeys.accessTokens",
+    "settings.apiKeys.decisionApi.title",
   ],
   // The two cards label themselves in English in every locale, so keys naming them
   // would never match their own anchor. The header carries both entries instead.
@@ -286,10 +309,6 @@ export function createSettingsSearchIndex({
       // whose PyTorch cannot use its GPUs says to "use Repair installation in Settings",
       // and searching Settings for "repair" answered "No settings found."
       "settings.general.repairInstall.label",
-    ],
-    appearance: [
-      ...SETTINGS_SEARCH_INDEX.appearance,
-      "settings.appearance.custom.interfaceScale.label",
     ],
     about: SETTINGS_SEARCH_INDEX.about.filter(
       (key) => key !== "settings.about.updates",
