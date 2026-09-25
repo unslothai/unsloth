@@ -85,8 +85,7 @@ PIP_CACHE_JOBS = {
     ("version-compat-ci.yml", "grpo-fake-run"),
 }
 
-# Saves that store a partial payload on purpose. ccache checksums every entry, so a cache cut
-# off by a timeout only costs misses, and the slice resumes from it in a later run.
+# Partial saves on purpose: ccache checksums entries, so a truncated cache only costs misses.
 PARTIAL_SAVE_JOBS = {("prebuilt-cuda-wheels.yml", "warm")}
 
 HEAVY = re.compile(

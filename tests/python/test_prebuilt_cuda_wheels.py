@@ -669,9 +669,6 @@ class TestWorkflow:
         assert workflow["concurrency"]["cancel-in-progress"] is False
 
 
-# ── flash-attn warm slices ────────────────────────────────────────────────────
-
-
 class TestWarmSlices:
     def test_the_slices_compile_every_object_exactly_once(self):
         objects = [f"/src/build/temp/csrc/kernel_{i:03d}.o" for i in range(97)]
@@ -741,8 +738,7 @@ class TestWarmWiring:
         assert warm["strategy"]["matrix"] == "${{ fromJSON(needs.plan.outputs.warm_matrix) }}"
 
     def test_a_skipped_warm_does_not_skip_what_follows_the_build(self, workflow):
-        """Without a status function, a job's `if` requires every ancestor to succeed, so a
-        dispatch without flash-attn (warm skipped) would silently skip signing and publishing."""
+        """Without a status function a skipped warm would silently skip signing and publishing."""
         jobs = workflow["jobs"]
 
         def needs(name):

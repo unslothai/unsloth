@@ -108,7 +108,6 @@ jobs:
           # quotes and braces and there is no reason to send it through a shell round trip.
           python3 .github/scripts/prebuilt_wheels.py matrix --github
 
-  # Split flash-attn's 6-8 hour compile across jobs, then pass cached objects to build.
   warm:
     name: warm ${{ matrix.label }}
     needs: plan
@@ -315,7 +314,6 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-      # Leave runner capacity for other workflows.
       max-parallel: 5
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
@@ -525,8 +523,7 @@ jobs:
           # wants a different one fails the step loudly instead of swapping torch under us.
           "$RUNNER_TEMP/smoke/bin/python" -m pip freeze | grep -E '^(torch|triton)==' \
             > "$RUNNER_TEMP/smoke-constraints.txt"
-          # tvm-ffi 0.1.12 with tilelang 0.1.8 breaks mamba_ssm imports.
-          # This pin covers the import test only, not GPU execution or wheel dependencies.
+          # tvm-ffi 0.1.12 with tilelang 0.1.8 breaks mamba_ssm imports (import test only).
           echo 'apache-tvm-ffi==0.1.11' >> "$RUNNER_TEMP/smoke-constraints.txt"
           cat "$RUNNER_TEMP/smoke-constraints.txt"
           "$RUNNER_TEMP/smoke/bin/python" - "src/dist/${WHEEL_NAME}" "$RUNNER_TEMP/smoke-constraints.txt" <<'PY'
