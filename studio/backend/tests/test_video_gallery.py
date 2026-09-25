@@ -508,7 +508,6 @@ def test_thumbnail_refuses_frames_past_max_pixels_even_when_the_header_understat
 
     av = pytest.importorskip("av")
     clip = _real_mp4_bytes(frames = 2, size = 256)
-    # The same packets under a header claiming 16x16: the decoder still makes 256x256 frames.
     lying = io.BytesIO()
     with av.open(io.BytesIO(clip)) as src, av.open(lying, "w", format = "mp4") as out:
         stream = out.add_stream("mpeg4", rate = 8)
@@ -518,7 +517,6 @@ def test_thumbnail_refuses_frames_past_max_pixels_even_when_the_header_understat
             if packet.dts is not None:
                 packet.stream = stream
                 out.mux(packet)
-    # The decoder counts its padding too, so a clip needs some room under the cap.
     assert gallery.first_frame_webp(io.BytesIO(clip), container = "mp4", max_pixels = 2 * 256 * 256)
     for data in (clip, lying.getvalue()):
         with pytest.raises(RuntimeError):

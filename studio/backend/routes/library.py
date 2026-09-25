@@ -64,7 +64,6 @@ class ItemPatch(BaseModel):
     id: str = Field(max_length = 4096)
     name: Optional[str] = Field(default = None, min_length = 1, max_length = 255)
     favorite: Optional[bool] = None
-    # Present-and-null moves the item back to the Library root.
     folderId: Optional[str] = Field(default = None, max_length = 64)
 
 
@@ -98,7 +97,6 @@ class FolderPatch(BaseModel):
 
 class TextContent(BaseModel):
     text: str = Field(max_length = 5_000_000)
-    # The note's own encoding, so a UTF-16 file (Windows PowerShell, Notepad "Unicode") stays one.
     encoding: Literal["utf-8", "utf-16le", "utf-16be"] = "utf-8"
 
 
@@ -125,18 +123,12 @@ def _still_there(item_id: str, fingerprint: Optional[str]) -> bool:
     try:
         return library.item_exists(item_id, fingerprint)
     except Exception:
-        # A store that cannot be read right now keeps its stars rather than dropping them.
         logger.debug("library.favorite_check_failed: %s", item_id, exc_info = True)
         return True
 
 
-# ── Items ────────────────────────────────────────────────────────
-
-
 @router.patch("/items")
 def patch_item(body: ItemPatch, current_subject: str = Depends(get_current_subject)) -> dict:
-    # A path can name another file later, so the row is kept for this one. With the file gone
-    # there is nothing to keep it for: an unmarked row would pass to a file made there later.
     fingerprint = library.fingerprint(body.id)
     if fingerprint is None and library.path_derived(body.id):
         raise HTTPException(status_code = 404, detail = "Item not found")
@@ -201,7 +193,6 @@ async def add_item_to_project(
     def _copy() -> dict:
         with library.open_item(body.id) as item:
             copied = copy_into_project(item.handle, body.projectId, item.folder, item.project_name)
-        # The copy is a project file of its own, listed from the next listing on.
         library.invalidate_listing()
         return copied
 
@@ -229,8 +220,6 @@ def _reveal(path) -> None:
     try:
         reveal_in_file_manager(path)
     except FileNotFoundError:
-        # Two things raise this, as the sandbox reveal knows: the file going before it is shown,
-        # and Popen not finding a file manager at all (a headless Linux has no xdg-open).
         if os.path.exists(path):
             logger.error("library.reveal_failed: %s", path, exc_info = True)
             raise HTTPException(
@@ -272,7 +261,6 @@ def get_item_thumbnail(
     return Response(
         content = data,
         media_type = "image/webp",
-        # Kept apart per sign-in: another account can have an item of the same id and version.
         headers = {
             "Cache-Control": "private, max-age=31536000, immutable",
             "Vary": "Authorization",
@@ -291,14 +279,11 @@ async def download_item(
     straight to disk, and its native save sends no header."""
     await subject_for_header_or_query_token(request, token)
     try:
-        # Opened once and streamed from that descriptor: a sandbox name can be a link by the time
-        # it would be opened again.
         item = await run_in_threadpool(library.open_item, id)
     except LookupError:
         raise HTTPException(status_code = 404, detail = "Item not found")
     except ValueError:
         raise HTTPException(status_code = 400, detail = "This item has no file to download")
-    # RFC 5987, as the sandbox route sends it: an ASCII fallback plus the UTF-8 name.
     ascii_name = item.name.encode("ascii", "replace").decode("ascii").replace('"', "_")
     disposition = f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(item.name)}"
     headers = {"Content-Disposition": disposition, "Cache-Control": "private, no-store", **_NOSNIFF}
@@ -334,12 +319,9 @@ def _send(
         status_code = status_code,
         media_type = media_type,
         headers = headers,
-        # A player that hangs up mid-range leaves the generator unfinished: the file still closes.
         background = BackgroundTask(item.close),
     )
 
-
-# ── Streamed previews ────────────────────────────────────────────
 
 # An audio or video preview plays from a link the element fetches itself, with range requests, so
 # a long file is never buffered whole and can seek. The bearer mints the link; the link alone then
@@ -368,7 +350,10 @@ def _stream_link_account(token: str, item_id: str):
     if len(parts) != 3:
         return None
     target, expires, signature = parts
-    if not hmac.compare_digest(signature, _stream_signature(f"{target}.{expires}")):
+    # Bytes: compare_digest raises TypeError on a non-ASCII str.
+    if not hmac.compare_digest(
+        signature.encode(), _stream_signature(f"{target}.{expires}").encode()
+    ):
         return None
     if not expires.isdigit() or int(expires) < time.time():
         return None
@@ -491,9 +476,6 @@ async def reveal_location(
     return {"ok": True}
 
 
-# ── Library-owned uploads ────────────────────────────────────────
-
-
 def _chunks(stream, name: str):
     total = 0
     while chunk := stream.read(_CHUNK_BYTES):
@@ -504,15 +486,12 @@ def _chunks(stream, name: str):
 
 
 def _base_name(name: Optional[str]) -> str:
-    # Some clients send a full path, with either separator.
     return re.split(r"[\\/]", name or "")[-1][:255] or "Untitled"
 
 
 @router.post("/uploads")
 async def upload_files(
     files: Optional[list[UploadFile]] = File(None),
-    # Desktop drops: signed grants for paths the OS handed the app, read here rather than
-    # through the webview, which cannot read documents.
     nativePathLeases: Optional[list[str]] = Form(None),
     folderId: Optional[str] = Form(None),
     current_subject: str = Depends(get_current_subject),
@@ -526,8 +505,6 @@ async def upload_files(
         try:
             return read(lease)
         except (ValueError, OSError) as exc:
-            # A bad or expired grant, a path outside this account's workspace, or a file gone.
-            # The reason can name the path, so it goes to the log alone.
             logger.info("library.native_drop_refused: %s", exc)
             raise HTTPException(
                 status_code = 400, detail = "The dropped file could not be read. Drop it again."
@@ -544,12 +521,10 @@ async def upload_files(
         name, content_type, handle = _native(library.open_native_upload, lease)
         consumed.append(lease)
         with handle:
-            # Refused before a byte is copied; _chunks still caps a file that grows meanwhile.
             if os.fstat(handle.fileno()).st_size > _MAX_UPLOAD_BYTES:
                 raise HTTPException(status_code = 413, detail = f"{name} is too large")
             return library.save_upload(name, content_type, _chunks(handle, name))
 
-    # Every grant and its size first, and nothing spent: a batch refused here is retried whole.
     for lease in nativePathLeases or []:
         await run_in_threadpool(_check_native, lease)
 
@@ -568,7 +543,6 @@ async def upload_files(
         for lease in nativePathLeases or []:
             records.append(await run_in_threadpool(_save_native, lease))
         ids = [f"upload:{record['id']}" for record in records]
-        # Placement is part of the batch too: a folder deleted meanwhile undoes the upload.
         if folderId:
             for item_id in ids:
                 library_db.update_entry(item_id, folder_id = folderId, move = True)
@@ -625,9 +599,6 @@ def put_upload_text(
     if not written:
         raise HTTPException(status_code = 404, detail = "File not found")
     return {"ok": True}
-
-
-# ── Folders ──────────────────────────────────────────────────────
 
 
 @router.post("/folders")

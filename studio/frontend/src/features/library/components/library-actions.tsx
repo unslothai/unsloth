@@ -31,7 +31,6 @@ import { type LibraryTarget, useLibraryActions } from "../actions-context";
 import { canReveal, revealInFolder, useRevealLabel } from "../reveal";
 import { OVERLAY_CONTROL } from "../surface";
 
-// Sized and weighted as the sidebar's chat and project menus draw theirs.
 const ICON = "size-icon";
 
 /** Folders a target can move into, depth-first with their nesting depth. A folder is never offered
@@ -66,7 +65,6 @@ function currentFolderId(target: LibraryTarget): string | null {
   return target.kind === "item" ? target.item.folderId : target.folder.parentId;
 }
 
-/** The ⋯ button and its menu. `overlay` is the frosted round button that floats over a card. */
 export function LibraryActionsMenu({
   target,
   variant,

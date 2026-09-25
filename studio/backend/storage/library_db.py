@@ -46,13 +46,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    # Added in place: a studio.db from before it keeps its rows, fingerprinted on first sight.
     entry_columns = {row["name"] for row in conn.execute("PRAGMA table_info(library_entries)")}
     if "fingerprint" not in entry_columns:
         try:
             conn.execute("ALTER TABLE library_entries ADD COLUMN fingerprint TEXT")
         except sqlite3.OperationalError as exc:
-            # Another process opening the same database added it first.
             if "duplicate column" not in str(exc).lower():
                 raise
     conn.execute(
@@ -111,9 +109,6 @@ def _folder(row: sqlite3.Row) -> dict:
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
     }
-
-
-# ── Folders ──────────────────────────────────────────────────────
 
 
 def list_folders() -> list[dict]:
@@ -240,9 +235,6 @@ def delete_folder(folder_id: str) -> bool:
         conn.close()
 
 
-# ── Item overlay ─────────────────────────────────────────────────
-
-
 def list_entries() -> dict[str, dict]:
     conn = get_connection()
     try:
@@ -343,9 +335,6 @@ def delete_entry(item_id: str) -> None:
         conn.commit()
     finally:
         conn.close()
-
-
-# ── Uploads owned by the Library ─────────────────────────────────
 
 
 def _upload(row: sqlite3.Row) -> dict:

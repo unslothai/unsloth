@@ -8,10 +8,8 @@ import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { errorMessage, getLibraryFavorites, updateLibraryItem } from "./api";
 
-/** What `adopt` needs to tell stars toggled since from a snapshot being fetched. */
 export interface FavoritesSnapshotStart {
   attempts: ReadonlyMap<string, number>;
-  /** Saving as the fetch went out, so its answer may predate them even if they finish first. */
   pending: ReadonlySet<string>;
   session: number;
 }
@@ -19,26 +17,18 @@ export interface FavoritesSnapshotStart {
 interface FavoritesState {
   ids: ReadonlySet<string>;
   load: () => Promise<void>;
-  /** Call before fetching a snapshot of favorites. */
   begin: () => FavoritesSnapshotStart;
-  /** Takes a snapshot fetched since `begin`, keeping stars toggled meanwhile. Returns the result. */
   adopt: (start: FavoritesSnapshotStart, loaded: ReadonlySet<string>) => ReadonlySet<string>;
-  /** Local only: the Library page mirrors its own edits here, calls the returned `settle` once
-   *  its request has, and `undo` if it failed with no snapshot to put the star right. */
   mark: (id: string, favorite: boolean) => { settle: () => void; undo: () => void };
   setFavorite: (id: string, favorite: boolean) => Promise<void>;
 }
 
 const latestAttempt = new Map<string, number>();
-// Toggles whose request has not settled: a snapshot can predate them even if fetched after.
 const pending = new Map<string, number>();
 // Bumped on sign-out, so a load started for the last account never lands for the next one.
 let session = 0;
 
-/** Library favorites by item id, for pages (Images, Video) that mark them without loading the
- *  whole Library. */
 export const useLibraryFavoritesStore = create<FavoritesState>((set, get) => {
-  /** Marks a request for `id` in flight; the returned function settles it, once. */
   function track(id: string): () => void {
     const trackedSession = session;
     pending.set(id, (pending.get(id) ?? 0) + 1);
@@ -66,13 +56,11 @@ export const useLibraryFavoritesStore = create<FavoritesState>((set, get) => {
       try {
         get().adopt(start, new Set(await getLibraryFavorites()));
       } catch {
-        // Favorites are a convenience here; the page works without them.
       }
     },
     begin: () => ({ attempts: new Map(latestAttempt), pending: new Set(pending.keys()), session }),
     adopt: (start, loaded) => {
       if (start.session !== session) return get().ids;
-      // A star toggled while this was loading, or still being saved, is newer than the snapshot.
       const ids = get().ids;
       const next = new Set(loaded);
       for (const [id, attempt] of latestAttempt) {
@@ -85,7 +73,6 @@ export const useLibraryFavoritesStore = create<FavoritesState>((set, get) => {
       return next;
     },
     mark: (id, favorite) => {
-      // An attempt too, so a load already in flight keeps this mark rather than its older snapshot.
       const attempt = (latestAttempt.get(id) ?? 0) + 1;
       latestAttempt.set(id, attempt);
       const was = get().ids.has(id);
@@ -93,7 +80,6 @@ export const useLibraryFavoritesStore = create<FavoritesState>((set, get) => {
       apply(id, favorite);
       return {
         settle: track(id),
-        // Only while no newer toggle owns the star.
         undo: () => {
           if (markedSession === session && latestAttempt.get(id) === attempt) apply(id, was);
         },
@@ -115,7 +101,6 @@ export const useLibraryFavoritesStore = create<FavoritesState>((set, get) => {
         );
       } catch (error) {
         settle();
-        // A newer toggle owns the star now.
         if (latestAttempt.get(id) !== attempt) return;
         apply(id, !favorite);
         toast.error(translate("library.toast.favoritesFailed"), {
@@ -136,7 +121,6 @@ if (typeof window !== "undefined") {
   });
 }
 
-/** Loads favorites once the calling page mounts; ids are `<source>:<id>`, e.g. `image:abc`. */
 export function useLibraryFavorites() {
   const ids = useLibraryFavoritesStore((s) => s.ids);
   const load = useLibraryFavoritesStore((s) => s.load);
