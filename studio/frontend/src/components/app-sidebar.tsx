@@ -98,6 +98,7 @@ import {
   Globe02Icon,
   HelpCircleIcon,
   Image03Icon,
+  LibrariesIcon,
   Logout05Icon,
   MoreHorizontalIcon,
   MoreVerticalIcon,
@@ -2226,6 +2227,18 @@ export function AppSidebar() {
           </span>
         </button>
       ),
+    },
+    library: {
+      icon: LibrariesIcon,
+      label: t("shell.navigation.library"),
+      active: pathname === "/library",
+      onClick: () => {
+        navigate({ to: "/library" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/library" }));
+      },
     },
     hub: {
       icon: DashboardCircleIcon,
