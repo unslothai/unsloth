@@ -402,12 +402,22 @@ def _dequantize_modelopt_on_merged_save() -> None:
     if status is None or getattr(status, "_unsloth_modelopt", False):
         return
 
+    try:
+        signature = inspect.signature(status)
+    except Exception:
+        signature = None
+
     @functools.wraps(status)
-    def check_model_quantization_status(model_name_or_path, *args, **kwargs):
-        result = status(model_name_or_path, *args, **kwargs)
-        if result != (False, None):
+    def check_model_quantization_status(*args, **kwargs):
+        result = status(*args, **kwargs)
+        if result != (False, None) or signature is None:
             return result
-        path = _hf_quant_config_path(model_name_or_path, token = kwargs.get("token"))
+        # zoo passes the token positionally: check_model_quantization_status(model_name, token, ...).
+        try:
+            bound = signature.bind(*args, **kwargs).arguments
+        except TypeError:
+            return result
+        path = _hf_quant_config_path(bound.get("model_name_or_path"), token = bound.get("token"))
         quant = _modelopt_block_from_hf_quant_config(path) if path else None
         if quant is not None and _is_fp8_quant_config(quant):
             return (True, "fp8")

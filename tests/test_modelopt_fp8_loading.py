@@ -1108,3 +1108,28 @@ def test_hf_quant_config_lookup_follows_the_load_location(tmp_path, monkeypatch)
     hub = {"local_files_only": True, "cache_dir": str(tmp_path / "cache")}
     assert not attach_hf_quant_config(config, model_name = "org/not-cached", hub_kwargs = hub)
     assert seen["local_files_only"] is True and seen["cache_dir"] == hub["cache_dir"]
+
+
+@needs_per_tensor_fp8
+def test_merged_save_lookup_keeps_a_positional_token(tmp_path, monkeypatch):
+    import unsloth.models.modelopt_fp8 as modelopt
+
+    zoo_saving = pytest.importorskip("unsloth_zoo.saving_utils")
+    for name in ("_is_fp8_quant_config", "check_model_quantization_status"):
+        fn = getattr(zoo_saving, name)
+        monkeypatch.setattr(zoo_saving, name, getattr(fn, "__wrapped__", fn))
+    if zoo_saving._is_fp8_quant_config(_sarvam_quant()):
+        pytest.skip("this unsloth_zoo already dequantizes ModelOpt FP8 on a merged save")
+    _hf_quant_config_checkpoint(tmp_path)
+    seen = []
+    real = modelopt._hf_quant_config_path
+    monkeypatch.setattr(
+        modelopt,
+        "_hf_quant_config_path",
+        lambda name, revision = None, token = None, hub_kwargs = None: seen.append(token)
+        or real(name, revision, token, hub_kwargs),
+    )
+    arm_modelopt_fp8_loading(SimpleNamespace(quantization_config = _sarvam_quant()), verbose = False)
+    # As unsloth_zoo calls it: check_model_quantization_status(model_name, token, ...).
+    assert zoo_saving.check_model_quantization_status(str(tmp_path), "hf_secret") == (True, "fp8")
+    assert seen == ["hf_secret"]
