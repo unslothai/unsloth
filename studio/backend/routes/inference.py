@@ -34079,7 +34079,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
         or any(m.role == "tool" or m.tool_calls for m in payload.messages)
         or payload.enable_thinking
         or payload.preserve_thinking
-        or payload.reasoning_effort
+        or payload.reasoning_effort not in (None, "none")
     ):
         raise HTTPException(
             status_code = 503,

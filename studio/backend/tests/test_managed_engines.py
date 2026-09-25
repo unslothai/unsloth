@@ -1090,6 +1090,36 @@ def test_managed_token_count_route_uses_engine_capabilities(monkeypatch, engine)
         assert calls == [[{"role": "user", "content": "Hi"}]]
 
 
+def test_managed_token_count_accepts_reasoning_turned_off(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from models.inference import ChatCountTokensRequest
+    from routes import inference
+
+    backend = SimpleNamespace(
+        active_model_name = "model",
+        models = {"model": {"engine": "vllm"}},
+        load_generation = 1,
+        count_chat_tokens = lambda messages, system_prompt, **kwargs: (17, "model"),
+    )
+    monkeypatch.setattr(inference, "get_inference_backend", lambda: backend)
+
+    def request(effort):
+        return ChatCountTokensRequest(
+            model = "model",
+            messages = [{"role": "user", "content": "Hi"}],
+            enable_tools = False,
+            reasoning_effort = effort,
+        )
+
+    response = asyncio.run(inference._mlx_count_chat_tokens(request("none")))
+    assert json.loads(response.body)["input_tokens"] == 17
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(inference._mlx_count_chat_tokens(request("high")))
+    assert error.value.status_code == 503
+
+
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
 @pytest.mark.parametrize("size", [1, 2, 4])
 def test_tensor_parallel_launch_stays_on_selected_local_devices(engine, size):
