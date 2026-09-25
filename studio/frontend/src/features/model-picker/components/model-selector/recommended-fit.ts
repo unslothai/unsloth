@@ -327,8 +327,8 @@ export function searchableRecommendedIds(
 }
 
 /** Order Recommended: curated seeds first in catalog order, then the rest of the listing, each
- *  id once. A seed hands off only to a row that survived `keep`, so a painted curated row
- *  does not vanish when the listing reports it with rejected metadata. The taking-over row
+ *  id once. With `familyOf`, families follow the listing's sort instead. A seed hands off only
+ *  to a row that survived `keep`, so a painted curated row does not vanish when the listing reports it with rejected metadata. The taking-over row
  *  inherits the seed's curated size, or a prequantized artifact would flip to the params
  *  guess, which assumes a quant still to come. */
 export function orderRecommendedRows<
@@ -339,8 +339,14 @@ export function orderRecommendedRows<
   keep: (row: T) => boolean;
   deviceFiltered: boolean;
   fits: (row: T) => boolean;
+  /** Catalog family of a repo id; when set, first-party rows lead and families follow the
+   *  listing's sort. `results` must be one sorted listing of unsloth/* repos, since a family ranks
+   *  by its index there. */
+  familyOf?: (id: string) => string | undefined;
+  /** Family keys (as returned by `familyOf`) that lead the list in this order, whatever the sort. */
+  pinnedFamilies?: readonly string[];
 }): T[] {
-  const { seeds, results, keep, deviceFiltered, fits } = opts;
+  const { seeds, results, keep, deviceFiltered, fits, familyOf, pinnedFamilies = [] } = opts;
   const seedById = new Map(seeds.map((s) => [s.id, s]));
   const rows = results.filter(keep).map((row) => {
     const curatedSizeBytes = seedById.get(row.id)?.curatedSizeBytes;
@@ -358,7 +364,53 @@ export function orderRecommendedRows<
   const rest = (deviceFiltered ? rows.filter(fits) : rows).filter(
     (r) => !curatedIds.has(r.id),
   );
-  return [...curated, ...rest];
+  const ordered = [...curated, ...rest];
+  if (!familyOf) return ordered;
+  // First-party rows lead. A family ranks at its best listed artifact and keeps its rows together;
+  // unlisted families go last, except first-party ones the unsloth listing can never return
+  // (unslothai/*), which keep their curated place on top.
+  const keyOf = (r: T) => familyOf(r.id) ?? r.id.toLowerCase();
+  const firstParty = (id: string) => /^unsloth(ai)?\//i.test(id);
+  const listable = new Set(
+    ordered.filter((r) => /^unsloth\//i.test(r.id)).map(keyOf),
+  );
+  const rank = new Map<string, number>();
+  results.forEach((r, i) => {
+    const key = keyOf(r);
+    if (!rank.has(key)) rank.set(key, i);
+  });
+  const firstSeen = new Map<string, number>();
+  ordered.forEach((r, i) => {
+    const key = keyOf(r);
+    if (!firstSeen.has(key)) firstSeen.set(key, i);
+  });
+  const pinIndex = new Map(pinnedFamilies.map((key, i) => [key, i]));
+  const sortKey = (r: T, i: number) => {
+    const key = keyOf(r);
+    // A pinned family leads as a whole, ahead of first-party rows that trend higher.
+    const pin = pinIndex.get(key);
+    if (pin != null) {
+      return [pin, 0, 0, firstSeen.get(key) ?? i, i];
+    }
+    const ours = firstParty(r.id);
+    const unranked = ours && !listable.has(key) ? -1 : Infinity;
+    return [
+      Number.POSITIVE_INFINITY,
+      ours ? 0 : 1,
+      rank.get(key) ?? unranked,
+      firstSeen.get(key) ?? i,
+      i,
+    ];
+  };
+  return ordered
+    .map((row, i) => ({ row, key: sortKey(row, i) }))
+    .sort((a, b) => {
+      for (let k = 0; k < a.key.length; k++) {
+        if (a.key[k] !== b.key[k]) return a.key[k] < b.key[k] ? -1 : 1;
+      }
+      return 0;
+    })
+    .map(({ row }) => row);
 }
 
 /** The allowance a curated row was judged against, the memory it is 70% of, and the unrounded size. */

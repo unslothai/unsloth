@@ -4459,6 +4459,20 @@ def _swa_full_from_args_or_env(
     return value in _LLAMA_ARG_TRUE_VALUES
 
 
+def _reasoning_from_env(env: Mapping[str, str]) -> Optional[bool]:
+    value = env.get("LLAMA_ARG_REASONING")
+    if value in _LLAMA_ARG_TRUE_VALUES:
+        return True
+    if value in _LLAMA_ARG_FALSE_VALUES:
+        return False
+    return None
+
+
+def _reasoning_effort_from_env(env: Mapping[str, str]) -> Optional[str]:
+    value = env.get("LLAMA_ARG_REASONING_EFFORT")
+    return None if value == "default" else value
+
+
 def _env_asks_for_the_native_context(env: Optional[Mapping[str, str]] = None) -> bool:
     """Whether an inherited LLAMA_ARG_CTX_SIZE is 0.
 
@@ -6387,9 +6401,6 @@ def _build_launch_reasoning_args(
     tools/server/server-common.cpp then overrides from the merged kwarg anyway. If
     llama.cpp stops writing that kwarg, or stops letting it override, this becomes a
     behaviour change rather than a substitution.
-
-    An exported LLAMA_ARG_REASONING is still overridden by the command line, exactly as
-    the kwargs channel overrides it on main; honouring it is #8521.
     """
     remaining = dict(reasoning_kwargs)
     args: list[str] = []
@@ -7856,7 +7867,11 @@ class LlamaCppBackend:
     def reasoning_default(self) -> bool:
         return self._reasoning_default
 
-    def _reasoning_kwargs(self, enable_thinking: bool) -> dict:
+    def _reasoning_kwargs(
+        self,
+        enable_thinking: bool,
+        effort: Optional[str] = None,
+    ) -> dict:
         if self._reasoning_style == "enable_thinking_effort":
             # GLM-5.2-style: enable_thinking is the on/off gate; when on, leave
             # the template's default effort (max) in place.
@@ -7864,7 +7879,7 @@ class LlamaCppBackend:
         if self._reasoning_style == "reasoning_effort":
             return _coerce_reasoning_effort(
                 getattr(self, "_architecture", None),
-                {"reasoning_effort": "high" if enable_thinking else "low"},
+                {"reasoning_effort": effort or ("high" if enable_thinking else "low")},
             )
         return {"enable_thinking": enable_thinking}
 
@@ -27096,8 +27111,17 @@ class LlamaCppBackend:
                             # <= 9, not < 9: 9B is the top of the Small tier, so it is off too.
                             if size_b <= 9:
                                 thinking_default = False
-                    self._reasoning_default = thinking_default
-                    reasoning_kw = self._reasoning_kwargs(thinking_default)
+                    # argv beats the env `unsloth start` pins these through, so repeat it.
+                    _env_reasoning = _reasoning_from_env(env)
+                    if _env_reasoning is not None:
+                        thinking_default = _env_reasoning
+                    reasoning_kw = self._reasoning_kwargs(
+                        thinking_default, _reasoning_effort_from_env(env)
+                    )
+                    # An effort ladder thinks at every level but "none" (Inkling: 0), low included.
+                    self._reasoning_default = reasoning_kw.get(
+                        "enable_thinking", reasoning_kw.get("reasoning_effort") not in ("none", 0)
+                    )
                     # preserve_thinking is independent of the thinking gate.
                     # Qwen3.8 defaults it on; Qwen3.6, Gemma 4, and every other
                     # supporting family keep the existing off default. The

@@ -173,7 +173,7 @@ export function DeepResearchComposerButton({
         }}
         className="composer-pill-glyph cursor-pointer"
       >
-        <HugeiconsIcon icon={Telescope02Icon} className="size-[15px]" />
+        <HugeiconsIcon icon={Telescope02Icon} className="size-[calc(15px*var(--ui-space-scale,1))]" />
         <XIcon className="composer-pill-x" />
       </span>
       <span>Deep research</span>
@@ -181,7 +181,7 @@ export function DeepResearchComposerButton({
       <HugeiconsIcon
         icon={ChevronDownStandardIcon}
         strokeWidth={1.5}
-        className="composer-pill-caret size-[15px] text-primary/70"
+        className="composer-pill-caret size-[calc(15px*var(--ui-space-scale,1))] text-primary/70"
       />
     </button>
   );
