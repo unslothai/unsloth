@@ -185,7 +185,7 @@ def _all_cached(monkeypatch):
 
 def test_gated_mirror_table_round_trips():
     """Both directions, exact case: canonical_base must hand back a real repo id."""
-    assert len(_MIRROR_PAIRS) == 24
+    assert len(_MIRROR_PAIRS) == 25
     for upstream, mirror in _MIRROR_PAIRS:
         assert mirror_repo(upstream) == mirror
         assert canonical_base(mirror) == upstream
@@ -208,7 +208,7 @@ def test_only_the_genuinely_gated_half_reads_as_gated():
     is mirrored, and which the Hub serves anonymously.
     """
     assert len(_GATED_MIRROR_PAIRS) == 12
-    assert len(_UNGATED_MIRROR_PAIRS) == 12
+    assert len(_UNGATED_MIRROR_PAIRS) == 13
     for upstream, _mirror in _GATED_MIRROR_PAIRS:
         assert upstream_is_gated(upstream), upstream
         assert upstream_is_gated(upstream.upper()), upstream
@@ -236,9 +236,7 @@ def test_no_mirror_is_a_companion_only_repo():
 # Vendor bases the catalog offers before their unsloth mirror exists on the Hub. A mirror row for a
 # repo that is not there would 404 every fetch it redirects, so the table cannot lead the upload;
 # this names the gap instead of letting the check below go red on every PR until it closes.
-# Qwen/Qwen-Image-2.1 came in with #11405; unsloth/Qwen-Image-2.1 was not on the Hub on 2026-09-22
-# (unsloth/Qwen-Image-2.1-FP8 and unsloth/Qwen-Image-2.1-GGUF are).
-_MIRRORS_NOT_YET_PUBLISHED = frozenset({"qwen/qwen-image-2.1"})
+_MIRRORS_NOT_YET_PUBLISHED: frozenset[str] = frozenset()
 
 
 def test_every_third_party_bf16_pipeline_the_catalog_offers_is_mirrored():
@@ -11706,3 +11704,52 @@ def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypa
         failures
     ), "a configured prequant that is not in its repo left the plan calling itself complete"
     assert "prequant artifact missing" in str(failures[0])
+
+
+def test_status_reports_cuda_graph_off_once_every_armed_step_ran_eager():
+    backend = DiffusionBackend()
+    handle = types.SimpleNamespace(
+        cache = {},
+        stats = {"captures": 0, "replays": 0, "eager_calls": 0, "refused_object": 0},
+        poisoned = False,
+        capture_error = None,
+    )
+    resolved = {
+        "cuda_graph": {
+            "value": "on",
+            "requested": None,
+            "source": "auto",
+            "status": "applied",
+            "reason": "denoiser step captured per input shape, replayed bit-identically",
+        }
+    }
+    backend._state = _LoadState(
+        pipe = object(),
+        family = detect_family("unsloth/Z-Image-GGUF"),
+        repo_id = "r",
+        base_repo = "b",
+        device = "cuda",
+        dtype = "bfloat16",
+        cpu_offload = False,
+        speed_optims = ("compiled", "cuda_graph"),
+        resolved = resolved,
+        cuda_graphs = (handle,),
+    )
+
+    st = backend.status()
+    assert st["resolved"]["cuda_graph"]["value"] == "on"
+    assert st["speed_optims"] == ["compiled", "cuda_graph"]
+
+    handle.stats.update(eager_calls = 25, refused_object = 25)
+    st = backend.status()
+    assert st["resolved"]["cuda_graph"]["value"] == "off"
+    assert st["resolved"]["cuda_graph"]["reason"] == (
+        "armed, but all 25 denoiser call(s) so far ran eager (25 with a non-tensor argument)"
+    )
+    assert st["speed_optims"] == ["compiled"]
+    assert resolved["cuda_graph"]["value"] == "on"
+
+    handle.stats.update(captures = 1, replays = 24)
+    st = backend.status()
+    assert st["resolved"]["cuda_graph"]["value"] == "on"
+    assert st["speed_optims"] == ["compiled", "cuda_graph"]
