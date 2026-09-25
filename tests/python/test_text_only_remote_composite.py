@@ -1415,7 +1415,7 @@ def test_adapter_on_wrapper_only_modules_keeps_the_full_model(tmp_path):
         local_files_only = True,
     )
     with pytest.raises(ValueError):
-        peft.PeftModel.from_pretrained(text, adapter)
+        peft.PeftModel.from_pretrained(text, adapter, torch_device = "cpu")
     assert ns["_adapter_fits_text_model"](str(adapter), mapping, text_names = text_names) is False
 
 
