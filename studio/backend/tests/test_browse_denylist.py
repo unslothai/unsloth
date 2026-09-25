@@ -37,6 +37,17 @@ class _HTTPException(Exception):
         self.detail = detail
 
 
+_WIN_ENV_OS = SimpleNamespace(
+    sep = "\\",
+    environ = {
+        "SystemRoot": r"C:\Windows",
+        "ProgramFiles": r"C:\Program Files",
+        "ProgramFiles(x86)": r"C:\Program Files (x86)",
+    },
+    path = SimpleNamespace(normcase = ntpath.normcase),
+)
+
+
 def _extract_is_denied_windows():
     """is_denied_system_path (+ _denied_path_prefixes) from studio_db.py under Windows semantics (ntpath) on a POSIX host."""
     src = (_BACKEND_ROOT / "storage" / "studio_db.py").read_text(encoding = "utf-8")
@@ -50,17 +61,8 @@ def _extract_is_denied_windows():
     module = ast.Module(body = funcs, type_ignores = [])
     ast.fix_missing_locations(module)
 
-    win_os = SimpleNamespace(
-        sep = "\\",
-        environ = {
-            "SystemRoot": r"C:\Windows",
-            "ProgramFiles": r"C:\Program Files",
-            "ProgramFiles(x86)": r"C:\Program Files (x86)",
-        },
-        path = SimpleNamespace(normcase = ntpath.normcase),
-    )
     ns = {
-        "os": win_os,
+        "os": _WIN_ENV_OS,
         "platform": SimpleNamespace(system = lambda: "Windows"),
         # /run has no Windows analog, so the carve-out is never reached.
         "is_linux_run_media_path": lambda _p: False,
@@ -153,47 +155,32 @@ def test_is_denied_system_path_windows_allows_non_system(path):
     assert is_denied(path) is False
 
 
-# realpath() keeps a Windows extended-length prefix, which must not hide the folder behind it.
-@pytest.mark.parametrize(
-    "path",
-    [r"\\?\C:\Windows\Temp\x", r"\\?\c:\program files\y", r"\\?\C:\WINDOWS"],
-)
-def test_is_denied_system_path_windows_sees_through_extended_prefixes(path, monkeypatch):
-    assert _extract_is_denied_windows()(path) is True
-    _hub_as_windows(monkeypatch)
-    assert scan_folders.is_denied_system_path(path) is True
-
-
-@pytest.mark.parametrize("path", [r"\\?\D:\models", r"\\?\UNC\server\share\Windows"])
-def test_is_denied_system_path_windows_extended_prefix_elsewhere_is_allowed(path, monkeypatch):
-    assert _extract_is_denied_windows()(path) is False
-    _hub_as_windows(monkeypatch)
-    assert scan_folders.is_denied_system_path(path) is False
-
-
-def _hub_as_windows(monkeypatch):
-    win_os = SimpleNamespace(
-        sep = "\\",
-        environ = {"SystemRoot": r"C:\Windows", "ProgramFiles": r"C:\Program Files"},
-        path = SimpleNamespace(normcase = ntpath.normcase),
-    )
-    monkeypatch.setattr(scan_folders, "os", win_os)
-    monkeypatch.setattr(scan_folders.platform, "system", lambda: "Windows")
-
-
+# realpath() keeps a Windows extended-length prefix, which must not hide the folder behind it, and
 # macOS disks ignore case by default: /LIBRARY is /Library.
-@pytest.mark.parametrize("path", ["/LIBRARY/x", "/library", "/private/TMP/x", "/SYSTEM/Volumes"])
-def test_is_denied_system_path_macos_ignores_case(path, monkeypatch):
-    for module in (studio_db, scan_folders):
-        monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
-        assert module.is_denied_system_path(path) is True, module
-
-
-@pytest.mark.parametrize("path", ["/Users/me/Library-Backup", "/Volumes/Drive/library"])
-def test_is_denied_system_path_macos_allows_look_alikes(path, monkeypatch):
-    for module in (studio_db, scan_folders):
-        monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
-        assert module.is_denied_system_path(path) is False, module
+@pytest.mark.parametrize(
+    "system, path, denied",
+    [
+        ("Windows", r"\\?\C:\Windows\Temp\x", True),
+        ("Windows", r"\\?\c:\program files\y", True),
+        ("Windows", r"\\?\C:\WINDOWS", True),
+        ("Windows", r"\\?\D:\models", False),
+        ("Windows", r"\\?\UNC\server\share\Windows", False),
+        ("Darwin", "/LIBRARY/x", True),
+        ("Darwin", "/library", True),
+        ("Darwin", "/private/TMP/x", True),
+        ("Darwin", "/SYSTEM/Volumes", True),
+        ("Darwin", "/Users/me/Library-Backup", False),
+        ("Darwin", "/Volumes/Drive/library", False),
+    ],
+)
+def test_is_denied_system_path_sees_through_spelling(system, path, denied, monkeypatch):
+    legacy = studio_db.is_denied_system_path
+    if system == "Windows":
+        legacy = _extract_is_denied_windows()
+        monkeypatch.setattr(scan_folders, "os", _WIN_ENV_OS)
+    monkeypatch.setattr(scan_folders.platform, "system", lambda: system)
+    assert legacy(path) is denied
+    assert scan_folders.is_denied_system_path(path) is denied
 
 
 def test_is_within_any_compares_like_the_disk(monkeypatch):
