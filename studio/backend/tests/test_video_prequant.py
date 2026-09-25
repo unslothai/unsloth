@@ -1180,6 +1180,7 @@ def test_unreadability_is_reported_only_when_it_is_what_kept_bfloat16(monkeypatc
     """The status may blame an unreadable hosted checkpoint only when every other condition for
     taking it held. speed off, a derivative base or a card the hosted denoiser does not fit keep
     bfloat16 for their own reasons, and must not be reported as a torchao problem."""
+    pytest.importorskip("torch")
     fam, torch, vid = _shared_setup_1()
     import core.inference.diffusion_prequant as pq
 
