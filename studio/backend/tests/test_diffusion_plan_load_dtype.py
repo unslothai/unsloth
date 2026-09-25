@@ -345,3 +345,45 @@ def test_a_bin_is_kept_beside_safetensors_shards_the_loader_cannot_select(tmp_pa
     assert snapshot.is_dir()
     _card(monkeypatch)
     assert _plan(torch.bfloat16).estimates["model_dense_mib"] == 100 + 300 + 200
+
+
+@pytest.mark.parametrize(
+    "attrs, dtype, expected",
+    [
+        # Transformers upcasts the non-strict set only for fp16; the strict set for both halves.
+        ({"_keep_in_fp32_modules": ["wo"]}, "float16", 400),
+        ({"_keep_in_fp32_modules": ["wo"]}, "bfloat16", 200),
+        ({"_keep_in_fp32_modules_strict": ["wo"]}, "bfloat16", 400),
+    ],
+)
+def test_transformers_pins_follow_the_half_dtype(tmp_path, monkeypatch, attrs, dtype, expected):
+    _snapshot(
+        tmp_path,
+        monkeypatch,
+        {
+            "text_encoder/config.json": json.dumps({"architectures": ["T5EncoderModel"]}),
+            "text_encoder/model.safetensors": _f32(400),
+        },
+    )
+    _card(monkeypatch)
+    lib = types.SimpleNamespace(T5EncoderModel = type("T5", (), attrs))
+    monkeypatch.setitem(sys.modules, "transformers", lib)
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    assert _plan(getattr(torch, dtype)).estimates["model_dense_mib"] == expected
+
+
+def test_a_diffusers_pin_holds_at_bf16(tmp_path, monkeypatch):
+    _snapshot(
+        tmp_path,
+        monkeypatch,
+        {
+            "transformer/config.json": json.dumps({"_class_name": "PinnedTransformer"}),
+            "transformer/diffusion_pytorch_model.safetensors": _f32(400),
+        },
+    )
+    _card(monkeypatch)
+    lib = types.SimpleNamespace(
+        PinnedTransformer = type("P", (), {"_keep_in_fp32_modules": ["norm"]})
+    )
+    monkeypatch.setitem(sys.modules, "diffusers", lib)
+    assert _plan(torch.bfloat16).estimates["model_dense_mib"] == 400

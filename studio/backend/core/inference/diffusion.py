@@ -1075,30 +1075,35 @@ def _float_load_itemsize(dtype: Any) -> Optional[int]:
     return None
 
 
-def _class_pins_fp32(class_name: str) -> bool:
-    """Whether a loaded diffusers / transformers class keeps some modules in fp32 (T5's ``wo``)."""
+def _class_pins_fp32(class_name: str, load_dtype: Any) -> bool:
+    """Whether a loaded class keeps modules in fp32 at this half dtype. Diffusers pins at both;
+    Transformers pins ``_keep_in_fp32_modules`` (T5's ``wo``) only at fp16, the strict set at both."""
     for lib in ("diffusers", "transformers"):
         module = sys.modules.get(lib)
         try:
             cls = getattr(module, class_name, None) if module is not None else None
         except Exception:  # noqa: BLE001 - an unimportable class tells us nothing
             cls = None
-        if cls is not None:
-            return bool(
-                getattr(cls, "_keep_in_fp32_modules", None)
-                or getattr(cls, "_keep_in_fp32_modules_strict", None)
-            )
+        if cls is None:
+            continue
+        if getattr(cls, "_keep_in_fp32_modules_strict", None):
+            return True
+        if not getattr(cls, "_keep_in_fp32_modules", None):
+            return False
+        return lib == "diffusers" or str(load_dtype) == "torch.float16"
     return False
 
 
-def _component_pins_fp32(folder: Path) -> bool:
+def _component_pins_fp32(folder: Path, load_dtype: Any) -> bool:
     """A component whose class keeps modules in fp32 keeps its full-precision size."""
     try:
         config = json.loads((folder / "config.json").read_text(encoding = "utf-8"))
         names = [config.get("_class_name"), *(config.get("architectures") or ())]
     except Exception:  # noqa: BLE001 - no readable config: nothing is pinned by name
         return False
-    return any(_class_pins_fp32(name) for name in names if isinstance(name, str) and name)
+    return any(
+        _class_pins_fp32(name, load_dtype) for name in names if isinstance(name, str) and name
+    )
 
 
 def _install_gguf_prefix_strip(transformer_cls: Any, logger: Any) -> None:
@@ -4049,15 +4054,16 @@ class DiffusionBackend:
         path: Path,
         *,
         exclude_transformer: bool,
-        load_itemsize: Optional[int] = None,
+        load_dtype: Any = None,
     ) -> dict[str, int]:
         """``{relative path: on-disk bytes}`` for the weight files under a diffusers directory. Per
         file, not a total, so callers merging several trees can dedupe by path. See
         ``_local_dir_weight_bytes`` for what the filter is for.
 
-        ``load_itemsize`` (bytes per element of the load dtype) prices what ``from_pretrained``
+        ``load_dtype`` (the float dtype the pipeline loads in) prices what ``from_pretrained``
         holds instead: default-variant component files, selectable safetensors over ``.bin``, and
         floats at the load dtype."""
+        load_itemsize = _float_load_itemsize(load_dtype)
         sizes: dict[str, int] = {}
         for f in path.rglob("*"):
             if f.suffix.lower() not in (".safetensors", ".bin", ".pt", ".ckpt"):
@@ -4092,7 +4098,7 @@ class DiffusionBackend:
             if rel.endswith(".bin") and rel.rsplit("/", 1)[0] in st_dirs:
                 del sizes[rel]
             elif rel.endswith(".safetensors") and not (
-                load_itemsize < 4 and _component_pins_fp32((path / rel).parent)
+                load_itemsize < 4 and _component_pins_fp32((path / rel).parent, load_dtype)
             ):
                 cast = DiffusionBackend._safetensors_cast_bytes(path / rel, load_itemsize)
                 if cast is not None:
@@ -4139,7 +4145,7 @@ class DiffusionBackend:
         path: Path,
         *,
         exclude_transformer: bool,
-        load_itemsize: Optional[int] = None,
+        load_dtype: Any = None,
     ) -> int:
         """Sum the on-disk weight files under a local diffusers directory. The HF blob cache is
         empty for a local path, so this is the only size signal for auto memory planning; without
@@ -4148,7 +4154,7 @@ class DiffusionBackend:
         a full pipeline load keeps it."""
         return sum(
             DiffusionBackend._local_dir_weight_sizes(
-                path, exclude_transformer = exclude_transformer, load_itemsize = load_itemsize
+                path, exclude_transformer = exclude_transformer, load_dtype = load_dtype
             ).values()
         )
 
@@ -4197,7 +4203,7 @@ class DiffusionBackend:
     def _companion_cache_bytes(
         base: str,
         staged_dir: Optional[str] = None,
-        load_itemsize: Optional[int] = None,
+        load_dtype: Any = None,
     ) -> int:
         """Resident companion (VAE + text-encoder) size for the memory plan. Excludes
         ``transformer/`` (supplied by the GGUF/single file, not resident here), otherwise the
@@ -4207,15 +4213,13 @@ class DiffusionBackend:
         return DiffusionBackend._union_over_cached_revs(
             base,
             lambda d: DiffusionBackend._local_dir_weight_sizes(
-                d, exclude_transformer = True, load_itemsize = load_itemsize
+                d, exclude_transformer = True, load_dtype = load_dtype
             ),
             staged_dir,
         )
 
     @staticmethod
-    def _local_dir_text_encoder_sizes(
-        path: Path, load_itemsize: Optional[int] = None
-    ) -> dict[str, int]:
+    def _local_dir_text_encoder_sizes(path: Path, load_dtype: Any = None) -> dict[str, int]:
         """``{relative path: on-disk bytes}`` for the TEXT-ENCODER weight files under a diffusers
         directory: the ``text_encoder*`` subfolders of what ``_local_dir_weight_sizes`` returns.
         Derived from that same walk rather than a second one, so the text-encoder term is a
@@ -4223,7 +4227,7 @@ class DiffusionBackend:
         return {
             rel: size
             for rel, size in DiffusionBackend._local_dir_weight_sizes(
-                path, exclude_transformer = True, load_itemsize = load_itemsize
+                path, exclude_transformer = True, load_dtype = load_dtype
             ).items()
             # Prefix, not equality: families ship text_encoder, text_encoder_2, text_encoder_3.
             if rel.split("/", 1)[0].startswith("text_encoder")
@@ -4233,7 +4237,7 @@ class DiffusionBackend:
     def _text_encoder_cache_bytes(
         base: str,
         staged_dir: Optional[str] = None,
-        load_itemsize: Optional[int] = None,
+        load_dtype: Any = None,
     ) -> int:
         """Text-encoder size for the memory plan: the share of ``_companion_cache_bytes`` the
         planner can move off the resident floor by streaming the encoders. Same
@@ -4241,7 +4245,7 @@ class DiffusionBackend:
         a repo split across two roots is counted once in BOTH terms."""
         return DiffusionBackend._union_over_cached_revs(
             base,
-            lambda d: DiffusionBackend._local_dir_text_encoder_sizes(d, load_itemsize),
+            lambda d: DiffusionBackend._local_dir_text_encoder_sizes(d, load_dtype),
             staged_dir,
         )
 
@@ -6496,7 +6500,9 @@ class DiffusionBackend:
             if device_memory_override is not None
             else settled_snapshot_device_memory(target)
         )
-        load_itemsize = _float_load_itemsize(getattr(target, "dtype", None))
+        load_dtype = getattr(target, "dtype", None)
+        if _float_load_itemsize(load_dtype) is None:
+            load_dtype = None
         if kind == "pipeline" and transformer_resident_override_mib is not None:
             # Re-planning an assembled pipeline against its dense-quant candidate. The family estimate already
             # splits transformer from companions; the cache scan below would price the bf16 transformer this
@@ -6524,24 +6530,24 @@ class DiffusionBackend:
                 else 0,
                 self._cache_bytes(cache_repo) if cache_repo else 0,
             )
-            if load_itemsize is not None:
+            if load_dtype is not None:
                 # Cached bytes are what the repo STORES: fp32 SDXL halves in bf16/fp16, a bf16 repo doubles in fp32,
                 # and variant twins or single files beside the pipeline are never opened.
                 loaded = max(
                     self._local_dir_weight_bytes(
-                        local_repo, exclude_transformer = False, load_itemsize = load_itemsize
+                        local_repo, exclude_transformer = False, load_dtype = load_dtype
                     )
                     if local_repo is not None and local_repo.is_dir()
                     else 0,
                     self._local_dir_weight_bytes(
-                        staged_repo, exclude_transformer = False, load_itemsize = load_itemsize
+                        staged_repo, exclude_transformer = False, load_dtype = load_dtype
                     )
                     if staged_repo is not None and staged_repo.is_dir()
                     else 0,
                     self._union_over_cached_revs(
                         cache_repo,
                         lambda d: self._local_dir_weight_sizes(
-                            d, exclude_transformer = False, load_itemsize = load_itemsize
+                            d, exclude_transformer = False, load_dtype = load_dtype
                         ),
                     )
                     if cache_repo
@@ -6576,12 +6582,10 @@ class DiffusionBackend:
             # The whole repo is the model, but its companions still sit in their own subfolders, so the same walk the
             # GGUF/single-file branch uses splits them out here too. Without the split both group tiers fail on None
             # and a pipeline that does not fit resident can only ever reach whole-module offload.
-            companion = self._companion_cache_bytes(
-                fetch_base or base, base_local_dir, load_itemsize
-            )
+            companion = self._companion_cache_bytes(fetch_base or base, base_local_dir, load_dtype)
             companion_mib = int(companion // (1024 * 1024)) if companion else None
             text_encoder = self._text_encoder_cache_bytes(
-                fetch_base or base, base_local_dir, load_itemsize
+                fetch_base or base, base_local_dir, load_dtype
             )
             text_encoder_mib = int(text_encoder // (1024 * 1024)) if text_encoder else None
             if is_narrow_base and table is not None:
@@ -6624,14 +6628,14 @@ class DiffusionBackend:
                 # the import-time root is invisible to a hub-id scan of the live one, so the VAE + text encoders would
                 # load unbudgeted.
                 companion = self._companion_cache_bytes(
-                    fetch_base or base, base_local_dir, load_itemsize
+                    fetch_base or base, base_local_dir, load_dtype
                 )
                 companion_mib = int(companion // (1024 * 1024)) if companion else None
                 # The text-encoder share of that companion total, from the SAME walk over the same trees, so the
                 # subtraction the planner does is exact rather than two estimates meeting in the middle. 0 bytes reads
                 # as nothing cached, i.e. no split.
                 text_encoder = self._text_encoder_cache_bytes(
-                    fetch_base or base, base_local_dir, load_itemsize
+                    fetch_base or base, base_local_dir, load_dtype
                 )
                 text_encoder_mib = int(text_encoder // (1024 * 1024)) if text_encoder else None
             model_dense_mib = None
