@@ -5455,6 +5455,15 @@ def unsloth_generic_save(
             "if you're planning to do multiple saves.\n"
             "If you are certain, change `save_method` to `merged_4bit_forced`."
         )
+    _saved_core = model.get_base_model() if isinstance(model, PeftModel) else model
+    _composed_parent = getattr(_saved_core, "_unsloth_composed_parent", None)
+    if save_method != "lora" and _composed_parent:
+        # The merge re-reads the repo's shards, which hold the wrapper's layout, not this child's.
+        raise NotImplementedError(
+            f"Unsloth: this model is the text core of `{_composed_parent}` (loaded with text_only = True), "
+            f"so `{save_method}` would write the wrapper's weights under the text core's config. "
+            "Save the adapter with `save_method = \"lora\"` and reload it with `text_only = True` instead."
+        )
 
     # Rebound rather than kept in a new local, because the `locals()` below is forwarded as
     # this function's own keywords.
