@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 from core._torchao_stub import (
+    hide_xformers_built_for_another_torch,
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
 )
@@ -230,6 +231,7 @@ logger = get_logger(__name__)
 # Every `import diffusers` below is lazy, so this runs first. On Windows ROCm both reach an absent distributed
 # backend: diffusers imports xformers on sight, its quantizers torchao.
 install_xformers_windows_rocm_stub()
+hide_xformers_built_for_another_torch()
 install_torchao_windows_rocm_stub()
 install_torchao_int_mm_patch()
 
