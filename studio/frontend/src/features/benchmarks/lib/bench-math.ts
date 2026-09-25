@@ -572,6 +572,52 @@ function stripSpecDepthArgs(args: readonly string[] | null | undefined): string[
   return out;
 }
 
+// Mode-owning flags a spec / auto-tune sweep owns through speculative_type. The loader treats
+// extras carrying --spec-type / --spec-default as owning the mode and returns before emitting the
+// row's requested mode (llama_cpp._build_speculative_flags), so a forced row would be skipped as a
+// mismatch and the Auto row silently measured under chat's override. --spec-type takes a value;
+// --spec-default is a bare flag.
+const SPEC_MODE_VALUE_FLAGS = ["--spec-type"];
+const SPEC_MODE_BOOL_FLAGS = ["--spec-default"];
+
+/** Drop inherited speculative-mode flags: a spec or auto-tune row sets the mode itself. */
+function stripSpecModeArgs(args: readonly string[] | null | undefined): string[] {
+  const out: string[] = [];
+  const list = args ?? [];
+  for (let i = 0; i < list.length; i++) {
+    const eq = list[i].indexOf("=");
+    const name = eq >= 0 ? list[i].slice(0, eq) : list[i];
+    if (SPEC_MODE_VALUE_FLAGS.includes(name)) {
+      if (eq < 0) i++; // its value is a separate token
+      continue;
+    }
+    if (SPEC_MODE_BOOL_FLAGS.includes(name)) continue;
+    out.push(list[i]);
+  }
+  return out;
+}
+
+// Context flags the context sweep owns through max_seq_length. An inherited -c / --ctx-size in
+// chat's pass-through args would last-wins-override each row's window: parse_ctx_override reads the
+// extras (llama_server_args.parse_ctx_override), so every context row would run at the inherited size.
+const CONTEXT_FLAGS = ["-c", "--ctx-size"];
+
+/** Drop inherited context flags: the context sweep's rows set max_seq_length themselves. */
+function stripContextArgs(args: readonly string[] | null | undefined): string[] {
+  const out: string[] = [];
+  const list = args ?? [];
+  for (let i = 0; i < list.length; i++) {
+    const eq = list[i].indexOf("=");
+    const name = eq >= 0 ? list[i].slice(0, eq) : list[i];
+    if (CONTEXT_FLAGS.includes(name)) {
+      if (eq < 0) i++; // its value is a separate token
+      continue;
+    }
+    out.push(list[i]);
+  }
+  return out;
+}
+
 // Slot count the parallel sweep owns through n_parallel. An inherited copy in chat's
 // pass-through args would last-wins-override the count each row asks for: the backend keeps
 // explicit extras and appends them after its managed --parallel, so every slot row would run
@@ -601,13 +647,16 @@ export function variantLoad<T extends LoadPayload>(
   const { llama_extra_args: extra, ...rest } = variant.load;
   // A row that owns GPU placement (the offload sweep) must not inherit chat's -ngl / --n-cpu-moe,
   // which /load would promote over the row's requested layer count. A row that owns speculative
-  // decoding must not inherit chat's --draft-max / --spec-draft-n-max, which would override the
-  // depth the row asked for.
+  // decoding must not inherit chat's --spec-type / --spec-default (which would take the mode) nor
+  // --draft-max / --spec-draft-n-max (which would override the depth the row asked for). A context
+  // row must not inherit chat's -c / --ctx-size, which last-wins over its requested window.
   let baseArgs = base.llama_extra_args ?? [];
   if (variant.load.gpu_memory_mode !== undefined)
     baseArgs = stripOffloadArgs(baseArgs);
   if (variant.load.speculative_type !== undefined)
-    baseArgs = stripSpecDepthArgs(baseArgs);
+    baseArgs = stripSpecModeArgs(stripSpecDepthArgs(baseArgs));
+  if (variant.load.max_seq_length !== undefined)
+    baseArgs = stripContextArgs(baseArgs);
   if (variant.load.n_parallel !== undefined)
     baseArgs = stripParallelArgs(baseArgs);
   return {
