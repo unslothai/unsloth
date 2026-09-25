@@ -492,7 +492,7 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
         pass
     else:
         # ISO-2022-JP is 7-bit, so it always passes as UTF-8; its escapes give it away.
-        if False:
+        if html and "\x1b$" in text and _declared_charset(data) == "iso2022_jp":
             return data.decode("iso2022_jp", errors = "replace")
         return text
     declared = _declared_charset(data) if html else None
