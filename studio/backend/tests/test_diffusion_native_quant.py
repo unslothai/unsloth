@@ -72,8 +72,6 @@ def _toy(dtype = torch.bfloat16):
     return _Toy().to(dtype)
 
 
-
-
 @pytest.mark.parametrize("scheme", ["int8", "fp8", "INT8", " fp8 "])
 def test_rocm_and_stub_hosts_take_explicit_int8_and_fp8(rocm, scheme):
     assert tq.native_quant_host(_target())
@@ -126,8 +124,6 @@ def test_the_shared_selector_is_untouched_on_rocm(rocm):
     for scheme in ("int8", "fp8", "auto"):
         assert tq.select_transformer_quant_scheme(_target(), scheme, unproven_ok = True) is None
     assert not tq.dense_transformer_supported(_target())
-
-
 
 
 @pytest.mark.parametrize("scheme,bound", [("int8", 0.01), ("fp8", 0.04)])
@@ -187,8 +183,6 @@ def test_a_module_wide_dtype_cast_leaves_the_stored_weights_alone(scheme):
     assert layer.weight_q.dtype == q_before.dtype and torch.equal(layer.weight_q, q_before)
     assert layer.weight_scale.dtype == torch.int32
     assert torch.allclose(layer(x.to(torch.float16)).float(), before.float(), rtol = 1e-2, atol = 1e-2)
-
-
 
 
 def _block_torchao(monkeypatch):
@@ -358,8 +352,6 @@ def test_peft_wrapped_base_layer_runs_native(rocm, monkeypatch):
     assert isinstance(to_q.lora_A["default"], torch.nn.Linear)
     with torch.no_grad():
         assert torch.isfinite(wrapped(x)).all()
-
-
 
 
 def _image_family(name):
