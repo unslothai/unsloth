@@ -584,6 +584,7 @@ export function ExportPage() {
   const estimatedSize = getEstimatedSize(exportMethod, quantLevels, fp16Bytes);
   const selectedExportSource =
     sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
+  // Derived, not reset in an effect: an imatrix is calibrated for one model, so another source must not inherit it.
   const imatrixSourceKey = JSON.stringify([
     sourceTab,
     sourceMode === "checkpoint" ? selectedModelIdx : null,
@@ -1666,8 +1667,8 @@ export function ExportPage() {
                           </div>
                           <div className="text-xs text-muted-foreground">
                             {requiresImatrix
-                              ? "Required for the selected IQ low-bit quant. Use a local file or auto-download the upstream Unsloth imatrix."
-                              : "Improves quant quality and unlocks the IQ low-bit quants. Use a local file or auto-download the upstream Unsloth imatrix."}
+                              ? "Required for the selected IQ low-bit quant."
+                              : "Improves quant quality and unlocks the IQ low-bit quants."}
                           </div>
                         </div>
                         <Switch
@@ -1689,7 +1690,7 @@ export function ExportPage() {
                             <InputGroupInput
                               id="export-imatrix-path"
                               aria-describedby="export-imatrix-path-help"
-                              placeholder="./imatrix.gguf"
+                              placeholder="/path/to/imatrix.gguf"
                               value={imatrixPath}
                               onChange={(e) =>
                                 setCustomImatrix({
@@ -1703,9 +1704,10 @@ export function ExportPage() {
                             id="export-imatrix-path-help"
                             className="text-xs text-muted-foreground"
                           >
-                            Enter the path to a .dat or .gguf imatrix file on the
-                            machine running Studio. Leave blank to auto-download
-                            the upstream Unsloth imatrix for the base model.
+                            Absolute path to a .dat or .gguf imatrix file on the
+                            machine running Unsloth Studio. Leave blank to
+                            auto-download the upstream Unsloth imatrix for the
+                            base model, if one exists.
                           </p>
                         </div>
                       )}

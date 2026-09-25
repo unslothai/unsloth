@@ -139,7 +139,7 @@ export interface RunExportParams {
   exportMethod: ExportMethod;
   isAdapter: boolean;
   quantLevels: string[];
-  /** GGUF: use an importance matrix (auto-download); required for the IQ quants. */
+  /** GGUF: use an importance matrix, auto-downloaded unless imatrixPath is set; required for the IQ quants. */
   useImatrix?: boolean;
   imatrixPath?: string;
   /** Merged: precision formats, each exported to its own sibling directory. Defaults to 16-bit.

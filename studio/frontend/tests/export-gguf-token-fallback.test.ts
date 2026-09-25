@@ -103,7 +103,7 @@ test("the load phase keeps using the load token on its own", async () => {
   assert.equal((load.args[0] as Record<string, unknown>).hf_token, "hf_load");
 });
 
-test("a local model forwards its custom imatrix for all selected quants", async () => {
+test("a local model forwards its trimmed custom imatrix path", async () => {
   const body = await ggufRequest({
     modelSource: "local",
     source: "/models/merged-model",
