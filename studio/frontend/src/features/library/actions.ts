@@ -94,8 +94,20 @@ export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> 
   const progress = toast.loading(translate("library.toast.preparingMany", { count: items.length }));
   try {
     const files: File[] = [];
+    let budget = MAX_ZIP_BYTES;
     for (const item of items) {
-      files.push(await libraryItemFile(item));
+      let file: File;
+      try {
+        file = await libraryItemFile(item, budget);
+      } catch (error) {
+        if (!(error instanceof LibraryFileTooLarge)) throw error;
+        // Grown past what the listing said: one download at a time instead of one zip in memory.
+        toast.dismiss(progress);
+        for (const each of items) await downloadLibraryItem(each, epoch);
+        return;
+      }
+      budget -= file.size;
+      files.push(file);
       if (getAuthSessionEpoch() !== epoch) return;
     }
     const names = uniqueFileNames(["__proto__", ...files.map((file) => file.name)]).slice(1);
