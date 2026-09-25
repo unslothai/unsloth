@@ -1270,3 +1270,83 @@ def test_hidreams_pre_cast_fourth_encoder_is_priced_in_the_bf16_plan(monkeypatch
     saved = HIDREAM_LLAMA_BF16_BYTES * (1.0 - teq.TE_PREQUANT_BUDGET_SCALE) / (1024 * 1024)
     assert abs((dense - pre_cast) - saved) <= 2
     assert seen[1]["companion_override_mib"] < seen[0]["companion_override_mib"]
+
+
+def test_a_lone_numbered_shard_without_its_index_is_not_a_cached_release(tmp_path):
+    folder = tmp_path / "transformer"
+    folder.mkdir()
+    (folder / "diffusion_pytorch_model-00001-of-00002.safetensors").write_bytes(b"x")
+    assert not DiffusionBackend._released_transformer_cached(str(tmp_path))
+    (folder / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+    assert DiffusionBackend._released_transformer_cached(str(tmp_path))
+
+
+def test_an_offline_pick_budgets_the_encoder_dense(monkeypatch):
+    """Offline, an uncached pre-cast encoder falls back to the dense one, so the bf16 plan prices it dense."""
+    import core.inference.diffusion_te_prequant as teq
+
+    backend = _settle_backend(monkeypatch)
+    monkeypatch.setattr(
+        teq,
+        "te_prequant_budget_scale",
+        lambda _fam, *, te_quant_mode, target, base: 0.5 if te_quant_mode == "fp8" else 1.0,
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        lambda *_a, **k: types.SimpleNamespace(
+            offload_policy = "none"
+            if (k.get("companion_override_mib") or 0) < 6_000
+            or (k.get("transformer_resident_override_mib") or 0) < 80_000
+            else "sequential"
+        ),
+    )
+    _uncompilable(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend, "_released_transformer_cached", staticmethod(lambda _base: True)
+    )
+    assert _settle(backend, text_encoder_quant = "fp8") is None
+    assert _settle(backend, text_encoder_quant = "fp8", local_files_only = True) == "fp8"
+
+
+def test_an_offline_pick_finds_released_shards_under_the_mirror(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    _offload_when_bf16_sized(monkeypatch, "none")
+    _uncompilable(monkeypatch)
+    monkeypatch.setattr(dmod, "prefer_ungated_mirror", lambda base, *_a, **_k: "unsloth/mirror")
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_released_transformer_cached",
+        staticmethod(lambda base: base == "unsloth/mirror"),
+    )
+    assert _settle(backend, local_files_only = True) is None
+
+
+def test_a_hidream_pipeline_is_repriced_with_its_standalone_encoder(monkeypatch):
+    """HiDream's Llama text_encoder_4 is outside the repo, so the as-built plan never counts it."""
+    fam = detect_family_for_pick("HiDream-ai/HiDream-I1-Dev", None, None)
+    assert fam is not None and fam.name == "hidream-i1"
+    as_built = types.SimpleNamespace(offload_policy = "none", estimates = {}, device_memory = None)
+    monkeypatch.setattr(DiffusionBackend, "_resident_sized_plan", lambda _s, plan, *_a, **_k: plan)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        lambda _s, *_a, **k: types.SimpleNamespace(offload_policy = "group", overrides = k),
+    )
+    repriced = DiffusionBackend()._bf16_resident_plan(
+        as_built,
+        _target(),
+        fam,
+        "HiDream-ai/HiDream-I1-Dev",
+        None,
+        False,
+        kind = "pipeline",
+        repo_id = "HiDream-ai/HiDream-I1-Dev",
+    )
+    assert repriced is not as_built
+    table_gb = 34.2 + 28.8
+    total_mib = (
+        repriced.overrides["transformer_resident_override_mib"]
+        + repriced.overrides["companion_override_mib"]
+    )
+    assert total_mib >= int(table_gb * 1000.0**3 / (1024 * 1024)) - 2

@@ -1383,6 +1383,9 @@ def _local_base_transformer_present(base_repo: Optional[str]) -> bool:
         return False
 
 
+_SHARD_NAME_RE = re.compile(r"-\d+-of-\d+\.safetensors$")
+
+
 def _transformer_folder_complete(folder: Path) -> bool:
     """Every weight shard a ``transformer/`` index names is present, or, without an index, a weights file is."""
     if not folder.is_dir():
@@ -1399,7 +1402,10 @@ def _transformer_folder_complete(folder: Path) -> bool:
             if shards and all((folder / shard).is_file() for shard in shards):
                 return True
         return False
-    return any_not_appledouble_metadata(folder.glob("*.safetensors"))
+    # Without an index only an unsharded file is whole; a numbered shard is part of a set whose index is missing.
+    return any_not_appledouble_metadata(
+        f for f in folder.glob("*.safetensors") if not _SHARD_NAME_RE.search(f.name)
+    )
 
 
 def _dense_candidate_is_prequant(
@@ -3033,17 +3039,29 @@ class DiffusionBackend:
                         kind = kind,
                         repo_id = repo_id,
                         fetch_base = fetch_base,
-                        text_encoder_quant = text_encoder_quant,
+                        # Offline, a pre-cast encoder that is not cached loads dense, so budget it dense.
+                        text_encoder_quant = None if local_files_only else text_encoder_quant,
                         device_memory_override = replace(bf16_memory, free_mib = bf16_memory.total_mib),
                     )
                     # Offline, a snapshot an earlier seeded load left without the released shards cannot assemble
-                    # bf16, so a cached seed is still the only way to load it.
+                    # bf16, so a cached seed is still the only way to load it. The shards may sit under the mirror.
                     if (
                         bf16_plan is not None
                         and _auto_quant_eager_reason(fam, bf16_plan) is not None
                         and not (
                             local_files_only
-                            and not self._released_transformer_cached(fetch_base or base or repo_id)
+                            and not any(
+                                self._released_transformer_cached(candidate)
+                                for candidate in dict.fromkeys(
+                                    (
+                                        fetch_base,
+                                        base,
+                                        repo_id,
+                                        prefer_ungated_mirror(base or repo_id or ""),
+                                    )
+                                )
+                                if candidate
+                            )
                         )
                     ):
                         return None
@@ -4515,7 +4533,7 @@ class DiffusionBackend:
                                 repo_id = repo_id,
                                 fetch_base = fetch_base,
                                 base_local_dir = _base_local_dir,
-                                text_encoder_quant = text_encoder_quant,
+                                text_encoder_quant = None if local_files_only else text_encoder_quant,
                             ),
                         )
                     )
@@ -6336,11 +6354,14 @@ class DiffusionBackend:
         text_encoder_quant: Optional[str] = None,
     ) -> Any:
         """``plan`` re-priced from the bf16-resident table when ``_resident_sized_plan`` lowers it (a recognised
-        pipeline base whose cached shards are wider than bf16, e.g. Lumina-2's fp32), else ``plan``. Same device
-        reading, so only the weight term moves."""
+        pipeline base whose cached shards are wider than bf16, e.g. Lumina-2's fp32), else ``plan``. HiDream is
+        always re-priced: its Llama text_encoder_4 loads from another repo, so no cached plan counts it, and every
+        variant shares the table's size. Same device reading, so only the weight term moves."""
+        if kind != "pipeline":
+            return plan
         if (
-            kind != "pipeline"
-            or self._resident_sized_plan(
+            getattr(fam, "name", None) != HIDREAM_FAMILY_NAME
+            and self._resident_sized_plan(
                 plan, fam, base, target, kind, text_encoder_quant = text_encoder_quant
             )
             is plan
