@@ -662,11 +662,7 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     if _post_warm_retired(generation):
         return
     try:
-        from utils.diffusers_repair import diffusers_repair_in_flight
-
-        # Importing the release now would pin it in this process for the whole session.
-        if not diffusers_repair_in_flight():
-            prewarm_diffusers_if_image_models_exist()
+        prewarm_diffusers_if_image_models_exist()
     except Exception as _prewarm_exc:  # noqa: BLE001 -- latency work must never end the worker
         import structlog as _structlog
         _structlog.get_logger(__name__).debug("diffusers prewarm skipped: %s", _prewarm_exc)
@@ -881,14 +877,6 @@ async def lifespan(app: FastAPI):
             )
             + "\n"
         )
-
-    # Before the socket binds, or a first diffusion load can import the release the repair is replacing.
-    # A metadata read and a thread start; the install itself runs on that thread.
-    try:
-        from utils.diffusers_repair import start_diffusers_autorepair_if_needed
-        start_diffusers_autorepair_if_needed()
-    except Exception as _diffusers_exc:  # noqa: BLE001 -- a self-heal must never block startup
-        _lifespan_log.warning("diffusers autorepair skipped: %s", _diffusers_exc)
 
     # Last, so it never contends for the GIL: the socket binds as soon as this returns, so the login
     # screen is up while torch/transformers/datasets load.
