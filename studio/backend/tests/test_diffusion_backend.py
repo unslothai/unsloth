@@ -13258,3 +13258,242 @@ def test_status_reports_cuda_graph_off_once_every_armed_step_ran_eager():
     st = backend.status()
     assert st["resolved"]["cuda_graph"]["value"] == "on"
     assert st["speed_optims"] == ["compiled", "cuda_graph"]
+
+
+def _resident_transformer(plan):
+    """``plan`` as the tier that keeps the denoiser resident and streams only the text encoders."""
+    return dataclasses.replace(
+        plan, offload_policy = "group", stream_text_encoders = True, stream_transformer = False
+    )
+
+
+def _record_placement(monkeypatch):
+    from core.inference import diffusion as dmod
+
+    placed: list = []
+
+    def _apply(pipe, plan, **kwargs):
+        placed.append(plan)
+        return plan.offload_policy, False
+
+    monkeypatch.setattr(dmod, "apply_memory_plan", _apply)
+    return placed
+
+
+def test_a_pipeline_quantises_where_only_the_encoders_stream(fake_runtime, tmp_path, monkeypatch):
+    """torchao weights fit once the encoders stream, so the transformer is converted and placed once."""
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    real_plan = DiffusionBackend._plan_memory
+
+    def _plan(self, *args, **kwargs):
+        plan = real_plan(self, *args, **kwargs)
+        if kwargs.get("transformer_resident_override_mib") is not None:
+            return _resident_transformer(plan)
+        return dataclasses.replace(plan, offload_policy = "group")
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _plan)
+    placed = _record_placement(monkeypatch)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        transformer_quant = "fp8",
+        _base_local_dir = str(tmp_path),
+    )
+    assert len(calls) == 1
+    assert status["transformer_quant"] == "fp8"
+    assert status["offload_policy"] == "group"
+    assert placed and placed[-1].stream_transformer is False
+    backend.unload()
+
+
+def test_a_pipeline_quant_replan_prices_the_encoder_the_load_opens(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """The in-place replan prices encoders like the other candidate replans, not the family table."""
+    backend = DiffusionBackend()
+    _stub_pipeline_dense_quant(backend, monkeypatch)
+    priced = {"companion_override_mib": 1234, "text_encoder_override_mib": 567}
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_candidate_companion_overrides",
+        staticmethod(lambda *args, **kwargs: dict(priced)),
+    )
+    real_plan = DiffusionBackend._plan_memory
+    seen = []
+
+    def _plan(self, *args, **kwargs):
+        plan = real_plan(self, *args, **kwargs)
+        if kwargs.get("transformer_resident_override_mib") is not None:
+            seen.append(kwargs)
+            return _resident_transformer(plan)
+        return dataclasses.replace(plan, offload_policy = "group")
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _plan)
+    _record_placement(monkeypatch)
+    backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        transformer_quant = "fp8",
+        _base_local_dir = str(tmp_path),
+    )
+    assert seen
+    assert seen[-1]["companion_override_mib"] == 1234
+    assert seen[-1]["text_encoder_override_mib"] == 567
+    backend.unload()
+
+
+def test_a_pipeline_whose_quantised_plan_still_streams_the_transformer_stays_dense(
+    fake_runtime, tmp_path, monkeypatch
+):
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    real_plan = DiffusionBackend._plan_memory
+
+    def _plan(self, *args, **kwargs):
+        return dataclasses.replace(real_plan(self, *args, **kwargs), offload_policy = "group")
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _plan)
+    _record_placement(monkeypatch)
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.load_pipeline(
+            "Qwen/Qwen-Image-2512",
+            model_kind = "pipeline",
+            transformer_quant = "fp8",
+            _base_local_dir = str(tmp_path),
+        )
+    assert calls == []
+    assert "Module.to()" in str(excinfo.value)
+
+
+def _gguf_candidate_backend(monkeypatch, tmp_path, *, initial_policy, candidate_plan):
+    """GGUF load planned as ``initial_policy`` whose candidate plans as ``candidate_plan(real_plan)``."""
+    from core.inference import diffusion as dmod
+
+    backend = _cuda_backend(tmp_path, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+    )
+    monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: "prequant/path")
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: types.SimpleNamespace(
+            transient_transformer_mib = 7_000,
+            steady_transformer_mib = 7_000,
+            companions_mib = 18_000,
+            text_encoders_mib = 16_700,
+            prequant = True,
+        ),
+    )
+    orig_plan = DiffusionBackend._plan_memory
+
+    def spy_plan(
+        self,
+        *a,
+        transformer_resident_override_mib = None,
+        **k,
+    ):
+        real = orig_plan(
+            self, *a, transformer_resident_override_mib = transformer_resident_override_mib, **k
+        )
+        if transformer_resident_override_mib is None:
+            return dataclasses.replace(real, offload_policy = initial_policy)
+        return candidate_plan(real)
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", spy_plan)
+    attempted: list = []
+
+    def fake_dense_load(self, *a, **k):
+        attempted.append(k.get("allow_dense_fallback"))
+        raise RuntimeError("test: stop after reaching the fast path")
+
+    monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", fake_dense_load)
+    return backend, attempted
+
+
+def test_a_gguf_pick_builds_the_quant_where_only_the_encoders_stream(
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
+):
+    backend, attempted = _gguf_candidate_backend(
+        monkeypatch, tmp_path, initial_policy = "group", candidate_plan = _resident_transformer
+    )
+    _load_m(backend, tmp_path, transformer_quant = "int8")
+    assert attempted == [False]
+
+
+def test_a_gguf_pick_declines_the_quant_where_the_transformer_would_stream(
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
+):
+    backend, attempted = _gguf_candidate_backend(
+        monkeypatch,
+        tmp_path,
+        initial_policy = "group",
+        candidate_plan = lambda real: dataclasses.replace(real, offload_policy = "group"),
+    )
+    status = _load_m(backend, tmp_path, transformer_quant = "int8")
+    assert attempted == []
+    assert status["transformer_quant"] is None
+
+
+def test_a_resident_gguf_plan_sizes_the_prequant_that_replaces_it(
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
+):
+    """The INT8 artifact outgrows the GGUF, so it loads under its own plan rather than the GGUF's."""
+    sized: list = []
+
+    def _candidate(real):
+        plan = _resident_transformer(real)
+        sized.append(plan)
+        return plan
+
+    backend, attempted = _gguf_candidate_backend(
+        monkeypatch, tmp_path, initial_policy = "none", candidate_plan = _candidate
+    )
+    placed = _record_placement(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_load_dense_quant_pipeline",
+        lambda self, *a, **k: attempted.append(k.get("allow_dense_fallback")) or (None, None),
+    )
+    _load_m(backend, tmp_path, transformer_quant = "int8")
+    assert sized, "the prequant was never sized"
+    assert attempted == [False]
+    assert placed[-1].offload_policy in ("none", "group")
+
+
+def test_a_resident_gguf_plan_declines_a_prequant_that_would_stream(
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
+):
+    backend, attempted = _gguf_candidate_backend(
+        monkeypatch,
+        tmp_path,
+        initial_policy = "none",
+        candidate_plan = lambda real: dataclasses.replace(real, offload_policy = "group"),
+    )
+    status = _load_m(backend, tmp_path, transformer_quant = "int8")
+    assert attempted == []
+    assert status["transformer_quant"] is None
+    assert (
+        "torchao tensors cannot be offloaded" in (status["resolved"]["transformer_quant"]["reason"])
+    )
+
+
+def test_candidate_overrides_price_the_encoder_the_load_opens(monkeypatch):
+    candidate = types.SimpleNamespace(companions_mib = 18_000, text_encoders_mib = 16_000)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_precast_scaled_companions_mib",
+        staticmethod(lambda cand, fam, base, target, teq: 2_000 + int(16_000 * 0.65)),
+    )
+    overrides = DiffusionBackend._candidate_companion_overrides(candidate, None, "b", None, "fp8")
+    assert overrides == {"companion_override_mib": 12_400, "text_encoder_override_mib": 10_400}
+    # No split: the encoder term stays unknown, so the planner keeps its previous tiers.
+    bare = types.SimpleNamespace(companions_mib = 18_000, text_encoders_mib = 0)
+    assert (
+        DiffusionBackend._candidate_companion_overrides(bare, None, "b", None, None)[
+            "text_encoder_override_mib"
+        ]
+        == 0
+    )

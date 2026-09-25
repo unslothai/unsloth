@@ -8352,6 +8352,48 @@ if ($stackExit -ne 0) {
     $ErrorActionPreference = $prevEAP
 }
 
+# Windows MXC Preview is an optional, pinned prebuilt like the other native
+# runtimes. Keep this outside the Python dependency fast path: a missing or
+# corrupt runtime must be installed or repaired even when the venv is current.
+if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+    $_mxcInstaller = Join-Path $PSScriptRoot "install_mxc_prebuilt.py"
+    $_mxcInstallDir = Join-Path $StudioHome "mxc-runtime\windows-x86_64"
+    if (Test-Path -LiteralPath $_mxcInstaller -PathType Leaf) {
+        substep "installing Windows MXC Preview runtime..."
+        # Optional, so a nonzero exit or stderr line must reach the fallback below, not stop setup.
+        $_mxcPrevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        $_mxcRestoreNative = $PSVersionTable.PSVersion.Major -ge 7
+        if ($_mxcRestoreNative) {
+            $_mxcPrevNative = $PSNativeCommandUseErrorActionPreference
+            $PSNativeCommandUseErrorActionPreference = $false
+        }
+        try {
+            $_mxcOutput = & python $_mxcInstaller --install-dir $_mxcInstallDir 2>&1 | Out-String
+            $_mxcExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $_mxcPrevEAP
+            if ($_mxcRestoreNative) {
+                $PSNativeCommandUseErrorActionPreference = $_mxcPrevNative
+            }
+        }
+        if ($_mxcExit -eq 0) {
+            if ($_mxcOutput -match "already matches") {
+                step "MXC Preview" "prebuilt up to date and validated"
+            } else {
+                step "MXC Preview" "prebuilt installed and validated"
+            }
+        } elseif ($_mxcExit -eq 3) {
+            step "MXC Preview" "install blocked by an active MXC process; existing runtime kept" "Yellow"
+        } else {
+            step "MXC Preview" "prebuilt unavailable; Studio will use software safeguards" "Yellow"
+        }
+        if ($script:UnslothVerbose -and $_mxcOutput) {
+            Write-StudioLine $_mxcOutput.Trim() -ForegroundColor $(if ($_mxcExit -eq 0) { "DarkGray" } else { "Yellow" })
+        }
+    }
+}
+
 # ── Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ ──
 # Runs outside the deps fast-path gate so that upgrades from the legacy
 # single .venv_t5 are always migrated to the tiered layout.
@@ -9107,7 +9149,7 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
     # caught here; an unowned tree still stops.
     step "whisper.cpp" "install directory cannot be read: access is denied; curated whisper.cpp dictation is unavailable; restore access to $WhisperCppDir or move it aside, then re-run setup; browser and Transformers dictation remain available" "Yellow"
 } elseif (Test-Path -LiteralPath $WhisperInstaller) {
-    # The installer's atomic activation replaces the whole directory, so the
+    # The installer replaces the whole directory during activation, so the
     # custom-home ownership guard must run first (mirrors the llama block).
     if ($RuntimeRootIsCustom) {
         Assert-StudioOwnedOrAbsent -Path $WhisperCppDir -Label "whisper.cpp install" -IsCustom $RuntimeRootIsCustom

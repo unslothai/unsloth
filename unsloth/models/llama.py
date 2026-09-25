@@ -2601,8 +2601,34 @@ class FastLlamaModel:
 
         # Disable bitsandbytes loading if the model has non-bitsandbytes quantization.
         load_in_4bit, load_in_8bit, _ckpt_quant_method = check_and_disable_bitsandbytes_loading(
-            model_config, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit
+            model_config,
+            load_in_4bit = load_in_4bit,
+            load_in_8bit = load_in_8bit,
+            rewrite_modelopt = not _vllm_will_load_weights(fast_inference, num_labels),
+            token = token,
+            model_name = model_name,
+            revision = revision,
+            hub_kwargs = {
+                "cache_dir": kwargs.get("cache_dir"),
+                "subfolder": kwargs.get("subfolder"),
+                "local_files_only": kwargs.get("local_files_only", False),
+            },
         )
+        from .modelopt_fp8 import (
+            keep_fp8_scale_names_on_save,
+            move_config_overrides_onto_config,
+            keep_task_heads_unquantized,
+            modelopt_planner_quantization_config,
+            modelopt_rewritten,
+            pop_modelopt_key_mapping,
+        )
+
+        _modelopt_rewritten = modelopt_rewritten(model_config)
+        if _modelopt_rewritten:
+            verify_fp8_support_if_applicable(model_config)
+        if _modelopt_rewritten and num_labels is not None:
+            keep_task_heads_unquantized(model_config, AutoModelForSequenceClassification)
+        pop_modelopt_key_mapping(model_config, kwargs)
         # Correct UNSLOTH_MODEL_NAME's bnb tokens now the effective bnb state is known (the per-load env
         # was built before remap/disable). gpt-oss only.
         sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit)
@@ -2669,6 +2695,9 @@ class FastLlamaModel:
                 load_in_4bit = load_in_4bit,
                 load_in_8bit = load_in_8bit,
                 quantization_config = kwargs.get("quantization_config", None),
+                rewritten_quantization_config = modelopt_planner_quantization_config(model_config)
+                if _modelopt_rewritten
+                else None,
                 # The same extra the bnb config below adds.
                 extra_skip_modules = ["out_proj"] if IS_FALCON_H1 else None,
             ),
@@ -2789,11 +2818,16 @@ class FastLlamaModel:
                     dtype = dtype,
                 )
             elif not fast_inference:
-                if user_config is not None:
+                if user_config is not None or _modelopt_rewritten:
                     # Transformers 5.x @strict model init rejects extra kwargs next to config=, so set the override
                     # on the config and pass the single config object through.
                     if max_position_embeddings is not None:
                         model_config.max_position_embeddings = max_position_embeddings
+                    _rope_scaling = kwargs.pop("rope_scaling", None)
+                    if _rope_scaling is not None:
+                        model_config.rope_scaling = _rope_scaling
+                    if _modelopt_rewritten and user_config is None:
+                        move_config_overrides_onto_config(model_config, kwargs)
                     model = AutoModelForCausalLM.from_pretrained(
                         model_name,
                         config = model_config,
@@ -2899,6 +2933,8 @@ class FastLlamaModel:
         finally:
             raise_handler.remove()
             os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
+        if _modelopt_rewritten:
+            keep_fp8_scale_names_on_save(model)
 
         # Counteract saved tokenizers.
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
