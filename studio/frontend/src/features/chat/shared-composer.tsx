@@ -573,7 +573,6 @@ export function SharedComposer({
 }): ReactElement {
   const t = useT();
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
-  const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform());
   const navigate = useNavigate();
   // Exit compare: parent's restore handler, or fresh chat if opened by URL.
   const handleExitCompare = useCallback(() => {
@@ -584,6 +583,7 @@ export function SharedComposer({
     navigate({ to: "/chat" });
   }, [navigate, onExitCompare]);
   const [text, setText] = useState("");
+  const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform(), text);
   const [running, setRunning] = useState(false);
   const [comparing, setComparing] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
@@ -797,9 +797,12 @@ export function SharedComposer({
       : reasoningEffort;
   const effectiveReasoningVisualEnabled =
     effectiveReasoningEnabled && displayedEffort !== "none";
-  const reasoningDisabled = !modelLoaded || !effectiveSupportsReasoning;
+  const reasoningDisabled =
+    !modelLoaded || !(effectiveSupportsReasoning || supportsPreserveThinking);
   const showReasoningControl =
-    effectiveSupportsReasoning || effectiveReasoningAlwaysOn;
+    effectiveSupportsReasoning ||
+    effectiveReasoningAlwaysOn ||
+    supportsPreserveThinking;
   // enable_thinking_effort (GLM-5.2: high|max + disable) reuses the effort dropdown; it just also
   // carries an Off row via supportsReasoningOff.
   const isEffort =
@@ -810,9 +813,11 @@ export function SharedComposer({
   const narrowEffortMenu =
     effectiveReasoningStyle === "enable_thinking_effort" &&
     !supportsPreserveThinking;
-  const thinkingActiveLook = isEffort
-    ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
-    : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
+  const thinkingActiveLook = !effectiveSupportsReasoning
+    ? preserveThinking && !reasoningDisabled
+    : isEffort
+      ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
+      : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
   // Search can use Unsloth tools or provider web search independently of Code.
   // Code follows the provider's sandbox placement and never falls back to local
   // execution when a hosted model lacks code support.
@@ -1976,7 +1981,7 @@ export function SharedComposer({
       }
       setCompositionState(false);
     }
-    if (composerSubmitIntent(e, sendShortcut)) {
+    if (composerSubmitIntent(e, sendShortcut, text)) {
       e.preventDefault();
       if (!busy && !isDictating) {
         send();
@@ -2779,6 +2784,7 @@ export function SharedComposer({
                       ))}
                   </>
                 ) : (
+                  effectiveSupportsReasoning &&
                   effectiveSupportsReasoningOff &&
                   !reasoningLockedOn && (
                     <DropdownMenuItem
@@ -2812,8 +2818,8 @@ export function SharedComposer({
                       e.preventDefault();
                       const next = !preserveThinking;
                       setPreserveThinking(next);
-                      // Preserve thinking requires thinking on.
-                      if (next) {
+                      // Only local models couple this setting to generation controls.
+                      if (next && !isExternalModel) {
                         setReasoningEnabled(true);
                         applyQwenThinkingParams(true);
                       }

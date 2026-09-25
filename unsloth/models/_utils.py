@@ -1127,6 +1127,11 @@ def _get_text_only_config(model_config, model_name):
         text_config = getattr(model_config, "text_config", None)
     if text_config is None:
         raise ValueError(f"Cannot load {model_name} as text-only; use FastVisionModel")
+    # unsloth_zoo's Gemma-4 proxy (__slots__) refuses new attrs and resolve_model_class cannot map it; unwrap.
+    try:
+        text_config = object.__getattribute__(text_config, "_real")
+    except AttributeError:
+        pass
     # Carry over quantization_config; copy first, since get_text_config() shares the parent's object.
     qc = getattr(model_config, "quantization_config", None)
     if qc is not None and getattr(text_config, "quantization_config", None) is None:
