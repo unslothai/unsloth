@@ -23,6 +23,7 @@ from ._utils import (
     resolve_model_class,
     resolve_encoder_attention_implementation,
     maybe_prefetch_hf_snapshot,
+    _mark_full_finetuning,
 )
 import inspect
 import json
@@ -182,7 +183,6 @@ def _save_pretrained_gguf(
     temporary_location = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage = 0.85,
     imatrix_file = None,
-    gguf_shard_size = None,
     **kwargs,
 ):
     """Saves the SentenceTransformer model to GGUF format by saving the inner transformer model, converting it, and placing the resulting GGUF files in the save directory."""
@@ -228,7 +228,6 @@ def _save_pretrained_gguf(
         # transformer_dir is the ST's own 0_Transformer module, not a throwaway: reclaiming it would hand back a folder that no longer loads as a SentenceTransformer, so a short disk fails loudly.
         merge_is_disposable = False,
         imatrix_file = imatrix_file,
-        gguf_shard_size = gguf_shard_size,
     )
 
     gguf_files = result.get("gguf_files", [])
@@ -310,7 +309,6 @@ def _push_to_hub_gguf(
     revision = None,
     tags = None,
     imatrix_file = None,
-    gguf_shard_size = None,
     **kwargs,
 ):
     """
@@ -356,7 +354,6 @@ def _push_to_hub_gguf(
         create_pr (bool): Whether to create a pull request instead of pushing directly.
         revision (str, optional): Branch/revision to push to.
         tags (list, optional): Additional tags for the repo.
-        gguf_shard_size (str, optional): Maximum final f32, f16 or bf16 GGUF shard size.
 
     Returns:
         str: The full repo ID on Hugging Face Hub.
@@ -403,7 +400,6 @@ def _push_to_hub_gguf(
             temporary_location = temporary_location,
             maximum_memory_usage = maximum_memory_usage,
             imatrix_file = imatrix_file,
-            gguf_shard_size = gguf_shard_size,
         )
 
         gguf_files = result.get("gguf_files", [])
@@ -1627,6 +1623,7 @@ class FastSentenceTransformer(FastModel):
             )
 
             st_model._unsloth_fast_encoder = True
+            _mark_full_finetuning(st_model[0].auto_model, full_finetuning)
             st_model._compile_mode = compile_mode
             st_model._dtype = dtype
             st_model._load_in_4bit = load_in_4bit

@@ -97,6 +97,7 @@
     "zustand": "^5.0.11"
   },
   "overrides": {
+    "@xmldom/xmldom": "0.8.15",
     "@tanstack/react-router": "1.169.2",
     "@tanstack/router-core": "1.169.2",
     "@tanstack/history": "1.161.6",

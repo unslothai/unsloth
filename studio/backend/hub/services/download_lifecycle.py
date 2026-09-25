@@ -1404,6 +1404,12 @@ def launch_worker(
                 else None
             ),
         )
+    # The one-off `X-Unsloth-HF-Token` is kept nowhere, so a repo fetched with it can sit in the
+    # cache of a host whose credential set is empty. Recorded HERE, after the in-flight check and
+    # the registry claim, so a rejected request cannot mark a repo it never fetched.
+    from hub.utils import hf_tokens as _hf_tokens
+
+    _hf_tokens.note_repo_fetched_with_a_request_token(hf_token, repo_id, repo_type)
     try:
         proc = spawn()
     except Exception as e:

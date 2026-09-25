@@ -39,7 +39,7 @@ export const CAPABILITY_FILTER_OPTIONS: ReadonlyArray<{
   { value: "vision", label: "Vision" },
   { value: "audio", label: "Audio" },
   { value: "embedding", label: "Embeddings" },
-  { value: "diffusion", label: "Image generation" },
+  { value: "diffusion", label: "Image/video gen" },
 ];
 
 export const FORMAT_FILTER_OPTIONS: ReadonlyArray<{

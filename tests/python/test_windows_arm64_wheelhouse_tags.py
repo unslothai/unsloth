@@ -15,6 +15,7 @@ never found and the entry silently does nothing.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import re
 import sys
@@ -1470,7 +1471,30 @@ class TestTheSkipGateAuditsTheArm64FilteredFile:
         assert "_windows_arm64_skip_packages(actual)" not in helper
 
     def test_pip_install_and_the_audits_share_it(self, ips):
-        """Three call sites: the install, the closure record, and the on-disk skip check."""
-        assert (
-            STACK_SRC.count("_effective_requirements(req)") == 3
-        ), "a caller that filters its own way can disagree with the file that installs"
+        """Five callers: both installs, the closure record, the on-disk skip check, and #11635's
+        Diffusers prefetch, which has to build from the same filtered file the install then reads
+        or its cache entry misses.
+
+        Every path that installs a requirements file, or reasons about one, has to filter it the
+        same way, or a caller decides a pin is satisfied against a file different from the one
+        that was installed. Named by function rather than counted, so a new caller fails with
+        its own name and a caller that stops filtering fails by going missing.
+        """
+        callers = {}
+        for node in ast.walk(ast.parse(STACK_SRC)):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            for sub in ast.walk(node):
+                if (
+                    isinstance(sub, ast.Call)
+                    and isinstance(sub.func, ast.Name)
+                    and sub.func.id == "_effective_requirements"
+                ):
+                    callers.setdefault(node.name, []).append(ast.unparse(sub.args[0]))
+        assert callers == {
+            "pip_install": ["req"],
+            "pip_install_try": ["req"],
+            "_closure_record": ["req"],
+            "_requirements_satisfied": ["req"],
+            "_prefetch_diffusers_main": ["req"],
+        }, "a caller that filters its own way can disagree with the file that installs"

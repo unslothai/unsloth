@@ -248,8 +248,8 @@ jobs:
         run: |
           # `notools` reads an absence, so a shim dir that never reached PATH looks exactly
           # like an installer that touched nothing: prove the wrapper records before
-          # trusting an empty file. macOS never probes git off the --local path, so the
-          # call has to be explicit.
+          # trusting an empty file. The installer's own git use depends on what it installs,
+          # so the call has to be explicit.
           set -a; . ./clean-machine.env; set +a
           [ -n "$UNSLOTH_TOOL_TRACE" ] || { echo "::error::trace mode set no UNSLOTH_TOOL_TRACE"; exit 1; }
           git --version >/dev/null 2>&1 || true
@@ -258,8 +258,15 @@ jobs:
             echo "PATH=$PATH"; command -v git; cat "$UNSLOTH_TOOL_TRACE" || true
             exit 1
           fi
+          # notools reads where git ran from this record; without it every uv submodule
+          # update is a hit, so say so here rather than as a toolchain use.
+          grep -q "$(printf '\t')--version$" "$UNSLOTH_TOOL_TRACE.git-cwd" 2>/dev/null || {
+            echo "::error::the git wrapper did not record its working directory"
+            exit 1
+          }
           echo "trace wrapper records; clearing the self-test entry"
           : > "$UNSLOTH_TOOL_TRACE"
+          : > "$UNSLOTH_TOOL_TRACE.git-cwd"
 
       - name: Install
         id: install
@@ -358,6 +365,20 @@ jobs:
           # CLT or installed a compiler left the leg green. Re-run it after.
           [ "${{ matrix.mode }}" = "mask" ] && checks="$checks absent nodylibtool"
           [ "${{ matrix.mode }}" = "trace" ] && checks="$checks notools dylibpatch"
+          # With a working git the default install clones its pinned git+ requirements, so
+          # `notools` lets git fetch exactly those remotes and nothing else. The pins are read
+          # from the package under test: an overlay-free leg installs the released wheel, whose
+          # pin can differ from this checkout's, so the installed copy replaces the checkout's.
+          allow_git_from=""
+          for installed in "$UNSLOTH_STUDIO_HOME"/unsloth_studio/lib/python*/site-packages/studio/backend/requirements/diffusers-main.txt; do
+            if [ -f "$installed" ]; then allow_git_from="$allow_git_from $installed"; fi
+          done
+          if [ -z "$allow_git_from" ]; then
+            echo "::warning::no installed diffusers-main.txt under the managed venv; reading this checkout's pin"
+            allow_git_from='studio/backend/requirements/diffusers-main.txt'
+          fi
+          echo "git+ allowance read from: $allow_git_from"
+          UNSLOTH_ALLOW_GIT_FROM="$allow_git_from" \
           UNSLOTH_CLEAN_ALLOW_WORKING='${{ matrix.allow_working }}' \
             bash .github/scripts/clean-machine-assert.sh $checks
 
@@ -1148,20 +1169,32 @@ jobs:
           # not the one the interop process used, a Get-ChildItem that fails on a long path. Plant
           # one intermediate of each kind, require the search to find both, then remove them. If the
           # control does not fire the job fails as a broken detector rather than reporting a pass.
-          $controlDir = Join-Path $env:TEMP ('unsloth-compiler-control-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+          # The planted files carry a nonce in their NAME, and the control matches on the name.
+          # It used to match on the directory, `$_.FullName -like (Join-Path $controlDir '*')`,
+          # which compares two strings that need not spell the same directory the same way:
+          # %TEMP% on a hosted runner is the 8.3 form (C:\Users\RUNNER~1\...), and whether an
+          # enumerated FullName comes back short or long is not something this check should be
+          # betting on. A nonce in the filename is unique on its own, so nothing has to agree
+          # about paths.
+          $controlStamp = [guid]::NewGuid().ToString('N').Substring(0, 8)
+          $controlDir = Join-Path $env:TEMP ('unsloth-compiler-control-' + $controlStamp)
           New-Item -ItemType Directory -Path $controlDir -Force | Out-Null
-          $controlFiles = @(
-            (Join-Path $controlDir 'control.cmdline'),
-            (Join-Path $controlDir 'control.rsp')
-          )
+          $controlNames = @("control-$controlStamp.cmdline", "control-$controlStamp.rsp")
+          $controlFiles = @($controlNames | ForEach-Object { Join-Path $controlDir $_ })
           foreach ($f in $controlFiles) { Set-Content -LiteralPath $f -Value '/noconfig /fullpaths' -Encoding ascii }
-          $controlSeen = @(
-            Get-ChildItem -LiteralPath $env:TEMP -Recurse -Include '*.cmdline', '*.rsp' -ErrorAction SilentlyContinue |
-              Where-Object { $_.FullName -like (Join-Path $controlDir '*') }
+          $controlOnDisk = @($controlFiles | Where-Object { Test-Path -LiteralPath $_ })
+          $controlSweep = @(
+            Get-ChildItem -LiteralPath $env:TEMP -Recurse -Include '*.cmdline', '*.rsp' -ErrorAction SilentlyContinue
           )
+          $controlSeen = @($controlSweep | Where-Object { $controlNames -contains $_.Name })
           Remove-Item -LiteralPath $controlDir -Recurse -Force -ErrorAction SilentlyContinue
           if ($controlSeen.Count -lt 2) {
+            # SAY WHICH HALF FAILED. This check exists because "the detector saw nothing" and
+            # "there was nothing to see" look identical, and the first version reproduced that
+            # very problem one level up: writing, sweeping and matching all fail as `0 of 2`.
+            # These three numbers separate them, so the next failure names its own cause.
             Write-Host "::error::the compiler-intermediate detector is broken: it found $($controlSeen.Count) of 2 planted files under $env:TEMP."
+            Write-Host "::error::wrote $($controlOnDisk.Count) of 2 control files; the %TEMP% sweep returned $($controlSweep.Count) intermediate(s) in total; planted under $controlDir looking for $($controlNames -join ', ')."
             Write-Host '::error::Not reporting this run as clean. A search that cannot see a file it just wrote cannot see one csc.exe wrote either.'
             exit 1
           }

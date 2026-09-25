@@ -298,7 +298,7 @@ test("every list that judges a row against the device asks the same helper", () 
   // calls it a fit and painted with the OOM badge at the same time.
   assert.match(
     declarationText("catalogFit"),
-    /curatedArtifactFitsDevice\(id, catalog, budget\)/,
+    /curatedArtifactFit\(id, catalog, budget\)/,
   );
   for (const declaration of ["recommendedRows", "searchRowFits"]) {
     assert.match(

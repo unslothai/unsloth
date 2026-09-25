@@ -54,12 +54,34 @@ on:
       # execute tests/studio, and skipped Backend CI, which does. The guards were then
       # absent for exactly the change they guard. Same reason as install.sh above.
       - '.github/actions/**'
+      # Test inputs, not sources: tests/python/test_docker_publish_tag_scheme.py and
+      # test_docker_publish_ref_freeze.py read docker-publish.yml, and
+      # tests/test_formatter_fixed_point.py plus the pinned-ruff step read
+      # .pre-commit-config.yaml. Editing either changes this job's verdict with no
+      # source change, and docker-publish.yml runs only on tags so it cannot self-check.
+      - '.github/workflows/docker-publish.yml'
+      - '.pre-commit-config.yaml'
       - '.github/workflows/studio-backend-ci.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
       # tests/python/test_amd_extras_contract.py asserts against this file.
       - '.github/workflows/security-audit.yml'
   push:
     branches: [main]
+    paths:
+      - 'studio/**'
+      - 'unsloth/**'
+      - 'unsloth_cli/**'
+      - 'tests/**'
+      - 'docker/**'
+      - 'install.sh'
+      - 'install.ps1'
+      - 'scripts/**'
+      - 'pyproject.toml'
+      - '.github/actions/**'
+      - '.github/workflows/docker-publish.yml'
+      - '.pre-commit-config.yaml'
+      - '.github/workflows/studio-backend-ci.yml'
+      - '.github/workflows/security-audit.yml'
 
 concurrency:
   # Unique per commit on main, so a merge burst cannot cancel a pending run
@@ -363,6 +385,7 @@ jobs:
         # fails that guard instead of flaking here.
         #
         # test_media_auto_switch has a 0.4s budget that xdist scheduling can exceed.
+        # test_pr5624_regressions exceeded its 1s R1 parser bound in two contended runs.
         #
         # --timeout: a per-test wall-clock cap, so a test that never returns fails with its
         # own name in the summary instead of taking the job's 45 minutes down with it and
@@ -411,6 +434,7 @@ jobs:
             --ignore=tests/test_anthropic_messages.py \
             --ignore=tests/test_profile_stats.py \
             --ignore=tests/test_media_auto_switch.py \
+            --ignore=tests/test_pr5624_regressions.py \
             -k 'not llama_cpp_load_progress_live and not TestGpuAutoSelection and not TestPreSpawnGpuResolution and not TestPerGpuFitGuardAllCounts and not TestTransformersIntrospection and not test_returns_cuda_when_cuda_available and not test_calls_cuda_cache_when_cuda'
 
       - name: Backend tests that cannot share a worker
@@ -436,7 +460,8 @@ jobs:
             tests/test_scan_loras_off_event_loop.py \
             tests/test_anthropic_messages.py \
             tests/test_profile_stats.py \
-            tests/test_media_auto_switch.py
+            tests/test_media_auto_switch.py \
+            tests/test_pr5624_regressions.py
 
       - name: Pre-3.12 branches, on the newest interpreter that takes them
         if: matrix.scope == 'floor-spot-check'
@@ -457,6 +482,14 @@ jobs:
             tests/test_third_party_source.py \
             tests/test_recommended_folders_permission.py \
             tests/test_hf_cache_settings.py
+
+      - name: Why a failure here might already be fixed on the base branch
+        # `if: failure()` so a green job never runs it, and the action itself stays
+        # quiet unless the base branch has actually moved since this run's merge ref
+        # was built. See .github/actions/merge-ref-age for the three pull requests
+        # that were misread this way.
+        if: failure() && github.event_name == 'pull_request'
+        uses: ./.github/actions/merge-ref-age
 
       - name: Save the pip cache
         if: always()
@@ -497,46 +530,117 @@ jobs:
     # to fix, and the sharded spread has not been measured on a runner yet.
     timeout-minutes: 45
     strategy:
-      # Three shards of one selection, balanced on measured time, not on file count. Summed
-      # test time over the whole discovered set is 2946s (`--durations=0`, -n 16), and it
-      # splits by directory almost exactly in thirds:
+      # Three shards of one selection, balanced on measured time, not on file count.
+      #
+      # The balance this replaces was predicted, not observed. It claimed the longest shard
+      # was 1.056x an ideal third, from summed test time on a 16-worker box:
       #
       #   tests/studio                 1035.8s   271 files   35.2%
       #   tests/python + tests/kaggle   955.8s   124 files   32.4%
       #   everything else               954.4s   180 files   32.4%
       #
-      # so the longest shard is 1.056x an ideal third and no rebalancing by named file is
-      # worth the property below.
+      # What the runner actually does is not that. Measured on the pytest step of this job
+      # over the last ~48 completed runs of each shard, medians:
       #
-      # Shard 3 is written as "tests/ minus the other two roots", never as an allowlist, so
-      # a new file lands in exactly one shard without a workflow edit: under tests/studio it
-      # is shard 1's, under tests/python or tests/kaggle shard 2's, and anywhere else,
-      # including a brand-new top-level directory, shard 3's.
-      # tests/test_ci_repo_cpu_shards.py fails if that stops being true.
+      #   Repo tests (CPU, studio)     18.6 min   (p90 19.1, max 19.9)
+      #   Repo tests (CPU, rest)        8.8 min
+      #   Repo tests (CPU, python)      7.5 min
+      #
+      # so the longest shard is 1.60x an ideal third, not 1.056x, and the job's wall clock
+      # is the studio shard alone: 20.9 min against 9.9 and 10.7. Summed time on a
+      # 16-worker host does not predict a 4-vCPU runner, which is the only shape that
+      # matters here.
+      #
+      # Within tests/studio the weight is almost all in one directory. Profiled locally at
+      # this job's own `-n 4 --dist loadgroup` shape with no GPU visible, tests/studio/install
+      # is 658s of the shard's 1125s of CPU-time (58.5%) across 64 files, studiobench 127s,
+      # and the 100-odd files directly under tests/studio 341s. Splitting on that boundary is
+      # what makes a balance reachable at all: no arrangement of the old three roots gets
+      # below 1.4x, because one of them is half the suite.
+      #
+      # Scaling those proportions onto the measured medians gives the blocks below, in
+      # runner-minutes: install 10.9, studiobench 2.1, the rest of tests/studio 5.6,
+      # tests/python 5.4, tests/kaggle 2.1, everything else 8.8. Total 34.9, ideal third
+      # 11.6, and install alone bounds any three-way split at 10.9.
+      #
+      # The arrangement below was then RUN, not just predicted, at the same local -n 4
+      # CPU-only shape as the numbers above:
+      #
+      #                     old shard            new shard
+      #   longest          362.8s (studio)      279.0s (studio-install)
+      #   middle           208.2s (python)      235.0s (studio)
+      #   shortest         174.1s (rest)        234.9s (rest)
+      #   longest / ideal    1.46x                1.12x
+      #
+      # so the critical path falls 23% locally, and 1.12x matches what the block arithmetic
+      # predicted. Same 12 failures before and after, redistributed across the shards, and
+      # the id partition was diffed directly: 25762 ids collected either way, none dropped,
+      # none doubled.
+      #
+      # On the runner the imbalance is WORSE than locally (1.60x against 1.46x), because the
+      # studio shard is relatively heavier there, so the saving should be at least this
+      # large; 18.6 min becoming roughly 13 to 14 is the expectation, not a measurement.
+      # Re-measure here rather than trusting that, exactly as the old comment should have
+      # been. The shard that lands longest is the one to split next, and 1.12x is close
+      # enough that the next move is probably not another rebalance.
+      #
+      # Why it matters beyond the wall clock: this job's cap is 45 min and its pytest step
+      # has been measured from 852s to 1683s across 40 runs, so the spread, not the mean, is
+      # what cancels a run. A cancelled job loses the shell, CLI and Docker steps silently
+      # (see the note above `timeout-minutes`), and evening the shards takes the worst shard
+      # further from the cap rather than raising the cap again.
+      #
+      # The `rest` shard is still written as "tests/ minus the other roots", never as an
+      # allowlist, so a new file lands in exactly one shard without a workflow edit:
+      # tests/studio/install and tests/studio/studiobench are shard 1's, tests/python and
+      # the rest of tests/studio are shard 2's, and anything else, including tests/kaggle
+      # and a brand-new top-level directory, falls to shard 3 by default.
+      # tests/test_ci_repo_cpu_shards.py fails if that stops being true, and it derives the
+      # partition from this matrix rather than restating it.
+      #
+      # Shard 1's roots are named UNDER tests/studio, which shards 2 and 3 exclude. That
+      # matters: an explicit root and an `--ignore` of its parent in the same selection is
+      # ambiguous (the note on the backend matrix above records that `--ignore=FILE` does
+      # not filter a file passed as an explicit argument), so the partition is arranged to
+      # never need that behaviour.
+      #
+      # Two check names change with this: "Repo tests (CPU, python)" no longer exists and
+      # "Repo tests (CPU, studio-install)" is new. Required status checks have to be updated
+      # in the same change or every pull request blocks on a check that cannot run.
       #
       # fail-fast off: three shards of one suite, and cancelling the other two on the first
       # failure would hide which of them were also red.
       fail-fast: false
       matrix:
         include:
+          # The heavy half of tests/studio: install, plus studiobench to fill it out. Both
+          # are named roots UNDER tests/studio, which the other two shards exclude, so the
+          # partition stays expressible without an explicit root fighting an --ignore.
+          - shard: studio-install
+            selection: >-
+              tests/studio/install
+              tests/studio/studiobench
+          # The rest of tests/studio, plus tests/python. Keeps the name `studio` because the
+          # hardware-spoof and load_freeze steps below select on it, and those files live
+          # directly under tests/studio.
           - shard: studio
             selection: >-
               tests/studio
+              tests/python
+              --ignore=tests/studio/install
+              --ignore=tests/studio/studiobench
               --ignore=tests/studio/load_freeze
               --ignore=tests/studio/test_hardware_dispatch_matrix.py
               --ignore=tests/studio/test_is_mlx_dispatch_gate.py
               --ignore=tests/studio/test_xpu_spoof_pipeline.py
               --ignore=tests/studio/test_mlx_context_platform_matrix.py
-          - shard: python
-            selection: >-
-              tests/python
-              tests/kaggle
+          # The catch-all. tests/kaggle now falls to it by default rather than being named
+          # by the shard that no longer exists.
           - shard: rest
             selection: >-
               tests/
               --ignore=tests/studio
               --ignore=tests/python
-              --ignore=tests/kaggle
               --ignore=tests/qlora
               --ignore=tests/saving
               --ignore=tests/utils
@@ -722,9 +826,10 @@ jobs:
         run: python -m pytest tests/studio/load_freeze -q --tb=short
 
       - name: CLI tests (unsloth_cli)
-        # Not under tests/, so no shard owns it by discovery; it rides the python shard,
-        # which is the shortest of the three.
-        if: matrix.shard == 'python'
+        # Not under tests/, so no shard owns it by discovery; it rides the shortest shard,
+        # which after the rebalance above is `rest` at a projected 10.9 runner-minutes. It
+        # was on `python`, which no longer exists.
+        if: matrix.shard == 'rest'
         # unsloth_cli/tests had no CI at all: `unsloth_cli/**` was only a paths
         # trigger and a ruff target, so 673 tests covering the studio launcher,
         # the pre-exposure gate and the auth secret writers ran nowhere, and
@@ -739,6 +844,14 @@ jobs:
         # run explicitly so notebook/Colab/branding regressions fail CI.
         if: matrix.shard == 'rest'
         run: python tests/validate_studio_features.py
+
+      - name: Why a failure here might already be fixed on the base branch
+        # `if: failure()` so a green job never runs it, and the action itself stays
+        # quiet unless the base branch has actually moved since this run's merge ref
+        # was built. See .github/actions/merge-ref-age for the three pull requests
+        # that were misread this way.
+        if: failure() && github.event_name == 'pull_request'
+        uses: ./.github/actions/merge-ref-age
 
       - name: Save the pip cache
         if: always()
