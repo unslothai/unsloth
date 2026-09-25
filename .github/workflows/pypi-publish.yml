@@ -38,9 +38,9 @@ concurrency:
   # Per commit on main: a shared group cancels a PENDING run when a newer one
   # queues, which would drop an intermediate release.
   # Accepted residual: two commits landing the gate for the same version race the
-  # upload and the first wins. A version-keyed group is impossible ($ver comes from
-  # decide), and deferring to the newer tip strands a release whose tip touched no
-  # gate file.
+  # upload and the first wins. Only the wheel is uploaded, so the result is never a
+  # mix of both runs. Deferring to the newer tip would strand a release whose tip
+  # touched no gate file.
   group: pypi-publish-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
   cancel-in-progress: false
 
