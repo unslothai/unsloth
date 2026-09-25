@@ -305,21 +305,25 @@ def test_builder_publishes_rotated_and_plain_int8_under_different_names():
     )
 
 
-def test_lora_baked_targets_rotate_their_base_layer_and_stay_exact():
-    # Studio attaches PEFT adapters before quantize_, so a LoRA target is "<suffix>.base_layer"
-    peft = pytest.importorskip("peft")
-    torch.manual_seed(0)
-    model = _Tiny().float()
-    cfg = peft.LoraConfig(
-        r = 4, lora_alpha = 8, target_modules = ["to_q", "to_v", "out"], init_lora_weights = False
-    )
-    model = peft.inject_adapter_in_model(cfg, model)
+class _LoraLike(nn.Module):
+    """PEFT's LoRA Linear layout: the frozen Linear under ``base_layer``, a side path on the same input."""
+
+    def __init__(self, base):
+        super().__init__()
+        self.base_layer = base
+        self.lora_A = nn.Linear(base.in_features, 4, bias = False)
+        self.lora_B = nn.Linear(4, base.out_features, bias = False)
+
+    def forward(self, x):
+        return self.base_layer(x) + self.lora_B(self.lora_A(x))
+
+
+def _check_base_layers_rotated(model):
+    torch.manual_seed(1)
     x, y = torch.randn(4, 512), torch.randn(4, 640)
     with torch.no_grad():
         ref = model(x, y)
-        rotated = tq.apply_runtime_convrot(
-            model, tq.TQ_INT8, "qwen-image-2.1", _filter("qwen-image-2.1")
-        )
+        rotated = tq.apply_runtime_convrot(model, tq.TQ_INT8, "qwen-image-2.1", _filter("qwen-image-2.1"))
         got = model(x, y)
     for i in range(2):
         for n in ("attn.to_q", "attn.to_v", "img_mlp.out"):
@@ -327,3 +331,25 @@ def test_lora_baked_targets_rotate_their_base_layer_and_stay_exact():
     assert len(rotated) == 12 and not any("lora_" in f for f in rotated)
     for a, b in zip(ref, got):
         torch.testing.assert_close(a, b, rtol = 1e-4, atol = 1e-4)
+
+
+def test_lora_baked_targets_rotate_their_base_layer_and_stay_exact():
+    # Studio attaches adapters before quantize_, so a LoRA target is "<suffix>.base_layer"
+    torch.manual_seed(0)
+    model = _Tiny().float()
+    for blk in model.transformer_blocks:
+        blk.attn.to_q = _LoraLike(blk.attn.to_q)
+        blk.attn.to_v = _LoraLike(blk.attn.to_v)
+        blk.img_mlp.out = _LoraLike(blk.img_mlp.out)
+    _check_base_layers_rotated(model)
+
+
+def test_real_peft_adapters_rotate_their_base_layer_and_stay_exact():
+    peft = pytest.importorskip("peft")
+    torch.manual_seed(0)
+    cfg = peft.LoraConfig(r = 4, lora_alpha = 8, target_modules = ["to_q", "to_v", "out"], init_lora_weights = False)
+    try:
+        model = peft.inject_adapter_in_model(cfg, _Tiny().float())
+    except ImportError as exc:  # peft < 0.19 with torchao >= 0.18, patched only once unsloth is imported
+        pytest.skip(f"peft cannot dispatch LoRA on this torchao: {exc}")
+    _check_base_layers_rotated(model)
