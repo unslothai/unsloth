@@ -247,24 +247,30 @@ def _host_prep_script(executable: Path, arguments: list[str]) -> str:
     return "\n".join(
         (
             "$ErrorActionPreference = 'Stop'",
+            # .NET only: cmdlets such as Get-FileHash fail to load when PSModulePath is pwsh 7's.
             # Known folder, not $env:ProgramData: user variables can shadow it.
             "$root = [Environment]::GetFolderPath('CommonApplicationData')",
-            "$dir = Join-Path $root ('unsloth-mxc-host-prep-' + [guid]::NewGuid().ToString('N'))",
-            "New-Item -ItemType Directory -Path $dir | Out-Null",
+            "$dir = [IO.Path]::Combine($root, 'unsloth-mxc-host-prep-' + [guid]::NewGuid().ToString('N'))",
+            "if ([IO.Directory]::Exists($dir)) { exit 92 }",
+            "$null = [IO.Directory]::CreateDirectory($dir)",
             "try {",
-            "  & icacls.exe $dir /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' "
-            "'*S-1-5-18:(OI)(CI)F' | Out-Null",
+            "  $icacls = [IO.Path]::Combine([Environment]::SystemDirectory, 'icacls.exe')",
+            "  $null = & $icacls $dir /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' "
+            "'*S-1-5-18:(OI)(CI)F'",
             "  if ($LASTEXITCODE -ne 0) { exit 90 }",
             # Anything planted before the ACL change stays: the dir must still be empty.
-            "  if (@(Get-ChildItem -LiteralPath $dir -Force).Count -ne 0) { exit 92 }",
-            "  $exe = Join-Path $dir 'wxc-host-prep.exe'",
-            f"  Copy-Item -LiteralPath {quote(str(executable))} -Destination $exe",
-            "  $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash",
+            "  if ([IO.Directory]::GetFileSystemEntries($dir).Length -ne 0) { exit 92 }",
+            "  $exe = [IO.Path]::Combine($dir, 'wxc-host-prep.exe')",
+            f"  [IO.File]::Copy({quote(str(executable))}, $exe)",
+            "  $stream = [IO.File]::OpenRead($exe)",
+            "  try { $digest = [Security.Cryptography.SHA256]::Create().ComputeHash($stream) }",
+            "  finally { $stream.Dispose() }",
+            "  $hash = [BitConverter]::ToString($digest).Replace('-', '')",
             f"  if ($hash -ne '{mxc_runtime.WXC_HOST_PREP_SHA256.upper()}') {{ exit 91 }}",
             f"  & $exe {' '.join(quote(value) for value in arguments)}",
             "  exit $LASTEXITCODE",
             "} finally {",
-            "  Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue",
+            "  try { [IO.Directory]::Delete($dir, $true) } catch { }",
             "}",
         )
     )

@@ -299,7 +299,7 @@ def test_host_prep_elevates_only_when_needed(monkeypatch, tmp_path, elevated, wi
     argv = calls[0][1]
     assert argv[0] == windows_dirs
     script = _decoded_script(argv)
-    assert f"Copy-Item -LiteralPath '{executable}'" in script
+    assert f"[IO.File]::Copy('{executable}', $exe)" in script
     assert "& $exe 'prepare-null-device' '--quiet'" in script
 
 
@@ -307,12 +307,14 @@ def test_host_prep_runs_elevated_only_from_an_admin_only_copy(tmp_path):
     # The install dir is user-writable; host-prep LoadLibrary's dbghelp.dll from its own dir.
     script = installer._host_prep_script(tmp_path / "wxc-host-prep.exe", ["prepare-system-drive"])
     assert "GetFolderPath('CommonApplicationData')" in script
-    assert "$env:ProgramData" not in script
+    assert "$env:ProgramData" not in script and "$env:SystemRoot" not in script
+    # Windows PowerShell cannot load Get-FileHash when started from pwsh 7 (PSModulePath).
+    assert "Get-FileHash" not in script and "Copy-Item" not in script
     assert "/inheritance:r" in script and "*S-1-5-32-544" in script and "*S-1-5-18" in script
     lock, empty, copy, hashed, run = (
         script.index("icacls.exe"),
-        script.index("Get-ChildItem"),
-        script.index("Copy-Item"),
+        script.index("GetFileSystemEntries"),
+        script.index("[IO.File]::Copy"),
         script.index(installer.mxc_runtime.WXC_HOST_PREP_SHA256.upper()),
         script.index("& $exe"),
     )

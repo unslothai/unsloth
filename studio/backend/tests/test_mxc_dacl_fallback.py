@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import os
 import shutil
+import sys
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -251,7 +252,9 @@ def test_journal_replay_reads_wxc_recovery_report(monkeypatch, returncode, stder
     monkeypatch.setattr(
         mxc_runtime,
         "_run_wxc_probe",
-        lambda _root, _env: subprocess.CompletedProcess([], returncode, stdout = "{}", stderr = stderr),
+        lambda _root, _env, **_kwargs: subprocess.CompletedProcess(
+            [], returncode, stdout = "{}", stderr = stderr
+        ),
     )
     assert mxc_runtime.recover_dacl_state({}) is clean
 
@@ -287,7 +290,10 @@ def test_trusted_terminal_path_dirs_are_granted_read_only(monkeypatch, tmp_path)
     assert str(untrusted) not in readonly
 
 
-@pytest.mark.skipif(not shutil.which("bash"), reason = "needs bash")
+@pytest.mark.skipif(
+    not shutil.which("bash") or sys.platform == "win32",
+    reason = "needs a POSIX bash whose cat comes only from PATH (Git bash finds its own)",
+)
 @pytest.mark.parametrize("has_cat", [True, False])
 def test_bash_probe_needs_a_working_cat_to_qualify(tmp_path, has_cat):
     # A missing cat left the capture empty, which read as a denied read.
@@ -439,3 +445,33 @@ def test_a_model_folder_inside_a_later_one_is_not_granted_twice(monkeypatch, tmp
         "filesystem"
     ]["readonlyPaths"]
     assert str(models) in readonly and str(child) not in readonly
+
+
+@pytest.mark.parametrize(
+    ("timed_out", "cancelled", "raises"),
+    [(True, False, False), (False, True, False), (False, False, True)],
+)
+def test_unconfirmed_restore_fails_only_a_run_that_was_not_forced(
+    monkeypatch, timed_out, cancelled, raises
+):
+    # After Studio's own kill the workload is gone and the next start replays the journal.
+    result = {"timedOut": timed_out, "cancelled": cancelled, "cleanup": "uncertain", "exitCode": 1}
+    monkeypatch.setattr(sandbox_windows_mxc.mxc_adapter, "completion_result", lambda _proc: result)
+    record = os_sandbox.ToolExecutionRecord(
+        requested_mode = "required",
+        effective_mode = "os_isolated",
+        environment = "win32",
+        backend = "mxc-processcontainer",
+        profile_id = mxc_runtime.PROFILE_ID,
+        probe_generation = "",
+        os_isolation = True,
+        retained_safeguards = (),
+        limitations = (),
+    )
+    prepared = SimpleNamespace(execution_record = record)
+    if raises:
+        with pytest.raises(os_sandbox.SandboxBuildError, match = "uncertain"):
+            sandbox_windows_mxc.verify_success(prepared, object())
+    else:
+        assert sandbox_windows_mxc.verify_success(prepared, object()) is result
+    assert prepared.execution_record.cleanup_status == "uncertain"

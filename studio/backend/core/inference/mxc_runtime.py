@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import platform
@@ -36,9 +37,11 @@ WXC_HOST_PREP_SIZE = 913_728
 WXC_HOST_PREP_SHA256 = "a9b8b14a11a1c5888641297c26abca547c2afa4435085c03ccfebd1deface310"
 HOST_PREP_STEPS = ("prepare-system-drive", "prepare-null-device")
 HOST_PREP_PROBE_SECONDS = 10.0
+DACL_RECOVERY_SECONDS = 60.0
 
 _WXC_EXEC_NAME = "wxc-exec.exe"
 _WXC_HOST_PREP_NAME = "wxc-host-prep.exe"
+logger = logging.getLogger(__name__)
 _lock = threading.RLock()
 
 
@@ -263,6 +266,7 @@ def _run_wxc_probe(
     env: dict[str, str] | None,
     *,
     replay_journal: bool = True,
+    timeout: float = HOST_PREP_PROBE_SECONDS,
 ):
     # --probe reaps orphaned ACEs first: point it at Studio's journal, not %LOCALAPPDATA%'s.
     env = dict(os.environ if env is None else env)
@@ -279,7 +283,7 @@ def _run_wxc_probe(
                 errors = "replace",
                 cwd = str(lease.info.path.parent),
                 env = env,
-                timeout = HOST_PREP_PROBE_SECONDS,
+                timeout = timeout,
                 creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 check = False,
             )
@@ -288,17 +292,22 @@ def _run_wxc_probe(
 def recover_dacl_state(env: dict[str, str] | None = None) -> bool:
     """Replay the DACL journal now; True only when wxc-exec reports no recovery error."""
     try:
-        completed = _run_wxc_probe(None, env)
-    except Exception:  # noqa: BLE001 - an unknown outcome is not a clean one
+        # Longer than the advice probe: it runs right after a kill, often beside other DACL launches.
+        completed = _run_wxc_probe(None, env, timeout = DACL_RECOVERY_SECONDS)
+    except Exception as exc:  # noqa: BLE001 - an unknown outcome is not a clean one
+        logger.warning("MXC DACL recovery did not run: %s", exc)
         return False
     stderr = completed.stderr or ""
     # main.rs prints "DACL recovery: ... N error(s)" only when there was work, or "DACL recovery failed".
     report = re.search(r"DACL recovery: .*?(\d+) error\(s\)", stderr)
-    return (
+    clean = (
         completed.returncode == 0
         and "DACL recovery failed" not in stderr
         and (report is None or report.group(1) == "0")
     )
+    if not clean:
+        logger.warning("MXC DACL recovery reported a problem: %s", stderr.strip()[-500:])
+    return clean
 
 
 def probe_host_prep_steps(
