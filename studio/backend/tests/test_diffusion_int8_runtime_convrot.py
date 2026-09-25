@@ -249,6 +249,8 @@ def test_unreachable_hub_still_loads_the_plain_artifact_already_cached(monkeypat
 
     plain = tmp_path / "Qwen-Image-2.1-INT8.safetensors"
     plain.write_bytes(b"weights")
+    # readability is torchao's to answer, and the runners without it are not what this is about
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda *a, **k: True)
     monkeypatch.setattr(
         "huggingface_hub.try_to_load_from_cache",
         lambda repo_id, filename, cache_dir = None, **k: str(tmp_path / filename)
