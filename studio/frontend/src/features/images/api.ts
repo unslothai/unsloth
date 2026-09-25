@@ -4,6 +4,11 @@
 import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import {
+  isMemoryEstimateRefusal,
+  MEMORY_REFUSAL_HEADER,
+  MemoryEstimateRefusalError,
+} from "./lib/memory-refusal";
 
 // One Advanced control's resolved value and provenance, for the Advanced-panel badges. `value` is the engaged
 // value (null when off), `requested` is what the caller asked for (null = left to the backend), `source` is "auto"
@@ -137,7 +142,7 @@ export interface DiffusionLoadRequest {
   // CUDA / ROCm physical indices this load may use; omit for automatic. Neither engine shards a
   // checkpoint, so several cards resolve to the one with the most free VRAM.
   gpu_ids?: number[];
-  transformer_cache?: "off" | "fbcache";
+  transformer_cache?: "off" | "fbcache" | "static";
   // LoRA adapters to BAKE into a torchao int8/fp8 build: they can only attach to the dense transformer BEFORE
   // quantisation and compile, so a quantized load that omits them rejects every generation. Ignored by bf16 /
   // bnb-4bit, which apply at generate time.
@@ -160,6 +165,7 @@ export interface DiffusionGenerateRequest {
   strength?: number;
   // Upscale (hires fix): factor > 1 with an init_image enlarges the source and re-denoises at low strength.
   upscale?: number;
+  allow_oversized?: boolean;
   // Additional images after init_image, in order, for the reference and edit workflows.
   reference_images?: string[];
   workflow?: "edit" | "reference";
@@ -408,6 +414,12 @@ export async function generateDiffusionImage(
     }
     throw new GenerateResponseLostError(detail);
   }
+  if (
+    !response.ok &&
+    isMemoryEstimateRefusal(response.status, response.headers.get(MEMORY_REFUSAL_HEADER))
+  ) {
+    throw new MemoryEstimateRefusalError(await readFastApiError(response));
+  }
   return parseJson(response);
 }
 
@@ -517,11 +529,14 @@ export async function clearGallery(): Promise<void> {
   if (!res.ok) throw new Error(await readFastApiError(res));
 }
 
-/** Fetch an auth-protected gallery image as its original blob. */
-export async function fetchGalleryBlob(url: string): Promise<Blob> {
+export async function fetchGalleryResponse(url: string): Promise<Response> {
   const res = await authFetch(url);
   if (!res.ok) throw new Error(await readFastApiError(res));
-  return res.blob();
+  return res;
+}
+
+export async function fetchGalleryBlob(url: string): Promise<Blob> {
+  return (await fetchGalleryResponse(url)).blob();
 }
 
 /** Fetch a gallery PNG (auth-protected, so it cannot be a plain <img src>) and wrap it in an object

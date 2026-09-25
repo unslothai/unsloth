@@ -74,7 +74,7 @@ def spawned(monkeypatch):
     def fake_popen(cmd, **kwargs):
         if calls.popen_error is not None:
             raise calls.popen_error
-        calls.popen.append(list(cmd))
+        calls.popen.append(cmd if isinstance(cmd, str) else list(cmd))
         return types.SimpleNamespace()
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -132,7 +132,7 @@ def test_windows_selects_a_file_in_explorer(windows, spawned, tmp_path):
     target = tmp_path / "report.csv"
     target.write_text("a,b\n")
     path_utils.reveal_in_file_manager(target)
-    assert spawned.popen == [["explorer", f"/select,{target}"]]
+    assert spawned.popen == [f'explorer /select,"{target}"']
     assert spawned.startfile == []
 
 
@@ -150,18 +150,16 @@ def test_windows_never_waits_on_explorer_or_reads_its_exit_code(windows, spawned
     target.write_text("a,b\n")
     path_utils.reveal_in_file_manager(target)
     assert spawned.run == [], "explorer must not be run and waited on"
-    assert spawned.popen and spawned.popen[0][0] == "explorer"
+    assert spawned.popen and spawned.popen[0].startswith("explorer /select,")
 
 
 def test_windows_keeps_a_comma_in_the_path_out_of_the_select_flag(windows, spawned, tmp_path):
-    """``/select,`` is comma-delimited and a filename may contain one. Recorded,
-    not asserted-correct: it is one argv element, so parsing is Explorer's
-    problem, not the shell's."""
+    """``/select,`` is comma-delimited and a filename may contain one: the path is
+    passed quoted after the flag, the documented form, so Explorer reads it whole."""
     target = tmp_path / "q3, final.csv"
     target.write_text("a,b\n")
     path_utils.reveal_in_file_manager(target)
-    assert spawned.popen == [["explorer", f"/select,{target}"]]
-    assert len(spawned.popen[0]) == 2
+    assert spawned.popen == [f'explorer /select,"{target}"']
 
 
 # ---------------------------------------------------------------------------

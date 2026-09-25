@@ -395,6 +395,7 @@ def _no_background_model_scan(monkeypatch):
     # assertion became a 503 "still indexing". Cold-path tests reset _scan themselves;
     # _build_index is untouched so tests calling it directly still walk for real.
     monkeypatch.setattr(local_model_resolver, "_scan", (time.monotonic(), {}))
+    monkeypatch.setattr(local_model_resolver, "_misses", {})
 
 
 @pytest.fixture(scope = "session")
@@ -1249,6 +1250,7 @@ _NVFP4_ENABLED_TEST_MODULES = frozenset(
         "test_diffusion_inference_info",
         "test_diffusion_lora",
         "test_diffusion_more_families",
+        "test_diffusion_native_quant",
         "test_diffusion_pipeline_prequant",
         "test_diffusion_precision",
         "test_diffusion_prequant",

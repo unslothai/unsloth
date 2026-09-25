@@ -161,6 +161,7 @@ CORE_FACTORIES = {
 
 from . import (  # noqa: E402  domain tables import Factory and register their seeders first
     factories_chat,
+    factories_library,
     factories_media,
     factories_providers,
     factories_rag,
@@ -170,6 +171,7 @@ from . import (  # noqa: E402  domain tables import Factory and register their s
 
 DOMAINS = (
     factories_chat,
+    factories_library,
     factories_media,
     factories_providers,
     factories_rag,
