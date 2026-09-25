@@ -113,3 +113,13 @@ test("a dataset missing on ModelScope keeps the backend's reason", () => {
   const missing = "o/d is not on ModelScope. Switch the model source to Hugging Face in Settings to use it.";
   assert.equal(normalizeDatasetSplitsError(missing), missing);
 });
+
+test("a cached gated dataset the backend refuses keeps the private-or-gated guidance", async () => {
+  const fail = (message: string) => () => Promise.reject(new Error(message));
+  const result = await loadHfDatasetSplits(args({ preferLocalCache: false }), {
+    local: fail("unused"),
+    remote: fail("Failed to fetch splits (401): gated dataset"),
+    hub: fail("Dataset preview is not available without Hub authorization."),
+  });
+  assert.match(result.error ?? "", /private or gated/);
+});

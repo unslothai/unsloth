@@ -43,6 +43,7 @@ export function normalizeDatasetSplitsError(message: string): string {
   }
   if (
     normalized.includes("unauthorized") ||
+    normalized.includes("authorization") ||
     normalized.includes("forbidden") ||
     normalized.includes("access token") ||
     normalized.includes("private") ||
