@@ -6511,6 +6511,8 @@ class DiffusionBackend:
                 # share from the same table rather than leaving a narrow on-disk figure beside a bf16 total.
                 companion_mib = int(sum(table[1:]) * (1000.0**3) / (1024.0 * 1024.0))
                 text_encoder_mib = int(table[1] * (1000.0**3) / (1024.0 * 1024.0))
+                # Already the dense bf16 encoders, an upper bound on any pre-cast one: swapping would add it on top.
+                companions_from_cache = False
             if companion_mib is not None and model_dense_mib is not None:
                 # The two terms come from different merges over the cache roots, so a repo only one of them can see
                 # must not report companions larger than the model.

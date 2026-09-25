@@ -11864,6 +11864,44 @@ def test_plan_memory_never_prices_an_uncached_precast_below_the_dense_shards(mon
     assert plan.estimates["text_encoder_dense_mib"] == 235 + 4000
 
 
+def test_a_table_priced_pipeline_does_not_add_the_precast_encoder_on_top(monkeypatch, tmp_path):
+    # A base-repo pipeline prices its encoders from the bf16 table, which already covers the dense encoder.
+    snapshot = _base_snapshot_with_sizes(
+        tmp_path,
+        monkeypatch,
+        {
+            "transformer/diffusion_pytorch_model.safetensors": 13500,
+            "vae/diffusion_pytorch_model.safetensors": 1288,
+        },
+    )
+    target = _small_card(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_precast_text_encoder_mib",
+        staticmethod(lambda *a, **k: (8959, ("text_encoder",), True)),
+    )
+    fam = types.SimpleNamespace(name = "qwen-image-2.1", base_repo = "bfl/base")
+
+    def _plan(quant):
+        return DiffusionBackend()._plan_memory(
+            target,
+            None,
+            "bfl/base",
+            fam,
+            None,
+            False,
+            kind = "pipeline",
+            repo_id = "bfl/base",
+            base_local_dir = str(snapshot),
+            text_encoder_quant = quant,
+        ).estimates
+
+    dense, precast = _plan(None), _plan("fp8")
+    assert dense["text_encoder_dense_mib"] == 16689
+    for key in ("model_dense_mib", "companion_dense_mib", "text_encoder_dense_mib"):
+        assert precast[key] == dense[key]
+
+
 def test_plan_memory_leaves_a_callers_companion_override_alone(monkeypatch, tmp_path):
     target = _small_card(monkeypatch)
     monkeypatch.setattr(
