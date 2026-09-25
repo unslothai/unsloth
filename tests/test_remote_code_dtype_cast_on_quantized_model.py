@@ -66,7 +66,6 @@ def test_cast_inside_the_context_moves_only_unquantized_floats():
     assert m.norm.weight.dtype == torch.bfloat16
     assert m.scale.dtype == torch.bfloat16
     assert m.packed.dtype == torch.uint8, "the packed weight must never be cast"
-    # and the shim is gone again
     with pytest.raises(ValueError):
         m.to(torch.float16)
 

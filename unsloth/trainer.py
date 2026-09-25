@@ -112,11 +112,7 @@ def _should_pack(config) -> bool:
 
 
 def _forward_accepts_packed_seq_lengths(model) -> bool:
-    """Whether the model's forward takes `packed_seq_lengths` (by name or `**kwargs`).
-
-    A fixed-signature remote-code forward (Phi-4-reasoning-vision) rejects it.
-    Unknown shapes answer True.
-    """
+    """Fixed-signature remote-code forwards (Phi-4-reasoning-vision) reject it; unknown = True."""
     if model is None or isinstance(model, str):
         return True
     unwrapped = model
