@@ -231,6 +231,38 @@ def test_taylor1_extrapolates_in_timestep():
         assert torch.allclose(outs[i][0], torch.full((1, 4, 2), 1.0 - i / 25), atol = 1e-6)
 
 
+def test_per_token_timestep_extrapolates_from_its_max():
+    """Wan2.2 TI2V passes ``mask * t`` per token; keyed on the first element (0), taylor1 silently reused."""
+
+    class _TokenDiT:
+        def __init__(self):
+            self.calls = 0
+
+        def forward(
+            self,
+            hidden_states = None,
+            timestep = None,
+            return_dict = True,
+        ):
+            self.calls += 1
+            return (torch.full((1, 4), float(timestep.max())),)
+
+    pipe = _pipe(_TokenDiT())
+    knobs = {**ss.static_skip_settings({}), "mode": "taylor1"}
+    assert ss.install_static_step_skip(pipe, settings = knobs) == dcache.TC_STATIC
+    steps = 25
+    ss.reset_static_step_skip(pipe, steps)
+    outs = []
+    for i in range(steps):
+        timestep = torch.full((1, 8), 1.0 - i / steps)
+        timestep[0, 0] = 0.0
+        outs.append(pipe.transformer.forward(timestep = timestep, return_dict = False))
+    assert pipe.transformer.calls == 16
+    for i, compute in enumerate(ss.static_schedule(steps)):
+        if not compute:
+            assert torch.allclose(outs[i][0], torch.full((1, 4), 1.0 - i / steps), atol = 1e-6)
+
+
 def test_prefix_kv_extract_step_is_never_reused():
     for mode in ("reuse", "taylor1"):
         pipe = _installed(_DiT(prefix = 3), mode = mode, head = 0.0)
@@ -782,7 +814,7 @@ def test_generate_fbcache_still_bypasses_and_resets(fake_runtime, tmp_path, monk
     backend.unload()
 
 
-def test_image_load_request_accepts_static_and_video_does_not():
+def test_image_and_video_load_requests_accept_static():
     from pydantic import ValidationError
 
     from models.inference import DiffusionLoadRequest, VideoLoadRequest
@@ -791,8 +823,12 @@ def test_image_load_request_accepts_static_and_video_does_not():
         DiffusionLoadRequest(model_path = "org/model", transformer_cache = "static").transformer_cache
         == "static"
     )
+    assert (
+        VideoLoadRequest(model_path = "org/model", transformer_cache = "static").transformer_cache
+        == "static"
+    )
     with pytest.raises(ValidationError):
-        VideoLoadRequest(model_path = "org/model", transformer_cache = "static")
+        VideoLoadRequest(model_path = "org/model", transformer_cache = "magic")
 
 
 def test_stats_of_the_last_generation_survive_the_post_render_reset():

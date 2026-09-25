@@ -187,14 +187,16 @@ def _timestep_of(
     kwargs: dict,
     slot: tuple = ("timestep", None),
 ) -> Any:
-    """The call's timestep as a one-element float32 tensor on its own device (no host sync)."""
+    """The call's timestep as a one-element float32 tensor on its own device (no host sync).
+
+    The max: a per-token ``mask * t`` (Wan2.2 TI2V, LTX) is 0 on conditioned tokens; taylor1 would silently reuse."""
     name, index = slot
     t = kwargs.get(name)
     if t is None and index is not None and index < len(args):
         t = args[index]
     try:
         if _is_tensor(t):
-            return t.detach().reshape(-1)[:1].to(dtype = _torch().float32).clone()
+            return t.detach().reshape(-1).float().amax().reshape(1).clone()
         if isinstance(t, (int, float)) and not isinstance(t, bool):
             return _torch().tensor([float(t)], dtype = _torch().float32)
     except Exception:  # noqa: BLE001 - no timestep, taylor1 falls back to reuse
@@ -294,7 +296,8 @@ class StaticStepSkip:
         self.history: dict = {}
         if keep_stats:
             return self
-        if self.stats["calls"]:
+        if self.stats["calls"] or self.counting:
+            # Kept for status past the per-call reset; arming a new generation clears it (no stale counts).
             self.last_stats = dict(self.stats)
         self.stats = {"calls": 0, "computed": 0, "skipped": 0}
         if steps is not None and owner != self.owner:
