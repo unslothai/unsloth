@@ -89,6 +89,8 @@ __all__ = [
     "save_to_gguf",
     "patch_saving_functions",
     "create_huggingface_repo",
+    "unsloth_save_pretrained_openvino",
+    "unsloth_push_to_hub_openvino",
 ]
 
 # llama.cpp specific targets: all takes 90s, the below 60s.
@@ -6818,6 +6820,201 @@ def unsloth_save_pretrained_torchao(
         gc.collect()
 
 
+def _unsloth_save_openvino(
+    model,
+    save_directory: Union[str, os.PathLike],
+    tokenizer = None,
+    quantization_type: Optional[str] = None,
+    quantization_config = None,
+    push_to_hub: bool = False,
+    token: Optional[Union[str, bool]] = None,
+    is_main_process: bool = True,
+    **kwargs,
+):
+    """Internal helper to merge and export model to OpenVINO IR format via optimum-intel."""
+    import tempfile
+    import shutil
+    import gc
+
+    if not is_main_process:
+        return None
+
+    try:
+        from optimum.intel.openvino import OVModelForCausalLM
+    except ImportError:
+        raise ImportError(
+            "Unsloth: Exporting to OpenVINO requires `optimum-intel` and `openvino`.\n"
+            "Please install them via: pip install 'optimum[openvino]'"
+        )
+
+    if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
+        tokenizer = patch_saving_functions(tokenizer)
+
+    if token is None and push_to_hub:
+        token = get_token()
+
+    work_tmp = tempfile.mkdtemp(prefix = "unsloth-openvino-")
+    staging_dir = os.path.join(work_tmp, "staging")
+
+    if push_to_hub:
+        repo_id = os.fspath(save_directory)
+        final_dir = os.path.join(work_tmp, "openvino_model")
+    else:
+        repo_id = None
+        final_dir = os.fspath(save_directory)
+
+    try:
+        # Step 1: Save merged 16-bit model to temporary staging directory
+        if not isinstance(model, PeftModelForCausalLM) and not isinstance(model, PeftModel):
+            model.save_pretrained(staging_dir)
+            if tokenizer is not None:
+                tokenizer.save_pretrained(staging_dir)
+        else:
+            unsloth_generic_save(
+                model = model,
+                tokenizer = tokenizer,
+                save_directory = staging_dir,
+                save_method = "merged_16bit",
+                push_to_hub = False,
+                token = token,
+            )
+
+        for _ in range(3):
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            if hasattr(torch, "xpu") and torch.xpu.is_available():
+                torch.xpu.empty_cache()
+
+        # Step 2: Configure quantization if specified
+        ov_quant_config = quantization_config
+        if ov_quant_config is None and quantization_type is not None:
+            from optimum.intel.openvino import OVWeightQuantizationConfig
+            qtype = str(quantization_type).lower()
+            if qtype in ("int4", "4bit", "4"):
+                ov_quant_config = OVWeightQuantizationConfig(bits = 4, sym = True, group_size = 128)
+            elif qtype in ("int8", "8bit", "8"):
+                ov_quant_config = OVWeightQuantizationConfig(bits = 8, sym = True)
+            elif qtype in ("none", "fp16", "f16"):
+                ov_quant_config = None
+            else:
+                raise ValueError(
+                    f"Unsloth: Unknown OpenVINO quantization_type '{quantization_type}'. "
+                    "Expected 'int4', 'int8', 'fp16', or None."
+                )
+
+        # Step 3: Export to OpenVINO IR format
+        os.makedirs(final_dir, exist_ok = True)
+        is_vlm = _is_vlm(model)
+        if is_vlm:
+            try:
+                from optimum.intel.openvino import OVModelForVisualCausalLM
+                ov_cls = OVModelForVisualCausalLM
+            except ImportError:
+                ov_cls = OVModelForCausalLM
+        else:
+            ov_cls = OVModelForCausalLM
+
+        ov_model = ov_cls.from_pretrained(
+            staging_dir,
+            export = True,
+            compile = False,
+            quantization_config = ov_quant_config,
+            **kwargs,
+        )
+        ov_model.save_pretrained(final_dir)
+
+        if tokenizer is not None:
+            tokenizer.save_pretrained(final_dir)
+
+        # Step 4: Push to Hub if requested
+        if push_to_hub and repo_id:
+            from huggingface_hub import HfApi
+            api = HfApi(token = token)
+            api.create_repo(repo_id = repo_id, exist_ok = True)
+            api.upload_folder(
+                folder_path = final_dir,
+                repo_id = repo_id,
+                commit_message = "Export model to OpenVINO IR with Unsloth",
+            )
+            return repo_id
+
+        return final_dir
+
+    finally:
+        # Cleanup: always remove the staging directory; when pushing to Hub
+        # the entire work_tmp (staging + openvino_model) is temporary.
+        cleanup_path = work_tmp if push_to_hub else staging_dir
+        if cleanup_path and os.path.exists(cleanup_path):
+            try:
+                shutil.rmtree(cleanup_path)
+            except Exception:
+                pass
+        for _ in range(3):
+            gc.collect()
+
+
+def unsloth_save_pretrained_openvino(
+    self,
+    save_directory: Union[str, os.PathLike],
+    tokenizer = None,
+    quantization_type: Optional[str] = None,
+    quantization_config = None,
+    push_to_hub: bool = False,
+    token: Optional[Union[str, bool]] = None,
+    is_main_process: bool = True,
+    **kwargs,
+):
+    """Save the model in OpenVINO Intermediate Representation (IR) format (.xml and .bin).
+    Merges LoRA weights into the base model and converts to OpenVINO IR using optimum-intel.
+
+    Parameters:
+    - save_directory: Local directory to save the OpenVINO model, or Hugging Face Hub repo_id (if push_to_hub=True).
+    - tokenizer: Tokenizer to save alongside the model.
+    - quantization_type: Optional weight quantization type: "int8", "int4", or None (full/fp16 precision).
+    - quantization_config: Custom OVWeightQuantizationConfig instance.
+    - push_to_hub: If True, uploads the exported OpenVINO model to Hugging Face Hub.
+    - token: Hugging Face authentication token.
+    - is_main_process: Guard for multi-GPU / DDP environments.
+    - **kwargs: Additional kwargs passed to OVModelForCausalLM.from_pretrained.
+    """
+    return _unsloth_save_openvino(
+        model = self,
+        save_directory = save_directory,
+        tokenizer = tokenizer,
+        quantization_type = quantization_type,
+        quantization_config = quantization_config,
+        push_to_hub = push_to_hub,
+        token = token,
+        is_main_process = is_main_process,
+        **kwargs,
+    )
+
+
+def unsloth_push_to_hub_openvino(
+    self,
+    repo_id: str,
+    tokenizer = None,
+    quantization_type: Optional[str] = None,
+    quantization_config = None,
+    token: Optional[Union[str, bool]] = None,
+    is_main_process: bool = True,
+    **kwargs,
+):
+    """Export the model to OpenVINO IR format and push it directly to the Hugging Face Hub."""
+    return unsloth_save_pretrained_openvino(
+        self,
+        save_directory = repo_id,
+        tokenizer = tokenizer,
+        quantization_type = quantization_type,
+        quantization_config = quantization_config,
+        push_to_hub = True,
+        token = token,
+        is_main_process = is_main_process,
+        **kwargs,
+    )
+
+
 def not_implemented_save(*args, **kwargs):
     raise NotImplementedError("Unsloth: Sorry GGUF is currently not supported for vision models!")
 
@@ -7011,6 +7208,8 @@ def patch_saving_functions(model, vision = False):
             model.push_to_hub_gguf = types.MethodType(unsloth_push_to_hub_gguf, model)
             model.save_pretrained_gguf = types.MethodType(unsloth_save_pretrained_gguf, model)
             model.save_pretrained_torchao = types.MethodType(unsloth_save_pretrained_torchao, model)
+            model.save_pretrained_openvino = types.MethodType(unsloth_save_pretrained_openvino, model)
+            model.push_to_hub_openvino = types.MethodType(unsloth_push_to_hub_openvino, model)
             model.push_to_hub_ggml = types.MethodType(
                 unsloth_convert_lora_to_ggml_and_push_to_hub, model
             )
@@ -7025,6 +7224,8 @@ def patch_saving_functions(model, vision = False):
         model.push_to_hub_gguf = types.MethodType(unsloth_push_to_hub_gguf, model)
         model.save_pretrained_gguf = types.MethodType(unsloth_save_pretrained_gguf, model)
         model.save_pretrained_torchao = types.MethodType(unsloth_save_pretrained_torchao, model)
+        model.save_pretrained_openvino = types.MethodType(unsloth_save_pretrained_openvino, model)
+        model.push_to_hub_openvino = types.MethodType(unsloth_push_to_hub_openvino, model)
     return model
 
 
@@ -7038,6 +7239,7 @@ _DEFERRED_INTO_MODELS = {
     "unsloth.models.sentence_transformer": (
         "unsloth_save_pretrained_torchao",
         "unsloth_save_pretrained_gguf",
+        "unsloth_save_pretrained_openvino",
     ),
 }
 for _module_name, _deferred_names in _DEFERRED_INTO_MODELS.items():
