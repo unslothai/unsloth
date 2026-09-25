@@ -46,9 +46,19 @@ if (-not (Get-StudioEarlyPython)) {
     # BROKEN EXTRACTION looks like from here: a helper this file forgot to pull out of
     # install.ps1 makes Get-StudioEarlyPython fail, the probe finds nothing, and the suite exits 0
     # having tested nothing. That happened once and CI recorded it as a pass. Tell the two apart.
+    # Only an interpreter that actually runs counts. A Store execution alias, a broken
+    # executable or a Python too old for the probe is on PATH yet is correctly rejected, and
+    # that host is the supported skip. This check uses none of the extracted helpers, so a
+    # broken extraction still shows up as a runnable interpreter the ladder did not find.
     $onPath = $null
     foreach ($n in @("python3", "python")) {
-        if (-not $onPath) { $onPath = (Get-Command $n -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1) }
+        foreach ($cmd in @(Get-Command $n -All -CommandType Application -ErrorAction SilentlyContinue)) {
+            if ($onPath -or -not $cmd.Source) { continue }
+            try {
+                $ran = & $cmd.Source -I -S -c "import os,sys;sys.stdout.write(os.path.realpath('.') if sys.version_info >= (3, 8) else '')" 2>$null
+                if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace("$ran")) { $onPath = $cmd }
+            } catch {}
+        }
     }
     if ($onPath) {
         Write-Host "  FAIL  Get-StudioEarlyPython found nothing, yet $($onPath.Source) is on PATH." -ForegroundColor Red
