@@ -3129,7 +3129,6 @@ def _cached_variant_candidates(
                 pending_downloads.append(candidate)
                 continue
             yield candidate
-        # Keep existing reuse semantics when no completed duplicate is available.
         yield from pending_downloads
     except Exception as e:
         logger.debug(f"Cache lookup for variant failed: {e}")

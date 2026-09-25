@@ -268,7 +268,6 @@ def test_cached_quant_keeps_its_own_context(cache_locations, cache_client, missi
     )
     assert response.status_code == 200, response.text
     listing = response.json()
-    # This is the native limit the picker supplies when the user selects/configures a quant.
     actual = {
         v["quant"]: v.get("context_length", listing["context_length"])
         for v in listing["variants"]
@@ -292,7 +291,6 @@ def test_inactive_source_uses_scoped_online_status(
         for q, source in expected.items()
         if source[0].parent != hf_cache_settings.get_hf_cache_paths().hub_cache
     )
-    # A normal HF snapshot symlink identifies the old blob independently of its byte size.
     payload = path.read_bytes()
     path.unlink()
     blob = repo / "blobs" / ("a" * 64)

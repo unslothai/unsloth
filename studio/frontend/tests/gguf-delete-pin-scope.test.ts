@@ -68,8 +68,7 @@ for (const task of [null, "text-generation", "image-text-to-text", "text-to-imag
       const usePinnedModelsStore = { getState: () => ({ pinned, togglePinned, unpinRepo }) };
       const reconcile = compile(helperFunction("reconcileGgufPinsAfterDelete"), {
         fetchCachedGgufInventory: async () => ({ cached: [{ repo_id: repoId }], scan_confirmed: true }),
-        // A media quant survives only in the inactive copy. Whole-row controls
-        // also retain a second copy, where media previously cleared all repo pins.
+        // Media previously cleared all repo pins despite a surviving second copy.
         listGgufVariants: async () => ({ variants: chat || wholeRepo ? [{ quant: surviving, downloaded: true, partial: false }] : [] }),
         usePinnedModelsStore, pinnedQuantEntries, modelIdsMatchForPicker, ggufVariantsMatchForPicker,
       });

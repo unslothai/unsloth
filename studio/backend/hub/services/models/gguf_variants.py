@@ -1915,8 +1915,7 @@ async def get_gguf_variants_answer(
             skip = True
             # Carried out: the route's context-length fallback walks these same caches.
             cache_authorized[0] = False
-        # Explicit filesystem requests keep their original scope. Logical repository requests
-        # include complete quantizations from remembered locations without adding inventory rows.
+        # Explicit folder requests stay scoped; logical repo requests add complete quants from remembered caches.
         sources = {}
         if (
             include_cache_locations
@@ -1968,7 +1967,6 @@ async def get_gguf_variants_answer(
                     dependency_key = _variant_dependency_key(repo_id, v.filename),
                 )
                 if online_answer:
-                    # Apply the same readiness and update checks as a request for this snapshot.
                     if source.snapshot not in scoped_responses:
                         original_source = answered_from[0]
                         try:

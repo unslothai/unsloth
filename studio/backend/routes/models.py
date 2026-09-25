@@ -4517,7 +4517,6 @@ async def get_gguf_variants(
         context_models = [
             m for m in dict.fromkeys([context_model, *variant_sources.values()]) if m is not None
         ]
-        # Share the existing hard deadline and concurrency guard across all source reads.
         context_values = await asyncio.gather(
             *(
                 _read_native_context_length_bounded(model, is_local_path(model))

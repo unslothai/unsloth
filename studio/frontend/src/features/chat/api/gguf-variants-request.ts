@@ -30,7 +30,6 @@ export function ggufVariantsQuery(
   offline: boolean,
 ): URLSearchParams {
   const params = new URLSearchParams({ repo_id: repoId });
-  // Chat resolves logical quants across remembered folders. Media callers opt out.
   if (options?.includeCacheLocations !== false) {
     params.set("include_cache_locations", "true");
   }

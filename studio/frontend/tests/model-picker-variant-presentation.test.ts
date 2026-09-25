@@ -230,7 +230,6 @@ test("the picker label is unchanged by the key-shaped parse", () => {
 test("cached quants retain their own revision's context for selection and settings", () => {
   assert.equal(ggufVariantContextLength({ context_length: 32768 }, 131072), 32768);
   assert.equal(ggufVariantContextLength({ context_length: 131072 }, 32768), 131072);
-  // An unreadable source must not inherit another revision's larger window.
   assert.equal(ggufVariantContextLength({ context_length: null }, 131072), null);
   assert.equal(ggufVariantContextLength({}, 131072), 131072);
 });
