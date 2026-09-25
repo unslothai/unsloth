@@ -1,24 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A standalone evaluate() / predict() under fp16_full_eval / bf16_full_eval must not change training.
-
-Unsloth's generated trainer config defaults ``fp16_full_eval = args.fp16`` and
-``bf16_full_eval = args.bf16``. Transformers' ``evaluation_loop`` (and the legacy
-``prediction_loop``) then runs ``model.to(dtype = half, device = args.device)`` on the whole
-model whenever it is not inside ``train()``, and never casts back. The fp32 LoRA master weights
-stay half, so ``evaluate(); train()`` raised "Attempting to unscale FP16 gradients" under fp16
-and trained on bf16 master weights under bf16; float buffers (RoPE ``inv_freq``) stayed half; and
-a ``device_map``-split model was collapsed onto one card.
-
-``_wrap_full_eval_keeps_trainable_dtype`` in ``unsloth/models/rl.py`` is applied to every
-generated trainer. It casts only frozen float32 weights (under autocast) and hides the flags from
-Transformers for the call, so trainable parameters and buffers are never touched and a standalone
-eval runs exactly like an eval inside ``train()``. These tests lift it with ``ast`` from the
-shipped source and put it on a plain ``transformers.Trainer`` over a tiny randomly initialised
-causal LM, so they run on CPU with no download and no ``import unsloth``. The GPU-marked tests run
-the real generated SFTTrainer, and a real two-GPU dispatch.
-"""
+"""Standalone evaluate() under fp16/bf16_full_eval must not change trainable dtypes, buffers or placement."""
 
 from __future__ import annotations
 
@@ -62,8 +45,7 @@ def _load_helpers():
 
 
 def _cuda_kernels_run(count):
-    """has_real_cuda() says a card is there; this says torch can launch on it. A torch build
-    without kernels for the card (torch 2.6 cu124 on sm_100) fails with "no kernel image"."""
+    """Torch can launch a kernel on the card (not just see it)."""
     if not has_real_cuda() or torch.cuda.device_count() < count:
         return False
     try:
@@ -75,8 +57,7 @@ def _cuda_kernels_run(count):
 
 
 def test_wrapper_is_applied_to_every_generated_trainer():
-    """The wrap must sit at function level in _patch_trl_rl_trainers_impl, not under an
-    ``if trainer_file == ...`` branch: GRPO, DPO, KTO, ... all inherit the same default."""
+    """Wrap sits at function level so every trainer gets it."""
     tree = ast.parse(SOURCE_PATH.read_text(encoding = "utf-8"))
     impl = next(
         n
@@ -103,9 +84,7 @@ transformers = pytest.importorskip("transformers")
 
 
 def _tiny_model(frozen_dtype = torch.float32):
-    """A 2-layer Llama with the attention projections trainable in float32 (the "adapter") and
-    everything else frozen in ``frozen_dtype``: float32 for a base that full eval should shrink,
-    half for the usual Unsloth base that is already loaded in half."""
+    """Attention projections trainable in fp32; the rest frozen in ``frozen_dtype``."""
     torch.manual_seed(0)
     config = transformers.LlamaConfig(
         vocab_size = 64,
@@ -160,7 +139,6 @@ def _args(
         logging_steps = 1,
     )
     kwargs[f"{precision}_full_eval"] = True
-    # Unsloth's generated config always pairs full eval with the same mixed precision.
     kwargs[precision] = autocast
     kwargs.update(extra)
     return transformers.TrainingArguments(**kwargs)
@@ -190,7 +168,6 @@ def _half(precision):
 
 
 def _state(model):
-    """Every trainable parameter and float buffer by identity of storage, dtype and value."""
     return {
         name: (t.data_ptr(), t.dtype, t.detach().clone())
         for name, t in list(model.named_parameters()) + list(model.named_buffers())
@@ -208,8 +185,7 @@ def _assert_untouched(model, before):
 
 
 def test_premise_transformers_leaves_the_whole_model_cast(tmp_path):
-    """The upstream behaviour the wrapper exists for; if Transformers ever casts back, the
-    wrapper becomes redundant rather than wrong."""
+    """Upstream still casts; if it casts back, the wrapper is redundant, not wrong."""
     trainer = _trainer(tmp_path, "bf16", wrap = False)
     trainer.evaluate()
     dtypes = {p.dtype for p in trainer.model.parameters() if p.requires_grad}
@@ -231,22 +207,17 @@ def test_standalone_eval_casts_only_frozen_weights(tmp_path, precision, entry):
     else:
         trainer.predict(_Rows())
 
-    # Trainable parameters and buffers: same storage, dtype and value, nothing held or copied.
     _assert_untouched(model, before)
-    # The frozen base keeps full eval's memory saving, where the forward autocasts (accelerate
-    # installs no fp16 autocast on CPU, and then nothing may be cast).
+    # No fp16 autocast on CPU, so nothing may be cast there.
     frozen = _half(precision) if trainer.accelerator.native_amp else torch.float32
     for name, param in model.named_parameters():
         if not param.requires_grad:
             assert param.dtype is frozen, name
-    # The flags are hidden from Transformers for the call only.
     assert getattr(trainer.args, f"{precision}_full_eval") is True
 
 
 @pytest.mark.parametrize("precision", ["bf16", "fp16"])
 def test_standalone_eval_matches_an_eval_inside_train(tmp_path, precision):
-    """With the base already in half, as Unsloth loads it, a standalone eval must give exactly
-    the loss an eval inside train() gives for the same weights."""
     half = _half(precision)
     first = _trainer(tmp_path / "a", precision, model = _tiny_model(half))
     if not first.accelerator.native_amp:
@@ -262,8 +233,7 @@ def test_standalone_eval_matches_an_eval_inside_train(tmp_path, precision):
 
 
 def test_without_autocast_nothing_is_cast(tmp_path):
-    """A half frozen weight next to a float32 trainable one needs autocast; Unsloth's bfloat16
-    full finetuning mode turns bf16_full_eval on with fp16 = bf16 = False. Evaluate as is."""
+    """bf16 full finetuning: bf16_full_eval without autocast, so nothing is cast."""
     trainer = _trainer(tmp_path, "bf16", autocast = False)
     dtypes = {n: p.dtype for n, p in trainer.model.named_parameters()}
     metrics = trainer.evaluate()
@@ -272,13 +242,10 @@ def test_without_autocast_nothing_is_cast(tmp_path):
 
 
 def test_evaluate_then_train_matches_train_alone(tmp_path):
-    """evaluate() before train() must not move the training trajectory of the trainable
-    parameters, and they must still be float32 at the optimizer step."""
     first = _trainer(tmp_path / "a", "bf16")
     first.evaluate()
     first.train()
     second = _trainer(tmp_path / "b", "bf16")
-    # Same frozen base dtype as the evaluated run, so only the eval itself differs.
     for p in second.model.parameters():
         if not p.requires_grad:
             p.data = p.data.to(torch.bfloat16)
@@ -300,7 +267,6 @@ def test_evaluate_after_train_then_resume(tmp_path):
 
 
 def test_eval_inside_train_is_passed_through(tmp_path):
-    """Transformers never casts inside train(); the wrapper must not start doing it."""
     trainer = _trainer(tmp_path, "bf16")
     before = {n: p.dtype for n, p in trainer.model.named_parameters()}
     trainer.is_in_train = True
@@ -336,8 +302,7 @@ def test_keep_in_fp32_modules_are_not_cast(tmp_path):
 
 
 def test_split_model_is_not_moved():
-    """Transformers' cast used ``device = args.device``, which collapses a device_map split onto
-    one card. Simulated with a cpu/meta split, since a real one needs two accelerators."""
+    """Split model must not be collapsed; cpu/meta simulates a split."""
     helpers = _load_helpers()
 
     class _Trainer:
@@ -357,7 +322,6 @@ def test_split_model_is_not_moved():
     offloaded = _tiny_model()
     offloaded.hf_device_map = {"model.layers.0": 0, "model.layers.1": "disk"}
     assert spans(offloaded)
-    # One card spelled two ways is still one card.
     same = _tiny_model()
     same.hf_device_map = {"model.layers.0": 0, "model.layers.1": "cuda:0"}
     assert not spans(same)
@@ -365,8 +329,6 @@ def test_split_model_is_not_moved():
 
 
 def test_a_failing_cast_still_evaluates(tmp_path):
-    """Only frozen weights can have been cast when the cast fails, so the eval runs as is, the
-    flags come back and nothing trainable changed."""
     helpers = _load_helpers()
 
     def cast_then_fail(trainer, model, target_dtype, device):
@@ -383,8 +345,7 @@ def test_a_failing_cast_still_evaluates(tmp_path):
 
 @pytest.mark.parametrize("where", ["cast", "eval"])
 def test_keyboard_interrupt_leaves_flags_and_weights(tmp_path, where):
-    """A KeyboardInterrupt (or any BaseException) during the cast or the eval propagates, with the
-    flags restored and every trainable tensor exactly as it was."""
+    """BaseException propagates with flags restored."""
     helpers = _load_helpers()
     if where == "cast":
         real_cast = helpers["_cast_frozen_for_full_eval"]
@@ -412,9 +373,6 @@ def test_keyboard_interrupt_leaves_flags_and_weights(tmp_path, where):
 @pytest.mark.gpu
 @pytest.mark.skipif(not _cuda_kernels_run(2), reason = "needs two CUDA devices torch can run on")
 def test_split_model_evaluate_train_evaluate_on_two_gpus(tmp_path):
-    """Both halves of the report on a real dispatch: embedding + head on cuda:1, decoder on
-    cuda:0, fp32 LoRA on top. evaluate() -> train() -> evaluate() must keep the split and the
-    fp32 adapter."""
     accelerate = pytest.importorskip("accelerate")
     peft = pytest.importorskip("peft")
 
@@ -468,8 +426,7 @@ def test_split_model_evaluate_train_evaluate_on_two_gpus(tmp_path):
 @pytest.mark.skipif(not _cuda_kernels_run(1), reason = "runs the generated SFTTrainer on a GPU")
 @pytest.mark.parametrize("dtype", ["float16", "bfloat16"])
 def test_generated_sft_trainer_evaluate_then_train(tmp_path, dtype):
-    """The report as filed: evaluate() then train() through Unsloth's own SFTTrainer. On main
-    fp16 raises "Attempting to unscale FP16 gradients" and bf16 leaves bf16 LoRA weights."""
+    """On main fp16 raised "Attempting to unscale FP16 gradients"."""
     from unsloth import FastLanguageModel
     from datasets import Dataset
     from trl import SFTConfig, SFTTrainer
