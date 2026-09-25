@@ -128,7 +128,7 @@ from .diffusion_speed import (
     compile_dynamic,
     compile_eligible,
     compiled_shapes_are_static,
-    dynamo_graph_count,
+    fresh_compile_count,
     normalize_speed_mode,
     resolve_speed_mode,
     restore_backend_flags,
@@ -7460,7 +7460,8 @@ class DiffusionBackend:
                 images: list[Any] = []
                 per_image_seeds: list[int] = []
                 chunk_shapes: list[int] = []
-                graphs_before = dynamo_graph_count()
+                graphs_before = fresh_compile_count()
+                compile_cache.note_use(state.compile_cache_ctx)
                 try:
                     pending = list(chunks)
                     while pending:
@@ -7541,7 +7542,10 @@ class DiffusionBackend:
                     # A cancelled or failed render may already have generalised a graph that the next render reuses
                     # without compiling, so the success path below would never see the count grow: dirty it now.
                     try:
-                        if auto_dynamic_active(state.pipe) and dynamo_graph_count() > graphs_before:
+                        if (
+                            auto_dynamic_active(state.pipe)
+                            and fresh_compile_count() > graphs_before
+                        ):
                             compile_cache.mark_recompiled(state.compile_cache_ctx)
                     except Exception:  # noqa: BLE001 - bookkeeping must not mask the render's own error
                         pass
@@ -7566,7 +7570,7 @@ class DiffusionBackend:
                             (reg_width, reg_height, int(chunk_batch)),
                             static = static_shapes,
                         )
-                    if auto_dynamic_active(state.pipe) and dynamo_graph_count() > graphs_before:
+                    if auto_dynamic_active(state.pipe) and fresh_compile_count() > graphs_before:
                         # Automatic dynamic recompiles on the first new text length at an already-registered
                         # (width, height, batch): persist those graphs too, or every fresh process pays them again.
                         compile_cache.mark_recompiled(state.compile_cache_ctx)
