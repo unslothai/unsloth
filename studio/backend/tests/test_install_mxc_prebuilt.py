@@ -231,9 +231,7 @@ def test_prepare_host_runs_only_the_steps_mxc_reports_missing(
     monkeypatch, prepared_install, reported, expected
 ):
     install_dir, ran = prepared_install
-    monkeypatch.setattr(
-        installer.mxc_runtime, "probe_host_prep_steps", lambda **_kwargs: reported
-    )
+    monkeypatch.setattr(installer.mxc_runtime, "probe_host_prep_steps", lambda **_kwargs: reported)
     assert installer.prepare_host(install_dir) == tuple(expected)
     host_prep = str((install_dir / "wxc-host-prep.exe").resolve())
     assert ran == [(host_prep, step) for step in expected]
@@ -282,7 +280,6 @@ def test_host_prep_elevates_only_when_needed(monkeypatch, tmp_path, elevated):
 
 def subprocess_result(code):
     import subprocess
-
     return subprocess.CompletedProcess(args = [], returncode = code)
 
 

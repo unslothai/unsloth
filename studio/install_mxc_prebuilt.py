@@ -155,7 +155,6 @@ def install_mxc_release(install_dir: Path) -> bool:
 
 def _is_elevated() -> bool:
     import ctypes
-
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except (AttributeError, OSError):

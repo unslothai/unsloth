@@ -55,9 +55,11 @@ def host_prep_remediation() -> str | None:
                 str(mxc_runtime._installed_package_root()),
             ]
         )
-        reboot = " (prepare-null-device is undone by every reboot)" if (
-            "prepare-null-device" in steps
-        ) else ""
+        reboot = (
+            " (prepare-null-device is undone by every reboot)"
+            if ("prepare-null-device" in steps)
+            else ""
+        )
         advice = (
             f"MXC reports missing host preparation: {', '.join(steps)}{reboot}. "
             f"Run {command} and approve the administrator prompt."

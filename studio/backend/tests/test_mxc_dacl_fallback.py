@@ -134,7 +134,9 @@ def test_malformed_fallback_is_refused_even_with_the_opt_in(monkeypatch, tmp_pat
     _stub_dispatch(monkeypatch, tmp_path)
     monkeypatch.setenv(OPT_IN, "1")
     monkeypatch.setattr(
-        mxc_adapter.subprocess, "Popen", lambda *_a, **_k: pytest.fail("malformed config dispatched")
+        mxc_adapter.subprocess,
+        "Popen",
+        lambda *_a, **_k: pytest.fail("malformed config dispatched"),
     )
     with pytest.raises(mxc_adapter.MxcAdapterError, match = "malformed"):
         mxc_adapter.spawn(_request(fallback))

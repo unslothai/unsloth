@@ -144,9 +144,7 @@ _HOST_PREP = b"official-host-prep-test-payload"
 def host_prep(runtime, monkeypatch):
     (runtime / "wxc-host-prep.exe").write_bytes(_HOST_PREP)
     monkeypatch.setattr(mxc_runtime, "WXC_HOST_PREP_SIZE", len(_HOST_PREP))
-    monkeypatch.setattr(
-        mxc_runtime, "WXC_HOST_PREP_SHA256", hashlib.sha256(_HOST_PREP).hexdigest()
-    )
+    monkeypatch.setattr(mxc_runtime, "WXC_HOST_PREP_SHA256", hashlib.sha256(_HOST_PREP).hexdigest())
     return runtime
 
 
@@ -173,10 +171,16 @@ _BOTH_WARNINGS = [
 @pytest.mark.parametrize(
     ("stdout", "returncode", "expected"),
     [
-        (json.dumps({"tier": "appcontainer-dacl", "warnings": _BOTH_WARNINGS}), 0,
-         ("prepare-system-drive", "prepare-null-device")),
-        (json.dumps({"tier": "appcontainer-dacl", "warnings": _BOTH_WARNINGS[1:]}), 0,
-         ("prepare-null-device",)),
+        (
+            json.dumps({"tier": "appcontainer-dacl", "warnings": _BOTH_WARNINGS}),
+            0,
+            ("prepare-system-drive", "prepare-null-device"),
+        ),
+        (
+            json.dumps({"tier": "appcontainer-dacl", "warnings": _BOTH_WARNINGS[1:]}),
+            0,
+            ("prepare-null-device",),
+        ),
         (json.dumps({"tier": "base-container", "warnings": []}), 0, ()),
         ("not json", 0, None),
         (json.dumps(["warnings"]), 0, None),

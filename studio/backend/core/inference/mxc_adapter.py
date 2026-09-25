@@ -67,9 +67,7 @@ def spawn(
     ):
         raise MxcAdapterError("the MXC DACL fallback policy is malformed", stage = "policy")
     if fallback["allowDaclMutation"] and not mxc_policy.dacl_fallback_enabled():
-        raise MxcAdapterError(
-            "MXC DACL fallback is not enabled on this host", stage = "policy"
-        )
+        raise MxcAdapterError("MXC DACL fallback is not enabled on this host", stage = "policy")
     if config.get("ui", {}).get("disable") is not False:
         raise MxcAdapterError("the Studio MXC UI policy is not enabled", stage = "policy")
 
