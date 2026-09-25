@@ -156,6 +156,7 @@ import {
   markThreadIncognito,
   saveStoredChatMessage,
   saveStoredChatThread,
+  syncStoredChatMessages,
   trackStoredChatThreadRecord,
   unmarkThreadIncognito,
   updateStoredChatThread,
@@ -1251,6 +1252,12 @@ function scheduleGenerationRecovery(
   generationRecoveries.set(runId, { promise: recovery, views });
 }
 
+/** What a temporary thread was started with, so saving it later keeps its starting model. */
+const temporaryThreadCreation = new Map<
+  string,
+  { modelId: string; modelGgufVariant: string | null | undefined; createdAt: number }
+>();
+
 export async function ensureThreadRecord({
   threadId,
   modelType,
@@ -1293,8 +1300,14 @@ export async function ensureThreadRecord({
   // A temporary chat skips the history list so a storage outage cannot block its first send.
   // Gated on the caller knowing the thread is new, not on its id: a `__LOCALID_` id is the
   // permanent key of every chat the app creates, so keying on the prefix tagged SAVED chats.
+  const creation = {
+    modelId: modelIdAtInit,
+    modelGgufVariant: modelGgufVariantAtInit,
+    createdAt: createdAtInit,
+  };
   if (incognitoAtInit && neverSent) {
     markThreadIncognito(threadId);
+    temporaryThreadCreation.set(threadId, creation);
     return;
   }
   // A point lookup, not a listing: this must not scale with how many chats exist.
@@ -1306,6 +1319,7 @@ export async function ensureThreadRecord({
   // real chat saving normally when the toggle flips on mid-stream.
   if (incognitoAtInit) {
     markThreadIncognito(threadId);
+    temporaryThreadCreation.set(threadId, creation);
     return;
   }
 
@@ -1354,8 +1368,9 @@ function parentsFirst(
   return ordered;
 }
 
-/** Save a temporary chat to history: its row and every message on every branch, after which it
- *  saves like any other chat. On failure it stays temporary; a retry completes what was written. */
+/** Save a temporary chat to history: its row, then every message on every branch in one batch,
+ *  after which it saves like any other chat. The batch is one transaction, so a failure leaves at
+ *  most an empty row, which a retry reuses; the chat stays temporary until then. */
 export async function persistTemporaryThread({
   threadId,
   modelType,
@@ -1370,20 +1385,26 @@ export async function persistTemporaryThread({
     const times = messages
       .map(({ message }) => message.createdAt?.getTime?.())
       .filter((time): time is number => typeof time === "number");
+    const creation = temporaryThreadCreation.get(threadId);
     await ensureThreadRecord({
       threadId,
       modelType,
       projectId: null,
       incognito: false,
-      createdAt: times.length > 0 ? Math.min(...times) : Date.now(),
+      ...(creation && {
+        modelId: creation.modelId,
+        modelGgufVariant: creation.modelGgufVariant,
+      }),
+      createdAt:
+        creation?.createdAt ?? (times.length > 0 ? Math.min(...times) : Date.now()),
     });
-    for (const { parentId, message } of parentsFirst(messages)) {
+    const records: MessageRecord[] = parentsFirst(messages).map(({ parentId, message }) => {
       const attachments =
         message.role === "user" ? cloneAttachments(message.attachments) : [];
       const metadata = message.metadata?.custom as
         | Record<string, unknown>
         | undefined;
-      await saveStoredChatMessage({
+      return {
         id: message.id,
         threadId,
         parentId: parentId ?? null,
@@ -1392,8 +1413,10 @@ export async function persistTemporaryThread({
         ...(attachments.length > 0 && { attachments }),
         ...(metadata && { metadata }),
         createdAt: message.createdAt?.getTime?.() ?? Date.now(),
-      });
-    }
+      };
+    });
+    await syncStoredChatMessages(threadId, records, { pruneMissing: false });
+    temporaryThreadCreation.delete(threadId);
   } catch (error) {
     markThreadIncognito(threadId);
     throw error;

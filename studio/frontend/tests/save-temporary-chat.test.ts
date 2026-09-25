@@ -52,6 +52,32 @@ test("the thread stops being temporary before writing, and goes back if the save
   assert.match(body, /incognito: false,/);
 });
 
+test("messages are written in one batch, so a failure cannot leave a truncated chat", () => {
+  const body = persistBody();
+  assert.match(body, /await syncStoredChatMessages\(threadId, records, \{ pruneMissing: false \}\);/);
+  assert.doesNotMatch(body, /saveStoredChatMessage\(/);
+  // The row comes first, since the batch needs it.
+  assert.ok(body.indexOf("await ensureThreadRecord(") < body.indexOf("await syncStoredChatMessages("));
+});
+
+test("the saved chat keeps the model it started on, not the one loaded at save time", () => {
+  const ensure = provider.slice(
+    provider.indexOf("export async function ensureThreadRecord({"),
+    provider.indexOf("/** Parents before children"),
+  );
+  // Both early returns for a temporary thread keep what it was started with.
+  assert.equal(ensure.match(/markThreadIncognito\(threadId\);\s*temporaryThreadCreation\.set\(threadId, creation\);/g)?.length, 2);
+  const body = persistBody();
+  assert.match(body, /const creation = temporaryThreadCreation\.get\(threadId\);/);
+  assert.match(body, /modelId: creation\.modelId,\s*modelGgufVariant: creation\.modelGgufVariant,/);
+  assert.match(body, /createdAt:\s*creation\?\.createdAt \?\?/);
+});
+
+test("saving waits for queued prompts, whose temporary tag would still discard them", () => {
+  assert.match(button, /Object\.values\(s\.byThreadId\)\.some\(\(entry\) => entry\.temporary\)/);
+  assert.match(button, /: target\.queued\s*\? "Wait for queued prompts to finish"/);
+});
+
 test("the save covers the whole branch tree, not only the visible path", () => {
   assert.match(button, /messages: aui\.thread\(\)\.export\(\)\.messages/);
   assert.match(persistBody(), /parentId: parentId \?\? null,/);

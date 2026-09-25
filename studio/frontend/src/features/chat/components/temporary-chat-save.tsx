@@ -24,6 +24,7 @@ import { useEffect, useId, useState } from "react";
 import { create } from "zustand";
 import { persistTemporaryThread } from "../runtime-provider";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import { usePromptQueueUI } from "../stores/prompt-queue-ui-store";
 import { isThreadIncognito } from "../utils/chat-history-storage";
 
 /** Skip the confirmation once the user said so. Per browser. */
@@ -48,6 +49,7 @@ function rememberSkipConfirm(): void {
 type SaveTarget = {
   hasMessages: boolean;
   running: boolean;
+  queued: boolean;
   save: () => Promise<void>;
 };
 
@@ -61,6 +63,10 @@ export function TemporaryChatSaveBridge() {
   const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const hasMessages = useAuiState(({ thread }) => thread.messages.length > 0);
   const running = useAuiState(({ thread }) => thread.isRunning);
+  // A queue keeps its temporary tag, so leaving a saved chat would still discard it.
+  const queued = usePromptQueueUI((s) =>
+    Object.values(s.byThreadId).some((entry) => entry.temporary),
+  );
 
   useEffect(() => {
     if (!incognito) return;
@@ -68,6 +74,7 @@ export function TemporaryChatSaveBridge() {
       target: {
         hasMessages: hasMessages && Boolean(remoteId),
         running,
+        queued,
         save: async () => {
           const threadId = aui.threadListItem().getState().remoteId;
           if (!threadId || !isThreadIncognito(threadId)) return;
@@ -82,7 +89,7 @@ export function TemporaryChatSaveBridge() {
       },
     });
     return () => useSaveTarget.setState({ target: null });
-  }, [aui, incognito, remoteId, hasMessages, running]);
+  }, [aui, incognito, remoteId, hasMessages, running, queued]);
 
   return null;
 }
@@ -100,7 +107,9 @@ export function SaveTemporaryChatButton({ className }: { className?: string }) {
     ? "Nothing to save yet"
     : target.running
       ? "Wait for the response to finish"
-      : null;
+      : target.queued
+        ? "Wait for queued prompts to finish"
+        : null;
   const label = disabledReason ?? "Save chat to history";
 
   const save = async () => {
