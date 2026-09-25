@@ -294,8 +294,7 @@ def _assert_video_precision_for_target(
             and not getattr(fam, "modular_workflow", None)
             and native_quant_host(target)
         ):
-            # AMD and the Windows-ROCm torchao stub run int8 / fp8 weight-only without torchao, as plain buffers the
-            # offload hooks can move. The modular workflow seeds torchao checkpoints instead, so it stays out.
+            # The modular workflow seeds torchao checkpoints, so it stays off the native path.
             if native_quant_scheme(target, pinned, family = getattr(fam, "name", None)) is None:
                 reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
         elif not dense_transformer_supported(target):
@@ -4302,8 +4301,6 @@ class VideoBackend:
         # Why the quant did not engage, in the caller's terms; threaded into `resolved`.
         transformer_quant_decline: Optional[str] = None
         transformer_quant_decline_status = RESOLVED_FELL_BACK
-        # An explicit int8 / fp8 on AMD or the Windows torchao stub, run weight-only without torchao. None wherever
-        # torchao serves, so the paths below are unchanged there.
         native_scheme = (
             native_quant_scheme(target, transformer_quant_pinned, family = fam.name)
             if kind == "pipeline"
@@ -4352,8 +4349,7 @@ class VideoBackend:
             and (source_precision := stored_denoiser_precision(_base_local_dir or repo_id))
             is not None
         ):
-            # from_pretrained widened a narrow fp8 / int8 checkpoint to bf16; quantising it again compounds a loss
-            # already taken. Same guard as the image loader, read off the shard headers.
+            # from_pretrained widened a narrow checkpoint to bf16; requantising compounds the loss.
             for view in views:
                 mark_source_precision(view, source_precision)
             transformer_quant_decline = (
@@ -4388,8 +4384,7 @@ class VideoBackend:
                     f"transformer_quant={engaged[0]} engaged on only "
                     f"{len(engaged)}/{len(views)} experts; retry without quant."
                 )
-            # A clean decline can remain bf16; a view converted part-way and then failed is neither dense nor
-            # usable, even when the precision fallback is allowed.
+            # A part-converted view is unusable even when the precision fallback is allowed.
             dirty = (
                 []
                 if engaged
@@ -4473,7 +4468,7 @@ class VideoBackend:
             speed_mode, is_gguf = kind == "gguf", dense_default = SPEED_DEFAULT
         )
         # A torchao-quantised DiT must be compiled (eager is ~30x slower), so force the regional profile when quant
-        # engaged but speed was off. Native weight-only runs bf16 arithmetic, which is already fast eager.
+        # engaged but speed was off.
         if (
             transformer_quant_engaged is not None
             and native_scheme is None

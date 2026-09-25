@@ -1768,8 +1768,6 @@ class DiffusionBackend:
                 and pinned in NATIVE_QUANT_SCHEMES
                 and native_quant_host(target)
             ):
-                # AMD and the Windows-ROCm torchao stub run int8 / fp8 weight-only without torchao: plain buffers, so
-                # offload hooks move them, and bf16 arithmetic, so there is no compile to require.
                 if native_quant_scheme(target, pinned, family = getattr(fam, "name", None)) is None:
                     reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
             elif _memory_request_forces_offload(memory_mode, cpu_offload):
@@ -4421,8 +4419,6 @@ class DiffusionBackend:
                 # visible, and into the refusal so it is actionable.
                 transformer_quant_decline: Optional[str] = None
                 transformer_quant_decline_status = RESOLVED_FELL_BACK
-                # An explicit int8 / fp8 on AMD or the Windows torchao stub: quantised in place below, weight-only
-                # and torchao-free. Pipeline loads only; None everywhere torchao serves, so nothing else moves.
                 native_scheme = (
                     native_quant_scheme(
                         target, transformer_quant_pinned, family = getattr(fam, "name", None)
@@ -5376,7 +5372,6 @@ class DiffusionBackend:
                                             plan.offload_policy,
                                         )
                                         plan = replanned
-                            # Weight-only buffers are plain tensors, which the offload hooks move like any other.
                             if plan.offload_policy != OFFLOAD_NONE and native_scheme is None:
                                 logger.info(
                                     "diffusion.transformer_quant: skipped (the memory plan picked '%s' "
@@ -5487,7 +5482,6 @@ class DiffusionBackend:
                     # bit-identical `off`.
                     effective_speed = resolve_speed_mode(speed_mode, is_gguf = kind == "gguf")
                     # A torchao-quantized dense transformer must be compiled (eager is ~30x slower, losing to GGUF).
-                    # Native weight-only runs bf16 arithmetic, so it needs no forced compile.
                     if (
                         transformer_quant_engaged is not None
                         and native_scheme is None

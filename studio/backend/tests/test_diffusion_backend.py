@@ -11692,12 +11692,10 @@ def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypa
     assert "prequant artifact missing" in str(failures[0])
 
 
-# ---- AMD: torchao-free weight-only int8 / fp8 for an explicit scheme ----------------------------------
 
 
 def _stub_amd_weight_only_host(backend, monkeypatch):
-    """A ROCm / Windows-torchao-stub host: the torchao dense schemes are refused and an explicit int8 / fp8
-    runs weight-only through ``quantize_transformer``'s native branch. Records the quantise calls."""
+    """ROCm / torchao-stub host; records the quantise calls."""
     from core.inference import diffusion as dmod
     from core.inference import diffusion_transformer_quant as tq
 

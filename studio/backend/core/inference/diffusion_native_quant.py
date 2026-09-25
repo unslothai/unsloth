@@ -1,19 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Torchao-free weight-only int8 / fp8 for the diffusion transformer, for hosts torchao cannot serve.
+"""Torchao-free weight-only int8 / fp8 for the diffusion transformer (ROCm, Windows torchao stub).
 
-ROCm reaches here (gfx1151 refuses fp8 ``_scaled_mm``, and torchao's int8 W8A8 measured 0.48x bf16 speed
-there), and so does Windows ROCm, where torchao cannot even import (torch ships no
-``_c10d_functional.all_gather_into_tensor``) and Studio installs a stub. Each large Linear keeps its weight
-in int8 or fp8 e4m3fn with one scale per output row and dequantises it to the activation dtype per forward:
-the transformer's weights halve, the arithmetic stays bf16.
-
-Measured on gfx1151 (Qwen-Image-2.1, 1024px, 20 steps): int8 weight-only ran at 0.97x bf16 speed with the
-transformer at 6.64 GiB instead of 13.25. Weights and scales are plain buffers, so unlike torchao tensors
-they survive the ``Module.to()`` calls the offload hooks make.
-
-Imports torch lazily, like the rest of the quant modules, so the module loads on a torch-free host.
+Plain buffers, unlike torchao tensors, survive the offload hooks' ``Module.to()``; torch imported lazily.
 """
 
 from __future__ import annotations
@@ -107,14 +97,9 @@ def apply_native_weight_quant(
     filter_fn: Callable[[Any, str], bool],
     logger: Any = None,
 ) -> int:
-    """Swap every Linear ``filter_fn`` keeps for a native weight-only twin; returns layers swapped.
-
-    One layer at a time, like torchao's ``quantize_``, so the build peak is the dense model plus one
-    layer rather than 1.5x it; on unified memory that peak is what the OS kills for. A failure part-way
-    leaves a partial conversion, which ``is_native_quantised`` reports so the loader refuses it the
-    same way it refuses a partial torchao pass."""
+    """Swap every Linear ``filter_fn`` keeps for a native weight-only twin; returns layers swapped. One layer
+    at a time; a failure part-way leaves a partial conversion the caller must refuse."""
     cls = native_linear_class()
-    # Names only: holding the old modules would keep every bf16 weight alive until the pass ends.
     names = [name for name, mod in transformer.named_modules() if name and filter_fn(mod, name)]
     for name in names:
         parent_name, _, leaf = name.rpartition(".")

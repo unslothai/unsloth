@@ -644,8 +644,7 @@ def dense_transformer_unsupported_reason(target: Any) -> str:
     return "this device cannot run a dense torchao quant (it needs a CUDA GPU in bf16)"
 
 
-# Explicit schemes a torchao-free, weight-only path can honour where the dense torchao path cannot (see
-# ``diffusion_native_quant``). ``auto`` never lands here: weight-only measured no speed win on gfx1151, only memory.
+# ``auto`` never lands here: weight-only measured no speed win on gfx1151, only memory.
 NATIVE_QUANT_SCHEMES = (TQ_INT8, TQ_FP8)
 
 
@@ -670,10 +669,7 @@ def native_quant_scheme(
     family: Optional[str] = None,
 ) -> Optional[str]:
     """The weight-only scheme an EXPLICIT ``requested`` runs as on a ``native_quant_host``, or None.
-
-    Separate from ``select_transformer_quant_scheme`` on purpose: that selector also feeds the hosted
-    prequant planners, and a hosted checkpoint is a torchao serialisation these hosts cannot open. The
-    family deny list still applies, as it does to the torchao path."""
+    Not in ``select_transformer_quant_scheme``: that also feeds hosted torchao prequant planners."""
     scheme = normalize_transformer_quant(requested)
     if scheme not in NATIVE_QUANT_SCHEMES or not native_quant_host(target):
         return None
