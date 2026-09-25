@@ -1586,6 +1586,40 @@ def test_auto_dynamic_active_follows_the_torchao_marker():
     assert isinstance(ds_mod.dynamo_graph_count(), int)
 
 
+def test_real_rope_installed_before_the_qwen_image_21_block_compile_only(monkeypatch):
+    from core.inference import diffusion_qwenimage21_rope as rope
+
+    _stub_torch(monkeypatch)
+    order = []
+    monkeypatch.setattr(rope, "install", lambda logger = None: order.append("rope") or True)
+    pipe = _Pipe(with_compile = True)
+    real_compile = pipe._compile
+    pipe.transformer.compile_repeated_blocks = lambda **kw: order.append("compile") or real_compile(
+        **kw
+    )
+    apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT)
+    assert order == ["compile"]  # any other DiT keeps the stock RoPE
+
+    order.clear()
+    QwenImage21Transformer2DModel = type("QwenImage21Transformer2DModel", (), {})
+    pipe = _Pipe(with_compile = True)
+    pipe.transformer = QwenImage21Transformer2DModel()
+    pipe.transformer.compile_repeated_blocks = lambda **kw: order.append("compile")
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert order == ["rope", "compile"] and applied["compiled"] is True
+
+    order.clear()
+    monkeypatch.setattr(
+        rope, "install", lambda logger = None: (_ for _ in ()).throw(RuntimeError("probe"))
+    )
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert order == ["compile"] and applied["compiled"] is True
+
+
 def test_family_compiles_regionally_reads_the_repeated_blocks_declaration(monkeypatch):
     from core.inference.diffusion_speed import family_compiles_regionally
 

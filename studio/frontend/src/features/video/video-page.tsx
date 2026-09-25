@@ -1005,7 +1005,7 @@ function VideoGenerator({
   const [attentionBackend, setAttentionBackend] = useState<
     "auto" | "native" | "cudnn" | "flash3" | "sage"
   >("auto");
-  const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache">("auto");
+  const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache" | "static">("auto");
   const [transformerQuant, setTransformerQuant] = useState<
     "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8"
   >("auto");
@@ -3462,7 +3462,7 @@ function VideoGenerator({
       )}
       <AdvancedSelect
         label="Step cache"
-        hint="First-Block-Cache reuses the transformer tail across steps for many-step models (small quality cost). Auto turns it on only on the Max speed tier at 20+ steps, re-checked per clip."
+        hint="First-Block-Cache reuses the transformer tail across steps for many-step models (small quality cost). Auto turns it on only on the Max speed tier at 20+ steps, re-checked per clip. Static skip extrapolates every other middle step on a fixed schedule (12+ steps) and keeps the compile and CUDA graph; Wan2.2 A14B, LTX-2 and MiniMax-H3 run uncached. Never picked by Auto."
         badge={<ResolvedBadge status={status} controlKey="transformer_cache" />}
         value={transformerCache}
         onValueChange={(v) => setTransformerCache(v as typeof transformerCache)}
@@ -3470,6 +3470,7 @@ function VideoGenerator({
           ["auto", "Auto"],
           ["off", "Off"],
           ["fbcache", "First-Block-Cache"],
+          ["static", "Static skip"],
         ]}
       />
       <LoadedBuildSummary status={status} />
