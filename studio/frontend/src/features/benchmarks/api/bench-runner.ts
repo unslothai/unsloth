@@ -282,56 +282,12 @@ export async function runBenchmark(
   if (prompts.length === 0)
     throw new BenchSetupError("The custom prompt is empty.");
 
-  // A run can name a model of its own; it loads with chat's settings so the base is the same.
-  if (
-    config.tuneModel &&
-    (config.tuneModel !== status.active_model ||
-      (config.tuneVariant ?? null) !== (status.gguf_variant ?? null))
-  ) {
-    events.onProgress(`Loading ${config.tuneModel}`);
-    await loadModel(
-      {
-        ...chatBaseLoad({
-          ...status,
-          active_model: config.tuneModel,
-          gguf_variant: config.tuneVariant ?? null,
-        }),
-        // chatBaseLoad falls back to chat's quant, which belongs to another model here.
-        gguf_variant: config.tuneVariant ?? null,
-        force_reload: true,
-      },
-      { signal, runtime: "chat" },
-    );
-    status = await getInferenceStatus(signal);
-  }
-  if (!status.active_model)
-    throw new BenchSetupError(
-      "Load a GGUF model in chat first. Benchmarks measure the model that is loaded.",
-    );
-  if (status.is_gguf === false)
-    throw new BenchSetupError(
-      "Benchmarks run on GGUF models. The loaded model runs on another backend.",
-    );
-
-  const base = chatBaseLoad(status);
-  const sampling = chatSampling(useChatRuntimeStore.getState());
-  config = { ...config, temperature: sampling.temperature };
-  const run: BenchRun = {
-    id: `run-${Date.now().toString(36)}`,
-    createdAt: Date.now(),
-    finishedAt: null,
-    model: status.active_model,
-    ggufVariant: status.gguf_variant ?? null,
-    kv: status.cache_type_kv ?? null,
-    context: status.context_length ?? null,
-    config,
-    meta: await readMeta(signal),
-    base: chatSettings(useChatRuntimeStore.getState()),
-    outcomes: config.variants.map((v) => ({ label: v.label, state: "queued" })),
-    results: [],
-  };
-  events.onStart(run);
+  // The initial model swap and setup live inside the restore scope below: a Stop during that
+  // first load must still put chat back on its own model, not leave it on the benchmark target.
+  let run: BenchRun | null = null;
+  let swapped = false;
   const setOutcome = (o: VariantOutcome) => {
+    if (!run) return;
     run.outcomes = run.outcomes.map((x) => (x.label === o.label ? o : x));
     events.onOutcome(o);
   };
@@ -343,7 +299,60 @@ export async function runBenchmark(
   let failedDemand: number | null = null;
   // Offload rows are meant to differ a lot in speed; only the absolute floor applies.
   const relativeFloor = config.sweep !== "offload";
+  // Only a context sweep can rule out larger contexts; offload rows all share one context.
+  const contextSweep = config.sweep === "context";
   try {
+    // A run can name a model of its own; it loads with chat's settings so the base is the same.
+    if (
+      config.tuneModel &&
+      (config.tuneModel !== status.active_model ||
+        (config.tuneVariant ?? null) !== (status.gguf_variant ?? null))
+    ) {
+      events.onProgress(`Loading ${config.tuneModel}`);
+      // Set before the load: an aborted swap may already have switched the server, so restore covers it.
+      swapped = true;
+      await loadModel(
+        {
+          ...chatBaseLoad({
+            ...status,
+            active_model: config.tuneModel,
+            gguf_variant: config.tuneVariant ?? null,
+          }),
+          // chatBaseLoad falls back to chat's quant, which belongs to another model here.
+          gguf_variant: config.tuneVariant ?? null,
+          force_reload: true,
+        },
+        { signal, runtime: "chat" },
+      );
+      status = await getInferenceStatus(signal);
+    }
+    if (!status.active_model)
+      throw new BenchSetupError(
+        "Load a GGUF model in chat first. Benchmarks measure the model that is loaded.",
+      );
+    if (status.is_gguf === false)
+      throw new BenchSetupError(
+        "Benchmarks run on GGUF models. The loaded model runs on another backend.",
+      );
+
+    const base = chatBaseLoad(status);
+    const sampling = chatSampling(useChatRuntimeStore.getState());
+    config = { ...config, temperature: sampling.temperature };
+    run = {
+      id: `run-${Date.now().toString(36)}`,
+      createdAt: Date.now(),
+      finishedAt: null,
+      model: status.active_model,
+      ggufVariant: status.gguf_variant ?? null,
+      kv: status.cache_type_kv ?? null,
+      context: status.context_length ?? null,
+      config,
+      meta: await readMeta(signal),
+      base: chatSettings(useChatRuntimeStore.getState()),
+      outcomes: config.variants.map((v) => ({ label: v.label, state: "queued" })),
+      results: [],
+    };
+    events.onStart(run);
     for (const variant of config.variants) {
       if (signal.aborted) throw abortError();
       const ctx = variant.load.max_seq_length;
@@ -377,7 +386,7 @@ export async function runBenchmark(
         if (signal.aborted) throw abortError();
         const message = err instanceof Error ? err.message : String(err);
         const oom = err instanceof RowLimitError || looksOutOfMemory(message);
-        if (oom && ctx !== undefined && demand === null)
+        if (oom && ctx !== undefined && demand === null && contextSweep)
           failedContext = Math.min(failedContext ?? ctx, ctx);
         if (oom && demand !== null)
           failedDemand = Math.min(failedDemand ?? demand, demand);
@@ -471,7 +480,10 @@ export async function runBenchmark(
         if (
           rate > 0 &&
           (rate < FLOOR_TPS ||
-            (relativeFloor && fastest > 0 && rate < fastest * FLOOR_FRACTION))
+            (!warmup &&
+              relativeFloor &&
+              fastest > 0 &&
+              rate < fastest * FLOOR_FRACTION))
         ) {
           rowFailure = `ran at ${rate.toFixed(1)} tok/s, far below the other rows, which means it spilled out of VRAM. Stopped to keep the machine responsive`;
           rowFailureLimited = true;
@@ -481,7 +493,7 @@ export async function runBenchmark(
       }
       if (rowFailure) {
         if (rowFailureLimited) {
-          if (ctx !== undefined && demand === null)
+          if (ctx !== undefined && demand === null && contextSweep)
             failedContext = Math.min(failedContext ?? ctx, ctx);
           if (demand !== null)
             failedDemand = Math.min(failedDemand ?? demand, demand);
@@ -502,22 +514,26 @@ export async function runBenchmark(
     }
   } catch (err) {
     if (!signal.aborted) throw err;
-    for (const o of run.outcomes) {
-      if (
-        o.state === "queued" ||
-        o.state === "loading" ||
-        o.state === "running"
-      )
-        setOutcome({ ...o, state: "cancelled" });
-    }
+    if (run)
+      for (const o of run.outcomes) {
+        if (
+          o.state === "queued" ||
+          o.state === "loading" ||
+          o.state === "running"
+        )
+          setOutcome({ ...o, state: "cancelled" });
+      }
   } finally {
-    run.finishedAt = Date.now();
-    if (config.restoreAfter && original.active_model) {
+    if (run) run.finishedAt = Date.now();
+    // Restore whenever chat's model may have changed: a variant ran, or the initial swap did.
+    if (config.restoreAfter && original.active_model && (run || swapped)) {
       events.onProgress("Restoring your original settings");
       // Restore the model chat had open, not the one a tuneModel run swapped in.
       await restore(original, chatBaseLoad(original)).catch(() => undefined);
     }
   }
+  // A Stop during setup, before any row: reject as a cancel, the restore above already ran.
+  if (!run) throw abortError();
   return run;
 }
 
