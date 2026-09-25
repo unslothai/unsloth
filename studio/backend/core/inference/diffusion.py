@@ -129,6 +129,7 @@ from .diffusion_speed import (
     compile_eligible,
     compiled_shapes_are_static,
     dynamo_graph_count,
+    fp16_compile_explicit_only,
     fp16_unet_offloaded,
     normalize_speed_mode,
     resolve_speed_mode,
@@ -5478,10 +5479,7 @@ class DiffusionBackend:
                         and effective_speed == SPEED_OFF
                         and transformer_quant_engaged is None
                         and compile_eligible(target, is_gguf = False, family = fam)
-                        # The deferred profile would find nothing to compile, so the load stays exact eager.
-                        and not fp16_unet_offloaded(
-                            target, pipe, offload_active = plan.offload_policy != OFFLOAD_NONE
-                        )
+                        and not fp16_compile_explicit_only(target)
                     )
                     # Speed optims run BEFORE placement, so snapshot the global backend flags first for unload restore.
                     # The dense transformer quant above builds quiet configs, so it mutated none of these flags.
@@ -6916,11 +6914,7 @@ class DiffusionBackend:
             entry["value"] = attention_engaged or "native"
             object.__setattr__(state, "resolved", {**state.resolved, "attention_backend": entry})
         gguf_transformer = state.kind == "gguf" and state.transformer_quant is None
-        if compile_eligible(
-            target, is_gguf = gguf_transformer, family = state.family
-        ) and not fp16_unet_offloaded(
-            target, state.pipe, offload_active = state.offload_policy != OFFLOAD_NONE
-        ):
+        if compile_eligible(target, is_gguf = gguf_transformer, family = state.family):
             compile_ctx = compile_cache.begin(
                 family = state.family.name,
                 # U-Net families (SDXL) carry the denoiser as pipe.unet.

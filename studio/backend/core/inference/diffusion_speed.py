@@ -227,6 +227,12 @@ def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
     return _is_float16(dtype) and _fp16_compile_capable(target)
 
 
+def fp16_compile_explicit_only(target: Any) -> bool:
+    """fp16 compiles on an explicit default / max tier but never through the automatic profile a dense load defers to
+    its 3rd image: on a T4 the cold compile (~245 s for SDXL-Turbo) buys ~0.1 s per image."""
+    return _is_float16(getattr(target, "dtype", None))
+
+
 def _is_bfloat16(dtype: Any) -> bool:
     try:
         import torch

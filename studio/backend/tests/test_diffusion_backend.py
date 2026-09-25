@@ -1197,17 +1197,17 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
     backend.unload()
 
 
-def test_deferred_speed_stays_off_for_an_offloaded_fp16_unet(fake_runtime, tmp_path, monkeypatch):
-    # compile_eligible accepts fp16, but an offloaded fp16 U-Net never compiles, so the 3rd image must not engage a
-    # profile (eager patches, attention upgrade) and report it as compiled.
+def test_deferred_speed_stays_off_when_only_an_explicit_tier_may_compile(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # fp16 compiles on an explicit default/max but never through the automatic 3rd-image profile, so an unset speed
+    # stays exact eager instead of engaging patches and a cold compile on the 3rd render.
     from core.inference import diffusion as dmod
 
     seen = []
     monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
     monkeypatch.setattr(
-        dmod,
-        "fp16_unet_offloaded",
-        lambda target, pipe, offload_active: seen.append(offload_active) or True,
+        dmod, "fp16_compile_explicit_only", lambda target: seen.append(target) or True
     )
     engaged = []
     monkeypatch.setattr(

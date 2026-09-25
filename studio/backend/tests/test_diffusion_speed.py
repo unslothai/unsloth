@@ -212,6 +212,15 @@ def test_compile_eligible_fp16_probe_failure_stays_eager(monkeypatch):
     assert compile_eligible(_fp16_target(), is_gguf = False, family = _family()) is False
 
 
+def test_fp16_compile_is_explicit_tier_only(monkeypatch):
+    # The automatic (deferred) profile never pays an fp16 cold compile; an explicit tier still does.
+    _stub_torch_capability(monkeypatch, (7, 5))
+    assert ds_mod.fp16_compile_explicit_only(_fp16_target()) is True
+    assert compile_eligible(_fp16_target(), is_gguf = False, family = _family()) is True
+    assert ds_mod.fp16_compile_explicit_only(_target()) is False
+    assert ds_mod.fp16_compile_explicit_only(_target(dtype = "float32")) is False
+
+
 def test_compile_eligible_bf16_never_probes_capability(monkeypatch):
     # bf16 is decided exactly as before: no capability probe, no fp16-incompatible check.
     seen = []
