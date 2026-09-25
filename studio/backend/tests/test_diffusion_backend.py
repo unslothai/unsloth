@@ -7135,6 +7135,8 @@ def test_unload_mid_render_releases_the_pipeline(fake_runtime, monkeypatch):
     import weakref
 
     backend = DiffusionBackend()
+    # Skip the real hardware probe (nvidia-smi can take >10 s on a busy host) so step 0 arrives promptly.
+    monkeypatch.setattr(backend, "_pick_device_and_dtype", lambda: ("cpu", sys.modules["torch"].float32))
     at_step0 = threading.Event()
     resume = threading.Event()
 
@@ -7187,7 +7189,7 @@ def test_unload_mid_render_releases_the_pipeline(fake_runtime, monkeypatch):
 
     t = threading.Thread(target = _run)
     t.start()
-    assert at_step0.wait(30)
+    assert at_step0.wait(5)
     u = threading.Thread(target = backend.unload)
     u.start()
     assert backend._active_generate_cancel.wait(5)
@@ -7210,6 +7212,8 @@ def test_replacing_load_mid_render_releases_the_pipeline(
     from core.inference import diffusion as diffusion_mod
 
     backend = DiffusionBackend()
+    # Skip the real hardware probe (nvidia-smi can take >10 s on a busy host) so step 0 arrives promptly.
+    monkeypatch.setattr(backend, "_pick_device_and_dtype", lambda: ("cpu", sys.modules["torch"].float32))
     at_step0 = threading.Event()
     resume = threading.Event()
     teardown_cleared = threading.Event()
@@ -7291,7 +7295,7 @@ def test_replacing_load_mid_render_releases_the_pipeline(
 
     t = threading.Thread(target = _run)
     t.start()
-    assert at_step0.wait(30)
+    assert at_step0.wait(5)
     ld = threading.Thread(target = _replacing_load)
     ld.start()
     assert backend._active_generate_cancel.wait(5)
