@@ -1087,7 +1087,15 @@ def _llama_pooling(name: str, served = None) -> str | None:
         and path
         and backend._model_repo == config.effective_gguf_repo_for_embedding_model(name)
     ):
-        pooling = getattr(backend, "_model_pooling", None) or _gguf_pooling(path)
+        captured = getattr(backend, "_model_pooling", None)
+        # A live server still serves the pooling captured at its spawn even if the file is
+        # replaced. ``served`` means an encode just completed on that same captured value. With a
+        # stopped ambient backend, however, the next spawn will read the file again, so pre-encode
+        # deduplication must do the same.
+        if served is not None or backend._process_alive():
+            pooling = captured or _gguf_pooling(path)
+        else:
+            pooling = _gguf_pooling(path)
     else:
         pooling = LlamaServerBackend.cached_pooling(name)
     if pooling is None:

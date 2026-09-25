@@ -1778,6 +1778,25 @@ def test_llama_identity_keeps_the_launched_pooling_when_the_file_vanishes(monkey
     assert embeddings._identity(True, model, backend) == legacy + ":last"
 
 
+def test_llama_identity_rechecks_a_stopped_backends_replaced_gguf(monkeypatch, tmp_path):
+    """Before an encode, a stopped server will respawn from the current file and must not
+    deduplicate with its old pooling. A completed encode still keeps the value it actually used."""
+    model, repo = "org/embed", "org/embed-GGUF"
+    monkeypatch.setattr(config, "effective_gguf_repo_for_embedding_model", lambda m: repo)
+    snapshot = _seed_cache(tmp_path / "hub", repo, ["embed-F16.gguf"])
+    served = (snapshot / "embed-F16.gguf").resolve()
+    _write_gguf(served, "qwen3", 3)
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    backend = LlamaServerBackend()
+    backend._adopt_model_path(str(served), repo)
+    monkeypatch.setattr(embeddings, "_backend", backend)
+    _write_gguf(served, "qwen3", 1)
+    legacy = config.embedding_identity("llama-server", model, gguf_repo = repo)
+
+    assert embeddings._identity(True, model) == legacy + ":mean"
+    assert embeddings._identity(True, model, backend) == legacy + ":last"
+
+
 def test_llama_identity_is_not_predicted_from_a_fallback_repo(monkeypatch, tmp_path):
     """The loader serves only the desired repo from cache before going online, so a
     fallback repo's cached GGUF may not be what the next encode loads."""
