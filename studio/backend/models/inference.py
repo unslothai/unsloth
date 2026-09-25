@@ -943,6 +943,11 @@ class EstimateMemoryResponse(BaseModel):
     )
     weights_bytes: int = Field(0, description = "Resident model files: weights, projector, drafter")
     kv_bytes: int = Field(0, description = "KV cache at the requested context and slots")
+    kv_checkpoint_bytes: int = Field(
+        0,
+        description = "Context checkpoints in host RAM: included in kv_bytes and total_bytes, "
+        "excluded from gpu_bytes.",
+    )
     compute_bytes: int = Field(0, description = "Compute / graph buffers, flat plus context-linear")
     drafter_runtime_bytes: int = Field(
         0,
@@ -1047,6 +1052,9 @@ class MemoryEstimate(BaseModel):
     )
 
     kv_bytes: int = Field(0, description = "KV cache at the requested context and slots")
+    kv_checkpoint_bytes: int = Field(
+        0, description = "The host-RAM part of kv_bytes: per-slot context checkpoints"
+    )
     compute_bytes: int = Field(0, description = "Compute / graph buffers, flat plus context-linear")
     drafter_runtime_bytes: int = Field(
         0, description = "A separate drafter's own KV cache and rollback state"
@@ -1269,6 +1277,10 @@ class _InferenceRuntimeFields(BaseModel):
         ),
     )
     is_mlx: bool = Field(False, description = "Whether the active model is served by the MLX backend")
+    is_npu: bool = Field(
+        False,
+        description = "Whether the active model runs on the AMD Ryzen AI NPU (FastFlowLM through Lemonade)",
+    )
     mlx_kv_bits: Optional[int] = Field(
         None, description = "MLX KV quantization bit width actually applied, if any"
     )
@@ -3876,12 +3888,12 @@ class DiffusionLoadRequest(BaseModel):
     )
     transformer_cache: Optional[Literal["off", "fbcache"]] = Field(
         None,
-        description = "Opt-in step caching (off by default). fbcache = First-Block-Cache: "
-        "reuse the transformer tail across denoise steps when the first block's residual "
-        "barely changes (~1.4x on Flux 28-step at LPIPS ~0.08). For MANY-step models "
-        "(Flux / Qwen-Image); leave off for few-step distilled models (e.g. Z-Image-Turbo), "
-        "which have no caching headroom. Composes with compile (drops fullgraph "
-        "automatically); incompatible models run uncached.",
+        description = "Step caching. fbcache = First-Block-Cache: reuse the transformer tail "
+        "across denoise steps when the first block's residual barely changes (~1.4x on Flux "
+        "28-step at LPIPS ~0.08). Unset = auto: engages only on speed_mode=max with a 20+ step "
+        "schedule, otherwise uncached. An explicit fbcache engages on every speed tier; off "
+        "never caches. Composes with compile (drops fullgraph automatically); incompatible "
+        "models run uncached.",
     )
     transformer_cache_threshold: Optional[float] = Field(
         None,
@@ -4106,6 +4118,14 @@ class DiffusionGenerateRequest(BaseModel):
         description = "Upscale (hires fix) factor for an init_image: enlarges the source "
         "by this multiple and re-denoises at low strength. Requires init_image; "
         "ignored for txt2img/inpaint/edit.",
+    )
+    allow_oversized: bool = Field(
+        False,
+        description = "Run even when the generate-time memory check estimates this size will not "
+        "fit the free GPU memory. Sizes that fit once the VAE decodes tile by tile already run "
+        "without it; this is for the rest. An oversized run can fail with an out-of-memory error, "
+        "or on Windows spill into system RAM and run very slowly. Same effect as the server's "
+        "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_GENERATE=1, per request.",
     )
     reference_images: Optional[list[str]] = Field(
         None,
@@ -4843,10 +4863,10 @@ class VideoLoadRequest(BaseModel):
     )
     transformer_cache: Optional[Literal["off", "fbcache"]] = Field(
         None,
-        description = "Opt-in step caching (off by default). fbcache = First-Block-Cache: "
-        "reuse the transformer tail across denoise steps when the first block's residual "
-        "barely changes. Engages on many-step schedules only; incompatible models run "
-        "uncached.",
+        description = "Step caching. fbcache = First-Block-Cache: reuse the transformer tail "
+        "across denoise steps when the first block's residual barely changes. Unset = auto: "
+        "engages only on speed_mode=max with a 20+ step schedule, otherwise uncached. An "
+        "explicit fbcache engages on every speed tier; incompatible models run uncached.",
     )
     transformer_cache_threshold: Optional[float] = Field(
         None,
