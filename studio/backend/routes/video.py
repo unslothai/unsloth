@@ -734,9 +734,13 @@ async def video_status(
     from core.inference.video import get_video_backend
     from hub.utils.host_paths import redact_host_paths
 
-    status_dict = get_video_backend().status()
+    backend = get_video_backend()
+    status_dict = backend.status()
     if account_access.resident_hidden("video", status_dict.get("repo_id")):
         return account_access.hidden_resident_response()
+    # Step-skip counters trace a clip as it runs (and after), which generate-progress hides from other accounts.
+    if status_dict.get("transformer_cache_stats") is not None and _generation_hidden(backend):
+        status_dict = {**status_dict, "transformer_cache_stats": None}
     # This route answers long after the request that resolved the reference ended, so there is
     # no handle in context to put back.
     return redact_host_paths(VideoStatusResponse(**status_dict), via_api_key = via_api_key)

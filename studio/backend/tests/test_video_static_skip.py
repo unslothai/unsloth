@@ -542,3 +542,29 @@ def test_load_pipeline_hands_the_cache_ask_to_the_native_path(monkeypatch):
         transformer_cache = "static",
     )
     assert calls and calls[0]["transformer_cache"] == "static"
+
+
+@pytest.mark.parametrize("hidden", [False, True])
+def test_status_route_hides_skip_counts_from_other_accounts(monkeypatch, hidden):
+    import asyncio
+
+    from core.inference import video as video_mod
+    from hub.services.models import account_access
+    from routes import video as routes
+
+    stats = {
+        "mode": "taylor1",
+        "planned_skips": 17,
+        "stats": {"calls": 100, "computed": 66, "skipped": 34},
+    }
+
+    class _Backend:
+        def status(self):
+            return {"loaded": True, "transformer_cache": "static", "transformer_cache_stats": stats}
+
+    monkeypatch.setattr(video_mod, "get_video_backend", lambda: _Backend())
+    monkeypatch.setattr(account_access, "resident_hidden", lambda *a, **k: False)
+    monkeypatch.setattr(routes, "_generation_hidden", lambda backend, *a: hidden)
+    body = asyncio.run(routes.video_status(current_subject = "u", via_api_key = False))
+    assert body.transformer_cache == "static"
+    assert body.transformer_cache_stats == (None if hidden else stats)
