@@ -50,7 +50,6 @@ concurrency:
 env:
   # Windows ARM64 support in Arrow's wheel build is CI-only and still unmerged, so it is
   # overlaid onto the release tag. Both halves move together or not at all.
-  # Commit SHA, never a branch: third-party fork whose batch files run to build a wheel we sign and publish.
   ARROW_WOA_REPO: MugundanMCW/arrow
   ARROW_WOA_REF: 423b9b38f85a2b7634f7fc8e4975b3ed573f3697  # Pyarrow_WoA @ 2026-08-18
 
