@@ -5549,6 +5549,9 @@ class DiffusionBackend:
                     else:
                         uninstall_patches()
                         uninstall_arch_patches()
+                    from .diffusion_qwenimage21 import install_for_pipe as install_q21_fast_step
+
+                    install_q21_fast_step(pipe, logger)
 
                     self._raise_if_load_cancelled(_load_token)
                     # Pre-warmed torch.compile cache: a per-fingerprint inductor dir plus a bundle loaded before the
@@ -7785,6 +7788,9 @@ class DiffusionBackend:
         from core.inference import diffusion_controlnet, diffusion_lora
         from hub.utils.gguf import extract_quant_token
 
+        resolved, speed_optims = cuda_graph.live_status(
+            state.resolved, state.speed_optims, getattr(state, "cuda_graphs", ())
+        )
         return {
             "loaded": True,
             "repo_id": state.repo_id,
@@ -7804,12 +7810,12 @@ class DiffusionBackend:
             "vae_tiling": state.vae_tiling,
             "memory_mode": state.memory_mode,
             "speed_mode": state.speed_mode,
-            "speed_optims": list(state.speed_optims),
+            "speed_optims": speed_optims,
             "text_encoder_quant": state.text_encoder_quant,
             "transformer_quant": state.transformer_quant,
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
-            "resolved": state.resolved,
+            "resolved": resolved,
             # Workflows the loaded family supports, so the UI can gate its tabs.
             "workflows": _family_workflows(state.family),
             "conditioning": conditioning_capabilities(
