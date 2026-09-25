@@ -2934,9 +2934,9 @@ def test_backfill_includes_a_standalone_gguf_with_no_variant():
     """A standalone .gguf picked directly has no quant to choose between, so it is stored
     with a null variant."""
     src = " ".join(_read("features/model-picker/api/migrate-model-overrides.ts").split())
-    assert 'entry.modelId.toLowerCase().endsWith(".gguf")' in src
-    # Still excluded for safetensors, which auto-switch does not resolve.
-    assert "entry.ggufVariant != null ||" in src
+    # No GGUF clause at all: auto-switch resolves non-GGUF weights too.
+    assert "cachedRepoConfigId(entry.modelId, entry.ggufVariant) === null &&" in src
+    assert "entry.ggufVariant != null ||" not in src
 
 
 def test_monitor_overlay_does_not_pull_in_the_lazy_page():
