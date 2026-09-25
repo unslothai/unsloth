@@ -66,6 +66,7 @@ from .diffusion_step_skip import (
     install_static_step_skip,
     mark_step_end,
     reset_static_step_skip,
+    static_skip_owner,
     static_skip_stats,
     uninstall_static_step_skip,
 )
@@ -5696,6 +5697,11 @@ class VideoBackend:
     def generate_job_account(self) -> Optional[str]:
         return self._generate_job_account
 
+    def static_skip_owner(self) -> Optional[str]:
+        """Account whose clip produced ``transformer_cache_stats``; never part of status()."""
+        state = self._state
+        return static_skip_owner(getattr(state, "pipe", None)) if state is not None else None
+
     def _run_generate(
         self,
         *,
@@ -6339,7 +6345,9 @@ class VideoBackend:
                             )
                 if static_skip:
                     # Without a step callback (HunyuanVideo-1.5) steps count per CFG branch from cache_context names.
-                    reset_static_step_skip(pipe, steps, step_signal = has_step_callback)
+                    reset_static_step_skip(
+                        pipe, steps, step_signal = has_step_callback, owner = current_account_id()
+                    )
                 elif state.transformer_cache:
                     self._reset_step_cache(pipe)
                 try:

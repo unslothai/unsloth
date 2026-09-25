@@ -299,6 +299,9 @@ def test_generate_skips_the_scheduled_steps_per_cfg_branch(loop_runtime):
         "computed": computed,
         "skipped": 2 * SKIPPED_PER_BRANCH,
     }
+    from utils.account_context import current_account_id
+
+    assert backend.static_skip_owner() == current_account_id()
     backend.generate(prompt = "a sloth", steps = STEPS)
     assert pipe.transformer.computed == 2 * computed
     backend.generate(prompt = "a sloth", steps = 8)
@@ -544,8 +547,11 @@ def test_load_pipeline_hands_the_cache_ask_to_the_native_path(monkeypatch):
     assert calls and calls[0]["transformer_cache"] == "static"
 
 
-@pytest.mark.parametrize("hidden", [False, True])
-def test_status_route_hides_skip_counts_from_other_accounts(monkeypatch, hidden):
+@pytest.mark.parametrize(
+    "scope, owner, shown",
+    [(None, "b", True), ("scoped", "a", True), ("scoped", "b", False), ("scoped", None, True)],
+)
+def test_status_route_shows_skip_counts_only_to_their_producer(monkeypatch, scope, owner, shown):
     import asyncio
 
     from core.inference import video as video_mod
@@ -562,9 +568,13 @@ def test_status_route_hides_skip_counts_from_other_accounts(monkeypatch, hidden)
         def status(self):
             return {"loaded": True, "transformer_cache": "static", "transformer_cache_stats": stats}
 
+        def static_skip_owner(self):
+            return owner
+
     monkeypatch.setattr(video_mod, "get_video_backend", lambda: _Backend())
     monkeypatch.setattr(account_access, "resident_hidden", lambda *a, **k: False)
-    monkeypatch.setattr(routes, "_generation_hidden", lambda backend, *a: hidden)
+    monkeypatch.setattr(account_access, "account_scope", lambda: scope)
+    monkeypatch.setattr(routes, "current_account_id", lambda: "a")
     body = asyncio.run(routes.video_status(current_subject = "u", via_api_key = False))
     assert body.transformer_cache == "static"
-    assert body.transformer_cache_stats == (None if hidden else stats)
+    assert body.transformer_cache_stats == (stats if shown else None)
