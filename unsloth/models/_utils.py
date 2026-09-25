@@ -3947,8 +3947,16 @@ def _find_concrete_accepts_loss_kwargs(model):
     return None, "no explicit accepts_loss_kwargs on any wrapper level"
 
 
-def _shadow_accepts_loss_kwargs(model, value):
+_GUESSED_LOSS_KWARGS = "_unsloth_guessed_accepts_loss_kwargs"
+
+
+def _shadow_accepts_loss_kwargs(
+    model,
+    value,
+    guessed = False,
+):
     # Set the attribute at every wrapper level so HF's hasattr check resolves wherever accelerator or peft unwrap lands.
+    # guessed marks values the source heuristic wrote, so a later call re-checks them instead of trusting them.
     seen = set()
     m = model
     for _ in range(8):
@@ -3957,6 +3965,10 @@ def _shadow_accepts_loss_kwargs(model, value):
         seen.add(id(m))
         try:
             setattr(m, "accepts_loss_kwargs", value)
+            if guessed:
+                m.__dict__[_GUESSED_LOSS_KWARGS] = True
+            else:
+                m.__dict__.pop(_GUESSED_LOSS_KWARGS, None)
         except Exception:
             pass
         nxt = getattr(m, "base_model", None)
@@ -3977,14 +3989,16 @@ def apply_accepts_loss_kwargs_fix(model):
     if value is None:
         declared = _instance_accepts_loss_kwargs(model)
         if declared is not None:
-            # Set in __init__ (or by an earlier call here): keep it, and carry it onto any wrapper added since.
+            # Set by the model itself: keep it, and carry it onto any wrapper added since.
             _shadow_accepts_loss_kwargs(model, declared)
             return f"{declared} (instance accepts_loss_kwargs)"
+        # Re-check an earlier guess: forward may have been replaced since.
+        _clear_guessed_accepts_loss_kwargs(model)
         causal_lm = _forward_ignores_num_items_in_batch(model)
         if causal_lm is not None:
-            _shadow_accepts_loss_kwargs(model, False)
+            _shadow_accepts_loss_kwargs(model, False, guessed = True)
             # transformers 5 reads the flag off get_base_model(), which the walk above can skip under PEFT.
-            _shadow_accepts_loss_kwargs(causal_lm, False)
+            _shadow_accepts_loss_kwargs(causal_lm, False, guessed = True)
             return "False (forward takes **kwargs but computes its own mean loss)"
         return f"default (signature inspection, {reason})"
     _shadow_accepts_loss_kwargs(model, value)
@@ -3994,15 +4008,37 @@ def apply_accepts_loss_kwargs_fix(model):
 _OWN_CE_LOSS = re.compile(r"\bCrossEntropyLoss\s*\(|\bcross_entropy\s*\(")
 
 
+def _loss_kwargs_chain(model):
+    seen = set()
+    m = model
+    for _ in range(8):
+        if m is None or id(m) in seen:
+            return
+        seen.add(id(m))
+        yield m
+        nxt = getattr(m, "base_model", None)
+        if nxt is None or nxt is m:
+            nxt = getattr(m, "model", None)
+        m = nxt
+
+
+def _clear_guessed_accepts_loss_kwargs(model):
+    for m in _loss_kwargs_chain(model):
+        d = getattr(m, "__dict__", {})
+        if d.pop(_GUESSED_LOSS_KWARGS, False):
+            d.pop("accepts_loss_kwargs", None)
+
+
 def _instance_accepts_loss_kwargs(model):
-    # First accepts_loss_kwargs stored on an instance along the wrapper chain, else None.
+    # First accepts_loss_kwargs the model itself stored on an instance along the wrapper chain, else None.
     seen = set()
     m = model
     for _ in range(8):
         if m is None or id(m) in seen:
             return None
         seen.add(id(m))
-        value = getattr(m, "__dict__", {}).get("accepts_loss_kwargs", None)
+        d = getattr(m, "__dict__", {})
+        value = None if d.get(_GUESSED_LOSS_KWARGS) else d.get("accepts_loss_kwargs", None)
         if value is not None:
             return value
         nxt = getattr(m, "base_model", None)
@@ -4055,11 +4091,18 @@ def _is_const(node, allowed):
 
 
 def _ce_calls_all_mean(source):
+    all_mean, found = _scan_ce_calls(source)
+    # A mention in a comment or docstring is not a call.
+    return all_mean and found
+
+
+def _scan_ce_calls(source):
     # A sum / "none" reduction (modern or legacy, keyword or positional) is the model's own objective, not a micro-batch mean.
+    # Returns (every call is a mean, at least one call was seen).
     try:
         tree = ast.parse(textwrap.dedent(source))
     except SyntaxError:
-        return False
+        return False, False
     found = False
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -4076,19 +4119,18 @@ def _ce_calls_all_mean(source):
         if params is None:
             continue
         if len(node.args) > len(params) or any(isinstance(x, ast.Starred) for x in node.args):
-            return False
+            return False, found
         if any(kw.arg is None for kw in node.keywords):
-            return False
+            return False, found
         bound = dict(zip(params, node.args))
         bound.update((kw.arg, kw.value) for kw in node.keywords)
         if "reduction" in bound and not _is_const(bound["reduction"], ("mean",)):
-            return False
+            return False, found
         for legacy in ("size_average", "reduce"):
             if legacy in bound and not _is_const(bound[legacy], (None, True)):
-                return False
+                return False, found
         found = True
-    # A mention in a comment or docstring is not a call.
-    return found
+    return True, found
 
 
 def _forward_ignores_num_items_in_batch(model):
@@ -4106,7 +4148,8 @@ def _forward_ignores_num_items_in_batch(model):
             return None
         seen.add(id(m))
         name = type(m).__name__
-        if "CausalLM" in name or "ForConditionalGeneration" in name:
+        # QWenLMHeadModel-style remote classes are causal LMs too.
+        if "CausalLM" in name or "ForConditionalGeneration" in name or "LMHeadModel" in name:
             break
         nxt = getattr(m, "base_model", None)
         if nxt is None or nxt is m:
@@ -4129,7 +4172,17 @@ def _forward_ignores_num_items_in_batch(model):
         return None
     if "num_items_in_batch" in source or "loss_function" in source:
         return None
-    if _OWN_CE_LOSS.search(source) is None or not _ce_calls_all_mean(source):
+    # A loss module built once in __init__ (self.loss_fct = CrossEntropyLoss()) and called from forward.
+    used = [
+        sub
+        for name, sub in m.named_children()
+        if isinstance(sub, torch.nn.CrossEntropyLoss)
+        and re.search(rf"\bself\.{re.escape(name)}\s*\(", source)
+    ]
+    if any(sub.reduction != "mean" for sub in used):
+        return None
+    all_mean, found = _scan_ce_calls(source)
+    if not all_mean or not (found or used):
         return None
     return m
 

@@ -44,6 +44,10 @@ _NAMES = {
     "_is_const",
     "_TORCH_CE_OWNERS",
     "_dotted_name",
+    "_scan_ce_calls",
+    "_GUESSED_LOSS_KWARGS",
+    "_loss_kwargs_chain",
+    "_clear_guessed_accepts_loss_kwargs",
     "apply_accepts_loss_kwargs_fix",
 }
 
@@ -59,7 +63,7 @@ def _load():
             isinstance(t, ast.Name) and t.id in _NAMES for t in node.targets
         ):
             keep.append(node)
-    ns = {"ast": ast, "re": re, "inspect": inspect, "os": os, "textwrap": textwrap}
+    ns = {"ast": ast, "re": re, "inspect": inspect, "os": os, "textwrap": textwrap, "torch": torch}
     exec(compile(ast.Module(body = keep, type_ignores = []), str(_UTILS), "exec"), ns)
     return ns
 
@@ -142,6 +146,30 @@ class InstanceDeclaredForCausalLM(nn.Module):
         super().__init__()
         self.model = Backbone()
         self.accepts_loss_kwargs = True
+
+    def forward(self, input_ids=None, labels=None, **kwargs):
+        logits = torch.zeros(1)
+        loss_fct = CrossEntropyLoss()
+        return loss_fct(logits.view(-1, 1), labels.view(-1))
+
+
+class LossModuleForCausalLM(nn.Module):
+    """Builds its CrossEntropyLoss once in __init__ and calls it from forward."""
+    def __init__(self, reduction="mean"):
+        super().__init__()
+        self.model = Backbone()
+        self.loss_fct = CrossEntropyLoss(reduction=reduction)
+
+    def forward(self, input_ids=None, labels=None, **kwargs):
+        logits = torch.zeros(1)
+        return self.loss_fct(logits.view(-1, 1), labels.view(-1))
+
+
+class QWenLMHeadModel(nn.Module):
+    """Remote causal LM named *LMHeadModel rather than *CausalLM."""
+    def __init__(self):
+        super().__init__()
+        self.transformer = Backbone()
 
     def forward(self, input_ids=None, labels=None, **kwargs):
         logits = torch.zeros(1)
@@ -420,3 +448,43 @@ def test_the_instance_forward_is_the_one_inspected(tmp_path):
     hooked.forward = functools.update_wrapper(functools.partial(new_forward, hooked), old_forward)
     ns["apply_accepts_loss_kwargs_fix"](hooked)
     assert hooked.accepts_loss_kwargs is False
+
+
+def test_a_loss_module_built_in_init_counts_by_its_reduction(tmp_path):
+    ns = _load()
+    mods = _models(tmp_path)
+    model = mods.LossModuleForCausalLM()
+    ns["apply_accepts_loss_kwargs_fix"](model)
+    assert model.accepts_loss_kwargs is False
+    summed = mods.LossModuleForCausalLM(reduction = "sum")
+    ns["apply_accepts_loss_kwargs_fix"](summed)
+    assert not hasattr(summed, "accepts_loss_kwargs")
+
+
+def test_an_lm_head_model_is_a_causal_lm(tmp_path):
+    ns = _load()
+    mods = _models(tmp_path)
+    model = mods.QWenLMHeadModel()
+    ns["apply_accepts_loss_kwargs_fix"](model)
+    assert model.accepts_loss_kwargs is False
+
+
+def test_a_forward_replaced_after_load_is_checked_again(tmp_path):
+    # The load-time guess must not stick once the user swaps in a forward that consumes num_items_in_batch.
+    ns = _load()
+    mods = _models(tmp_path)
+    model = mods.NemotronHForCausalLM()
+    ns["apply_accepts_loss_kwargs_fix"](model)
+    assert model.accepts_loss_kwargs is False
+
+    def consuming_forward(
+        input_ids = None,
+        labels = None,
+        num_items_in_batch = None,
+        **kwargs,
+    ):
+        return None
+
+    model.forward = consuming_forward
+    ns["apply_accepts_loss_kwargs_fix"](model)
+    assert not hasattr(model, "accepts_loss_kwargs")
