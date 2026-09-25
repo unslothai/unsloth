@@ -2769,3 +2769,40 @@ def test_a_gpu_refusal_on_a_gated_base_is_not_blamed_on_the_family_deny(monkeypa
     message = str(err.value)
     assert "on this GPU" in message
     assert "accuracy-gate record" not in message
+
+
+def test_a_gguf_pick_whose_base_comes_from_its_card_is_judged_on_the_gated_base(monkeypatch):
+    """A GGUF load that names no base_repo resolves it from the repo card at load time. The network-free gate must not
+    refuse explicit NVFP4 under the generic family deny that the Qwen-Image-2512 gate record lifts."""
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend, "_resolve_device_target", lambda self, fam: _cuda_target()
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        diffusion_module, "_pipeline_quant_uncompilable_reason", lambda *a, **k: None
+    )
+    import core.inference.diffusion_transformer_quant as tq
+
+    seen = []
+
+    def _select(target, requested, **kwargs):
+        # What the real selector does once the GPU is fine: the deny holds unless the base is gated.
+        seen.append(kwargs.get("base_repo"))
+        return (
+            None
+            if tq.family_denies_scheme(kwargs.get("family"), requested, kwargs.get("base_repo"))
+            else requested
+        )
+
+    monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", _select)
+    backend.assert_precision_available(
+        types.SimpleNamespace(name = "qwen-image"),
+        model_kind = "gguf",
+        transformer_quant = "nvfp4",
+        repo_id = "unsloth/Qwen-Image-2512-GGUF",
+    )
+    assert seen == ["Qwen/Qwen-Image-2512"]
