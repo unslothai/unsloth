@@ -327,8 +327,10 @@ import {
   PencilRulerIcon,
   Scroll01Icon,
   Telescope02Icon,
+  VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Volume02Icon } from "@/lib/volume-icons";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
@@ -347,8 +349,6 @@ import {
   RefreshCwIcon,
   SquareIcon,
   TerminalIcon,
-  Volume2Icon,
-  VolumeXIcon,
   XIcon,
 } from "lucide-react";
 import {
@@ -8376,7 +8376,7 @@ const AssistantActionBar: FC = () => {
           <MessagePrimitive.If speaking={false}>
             <ActionBarPrimitive.Speak asChild={true}>
               <TooltipIconButton tooltip="Read aloud" aria-label="Read aloud">
-                <Volume2Icon strokeWidth={1.75} className="size-icon" />
+                <HugeiconsIcon icon={Volume02Icon} strokeWidth={1.75} className="size-icon" />
               </TooltipIconButton>
             </ActionBarPrimitive.Speak>
           </MessagePrimitive.If>
@@ -8390,7 +8390,7 @@ const AssistantActionBar: FC = () => {
               aria-label="Stop reading"
               className="text-destructive"
             >
-              <VolumeXIcon strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={VolumeMute02Icon} strokeWidth={1.75} className="size-icon" />
             </TooltipIconButton>
           </ActionBarPrimitive.StopSpeaking>
         </MessagePrimitive.If>

@@ -28,8 +28,8 @@ import {
   Mic01Icon,
   RemoveCircleIcon,
   Video01Icon,
-  VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
+import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef } from "react";
@@ -55,7 +55,7 @@ const COLLAPSED_KEY = LOADED_MODELS_PREFERENCE_KEYS.collapsed;
 
 const KIND_ICONS: Record<LoadedModelKind, typeof SparkleIcon> = {
   text: Message01Icon,
-  tts: VolumeHighIcon,
+  tts: Volume02Icon,
   image: Image01Icon,
   video: Video01Icon,
   stt: Mic01Icon,
