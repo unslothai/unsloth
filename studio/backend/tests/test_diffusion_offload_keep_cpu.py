@@ -303,13 +303,23 @@ def test_a_weight_reassigned_through_data_on_the_device_is_copied_back():
     assert torch.equal(pipe.transformer.weight.detach(), torch.full((8, 8), 7.0))
 
 
-def _fake_cgroup(tmp_path, monkeypatch, limit, current, version = 2):
+def _fake_cgroup(
+    tmp_path,
+    monkeypatch,
+    limit,
+    current,
+    version = 2,
+):
     import core.inference.llama_cpp as llama_cpp_module
 
     root = tmp_path / "cgroup"
     leaf = root / ("studio.slice" if version == 2 else "memory/studio.slice")
     leaf.mkdir(parents = True)
-    names = ("memory.max", "memory.current") if version == 2 else ("memory.limit_in_bytes", "memory.usage_in_bytes")
+    names = (
+        ("memory.max", "memory.current")
+        if version == 2
+        else ("memory.limit_in_bytes", "memory.usage_in_bytes")
+    )
     if limit is not None:
         (leaf / names[0]).write_text(str(limit), encoding = "utf-8")
         (leaf / names[1]).write_text(str(current), encoding = "utf-8")
@@ -350,7 +360,9 @@ def test_the_ram_gate_is_sized_from_the_container(
         lambda: types.SimpleNamespace(total = 512 << 30, available = host_available),
     )
     # 16 GiB of weights (a power of two, so no chunk rounding), never allocated: the gate only reads sizes, and the first allocation is refused.
-    data = types.SimpleNamespace(nbytes = 16 << 30, is_contiguous = lambda: True, is_pinned = lambda: False)
+    data = types.SimpleNamespace(
+        nbytes = 16 << 30, is_contiguous = lambda: True, is_pinned = lambda: False
+    )
     weight = types.SimpleNamespace(device = torch.device("cpu"), data = data)
     module = types.SimpleNamespace(named_parameters = lambda: [("weight", weight)])
     allocated = []
