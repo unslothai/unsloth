@@ -7,8 +7,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrc } from "./helpers/kit.ts";
-
 import {
   embeddedBlobType,
   itemVersion,
