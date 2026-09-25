@@ -291,6 +291,24 @@ def test_notes_are_saved_in_their_own_encoding_and_deletable(client):
     assert client.put(url, json = {"text": "x"}).status_code == 404
 
 
+def test_chat_attachments_holding_bytes_are_known_by_their_type_in_any_case(client, monkeypatch):
+    import storage.studio_db as studio_db
+
+    def attachment(attachment_id, content_type):
+        return {"messageId": "m", "id": attachment_id, "type": "file", "contentType": content_type}
+
+    monkeypatch.setattr(library, "_SOURCES", (library._attachment_items,))
+    monkeypatch.setattr(
+        studio_db,
+        "list_chat_attachments",
+        lambda: [attachment("clip", "Video/WebM; codecs=vp9"), attachment("words", "Text/Plain")],
+    )
+    items = _items(client)[0]
+    clip, words = items["attachment:m:clip"], items["attachment:m:words"]
+    assert (clip["contentType"], clip["textOnly"]) == ("video/webm", False)
+    assert (words["contentType"], words["textOnly"]) == ("text/plain", True)
+
+
 def test_generated_audio_and_video_are_listed_and_deleted(client, monkeypatch):
     import routes.video as video_routes
     from core.inference import audio_gallery, video_gallery
@@ -1705,6 +1723,8 @@ def test_thumbnails_are_cached_by_version_and_attachments_have_them_too(client, 
     for _ in range(3):
         assert _thumbnail_size(client, image) == (40, 30)
     assert calls == ["image/png"]
+    # Another account can have an item of the same id and version: its sign-in keys it apart.
+    assert _thumbnail(client, image).headers["vary"] == "Authorization"
     # A new version of the file is a new size and mtime, so a new picture.
     library.upload_path(_ref(image)).write_bytes(_png(30, 20, "RGB"))
     assert _thumbnail_size(client, image) == (30, 20)

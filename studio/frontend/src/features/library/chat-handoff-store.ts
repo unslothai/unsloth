@@ -20,6 +20,9 @@ interface LibraryChatHandoffState {
   take: (targetKey: string) => LibraryChatHandoff | null;
 }
 
+// Bumped by a sign-out, so a hand-off under way stops rather than going on in the next account.
+let session = 0;
+
 export const useLibraryChatHandoffStore = create<LibraryChatHandoffState>(
   (set, get) => ({
     pending: null,
@@ -45,6 +48,7 @@ export async function attachLibraryChatFiles(
   retryHeld = false,
 ): Promise<number> {
   const store = useLibraryChatHandoffStore;
+  const started = session;
   const held = store.getState().held;
   let files: File[];
   if (retryHeld) {
@@ -56,6 +60,7 @@ export async function attachLibraryChatFiles(
   }
   const refused: File[] = [];
   for (const file of files) {
+    if (session !== started) return 0;
     try {
       await add(file);
     } catch {
@@ -63,7 +68,7 @@ export async function attachLibraryChatFiles(
       refused.push(file);
     }
   }
-  if (refused.length === 0) return 0;
+  if (refused.length === 0 || session !== started) return 0;
   store.setState(({ held: now }) => ({
     held: {
       targetKey,
@@ -76,6 +81,7 @@ export async function attachLibraryChatFiles(
 // Module state outlives a sign-out; the next account must not be handed these files.
 if (typeof window !== "undefined") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
+    session += 1;
     useLibraryChatHandoffStore.setState({ pending: null, held: null });
   });
 }

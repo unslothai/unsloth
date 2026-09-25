@@ -3,8 +3,7 @@
 
 import { create } from "zustand";
 import { AUTH_SESSION_CLEARED_EVENT, getAuthSessionEpoch } from "@/features/auth";
-import { deleteFineTunedModel } from "@/features/chat";
-import { emitChatAttachmentDeleted } from "@/features/chat/utils/chat-attachment-events";
+import { deleteFineTunedModel, emitChatAttachmentDeleted } from "@/features/chat";
 import { translate } from "@/i18n";
 import { type GalleryKind, notifyGalleryChanged } from "@/lib/gallery-flags";
 import {
@@ -50,33 +49,50 @@ let refreshGeneration = 0;
 // Bumped each time a snapshot lands, so a caller can tell whether its refresh brought one.
 let snapshots = 0;
 
-/** `now`, with the entries an edit changed (`before` it, `after` it) back as they were. */
+/**
+ * `now`, with what an edit changed (`before` it, `after` it) put back: each field still holding the
+ * edit's value, so a later edit that landed keeps its own, and each entry the edit removed.
+ */
 function undoEdit<T extends { id: string }>(now: T[], before: T[], after: T[] | undefined): T[] {
   if (!after) return now;
   const edited = new Map(after.map((entry) => [entry.id, entry]));
   const prior = new Map(
     before.filter((entry) => edited.get(entry.id) !== entry).map((entry) => [entry.id, entry]),
   );
-  const restored = now.map((entry) => prior.get(entry.id) ?? entry);
+  const restored = now.map((entry) => {
+    const was = prior.get(entry.id);
+    const made = edited.get(entry.id);
+    if (!was || !made) return entry;
+    let undone = entry;
+    for (const key of new Set([...Object.keys(was), ...Object.keys(made)]) as Set<keyof T>) {
+      if (made[key] !== was[key] && entry[key] === made[key]) {
+        undone = { ...undone, [key]: was[key] };
+      }
+    }
+    return undone;
+  });
   const present = new Set(now.map((entry) => entry.id));
   for (const entry of prior.values()) {
-    if (!present.has(entry.id)) {
+    if (!edited.has(entry.id) && !present.has(entry.id)) {
       restored.splice(Math.min(before.indexOf(entry), restored.length), 0, entry);
     }
   }
   return restored;
 }
 
+// Edits apply here before the server has them, so a snapshot fetched while one is in flight, or
+// started before one, can predate it and would undo it on screen. Such a snapshot is dropped and
+// fetched again once every edit has settled; a failed edit rolls back the same way. A sign-out
+// starts the count again: an edit of the account that left must not hold back the next one's.
+let session = 0;
+let inFlight = 0;
+let edits = 0;
+let stale = false;
+// Failed edits, undone by hand if the refresh that should replace them brings nothing (an outage).
+let undos: (() => void)[] = [];
+
 // Edits apply locally first so menus feel instant, and roll back to the server's view on failure.
 export const useLibraryStore = create<LibraryState>((set, get) => {
-  // Edits apply here before the server has them, so a snapshot fetched while one is in flight, or
-  // started before one, can predate it and would undo it on screen. Such a snapshot is dropped and
-  // fetched again once every edit has settled; a failed edit rolls back the same way.
-  let inFlight = 0;
-  let edits = 0;
-  let stale = false;
-  // Failed edits, undone by hand if the refresh that should replace them brings nothing (an outage).
-  let undos: (() => void)[] = [];
   async function optimistic(
     apply: (state: LibraryState) => Partial<LibraryState>,
     request: () => Promise<void>,
@@ -84,25 +100,28 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
     const before = get();
     const after = apply(before);
     const epoch = getAuthSessionEpoch();
+    const started = session;
     set(after);
     edits += 1;
     inFlight += 1;
     try {
       await request();
     } catch (error) {
-      stale = true;
-      undos.push(() => {
-        // Signed out meanwhile: the store is the next account's now.
-        if (getAuthSessionEpoch() !== epoch) return;
-        set((state) => ({
-          items: undoEdit(state.items, before.items, after.items),
-          folders: undoEdit(state.folders, before.folders, after.folders),
-        }));
-      });
+      if (started === session) {
+        stale = true;
+        undos.push(() => {
+          // Signed out meanwhile: the store is the next account's now.
+          if (getAuthSessionEpoch() !== epoch) return;
+          set((state) => ({
+            items: undoEdit(state.items, before.items, after.items),
+            folders: undoEdit(state.folders, before.folders, after.folders),
+          }));
+        });
+      }
       throw error;
     } finally {
-      inFlight -= 1;
-      if (inFlight === 0 && stale) {
+      if (started === session) inFlight -= 1;
+      if (started === session && inFlight === 0 && stale) {
         stale = false;
         const pending = undos;
         undos = [];
@@ -270,6 +289,10 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
 if (typeof window !== "undefined") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
     refreshGeneration += 1;
+    session += 1;
+    inFlight = 0;
+    stale = false;
+    undos = [];
     useLibraryStore.setState({ items: [], folders: [], status: "idle", error: null });
     clearCachedObjectUrls();
   });

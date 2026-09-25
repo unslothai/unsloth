@@ -53,6 +53,48 @@ test("a sign-out drops files handed to a chat that has not taken them", async ()
   assert.equal(useLibraryChatHandoffStore.getState().held, null);
 });
 
+test("a sign-out mid-handoff stops it, and keeps nothing for the next account", async () => {
+  useLibraryChatHandoffStore
+    .getState()
+    .offer("single:4", { files: [file("a.png"), file("b.png"), file("c.png")] });
+  const added: string[] = [];
+  const add = async (f: File) => {
+    added.push(f.name);
+    if (f.name === "a.png") fireWindowEvent(SIGNED_OUT, {});
+    throw new Error("Load a model first");
+  };
+  assert.equal(await attachLibraryChatFiles("single:4", add), 0);
+  assert.deepEqual(added, ["a.png"]);
+  assert.equal(useLibraryChatHandoffStore.getState().held, null);
+});
+
+test("an upload's grants from before a sign-in are not sent under it", async () => {
+  let epoch = 1;
+  let requests = 0;
+  const { uploadLibraryFiles } = loadWithStubs<{
+    uploadLibraryFiles: (batch: object, folderId: string | null) => Promise<string[]>;
+  }>(new URL("../src/features/library/api.ts", import.meta.url), {
+    "@/features/auth": {
+      authFetch: async () => {
+        requests += 1;
+        return new Response(JSON.stringify({ ids: ["upload:x"] }));
+      },
+      getAuthSessionEpoch: () => epoch,
+      getAuthToken: () => null,
+    },
+    "@/i18n": { translate: (key: string) => key },
+    "@/lib/api-base": {},
+    "@/lib/format-fastapi-error": {},
+    "./file-name": {},
+    "./note-text": {},
+  });
+  const batch = { nativePathLeases: ["lease"], sessionEpoch: epoch };
+  epoch += 1;
+  await assert.rejects(uploadLibraryFiles(batch, null), /signedOutBeforeUpload/);
+  assert.equal(requests, 0);
+  assert.deepEqual(await uploadLibraryFiles({ ...batch, sessionEpoch: epoch }, null), ["upload:x"]);
+});
+
 type Item = { id: string; name: string; favorite: boolean; folderId: string | null };
 
 function loadStore(api: Record<string, unknown>, emitted: unknown[] = []) {
@@ -69,8 +111,8 @@ function loadStore(api: Record<string, unknown>, emitted: unknown[] = []) {
     zustand,
     "zustand/middleware": zustandMiddleware,
     "@/features/auth": { AUTH_SESSION_CLEARED_EVENT: SIGNED_OUT, getAuthSessionEpoch: () => 0 },
-    "@/features/chat": { deleteFineTunedModel: async () => {} },
-    "@/features/chat/utils/chat-attachment-events": {
+    "@/features/chat": {
+      deleteFineTunedModel: async () => {},
       emitChatAttachmentDeleted: (event: unknown) => emitted.push(event),
     },
     "@/i18n": { translate: (key: string) => key },
@@ -110,6 +152,37 @@ test("a failed edit is undone locally when the refresh meant to undo it fails to
     assert.rejects(store.getState().patchItem("upload:b", { name: "two" })),
   ]);
   assert.deepEqual(store.getState().items, [item("upload:a"), item("upload:b")]);
+});
+
+test("undoing a failed edit keeps what a later edit to the same item saved", async () => {
+  let online = true;
+  const store = loadStore({
+    getLibrary: async () => {
+      if (!online) throw new Error("offline");
+      return { items: [item("upload:a")], folders: [] };
+    },
+    updateLibraryItem: async (_id: string, patch: Partial<Item>) => {
+      if (patch.name) throw new Error("offline");
+    },
+  });
+  await store.getState().refresh();
+  online = false;
+  await Promise.allSettled([
+    store.getState().patchItem("upload:a", { name: "renamed" }),
+    store.getState().patchItem("upload:a", { favorite: true }),
+  ]);
+  assert.deepEqual(store.getState().items, [{ ...item("upload:a"), favorite: true }]);
+});
+
+test("an edit still pending at sign-out does not hold back the next account's Library", async () => {
+  const store = loadStore({
+    getLibrary: async () => ({ items: [item("upload:b")], folders: [] }),
+    updateLibraryItem: () => new Promise(() => {}),
+  });
+  void store.getState().patchItem("upload:a", { name: "never answered" });
+  fireWindowEvent(SIGNED_OUT, {});
+  await store.getState().refresh();
+  assert.deepEqual(store.getState().items, [item("upload:b")]);
 });
 
 test("deleting a chat attachment tells an open chat to drop it", async () => {
