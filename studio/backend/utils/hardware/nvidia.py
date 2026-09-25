@@ -238,12 +238,19 @@ def get_visible_gpu_utilization(
     }
 
 
+_WSL_NVIDIA_SMI = "/usr/lib/wsl/lib/nvidia-smi"
+
+
 def _nvidia_smi_executable() -> str:
     """The nvidia-smi to run, resolving the standard Windows locations off PATH. A driver install can leave nvidia-smi.exe in the NVSMI directory or the driver store without putting either on PATH, and a bare "nvidia-smi" then raises FileNotFoundError, leaving the physical inventory empty on exactly the host this inventory exists for: real GPUs, a PyTorch that cannot see them. Same two locations setup.ps1 falls back to. Returns the bare name when nothing better is found, so the caller's existing OSError handling still applies."""
     found = shutil.which("nvidia-smi")
     if found:
         return found
     if platform.system() != "Windows":
+        # WSL ships it in /usr/lib/wsl/lib, which is often off PATH (sudo's secure_path strips
+        # it), and WSL has no /proc/driver/nvidia to fall back on. The file exists only there.
+        if platform.system() == "Linux" and os.path.isfile(_WSL_NVIDIA_SMI):
+            return _WSL_NVIDIA_SMI
         return "nvidia-smi"
     for base, tail in (
         (os.environ.get("ProgramFiles"), r"NVIDIA Corporation\NVSMI\nvidia-smi.exe"),
