@@ -483,6 +483,18 @@ def runtime_paths_under(workdir: str) -> tuple[str, ...]:
     return tuple(inside)
 
 
+def _state_filters(paths: tuple[str, ...]) -> list[str]:
+    """Like ``_path_filters``, but a state root that does not exist yet is still denied, as a directory."""
+    filters = _path_filters(tuple(path for path in paths if os.path.exists(path)))
+    for path in paths:
+        if os.path.exists(path):
+            continue
+        for spelling in _sbpl_spellings(path):
+            encoded = _sbpl_string(spelling)
+            filters.extend((f"(literal {encoded})", f"(subpath {encoded})"))
+    return filters
+
+
 def _studio_state_rules(
     runtime_paths: tuple[str, ...], developer_paths: tuple[str, ...], workdir: str, private_tmp: str
 ) -> list[str]:
@@ -496,7 +508,7 @@ def _studio_state_rules(
         if path and _within_any(path, state)
     )
     # file-read-data, NOT file-read*: denying stat on the workdir's ancestors breaks os.makedirs.
-    rules = [_rule("deny file-read-data file-map-executable", _path_filters(state))]
+    rules = [_rule("deny file-read-data file-map-executable", _state_filters(state))]
     if needed:
         rules.append(
             _rule("allow file-read* file-test-existence file-map-executable", _path_filters(needed))

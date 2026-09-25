@@ -779,6 +779,19 @@ def test_studio_state_under_an_optional_read_root_is_denied(monkeypatch, tmp_pat
     assert str(state) in rules[0]
 
 
+def test_a_studio_home_that_does_not_exist_yet_is_still_denied(monkeypatch, tmp_path):
+    """Measured on macos-15/26: with no Studio home the probe raised 'no paths survived' and never isolated."""
+    from core.inference import sandbox_macos
+
+    state = tmp_path / "not-created-yet" / "studio"
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
+
+    rules = sandbox_macos._studio_state_rules((), (), str(tmp_path / "work"), str(tmp_path / "tmp"))
+
+    assert rules and rules[0].startswith("(deny file-read-data")
+    assert f'(subpath "{state}")' in rules[0]
+
+
 def test_the_runtime_inside_a_custom_studio_home_is_restored(monkeypatch, tmp_path):
     """A blanket deny would break a custom-home install: the managed venv lives under the Studio root, so the interpreter itself would stop being readable."""
     from core.inference import sandbox_macos
