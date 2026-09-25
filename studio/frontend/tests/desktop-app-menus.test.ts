@@ -99,17 +99,22 @@ test("Close keeps the native close so Cmd+W still reaches the window's close han
 test("Open Folder lands on the new project's Sources, not its chats", () => {
   const openFolder = readSrc("features/chat/utils/open-folder-as-project.ts");
   const landing = readSrc("features/chat/chat-page.tsx");
-  // Marked only once the folder is linked, before the caller navigates.
-  assert.ok(
-    openFolder.indexOf("markProjectSourcesPending(project.id)") >
-      openFolder.indexOf("createLinkedFolder("),
-  );
+  // Marked as soon as the project exists, before the link: the sidebar can open it meanwhile.
+  const marked = openFolder.indexOf("markProjectSourcesPending(project.id)");
+  assert.ok(marked > openFolder.indexOf("await createChatProject("));
+  assert.ok(marked < openFolder.indexOf("await createLinkedFolder("));
   assert.match(landing, /hasProjectSourcesPending\(projectId\) \? "sources" : "chats"/);
   // A failed link keeps the project: deleting it would delete chats that joined it meanwhile.
   assert.doesNotMatch(openFolder, /deleteChatProject/);
-  assert.ok(openFolder.indexOf("markProjectSourcesPending(project.id)") > openFolder.indexOf("} finally {"));
   // Keyed by project, so a new project mounts fresh and reads the marker.
   assert.match(landing, /<ProjectLanding\s+key=\{baseView\.projectId\}/);
+});
+
+test("Open Folder is disabled until the open in progress finishes", () => {
+  const openFolder = readSrc("features/chat/utils/open-folder-as-project.ts");
+  assert.match(openFolder, /if \(opening\) return null;\s*setOpening\(true\);/);
+  assert.match(openFolder, /\} finally \{\s*setOpening\(false\);/);
+  assert.match(ROOT, /pathLeasesSupported && !ragUnavailable && !openingFolder/);
 });
 
 test("menu triggers reach the newest mounted handler that claims the action", async () => {

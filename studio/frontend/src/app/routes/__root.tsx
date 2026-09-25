@@ -21,6 +21,7 @@ import {
   hydrateModelDisclaimerPreference,
   openFolderAsProject,
   StopRunningChatsDialog,
+  useOpeningFolder,
   useChatRuntimeStore,
 } from "@/features/chat";
 import { useExportRuntimeLifecycle } from "@/features/export";
@@ -510,6 +511,7 @@ function RootLayout() {
   // The desktop File and View menus. Open Folder links the folder, so it needs path leases and RAG.
   const pathLeasesSupported = useNativePathLeasesSupported();
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
+  const openingFolder = useOpeningFolder();
   // Menu items for web shortcuts are live exactly while a mounted handler would take them.
   const sidebarMounted = useShortcutAvailable("toggleSidebar", isTauri);
   const findMounted = useShortcutAvailable("findInPage", isTauri);
@@ -527,7 +529,7 @@ function RootLayout() {
       ? () => startNewChat({ incognito: true, standalone: true })
       : null,
     "open-folder":
-      routeShortcutEnabled && pathLeasesSupported && !ragUnavailable
+      routeShortcutEnabled && pathLeasesSupported && !ragUnavailable && !openingFolder
         ? () =>
             void openFolderAsProject().then((project) => {
               if (!project) return;
