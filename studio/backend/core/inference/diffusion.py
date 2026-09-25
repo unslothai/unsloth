@@ -4524,7 +4524,7 @@ class DiffusionBackend:
                     and (
                         eager_reason := _auto_quant_eager_reason(
                             fam,
-                            self._bf16_resident_plan(
+                            eager_plan := self._bf16_resident_plan(
                                 plan,
                                 target,
                                 fam,
@@ -4549,6 +4549,8 @@ class DiffusionBackend:
                     )
                     transformer_quant = "off"
                     transformer_quant_decline = eager_reason
+                    # Place the released weights by the plan that proved they fit, not by fp32 shard bytes.
+                    plan = eager_plan
                 if transformer_quant_pinned is not None and not dense_quant_supported_kind(kind):
                     transformer_quant_decline = dense_quant_unsupported_kind_reason(kind)
                     transformer_quant_decline_status = RESOLVED_UNSUPPORTED

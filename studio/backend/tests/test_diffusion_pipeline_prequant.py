@@ -1460,3 +1460,34 @@ def test_the_load_time_decision_budgets_an_unresolved_encoder_dense(
         _te_prequant_resolved = resolved,
     )
     assert heard == [("fp8" if resolved else None)]
+
+
+def test_the_kept_bf16_weights_are_placed_by_the_plan_that_proved_the_fit(
+    fake_runtime, monkeypatch
+):
+    backend, spy = _load_backend(monkeypatch)
+    _uncompilable(monkeypatch)
+    real_plan = DiffusionBackend._plan_memory
+
+    def _plan(self, *a, **k):
+        plan = real_plan(self, *a, **k)
+        if k.get("transformer_resident_override_mib") is None:
+            plan.offload_policy = "sequential"
+        return plan
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _plan)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resident_sized_plan",
+        lambda _s, plan, *_a, **_k: types.SimpleNamespace(**vars(plan)),
+    )
+    placed: list = []
+    monkeypatch.setattr(
+        dmod,
+        "apply_memory_plan",
+        lambda _pipe, plan, *_a, **_k: placed.append(plan.offload_policy) or ("none", False),
+    )
+    _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+
+    assert spy.quantised == []
+    assert placed == ["none"]
