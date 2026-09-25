@@ -4130,15 +4130,9 @@ class DiffusionBackend:
         text_encoder_quant: Optional[str],
         staged_dir: Optional[str] = None,
     ) -> Optional[tuple[int, tuple[str, ...], bool]]:
-        """``(MiB, components, exact)`` for the PRE-CAST text encoder(s) this pick loads from a
-        hosted checkpoint, or None when it loads none (or the size cannot be known).
+        """``(MiB, components, exact)`` for the hosted pre-cast text encoder(s) this pick loads, or None.
 
-        Same resolver as the injection (``te_prequant_sources_for_base``), so the plan prices the
-        encoder the load actually opens; ``components`` names which ``text_encoder*`` folders it
-        replaces (FLUX.1 pre-casts only its T5, not CLIP-L). The cached file size is exact: the
-        pre-cast state dict is stored at its load precision. A checkpoint not cached yet is priced
-        from the family table's dense encoder at ``TE_PREQUANT_BUDGET_SCALE`` and reported
-        ``exact=False``, since the load can still fall back to the dense encoder. Never raises."""
+        Uncached checkpoints are priced from the family table (``exact=False``). Never raises."""
         try:
             from .diffusion_te_prequant import (
                 TE_PREQUANT_BUDGET_SCALE,
@@ -4165,7 +4159,6 @@ class DiffusionBackend:
                     names = te_candidate_filenames(source)
 
                     def _sizes(d: Path, names = names) -> dict[str, int]:
-                        # Best candidate first: a repo hosting both spellings loads the preferred one.
                         for name in names:
                             f = d / name
                             if f.is_file():
@@ -4184,7 +4177,6 @@ class DiffusionBackend:
                 table = family_bf16_components_gb(fam, base)
                 if table is None:
                     return None
-                # The table's encoder term covers every encoder; price the uncached share of it.
                 share = uncached / max(1, len(sources))
                 total += int(table[1] * (1000.0**3) * TE_PREQUANT_BUDGET_SCALE * share)
             if total <= 0:
@@ -6445,11 +6437,8 @@ class DiffusionBackend:
         ``device_memory_override`` replaces the live reading for a plan taken BEFORE the download,
         where free memory still describes the OLD model; capacity bounds any later free reading.
 
-        ``text_encoder_quant`` is the RESOLVED encoder scheme. When it makes this pick take its
-        encoder pre-cast from a hosted checkpoint in another repo, the cache-scanned companion and
-        text-encoder terms are re-priced at that checkpoint's size (``_precast_text_encoder_mib``):
-        the base-repo scans never see it, so without this a GGUF Qwen-Image-2.1 load budgeted 0 MiB
-        for its 8.7 GiB encoder. None keeps the previous sizing.
+        ``text_encoder_quant`` (resolved scheme) re-prices cache-scanned encoder terms at a hosted
+        pre-cast checkpoint's size, which base-repo scans never see.
         """
         # Settled (max-over-reads) on cuda: a transient foreign allocation would make an empty card look full
         device_memory = (
@@ -6457,8 +6446,6 @@ class DiffusionBackend:
             if device_memory_override is not None
             else settled_snapshot_device_memory(target)
         )
-        # True where the companion / encoder terms come from the cache scans (not a caller's override), which is the
-        # only place a hosted pre-cast encoder can be missing from them.
         companions_from_cache = False
         if kind == "pipeline" and transformer_resident_override_mib is not None:
             # Re-planning an assembled pipeline against its dense-quant candidate. The family estimate already
@@ -6570,16 +6557,11 @@ class DiffusionBackend:
             if transformer_resident is not None:
                 model_dense_mib = transformer_resident + (companion_mib or 0)
         if companions_from_cache and text_encoder_quant is not None:
-            # The encoder this pick loads may not be the one the scans above priced: a hosted PRE-CAST checkpoint
-            # lives in its own repo (Qwen-Image-2.1's fp8 Qwen3-VL sits in unsloth/Qwen-Image-2.1-FP8), so the
-            # base-repo walk reads it as nothing, or reads dense shards the load will never open. Swap the scanned
-            # encoder share for the checkpoint's size in every term that carries it.
             precast = self._precast_text_encoder_mib(
                 fam, base, target, text_encoder_quant, base_local_dir
             )
             if precast:
                 precast_mib, precast_components, _exact = precast
-                # Only the encoder folders the checkpoint replaces leave the budget (FLUX.1 keeps its dense CLIP-L).
                 covered = frozenset(precast_components)
                 scanned_te = int(
                     self._union_over_cached_revs(
@@ -6592,9 +6574,7 @@ class DiffusionBackend:
                         base_local_dir,
                     )
                 ) // (1024 * 1024)
-                # Never below the dense shards scanned: load_prequant_text_encoder returns None on a bad or
-                # incompatible checkpoint (cached or not) and assembly then opens those shards instead. The prefetch
-                # skips covered shards, so this is 0 unless a dense load left them behind.
+                # Never below scanned dense shards: a bad checkpoint falls back to opening them.
                 precast_mib = max(int(precast_mib), scanned_te)
                 text_encoder_mib = max(0, int(text_encoder_mib or 0) - scanned_te) + int(
                     precast_mib

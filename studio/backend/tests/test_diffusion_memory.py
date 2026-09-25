@@ -1608,7 +1608,6 @@ def test_streaming_the_text_encoders_does_not_pin_host_memory(monkeypatch):
     # whole-module offload, which pins nothing, on a card too small to hold the companions. Those
     # hosts are not reliably RAM-rich, and #8188's machine got into trouble precisely by turning a
     # device shortfall into unswappable host memory. The encoders run once per call, so the slower
-    # unpinned copy is paid once rather than per step. On a host with no RAM to spare, nothing is pinned.
     import core.inference.diffusion_memory as mem
 
     monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
@@ -2103,11 +2102,6 @@ def test_the_same_load_reaches_group_offload_once_the_split_is_known():
     assert plan.vae_tiling is False
 
 
-# ── the resident-transformer tier ─────────────────────────────────────────────
-# Qwen-Image-2.1 GGUF Q8_0 as the image loader prices it once the hosted fp8 encoder is counted: transformer 7650,
-# VAE 1288, encoder 8959 MiB. On a 24 GB card the denoiser fits beside the VAE with room for the decode spike, but not
-# beside the encoder as well, so every tier before this one streamed the transformer on EVERY step while the encoder
-# (used once, before step 0) sat resident. ComfyUI on the same card encodes, drops the encoder and keeps the denoiser.
 _Q21_TRANSFORMER_MIB = 7_650
 _Q21_VAE_MIB = 1_288
 _Q21_TE_MIB = 8_959
@@ -2136,18 +2130,14 @@ def _q21_plan(
 
 def test_the_transformer_stays_resident_when_only_the_encoder_does_not_fit():
     plan = _q21_plan(_24G_FREE_MIB, _24G_TOTAL_MIB)
-    # 7650 + 1288 + 8192 + 2048 = 19178 <= 20543, while all of it (28137) is not within 0.85 of the budget.
     assert plan.estimates["resident_transformer_floor_mib"] == 19_178
     assert plan.offload_policy == OFFLOAD_GROUP
     assert plan.stream_transformer is False and plan.stream_text_encoders is True
-    # Plain group offload (companions resident, 20487) fits as well; the resident transformer is preferred because
-    # it pays one encoder pass per call instead of a transformer pass per step.
     assert plan.estimates["group_floor_mib"] <= plan.estimates["safe_device_budget_mib"]
     assert plan.as_public_dict()["stream_transformer"] is False
 
 
 def test_the_resident_transformer_tier_needs_the_encoder_split():
-    # Unknown split: the previous decision exactly (plain group, transformer streamed), never a guessed floor.
     plan = _q21_plan(_24G_FREE_MIB, _24G_TOTAL_MIB, text_encoder_dense_mib = None)
     assert plan.estimates["resident_transformer_floor_mib"] is None
     assert plan.offload_policy == OFFLOAD_GROUP
@@ -2155,7 +2145,6 @@ def test_the_resident_transformer_tier_needs_the_encoder_split():
 
 
 def test_a_card_too_small_for_the_resident_transformer_still_streams_it():
-    # 16 GB: the resident floor (19178) is over the 13822 budget, so the streamed-encoder group tier stands.
     plan = _q21_plan(_16G_FREE_MIB, _16G_TOTAL_MIB)
     assert plan.offload_policy == OFFLOAD_GROUP
     assert plan.stream_transformer is True and plan.stream_text_encoders is True
@@ -2168,7 +2157,6 @@ def test_fast_mode_prefers_the_resident_transformer_over_streaming_it():
 
 
 def test_every_other_tier_reports_a_streamed_or_resident_transformer_consistently():
-    # stream_transformer is only ever False on the group tier; resident and whole-module plans keep the default.
     roomy = _q21_plan(80_000, 81_920)
     assert roomy.offload_policy == OFFLOAD_NONE and roomy.stream_transformer is True
     tiny = _q21_plan(6_000, 8_192)
@@ -2187,7 +2175,6 @@ def test_apply_group_offload_can_keep_the_transformer_resident(monkeypatch):
         )
         is True
     )
-    # Only the encoders get hooks; the transformer is placed resident with the VAE.
     assert applied == [te, te2]
     assert transformer.placed is not None and vae.placed is not None
     assert te.placed is None and te2.placed is None
@@ -2203,8 +2190,6 @@ def test_the_resident_transformer_tier_streams_encoders_at_leaf_level(monkeypatc
 def test_a_refusing_encoder_hands_the_resident_transformer_tier_to_whole_module_offload(
     monkeypatch,
 ):
-    # Keeping the refusing encoder resident beside a resident transformer is the OOM this tier was picked to avoid.
-    # Nothing is hooked yet, so the applier reports failure and apply_memory_plan falls back to model offload.
     import core.inference.diffusion_memory as mem
 
     def _apply(module, **kw):
@@ -2244,15 +2229,10 @@ def test_apply_memory_plan_threads_the_resident_transformer_flag(monkeypatch):
     )
     assert policy == OFFLOAD_GROUP
     assert seen == {"stream_text_encoders": True, "stream_transformer": False}
-    # The streamed-transformer tiers keep the call they always made.
     apply_memory_plan(_RecordingPipe(), _q21_plan(_16G_FREE_MIB, _16G_TOTAL_MIB), device = "cuda")
     assert seen == {"stream_text_encoders": True}
 
 
-# ── pinning the streamed-encoder tiers when host RAM allows ───────────────────
-# Unpinned (low_cpu_mem_usage) streaming re-pins every tensor on every onload. Measured on Qwen-Image-2.1 GGUF Q8_0:
-# a 16 GB card's 25-step image 25.1 s unpinned against 8.5 s pinned, and the resident-transformer tier's encoder pass
-# 2.37 s against 0.39 s. Pinning is still refused where it would eat the host's last max(4 GiB, 15%).
 
 
 def _sized_stream_te_kwargs(monkeypatch, sizes, budget, **call_kw):
@@ -2276,7 +2256,6 @@ def test_a_ram_rich_host_pins_everything_the_tier_streams(monkeypatch):
 
 
 def test_the_transformer_is_pinned_before_the_encoders(monkeypatch):
-    # Room for the transformer (paid every step) but not for it plus the encoders (paid once per call).
     seen = _sized_stream_te_kwargs(
         monkeypatch,
         {"transformer": 7000, "text_encoder": 8000, "text_encoder_2": 500},
@@ -2303,9 +2282,6 @@ def test_the_resident_transformer_tier_pins_its_encoders_when_ram_allows(monkeyp
 
 @pytest.mark.parametrize("stream_transformer", [True, False])
 def test_windows_and_wsl_never_pin_the_streamed_tiers(monkeypatch, stream_transformer):
-    # WDDM and WSL2 cap page-locked memory near 1 GiB however much RAM is free, so a multi-GB pin fails part way:
-    # the resident-transformer tier then falls back to whole-module offload, and the streamed tier places the
-    # encoder resident. These hosts keep the unpinned path the tiers had before.
     import core.inference.diffusion_memory as mem
 
     seen = _sized_stream_te_kwargs(
@@ -2327,15 +2303,11 @@ def test_windows_and_wsl_never_pin_the_streamed_tiers(monkeypatch, stream_transf
         monkeypatch, stream_text_encoders = True, stream_transformer = stream_transformer
     )
     assert seen and all(kw["low_cpu_mem_usage"] is True for kw in seen.values()), seen
-    # The env override still wins for a host known to allow it.
     monkeypatch.setenv(mem.GROUP_OFFLOAD_PIN_ENV, "1")
     assert mem._streamed_pin_plan(7000, 8000) == (True, True)
 
 
 def test_a_first_encoder_refusal_is_unhooked_before_whole_module_offload(monkeypatch):
-    # Leaf-level group offload hooks each leaf as it builds it, so a refusal part way (a pinned allocation the host
-    # will not grant) leaves hooks behind, and enable_model_cpu_offload then raises "components with group offloading
-    # enabled": the resident-transformer tier's fallback to whole-module offload would fail the load instead.
     import core.inference.diffusion_memory as mem
 
     def _apply(module, **kw):
@@ -2414,9 +2386,6 @@ def test_the_pin_budget_leaves_the_reserve_free(monkeypatch):
 
 
 def test_a_late_encoder_refusal_streams_the_transformer_before_placing_the_encoder(monkeypatch):
-    # The first encoder hooked, so whole-module offload is gone; the second refuses. Keeping it resident beside a
-    # resident transformer is the OOM the tier was picked to avoid, so the transformer streams after all, and it
-    # gets its hooks BEFORE the refusing encoder is placed.
     import core.inference.diffusion_memory as mem
 
     order: list[str] = []
@@ -2465,5 +2434,4 @@ def test_pinned_host_pricing_rounds_each_tensor_to_a_power_of_two(monkeypatch):
         def buffers(self, recurse = True):
             return [_T(1024 * 1024)]
 
-    # 3 -> 4, 5 -> 8, 1 -> 1 MiB.
     assert mem._module_host_mib(_M()) == 13
