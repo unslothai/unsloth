@@ -250,6 +250,7 @@ from .device_type import (
 
 from .import_fixes import (
     fix_transformers5_bare_annotation_configs,
+    fix_transformers5_legacy_config_types,
     fix_transformers5_image_processing_reexports,
     fix_transformers_composite_prefix_renaming,
     fix_transformers_fully_masked_rows,
@@ -297,6 +298,7 @@ from .import_fixes import (
     patch_accelerate_recursively_apply,
 )
 
+fix_transformers5_legacy_config_types()
 # Must run first: guards PretrainedConfig before vLLM defines its config classes.
 fix_transformers5_bare_annotation_configs()
 # Probe-gated: no-ops unless this transformers really hands SDPA a query row that attends to
@@ -383,6 +385,7 @@ fix_peft_torchao_missing_tensor_subclass()
 patch_accelerate_recursively_apply()
 
 del fix_transformers5_bare_annotation_configs
+del fix_transformers5_legacy_config_types
 del fix_transformers_rope_scaling_drops_theta
 del fix_transformers_fp8_modulelist_experts
 del fix_transformers_validate_rope_ignore_keys
