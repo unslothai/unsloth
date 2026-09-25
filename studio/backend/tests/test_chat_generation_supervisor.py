@@ -14,8 +14,7 @@ from starlette.requests import Request
 
 from core.inference import llama_keepwarm
 from core.inference.chat_generation_runs import (
-    _EVENT_BATCH_SECONDS,
-    _EVENT_SINGLE_FLUSH_SECONDS,
+    _EVENT_FLUSH_SECONDS,
     ChatGenerationSupervisor,
 )
 from models.inference import ChatCompletionRequest
@@ -285,8 +284,8 @@ async def test_a_prefill_reporting_only_progress_renews_the_lease(durable_run, m
     async def body():
         for processed in (1024, 8192, 65536):
             yield f"data: {json.dumps(_progress(processed))}\n\n"
-        # Polled, not slept: the idle flush is on a 0.1s timer
-        # (_EVENT_BATCH_SECONDS) and a sleep sized against it flakes under load.
+        # Polled, not slept: the idle flush is on a timer
+        # (_EVENT_FLUSH_SECONDS) and a sleep sized against it flakes under load.
         _deadline = time.monotonic() + 10.0
         while time.monotonic() < _deadline:
             sampled["events"] = [
@@ -435,15 +434,37 @@ async def test_event_batch_flushes_while_upstream_is_idle(durable_run, monkeypat
     monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
     supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
     task = asyncio.create_task(supervisor._produce("run-1"))
-    # Poll rather than sleep a fixed span. The flush costs the batch timer plus a
-    # thread hop and a SQLite write, which measures ~0.11s on an idle machine, so
-    # the old bare sleep(0.2) left under 2x headroom and lost the race on a loaded
-    # runner. The budget is still bounded well below _EVENT_SINGLE_FLUSH_SECONDS,
-    # so a regression that drops these two events onto the single-event timer, or
-    # never flushes them at all, still fails here rather than passing slowly.
-    deadline = (_EVENT_BATCH_SECONDS + _EVENT_SINGLE_FLUSH_SECONDS) / 2
-    stored = await _await_chunk_payloads("run-1", len(chunks), deadline)
+    # Polled, not slept: a fixed sleep races the flush on a loaded runner.
+    stored = await _await_chunk_payloads("run-1", len(chunks), 0.5)
     assert stored == chunks
+    release.set()
+    await task
+
+
+def test_event_flush_interval_is_one_display_frame():
+    # This interval is the chat's text frame rate; 0.1s made streaming stutter (#11778).
+    assert _EVENT_FLUSH_SECONDS <= 1 / 60
+
+
+@pytest.mark.asyncio
+async def test_a_lone_chunk_is_appended_without_waiting_for_another(durable_run, monkeypatch):
+    # A lone chunk used to wait up to 1s for a second one before it was appended.
+    release = asyncio.Event()
+    chunk = {"choices": [{"delta": {"content": "Hello"}}]}
+
+    async def body():
+        yield f"data: {json.dumps(chunk)}\n\n"
+        await release.wait()
+        yield "data: [DONE]\n\n"
+
+    async def fake(*_args, **_kwargs):
+        return SimpleNamespace(status_code = 200, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    task = asyncio.create_task(supervisor._produce("run-1"))
+    stored = await _await_chunk_payloads("run-1", 1, 0.5)
+    assert stored == [chunk]
     release.set()
     await task
 
