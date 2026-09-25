@@ -255,6 +255,10 @@ def test_rename_favorite_and_folders_are_an_overlay(client):
     assert _post(client, "items/opened", id = image).status_code == 200
     item = _items(client)[0][image]
     assert item["createdAt"] <= item["openedAt"] and item["favorite"] is True
+    # An open landing after a delete, or naming nothing, leaves no row behind.
+    for missing in ("upload:gone", "sandbox:t-lib:gone.txt"):
+        assert _post(client, "items/opened", id = missing).status_code == 404
+    assert "upload:gone" not in library_db.list_entries()
     # The type follows the file's own name, so a binary renamed to .txt never opens as text.
     assert item["fileName"] == "photo.png"
     # Leaving the key off leaves it where it is; an explicit null moves it back out.
@@ -373,6 +377,19 @@ def test_a_sandbox_file_written_twice_in_a_second_is_a_new_version(client, signe
         library.invalidate_listing()
         versions.append(_items(client)[0]["sandbox:t-lib:frame.png"]["updatedAt"])
     assert versions == [1_700_000_000_100, 1_700_000_000_600]
+
+
+def test_a_clip_counts_its_recipe_toward_what_it_takes_on_disk(client, monkeypatch):
+    from core.inference import audio_gallery
+
+    monkeypatch.setattr(library, "_SOURCES", (library._audio_items, library._image_items))
+    audio, image = _gallery_audio("A recipe beside it"), _gallery_image("No recipe")
+    items = _items(client)[0]
+    wav = audio_gallery.audio_path(audio)
+    item = items[f"audio:{audio}"]
+    assert item["sizeBytes"] == wav.stat().st_size
+    assert item["storageBytes"] == wav.stat().st_size + wav.with_suffix(".json").stat().st_size
+    assert "storageBytes" not in items[f"image:{image}"]
 
 
 def test_generated_audio_and_video_are_listed_and_deleted(client, monkeypatch):
@@ -1544,6 +1561,28 @@ def test_a_move_cut_short_waits_for_the_drive_it_was_moving_onto(client, tmp_pat
     assert str((tmp_path / "Other").resolve()) in response.text
     assert _images() == new.resolve()
     assert "moving_from" not in str(get_app_setting("library.locations", {}))
+
+
+def test_a_new_move_finishes_one_cut_short_first_or_waits_for_its_drive(
+    client, tmp_path, monkeypatch
+):
+    import shutil
+
+    from utils.paths.relocations import forget_cache
+
+    old, new, other = _images(), tmp_path / "Pictures", tmp_path / "Other"
+    _fill(old)
+    _crash_moving(monkeypatch, "images", new)
+    shutil.move(new, tmp_path / "unplugged")
+    forget_cache()
+    # While the drive is out, a move from the folder standing in would leave its file behind.
+    response = _move(client, "images", str(other))
+    assert response.status_code == 400 and str(new.resolve()) in response.text
+    # Plugged back in without a restart: the move cut short is finished before the new one.
+    shutil.move(tmp_path / "unplugged", new)
+    assert _move(client, "images", str(other)).status_code == 200
+    assert _images() == other.resolve() and len(_files(other)) == 3
+    assert _files(old) == [] and _files(new) == []
 
 
 def test_a_move_cut_short_waits_for_the_drive_it_was_leaving(client, tmp_path, monkeypatch):

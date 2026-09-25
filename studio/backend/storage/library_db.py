@@ -319,15 +319,24 @@ def update_entry(
         conn.close()
 
 
-def mark_opened(item_id: str) -> None:
-    """Record that the item was just opened, for Suggested's Last activity."""
+def mark_opened(item_id: str, fingerprint: Optional[str] = None) -> None:
+    """Record that the item was just opened, for Suggested's Last activity. ``fingerprint`` is as
+    for ``update_entry``: a row kept for another file at the path is dropped, not carried over."""
     conn = get_connection()
     try:
+        _lock(conn)
         now = _now_ms()
+        if fingerprint is not None:
+            conn.execute(
+                "DELETE FROM library_entries WHERE item_id = ? AND fingerprint IS NOT NULL AND fingerprint != ?",
+                (item_id, fingerprint),
+            )
         conn.execute(
-            "INSERT INTO library_entries (item_id, updated_at, opened_at) VALUES (?, ?, ?) "
-            "ON CONFLICT(item_id) DO UPDATE SET opened_at = excluded.opened_at",
-            (item_id, now, now),
+            "INSERT INTO library_entries (item_id, updated_at, opened_at, fingerprint) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(item_id) DO UPDATE SET opened_at = "
+            "excluded.opened_at, fingerprint = COALESCE(library_entries.fingerprint, "
+            "excluded.fingerprint)",
+            (item_id, now, now, fingerprint),
         )
         conn.commit()
     finally:

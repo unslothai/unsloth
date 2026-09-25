@@ -20,6 +20,8 @@ export interface LibraryItem {
   source: LibrarySource;
   contentType: string;
   sizeBytes: number | null;
+  /** What it takes on disk with the files kept beside it (a clip's recipe), when that is more. */
+  storageBytes?: number;
   createdAt: number;
   updatedAt: number;
   /** Served by the item's own source route; always fetched with auth. */

@@ -100,16 +100,17 @@ export function useLibraryStorage(): LibraryStorage {
     let diskBytes = 0;
     let hiddenBytes = 0;
     for (const item of snapshot.items) {
+      const bytes = item.storageBytes ?? item.sizeBytes ?? 0;
       if (!onDisk || onDisk.has(diskSource(item.id))) {
-        diskBytes += item.sizeBytes ?? 0;
+        diskBytes += bytes;
       }
       if (!includedBySettings(item.id, settings)) {
-        hiddenBytes += item.sizeBytes ?? 0;
+        hiddenBytes += bytes;
         continue;
       }
       const category = KIND_CATEGORIES[fileKind(item)] ?? "files";
       const total = totals.get(category) ?? { bytes: 0, count: 0 };
-      total.bytes += item.sizeBytes ?? 0;
+      total.bytes += bytes;
       total.count += 1;
       totals.set(category, total);
     }

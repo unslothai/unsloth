@@ -465,6 +465,13 @@ def _gallery_items(kind: str) -> list[dict]:
                 size = path.stat().st_size if path is not None else None
             except OSError:
                 size = None
+            # Audio and video keep their recipe beside the file, which takes space on disk too.
+            sidecar = None
+            if size is not None:
+                try:
+                    sidecar = path.with_suffix(".json").stat().st_size
+                except OSError:
+                    pass
             items.append(
                 _item(
                     f"{kind}:{record['id']}",
@@ -479,6 +486,8 @@ def _gallery_items(kind: str) -> list[dict]:
                     archived = archived,
                 )
             )
+            if sidecar is not None:
+                items[-1]["storageBytes"] = size + sidecar
     return items
 
 
@@ -1818,6 +1827,10 @@ def move_location(key: str, path: Optional[str]) -> Optional[str]:
             "These files stay where they are: training and chats remember them by path."
         )
     with _move_lock:
+        # A move cut short is finished first, now that its drives may be back: a new one started
+        # over it would forget the files still in the folder it was leaving.
+        if relocations.moving_from(key) is not None:
+            _resume_move(key)
         current = _location_path(key).resolve()
         if not relocations.is_available(key):
             # Its drive unplugged: nothing can move, but Reset still lets go of the folder.
@@ -1831,6 +1844,7 @@ def move_location(key: str, path: Optional[str]) -> Optional[str]:
         target = _move_target(path) if path is not None else _location_default(key).resolve()
         if _same_folder(target, current):
             return _settle_waiting_move(key, current)
+        _refuse_while_waiting(key)
         _refuse_overlap(target, key, final = False)
         _refuse_short_space(current, target)
         # Resolved again: the named subfolder can be a link to somewhere else entirely, or another
@@ -1856,6 +1870,22 @@ def move_location(key: str, path: Optional[str]) -> Optional[str]:
         _settle(current, target, wait = key != "uploads")
         _finish_move(key, target)
     return None
+
+
+def _refuse_while_waiting(key: str) -> None:
+    """ValueError while a move cut short still waits for a drive: files are on it, and a move from
+    here would leave them behind."""
+    if relocations.moving_from(key) is None:
+        return
+    missing = (
+        relocations.moving_from(key)
+        if relocations.chosen_available(key)
+        else relocations.chosen(key)
+    )
+    raise ValueError(
+        f"Some of these files are still in {missing}, which is not connected. Reconnect its "
+        "drive so their move can finish first."
+    )
 
 
 def _settle_waiting_move(key: str, current: Path) -> Optional[str]:
