@@ -62,10 +62,11 @@ class _Page:
         *,
         click_opens_menu: bool,
         menu_closes_on_escape: bool = True,
+        menu_already_open: bool = False,
     ) -> None:
         self.click_opens_menu = click_opens_menu
         self.menu_closes_on_escape = menu_closes_on_escape
-        self.menu_open = False
+        self.menu_open = menu_already_open
         self.keyboard = _Keyboard(self)
 
     def locator(self, _selector: str) -> _Locator:
@@ -129,3 +130,14 @@ def test_a_menu_that_will_not_close_is_reported_and_bounded():
     assert result.ran is False
     assert page.keyboard.pressed == ["Escape"] * 3
     assert "still open after Escape" in result.reason
+
+
+def test_a_menu_that_was_already_open_is_left_alone():
+    """Not this action's to close: it can be what blocked the click, and it belongs to its opener."""
+    page = _Page(click_opens_menu = False, menu_already_open = True)
+    result = _upload(page)
+
+    assert result.ran is False
+    assert page.keyboard.pressed == []
+    assert page.menu_open is True
+    assert result.reason == "the attachments button could not be clicked: TimeoutError"
