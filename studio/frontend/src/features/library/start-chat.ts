@@ -84,6 +84,8 @@ export async function chatAboutMedia(
   }, LOADING_TOAST_DELAY_MS);
   // A sign-out while the file downloads would hand it to the next account's chat.
   const epoch = getAuthSessionEpoch();
+  // The media pages stay mounted off-route: a user who moved on must not be pulled into a new chat.
+  const startedAt = typeof window === "undefined" ? "" : window.location.pathname;
   try {
     const response = await load();
     if (!response.ok) throw new Error(translate(media.readFailed, { status: response.status }));
@@ -95,6 +97,7 @@ export async function chatAboutMedia(
     }
     const blob = await response.blob();
     if (getAuthSessionEpoch() !== epoch) return;
+    if (typeof window !== "undefined" && window.location.pathname !== startedAt) return;
     if (blob.size > media.bytes) {
       tooLarge();
       return;
