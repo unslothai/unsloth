@@ -102,12 +102,34 @@ def test_unavailable_capability_names_the_host_prep_command(monkeypatch, tmp_pat
     monkeypatch.setattr(sandbox_windows_mxc.mxc_probe, "probe", lambda *_a, **_k: (False, "no"))
     monkeypatch.setattr(sandbox_windows_mxc.mxc_runtime, "installation_identity", lambda: "runner")
     monkeypatch.setattr(mxc_probe.mxc_runtime, "probe_host_prep_steps", lambda **_kwargs: steps)
+    monkeypatch.setenv("UNSLOTH_MXC_ALLOW_DACL_FALLBACK", "1")
     capability = sandbox_windows_mxc.capability_snapshot(
         execution_kind = "python", selected_executable = str(tmp_path / "python.exe")
     )
     assert ("--prepare-host" in capability.remediation) is advised
-    assert ("every reboot" in capability.remediation) is advised
+    assert ("undone by every reboot" in capability.remediation) is advised
     assert "install_mxc_prebuilt.py" in capability.remediation or not advised
+
+
+def test_host_prep_is_not_advised_without_the_dacl_opt_in(monkeypatch, tmp_path):
+    # A bare --probe allows the fallback, so it reports host-prep steps Studio never needs.
+    from core.inference import mxc_probe, sandbox_windows_mxc
+
+    monkeypatch.setattr(sandbox_windows_mxc.sys, "platform", "win32")
+    monkeypatch.setattr(mxc_probe, "_host_prep_cache", {})
+    monkeypatch.delenv("UNSLOTH_MXC_ALLOW_DACL_FALLBACK", raising = False)
+    monkeypatch.setattr(sandbox_windows_mxc.mxc_probe, "probe", lambda *_a, **_k: (False, "no"))
+    monkeypatch.setattr(sandbox_windows_mxc.mxc_runtime, "installation_identity", lambda: "runner")
+    monkeypatch.setattr(
+        mxc_probe.mxc_runtime,
+        "probe_host_prep_steps",
+        lambda **_kwargs: pytest.fail("host preparation was probed with the DACL tier off"),
+    )
+    capability = sandbox_windows_mxc.capability_snapshot(
+        execution_kind = "python", selected_executable = str(tmp_path / "python.exe")
+    )
+    assert "--prepare-host" not in capability.remediation
+    assert "UNSLOTH_MXC_ALLOW_DACL_FALLBACK=1" in capability.remediation
 
 
 def test_available_capability_never_runs_the_host_prep_probe(monkeypatch, tmp_path):

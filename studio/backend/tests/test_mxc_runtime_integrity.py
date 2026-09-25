@@ -197,7 +197,9 @@ def test_host_prep_probe_reads_wxc_probe_warnings(
     env = {"SYSTEMROOT": "C:\\Windows"}
     assert mxc_runtime.probe_host_prep_steps(package_root = runtime, env = env) == expected
     assert seen["argv"] == [str((runtime / "wxc-exec.exe").resolve()), "--probe"]
-    assert seen["env"] is env
+    assert seen["env"]["SYSTEMROOT"] == "C:\\Windows"
+    # --probe reaps orphaned ACEs, so it must read the journal every launch writes.
+    assert seen["env"]["MXC_DACL_STATE_DIR"] == str(mxc_runtime.dacl_state_path())
     assert seen["timeout"] == mxc_runtime.HOST_PREP_PROBE_SECONDS
 
 

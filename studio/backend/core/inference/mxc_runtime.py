@@ -258,6 +258,9 @@ def probe_host_prep_steps(
 ) -> tuple[str, ...] | None:
     """Host preparation `wxc-exec --probe` reports missing; None when it cannot tell."""
     try:
+        # --probe reaps orphaned ACEs first: point it at Studio's journal, not %LOCALAPPDATA%'s.
+        env = dict(os.environ if env is None else env)
+        env.setdefault("MXC_DACL_STATE_DIR", str(dacl_state_dir()))
         with acquire_runtime(package_root = package_root) as lease:
             completed = subprocess.run(
                 [str(lease.info.path), "--probe"],
