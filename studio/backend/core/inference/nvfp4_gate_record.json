@@ -5,57 +5,9 @@
     {
       "family": "z-image",
       "base_repo": "Tongyi-MAI/Z-Image-Turbo",
-      "policy_id": "zimg_f8mod_toq34_v1",
+      "policy_id": "zimg_rg76_v1",
       "policy_version": 1,
-      "checkpoint_sha256": "d2f80a4a32c7b21bb3f5bda15f6c786802953ab472dc284cae81f3193670dc27",
-      "repo_id": "unsloth/Z-Image-Turbo-NVFP4",
-      "filename": "Z-Image-Turbo-NVFP4-RTN.pt",
-      "gptq": false,
-      "all_pass": true,
-      "num_pairs": 24,
-      "num_passed": 24,
-      "aggregates": {
-        "lpips_mean": 0.15640976116992533,
-        "ssim_mean": 0.8474995975672268,
-        "clip_delta_mean": 0.005153092245260875,
-        "failures": []
-      },
-      "gates": {
-        "lpips_case_max": 0.6,
-        "lpips_mean_max": 0.25,
-        "ssim_case_min": 0.3,
-        "ssim_mean_min": 0.7,
-        "clip_delta_case_max": 0.03,
-        "clip_delta_mean_max": 0.01,
-        "black_luma_min": 0.02
-      },
-      "resolutions": [
-        512,
-        1024
-      ],
-      "seeds": [
-        1234,
-        4321
-      ],
-      "cuda_graphs": true,
-      "backend": "flashinfer",
-      "gpu": "NVIDIA B200",
-      "versions": {
-        "torch": "2.12.1+cu130",
-        "torchao": "0.17.0+cu130",
-        "diffusers": "0.40.0.dev0",
-        "flashinfer": "0.6.6"
-      },
-      "gate_script_sha256": "5d3de7f30c40ea11cdf47c1e7f86903d8eba398bbd751bba2bd5aa986aaef8d8",
-      "run_date": "2026-09-09",
-      "results_path": "/mnt/disks/unslothai/ubuntu/workspace_81/outputs/nvfp4_pr2/gate_zimage_flashinfer/results.json"
-    },
-    {
-      "family": "z-image",
-      "base_repo": "Tongyi-MAI/Z-Image-Turbo",
-      "policy_id": "zimg_f8mod_toq34_v1",
-      "policy_version": 1,
-      "checkpoint_sha256": "22771918e8ef71abb99caa7d15f0058b9329c77c095707d5cc9236b1ca4ab336",
+      "checkpoint_sha256": "2453bc13d7abe5b4a49721f4a9d38a9aa16dee20085a9267f8a35867c7d9cc33",
       "repo_id": "unsloth/Z-Image-Turbo-NVFP4",
       "filename": "Z-Image-Turbo-NVFP4.pt",
       "gptq": true,
@@ -63,9 +15,9 @@
       "num_pairs": 24,
       "num_passed": 24,
       "aggregates": {
-        "lpips_mean": 0.14103486808016896,
-        "ssim_mean": 0.8657750307609459,
-        "clip_delta_mean": 0.006255585700273514,
+        "lpips_mean": 0.1581714154841999,
+        "ssim_mean": 0.8411444996904973,
+        "clip_delta_mean": 0.004930264006058375,
         "failures": []
       },
       "gates": {
@@ -90,30 +42,136 @@
       "gpu": "NVIDIA B200",
       "versions": {
         "torch": "2.12.1+cu130",
-        "torchao": "0.17.0+cu130",
-        "diffusers": "0.40.0.dev0",
-        "flashinfer": "0.6.6"
+        "torchao": "0.18.0",
+        "diffusers": "0.41.0.dev0",
+        "flashinfer": "0.6.18.post1"
       },
-      "gate_script_sha256": "5d3de7f30c40ea11cdf47c1e7f86903d8eba398bbd751bba2bd5aa986aaef8d8",
-      "run_date": "2026-09-09",
-      "results_path": "/mnt/disks/unslothai/ubuntu/workspace_81/outputs/nvfp4_pr2/gate_zimage_gptq_flashinfer/results.json"
+      "gate_script_sha256": "d0b423658874f8430b1508f839cbc7fe39b1ee04d73931ffe4f24c444b11d3b5",
+      "run_date": "2026-09-24",
+      "results_path": "/mnt/disks/unslothai/ubuntu/workspace_81/outputs/nvfp4_repick/zimg_zimg_rg76_v1_g32/gate/results.json",
+      "fp8_paired": {
+        "metric": "lpips_vgg(nvfp4, bf16) - lpips_vgg(fp8, bf16), per (prompt, seed)",
+        "prompts": "diffusion_bench image_24 (24 frozen prompts)",
+        "num_pairs": 48,
+        "resolution": 1024,
+        "seeds": [
+          1234,
+          4321
+        ],
+        "fp8_sha256": "d9ee7d97ef94f620660b0f475ee961b84a877fd99d86bfc84101d21ad3cd8dfc",
+        "d_lpips_mean": 0.0219,
+        "d_lpips_ci95": [
+          0.0021,
+          0.0402
+        ],
+        "d_lpips_prompt_cluster_ci95": [
+          0.0035,
+          0.0412
+        ],
+        "bar_upper_ci95": 0.05,
+        "ssim_vs_bf16": {
+          "fp8": 0.8275,
+          "nvfp4": 0.8028
+        },
+        "psnr_vs_bf16": {
+          "fp8": 21.79,
+          "nvfp4": 20.63
+        }
+      }
+    },
+    {
+      "family": "qwen-image-2.1",
+      "base_repo": "Qwen/Qwen-Image-2.1",
+      "policy_id": "qwen21_r020_v1",
+      "policy_version": 1,
+      "checkpoint_sha256": "37af1338c21a0c20dd0518f1908f6bc5828740c1cd12c50718552a31d753c24d",
+      "repo_id": "unsloth/Qwen-Image-2.1-NVFP4",
+      "filename": "Qwen-Image-2.1-NVFP4.pt",
+      "gptq": true,
+      "all_pass": true,
+      "num_pairs": 28,
+      "num_passed": 28,
+      "aggregates": {
+        "lpips_mean": 0.1248540869647903,
+        "ssim_mean": 0.8829234177148308,
+        "clip_delta_mean": 0.005960816783564431,
+        "failures": []
+      },
+      "gates": {
+        "lpips_case_max": 0.6,
+        "lpips_mean_max": 0.25,
+        "ssim_case_min": 0.3,
+        "ssim_mean_min": 0.7,
+        "clip_delta_case_max": 0.03,
+        "clip_delta_mean_max": 0.01,
+        "black_luma_min": 0.02
+      },
+      "resolutions": [
+        512,
+        1024
+      ],
+      "seeds": [
+        1234,
+        4321
+      ],
+      "cuda_graphs": true,
+      "backend": "flashinfer",
+      "gpu": "NVIDIA B200",
+      "versions": {
+        "torch": "2.12.1+cu130",
+        "torchao": "0.18.0",
+        "diffusers": "0.41.0.dev0",
+        "flashinfer": "0.6.18.post1"
+      },
+      "gate_script_sha256": "d0b423658874f8430b1508f839cbc7fe39b1ee04d73931ffe4f24c444b11d3b5",
+      "run_date": "2026-09-24",
+      "results_path": "/mnt/disks/unslothai/ubuntu/workspace_81/outputs/nvfp4_repick/q21_qwen21_r020_v1_g32/gate/results.json",
+      "fp8_paired": {
+        "metric": "lpips_vgg(nvfp4, bf16) - lpips_vgg(fp8, bf16), per (prompt, seed)",
+        "prompts": "diffusion_bench image_24 (24 frozen prompts)",
+        "num_pairs": 48,
+        "resolution": 1024,
+        "seeds": [
+          1234,
+          4321
+        ],
+        "fp8_sha256": "5ce621f4deab0fca5f4b9cd43af68f57ef0a8eb9ea0581d0229dce8612c27788",
+        "d_lpips_mean": 0.0277,
+        "d_lpips_ci95": [
+          0.0118,
+          0.0457
+        ],
+        "d_lpips_prompt_cluster_ci95": [
+          0.0134,
+          0.0432
+        ],
+        "bar_upper_ci95": 0.05,
+        "ssim_vs_bf16": {
+          "fp8": 0.9045,
+          "nvfp4": 0.8782
+        },
+        "psnr_vs_bf16": {
+          "fp8": 25.98,
+          "nvfp4": 24.37
+        }
+      }
     },
     {
       "family": "flux.1",
       "base_repo": "black-forest-labs/FLUX.1-schnell",
-      "policy_id": "flux_mod_single_v1",
+      "policy_id": "flux_r420_v1",
       "policy_version": 1,
-      "checkpoint_sha256": "5b344cafa3884540841b25fa9e8818c2edb8ca6354d7dc3e20a2351da35d4a6a",
+      "checkpoint_sha256": "d4e4c5e353374e022685f2e48dc7b38d054e36f30809dd8eb77a22a0a5d67006",
       "repo_id": "unsloth/FLUX.1-schnell-NVFP4",
       "filename": "FLUX.1-schnell-NVFP4.pt",
-      "gptq": false,
+      "gptq": true,
       "all_pass": true,
       "num_pairs": 24,
       "num_passed": 24,
       "aggregates": {
-        "lpips_mean": 0.18111217020001882,
-        "ssim_mean": 0.7998154920352115,
-        "clip_delta_mean": 0.006424197306235631,
+        "lpips_mean": 0.1846515154466033,
+        "ssim_mean": 0.7870014756664174,
+        "clip_delta_mean": 0.007136411964893341,
         "failures": []
       },
       "gates": {
@@ -138,13 +196,42 @@
       "gpu": "NVIDIA B200",
       "versions": {
         "torch": "2.12.1+cu130",
-        "torchao": "0.17.0+cu130",
-        "diffusers": "0.40.0.dev0",
-        "flashinfer": "0.6.6"
+        "torchao": "0.18.0",
+        "diffusers": "0.41.0.dev0",
+        "flashinfer": "0.6.18.post1"
       },
-      "gate_script_sha256": "5d3de7f30c40ea11cdf47c1e7f86903d8eba398bbd751bba2bd5aa986aaef8d8",
-      "run_date": "2026-09-09",
-      "results_path": "/mnt/disks/unslothai/ubuntu/workspace_81/outputs/nvfp4_pr2/gate_flux_flashinfer/results.json"
+      "gate_script_sha256": "d0b423658874f8430b1508f839cbc7fe39b1ee04d73931ffe4f24c444b11d3b5",
+      "run_date": "2026-09-24",
+      "results_path": "/mnt/disks/unslothai/ubuntu/workspace_81/outputs/nvfp4_repick/flux_flux_r420_v1_g32/gate/results.json",
+      "fp8_paired": {
+        "metric": "lpips_vgg(nvfp4, bf16) - lpips_vgg(fp8, bf16), per (prompt, seed)",
+        "prompts": "diffusion_bench image_24 (24 frozen prompts)",
+        "num_pairs": 48,
+        "resolution": 1024,
+        "seeds": [
+          1234,
+          4321
+        ],
+        "fp8_sha256": "fd619e706f2f42171864d45e5115e4410a9830bd33945837360e05e109761f76",
+        "d_lpips_mean": 0.0235,
+        "d_lpips_ci95": [
+          0.0161,
+          0.0307
+        ],
+        "d_lpips_prompt_cluster_ci95": [
+          0.0163,
+          0.0307
+        ],
+        "bar_upper_ci95": 0.05,
+        "ssim_vs_bf16": {
+          "fp8": 0.8137,
+          "nvfp4": 0.7881
+        },
+        "psnr_vs_bf16": {
+          "fp8": 22.39,
+          "nvfp4": 21.18
+        }
+      }
     }
   ]
 }

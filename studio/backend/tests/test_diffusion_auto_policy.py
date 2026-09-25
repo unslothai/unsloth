@@ -164,7 +164,7 @@ def test_an_nvfp4_policy_base_is_sized_by_the_policy_not_by_whole_model_nvfp4():
     policy = estimate_dense_quant(_fam("z-image"), "nvfp4", base_repo = "Tongyi-MAI/Z-Image-Turbo")
     assert policy is not None
     assert policy.steady_transformer_mib == int(
-        transformer_gb * _POLICY_STEADY_FACTOR["zimg_f8mod_toq34_v1"] * _MIB_PER_GB
+        transformer_gb * _POLICY_STEADY_FACTOR["zimg_rg76_v1"] * _MIB_PER_GB
     )
     whole_model = int(transformer_gb * _QUANT_STEADY_FACTOR["nvfp4"] * _MIB_PER_GB)
     assert policy.steady_transformer_mib > whole_model
