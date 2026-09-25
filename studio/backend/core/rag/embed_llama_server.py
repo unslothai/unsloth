@@ -522,7 +522,15 @@ class LlamaServerBackend:
         # setting change reads as stale and respawns.
         desired = config.effective_gguf_repo_for_embedding_model(model)
         if self._model_path is not None and self._model_repo == desired:
-            return self._model_path
+            if Path(self._model_path).is_file():
+                return self._model_path
+            # The process is stopped when this resolver runs. A remembered cache path can have
+            # been evicted since its last server lifetime, so let the normal cache/Hub order find
+            # what the next process can actually open.
+            self._model_path = None
+            self._model_pooling = None
+            self._dim = None
+            self._max_tokens = None
         local = self._resolve_local_gguf(model)
         if local is not None:
             return self._adopt_model_path(local, desired)
@@ -1020,6 +1028,11 @@ class LlamaServerBackend:
             and self._model_repo == desired
             and self._binary_path_revision == custom_llama_cpp_path_revision()
         )
+
+    def pooling_identity_snapshot(self) -> tuple[str | None, str | None, str | None, bool]:
+        """One coherent path/repo/pooling/process snapshot for pre-encode identity prediction."""
+        with self._serve_lock:
+            return self._model_path, self._model_repo, self._model_pooling, self._process_alive()
 
     def _ensure_ready(self, model_name: str | None = None) -> None:
         """Guarantee a live server on ``model_name``, (re)spawning if needed. Double-checked so the

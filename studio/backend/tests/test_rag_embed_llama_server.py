@@ -1814,6 +1814,100 @@ def test_llama_identity_rechecks_a_stopped_backends_replaced_gguf(monkeypatch, t
     assert embeddings._identity(True, model, backend) == legacy + ":last"
 
 
+def test_llama_identity_treats_an_evicted_stopped_model_as_unresolved(monkeypatch, tmp_path):
+    """A stopped backend cannot keep serving a deleted path. Pre-encode deduplication must
+    miss old CLS rows, and the next spawn must run the normal resolver instead of that path."""
+    model, repo = "org/embed", "org/embed-GGUF"
+    monkeypatch.setattr(config, "effective_gguf_repo_for_embedding_model", lambda m: repo)
+    snapshot = _seed_cache(tmp_path / "hub", repo, ["embed-F16.gguf"])
+    served = (snapshot / "embed-F16.gguf").resolve()
+    _write_gguf(served, "qwen3", 2)
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    backend = LlamaServerBackend()
+    backend._adopt_model_path(str(served), repo)
+    monkeypatch.setattr(embeddings, "_backend", backend)
+    served.unlink()
+    legacy = config.embedding_identity("llama-server", model, gguf_repo = repo)
+
+    assert embeddings._identity(True, model) == legacy + ":unresolved"
+    monkeypatch.setattr(backend, "_resolve_uncached_model_path", lambda *args: "/fresh.gguf")
+    assert backend._resolve_model_path(model) == "/fresh.gguf"
+
+
+def test_preencode_identity_takes_one_locked_backend_snapshot(monkeypatch):
+    """A concurrent model switch cannot combine model A's repo check with model B's pooling."""
+
+    class SwitchingBackend(LlamaServerBackend):
+        def __init__(self):
+            self.gate = False
+            self.repo_read = threading.Event()
+            self.allow_repo_read = threading.Event()
+            super().__init__()
+
+        @property
+        def _model_repo(self):
+            value = self._repo_value
+            if self.gate:
+                self.repo_read.set()
+                assert self.allow_repo_read.wait(timeout = 2)
+            return value
+
+        @_model_repo.setter
+        def _model_repo(self, value):
+            self._repo_value = value
+
+        @property
+        def _model_pooling(self):
+            return self._pooling_value
+
+        @_model_pooling.setter
+        def _model_pooling(self, value):
+            self._pooling_value = value
+
+    model, repo_a, repo_b = "org/a", "org/a-GGUF", "org/b-GGUF"
+    backend = SwitchingBackend()
+    backend._model_path = "/served/a.gguf"
+    backend._model_repo = repo_a
+    backend._model_pooling = "last"
+    backend._process = _FakeProc(alive = True)
+    backend.gate = True
+    monkeypatch.setattr(config, "effective_gguf_repo_for_embedding_model", lambda _model: repo_a)
+    monkeypatch.setattr(embeddings, "_backend", backend)
+    result = {}
+    switched_before_snapshot = []
+
+    def predict():
+        result["identity"] = embeddings._identity(True, model)
+
+    def switch_model():
+        assert backend.repo_read.wait(timeout = 2)
+        acquired = backend._serve_lock.acquire(timeout = 0.05)
+        switched_before_snapshot.append(acquired)
+        if acquired:
+            backend._repo_value = repo_b
+            backend._pooling_value = "mean"
+            backend._serve_lock.release()
+        backend.allow_repo_read.set()
+        if not acquired:
+            with backend._serve_lock:
+                backend._repo_value = repo_b
+                backend._pooling_value = "mean"
+
+    reader = threading.Thread(target = predict)
+    writer = threading.Thread(target = switch_model)
+    reader.start()
+    writer.start()
+    reader.join(timeout = 2)
+    writer.join(timeout = 2)
+    backend._process = None
+
+    assert not reader.is_alive() and not writer.is_alive()
+    assert switched_before_snapshot == [False]
+    assert result["identity"] == config.embedding_identity(
+        "llama-server", model, gguf_repo = repo_a, pooling = "last"
+    )
+
+
 def test_encode_identity_keeps_the_callers_snapshot_when_another_model_takes_over(monkeypatch):
     """The shared backend can switch models after an encode returns. Each thread must retain
     the immutable repo and pooling that served its own vectors, not the backend's later state."""

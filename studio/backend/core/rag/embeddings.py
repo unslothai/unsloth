@@ -1081,21 +1081,22 @@ def _llama_pooling(name: str, served = None) -> str | None:
         return None
     # The file the running server loaded wins over a cache search: moving the HF cache leaves it serving the old path.
     backend = served if served is not None else _backend
-    path = getattr(backend, "_model_path", None)
-    if (
-        isinstance(backend, LlamaServerBackend)
-        and path
-        and backend._model_repo == config.effective_gguf_repo_for_embedding_model(name)
-    ):
-        captured = getattr(backend, "_model_pooling", None)
+    desired = config.effective_gguf_repo_for_embedding_model(name)
+    if isinstance(backend, LlamaServerBackend):
+        path, repo, captured, alive = backend.pooling_identity_snapshot()
+    else:
+        path, repo, captured, alive = None, None, None, False
+    if path and repo == desired:
         # A live server still serves the pooling captured at its spawn even if the file is
         # replaced. ``served`` means an encode just completed on that same captured value. With a
         # stopped ambient backend, however, the next spawn will read the file again, so pre-encode
         # deduplication must do the same.
-        if served is not None or backend._process_alive():
+        if served is not None or alive:
             pooling = captured or _gguf_pooling(path)
-        else:
+        elif os.path.isfile(path):
             pooling = _gguf_pooling(path)
+        else:
+            pooling = LlamaServerBackend.cached_pooling(name)
     else:
         pooling = LlamaServerBackend.cached_pooling(name)
     if pooling is None:
