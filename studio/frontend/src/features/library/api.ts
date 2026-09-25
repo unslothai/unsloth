@@ -331,8 +331,8 @@ export async function libraryDownloadUrl(item: LibraryItem): Promise<string> {
   return apiUrl(token ? `${path}&token=${encodeURIComponent(token)}` : path);
 }
 
-export async function libraryItemFile(item: LibraryItem): Promise<File> {
+export async function libraryItemFile(item: LibraryItem, maxBytes = Infinity): Promise<File> {
   const name = libraryFileName(item);
   const type = libraryFileType(name, item.textOnly ? "text/plain" : item.contentType);
-  return new File([await fetchLibraryBlob(item, type)], name, { type });
+  return new File([await fetchLibraryBlob(item, type, maxBytes)], name, { type });
 }
