@@ -164,7 +164,7 @@ export function SaveTemporaryChatButton({ className }: { className?: string }) {
               <HugeiconsIcon
                 icon={Bookmark02Icon}
                 strokeWidth={2}
-                className="text-foreground/80 size-5 shrink-0"
+                className="text-foreground/80 size-4.5 shrink-0"
               />
               Save this chat to history?
             </DialogTitle>
@@ -183,7 +183,7 @@ export function SaveTemporaryChatButton({ className }: { className?: string }) {
                 onCheckedChange={(checked) => setDontShowAgain(checked === true)}
                 disabled={saving}
               />
-              Don&apos;t show this again
+              Don&apos;t show again
             </label>
             <div className="flex gap-2">
               <Button
