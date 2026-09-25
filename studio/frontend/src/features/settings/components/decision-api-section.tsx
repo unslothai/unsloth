@@ -399,7 +399,6 @@ export function DecisionApiSection(): ReactElement | null {
                 })
               : t("settings.apiKeys.decisionApi.deviceDescription")
           }
-          alignTop={true}
         >
           <Select
             value={settings.device}
