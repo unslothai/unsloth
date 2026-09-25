@@ -113,6 +113,7 @@ from ._utils import (
     _get_remote_composite_text_only,
     _merge_key_mapping,
     _rebase_user_quantization_config,
+    _drop_text_only_key_mapping,
     _adapter_fits_text_model,
     set_task_config_attr,
     maybe_prefetch_hf_snapshot,
@@ -1903,6 +1904,7 @@ class FastModel(FastBaseModel):
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
         load_text_only = text_only and auto_model is None
         text_only_decoder = False
+        _text_key_mapping = None
         if load_text_only:
             if hasattr(model_config, "vision_config"):
                 text_config = _get_text_only_config(model_config, old_model_name)
@@ -2057,6 +2059,7 @@ class FastModel(FastBaseModel):
             *args,
             **kwargs,
         )
+        _drop_text_only_key_mapping(model, _text_key_mapping)
 
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)

@@ -1558,6 +1558,26 @@ def _merge_key_mapping(kwargs, mapping):
     kwargs["key_mapping"] = {**mapping, **user_mapping} if user_mapping else mapping
 
 
+def _drop_text_only_key_mapping(model, mapping):
+    # transformers 5 keeps the load's key_mapping renames on the model and reverses them in save_pretrained,
+    # which would write the standalone decoder under the composite prefix. Drop only the plan's own entries.
+    conversions = getattr(model, "_weight_conversions", None)
+    if not mapping or not isinstance(conversions, list):
+        return
+    own = {(pattern, replacement) for pattern, replacement in mapping.items()}
+
+    def _is_own(conversion):
+        sources = getattr(conversion, "source_patterns", None)
+        targets = getattr(conversion, "target_patterns", None)
+        if type(conversion).__name__ != "WeightRenaming" or not sources or not targets:
+            return False
+        if len(sources) != 1 or len(targets) != 1:
+            return False
+        return (sources[0], targets[0]) in own
+
+    model._weight_conversions = [c for c in conversions if not _is_own(c)]
+
+
 def _adapter_fits_text_model(
     adapter_name,
     key_mapping,

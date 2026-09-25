@@ -40,6 +40,7 @@ _HELPERS = (
     "_get_remote_composite_text_only",
     "_merge_key_mapping",
     "_rebase_user_quantization_config",
+    "_drop_text_only_key_mapping",
     "_trusted_remote_code_commit",
     "_adapter_fits_text_model",
 )
@@ -769,6 +770,106 @@ def test_post_load_quantization_config_stamp_uses_the_rebased_config():
     fn = _from_pretrained_node(VISION_PATH, "FastBaseModel")
     rebase, reads = _qc_reads_after_rebase(fn, "user_quantization_config")
     assert reads
+
+
+def _saved_keys(directory):
+    from safetensors import safe_open
+
+    keys = []
+    for f in sorted(Path(directory).glob("*.safetensors")):
+        with safe_open(str(f), "pt") as fh:
+            keys += list(fh.keys())
+    return sorted(keys)
+
+
+@needs_tf5
+def test_saved_text_only_decoder_keeps_standalone_names(tmp_path):
+    # transformers 5 keeps the load's key_mapping on the model and reverses it in save_pretrained, so the
+    # standalone decoder was written as language_model.* beside its standalone config and reloaded random.
+    ns = _ns()
+    repo, _ = _write_repo(tmp_path, name = "save_names")
+    parent = _load_parent_config(repo)
+    text_config, mapping, _ = ns["_get_remote_composite_text_only"](
+        parent, str(repo), trust_remote_code = True
+    )
+    kw = {}
+    ns["_merge_key_mapping"](kw, mapping)
+
+    def load():
+        return transformers.AutoModelForCausalLM.from_pretrained(
+            repo,
+            config = text_config,
+            key_mapping = kw["key_mapping"],
+            trust_remote_code = True,
+            dtype = torch.float32,
+            local_files_only = True,
+        )
+
+    # Without the drop the saved names are not the standalone ones.
+    model = load()
+    model.save_pretrained(tmp_path / "raw")
+    assert "model.embed_tokens.weight" not in _saved_keys(tmp_path / "raw")
+
+    model = load()
+    ns["_drop_text_only_key_mapping"](model, mapping)
+    model.save_pretrained(tmp_path / "saved")
+    expected = sorted(model.state_dict())
+    assert _saved_keys(tmp_path / "saved") == expected
+    reloaded, info = transformers.AutoModelForCausalLM.from_pretrained(
+        tmp_path / "saved", dtype = torch.float32, local_files_only = True, output_loading_info = True
+    )
+    assert not info["missing_keys"] and not info["unexpected_keys"]
+    state = reloaded.state_dict()
+    assert all(torch.equal(state[k], v) for k, v in model.state_dict().items())
+
+    # A merged LoRA export through save_pretrained keeps the standalone names too.
+    from peft import LoraConfig, get_peft_model
+
+    peft_model = get_peft_model(model, LoraConfig(r = 2, target_modules = ["q_proj", "v_proj"]))
+    peft_model.save_pretrained(tmp_path / "adapter")
+    assert all(k.startswith("base_model.model.model.") for k in _saved_keys(tmp_path / "adapter"))
+    peft_model.merge_and_unload().save_pretrained(tmp_path / "merged")
+    assert _saved_keys(tmp_path / "merged") == expected
+
+
+@needs_tf5
+def test_drop_keeps_every_other_weight_conversion():
+    # Only the plan's own prefix strip goes; a caller's key_mapping and model conversions still reverse on save.
+    from transformers.core_model_loading import WeightRenaming
+
+    ns = _ns()
+    plan = WeightRenaming(source_patterns = r"^language_model\.", target_patterns = "")
+    user = WeightRenaming(source_patterns = r"^old\.", target_patterns = "new.")
+    other = WeightRenaming(source_patterns = "LayerNorm.gamma", target_patterns = "LayerNorm.weight")
+
+    class Holder:
+        pass
+
+    model = Holder()
+    model._weight_conversions = [plan, user, other]
+    ns["_drop_text_only_key_mapping"](model, {r"^language_model\.": ""})
+    assert model._weight_conversions == [user, other]
+    # No plan, or no retained conversions (transformers 4.x): untouched.
+    ns["_drop_text_only_key_mapping"](model, None)
+    assert model._weight_conversions == [user, other]
+    bare = Holder()
+    ns["_drop_text_only_key_mapping"](bare, {r"^language_model\.": ""})
+    assert not hasattr(bare, "_weight_conversions")
+
+
+def test_loader_and_vision_drop_the_plan_mapping_after_the_load():
+    loader = LOADER_PATH.read_text(encoding = "utf-8")
+    vision = VISION_PATH.read_text(encoding = "utf-8")
+    assert re.search(
+        r"text_only_decoder = text_only_decoder,\n\s+\*args,\n\s+\*\*kwargs,\n\s+\)\n"
+        r"\s+_drop_text_only_key_mapping\(model, _text_key_mapping\)\n",
+        loader,
+    )
+    i_load = vision.index("model = auto_model.from_pretrained(")
+    i_drop = vision.index("_drop_text_only_key_mapping(model, _text_key_mapping)")
+    assert (
+        i_load < i_drop < vision.index("restore_remote_code_non_persistent_buffers(model)", i_load)
+    )
 
 
 # ---------------------------------------------------------------- .bin checkpoints

@@ -82,6 +82,7 @@ from ._utils import (
     _get_remote_composite_text_only,
     _merge_key_mapping,
     _rebase_user_quantization_config,
+    _drop_text_only_key_mapping,
     _trusted_remote_code_commit,
     _select_moe_detection_targets,
     set_task_config_attr,
@@ -1295,6 +1296,7 @@ class FastBaseModel:
                 local_files_only = local_files_only,
                 revision = _revision,
             )
+        _text_key_mapping = None
         if text_only and hasattr(auto_config, "vision_config"):
             parent_config = auto_config
             _trusted_code_commit = getattr(parent_config, "_commit_hash", None)
@@ -1781,6 +1783,8 @@ class FastBaseModel:
                     trust_remote_code = trust_remote_code,
                     **kwargs,
                 )
+                # Save the standalone decoder under its own names, not the composite prefix it was read from.
+                _drop_text_only_key_mapping(model, _text_key_mapping)
                 # transformers 5 leaves remote code's non-persistent buffers (RoPE inv_freq, decay slopes) uninitialised.
                 restore_remote_code_non_persistent_buffers(model)
                 # Must precede _attach_bnb_multidevice_hooks: it returns early while offload_embedding is True.
