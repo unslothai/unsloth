@@ -255,7 +255,7 @@ def test_the_recorded_base_must_be_the_canonical_id_not_just_the_same_tail(capsy
         assert rc != 2 or "is not" not in capsys.readouterr().out, accepted
 
 
-def _build_nvfp4(monkeypatch, tmp_path):
+def _build_nvfp4(monkeypatch, tmp_path, fam = None, extra_argv = (), loaded = None):
     """Run the build on a tiny aligned + ragged dense model; returns (quantized names, metadata)."""
     torch = pytest.importorskip("torch")
     pytest.importorskip("torchao")
@@ -263,7 +263,7 @@ def _build_nvfp4(monkeypatch, tmp_path):
 
     import core.inference.diffusion_transformer_quant as dtq
 
-    fam = detect_family("Tongyi-MAI/Z-Image-Turbo")
+    fam = fam or detect_family("Tongyi-MAI/Z-Image-Turbo")
     assert fam is not None
 
     class _Dense(torch.nn.Module):
@@ -274,6 +274,8 @@ def _build_nvfp4(monkeypatch, tmp_path):
 
         @classmethod
         def from_pretrained(cls, *args, **kwargs):
+            if loaded is not None:
+                loaded.append(kwargs.get("subfolder"))
             return cls()
 
         def to(self, *args, **kwargs):
@@ -295,7 +297,7 @@ def _build_nvfp4(monkeypatch, tmp_path):
     build = _script()
     out = tmp_path / "out.pt"
     argv = ["--base", "b", "--family", fam.name, "--scheme", "nvfp4", "--out", str(out)]
-    assert build.main(argv) == 0
+    assert build.main(argv + list(extra_argv)) == 0
     return quantized, torch.load(out, weights_only = False)["metadata"]
 
 
@@ -319,3 +321,41 @@ def test_the_build_stamps_its_denoiser_so_it_cannot_load_as_the_second_expert(
     ckpt = {"format": PREQUANT_FORMAT, "metadata": {**meta, "base_model_id": ""}, "state_dict": {}}
     assert _validate_checkpoint(ckpt, "nvfp4", "", None, component = "transformer")
     assert not _validate_checkpoint(ckpt, "nvfp4", "", None, component = "transformer_2")
+
+
+def test_the_second_expert_builds_from_its_own_subfolder_and_loads_as_transformer_2(
+    monkeypatch, tmp_path
+):
+    """``--component transformer_2`` reads that subfolder, stamps it, and publishes under the name the loader asks for."""
+    from core.inference.diffusion_prequant import PREQUANT_FORMAT, _validate_checkpoint
+
+    wan = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers", override = "wan2.2-t2v-a14b")
+    assert wan is not None
+    loaded = []
+    _, meta = _build_nvfp4(
+        monkeypatch, tmp_path, fam = wan, extra_argv = ["--component", "transformer_2"], loaded = loaded
+    )
+    assert loaded == ["transformer_2"]
+    assert meta["component"] == "transformer_2" and meta["family"] == wan.name
+    ckpt = {"format": PREQUANT_FORMAT, "metadata": {**meta, "base_model_id": ""}, "state_dict": {}}
+    assert _validate_checkpoint(ckpt, "nvfp4", "", None, component = "transformer_2")
+    assert not _validate_checkpoint(ckpt, "nvfp4", "", None, component = "transformer")
+
+    build = _script()
+    assert (
+        build.upload_destination(wan, "nvfp4", rotated = False, component = "transformer_2")
+        == "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"
+    )
+    # The default component keeps the name it has always published under.
+    assert build.upload_destination(wan, "nvfp4", rotated = False) == "transformer_nvfp4.pt"
+    # A component the family declares no row for would land where nothing ever looks.
+    with pytest.raises(ValueError, match = "transformer_2"):
+        build.upload_destination(
+            detect_family("Tongyi-MAI/Z-Image-Turbo"), "nvfp4", rotated = False, component = "transformer_2"
+        )
+
+
+def test_a_default_build_still_reads_the_transformer_subfolder(monkeypatch, tmp_path):
+    loaded = []
+    _, meta = _build_nvfp4(monkeypatch, tmp_path, loaded = loaded)
+    assert loaded == ["transformer"] and meta["component"] == "transformer"
