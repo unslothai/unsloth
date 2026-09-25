@@ -2595,10 +2595,8 @@ def _openai_llama_admission_recost(
                 vision = bool(getattr(llama_backend, "is_vision", False)),
             )
             prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
-            # Re-sent every round, so it belongs in every re-costing, not just the opening one.
             prompt_tokens += _openai_llama_admission_injected_tool_tokens(injected_tools)
-            # Anthropic keeps `system` and `tools` out of the message list entirely, so for
-            # that route this is most of the prompt.
+            # Anthropic keeps `system` and `tools` outside the message list.
             prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
             # mtmd embeddings: image parts compact to "[image]" in the text estimate.
             prompt_tokens += _openai_llama_admission_media_tokens(
