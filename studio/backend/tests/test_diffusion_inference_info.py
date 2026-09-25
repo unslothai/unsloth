@@ -59,9 +59,10 @@ def test_a_policy_family_reports_its_policy_nvfp4_footprint():
     from core.inference.diffusion_auto_policy import _POLICY_STEADY_FACTOR, policy_steady_factor
     infos = {info["family"]: info for info in family_inference_infos()}
     for family, policy_id in (
-        ("z-image", "zimg_f8mod_toq34_v1"),
-        ("flux.1", "flux_mod_single_v1"),
+        ("z-image", "zimg_rg76_v1"),
+        ("flux.1", "flux_r420_v1"),
         ("qwen-image", "qwen_p02_v1"),
+        ("qwen-image-2.1", "qwen21_r020_v1"),
     ):
         transformer, text_encoders, vae = _FAMILY_BF16_GB[family]
         expected = round(transformer * _POLICY_STEADY_FACTOR[policy_id] + text_encoders + vae, 1)

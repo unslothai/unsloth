@@ -317,6 +317,9 @@ _FAMILY_AUTO_PREFER: dict[str, _AutoPrefer] = {
     "qwen-image": _AutoPrefer(
         floor = (10, 0), schemes = (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8), gated = True
     ),
+    "qwen-image-2.1": _AutoPrefer(
+        floor = (10, 0), schemes = (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8), gated = True
+    ),
     "wan2.2-t2v-a14b": _AutoPrefer(
         floor = (10, 0),
         schemes = (TQ_NVFP4, TQ_INT8, TQ_FP8, TQ_MXFP8),
