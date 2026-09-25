@@ -3802,10 +3802,19 @@ class DiffusionBackend:
         hf_token: Optional[str],
     ) -> set[str]:
         """Missing files an older snapshot holds with the same content; never hashes on the request path."""
-        if not revision or not names:
+        if not names:
             return set()
         try:
-            from hub.utils.snapshot_reuse import hub_remote_digests, reusable_paths
+            from hub.utils.snapshot_reuse import (
+                cached_ref_commit,
+                hub_remote_digests,
+                reusable_paths,
+            )
+
+            # Unpinned entries (pre-cast text encoder, DiT prequant) were probed against the local main ref.
+            revision = revision or cached_ref_commit("model", repo_id, hub_cache_dir())
+            if not revision:
+                return set()
             return reusable_paths(
                 "model",
                 repo_id,

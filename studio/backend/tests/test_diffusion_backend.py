@@ -7736,6 +7736,36 @@ def test_reusable_from_older_snapshot_reads_the_live_cache_without_hashing(monke
     )
 
 
+def test_reusable_from_older_snapshot_targets_the_main_ref_when_unpinned(monkeypatch, tmp_path):
+    # The pre-cast text encoder is planned with no revision; its cache probe reads refs/main.
+    from hub.utils import snapshot_reuse
+
+    old, new = "1" * 40, "2" * 40
+    encoder = b"s" * 4096
+    repo = tmp_path / "models--unsloth--Qwen-Image-2.1-FP8"
+    (repo / "snapshots" / old).mkdir(parents = True)
+    (repo / "snapshots" / new / "vae").mkdir(parents = True)
+    (repo / "snapshots" / old / "te.safetensors").write_bytes(encoder)
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text(new)
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        snapshot_reuse,
+        "hub_remote_digests",
+        lambda repo_type, repo_id, token: lambda commit, paths: {p: "a" * 64 for p in paths},
+    )
+
+    found = DiffusionBackend._reusable_from_older_snapshot(
+        "unsloth/Qwen-Image-2.1-FP8",
+        ["te.safetensors"],
+        None,
+        {"te.safetensors": len(encoder)},
+        None,
+    )
+
+    assert found == {"te.safetensors"}
+
+
 def test_download_plan_is_empty_when_every_required_file_is_cached(monkeypatch):
     _fake_flux_hub(monkeypatch)
     _all_cached(monkeypatch)

@@ -164,6 +164,22 @@ def repo_cache_dir(
     return root / repo_folder_name(repo_id = repo_id, repo_type = repo_type)
 
 
+def cached_ref_commit(
+    repo_type: str,
+    repo_id: str,
+    hub_cache: Optional[str | Path] = None,
+    ref: str = "main",
+) -> Optional[str]:
+    try:
+        from hub.utils.download_manifest import normalized_commit_hash
+        text = (repo_cache_dir(repo_type, repo_id, hub_cache) / "refs" / ref).read_text(
+            encoding = "utf-8"
+        )
+        return normalized_commit_hash(text.strip())
+    except Exception:  # noqa: BLE001 - no readable ref means nothing to compare against
+        return None
+
+
 def _is_regular_file(path: Path) -> bool:
     try:
         return stat_module.S_ISREG(os.lstat(path).st_mode)
