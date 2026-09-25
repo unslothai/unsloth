@@ -123,6 +123,19 @@ function Write-StudioLine {
     }
 }
 
+function Show-DownloadProgress {
+    param([Parameter(ValueFromPipeline = $true)][object]$InputObject)
+    process {
+        $line = [string]$InputObject
+        if ((@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE) -and
+            ($line -like 'Downloading *: *% (*) at */s' -or
+             $line -like 'Downloading *: * downloaded at */s')) {
+            Write-StudioLine $line
+        }
+        $InputObject
+    }
+}
+
 # --------------------------------------------------------------------------
 #  Maintainer-editable defaults
 #  Change these in the GitHub-hosted script so users get updated defaults.
@@ -4924,7 +4937,7 @@ if ($NeedNodeForSetup) {
         substep "installing isolated Node (system Node/npm left untouched)..."
         # Prefer the validated handed-off/venv Python: bare `python` may be a Store stub here.
         $NodeInstallPython = if ($ValidatedSetupPython) { $ValidatedSetupPython } else { "python" }
-        $nodeOut = & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Out-String
+        $nodeOut = & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Show-DownloadProgress | Out-String
         $nodeExit = $LASTEXITCODE
         if ($nodeExit -eq 3) {
             Write-StudioLine $nodeOut -ForegroundColor DarkGray
@@ -8992,7 +9005,7 @@ if ($LocalLlamaCppLinked) {
                 $prebuiltOutput = if (Test-Path $prebuiltLog) { Get-Content $prebuiltLog -Raw } else { "" }
                 Remove-Item $prebuiltLog -ErrorAction SilentlyContinue
             } else {
-                $prebuiltOutput = & python @prebuiltArgs 2>&1 | Out-String
+                $prebuiltOutput = & python @prebuiltArgs 2>&1 | Show-DownloadProgress | Out-String
                 $prebuiltExit = $LASTEXITCODE
             }
         } finally {
@@ -9131,7 +9144,7 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
         $restoreNativeErrorPreferenceW = $true
     }
     try {
-        $whisperOutput = & python @whisperArgs 2>&1 | Out-String
+        $whisperOutput = & python @whisperArgs 2>&1 | Show-DownloadProgress | Out-String
         $whisperExit = $LASTEXITCODE
     } finally {
         if ($restoreNativeErrorPreferenceW) {
