@@ -1166,9 +1166,7 @@ def resolve_remote_code_model_class(
 
 
 def attention_class_for_load(model_class, builds_remote_class, remote_class, supports_sdpa):
-    """(class, supports_sdpa) for `resolve_attention_implementation`. A remote class replaces only a
-    native class it shadows; otherwise it may only rule sdpa out, so remote code that loaded
-    before keeps its attention route."""
+    """A remote class replaces only a native class it shadows; otherwise it may only rule sdpa out, so remote code that already loaded keeps its attention route."""
     if not builds_remote_class:
         return model_class, supports_sdpa
     if model_class is None and remote_class is None:
