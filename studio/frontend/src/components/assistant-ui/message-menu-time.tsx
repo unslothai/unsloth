@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ActionBarMorePrimitive, useAuiState } from "@assistant-ui/react";
-import { HelpCircleIcon } from "@hugeicons/core-free-icons";
+import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Tooltip,
@@ -27,22 +27,20 @@ export const MessageMenuTime: FC<{ onShowDetails: () => void }> = ({
       : null;
 
   return (
-    <div className="flex items-center justify-between gap-3">
-      {date ? (
+    <div className="flex items-center">
+      {date && (
         <time
           dateTime={date.toISOString()}
           title={date.toLocaleString(locale, { dateStyle: "full", timeStyle: "short" })}
-          className="block select-none px-3 py-2 text-sm text-muted-foreground tabular-nums"
+          className="block select-none py-2 pl-3 pr-1 text-sm text-muted-foreground tabular-nums"
         >
           {formatMessageDate(date.getTime(), Date.now(), locale, {
             today: (time) => t("common.todayAt", { time }),
             yesterday: (time) => t("common.yesterdayAt", { time }),
           })}
         </time>
-      ) : (
-        <span />
       )}
-      {/* Shown while the menu is hovered, or when reached by keyboard. */}
+      {/* Right after the time. Shown while the menu is hovered, or when reached by keyboard. */}
       <Tooltip>
         <TooltipTrigger asChild={true}>
           <ActionBarMorePrimitive.Item
@@ -50,7 +48,7 @@ export const MessageMenuTime: FC<{ onShowDetails: () => void }> = ({
             aria-label="See response details"
             className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 outline-none transition-opacity hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground focus:opacity-100 group-hover/more-menu:opacity-100"
           >
-            <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={1.75} className="size-icon" />
+            <HugeiconsIcon icon={InformationCircleIcon} strokeWidth={1.75} className="size-icon" />
           </ActionBarMorePrimitive.Item>
         </TooltipTrigger>
         {/* Above, so it never covers the time beside it. */}
