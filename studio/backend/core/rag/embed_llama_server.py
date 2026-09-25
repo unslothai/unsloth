@@ -478,12 +478,21 @@ class LlamaServerBackend:
     @staticmethod
     def cached_pooling(model: str) -> str | None:
         """Pooling of ``model``'s GGUF already on disk, found without the network; None when
-        nothing is on disk yet. Only the local path and the desired repo, which the loader serves
-        from cache before going online. Every quant of one conversion declares the same pooling."""
+        the loader cannot yet know which file it will serve. Match its local, planned and configured-
+        variant order so identity prediction never reads metadata from a different cached family."""
         try:
             desired = config.effective_gguf_repo_for_embedding_model(model)
             path = LlamaServerBackend._resolve_local_gguf(model)
-            path = path or LlamaServerBackend._resolve_cached_gguf(desired, require_variant = False)
+            path = path or LlamaServerBackend._planned_family_path(model, desired)
+            path = path or LlamaServerBackend._resolve_cached_gguf(desired)
+            if path is None:
+                try:
+                    from utils.embedding_model_settings import get_stored_download_pending
+                    download_pending = get_stored_download_pending(model)
+                except Exception:  # noqa: BLE001 - old/unavailable settings store
+                    download_pending = False
+                if download_pending:
+                    path = LlamaServerBackend._resolve_cached_gguf(desired, require_variant = False)
         except Exception:  # noqa: BLE001 - identity prediction must not block ingestion
             return None
         return None if path is None else _gguf_pooling(path)

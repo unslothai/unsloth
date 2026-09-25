@@ -1761,3 +1761,42 @@ def test_llama_identity_is_not_predicted_from_a_fallback_repo(monkeypatch, tmp_p
     _use_cache_root(monkeypatch, tmp_path / "hub")
     legacy = config.embedding_identity("llama-server", model, gguf_repo = repo)
     assert embeddings._identity(True, model) == legacy + ":unresolved"
+
+
+def test_llama_identity_follows_the_planned_family_before_a_later_variant(monkeypatch, tmp_path):
+    """The loader pins a completed download family before considering the configured
+    variant, so prediction must not take pooling from a different file that arrived later."""
+    import utils.embedding_model_settings as ems
+
+    model, repo = "org/embed", "org/embed-GGUF"
+    monkeypatch.setattr(config, "effective_gguf_repo_for_embedding_model", lambda m: repo)
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(ems, "get_stored_gguf_files", lambda m: ["embed-Q8_0.gguf"])
+    snapshot = _seed_cache(tmp_path / "hub", repo, ["embed-Q8_0.gguf", "embed-F16.gguf"])
+    _write_gguf((snapshot / "embed-Q8_0.gguf").resolve(), "qwen3", 3)
+    _write_gguf((snapshot / "embed-F16.gguf").resolve(), "bert", 2)
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    legacy = config.embedding_identity("llama-server", model, gguf_repo = repo)
+
+    assert embeddings._identity(True, model) == legacy + ":last"
+
+
+@pytest.mark.parametrize("download_pending, suffix", [(False, ":unresolved"), (True, ":last")])
+def test_llama_identity_only_predicts_a_stand_in_quant_while_its_download_is_pending(
+    monkeypatch, tmp_path, download_pending, suffix
+):
+    """Without the configured variant, the loader goes online unless an active download
+    makes the cached quant a deliberate stand-in. Only that stand-in is predictable."""
+    import utils.embedding_model_settings as ems
+
+    model, repo = "org/embed", "org/embed-GGUF"
+    monkeypatch.setattr(config, "effective_gguf_repo_for_embedding_model", lambda m: repo)
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(ems, "get_stored_gguf_files", lambda m: None)
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda m: download_pending)
+    snapshot = _seed_cache(tmp_path / "hub", repo, ["embed-Q8_0.gguf"])
+    _write_gguf((snapshot / "embed-Q8_0.gguf").resolve(), "qwen3", 3)
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    legacy = config.embedding_identity("llama-server", model, gguf_repo = repo)
+
+    assert embeddings._identity(True, model) == legacy + suffix
