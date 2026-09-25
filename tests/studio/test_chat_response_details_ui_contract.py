@@ -432,19 +432,24 @@ def _definition_body(name: str, source: str) -> str | None:
     return source[at.end() :]
 
 
+# `setDetailsOpen(true)`, or a functional updater that always answers true
+# (`setDetailsOpen(() => true)`, `setDetailsOpen((open) => true)`).
+_OPENS_SHEET = re.compile(
+    r"\bsetDetailsOpen\(\s*(?:true|(?:\(\s*[\w$]*\s*\)|[\w$]+)\s*=>\s*(?:true|\{\s*return\s+true\s*;?\s*\}))\s*\)"
+)
+
+
 def _opens_details(value: str, source: str) -> bool:
     """Whether a callback opens the sheet: inline, or the name of one this file defines."""
     # `analytics("setDetailsOpen(true)")` names the setter inside a string without calling it.
-    if re.search(r"\bsetDetailsOpen\(\s*true\s*\)", _without_strings(value)):
+    if _OPENS_SHEET.search(_without_strings(value)):
         return True
     name = re.fullmatch(r"\s*([A-Za-z_$][\w$]*)\s*", value)
     if name is None:
         return False
     # A commented-out setter inside the body does not open anything.
     body = _definition_body(name.group(1), _without_block_comments(source))
-    return body is not None and bool(
-        re.search(r"\bsetDetailsOpen\(\s*true\s*\)", _without_strings(body))
-    )
+    return body is not None and bool(_OPENS_SHEET.search(_without_strings(body)))
 
 
 DETAILS_LABEL = "See response details"
@@ -591,6 +596,12 @@ def test_assistant_more_menu_exposes_response_details_action():
         ("showDetails", "const showDetails = () => setDetailsOpen(false);", False),
         ("missing", "const showDetails = () => setDetailsOpen(true);", False),
         ('() => analytics("setDetailsOpen(true)")', "", False),
+        ("() => setDetailsOpen(() => true)", "", True),
+        ("() => setDetailsOpen((open) => true)", "", True),
+        ("() => setDetailsOpen(() => { return true; })", "", True),
+        ("showDetails", "const showDetails = () => setDetailsOpen(() => true);", True),
+        ("() => setDetailsOpen((open) => !open)", "", False),
+        ("() => setDetailsOpen(() => false)", "", False),
         ("showDetails", 'const showDetails = () => analytics("setDetailsOpen(true)");', False),
     ],
 )

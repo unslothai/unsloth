@@ -134,11 +134,15 @@ def test_every_key_the_studio_tests_ask_for_exists():
 
 
 def _github_glob(pattern: str) -> re.Pattern[str]:
-    """A workflow `paths` pattern as a regex: `**` crosses `/`, `*` and `?` do not."""
+    """A workflow `paths` pattern as a regex: `**` crosses `/` (`**/` also matches nothing), `*` and `?` do not."""
     out = []
     index = 0
     while index < len(pattern):
-        if pattern.startswith("**", index):
+        if pattern.startswith("**/", index):
+            # `**/` may match zero directories: `a/**/b` selects `a/b` too.
+            out.append("(?:.*/)?")
+            index += 3
+        elif pattern.startswith("**", index):
             out.append(".*")
             index += 2
         elif pattern[index] == "*":
@@ -173,10 +177,58 @@ def _paths_include(paths: list[str], path: str) -> bool:
         (["tests/studio/*", "!tests/studio/_en_catalog.py"], False),
         (["!tests/studio/_en_catalog.py", "tests/studio/*"], True),
         (["tests/**", "!tests/studio/**", "tests/studio/_en_*.py"], True),
+        (["tests/studio/**/_en_catalog.py"], True),
+        (["tests/**/_en_catalog.py"], True),
+        (["tests/**/studio/_en_catalog.py"], True),
     ],
 )
 def test_the_paths_filter_is_read_in_order(paths, included):
     assert _paths_include(paths, "tests/studio/_en_catalog.py") is included
+
+
+def _pull_request_runs_on(workflow: dict, path: str) -> bool:
+    """Whether a pull request that changes only `path` triggers `workflow`."""
+    # PyYAML reads a bare `on:` key as True and a quoted `"on":` as the string.
+    triggers = workflow.get(True, workflow.get("on"))
+    if isinstance(triggers, str):
+        triggers = [triggers]
+    if isinstance(triggers, list):
+        return "pull_request" in triggers
+    if not isinstance(triggers, dict) or "pull_request" not in triggers:
+        return False
+    event = triggers["pull_request"] or {}
+    if "paths" in event:
+        return _paths_include(event["paths"] or [], path)
+    if "paths-ignore" in event:
+        # Same ordered reading: a match excludes, a later `!` match puts it back.
+        return not _paths_include(event["paths-ignore"] or [], path)
+    return True
+
+
+@pytest.mark.parametrize(
+    "workflow, runs",
+    [
+        ({True: {"pull_request": None}}, True),
+        ({True: "pull_request"}, True),
+        ({True: ["push", "pull_request"]}, True),
+        ({True: {"push": None}}, False),
+        ({"on": {"pull_request": {"paths": ["tests/other/**"]}}}, False),
+        ({"on": {"pull_request": {"paths": ["tests/studio/**"]}}}, True),
+        ({True: {"pull_request": {"paths": ["tests/studio/**/_en_catalog.py"]}}}, True),
+        ({True: {"pull_request": {"paths-ignore": ["tests/studio/**"]}}}, False),
+        ({True: {"pull_request": {"paths-ignore": ["docs/**"]}}}, True),
+        (
+            {
+                True: {
+                    "pull_request": {"paths-ignore": ["tests/**", "!tests/studio/_en_catalog.py"]}
+                }
+            },
+            True,
+        ),
+    ],
+)
+def test_the_pull_request_trigger_is_read_in_full(workflow, runs):
+    assert _pull_request_runs_on(workflow, "tests/studio/_en_catalog.py") is runs
 
 
 def test_every_workflow_running_a_catalog_driver_also_triggers_on_the_catalog_reader():
@@ -199,11 +251,6 @@ def test_every_workflow_running_a_catalog_driver_also_triggers_on_the_catalog_re
         runs = [name for name in drivers if f"tests/studio/{name}" in text]
         if not runs:
             continue
-        triggers = yaml.safe_load(text).get(True) or {}  # PyYAML reads the `on:` key as True.
-        pull_request = triggers.get("pull_request") if isinstance(triggers, dict) else None
-        paths = (pull_request or {}).get("paths") if isinstance(pull_request, dict) else None
-        if not paths:
-            continue  # No path filter: every PR runs it.
-        if not _paths_include(paths, reader):
+        if not _pull_request_runs_on(yaml.safe_load(text), reader):
             unguarded[workflow.name] = runs
     assert not unguarded, f"these workflows run catalog drivers but skip {reader}: {unguarded}"
