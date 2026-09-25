@@ -1108,7 +1108,8 @@ def test_a_complete_install_still_holding_the_lock_is_waited_for_in_case_it_roll
             env.dists.pop("flashinfer-python")
             env.dists.pop("flashinfer-jit-cache")
             env.importable = False
-            rolled_back.append(time.monotonic())
+            # Imports seen before the rollback: ordering by count, not by clock.
+            rolled_back.append(len(stamps))
 
     t = threading.Thread(target = _hold)
     t.start()
@@ -1117,7 +1118,7 @@ def test_a_complete_install_still_holding_the_lock_is_waited_for_in_case_it_roll
         ok, reason = _ensure(env)
     finally:
         t.join()
-    assert rolled_back and stamps and stamps[0] >= rolled_back[0]
+    assert rolled_back == [0] and stamps
     assert "already installed" not in reason
 
 

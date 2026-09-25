@@ -463,7 +463,8 @@ def _uv_config_tables() -> Optional[list[tuple[dict, dict]]]:
     if not explicit and _flag(os.environ.get("UV_NO_CONFIG")):
         return []
     try:
-        import tomllib
+        # novermin -- 3.11; the tomli / None fallback below is the guard, which vermin cannot see.
+        import tomllib  # novermin
     except ImportError:
         try:
             import tomli as tomllib  # type: ignore[no-redef]
