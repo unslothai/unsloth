@@ -2228,6 +2228,21 @@ if ($true -ne (Test-EventDataFromPolicy $ours $NOISG)) { exit 51 }
 if ($true -ne (Test-EventDataFromPolicy $byName $NOISG)) { exit 52 }
 if ($true -eq (Test-EventDataFromPolicy $other $NOISG)) { exit 53 }
 if ($true -eq (Test-EventDataFromPolicy $null $NOISG)) { exit 54 }
+"""
+    # The predicate collect counts with, run as written. With no audit policy
+    # applied Smart App Control logs no 3076, so none may count as a verdict.
+    start = collect.index("    $isOurAudit = {")
+    predicate = collect[start : collect.index("\n    }\n", start) + 6]
+    body += predicate + r"""
+$NOISG_GUID = $NOISG
+$evOurs = [pscustomobject]@{ Id = 3076; EventData = $ours }
+$evOther = [pscustomobject]@{ Id = 3076; EventData = $other }
+$auditApplied = $true
+if ($true -ne (& $isOurAudit $evOurs)) { exit 55 }
+if ($true -eq (& $isOurAudit $evOther)) { exit 56 }
+$auditApplied = $false
+if ($true -eq (& $isOurAudit $evOurs)) { exit 57 }
+if ($true -eq (& $isOurAudit $evOther)) { exit 58 }
 exit 0
 """
     _drive_probe(tmp_path, body, ["Test-EventDataFromPolicy"])
