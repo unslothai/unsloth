@@ -9,13 +9,34 @@ from typing import Any, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
+from hub.utils.host_paths import host_paths_visible, redact_host_paths
 from storage.benchmark_runs_db import delete_run, get_run, list_runs, upsert_run
 
 router = APIRouter()
 
 MAX_RESULTS = 20_000
 MAX_RUNS_LISTED = 200
+
+
+def _redact_run(run: dict[str, Any], *, via_api_key: bool) -> dict[str, Any]:
+    """`model` and `config.tuneModel` hold the resolved absolute path of a local GGUF, the same
+    host identity the inference status route hides from API-key callers. The path redactor keys
+    on field name and neither is one it knows, so route them through identity keys it does and
+    map the references back."""
+    if host_paths_visible(via_api_key):
+        return run
+    config = run.get("config")
+    tune = config.get("tuneModel") if isinstance(config, dict) else None
+    ids = redact_host_paths(
+        {"active_model": run.get("model"), "model_name": tune},
+        via_api_key = via_api_key,
+    )
+    out = dict(run)
+    out["model"] = ids["active_model"]
+    if isinstance(config, dict) and "tuneModel" in config:
+        out["config"] = {**config, "tuneModel": ids["model_name"]}
+    return out
 
 
 class BenchmarkResult(BaseModel):
@@ -58,16 +79,28 @@ class BenchmarkRun(BaseModel):
 
 
 @router.get("/runs")
-def get_runs(current_subject: str = Depends(get_current_subject)):
-    return {"runs": list_runs(limit = MAX_RUNS_LISTED)}
+def get_runs(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    return {
+        "runs": [
+            _redact_run(run, via_api_key = via_api_key)
+            for run in list_runs(limit = MAX_RUNS_LISTED)
+        ]
+    }
 
 
 @router.get("/runs/{run_id}")
-def get_one(run_id: str, current_subject: str = Depends(get_current_subject)):
+def get_one(
+    run_id: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
     run = get_run(run_id)
     if run is None:
         raise HTTPException(status_code = 404, detail = "Benchmark run not found")
-    return run
+    return _redact_run(run, via_api_key = via_api_key)
 
 
 @router.put("/runs/{run_id}")

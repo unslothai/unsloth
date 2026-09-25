@@ -280,6 +280,10 @@ export async function runBenchmark(
   let status = await getInferenceStatus(signal);
   // Chat's model before the sweep; a run that names its own model still restores this one.
   const original = status;
+  // Snapshot the original load now: chatBaseLoad reads the live chat store, and if the user
+  // goes back to Chat mid-run its status polling adopts each variant's settings, so recomputing
+  // it at restore time would put the original model back with the last variant's KV/context/etc.
+  const originalLoad = chatBaseLoad(original);
   const prompts = promptsFor(config.promptSet, config.customPrompt);
   if (prompts.length === 0)
     throw new BenchSetupError("The custom prompt is empty.");
@@ -532,7 +536,7 @@ export async function runBenchmark(
       events.onProgress("Restoring your original settings");
       // Restore the model chat had open, not the one a tuneModel run swapped in.
       // Keep the finished run, but tell the user if chat was left on the benchmark model.
-      await restore(original, chatBaseLoad(original)).catch((err) =>
+      await restore(original, originalLoad).catch((err) =>
         events.onRestoreError?.(
           err instanceof Error ? err.message : String(err),
         ),
