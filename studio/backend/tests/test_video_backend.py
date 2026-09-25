@@ -9456,6 +9456,7 @@ def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
 def test_an_explicit_scheme_under_speed_off_stages_the_hosted_experts(monkeypatch):
     """An EXPLICIT scheme under speed_mode="off" is still quantized, so the plan keeps its seed and
     stages the hosted checkpoint rather than the ~56 GB of dense experts."""
+    import core.inference.video as video_mod
     import core.inference.video_denoiser_prequant as dq
 
     _plan_api(
@@ -9491,6 +9492,11 @@ def test_an_explicit_scheme_under_speed_off_stages_the_hosted_experts(monkeypatc
         ),
     }
     monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: sources)
+    # The runner's own GPU and memory must not decide the seed: this pins the speed-off rule only.
+    monkeypatch.setattr(
+        video_mod, "select_transformer_quant_scheme", lambda target, requested, **kw: requested
+    )
+    monkeypatch.setattr(video_mod, "_video_seed_stays_resident", lambda fam, **kw: True)
 
     plan = VideoBackend().download_plan(
         "Wan-AI/Wan2.2-T2V-A14B-Diffusers",

@@ -1590,7 +1590,7 @@ def quantize_transformer(
     Best-effort: never raises for an unsupported environment (failure leaves it dense).
     ``fast_accum`` (fp8 only) overrides the per-GPU-class accumulate choice: None auto-detects,
     True/False force it. ``base_repo`` (UPSTREAM id) selects the per-layer NVFP4 policy."""
-    scheme = select_transformer_quant_scheme(target, mode, family = family)
+    scheme = select_transformer_quant_scheme(target, mode, family = family, base_repo = base_repo)
     if scheme is None:
         return None
     transformer = getattr(pipe, "transformer", None)
