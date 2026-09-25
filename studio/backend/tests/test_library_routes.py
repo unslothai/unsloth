@@ -27,7 +27,7 @@ def client(monkeypatch):
     # test does not seed.
     monkeypatch.setattr(library, "_SOURCES", (library._upload_items,))
     library.invalidate_listing()
-    library._thumbnail_cache.clear()
+    library._THUMBNAILS.forget()
     app = FastAPI()
     app.dependency_overrides[get_current_subject] = lambda: "unsloth"
     app.dependency_overrides[request_admitted_without_credential] = lambda: False
@@ -893,7 +893,7 @@ def test_a_projects_own_files_are_listed(client, monkeypatch, tmp_path):
     conn.execute("UPDATE chat_projects SET root_path = ? WHERE id = 'p-lib'", (str(own),))
     conn.commit()
     conn.close()
-    assert not library._studio_project_root(str(own), library._project_workspaces())
+    assert not library._studio_project_root(str(own))
     assert "sandbox:project-p-lib:files/notes.txt" not in _items(client)[0]
 
 
@@ -1031,7 +1031,7 @@ def test_an_upload_downloads_under_the_name_it_was_given(client, signed_in):
 )
 def test_names_written_to_disk_are_valid_on_windows(name, safe):
     assert library.safe_file_name(name) == safe
-    project_name = library._project_name(name, "upload:x")
+    project_name = library.safe_file_name(name, item_id = "upload:x")
     from core.inference.gallery_projects import _bad_name
 
     assert not _bad_name(project_name), project_name
@@ -1067,7 +1067,7 @@ def test_an_image_attachment_has_a_thumbnail(client, monkeypatch):
     )
     assert _thumbnail_size(client, "attachment:m:a") == (120, 90)
     attachment["content"] = [{"type": "text", "text": "just words"}]
-    library._thumbnail_cache.clear()
+    library._THUMBNAILS.forget()
     response = client.get("/api/library/items/thumbnail", params = {"id": "attachment:m:a"})
     assert response.status_code == 404
 
@@ -1115,13 +1115,13 @@ def test_a_video_thumbnail_reads_its_container_by_type(client, monkeypatch):
 
 def test_thumbnails_are_cached_by_version_and_decoded_a_few_at_a_time(client, monkeypatch):
     calls = []
-    real = library._picture
+    real = library._decode
 
     def counted(mime_type, source):
         calls.append(mime_type)
         return real(mime_type, source)
 
-    monkeypatch.setattr(library, "_picture", counted)
+    monkeypatch.setattr(library, "_decode", counted)
     [image] = _upload(client, ("a.png", _png(40, 30), "image/png"))
     for _ in range(3):
         assert _thumbnail_size(client, image) == (40, 30)
@@ -1665,11 +1665,11 @@ def test_a_tampered_expired_or_foreign_stream_link_is_refused(client, monkeypatc
         "/api/library/items/stream", params = {"id": item_id, "token": value}
     )
     assert get(clip, token).status_code == 200
-    target, expires, signature = token.split(".")
+    target, expires, signature = token.rsplit(".", 2)
     for bad in (
         f"{target}.{expires}.{'0' * len(signature)}",
         f"{target}.{int(expires) + 60}.{signature}",
-        f"{library_routes._sign_stream_id(other).split('.')[0]}.{expires}.{signature}",
+        f"{library_routes._sign_stream_id(other).rsplit('.', 2)[0]}.{expires}.{signature}",
         "nonsense",
         "",
     ):

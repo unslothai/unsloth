@@ -21,18 +21,23 @@ and layers its overlay (name, favorite, folder) on top.
 from __future__ import annotations
 
 import functools
+import hashlib
+import importlib
+import io
 import os
 import re
 import stat
 import threading
 import time
 import uuid
+import zlib
 from collections import OrderedDict
 from pathlib import Path
-from typing import BinaryIO, Optional, Union
+from types import ModuleType
+from typing import BinaryIO, Callable, NamedTuple, Optional, Union
 from urllib.parse import quote
 
-from core.inference.gallery_projects import RESERVED_NAMES, UNSAFE_NAME_CHARS
+from core.inference.gallery_projects import UNSAFE_NAME_CHARS, _bad_name
 from loggers import get_logger
 from storage import library_db
 from utils.paths import ensure_dir
@@ -94,13 +99,10 @@ def _item(
 
 
 def _fingerprint(info: os.stat_result) -> str:
-    """Which file a path-derived id (``sandbox:``, ``model:``) found at its path: the inode, the
-    file id on Windows, with the birth time where the OS keeps one. Both hold through an edit in
-    place and a model folder filling up, and change when the path is deleted and made again, so an
-    overlay row stays with the file it was made for. Not the device number, which a remount can
-    change. Linux has no birth time here and ext4 hands a freed inode to the next file, so there a
-    file recreated at once can still pass for the old one; a save that writes a copy and renames
-    it over reads as a new file everywhere."""
+    """Which file a path-derived id (``sandbox:``, ``model:``) found: its inode (file id on Windows)
+    and birth time where the OS keeps one, so an edit in place keeps it and a path made again does
+    not. Not the device, which a remount changes. Linux keeps no birth time and ext4 reuses inodes,
+    so there a file recreated at once can pass for the old one."""
     birth = getattr(info, "st_birthtime", None)
     if birth is None and os.name == "nt":
         # Before Python 3.12, Windows kept the creation time in st_ctime.
@@ -156,26 +158,21 @@ def _verify_native(lease: str, *, consume: bool):
 
 
 def check_native_upload(lease: str) -> tuple[str, int]:
-    """(name, size) of a desktop drop, its grant checked but not used up. A batch checks every
-    grant first, so one bad drop refuses the batch before any grant is spent."""
+    """(name, size) of a desktop drop, its grant checked but not spent, so a batch can check all."""
     grant = _verify_native(lease, consume = False)
     return grant.canonical_path.name, os.stat(grant.canonical_path).st_size
 
 
 def open_native_upload(lease: str):
-    """Verify a desktop drop's signed path grant and open the file it names.
-
-    Returns (name, content type, binary handle). The webview never names a path itself: the app
-    signs the one the OS handed it, and the grant is re-checked here before a byte is read.
-    """
+    """(name, content type, binary handle) of a desktop drop: the app signs the path the OS handed
+    it, never the webview, and the grant is spent here before a byte is read."""
     grant = _verify_native(lease, consume = True)
     name = grant.canonical_path.name
     return name, _guess_type(name), open(grant.canonical_path, "rb")
 
 
-# Deleting an upload and rewriting a note each check its row, then change the file and the row.
-# One at a time, or a delete could set the file aside mid-write, or drop a row another delete is
-# still relying on, and leave a file with no row.
+# Deletes and note saves check a row, then change the file and the row: one at a time, or a file
+# can be left with no row.
 _upload_lock = threading.Lock()
 
 
@@ -309,96 +306,82 @@ def _attachment_items() -> list[dict]:
     return items
 
 
-# ── Generated images ─────────────────────────────────────────────
+# ── Generated images, video and audio ────────────────────────────
 
 
-# What Windows refuses in a file name, the class gallery_projects refuses a copy's name by.
-# `_prompt_name` clears whitespace too, as a prompt's line breaks make no name.
-_UNSAFE_NAME_RE = re.compile(f"[{UNSAFE_NAME_CHARS}]+")
+# A run of what Windows refuses in a file name, or of whitespace: a prompt's line breaks make no name.
+_NAME_BREAK_RE = re.compile(f"[{UNSAFE_NAME_CHARS}\\s]+")
 
 
 def _prompt_name(prompt: str, fallback: str, extension: str) -> str:
-    cleaned = re.sub(f"[{UNSAFE_NAME_CHARS}\\s]+", " ", prompt).strip()
+    cleaned = _NAME_BREAK_RE.sub(" ", prompt).strip()
     if len(cleaned) > 60:
         cleaned = cleaned[:60].rsplit(" ", 1)[0] or cleaned[:60]
     return f"{cleaned or fallback}.{extension}"
 
 
-def _file_size(path: Optional[Path]) -> Optional[int]:
-    if path is None:
-        return None
-    try:
-        return path.stat().st_size
-    except OSError:
-        return None
+class _Gallery(NamedTuple):
+    module: ModuleType
+    records: Callable
+    resolve: Callable
+    label: str  # what an item with no prompt is called
+    extension: str
+    content_type: str
+    folder: str  # the project folder Add to project copies into
 
 
-def _both_shelves(list_records) -> list[tuple[dict, bool]]:
-    """(record, archived) for both shelves: archiving tidies a gallery page, the file is still
-    Studio's."""
-    return [(record, False) for record in list_records()] + [
-        (record, True) for record in list_records(archived = True)
-    ]
+# kind: its module in core.inference, its list and path functions, then the rest of _Gallery.
+_GALLERIES = {
+    "image": ("image_gallery", "list_images", "image_path", "Image", "png", "image/png", "images"),
+    "video": ("video_gallery", "list_videos", "video_path", "Video", "mp4", "video/mp4", "videos"),
+    "audio": ("audio_gallery", "list_audio", "audio_path", "Audio", "wav", "audio/wav", "audio"),
+}
 
 
-def _image_items() -> list[dict]:
-    from core.inference import image_gallery
+def _gallery(kind: str) -> _Gallery:
+    module_name, records, resolve, *rest = _GALLERIES[kind]
+    module = importlib.import_module(f"core.inference.{module_name}")
+    return _Gallery(module, getattr(module, records), getattr(module, resolve), *rest)
 
+
+def _gallery_items(kind: str) -> list[dict]:
+    gallery = _gallery(kind)
     items = []
-    for record, archived in _both_shelves(image_gallery.list_images):
-        items.append(
-            _item(
-                f"image:{record['id']}",
-                name = _prompt_name(str(record.get("prompt") or ""), "Image", "png"),
-                source = "generated",
-                content_type = "image/png",
-                size_bytes = _file_size(image_gallery.image_path(record["id"])),
-                created_at = _to_ms(record.get("created_at")),
-                file_url = record["url"],
-                archived = archived,
+    # Both shelves: archiving tidies a gallery page, the file is still Studio's.
+    for archived in (False, True):
+        for record in gallery.records(archived = archived):
+            path = gallery.resolve(record["id"])
+            try:
+                size = path.stat().st_size if path is not None else None
+            except OSError:
+                size = None
+            items.append(
+                _item(
+                    f"{kind}:{record['id']}",
+                    name = _prompt_name(
+                        str(record.get("prompt") or ""), gallery.label, gallery.extension
+                    ),
+                    source = "generated",
+                    content_type = gallery.content_type,
+                    size_bytes = size,
+                    created_at = _to_ms(record.get("created_at")),
+                    file_url = record["url"],
+                    archived = archived,
+                )
             )
-        )
     return items
 
 
-# ── Generated video ──────────────────────────────────────────────
+def _image_items() -> list[dict]:
+    return _gallery_items("image")
 
 
 def _video_items() -> list[dict]:
-    from core.inference import video_gallery
-    return [
-        _item(
-            f"video:{record['id']}",
-            name = _prompt_name(str(record.get("prompt") or ""), "Video", "mp4"),
-            source = "generated",
-            content_type = "video/mp4",
-            size_bytes = _file_size(video_gallery.video_path(record["id"])),
-            created_at = _to_ms(record.get("created_at")),
-            file_url = record["url"],
-            archived = archived,
-        )
-        for record, archived in _both_shelves(video_gallery.list_videos)
-    ]
-
-
-# ── Generated audio ──────────────────────────────────────────────
+    return _gallery_items("video")
 
 
 def _audio_items() -> list[dict]:
-    from core.inference import audio_gallery
-    return [
-        _item(
-            f"audio:{record['id']}",
-            name = _prompt_name(str(record.get("prompt") or ""), "Audio", "wav"),
-            source = "generated",
-            content_type = "audio/wav",
-            size_bytes = _file_size(audio_gallery.audio_path(record["id"])),
-            created_at = _to_ms(record.get("created_at")),
-            file_url = record["url"],
-            archived = archived,
-        )
-        for record, archived in _both_shelves(audio_gallery.list_audio)
-    ]
+    return _gallery_items("audio")
 
 
 # ── Fine-tuned models ────────────────────────────────────────────
@@ -487,30 +470,24 @@ def _sandbox_sessions() -> list[tuple[str, Optional[str], Optional[str]]]:
         projects = conn.execute("SELECT id, name, root_path FROM chat_projects").fetchall()
     finally:
         conn.close()
-    sessions: list[tuple[str, Optional[str], Optional[str]]] = [
-        (row["id"], row["id"], row["title"]) for row in threads
-    ]
-    workspaces = _project_workspaces()
-    sessions.extend(
+    return [(row["id"], row["id"], row["title"]) for row in threads] + [
         (f"{_PROJECT_SESSION_PREFIX}{row['id']}", None, row["name"])
         for row in projects
-        if _studio_project_root(row["root_path"], workspaces)
-    )
-    return sessions
+        if _studio_project_root(row["root_path"])
+    ]
 
 
-def _project_workspaces() -> str:
+def _studio_project_root(root_path: Optional[str]) -> bool:
+    """Whether a project works in Studio's own workspace (every project is given a folder there),
+    not a folder of the user's own, whose files are not Studio's."""
     from utils.paths.storage_roots import project_workspaces_root
-    return os.path.realpath(project_workspaces_root())
 
-
-def _studio_project_root(root_path: Optional[str], workspaces: str) -> bool:
-    """Whether a project works in Studio's own workspace. Every project is given a folder under
-    the workspaces root when it is made, so the column is never empty; one pointed at a folder of
-    the user's own works in that folder, and those files are not Studio's."""
     if not root_path:
         return True
-    return is_path_within(os.path.realpath(os.path.expanduser(root_path)), workspaces)
+    return is_path_within(
+        os.path.realpath(os.path.expanduser(root_path)),
+        os.path.realpath(project_workspaces_root()),
+    )
 
 
 def _sandbox_session_eligible(session_id: str) -> bool:
@@ -531,42 +508,24 @@ def _sandbox_session_eligible(session_id: str) -> bool:
         ).fetchone()
     finally:
         conn.close()
-    return row is not None and _studio_project_root(row["root_path"], _project_workspaces())
+    return row is not None and _studio_project_root(row["root_path"])
 
 
 def _sandbox_names(directory: str) -> frozenset:
-    """The files one sandbox's listing holds, remembered as long as the listing's own walk, so a
-    grid of cards asking for pictures walks a sandbox once rather than once a card. The listing
-    leaves its walk here too, so a card it just listed is checked without walking again."""
+    """The files one sandbox's listing holds, remembered with the listing, so a grid of cards walks
+    a sandbox once rather than once a card."""
     from routes.inference import _sandbox_listing_names
-
-    key = (_account_key(), directory)
-    now = time.monotonic()
-    with _source_cache_lock:
-        hit = _sandbox_names_cache.get(key)
-        generation = _source_generation
-    if hit is not None and now - hit[0] < _SANDBOX_TTL_SECONDS:
-        return hit[1]
-    names = _sandbox_listing_names(directory) if os.path.isdir(directory) else []
-    return _remember_sandbox_names(key, now, names, generation)
-
-
-def _remember_sandbox_names(key: tuple, now: float, names: list[str], generation: int) -> frozenset:
-    listed = frozenset(names)
-    with _source_cache_lock:
-        # A write that forgot the cache while this walked leaves the answer unsaved.
-        if generation == _source_generation:
-            _sandbox_names_cache[key] = (now, listed)
-    return listed
+    return _LISTING.get(
+        ("names", directory),
+        lambda: frozenset(_sandbox_listing_names(directory) if os.path.isdir(directory) else []),
+        _SANDBOX_TTL_SECONDS,
+    )
 
 
 def _sandbox_path(ref: str) -> str:
-    """The file a ``sandbox:`` id names, by the rules the listing's walk applies: an eligible
-    session, servable segments, no dotfile, not too deep, no link anywhere on the way (the walk
-    never follows one), and among the files the walk's cap lets through. The segment rules are
-    checked for this one file, so a card's picture or download never lists every chat; the cap
-    needs the walk's order, so that is this sandbox's walk alone, remembered. Raises LookupError
-    otherwise, so a crafted id reaches nothing else."""
+    """The file a ``sandbox:`` id names, by the listing walk's rules: an eligible session, servable
+    segments, no dotfile, not too deep, no link on the way, and within the walk's cap. Checked for
+    this one file, so a card never lists every chat. LookupError otherwise."""
     from core.inference.tools import (
         _MAX_SANDBOX_PATH_SEGMENTS,
         _servable_segment,
@@ -595,10 +554,9 @@ def _sandbox_path(ref: str) -> str:
 def _open_sandbox_file(ref: str) -> tuple[BinaryIO, str]:
     """(open file, path) for a ``sandbox:`` id, opened once and checked by its descriptor.
 
-    Tool code runs in this directory, so a name checked and then reopened can be a link by the
-    time it is read. As the sandbox route does: O_NOFOLLOW where the OS has it, then the path is
-    resolved again and must still be this same regular file, so a parent swapped for a link
-    (the only way in on Windows, which has no O_NOFOLLOW) is refused too."""
+    Tool code runs here, so a name checked then reopened can be a link by then. O_NOFOLLOW where the
+    OS has it, then the path must still resolve to itself and to this same regular file, which also
+    refuses a parent swapped for a link (the only way in on Windows)."""
     path = _sandbox_path(ref)
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     try:
@@ -607,8 +565,6 @@ def _open_sandbox_file(ref: str) -> tuple[BinaryIO, str]:
         raise LookupError(ref) from None
     try:
         info = os.fstat(fd)
-        # The descriptor is what gets read, so it is what the checks have to be about: the path
-        # still resolves to itself, and to this same file.
         checked = os.stat(path, follow_symlinks = False)
         if (
             not stat.S_ISREG(info.st_mode)
@@ -637,8 +593,7 @@ def _delete_sandbox_file(ref: str) -> bool:
     with handle:
         info = os.fstat(handle.fileno())
         if _USE_DIR_FD:
-            # By the folder's descriptor: a parent swapped for a link after the check would have
-            # the name unlinked wherever it now points.
+            # By the folder's descriptor, so a parent swapped for a link since is not followed.
             dir_fd = os.open(parent, _DIR_FLAGS)
             try:
                 entry = os.stat(name, dir_fd = dir_fd, follow_symlinks = False)
@@ -648,8 +603,7 @@ def _delete_sandbox_file(ref: str) -> bool:
             finally:
                 os.close(dir_fd)
             return True
-    # Windows: an open file cannot be deleted, so the handle is closed first; there a link needs
-    # privileges tool code does not have.
+    # Windows cannot delete an open file; there a link needs privileges tool code lacks.
     os.unlink(path)
     return True
 
@@ -659,9 +613,7 @@ def _sandbox_items() -> list[dict]:
     from routes.inference import _sandbox_listing_names
 
     items = []
-    account = _account_key()
-    with _source_cache_lock:
-        generation = _source_generation
+    generation = _LISTING.generation
     for session_id, thread_id, title in _sandbox_sessions():
         try:
             directory = os.path.realpath(resolve_sandbox_workdir(session_id))
@@ -669,12 +621,11 @@ def _sandbox_items() -> list[dict]:
         except Exception:
             logger.debug("library.sandbox_listing_failed", exc_info = True)
             continue
-        _remember_sandbox_names((account, directory), time.monotonic(), names, generation)
-        for name in names:
-            relative = name.replace(os.sep, "/")
+        # Left for the per-item routes, so a card just listed is checked without walking again.
+        _LISTING.put(("names", directory), frozenset(names), generation)
+        for relative in names:
             if os.path.basename(relative).startswith("."):
                 continue
-            # The one stat the sandbox route's listing makes, kept whole for the fingerprint.
             try:
                 info = os.stat(os.path.join(directory, relative))
             except OSError:
@@ -700,74 +651,60 @@ def _sandbox_items() -> list[dict]:
 # app can remap a type, and it names `.ts` an MPEG transport stream. The sandbox route's raster
 # types are merged in, so the two agree on every image.
 _CONTENT_TYPES = {
-    ".svg": "image/svg+xml",
-    ".tif": "image/tiff",
-    ".tiff": "image/tiff",
-    ".ico": "image/x-icon",
-    ".heic": "image/heic",
-    ".heif": "image/heif",
-    ".mp3": "audio/mpeg",
-    ".wav": "audio/wav",
-    ".ogg": "audio/ogg",
-    ".oga": "audio/ogg",
-    ".opus": "audio/ogg",
-    ".flac": "audio/flac",
-    ".m4a": "audio/mp4",
-    ".aac": "audio/aac",
-    ".weba": "audio/webm",
-    ".mp4": "video/mp4",
-    ".m4v": "video/mp4",
-    ".mov": "video/quicktime",
-    ".webm": "video/webm",
-    ".mkv": "video/x-matroska",
-    ".avi": "video/x-msvideo",
-    ".ogv": "video/ogg",
-    ".pdf": "application/pdf",
-    ".txt": "text/plain",
-    ".log": "text/plain",
-    ".md": "text/markdown",
-    ".markdown": "text/markdown",
-    ".csv": "text/csv",
-    ".tsv": "text/tab-separated-values",
-    ".json": "application/json",
-    ".jsonl": "application/jsonl",
-    ".xml": "application/xml",
-    ".yaml": "text/yaml",
-    ".yml": "text/yaml",
-    ".toml": "text/plain",
-    ".ini": "text/plain",
-    ".html": "text/html",
-    ".htm": "text/html",
-    ".css": "text/css",
-    ".js": "text/javascript",
-    ".mjs": "text/javascript",
-    ".cjs": "text/javascript",
-    ".jsx": "text/javascript",
-    ".ts": "text/typescript",
-    ".tsx": "text/typescript",
-    ".mts": "text/typescript",
-    ".cts": "text/typescript",
-    ".py": "text/x-python",
-    ".ipynb": "application/x-ipynb+json",
-    ".sh": "text/x-shellscript",
-    ".sql": "text/plain",
-    ".rtf": "application/rtf",
-    ".doc": "application/msword",
-    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ".xls": "application/vnd.ms-excel",
-    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ".ppt": "application/vnd.ms-powerpoint",
-    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    ".odt": "application/vnd.oasis.opendocument.text",
-    ".ods": "application/vnd.oasis.opendocument.spreadsheet",
-    ".odp": "application/vnd.oasis.opendocument.presentation",
-    ".epub": "application/epub+zip",
-    ".zip": "application/zip",
-    ".gz": "application/gzip",
-    ".tar": "application/x-tar",
-    ".parquet": "application/vnd.apache.parquet",
-    ".safetensors": "application/octet-stream",
-    ".gguf": "application/octet-stream",
+    f".{extension}": content_type
+    for content_type, extensions in (
+        ("image/svg+xml", "svg"),
+        ("image/tiff", "tif tiff"),
+        ("image/x-icon", "ico"),
+        ("image/heic", "heic"),
+        ("image/heif", "heif"),
+        ("audio/mpeg", "mp3"),
+        ("audio/wav", "wav"),
+        ("audio/ogg", "ogg oga opus"),
+        ("audio/flac", "flac"),
+        ("audio/mp4", "m4a"),
+        ("audio/aac", "aac"),
+        ("audio/webm", "weba"),
+        ("video/mp4", "mp4 m4v"),
+        ("video/quicktime", "mov"),
+        ("video/webm", "webm"),
+        ("video/x-matroska", "mkv"),
+        ("video/x-msvideo", "avi"),
+        ("video/ogg", "ogv"),
+        ("application/pdf", "pdf"),
+        ("text/plain", "txt log toml ini sql"),
+        ("text/markdown", "md markdown"),
+        ("text/csv", "csv"),
+        ("text/tab-separated-values", "tsv"),
+        ("application/json", "json"),
+        ("application/jsonl", "jsonl"),
+        ("application/xml", "xml"),
+        ("text/yaml", "yaml yml"),
+        ("text/html", "html htm"),
+        ("text/css", "css"),
+        ("text/javascript", "js mjs cjs jsx"),
+        ("text/typescript", "ts tsx mts cts"),
+        ("text/x-python", "py"),
+        ("application/x-ipynb+json", "ipynb"),
+        ("text/x-shellscript", "sh"),
+        ("application/rtf", "rtf"),
+        ("application/msword", "doc"),
+        ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", "docx"),
+        ("application/vnd.ms-excel", "xls"),
+        ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"),
+        ("application/vnd.ms-powerpoint", "ppt"),
+        ("application/vnd.openxmlformats-officedocument.presentationml.presentation", "pptx"),
+        ("application/vnd.oasis.opendocument.text", "odt"),
+        ("application/vnd.oasis.opendocument.spreadsheet", "ods"),
+        ("application/vnd.oasis.opendocument.presentation", "odp"),
+        ("application/epub+zip", "epub"),
+        ("application/zip", "zip"),
+        ("application/gzip", "gz"),
+        ("application/x-tar", "tar"),
+        ("application/vnd.apache.parquet", "parquet"),
+        ("application/octet-stream", "safetensors gguf"),
+    )
+    for extension in extensions.split()
 }
 
 _MEDIA_TYPE_RE = re.compile(r"[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*")
@@ -775,17 +712,8 @@ _MEDIA_TYPE_RE = re.compile(r"[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+
 # Types a browser runs or renders as a document of its own. A client that declares one for a file
 # whose extension says otherwise does not get it stored.
 _ACTIVE_TYPES = frozenset(
-    {
-        "text/html",
-        "application/xhtml+xml",
-        "image/svg+xml",
-        "application/pdf",
-        "text/xml",
-        "application/xml",
-        "text/javascript",
-        "application/javascript",
-        "application/x-shockwave-flash",
-    }
+    "text/html application/xhtml+xml image/svg+xml application/pdf text/xml application/xml"
+    " text/javascript application/javascript application/x-shockwave-flash".split()
 )
 
 
@@ -818,26 +746,84 @@ def upload_content_type(name: str, declared: Optional[str]) -> str:
     return declared_type
 
 
-# ── Public API ───────────────────────────────────────────────────
+def item_type(item_id: str) -> str:
+    """The media type an item's bytes are, by the Library's fixed map; "" for an item it has none
+    for. LookupError for an upload the account does not have."""
+    kind, _, ref = item_id.partition(":")
+    if kind in _GALLERIES:
+        return _gallery(kind).content_type
+    if kind == "upload":
+        record = library_db.get_upload(ref)
+        if record is None:
+            raise LookupError(item_id)
+        # Stored as its extension's type when the map knows it, so this is the name's type too.
+        return media_type(record["contentType"]) or ""
+    return _guess_type(ref) if kind == "sandbox" else ""
+
+
+# ── Caches ───────────────────────────────────────────────────────
+
+
+def _account_key() -> str:
+    """Which account's stores a cached answer came from: each has a studio.db of its own."""
+    from utils.paths import studio_db_path
+    return str(studio_db_path())
+
+
+class _Memo:
+    """Answers kept per account and key, each for ``ttl`` seconds while its ``stamp`` agrees, and
+    only the ``size`` most recent when that is set. ``forget`` drops them all, and an answer worked
+    out across a forget is not kept: it can predate the write that forgot."""
+
+    def __init__(self, size: int = 0):
+        self.size = size
+        self.generation = 0
+        self._entries: OrderedDict[tuple, tuple[float, object, object]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def forget(self) -> None:
+        with self._lock:
+            self.generation += 1
+            self._entries.clear()
+
+    def get(
+        self,
+        key: tuple,
+        compute: Callable,
+        ttl: float = float("inf"),
+        stamp = None,
+    ):
+        full, now = (_account_key(), *key), time.monotonic()
+        with self._lock:
+            generation, hit = self.generation, self._entries.get(full)
+            if hit is not None and now - hit[0] < ttl and hit[1] == stamp:
+                self._entries.move_to_end(full)
+                return hit[2]
+        value = compute()
+        self.put(key, value, generation, stamp)
+        return value
+
+    def put(
+        self,
+        key: tuple,
+        value: object,
+        generation: int,
+        stamp = None,
+    ) -> None:
+        with self._lock:
+            if generation == self.generation:
+                self._entries[(_account_key(), *key)] = (time.monotonic(), stamp, value)
+                while self.size and len(self._entries) > self.size:
+                    self._entries.popitem(last = False)
+
 
 # Walking every fine-tune and every chat's sandbox is most of a listing's time, and the page lists
-# again after each change. Their answers are remembered a few seconds, per account; a fine-tune's
-# a minute, while its roots and their folders keep their mtimes. The Library's own writes forget them.
+# again after each change: remembered a few seconds per account, a fine-tune's a minute while its
+# roots' folders keep their mtimes. The Library's own writes forget them.
 _SANDBOX_TTL_SECONDS = 5.0
 _MODEL_TTL_SECONDS = 60.0
-_source_cache: dict[tuple[str, str], tuple[float, object, list[dict]]] = {}
-# (account, sandbox directory) -> (when, the names its walk listed), for the per-item routes.
-_sandbox_names_cache: dict[tuple[str, str], tuple[float, frozenset]] = {}
-_source_cache_lock = threading.Lock()
-_source_generation = 0
-
-
-def invalidate_listing() -> None:
-    global _source_generation
-    with _source_cache_lock:
-        _source_generation += 1
-        _source_cache.clear()
-        _sandbox_names_cache.clear()
+_LISTING = _Memo()
+invalidate_listing = _LISTING.forget
 
 
 def _model_stamp() -> tuple:
@@ -863,32 +849,20 @@ def _model_stamp() -> tuple:
 def _remembered(
     name: str,
     ttl: float,
-    stamp = None,
-):
-    """The source ``name``, its answer reused for ``ttl`` seconds while ``stamp()`` agrees. By
-    name, so a test that swaps the source swaps what is remembered."""
+    stamp: Optional[Callable] = None,
+) -> Callable:
+    """The source ``name``, remembered. Found by name, so a test that swaps the source swaps it."""
 
     def remembered() -> list[dict]:
-        key = (_account_key(), name)
-        now = time.monotonic()
-        current = stamp() if stamp else None
-        with _source_cache_lock:
-            hit = _source_cache.get(key)
-            generation = _source_generation
-        if hit is not None and now - hit[0] < ttl and hit[1] == current:
-            items = hit[2]
-        else:
-            items = globals()[name]()
-            with _source_cache_lock:
-                # A write that forgot the cache while this was built leaves the answer unsaved.
-                if generation == _source_generation:
-                    _source_cache[key] = (now, current, items)
+        items = _LISTING.get((name,), globals()[name], ttl, stamp() if stamp else None)
         # Copies: the overlay is written onto each item.
         return [dict(item) for item in items]
 
     remembered.__name__ = name
     return remembered
 
+
+# ── Public API ───────────────────────────────────────────────────
 
 _SOURCES = (
     _upload_items,
@@ -938,9 +912,8 @@ def list_items() -> list[dict]:
 
 
 def fingerprint(item_id: str) -> Optional[str]:
-    """The fingerprint of the file a path-derived id names right now, for its overlay row. None
-    for ids never given to another file (uploads, attachments and gallery items are unique ids)
-    and for a file that is gone."""
+    """The fingerprint of the file a path-derived id names now, for its overlay row; None for other
+    ids (never given to another file) and for a file that is gone."""
     kind, _, ref = item_id.partition(":")
     if kind not in ("sandbox", "model"):
         return None
@@ -951,35 +924,27 @@ def fingerprint(item_id: str) -> Optional[str]:
         return None
 
 
-def _safe_name_parts(name: str, fallback: str) -> tuple[str, str]:
-    """(stem, extension) of ``name`` made a file name every OS can hold: the last path segment,
-    no character Windows refuses, no leading dot (a hidden file), no trailing dot or space
-    (Windows drops them), and never a reserved device name such as ``CON``."""
-    base = re.split(r"[\\/]", name or "")[-1]
-    stem, ext = os.path.splitext(base)
+def safe_file_name(
+    name: str,
+    fallback: str = "file",
+    item_id: Optional[str] = None,
+) -> str:
+    """``name`` as a file name every OS can hold: its last path segment, nothing Windows refuses, no
+    leading dot (hidden), no trailing dot or space (Windows drops them), never a device name such as
+    ``CON``. With ``item_id``, a hash of it keeps each item's project copy apart, so adding one
+    twice is a no-op."""
+    stem, ext = os.path.splitext(re.split(r"[\\/]", name or "")[-1])
     if not ext and stem.startswith("."):
         stem, ext = os.path.splitext(stem.lstrip("."))
-    stem = re.sub(r"\s+", " ", _UNSAFE_NAME_RE.sub(" ", stem)).strip(" .")
-    ext = _UNSAFE_NAME_RE.sub("", ext).rstrip(" .")
-    ext = ext if len(ext) > 1 else ""
-    if not stem:
-        stem = fallback
-    if stem.split(".", 1)[0].rstrip(" ").upper() in RESERVED_NAMES:
+    stem = _NAME_BREAK_RE.sub(" ", stem).strip(" .") or fallback
+    ext = re.sub(f"[{UNSAFE_NAME_CHARS}]", "", ext).rstrip(" .")
+    ext = ext[:16] if len(ext) > 1 else ""
+    # Cleaned, only a device name can still be refused.
+    if _bad_name(stem):
         stem = f"_{stem}"
-    return stem, ext
-
-
-def safe_file_name(name: str, fallback: str = "file") -> str:
-    stem, ext = _safe_name_parts(name, fallback)
-    return f"{stem[:200]}{ext[:16]}"
-
-
-def _project_name(name: str, item_id: str) -> str:
-    """A readable name that stays unique per item, so adding it twice is a no-op."""
-    import hashlib
-
-    stem, ext = _safe_name_parts(name, "file")
-    return f"{stem[:80]}-{hashlib.sha1(item_id.encode()).hexdigest()[:8]}{ext[:16]}"
+    if item_id:
+        return f"{stem[:80]}-{hashlib.sha1(item_id.encode()).hexdigest()[:8]}{ext}"
+    return f"{stem[:200]}{ext}"
 
 
 class ItemFile:
@@ -991,9 +956,8 @@ class ItemFile:
         info = os.fstat(handle.fileno())
         self.size = info.st_size
         self.modified_ns = info.st_mtime_ns
-        # What it downloads as.
+        # What it downloads as, and where and as what Add to project copies it.
         self.name = name
-        # Where, and as what, Add to project puts its copy.
         self.folder = folder
         self.project_name = project_name
 
@@ -1007,25 +971,19 @@ class ItemFile:
         self.close()
 
 
-def _gallery_file(kind: str, ref: str) -> tuple[Optional[Path], str, str]:
-    """(path, project folder, prompt) of a gallery item Studio made, path None otherwise. The
-    gallery's own ownership test (``owned_*_path``: a file with a readable recipe), with that
-    recipe read once for the prompt too: an image's sits in its PNG, which Pillow decodes whole."""
-    from core.inference import audio_gallery, image_gallery, video_gallery
-
-    if kind == "image":
-        path, folder = image_gallery.image_path(ref), "images"
-        meta = image_gallery._read_meta(path) if path is not None else None
-    else:
-        gallery, folder, resolve = {
-            "video": (video_gallery, "videos", video_gallery.video_path),
-            "audio": (audio_gallery, "audio", audio_gallery.audio_path),
-        }[kind]
-        path = resolve(ref)
-        meta = gallery._read_meta(gallery._sidecar_path(ref)) if path is not None else None
+def _gallery_file(kind: str, ref: str) -> tuple[Path, str]:
+    """(path, prompt) of a gallery item Studio made, by the gallery's own ownership test (a file
+    with a readable recipe); LookupError otherwise. An image's recipe sits in its PNG, which Pillow
+    decodes whole."""
+    gallery = _gallery(kind)
+    path = gallery.resolve(ref)
+    if path is not None:
+        meta = gallery.module._read_meta(
+            path if kind == "image" else gallery.module._sidecar_path(ref)
+        )
     if path is None or meta is None:
-        return None, folder, ""
-    return path, folder, str(meta.get("prompt") or "")
+        raise LookupError(f"{kind}:{ref}")
+    return path, str(meta.get("prompt") or "")
 
 
 def _open_owned(path: Path, item_id: str) -> BinaryIO:
@@ -1051,21 +1009,20 @@ def open_item(item_id: str) -> ItemFile:
             _open_owned(path, item_id),
             safe_file_name(record["name"]),
             "files",
-            _project_name(record["name"], item_id),
+            safe_file_name(record["name"], item_id = item_id),
         )
-    if kind in ("image", "video", "audio"):
-        path, folder, prompt = _gallery_file(kind, ref)
-        if path is None:
-            raise LookupError(item_id)
-        # Downloads are named after the prompt, the id when there is none. A project copy keeps
-        # the stored name, as the Images, Video and Audio pages copy it, so either place sees the
-        # other's copy as already there.
+    if kind in _GALLERIES:
+        path, prompt = _gallery_file(kind, ref)
+        # Downloads under its prompt (its id with none). A project copy keeps the stored name, as
+        # the gallery pages copy it, so either place sees the other's copy as already there.
         name = safe_file_name(_prompt_name(prompt, ref, path.suffix.lstrip(".")), ref)
-        return ItemFile(_open_owned(path, item_id), name, folder, path.name)
+        return ItemFile(_open_owned(path, item_id), name, _gallery(kind).folder, path.name)
     if kind == "sandbox":
         handle, path = _open_sandbox_file(ref)
         name = os.path.basename(path)
-        return ItemFile(handle, safe_file_name(name), "files", _project_name(name, item_id))
+        return ItemFile(
+            handle, safe_file_name(name), "files", safe_file_name(name, item_id = item_id)
+        )
     raise ValueError("This item cannot be added to a project.")
 
 
@@ -1080,11 +1037,8 @@ def local_path(item_id: str) -> Path:
         if library_db.get_upload(ref) is None or path is None or not path.is_file():
             raise LookupError(item_id)
         return path
-    if kind in ("image", "video", "audio"):
-        path, _folder, _prompt = _gallery_file(kind, ref)
-        if path is None:
-            raise LookupError(item_id)
-        return path
+    if kind in _GALLERIES:
+        return _gallery_file(kind, ref)[0]
     if kind == "sandbox":
         path = Path(_sandbox_path(ref))
         if not path.is_file():
@@ -1106,6 +1060,8 @@ def local_path(item_id: str) -> Path:
     return Path(resolved)
 
 
+# ── Thumbnails ───────────────────────────────────────────────────
+
 # Cards are up to a few hundred CSS pixels wide, so twice that for high-density screens.
 _THUMBNAIL_WIDTH = 640
 # The grid crops a picture past these heights (as a share of its width), so the rest is never sent.
@@ -1113,13 +1069,11 @@ _THUMBNAIL_MIN_RATIO = 2 / 3
 _THUMBNAIL_MAX_RATIO = 3 / 2
 # A small file can still decode to an enormous bitmap; past this many pixels a card shows its icon.
 _THUMBNAIL_MAX_PIXELS = 64_000_000
-
-
-# Decoders run on whatever a user uploads or a tool writes, so each opens only what a card shows:
-# no PostScript (EPS hands the file to Ghostscript), PDF or long tail of legacy image plugins.
+# Decoders run on whatever a user uploads or a tool writes, so only what a card shows: no
+# PostScript (EPS hands the file to Ghostscript), PDF or long tail of legacy image plugins.
 _THUMBNAIL_IMAGE_FORMATS = ("PNG", "JPEG", "WEBP", "GIF", "BMP", "TIFF", "AVIF")
-# The container a clip is read as, by its type. Forced rather than probed: a probe can settle on
-# HLS or concat, whose playlists name other files, and those would be read too.
+# The container a clip is read as, forced rather than probed: a probe can settle on HLS or concat,
+# whose playlists name other files, and those would be read too.
 _THUMBNAIL_VIDEO_CONTAINERS = {
     "video/mp4": "mp4",
     "video/quicktime": "mov",
@@ -1130,9 +1084,7 @@ _THUMBNAIL_VIDEO_CONTAINERS = {
 }
 # A grid of cards asks for dozens at once; each decode holds a full frame in memory.
 _THUMBNAIL_DECODES = threading.BoundedSemaphore(2)
-_THUMBNAIL_CACHE_ENTRIES = 256
-_thumbnail_cache: "OrderedDict[tuple, bytes]" = OrderedDict()
-_thumbnail_cache_lock = threading.Lock()
+_THUMBNAILS = _Memo(size = 256)
 
 
 def _attachment_media(ref: str) -> tuple[str, bytes]:
@@ -1177,8 +1129,6 @@ def _attachment_media(ref: str) -> tuple[str, bytes]:
 
 def _image_thumbnail(source: Union[Path, BinaryIO]) -> bytes:
     """The picture cropped as a card shows it and at most `_THUMBNAIL_WIDTH` wide, as WebP."""
-    import io
-
     try:
         from PIL import Image, ImageOps
     except Exception as exc:  # noqa: BLE001 -- a missing dependency makes thumbnails unavailable
@@ -1214,90 +1164,37 @@ def _image_thumbnail(source: Union[Path, BinaryIO]) -> bytes:
         raise RuntimeError(f"Thumbnail generation failed to decode the image: {exc}") from exc
 
 
-def _account_key() -> str:
-    """Which account's stores a cached answer came from: each has a studio.db of its own."""
-    from utils.paths import studio_db_path
-    return str(studio_db_path())
-
-
-def _picture(mime_type: str, source: BinaryIO) -> bytes:
+def _decode(mime_type: str, source: BinaryIO) -> bytes:
     from core.inference import video_gallery
-
-    if mime_type.startswith("video/"):
-        container = _THUMBNAIL_VIDEO_CONTAINERS.get(mime_type)
-        if container is None:
-            raise LookupError(mime_type)
-        return video_gallery.first_frame_webp(
-            source,
-            width = _THUMBNAIL_WIDTH,
-            container = container,
-            max_pixels = _THUMBNAIL_MAX_PIXELS,
-        )
-    if mime_type.startswith("image/") and mime_type != "image/svg+xml":
-        return _image_thumbnail(source)
-    raise LookupError(mime_type)
-
-
-def _cached_picture(key: tuple, mime_type: str, source: BinaryIO) -> bytes:
-    """``_picture``, remembered by ``key``: a card's file with its size and mtime, so an edit
-    makes a new one, and each account's apart."""
-    key = (_account_key(), _THUMBNAIL_WIDTH, *key)
-    with _thumbnail_cache_lock:
-        cached = _thumbnail_cache.get(key)
-        if cached is not None:
-            _thumbnail_cache.move_to_end(key)
-            return cached
     with _THUMBNAIL_DECODES:
-        data = _picture(mime_type, source)
-    with _thumbnail_cache_lock:
-        _thumbnail_cache[key] = data
-        while len(_thumbnail_cache) > _THUMBNAIL_CACHE_ENTRIES:
-            _thumbnail_cache.popitem(last = False)
-    return data
+        if mime_type.startswith("video/") and mime_type in _THUMBNAIL_VIDEO_CONTAINERS:
+            return video_gallery.first_frame_webp(
+                source,
+                width = _THUMBNAIL_WIDTH,
+                container = _THUMBNAIL_VIDEO_CONTAINERS[mime_type],
+                max_pixels = _THUMBNAIL_MAX_PIXELS,
+            )
+        if mime_type.startswith("image/") and mime_type != "image/svg+xml":
+            return _image_thumbnail(source)
+    raise LookupError(mime_type)
 
 
 def thumbnail(item_id: str) -> bytes:
     """A card's picture: an image cropped and scaled down, or a video's first frame, as WebP.
+    Remembered by the file's version, so an edit makes a new one.
 
     LookupError when the item is gone or has no picture; RuntimeError when it cannot be decoded."""
-    import io
-    import zlib
-
     kind, _, ref = item_id.partition(":")
     if kind == "attachment":
         mime_type, data = _attachment_media(ref)
-        key = (item_id, len(data), zlib.crc32(data))
-        try:
-            return _cached_picture(key, mime_type, io.BytesIO(data))
-        except LookupError:
-            raise LookupError(item_id) from None
-    if kind not in ("upload", "image", "video", "sandbox"):
+        version = (item_id, len(data), zlib.crc32(data))
+        return _THUMBNAILS.get(version, lambda: _decode(mime_type, io.BytesIO(data)))
+    mime_type = item_type(item_id)
+    if not mime_type.startswith(("image/", "video/")):
         raise LookupError(item_id)
     with open_item(item_id) as item:
-        if kind == "upload":
-            record = library_db.get_upload(ref) or {}
-            # The file's own extension first: the type a client declared is only a fallback.
-            types = (
-                _guess_type(str(record.get("name") or "")),
-                str(record.get("contentType") or ""),
-            )
-        elif kind == "sandbox":
-            types = (_guess_type(item.name),)
-        else:
-            types = ("image/png" if kind == "image" else "video/mp4",)
-        mime_type = next(
-            (
-                value
-                for value in (media_type(declared) for declared in types)
-                if value and value.startswith(("image/", "video/"))
-            ),
-            "",
-        )
-        key = (item_id, item.size, item.modified_ns)
-        try:
-            return _cached_picture(key, mime_type, item.handle)
-        except LookupError:
-            raise LookupError(item_id) from None
+        version = (item_id, item.size, item.modified_ns)
+        return _THUMBNAILS.get(version, lambda: _decode(mime_type, item.handle))
 
 
 def item_exists(item_id: str, recorded: Optional[str] = None) -> bool:
@@ -1310,16 +1207,10 @@ def item_exists(item_id: str, recorded: Optional[str] = None) -> bool:
             from storage.studio_db import get_chat_attachment
             message_id, _, attachment_id = ref.partition(":")
             return get_chat_attachment(message_id, attachment_id) is not None
-        if kind in ("image", "video", "audio"):
-            # Its file being there is enough. Reading the recipe to name it, as local_path does,
-            # decodes a whole PNG, and the galleries ask this for every star when they open.
-            from core.inference import audio_gallery, image_gallery, video_gallery
-            resolve = {
-                "image": image_gallery.image_path,
-                "video": video_gallery.video_path,
-                "audio": audio_gallery.audio_path,
-            }[kind]
-            return resolve(ref) is not None
+        if kind in _GALLERIES:
+            # The file being there is enough: reading its recipe decodes a whole PNG, and the
+            # galleries ask this for every star when they open.
+            return _gallery(kind).resolve(ref) is not None
         path = local_path(item_id)
     except (LookupError, ValueError):
         return False
@@ -1350,27 +1241,23 @@ def locations() -> list[dict]:
 
 
 def _delete_upload(upload_id: str, path: Path) -> bool:
-    with _upload_lock:
-        return _delete_upload_locked(upload_id, path)
-
-
-def _delete_upload_locked(upload_id: str, path: Path) -> bool:
     """Set the file aside before dropping its row, so a failure at either step leaves both."""
     staged = path.with_name(f".{upload_id}.deleting")
-    try:
-        os.replace(path, staged)
-    except FileNotFoundError:
-        return library_db.delete_upload(upload_id)
-    try:
-        deleted = library_db.delete_upload(upload_id)
-    except BaseException:
-        os.replace(staged, path)
-        raise
-    if deleted:
-        staged.unlink(missing_ok = True)
-    else:
-        os.replace(staged, path)
-    return deleted
+    with _upload_lock:
+        try:
+            os.replace(path, staged)
+        except FileNotFoundError:
+            return library_db.delete_upload(upload_id)
+        try:
+            deleted = library_db.delete_upload(upload_id)
+        except BaseException:
+            os.replace(staged, path)
+            raise
+        if deleted:
+            staged.unlink(missing_ok = True)
+        else:
+            os.replace(staged, path)
+        return deleted
 
 
 class DeleteIncomplete(RuntimeError):
@@ -1389,9 +1276,6 @@ def delete_item(item_id: str) -> bool:
         from storage.studio_db import delete_chat_attachment
         message_id, _, attachment_id = ref.partition(":")
         deleted = delete_chat_attachment(message_id, attachment_id)
-    elif kind == "image":
-        from core.inference import image_gallery
-        deleted = image_gallery.delete(ref)
     elif kind == "video":
         from core.inference import video_gallery
         from routes.video import _forget_openai_job, _forget_terminal_video
@@ -1405,9 +1289,8 @@ def delete_item(item_id: str) -> bool:
             deleted = video_gallery.delete(ref)
             if deleted:
                 _forget_terminal_video(ref)
-    elif kind == "audio":
-        from core.inference import audio_gallery
-        deleted = audio_gallery.delete(ref)
+    elif kind in _GALLERIES:
+        deleted = _gallery(kind).module.delete(ref)
     elif kind == "sandbox":
         deleted = _delete_sandbox_file(ref)
     elif kind == "model":
