@@ -1882,6 +1882,19 @@ def test_an_offline_hub_id_reads_its_cached_snapshot(tmp_path, monkeypatch):
     assert tq.stored_denoiser_precision("org/not-cached") is None
 
 
+def test_an_offline_hub_id_reads_studios_live_cache(tmp_path, monkeypatch):
+    """Studio can move its cache at runtime; the loaders read from there, so the probe must too."""
+    import torch
+    from huggingface_hub import constants
+    from utils import hf_cache_settings
+
+    live = tmp_path / "live"
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path / "import_time_default"))
+    monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: str(live))
+    _cached_snapshot(live, "org/narrow-dit", torch.float8_e4m3fn)
+    assert tq.stored_denoiser_precision("org/narrow-dit") == "fp8"
+
+
 def test_a_recovered_source_precision_blocks_the_quant(tmp_path):
     """The recovered marker feeds the same refusal the Ideogram loader's marker does."""
     import torch

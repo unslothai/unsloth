@@ -509,6 +509,25 @@ _NARROW_STORED_DTYPES: dict[str, str] = {
 }
 
 
+def _cached_snapshot_dir(repo_id: str) -> Any:
+    """``repo_id``'s already-cached snapshot, Studio's live cache first (the loaders pass it as ``cache_dir``)."""
+    from pathlib import Path
+
+    from huggingface_hub import snapshot_download
+
+    try:
+        from utils.hf_cache_settings import active_hf_hub_cache
+        roots = (active_hf_hub_cache(), None)
+    except Exception:  # noqa: BLE001 -- the smoke-probe child has no Studio settings
+        roots = (None,)
+    for cache_dir in roots:
+        try:
+            return Path(snapshot_download(repo_id, cache_dir = cache_dir, local_files_only = True))
+        except Exception:  # noqa: BLE001 -- not cached there
+            continue
+    return None
+
+
 def stored_denoiser_precision(local_dir: Optional[str]) -> Optional[str]:
     """The narrow precision a LOCAL snapshot's denoiser shards are stored at, or None.
 
@@ -530,8 +549,9 @@ def stored_denoiser_precision(local_dir: Optional[str]) -> Optional[str]:
 
         root = Path(local_dir).expanduser()
         if not root.is_dir():
-            from huggingface_hub import snapshot_download
-            root = Path(snapshot_download(str(local_dir), local_files_only = True))
+            root = _cached_snapshot_dir(str(local_dir))
+            if root is None:
+                return None
         for attr in DENOISER_ATTRS:
             sub = root / attr
             if not sub.is_dir():
