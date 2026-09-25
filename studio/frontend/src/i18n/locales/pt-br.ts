@@ -11,9 +11,14 @@ export const ptBR = {
     plainTextDescription: "Manter código, Markdown e links como texto literal. Desative para mostrar uma prévia formatada.",
     showContext: "Mostrar uso da janela de contexto",
     sendShortcut: "Atalho de envio",
-    sendDescription: "Escolha se Enter envia uma mensagem ou insere uma nova linha.",
+    sendMultiline: "{mod} + Enter para mensagens de várias linhas",
+    sendAlways: "{mod} + Enter sempre",
+    sendEnterDescription: "Enter envia. Shift + Enter adiciona uma nova linha.",
+    sendMultilineDescription: "Enter envia uma mensagem de uma linha. Quando ela tem mais de uma linha, Enter adiciona uma nova linha e {mod} + Enter envia.",
+    sendAlwaysDescription: "{mod} + Enter envia. Enter adiciona uma nova linha.",
     followUp: "Mensagens de acompanhamento",
     followUpDescription: "Escolha o que acontece ao enviar durante uma resposta. Pressione {shortcut} para fazer o contrário em uma mensagem.",
+    followUpMultilineShortcut: "{shortcut} ({multiline} em uma mensagem de várias linhas)",
     queue: "Enfileirar",
     steer: "Redirecionar",
     steerDescription: "Redirecionar interrompe a resposta atual e envia sua mensagem de acompanhamento em seguida.",
@@ -106,6 +111,8 @@ export const ptBR = {
     error: "Erro",
     export: "Exportar",
     help: "Ajuda",
+    todayAt: "Hoje, {time}",
+    yesterdayAt: "Ontem, {time}",
     loading: "Carregando...",
     new: "Novo",
     rename: "Renomear",
@@ -166,6 +173,8 @@ export const ptBR = {
       noChatsYet: "Nenhum chat ainda",
       // Shown under an empty project folder in the sidebar.
       noChats: "Nenhum chat",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "Todos os projetos fixados",
       showMore: "Mostrar mais",
       showLess: "Mostrar menos",
       settings: "Configurações",
@@ -215,26 +224,12 @@ export const ptBR = {
       priority: "Prioridade",
       lastUpdated: "Última atualização",
       manualOrder: "Ordem manual",
-      priorityHint: "Ativos e não lidos primeiro",
-      lastUpdatedHint: "Mais recentes primeiro",
-      manualOrderHint: "Arraste as linhas para reordenar",
       switchedToManual: "Ordem manual: arraste as linhas para reordenar",
       organizeChats: "Organizar conversas",
       organizeProjects: "Organizar projetos",
       sortPinnedChats: "Ordenar conversas fixadas",
-      dragDrop: "Arrastar e soltar",
-      dragHints: "Mostrar uma dica ao arrastar",
-      reorderSwitchesSort: "Reordenar muda para ordem manual",
-      dragOpensFolders: "Abrir pastas sob o ponteiro",
       moveUp: "Mover para cima",
       moveDown: "Mover para baixo",
-    },
-    drag: {
-      reorder: "Reordenar",
-      pin: "Fixar",
-      unpin: "Desafixar",
-      moveTo: "Mover para {name}",
-      moveToRecents: "Mover para Recentes",
     },
     dialog: {
       deleteChat: {
@@ -578,7 +573,16 @@ export const ptBR = {
       sourceHint: "Os executores de modelos gravam os próprios logs, então uma falha ao carregar ou ao gerar costuma ser explicada ali, e não no log do servidor.",
       path: "Local",
       pathCopy: "Copiar caminho",
-      refreshSection: "Atualização",
+      currentSession: "Atual",
+      statusLive: "Ao vivo",
+      statusPaused: "Pausado",
+      statusStale: "Desatualizado",
+      filterPlaceholder: "Filtrar linhas",
+      lineCount: "{count} linhas",
+      filteredLineCount: "{shown} de {total} linhas",
+      wrapLines: "Quebrar linhas",
+      jumpToLatest: "Ir para o fim",
+      noMatches: "Nenhuma linha corresponde ao filtro.",
       mode: "Modo",
       modeLive: "Ao vivo",
       modeInterval: "A cada 3 segundos",
@@ -611,6 +615,29 @@ export const ptBR = {
       title: "Voz",
       description: "Microfone, ditado, conversão de fala em texto e leitura em voz alta",
       dictation: {
+        audioUploadTitle: "Ditar com uma gravação",
+        audioUploadDescription:
+          "Seu navegador exige uma conexão segura (HTTPS) para gravar diretamente no Studio. Nesta conexão HTTP, use o gravador do celular ou escolha uma gravação salva. Seu servidor do Studio transcreverá o áudio e adicionará o texto à sua mensagem.",
+        audioUploadChooseFile: "Escolher gravação",
+        audioUploadRecord: "Gravar áudio",
+        audioUploadIphoneHint:
+          "No iPhone, salve uma gravação do Gravador ou de outro aplicativo de gravação e escolha-a aqui.",
+        audioUploadServerModelNote:
+          "Esta gravação usa o modelo local mostrado acima no servidor do Studio, mesmo que o ditado normal use outro mecanismo.",
+        audioUploadAutomatic: "Automático",
+        audioUploadModelReady: "Pronto neste servidor do Studio",
+        audioUploadRetryTitle: "Não foi possível transcrever {file}",
+        audioUploadRetry: "Tentar transcrever novamente",
+        audioUploadChooseModel:
+          "Escolha um modelo local de reconhecimento de fala nas configurações de Voz.",
+        audioUploadEmpty: "A gravação selecionada está vazia.",
+        audioUploadTooLarge: "Escolha uma gravação menor que {size}.",
+        audioUploadVideoUnsupported:
+          "Escolha uma gravação de áudio, não um vídeo.",
+        audioUploadNoSpeech: "O modelo não detectou fala nessa gravação.",
+        audioUploadFailed: "Não foi possível transcrever a gravação.",
+        audioUploadCancel: "Cancelar transcrição",
+        audioUploadTranscribing: "Transcrevendo áudio…",
         sectionTitle: "Ditado",
         engineLabel: "Mecanismo de ditado",
         engineBrowser: "Navegador",
@@ -901,6 +928,18 @@ export const ptBR = {
         revoked: "Todos os links de pré-visualização foram revogados",
         revokeError: "Não foi possível revogar os links de pré-visualização",
       },
+      managedProviderUrls: {
+        sectionTitle: "Contas gerenciadas",
+        enableLabel: "Conexões locais e de rede",
+        enableDescription:
+          "Permite que contas gerenciadas apontem suas conexões para endereços locais ou de rede, como um servidor Ollama ou llama.cpp neste computador ou na sua rede local. Desativado por padrão, porque permite que essas contas alcancem serviços em execução no seu computador e na sua rede.",
+        lockedByEnvironment:
+          "Definido por UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 neste servidor, que recusa endereços privados para todas as contas.",
+        loadError:
+          "Não foi possível carregar as configurações de conexão das contas gerenciadas.",
+        saveError:
+          "Não foi possível salvar as configurações de conexão das contas gerenciadas.",
+      },
       notifications: {
         sectionTitle: "Notificações",
         showLlamaUpdates: "Notificações de atualização do llama.cpp",
@@ -1143,7 +1182,7 @@ export const ptBR = {
       custom: {
         chatWidth: {
           label: "Largura do chat",
-          description: "Defina a largura das mensagens e do campo de texto. A largura total usa o espaço entre as barras laterais.",
+          description: "Largura das mensagens e do campo de texto.",
           standard: "Padrão",
           wide: "Ampla",
           full: "Largura total",
@@ -1214,7 +1253,6 @@ export const ptBR = {
         },
         contrast: {
           label: "Contraste",
-          description: "Intensidade das bordas e do texto secundário.",
         },
         reduceMotion: {
           label: "Reduzir movimento",
@@ -1244,7 +1282,7 @@ export const ptBR = {
       sidebarNav: {
         title: "Navegação da barra lateral",
         description:
-          "Fixe e reordene as abas da barra lateral. As abas não fixadas ficam no menu Mais; se só houver uma aba não fixada, ela é ocultada em vez de virar um menu de um item só. Novo chat permanece fixo.",
+          "Fixe e reordene as abas da barra lateral. As não fixadas vão para o menu Mais.",
         dragToReorder: "Arraste para reordenar",
         pinToSidebar: "Fixar {name} na barra lateral",
         moreHolds: "Mais ({count})",
@@ -1252,7 +1290,7 @@ export const ptBR = {
       sidebarMenu: {
         title: "Menu da barra lateral",
         description:
-          "Mostre, oculte e reordene os itens do menu de perfil da barra lateral. Configurações, Ajuda, Sair e Desligar permanecem fixos.",
+          "Escolha e reordene os atalhos do menu de perfil.",
         darkModeToggle: "Alternador de modo escuro",
         dragToReorder: "Arraste para reordenar",
       },
@@ -1393,6 +1431,61 @@ export const ptBR = {
         copied: "Caminho copiado",
         openError: "Não foi possível abrir a pasta",
         copyError: "Não foi possível copiar o caminho",
+        caches: {
+          label: "Arquivos de cache",
+          description:
+            "{size} em caches, dos quais {reclaimable} podem ser limpos agora.",
+          hint: "Downloads de pacotes, kernels compilados e caches de transferência que o Unsloth recria quando precisa deles. Modelos baixados, projetos, conversas, configurações e o seu token do Hugging Face nunca são limpos aqui.",
+          keywords:
+            "cache caches limpar apagar esvaziar liberar espaço disco temporário compilado cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "Medindo o tamanho dos caches...",
+          measureFailed: "Não foi possível medir os caches",
+          empty: "Nenhum arquivo de cache encontrado.",
+          detailsAction: "Detalhes",
+          recheckAction: "Verificar novamente",
+          hideDetailsAction: "Ocultar detalhes",
+          clearAction: "Limpar caches",
+          clearOneAction: "Limpar",
+          clearingAction: "Limpando...",
+          confirmTitle: "Limpar os arquivos em cache?",
+          confirmDescription: "Isso libera cerca de {size}.",
+          confirmOneTitle: "Limpar {name}?",
+          safety:
+            "O Unsloth recria um cache na próxima vez que precisar dele. Modelos baixados, projetos, conversas, configurações e o seu token do Hugging Face não são afetados.",
+          hubCost:
+            "Este é o cache de modelos. Ao limpá-lo, esses modelos serão baixados novamente na próxima vez que você usá-los.",
+          datasetsCost:
+            "Ao limpar isso, esses conjuntos de dados serão baixados novamente na próxima vez que você usá-los.",
+          blocked: "Não foi limpo: {reason}",
+          cleared: "{size} liberados",
+          partial: "Não foi possível remover alguns arquivos de cache",
+          clearFailed: "Não foi possível limpar os caches",
+          names: {
+            uv: "Cache de pacotes do uv",
+            pip: "Cache de downloads do pip",
+            npm: "Cache de pacotes do npm",
+            bun: "Cache de pacotes do Bun",
+            torchInductor: "Cache de compilação do Torch Inductor",
+            torchExtensions: "Builds de extensões do Torch",
+            triton: "Cache de kernels do Triton",
+            cuda: "Cache de kernels do CUDA",
+            numba: "Cache de compilação do Numba",
+            matplotlib: "Cache de fontes do Matplotlib",
+            vllm: "Cache do vLLM",
+            unslothCompiled: "Módulos compilados do Unsloth",
+            hfXet: "Cache de transferência do Hugging Face",
+            hfAssets: "Cache de recursos do Hugging Face",
+            hfDatasets: "Cache de conjuntos de dados do Hugging Face",
+            hfHub: "Cache de modelos do Hugging Face",
+          },
+        },
+        lowDisk: {
+          title: "O espaço em disco está acabando",
+          criticalTitle: "O espaço em disco está criticamente baixo",
+          description:
+            "{free} livres de {total}. Limpar os caches pode liberar espaço.",
+          action: "Ver caches",
+        },
         futureDownloads: "Apenas novos downloads",
         environmentManaged: "Gerenciado pela variável de ambiente {variable}.",
         locationFree: "{free} livres",
@@ -1515,9 +1608,9 @@ export const ptBR = {
         yolo: "Pula os pedidos de aprovação. Use apenas em ambientes confiáveis.",
       },
       remote: {
-        title: "Conectar a um Unsloth Studio remoto",
+        title: "Conectar a um Unsloth remoto",
         description:
-          "Aponte o unsloth start para um Unsloth Studio em execução em outro lugar, definindo estas variáveis antes de iniciar (ou passe --api-key diretamente):",
+          "Aponte o unsloth start para um Unsloth em execução em outro lugar, definindo estas variáveis antes de iniciar (ou passe --api-key diretamente):",
       },
       passthrough: {
         title: "Repassar argumentos ao agente",
@@ -1544,16 +1637,11 @@ export const ptBR = {
         "Altere esta configuração para cada chat pelo menu de anexos.",
       rememberParamsPerModelHint:
         "Quando desativado, todos os modelos usam as mesmas configurações.",
-      autoCompactHint: "Usa o tamanho de contexto definido, não a VRAM disponível.",
+      autoCompactHint: "Apenas chats GGUF locais. Os turnos removidos são indexados para que o modelo possa buscá-los de volta, e uma reinicialização cita palavra por palavra as instruções permanentes que couberem, priorizando as mais antigas e as mais recentes em vez das intermediárias. Arquivar exige um chat salvo e o índice vetorial; sem eles, os turnos antigos são descartados. Usa o tamanho de contexto definido, não a VRAM disponível.",
       pastedTextShortDescription:
         "Texto colado com {count} caracteres ou mais vira um anexo .txt. Textos menores ficam na caixa de mensagem.",
       pastedTextOffDescription:
         "Todo o texto colado fica na caixa de mensagem, independentemente do tamanho.",
-      compactionDescriptionInherit: "Segue a política de contexto do servidor.",
-      compactionDescriptionCheckpoint:
-        "Mantém a última troca de mensagens e as instruções permanentes.",
-      compactionDescriptionRolling:
-        "Remove os turnos mais antigos para manter o histórico recente e o espaço extra selecionado.",
       projectsSection: "Mostrar a seção Projetos",
       projectsSectionDescription:
         "Agrupa as conversas de projeto sob um título Projetos. Desative para listá-las em Recentes.",
@@ -1577,7 +1665,7 @@ export const ptBR = {
           "Fixe itens no menu lateral do botão + do chat. Os demais ficam em “Mais”.",
         chatWithFiles: "Chat com arquivos (RAG)",
         mcp: "MCP",
-        skills: "Habilidades de agentes",
+        skills: "Habilidades",
         savedPrompts: "Prompts salvos",
         compareChat: "Comparar chats",
         exportChat: "Exportar chat",
@@ -1589,6 +1677,10 @@ export const ptBR = {
       showResponseModel: "Mostrar o modelo da resposta",
       showResponseModelDescription:
         "Mostra os metadados do modelo nas respostas do assistente.",
+      inlineReadAloud: "Leitura em voz alta nas respostas",
+      inlineReadAloudDescription: "Mostrar Leitura em voz alta em cada resposta, em vez de no menu Mais.",
+      inlineEditResponse: "Editar resposta nas respostas",
+      inlineEditResponseDescription: "Mostrar Editar resposta em cada resposta, em vez de no menu Mais.",
       modelDisclaimer: "Mostrar aviso do modelo",
       modelDisclaimerDescription:
         'Mostra "LLMs podem cometer erros" abaixo da caixa de chat.',
@@ -1600,26 +1692,20 @@ export const ptBR = {
         "Restaura o último prompt, a temperatura e as outras configurações usadas com cada modelo.",
       autoCompact: "Compactar automaticamente chats longos",
       autoCompactDescription:
-        "Remove turnos antigos quando um chat GGUF local atinge o limite de contexto.",
-      compactionStyle: "Quando o contexto estiver cheio",
-      compactionStyleDescription:
-        "Usar o padrão do servidor preserva UNSLOTH_CONTEXT_POLICY. Redefinir a conversa mantém o turno mais recente e as instruções permanentes. Uma janela deslizante descarta os turnos mais antigos e pode manter mais histórico recente.",
-      compactionStyleInherit: "Usar padrão do servidor",
-      compactionStyleCheckpoint: "Redefinir conversa",
-      compactionStyleRollingDefault:
-        "Descartar turnos antigos (~25% de espaço extra)",
-      compactionStyleRolling10:
-        "Descartar turnos antigos (~10% de espaço extra)",
-      compactionStyleRolling5:
-        "Descartar turnos antigos (~5% de espaço extra)",
-      compactionStyleRollingNone:
-        "Descartar turnos antigos (sem corte extra)",
+        "Os turnos antigos vão para um arquivo pesquisável quando um chat enche o contexto.",
       autoCompactKeywords:
-        "compactação compactar automaticamente contexto janela truncar deslizante checkpoint margem compaction rolling headroom",
+        "compactação compactar automaticamente contexto janela truncar deslizante checkpoint margem arquivo recuperação busca compaction rolling headroom archive retrieval rag",
+      visibility: {
+        collapsed: "Recolhido",
+        auto: "Expandir durante a execução",
+        expanded: "Sempre expandido",
+      },
+      visibilityKeywords:
+        "recolher recolhido expandir expandido aberto fechado raciocínio pensamento chamadas de ferramentas atividade agrupar streaming",
       thinking: {
-        collapseByDefault: "Recolher o raciocínio por padrão",
-        collapseByDefaultDescription:
-          "Mantém o raciocínio recolhido enquanto o modelo pensa, em vez de abri-lo automaticamente. Expanda um bloco para lê-lo.",
+        visibility: "Raciocínio",
+        visibilityDescription:
+          "Como o raciocínio abre. Você ainda pode expandir ou recolher qualquer bloco.",
       },
       currentDate: {
         label: "Informar a data de hoje ao modelo",
@@ -1629,12 +1715,14 @@ export const ptBR = {
         saveError: "Não foi possível atualizar as configurações de data atual",
       },
       tools: {
-        collapseByDefault: "Recolher atividade de ferramentas por padrão",
-        collapseByDefaultDescription:
-          "Mantém entradas e saídas das ferramentas recolhidas durante a execução. Expanda uma linha para inspecioná-la.",
-        foldIntoThinking: "Recolher chamadas de ferramentas no Pensamento",
+        visibility: "Chamadas de ferramentas",
+        visibilityDescription:
+          "Como a atividade de ferramentas abre. Você ainda pode expandir ou recolher qualquer chamada.",
+        foldIntoThinking: "Agrupar chamadas de ferramentas no Raciocínio",
         foldIntoThinkingDescription:
-          "Oculta as chamadas de ferramentas de um turno até abrir o bloco de Pensamento.",
+          "Mostra as chamadas de ferramentas de um turno dentro do bloco de Raciocínio em vez de em linhas próprias.",
+        foldIntoThinkingBlocked:
+          "Indisponível enquanto as chamadas de ferramentas estiverem em «Sempre expandido», que as mantém em linhas próprias.",
       },
       webSearch: {
         title: "Busca na web",
@@ -1935,12 +2023,42 @@ export const ptBR = {
       expires: "Expira {value}",
       actionsFor: "Ações para {name}",
       copyPrefix: "Copiar prefixo",
+      copyFailed: "Não foi possível copiar",
       revokeToken: "Revogar token",
       revokeTitle: 'Revogar token de acesso "{name}"?',
       revokeDescription:
         "Aplicativos que usam este token perderão o acesso imediatamente. Esta ação não pode ser desfeita.",
       revokeAction: 'Revogar "{name}"',
       revoking: "Revogando...",
+      decisionApi: {
+        title: "API de decisões",
+        description: "Responda a perguntas de sim/não, múltipla escolha e pontuação sobre texto com um modelo Laya local. Funciona com o SDK da TypeSafe.",
+        enable: "Atender solicitações",
+        enableDescription: "Atende /v1/systemone. Ao ativar, o modelo é baixado.",
+        lockedByEnv: "Definido por {name}.",
+        model: "Modelo",
+        modelMultilingual: "Multilíngue",
+        modelEnglish: "Inglês",
+        modelTypedDecisions: "Decisões tipadas",
+        recommended: "Recomendado",
+        device: "Executar em",
+        deviceDescription: "A GPU responde mais rápido, mas mantém a memória reservada até reiniciar.",
+        deviceCpu: "CPU",
+        deviceGpu: "GPU",
+        checking: "Verificando…",
+        notDownloaded: "Não baixado · {size}",
+        downloading: "Baixando…",
+        downloaded: "Baixado · carrega na primeira solicitação",
+        installing: "Instalando…",
+        loading: "Carregando…",
+        loadedOn: "Carregado em {device}",
+        download: "Baixar",
+        unload: "Descarregar",
+        downloadBusy: "Um modelo da API de decisões já está sendo baixado.",
+        downloadFailed: "Não foi possível iniciar o download.",
+        saveFailed: "Não foi possível salvar a configuração da API de decisões.",
+        loadError: "Não foi possível carregar as configurações da API de decisões.",
+      },
       usageNoModel:
         "Carregue ou baixe um modelo para ver exemplos executáveis. Este servidor ainda não tem nenhum modelo para indicar.",
     },
@@ -2753,7 +2871,7 @@ export const ptBR = {
     tooLarge: "Maior que a VRAM, será descarregado para a CPU. Uma quantização menor roda mais rápido",
   },
   skills: {
-    title: "Habilidades de agentes",
+    title: "Habilidades",
     description: "As habilidades são descobertas nas suas pastas padrão de agentes. Ative-as aqui e digite @ no chat para mencionar uma.",
     precedence: "~/.agents/skills tem precedência sobre ~/.claude/skills.",
     refresh: "Atualizar",
@@ -2768,6 +2886,6 @@ export const ptBR = {
     enable: "Ativar {name}",
     disable: "Desativar {name}",
     updateError: "Não foi possível atualizar a habilidade",
-    mentions: "Habilidades de agentes",
+    mentions: "Habilidades",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

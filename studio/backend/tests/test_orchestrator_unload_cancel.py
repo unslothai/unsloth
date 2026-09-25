@@ -3427,7 +3427,9 @@ def test_every_long_lived_spawner_consults_the_shutdown_latch():
     backend = Path(__file__).resolve().parent.parent
     guarded = {
         "core/export/orchestrator.py",
+        "core/inference/lemonade_server.py",
         "core/inference/llama_cpp.py",
+        "core/inference/npu_backend.py",
         "core/inference/orchestrator.py",
         "core/inference/sd_cpp_engine.py",
         "core/inference/sd_cpp_server.py",
@@ -3450,6 +3452,7 @@ def test_every_long_lived_spawner_consults_the_shutdown_latch():
         "core/inference/stt_download_worker.py",
         "core/inference/tools.py",
         "core/training/diffusion_training_service.py",
+        "utils/diffusers_repair.py",
         "utils/prebuilt/update_flow.py",
         "utils/process_lifetime.py",
         "utils/torch_device_probe.py",

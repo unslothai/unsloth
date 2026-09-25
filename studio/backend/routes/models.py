@@ -4520,7 +4520,6 @@ async def get_gguf_variants(
                         # the row reads as its whole relative path.
                         display_label = getattr(v, "display_label", None),
                         size_bytes = v.size_bytes,
-                        shard_count = int(getattr(v, "shard_count", 0) or 0),
                         download_size_bytes = int(
                             getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
                         ),
@@ -4592,6 +4591,7 @@ def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
 @router.get("/download-progress")
 async def get_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
+    mlx_load: bool = Query(False),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
@@ -4600,7 +4600,9 @@ async def get_download_progress(
     the cache directory it measured, so it takes the caller class like its ``/api/hub`` twin."""
     from hub.services.models import downloads
     return redact_host_paths(
-        await downloads.get_download_progress_response(repo_id, hf_token = hf_token),
+        await downloads.get_download_progress_response(
+            repo_id, hf_token = hf_token, mlx_load = mlx_load
+        ),
         via_api_key = via_api_key,
     )
 
@@ -4842,12 +4844,8 @@ def _repo_gguf_size_bytes(repo_info) -> int:
             # Snapshot-relative: only the directory tells an MTP/ drafter from a primary quant.
             name = _cached_repo_file_name(f)
             if _is_main_gguf_filename(name):
-                blob_path = getattr(f, "blob_path", None)
-                size = f.size_on_disk or 0
-                if blob_path:
-                    unique_blobs[str(blob_path)] = size
-                else:
-                    unique_blobs[f"{rev_id}:{name}"] = size
+                from hub.services.models.cache_inventory import _blob_key
+                unique_blobs[_blob_key(f, f"{rev_id}:{name}")] = f.size_on_disk or 0
     return sum(unique_blobs.values())
 
 
@@ -5241,9 +5239,9 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                         and _snapshot_can_serve_a_load(selected)
                     ):
                         continue
-                total_size = sum(
-                    (f.size_on_disk or 0) for rev in repo_info.revisions for f in rev.files
-                )
+                from hub.services.models.cache_inventory import repo_unique_size_bytes
+
+                total_size = repo_unique_size_bytes(repo_info)
                 if total_size == 0:
                     continue
                 weight_files = [

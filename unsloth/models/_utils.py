@@ -103,6 +103,7 @@ __all__ = [
     "make_fast_generate_wrapper",
     "_mark_unsloth_disable_data_parallel",
     "_patch_transformers_trainer_data_parallel",
+    "patch_flex_attention_kernel_options",
 ]
 
 import torch
@@ -116,6 +117,7 @@ import copy
 import re
 from dataclasses import dataclass, field
 import functools
+import threading
 import textwrap
 import logging
 import warnings, subprocess, inspect, psutil, os, math
@@ -128,6 +130,8 @@ from ..device_type import (
     DEVICE_TYPE_TORCH,
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
+    apply_gfx101x_triton_workaround,
+    gfx101x_triton_workaround_applied,
 )
 from ..import_fixes import UNSLOTH_ENABLE_LOGGING
 from unsloth_zoo.log import logger
@@ -433,6 +437,367 @@ def _flex_attention_gpu_is_supported():
         return True
 
 
+# head_dim > 128 with an explicit mask drops torch <= 2.13 SDPA to an sm80 CUTLASS kernel (8.82x
+# the unmasked cost at head_dim 256, T=8192, B200). Flex's BlockMask carries causal, padding and
+# packed-sequence masks exactly as sdpa_mask does. Not FA2 (padding needs varlen), FA3 (no sm100
+# cubin) or FA4 (Hub build broken against nvidia-cutlass-dsl 4.6.0).
+_SDPA_FLASH_MAX_HEAD_DIM = 128
+_FLEX_LARGE_HEAD_DIM_ENV_VAR = "UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM"
+# gemma2 measured slower under flex. gemma4 shares one _attn_implementation across all layers, so
+# flex would also pull its 25 sliding layers off unsloth_zoo's faster gemma4_flash_sliding router,
+# which is registered under "sdpa".
+_FLEX_LARGE_HEAD_DIM_EXCLUDED_MODELS = ("gemma2", "gemma4", "gemma4_text")
+# Interface dispatch, and a BlockMask from create_causal_mask rather than a hand-built 4D mask.
+_FLEX_INTERFACE_MARKERS = ("ALL_ATTENTION_FUNCTIONS", "create_causal_mask")
+_FLEX_SUPPORT_FORCED = set()
+_ATTN_IMPL_MAPPING_SUPPORTED = []
+
+
+def _text_attention_configs(config):
+    """The decoder's attention sub-configs. A VLM vision tower is excluded: small head dim, and
+    per-image lengths would recompile flex per shape."""
+    text_config = None
+    getter = getattr(config, "get_text_config", None)
+    if callable(getter):
+        try:
+            text_config = getter()
+        except Exception:
+            text_config = None
+    if text_config is None:
+        text_config = _config_get(config, "text_config", None)
+    if text_config is None:
+        text_config = config
+    return list(_iter_attention_configs(text_config))
+
+
+def _text_attention_head_dim(config):
+    head_dims = []
+    for attention_config in _text_attention_configs(config):
+        head_dims.extend(_collect_attention_head_dims(attention_config))
+    return max(head_dims) if len(head_dims) != 0 else None
+
+
+# torch 2.14 lets cuDNN take a masked head_dim 256 on sm100, matching flex with no compile. Measured
+# on Blackwell only, so other cards keep flex.
+_CUDNN_LARGE_HEAD_DIM_TORCH_VERSION = "2.14"
+_CUDNN_LARGE_HEAD_DIM_MIN_CAPABILITY = (10, 0)
+
+
+def _sdpa_reaches_cudnn_at_head_dim_256():
+    """True when plain SDPA already dispatches cuDNN for a MASKED head_dim 256 on this box."""
+    try:
+        if Version(torch.__version__.split("+")[0]) < Version(_CUDNN_LARGE_HEAD_DIM_TORCH_VERSION):
+            return False
+        if getattr(torch.version, "hip", None):
+            return False
+        if not torch.cuda.is_available():
+            return False
+        return all(
+            torch.cuda.get_device_capability(index) >= _CUDNN_LARGE_HEAD_DIM_MIN_CAPABILITY
+            for index in range(torch.cuda.device_count())
+        )
+    except Exception:
+        return False
+
+
+# Inductor's default flex template needs 151552 bytes of shared memory at head_dim 256 (172032 at
+# 192), more than sm86/sm89/sm120 cards (101376) or an A100 (166912) have. There the compile
+# fails, unsloth_zoo's suppress_errors falls back to unfused eager flex, and training runs slower
+# and in more memory than on SDPA. Offer flex only on the 227 KiB class it was measured on.
+_FLEX_LARGE_HEAD_DIM_MIN_SHARED_MEMORY = 232448
+
+
+def _flex_kernels_fit_large_head_dim():
+    """True when every CUDA device has the shared memory Inductor's default flex template needs."""
+    try:
+        if getattr(torch.version, "hip", None):
+            return False
+        if not torch.cuda.is_available():
+            return False
+        return all(
+            torch.cuda.get_device_properties(index).shared_memory_per_block_optin
+            >= _FLEX_LARGE_HEAD_DIM_MIN_SHARED_MEMORY
+            for index in range(torch.cuda.device_count())
+        )
+    except Exception:
+        return False
+
+
+def _flex_large_head_dim_override():
+    """True / False when UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM forces flex on / off, else None."""
+    override = os.environ.get(_FLEX_LARGE_HEAD_DIM_ENV_VAR)
+    if override is None or override.strip() == "":
+        return None
+    return override.strip() != "0"
+
+
+def _prefers_flex_for_head_dim(config):
+    """True when the decoder's head dim leaves masked SDPA without a flash kernel.
+
+    Unsloth's compiled create_causal_mask always passes a mask (see
+    test_our_compiled_wrapper_is_what_defeats_the_skip), so the masked case is the training case.
+    Flex costs a 4-12 s compile per (shape, length) that a 60-step run does not repay;
+    UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM="0" keeps SDPA and "1" forces flex. head_dim 256
+    routes only until SDPA reaches cuDNN; above 256 always, with patch_flex_attention_kernel_options.
+    """
+    _override = _flex_large_head_dim_override()
+    if _override is not None:
+        return _override
+    for attention_config in _text_attention_configs(config):
+        if (
+            _config_get(attention_config, "model_type", "").lower()
+            in _FLEX_LARGE_HEAD_DIM_EXCLUDED_MODELS
+        ):
+            return False
+    if _config_get(config, "model_type", "").lower() in _FLEX_LARGE_HEAD_DIM_EXCLUDED_MODELS:
+        return False
+    head_dim = _text_attention_head_dim(config)
+    if head_dim is None or head_dim <= _SDPA_FLASH_MAX_HEAD_DIM:
+        return False
+    if not _flex_kernels_fit_large_head_dim():
+        return False
+    # No cuDNN build takes head_dim > 256, so the version gate does not apply.
+    if head_dim > _FLEX_KERNEL_OPTIONS_SAFE_HEAD_DIM:
+        return True
+    return not _sdpa_reaches_cudnn_at_head_dim_256()
+
+
+# Above head_dim 256 Inductor's default flex template overflows shared memory and the launch
+# faults with `misaligned address` (torch 2.13, 2.14). Measured: 64x64 still faults, 32x32 passes.
+_FLEX_KERNEL_OPTIONS_SAFE_HEAD_DIM = 256
+# BLOCK_M/N drive the forward template, BLOCK_M1/N1/M2/N2 the two backward passes.
+_FLEX_LARGE_HEAD_DIM_KERNEL_OPTIONS = {
+    "BLOCK_M": 32,
+    "BLOCK_N": 32,
+    "BLOCK_M1": 16,
+    "BLOCK_N1": 32,
+    "BLOCK_M2": 32,
+    "BLOCK_N2": 16,
+}
+
+
+def _flex_kernel_options_for_head_dim(head_dim):
+    """The kernel_options flex needs at this head dim, or None when the default config is fine."""
+    if not isinstance(head_dim, int) or head_dim <= _FLEX_KERNEL_OPTIONS_SAFE_HEAD_DIM:
+        return None
+    return dict(_FLEX_LARGE_HEAD_DIM_KERNEL_OPTIONS)
+
+
+def _wrap_flex_attention_forward(flex_attention_forward):
+    """Add kernel_options to a registered `flex_attention` function, for large head dims only."""
+    if getattr(flex_attention_forward, "_unsloth_flex_kernel_options", False):
+        return flex_attention_forward
+
+    @functools.wraps(flex_attention_forward)
+    def unsloth_flex_attention_forward(module, query, key, value, *args, **kwargs):
+        try:
+            # Some vision callers reuse the interface with a non-4D query.
+            kernel_options = (
+                _flex_kernel_options_for_head_dim(query.shape[-1])
+                if hasattr(query, "dim") and query.dim() == 4
+                else None
+            )
+        except Exception:
+            kernel_options = None
+        if kernel_options is not None:
+            # A caller that already asked for something keeps it: only fill the gaps.
+            requested = kwargs.get("kernel_options") or {}
+            kernel_options.update(requested)
+            kwargs["kernel_options"] = kernel_options
+        return flex_attention_forward(module, query, key, value, *args, **kwargs)
+
+    unsloth_flex_attention_forward._unsloth_flex_kernel_options = True
+    unsloth_flex_attention_forward._unsloth_original_forward = flex_attention_forward
+    return unsloth_flex_attention_forward
+
+
+def patch_flex_attention_kernel_options():
+    """Wrap the registered flex_attention to pass kernel_options above head_dim 256.
+
+    Unconditional, since explicit requests and _FLEX_PREFERRED_MODELS reach flex too. Returns True
+    when the registered function is wrapped.
+    """
+    try:
+        from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+    except Exception:
+        return False
+
+    # The interface holds the function captured at import, so wrap what is registered.
+    try:
+        registered = ALL_ATTENTION_FUNCTIONS["flex_attention"]
+    except Exception:
+        return False
+    if registered is None:
+        return False
+
+    wrapped = _wrap_flex_attention_forward(registered)
+    if wrapped is registered:
+        return True  # Already ours.
+
+    # __setitem__ covers the shared instance; register() covers the class mapping that models
+    # building their own AttentionInterface (doge) read.
+    try:
+        ALL_ATTENTION_FUNCTIONS["flex_attention"] = wrapped
+    except Exception:
+        return False
+    try:
+        register = getattr(type(ALL_ATTENTION_FUNCTIONS), "register", None)
+        if register is not None:
+            register("flex_attention", wrapped)
+    except Exception:
+        pass
+
+    try:
+        import transformers.integrations.flex_attention as _flex_module
+        if getattr(_flex_module, "flex_attention_forward", None) is registered:
+            _flex_module.flex_attention_forward = wrapped
+    except Exception:
+        pass
+
+    return True
+
+
+def _transformers_supports_attn_impl_mapping():
+    """True when Transformers accepts a per-sub-config `attn_implementation` mapping."""
+    if _ATTN_IMPL_MAPPING_SUPPORTED:
+        return _ATTN_IMPL_MAPPING_SUPPORTED[0]
+    supported = False
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+        source = inspect.getsource(PreTrainedModel.set_attn_implementation)
+        supported = "isinstance(attn_implementation, dict)" in source
+    except Exception:
+        supported = False
+    _ATTN_IMPL_MAPPING_SUPPORTED.append(supported)
+    return supported
+
+
+def _text_sub_config(config):
+    """The separate text sub-config, or None when the config is text-only."""
+    getter = getattr(config, "get_text_config", None)
+    if callable(getter):
+        try:
+            text_config = getter()
+        except Exception:
+            text_config = None
+    else:
+        text_config = None
+    if text_config is None:
+        text_config = _config_get(config, "text_config", None)
+    if text_config is config:
+        return None
+    return text_config
+
+
+def _is_same_config(config, other_config):
+    """Identity, also through a forwarding proxy (unsloth_zoo wraps Gemma 4's text config), whose
+    vars() is the wrapped config's."""
+    if config is other_config:
+        return True
+    if config is None or other_config is None:
+        return False
+    try:
+        return vars(config) is vars(other_config)
+    except TypeError:
+        return False
+
+
+def _flex_attn_impl_for(config, other_attn_implementation):
+    """`flex_attention` for the decoder, `other_attn_implementation` for every other sub-config.
+
+    None when that cannot be scoped: without the Transformers 4.57+ mapping form, a plain string
+    would also move a VLM's vision tower.
+    """
+    text_config = _text_sub_config(config)
+    if not _transformers_supports_attn_impl_mapping():
+        return "flex_attention" if text_config is None else None
+    if text_config is None:
+        return "flex_attention"
+    for field_name, child_config in _config_items(config):
+        if (
+            isinstance(field_name, str)
+            and field_name.endswith("_config")
+            and _is_same_config(child_config, text_config)
+        ):
+            return {"": other_attn_implementation, field_name: "flex_attention"}
+    # An unnamed text sub-config: a plain string would move every sibling, so decline.
+    return None
+
+
+def _flex_support_anchor_class(model_class):
+    """The architecture's own PreTrainedModel base, so `_supports_flex_attn` also covers the inner
+    text model Transformers validates separately under a mapping."""
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+    except Exception:
+        return model_class
+    module_name = getattr(model_class, "__module__", "")
+    anchor = model_class
+    for klass in getattr(model_class, "__mro__", ()):
+        if klass is PreTrainedModel:
+            break
+        if not isinstance(klass, type) or not issubclass(klass, PreTrainedModel):
+            continue
+        if getattr(klass, "__module__", "") == module_name:
+            anchor = klass
+    return anchor
+
+
+def _modeling_module_is_interface_based(model_class):
+    import sys
+
+    module = sys.modules.get(getattr(model_class, "__module__", "") or "", None)
+    if module is None:
+        return False
+    try:
+        source = inspect.getsource(module)
+    except Exception:
+        return False
+    return all(marker in source for marker in _FLEX_INTERFACE_MARKERS)
+
+
+def _declares_flex_support(model_class):
+    """The architecture's own `_supports_flex_attn`, or None when inherited. Not getattr:
+    PreTrainedModel sets False for every model, which hides a deliberate opt-out."""
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+    except Exception:
+        return None
+    for klass in getattr(model_class, "__mro__", ()):
+        if klass is PreTrainedModel:
+            break
+        if not isinstance(klass, type):
+            continue
+        if "_supports_flex_attn" in vars(klass):
+            return vars(klass)["_supports_flex_attn"]
+    return None
+
+
+def _enable_flex_attention_support(model_class, model_type = ""):
+    """Set `_supports_flex_attn` on an interface-based architecture that leaves it unset (qwen3_5,
+    qwen3_5_moe). Returns True when flex is now permitted."""
+    if model_class is None:
+        return False
+    if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
+        return False
+    if _is_flex_excluded(str(model_type).lower()):
+        return False
+    if not _modeling_module_is_interface_based(model_class):
+        return False
+    if _declares_flex_support(model_class) is False:
+        # A deliberate opt-out, e.g. T5Gemma2, whose custom masks cannot merge under flex.
+        return False
+    anchor = _flex_support_anchor_class(model_class)
+    key = f"{getattr(anchor, '__module__', '')}.{getattr(anchor, '__name__', '')}"
+    if key not in _FLEX_SUPPORT_FORCED:
+        try:
+            anchor._supports_flex_attn = True
+        except Exception:
+            return False
+        _FLEX_SUPPORT_FORCED.add(key)
+    return True
+
+
 def _supports_flex_attention(model_class, config, model_type):
     if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
         return False
@@ -654,16 +1019,26 @@ def _disable_flash_attention_if_needed(
         fallback_attn_implementation = "flex_attention"
     else:
         fallback_attn_implementation = "eager"
+    # Only replaces an sdpa fallback; flex and eager fallbacks are left alone.
+    if (
+        fallback_attn_implementation == "sdpa"
+        and supports_flex_attention
+        and _prefers_flex_for_head_dim(config)
+    ):
+        _flex_fallback = _flex_attn_impl_for(config, "sdpa")
+        if _flex_fallback is not None:
+            fallback_attn_implementation = _flex_fallback
     if _is_flash_attention_requested(requested_attn_implementation) or would_use_flash_attention:
         logged_attn_implementation = (
             requested_attn_implementation
             if _is_flash_attention_requested(requested_attn_implementation)
             else "flash_attention_2"
         )
+        fallback_label = _attn_impl_label(fallback_attn_implementation)
         warning_key = (
             model_type,
             logged_attn_implementation,
-            fallback_attn_implementation,
+            fallback_label,
             disable_reason,
         )
         if warning_key not in _FLASH_ATTENTION_DISABLED_WARNED:
@@ -671,17 +1046,44 @@ def _disable_flash_attention_if_needed(
             print(
                 f"Unsloth: `{logged_attn_implementation}` is not supported "
                 f"for `{model_type}` because {disable_reason} - "
-                f"defaulting to `{fallback_attn_implementation}`."
+                f"defaulting to `{fallback_label}`."
             )
 
     return _set_attn_impl(config, fallback_attn_implementation)
 
 
+def _attn_impl_label(impl):
+    """A printable, hashable name for an attention implementation, which may be a mapping."""
+    if isinstance(impl, dict):
+        named = [v for k, v in impl.items() if k != ""]
+        if len(set(named)) == 1:
+            return named[0]
+        return ", ".join(f"{k or 'default'}={v}" for k, v in impl.items())
+    return impl
+
+
+def _write_attn_impl(config, impl):
+    _config_set(config, "_attn_implementation", impl)
+    if isinstance(config, dict) or hasattr(config, "attn_implementation"):
+        _config_set(config, "attn_implementation", impl)
+
+
 def _set_attn_impl(config, impl):
-    if config is not None:
-        _config_set(config, "_attn_implementation", impl)
-        if isinstance(config, dict) or hasattr(config, "attn_implementation"):
-            _config_set(config, "attn_implementation", impl)
+    if config is None:
+        return impl
+    if isinstance(impl, dict):
+        # `""` is Transformers' key for the top level and every unnamed sub-config.
+        default_impl = impl.get("")
+        if default_impl is not None:
+            _write_attn_impl(config, default_impl)
+        for field_name, sub_impl in impl.items():
+            if field_name == "":
+                continue
+            sub_config = _config_get(config, field_name, None)
+            if sub_config is not None:
+                _write_attn_impl(sub_config, sub_impl)
+        return impl
+    _write_attn_impl(config, impl)
     return impl
 
 
@@ -712,6 +1114,69 @@ def resolve_model_class(auto_model, config):
     return result[0] if isinstance(result, (list, tuple)) else result
 
 
+@functools.lru_cache(maxsize = None)
+def _auto_loader_prefers_explicit_local_code():
+    """5 lets a class registered for the exact config class beat auto_map; 4.x never does."""
+    try:
+        import inspect
+        from transformers.models.auto.auto_factory import _BaseAutoModelClass
+        return "explicit_local_code" in inspect.getsource(_BaseAutoModelClass.from_pretrained)
+    except Exception:
+        return True
+
+
+_REMOTE_CLASS_HUB_OPTIONS = ("code_revision", "cache_dir", "proxies", "force_download")
+
+
+def resolve_remote_code_model_class(
+    auto_model,
+    config,
+    model_name,
+    trust_remote_code = False,
+    **hub_kwargs,
+):
+    """(True, cls) if the load builds the remote class, (True, None) if unfetchable, else (False, None); `resolve_model_class` matches by NAME and misses remote shadows (Trinity-Large)."""
+    if not trust_remote_code or config is None or model_name is None:
+        return False, None
+    auto_map = getattr(config, "auto_map", None)
+    auto_name = getattr(auto_model, "__name__", None)
+    if not isinstance(auto_map, dict) or auto_name not in auto_map:
+        return False, None
+    # Exact match only, as transformers checks `type(config) in cls._model_mapping`.
+    try:
+        mapping = auto_model._model_mapping
+        if type(config) in mapping and _auto_loader_prefers_explicit_local_code():
+            from transformers.models.auto.auto_factory import _get_model_class
+            local_class = _get_model_class(config, mapping)
+            if not (getattr(local_class, "__module__", "") or "").startswith("transformers."):
+                return False, None
+    except Exception:
+        pass
+    class_ref = auto_map[auto_name]
+    if isinstance(class_ref, (list, tuple)):
+        class_ref = class_ref[0]
+    if not isinstance(class_ref, str):
+        return True, None
+    try:
+        from transformers.dynamic_module_utils import get_class_from_dynamic_module
+        hub_kwargs = {k: v for k, v in hub_kwargs.items() if v is not None}
+        return True, get_class_from_dynamic_module(class_ref, model_name, **hub_kwargs)
+    except Exception:
+        return True, None
+
+
+def attention_class_for_load(model_class, builds_remote_class, remote_class, supports_sdpa):
+    """A remote class replaces only a native class it shadows; otherwise it may only rule sdpa out, so remote code that already loaded keeps its attention route."""
+    if not builds_remote_class:
+        return model_class, supports_sdpa
+    if model_class is None and remote_class is None:
+        return None, supports_sdpa
+    return (
+        remote_class if model_class is not None else None,
+        bool(supports_sdpa) and bool(getattr(remote_class, "_supports_sdpa", False)),
+    )
+
+
 def _is_family_text_decoder(parent_model_type, text_model_type):
     # True only for the family's own text variant (gemma3 -> gemma3_text); a generic reused decoder (llava -> llama) would load random weights, so keep the full model.
     return bool(parent_model_type) and str(text_model_type).startswith(parent_model_type)
@@ -726,6 +1191,11 @@ def _get_text_only_config(model_config, model_name):
         text_config = getattr(model_config, "text_config", None)
     if text_config is None:
         raise ValueError(f"Cannot load {model_name} as text-only; use FastVisionModel")
+    # unsloth_zoo's Gemma-4 proxy (__slots__) refuses new attrs and resolve_model_class cannot map it; unwrap.
+    try:
+        text_config = object.__getattribute__(text_config, "_real")
+    except AttributeError:
+        pass
     # Carry over quantization_config; copy first, since get_text_config() shares the parent's object.
     qc = getattr(model_config, "quantization_config", None)
     if qc is not None and getattr(text_config, "quantization_config", None) is None:
@@ -791,6 +1261,86 @@ def _get_text_only_key_mapping(parent_config, text_config):
     }
 
 
+_TEXT_ONLY_PARENT_MODEL_TYPES = {}
+# Per-thread, set only during one text-only `get_model_conversion_mapping` call.
+_TEXT_ONLY_LOOKUP_OVERRIDES = threading.local()
+_TEXT_ONLY_PREFIX_RENAME = r"^language_model\.model\."
+
+
+def _parent_conversions_for_text_only(parent_model_type):
+    """VLM conversions a decoder-only load needs, minus start-anchored prefix renames the text-only key_mapping replaces."""
+    try:
+        from transformers.conversion_mapping import get_checkpoint_conversion_mapping
+        from transformers.core_model_loading import WeightRenaming
+    except Exception:
+        return []
+    kept = []
+    for transform in get_checkpoint_conversion_mapping(parent_model_type) or []:
+        sources = transform.source_patterns
+        if not isinstance(sources, (list, tuple)):
+            sources = [sources]
+        if isinstance(transform, WeightRenaming) and all(str(s).startswith("^") for s in sources):
+            continue
+        kept.append(transform)
+    return kept
+
+
+def _install_text_only_conversion_carry():
+    """Give text-only VLM loads (Unsloth key_mapping, no own conversions) the VLM's conversions."""
+    try:
+        import transformers.conversion_mapping as conversion_mapping
+        import transformers.modeling_utils as modeling_utils
+        lookup = conversion_mapping.get_checkpoint_conversion_mapping
+    except Exception:
+        return
+    original = getattr(modeling_utils, "get_model_conversion_mapping", None)
+    if original is None or getattr(original, "_unsloth_text_only_carry", False):
+        return
+
+    # Installed once, never swapped per call: concurrent loads would race on the module global.
+    if not getattr(lookup, "_unsloth_text_only_carry", False):
+
+        @functools.wraps(lookup)
+        def get_checkpoint_conversion_mapping(model_type, *args, **kwargs):
+            overrides = getattr(_TEXT_ONLY_LOOKUP_OVERRIDES, "value", None)
+            if overrides and model_type in overrides:
+                return copy.deepcopy(overrides[model_type])
+            return lookup(model_type, *args, **kwargs)
+
+        get_checkpoint_conversion_mapping._unsloth_text_only_carry = True
+        conversion_mapping.get_checkpoint_conversion_mapping = get_checkpoint_conversion_mapping
+
+    @functools.wraps(original)
+    def get_model_conversion_mapping(
+        model,
+        key_mapping = None,
+        *args,
+        **kwargs,
+    ):
+        text_model_type = getattr(getattr(model, "config", None), "model_type", None)
+        parent_model_type = _TEXT_ONLY_PARENT_MODEL_TYPES.get(text_model_type)
+        if (
+            parent_model_type is None
+            or not key_mapping
+            or _TEXT_ONLY_PREFIX_RENAME not in key_mapping
+            or lookup(type(model).__name__) is not None
+            or lookup(text_model_type) is not None
+        ):
+            return original(model, key_mapping, *args, **kwargs)
+        extra = _parent_conversions_for_text_only(parent_model_type)
+
+        # Same list position as a native registration so the quantizer rewrites them too (FP8).
+        previous = getattr(_TEXT_ONLY_LOOKUP_OVERRIDES, "value", None)
+        _TEXT_ONLY_LOOKUP_OVERRIDES.value = {**(previous or {}), text_model_type: extra}
+        try:
+            return original(model, key_mapping, *args, **kwargs)
+        finally:
+            _TEXT_ONLY_LOOKUP_OVERRIDES.value = previous
+
+    get_model_conversion_mapping._unsloth_text_only_carry = True
+    modeling_utils.get_model_conversion_mapping = get_model_conversion_mapping
+
+
 def _apply_text_only_key_mapping(kwargs, parent_config, text_config):
     # Add the text-only key_mapping to from_pretrained kwargs, under any user mapping.
     mapping = _get_text_only_key_mapping(parent_config, text_config)
@@ -798,6 +1348,58 @@ def _apply_text_only_key_mapping(kwargs, parent_config, text_config):
         return
     user_mapping = kwargs.get("key_mapping", None)
     kwargs["key_mapping"] = {**mapping, **user_mapping} if user_mapping else mapping
+    parent_model_type = getattr(parent_config, "model_type", None)
+    text_model_type = getattr(text_config, "model_type", None)
+    if (
+        parent_model_type
+        and text_model_type
+        and _parent_conversions_for_text_only(parent_model_type)
+    ):
+        _TEXT_ONLY_PARENT_MODEL_TYPES[text_model_type] = parent_model_type
+        _install_text_only_conversion_carry()
+
+
+def _cast_text_only_prequantized_params(model, dtype):
+    # transformers>=5 keeps the checkpoint dtype for key_mapping-renamed keys on pre-quantized loads.
+    if dtype not in (torch.float16, torch.bfloat16, torch.float32):
+        return 0
+    quantizer = getattr(model, "hf_quantizer", None)
+    if quantizer is None or not getattr(quantizer, "pre_quantized", False):
+        return 0
+    # Quantizer may override the request (AWQ, FBGEMM FP8); config.dtype holds the result.
+    resolved = getattr(getattr(model, "config", None), "dtype", None)
+    if resolved in (torch.float16, torch.bfloat16, torch.float32):
+        dtype = resolved
+    keep_fp32 = []
+    get_dtype_plan = getattr(model, "_get_dtype_plan", None)
+    if callable(get_dtype_plan):
+        try:
+            keep_fp32 = [k for k, v in get_dtype_plan(dtype).items() if v == torch.float32]
+        except Exception:
+            keep_fp32 = []
+
+    def _is_quantized_storage(t):
+        if type(t) is not torch.nn.Parameter or type(t.data) is not torch.Tensor:
+            return True
+        return not t.dtype.is_floating_point or t.dtype.itemsize == 1
+
+    n_cast = 0
+    for module_name, module in model.named_modules():
+        own = list(module.named_parameters(recurse = False))
+        # Quantized modules' fp16 scales / bias are the kernel's contract (EETQ), not leftovers.
+        if any(_is_quantized_storage(t) for _, t in own):
+            continue
+        for param_name, param in own:
+            name = f"{module_name}.{param_name}" if module_name else param_name
+            # accelerate casts offloaded weights to the meta placeholder's dtype, so recasting it suffices.
+            if param.dtype not in (torch.float16, torch.bfloat16):
+                continue
+            target = torch.float32 if any(re.search(k, name) for k in keep_fp32) else dtype
+            if param.dtype == target:
+                continue
+            param.data = param.data.to(target)
+            n_cast += 1
+    return n_cast
 
 
 def resolve_attention_implementation(
@@ -822,6 +1424,18 @@ def resolve_attention_implementation(
         and not _is_flash_excluded(model_type)
     )
     supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
+    # Before the ladder, since every branch below reads supports_flex_attention.
+    prefers_flex_for_head_dim = _prefers_flex_for_head_dim(config)
+    if prefers_flex_for_head_dim and not supports_flex_attention:
+        if _enable_flex_attention_support(model_class, model_type):
+            supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
+    # The automatic routing only replaces the sdpa fallback, but an explicit "1" forces flex
+    # over flash_attention_2 as well, when flex can be scoped to the decoder.
+    flex_forced_for_head_dim = (
+        _flex_large_head_dim_override() is True
+        and supports_flex_attention
+        and _flex_attn_impl_for(config, "sdpa") is not None
+    )
     disable_reason = _get_flash_attention_disable_reason(config)
     float32_is_only_disable_reason = disable_reason is None and dtype is torch.float32
     if float32_is_only_disable_reason:
@@ -838,7 +1452,12 @@ def resolve_attention_implementation(
         elif prefers_flex_attention and supports_flex_attention:
             # _FLEX_PREFERRED_MODELS (the gemma3 family) prefer flex_attention over flash; a caller can still override with requested_attn_implementation="sdpa".
             attn_impl = _set_attn_impl(config, "flex_attention")
-        elif not flash_attention_disabled and HAS_FLASH_ATTENTION and supports_flash_attention:
+        elif (
+            not flash_attention_disabled
+            and HAS_FLASH_ATTENTION
+            and supports_flash_attention
+            and not flex_forced_for_head_dim
+        ):
             attn_impl = _set_attn_impl(config, "flash_attention_2")
         elif flash_attention_disabled:
             attn_impl = _disable_flash_attention_if_needed(
@@ -855,6 +1474,12 @@ def resolve_attention_implementation(
                 disable_reason = disable_reason,
                 honor_config_attn_implementation = not float32_is_only_disable_reason,
             )
+        elif prefers_flex_for_head_dim and supports_flex_attention:
+            _flex_impl = _flex_attn_impl_for(config, "sdpa" if supports_sdpa else "eager")
+            if _flex_impl is None:
+                attn_impl = _set_attn_impl(config, "sdpa" if supports_sdpa else "eager")
+            else:
+                attn_impl = _set_attn_impl(config, _flex_impl)
         elif supports_sdpa:
             attn_impl = _set_attn_impl(config, "sdpa")
         elif supports_flex_attention:
@@ -2240,6 +2865,9 @@ patch_torch_compile(
     O3 = UNSLOTH_COMPILE_MAXIMUM,
     ignore_errors = UNSLOTH_COMPILE_IGNORE_ERRORS,
 )
+# patch_torch_compile popped the gfx101x Inductor cache dir chosen in _gpu_init.
+if gfx101x_triton_workaround_applied():
+    apply_gfx101x_triton_workaround()
 
 torch_compile_options = {
     "epilogue_fusion": True,
@@ -3169,9 +3797,127 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
     return outputs
 
 
+# The attributes a training wrapper keeps its wrappee under. DDP, FSDP1 and DataParallel use
+# `module`; `torch.compile` uses `_orig_mod`; FSDP's own wrapper policy uses `_fsdp_wrapped_module`.
+_UNSLOTH_WRAPPED_MODULE_ATTRS = ("module", "_orig_mod", "_fsdp_wrapped_module")
+
+
+def _unsloth_wrappees_are_in_train_mode(model):
+    """Whether every module `model` merely wraps also reports training mode.
+
+    `training_step` is handed `self.model_wrapped`, but `Trainer.evaluation_loop` calls `.eval()`
+    on `self._wrap_model(self.model, training=False)`, which under DDP is the module INSIDE the
+    wrapper. That leaves the wrapper's own `.training` True while the whole model sits in eval,
+    so the root flag alone cannot tell the two apart and training would silently continue with
+    every dropout disabled. This is a handful of attribute reads, not the module walk being
+    skipped, and on an unwrapped model it stops at the first miss.
+    """
+    inner = model
+    for _ in range(4):
+        for attr in _UNSLOTH_WRAPPED_MODULE_ATTRS:
+            wrappee = getattr(inner, attr, None)
+            if isinstance(wrappee, torch.nn.Module):
+                break
+        else:
+            return True
+        if not wrappee.training:
+            return False
+        inner = wrappee
+    return True
+
+
+def _unsloth_train_if_needed(model):
+    """`Trainer.training_step` calls `model.train()` on every micro-step. On a PEFT-wrapped 9B
+    model that is a recursive walk over ~2k modules with a `__setattr__` each, several ms of
+    pure Python per micro-step while the GPU waits. The mode only has to be asserted once: skip
+    the walk when the root already reports training mode and we were the ones who set it. A root
+    `.eval()` (evaluation, `for_inference`) flips `model.training`, so the next call walks again.
+    """
+    if (
+        model.training
+        and getattr(model, "_unsloth_train_mode_asserted", False)
+        and _unsloth_wrappees_are_in_train_mode(model)
+    ):
+        return model
+    model.train()
+    try:
+        model._unsloth_train_mode_asserted = True
+    except Exception:
+        pass
+    return model
+
+
+def _unsloth_cache_reuses_one_config(cache):
+    """Whether this autotuner cache answers every key with its one stored config.
+
+    That is what unsloth_zoo's `compile_fla_no_autotune` installs, but its `_ReuseBestCache` is
+    defined inside that function, so there is no symbol to import and no class to isinstance
+    against. Probe the behaviour instead of the class name: `dict.keys()` membership always uses
+    dict's own lookup, so a key absent from the raw mapping yet reported present by `in` is
+    exactly the reuse behaviour, under any name a future rewrite gives it.
+    """
+    try:
+        if len(cache) == 0:
+            return False
+        probe = ("__unsloth_probe__",) * 2
+        return probe not in cache.keys() and probe in cache
+    except Exception:
+        return False
+
+
+def patch_fla_autotuner_fast_path():
+    """unsloth_zoo's `compile_fla_no_autotune` makes every fla Triton autotuner reuse its first
+    tuned config for every key (`_ReuseBestCache`). After that, fla's `CachedAutotuner.run` still
+    builds its own `AutotuneKey` (dict zips, dtype strings, JSON-able normalisation) and then
+    Triton's `Autotuner.run` builds a key a second time, on every launch, for a lookup whose answer
+    is always the same config. Linear-attention layers make thousands of such launches per optimizer
+    step. Once the config is settled, launch the kernel with it directly: same config, same kernel,
+    same numerics.
+    """
+    try:
+        import fla.ops.utils.cache as fla_cache
+    except Exception:
+        return
+    CachedAutotuner = getattr(fla_cache, "CachedAutotuner", None)
+    if CachedAutotuner is None or getattr(CachedAutotuner.run, "_unsloth_fast_path", False):
+        return
+    # FLA_CACHE_MODE=always re-reads the config files on every launch on purpose (a debug mode).
+    cache_mode = getattr(fla_cache, "FLA_CACHE_MODE", None)
+    if getattr(cache_mode, "value", None) == "always":
+        return
+    original_run = CachedAutotuner.run
+
+    @functools.wraps(original_run)
+    def run(self, *args, **kwargs):
+        cfg = getattr(self, "_unsloth_fixed_config", None)
+        if cfg is None:
+            cache = self.cache
+            if len(self.configs) == 1:
+                cfg = self.configs[0]
+            elif _unsloth_cache_reuses_one_config(cache):
+                cfg = next(iter(cache.values()))
+            else:
+                return original_run(self, *args, **kwargs)
+            if cfg.pre_hook is not None:
+                return original_run(self, *args, **kwargs)
+            self._unsloth_fixed_config = cfg
+            self._unsloth_fixed_kwargs = cfg.all_kwargs()
+        self.best_config = cfg
+        return self.fn.run(*args, **kwargs, **self._unsloth_fixed_kwargs)
+
+    run._unsloth_fast_path = True
+    CachedAutotuner.run = run
+
+
 def patch_gradient_accumulation_fix(Trainer):
     # Fixes "Output 0 of UnslothFusedLossBackward is a view and is being modified inplace" and gradient accumulation.
     import inspect
+
+    # Before the early returns below: the fla patch is unrelated to gradient accumulation, and it
+    # can only install once fla has been imported. Loading a non-fla model first (llama.py's
+    # FastLlamaModel.from_pretrained never imports fla) and a gated-deltanet model second would
+    # otherwise leave it permanently uninstalled, since the second call returns here.
+    patch_fla_autotuner_fast_path()
 
     if hasattr(Trainer, "get_batch_samples"):
         if Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples":
@@ -3253,6 +3999,9 @@ def patch_gradient_accumulation_fix(Trainer):
             "if num_items_in_batch is not None: loss *= self.args.gradient_accumulation_steps",
         )
         function = function.replace("def training_step", "def _unsloth_training_step", 1)
+
+        # Skip the per-micro-step recursive `model.train()` walk once train mode is set.
+        function = function.replace("model.train()", "_unsloth_train_if_needed(model)", 1)
 
         # Fix 4.47.0 removing num_items_in_batch (huggingface/transformers#35121) and the case where it is nothing (huggingface/transformers#35207).
         function = function.replace(
@@ -4670,3 +5419,9 @@ if (
         transformers.integrations.bitsandbytes.should_convert_module = patched_should_convert_module
     except Exception:
         pass
+
+
+try:
+    patch_flex_attention_kernel_options()
+except Exception:
+    pass

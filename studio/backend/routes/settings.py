@@ -4,6 +4,7 @@
 """Settings policy: the account, shared and owner routers decide who may reach each
 /api/settings path."""
 
+import asyncio
 import functools
 import hashlib
 import re
@@ -45,7 +46,7 @@ from core.rag.config import (
     effective_gguf_repo_for_embedding_model,
 )
 from loggers import get_logger
-from utils.utils import safe_error_detail, log_and_http_error
+from utils.utils import safe_curated_detail, safe_error_detail, log_and_http_error
 from utils.personalization_settings import (
     MAX_AVATAR_DATA_URL_BYTES,
     PERSONALIZATION_VERSION,
@@ -61,6 +62,7 @@ from utils.upload_limits import (
     upload_limit_bytes,
     upload_limit_label,
 )
+from utils.cache_inventory import CACHE_KEYS, cache_inventory, purge_caches
 from utils.xet_notice_settings import reserve_xet_notice
 from utils.chat_preferences_settings import (
     get_show_model_disclaimer,
@@ -73,6 +75,7 @@ from utils.helper_precache_settings import (
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
 )
+from utils import systemone_settings
 from utils.download_transport_settings import (
     get_download_transport_mode,
     set_download_transport_mode,
@@ -137,6 +140,12 @@ from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
     get_preview_sharing_enabled,
     set_preview_sharing_enabled,
+)
+from utils.managed_provider_url_settings import (
+    DEFAULT_MANAGED_PRIVATE_PROVIDER_URLS_ALLOWED,
+    get_managed_private_provider_urls_allowed,
+    private_urls_locked_by_environment,
+    set_managed_private_provider_urls_allowed,
 )
 from utils.current_date_prompt_settings import (
     DEFAULT_CURRENT_DATE_PROMPT_ENABLED,
@@ -210,8 +219,8 @@ class ImageGenerationPresetParams(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
     negativePrompt: str = ""
-    width: int = Field(default = 1024, ge = 256, le = 2048, multiple_of = 16)
-    height: int = Field(default = 1024, ge = 256, le = 2048, multiple_of = 16)
+    width: int = Field(default = 1024, ge = 256, le = 2752, multiple_of = 16)
+    height: int = Field(default = 1024, ge = 256, le = 2752, multiple_of = 16)
     steps: int = Field(default = 9, ge = 1, le = 100)
     guidance: float = Field(default = 0, ge = 0, le = 20)
     batchSize: int = Field(default = 1, ge = 1, le = 32)
@@ -608,6 +617,42 @@ def clear_hugging_face_token(
     return HuggingFaceTokenResponse(token = None, has_token = False)
 
 
+class SystemOneModelOption(BaseModel):
+    name: str
+    description: str
+    download_bytes: int
+
+
+class SystemOneSettingsResponse(BaseModel):
+    enabled: bool
+    enabled_locked: bool
+    model: str
+    model_locked: bool
+    device: str
+    device_locked: bool
+    gpu_available: bool
+    models: list[SystemOneModelOption]
+    loaded_model: Optional[str] = None
+    loaded_device: Optional[str] = None
+    loading_model: Optional[str] = None
+    installing: bool = False
+    error: Optional[str] = None
+
+
+class SystemOneSettingsPayload(BaseModel):
+    enabled: Optional[bool] = None
+    model: Optional[str] = None
+    device: Optional[str] = None
+
+
+class SystemOneDownloadPlan(BaseModel):
+    repo: Optional[str] = None
+    files: list[str]
+    size_bytes: int
+    cached: bool
+    error: Optional[str] = None
+
+
 class HelperPrecachePayload(BaseModel):
     enabled: bool
 
@@ -724,6 +769,47 @@ class HuggingFaceCacheResponse(BaseModel):
     writable: bool
     free_bytes: Optional[int] = None
     environment_variable: Optional[str] = None
+
+
+class CacheEntryResponse(BaseModel):
+    key: str
+    group: str
+    # Clearing this costs a re-download, so the UI never folds it into a
+    # "clear everything" action.
+    opt_in: bool
+    paths: list[str]
+    size_bytes: int
+    entry_count: int
+    present: bool
+    purgeable: bool
+    blocked_reason: Optional[str] = None
+
+
+class CacheInventoryResponse(BaseModel):
+    caches: list[CacheEntryResponse]
+    total_bytes: int
+    reclaimable_bytes: int
+    free_bytes: Optional[int] = None
+    total_disk_bytes: Optional[int] = None
+
+
+class CachePurgePayload(BaseModel):
+    # Cache identifiers, never paths: the backend owns the mapping from a key to
+    # a directory, so a caller cannot name one of its own.
+    keys: list[str] = Field(min_length = 1, max_length = len(CACHE_KEYS))
+
+
+class CachePurgeResultResponse(BaseModel):
+    key: str
+    freed_bytes: int
+    removed_entries: int
+    errors: list[str]
+
+
+class CachePurgeResponse(BaseModel):
+    results: list[CachePurgeResultResponse]
+    freed_bytes: int
+    inventory: CacheInventoryResponse
 
 
 class LlamaCppPathPayload(BaseModel):
@@ -1128,6 +1214,49 @@ def update_hugging_face_cache(
     return _hugging_face_cache_response()
 
 
+@_owner_settings_router.get("/caches", response_model = CacheInventoryResponse)
+async def get_caches(
+    refresh: bool = False,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> CacheInventoryResponse:
+    """Size every cache this install writes to, plus the free space around them.
+
+    ``refresh`` re-walks every cache instead of reusing a size measured in the
+    last minute, for the Recheck the UI offers after something big was written.
+    It is the interactive button, and a walk of a large hub or triton cache is
+    seconds of stat calls in the shared executor with no memo in front of it, so
+    only a UI session may ask for one. A plain read stays open to an API key.
+    """
+    if refresh:
+        require_ui_session(via_api_key)
+    # A cold walk of a large hub or triton cache is seconds of stat calls, so it
+    # stays off the event loop.
+    inventory = await asyncio.to_thread(cache_inventory, refresh = refresh)
+    return CacheInventoryResponse(**inventory)
+
+
+@_owner_settings_router.post("/caches/purge", response_model = CachePurgeResponse)
+async def purge_caches_endpoint(
+    payload: CachePurgePayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> CachePurgeResponse:
+    """Empty the named caches. Only the interactive UI may delete anything."""
+    require_ui_session(via_api_key)
+    try:
+        result = await asyncio.to_thread(purge_caches, payload.keys)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            str(exc),
+            event = "settings.purge_caches_failed",
+            log = logger,
+        ) from exc
+    return CachePurgeResponse(**result)
+
+
 @_owner_settings_router.get("/llama-cpp-path", response_model = LlamaCppPathResponse)
 def get_llama_cpp_path(current_subject: str = Depends(get_current_subject)) -> LlamaCppPathResponse:
     return _llama_cpp_path_response()
@@ -1200,6 +1329,92 @@ def update_helper_precache(
             log = logger,
         ) from exc
     return _helper_precache_response(enabled)
+
+
+def _systemone_response() -> SystemOneSettingsResponse:
+    from core.systemone import catalog, laya_runtime
+
+    enabled = systemone_settings.get_enabled()
+    if enabled:
+        laya_runtime.install_in_background()
+    runtime = laya_runtime.status()
+    model = catalog.default_checkpoint().name
+    error = runtime["error"]
+    if runtime["error_model"] not in (None, model):
+        error = None
+    return SystemOneSettingsResponse(
+        enabled = enabled,
+        enabled_locked = systemone_settings.enabled_locked(),
+        model = model,
+        model_locked = systemone_settings.model_locked(),
+        device = systemone_settings.get_device(),
+        device_locked = systemone_settings.device_locked(),
+        gpu_available = systemone_settings.gpu_available(),
+        models = [
+            SystemOneModelOption(
+                name = c.name, description = c.description, download_bytes = c.download_bytes
+            )
+            for c in catalog.CHECKPOINTS.values()
+        ],
+        loaded_model = runtime["loaded_model"],
+        loaded_device = runtime["device"],
+        loading_model = runtime["loading_model"],
+        installing = runtime["installing"],
+        error = error,
+    )
+
+
+@_shared_settings_router.get("/systemone", response_model = SystemOneSettingsResponse)
+def get_systemone_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> SystemOneSettingsResponse:
+    return _systemone_response()
+
+
+@_owner_settings_router.put("/systemone", response_model = SystemOneSettingsResponse)
+def update_systemone_settings(
+    payload: SystemOneSettingsPayload, current_subject: str = Depends(get_current_subject)
+) -> SystemOneSettingsResponse:
+    from core.systemone import laya_runtime
+
+    try:
+        values = systemone_settings.validate(**payload.model_dump(exclude_none = True))
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc, fallback = "Invalid Decision API setting."),
+            event = "settings.update_systemone_failed",
+            log = logger,
+        ) from exc
+    if values:
+        # The resident model was built from the old settings; drop it so the next request uses the new ones.
+        try:
+            laya_runtime.unload()
+        except laya_runtime.Unavailable as exc:
+            raise HTTPException(status_code = 409, detail = exc.message) from None
+        systemone_settings.save(values)
+    return _systemone_response()
+
+
+@_owner_settings_router.get("/systemone/resolve", response_model = SystemOneDownloadPlan)
+def resolve_systemone_download(
+    current_subject: str = Depends(get_current_subject),
+) -> SystemOneDownloadPlan:
+    from core.systemone import catalog, laya_runtime
+    return SystemOneDownloadPlan(**laya_runtime.download_plan(catalog.default_checkpoint()))
+
+
+@_owner_settings_router.post("/systemone/unload", response_model = SystemOneSettingsResponse)
+def unload_systemone_model(
+    current_subject: str = Depends(get_current_subject),
+) -> SystemOneSettingsResponse:
+    from core.systemone import laya_runtime
+    try:
+        laya_runtime.unload()
+    except laya_runtime.Unavailable as exc:
+        raise HTTPException(status_code = 409, detail = exc.message) from None
+    return _systemone_response()
 
 
 @_shared_settings_router.get("/download-transport", response_model = DownloadTransportResponse)
@@ -1439,6 +1654,60 @@ def update_last_local_model(
     return LastLocalModelResponse(
         **payload.model_dump(exclude = {"client_now"}), server_now = _server_now
     )
+
+
+class DiffusionAcceleratorFallbackRecord(BaseModel):
+    accelerator: str
+    fallback: Optional[str] = None
+    # Qualifying failures under the current fingerprint; `proven` means one named the BUILD.
+    strikes: int = 0
+    proven: bool = False
+    diverting: bool = False
+    # Taken under a different driver, bundle or set of cards, so it is already inert.
+    stale: bool = False
+
+
+class DiffusionAcceleratorFallbackResponse(BaseModel):
+    records: list[DiffusionAcceleratorFallbackRecord] = []
+    # False when UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK is off, where no record can divert.
+    enabled: bool = True
+    diverting: bool = False
+
+
+def _diffusion_accelerator_fallback_response() -> DiffusionAcceleratorFallbackResponse:
+    from core.inference.sd_cpp_backend import accelerator_runtime_failure_state
+    return DiffusionAcceleratorFallbackResponse(**accelerator_runtime_failure_state())
+
+
+@_owner_settings_router.get(
+    "/diffusion-accelerator-fallback", response_model = DiffusionAcceleratorFallbackResponse
+)
+def get_diffusion_accelerator_fallback(
+    current_subject: str = Depends(get_current_subject),
+) -> DiffusionAcceleratorFallbackResponse:
+    """Which native diffusion accelerators this host has been recorded as unable to run.
+
+    Upstream publishes one generic ROCm stable-diffusion.cpp build, not one per gfx arch, so a card
+    it carries no kernels for cannot start it and the host moves to Vulkan (#9278, #8814).
+    """
+    return _diffusion_accelerator_fallback_response()
+
+
+@_owner_settings_router.delete(
+    "/diffusion-accelerator-fallback", response_model = DiffusionAcceleratorFallbackResponse
+)
+def clear_diffusion_accelerator_fallback(
+    current_subject: str = Depends(get_current_subject),
+) -> DiffusionAcceleratorFallbackResponse:
+    """Forget the records, so the next load tries this host's own accelerator again.
+
+    A driver upgrade or a new card retires them through the fingerprint; this is the way back for a
+    fix it cannot see. Reinstalling does not clear them: the record lives in settings, not the tree.
+    """
+    from core.inference.sd_cpp_backend import clear_accelerator_runtime_failures
+
+    clear_accelerator_runtime_failures()
+    return _diffusion_accelerator_fallback_response()
 
 
 @_owner_settings_router.get("/vram-budget", response_model = VramBudgetResponse)
@@ -1721,10 +1990,11 @@ def update_openai_auto_switch_override(
 ) -> ModelOverridesResponse:
     from core.inference.llama_server_args import (
         drop_managed_flags,
+        parse_ctx_override,
         strip_shadowing_flags,
         validate_extra_args,
     )
-    from utils.openai_auto_switch_settings import get_model_override
+    from utils.openai_auto_switch_settings import MAX_SEQ_LENGTH_CEILING, get_model_override
 
     try:
         if payload.fill_absent_fields and payload.remove is True:
@@ -1910,12 +2180,27 @@ def update_openai_auto_switch_override(
             ):
                 _kept_reasoning_budget = -1
                 _kept_reasoning_budget_message = ""
+            # A -c sent with this save is what its load runs at (llama.cpp takes the last -c); store it as
+            # the context or auto-switch strips it as stale (#11511). Carried-over flags and fills keep that rule.
+            max_seq_length = payload.max_seq_length
+            custom_context_length = payload.custom_context_length
+            if payload.llama_extra_args is not None and not payload.fill_absent_fields:
+                try:
+                    explicit_ctx = parse_ctx_override(extra_args)
+                except ValueError:
+                    explicit_ctx = None
+                # Past the stored ceiling the field would be dropped, leaving the flag unchecked.
+                if explicit_ctx and explicit_ctx <= MAX_SEQ_LENGTH_CEILING:
+                    if max_seq_length is not None:
+                        max_seq_length = explicit_ctx
+                    if custom_context_length is not None:
+                        custom_context_length = explicit_ctx
             set_model_override(
                 target_id,
                 llama_extra_args = extra_args,
                 keep_empty_extra_args = keep_empty,
-                max_seq_length = payload.max_seq_length,
-                custom_context_length = payload.custom_context_length,
+                max_seq_length = max_seq_length,
+                custom_context_length = custom_context_length,
                 kv_cache_dtype = payload.kv_cache_dtype,
                 mlx_kv_bits = payload.mlx_kv_bits,
                 speculative_type = payload.speculative_type,
@@ -2988,6 +3273,18 @@ class PreviewSharingResponse(BaseModel):
     default_enabled: bool = DEFAULT_PREVIEW_SHARING_ENABLED
 
 
+class ManagedProviderUrlsPayload(BaseModel):
+    allowed: StrictBool
+
+
+class ManagedProviderUrlsResponse(BaseModel):
+    allowed: bool
+    default_allowed: bool = DEFAULT_MANAGED_PRIVATE_PROVIDER_URLS_ALLOWED
+    # UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 holds the answer: the UI says why rather than
+    # showing a switch that silently reverts.
+    locked_by_environment: bool = False
+
+
 class CurrentDatePromptPayload(BaseModel):
     enabled: StrictBool
 
@@ -3220,6 +3517,53 @@ def update_preview_sharing(
         ) from exc
     logger.info("settings.preview_sharing_updated subject=%s enabled=%s", current_subject, enabled)
     return PreviewSharingResponse(enabled = enabled)
+
+
+def _managed_provider_urls_response() -> ManagedProviderUrlsResponse:
+    # The EFFECTIVE answer, not the stored preference: a switch reading back on while every save
+    # is refused would be the worst of the three things this could say.
+    return ManagedProviderUrlsResponse(
+        allowed = get_managed_private_provider_urls_allowed(),
+        locked_by_environment = private_urls_locked_by_environment(),
+    )
+
+
+@_shared_settings_router.get("/managed-provider-urls", response_model = ManagedProviderUrlsResponse)
+def get_managed_provider_urls(
+    current_subject: str = Depends(get_current_subject),
+) -> ManagedProviderUrlsResponse:
+    """Readable by any account: a managed one has to be able to tell a refusal the owner can lift
+    from one nobody on this installation can, and it learns the same bit by trying to save a URL."""
+    return _managed_provider_urls_response()
+
+
+@_owner_settings_router.put("/managed-provider-urls", response_model = ManagedProviderUrlsResponse)
+def update_managed_provider_urls(
+    payload: ManagedProviderUrlsPayload,
+    current_subject: str = Depends(get_current_subject),
+    # Installation policy: set at the console, not from a remote key that happens to be owned.
+    _ui_session: None = Depends(_require_ui_session),
+) -> ManagedProviderUrlsResponse:
+    """Allow or refuse private and LAN provider base URLs for the installation's managed accounts.
+
+    Off by default. The preference is stored either way, so removing
+    ``UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS`` later restores what the owner chose here rather
+    than a default.
+    """
+    try:
+        allowed = set_managed_private_provider_urls_allowed(payload.allowed)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid managed provider URL setting."),
+            event = "settings.update_managed_provider_urls_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.managed_provider_urls_updated subject=%s allowed=%s", current_subject, allowed
+    )
+    return _managed_provider_urls_response()
 
 
 @_account_settings_router.get("/current-date-prompt", response_model = CurrentDatePromptResponse)
@@ -3663,9 +4007,8 @@ class DebugLogSourcesResponse(BaseModel):
     file_logging_disabled: bool = False
     # Where the logs actually live, so a caller does not have to guess. The
     # desktop "Open logs folder" button otherwise falls back to a hard-coded
-    # ~/.unsloth/studio, which is wrong whenever UNSLOTH_STUDIO_HOME or
-    # STUDIO_HOME is set AND there is no readable log to take a path from.
-    # Additive and optional: an older client ignores it.
+    # ~/.unsloth/studio/logs, which is wrong whenever UNSLOTH_STUDIO_HOME or
+    # STUDIO_HOME is set. Additive and optional: an older client ignores it.
     log_root: Optional[str] = None
 
 
@@ -3702,14 +4045,18 @@ def get_debug_log_sources(
     from utils import debug_log_sources
 
     sources = debug_log_sources.list_sources()
-    # The first candidate root is the one the walk prefers, so it is the
-    # directory a user opening "the log folder" expects to land in.
+    # The first candidate root is the one the walk prefers. File logging may
+    # be disabled before logs/ is created, so reveal the existing home then.
     roots = debug_log_sources.candidate_roots()
+    log_root = None
+    if roots:
+        logs_dir = roots[0] / "logs"
+        log_root = str(logs_dir if logs_dir.is_dir() else roots[0])
     return DebugLogSourcesResponse(
         sources = [DebugLogSourceModel(**vars(source)) for source in sources],
         default_source_id = debug_log_sources.default_source_id(),
         file_logging_disabled = debug_log_sources.file_logging_disabled(),
-        log_root = str(roots[0]) if roots else None,
+        log_root = log_root,
     )
 
 

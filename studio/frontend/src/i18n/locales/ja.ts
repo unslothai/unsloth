@@ -12,9 +12,14 @@ export const ja = {
     plainTextDescription: "コード、Markdown、リンクをそのままのテキストで表示します。オフにすると書式付きプレビューを表示します。",
     showContext: "コンテキストウィンドウの使用量を表示",
     sendShortcut: "送信ショートカット",
-    sendDescription: "Enter キーで送信するか改行するかを選択します。",
+    sendMultiline: "複数行のメッセージは {mod} + Enter",
+    sendAlways: "常に {mod} + Enter",
+    sendEnterDescription: "Enter で送信、Shift + Enter で改行します。",
+    sendMultilineDescription: "1 行のメッセージは Enter で送信します。2 行以上になると、Enter で改行し、{mod} + Enter で送信します。",
+    sendAlwaysDescription: "{mod} + Enter で送信、Enter で改行します。",
     followUp: "追加メッセージの動作",
     followUpDescription: "応答中に送信した場合の動作を選択します。{shortcut} を押すと、そのメッセージだけ逆の動作になります。",
+    followUpMultilineShortcut: "{shortcut}（複数行のメッセージでは {multiline}）",
     queue: "キューに追加",
     steer: "方向を変更",
     steerDescription: "現在の応答を停止し、追加メッセージを次に送信します。",
@@ -106,6 +111,8 @@ export const ja = {
     error: "エラー",
     export: "エクスポート",
     help: "ヘルプ",
+    todayAt: "今日 {time}",
+    yesterdayAt: "昨日 {time}",
     loading: "読み込み中...",
     new: "新規",
     rename: "名前変更",
@@ -166,6 +173,8 @@ export const ja = {
       noChatsYet: "チャットがまだありません",
       // Shown under an empty project folder in the sidebar.
       noChats: "チャットなし",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "すべてのプロジェクトをピン留め済み",
       showMore: "もっと見る",
       showLess: "表示を減らす",
       settings: "設定",
@@ -215,26 +224,12 @@ export const ja = {
       priority: "優先度",
       lastUpdated: "最終更新",
       manualOrder: "手動で並べ替え",
-      priorityHint: "実行中・未読が先頭",
-      lastUpdatedHint: "新しい順",
-      manualOrderHint: "行をドラッグして並べ替えます",
       switchedToManual: "手動の並び順に切り替えました。行をドラッグして並べ替えます",
       organizeChats: "チャットを整理",
       organizeProjects: "プロジェクトを整理",
       sortPinnedChats: "ピン留めチャットを並べ替え",
-      dragDrop: "ドラッグ＆ドロップ",
-      dragHints: "ドラッグ中にヒントを表示",
-      reorderSwitchesSort: "並べ替えると手動順序に切り替える",
-      dragOpensFolders: "ポインターの下のフォルダーを開く",
       moveUp: "上へ移動",
       moveDown: "下へ移動",
-    },
-    drag: {
-      reorder: "並べ替え",
-      pin: "ピン留め",
-      unpin: "ピン留めを解除",
-      moveTo: "{name} に移動",
-      moveToRecents: "最近に移動",
     },
     dialog: {
       deleteChat: {
@@ -578,7 +573,16 @@ export const ja = {
       sourceHint: "モデルランナーはそれぞれ独自のログを書き出すため、読み込みや生成の失敗の理由は、サーバーログではなくそちらに記録されていることがよくあります。",
       path: "場所",
       pathCopy: "パスをコピー",
-      refreshSection: "更新",
+      currentSession: "現在",
+      statusLive: "ライブ",
+      statusPaused: "一時停止",
+      statusStale: "古い",
+      filterPlaceholder: "行を絞り込む",
+      lineCount: "{count} 行",
+      filteredLineCount: "{total} 行中 {shown} 行",
+      wrapLines: "行を折り返す",
+      jumpToLatest: "最新へ移動",
+      noMatches: "フィルターに一致する行はありません。",
       mode: "モード",
       modeLive: "ライブ",
       modeInterval: "3 秒ごと",
@@ -611,6 +615,29 @@ export const ja = {
       title: "音声",
       description: "マイク、音声入力、音声認識、読み上げ",
       dictation: {
+        audioUploadTitle: "録音を使って音声入力",
+        audioUploadDescription:
+          "Studio で直接録音するには、ブラウザーでセキュア接続 (HTTPS) が必要です。この HTTP 接続では、代わりにスマートフォンのレコーダーを使うか、保存済みの録音を選択してください。Studio サーバーが音声を文字起こしし、テキストをメッセージに追加します。",
+        audioUploadChooseFile: "録音を選択",
+        audioUploadRecord: "音声を録音",
+        audioUploadIphoneHint:
+          "iPhone では、Voice Memos または別の録音アプリで録音を保存してから、ここで選択してください。",
+        audioUploadServerModelNote:
+          "この録音では、通常の音声入力に別のエンジンを使用している場合でも、Studio サーバー上で上に表示されているローカルモデルを使用します。",
+        audioUploadAutomatic: "自動",
+        audioUploadModelReady: "この Studio サーバーで使用可能",
+        audioUploadRetryTitle: "{file} を文字起こしできませんでした",
+        audioUploadRetry: "文字起こしを再試行",
+        audioUploadChooseModel:
+          "音声設定でローカル音声認識モデルを選択してください。",
+        audioUploadEmpty: "選択した録音は空です。",
+        audioUploadTooLarge: "{size} 未満の録音を選択してください。",
+        audioUploadVideoUnsupported:
+          "動画ではなく、音声録音を選択してください。",
+        audioUploadNoSpeech: "この録音から音声を検出できませんでした。",
+        audioUploadFailed: "録音を文字起こしできませんでした。",
+        audioUploadCancel: "文字起こしをキャンセル",
+        audioUploadTranscribing: "音声を文字起こし中…",
         sectionTitle: "音声入力",
         engineLabel: "音声入力エンジン",
         engineBrowser: "ブラウザー",
@@ -887,6 +914,16 @@ export const ja = {
         revoked: "すべてのプレビューリンクを失効させました",
         revokeError: "プレビューリンクを失効させることができませんでした",
       },
+      managedProviderUrls: {
+        sectionTitle: "管理対象アカウント",
+        enableLabel: "ローカルおよびネットワーク接続",
+        enableDescription:
+          "管理対象アカウントが、このコンピューターや LAN 上の Ollama や llama.cpp サーバーなど、ローカルまたはネットワークのアドレスに接続を向けられるようにします。既定ではオフです。オンにすると、これらのアカウントがお使いのコンピューターやネットワークで動作しているサービスに到達できるようになるためです。",
+        lockedByEnvironment:
+          "このサーバーの UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 によって決まります。すべてのアカウントでプライベートアドレスが拒否されます。",
+        loadError: "管理対象アカウントの接続設定を読み込めませんでした。",
+        saveError: "管理対象アカウントの接続設定を保存できませんでした。",
+      },
       notifications: {
         sectionTitle: "通知",
         showLlamaUpdates: "llama.cpp のアップデート通知",
@@ -1114,7 +1151,7 @@ export const ja = {
       custom: {
         chatWidth: {
           label: "チャットの幅",
-          description: "メッセージと入力欄の幅を設定します。全幅ではサイドバーの間のスペースを使います。",
+          description: "メッセージと入力欄の幅です。",
           standard: "標準",
           wide: "広い",
           full: "全幅",
@@ -1185,7 +1222,6 @@ export const ja = {
         },
         contrast: {
           label: "コントラスト",
-          description: "枠線と補助テキストの強さ。",
         },
         reduceMotion: {
           label: "モーションを減らす",
@@ -1214,7 +1250,7 @@ export const ja = {
       sidebarNav: {
         title: "サイドバーナビゲーション",
         description:
-          "サイドバーのタブを固定したり並べ替えたりします。固定していないタブは「その他」メニューにまとめられます。固定していないタブが 1 つだけの場合は、項目が 1 つのメニューを作らずにそのタブを非表示にします。「新規チャット」は固定されたままです。",
+          "サイドバーのタブを固定して並べ替えます。固定していないタブは「その他」メニューに入ります。",
         dragToReorder: "ドラッグして並べ替え",
         pinToSidebar: "{name} をサイドバーに固定",
         moreHolds: "その他 ({count})",
@@ -1222,7 +1258,7 @@ export const ja = {
       sidebarMenu: {
         title: "サイドバーメニュー",
         description:
-          "サイドバーのプロフィールメニュー項目の表示と並び順を変更します。設定、ヘルプ、ログアウト、シャットダウンは固定です。",
+          "プロフィールメニューのショートカットを選んで並べ替えます。",
         darkModeToggle: "ダークモード切り替え",
         dragToReorder: "ドラッグして並べ替え",
       },
@@ -1364,6 +1400,61 @@ export const ja = {
         copied: "パスをコピーしました",
         openError: "フォルダを開けませんでした",
         copyError: "パスをコピーできませんでした",
+        caches: {
+          label: "キャッシュファイル",
+          description:
+            "キャッシュの合計は{size}で、そのうち{reclaimable}を今すぐ削除できます。",
+          hint: "パッケージのダウンロード、コンパイル済みカーネル、転送キャッシュなど、必要になったときにUnslothが再作成するものです。ダウンロード済みのモデル、プロジェクト、チャット、設定、Hugging Faceトークンがここで削除されることはありません。",
+          keywords:
+            "キャッシュ 削除 消去 クリア 掃除 空き容量 ディスク 一時 コンパイル cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "キャッシュサイズを計測しています...",
+          measureFailed: "キャッシュを計測できませんでした",
+          empty: "キャッシュファイルは見つかりませんでした。",
+          detailsAction: "詳細",
+          recheckAction: "再確認",
+          hideDetailsAction: "詳細を隠す",
+          clearAction: "キャッシュを削除",
+          clearOneAction: "削除",
+          clearingAction: "削除しています...",
+          confirmTitle: "キャッシュファイルを削除しますか?",
+          confirmDescription: "約{size}の空き容量ができます。",
+          confirmOneTitle: "{name}を削除しますか?",
+          safety:
+            "Unslothは次に必要になったときにキャッシュを再作成します。ダウンロード済みのモデル、プロジェクト、チャット、設定、Hugging Faceトークンは変更されません。",
+          hubCost:
+            "これはモデルキャッシュです。削除すると、次に使うときにそれらのモデルを再ダウンロードします。",
+          datasetsCost:
+            "削除すると、次に使うときにそれらのデータセットを再ダウンロードします。",
+          blocked: "削除されませんでした: {reason}",
+          cleared: "{size}を削除しました",
+          partial: "一部のキャッシュファイルを削除できませんでした",
+          clearFailed: "キャッシュを削除できませんでした",
+          names: {
+            uv: "uvパッケージキャッシュ",
+            pip: "pipダウンロードキャッシュ",
+            npm: "npmパッケージキャッシュ",
+            bun: "Bunパッケージキャッシュ",
+            torchInductor: "Torch Inductorコンパイルキャッシュ",
+            torchExtensions: "Torch拡張機能のビルド",
+            triton: "Tritonカーネルキャッシュ",
+            cuda: "CUDAカーネルキャッシュ",
+            numba: "Numbaコンパイルキャッシュ",
+            matplotlib: "Matplotlibフォントキャッシュ",
+            vllm: "vLLMキャッシュ",
+            unslothCompiled: "Unslothのコンパイル済みモジュール",
+            hfXet: "Hugging Face転送キャッシュ",
+            hfAssets: "Hugging Faceアセットキャッシュ",
+            hfDatasets: "Hugging Faceデータセットキャッシュ",
+            hfHub: "Hugging Faceモデルキャッシュ",
+          },
+        },
+        lowDisk: {
+          title: "ディスクの空き容量が少なくなっています",
+          criticalTitle: "ディスクの空き容量が非常に少なくなっています",
+          description:
+            "{total}中{free}が空きです。キャッシュを削除すると空き容量を増やせます。",
+          action: "キャッシュを確認",
+        },
         futureDownloads: "新規ダウンロードのみ",
         environmentManaged: "環境変数 {variable} で管理されています。",
         locationFree: "{free} 空き",
@@ -1487,9 +1578,9 @@ export const ja = {
           "承認の確認をスキップします。信頼できる環境でのみ使用してください。",
       },
       remote: {
-        title: "リモートの Unsloth Studio に接続する",
+        title: "リモートの Unsloth に接続する",
         description:
-          "起動前に次を設定すると、unsloth start を別の場所で動作している Unsloth Studio に向けられます (--api-key を直接渡すことも可能です):",
+          "起動前に次を設定すると、unsloth start を別の場所で動作している Unsloth に向けられます (--api-key を直接渡すことも可能です):",
       },
       passthrough: {
         title: "エージェントへの引数の受け渡し",
@@ -1515,15 +1606,11 @@ export const ja = {
       projectAttachmentsHint: "各チャットの添付メニューで個別に変更できます。",
       rememberParamsPerModelHint:
         "オフの場合、すべてのモデルで同じ設定を使います。",
-      autoCompactHint: "空きVRAMではなく、設定したコンテキスト長を基準にします。",
+      autoCompactHint: "ローカルの GGUF チャットのみ。文脈から外れたターンは索引化され、モデルが検索して取り出せます。リセットでは、収まる範囲の継続的な指示がそのままの文言で引き継がれ、途中のものより最も古いものと最も新しいものが優先されます。アーカイブには保存済みのチャットとベクトル索引が必要で、それらがない場合、古いターンは破棄されます。空きVRAMではなく、設定したコンテキスト長を基準にします。",
       pastedTextShortDescription:
         "{count}文字以上の貼り付けテキストは .txt 添付ファイルになります。短いテキストは入力欄に残ります。",
       pastedTextOffDescription:
         "長さに関係なく、貼り付けたテキストはすべて入力欄に残ります。",
-      compactionDescriptionInherit: "サーバーのコンテキストポリシーに従います。",
-      compactionDescriptionCheckpoint: "最新のやり取りと継続的な指示を保持します。",
-      compactionDescriptionRolling:
-        "古いターンを削除し、最近の履歴と選択した余裕分の空きを確保します。",
       projectsSection: "プロジェクトセクションを表示",
       projectsSectionDescription:
         "プロジェクトのチャットを「プロジェクト」の見出しにまとめます。オフにすると「最近」に表示されます。",
@@ -1547,7 +1634,7 @@ export const ja = {
           "項目をチャットの「+」サイドメニューに固定します。その他の項目は「More」に移動します。",
         chatWithFiles: "ファイルとチャット (RAG)",
         mcp: "MCP",
-        skills: "エージェントスキル",
+        skills: "スキル",
         savedPrompts: "保存済みプロンプト",
         compareChat: "チャットを比較",
         exportChat: "チャットをエクスポート",
@@ -1559,6 +1646,10 @@ export const ja = {
       showResponseModel: "応答モデルを表示",
       showResponseModelDescription:
         "アシスタントの応答にモデルのメタデータを表示します。",
+      inlineReadAloud: "応答に読み上げを表示",
+      inlineReadAloudDescription: "読み上げを「その他」メニューではなく、各応答に表示します。",
+      inlineEditResponse: "応答に応答の編集を表示",
+      inlineEditResponseDescription: "応答の編集を「その他」メニューではなく、各応答に表示します。",
       modelDisclaimer: "モデルの免責事項を表示",
       modelDisclaimerDescription: 'チャットボックスの下に "LLMs can make mistakes" と表示します。',
       projectAttachments: "プロジェクト全体でファイルを共有",
@@ -1569,22 +1660,20 @@ export const ja = {
         "各モデルで最後に使ったプロンプト、温度、その他の設定を復元します。",
       autoCompact: "長いチャットを自動圧縮",
       autoCompactDescription:
-        "ローカル GGUF チャットがコンテキスト上限に達したら、古いターンを削除します。",
-      compactionStyle: "コンテキストが満杯になったとき",
-      compactionStyleDescription:
-        "サーバー既定値を使うと UNSLOTH_CONTEXT_POLICY が維持されます。会話をリセットすると最新ターンと継続指示が残ります。スライディングウィンドウは古いターンを削除し、より多くの最近の履歴を残せます。",
-      compactionStyleInherit: "サーバー既定値を使用",
-      compactionStyleCheckpoint: "会話をリセット",
-      compactionStyleRollingDefault: "古いターンを削除（約 25% の追加余裕）",
-      compactionStyleRolling10: "古いターンを削除（約 10% の追加余裕）",
-      compactionStyleRolling5: "古いターンを削除（約 5% の追加余裕）",
-      compactionStyleRollingNone: "古いターンを削除（追加の切り詰めなし）",
+        "チャットの文脈が満杯になると、古いターンは検索可能なアーカイブに移ります。",
       autoCompactKeywords:
-        "圧縮 自動圧縮 コンテキスト ウィンドウ 切り詰め スライディング チェックポイント 余裕 compaction rolling headroom",
+        "圧縮 自動圧縮 コンテキスト ウィンドウ 切り詰め スライディング チェックポイント 余裕 アーカイブ 検索 取得 compaction rolling headroom archive retrieval rag",
+      visibility: {
+        collapsed: "折りたたむ",
+        auto: "実行中は展開",
+        expanded: "常に展開",
+      },
+      visibilityKeywords:
+        "折りたたむ 展開 開く 閉じる 思考 推論 ツール呼び出し ツールの動作 グループ ストリーミング",
       thinking: {
-        collapseByDefault: "思考をデフォルトで折りたたむ",
-        collapseByDefaultDescription:
-          "モデルの思考中も自動で展開せず、折りたたんだままにします。読みたいときはブロックを展開してください。",
+        visibility: "思考",
+        visibilityDescription:
+          "思考の開き方。個々のブロックは手動で展開・折りたたみできます。",
       },
       currentDate: {
         label: "今日の日付をモデルに伝える",
@@ -1594,12 +1683,14 @@ export const ja = {
         saveError: "現在の日付の設定を更新できませんでした",
       },
       tools: {
-        collapseByDefault: "ツールの動作をデフォルトで折りたたむ",
-        collapseByDefaultDescription:
-          "ツールの実行中は入力と出力を折りたたんだままにします。確認するにはツール行を展開してください。",
-        foldIntoThinking: "ツール呼び出しを思考に折りたたむ",
+        visibility: "ツール呼び出し",
+        visibilityDescription:
+          "ツールの動作の開き方。個々の呼び出しは手動で展開・折りたたみできます。",
+        foldIntoThinking: "ツール呼び出しを思考にまとめる",
         foldIntoThinkingDescription:
-          "思考ブロックを開くまで、そのターンのツール呼び出しを隠します。",
+          "そのターンのツール呼び出しを独立した行ではなく思考ブロック内に表示します。",
+        foldIntoThinkingBlocked:
+          "ツール呼び出しが「常に展開」の間は使えません。その設定では独立した行に表示されます。",
       },
       webSearch: {
         title: "ウェブ検索",
@@ -1887,11 +1978,41 @@ export const ja = {
       expires: "有効期限 {value}",
       actionsFor: "{name} のアクション",
       copyPrefix: "プレフィックスをコピー",
+      copyFailed: "コピーできませんでした",
       revokeToken: "トークンを失効",
       revokeTitle: 'アクセストークン "{name}" を失効させますか？',
       revokeDescription: "このトークンを使用しているアプリはすぐにアクセスできなくなります。この操作は取り消せません。",
       revokeAction: '"{name}" を失効',
       revoking: "失効中...",
+      decisionApi: {
+        title: "判定 API",
+        description: "ローカルの Laya モデルで、テキストに関するはい/いいえ・選択式・スコアの質問に答えます。TypeSafe SDK で使えます。",
+        enable: "リクエストに応答",
+        enableDescription: "/v1/systemone を提供します。オンにするとモデルをダウンロードします。",
+        lockedByEnv: "{name} で設定されています。",
+        model: "モデル",
+        modelMultilingual: "多言語",
+        modelEnglish: "英語",
+        modelTypedDecisions: "型付き判定",
+        recommended: "推奨",
+        device: "実行先",
+        deviceDescription: "GPU の方が高速ですが、再起動するまでメモリを確保し続けます。",
+        deviceCpu: "CPU",
+        deviceGpu: "GPU",
+        checking: "確認中…",
+        notDownloaded: "未ダウンロード · {size}",
+        downloading: "ダウンロード中…",
+        downloaded: "ダウンロード済み · 最初のリクエストで読み込み",
+        installing: "インストール中…",
+        loading: "読み込み中…",
+        loadedOn: "{device} に読み込み済み",
+        download: "ダウンロード",
+        unload: "アンロード",
+        downloadBusy: "判定 API のモデルはすでにダウンロード中です。",
+        downloadFailed: "ダウンロードを開始できませんでした。",
+        saveFailed: "判定 API の設定を保存できませんでした。",
+        loadError: "判定 API の設定を読み込めませんでした。",
+      },
       usageNoModel:
         "モデルを読み込むかダウンロードすると、実行できる例が表示されます。このサーバーにはまだ指定できるモデルがありません。",
     },
@@ -2670,11 +2791,11 @@ export const ja = {
     tooLarge: "VRAM を超えるため CPU にオフロードされます。より小さい量子化の方が高速です",
   },
   skills: {
-    title: "エージェントスキル",
+    title: "スキル",
     description: "スキルは標準のエージェントフォルダーから検出されます。ここで有効にし、チャットで @ を入力して呼び出します。",
     precedence: "~/.agents/skills は ~/.claude/skills より優先されます。",
     refresh: "更新",
-    empty: "エージェントスキルが見つかりません。~/.agents/skills または ~/.claude/skills に SKILL.md のフォルダーを追加して更新してください。",
+    empty: "スキルが見つかりません。~/.agents/skills または ~/.claude/skills に SKILL.md のフォルダーを追加して更新してください。",
     sourceAgents: "Agents",
     sourceClaude: "Claude",
     sourceBundled: "同梱",
@@ -2684,7 +2805,7 @@ export const ja = {
     shadowedBy: "同名の別のスキル ({source}) が優先されます。",
     enable: "{name} を有効化",
     disable: "{name} を無効化",
-    updateError: "エージェントスキルを更新できませんでした",
-    mentions: "エージェントスキル",
+    updateError: "スキルを更新できませんでした",
+    mentions: "スキル",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

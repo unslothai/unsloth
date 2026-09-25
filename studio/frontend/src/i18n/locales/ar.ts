@@ -11,9 +11,14 @@ export const ar = {
     plainTextDescription: "إبقاء التعليمات البرمجية وMarkdown والروابط كنص حرفي. عطّل هذا الخيار لعرض معاينة منسقة.",
     showContext: "إظهار استخدام نافذة السياق",
     sendShortcut: "اختصار الإرسال",
-    sendDescription: "اختر ما إذا كان Enter يرسل الرسالة أو يضيف سطرًا جديدًا.",
+    sendMultiline: "{mod} + Enter للرسائل متعددة الأسطر",
+    sendAlways: "{mod} + Enter دائمًا",
+    sendEnterDescription: "Enter للإرسال. Shift + Enter لإضافة سطر جديد.",
+    sendMultilineDescription: "Enter يرسل الرسالة المكونة من سطر واحد. وعندما تصبح أكثر من سطر، يضيف Enter سطرًا جديدًا ويرسل {mod} + Enter.",
+    sendAlwaysDescription: "{mod} + Enter للإرسال. Enter لإضافة سطر جديد.",
     followUp: "سلوك رسائل المتابعة",
     followUpDescription: "اختر ما يحدث عند الإرسال أثناء الرد. اضغط {shortcut} لتنفيذ الإجراء المعاكس لرسالة واحدة.",
+    followUpMultilineShortcut: "{shortcut} ({multiline} في الرسائل متعددة الأسطر)",
     queue: "إضافة للطابور",
     steer: "توجيه",
     steerDescription: "التوجيه يوقف الرد الحالي ويرسل رسالة المتابعة بعده مباشرة.",
@@ -104,6 +109,8 @@ export const ar = {
     error: "خطأ",
     export: "تصدير",
     help: "مساعدة",
+    todayAt: "اليوم، {time}",
+    yesterdayAt: "أمس، {time}",
     loading: "جارٍ التحميل...",
     new: "جديد",
     rename: "إعادة تسمية",
@@ -164,6 +171,8 @@ export const ar = {
       noChatsYet: "لا توجد محادثات بعد",
       // Shown under an empty project folder in the sidebar.
       noChats: "لا توجد محادثات",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "كل المشاريع مثبتة",
       showMore: "عرض المزيد",
       showLess: "عرض أقل",
       settings: "الإعدادات",
@@ -213,26 +222,12 @@ export const ar = {
       priority: "الأولوية",
       lastUpdated: "آخر تحديث",
       manualOrder: "ترتيب يدوي",
-      priorityHint: "النشطة وغير المقروءة أولاً",
-      lastUpdatedHint: "الأحدث أولاً",
-      manualOrderHint: "اسحب الصفوف لإعادة ترتيبها",
       switchedToManual: "الترتيب يدوي الآن: اسحب الصفوف لإعادة ترتيبها",
       organizeChats: "تنظيم المحادثات",
       organizeProjects: "تنظيم المشاريع",
       sortPinnedChats: "ترتيب المحادثات المثبتة",
-      dragDrop: "السحب والإفلات",
-      dragHints: "إظهار تلميح أثناء السحب",
-      reorderSwitchesSort: "إعادة الترتيب تبدّل إلى الترتيب اليدوي",
-      dragOpensFolders: "فتح المجلدات أسفل المؤشر",
       moveUp: "تحريك لأعلى",
       moveDown: "تحريك لأسفل",
-    },
-    drag: {
-      reorder: "إعادة ترتيب",
-      pin: "تثبيت",
-      unpin: "إلغاء التثبيت",
-      moveTo: "نقل إلى {name}",
-      moveToRecents: "نقل إلى الأخيرة",
     },
     dialog: {
       deleteChat: {
@@ -576,7 +571,16 @@ export const ar = {
       sourceHint: "تكتب مشغّلات النماذج سجلاتها الخاصة، لذا غالبًا ما يكون سبب فشل التحميل أو التوليد موضّحًا فيها لا في سجل الخادم.",
       path: "الموقع",
       pathCopy: "نسخ المسار",
-      refreshSection: "التحديث",
+      currentSession: "الحالي",
+      statusLive: "مباشر",
+      statusPaused: "متوقف مؤقتًا",
+      statusStale: "قديم",
+      filterPlaceholder: "تصفية الأسطر",
+      lineCount: "{count} سطر",
+      filteredLineCount: "{shown} من {total} سطر",
+      wrapLines: "التفاف الأسطر",
+      jumpToLatest: "الانتقال إلى الأحدث",
+      noMatches: "لا توجد أسطر تطابق عامل التصفية.",
       mode: "الوضع",
       modeLive: "مباشر",
       modeInterval: "كل 3 ثوانٍ",
@@ -609,6 +613,29 @@ export const ar = {
       title: "الصوت",
       description: "الميكروفون والإملاء وتحويل الكلام إلى نص والقراءة بصوت عالٍ",
       dictation: {
+        audioUploadTitle: "الإملاء باستخدام تسجيل",
+        audioUploadDescription:
+          "يتطلب متصفحك اتصالاً آمنًا (HTTPS) للتسجيل مباشرةً في Studio. على اتصال HTTP هذا، استخدم مسجل هاتفك أو اختر تسجيلاً محفوظًا بدلاً من ذلك. سينسخ خادم Studio الصوت ويضيف النص إلى رسالتك.",
+        audioUploadChooseFile: "اختيار تسجيل",
+        audioUploadRecord: "تسجيل الصوت",
+        audioUploadIphoneHint:
+          "على iPhone، احفظ تسجيلاً من Voice Memos أو من تطبيق تسجيل آخر، ثم اختره هنا.",
+        audioUploadServerModelNote:
+          "يستخدم هذا التسجيل النموذج المحلي الموضّح أعلاه على خادم Studio، حتى إذا كان الإملاء العادي يستخدم محركًا مختلفًا.",
+        audioUploadAutomatic: "تلقائي",
+        audioUploadModelReady: "جاهز على خادم Studio هذا",
+        audioUploadRetryTitle: "تعذّر نسخ {file}",
+        audioUploadRetry: "إعادة محاولة النسخ",
+        audioUploadChooseModel:
+          "اختر نموذجًا محليًا للتعرّف على الكلام في إعدادات الصوت.",
+        audioUploadEmpty: "التسجيل المحدد فارغ.",
+        audioUploadTooLarge: "اختر تسجيلاً أصغر من {size}.",
+        audioUploadVideoUnsupported:
+          "اختر تسجيلاً صوتياً، وليس مقطع فيديو.",
+        audioUploadNoSpeech: "لم يسمع النموذج أي كلام في ذلك التسجيل.",
+        audioUploadFailed: "تعذّر نسخ التسجيل.",
+        audioUploadCancel: "إلغاء النسخ",
+        audioUploadTranscribing: "جارٍ نسخ الصوت…",
         sectionTitle: "الإملاء",
         engineLabel: "محرك الإملاء",
         engineBrowser: "المتصفح",
@@ -895,6 +922,16 @@ export const ar = {
         revoked: "تم إلغاء جميع روابط المعاينة",
         revokeError: "تعذّر إلغاء روابط المعاينة",
       },
+      managedProviderUrls: {
+        sectionTitle: "الحسابات المُدارة",
+        enableLabel: "الاتصالات المحلية والشبكية",
+        enableDescription:
+          "اسمح للحسابات المُدارة بتوجيه اتصالاتها إلى عناوين محلية أو عناوين على الشبكة، مثل خادم Ollama أو llama.cpp على هذا الجهاز أو على شبكتك المحلية. معطّل افتراضيًا، لأنه يتيح لتلك الحسابات الوصول إلى الخدمات التي تعمل على جهازك وعلى شبكتك.",
+        lockedByEnvironment:
+          "محدَّد عبر UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 على هذا الخادم، وهو يرفض العناوين الخاصة لكل الحسابات.",
+        loadError: "تعذّر تحميل إعدادات اتصال الحسابات المُدارة.",
+        saveError: "تعذّر حفظ إعدادات اتصال الحسابات المُدارة.",
+      },
       notifications: {
         sectionTitle: "الإشعارات",
         showLlamaUpdates: "إشعارات تحديث llama.cpp",
@@ -1132,7 +1169,7 @@ export const ar = {
       custom: {
         chatWidth: {
           label: "عرض المحادثة",
-          description: "حدّد عرض الرسائل وحقل الكتابة. يستخدم العرض الكامل المساحة بين الشريطين الجانبيين.",
+          description: "عرض الرسائل وحقل الكتابة.",
           standard: "قياسي",
           wide: "واسع",
           full: "العرض الكامل",
@@ -1205,7 +1242,6 @@ export const ar = {
         },
         contrast: {
           label: "التباين",
-          description: "مدى وضوح الحدود والنصوص الثانوية.",
         },
         reduceMotion: {
           label: "تقليل الحركة",
@@ -1235,7 +1271,7 @@ export const ar = {
       sidebarNav: {
         title: "التنقّل في الشريط الجانبي",
         description:
-          "ثبّت علامات تبويب الشريط الجانبي وأعد ترتيبها. تتجمّع العلامات غير المثبّتة في قائمة «المزيد»؛ وإذا بقيت علامة واحدة غير مثبّتة فتُخفى بدلاً من إنشاء قائمة بعنصر واحد. تبقى «محادثة جديدة» ثابتة.",
+          "ثبّت علامات تبويب الشريط الجانبي وأعد ترتيبها. تنتقل غير المثبّتة إلى قائمة «المزيد».",
         dragToReorder: "اسحب لإعادة الترتيب",
         pinToSidebar: "تثبيت {name} في الشريط الجانبي",
         moreHolds: "المزيد ({count})",
@@ -1243,7 +1279,7 @@ export const ar = {
       sidebarMenu: {
         title: "قائمة الشريط الجانبي",
         description:
-          "أظهر عناصر قائمة الملف الشخصي في الشريط الجانبي وأخفها وأعد ترتيبها. تبقى الإعدادات والمساعدة وتسجيل الخروج وإيقاف التشغيل ثابتة.",
+          "اختر اختصارات قائمة اسمك وأعد ترتيبها.",
         darkModeToggle: "مفتاح الوضع الداكن",
         dragToReorder: "اسحب لإعادة الترتيب",
       },
@@ -1383,6 +1419,61 @@ export const ar = {
         copied: "تم نسخ المسار",
         openError: "تعذّر فتح المجلد",
         copyError: "تعذّر نسخ المسار",
+        caches: {
+          label: "ملفات ذاكرة التخزين المؤقت",
+          description:
+            "{size} في ذاكرات التخزين المؤقت، يمكن مسح {reclaimable} منها الآن.",
+          hint: "تنزيلات الحزم والنوى المُصرَّفة وذاكرات النقل المؤقتة التي تعيد Unsloth بناءها عند الحاجة إليها. لا يتم هنا مسح النماذج المُنزَّلة أو المشاريع أو المحادثات أو الإعدادات أو رمز Hugging Face الخاص بك.",
+          keywords:
+            "ذاكرة مؤقت تخزين كاش مسح تنظيف تفريغ مساحة قرص مؤقتة مُصرَّف cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "جارٍ قياس أحجام ذاكرات التخزين المؤقت...",
+          measureFailed: "تعذّر قياس ذاكرات التخزين المؤقت",
+          empty: "لم يتم العثور على ملفات ذاكرة تخزين مؤقت.",
+          detailsAction: "التفاصيل",
+          recheckAction: "إعادة الفحص",
+          hideDetailsAction: "إخفاء التفاصيل",
+          clearAction: "مسح ذاكرات التخزين المؤقت",
+          clearOneAction: "مسح",
+          clearingAction: "جارٍ المسح...",
+          confirmTitle: "هل تريد مسح الملفات المخزّنة مؤقتًا؟",
+          confirmDescription: "سيؤدي ذلك إلى تحرير نحو {size}.",
+          confirmOneTitle: "هل تريد مسح {name}؟",
+          safety:
+            "تعيد Unsloth بناء ذاكرة التخزين المؤقت في المرة التالية التي تحتاج إليها. لن تُمَس النماذج المُنزَّلة أو المشاريع أو المحادثات أو الإعدادات أو رمز Hugging Face الخاص بك.",
+          hubCost:
+            "هذه هي ذاكرة النماذج المؤقتة. مسحها يعني تنزيل تلك النماذج من جديد عند استخدامها في المرة القادمة.",
+          datasetsCost:
+            "مسح هذا يعني تنزيل مجموعات البيانات تلك من جديد عند استخدامها في المرة القادمة.",
+          blocked: "لم يتم المسح: {reason}",
+          cleared: "تم مسح {size}",
+          partial: "تعذّرت إزالة بعض ملفات ذاكرة التخزين المؤقت",
+          clearFailed: "تعذّر مسح ذاكرات التخزين المؤقت",
+          names: {
+            uv: "ذاكرة حزم uv المؤقتة",
+            pip: "ذاكرة تنزيلات pip المؤقتة",
+            npm: "ذاكرة حزم npm المؤقتة",
+            bun: "ذاكرة حزم Bun المؤقتة",
+            torchInductor: "ذاكرة تصريف Torch Inductor المؤقتة",
+            torchExtensions: "بِنى امتدادات Torch",
+            triton: "ذاكرة نوى Triton المؤقتة",
+            cuda: "ذاكرة نوى CUDA المؤقتة",
+            numba: "ذاكرة تصريف Numba المؤقتة",
+            matplotlib: "ذاكرة خطوط Matplotlib المؤقتة",
+            vllm: "ذاكرة vLLM المؤقتة",
+            unslothCompiled: "وحدات Unsloth المُصرَّفة",
+            hfXet: "ذاكرة نقل Hugging Face المؤقتة",
+            hfAssets: "ذاكرة أصول Hugging Face المؤقتة",
+            hfDatasets: "ذاكرة مجموعات بيانات Hugging Face المؤقتة",
+            hfHub: "ذاكرة نماذج Hugging Face المؤقتة",
+          },
+        },
+        lowDisk: {
+          title: "مساحة القرص على وشك النفاد",
+          criticalTitle: "مساحة القرص منخفضة بشكل حرج",
+          description:
+            "{free} متاحة من أصل {total}. مسح ذاكرات التخزين المؤقت يمكن أن يحرّر مساحة.",
+          action: "مراجعة ذاكرات التخزين المؤقت",
+        },
         futureDownloads: "التنزيلات الجديدة فقط",
         environmentManaged: "يُدار عبر متغيّر البيئة {variable}.",
         locationFree: "{free} متاح",
@@ -1500,9 +1591,9 @@ export const ar = {
         yolo: "يتخطى طلبات الموافقة. استخدمه في البيئات الموثوقة فقط.",
       },
       remote: {
-        title: "الاتصال بنسخة بعيدة من Unsloth Studio",
+        title: "الاتصال بنسخة بعيدة من Unsloth",
         description:
-          "وجّه unsloth start إلى نسخة من Unsloth Studio تعمل في مكان آخر بضبط ما يلي قبل التشغيل (أو مرّر ‎--api-key مباشرة):",
+          "وجّه unsloth start إلى نسخة من Unsloth تعمل في مكان آخر بضبط ما يلي قبل التشغيل (أو مرّر ‎--api-key مباشرة):",
       },
       passthrough: {
         title: "تمرير وسائط إلى الوكيل",
@@ -1530,16 +1621,11 @@ export const ar = {
       rememberParamsPerModelHint:
         "عند إيقافه، تستخدم جميع النماذج الإعدادات نفسها.",
       autoCompactHint:
-        "يعتمد على طول السياق الذي حددته، لا على ذاكرة VRAM المتاحة.",
+        "لمحادثات GGUF المحلية فقط. تُفهرس الأدوار التي تخرج من السياق ليتمكن النموذج من البحث عنها لاحقًا، ومع إعادة التعيين يُقتبس ما يتّسع من تعليماتك الدائمة بنصه الحرفي، مع تفضيل الأقدم والأحدث على ما بينهما. تتطلب الأرشفة محادثة محفوظة وفهرسًا متجهيًا؛ وبدونهما تُحذف الأدوار الأقدم. يعتمد على طول السياق الذي حددته، لا على ذاكرة VRAM المتاحة.",
       pastedTextShortDescription:
         "يصبح النص الملصق الذي يبلغ {count} حرفًا أو أكثر مرفقًا بصيغة .txt. يبقى النص الأقصر في مربع الرسالة.",
       pastedTextOffDescription:
         "يبقى كل النص الملصق في مربع الرسالة، مهما كان طوله.",
-      compactionDescriptionInherit: "يتبع سياسة السياق المحددة على الخادم.",
-      compactionDescriptionCheckpoint:
-        "يحتفظ بآخر تبادل للرسائل والتعليمات الدائمة.",
-      compactionDescriptionRolling:
-        "يحذف أقدم التبادلات للاحتفاظ بالسجل الحديث والمساحة الإضافية المحددة.",
       projectsSection: "إظهار قسم المشاريع",
       projectsSectionDescription:
         "يجمع محادثات المشروع تحت عنوان المشاريع. أوقف هذا الخيار لعرضها ضمن الأخيرة بدلاً من ذلك.",
@@ -1563,7 +1649,7 @@ export const ar = {
           "ثبّت العناصر في القائمة الجانبية لعلامة + في المحادثة. تنتقل العناصر الأخرى إلى «المزيد».",
         chatWithFiles: "المحادثة مع الملفات (RAG)",
         mcp: "MCP",
-        skills: "مهارات الوكلاء",
+        skills: "المهارات",
         savedPrompts: "الموجّهات المحفوظة",
         compareChat: "مقارنة المحادثات",
         exportChat: "تصدير المحادثة",
@@ -1575,6 +1661,10 @@ export const ar = {
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
         "إظهار البيانات الوصفية للنموذج في ردود المساعد.",
+      inlineReadAloud: "القراءة بصوت عالٍ في الردود",
+      inlineReadAloudDescription: "إبقاء القراءة بصوت عالٍ على كل رد بدلًا من قائمة المزيد.",
+      inlineEditResponse: "تعديل الرد في الردود",
+      inlineEditResponseDescription: "إبقاء تعديل الرد على كل رد بدلًا من قائمة المزيد.",
       modelDisclaimer: "إظهار إخلاء مسؤولية النموذج",
       modelDisclaimerDescription:
         'إظهار عبارة "LLMs can make mistakes" أسفل مربع المحادثة.',
@@ -1586,22 +1676,20 @@ export const ar = {
         "استعد آخر موجّه ودرجة حرارة وإعدادات أخرى استُخدمت مع كل نموذج.",
       autoCompact: "ضغط المحادثات الطويلة تلقائيًا",
       autoCompactDescription:
-        "احذف الأدوار الأقدم عندما تصل محادثة GGUF محلية إلى حد السياق.",
-      compactionStyle: "عند امتلاء السياق",
-      compactionStyleDescription:
-        "يُبقي الخيار الافتراضي للخادم UNSLOTH_CONTEXT_POLICY. تحتفظ إعادة ضبط المحادثة بأحدث دور والتعليمات الدائمة. تحذف النافذة المنزلقة الأدوار الأقدم ويمكنها الاحتفاظ بمزيد من السجل الحديث.",
-      compactionStyleInherit: "استخدام إعداد الخادم الافتراضي",
-      compactionStyleCheckpoint: "إعادة ضبط المحادثة",
-      compactionStyleRollingDefault: "حذف الأدوار الأقدم (مساحة إضافية نحو 25%)",
-      compactionStyleRolling10: "حذف الأدوار الأقدم (مساحة إضافية نحو 10%)",
-      compactionStyleRolling5: "حذف الأدوار الأقدم (مساحة إضافية نحو 5%)",
-      compactionStyleRollingNone: "حذف الأدوار الأقدم (دون اقتطاع إضافي)",
+        "تنتقل الأدوار الأقدم إلى أرشيف قابل للبحث عندما تمتلئ نافذة سياق المحادثة.",
       autoCompactKeywords:
-        "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش compaction rolling checkpoint headroom",
+        "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش أرشيف استرجاع بحث compaction rolling checkpoint headroom archive retrieval rag",
+      visibility: {
+        collapsed: "مطوي",
+        auto: "التوسيع أثناء التشغيل",
+        expanded: "موسّع دائمًا",
+      },
+      visibilityKeywords:
+        "طي مطوي توسيع موسّع فتح مغلق تفكير استدعاءات الأدوات نشاط الأدوات تجميع بث",
       thinking: {
-        collapseByDefault: "طيّ التفكير افتراضيًا",
-        collapseByDefaultDescription:
-          "إبقاء التفكير مطويًا أثناء تفكير النموذج بدلًا من فتحه تلقائيًا. وسّع أي كتلة لقراءتها.",
+        visibility: "التفكير",
+        visibilityDescription:
+          "كيفية فتح التفكير. لا يزال بإمكانك توسيع أو طي أي كتلة بنفسك.",
       },
       currentDate: {
         label: "إخبار النموذج بتاريخ اليوم",
@@ -1611,12 +1699,14 @@ export const ar = {
         saveError: "تعذّر تحديث إعدادات التاريخ الحالي",
       },
       tools: {
-        collapseByDefault: "طيّ نشاط الأدوات افتراضيًا",
-        collapseByDefaultDescription:
-          "إبقاء مدخلات الأدوات ومخرجاتها مطوية أثناء التشغيل. وسّع أي صف أداة لفحصه.",
-        foldIntoThinking: "طيّ استدعاءات الأدوات داخل التفكير",
+        visibility: "استدعاءات الأدوات",
+        visibilityDescription:
+          "كيفية فتح نشاط الأدوات. لا يزال بإمكانك توسيع أو طي أي استدعاء بنفسك.",
+        foldIntoThinking: "تجميع استدعاءات الأدوات ضمن التفكير",
         foldIntoThinkingDescription:
-          "إخفاء استدعاءات الأدوات في الدور حتى فتح كتلة التفكير.",
+          "عرض استدعاءات الأدوات في الدور داخل كتلة التفكير بدلًا من صفوف مستقلة.",
+        foldIntoThinkingBlocked:
+          "غير متاح بينما تكون استدعاءات الأدوات مضبوطة على «موسّع دائمًا»، وهو ما يبقيها في صفوف مستقلة.",
       },
       webSearch: {
         title: "البحث على الويب",
@@ -1917,12 +2007,42 @@ export const ar = {
       expires: "الانتهاء: {value}",
       actionsFor: "إجراءات {name}",
       copyPrefix: "نسخ البادئة",
+      copyFailed: "تعذّر النسخ",
       revokeToken: "إلغاء التوكن",
       revokeTitle: 'إلغاء توكن الوصول "{name}"؟',
       revokeDescription:
         "ستفقد التطبيقات التي تستخدم هذا التوكن الوصول فورًا. لا يمكن التراجع عن هذا الإجراء.",
       revokeAction: 'إلغاء "{name}"',
       revoking: "جارٍ الإلغاء...",
+      decisionApi: {
+        title: "واجهة القرارات البرمجية",
+        description: "أجب عن أسئلة نعم/لا والاختيار من متعدد والتقييم حول النص باستخدام نموذج Laya محلي. يعمل مع حزمة TypeSafe.",
+        enable: "خدمة الطلبات",
+        enableDescription: "يقدّم /v1/systemone. عند التشغيل يُنزَّل النموذج.",
+        lockedByEnv: "مضبوط بواسطة {name}.",
+        model: "النموذج",
+        modelMultilingual: "متعدد اللغات",
+        modelEnglish: "إنجليزي",
+        modelTypedDecisions: "قرارات مُصنَّفة",
+        recommended: "موصى به",
+        device: "التشغيل على",
+        deviceDescription: "وحدة GPU أسرع في الإجابة، لكنها تحتفظ بذاكرتها محجوزة حتى إعادة التشغيل.",
+        deviceCpu: "CPU",
+        deviceGpu: "GPU",
+        checking: "جارٍ التحقق…",
+        notDownloaded: "غير مُنزَّل · {size}",
+        downloading: "جارٍ التنزيل…",
+        downloaded: "مُنزَّل · يُحمَّل عند أول طلب",
+        installing: "جارٍ التثبيت…",
+        loading: "جارٍ التحميل…",
+        loadedOn: "مُحمَّل على {device}",
+        download: "تنزيل",
+        unload: "إلغاء التحميل",
+        downloadBusy: "يجري بالفعل تنزيل نموذج لواجهة القرارات.",
+        downloadFailed: "تعذّر بدء التنزيل.",
+        saveFailed: "تعذّر حفظ إعداد واجهة القرارات.",
+        loadError: "تعذّر تحميل إعدادات واجهة القرارات.",
+      },
       usageNoModel:
         "حمّل نموذجًا أو نزّله لعرض أمثلة قابلة للتشغيل. لا يوجد في هذا الخادم أي نموذج يمكن استخدامه في الأمثلة بعد.",
     },
@@ -2723,7 +2843,7 @@ export const ar = {
     tooLarge: "أكبر من ذاكرة الرسوميات، وسيُفرَّغ جزء منه إلى المعالج. التكميم الأصغر أسرع",
   },
   skills: {
-    title: "مهارات الوكلاء",
+    title: "المهارات",
     description: "تُكتشف المهارات من مجلدات الوكلاء القياسية. فعّلها هنا ثم اكتب @ في الدردشة لذكر إحداها.",
     precedence: "‎~/.agents/skills له الأولوية على ‎~/.claude/skills.",
     refresh: "تحديث",
@@ -2737,7 +2857,7 @@ export const ar = {
     shadowedBy: "مهارة أخرى ({source}) بالاسم نفسه لها الأولوية.",
     enable: "تفعيل {name}",
     disable: "تعطيل {name}",
-    updateError: "تعذّر تحديث مهارة الوكيل",
-    mentions: "مهارات الوكلاء",
+    updateError: "تعذّر تحديث المهارة",
+    mentions: "المهارات",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

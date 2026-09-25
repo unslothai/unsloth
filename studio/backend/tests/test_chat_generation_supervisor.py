@@ -5,15 +5,16 @@ import asyncio
 import json
 import threading
 import time
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from starlette.requests import Request
 
 from core.inference import llama_keepwarm
 from core.inference.chat_generation_runs import (
-    _EVENT_BATCH_SECONDS,
-    _EVENT_SINGLE_FLUSH_SECONDS,
+    _EVENT_FLUSH_SECONDS,
     ChatGenerationSupervisor,
 )
 from models.inference import ChatCompletionRequest
@@ -22,6 +23,7 @@ from routes import inference
 from state import active_generations
 from storage import chat_generation_runs_db as runs_db
 from storage import studio_db
+from utils.current_date_prompt_settings import _request_local_date
 
 
 @pytest.fixture
@@ -72,7 +74,8 @@ def _create_payload(content = "Hello"):
 
 def _route_request(supervisor):
     return SimpleNamespace(
-        app = SimpleNamespace(state = SimpleNamespace(chat_generation_supervisor = supervisor))
+        app = SimpleNamespace(state = SimpleNamespace(chat_generation_supervisor = supervisor)),
+        headers = {},
     )
 
 
@@ -198,6 +201,67 @@ async def test_background_producer_persists_chunks_and_completes(durable_run, mo
 
 
 @pytest.mark.asyncio
+async def test_producer_dates_the_prompt_in_the_browser_timezone(monkeypatch):
+    studio_db.upsert_chat_thread(
+        {"id": "thread-1", "title": "Chat", "modelType": "base", "modelId": "local", "createdAt": 1}
+    )
+    studio_db.upsert_chat_message(
+        {"id": "user-1", "threadId": "thread-1", "role": "user", "content": [], "createdAt": 2}
+    )
+    browser = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/inference/chat-runs",
+            "query_string": b"",
+            "headers": [
+                (b"x-unsloth-timezone", b"Pacific/Kiritimati"),
+                (b"x-unsloth-timezone-offset-minutes", b"-840"),
+            ],
+            "app": SimpleNamespace(state = SimpleNamespace()),
+        }
+    )
+    await run_routes.create_chat_generation_run(_create_payload(), browser, "alice")
+    instant = datetime(2026, 9, 24, 10, 5, tzinfo = timezone.utc)
+    observed = []
+
+    async def body():
+        yield "data: [DONE]\n\n"
+
+    async def fake(payload, request, _subject, *, cancel_on_disconnect):
+        observed.append((sorted(payload.model_extra), _request_local_date(request, instant)))
+        return SimpleNamespace(status_code = 200, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    await supervisor._produce("run-1")
+    assert observed == [(["generation_run_id"], date(2026, 9, 25))]
+
+
+@pytest.mark.asyncio
+async def test_a_create_retried_across_a_dst_change_returns_the_committed_run():
+    studio_db.upsert_chat_thread(
+        {"id": "thread-1", "title": "Chat", "modelType": "base", "modelId": "local", "createdAt": 1}
+    )
+    studio_db.upsert_chat_message(
+        {"id": "user-1", "threadId": "thread-1", "role": "user", "content": [], "createdAt": 2}
+    )
+
+    def browser(offset):
+        request = _route_request(None)
+        request.headers = {
+            "x-unsloth-timezone": "America/Los_Angeles",
+            "x-unsloth-timezone-offset-minutes": offset,
+        }
+        return request
+
+    first = await run_routes.create_chat_generation_run(_create_payload(), browser("420"), "alice")
+    retry = await run_routes.create_chat_generation_run(_create_payload(), browser("480"), "alice")
+    assert (first["created"], retry["created"]) == (True, False)
+    assert retry["requestPayload"]["timezone_headers"]["x-unsloth-timezone-offset-minutes"] == "420"
+
+
+@pytest.mark.asyncio
 async def test_a_prefill_reporting_only_progress_renews_the_lease(durable_run, monkeypatch):
     """A 250K prefill outruns the 1200s lease before its first token, and the
     write is what renews it, so dropping content-less progress chunks would reap a
@@ -220,8 +284,7 @@ async def test_a_prefill_reporting_only_progress_renews_the_lease(durable_run, m
     async def body():
         for processed in (1024, 8192, 65536):
             yield f"data: {json.dumps(_progress(processed))}\n\n"
-        # Polled, not slept: the idle flush is on a 0.1s timer
-        # (_EVENT_BATCH_SECONDS) and a sleep sized against it flakes under load.
+        # Polled, not slept: a sleep sized against the flush timer flakes under load.
         _deadline = time.monotonic() + 10.0
         while time.monotonic() < _deadline:
             sampled["events"] = [
@@ -370,15 +433,37 @@ async def test_event_batch_flushes_while_upstream_is_idle(durable_run, monkeypat
     monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
     supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
     task = asyncio.create_task(supervisor._produce("run-1"))
-    # Poll rather than sleep a fixed span. The flush costs the batch timer plus a
-    # thread hop and a SQLite write, which measures ~0.11s on an idle machine, so
-    # the old bare sleep(0.2) left under 2x headroom and lost the race on a loaded
-    # runner. The budget is still bounded well below _EVENT_SINGLE_FLUSH_SECONDS,
-    # so a regression that drops these two events onto the single-event timer, or
-    # never flushes them at all, still fails here rather than passing slowly.
-    deadline = (_EVENT_BATCH_SECONDS + _EVENT_SINGLE_FLUSH_SECONDS) / 2
-    stored = await _await_chunk_payloads("run-1", len(chunks), deadline)
+    # Polled, not slept: a fixed sleep races the flush on a loaded runner.
+    stored = await _await_chunk_payloads("run-1", len(chunks), 0.5)
     assert stored == chunks
+    release.set()
+    await task
+
+
+def test_event_flush_interval_is_one_display_frame():
+    # This interval is the chat's text frame rate; 0.1s made streaming stutter (#11778).
+    assert _EVENT_FLUSH_SECONDS <= 1 / 60
+
+
+@pytest.mark.asyncio
+async def test_a_lone_chunk_is_appended_without_waiting_for_another(durable_run, monkeypatch):
+    # A lone chunk used to wait up to 1s for a second one before it was appended.
+    release = asyncio.Event()
+    chunk = {"choices": [{"delta": {"content": "Hello"}}]}
+
+    async def body():
+        yield f"data: {json.dumps(chunk)}\n\n"
+        await release.wait()
+        yield "data: [DONE]\n\n"
+
+    async def fake(*_args, **_kwargs):
+        return SimpleNamespace(status_code = 200, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    task = asyncio.create_task(supervisor._produce("run-1"))
+    stored = await _await_chunk_payloads("run-1", 1, 0.5)
+    assert stored == [chunk]
     release.set()
     await task
 
@@ -653,3 +738,34 @@ async def test_shutdown_returns_even_when_a_producer_will_not_unwind(durable_run
     finally:
         release.set()
         await asyncio.sleep(0)
+
+
+# ── The durable marker is production state, so a test must read it off the producer ──
+# Every approval test constructs `cancel.durable = True` by hand, which means the line in
+# _ensure_reservation that actually sets it was pinned by nothing: deleting it left the whole
+# backend suite green while silently returning every parked approval to the 3600s auto-deny.
+# Same for durable_run_id, which is how the gate asks whether anyone is still watching.
+
+
+def test_the_producers_cancel_event_carries_the_durable_marker_and_its_run_id():
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    try:
+        assert supervisor._ensure_reservation("run-durable", thread_id = "thread-1") is True
+        cancel_event = supervisor._cancel_events["run-durable"]
+        assert getattr(cancel_event, "durable", False) is True, (
+            "state.tool_approvals.wait_tool_decision reads this to park an approval instead of "
+            "auto-denying it, so without it a tool turn that outlives its tab still loses the call"
+        )
+        assert getattr(cancel_event, "durable_run_id", None) == "run-durable", (
+            "the gate resolves attendance by run id (state/run_subscribers.py); without it an "
+            "attended approval cannot be told from an abandoned one and expires at the park ceiling"
+        )
+    finally:
+        supervisor.cancel("run-durable")
+        registration = supervisor._active_registrations.pop("run-durable", None)
+        if registration is not None:
+            registration.__exit__(None, None, None)
+        supervisor._cancel_events.pop("run-durable", None)
+        activity = supervisor._activities.pop("run-durable", None)
+        if activity is not None:
+            activity.finish()

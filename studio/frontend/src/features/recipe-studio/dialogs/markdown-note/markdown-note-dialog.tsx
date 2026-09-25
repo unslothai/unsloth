@@ -66,7 +66,7 @@ export function MarkdownNoteDialog({
         />
         <Textarea
           id={markdownId}
-          className="corner-squircle nodrag min-h-[180px]"
+          className="corner-squircle nodrag min-h-[calc(180px*var(--ui-space-scale,1))]"
           placeholder="## Note"
           value={config.markdown}
           onChange={(event) => onUpdate({ markdown: event.target.value })}

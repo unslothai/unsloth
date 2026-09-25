@@ -82,7 +82,7 @@ function Chord({
   return (
     <Tooltip>
       <TooltipTrigger asChild={true}>{cap}</TooltipTrigger>
-      <TooltipContent className="max-w-[260px] leading-snug">
+      <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] leading-snug">
         {note}
       </TooltipContent>
     </Tooltip>

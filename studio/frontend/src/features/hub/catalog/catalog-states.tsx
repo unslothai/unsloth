@@ -11,6 +11,7 @@ import {
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useLayoutEffect, useRef, useState } from "react";
 import type { HubFailure } from "@/features/hub/lib/network";
 
@@ -80,7 +81,7 @@ export function NetworkErrorState({
   const icon = offlineLike ? WifiDisconnected02Icon : CloudOffIcon;
 
   return (
-    <div className="flex min-h-[260px] flex-col items-center justify-center gap-3 px-6 text-center">
+    <div className="flex min-h-[calc(260px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-3 px-6 text-center">
       <div className="inline-flex size-11 items-center justify-center rounded-[12px] bg-amber-500/10 text-amber-700 dark:text-amber-300">
         <HugeiconsIcon icon={icon} strokeWidth={1.6} className="size-5" />
       </div>
@@ -98,7 +99,7 @@ export function NetworkErrorState({
           <button
             type="button"
             onClick={onSwitchDevice}
-            className="inline-flex h-8 items-center gap-1.5 rounded-full bg-foreground/[0.06] px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-foreground/[0.1] dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
+            className="inline-flex h-8 items-center gap-1.5 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
           >
             On Device
           </button>
@@ -106,7 +107,7 @@ export function NetworkErrorState({
         <button
           type="button"
           onClick={onRetry}
-          className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
+          className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]"
         >
           <HugeiconsIcon
             icon={Refresh01Icon}
@@ -134,7 +135,7 @@ export function DiscoverFetchMoreState({
   onClearFilters: () => void;
 }) {
   return (
-    <div className="flex min-h-[260px] flex-col items-center justify-center gap-3 px-6 text-center">
+    <div className="flex min-h-[calc(260px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-3 px-6 text-center">
       <div className="inline-flex size-11 items-center justify-center rounded-[12px] bg-muted text-muted-foreground">
         <HugeiconsIcon icon={FilterIcon} strokeWidth={1.5} className="size-5" />
       </div>
@@ -152,7 +153,7 @@ export function DiscoverFetchMoreState({
           <button
             type="button"
             onClick={onClearFilters}
-            className="inline-flex h-8 items-center gap-1.5 rounded-full bg-foreground/[0.06] px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-foreground/[0.1] dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
+            className="inline-flex h-8 items-center gap-1.5 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
           >
             Clear filters
           </button>
@@ -161,7 +162,7 @@ export function DiscoverFetchMoreState({
           type="button"
           onClick={onFetchMore}
           disabled={isLoadingMore}
-          className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-foreground/[0.04] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/[0.05]"
+          className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]"
         >
           <HugeiconsIcon
             icon={Refresh01Icon}
@@ -214,7 +215,7 @@ export function DiscoverFetchMoreFooter({
         type="button"
         onClick={failed && onRetry ? onRetry : onFetchMore}
         disabled={isLoadingMore}
-        className="inline-flex h-8 items-center gap-1.5 rounded-full bg-foreground/[0.06] px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-foreground/[0.1] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
+        className="inline-flex h-8 items-center gap-1.5 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
       >
         <HugeiconsIcon
           icon={Refresh01Icon}
@@ -235,7 +236,7 @@ export function InventoryErrorState({
   onRetry: () => void;
 }) {
   return (
-    <div className="flex min-h-[260px] flex-col items-center justify-center gap-3 px-6 text-center">
+    <div className="flex min-h-[calc(260px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-3 px-6 text-center">
       <div className="inline-flex size-11 items-center justify-center rounded-[12px] bg-amber-500/10 text-amber-700 dark:text-amber-300">
         <HugeiconsIcon icon={CloudOffIcon} strokeWidth={1.6} className="size-5" />
       </div>
@@ -252,7 +253,7 @@ export function InventoryErrorState({
       <button
         type="button"
         onClick={onRetry}
-        className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
+        className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]"
       >
         <HugeiconsIcon icon={Refresh01Icon} strokeWidth={1.75} className="size-3.5" />
         Try again
@@ -273,7 +274,7 @@ export function EmptyState({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex min-h-[220px] flex-col items-center justify-center gap-3 px-6 text-center">
+    <div className="flex min-h-[calc(220px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-3 px-6 text-center">
       <div className="inline-flex size-11 items-center justify-center rounded-[12px] bg-muted text-muted-foreground">
         <HugeiconsIcon icon={icon} strokeWidth={1.5} className="size-5" />
       </div>
@@ -295,8 +296,8 @@ function SkeletonRow() {
     <div className="flex items-center gap-3 px-3 py-2.5">
       <div className="size-8 shrink-0 animate-pulse rounded-[9px] bg-muted" />
       <div className="min-w-0 flex-1 space-y-1.5">
-        <div className="h-[13px] w-1/2 animate-pulse rounded-full bg-muted" />
-        <div className="h-[11px] w-3/4 animate-pulse rounded-full bg-muted/70" />
+        <div className="h-[calc(13px*var(--ui-space-scale,1))] w-1/2 animate-pulse rounded-full bg-muted" />
+        <div className="h-[calc(11px*var(--ui-space-scale,1))] w-3/4 animate-pulse rounded-full bg-muted/70" />
       </div>
     </div>
   );
@@ -307,11 +308,14 @@ const MIN_SKELETON_ROWS = 4;
 const MAX_SKELETON_ROWS = 24;
 const DEFAULT_SKELETON_ROWS = 6;
 
-function clampSkeletonCount(height: number): number {
+// The row's padding, avatar and bars follow the UI font size, so the estimate
+// does too, or the list under-fills at small sizes and overflows at large.
+function clampSkeletonCount(height: number, scale: number): number {
   if (!Number.isFinite(height) || height <= 0) return DEFAULT_SKELETON_ROWS;
+  const rowHeight = SKELETON_ROW_ESTIMATE_PX * scale;
   return Math.max(
     MIN_SKELETON_ROWS,
-    Math.min(MAX_SKELETON_ROWS, Math.ceil(height / SKELETON_ROW_ESTIMATE_PX)),
+    Math.min(MAX_SKELETON_ROWS, Math.ceil(height / rowHeight)),
   );
 }
 
@@ -319,6 +323,7 @@ export function SkeletonList({ count }: { count?: number }) {
   const ref = useRef<HTMLUListElement>(null);
   const [autoCount, setAutoCount] = useState(count ?? DEFAULT_SKELETON_ROWS);
   const rowCount = count ?? autoCount;
+  const scale = useUiSpaceScale();
 
   useLayoutEffect(() => {
     if (count != null) return;
@@ -328,7 +333,7 @@ export function SkeletonList({ count }: { count?: number }) {
     let frame: number | null = null;
     const update = () => {
       frame = null;
-      setAutoCount(clampSkeletonCount(container.clientHeight));
+      setAutoCount(clampSkeletonCount(container.clientHeight, scale));
     };
     const schedule = () => {
       if (frame !== null) return;
@@ -350,7 +355,7 @@ export function SkeletonList({ count }: { count?: number }) {
       if (frame !== null) window.cancelAnimationFrame(frame);
       observer.disconnect();
     };
-  }, [count]);
+  }, [count, scale]);
 
   return (
     <ul ref={ref} className="divide-y divide-border" aria-hidden="true">

@@ -248,13 +248,22 @@ def test_anthropic_reasoning_args_maps_effort_only_to_enable_thinking():
         is True
     )
     assert _anthropic_reasoning_args(_basic_payload())["enable_thinking"] is None
-    # An explicit boolean always wins over the effort mapping.
-    assert (
-        _anthropic_reasoning_args(_basic_payload(enable_thinking = True, reasoning_effort = "none"))[
-            "enable_thinking"
-        ]
-        is True
-    )
+    # An explicit boolean always wins; a contradictory effort is removed rather than
+    # riding along into model-specific template resolution.
+    assert _anthropic_reasoning_args(
+        _basic_payload(enable_thinking = True, reasoning_effort = "none")
+    ) == {
+        "enable_thinking": True,
+        "reasoning_effort": None,
+        "preserve_thinking": None,
+    }
+    assert _anthropic_reasoning_args(
+        _basic_payload(enable_thinking = False, reasoning_effort = "high")
+    ) == {
+        "enable_thinking": False,
+        "reasoning_effort": None,
+        "preserve_thinking": None,
+    }
 
 
 # thinking x reasoning_effort, every combination. The request model documents
@@ -2588,7 +2597,7 @@ class TestNormalizeAnthropicOpenAIImages:
             _normalize_anthropic_openai_images(msgs, is_vision = False)
         assert exc.value.status_code == 400
 
-    def test_reencodes_jpeg_data_url_to_png(self):
+    def test_forwards_jpeg_data_url_unchanged(self):
         original_url = _jpeg_data_url()
         msgs = [
             {
@@ -2600,9 +2609,17 @@ class TestNormalizeAnthropicOpenAIImages:
             }
         ]
         _normalize_anthropic_openai_images(msgs, is_vision = True)
-        new_url = msgs[0]["content"][1]["image_url"]["url"]
-        assert new_url.startswith("data:image/png;base64,")
-        assert new_url != original_url
+        assert msgs[0]["content"][1]["image_url"]["url"] == original_url
+
+    def test_reencodes_webp_data_url_to_png(self):
+        from PIL import Image
+
+        buf = _BytesIO()
+        Image.new("RGB", (2, 2), (255, 0, 0)).save(buf, format = "WEBP")
+        url = "data:image/webp;base64," + _b64.b64encode(buf.getvalue()).decode("ascii")
+        msgs = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}]
+        _normalize_anthropic_openai_images(msgs, is_vision = True)
+        assert msgs[0]["content"][0]["image_url"]["url"].startswith("data:image/png;base64,iVBOR")
 
     def test_remote_url_is_replaced_by_the_bytes_we_fetched(self, monkeypatch):
         import core.inference.external_provider as ep
@@ -2624,7 +2641,8 @@ class TestNormalizeAnthropicOpenAIImages:
             }
         ]
         _normalize_anthropic_openai_images(msgs, is_vision = True)
-        assert msgs[0]["content"][0]["image_url"]["url"].startswith("data:image/png;base64,")
+        # The bytes are JPEG whatever the server declared, and are labelled as such.
+        assert msgs[0]["content"][0]["image_url"]["url"] == _jpeg_data_url()
 
     def test_bad_base64_raises_400(self):
         msgs = [

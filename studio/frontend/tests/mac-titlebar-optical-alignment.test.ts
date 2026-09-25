@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrc } from "./helpers/kit.ts";
+import { atDefaultUiScale, readSrc } from "./helpers/kit.ts";
 
 const PORTALLED_NATIVE_TITLEBAR_PATTERN =
   /"--studio-window-chrome-top",[\s\S]*?NATIVE_MAC_TITLEBAR_HEIGHT_VAR/;
 
 test("mac titlebar navigation shifts buttons with centered glyphs", async () => {
   const [titlebar, provider] = await Promise.all([
-    readSrc("components/tauri/window-titlebar.tsx"),
-    readSrc("app/provider.tsx"),
+    atDefaultUiScale(readSrc("components/tauri/window-titlebar.tsx")),
+    atDefaultUiScale(readSrc("app/provider.tsx")),
   ]);
   const macStyle = provider.match(
     /const MAC_NATIVE_CHROME_STYLE = \{[\s\S]*?\} as CSSProperties;/,
@@ -29,10 +29,10 @@ test("mac titlebar navigation shifts buttons with centered glyphs", async () => 
 
 test("mac chat and media headers share the lowered control row", async () => {
   const [provider, chat, images, video] = await Promise.all([
-    readSrc("app/provider.tsx"),
-    readSrc("features/chat/chat-page.tsx"),
-    readSrc("features/images/images-page.tsx"),
-    readSrc("features/video/video-page.tsx"),
+    atDefaultUiScale(readSrc("app/provider.tsx")),
+    atDefaultUiScale(readSrc("features/chat/chat-page.tsx")),
+    atDefaultUiScale(readSrc("features/images/images-page.tsx")),
+    atDefaultUiScale(readSrc("features/video/video-page.tsx")),
   ]);
 
   const macStyle = provider.match(
@@ -50,8 +50,8 @@ test("mac chat and media headers share the lowered control row", async () => {
 // fallback string is built from the same constant rather than retyped.
 test("mac native chrome clearance stays fixed across interface scales", async () => {
   const [provider, runtime] = await Promise.all([
-    readSrc("app/provider.tsx"),
-    readSrc("features/settings/lib/interface-scale-runtime.ts"),
+    atDefaultUiScale(readSrc("app/provider.tsx")),
+    atDefaultUiScale(readSrc("features/settings/lib/interface-scale-runtime.ts")),
   ]);
   assert.match(
     runtime,

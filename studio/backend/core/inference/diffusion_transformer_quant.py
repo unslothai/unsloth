@@ -30,6 +30,7 @@ from typing import Any, Optional
 
 # stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
 from core._torchao_stub import is_stubbed, torch_is_rocm
+from .diffusion_native_quant import is_native_linear
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 
 # Also runs in the spawned smoke-probe child, which imports this module and nothing else of the backend.
@@ -124,6 +125,13 @@ _LTX2_INT8_EXCLUDES = ("audio", "av_cross_attn", "adaln")
 _INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
     "qwen-image": _QWENIMAGE_INT8_EXCLUDES,
     "qwen-image-edit": _QWENIMAGE_INT8_EXCLUDES,  # same DiT class + unpadded text stream
+    # 2.1 is a 32-block SINGLE-stream DiT: no add_* projections, no txt_mlp, so the 20B MMDiT's
+    # exclusion list does not apply and this one was measured rather than inherited. ``txt_in`` is
+    # here as a QUALITY lever, not the small-M crash guard it is on qwen-image: all four policy arms
+    # rendered a deliberately 2-token prompt without tripping ``_int_mm``'s M floor, so nothing
+    # crashes either way. Excluding it scored LPIPS 0.0642 against 0.1032 with the generic tokens
+    # alone, paired over 16 calibration prompts, -0.0390 CI95 [-0.0708, -0.0072], better on 14/16.
+    "qwen-image-2.1": ("txt_in",),
     "hunyuanvideo-1.5": _HUNYUAN15_INT8_EXCLUDES,
     "hunyuanvideo-1.5-720p": _HUNYUAN15_INT8_EXCLUDES,
     "minimax-h3": _MINIMAX_H3_INT8_EXCLUDES,
@@ -501,6 +509,25 @@ _NARROW_STORED_DTYPES: dict[str, str] = {
 }
 
 
+def _cached_snapshot_dir(repo_id: str) -> Any:
+    """``repo_id``'s already-cached snapshot, Studio's live cache first (the loaders pass it as ``cache_dir``)."""
+    from pathlib import Path
+
+    from huggingface_hub import snapshot_download
+
+    try:
+        from utils.hf_cache_settings import active_hf_hub_cache
+        roots = (active_hf_hub_cache(), None)
+    except Exception:  # noqa: BLE001 -- the smoke-probe child has no Studio settings
+        roots = (None,)
+    for cache_dir in roots:
+        try:
+            return Path(snapshot_download(repo_id, cache_dir = cache_dir, local_files_only = True))
+        except Exception:  # noqa: BLE001 -- not cached there
+            continue
+    return None
+
+
 def stored_denoiser_precision(local_dir: Optional[str]) -> Optional[str]:
     """The narrow precision a LOCAL snapshot's denoiser shards are stored at, or None.
 
@@ -511,8 +538,8 @@ def stored_denoiser_precision(local_dir: Optional[str]) -> Optional[str]:
     is the only place left to look.
 
     Headers only, and only under a directory we already have: no download, no tensor read, and no
-    verdict without a local snapshot, which is the behaviour without this check. A hub id is not a
-    directory and answers None, so the caller may pass the staged snapshot or the load's own base."""
+    verdict without a local snapshot, which is the behaviour without this check. A hub id resolves to
+    its already-cached snapshot (``local_files_only``: an offline load stages nothing), else None."""
     if not local_dir:
         return None
     try:
@@ -521,6 +548,10 @@ def stored_denoiser_precision(local_dir: Optional[str]) -> Optional[str]:
         import safetensors
 
         root = Path(local_dir).expanduser()
+        if not root.is_dir():
+            root = _cached_snapshot_dir(str(local_dir))
+            if root is None:
+                return None
         for attr in DENOISER_ATTRS:
             sub = root / attr
             if not sub.is_dir():
@@ -583,10 +614,13 @@ def dense_quant_blocker(pipe: Any) -> Optional[str]:
 
 
 def transformer_is_quantised(module: Any) -> bool:
-    """Whether any Linear weight has been replaced by a torchao tensor subclass."""
+    """Whether any Linear weight has been replaced by a torchao tensor subclass, or any Linear by a
+    torchao-free weight-only twin (``diffusion_native_quant``)."""
     try:
         import torch
         for sub in module.modules():
+            if is_native_linear(sub):
+                return True
             if not isinstance(sub, torch.nn.Linear):
                 continue
             weight = getattr(sub, "weight", None)
@@ -631,6 +665,40 @@ def dense_transformer_unsupported_reason(target: Any) -> str:
     if is_stubbed("torchao"):
         return "this platform ships a torchao stub whose quantize_ is a no-op"
     return "this device cannot run a dense torchao quant (it needs a CUDA GPU in bf16)"
+
+
+# ``auto`` never lands here: weight-only measured no speed win on gfx1151, only memory.
+NATIVE_QUANT_SCHEMES = (TQ_INT8, TQ_FP8)
+
+
+def native_quant_host(target: Any) -> bool:
+    """Whether ``target`` is a bf16 GPU whose torchao path is closed for a platform reason: a ROCm torch
+    (the NVIDIA-shaped capability ladder misclassifies it, and gfx1151 refuses fp8 ``_scaled_mm``) or the
+    Windows-ROCm torchao stub. False on every NVIDIA, MPS, XPU and CPU host, which keep the torchao path."""
+    if getattr(target, "device", None) != "cuda":
+        return False
+    if not (torch_is_rocm() or is_stubbed("torchao")):
+        return False
+    try:
+        import torch
+        return getattr(target, "dtype", None) is torch.bfloat16
+    except Exception:
+        return False
+
+
+def native_quant_scheme(
+    target: Any,
+    requested: Optional[str],
+    family: Optional[str] = None,
+) -> Optional[str]:
+    """The weight-only scheme an EXPLICIT ``requested`` runs as on a ``native_quant_host``, or None.
+    Not in ``select_transformer_quant_scheme``: that also feeds hosted torchao prequant planners."""
+    scheme = normalize_transformer_quant(requested)
+    if scheme not in NATIVE_QUANT_SCHEMES or not native_quant_host(target):
+        return None
+    if _family_denied(family, scheme):
+        return None
+    return scheme
 
 
 def select_transformer_quant_scheme(
@@ -1341,7 +1409,12 @@ def quantize_transformer(
     Returns the scheme engaged, or None when disabled / unsupported / failed (caller loads GGUF).
     Best-effort: never raises for an unsupported environment (failure leaves it dense).
     ``fast_accum`` (fp8 only) overrides the per-GPU-class accumulate choice: None auto-detects,
-    True/False force it."""
+    True/False force it. On a ``native_quant_host`` an explicit int8 / fp8 runs weight-only without torchao."""
+    native = native_quant_scheme(target, mode, family = family)
+    if native is not None:
+        return _quantize_native(
+            pipe, native, family = family, min_features = min_features, logger = logger
+        )
     scheme = select_transformer_quant_scheme(target, mode, family = family)
     if scheme is None:
         return None
@@ -1379,6 +1452,34 @@ def quantize_transformer(
         return scheme
     except Exception as exc:  # noqa: BLE001 - leave the transformer dense -> GGUF fallback
         _warn(logger, scheme, exc)
+        return None
+
+
+def _quantize_native(
+    pipe: Any, scheme: str, *, family: Optional[str], min_features: int, logger: Any
+) -> Optional[str]:
+    """The torchao-free branch of ``quantize_transformer``: the same layer filter, weight-only."""
+    transformer = getattr(pipe, "transformer", None)
+    if transformer is None:
+        return None
+    try:
+        from .diffusion_native_quant import apply_native_weight_quant
+
+        # require_bf16 keeps the fp32 linears some DiTs deliberately hold (Wan, Hunyuan) at full precision.
+        filter_fn = make_filter_fn(
+            min_features,
+            exclude_name_tokens = exclude_tokens_for_scheme(scheme, family) + ("lora_",),
+            require_bf16 = True,
+        )
+        if not apply_native_weight_quant(transformer, scheme, filter_fn = filter_fn, logger = logger):
+            return None
+        try:
+            transformer._unsloth_runtime_quant = scheme
+        except Exception:  # noqa: BLE001 - marker is best-effort
+            pass
+        return scheme
+    except Exception as exc:  # noqa: BLE001 - a partial swap is reported by transformer_is_quantised
+        _warn(logger, f"{scheme} (weight-only)", exc)
         return None
 
 
