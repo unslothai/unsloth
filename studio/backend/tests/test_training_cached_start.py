@@ -1566,14 +1566,29 @@ def test_unscoped_reset_cannot_touch_a_live_run(monkeypatch):
     assert backend.reset_training_state() == "active"
 
 
-def test_runtime_4bit_resume_reaches_worker_with_source_resource_pins(tmp_path):
-    route = _load_route_module("training_route_resume_resource_provenance")
+@pytest.mark.parametrize(
+    ("resume_model_load_mode", "model_config_json"),
+    [
+        pytest.param("runtime_4bit", "{}", id = "runtime_4bit"),
+        pytest.param(
+            "prequantized_8bit",
+            json.dumps({"quantization_config": {"load_in_8bit": True}}),
+            id = "prequantized_8bit",
+        ),
+    ],
+)
+def test_4bit_resume_reaches_worker_with_source_resource_pins(
+    tmp_path, resume_model_load_mode, model_config_json
+):
+    route = _load_route_module(
+        f"training_route_resume_resource_provenance_{resume_model_load_mode}"
+    )
     model_root = tmp_path / "models--unsloth--test"
     old_model = model_root / "snapshots" / "commit-old"
     new_model = model_root / "snapshots" / "commit-new"
     for snapshot in (old_model, new_model):
         snapshot.mkdir(parents = True)
-        (snapshot / "config.json").write_text("{}")
+        (snapshot / "config.json").write_text(model_config_json)
         (snapshot / "model.safetensors").write_bytes(b"x")
     dataset_root = tmp_path / "datasets--org--dataset"
     old_dataset = dataset_root / "snapshots" / "commit-old"
@@ -1599,7 +1614,7 @@ def test_runtime_4bit_resume_reaches_worker_with_source_resource_pins(tmp_path):
             "version": 1,
             "status": "complete",
             "model_status": "attested",
-            "model_load_mode": "runtime_4bit",
+            "model_load_mode": resume_model_load_mode,
             "dataset_status": "attested",
             "reasons": [],
         },
@@ -1662,7 +1677,7 @@ def test_runtime_4bit_resume_reaches_worker_with_source_resource_pins(tmp_path):
     assert captured["require_exact_resume_resources"] is True
     assert captured["require_exact_model_resource"] is True
     assert captured["require_exact_dataset_resource"] is True
-    assert captured["resume_model_load_mode"] == "runtime_4bit"
+    assert captured["resume_model_load_mode"] == resume_model_load_mode
     assert tier_targets == [str(old_model.resolve())]
 
     from core.training.training import (
@@ -1677,7 +1692,7 @@ def test_runtime_4bit_resume_reaches_worker_with_source_resource_pins(tmp_path):
         worker_config = _build_training_worker_config(captured)
     _apply_cache_pins(worker_config)
 
-    assert worker_config["resume_model_load_mode"] == "runtime_4bit"
+    assert worker_config["resume_model_load_mode"] == resume_model_load_mode
     assert worker_config["model_snapshot_path"] == str(old_model.resolve())
 
 

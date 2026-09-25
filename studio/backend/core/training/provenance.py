@@ -19,8 +19,13 @@ RESOURCE_PROVENANCE_KEY = "resource_provenance"
 _ATTESTED = "attested"
 _INCOMPLETE = "incomplete"
 _MODEL_LOAD_UNQUANTIZED = "unquantized"
+# Prequantized modes are `prequantized_{widths}bit`, where `widths` are the snapshot's
+# declared bit widths, sorted ascending, de-duplicated, and joined by `_`
+# (e.g. `prequantized_8bit`, `prequantized_4_8bit`). `_MODEL_LOAD_PREQUANTIZED_4BIT` is
+# exactly the `{4}` case, so existing v1 markers stay valid without a version bump.
 _MODEL_LOAD_PREQUANTIZED_4BIT = "prequantized_4bit"
 _MODEL_LOAD_RUNTIME_4BIT = "runtime_4bit"
+_PREQUANTIZED_MODE_RE = re.compile(r"prequantized_(?:1[0-6]|[1-9])(?:_(?:1[0-6]|[1-9])){0,7}bit")
 _REASON_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 _MODEL_WEIGHT_RE = re.compile(
     r"(?:"
@@ -161,37 +166,54 @@ def _normalized_commit(value: Any) -> Optional[str]:
     return value
 
 
-def _snapshot_declares_quantization(snapshot: Path) -> bool:
+def _prequantized_mode(widths: frozenset[int]) -> str:
+    return "prequantized_" + "_".join(str(width) for width in sorted(widths)) + "bit"
+
+
+def _prequantized_mode_widths(mode: Any) -> Optional[frozenset[int]]:
+    if not isinstance(mode, str) or _PREQUANTIZED_MODE_RE.fullmatch(mode) is None:
+        return None
+    widths = [
+        int(part) for part in mode.removeprefix("prequantized_").removesuffix("bit").split("_")
+    ]
+    # The regex alone accepts any order/duplicates; only the strictly increasing sequence
+    # `_prequantized_mode` itself would have produced is a canonical, attestable mode.
+    if any(widths[index] >= widths[index + 1] for index in range(len(widths) - 1)):
+        return None
+    return frozenset(widths)
+
+
+def _snapshot_quantization_widths(snapshot: Path) -> Optional[frozenset[int]]:
     try:
         parsed = json.loads((snapshot / "config.json").read_text(encoding = "utf-8"))
     except (OSError, ValueError):
-        return False
+        return frozenset()
     if not isinstance(parsed, dict):
-        return False
+        return frozenset()
     queue = [parsed.get("quantization_config"), parsed.get("quantization")]
-    found_4bit = False
-    conflicting_width = False
+    widths: set[int] = set()
     while queue:
         current = queue.pop()
         if isinstance(current, dict):
             if current.get("load_in_4bit") is True:
-                found_4bit = True
+                widths.add(4)
             if current.get("load_in_8bit") is True:
-                conflicting_width = True
+                widths.add(8)
             for key in ("bits", "nbits", "q_bits"):
                 width = current.get(key)
                 if isinstance(width, str) and width.strip().isdigit():
                     width = int(width.strip())
                 if isinstance(width, bool) or not isinstance(width, int):
                     continue
-                if width == 4:
-                    found_4bit = True
-                else:
-                    conflicting_width = True
+                widths.add(width)
             queue.extend(current.values())
         elif isinstance(current, (list, tuple)):
             queue.extend(current)
-    return found_4bit and not conflicting_width
+    if not widths:
+        return frozenset()
+    if len(widths) > 8 or any(width < 1 or width > 16 for width in widths):
+        return None
+    return frozenset(widths)
 
 
 def _resolved_model_snapshot_file(snapshot: Path, path: Path) -> Optional[Path]:
@@ -272,12 +294,7 @@ def _snapshot_has_dataset_data(snapshot: Path) -> bool:
     return found_data
 
 
-def exact_model_snapshot_path(
-    path_value: Any,
-    repo_id: Any,
-    *,
-    require_quantized: bool = False,
-) -> Optional[str]:
+def exact_model_snapshot_path(path_value: Any, repo_id: Any) -> Optional[str]:
     repo_id = _normalized_repo_id(repo_id)
     if repo_id is None or not isinstance(path_value, str) or not path_value.strip():
         return None
@@ -306,17 +323,10 @@ def exact_model_snapshot_path(
         return None
     if not same_existing_path(resolved, requested) or not _snapshot_has_model_weights(resolved):
         return None
-    if require_quantized and not _snapshot_declares_quantization(resolved):
-        return None
     return str(resolved)
 
 
-def exact_model_snapshot_for_commit(
-    repo_id: Any,
-    commit: Any,
-    *,
-    require_quantized: bool = False,
-) -> Optional[str]:
+def exact_model_snapshot_for_commit(repo_id: Any, commit: Any) -> Optional[str]:
     repo_id = _normalized_repo_id(repo_id)
     commit = _normalized_commit(commit)
     if repo_id is None or commit is None:
@@ -329,7 +339,6 @@ def exact_model_snapshot_for_commit(
         resolved = exact_model_snapshot_path(
             str(candidate),
             repo_id,
-            require_quantized = require_quantized,
         )
         if resolved is not None:
             return resolved
@@ -612,10 +621,15 @@ def _loaded_model_refs(model: Any) -> set[tuple[str, str]]:
 
 
 def _attested_model_load_mode(snapshot: str, model: Any, load_in_4bit: bool) -> Optional[str]:
+    widths = _snapshot_quantization_widths(Path(snapshot))
+    if widths is None:
+        return None
+    if widths:
+        # A snapshot that declares any width attests as prequantized regardless of the
+        # load_in_4bit toggle: the weights on disk are what actually loaded, not the flag.
+        return _prequantized_mode(widths)
     if not load_in_4bit:
         return _MODEL_LOAD_UNQUANTIZED
-    if _snapshot_declares_quantization(Path(snapshot)):
-        return _MODEL_LOAD_PREQUANTIZED_4BIT
     if _loaded_model_is_4bit(model):
         return _MODEL_LOAD_RUNTIME_4BIT
     return None
@@ -757,17 +771,24 @@ def normalize_worker_provenance_event(
         )
         if model_snapshot is not None:
             event_load_mode = model_event.get("load_mode")
-            snapshot_is_quantized = _snapshot_declares_quantization(Path(model_snapshot))
-            if bool(config.get("load_in_4bit")):
-                if (
-                    event_load_mode in (None, _MODEL_LOAD_PREQUANTIZED_4BIT)
-                    and snapshot_is_quantized
-                ):
-                    model_load_mode = _MODEL_LOAD_PREQUANTIZED_4BIT
-                elif event_load_mode == _MODEL_LOAD_RUNTIME_4BIT and not snapshot_is_quantized:
-                    model_load_mode = _MODEL_LOAD_RUNTIME_4BIT
-            elif event_load_mode in (None, _MODEL_LOAD_UNQUANTIZED):
-                model_load_mode = _MODEL_LOAD_UNQUANTIZED
+            snapshot_widths = _snapshot_quantization_widths(Path(model_snapshot))
+            load_in_4bit = bool(config.get("load_in_4bit"))
+            event_widths = _prequantized_mode_widths(event_load_mode)
+            if snapshot_widths is not None:
+                if event_widths is not None:
+                    if event_widths == snapshot_widths:
+                        model_load_mode = _prequantized_mode(event_widths)
+                elif event_load_mode is None:
+                    if load_in_4bit and snapshot_widths == frozenset({4}):
+                        model_load_mode = _MODEL_LOAD_PREQUANTIZED_4BIT
+                    elif not load_in_4bit and not snapshot_widths:
+                        model_load_mode = _MODEL_LOAD_UNQUANTIZED
+                elif event_load_mode == _MODEL_LOAD_RUNTIME_4BIT:
+                    if load_in_4bit and not snapshot_widths:
+                        model_load_mode = _MODEL_LOAD_RUNTIME_4BIT
+                elif event_load_mode == _MODEL_LOAD_UNQUANTIZED:
+                    if not load_in_4bit and not snapshot_widths:
+                        model_load_mode = _MODEL_LOAD_UNQUANTIZED
             if model_load_mode is None:
                 model_snapshot = None
     if model_snapshot is None:
@@ -818,14 +839,19 @@ def validate_exact_model_pin(config: dict[str, Any]) -> str:
     if stored_load_mode is None and isinstance(marker, dict):
         stored_load_mode = marker.get("model_load_mode")
     load_in_4bit = bool(config.get("load_in_4bit"))
-    if load_in_4bit:
+
+    # A stored mode that parses as a canonical prequantized width wins regardless of the
+    # load_in_4bit toggle: it is what the run actually attested, not what the toggle says.
+    expected_widths = _prequantized_mode_widths(stored_load_mode)
+    if expected_widths is not None:
+        model_load_mode = _prequantized_mode(expected_widths)
+    elif load_in_4bit:
         if stored_load_mode is None:
             model_load_mode = _MODEL_LOAD_PREQUANTIZED_4BIT
-        elif stored_load_mode in {
-            _MODEL_LOAD_PREQUANTIZED_4BIT,
-            _MODEL_LOAD_RUNTIME_4BIT,
-        }:
-            model_load_mode = stored_load_mode
+            expected_widths = frozenset({4})
+        elif stored_load_mode == _MODEL_LOAD_RUNTIME_4BIT:
+            model_load_mode = _MODEL_LOAD_RUNTIME_4BIT
+            expected_widths = frozenset()
         else:
             model_load_mode = None
     elif stored_load_mode in (None, _MODEL_LOAD_UNQUANTIZED):
@@ -844,12 +870,13 @@ def validate_exact_model_pin(config: dict[str, Any]) -> str:
     model_snapshot = exact_model_snapshot_path(
         config.get("model_snapshot_path"),
         model_repo_id,
-        require_quantized = model_load_mode == _MODEL_LOAD_PREQUANTIZED_4BIT,
     )
+    # Legacy unquantized markers keep resuming without a snapshot width check, exactly as
+    # today; prequantized and runtime modes both pin an exact expected width set.
     if (
         model_snapshot is not None
-        and model_load_mode == _MODEL_LOAD_RUNTIME_4BIT
-        and _snapshot_declares_quantization(Path(model_snapshot))
+        and model_load_mode != _MODEL_LOAD_UNQUANTIZED
+        and _snapshot_quantization_widths(Path(model_snapshot)) != expected_widths
     ):
         model_snapshot = None
     if model_snapshot is None:
