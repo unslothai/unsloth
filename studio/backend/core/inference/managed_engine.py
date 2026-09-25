@@ -199,6 +199,21 @@ def validate_model(
     return options
 
 
+def _deep_gemm_unloadable(environment: str) -> bool:
+    """vLLM bundles DeepGEMM's _C for one CPython only; a mismatch still reads as present, so
+    Hopper/Blackwell warmup crashes even bf16 models (vllm-project/vllm#41849)."""
+    for site in Path(environment).glob("lib/python3.*/site-packages"):
+        if (site / "deep_gemm").is_dir():
+            return False
+        vendored = site / "vllm" / "third_party" / "deep_gemm"
+        if vendored.is_dir():
+            tag = "cpython-3" + site.parent.name.removeprefix("python3.")
+            return not any(vendored.glob(f"_C.{tag}-*.so")) and not any(
+                vendored.glob("_C.abi3*.so")
+            )
+    return False
+
+
 # Engine silence, not total startup time: an uncached Hub model downloads inside the engine.
 STARTUP_STALL_S = 900
 STARTUP_LIMIT_S = 4 * 3600
@@ -307,6 +322,8 @@ class ManagedEngine:
                 child_env["TRITON_CACHE_DIR"] = str(cache / "triton")
                 memory_fraction = gpu_memory_fraction(gpu_ids or [0])
                 child_env.update(self.adapter.environment(len(gpu_ids or [0])))
+                if self.engine == "vllm" and _deep_gemm_unloadable(info["path"]):
+                    child_env["VLLM_USE_DEEP_GEMM"] = "0"
                 self.process = spawn_on_lifetime_thread(
                     lambda: subprocess.Popen(
                         self.adapter.command(

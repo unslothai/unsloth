@@ -1592,3 +1592,29 @@ def test_startup_deadline_counts_engine_silence(isolated, monkeypatch, chatty):
                 engine.start("model", 2048, [0], dict(os.environ))
     finally:
         engine.stop()
+
+
+@pytest.mark.parametrize(
+    "files, disabled",
+    [
+        (["vllm/third_party/deep_gemm/_C.cpython-312-x86_64-linux-gnu.so"], True),
+        (["vllm/third_party/deep_gemm/_C.cpython-313-x86_64-linux-gnu.so"], False),
+        (
+            [
+                "vllm/third_party/deep_gemm/_C.cpython-312-x86_64-linux-gnu.so",
+                "deep_gemm/__init__.py",
+            ],
+            False,
+        ),
+        ([], False),
+    ],
+)
+def test_vendored_deep_gemm_for_another_python_is_disabled(tmp_path, files, disabled):
+    from core.inference.managed_engine import _deep_gemm_unloadable
+
+    site = tmp_path / "lib" / "python3.13" / "site-packages"
+    for name in files:
+        (site / name).parent.mkdir(parents = True, exist_ok = True)
+        (site / name).touch()
+    site.mkdir(parents = True, exist_ok = True)
+    assert _deep_gemm_unloadable(str(tmp_path)) is disabled
