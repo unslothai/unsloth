@@ -1472,3 +1472,65 @@ def test_switching_from_managed_engine_keeps_default_precision():
     request = LoadRequest(model_path = "model")
     _inherit_resident_load_in_4bit(backend, request, "model")
     assert request.load_in_4bit is True
+
+
+@pytest.mark.parametrize("url", ["/" * 64 + "etc/hostname", "/etc/hostname", "/9j/4AAQSkZJRg=="])
+def test_bare_image_strings_reach_the_engine_as_data_urls(peer, url):
+    engine, requests = peer
+    messages = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}]
+    list(engine.generate(messages = messages))
+    sent = requests[0][2]["messages"][0]["content"][0]["image_url"]["url"]
+    assert sent == "data:image/png;base64," + url
+
+
+def test_non_base64_image_string_is_refused_before_the_engine(peer):
+    engine, requests = peer
+    messages = [
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "/tmp/a.png"}}]}
+    ]
+    with pytest.raises(ValueError, match = "data URLs"):
+        list(engine.generate(messages = messages))
+    assert requests == []
+
+
+def test_status_probe_does_not_fail_a_concurrent_engine_lease(isolated):
+    import fcntl
+    import time
+
+    active(isolated)
+    probe_held = threading.Event()
+
+    def probe():
+        with (isolated / "vllm.lock").open("a") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            probe_held.set()
+            time.sleep(0.2)
+
+    thread = threading.Thread(target = probe)
+    thread.start()
+    probe_held.wait(2)
+    with install.engine_lease("vllm"):
+        assert install.status("vllm")["in_use"]
+    thread.join()
+    assert not install.status("vllm")["in_use"]
+
+
+def test_support_probe_waits_for_a_slow_driver_and_is_cached(monkeypatch):
+    from types import SimpleNamespace
+
+    calls = []
+
+    def slow_smi(argv, **kwargs):
+        calls.append(kwargs["timeout"])
+        if kwargs["timeout"] < 20:
+            raise install.subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        return SimpleNamespace(returncode = 0, stdout = "590.48.01, 10.0\n")
+
+    monkeypatch.setattr(install, "_gpu_rows", {})
+    monkeypatch.setattr(install.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(install.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(install.platform, "libc_ver", lambda: ("glibc", "2.39"))
+    monkeypatch.setattr(install.subprocess, "run", slow_smi)
+    assert install.support_reason("vllm") is None
+    assert install.support_reason("sglang") is None
+    assert len(calls) == 1

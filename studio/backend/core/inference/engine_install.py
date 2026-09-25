@@ -201,33 +201,52 @@ if problems:
 """
 
 
+_gpu_rows: dict = {}
+_gpu_rows_lock = threading.Lock()
+
+
+def _driver_rows(gpu_id: int | None) -> list[list[str]] | None:
+    """nvidia-smi rows, cached per process: status polls every few seconds and a loaded
+    multi-GPU host can take over 20s to answer."""
+    with _gpu_rows_lock:
+        if gpu_id in _gpu_rows:
+            return _gpu_rows[gpu_id]
+        try:
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=driver_version,compute_cap",
+                    "--format=csv,noheader",
+                    *(["--id", str(gpu_id)] if gpu_id is not None else []),
+                ],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 60,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode != 0:
+            return None
+        rows = [line.split(",") for line in result.stdout.strip().splitlines()]
+        _gpu_rows[gpu_id] = rows
+        return rows
+
+
 def support_reason(engine: str = "vllm", gpu_id: int | None = None) -> str | None:
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         return "Managed engines currently require Linux x86_64."
     if tuple(int(x) for x in (platform.libc_ver()[1] or "0.0").split(".")[:2]) < (2, 34):
         return "Managed engines require glibc 2.34 or newer."
     try:
-        result = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-gpu=driver_version,compute_cap",
-                "--format=csv,noheader",
-                *(["--id", str(gpu_id)] if gpu_id is not None else []),
-            ],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 5,
-        )
-        rows = [line.split(",") for line in result.stdout.strip().splitlines()]
-        if result.returncode == 0 and any(
+        if any(
             int(row[0].strip().split(".")[0]) >= profile(engine)["driver"] and float(row[1]) >= 8.0
-            for row in rows
+            for row in _driver_rows(gpu_id) or ()
             if len(row) == 2
         ):
             return None
-    except (OSError, ValueError, subprocess.TimeoutExpired):
+    except ValueError:
         pass
     return f"Requires an NVIDIA GPU with compute capability 8.0 or newer and driver {profile(engine)['driver']} or newer."
 
@@ -242,19 +261,30 @@ def _atomic_json(path: Path, data: dict) -> None:
 
 
 @contextmanager
-def engine_lease(engine: str, *, exclusive: bool = False):
+def engine_lease(
+    engine: str,
+    *,
+    exclusive: bool = False,
+    wait: float = 1.0,
+):
+    """``wait=0`` for status probes: real takers retry so a probe's instant hold never fails them."""
     profile(engine)
     import fcntl
 
     root = engine_root()
     root.mkdir(parents = True, exist_ok = True)
     with (root / f"{engine}.lock").open("a", encoding = "utf-8") as handle:
-        try:
-            fcntl.flock(handle, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise RuntimeError(
-                "This engine is running or being changed in another Studio instance."
-            ) from None
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                fcntl.flock(handle, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        "This engine is running or being changed in another Studio instance."
+                    ) from None
+                time.sleep(0.05)
         try:
             yield
         finally:
@@ -291,7 +321,7 @@ def status(engine: str) -> dict:
         job = {"state": "idle", "phase": None, "message": ""}
     if job.get("state") == "running":
         try:
-            with engine_lease(engine):
+            with engine_lease(engine, wait = 0):
                 job = {
                     "state": "error",
                     "phase": None,
@@ -303,7 +333,7 @@ def status(engine: str) -> dict:
     in_use = False
     if info and job.get("state") != "running":
         try:
-            with engine_lease(engine, exclusive = True):
+            with engine_lease(engine, exclusive = True, wait = 0):
                 pass
         except RuntimeError:
             in_use = True
