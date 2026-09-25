@@ -1993,7 +1993,7 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
     monkeypatch.setattr(
         studio_db, "list_scan_folders", lambda: [{"path": str(tmp_path / "custom")}]
     )
-    for sub in ("active", "previous", "legacy", "default", "lmstudio", "custom"):
+    for sub in ("active", "previous", "legacy", "default", "lmstudio", "custom", "custom/hub"):
         (tmp_path / sub).mkdir()
 
     resolver._build_index()
@@ -2004,6 +2004,7 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
     assert str((tmp_path / "default").resolve()) in hf
     assert str((tmp_path / "previous").resolve()) in hf
     assert str((tmp_path / "custom").resolve()) in hf
+    assert str((tmp_path / "custom" / "hub").resolve()) in hf
     assert str((tmp_path / "lmstudio").resolve()) in lm
 
 

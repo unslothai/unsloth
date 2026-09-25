@@ -693,16 +693,19 @@ async def _collect_models_from_default_sources(
         )
     for folder in custom_folders:
         folder_path = Path(normalize_path(folder["path"])).expanduser()
-        discovered = await _scan_source(
-            "custom HF cache",
-            lambda path: _discover_hf_cache(path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES),
-            folder_path,
-        )
+        hf_caches = []
+        for cache_dir in hf_cache_scan.scan_folder_hf_caches(folder_path):
+            discovered = await _scan_source(
+                "custom HF cache",
+                lambda path: _discover_hf_cache(path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES),
+                cache_dir,
+            )
+            hf_caches.append((cache_dir, discovered))
+            state_repositories.extend(
+                ("model", model_id, cache_dir) for _repo, model_id, _updated in discovered
+            )
         # Carry the registered path: the status registry is keyed on the row, not on the normalized Path this scan walks.
-        custom_sources.append((folder_path, discovered, str(folder["path"])))
-        state_repositories.extend(
-            ("model", model_id, folder_path) for _repo, model_id, _updated in discovered
-        )
+        custom_sources.append((folder_path, hf_caches, str(folder["path"])))
     try:
         variant_states = await asyncio.to_thread(
             download_manifest.build_variant_state_index,
@@ -735,12 +738,12 @@ async def _collect_models_from_default_sources(
         local_models += await _scan_source("Hermes", scan_hermes_dir, hermes_dir)
 
     hermes_identities = {_inventory_physical_identity(str(d)) for d in hermes_dirs}
-    for folder_path, discovered, row_path in custom_sources:
+    for folder_path, hf_caches, row_path in custom_sources:
         try:
             custom_models = await asyncio.to_thread(
                 _scan_custom_folder,
                 folder_path,
-                discovered = discovered,
+                hf_caches = hf_caches,
                 variant_states = variant_states,
                 active_hub_cache = hf_cache_dir,
             )
@@ -777,13 +780,15 @@ async def _collect_models_from_default_sources(
 def _scan_custom_folder(
     folder_path: Path,
     *,
-    discovered: Optional[list[tuple[Path, str, Optional[float]]]] = None,
+    hf_caches: Optional[list[tuple[Path, Optional[list]]]] = None,
     variant_states: Optional[download_manifest.VariantStateIndex] = None,
     active_hub_cache: Optional[Path] = None,
 ) -> List[LocalModelInfo]:
     from utils.models.model_config import detect_gguf_model
 
     supported_formats: set[ModelFormat] = {"gguf", "safetensors", "adapter"}
+    if hf_caches is None:
+        hf_caches = [(path, None) for path in hf_cache_scan.scan_folder_hf_caches(folder_path)]
 
     def _is_supported(m: LocalModelInfo) -> bool:
         # A diffusers pipeline keeps its weights in component subdirs, so its root lands as "unknown"; judge it on its shape rather than on a format the layout cannot report.
@@ -799,14 +804,18 @@ def _scan_custom_folder(
                 limit = _MAX_MODELS_PER_CUSTOM_FOLDER,
                 entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
             )
-            + _scan_hf_cache(
-                folder_path,
-                entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
-                active_cache = False,
-                discovered = discovered,
-                variant_states = variant_states,
-                active_hub_cache = active_hub_cache,
-            )
+            + [
+                row
+                for cache_dir, discovered in hf_caches
+                for row in _scan_hf_cache(
+                    cache_dir,
+                    entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
+                    active_cache = False,
+                    discovered = discovered,
+                    variant_states = variant_states,
+                    active_hub_cache = active_hub_cache,
+                )
+            ]
             + _scan_lmstudio_dir(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES)
         )
         if _is_supported(m)
