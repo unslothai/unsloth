@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A PEFT wrapper must not silently export a method bound to its base model."""
-
 from __future__ import annotations
 
 import ast
