@@ -85,49 +85,35 @@ function zonesUnder(x: number, y: number): ZoneHit[] {
 /** Max distance between a row's bottom and the next row's top for them to share a gap. */
 const ADJACENT_PX = 3;
 
-/** The row drawn directly below or above the row, or section tail, that `key` names. */
+/** Marks the row, or section tail, a line can be drawn on with its row key, so a neighbour
+ *  lookup finds it directly instead of scanning every zone. */
+const ROW_KEY_ATTR = "data-sidebar-row-key";
+
+/** The row drawn directly below or above the row, or section tail, that `key` names. Probes
+ *  just past its edge, so the cost does not grow with the list. */
 function rowNextTo(key: string, side: "below" | "above"): ZoneHit | null {
   if (typeof document === "undefined") return null;
-  const rows: ZoneHit[] = [];
-  let self: ZoneHit | null = null;
-  for (const element of document.querySelectorAll(`[${DROP_ZONE_ATTR}]`)) {
+  const self = document.querySelector(`[${ROW_KEY_ATTR}="${CSS.escape(key)}"]`);
+  if (!self) return null;
+  const from = self.getBoundingClientRect();
+  // Rows overlap by a pixel (DROP_ROW_HIT), so step two in to land inside the neighbour.
+  const y = side === "below" ? from.bottom + 1 : from.top - 2;
+  for (const element of document.elementsFromPoint(from.left + from.width / 2, y)) {
+    if (element === self || !element.hasAttribute(ROW_KEY_ATTR)) continue;
+    const raw = element.getAttribute(DROP_ZONE_ATTR);
+    if (!raw) continue;
     try {
-      const parsed = JSON.parse(element.getAttribute(DROP_ZONE_ATTR) ?? "") as {
-        zone: SidebarDropZone;
-        closed?: boolean;
-      };
-      const { zone } = parsed;
-      const hit: ZoneHit = {
-        zone,
-        closed: Boolean(parsed.closed),
-        rect: element.getBoundingClientRect(),
-      };
-      // A section tail has no row but draws its line under its blockEnd key.
-      if (!zone.row && zone.blockEnd?.scope === SIDEBAR_TAIL_SCOPE) {
-        if (rowKey(SIDEBAR_TAIL_SCOPE, zone.blockEnd.id) === key) self = hit;
-        continue;
-      }
-      if (!zone.row || zone.header) continue;
-      if (rowKey(zone.row.scope, zone.row.id) === key) self = hit;
-      rows.push(hit);
+      const parsed = JSON.parse(raw) as { zone: SidebarDropZone; closed?: boolean };
+      if (!parsed.zone.row) continue;
+      const rect = element.getBoundingClientRect();
+      const gap = side === "below" ? rect.top - from.bottom : from.top - rect.bottom;
+      if (Math.abs(gap) > ADJACENT_PX) return null;
+      return { zone: parsed.zone, closed: Boolean(parsed.closed), rect };
     } catch {
-      // Unreadable zones are not rows.
+      return null;
     }
   }
-  if (!self) return null;
-  const from = self.rect;
-  const gapTo = (rect: DOMRect) =>
-    side === "below" ? rect.top - from.bottom : from.top - rect.bottom;
-  let best: ZoneHit | null = null;
-  for (const hit of rows) {
-    if (hit === self) continue;
-    const beyond =
-      side === "below" ? hit.rect.top > from.top : hit.rect.bottom < from.bottom;
-    if (!beyond || Math.abs(gapTo(hit.rect)) > ADJACENT_PX) continue;
-    if (hit.rect.right <= from.left || hit.rect.left >= from.right) continue;
-    if (!best || Math.abs(gapTo(hit.rect)) < Math.abs(gapTo(best.rect))) best = hit;
-  }
-  return best;
+  return null;
 }
 
 /** The list the row scrolls while it is carried: the nearest ancestor that actually scrolls. */
@@ -254,7 +240,8 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
             "line" in alt.cue &&
             equivalentDrop(alt, outcome)
           ) {
-            return { hit, outcome: alt };
+            // Only the painted line moves: the original `place` is what a slow move re-aims by.
+            return { hit, outcome: { ...outcome, cue: alt.cue } };
           }
         }
         return { hit, outcome };
@@ -454,11 +441,21 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
   );
 
   const dropZoneProps = useCallback(
-    (zone: SidebarDropZone, zoneOptions?: { closed?: boolean }) => ({
-      [DROP_ZONE_ATTR]: JSON.stringify(
-        zoneOptions?.closed ? { zone, closed: true } : { zone },
-      ),
-    }),
+    (zone: SidebarDropZone, zoneOptions?: { closed?: boolean }) => {
+      const props: Record<string, string> = {
+        [DROP_ZONE_ATTR]: JSON.stringify(
+          zoneOptions?.closed ? { zone, closed: true } : { zone },
+        ),
+      };
+      const key =
+        zone.row && !zone.header
+          ? rowKey(zone.row.scope, zone.row.id)
+          : !zone.row && zone.blockEnd?.scope === SIDEBAR_TAIL_SCOPE
+            ? rowKey(SIDEBAR_TAIL_SCOPE, zone.blockEnd.id)
+            : null;
+      if (key) props[ROW_KEY_ATTR] = key;
+      return props;
+    },
     [],
   );
 

@@ -1382,4 +1382,9 @@ test("the two edges of one gap are one drop, and draw one line", () => {
     /planSidebarDrop\(dragged, next\.zone, tail \? "bottom" : "top", context\)/,
   );
   assert.match(HOOK, /equivalentDrop\(alt, outcome\)/);
+  // Only the cue is swapped: the original effects keep the `place` a slow move re-aims by.
+  assert.match(HOOK, /outcome: \{ \.\.\.outcome, cue: alt\.cue \}/);
+  // Neighbours are found by key and a point probe, not by scanning every zone per frame.
+  assert.match(HOOK, /document\.querySelector\(`\[\$\{ROW_KEY_ATTR\}="\$\{CSS\.escape\(key\)\}"\]`\)/);
+  assert.doesNotMatch(HOOK, /querySelectorAll\(`\[\$\{DROP_ZONE_ATTR\}\]`\)/);
 });
