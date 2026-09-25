@@ -71,7 +71,38 @@ class _OtherConfig:
 
 
 @pytest.fixture
-def zoo(monkeypatch):
+def sizes(monkeypatch):
+    """Hermetic checkpoint size (Hub file metadata) and free accelerator memory, in GiB."""
+    import huggingface_hub
+    import torch
+
+    state = {"checkpoint": 13, "free": [80], "hub_raises": False}
+    GiB = 2**30
+
+    class _Sibling:
+        def __init__(self, name, size):
+            self.rfilename, self.size = name, size
+
+    class _Api:
+        def model_info(self, repo_id, files_metadata = False):
+            if state["hub_raises"]:
+                raise OSError("offline")
+            half = int(state["checkpoint"] * GiB / 2)
+            return types.SimpleNamespace(siblings = [
+                _Sibling("model-00001-of-00002.safetensors", half),
+                _Sibling("model-00002-of-00002.safetensors", half),
+                _Sibling("config.json", 1000),
+            ])
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: len(state["free"]))
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda i: (int(state["free"][i] * GiB), 0))
+    return state
+
+
+@pytest.fixture
+def zoo(monkeypatch, sizes):
     """Install a stub unsloth_zoo.temporary_patches.mxfp4 whose gate returns `state["keep"]`."""
     state = {"keep": True, "raise": False}
     module = types.ModuleType(ZOO_MXFP4)
@@ -102,6 +133,8 @@ def _run_branch(
         "quantizer": quantizer,
         "quantizer_kwargs": {},
         "_mxfp4_lora_keeps_experts_packed": _helper(),
+        "model_name": "openai/gpt-oss-20b",
+        "kwargs": {},
     }
     node = _dequantize_branch()
     code = ast.Module(body = [node], type_ignores = [])
@@ -172,3 +205,36 @@ def test_offloading_device_map_keeps_native_load(zoo):
 def test_quantizer_without_dequantize_argument_untouched(zoo):
     assert _run_branch(False, "mxfp4", False, quantizer = _OtherConfig) is False
     assert _run_branch(True, "mxfp4", False, quantizer = _OtherConfig) is False
+
+
+def test_placement_strategy_that_would_offload_keeps_native_load(zoo, sizes):
+    # "auto" / "sequential" resolve after this decision; a checkpoint larger than the free
+    # accelerator memory will be spilled to CPU, where the packed path would dequantize.
+    sizes["checkpoint"], sizes["free"] = 65, [40]
+    for device_map in ("sequential", "auto", "balanced", "balanced_low_0"):
+        assert _helper()("mxfp4", False, device_map, "openai/gpt-oss-120b") is False
+        assert _run_branch(False, "mxfp4", False, device_map = device_map) is False
+    # Two cards together hold it.
+    sizes["free"] = [40, 40]
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b") is True
+    # A caller's max_memory caps each card and leaves unnamed cards out.
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b", {0: "30GiB", 1: "30GiB"}) is False
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b", {0: 40 * 2**30}) is False
+    # A named device or a planned map is not a strategy and is not sized here.
+    assert _helper()("mxfp4", False, {"": 0}, "openai/gpt-oss-120b") is True
+
+
+def test_placement_strategy_keeps_packed_when_it_fits_or_size_is_unknown(zoo, sizes):
+    sizes["checkpoint"], sizes["free"] = 13, [80]
+    assert _helper()("mxfp4", False, "sequential", "openai/gpt-oss-20b") is True
+    sizes["hub_raises"] = True
+    sizes["free"] = [4]
+    assert _helper()("mxfp4", False, "sequential", "openai/gpt-oss-20b") is True
+
+
+def test_placement_strategy_sizes_a_local_checkpoint(zoo, sizes, tmp_path):
+    (tmp_path / "model.safetensors").write_bytes(b"0" * 4096)
+    sizes["free"] = [4096 / 2**30]
+    assert _helper()("mxfp4", False, "auto", str(tmp_path)) is False
+    sizes["free"] = [1.0]
+    assert _helper()("mxfp4", False, "auto", str(tmp_path)) is True

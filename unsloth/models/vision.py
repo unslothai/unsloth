@@ -1183,6 +1183,8 @@ def _mxfp4_lora_keeps_experts_packed(
     quant_method,
     full_finetuning = False,
     device_map = None,
+    model_name = None,
+    max_memory = None,
 ):
     """Whether a LoRA load of an MXFP4 checkpoint should take unsloth_zoo's packed-experts path.
 
@@ -1194,7 +1196,9 @@ def _mxfp4_lora_keeps_experts_packed(
     silently gets the gradient of the residual stream only. Off when unsloth_zoo has no packed
     path, for full finetuning, with UNSLOTH_MXFP4_KEEP_PACKED=0, and for a device map that
     offloads to CPU or disk: unsloth_zoo cannot keep offloaded experts packed and would
-    dequantize every expert to 16 bit at load instead."""
+    dequantize every expert to 16 bit at load instead. A placement strategy ("auto",
+    "sequential", ...) is only resolved later, so it counts as offloading when the checkpoint
+    does not fit in the accelerators' free memory (or the caller's max_memory)."""
     if full_finetuning or str(quant_method).lower() != "mxfp4":
         return False
     # unsloth_zoo only learns about offload once transformers resolves the map, after this
@@ -1203,6 +1207,51 @@ def _mxfp4_lora_keeps_experts_packed(
         str(value) in ("cpu", "disk") for value in device_map.values()
     ):
         return False
+    if isinstance(device_map, str) and device_map in (
+        "auto",
+        "balanced",
+        "balanced_low_0",
+        "sequential",
+    ):
+        # transformers resolves these with infer_auto_device_map, which spills to CPU / disk
+        # once the accelerators are full. Unknown sizes keep the packed path, as before.
+        try:
+            import os
+            import torch
+
+            if os.path.isdir(str(model_name)):
+                checkpoint_bytes = sum(
+                    os.path.getsize(os.path.join(root, name))
+                    for root, _, names in os.walk(str(model_name))
+                    for name in names
+                    if name.endswith(".safetensors")
+                )
+            else:
+                from huggingface_hub import HfApi
+
+                info = HfApi().model_info(str(model_name), files_metadata = True)
+                checkpoint_bytes = sum(
+                    (sibling.size or 0)
+                    for sibling in (info.siblings or ())
+                    if sibling.rfilename.endswith(".safetensors")
+                )
+            free_bytes = 0
+            for index in range(torch.cuda.device_count() if torch.cuda.is_available() else 0):
+                free = torch.cuda.mem_get_info(index)[0]
+                budget = (max_memory or {}).get(index, (max_memory or {}).get(str(index)))
+                if isinstance(budget, str):
+                    from accelerate.utils import convert_file_size_to_int
+
+                    budget = convert_file_size_to_int(budget)
+                if isinstance(budget, int):
+                    free = min(free, budget)
+                elif max_memory and budget is None:
+                    free = 0  # a max_memory that leaves this card out
+                free_bytes += free
+            if checkpoint_bytes and free_bytes and checkpoint_bytes > 0.9 * free_bytes:
+                return False
+        except Exception:
+            pass
     try:
         from unsloth_zoo.temporary_patches.mxfp4 import keep_mxfp4_experts_packed
     except Exception:
@@ -1734,7 +1783,11 @@ class FastBaseModel:
                     if (
                         load_in_16bit
                         or _mxfp4_lora_keeps_experts_packed(
-                            quant_method, full_finetuning, device_map
+                            quant_method,
+                            full_finetuning,
+                            device_map,
+                            model_name,
+                            kwargs.get("max_memory", None),
                         )
                     ) and "dequantize" in inspect.signature(quantizer).parameters:
                         quantizer_kwargs["dequantize"] = True
