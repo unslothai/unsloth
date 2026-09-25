@@ -7,7 +7,7 @@ import pytest
 
 from transformers import LlamaConfig, LlamaForCausalLM
 from unsloth.models.vision import _tolerate_dtype_cast_on_quantized_model
-from unsloth.trainer import _forward_accepts_packed_seq_lengths
+from unsloth.trainer import _forward_accepts_packing_kwargs
 
 
 def _tiny():
@@ -50,8 +50,8 @@ def test_a_compiled_model_keeps_padding_free():
         ):
             return input_ids
 
-    assert _forward_accepts_packed_seq_lengths(Kwargs()) is True
-    assert _forward_accepts_packed_seq_lengths(torch.compile(Kwargs())) is True
+    assert _forward_accepts_packing_kwargs(Kwargs()) is True
+    assert _forward_accepts_packing_kwargs(torch.compile(Kwargs())) is True
 
 
 def test_a_fixed_signature_is_still_refused():
@@ -65,4 +65,4 @@ def test_a_fixed_signature_is_still_refused():
         ):
             return input_ids
 
-    assert _forward_accepts_packed_seq_lengths(Fixed()) is False
+    assert _forward_accepts_packing_kwargs(Fixed()) is False

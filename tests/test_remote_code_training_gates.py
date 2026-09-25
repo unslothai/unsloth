@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 from transformers import PretrainedConfig, PreTrainedModel
 
-from unsloth.trainer import _forward_accepts_packed_seq_lengths
+from unsloth.trainer import _forward_accepts_packing_kwargs
 from unsloth.models.vision import _inherit_gradient_checkpointing_support
 
 
@@ -61,23 +61,23 @@ class _PeftLike(nn.Module):
 
 def test_fixed_signature_cannot_take_packed_seq_lengths():
     """Without the gate this model was made padding-free."""
-    assert _forward_accepts_packed_seq_lengths(_Fixed()) is False
+    assert _forward_accepts_packing_kwargs(_Fixed()) is False
 
 
 def test_kwargs_and_explicit_parameter_can():
-    assert _forward_accepts_packed_seq_lengths(_Kwargs()) is True
-    assert _forward_accepts_packed_seq_lengths(_Explicit()) is True
+    assert _forward_accepts_packing_kwargs(_Kwargs()) is True
+    assert _forward_accepts_packing_kwargs(_Explicit()) is True
 
 
 def test_peft_wrapper_is_looked_through():
-    assert _forward_accepts_packed_seq_lengths(_PeftLike(_Fixed())) is False
-    assert _forward_accepts_packed_seq_lengths(_PeftLike(_Kwargs())) is True
+    assert _forward_accepts_packing_kwargs(_PeftLike(_Fixed())) is False
+    assert _forward_accepts_packing_kwargs(_PeftLike(_Kwargs())) is True
 
 
 def test_unknown_shapes_leave_the_decision_alone():
-    assert _forward_accepts_packed_seq_lengths(None) is True
-    assert _forward_accepts_packed_seq_lengths("unsloth/Qwen3-0.6B") is True
-    assert _forward_accepts_packed_seq_lengths(object()) is True
+    assert _forward_accepts_packing_kwargs(None) is True
+    assert _forward_accepts_packing_kwargs("unsloth/Qwen3-0.6B") is True
+    assert _forward_accepts_packing_kwargs(object()) is True
 
 
 class _Cfg(PretrainedConfig):
