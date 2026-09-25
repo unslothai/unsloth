@@ -525,6 +525,9 @@ def model_library_roots() -> tuple[str, ...]:
             continue
         if os.path.normcase(real) in forbidden:
             continue
+        # The approval gate still asks for a credential inside a model folder; a whole-folder grant would not.
+        if tool_path_approval._references_sensitive_path(real + os.sep):
+            continue
         if any(_paths_overlap(real, root) for root in state):
             continue
         if real not in kept:
