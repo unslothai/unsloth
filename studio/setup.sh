@@ -328,7 +328,7 @@ _mirror_fallback() {
     fi
     [ -n "${UNSLOTH_PYTORCH_MIRROR:-}${UNSLOTH_TORCH_INDEX_URL:-}" ] || _mf_hosts="$_mf_hosts torch"
     [ -n "${UNSLOTH_NODE_MIRROR:-}" ] || _mf_hosts="$_mf_hosts node"
-    [ -n "${UNSLOTH_NPM_REGISTRY:-}" ] || _mf_hosts="$_mf_hosts npm"
+    [ -n "${UNSLOTH_NPM_REGISTRY:-}${NPM_CONFIG_REGISTRY:-}${npm_config_registry:-}" ] || _mf_hosts="$_mf_hosts npm"
     _mirror_configured python || _mf_hosts="$_mf_hosts python"
     [ -n "${UNSLOTH_UV_WHEEL_MIRROR:-}${UV_DOWNLOAD_URL:-}${INSTALLER_DOWNLOAD_URL:-}${UV_INSTALLER_GHE_BASE_URL:-}${UV_INSTALLER_GITHUB_BASE_URL:-}" ] || _mf_hosts="$_mf_hosts uvbin"
     [ -n "$_mf_hosts" ] || return 0
@@ -352,7 +352,7 @@ _mirror_fallback() {
     done
     if [ -n "$_mf_slow" ]; then
         # The default runs again beside the mirror so both share the link the same way.
-        _mirror_index_probe $(for _mf_host in $_mf_slow; do echo "cernet-$_mf_host"; done)
+        _mirror_index_probe $_mf_slow $(for _mf_host in $_mf_slow; do echo "cernet-$_mf_host"; done)
         _mirror_probe_all "$_mf_dir" 4 $(for _mf_host in $_mf_slow; do _mirror_default "$_mf_host"; _mirror_source "$_mf_host"; done | sort -u)
         _mirror_index_wait
         for _mf_host in $_mf_slow; do

@@ -116,6 +116,11 @@ for SH in dash bash; do
     assert_contains "[$SH] torch waits on CERNET's torch tree ..." "$out" "UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl"
     assert_not_contains "[$SH] ... and node on its node tree" "$out" "UNSLOTH_NODE_MIRROR"
     assert_contains "[$SH] an unreachable pypi.org means blocked mode" "$(_run "$SH" MOCK_PYPIINDEX=blocked)" "UV_DEFAULT_INDEX=$M/pypi/web/simple"
+    assert_eq "[$SH] a pypi.org index that answers in the race is not blocked" "" "$(_run "$SH" MOCK_PYPIINDEX="blocked|fast")"
+    for _npm_env in NPM_CONFIG_REGISTRY npm_config_registry; do
+        out=$(_run "$SH" MOCK_NPM=blocked "$_npm_env=https://corp.example/npm/" _AFTER='echo "SPARE $_UNSLOTH_MIRROR_SPARE"')
+        assert_not_contains "[$SH] $_npm_env: no npm switch or retry" "$out" "UNSLOTH_NPM_REGISTRY"
+    done
     out=$(_run "$SH" MOCK_PYPI=blocked MOCK_TORCH=blocked MOCK_ASTRAL=blocked MOCK_CERNETPYPIINDEX=blocked)
     assert_not_contains "[$SH] a mirror whose index does not answer is not used ..." "$out" "PIP_INDEX_URL"
     assert_contains "[$SH] ... while a mirror with its own live index is" "$out" "UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl"

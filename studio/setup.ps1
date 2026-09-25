@@ -1000,7 +1000,7 @@ function Invoke-MirrorFallback {
         $hosts['torch'] = @('torch', 'cernet-torch', "$cernet/pytorch/whl", 'https://download.pytorch.org/whl/cpu/torch/', "$cernet/pytorch/whl/cpu/torch/")
     }
     if (-not $env:UNSLOTH_NODE_MIRROR) { $hosts['node'] = @('node', 'npmmirror-node', "$npmMirror/-/binary/node", $null, $null) }
-    if (-not $env:UNSLOTH_NPM_REGISTRY) { $hosts['npm'] = @('npm', 'npmmirror', $npmMirror, $null, $null) }
+    if (-not "$env:UNSLOTH_NPM_REGISTRY$env:NPM_CONFIG_REGISTRY") { $hosts['npm'] = @('npm', 'npmmirror', $npmMirror, $null, $null) }
     if (-not "$env:UNSLOTH_UV_WHEEL_MIRROR$env:UV_DOWNLOAD_URL$env:INSTALLER_DOWNLOAD_URL$env:UV_INSTALLER_GHE_BASE_URL$env:UV_INSTALLER_GITHUB_BASE_URL") {
         $hosts['uvbin'] = @('astral', 'cernet-pypi', "$cernet/pypi/web", $null, $null)
     }
@@ -1050,7 +1050,7 @@ function Invoke-MirrorFallback {
         if ($slow.Count -eq 0) { return }
         # The default runs again beside the mirror so both share the link the same way.
         $sources = @($slow | ForEach-Object { $hosts[$_][1] } | Select-Object -Unique)
-        $indexes = Start-MirrorProbe -Urls @($slow | ForEach-Object { $hosts[$_][4] } | Where-Object { $_ }) -Seconds 4 -LastByte 1023
+        $indexes = Start-MirrorProbe -Urls @($slow | ForEach-Object { $hosts[$_][3]; $hosts[$_][4] } | Where-Object { $_ }) -Seconds 4 -LastByte 1023
         $race = Wait-MirrorProbe (Start-MirrorProbe -Urls @($slow | ForEach-Object { $artifact[$hosts[$_][0]] }; $sources | ForEach-Object { $artifact[$_] }) -Seconds 4 -LastByte 1048575)
         $sourceIndexes = Wait-MirrorProbe $indexes
         foreach ($url in $sourceIndexes.Keys) { $answered[$url] = $sourceIndexes[$url] }

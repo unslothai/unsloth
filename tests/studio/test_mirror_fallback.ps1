@@ -59,7 +59,7 @@ try {
 } finally { $proc.Kill() }
 
 $names = '_UNSLOTH_MIRROR_PROBED', 'UNSLOTH_MIRROR_FALLBACK', 'UV_INDEX', 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX_STRATEGY', 'PIP_INDEX_URL',
-    'PIP_EXTRA_INDEX_URL', 'UNSLOTH_PYTORCH_MIRROR', 'UNSLOTH_NODE_MIRROR', 'UNSLOTH_NPM_REGISTRY', 'UV_CONFIG_FILE', 'PIP_CONFIG_FILE',
+    'PIP_EXTRA_INDEX_URL', 'UNSLOTH_PYTORCH_MIRROR', 'UNSLOTH_NODE_MIRROR', 'UNSLOTH_NPM_REGISTRY', 'NPM_CONFIG_REGISTRY', 'UV_CONFIG_FILE', 'PIP_CONFIG_FILE',
     'UNSLOTH_UV_WHEEL_MIRROR', 'UV_INSTALLER_GITHUB_BASE_URL', 'UV_INSTALL_DIR', 'UV_NO_MODIFY_PATH', '_UNSLOTH_MIRROR_SPARE', 'UNSLOTH_INSTALL_RETRIES', 'UNSLOTH_INSTALL_RETRY_DELAY'
 $saved = @{}; foreach ($n in $names + 'APPDATA', 'USERPROFILE', 'ProgramData', 'PATH') { $saved[$n] = [Environment]::GetEnvironmentVariable($n) }
 $home_ = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-mirror-" + [guid]::NewGuid())
@@ -124,6 +124,8 @@ try {
     Check "each mirror tree is timed once" (@($script:probed -match "^($([regex]::Escape($M))|https://registry\.npmmirror\.com)/.*\.(t?gz|whl)$").Count -eq 3)
     Run @{ torch = 'blocked'; node = 'blocked'; npmmirrornode = 'blocked' }; Check "torch and node are weighed against their own mirror trees" ($env:UNSLOTH_PYTORCH_MIRROR -eq "$M/pytorch/whl" -and -not $env:UNSLOTH_NODE_MIRROR)
     Run @{ pypiindex = 'blocked' }; Check "an unreachable pypi.org means blocked mode, with nothing spared behind the mirror" ($env:UV_DEFAULT_INDEX -eq $pypiMirror -and $env:_UNSLOTH_MIRROR_SPARE -notmatch 'unsynced')
+    Run @{ pypiindex = 'blocked|fast' }; Check "a pypi.org index that answers in the race is not blocked" (-not $env:UV_DEFAULT_INDEX -and $script:lines.Count -eq 0)
+    Run @{ npm = 'blocked' } @{ NPM_CONFIG_REGISTRY = 'https://corp.example/npm/' }; Check "NPM_CONFIG_REGISTRY: no npm switch or retry" (-not $env:UNSLOTH_NPM_REGISTRY -and $env:_UNSLOTH_MIRROR_SPARE -notmatch 'UNSLOTH_NPM_REGISTRY')
     Run @{ torchindex = 'blocked' }; Check "an unreachable torch index switches torch" ($env:UNSLOTH_PYTORCH_MIRROR -eq "$M/pytorch/whl")
     Run @{ pypi = 'blocked'; torch = 'blocked'; astral = 'blocked'; cernetpypiindex = 'blocked' }
     Check "a mirror is used only while its own index answers; the uv wheel skips the index" (-not $env:PIP_INDEX_URL -and $env:UNSLOTH_PYTORCH_MIRROR -and $env:UNSLOTH_UV_WHEEL_MIRROR -eq "$M/pypi/web")
