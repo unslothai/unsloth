@@ -37320,7 +37320,14 @@ class LlamaCppBackend:
                         # outlives the closure.
                         _last_result_budget: list = ["<not passed>"]
 
-                        def _invoke_tool(_output_callback, _decision = decision):
+                        # Only a call the user answered: the executor lets it reach the host paths it names.
+                        _host_access_approved = _decision not in (None, "deny")
+
+                        def _invoke_tool(
+                            _output_callback,
+                            _decision = decision,
+                            _approved = _host_access_approved,
+                        ):
                             # execute_tool is injectable and may be monkey-patched with the
                             # pre-PR signature; forward output_callback only if it's accepted.
                             kwargs = dict(
@@ -37336,6 +37343,8 @@ class LlamaCppBackend:
                             # forced recall correctly refused.
                             if accepts_kwarg(execute_tool, "conversation_branch"):
                                 kwargs["conversation_branch"] = _extend_live_branch(conversation)
+                            if _approved and accepts_kwarg(execute_tool, "host_access_approved"):
+                                kwargs["host_access_approved"] = True
                             # And the room actually left: the model picks its own top_k and
                             # the result lands in the current tool exchange, which rolling
                             # truncation protects, so a top_k the window cannot hold ends

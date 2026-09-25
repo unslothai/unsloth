@@ -778,3 +778,63 @@ def test_a_managed_account_without_confinement_still_refuses_required(monkeypatc
 
     assert "1" not in result.splitlines()[:1], f"the call ran unisolated: {result!r}"
     assert "Execution error" in result or "OS_ISOLATION_UNAVAILABLE" in result
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        lambda **kw: tools._python_exec(
+            "import os\nprint('ran', os.path.exists('/srv/pr-approved/data.csv'))",
+            None,
+            60,
+            _SESSION,
+            **kw,
+        ),
+        lambda **kw: tools._bash_exec(
+            "ls /srv/pr-approved/data.csv; echo ran", None, 60, _SESSION, **kw
+        ),
+    ],
+    ids = ["python", "terminal"],
+)
+@pytest.mark.parametrize(
+    "approved, mode, jailed",
+    [
+        # The user approved a call that names a host path the jail does not bind.
+        (True, "auto", False),
+        # Nobody approved it: the jail stays, whatever the path.
+        (False, "auto", True),
+        # `required` is a promise about the boundary, so an approval does not lift it.
+        (True, "required", True),
+    ],
+)
+def test_an_approved_host_path_call_runs_as_it_does_without_the_jail(
+    monkeypatch, run, approved, mode, jailed
+):
+    planned: list = []
+
+    def prepare(plan):
+        planned.append(plan)
+        return _echoing_prepare(_Recorder())(plan)
+
+    monkeypatch.setattr(os_sandbox, "prepare_tool_launch", prepare)
+    tools._last_tool_execution_record = None
+    out = run(host_access_approved = approved, tool_execution_mode = mode)
+    assert "ran" in out
+    assert bool(planned) is jailed
+    if not jailed:
+        record = tools._last_tool_execution_record
+        assert record.effective_mode == "software_safeguards"
+        assert "user_approved_host_access" in record.limitations
+
+
+def test_an_approval_does_not_lift_the_jail_for_a_call_that_needs_no_host_path(monkeypatch):
+    planned: list = []
+
+    def prepare(plan):
+        planned.append(plan)
+        return _echoing_prepare(_Recorder())(plan)
+
+    monkeypatch.setattr(os_sandbox, "prepare_tool_launch", prepare)
+    # "ask" mode approves every call; only one that reaches the host may leave the jail.
+    assert "3" in tools._python_exec("print(1 + 2)", None, 60, _SESSION, host_access_approved = True)
+    assert len(planned) == 1

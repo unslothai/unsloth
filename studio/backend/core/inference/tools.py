@@ -9639,11 +9639,32 @@ def _software_safeguards_launch(plan, fault: str):
     )
 
 
-def _prepare_tool_launch(plan):
+def _reaches_host_paths(kind: str, text: str) -> bool:
+    """Whether the call names a host path outside the silent roots: the check that put it in front of the user."""
+    try:
+        if kind == "python":
+            tree, error = _parse_python(text)
+            return error is None and _python_reaches_outside_sandbox(tree, text)
+        command = text.replace("\r\n", ";").replace("\n", ";").replace("\r", ";")
+        for variant in {command, _expand_shell_assignments(_expand_param_defaults(command))}:
+            lexer = shlex.shlex(variant, posix = True, punctuation_chars = ";&|()")
+            lexer.whitespace_split = True
+            if _terminal_reaches_outside_sandbox(list(lexer), variant):
+                return True
+    except Exception:  # noqa: BLE001 - unclassifiable stays isolated
+        return False
+    return False
+
+
+def _prepare_tool_launch(plan, *, host_access_approved: bool = False):
     """Allow auto fallback for unavailable backends or unexpected planner errors.
 
     Unsafe workdirs and backend construction failures always refuse execution.
+    ``host_access_approved``: the user approved this exact call because it reaches host paths, which the jail does not
+    bind, so in ``auto`` it runs as it does without OS isolation. ``required`` keeps the jail.
     """
+    if host_access_approved and plan.requested_mode == "auto":
+        return _software_safeguards_launch(plan, "user_approved_host_access")
     try:
         prepared = os_sandbox.prepare_tool_launch(plan)
         if plan.preexec_fn is not None and prepared.preexec_fn is None:
@@ -12993,6 +13014,7 @@ def execute_tool(
     result_budget_tokens: int | None = None,
     *,
     tool_execution_mode: str = "auto",
+    host_access_approved: bool = False,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -13008,7 +13030,8 @@ def execute_tool(
     hidden server-validated domain limits for web_search. ``tool_execution_mode`` controls OS
     isolation for python/terminal: ``"auto"`` isolates when available and otherwise preserves
     existing behavior, while ``"required"`` refuses unisolated execution. Full access remains
-    controlled by ``disable_sandbox``; ``"full"`` here is refused.
+    controlled by ``disable_sandbox``; ``"full"`` here is refused. ``host_access_approved``: the user approved this
+    call at the confirmation prompt (see ``_prepare_tool_launch``).
     """
     from state.tool_policy import require_tool_access
 
@@ -13209,6 +13232,7 @@ def execute_tool(
                 output_callback = output_callback,
                 thread_id = thread_id,
                 tool_execution_mode = tool_execution_mode,
+                host_access_approved = host_access_approved,
             )
     if name == "terminal":
         with _session_in_flight(session_id):
@@ -13221,6 +13245,7 @@ def execute_tool(
                 output_callback = output_callback,
                 thread_id = thread_id,
                 tool_execution_mode = tool_execution_mode,
+                host_access_approved = host_access_approved,
             )
     # Same in-flight guard as the two above: it writes into the session workdir, so a chat deleted mid-call must not
     # unlink it underneath.
@@ -19553,6 +19578,7 @@ def _python_exec(
     thread_id: str | None = None,
     *,
     tool_execution_mode: str = "auto",
+    host_access_approved: bool = False,
 ) -> str:
     """Execute Python code in a subprocess sandbox. disable_sandbox (Bypass Permissions): skip the
     safety analysis and rlimit pre-exec, and use the host env minus secrets. output_callback:
@@ -19665,7 +19691,8 @@ def _python_exec(
                     requested_mode = requested_mode,
                     timeout_seconds = timeout,
                     execution_kind = "python",
-                )
+                ),
+                host_access_approved = host_access_approved and _reaches_host_paths("python", code),
             )
             _note_tool_execution(prepared.execution_record)
             proc = os_sandbox.spawn_prepared_launch(
@@ -19771,6 +19798,7 @@ def _bash_exec(
     thread_id: str | None = None,
     *,
     tool_execution_mode: str = "auto",
+    host_access_approved: bool = False,
 ) -> str:
     """Execute a bash command in a subprocess sandbox. disable_sandbox (Bypass Permissions): skip
     the command blocklist and rlimit pre-exec, and use the host env minus secrets.
@@ -19860,7 +19888,9 @@ def _bash_exec(
                     requested_mode = requested_mode,
                     timeout_seconds = timeout,
                     execution_kind = "terminal",
-                )
+                ),
+                host_access_approved = host_access_approved
+                and _reaches_host_paths("terminal", command),
             )
             _note_tool_execution(prepared.execution_record)
             proc = os_sandbox.spawn_prepared_launch(
