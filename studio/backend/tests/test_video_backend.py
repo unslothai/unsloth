@@ -9631,9 +9631,7 @@ def test_the_boundary_marker_waits_out_a_busy_capture_lock(fake_runtime, monkeyp
 def test_an_explicit_video_scheme_on_amd_runs_weight_only_without_forcing_compile(
     fake_runtime, monkeypatch, scheme
 ):
-    """On AMD / the Windows torchao stub, an explicit int8 / fp8 video DiT goes to the torchao-free
-    weight-only branch: it engages instead of being declined, and speed=off is honoured because bf16
-    arithmetic has no compile to require."""
+    """An explicit int8 / fp8 video DiT engages the native branch on AMD, honouring speed=off."""
     import core.inference.video as video_mod
     from core.inference import diffusion_transformer_quant as tq
 
@@ -9674,8 +9672,7 @@ def test_an_explicit_video_scheme_on_amd_runs_weight_only_without_forcing_compil
 def test_a_video_checkpoint_stored_narrow_is_not_quantised_again(
     fake_runtime, monkeypatch, fallback
 ):
-    """from_pretrained widens an fp8 checkpoint to bf16; quantising that again compounds the loss, so the
-    video loader declines it as the image loader does, and never calls the quantiser."""
+    """A bf16-widened fp8 checkpoint is declined without calling the quantiser."""
     import core.inference.video as video_mod
     from core.inference import diffusion_transformer_quant as tq
 
@@ -9709,8 +9706,7 @@ def test_a_video_checkpoint_stored_narrow_is_not_quantised_again(
 def test_a_partly_converted_video_denoiser_is_refused_even_with_the_fallback_allowed(
     fake_runtime, monkeypatch, fallback
 ):
-    """A weight-only pass that swapped some linears and then failed leaves the DiT neither dense nor
-    usable, so the load refuses it; the precision fallback covers a clean decline, not this."""
+    """A part-converted weight-only DiT is refused even with the precision fallback."""
     import core.inference.video as video_mod
     from core.inference import diffusion_transformer_quant as tq
 

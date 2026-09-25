@@ -644,8 +644,7 @@ def dense_transformer_unsupported_reason(target: Any) -> str:
     return "this device cannot run a dense torchao quant (it needs a CUDA GPU in bf16)"
 
 
-# Explicit schemes a torchao-free, weight-only path can honour where the dense torchao path cannot (see
-# ``diffusion_native_quant``). ``auto`` never lands here: weight-only measured no speed win on gfx1151, only memory.
+# ``auto`` never lands here: weight-only measured no speed win on gfx1151, only memory.
 NATIVE_QUANT_SCHEMES = (TQ_INT8, TQ_FP8)
 
 

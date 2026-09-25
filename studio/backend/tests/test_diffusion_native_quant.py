@@ -76,7 +76,6 @@ def _toy(dtype = torch.bfloat16):
     return _Toy().to(dtype)
 
 
-# ---- host / scheme truth table ----------------------------------------------------------------
 
 
 @pytest.mark.parametrize("scheme", ["int8", "fp8", "INT8", " fp8 "])
@@ -210,7 +209,6 @@ def test_the_shared_selector_is_untouched_on_rocm(rocm):
     assert not tq.dense_transformer_supported(_target())
 
 
-# ---- the layer --------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("scheme,bound", [("int8", 0.01), ("fp8", 0.04)])
@@ -220,7 +218,6 @@ def test_native_layer_reconstructs_the_weight(scheme, bound):
     err = nq.native_weight_error(lin, scheme)
     assert err is not None and err < bound
     layer = nq.native_linear_class()(lin, scheme)
-    # Stored as integer views (fp8 as uint8, fp32 scales as int32) so a module ``.to(dtype)`` cannot cast them.
     assert layer.weight_q.dtype == (torch.int8 if scheme == "int8" else torch.uint8)
     assert layer.weight_scale.dtype == torch.int32 and layer.weight_scale.shape == (512,)
     assert layer.weight_q.element_size() == 1
@@ -260,8 +257,7 @@ def test_native_buffers_move_with_module_to_and_state_dict():
 
 @pytest.mark.parametrize("scheme", ["int8", "fp8"])
 def test_a_module_wide_dtype_cast_leaves_the_stored_weights_alone(scheme):
-    """A pipeline ``.to(dtype)`` casts every floating buffer: an fp8 payload would widen back to bf16
-    and the fp32 scales would round. Integer views are skipped, so memory and output are unchanged."""
+    """A module ``.to(dtype)`` must not cast the integer-view payload or scales."""
     torch.manual_seed(0)
     lin = torch.nn.Linear(128, 64).to(torch.bfloat16)
     layer = nq.native_linear_class()(lin, scheme)
@@ -424,7 +420,6 @@ def test_quantize_transformer_goes_native_on_rocm(rocm, monkeypatch, scheme):
     assert got == scheme
     assert model._unsloth_runtime_quant == scheme
     swapped = {n for n, m in model.named_modules() if nq.is_native_linear(m)}
-    # to_q / ff / out in both blocks; `small` (8 out features) stays below the floor.
     assert swapped == {f"blocks.{i}.{n}" for i in range(2) for n in ("to_q", "ff", "out")}
     assert isinstance(model.blocks[0].small, torch.nn.Linear)
     assert tq.transformer_is_quantised(model) and nq.is_native_quantised(model)
@@ -466,8 +461,7 @@ def test_quantize_transformer_auto_on_rocm_stays_dense(rocm, monkeypatch):
 
 
 def test_quantize_transformer_failure_is_reported_as_dirty(rocm, monkeypatch):
-    # Per-layer like torchao's quantize_, so a mid-pass failure leaves a partial conversion; the loader's dirty
-    # check (transformer_is_quantised) must see it rather than run a half-quantised transformer as dense.
+    # A partial conversion must read as quantised, not dense.
     model = _toy()
     real = nq.native_linear_class()
     calls = []
@@ -668,9 +662,7 @@ def test_compile_cache_keys_native_apart_from_torchao():
 
 @pytest.mark.parametrize("scheme", ["int8", "fp8"])
 def test_reading_weight_gives_the_dense_weight_without_storing_it(scheme):
-    """PEFT's DoRA forward reads ``base_layer.weight``, and some DiT blocks read a Linear's
-    ``weight.dtype`` to cast their input. Both get the dense weight in the original dtype, rebuilt on
-    each read, and nothing new lands in the state dict."""
+    """PEFT DoRA reads ``base_layer.weight``: dense, rebuilt per read, not in the state dict."""
     torch.manual_seed(0)
     lin = torch.nn.Linear(128, 64).to(torch.bfloat16)
     layer = nq.native_linear_class()(lin, scheme)
@@ -718,7 +710,6 @@ def test_peft_wrapped_base_layer_runs_native(rocm, monkeypatch):
         assert torch.isfinite(wrapped(x)).all()
 
 
-# ---- preflight gates --------------------------------------------------------------------------
 
 
 def _image_family(name):
@@ -804,7 +795,6 @@ def test_image_gate_on_nvidia_never_consults_the_native_scheme(nvidia, monkeypat
 
     monkeypatch.setattr(d, "native_quant_scheme", lambda *a, **k: pytest.fail("native on NVIDIA"))
     monkeypatch.setattr(d, "dense_transformer_supported", lambda target: False)
-    # The pre-change answer on a host without the torchao path: refused, native never asked.
     with pytest.raises(RuntimeError, match = "transformer_quant"):
         _image_gate(monkeypatch, _image_family("qwen-image-2.1"), "int8")
 
