@@ -140,7 +140,9 @@ def _variant_is_a_required_companion_asset(repo_id: str, variant: str) -> bool:
 
 
 def _delete_impact_blocking(
-    repo_id: str, variant: Optional[str], cache_path: Optional[str] = None
+    repo_id: str,
+    variant: Optional[str],
+    cache_path: Optional[str] = None,
 ) -> dict:
     scans = _account_scans()
     by_id = _repos_by_id(scans)
@@ -226,7 +228,9 @@ class _SingleRepoScan:
 
 
 async def delete_impact_response(
-    repo_id: str, variant: Optional[str] = None, cache_path: Optional[str] = None
+    repo_id: str,
+    variant: Optional[str] = None,
+    cache_path: Optional[str] = None,
 ) -> dict:
     """What a delete of *repo_id* (/*variant*) would reclaim, retain, and be blocked by."""
     if not _is_valid_repo_id(repo_id):

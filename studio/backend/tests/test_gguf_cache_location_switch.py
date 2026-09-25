@@ -147,7 +147,6 @@ def test_complete_inactive_copy_beats_torn_active_copy(cache_locations, cache_cl
     assert cached_gguf_for_load(repo_id, inactive_quant) == str(expected[inactive_quant][1])
 
 
-
 def test_loader_skips_a_cancelled_copy_for_a_healthy_duplicate(cache_locations):
     """The listing prefers the healthy duplicate, so the loader must not open the cancelled copy."""
     from core.inference.llama_cpp import cached_gguf_for_load
@@ -170,6 +169,7 @@ def test_loader_skips_a_cancelled_copy_for_a_healthy_duplicate(cache_locations):
     )
     inventory_scan.invalidate_hf_cache_scans()
     assert cached_gguf_for_load(repo_id, quant) == str(healthy / f"Model-{quant}.gguf")
+
 
 def test_duplicate_quant_prefers_active_cache_and_deletes_only_that_copy(
     cache_locations, cache_client
@@ -549,7 +549,9 @@ def test_pin_listing_needs_explicit_token_when_ambient_is_denied(
 
 
 @pytest.mark.parametrize("entrypoint", ["listing", "source"])
-def test_incomplete_remembered_copy_is_not_advertised_complete(cache_locations, monkeypatch, entrypoint):
+def test_incomplete_remembered_copy_is_not_advertised_complete(
+    cache_locations, monkeypatch, entrypoint
+):
     """An offline/local answer has no Hub check to fall back on, so the remembered copy is
     judged by its own manifest: a quant whose companion never finished is not a complete
     copy the picker may offer to load, even though every main shard is on disk."""
@@ -647,6 +649,7 @@ def test_a_healthy_duplicate_is_preferred_over_a_cancelled_copy(cache_locations)
     assert not variant.partial
     assert variant.cache_path == str(healthy.parent.parent)
 
+
 def test_an_authorized_anonymous_caller_still_sees_remembered_caches(cache_locations, monkeypatch):
     """hub_cached_read_refused authorizes a public repo for the sentinel; a second anonymous
     test here re-refused it and dropped a quant that exists only in a remembered folder."""
@@ -715,7 +718,9 @@ def test_merging_a_root_row_recomputes_the_default(cache_locations, monkeypatch)
     distilled = GgufVariantInfo(
         filename = "distilled/Model-Q6_K.gguf", quant = "distilled/Model-Q6_K", size_bytes = 256
     )
-    monkeypatch.setattr(gguf_variants, "list_gguf_variants", lambda *a, **k: ([distilled], False, []))
+    monkeypatch.setattr(
+        gguf_variants, "list_gguf_variants", lambda *a, **k: ([distilled], False, [])
+    )
     inventory_scan.invalidate_hf_cache_scans()
     response = asyncio.run(
         gguf_variants.get_gguf_variants_response(
@@ -736,12 +741,8 @@ def test_duplicate_ranking_honors_current_companion_readiness(cache_locations):
     for repo, path in expected.values():
         (path.parent / f"Model-{quant}.gguf").write_bytes(b"0" * 256)
     inventory_scan.invalidate_hf_cache_scans()
-    active_snap, remembered_snap = sorted(
-        path.parent for repo, path in expected.values()
-    ) if False else (
-        next(path.parent for repo, path in expected.values() if repo.parent == active),
-        next(path.parent for repo, path in expected.values() if repo.parent != active),
-    )
+    active_snap = next(path.parent for repo, path in expected.values() if repo.parent == active)
+    remembered_snap = next(path.parent for repo, path in expected.values() if repo.parent != active)
     # The active copy satisfies every local rule but its scoped Hub answer does not.
     readiness = {active_snap: False, remembered_snap: True}
     chosen = cached_gguf_sources(
@@ -798,15 +799,17 @@ def test_a_remembered_partial_keeps_its_resume_metadata(cache_locations, monkeyp
     inventory_scan.invalidate_hf_cache_scans()
     roots = []
 
-    def _resumable(_repo_id, _quant, repo_cache_dir = None):
+    def _resumable(
+        _repo_id,
+        _quant,
+        repo_cache_dir = None,
+    ):
         roots.append(repo_cache_dir)
         # Only the remembered folder holds a resumable partial; the active root has none.
         return repo_cache_dir is not None and repo_cache_dir.parent == repo.parent
 
     monkeypatch.setattr(gguf_variants, "_partial_resumable_for_variant", _resumable)
-    monkeypatch.setattr(
-        gguf_variants, "variant_remaining_bytes_from_state", lambda *a, **k: 4096
-    )
+    monkeypatch.setattr(gguf_variants, "variant_remaining_bytes_from_state", lambda *a, **k: 4096)
 
     response = asyncio.run(
         gguf_variants.get_gguf_variants_response(
@@ -869,7 +872,9 @@ def test_a_cached_only_quant_is_judged_by_its_own_partial_state(cache_locations,
         False,
     )
     # The current revision cannot describe this quant, so its scoped answer returns no row.
-    monkeypatch.setattr(gguf_sources, "cached_gguf_sources", lambda *a, **k: {quant.lower(): source})
+    monkeypatch.setattr(
+        gguf_sources, "cached_gguf_sources", lambda *a, **k: {quant.lower(): source}
+    )
     monkeypatch.setattr(gguf_sources, "cached_gguf_source_partial", lambda *a, **k: True)
     inventory_scan.invalidate_hf_cache_scans()
 

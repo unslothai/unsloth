@@ -2235,7 +2235,13 @@ def test_gguf_variants_route_forwards_offline(monkeypatch):
     _variants(offline = True)
 
     assert calls == [
-        {"prefer_local_cache": False, "offline": True, "local_path": None, "include_cache_locations": False, "hf_token": None}
+        {
+            "prefer_local_cache": False,
+            "offline": True,
+            "local_path": None,
+            "include_cache_locations": False,
+            "hf_token": None,
+        }
     ]
 
 

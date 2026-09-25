@@ -3063,7 +3063,6 @@ def _cached_gguf_snapshots(repo_id: str):
                 yield snapshot
 
 
-
 def _cached_colocated_split_main(
     repo_id: str, main_filename: str, shards: Iterable[str], expected_sizes: dict[str, int]
 ) -> Optional[str]:
@@ -3117,6 +3116,7 @@ def _cached_variant_candidates(
             cached_gguf_manifest_complete,
             cached_gguf_source_partial,
         )
+
         pending_downloads = []
         for snap in _cached_gguf_snapshots(repo_id):
             cached_files = _gguf_snapshot_files(snap)
