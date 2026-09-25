@@ -96,17 +96,26 @@ export function isFileItem(item: LibraryItem): boolean {
   return !isModelItem(item);
 }
 
-const MODEL_LABELS: Record<string, string> = {
-  "training:lora": "LoRA",
-  "training:merged": "Full fine-tune",
-  "exported:lora": "LoRA export",
-  "exported:merged": "Merged export",
-  "exported:gguf": "GGUF export",
-};
+const MODEL_LABELS = {
+  "training:lora": "library.modelKind.lora",
+  "training:merged": "library.modelKind.fullFineTune",
+  "exported:lora": "library.modelKind.loraExport",
+  "exported:merged": "library.modelKind.mergedExport",
+  "exported:gguf": "library.modelKind.ggufExport",
+} as const;
 
-export function modelLabel(item: LibraryItem): string {
+export type ModelLabelKey =
+  | (typeof MODEL_LABELS)[keyof typeof MODEL_LABELS]
+  | "library.modelKind.model";
+
+/** The message key naming how a fine-tuned model was made, or null for a file. */
+export function modelLabelKey(item: LibraryItem): ModelLabelKey | null {
   const model = item.model;
-  return model ? (MODEL_LABELS[`${model.origin}:${model.exportType}`] ?? "Model") : "";
+  if (!model) return null;
+  const key = `${model.origin}:${model.exportType}`;
+  return key in MODEL_LABELS
+    ? MODEL_LABELS[key as keyof typeof MODEL_LABELS]
+    : "library.modelKind.model";
 }
 
 /** The extension the file itself has. A rename changes only the name shown, never what it is. */

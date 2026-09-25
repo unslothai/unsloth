@@ -6,10 +6,11 @@ models and sandbox files, plus folders, favorites and renames. See ``core.librar
 
 import os
 import re
-from typing import Optional
+from typing import Literal, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -28,17 +29,25 @@ router = APIRouter()
 
 _MAX_UPLOAD_BYTES = LIBRARY_UPLOAD_MAX_BYTES
 _CHUNK_BYTES = 1024 * 1024
-# Raster images render inline; anything else (svg and html included) downloads as opaque bytes, as
-# the sandbox route does, so a crafted upload cannot run script on the app origin.
-_INLINE_PREFIXES = (
-    "image/png",
-    "image/jpeg",
-    "image/gif",
-    "image/webp",
-    "image/avif",
-    "audio/",
-    "video/",
+# Raster images, audio and video render inline; anything else (svg and html included) downloads as
+# opaque bytes, as the sandbox route does, so a crafted upload cannot run script on the app origin.
+# Exact types, never a prefix: a stored "audio/x, text/html" is not audio.
+_INLINE_IMAGE_TYPES = frozenset(
+    {"image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"}
 )
+_NOSNIFF = {"X-Content-Type-Options": "nosniff"}
+
+
+def _inline_type(content_type: str) -> Optional[str]:
+    value = library.media_type(content_type)
+    if value in _INLINE_IMAGE_TYPES:
+        return value
+    playable = {
+        known
+        for known in library.content_types().values()
+        if known.startswith(("audio/", "video/"))
+    }
+    return value if value in playable else None
 
 
 class ItemPatch(BaseModel):
@@ -74,6 +83,8 @@ class FolderPatch(BaseModel):
 
 class TextContent(BaseModel):
     text: str = Field(max_length = 5_000_000)
+    # The note's own encoding, so a UTF-16 file (Windows PowerShell, Notepad "Unicode") stays one.
+    encoding: Literal["utf-8", "utf-16le", "utf-16be"] = "utf-8"
 
 
 @router.get("")
@@ -84,12 +95,24 @@ async def get_library(current_subject: str = Depends(get_current_subject)) -> di
 
 @router.get("/favorites")
 def get_favorites(current_subject: str = Depends(get_current_subject)) -> dict:
-    """Favorite item ids alone, for pages that mark favorites without listing every source."""
+    """Favorite item ids alone, for pages that mark favorites without listing every source. Only
+    those the source still has: a gallery or chat can delete one without the Library."""
     return {
         "ids": [
-            item_id for item_id, entry in library_db.list_entries().items() if entry["favorite"]
+            item_id
+            for item_id, entry in library_db.list_entries().items()
+            if entry["favorite"] and _still_there(item_id)
         ]
     }
+
+
+def _still_there(item_id: str) -> bool:
+    try:
+        return library.item_exists(item_id)
+    except Exception:
+        # A store that cannot be read right now keeps its stars rather than dropping them.
+        logger.debug("library.favorite_check_failed: %s", item_id, exc_info = True)
+        return True
 
 
 # ── Items ────────────────────────────────────────────────────────
@@ -126,9 +149,21 @@ async def delete_item(body: ItemRef, current_subject: str = Depends(get_current_
             event = "library.delete_protected",
             log = logger,
         ) from exc
+    except OSError as exc:
+        raise _file_error(exc, "library.delete_failed", "Could not delete the file.") from exc
     if not deleted:
         raise HTTPException(status_code = 404, detail = "Item not found")
     return {"ok": True}
+
+
+def _file_error(exc: OSError, event: str, detail: str) -> HTTPException:
+    """Windows refuses to replace or delete a file another program holds open, so that one says
+    what to do; anything else is logged and answered without the path."""
+    if isinstance(exc, PermissionError):
+        logger.info("%s: %s", event, exc)
+        return HTTPException(status_code = 409, detail = "The file is in use. Close it and try again.")
+    logger.warning("%s: %s", event, exc, exc_info = True)
+    return HTTPException(status_code = 500, detail = detail)
 
 
 @router.post("/items/project")
@@ -138,9 +173,15 @@ async def add_item_to_project(
     """Copy an item's file into a chat project's folder. The Library keeps its item."""
     from core.inference.gallery_projects import ProjectNotFound, copy_into_project
 
+    def _copy() -> dict:
+        with library.open_item(body.id) as item:
+            copied = copy_into_project(item.handle, body.projectId, item.folder, item.project_name)
+        # The copy is a project file of its own, listed from the next listing on.
+        library.invalidate_listing()
+        return copied
+
     try:
-        path, folder, name = await run_in_threadpool(library.project_source, body.id)
-        result = await run_in_threadpool(copy_into_project, path, body.projectId, folder, name)
+        result = await run_in_threadpool(_copy)
     except ProjectNotFound:
         raise HTTPException(status_code = 404, detail = "Project not found")
     except LookupError:
@@ -154,10 +195,22 @@ async def add_item_to_project(
 
 
 def _reveal(path) -> None:
+    from utils.paths.file_manager import file_manager_kind
     from utils.paths.path_utils import reveal_in_file_manager
+
+    # The UI hides Reveal on such a host; a direct call must not open a window nobody sees.
+    if file_manager_kind() is None:
+        raise HTTPException(status_code = 503, detail = "No file manager is available on this machine")
     try:
         reveal_in_file_manager(path)
     except FileNotFoundError:
+        # Two things raise this, as the sandbox reveal knows: the file going before it is shown,
+        # and Popen not finding a file manager at all (a headless Linux has no xdg-open).
+        if os.path.exists(path):
+            logger.error("library.reveal_failed: %s", path, exc_info = True)
+            raise HTTPException(
+                status_code = 503, detail = "No file manager is available on this machine"
+            )
         raise HTTPException(status_code = 404, detail = "File not found")
     except Exception:
         logger.error("library.reveal_failed: %s", path, exc_info = True)
@@ -188,13 +241,13 @@ def get_item_thumbnail(
         data = library.thumbnail(id)
     except LookupError:
         raise HTTPException(status_code = 404, detail = "Item not found")
-    except RuntimeError as exc:
+    except (RuntimeError, OSError) as exc:
         logger.info("library.thumbnail_unavailable: %s", exc)
         raise HTTPException(status_code = 501, detail = "No thumbnail for this item")
     return Response(
         content = data,
         media_type = "image/webp",
-        headers = {"Cache-Control": "private, max-age=31536000, immutable"},
+        headers = {"Cache-Control": "private, max-age=31536000, immutable", **_NOSNIFF},
     )
 
 
@@ -208,17 +261,46 @@ async def download_item(
     straight to disk, and its native save sends no header."""
     await subject_for_header_or_query_token(request, token)
     try:
-        path, _folder, _name = await run_in_threadpool(library.project_source, id)
+        # Opened once and streamed from that descriptor: a sandbox name can be a link by the time
+        # it would be opened again.
+        item = await run_in_threadpool(library.open_item, id)
     except LookupError:
         raise HTTPException(status_code = 404, detail = "Item not found")
     except ValueError:
         raise HTTPException(status_code = 400, detail = "This item has no file to download")
-    return FileResponse(
-        path,
-        media_type = "application/octet-stream",
-        filename = path.name,
-        headers = {"X-Content-Type-Options": "nosniff"},
+    headers = {
+        **_attachment_headers(item.name),
+        "Content-Length": str(item.size),
+        "Cache-Control": "private, no-store",
+    }
+    if request.method.upper() == "HEAD":
+        item.close()
+        return Response(status_code = 200, media_type = "application/octet-stream", headers = headers)
+    return StreamingResponse(
+        _read_exactly(item), media_type = "application/octet-stream", headers = headers
     )
+
+
+def _attachment_headers(name: str) -> dict:
+    # RFC 5987, as the sandbox route sends it: an ASCII fallback plus the UTF-8 name.
+    ascii_name = name.encode("ascii", "replace").decode("ascii").replace('"', "_")
+    return {
+        "Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name)}",
+        **_NOSNIFF,
+    }
+
+
+def _read_exactly(item):
+    """The file's bytes up to the length sent in the header, as the sandbox route streams: a file
+    still being appended to must not send a body longer than Content-Length."""
+    remaining = item.size
+    with item:
+        while remaining > 0:
+            chunk = item.handle.read(min(_CHUNK_BYTES, remaining))
+            if not chunk:
+                return
+            remaining -= len(chunk)
+            yield chunk
 
 
 @router.get("/locations")
@@ -273,19 +355,39 @@ async def upload_files(
     if folderId and library_db.get_folder(folderId) is None:
         raise HTTPException(status_code = 404, detail = "Folder not found")
 
+    def _check_native(lease: str) -> None:
+        try:
+            name, size = library.check_native_upload(lease)
+        except (ValueError, OSError) as exc:
+            # A bad or expired grant, a path outside this account's workspace, or a file gone.
+            # The reason can name the path, so it goes to the log alone.
+            logger.info("library.native_drop_refused: %s", exc)
+            raise HTTPException(
+                status_code = 400, detail = "The dropped file could not be read. Drop it again."
+            ) from exc
+        if size > _MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code = 413, detail = f"{name} is too large")
+
+    consumed: list[str] = []
+
     def _save_native(lease: str) -> dict:
         try:
             name, content_type, handle = library.open_native_upload(lease)
-        except ValueError as exc:
-            # A bad or expired grant, or a path outside this account's workspace.
-            raise HTTPException(status_code = 400, detail = str(exc)) from exc
-        except OSError as exc:
-            raise HTTPException(status_code = 400, detail = "Dropped file could not be read.") from exc
+        except (ValueError, OSError) as exc:
+            logger.info("library.native_drop_refused: %s", exc)
+            raise HTTPException(
+                status_code = 400, detail = "The dropped file could not be read. Drop it again."
+            ) from exc
+        consumed.append(lease)
         with handle:
             # Refused before a byte is copied; _chunks still caps a file that grows meanwhile.
             if os.fstat(handle.fileno()).st_size > _MAX_UPLOAD_BYTES:
                 raise HTTPException(status_code = 413, detail = f"{name} is too large")
             return library.save_upload(name, content_type, _chunks(handle, name))
+
+    # Every grant and its size first, and nothing spent: a batch refused here is retried whole.
+    for lease in nativePathLeases or []:
+        await run_in_threadpool(_check_native, lease)
 
     records = []
     try:
@@ -295,7 +397,7 @@ async def upload_files(
                 await run_in_threadpool(
                     library.save_upload,
                     name,
-                    upload.content_type or "application/octet-stream",
+                    library.upload_content_type(name, upload.content_type),
                     _chunks(upload.file, name),
                 )
             )
@@ -307,13 +409,24 @@ async def upload_files(
             for item_id in ids:
                 library_db.update_entry(item_id, folder_id = folderId, move = True)
     except BaseException as exc:
-        # All or nothing, so a retry never duplicates the files that did make it.
+        # All or nothing, so a retry never duplicates the files that did make it, and the grants
+        # this batch spent are given back, or its retry would be refused as a replay.
         for record in records:
             await run_in_threadpool(library.delete_item, f"upload:{record['id']}")
+        _release_leases(consumed)
         if isinstance(exc, KeyError):
             raise HTTPException(status_code = 404, detail = "Folder not found") from exc
         raise
     return {"ids": ids}
+
+
+def _release_leases(leases: list[str]) -> None:
+    from utils.native_path_leases import release_native_path_lease
+    for lease in leases:
+        try:
+            release_native_path_lease(lease)
+        except ValueError:
+            logger.debug("library.native_lease_release_failed", exc_info = True)
 
 
 @router.get("/uploads/{upload_id}/file")
@@ -322,14 +435,14 @@ def get_upload_file(upload_id: str, current_subject: str = Depends(get_current_s
     path = library.upload_path(upload_id)
     if record is None or path is None or not path.is_file():
         raise HTTPException(status_code = 404, detail = "File not found")
-    content_type = record["contentType"].lower()
-    if content_type.startswith(_INLINE_PREFIXES):
-        return FileResponse(path, media_type = content_type)
+    content_type = _inline_type(record["contentType"])
+    if content_type:
+        return FileResponse(path, media_type = content_type, headers = _NOSNIFF)
     return FileResponse(
         path,
         media_type = "application/octet-stream",
-        filename = record["name"],
-        headers = {"X-Content-Type-Options": "nosniff"},
+        filename = library.safe_file_name(record["name"]),
+        headers = _NOSNIFF,
     )
 
 
@@ -339,7 +452,13 @@ def put_upload_text(
     body: TextContent,
     current_subject: str = Depends(get_current_subject),
 ) -> dict:
-    if not library.write_upload_text(upload_id, body.text):
+    try:
+        written = library.write_upload_text(upload_id, body.text, body.encoding)
+    except UnicodeEncodeError:
+        raise HTTPException(status_code = 400, detail = "The note has characters it cannot hold.")
+    except OSError as exc:
+        raise _file_error(exc, "library.note_save_failed", "Could not save the note.") from exc
+    if not written:
         raise HTTPException(status_code = 404, detail = "File not found")
     return {"ok": True}
 

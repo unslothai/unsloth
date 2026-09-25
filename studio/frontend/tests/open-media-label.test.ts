@@ -8,30 +8,28 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
-import { openMediaLabel } from "../src/lib/open-media-label.ts";
+import { shortPrompt } from "../src/lib/open-media-label.ts";
 
-test("the label keeps the prompt", () => {
-  assert.equal(openMediaLabel("image", "a red fox in snow"), "Open image: a red fox in snow");
-  assert.equal(openMediaLabel("image", "  a red\n fox  "), "Open image: a red fox");
+test("the prompt is kept, whitespace collapsed", () => {
+  assert.equal(shortPrompt("a red fox in snow"), "a red fox in snow");
+  assert.equal(shortPrompt("  a red\n fox  "), "a red fox");
 });
 
-test("no prompt leaves the plain action", () => {
-  assert.equal(openMediaLabel("image", ""), "Open image");
-  assert.equal(openMediaLabel("video", " \n "), "Open video");
+test("no prompt gives nothing, for the plain action", () => {
+  assert.equal(shortPrompt(""), "");
+  assert.equal(shortPrompt(" \n "), "");
 });
 
 test("a long prompt is cut at a word, with an ellipsis", () => {
   const prompt = "a very detailed painting of a lighthouse on a cliff at dusk, waves crashing below, gulls";
-  const label = openMediaLabel("image", prompt, 40);
-  assert.equal(label, "Open image: a very detailed painting of a lighthouse…");
-  assert.equal(openMediaLabel("image", prompt, 38), "Open image: a very detailed painting of a…");
+  assert.equal(shortPrompt(prompt, 40), "a very detailed painting of a lighthouse…");
+  assert.equal(shortPrompt(prompt, 38), "a very detailed painting of a…");
   // One long word has no space to cut at, so it is cut where the limit falls.
-  assert.equal(openMediaLabel("image", "x".repeat(50), 10), `Open image: ${"x".repeat(10)}…`);
+  assert.equal(shortPrompt("x".repeat(50), 10), `${"x".repeat(10)}…`);
 });
 
 test("the cut counts code points, so an emoji is never split", () => {
-  const label = openMediaLabel("image", `a${"🐱".repeat(20)}`, 10);
-  assert.equal(label, `Open image: a${"🐱".repeat(9)}…`);
+  assert.equal(shortPrompt(`a${"🐱".repeat(20)}`, 10), `a${"🐱".repeat(9)}…`);
 });
 
 test("the Images preview is named for its prompt", () => {
@@ -42,5 +40,5 @@ test("the Images preview is named for its prompt", () => {
   );
   assert.ok(preview.includes('role="button"'));
   assert.ok(preview.includes("tabIndex={0}"));
-  assert.ok(preview.includes('aria-label={openMediaLabel("image", selected.prompt)}'));
+  assert.ok(preview.includes("aria-label={openImageLabel(t, selected.prompt)}"));
 });

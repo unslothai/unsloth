@@ -21,13 +21,12 @@ import {
   Image03Icon,
   ImageAdd02Icon,
   InformationCircleIcon,
-  LibrariesIcon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { MediaViewer } from "@/components/media-viewer";
-import { openMediaLabel } from "@/lib/open-media-label";
+import { shortPrompt } from "@/lib/open-media-label";
 
 import { ImageDropzone } from "@/components/image-dropzone";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
@@ -90,7 +89,8 @@ import { MediaRailResizeHandle } from "@/components/media-rail-resize-handle";
 import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-width";
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
-import { MediaPageLink } from "@/components/media-page-link";
+import { LibraryPageLink } from "@/components/media-page-link";
+import { translate, useT } from "@/i18n";
 import {
   chatAboutMedia,
   revealInFolder,
@@ -1242,6 +1242,12 @@ type LoadAdvanced = Pick<
   | "gpu_ids"
 >;
 
+/** The preview's accessible name: what it does, and which image, as its alt would have said. */
+function openImageLabel(t: ReturnType<typeof useT>, prompt: string): string {
+  const text = shortPrompt(prompt);
+  return text ? t("library.viewer.openImageNamed", { prompt: text }) : t("library.viewer.openImage");
+}
+
 export function ImagesPage({
   active = true,
   onInitialReady,
@@ -1249,6 +1255,7 @@ export function ImagesPage({
   active?: boolean;
   onInitialReady?: () => void;
 }) {
+  const t = useT();
   const initialReadySent = useRef(false);
   const [rememberedModel, setRememberedModel] = useState(readImageModel);
   const pendingRecalledGeneration = useRef<{ model: RememberedImageModel; load: number; workflow: WorkflowId } | null>(null);
@@ -3297,7 +3304,9 @@ export function ImagesPage({
       if (found) {
         setSelectedId(routedItem);
       } else {
-        toast("Could not find this image", { description: "It may be archived or deleted." });
+        toast(translate("library.toast.imageNotFound"), {
+          description: translate("library.toast.notFoundDescription"),
+        });
       }
     });
   }, [routedItem, navigateSelf, loadGallery, loadMore]);
@@ -4572,11 +4581,8 @@ export function ImagesPage({
           </div>
           <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-2">
-              <MediaPageLink
-                to="/library"
-                libraryTab="images"
-                label="Library"
-                icon={LibrariesIcon}
+              <LibraryPageLink
+                tab="images"
                 labelClassName="hidden @[50rem]:inline"
                 arrowClassName="hidden @[50rem]:block"
               />
@@ -5285,13 +5291,13 @@ export function ImagesPage({
             <MediaViewer
               open={true}
               onOpenChange={(open) => !open && setViewerId(null)}
-              title={viewerImage.prompt || "Untitled image"}
+              title={viewerImage.prompt || t("library.viewer.untitledImage")}
               meta={`Generated · ${viewerImage.width} × ${viewerImage.height}`}
               media={true}
               noun="image"
               actions={{
                 primary: {
-                  label: "Chat about this",
+                  label: t("library.menu.chatAboutThis"),
                   icon: MessageCircleIcon,
                   onClick: () =>
                     void chatAboutMedia(
@@ -5327,7 +5333,7 @@ export function ImagesPage({
                   style={TRANSPARENCY_CHECKER}
                   role="button"
                   tabIndex={0}
-                  aria-label={openMediaLabel("image", selected.prompt)}
+                  aria-label={openImageLabel(t, selected.prompt)}
                   onClick={openViewer}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
@@ -5344,8 +5350,8 @@ export function ImagesPage({
                   <Button
                     size="icon-sm"
                     variant="ghost"
-                    aria-label="Open image"
-                    title="Open image"
+                    aria-label={t("library.viewer.openImage")}
+                    title={t("library.viewer.openImage")}
                     onClick={(event) => {
                       // Safari does not focus a clicked button, and the viewer returns focus to what had it.
                       event.currentTarget.focus();

@@ -22,9 +22,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useT } from "@/i18n";
 import { StarPointedIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
-import { useProjectSubmenu } from "./project-submenu";
+import { type MediaNoun, useProjectSubmenu } from "./project-submenu";
 
 /**
  * Actions for one gallery item, shared by the Images, Video and Audio pages. Matches a chat row's menu.
@@ -68,13 +69,14 @@ export function GalleryItemMenu({
   leadingItems?: ReactNode;
   variant?: GalleryItemMenuVariant;
   /** Used in the aria-label and messages, e.g. "image" or "video". */
-  noun: string;
+  noun: MediaNoun;
   /** False while the page is off-tab; forces the menu shut so a portalled popup cannot outlive it. */
   active?: boolean;
   className?: string;
 }) {
   // Controlled like RecipePopover: DropdownMenuContent portals to body, so the inert page wrapper
   // cannot contain it when the tab goes away.
+  const t = useT();
   const [open, setOpen] = useState(false);
   const project = useProjectSubmenu({ noun, onAddToProject });
   const closeProject = project.close;
@@ -132,7 +134,7 @@ export function GalleryItemMenu({
               strokeWidth={1.75}
               className={cn("size-icon", favorite && "[&_path]:fill-current")}
             />
-            {favorite ? "Remove from Favorites" : "Add to Favorites"}
+            {t(favorite ? "library.menu.removeFromFavorites" : "library.menu.addToFavorites")}
           </DropdownMenuItem>
         )}
         {onDownload ? (

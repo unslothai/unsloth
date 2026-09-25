@@ -143,6 +143,12 @@ export function MediaZoomStage({
   function onPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
     const current = drag.current;
     if (!current || current.id !== event.pointerId) return;
+    // Released outside the stage before the drag captured the pointer, so no pointerup came here;
+    // without this, moving back over the stage would pan with no button held.
+    if ((event.buttons & 1) === 0) {
+      endDrag(current);
+      return;
+    }
     const dx = event.clientX - current.x;
     const dy = event.clientY - current.y;
     if (!current.moved) {
@@ -167,6 +173,10 @@ export function MediaZoomStage({
   function onPointerEnd(event: ReactPointerEvent<HTMLDivElement>) {
     const current = drag.current;
     if (current?.id !== event.pointerId) return;
+    endDrag(current);
+  }
+
+  function endDrag(current: NonNullable<typeof drag.current>) {
     cancelAnimationFrame(current.frame);
     dragged.current = current.moved;
     drag.current = null;
@@ -183,6 +193,7 @@ export function MediaZoomStage({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerEnd}
       onPointerCancel={onPointerEnd}
+      onLostPointerCapture={onPointerEnd}
       // The click that ends a drag must not also play or pause a video.
       onClickCapture={(event) => {
         if (!dragged.current) return;

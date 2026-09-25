@@ -8,6 +8,7 @@ import { getAuthSessionEpoch } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 // eslint-disable-next-line no-restricted-imports -- the chat barrel imports the Library back
 import { clearNewChatDraft } from "@/features/chat/utils/composer-draft";
+import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { MAX_VIDEO_SIZE } from "@/lib/video-utils";
 import {
@@ -76,18 +77,28 @@ export async function chatAboutMedia(
   handoffInFlight = true;
   const limit = MEDIA_LIMITS[kind];
   const tooLarge = () =>
-    toast.error(`This ${kind} is too large to attach`, {
-      description: `Chat attachments are limited to ${Math.round(limit.bytes / (1024 * 1024))} MB.`,
+    toast.error(translate(kind === "image" ? "library.toast.imageTooLarge" : "library.toast.videoTooLarge"), {
+      description: translate("library.toast.attachmentLimit", {
+        size: Math.round(limit.bytes / (1024 * 1024)),
+      }),
     });
   let loadingToast: string | number | null = null;
   const loadingTimer = setTimeout(() => {
-    loadingToast = toast.loading(`Attaching the ${kind}…`);
+    loadingToast = toast.loading(
+      translate(kind === "image" ? "library.toast.attachingImage" : "library.toast.attachingVideo"),
+    );
   }, LOADING_TOAST_DELAY_MS);
   // A sign-out while the file downloads would hand it to the next account's chat.
   const epoch = getAuthSessionEpoch();
   try {
     const response = typeof source === "string" ? await fetch(source) : await source();
-    if (!response.ok) throw new Error(`Could not read the ${kind} (${response.status}).`);
+    if (!response.ok) {
+      throw new Error(
+        translate(kind === "image" ? "library.toast.readImageFailed" : "library.toast.readVideoFailed", {
+          status: response.status,
+        }),
+      );
+    }
     // Before reading the body, so an oversized file is never buffered.
     if (Number(response.headers.get("content-length")) > limit.bytes) {
       void response.body?.cancel();
@@ -106,7 +117,7 @@ export async function chatAboutMedia(
       files: [new File([blob], mediaFileName(prompt, limit.extension), { type })],
     });
   } catch (error) {
-    toast.error("Could not open the file", {
+    toast.error(translate("library.toast.openFileFailed"), {
       description: error instanceof Error ? error.message : String(error),
     });
   } finally {

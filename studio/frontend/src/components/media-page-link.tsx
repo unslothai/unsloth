@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { LibrariesIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { IconSvgElement } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -11,6 +12,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import type { LibraryTab } from "@/features/library";
+import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
   ArrowRightIcon,
@@ -78,5 +80,29 @@ export function MediaPageLink({
         </TooltipContent>
       </Tooltip>
     </>
+  );
+}
+
+/** The link out to the Library, opened on `tab`, named in the app's language. */
+export function LibraryPageLink({
+  tab,
+  labelClassName,
+  arrowClassName,
+}: {
+  tab: LibraryTab;
+  labelClassName?: string;
+  arrowClassName?: string;
+}) {
+  const t = useT();
+  return (
+    <MediaPageLink
+      to="/library"
+      libraryTab={tab}
+      label={t("shell.navigation.library")}
+      tooltip={t("studio.goToLibrary")}
+      icon={LibrariesIcon}
+      labelClassName={labelClassName}
+      arrowClassName={arrowClassName}
+    />
   );
 }

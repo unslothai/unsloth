@@ -136,7 +136,7 @@ import {
   useNativeIntentStore,
 } from "@/features/native-intents";
 import { nativeAttachmentIntentToFile } from "@/features/native-intents/native-attachment-file";
-import { useLibraryChatHandoffStore } from "@/features/library";
+import { useLibraryChatHandoffStore } from "@/features/library/chat-handoff-store";
 import { cancelResearchRun } from "@/features/chat/api/research-api";
 import {
   ingestResearchUpdate,

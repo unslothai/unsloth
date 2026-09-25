@@ -10,7 +10,6 @@ import {
   FlimSlateIcon,
   ImageCropIcon,
   InformationCircleIcon,
-  LibrariesIcon,
   VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -24,7 +23,8 @@ import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
 import { ImageDropzone } from "@/components/image-dropzone";
-import { MediaPageLink } from "@/components/media-page-link";
+import { LibraryPageLink } from "@/components/media-page-link";
+import { translate, useT } from "@/i18n";
 import {
   chatAboutMedia,
   revealInFolder,
@@ -917,6 +917,7 @@ function VideoGenerator({
   active?: boolean;
   onInitialReady?: () => void;
 }) {
+  const t = useT();
   const initialReadySent = useRef(false);
   // Clear the floating sidebar toggle on mobile.
   const isMobileShell = useIsMobileShell();
@@ -3032,7 +3033,9 @@ function VideoGenerator({
       if (found) {
         setSelectedId(routedItem);
       } else {
-        toast("Could not find this clip", { description: "It may be archived or deleted." });
+        toast(translate("library.toast.clipNotFound"), {
+          description: translate("library.toast.notFoundDescription"),
+        });
       }
     });
   }, [routedItem, navigateSelf, loadGallery, loadMore]);
@@ -3735,11 +3738,8 @@ function VideoGenerator({
         </div>
         <div className="pointer-events-auto flex shrink-0 items-center gap-2">
           {/* A separate page, so it sits outside this page's controls. */}
-          <MediaPageLink
-            to="/library"
-            libraryTab="videos"
-            label="Library"
-            icon={LibrariesIcon}
+          <LibraryPageLink
+            tab="videos"
             labelClassName="@max-[30rem]:hidden"
             arrowClassName="@max-[30rem]:hidden"
           />
@@ -4308,13 +4308,13 @@ function VideoGenerator({
             <MediaViewer
               open={true}
               onOpenChange={(open) => !open && closeViewer()}
-              title={viewerVideo.prompt || "Untitled video"}
+              title={viewerVideo.prompt || t("library.viewer.untitledVideo")}
               meta={`Generated · ${viewerVideo.width} × ${viewerVideo.height} · ${Math.round(viewerVideo.duration_s)}s`}
               media={true}
               noun="video"
               actions={{
                 primary: {
-                  label: "Chat about this",
+                  label: t("library.menu.chatAboutThis"),
                   icon: MessageCircleIcon,
                   onClick: () =>
                     void chatAboutMedia(
@@ -4409,8 +4409,8 @@ function VideoGenerator({
                   <Button
                     size="icon-sm"
                     variant="ghost"
-                    aria-label="Open video"
-                    title="Open video"
+                    aria-label={t("library.viewer.openVideo")}
+                    title={t("library.viewer.openVideo")}
                     onClick={(event) => {
                       // Safari does not focus a clicked button, and the viewer returns focus to what had it.
                       event.currentTarget.focus();

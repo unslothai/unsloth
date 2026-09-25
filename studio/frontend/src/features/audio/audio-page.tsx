@@ -11,13 +11,13 @@ import {
   Copy01Icon,
   Delete02Icon,
   Download01Icon,
-  LibrariesIcon,
   Mic01Icon,
   SparklesIcon,
   StopIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { MediaPageLink } from "@/components/media-page-link";
+import { LibraryPageLink } from "@/components/media-page-link";
+import { translate } from "@/i18n";
 import {
   type ReactNode,
   useCallback,
@@ -1786,8 +1786,8 @@ export function AudioPage({
   ]);
 
   // A Library "View in Audio" link arrives as ?task=text-to-speech&item=: the task switches to Speak
-  // (and clears the query), this selects the clip, paging back until it loads. A counter, not
-  // effect cleanup, retires a lookup: clearing the query must not cancel its own.
+  // (and clears its part of the query), this selects the clip, paging back until it loads. A
+  // counter, not effect cleanup, retires a lookup: clearing the query must not cancel its own.
   const routedItem = active ? routeSearch.item : undefined;
   const routedLookup = useRef(0);
   // Leaving the page does retire it: hidden pages stay mounted and would keep paging.
@@ -1797,7 +1797,14 @@ export function AudioPage({
   useEffect(() => {
     if (!routedItem) return;
     const lookup = ++routedLookup.current;
-    if (!routeSearch.task) void navigateSelf({ to: "/audio", search: {}, replace: true });
+    // The item leaves the URL at once, whoever clears the task: a mode switch refused while the
+    // page is busy keeps ?task= for its retry, and a lingering ?item= would start this lookup
+    // over whenever these callbacks change.
+    void navigateSelf({
+      to: "/audio",
+      search: (prev) => ({ ...prev, item: undefined }),
+      replace: true,
+    });
     void loadGalleryUntil({
       has: () => galleryCache.clips.some((clip) => clip.id === routedItem),
       count: () => galleryCache.clips.length,
@@ -1809,10 +1816,12 @@ export function AudioPage({
     }).then((found) => {
       if (lookup !== routedLookup.current) return;
       if (found) selectClip(routedItem);
-      else toast("Could not find this clip", { description: "It may be archived or deleted." });
+      else {
+        toast(translate("library.toast.clipNotFound"), {
+          description: translate("library.toast.notFoundDescription"),
+        });
+      }
     });
-    // The task only decides who clears the query; a change to it is not a new link.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routedItem, navigateSelf, refreshGallery, loadMore, selectClip]);
 
 
@@ -2736,11 +2745,8 @@ export function AudioPage({
           </div>
           <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-2">
-              <MediaPageLink
-                to="/library"
-                libraryTab="audio"
-                label="Library"
-                icon={LibrariesIcon}
+              <LibraryPageLink
+                tab="audio"
                 labelClassName="hidden @[50rem]:inline"
                 arrowClassName="hidden @[50rem]:block"
               />

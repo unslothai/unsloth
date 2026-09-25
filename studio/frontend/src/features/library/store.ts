@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { AUTH_SESSION_CLEARED_EVENT, getAuthSessionEpoch } from "@/features/auth";
+import { translate } from "@/i18n";
 import { type GalleryKind, notifyGalleryChanged } from "@/lib/gallery-flags";
 import {
   type LibraryFolder,
@@ -18,7 +19,7 @@ import {
   uploadLibraryFiles,
 } from "./api";
 import { useLibraryFavoritesStore } from "./favorites-store";
-import { clearCachedObjectUrls } from "./hooks";
+import { clearCachedObjectUrls } from "./object-url-cache";
 
 type ItemPatch = { name?: string; favorite?: boolean; folderId?: string | null };
 type FolderPatch = { name?: string; parentId?: string | null };
@@ -150,7 +151,9 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
       const epoch = getAuthSessionEpoch();
       const folder = await createLibraryFolder(name, parentId);
       // Signed out meanwhile: it belongs to the account that left, not the one here now.
-      if (getAuthSessionEpoch() !== epoch) throw new Error("Signed out before the folder was made.");
+      if (getAuthSessionEpoch() !== epoch) {
+        throw new Error(translate("library.toast.signedOutBeforeFolder"));
+      }
       // A refresh started before it landed would drop it; the count sends that one back for more.
       edits += 1;
       set((state) => ({

@@ -13,7 +13,25 @@ import {
   DropdownMenuSubTrigger,
 } from "@/components/ui/dropdown-menu";
 import { NewProjectDialog, useChatProjects } from "@/features/chat";
+import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
+
+/** What the menu's item is, which its labels and messages name. */
+export type MediaNoun = "image" | "video" | "clip" | "file";
+
+const ADD_FAILED: Record<MediaNoun, TranslationKey> = {
+  image: "library.project.addFailedImage",
+  video: "library.project.addFailedVideo",
+  clip: "library.project.addFailedClip",
+  file: "library.project.addFailedFile",
+};
+
+const NEW_PROJECT_TITLE: Record<MediaNoun, TranslationKey> = {
+  image: "library.project.newProjectImage",
+  video: "library.project.newProjectVideo",
+  clip: "library.project.newProjectClip",
+  file: "library.project.newProjectFile",
+};
 
 /**
  * The Project submenu and its New project dialog, for any menu that copies an item into a project.
@@ -23,9 +41,10 @@ export function useProjectSubmenu({
   noun,
   onAddToProject,
 }: {
-  noun: string;
+  noun: MediaNoun;
   onAddToProject?: (projectId: string) => Promise<{ already: boolean }>;
 }) {
+  const t = useT();
   const [creatingProject, setCreatingProject] = useState(false);
   const { projects } = useChatProjects();
 
@@ -33,9 +52,13 @@ export function useProjectSubmenu({
     if (!onAddToProject) return;
     try {
       const { already } = await onAddToProject(projectId);
-      toast.success(already ? `Already in ${projectName}` : `Added to ${projectName}`);
+      toast.success(
+        t(already ? "library.project.alreadyIn" : "library.project.addedTo", {
+          project: projectName,
+        }),
+      );
     } catch (err) {
-      toast.error(`Failed to add ${noun} to project`, {
+      toast.error(t(ADD_FAILED[noun]), {
         description: err instanceof Error ? err.message : undefined,
       });
     }
@@ -45,7 +68,7 @@ export function useProjectSubmenu({
     <DropdownMenuSub>
       <DropdownMenuSubTrigger>
         <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-icon" />
-        <span>Project</span>
+        <span>{t("library.project.label")}</span>
       </DropdownMenuSubTrigger>
       <DropdownMenuSubContent
         sideOffset={0}
@@ -55,11 +78,11 @@ export function useProjectSubmenu({
         {/* Actions above the rule, destinations below, as in a chat's Project menu. */}
         <DropdownMenuItem onClick={() => setCreatingProject(true)}>
           <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon" />
-          <span>New project</span>
+          <span>{t("library.project.newProject")}</span>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         {projects.length === 0 ? (
-          <DropdownMenuItem disabled={true}>No projects yet</DropdownMenuItem>
+          <DropdownMenuItem disabled={true}>{t("library.project.noProjects")}</DropdownMenuItem>
         ) : (
           projects.map((project) => (
             <DropdownMenuItem
@@ -80,8 +103,8 @@ export function useProjectSubmenu({
     <NewProjectDialog
       open={true}
       onOpenChange={setCreatingProject}
-      title={`Add ${noun} to new project`}
-      submitLabel="Create and add"
+      title={t(NEW_PROJECT_TITLE[noun])}
+      submitLabel={t("library.project.createAndAdd")}
       onCreated={(project) => addToProject(project.id, project.name)}
     />
   ) : null;
