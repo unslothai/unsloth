@@ -144,6 +144,54 @@ def test_resident_embedding_gguf_still_uses_the_proxy(studio_embedder):
     assert payload == {"data": [{"embedding": [0.5]}]}
 
 
+@pytest.mark.parametrize("encoding_format", ["float", "base64"])
+@pytest.mark.parametrize("dimensions, status", [(2, 200), (256, 400)])
+def test_resident_embedding_gguf_checks_dimensions_against_its_width(
+    studio_embedder, encoding_format, dimensions, status
+):
+    import httpx
+
+    forwarded = []
+
+    class _Client:
+        async def post(self, *_args, json = None, **_kwargs):
+            forwarded.append(json)
+            # llama-server ignores `dimensions` and always returns its full width
+            vector = [0.5, 0.5]
+            if encoding_format == "base64":
+                vector = base64.b64encode(np.asarray(vector, dtype = np.float32).tobytes()).decode()
+            return httpx.Response(200, json = {"data": [{"embedding": vector}]})
+
+        async def aclose(self):
+            return None
+
+    studio_embedder.setattr(inference_route, "_cancelable_nonstreaming_client", _Client)
+    studio_embedder.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = True,
+            is_embedding_gguf = True,
+            base_url = "http://llama.test",
+            context_length = 512,
+            model_identifier = "org/E-GGUF",
+        ),
+    )
+    body = {
+        "input": "alpha",
+        "model": "org/E-GGUF",
+        "encoding_format": encoding_format,
+        "dimensions": dimensions,
+    }
+    if status == 200:
+        _call(body)
+    else:
+        error = _http_error(body)
+        assert error.status_code == 400
+        assert "'dimensions' is not supported" in error.detail
+    assert "dimensions" not in forwarded[0]
+
+
 def test_base64_encoding_format(studio_embedder):
     studio_embedder.setattr(
         inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)

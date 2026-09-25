@@ -30801,6 +30801,16 @@ async def _studio_embeddings(
     return Response(content = json.dumps(payload), media_type = "application/json")
 
 
+def _embedding_width(resp) -> Optional[int]:
+    try:
+        embedding = resp.json()["data"][0]["embedding"]
+        if isinstance(embedding, str):
+            return len(base64.b64decode(embedding)) // 4
+        return len(embedding)
+    except Exception:  # noqa: BLE001 - an unreadable vector has no width to match
+        return None
+
+
 def _embeddings_input_present(body: dict) -> bool:
     """Whether an embeddings body carries a usable ``input`` (non-empty)."""
     inp = body.get("input")
@@ -30896,6 +30906,9 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     # no-pooling error on /v1/embeddings against a non-embedding GGUF), so claiming before the
     # upstream response would strand a preview-owned checkpoint as Unsloth-owned.
 
+    # llama-server ignores `dimensions`, so it is checked against the width it returns instead.
+    body = dict(body)
+    dimensions = body.pop("dimensions", None)
     target_url = f"{llama_backend.base_url}/v1/embeddings"
     prompt_text = _flatten_monitor_prompt(body.get("input", ""))
     monitor_id = None
@@ -30960,6 +30973,14 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         finally:
             _direct_llama_request_finished()
             _tracker.__exit__(None, None, None)
+    if (
+        resp.status_code == 200
+        and dimensions is not None
+        and dimensions != _embedding_width(resp)
+    ):
+        detail = f"'dimensions' is not supported by {_llama_public_model_id(llama_backend)}."
+        api_monitor.fail(monitor_id, detail)
+        raise HTTPException(status_code = 400, detail = detail)
     if resp.status_code != 200:
         api_monitor.fail(monitor_id, resp.text[:500])
     else:
