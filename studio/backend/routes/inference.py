@@ -3472,6 +3472,7 @@ from models.inference import (
     OpenAIContainerSummary,
 )
 from core.inference.anthropic_compat import (
+    TOOL_RESULT_IMAGE_OMITTED,
     anthropic_messages_to_openai,
     anthropic_reference_block_text,
     fold_tool_results_into_user,
@@ -8533,6 +8534,25 @@ def _messages_have_image(messages) -> bool:
     )
 
 
+def _omit_tool_images(messages) -> None:
+    for message in messages:
+        if message.role != "tool" or not _messages_have_image((message,)):
+            continue
+        parts = [
+            TextContentPart(type = "text", text = TOOL_RESULT_IMAGE_OMITTED)
+            if isinstance(part, ImageContentPart)
+            else part
+            for part in message.content
+        ]
+        # Text-only is flattened, as _responses_tool_output_content and anthropic_messages_to_openai
+        # do: some templates render a part list as an empty tool result.
+        message.content = (
+            "\n".join(part.text for part in parts)
+            if all(isinstance(part, TextContentPart) for part in parts)
+            else parts
+        )
+
+
 def _messages_have_remote_image(messages) -> bool:
     return any(
         isinstance(m.content, list)
@@ -9626,6 +9646,7 @@ async def _maybe_auto_switch_model(
     image_preflight: Optional[dict] = None,
     require_speech: bool = False,
     speech_budget: Optional[dict] = None,
+    tool_images_only: bool = False,
 ) -> None:
     """Load a downloaded local model named by an OpenAI request when auto-switch is on.
 
@@ -9654,6 +9675,10 @@ async def _maybe_auto_switch_model(
     :func:`_preflight_audio_for_switch`. ``image_preflight`` does the same for
     non-GGUF image count and byte validation.
     """
+    # A text-only GGUF reads tool-result images as a note, so only audio or video needs its mmproj.
+    gguf_requires_vision = (
+        (require_audio_input or require_video) if tool_images_only else require_vision
+    )
     # The reload-only sentinel means an omitted model, not a name.
     named_model = requested_model if requested_model != _RELOAD_ONLY_MODEL else None
     if account_access.managed_account():
@@ -9823,7 +9848,7 @@ async def _maybe_auto_switch_model(
                     fastapi_request,
                     # GGUF carries both from one mmproj, so the download guard takes
                     # either need; splitting them here would fetch a text-only repo.
-                    require_vision = require_vision or require_audio_input,
+                    require_vision = gguf_requires_vision or require_audio_input,
                     require_speech = require_speech,
                     current_subject = current_subject,
                 )
@@ -10005,14 +10030,17 @@ async def _maybe_auto_switch_model(
         target_requires_image = require_image
         if require_audio_input and not target_is_gguf and audio_preflight is not None:
             target_requires_image = bool(audio_preflight.get("has_image"))
+        target_requires_vision = gguf_requires_vision if target_is_gguf else require_vision
+        if tool_images_only and target_is_gguf:
+            target_requires_image = False
         if (
-            (require_vision or require_audio_input)
+            (target_requires_vision or require_audio_input)
             and resolved is not None
             and not await asyncio.to_thread(
                 _target_accepts_request_input,
                 target_id,
                 target_is_gguf,
-                require_vision,
+                target_requires_vision,
                 require_audio_input,
                 variant,
                 target_requires_image,
@@ -24608,6 +24636,7 @@ async def produce_openai_chat_completions(
     _modality_label = "image or audio"
     _needs_audio_input = False
     _needs_video = False
+    _tool_images_only = False
     _predecoded_audio = None
     _preprepared_audio = None
     _image_preflight = None
@@ -24719,6 +24748,11 @@ async def produce_openai_chat_completions(
         # projector carries no vision tower. A safetensors or MLX checkpoint
         # declares audio input separately, so it is tracked apart as well.
         _needs_image = bool(_pre_parsed[2]) or _request_has_attached_image(payload)
+        _tool_images_only = (
+            _needs_image
+            and not payload.image_base64
+            and not _messages_have_image(m for m in payload.messages if m.role != "tool")
+        )
         # Video rides that projector too. Its own /props gate can only run after
         # the load, so this at least keeps a text-only target from evicting a
         # working model to serve a clip it could never take.
@@ -24800,6 +24834,7 @@ async def produce_openai_chat_completions(
         require_video = _needs_video,
         audio_preflight = _audio_preflight,
         image_preflight = _image_preflight,
+        tool_images_only = _tool_images_only,
     )
     if _audio_preflight is not None:
         _predecoded_audio = _audio_preflight.get("decoded")
@@ -25331,6 +25366,10 @@ async def produce_openai_chat_completions(
     _supports_tool_passthrough = getattr(
         llama_backend, "supports_tool_passthrough", llama_backend.supports_tools
     )
+    # Before the route split, so the passthrough and the Unsloth tool loop both read a tool
+    # result's image as a note on a text-only GGUF, as /v1/messages does.
+    if using_gguf and not llama_backend.is_vision:
+        _omit_tool_images(payload.messages)
     # Before the passthrough dispatch and the parse, so every later reader sees the fold.
     if using_gguf and _folds_studio_tool_history(payload, llama_backend):
         payload.messages = _folded_studio_tool_messages(payload.messages)
@@ -31998,15 +32037,14 @@ async def _responses_stream(
         )
         raise HTTPException(status_code = _status, detail = _detail)
 
-    # Direct pass-through bypasses the openai_chat_completions image gate.
-    if not llama_backend.is_vision and any(
-        isinstance(m.content, list) and any(isinstance(p, ImageContentPart) for p in m.content)
-        for m in messages
-    ):
-        raise HTTPException(
-            status_code = 400,
-            detail = "Image provided but current GGUF model does not support vision.",
-        )
+    # Direct pass-through bypasses the openai_chat_completions tool-image note and image gate.
+    if not llama_backend.is_vision:
+        _omit_tool_images(chat_req.messages)
+        if _messages_have_image(chat_req.messages):
+            raise HTTPException(
+                status_code = 400,
+                detail = "Image provided but current GGUF model does not support vision.",
+            )
 
     # Same bypass, same reason as the image gate: without this the non-streaming half of this
     # very route folds a Studio tool thread and answers while the streaming half still ships
@@ -33171,7 +33209,7 @@ async def openai_responses(
             )
     if payload.stream:
         # streaming preflights here; non-streaming delegates its complete preflight to chat.
-        _responses_has_image = _messages_have_image(messages)
+        _responses_has_image = _messages_have_image(m for m in messages if m.role != "tool")
         _responses_image_b64s = _local_image_payloads_from_messages(messages)
         await _maybe_auto_switch_model(
             _switch_model_for_payload(payload),

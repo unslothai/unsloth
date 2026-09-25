@@ -56,6 +56,7 @@ export {
   type Preset,
 } from "./chat-settings-sheet";
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
+export { openFolderAsProject, useOpeningFolder } from "./utils/open-folder-as-project";
 export {
   hydrateModelDisclaimerPreference,
   refreshModelDisclaimerPreference,
@@ -471,6 +472,7 @@ export {
   composerSubmitIntent,
   composerFollowUpBehavior,
   composerShortcutLabels,
+  effectiveSendShortcut,
   followUpSubmitIntent,
   steeringInsertionIndex,
   type ComposerSendShortcut,
