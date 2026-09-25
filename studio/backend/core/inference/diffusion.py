@@ -1075,8 +1075,8 @@ def _float_load_itemsize(dtype: Any) -> Optional[int]:
     return None
 
 
-def _class_pins_fp32(class_name: str, load_dtype: Any) -> bool:
-    """Whether a loaded class keeps modules in fp32 at this half dtype. Diffusers pins at both;
+def _class_pins_fp32(class_name: str, load_dtype: Any) -> tuple[str, ...]:
+    """Module names a loaded class keeps in fp32 at this half dtype. Diffusers pins at both;
     Transformers pins ``_keep_in_fp32_modules`` (T5's ``wo``) only at fp16, the strict set at both."""
     for lib in ("diffusers", "transformers"):
         module = sys.modules.get(lib)
@@ -1086,23 +1086,25 @@ def _class_pins_fp32(class_name: str, load_dtype: Any) -> bool:
             cls = None
         if cls is None:
             continue
-        if getattr(cls, "_keep_in_fp32_modules_strict", None):
-            return True
-        if not getattr(cls, "_keep_in_fp32_modules", None):
-            return False
-        return lib == "diffusers" or str(load_dtype) == "torch.float16"
-    return False
+        pinned = list(getattr(cls, "_keep_in_fp32_modules_strict", None) or ())
+        if lib == "diffusers" or str(load_dtype) == "torch.float16":
+            pinned += list(getattr(cls, "_keep_in_fp32_modules", None) or ())
+        return tuple(str(name) for name in pinned)
+    return ()
 
 
-def _component_pins_fp32(folder: Path, load_dtype: Any) -> bool:
-    """A component whose class keeps modules in fp32 keeps its full-precision size."""
+def _component_pins_fp32(folder: Path, load_dtype: Any) -> tuple[str, ...]:
+    """Module names the component's class keeps in fp32 when loaded at ``load_dtype``."""
     try:
         config = json.loads((folder / "config.json").read_text(encoding = "utf-8"))
         names = [config.get("_class_name"), *(config.get("architectures") or ())]
     except Exception:  # noqa: BLE001 - no readable config: nothing is pinned by name
-        return False
-    return any(
-        _class_pins_fp32(name, load_dtype) for name in names if isinstance(name, str) and name
+        return ()
+    return tuple(
+        pin
+        for name in names
+        if isinstance(name, str) and name
+        for pin in _class_pins_fp32(name, load_dtype)
     )
 
 
@@ -4097,19 +4099,26 @@ class DiffusionBackend:
         for rel in list(sizes):
             if rel.endswith(".bin") and rel.rsplit("/", 1)[0] in st_dirs:
                 del sizes[rel]
-            elif rel.endswith(".safetensors") and not (
-                load_itemsize < 4 and _component_pins_fp32((path / rel).parent, load_dtype)
-            ):
-                cast = DiffusionBackend._safetensors_cast_bytes(path / rel, load_itemsize)
+            elif rel.endswith(".safetensors"):
+                pinned = (
+                    _component_pins_fp32((path / rel).parent, load_dtype)
+                    if load_itemsize < 4
+                    else ()
+                )
+                cast = DiffusionBackend._safetensors_cast_bytes(path / rel, load_itemsize, pinned)
                 if cast is not None:
                     sizes[rel] = cast
         return sizes
 
     @staticmethod
-    def _safetensors_cast_bytes(path: Path, itemsize: int) -> Optional[int]:
+    def _safetensors_cast_bytes(
+        path: Path,
+        itemsize: int,
+        pinned: tuple[str, ...] = (),
+    ) -> Optional[int]:
         """Bytes once loaded at an ``itemsize``-byte float, or None to keep the stored size. An fp32
-        load widens every float; a half load narrows only a file stored wider throughout (a mixed
-        file pins its fp32 norms). Packed / fp8 weights and an unreadable header keep their size."""
+        load and ``pinned`` modules hold four bytes; a half load narrows only a file stored wider
+        throughout (a mixed file pins its fp32 norms). Packed / fp8 weights keep their size."""
         try:
             with open(path, "rb") as fh:
                 length = int.from_bytes(fh.read(8), "little")
@@ -4117,26 +4126,35 @@ class DiffusionBackend:
                 if length > 100_000_000:
                     return None
                 header = json.loads(fh.read(length))
-            total, widths = 0, set()
+            tensors = []
             for name, meta in header.items():
                 if name == "__metadata__" or not isinstance(meta, dict):
                     continue
                 dtype = str(meta.get("dtype", ""))
-                begin, end = meta["data_offsets"]
-                width = _SAFETENSORS_FLOAT_WIDTH.get(dtype)
-                if width is not None:
-                    numel = 1
-                    for dim in meta.get("shape", []):
-                        numel *= int(dim)
-                    total += numel * itemsize
-                    widths.add(width)
-                elif dtype in ("I64", "I32", "BOOL"):
-                    total += int(end) - int(begin)
-                else:
+                if dtype not in _SAFETENSORS_FLOAT_WIDTH and dtype not in ("I64", "I32", "BOOL"):
                     return None
-            if widths and (itemsize >= 4 or min(widths) > itemsize):
-                return total
-            return None
+                begin, end = meta["data_offsets"]
+                numel = 1
+                for dim in meta.get("shape", []):
+                    numel *= int(dim)
+                tensors.append(
+                    (name, _SAFETENSORS_FLOAT_WIDTH.get(dtype), numel, int(end) - int(begin))
+                )
+            widths = [width for _, width, _, _ in tensors if width is not None]
+            if not widths:
+                return None
+            narrows = min(widths) > itemsize
+            total = 0
+            for name, width, numel, stored in tensors:
+                if width is None:
+                    total += stored
+                elif itemsize >= 4 or (pinned and set(name.split(".")) & set(pinned)):
+                    total += numel * 4
+                elif narrows:
+                    total += numel * itemsize
+                else:
+                    total += stored
+            return total
         except Exception:  # noqa: BLE001 - corrupt/crafted header keeps the on-disk size
             return None
 

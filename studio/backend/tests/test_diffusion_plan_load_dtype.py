@@ -60,6 +60,15 @@ def _bf16(mib):
     return {"w": ("BF16", mib * MIB // 2)}
 
 
+def _t5(dtype, wo_mib, rest_mib):
+    """A T5-like encoder: the ``wo`` projections Transformers may pin to fp32, and everything else."""
+    width = 4 if dtype == "F32" else 2
+    return {
+        "encoder.block.0.layer.1.DenseReluDense.wo.weight": (dtype, wo_mib * MIB // width),
+        "encoder.block.0.layer.1.DenseReluDense.wi.weight": (dtype, rest_mib * MIB // width),
+    }
+
+
 def _snapshot(
     tmp_path,
     monkeypatch,
@@ -214,23 +223,41 @@ def test_a_mixed_precision_or_quantised_file_keeps_its_stored_size(tmp_path, mon
     assert _plan(torch.bfloat16).estimates["model_dense_mib"] == 1220
 
 
-def test_a_component_class_pinning_fp32_modules_keeps_its_full_size(tmp_path, monkeypatch):
+def test_a_component_class_pinning_fp32_modules_keeps_those_modules_wide(tmp_path, monkeypatch):
     _snapshot(
         tmp_path,
         monkeypatch,
         {
             "transformer/diffusion_pytorch_model.safetensors": _f32(2000),
             "text_encoder/config.json": json.dumps({"architectures": ["T5EncoderModel"]}),
-            "text_encoder/model.safetensors": _f32(400),
+            "text_encoder/model.safetensors": _t5("F32", 100, 300),
         },
     )
     _card(monkeypatch)
     pinned = types.SimpleNamespace(T5EncoderModel = type("T5", (), {"_keep_in_fp32_modules": ["wo"]}))
     monkeypatch.setitem(sys.modules, "transformers", pinned)
-    assert _plan(torch.float16).estimates["model_dense_mib"] == 1000 + 400
+    # wo stays fp32 (100), the rest halves (150).
+    assert _plan(torch.float16).estimates["model_dense_mib"] == 1000 + 100 + 150
     free = types.SimpleNamespace(T5EncoderModel = type("T5", (), {"_keep_in_fp32_modules": None}))
     monkeypatch.setitem(sys.modules, "transformers", free)
     assert _plan(torch.float16).estimates["model_dense_mib"] == 1000 + 200
+
+
+def test_pinned_modules_of_a_half_checkpoint_are_widened(tmp_path, monkeypatch):
+    _snapshot(
+        tmp_path,
+        monkeypatch,
+        {
+            "text_encoder/config.json": json.dumps({"architectures": ["T5EncoderModel"]}),
+            "text_encoder/model.safetensors": _t5("BF16", 100, 300),
+        },
+    )
+    _card(monkeypatch)
+    pinned = types.SimpleNamespace(T5EncoderModel = type("T5", (), {"_keep_in_fp32_modules": ["wo"]}))
+    monkeypatch.setitem(sys.modules, "transformers", pinned)
+    # bf16 on disk, loaded in fp16: wo is upcast to fp32 (200), the rest stays two bytes (300).
+    assert _plan(torch.float16).estimates["model_dense_mib"] == 500
+    assert _plan(torch.bfloat16).estimates["model_dense_mib"] == 400
 
 
 def test_gguf_companions_are_priced_at_the_load_dtype(tmp_path, monkeypatch):
@@ -272,7 +299,7 @@ def test_a_unified_pool_no_longer_refuses_an_fp32_repo_that_fits_in_bf16(tmp_pat
         ({"a": ("F32", 10)}, 4, 40),
         ({"a": ("BF16", 10), "b": ("F32", 5)}, 4, 60),
         ({"a": ("I64", 10)}, 2, None),
-        ({"a": ("F32", 10), "b": ("F16", 10)}, 2, None),
+        ({"a": ("F32", 10), "b": ("F16", 10)}, 2, 60),
         ({"a": ("U8", 10), "b": ("F32", 1)}, 4, None),
     ],
 )
@@ -351,9 +378,9 @@ def test_a_bin_is_kept_beside_safetensors_shards_the_loader_cannot_select(tmp_pa
     "attrs, dtype, expected",
     [
         # Transformers upcasts the non-strict set only for fp16; the strict set for both halves.
-        ({"_keep_in_fp32_modules": ["wo"]}, "float16", 400),
+        ({"_keep_in_fp32_modules": ["wo"]}, "float16", 250),
         ({"_keep_in_fp32_modules": ["wo"]}, "bfloat16", 200),
-        ({"_keep_in_fp32_modules_strict": ["wo"]}, "bfloat16", 400),
+        ({"_keep_in_fp32_modules_strict": ["wo"]}, "bfloat16", 250),
     ],
 )
 def test_transformers_pins_follow_the_half_dtype(tmp_path, monkeypatch, attrs, dtype, expected):
@@ -362,7 +389,7 @@ def test_transformers_pins_follow_the_half_dtype(tmp_path, monkeypatch, attrs, d
         monkeypatch,
         {
             "text_encoder/config.json": json.dumps({"architectures": ["T5EncoderModel"]}),
-            "text_encoder/model.safetensors": _f32(400),
+            "text_encoder/model.safetensors": _t5("F32", 100, 300),
         },
     )
     _card(monkeypatch)
@@ -378,7 +405,10 @@ def test_a_diffusers_pin_holds_at_bf16(tmp_path, monkeypatch):
         monkeypatch,
         {
             "transformer/config.json": json.dumps({"_class_name": "PinnedTransformer"}),
-            "transformer/diffusion_pytorch_model.safetensors": _f32(400),
+            "transformer/diffusion_pytorch_model.safetensors": {
+                "blocks.0.norm.weight": ("F32", 100 * MIB // 4),
+                "blocks.0.proj.weight": ("F32", 300 * MIB // 4),
+            },
         },
     )
     _card(monkeypatch)
@@ -386,4 +416,4 @@ def test_a_diffusers_pin_holds_at_bf16(tmp_path, monkeypatch):
         PinnedTransformer = type("P", (), {"_keep_in_fp32_modules": ["norm"]})
     )
     monkeypatch.setitem(sys.modules, "diffusers", lib)
-    assert _plan(torch.bfloat16).estimates["model_dense_mib"] == 400
+    assert _plan(torch.bfloat16).estimates["model_dense_mib"] == 100 + 150
