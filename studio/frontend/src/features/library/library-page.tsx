@@ -74,27 +74,24 @@ const TAB_LABELS: Record<LibraryTab, TranslationKey> = {
   all: "library.tabs.all",
 };
 
-const EMPTY_ICONS: Record<LibraryTab, typeof Folder01Icon> = {
-  suggested: Upload01Icon,
-  favorites: StarPointedIcon,
-  folders: Folder01Icon,
-  images: Image02Icon,
-  videos: FlimSlateIcon,
-  audio: AudioWave01Icon,
-  models: TestTubeOutlineIcon,
-  all: Upload01Icon,
+type EmptyCopy = [icon: typeof Folder01Icon, title: TranslationKey, description: TranslationKey];
+const EMPTY_COPY: Record<LibraryTab, EmptyCopy> = {
+  suggested: [Upload01Icon, "library.empty.suggestedTitle", "library.empty.suggestedDescription"],
+  favorites: [StarPointedIcon, "library.empty.favoritesTitle", "library.empty.favoritesDescription"],
+  folders: [Folder01Icon, "library.empty.foldersTitle", "library.empty.foldersDescription"],
+  images: [Image02Icon, "library.empty.imagesTitle", "library.empty.imagesDescription"],
+  videos: [FlimSlateIcon, "library.empty.videosTitle", "library.empty.videosDescription"],
+  audio: [AudioWave01Icon, "library.empty.audioTitle", "library.empty.audioDescription"],
+  models: [TestTubeOutlineIcon, "library.empty.modelsTitle", "library.empty.modelsDescription"],
+  all: [Upload01Icon, "library.empty.suggestedTitle", "library.empty.suggestedDescription"],
 };
 
-const EMPTY_COPY: Record<LibraryTab, [title: TranslationKey, description: TranslationKey]> = {
-  suggested: ["library.empty.suggestedTitle", "library.empty.suggestedDescription"],
-  favorites: ["library.empty.favoritesTitle", "library.empty.favoritesDescription"],
-  folders: ["library.empty.foldersTitle", "library.empty.foldersDescription"],
-  images: ["library.empty.imagesTitle", "library.empty.imagesDescription"],
-  videos: ["library.empty.videosTitle", "library.empty.videosDescription"],
-  audio: ["library.empty.audioTitle", "library.empty.audioDescription"],
-  models: ["library.empty.modelsTitle", "library.empty.modelsDescription"],
-  all: ["library.empty.suggestedTitle", "library.empty.suggestedDescription"],
-};
+// Where an empty media tab sends you to make something for it.
+const EMPTY_LINKS = {
+  videos: ["/video", "library.empty.generateVideo"],
+  audio: ["/audio", "library.empty.generateAudio"],
+  models: ["/studio", "library.empty.trainModel"],
+} as const;
 
 /** What each single-kind tab holds. Only the Source filter means anything on these. */
 const KIND_TABS: Partial<Record<LibraryTab, (item: LibraryItem) => boolean>> = {
@@ -125,10 +122,11 @@ function nameMatches(name: string, needle: string): boolean {
   return !needle || name.toLowerCase().includes(needle);
 }
 
-function targetName(target: LibraryTarget): string {
-  return target.kind === "item" ? target.item.name : target.folder.name;
-}
-
+// The selection bar's labelled buttons, and its round icon ones.
+const BAR_PILL =
+  "flex h-9 items-center gap-2 rounded-full px-4 text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
+const BAR_ROUND =
+  "flex size-9 items-center justify-center rounded-full outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring";
 
 // Media tabs appear once there is something to show in them, so a fresh Library stays uncluttered.
 const MEDIA_TABS = new Set<LibraryTab>(["images", "videos", "audio"]);
@@ -363,16 +361,9 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     );
     const failed = results.find((result) => result.status === "rejected");
     if (failed) fail(t("library.toast.moveFailed"))(failed.reason);
-    else {
-      toast.success(
-        folder === null
-          ? t("library.toast.movedToLibrary")
-          : t("library.toast.movedToFolder", { folder }),
-      );
-    }
+    else if (folder === null) toast.success(t("library.toast.movedToLibrary"));
+    else toast.success(t("library.toast.movedToFolder", { folder }));
   };
-  const moveTo = (target: LibraryTarget, destination: string | null) =>
-    moveAll([target], destination);
 
   const actions: LibraryActions = {
     folders,
@@ -386,7 +377,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       void patchItem(item.id, { favorite: !item.favorite }).catch(fail(t("library.toast.favoritesFailed"))),
     download: (item) => void downloadLibraryItem(item),
     rename: (target) => setNameDialog({ mode: "rename", target }),
-    moveTo: (target, destination) => void moveTo(target, destination),
+    moveTo: (target, destination) => void moveAll([target], destination),
     moveToNewFolder: (target) =>
       setNameDialog({ mode: "create", parentId: folderId, thenMove: target }),
     remove: (target) => setPendingDelete([target]),
@@ -486,15 +477,10 @@ function LibraryView({ search }: { search: LibrarySearch }) {
         return;
       }
       const folder = await addFolder(name, nameDialog.parentId);
-      if (nameDialog.thenMove) await moveTo(nameDialog.thenMove, folder.id);
+      if (nameDialog.thenMove) await moveAll([nameDialog.thenMove], folder.id);
     } catch (err) {
-      fail(
-        t(
-          nameDialog.mode === "rename"
-            ? "library.toast.renameFailed"
-            : "library.toast.createFolderFailed",
-        ),
-      )(err);
+      const renaming = nameDialog.mode === "rename";
+      fail(t(renaming ? "library.toast.renameFailed" : "library.toast.createFolderFailed"))(err);
       throw err;
     }
   }
@@ -616,12 +602,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     </Button>
   );
 
-  function renderGrid() {
-    return (
-      <CardSelectionContext.Provider value={cardSelection}>{renderCards()}</CardSelectionContext.Provider>
-    );
-  }
-
   function renderCards() {
     const itemsGrid = visibleItems.length > 0 && (
       <Masonry
@@ -631,19 +611,21 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       />
     );
     if (folderId || tab === "all") {
+      // All heads each section; a folder just lists its subfolders above its files.
+      const sectioned = !folderId;
       return (
         <>
           {visibleFolders.length > 0 && (
             <>
-              {tab === "all" && !folderId && <SectionHeading>{t("library.sections.folders")}</SectionHeading>}
-              <div className={cn(!(tab === "all" && !folderId) && "mt-6")}>
+              {sectioned && <SectionHeading>{t("library.sections.folders")}</SectionHeading>}
+              <div className={cn(!sectioned && "mt-6")}>
                 <FolderGrid folders={visibleFolders} counts={counts} />
               </div>
             </>
           )}
           {visibleItems.length > 0 && (
             <>
-              {tab === "all" && !folderId ? (
+              {sectioned ? (
                 <SectionHeading>{t("library.sections.items")}</SectionHeading>
               ) : (
                 <div className="mt-6" />
@@ -665,40 +647,25 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   }
 
   function emptyAction(): ReactNode {
-    switch (tab) {
-      case "favorites":
-        return undefined;
-      case "folders":
-        return (
-          <Button
-            variant="dark"
-            className="rounded-full px-5"
-            onClick={() => setNameDialog({ mode: "create", parentId: null })}
-          >
-            {t("library.empty.createFolder")}
-          </Button>
-        );
-      case "videos":
-        return (
-          <Button variant="muted" className="rounded-full px-5" onClick={() => void navigate({ to: "/video" })}>
-            {t("library.empty.generateVideo")}
-          </Button>
-        );
-      case "audio":
-        return (
-          <Button variant="muted" className="rounded-full px-5" onClick={() => void navigate({ to: "/audio" })}>
-            {t("library.empty.generateAudio")}
-          </Button>
-        );
-      case "models":
-        return (
-          <Button variant="muted" className="rounded-full px-5" onClick={() => void navigate({ to: "/studio" })}>
-            {t("library.empty.trainModel")}
-          </Button>
-        );
-      default:
-        return uploadButton;
+    if (tab === "favorites") return undefined;
+    if (tab === "folders") {
+      return (
+        <Button
+          variant="dark"
+          className="rounded-full px-5"
+          onClick={() => setNameDialog({ mode: "create", parentId: null })}
+        >
+          {t("library.empty.createFolder")}
+        </Button>
+      );
     }
+    if (!(tab in EMPTY_LINKS)) return uploadButton;
+    const [to, label] = EMPTY_LINKS[tab as keyof typeof EMPTY_LINKS];
+    return (
+      <Button variant="muted" className="rounded-full px-5" onClick={() => void navigate({ to })}>
+        {t(label)}
+      </Button>
+    );
   }
 
   function renderBody() {
@@ -738,10 +705,10 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       );
     }
     if (empty) {
-      const [emptyTitle, emptyDescription] = EMPTY_COPY[tab];
+      const [emptyIcon, emptyTitle, emptyDescription] = EMPTY_COPY[tab];
       return (
         <EmptyState
-          icon={EMPTY_ICONS[tab]}
+          icon={emptyIcon}
           title={t(emptyTitle)}
           description={t(emptyDescription)}
           action={emptyAction()}
@@ -761,7 +728,9 @@ function LibraryView({ search }: { search: LibrarySearch }) {
         </div>
       );
     }
-    return renderGrid();
+    return (
+      <CardSelectionContext.Provider value={cardSelection}>{renderCards()}</CardSelectionContext.Provider>
+    );
   }
 
   const nameDialogProps =
@@ -773,7 +742,8 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               : "library.dialog.renameFile",
           ),
           submitLabel: t("common.rename"),
-          initialValue: targetName(nameDialog.target),
+          initialValue:
+            nameDialog.target.kind === "item" ? nameDialog.target.item.name : nameDialog.target.folder.name,
         }
       : {
           title: t("library.dialog.newFolder"),
@@ -889,7 +859,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               type="button"
               disabled={selectedModel() === null && selectedFiles().length === 0}
               onClick={bulkChat}
-              className="flex h-9 items-center gap-2 rounded-full bg-foreground px-4 text-sm font-medium text-background outline-none transition-opacity hover:opacity-85 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+              className={cn(BAR_PILL, "bg-foreground text-background transition-opacity hover:opacity-85")}
             >
               <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-4" />
               {t("library.selection.startChat")}
@@ -899,7 +869,10 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               disabled={selectedFiles().length === 0}
               onClick={bulkDownload}
               // Dark mode: borderless, filled like the model picker's search field.
-              className="flex h-9 items-center gap-2 rounded-full border border-border px-4 text-sm font-medium outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 dark:border-transparent dark:bg-accent/60 dark:hover:bg-accent"
+              className={cn(
+                BAR_PILL,
+                "border border-border transition-colors hover:bg-sidebar-accent dark:border-transparent dark:bg-accent/60 dark:hover:bg-accent",
+              )}
             >
               <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4" />
               {t("library.selection.download")}
@@ -908,7 +881,10 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               type="button"
               disabled={deletableSelection().length === 0}
               onClick={() => setPendingDelete(deletableSelection())}
-              className="flex h-9 items-center gap-2 rounded-full border border-red-500/70 px-4 text-sm font-medium text-red-600 outline-none transition-colors hover:bg-red-500/15 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 dark:text-red-400"
+              className={cn(
+                BAR_PILL,
+                "border border-red-500/70 text-red-600 transition-colors hover:bg-red-500/15 dark:text-red-400",
+              )}
             >
               <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
               {t("common.delete")}
@@ -918,7 +894,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
                 <button
                   type="button"
                   aria-label={t("library.selection.moreActions")}
-                  className="flex size-9 items-center justify-center rounded-full outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-sidebar-accent"
+                  className={cn(BAR_ROUND, "data-[state=open]:bg-sidebar-accent")}
                 >
                   <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-5" />
                 </button>
@@ -948,7 +924,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               type="button"
               aria-label={t("library.selection.clear")}
               onClick={() => setSelection(new Set())}
-              className="flex size-9 items-center justify-center rounded-full outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"
+              className={BAR_ROUND}
             >
               <HugeiconsIcon icon={Cancel01Icon} strokeWidth={1.75} className="size-5" />
             </button>
