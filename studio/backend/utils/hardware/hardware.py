@@ -1712,8 +1712,7 @@ def _gpu_present_but_unusable_message(
         )
         return (
             f"This host has a GPU, but the installed PyTorch is a CPU-only build{installed}, "
-            f"so {feature} cannot use it. {repair}"
-            + (f" {node_hint}" if node_hint else "")
+            f"so {feature} cannot use it. {repair}" + (f" {node_hint}" if node_hint else "")
         )
     return (
         f"This host has a GPU, but the installed PyTorch{installed} cannot initialise it, so "

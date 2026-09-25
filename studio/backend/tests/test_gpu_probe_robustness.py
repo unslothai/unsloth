@@ -31,8 +31,14 @@ def _boom(*_a, **_k):
     raise RuntimeError("probe failed")
 
 
-def _fake_torch(*, cuda = False, xpu = False, cuda_raises = False, xpu_raises = False,
-                xpu_name_raises = False):
+def _fake_torch(
+    *,
+    cuda = False,
+    xpu = False,
+    cuda_raises = False,
+    xpu_raises = False,
+    xpu_name_raises = False,
+):
     torch = types.ModuleType("torch")
     torch.__version__ = "2.11.0+xpu" if xpu else "2.11.0+cu128"
     torch.version = SimpleNamespace(hip = None, cuda = "12.8", xpu = None)
@@ -48,7 +54,12 @@ def _fake_torch(*, cuda = False, xpu = False, cuda_raises = False, xpu_raises = 
     return torch
 
 
-def _detect(monkeypatch, torch, *, force_xpu = False):
+def _detect(
+    monkeypatch,
+    torch,
+    *,
+    force_xpu = False,
+):
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", None)
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
@@ -157,9 +168,7 @@ def test_a_linux_intel_host_is_told_the_pin_instead_of_a_repair_that_reinstalls_
 def test_wsl_nvidia_smi_is_found_off_path(monkeypatch, present):
     monkeypatch.setattr(nvidia.platform, "system", lambda: "Linux")
     monkeypatch.setattr(nvidia.shutil, "which", lambda _name: None)
-    monkeypatch.setattr(
-        nvidia.os.path, "isfile", lambda p: present and p == nvidia._WSL_NVIDIA_SMI
-    )
+    monkeypatch.setattr(nvidia.os.path, "isfile", lambda p: present and p == nvidia._WSL_NVIDIA_SMI)
     expected = nvidia._WSL_NVIDIA_SMI if present else "nvidia-smi"
     assert nvidia._nvidia_smi_executable() == expected
 
