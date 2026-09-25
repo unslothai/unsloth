@@ -57,6 +57,7 @@ function harness(response: ReturnType<typeof jsonResponse>) {
       "./gguf-variants-request": {},
       "./padded-response": { assertCompletedPaddedBody: () => {} },
       "@/features/hf-auth": { prepareHfTokenForUse: async () => undefined },
+      "@/features/settings/low-disk-check": { checkDiskSpace: () => Promise.resolve() },
       "@/features/igpu-carveout": {
         dismissCarveoutAdviceForModel: () => {},
         showCarveoutAdvice: () => {},

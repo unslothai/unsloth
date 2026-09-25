@@ -713,7 +713,6 @@ def test_response_details_metadata_is_persisted_without_backend_schema_change():
     assert "responseDetails: buildResponseDetails(finishedAt)" in src
     assert "toolCalls: Array.from(" in src
     assert "!isExternalRequest && supportsTools && toolsEnabled" in src
-    assert "!isExternalRequest && supportsTools && codeToolsEnabled" in src
     assert re.search(r"selectedModelSummary\?\.name\s*\|\|\s*responseModelId", src)
     assert "providerName" in src
     assert "cancelId" in src
@@ -723,6 +722,14 @@ def test_response_details_metadata_is_persisted_without_backend_schema_change():
     builder_block = src[
         src.find("const buildResponseDetails") : src.find("const externalCapabilities")
     ]
+    # #11628: Code is recorded from the placement the request actually sends, a hosted sandbox or Studio's local
+    # python/terminal/edit_file, so an external connection without a sandbox still reports Code when it runs locally.
+    # Read inside the builder: the request payload further down tests studioLocalCodeTools too.
+    assert re.search(
+        r"code:\s*hostedCodeToolsForThisTurn\.length > 0\s*\|\|\s*"
+        r"\(\s*supportsStudioToolsForThisTurn\s*&&\s*studioLocalCodeTools\.length > 0\s*\)",
+        builder_block,
+    ), "Response details no longer record Code from the hosted sandbox or Studio's local tools"
     for forbidden in [
         "encrypted_api_key",
         "externalApiKey",

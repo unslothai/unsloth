@@ -557,11 +557,11 @@ export function DatasetPreviewDialog({
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
-        className="sm:max-w-5xl w-[90vw] max-h-[88dvh] flex flex-col gap-0 p-0 overflow-hidden rounded-3xl corner-squircle"
+        className="sm:max-w-5xl w-[90vw] max-sm:w-[calc(100vw-1rem)] max-sm:rounded-2xl max-h-[88dvh] flex flex-col gap-0 p-0 overflow-hidden rounded-3xl corner-squircle"
         showCloseButton={true}
       >
         {/* Header */}
-        <DialogHeader className="px-6 pt-5 pb-4 shrink-0">
+        <DialogHeader className="px-6 max-sm:px-4 pt-5 pb-4 shrink-0">
           <div className="flex items-center gap-3 pr-10">
             <div className="rounded-xl corner-squircle p-2 ring-1 ring-indigo-200 bg-indigo-50 text-indigo-600 dark:ring-indigo-800 dark:bg-indigo-950 dark:text-indigo-400 shrink-0">
               <HugeiconsIcon icon={Database02Icon} className="size-4" />
@@ -689,7 +689,7 @@ export function DatasetPreviewDialog({
               )}
 
               {/* Data table */}
-              <div className="flex-1 min-h-[250px] rounded-xl corner-squircle ring-1 ring-border/60 overflow-auto">
+              <div className="flex-1 min-h-[calc(250px*var(--ui-space-scale,1))] rounded-xl corner-squircle ring-1 ring-border/60 overflow-auto">
                 <DataTable columns={tableColumns} data={rows} />
               </div>
 
