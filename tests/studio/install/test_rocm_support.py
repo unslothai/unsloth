@@ -2404,6 +2404,8 @@ class TestGfx1102Rocm64Floor:
         gfx_target: str,
         floor: "tuple[int, int]" = (6, 4),
         arch_routed: str = "false",
+        venv_family: str = "",
+        routed_family: str = "",
     ) -> str:
         """Execute install.sh's migrated-environment ROCm repair with a stubbed venv torch."""
         shell = shutil.which("bash")
@@ -2427,6 +2429,9 @@ class TestGfx1102Rocm64Floor:
                     "t.version = v\n"
                     "sys.modules['torch'] = t\n"
                     "sys.modules['torch.version'] = v\n"
+                    "import importlib.metadata as md\n"
+                    f"fam = '{venv_family}'\n"
+                    "if fam: md.requires = lambda n: ['rocm-sdk-libraries-' + fam + '==7.13.0'] if n == 'rocm' else []\n"
                     "exec(sys.argv[1])\n"
                     '" "$2"\n'
                 )
@@ -2437,12 +2442,15 @@ class TestGfx1102Rocm64Floor:
                 + "\n"
                 + _extract_sh_function_body(source, "_venv_torch_rocm_below")
                 + "\n"
+                + _extract_sh_function_body(source, "_venv_torch_amd_family")
+                + "\n"
                 + "substep() { :; }\n"
                 + '_install_torch_default_index() { printf "REINSTALL\\n"; }\n'
                 + f'_VENV_PY="{venv_py}"\n'
                 + f"_gfx_rocm64_target={gfx_target}\n"
                 + f"_gfx_rocm64_floor_maj={floor[0]}\n_gfx_rocm64_floor_min={floor[1]}\n"
                 + f"_amd_arch_index_routed={arch_routed}\n"
+                + f'_amd_arch_index_family="{routed_family}"\n'
                 + f'_torch_index_leaf="rocm{floor[0]}.{floor[1]}"\n'
                 + source[start:end]
                 + '\nprintf "DONE\\n"\n'
@@ -2492,6 +2500,28 @@ class TestGfx1102Rocm64Floor:
     ):
         out = self._run_migrated_rocm_repair(
             torch_version, "7.2.0", "true", (6, 4), arch_routed = arch_routed
+        )
+        assert "DONE" in out, out
+        assert ("REINSTALL" in out) is reinstalls, out
+
+    @pytest.mark.parametrize(
+        ("venv_family", "routed_family", "reinstalls"),
+        (
+            # A 7.13 wheel for another family (a gfx1151 venv reused on RDNA 4) has no kernels.
+            ("gfx1151", "gfx120x-all", True),
+            ("gfx120X-all", "gfx1151", True),
+            # controls: the routed family, or an unreadable one, is left alone
+            ("gfx120X-all", "gfx120x-all", False),
+            ("gfx1151", "gfx1151", False),
+            ("", "gfx120x-all", False),
+        ),
+    )
+    def test_install_sh_migrated_repair_honors_the_arch_index_family(
+        self, venv_family, routed_family, reinstalls
+    ):
+        out = self._run_migrated_rocm_repair(
+            "2.11.0+rocm7.13.0", "7.13.0", "true", (6, 4), arch_routed = "true",
+            venv_family = venv_family, routed_family = routed_family,
         )
         assert "DONE" in out, out
         assert ("REINSTALL" in out) is reinstalls, out
