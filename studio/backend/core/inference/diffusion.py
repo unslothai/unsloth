@@ -5769,7 +5769,6 @@ class DiffusionBackend:
                                     )
                                 )
                                 if transformer_quant_engaged is None
-                                # Weight-only: the stored precision is the scheme, the arithmetic is not.
                                 else f"weight-only: {transformer_quant_engaged} weights, bf16 compute "
                                 "(torchao-free, a memory saving rather than a speed-up)"
                                 if native_scheme is not None
