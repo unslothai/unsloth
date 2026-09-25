@@ -24,11 +24,8 @@ function startOfDay(date: Date): number {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
 }
 
-/**
- * A clock time today, then "Yesterday", then the weekday for the past week, then a short date, in
- * `locale` (the app's language). A time ahead of `now`, from another machine's clock, shows its
- * date.
- */
+/** A clock time today, then "Yesterday", a weekday within the week, then a short date, in the
+ *  app's `locale`. A time ahead of `now` (another machine's clock) shows its date. */
 export function formatCardTime(ts: number, locale: Locale, now: number = Date.now()): string {
   if (!Number.isFinite(ts)) return "";
   const then = new Date(ts);

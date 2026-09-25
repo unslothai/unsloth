@@ -56,8 +56,7 @@ export interface LibraryFolder {
 export interface LibraryDisk {
   totalBytes: number;
   freeBytes: number;
-  /** Item sources (the id prefix, `model:<origin>` for models) stored on this disk; others may
-   *  live elsewhere. */
+  /** Item sources on this disk (id prefix, `model:<origin>` for models); others may be elsewhere. */
   sources?: string[];
 }
 
@@ -138,9 +137,7 @@ export function updateLibraryItem(
 }
 
 export async function markLibraryItemOpened(id: string): Promise<void> {
-  await ensureOk(
-    await sendWrite("/api/library/items/opened", jsonInit("POST", { id })),
-  );
+  await ensureOk(await sendWrite("/api/library/items/opened", jsonInit("POST", { id })));
 }
 
 /** Copies the item's file into a project's folder; the Library keeps its item. */
@@ -169,7 +166,7 @@ export interface LibraryLocation {
   /** False while a chosen folder's drive is not connected. */
   available?: boolean;
   /** Space on the disk holding the folder; null while it cannot be read. */
-  disk?: { totalBytes: number; freeBytes: number } | null;
+  disk?: LibraryDisk | null;
   /** Tells folders on one disk from folders on another. */
   device?: string | null;
 }
@@ -183,20 +180,12 @@ export async function revealLibraryLocation(key: LibraryLocation["key"]): Promis
   await ensureOk(await sendWrite("/api/library/locations/reveal", jsonInit("POST", { key })));
 }
 
-export interface LibraryLocationMove {
-  locations: LibraryLocation[];
-  /** A Reset let go of a folder on a drive that is not connected: its files are still there. */
-  leftBehind: string | null;
-}
-
-/**
- * Move one kind of file, files and all; `path` null moves it back to the default. No time limit:
- * the answer comes once every file has moved, which across drives can take a while.
- */
+/** Move one kind of file, files and all (`path` null: back to the default), untimed, as that can
+ *  take a while across drives. `leftBehind`: a folder Reset let go of on an unplugged drive. */
 export async function moveLibraryLocation(
   key: LibraryLocation["key"],
   path: string | null,
-): Promise<LibraryLocationMove> {
+): Promise<{ locations: LibraryLocation[]; leftBehind: string | null }> {
   const response = await ensureOk(
     await sendWrite("/api/library/locations/move", jsonInit("POST", { key, path })),
   );
