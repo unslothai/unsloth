@@ -4,6 +4,7 @@
 import { translate } from "@/i18n";
 import { type RefObject, useEffect, useState } from "react";
 import {
+  LibraryFileTooLarge,
   type LibraryItem,
   errorMessage,
   fetchLibraryBlob,
@@ -32,10 +33,13 @@ async function previewSource(
       // An older server without the route: the blob below still plays it.
     }
   }
-  if (item.sizeBytes !== null && item.sizeBytes > MAX_BUFFERED_PREVIEW_BYTES) {
-    throw new Error(translate("library.preview.tooLargeToPreview"));
-  }
-  const blob = await fetchLibraryBlob(item, embeddedBlobType(body, item.contentType));
+  const tooLarge = () => new Error(translate("library.preview.tooLargeToPreview"));
+  if (item.sizeBytes !== null && item.sizeBytes > MAX_BUFFERED_PREVIEW_BYTES) throw tooLarge();
+  // Held to the cap as it arrives too: the listed size can be out of date, or unknown.
+  const type = embeddedBlobType(body, item.contentType);
+  const blob = await fetchLibraryBlob(item, type, MAX_BUFFERED_PREVIEW_BYTES).catch((error) => {
+    throw error instanceof LibraryFileTooLarge ? tooLarge() : error;
+  });
   return { url: URL.createObjectURL(blob), streamed: false };
 }
 
