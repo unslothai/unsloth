@@ -32844,7 +32844,9 @@ async def _responses_non_streaming(
             ),
             stop_reason = (choices[0].get("finish_reason") if choices else None),
         )
-        api_monitor.finish(monitor_id)
+        # The inner chat route stops generating on disconnect and returns the partial reply.
+        client_left = await _embeddings_client_gone(request)
+        api_monitor.finish(monitor_id, "cancelled" if client_left else "completed")
         return _model_json_response(response)
     except asyncio.CancelledError:
         api_monitor.finish(monitor_id, "cancelled")
