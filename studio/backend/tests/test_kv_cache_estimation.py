@@ -1318,6 +1318,34 @@ class TestLegacyEstimation:
         old_formula = int(2 * n_kv_heads * head_dim * n_layers * n_ctx * bpe)
         assert b._estimate_kv_cache_bytes(n_ctx, "f16") == old_formula
 
+    @pytest.mark.parametrize(
+        "overrides, flash_attn, k_heads, v_heads",
+        [
+            pytest.param(
+                {"_n_layers": 4, "_n_kv_heads_by_layer": [0, 0, 8, 4]},
+                True,
+                12,
+                12,
+                id = "per-layer-heads",
+            ),
+            pytest.param(
+                {"_n_layers": 4, "_n_kv_heads_by_layer": [0, 0, 8, 4]},
+                False,
+                12,
+                4 * 8,
+                id = "per-layer-heads-padded-v",
+            ),
+            # The Mamba converters write head_count 0 and no head_count_kv.
+            pytest.param({"_n_kv_heads": None, "_n_heads": 0}, False, 0, 0, id = "pure-ssm"),
+        ],
+    )
+    def test_only_kv_bearing_layers_are_charged(self, overrides, flash_attn, k_heads, v_heads):
+        b = self._legacy_backend(**overrides)
+        kv = b._estimate_kv_cache_bytes(4096, "q8_0", flash_attn = flash_attn)
+        q8 = lc._kv_bytes_per_elem("q8_0")
+        # The FA-off retry rewrites a quantized V cache to f16.
+        assert kv == int((k_heads * q8 + v_heads * (q8 if flash_attn else 2)) * 128 * 4096)
+
 
 # H. Path Priority (selection order)
 

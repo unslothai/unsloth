@@ -16215,7 +16215,12 @@ class LlamaCppBackend:
 
         # Path 5: Legacy fallback (old GGUFs without explicit dimensions)
         head_dim = self._legacy_head_dim()
-        return int(2 * n_kv * head_dim * n_layers_kv * total_cells * bpe_k) + ssm_state
+        # llama.cpp defaults head_count_kv to head_count, so a pure SSM (head_count 0) has no KV.
+        layer_default = self._n_kv_heads if self._n_kv_heads is not None else (self._n_heads or 0)
+        heads = [self._kv_heads_for_layer(i, layer_default) for i in range(n_layers_kv)]
+        # Without flash attention V is padded to the widest layer, as on Path 4.
+        v_heads = sum(heads) if flash_attn else len(heads) * max(heads)
+        return int((sum(heads) * bpe_k + v_heads * bpe_v) * head_dim * total_cells) + ssm_state
 
     def _draft_backend_for(self, drafter_path: str) -> Optional["LlamaCppBackend"]:
         """Lightweight backend with a drafter GGUF's metadata, to size its own KV
