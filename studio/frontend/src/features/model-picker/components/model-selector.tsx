@@ -224,8 +224,8 @@ function ModelSelectorTrigger({
             {currentModel.icon}
           </span>
         ) : null}
-        {/* A box-centred Hellix label sits above the icon's centre; drop it 0.05em to centre the caps. */}
-        <span className="relative top-[0.05em] flex min-w-0 flex-1 items-baseline">
+        {/* No vertical offset, so the caps line up with the project switcher. */}
+        <span className="flex min-w-0 flex-1 items-baseline">
           {/* Name and quant stay whole; only the description truncates. The suffix sits outside this
               group, so even an over-long name leaves room for it. */}
           <span className="flex min-w-0 items-baseline">

@@ -314,7 +314,7 @@ export function AudioPage({
 
   const [status, setStatus] = useState<InferenceStatusResponse | null>(null);
   // Starts from the last text generated with.
-  const [prompt, setPrompt] = useState(() => readLastPrompt("audio", ""));
+  const [prompt, setPrompt] = useState(() => readLastPrompt("audio"));
   const [audioInstructions, setAudioInstructions] = useState("");
   const [audioLanguage, setAudioLanguage] = useState("");
   const [temperature, setTemperature] = useState(0.6);
@@ -3269,11 +3269,7 @@ export function AudioPage({
                         )}
                         <button
                           type="button"
-                          onClick={() => {
-                            selectClip(clip.id);
-                            // Show the text this clip was made with.
-                            setPrompt(clip.prompt);
-                          }}
+                          onClick={() => selectClip(clip.id)}
                           aria-current={
                             clip.id === selectedId ? "true" : undefined
                           }

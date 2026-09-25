@@ -106,7 +106,12 @@ import {
   sortGalleryItems,
   subscribeGalleryChanged,
 } from "@/lib/gallery-flags";
-import { readLastPrompt, saveLastPrompt } from "@/lib/last-prompt";
+import {
+  dismissExample,
+  isExampleDismissed,
+  readLastPrompt,
+  saveLastPrompt,
+} from "@/lib/last-prompt";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useImageWorkflowStore } from "./stores/image-workflow-store";
 import { WORKFLOW_EXAMPLE_PROMPTS, WORKFLOW_TABS, type WorkflowId } from "./workflows";
@@ -1247,14 +1252,17 @@ export function ImagesPage({
   const imageModels = useImageModels(hostClass, denseQuantSchemes);
   const { rootStyle: railRootStyle } = useMediaRailWidth("images");
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
-  // One prompt per workflow: each starts from its example, then the last one generated with.
+  // One prompt per workflow, starting from the last one generated with.
   const [prompts, setPrompts] = useState<Record<WorkflowId, string>>(() =>
     Object.fromEntries(
-      WORKFLOW_TABS.map(({ id }) => [
-        id,
-        readLastPrompt(`images:${id}`, WORKFLOW_EXAMPLE_PROMPTS[id]),
-      ]),
+      WORKFLOW_TABS.map(({ id }) => [id, readLastPrompt(`images:${id}`)]),
     ) as Record<WorkflowId, string>,
+  );
+  // Workflows whose example hint is gone: it shows as a placeholder until the box is first focused.
+  const [examplesDismissed, setExamplesDismissed] = useState<Record<WorkflowId, boolean>>(() =>
+    Object.fromEntries(
+      WORKFLOW_TABS.map(({ id }) => [id, isExampleDismissed(`images:${id}`)]),
+    ) as Record<WorkflowId, boolean>,
   );
   const setPromptFor = useCallback((id: WorkflowId, next: SetStateAction<string>) => {
     setPrompts((prev) => ({
@@ -3699,6 +3707,128 @@ export function ImagesPage({
       </Field>
     ) : null;
 
+  // Aspect ratio, Resolution and 2K presets. Unified Edit shows them under Output size when Custom is
+  // picked, next to the choice that reveals them; every other workflow keeps them in place.
+  const sizeControls = (
+    <>
+      <Field
+        label="Aspect ratio"
+        hint="Pick a ratio to lock the proportions, then set the size below. Flip swaps width and height."
+      >
+        <div className="flex items-center gap-2">
+          <Select
+            value={aspect}
+            onValueChange={changeAspect}
+            open={active && aspectOpen}
+            onOpenChange={(o) => setAspectOpen(active && o)}
+          >
+            <SelectTrigger className="flex-1">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {ASPECT_OPTIONS.map((key) => (
+                <SelectItem key={key} value={key}>
+                  {key === "custom"
+                    ? "Custom"
+                    : `${ASPECT_LABELS[key]} (${key})`}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <Button
+                type="button"
+                variant="secondary"
+                size="icon"
+                aria-label="Flip width and height"
+                onClick={flipDimensions}
+              >
+                {/* Arrows turn with the orientation, showing which way it flips. */}
+                <HugeiconsIcon
+                  icon={ArrowLeftRightIcon}
+                  className={cn(
+                    "size-4 transition-transform duration-200",
+                    portrait && "rotate-90",
+                  )}
+                />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              {portrait ? "Switch to landscape" : "Switch to portrait"}
+            </TooltipContent>
+          </Tooltip>
+        </div>
+      </Field>
+      <Field
+        label="Resolution"
+        hint={
+          // Image-conditioned workflows size from the source, so "this is the output size" is wrong
+          // there: Transform caps the source by this box, the rest ignore it.
+          workflow === "transform"
+            ? "Caps the output size. The source image is scaled down to fit inside this box, keeping its aspect ratio, so the result may be smaller than the values shown."
+            : workflow === "inpaint" ||
+                workflow === "extend" ||
+                workflow === "upscale" ||
+                (workflow === "edit" && !unifiedEdit)
+              ? "Not used by this workflow: the output size comes from the source image. Upload a smaller image to generate at a smaller size."
+              : `Width and height in pixels. Sizes run from ${MIN_DIM} to ${sizeLimits.maxSide} in steps of ${sizeLimits.multiple}${sizeLimits.maxPixels < sizeLimits.maxSide * sizeLimits.maxSide ? `, up to ${(sizeLimits.maxPixels / 1e6).toFixed(1)} megapixels` : ""}. Most models are trained around 1 megapixel, so much larger sizes can look worse.`
+        }
+      >
+        <div className="flex items-center gap-2">
+          <DimensionSelect
+            icon={ArrowLeftRightIcon}
+            label="Width"
+            value={width}
+            open={active && widthOpen}
+            onOpenChange={(o) => setWidthOpen(active && o)}
+            onChange={changeWidth}
+            limits={sizeLimits}
+          />
+          <DimensionSelect
+            icon={ArrowUpDownIcon}
+            label="Height"
+            value={height}
+            open={active && heightOpen}
+            onOpenChange={(o) => setHeightOpen(active && o)}
+            onChange={changeHeight}
+            limits={sizeLimits}
+          />
+        </div>
+      </Field>
+      {showOfficialPresets && (
+        <Field
+          label="2K presets"
+          hint="The model's native 2K sizes. They take several times the memory and time of a 1 megapixel image."
+        >
+          <Select
+            value=""
+            onValueChange={(v) => {
+              const preset = officialPresets.find((p) => `${p.width}x${p.height}` === v);
+              if (!preset) return;
+              setWidth(preset.width);
+              setHeight(preset.height);
+              const m = matchAspect(preset.width, preset.height);
+              setAspect(m.key);
+              setPortrait(m.portrait);
+            }}
+          >
+            <SelectTrigger aria-label="2K presets">
+              <SelectValue placeholder="Choose a 2K size" />
+            </SelectTrigger>
+            <SelectContent>
+              {officialPresets.map((p) => (
+                <SelectItem key={`${p.width}x${p.height}`} value={`${p.width}x${p.height}`}>
+                  {`${p.label} (${p.width} × ${p.height})`}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+      )}
+    </>
+  );
+
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) {
       toast.error("Prompt is empty");
@@ -4838,6 +4968,7 @@ export function ImagesPage({
                       : `${editSize.width} × ${editSize.height}`}
                   </p>
                 </Field>
+                {editSizing === "custom" && sizeControls}
                 {referenceDetailControl}
                 {engineNotes}
                 {unifiedEdit && (
@@ -4858,9 +4989,14 @@ export function ImagesPage({
               <Textarea
                 rows={4}
                 placeholder={
-                  workflow === "edit" ? "Describe the edit, e.g. make the sky sunset orange" : undefined
+                  examplesDismissed[workflow] ? undefined : WORKFLOW_EXAMPLE_PROMPTS[workflow]
                 }
                 value={prompt}
+                onFocus={() => {
+                  if (examplesDismissed[workflow]) return;
+                  dismissExample(`images:${workflow}`);
+                  setExamplesDismissed((prev) => ({ ...prev, [workflow]: true }));
+                }}
                 onChange={(e) => setPrompt(e.target.value)}
               />
             </Field>
@@ -5007,125 +5143,7 @@ export function ImagesPage({
                 </div>
               </Field>
             )}
-            {!(unifiedEditActive && editSizing === "source") && (
-            <>
-            <Field
-              label="Aspect ratio"
-              hint="Pick a ratio to lock the proportions, then set the size below. Flip swaps width and height."
-            >
-              <div className="flex items-center gap-2">
-                <Select
-                  value={aspect}
-                  onValueChange={changeAspect}
-                  open={active && aspectOpen}
-                  onOpenChange={(o) => setAspectOpen(active && o)}
-                >
-                  <SelectTrigger className="flex-1">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ASPECT_OPTIONS.map((key) => (
-                      <SelectItem key={key} value={key}>
-                        {key === "custom"
-                          ? "Custom"
-                          : `${ASPECT_LABELS[key]} (${key})`}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Tooltip>
-                  <TooltipTrigger asChild={true}>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="icon"
-                      aria-label="Flip width and height"
-                      onClick={flipDimensions}
-                    >
-                      {/* Arrows turn with the orientation, showing which way it flips. */}
-                      <HugeiconsIcon
-                        icon={ArrowLeftRightIcon}
-                        className={cn(
-                          "size-4 transition-transform duration-200",
-                          portrait && "rotate-90",
-                        )}
-                      />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {portrait ? "Switch to landscape" : "Switch to portrait"}
-                  </TooltipContent>
-                </Tooltip>
-              </div>
-            </Field>
-            <Field
-              label="Resolution"
-              hint={
-                // Image-conditioned workflows size from the source, so "this is the output size" is wrong
-                // there: Transform caps the source by this box, the rest ignore it.
-                workflow === "transform"
-                  ? "Caps the output size. The source image is scaled down to fit inside this box, keeping its aspect ratio, so the result may be smaller than the values shown."
-                  : workflow === "inpaint" ||
-                      workflow === "extend" ||
-                      workflow === "upscale" ||
-                      (workflow === "edit" && !unifiedEdit)
-                    ? "Not used by this workflow: the output size comes from the source image. Upload a smaller image to generate at a smaller size."
-                    : `Width and height in pixels. Sizes run from ${MIN_DIM} to ${sizeLimits.maxSide} in steps of ${sizeLimits.multiple}${sizeLimits.maxPixels < sizeLimits.maxSide * sizeLimits.maxSide ? `, up to ${(sizeLimits.maxPixels / 1e6).toFixed(1)} megapixels` : ""}. Most models are trained around 1 megapixel, so much larger sizes can look worse.`
-              }
-            >
-              <div className="flex items-center gap-2">
-                <DimensionSelect
-                  icon={ArrowLeftRightIcon}
-                  label="Width"
-                  value={width}
-                  open={active && widthOpen}
-                  onOpenChange={(o) => setWidthOpen(active && o)}
-                  onChange={changeWidth}
-                  limits={sizeLimits}
-                />
-                <DimensionSelect
-                  icon={ArrowUpDownIcon}
-                  label="Height"
-                  value={height}
-                  open={active && heightOpen}
-                  onOpenChange={(o) => setHeightOpen(active && o)}
-                  onChange={changeHeight}
-                  limits={sizeLimits}
-                />
-              </div>
-            </Field>
-            {showOfficialPresets && (
-              <Field
-                label="2K presets"
-                hint="The model's native 2K sizes. They take several times the memory and time of a 1 megapixel image."
-              >
-                <Select
-                  value=""
-                  onValueChange={(v) => {
-                    const preset = officialPresets.find((p) => `${p.width}x${p.height}` === v);
-                    if (!preset) return;
-                    setWidth(preset.width);
-                    setHeight(preset.height);
-                    const m = matchAspect(preset.width, preset.height);
-                    setAspect(m.key);
-                    setPortrait(m.portrait);
-                  }}
-                >
-                  <SelectTrigger aria-label="2K presets">
-                    <SelectValue placeholder="Choose a 2K size" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {officialPresets.map((p) => (
-                      <SelectItem key={`${p.width}x${p.height}`} value={`${p.width}x${p.height}`}>
-                        {`${p.label} (${p.width} × ${p.height})`}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-            )}
-            </>
-            )}
+            {!unifiedEditActive && sizeControls}
 
             {/* First of the one-line sliders, so it takes a bigger break than the gap gives. */}
             <div className="pt-2">
@@ -5349,11 +5367,7 @@ export function ImagesPage({
                   )}
                   <button
                     type="button"
-                    onClick={() => {
-                      setSelectedId(image.id);
-                      // Show the prompt this image was made with.
-                      setPrompt(image.prompt);
-                    }}
+                    onClick={() => setSelectedId(image.id)}
                     className="relative size-full overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     {srcById[image.id] ? (

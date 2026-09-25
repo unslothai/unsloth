@@ -155,7 +155,7 @@ test("main, edit and comparison composers use the setting and expose settings ac
   assert.match(text, /submitMode="none"/);
   assert.match(
     text,
-    /submitMode=\{sendShortcut === "mod-enter" \? "ctrlEnter" : "enter"\}/,
+    /effectiveSendShortcut\(sendShortcut, editMultiline \? "\\n" : ""\) === "mod-enter"\s*\? "ctrlEnter"\s*: "enter"/,
   );
   assert.match(
     text,
@@ -163,7 +163,7 @@ test("main, edit and comparison composers use the setting and expose settings ac
   );
   assert.match(text, /scrollTarget: "chat-composer"/);
   const compare = readSrc("features/chat/shared-composer.tsx");
-  assert.match(compare, /composerSubmitIntent\(e, sendShortcut\)/);
+  assert.match(compare, /composerSubmitIntent\(e, sendShortcut, text\)/);
   assert.match(compare, /scrollTarget: "chat-composer"/);
   const page = readSrc("features/chat/chat-page.tsx");
   assert.match(page, /showContextWindowUsage &&\s*view.mode === "single"/);

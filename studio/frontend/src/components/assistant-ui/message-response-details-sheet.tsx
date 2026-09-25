@@ -24,7 +24,7 @@ import {
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { cn } from "@/lib/utils";
 import { useMessage, useMessageTiming } from "@assistant-ui/react";
-import { HelpCircleIcon } from "@hugeicons/core-free-icons";
+import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { FC, ReactNode } from "react";
 
@@ -388,7 +388,7 @@ export const MessageResponseDetailsSheet: FC<{
           <div className="relative">
             <SheetTitle className="flex items-center gap-2 pr-10 font-heading text-base">
               <HugeiconsIcon
-                icon={HelpCircleIcon}
+                icon={InformationCircleIcon}
                 strokeWidth={1.75}
                 className="size-icon text-chat-icon-fg"
               />

@@ -181,6 +181,18 @@ if _IS_MLX:
     except Exception:
         pass
     try:
+        from .import_fixes import fix_transformers_validate_rope_ignore_keys as _fix_validate_rope
+        _fix_validate_rope()
+        del _fix_validate_rope
+    except Exception:
+        pass
+    try:
+        from .import_fixes import fix_transformers_is_torch_fx_available as _fix_torch_fx
+        _fix_torch_fx()
+        del _fix_torch_fx
+    except Exception:
+        pass
+    try:
         # Same reason: this branch imports transformers itself further down, so a --no-deps floor miss would
         # surface here with the same wrong remedy.
         from .import_fixes import check_transformers_dependency_versions as _check_tf_deps
