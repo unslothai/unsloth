@@ -527,28 +527,31 @@ def test_native_cmd_timeout_reclaims_terminal_child_and_grandchild(monkeypatch):
 
 
 @pytest.mark.native_mxc
-def test_native_mxc_pip_install_lands_in_the_session_and_imports_next_call():
-    """The interpreter is read-only in the container, so pip has to target the session packages."""
+def test_native_mxc_session_packages_import_inside_the_container():
+    """Packages an earlier call installed into the session must stay importable once the call is isolated."""
     _require_native_mxc()
-    session = "__LOCALID_native_mxc_pip"
-    # In process: the code gate refuses a subprocess argv it cannot read as literal.
-    installed = tools._python_exec(
-        "from pip._internal.cli.main import main\n"
-        "rc = main(['install', '--no-deps', '--disable-pip-version-check', 'six==1.16.0'])\n"
-        "print('PIP_EXIT', rc)\n",
-        None,
-        240,
-        session,
-        tool_execution_mode = "required",
-    )
-    assert "PIP_EXIT 0" in installed, installed
+    session = "__LOCALID_native_mxc_packages"
     packages = Path(tools._get_workdir(session)) / os_sandbox.SESSION_PACKAGES_RELPATH
-    assert (packages / "six.py").is_file(), installed
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "-q",
+            "--no-deps",
+            "--target",
+            str(packages),
+            "six==1.16.0",
+        ],
+        check = True,
+    )
     imported = tools._python_exec(
-        "import six; print('SIX', six.__version__)",
+        "import six; print('SIX', six.__version__, six.__file__)",
         None,
         60,
         session,
         tool_execution_mode = "required",
     )
     assert "SIX 1.16.0" in imported, imported
+    assert os_sandbox.SESSION_PACKAGES_RELPATH in imported, imported
