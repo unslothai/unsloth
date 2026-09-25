@@ -55,14 +55,18 @@ def _hermes_args() -> list[str]:
     return shlex.split(match.group(1))
 
 
-def _installer(tmp_path: Path, known: list[str]) -> Path:
+def _installer(
+    tmp_path: Path,
+    known: list[str],
+    preamble: str = "",
+) -> Path:
     """A vendor installer: records its arguments, and exits on any it does not parse."""
     record = tmp_path / "argv"
     labels = "|".join(known)
     script = tmp_path / "install.sh"
     # Recorded before parsing, so a rejected run still shows what it was given.
     script.write_text(
-        f"printf '%s\\n' \"$@\" > {shlex.quote(str(record))}\n"
+        preamble + f"printf '%s\\n' \"$@\" > {shlex.quote(str(record))}\n"
         "while [ $# -gt 0 ]; do\n"
         '    case "$1" in\n'
         f"        {labels}) shift ;;\n"
@@ -126,6 +130,34 @@ def test_a_required_flag_the_installer_dropped_still_fails(tmp_path: Path) -> No
     result = _curl_bash(tmp_path, installer, ["--non-interactive", "?--skip-setup"])
     assert result.returncode != 0
     assert _received(tmp_path) == ["--non-interactive", "--skip-setup"]
+
+
+def test_a_removed_flag_still_named_outside_the_parser_is_not_kept(tmp_path: Path) -> None:
+    """A comment, help text or migration note naming the old option is not a case label."""
+    preamble = (
+        "# removed --no-skills) in favour of always syncing skills\n"
+        'usage() { echo "  --no-skills)  gone: skills always sync"; }\n'
+        "NOTE='--no-skills|--quiet) were retired'\n"
+    )
+    installer = _installer(tmp_path, ["--non-interactive"], preamble)
+    result = _curl_bash(tmp_path, installer, ["--non-interactive", "?--no-skills"])
+    assert result.returncode == 0, (tmp_path / "install.log").read_text(encoding = "utf-8")
+    assert _received(tmp_path) == ["--non-interactive"]
+
+
+def test_a_flag_among_alternatives_is_kept(tmp_path: Path) -> None:
+    installer = _installer(
+        tmp_path, ["--non-interactive", "--no-playwright|--skip-browser|-SkipBrowser"]
+    )
+    result = _curl_bash(tmp_path, installer, ["--non-interactive", "?--skip-browser"])
+    assert result.returncode == 0
+    assert _received(tmp_path) == ["--non-interactive", "--skip-browser"]
+
+
+def test_the_helpers_run_on_the_bash_macos_ships() -> None:
+    """bash 3.2 has neither mapfile nor readarray."""
+    for name in ("installer_args", "curl_bash"):
+        assert not re.search(r"\b(mapfile|readarray)\b", _function(name)), name
 
 
 def test_hermes_still_passes_non_interactive_as_required() -> None:

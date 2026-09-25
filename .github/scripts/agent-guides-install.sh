@@ -37,7 +37,9 @@ npm_retry() {
 }
 
 # An installer option written as ?--flag is one we pass only to save time, and it
-# is kept only while the downloaded installer still parses it as a case label.
+# is kept only while the downloaded installer still parses it as a case label: a
+# line that opens with it, alone or among |-joined alternatives, so a comment or
+# help text that still names a removed option does not count.
 # These installers track the vendor's main branch and treat any unknown option as
 # fatal, so a vendor dropping a nicety turned every PR red: hermes removed
 # --no-skills on 2026-09-24. Everything else is required and passed as written.
@@ -47,7 +49,7 @@ installer_args() {
   for arg in "$@"; do
     if [[ "$arg" == \?* ]]; then
       flag="${arg#\?}"
-      if grep -qE -- "(^|[[:space:]|(])${flag}[|)]" "$script"; then
+      if grep -qE -- "^[[:space:]]*\(?([^[:space:]#|()]+\|)*${flag}(\|[^[:space:]|()]+)*\)" "$script"; then
         printf '%s\n' "$flag"
       else
         echo "[install] the installer no longer takes $flag; installing without it" | tee -a "$LOG" >&2
@@ -64,14 +66,20 @@ installer_args() {
 curl_bash() {
   local url="$1"; shift
   local i tmp
+  local arg
   local -a args
   tmp="$(mktemp)"
   for i in 1 2 3; do
-    if curl -fsSL --retry 3 --retry-delay 5 "$url" -o "$tmp" 2>>"$LOG" \
-        && mapfile -t args < <(installer_args "$tmp" "$@") \
-        && bash "$tmp" "${args[@]}" >> "$LOG" 2>&1; then
-      rm -f "$tmp"
-      return 0
+    if curl -fsSL --retry 3 --retry-delay 5 "$url" -o "$tmp" 2>>"$LOG"; then
+      args=()
+      # A read loop: the bash 3.2 macOS ships has no builtin that reads lines into an array.
+      while IFS= read -r arg; do
+        args+=("$arg")
+      done < <(installer_args "$tmp" "$@")
+      if bash "$tmp" ${args[@]+"${args[@]}"} >> "$LOG" 2>&1; then
+        rm -f "$tmp"
+        return 0
+      fi
     fi
     echo "[install] curl|bash $url attempt $i failed; backing off $((i * 10))s" | tee -a "$LOG"
     sleep "$((i * 10))"
