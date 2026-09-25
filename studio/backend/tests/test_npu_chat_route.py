@@ -1061,3 +1061,35 @@ def test_a_cancel_racing_the_npu_load_unloads_what_landed(monkeypatch):
         )
     assert err.value.status_code == 409
     assert calls == ["load", "unload"]
+
+
+def _finish_after(turns: list[list[str]], owed: str | None = None) -> bool:
+    from routes.inference import _TurnFinish
+
+    finish = _TurnFinish()
+    for lines in turns:
+        for line in lines:
+            finish.see(line.strip())
+        finish.end_turn()
+    if owed is not None:
+        finish.see(owed)
+    return finish.finished
+
+
+def test_a_tool_loop_turn_dropped_after_a_tool_call_is_cut_short():
+    called = [_chunk({}, "tool_calls")]
+    dropped = [_chunk({"content": "par"})]
+    answered = [_chunk({"content": "sunny"}), _chunk({}, "stop")]
+    assert _finish_after([called, dropped]) is False
+    assert _finish_after([called, answered]) is True
+    # The loop can stop on a call it will not run; that turn did finish.
+    assert _finish_after([called]) is True
+    # A headerless caller's synthetic terminal counts.
+    assert _finish_after([dropped], owed = _chunk({}, "stop").strip()) is True
+    # No tool loop: no turn boundary is reported, and any finish counts.
+    from routes.inference import _TurnFinish
+
+    plain = _TurnFinish()
+    plain.see(_chunk({}, "stop").strip())
+    assert plain.finished is True
+

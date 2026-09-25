@@ -563,8 +563,10 @@ class LemonadeNpuBackend:
     ) -> NpuModel:
         """Load a downloaded model onto the NPU and return it once lemond reports it resident."""
         with self._lock:
-            self._loading = model_id
-            self._load_cancelled.clear()
+            # Cleared before the load is published, so a cancel that sees it is never wiped.
+            with self._commit_lock:
+                self._load_cancelled.clear()
+                self._loading = model_id
             replaced = False
             loaded = False
             try:

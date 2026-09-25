@@ -23277,6 +23277,28 @@ def _sse_line_finishes(line: str) -> bool:
     )
 
 
+class _TurnFinish:
+    """Whether a stream's last provider turn carried a finish_reason.
+
+    The tool loop relays each intermediate turn's "tool_calls" finish, so only the final turn counts.
+    """
+
+    def __init__(self) -> None:
+        self.turn = False
+        self.last: bool | None = None
+
+    def see(self, line: str) -> None:
+        if not self.turn:
+            self.turn = _sse_line_finishes(line)
+
+    def end_turn(self) -> None:
+        self.last, self.turn = self.turn, False
+
+    @property
+    def finished(self) -> bool:
+        return self.turn or bool(self.last)
+
+
 async def _stop_on_cancel(agen, cancel_event: threading.Event):
     """Yield from ``agen`` until ``cancel_event`` is set, even while it waits for a frame.
 
@@ -24079,6 +24101,8 @@ async def _proxy_to_external_provider(
             fast_mode = payload.fast_mode,
             response_format = _extract_response_format(payload),
         )
+        # A managed runtime that drops a reply still closes with [DONE]; it is cut short, not done.
+        managed_finish = _TurnFinish()
         if run_studio_tool_loop:
             # The Unsloth loop owns the tool surface for this turn. The caller's
             # own catalog is dropped for the same reason the Codex path drops it
@@ -24100,6 +24124,12 @@ async def _proxy_to_external_provider(
                 else provider_type
             )
             loop_hosted_tools = hosted_only_tools(hosted_provider_type, payload.enabled_tools)
+
+            def _end_provider_turn() -> None:
+                managed_finish.end_turn()
+                if not _ui_events:
+                    _tool_call_stripper.end_turn()
+
             gen = stream_with_studio_tools(
                 OAICompatTransport(
                     client,
@@ -24143,7 +24173,7 @@ async def _proxy_to_external_provider(
                     # Matches the strip below: only a headerless caller has its calls
                     # withheld, so only it needs a healed one the wire never carried flagged.
                     on_withheld_tool_call = (None if _ui_events else _tool_call_stripper.arm),
-                    on_provider_turn_end = (None if _ui_events else _tool_call_stripper.end_turn),
+                    on_provider_turn_end = _end_provider_turn,
                 ),
                 cancel_event = cancel_event,
             )
@@ -24162,14 +24192,12 @@ async def _proxy_to_external_provider(
             # Stopping the read stops FastFlowLM, which a model swap is waiting on.
             gen = _stop_on_cancel(gen, cancel_event)
         disconnect_task = asyncio.create_task(_watch_disconnect()) if run_studio_tool_loop else None
-        # A managed runtime that drops a reply still closes with [DONE]; it is cut short, not done.
-        managed_finished = False
 
         def _managed_cut_short() -> bool:
             return (
                 managed is not None
                 and not stream_failed
-                and not managed_finished
+                and not managed_finish.finished
                 and not cancel_event.is_set()
             )
 
@@ -24185,8 +24213,8 @@ async def _proxy_to_external_provider(
                     # Before [DONE] reaches the monitor, which would record the reply completed.
                     yield _fail_cut_short()
                     stream_failed = True
-                if managed is not None and not managed_finished:
-                    managed_finished = _sse_line_finishes(line)
+                if managed is not None:
+                    managed_finish.see(line)
                 monitor_event = _monitor_openai_sse_line(monitor_id, line)
                 if monitor_event is None:
                     try:
@@ -24232,6 +24260,7 @@ async def _proxy_to_external_provider(
             # the GGUF passthrough places its own synthetic finish.
             _owed = _tool_call_stripper.owed_terminal_chunk()
             if _owed is not None and not stream_failed:
+                managed_finish.see(_owed)
                 _monitor_openai_sse_line(monitor_id, _owed)
                 yield f"{_owed}\n\n"
             if not sent_done and _managed_cut_short():
