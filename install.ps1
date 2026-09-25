@@ -8260,14 +8260,13 @@ exit 0
     }
 
     # "source;cudaMajor;cudaMinor;cap,cap" from NVML, else the CUDA driver API; "" when neither
-    # answers. Versions are major*1000 + minor*10. Read in a runspace of its own under a deadline:
-    # a wedged driver can block inside the library, and the deadline leaves that runspace behind.
+    # answers. Versions are major*1000 + minor*10. One runspace + deadline per reader: a shared one let slow NVML starve CUDA.
     function Read-NvidiaLibraryRaw {
-        param([int]$TimeoutMs = 10000)
+        param([int]$TimeoutMs = 30000)
         $type = Get-NvidiaLibraryProbeType
         if (-not $type) { return "" }
         $reader = {
-            param($T)
+            param($T, $Which)
             function Read-Nvml {
                 if ($T::nvmlInit_v2() -ne 0) { return "" }
                 try {
@@ -8309,26 +8308,30 @@ exit 0
                 return "cuda;$([int][math]::Floor($ver / 1000));$([int][math]::Floor(($ver % 1000) / 10));$($caps -join ',')"
             }
             $r = ""
-            try { $r = Read-Nvml } catch { $r = "" }
-            if (-not $r) { try { $r = Read-Cuda } catch { $r = "" } }
+            try { if ($Which -eq "nvml") { $r = Read-Nvml } else { $r = Read-Cuda } } catch { $r = "" }
             return "$r"
         }
-        $ps = $null; $handle = $null
-        try {
-            $ps = [powershell]::Create()
-            $null = $ps.AddScript($reader.ToString()).AddArgument($type)
-            $handle = $ps.BeginInvoke()
-            if (-not $handle.AsyncWaitHandle.WaitOne($TimeoutMs)) { return "" }
-            return "$(@($ps.EndInvoke($handle)) | Select-Object -Last 1)"
-        } catch { return "" }
-        finally { if ($ps -and $handle -and $handle.IsCompleted) { $ps.Dispose() } }
+        foreach ($which in @("nvml", "cuda")) {
+            $ps = $null; $handle = $null; $r = ""
+            try {
+                $ps = [powershell]::Create()
+                $null = $ps.AddScript($reader.ToString()).AddArgument($type).AddArgument($which)
+                $handle = $ps.BeginInvoke()
+                if ($handle.AsyncWaitHandle.WaitOne($TimeoutMs)) {
+                    $r = "$(@($ps.EndInvoke($handle)) | Select-Object -Last 1)"
+                }
+            } catch { $r = "" }
+            finally { if ($ps -and $handle -and $handle.IsCompleted) { $ps.Dispose() } }
+            if ($r) { return $r }
+        }
+        return ""
     }
 
     # NVIDIA inventory from the driver's own libraries (NVML, then the CUDA driver API), for a
     # host whose nvidia-smi is absent, stale or hangs (#9255). Twin of studio/nvidia_probe.py.
     # Cached. $null, or @{ Source; CudaMajor; CudaMinor; ComputeCaps ("8.9" strings); Count }.
     function Get-NvidiaLibraryInventory {
-        param([int]$TimeoutSec = 10)
+        param([int]$TimeoutSec = 30)
         if ($script:NvidiaLibraryInventoryProbed) { return $script:NvidiaLibraryInventory }
         $script:NvidiaLibraryInventoryProbed = $true
         $script:NvidiaLibraryInventory = $null
@@ -9262,6 +9265,10 @@ exit 0
         if ($NvidiaSmiExe) {
             try {
                 $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe
+                if ($LASTEXITCODE -eq 124) {
+                    substep "nvidia-smi did not answer within 10s; retrying with a 45s limit..." "Yellow"
+                    $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe -TimeoutSec 45
+                }
                 if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
                     $major = [int]$Matches[1]; $minor = [int]$Matches[2]
                 }
@@ -9276,6 +9283,9 @@ exit 0
                 return "$baseUrl/cpu"
             } else {
                 substep "could not determine CUDA version from nvidia-smi, defaulting to cu126" "Yellow"
+                $pinHint = if ($env:UNSLOTH_PYTORCH_MIRROR) { "UNSLOTH_TORCH_INDEX_FAMILY=" } else { "UNSLOTH_TORCH_INDEX_URL=$baseUrl/" }
+                substep "cu126 has no kernels for Blackwell (sm_100 / sm_120). To choose the wheel yourself, re-run with" "Yellow"
+                substep "  ${pinHint}cu128   (or cu130 on a driver that supports CUDA 13)" "Yellow"
                 return "$baseUrl/cu126"
             }
         }
@@ -9590,17 +9600,35 @@ exit 0
             "gfx1201" = "torch>=2.11.0,<2.12.0"; "gfx1200" = "torch>=2.11.0,<2.12.0"
             "gfx1151" = "torch>=2.11.0,<2.12.0"; "gfx1150" = "torch>=2.11.0,<2.12.0"
             "gfx1152" = "torch>=2.11.0,<2.12.0"
+            "gfx1030" = "torch>=2.11.0,<2.12.0"; "gfx1031" = "torch>=2.11.0,<2.12.0"
+            "gfx1032" = "torch>=2.11.0,<2.12.0"; "gfx1033" = "torch>=2.11.0,<2.12.0"
+            "gfx1034" = "torch>=2.11.0,<2.12.0"; "gfx1035" = "torch>=2.11.0,<2.12.0"
+            "gfx1036" = "torch>=2.11.0,<2.12.0"; "gfx1100" = "torch>=2.11.0,<2.12.0"
+            "gfx1101" = "torch>=2.11.0,<2.12.0"; "gfx1102" = "torch>=2.11.0,<2.12.0"
+            "gfx1103" = "torch>=2.11.0,<2.12.0"
         }
         # Companions track the torch ceiling for a consistent trio on AMD's per-arch index.
         $torchvisionFloorMap = @{
             "gfx1201" = "torchvision>=0.26.0,<0.27.0"; "gfx1200" = "torchvision>=0.26.0,<0.27.0"
             "gfx1151" = "torchvision>=0.26.0,<0.27.0"; "gfx1150" = "torchvision>=0.26.0,<0.27.0"
             "gfx1152" = "torchvision>=0.26.0,<0.27.0"
+            "gfx1030" = "torchvision>=0.26.0,<0.27.0"; "gfx1031" = "torchvision>=0.26.0,<0.27.0"
+            "gfx1032" = "torchvision>=0.26.0,<0.27.0"; "gfx1033" = "torchvision>=0.26.0,<0.27.0"
+            "gfx1034" = "torchvision>=0.26.0,<0.27.0"; "gfx1035" = "torchvision>=0.26.0,<0.27.0"
+            "gfx1036" = "torchvision>=0.26.0,<0.27.0"; "gfx1100" = "torchvision>=0.26.0,<0.27.0"
+            "gfx1101" = "torchvision>=0.26.0,<0.27.0"; "gfx1102" = "torchvision>=0.26.0,<0.27.0"
+            "gfx1103" = "torchvision>=0.26.0,<0.27.0"
         }
         $torchaudioFloorMap = @{
             "gfx1201" = "torchaudio>=2.11.0,<2.12.0"; "gfx1200" = "torchaudio>=2.11.0,<2.12.0"
             "gfx1151" = "torchaudio>=2.11.0,<2.12.0"; "gfx1150" = "torchaudio>=2.11.0,<2.12.0"
             "gfx1152" = "torchaudio>=2.11.0,<2.12.0"
+            "gfx1030" = "torchaudio>=2.11.0,<2.12.0"; "gfx1031" = "torchaudio>=2.11.0,<2.12.0"
+            "gfx1032" = "torchaudio>=2.11.0,<2.12.0"; "gfx1033" = "torchaudio>=2.11.0,<2.12.0"
+            "gfx1034" = "torchaudio>=2.11.0,<2.12.0"; "gfx1035" = "torchaudio>=2.11.0,<2.12.0"
+            "gfx1036" = "torchaudio>=2.11.0,<2.12.0"; "gfx1100" = "torchaudio>=2.11.0,<2.12.0"
+            "gfx1101" = "torchaudio>=2.11.0,<2.12.0"; "gfx1102" = "torchaudio>=2.11.0,<2.12.0"
+            "gfx1103" = "torchaudio>=2.11.0,<2.12.0"
         }
         $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
         if ($archFamily) {
@@ -9629,8 +9657,8 @@ exit 0
             # Only KNOWN-2.11 rocm (rocm7.2) gets the floor. Matches Test-RocmKnown211Version.
             $_pinRocm211 = ([int]$Matches[1] -eq 7 -and [int]$Matches[2] -eq 2)
         }
-        # Only the 2.11-allowlist gfx arches need the floor; others publish <2.11 and stay bare.
-        $_pinGfx211 = @('gfx120x-all', 'gfx1151', 'gfx1150', 'gfx1152') -contains $_pinLeaf
+        # Only the 2.11-allowlist gfx arches need the floor (gfx908 / gfx90a stay bare).
+        $_pinGfx211 = @('gfx120x-all', 'gfx1151', 'gfx1150', 'gfx1152', 'gfx103x-all', 'gfx110x-all') -contains $_pinLeaf
         if ($_pinGfx211 -or $_pinRocm211) {
             $ROCmIndexUrl = $TorchIndexUrl
             $ROCmTorchFloor = "torch>=2.11.0,<2.12.0"
@@ -9853,7 +9881,7 @@ exit 0
 
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.9.7" }
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.9.11" }
 
     if ($_Migrated) {
         Write-TauriLog "STEP" "Installing unsloth"
@@ -9864,7 +9892,7 @@ exit 0
             # --no-deps means unsloth's own metadata is never read, so this spec IS the zoo
             # floor for this path. Keep it equal to the unsloth_zoo floor in pyproject.toml
             # (tests/test_installer_zoo_floor_parity.py enforces that).
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.7" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -9883,7 +9911,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.7" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -10135,7 +10163,7 @@ exit 0
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
             # --no-deps: this spec IS the zoo floor here. Kept equal to pyproject.toml's.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.7" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
@@ -10155,11 +10183,11 @@ exit 0
             # Freeze the trio so this with-deps resolve cannot downgrade the pinned build.
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.7" }
                 Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
                 $script:TorchOverridesFile = $null
             } else {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.6" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.7" }
             }
         } else {
             $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
@@ -10196,7 +10224,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.9.6" "$_unslothReleaseInstallSpec" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.9.7" "$_unslothReleaseInstallSpec" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)

@@ -351,6 +351,7 @@ from routes import (
 from routes.llama import router as llama_router
 from routes.llama_compat import is_engine_probe_path, router as llama_compat_router
 from routes.whisper import router as whisper_router
+from routes.npu import router as npu_router
 from routes.preview import router as preview_router
 from hub.routes import (
     inventory_router as hub_inventory_router,
@@ -365,6 +366,7 @@ from hub.utils.download_registry import (
     terminate_active_downloads as terminate_hub_downloads,
 )
 from routes.settings import router as settings_router
+from routes.systemone import router as systemone_router
 from routes.prompts import router as prompts_router
 from routes.profile_stats import router as profile_stats_router
 from auth import policy as auth_policy, storage
@@ -1573,7 +1575,7 @@ app.add_middleware(
     allow_headers = ["*"],
     # allow_headers is the REQUEST side; a response header is unreadable to JS unless
     # exposed, and Studio is cross-origin from tauri://localhost and tunnels.
-    expose_headers = ["X-Unsloth-Conflict-Kind"],
+    expose_headers = ["X-Unsloth-Conflict-Kind", "X-Unsloth-Refusal"],
     # is_allowed_origin closes the moment the tunnel URL clears, but a preflight already cached by the browser
     # does not. Measured in WebKit: with Starlette's 600s default, a state-changing request still REACHED the
     # server after remote access was stopped. Keep the stale window short.
@@ -1613,6 +1615,7 @@ app.include_router(video_openai_router, prefix = "/api/inference", tags = ["infe
 app.include_router(video_openai_router, prefix = "/v1", tags = ["openai-compat"])
 
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
+app.include_router(systemone_router, prefix = "/v1", tags = ["systemone"])
 # llama-server / Ollama discovery probes. Declares its own full paths (/props, /version, /api/tags, ...) so it
 # needs no prefix, and must be registered ahead of the SPA catch-all in serve_frontend() or /props and /version
 # go on resolving to index.html with a 200.
@@ -1631,6 +1634,7 @@ app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
 app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])
+app.include_router(npu_router, prefix = "/api/npu", tags = ["npu"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])

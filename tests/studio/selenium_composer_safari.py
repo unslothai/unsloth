@@ -10,7 +10,13 @@ from selenium.webdriver import ActionChains, Keys
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from _playwright_robust import start_vite, stop_process, wait_for_smoke_page
+from selenium.common.exceptions import SessionNotCreatedException
+from _playwright_robust import (
+    open_session_with_retry,
+    start_vite,
+    stop_process,
+    wait_for_smoke_page,
+)
 
 
 def main():
@@ -26,7 +32,7 @@ def main():
             "/smoke-prompt-queue-actions-main.tsx",
             proc = server,
         )
-        driver = webdriver.Safari()
+        driver = open_session_with_retry(webdriver.Safari, retry_on = SessionNotCreatedException)
         driver.set_window_size(1100, 900)
         report["version"] = driver.capabilities.get("browserVersion")
         wait = WebDriverWait(driver, 10)

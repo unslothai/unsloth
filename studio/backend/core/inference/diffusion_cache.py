@@ -11,9 +11,8 @@ diffusers ships it natively (``transformer.enable_cache(FirstBlockCacheConfig(..
 Measured on Flux.1-dev (28 steps, 1024px, B200): ~1.4x on top of torch.compile (2.83 -> 2.03 s)
 at LPIPS ~0.08 -- deep inside the speed-for-quality bar.
 
-OFF by default: the win scales with step count, so a few-step distilled model (Z-Image-Turbo
-~8 steps) has almost no headroom and caching is for many-step models (Flux / Qwen-Image). It
-composes with torch.compile only at ``fullgraph=False`` (the cache's compiler-disabled decision
+Explicit ``fbcache`` works on every tier; unset / ``auto`` engages only on ``max`` with 20+ steps.
+It composes with torch.compile only at ``fullgraph=False`` (the cache's compiler-disabled decision
 is a graph break), which the speed layer switches to automatically. Best-effort: an incompatible
 model is caught and the load proceeds uncached. torch / diffusers imported lazily.
 """
@@ -36,6 +35,20 @@ QUANT_FBCACHE_THRESHOLD = 0.12
 # qualify, distilled turbo never does).
 FBCACHE_MIN_STEPS = 20
 
+# == diffusion_speed.SPEED_MAX, spelled out to keep this module import-free.
+AUTO_STEP_CACHE_TIER = "max"
+
+
+def auto_step_cache_allowed(speed_mode: Optional[str]) -> bool:
+    """Takes the EFFECTIVE speed tier."""
+    return speed_mode == AUTO_STEP_CACHE_TIER
+
+
+def resolve_auto_step_cache(speed_mode: Optional[str], default_steps: int) -> Optional[str]:
+    if auto_step_cache_allowed(speed_mode) and int(default_steps) >= FBCACHE_MIN_STEPS:
+        return TC_FBCACHE
+    return None
+
 
 def normalize_transformer_cache(value: Optional[str]) -> Optional[str]:
     """Lower/strip a cache mode; None / "" / "none" / "off" -> None, "auto" -> TC_AUTO (loader
@@ -53,6 +66,65 @@ def normalize_transformer_cache(value: Optional[str]) -> Optional[str]:
             f"{', '.join(TC_MODES)}."
         )
     return normalized
+
+
+# Block classes diffusers ships without first-block-cache metadata, and the metadata they want.
+# The pair is (index of hidden_states in the block's return, index of encoder_hidden_states or None).
+#
+# Qwen-Image-2.1 is single stream: its block takes ``hidden_states, modulation, rotary_emb, ...``
+# and returns the hidden states alone, so 0 / None. Without the entry ``enable_cache`` raises
+# "Model class QwenImage21TransformerBlock not registered." and every load of the family renders
+# uncached, which is the whole step-cache saving gone on a 20+ step model, silently.
+_UNREGISTERED_BLOCK_METADATA: dict = {
+    (
+        "diffusers.models.transformers.transformer_qwenimage21",
+        "QwenImage21TransformerBlock",
+    ): (0, None),
+}
+
+
+def register_unregistered_transformer_blocks(logger: Any = None) -> tuple:
+    """Add our own first-block-cache metadata for block classes diffusers has not registered.
+
+    Idempotent, best-effort, and never overwrites: a class diffusers registers later wins, since
+    upstream's own metadata is authoritative and ours exists only to fill the gap until it lands.
+    An import failure means that diffusers does not have the class at all, which is not an error
+    here; the family simply is not installed.
+    """
+    added: list = []
+    try:
+        from diffusers.hooks._helpers import TransformerBlockMetadata, TransformerBlockRegistry
+    except Exception:  # noqa: BLE001 - an older diffusers has no registry to fill
+        return ()
+    for (module_name, class_name), (
+        hidden_index,
+        encoder_index,
+    ) in _UNREGISTERED_BLOCK_METADATA.items():
+        try:
+            import importlib
+            block_cls = getattr(importlib.import_module(module_name), class_name, None)
+        except Exception:  # noqa: BLE001 - this diffusers does not ship the family
+            continue
+        if block_cls is None:
+            continue
+        try:
+            TransformerBlockRegistry.get(block_cls)
+            continue  # already known, ours would be a downgrade
+        except Exception:  # noqa: BLE001 - "not registered" is the case we are here for
+            pass
+        try:
+            TransformerBlockRegistry.register(
+                model_class = block_cls,
+                metadata = TransformerBlockMetadata(
+                    return_hidden_states_index = hidden_index,
+                    return_encoder_hidden_states_index = encoder_index,
+                ),
+            )
+            added.append(class_name)
+        except Exception as exc:  # noqa: BLE001 - registration is an optimisation, never a gate
+            if logger is not None:
+                logger.debug("could not register %s for step caching: %s", class_name, exc)
+    return tuple(added)
 
 
 def _invalidate_child_registry_cache(transformer: Any) -> None:
@@ -120,7 +192,20 @@ def _compile_hooked_block_inners(transformer: Any, logger: Any = None) -> int:
                     continue  # not a plain bound method; arming would miss the block
                 # fullgraph=False / dynamic=True: a cache is active (its decision graph-breaks) and this matches the
                 # default tier. Dynamo caches per code object, so re-arming after a toggle is ~free.
-                fn_ref.original_forward = torch.compile(orig, fullgraph = False, dynamic = True)
+                # Automatic dynamic when the speed layer chose it (max tier or torchao weights), as the blocks do.
+                dynamic = None if getattr(transformer, "_unsloth_auto_dynamic", False) else True
+                compiled = torch.compile(orig, fullgraph = False, dynamic = dynamic)
+                # Same runtime fallback as the block's own compile: a lowering failure on the first computed step
+                # restores the eager inner instead of failing the render.
+                guard = getattr(transformer, "_unsloth_compile_guard", None)
+                if guard is not None:
+
+                    def restore(ref: Any = fn_ref, inner: Any = orig) -> None:
+                        ref.original_forward = inner
+
+                    guard.restores.append(restore)
+                    compiled = guard.wrap(compiled, orig, transformer)
+                fn_ref.original_forward = compiled
                 hook._unsloth_orig_inner = orig
                 armed += 1
     except Exception as exc:  # noqa: BLE001 -- best-effort: the cache still works eager
@@ -229,17 +314,147 @@ def _pipeline_opens_cache_context(pipe: Any) -> bool:
     return "cache_context(" in src
 
 
+def _transformer_blocks_registered(transformer: Any, logger: Any = None) -> bool:
+    """True when the registry cannot be read, so enable_cache stays the judge."""
+    try:
+        import torch
+        from diffusers.hooks._common import _ALL_TRANSFORMER_BLOCK_IDENTIFIERS
+        from diffusers.hooks._helpers import TransformerBlockRegistry
+    except Exception:  # noqa: BLE001 - no registry to ask
+        return True
+    named_children = getattr(transformer, "named_children", None)
+    if not callable(named_children):
+        return True
+    register_unregistered_transformer_blocks(logger)
+    blocks = [
+        getattr(block, "_orig_mod", block)
+        for name, child in named_children()
+        if name in _ALL_TRANSFORMER_BLOCK_IDENTIFIERS and isinstance(child, torch.nn.ModuleList)
+        for block in child
+    ]
+    # FBCache needs a head and a tail block.
+    if len(blocks) < 2:
+        return False
+    try:
+        for cls in {type(block) for block in blocks}:
+            TransformerBlockRegistry.get(cls)
+    except Exception:  # noqa: BLE001 - unregistered, or the registry itself failed to load
+        return False
+    return True
+
+
+def step_cache_supported(pipe: Any, *, logger: Any = None) -> bool:
+    """Mirrors apply_step_cache's refusals for an auto request, without engaging the cache."""
+    transformer = getattr(pipe, "transformer", None)
+    if transformer is None or not callable(getattr(transformer, "enable_cache", None)):
+        return False
+    if not _pipeline_opens_cache_context(pipe):
+        return False
+    if _reuses_prefix_kv(pipe, transformer):
+        return False
+    return _transformer_blocks_registered(transformer, logger)
+
+
+def install_fbcache_length_guard() -> bool:
+    """Make First-Block-Cache recompute, instead of raise, when the block sequence length changes.
+
+    FBCache decides per step by subtracting the previous step's head-block residual from this one's.
+    A prefix-KV transformer (Qwen-Image-2.1) runs step 0 over prompt + target tokens and every later
+    step over the target alone, so that subtraction raises on step 1. A length change means the
+    stored residuals describe a different sequence, so the only correct answer is "compute": the
+    full pass then stores residuals at the new length and later steps cache normally. Same-length
+    calls take the original path unchanged. Process-wide and idempotent; False when this diffusers
+    has no FBCache head hook to guard."""
+    try:
+        from diffusers.hooks.first_block_cache import FBCHeadBlockHook
+    except Exception:  # noqa: BLE001 - no FBCache in this diffusers
+        return False
+    original = getattr(FBCHeadBlockHook, "_should_compute_remaining_blocks", None)
+    if original is None:
+        return False
+    if getattr(original, "_unsloth_length_guard", False):
+        return True
+    import torch
+
+    @torch.compiler.disable
+    def _should_compute_remaining_blocks(self, hidden_states_residual):
+        state = self.state_manager.get_state()
+        previous = state.head_block_residual
+        if previous is not None and previous.shape != hidden_states_residual.shape:
+            return True
+        tail = state.tail_block_residuals
+        if tail is not None and getattr(tail[0], "shape", None) not in (
+            None,
+            hidden_states_residual.shape,
+        ):
+            return True
+        return original(self, hidden_states_residual)
+
+    _should_compute_remaining_blocks._unsloth_length_guard = True
+    FBCHeadBlockHook._should_compute_remaining_blocks = _should_compute_remaining_blocks
+    return True
+
+
+def _reuses_prefix_kv(pipe: Any, transformer: Any) -> bool:
+    """Whether the denoise loop feeds the blocks a SHORTER sequence after the first step.
+
+    A transformer that caches the prompt/condition prefix K and V runs its first step over the
+    whole joint sequence and every later step over the target tokens alone, so the per-block
+    sequence length changes between step 0 and step 1. FBCache compares the first block's residual
+    against the previous step's and reuses the remaining blocks' cached residual, and both are
+    plain elementwise ops on a stored tensor, so the length change makes them raise:
+
+        RuntimeError: The size of tensor a (4096) must match the size of tensor b (4297)
+                      at non-singleton dimension 1
+
+    (Qwen-Image-2.1 at 1024px: 4096 image tokens against 4096 + 201 prompt tokens.) The cache is
+    not merely unsupported here, it takes the generation down at the second step, so refuse it.
+
+    Read structurally rather than by family name, because the shape is shared: the transformer's
+    forward accepts a ``kv_cache_mode`` and the pipeline passes one. Qwen-Image-2.1, FLUX.2 klein
+    KV and Wan-Animate-2 all match today, and a family that adopts prefix reuse later is covered
+    without touching this file.
+
+    Conservative on purpose. A checkpoint that carries the parameter but never populates the cache
+    (the pipeline gates on its own config) keeps a constant length and would have been safe, and it
+    loses the cache anyway. That costs speed on a model we have not seen; guessing the other way
+    costs a failed render on one we have."""
+    import inspect
+
+    forward = getattr(transformer, "forward", None)
+    if forward is None:
+        return False
+    try:
+        if "kv_cache_mode" not in inspect.signature(forward).parameters:
+            return False
+    except (TypeError, ValueError):  # not introspectable: assume no prefix reuse
+        return False
+    call = getattr(pipe, "__call__", None)
+    if call is None:
+        return False
+    try:
+        src = inspect.getsource(call)
+    except (OSError, TypeError):
+        # The transformer takes the parameter and the loop cannot be read, so whether it is driven
+        # is unknown. Unknown is the crashing side here, so treat it as driven.
+        return True
+    return "kv_cache_mode" in src
+
+
 def apply_step_cache(
     pipe: Any,
     *,
     mode: Optional[str],
     threshold: Optional[float] = None,
     quant_active: bool = False,
+    length_changes_ok: bool = False,
     logger: Any = None,
 ) -> Optional[str]:
     """Engage step caching on ``pipe.transformer``. Returns the mode engaged, or None when
     disabled / unsupported (runs uncached). ``threshold`` overrides the default; ``quant_active``
-    raises it so the cache triggers on a quantised transformer. Best-effort."""
+    raises it so the cache triggers on a quantised transformer. ``length_changes_ok`` lets a
+    prefix-KV transformer engage through the length guard; only an explicit request sets it, since
+    those families skip far more steps at the default threshold. Best-effort."""
     mode = normalize_transformer_cache(mode)
     if mode is None or mode == TC_AUTO:
         # AUTO is resolved by the loader before this; treat a stray auto as off.
@@ -247,6 +462,8 @@ def apply_step_cache(
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
         return None
+    # Before enable_cache, which is what raises on a block class the registry has never seen.
+    register_unregistered_transformer_blocks(logger)
     thr = (
         threshold
         if threshold is not None
@@ -263,6 +480,22 @@ def apply_step_cache(
     if not _pipeline_opens_cache_context(pipe):
         _warn(
             logger, mode, RuntimeError("pipeline __call__ opens no cache_context; running uncached")
+        )
+        return None
+    # Prefix KV reuse shortens the block sequence after the first step, which the cache's stored
+    # residuals cannot be subtracted from. Checked before enable_cache: engaging here does not fail
+    # at load, it fails at step 2 of the user's generation. On an explicit request the length guard
+    # makes the head block recompute whenever the length moved, so the cache engages; otherwise refuse.
+    if _reuses_prefix_kv(pipe, transformer) and not (
+        length_changes_ok and install_fbcache_length_guard()
+    ):
+        _warn(
+            logger,
+            mode,
+            RuntimeError(
+                "transformer reuses a prefix KV cache, so the block sequence length changes "
+                "after the first step; running uncached"
+            ),
         )
         return None
     # enable_cache RAISES when is_cache_enabled, so without this a redundant call lands in the

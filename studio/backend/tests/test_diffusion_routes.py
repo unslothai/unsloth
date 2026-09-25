@@ -692,6 +692,45 @@ def test_generate_execution_error_with_cancelled_substring_is_sanitized_500(clie
     assert "cancelled" not in detail and "models" not in detail and "/home/u" not in detail
 
 
+def test_generate_memory_refusal_is_a_tagged_400_and_allow_oversized_reaches_the_backend(
+    client, monkeypatch
+):
+    from core.inference.diffusion_memory import (
+        IMAGE_REFUSAL_HEADER,
+        IMAGE_REFUSAL_MEMORY_ESTIMATE,
+        ImageActivationShortfallError,
+    )
+
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+    seen = []
+
+    def _guarded(**kwargs):
+        seen.append(kwargs.get("allow_oversized"))
+        if not kwargs.get("allow_oversized"):
+            raise ImageActivationShortfallError("Generating at 2048x2048 needs about 34.00 GB")
+        return {"images": [], "seed": 1, "seeds": []}
+
+    monkeypatch.setattr(backend, "generate", _guarded)
+    refused = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert refused.status_code == 400
+    assert refused.headers.get(IMAGE_REFUSAL_HEADER) == IMAGE_REFUSAL_MEMORY_ESTIMATE
+    assert "2048x2048" in refused.json()["detail"]
+    retried = client.post(
+        "/api/inference/images/generate", json = {"prompt": "p", "allow_oversized": True}
+    )
+    assert retried.status_code == 200
+    assert seen == [False, True]
+
+    def _plain(**kwargs):
+        raise ValueError("width and height are required for this workflow.")
+
+    monkeypatch.setattr(backend, "generate", _plain)
+    other = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert other.status_code == 400
+    assert IMAGE_REFUSAL_HEADER not in other.headers
+
+
 def test_generate_user_cancellation_returns_409(client, monkeypatch):
     # The exact cancellation sentinel both engines raise is client-state (409).
     backend = diffusion_module.get_diffusion_backend()
@@ -2656,3 +2695,76 @@ def test_the_plan_route_refuses_an_unrecognised_model_before_planning(client):
 
     assert resp.status_code == 400, resp.text
     assert "Could not infer a diffusion family" in resp.json()["detail"]
+
+
+def test_edit_without_a_size_lets_the_backend_match_image_1(client, monkeypatch):
+    """An edit that names no size must not be pinned to the schema's 1024 square: the route hands
+    the backend None so it sizes from Image 1 on the family grid. A named size passes through."""
+    _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    backend = diffusion_module.get_diffusion_backend()
+    seen = []
+    original = backend.generate
+
+    def _record(**kwargs):
+        seen.append(kwargs)
+        out = original(**kwargs)
+        out.update(workflow = "edit", reference_resolution = 512, localized_edit = "mask")
+        return out
+
+    monkeypatch.setattr(backend, "generate", _record)
+    layer = {"mode": "mask", "image": "QUJD"}
+    resp = _post_generate(
+        client,
+        prompt = "p",
+        workflow = "edit",
+        init_image = "QUJD",
+        reference_images = ["QUJD", "QUJD"],
+        reference_resolution = 512,
+        localized_edit = layer,
+    )
+    assert resp.status_code == 200
+    assert seen[-1]["width"] is None and seen[-1]["height"] is None
+    assert seen[-1]["workflow"] == "edit" and seen[-1]["reference_resolution"] == 512
+    assert seen[-1]["localized_edit"].mode == "mask"
+    record = resp.json()["images"][0]
+    # The engaged values are what the recipe keeps; the count stays images BEYOND the source.
+    assert record["reference_resolution"] == 512
+    assert record["localized_edit"] == "mask"
+    assert record["reference_image_count"] == 2
+    _post_generate(client, prompt = "p", workflow = "edit", init_image = "QUJD", width = 1024)
+    assert seen[-1]["width"] == 1024 and seen[-1]["height"] == 1024
+
+
+def test_generate_schema_bounds_for_unified_editing(client):
+    _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    nine = _post_generate(client, prompt = "p", init_image = "QUJD", reference_images = ["QUJD"] * 9)
+    assert nine.status_code == 200
+    ten = _post_generate(client, prompt = "p", init_image = "QUJD", reference_images = ["QUJD"] * 10)
+    assert ten.status_code == 422
+    assert _post_generate(client, prompt = "p", workflow = "inpaint").status_code == 422
+    assert _post_generate(client, prompt = "p", width = 2752, height = 1536).status_code == 200
+    assert _post_generate(client, prompt = "p", width = 2768).status_code == 422
+    bad_mode = _post_generate(client, prompt = "p", localized_edit = {"mode": "lasso", "image": "QUJD"})
+    assert bad_mode.status_code == 422
+
+
+def test_a_managed_account_cannot_send_allow_oversized(client, monkeypatch):
+    from hub.services.models import account_access
+
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+    seen = []
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(account_access, "require_media_adapters", lambda *a, **k: None)
+    monkeypatch.setattr(account_access, "require_media_generation_access", lambda *a, **k: None)
+    monkeypatch.setattr(
+        backend,
+        "generate",
+        lambda **kw: seen.append(kw.get("allow_oversized"))
+        or {"images": [], "seed": 1, "seeds": []},
+    )
+    resp = client.post(
+        "/api/inference/images/generate", json = {"prompt": "p", "allow_oversized": True}
+    )
+    assert resp.status_code == 200
+    assert seen == [False]
