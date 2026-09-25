@@ -52,8 +52,7 @@ export interface GpuInfo {
   /** The dense quant schemes the backend says this host can run, best first ("fp8", "int8"). Empty
    *  until system info arrives, and on a backend too old to report the field. */
   denseQuantSchemes: readonly string[];
-  /** Whether the backend accepts NVFP4 for image/video generation. False until system info arrives,
-   *  and on a backend that does not report it, so the pickers never offer a scheme it refuses. */
+  /** False until system info arrives, and on backends that do not report it. */
   nvfp4Diffusion: boolean;
   name: string;
   memoryTotalGb: number;

@@ -3298,7 +3298,6 @@ class DiffusionBackend:
         from .diffusion_nvfp4_flag import nvfp4_blocked, nvfp4_repo_blocked
 
         if nvfp4_blocked(scheme) or nvfp4_repo_blocked(source.location):
-            # The NVFP4 switch is off: no Hub request to a *-NVFP4 repo, and the plan keeps the dense shards.
             return None
         from huggingface_hub import HfApi
         from huggingface_hub.errors import RepositoryNotFoundError
