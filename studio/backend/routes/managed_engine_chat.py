@@ -13,7 +13,7 @@ import httpx
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
-from core.inference.engine_transport import engine_request_timeout
+from core.inference.engine_transport import engine_messages, engine_request_timeout
 from core.inference.http_stream import closing_response_lines
 from core.inference.studio_tool_loop import ToolLoopPolicy, ToolLoopRun, stream_with_studio_tools
 
@@ -30,7 +30,7 @@ class ManagedToolTransport:
 
         body = {
             **self.body,
-            "messages": messages,
+            "messages": engine_messages(messages),
             "stream": True,
             "stream_options": {"include_usage": True},
         }
@@ -127,6 +127,10 @@ async def managed_tool_chat(
         nudge = await api._apply_rag_nudge(nudge, tools, rag_scope = payload.rag_scope)
         if nudge:
             messages = api._append_to_system_message(messages, nudge)
+    try:
+        messages = engine_messages(messages)
+    except ValueError as exc:
+        raise reject(str(exc)) from exc
     engine = backend._managed_engine
     body = {
         "model": engine.model,

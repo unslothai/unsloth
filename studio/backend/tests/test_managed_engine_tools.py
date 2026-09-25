@@ -442,3 +442,28 @@ def test_managed_tool_history_promotes_images_for_vision_only(native, vision):
         for part in message["content"]
     ]
     assert any(part.get("type") == "image_url" for part in parts) is vision
+
+
+def test_managed_route_never_forwards_a_bare_image_path(native):
+    native[0].models["sf-model"]["is_vision"] = True
+    payload = route_test._request(enable_tools = False, tools = [route_test.LOOKUP_TOOL])
+    path = "/" * 64 + "etc/hostname"
+    payload.messages = [
+        route_test.ChatMessage(
+            role = "user",
+            content = [
+                {"type": "text", "text": "Describe"},
+                {"type": "image_url", "image_url": {"url": path}},
+            ],
+        )
+    ]
+    run(payload)
+    urls = [
+        part["image_url"]["url"]
+        for body in native[1]
+        for message in body["messages"]
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image_url"
+    ]
+    assert urls and all(url.startswith("data:") for url in urls)

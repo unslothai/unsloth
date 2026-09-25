@@ -6,6 +6,7 @@
 import asyncio
 import json
 import queue
+import re
 import threading
 
 import httpx
@@ -20,6 +21,32 @@ class EngineHTTPError(RuntimeError):
         self.status_code = status_code
         self.body = body[:500]
         super().__init__(f"Engine rejected generation (HTTP {status_code}): {self.body}")
+
+
+_BASE64 = re.compile(r"[A-Za-z0-9+/=\s]+")
+
+
+def engine_messages(messages):
+    """Send engines data-URL images only: SGLang opens a bare "/..." image string as a host file."""
+    out = []
+    for message in messages:
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            out.append(message)
+            continue
+        parts = []
+        for part in content:
+            image = part.get("image_url") if isinstance(part, dict) else None
+            url = image.get("url") if isinstance(image, dict) else image
+            if isinstance(url, str) and not url.lstrip().startswith("data:"):
+                if not _BASE64.fullmatch(url):
+                    raise ValueError("Send images over https or as base64 data URLs.")
+                image = image if isinstance(image, dict) else {}
+                url = "data:image/png;base64," + "".join(url.split())
+                part = {**part, "image_url": {**image, "url": url}}
+            parts.append(part)
+        out.append({**message, "content": parts})
+    return out
 
 
 def engine_request_timeout():

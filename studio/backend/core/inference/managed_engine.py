@@ -502,6 +502,9 @@ class ManagedEngine:
             raise ValueError(
                 "Continuation and reasoning controls are unavailable for this engine profile."
             )
+        from .engine_transport import engine_messages
+
+        messages = engine_messages(messages)
         payload = {
             "model": self.model,
             "messages": messages,
