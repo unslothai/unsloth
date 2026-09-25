@@ -288,7 +288,7 @@ def _build_plan(key: tuple, device: Any, operands: list):
 
 
 def forget_availability() -> None:
-    """Re-probe on the next ``available()``. For an install that just made flashinfer importable."""
+    """Re-probe on the next ``available()``."""
     global _AVAILABLE
     with _LOCK:
         _AVAILABLE = None

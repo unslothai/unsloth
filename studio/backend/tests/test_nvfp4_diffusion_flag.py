@@ -585,10 +585,6 @@ def test_the_fast_dispatch_is_never_probed_or_verified(monkeypatch):
     assert touched == []
 
 
-# ---------------------------------------------------------------------------------------------
-# flashinfer auto-install (studio-nvfp4-flashinfer-autoinstall)
-
-
 def test_no_flashinfer_install_is_attempted(monkeypatch):
     from core.inference import diffusion_nvfp4_install as inst
 

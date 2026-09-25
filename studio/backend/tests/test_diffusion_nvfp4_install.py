@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the on-demand FlashInfer install behind NVFP4 (``diffusion_nvfp4_install.py``).
-
-Hermetic: the installer subprocess, the torch probe, the device capability and the installed
-distribution set are all fakes, so nothing here touches the network or the running venv.
-"""
+"""Hermetic tests for the on-demand FlashInfer install behind NVFP4: installer, torch probe and venv are fakes."""
 
 from __future__ import annotations
 
@@ -69,7 +65,6 @@ class _FakeEnv:
         self.fail_verify = False
         self.install_moves = install_moves or {}
         self.install_delay = install_delay
-        # What another installer (the built-in terminal) adds to the venv while this install runs.
         self.concurrent_add = concurrent_add or {}
         self.commands: list[list[str]] = []
         self.constraints_seen: list[str] = []
@@ -121,7 +116,6 @@ class _FakeEnv:
                 self.dists["flashinfer-jit-cache"] = spec.split("==", 1)[1]
                 return _Result(0, f"Installed 1 package in 3.1s\n + {spec}")
             else:
-                # A rollback restore: name==old --no-deps.
                 for spec in cmd:
                     if "==" in spec:
                         name, version = spec.split("==", 1)
@@ -157,7 +151,6 @@ def _clean(monkeypatch, tmp_path):
         "all_proxy",
     ):
         monkeypatch.delenv(name, raising = False)
-    # The host's own uv.toml and pip.conf never leak in: the fake run answers no `pip config list`.
     monkeypatch.setenv("UV_NO_CONFIG", "1")
     inst.reset_install_state()
     yield
@@ -207,12 +200,10 @@ def test_installs_pinned_flashinfer_and_matching_jit_cache_when_missing(env):
     main, jit = _steps(installs)
     assert "flashinfer-python==0.6.6" in main and "--only-binary" in main
     assert "--no-deps" not in main  # tvm-ffi and friends are real import deps
-    # The full local version: `==0.6.6` would be satisfied by a cache built for another CUDA.
     assert "flashinfer-jit-cache==0.6.6+cu130" in jit and "--no-deps" in jit
     assert jit[jit.index("--index-url") + 1] == "https://flashinfer.ai/whl/cu130"
     assert jit[jit.index("--index") + 1] == "https://flashinfer.ai/whl/cu130"
     assert env.dists["flashinfer-jit-cache"] == "0.6.6+cu130"
-    # Every distribution already present is pinned exactly, torch/triton/nvidia included.
     pins = env.constraints_seen[0].splitlines()
     for name, version in _BASE_DISTS.items():
         assert f"{name}=={version}" in pins
@@ -270,7 +261,6 @@ def test_torch_version_change_rolls_back_and_refuses(env):
     env.install_moves = {"torch": "2.13.0+cu130"}
     ok, reason = _ensure(env)
     assert not ok and "rolled back" in reason and "torch 2.12.1+cu130 -> 2.13.0+cu130" in reason
-    # Everything the install added is gone and torch is back where it was.
     assert env.dists == _BASE_DISTS
     uninstall = [c for c in env.commands if "uninstall" in c]
     assert uninstall and set(_ADDED_BY_INSTALL) <= set(uninstall[0])
@@ -299,7 +289,6 @@ def test_failed_jit_cache_step_rolls_back_the_first_step(env):
 
 
 def test_rollback_leaves_packages_another_installer_added_meanwhile(env):
-    # The built-in terminal does not take the env lock; what it installed during this transaction must survive.
     env.fail_verify = True
     env.concurrent_add = {"requests": "2.32.3", "rich": "14.0.0"}
     ok, reason = _ensure(env)
@@ -325,7 +314,6 @@ def test_reported_installs_reads_uv_and_pip_output():
 
 
 def test_rollback_without_installer_output_follows_the_flashinfer_dependency_tree(monkeypatch):
-    # A timed-out install reports nothing: fall back to flashinfer's installed requirement tree, never the whole diff.
     import importlib.metadata as md
 
     requires = {
@@ -422,7 +410,6 @@ def test_another_process_holding_the_env_lock_blocks_the_install(env, monkeypatc
         t.join()
     assert not ok and "another process" in reason
     assert env.commands == []
-    # Not memoised: once the other install is done, this process installs.
     assert _ensure(env)[0]
 
 
@@ -564,13 +551,11 @@ def test_image_loader_installs_before_the_load_locks():
 def test_video_loader_installs_after_teardown_and_outside_the_locks():
     body = _load_pipeline_body(_INFERENCE_DIR / "video.py")
     teardown = body.index("self._teardown_state_locked()")
-    # The MiniMax-H3 modular dispatch installs inline; a conventional load through the seed hop.
     modular = body.index("ensure_flashinfer_for_nvfp4(")
     conventional = body.index("self._install_flashinfer_for_seed(")
     assert body.count("ensure_flashinfer_for_nvfp4(") == 1
     for call, indent in ((modular, 16), (conventional, 8)):
         assert teardown < call
-        # Only the modular branch's own `if` blocks above it: not nested in any with-block.
         line = body[body.rindex("\n", 0, call) + 1 : call]
         assert line == " " * indent + "_nvfp4_install_outcome = "
     assert _flat(
@@ -579,14 +564,11 @@ def test_video_loader_installs_after_teardown_and_outside_the_locks():
 
 
 def test_video_loader_installs_only_for_a_seed_the_live_memory_plan_kept():
-    # The prefetch settles the seed against CAPACITY; the load re-plans against live free memory and can drop it
-    # (it would offload). Installing before that re-plan bought ~1.5 GB of FlashInfer for a bf16 denoiser.
     from core.inference.video import VideoBackend
 
     body = _load_pipeline_body(_INFERENCE_DIR / "video.py")
     conventional = body.index("self._install_flashinfer_for_seed(")
     injection = body.index("denoiser_prequant_pipe_kwargs(")
-    # After every memory-plan decision that can drop the seed, before the seeded denoiser is built.
     assert body.rindex("denoiser_seed_scheme = None", 0, injection) < conventional < injection
     assert _flat("_nvfp4_install_wanted denoiser_seed_scheme device") in _flat(
         body[conventional : body.index(")", conventional)]
@@ -622,7 +604,6 @@ def test_image_loader_gates_the_install_on_the_seed_plan_it_will_rerun():
     body = _load_pipeline_body(_INFERENCE_DIR / "diffusion.py")
     call = body.index("ensure_flashinfer_for_nvfp4(")
     assert "self._seed_plan_stays_resident(" in body[:call]
-    # The locked re-plan and the pre-install gate are one plan, so they cannot disagree on what the seed costs.
     locked = body[body.index("with self._lock:") :]
     assert "self._seeded_pipeline_plan(" in locked
     helper = inspect.getsource(diffusion.DiffusionBackend._seed_plan_stays_resident)
@@ -684,14 +665,12 @@ def _seed_gate(
 
 
 def test_seed_gate_refuses_when_live_memory_would_offload_the_seed(monkeypatch):
-    # Total capacity fits (the prefetch said NVFP4) but a foreign tenant leaves too little free: no install.
     ok, seen = _seed_gate(monkeypatch, free_mib = 10_000, reserved_mib = 0, need_mib = 40_000)
     assert ok is False
     assert seen and seen[0]["transformer_resident_override_mib"] == 40_000
 
 
 def test_seed_gate_credits_what_the_teardown_frees(monkeypatch):
-    # The resident pipeline is this process's allocation and the teardown frees it before the loader's re-plan.
     ok, _ = _seed_gate(monkeypatch, free_mib = 10_000, reserved_mib = 35_000, need_mib = 40_000)
     assert ok is True
 
@@ -735,14 +714,12 @@ def test_a_pip_only_mirror_is_handed_to_uv(env, monkeypatch):
     assert _ensure(env)[0]
     installs = [c for c in env.commands if c[:3] == ["uv", "pip", "install"]]
     assert installs and "https://pip-mirror.example/simple" in _steps(installs)[0]
-    # uv's own setting wins and is left to uv.
     monkeypatch.setenv("UV_INDEX_URL", "https://uv-mirror.example/simple")
     assert "--index-url" not in inst._installer_prefix("uv")
     assert "--index-url" not in inst._installer_prefix(None)
 
 
 def test_a_uv_only_mirror_is_handed_to_the_pip_fallback(env, monkeypatch):
-    # No uv: pip does not read UV_* settings, and the preflight skipped the pypi.org probe for them.
     monkeypatch.setattr(inst, "_uv_executable", lambda: None)
     for name in ("PIP_INDEX_URL", "UV_DEFAULT_INDEX"):
         monkeypatch.delenv(name, raising = False)
@@ -752,16 +729,13 @@ def test_a_uv_only_mirror_is_handed_to_the_pip_fallback(env, monkeypatch):
     monkeypatch.setenv("UV_DEFAULT_INDEX", "https://uv-default.example/simple")
     main = inst._installer_prefix(None)
     assert main[main.index("--index-url") + 1] == "https://uv-default.example/simple"
-    # The jit-cache step keeps its own index only.
     jit = inst._installer_prefix(None, "https://flashinfer.ai/whl/cu130")
     assert jit.count("--index-url") == 1 and jit[-1] == "https://flashinfer.ai/whl/cu130"
-    # pip's own setting wins and is left to pip.
     monkeypatch.setenv("PIP_INDEX_URL", "https://pip-mirror.example/simple")
     assert "--index-url" not in inst._installer_prefix(None)
 
 
 def test_a_pip_only_mirror_never_gives_uv_two_index_urls(env, monkeypatch):
-    # uv rejects a repeated --index-url; the jit-cache step's own index replaces the mirror.
     monkeypatch.setenv("PIP_INDEX_URL", "https://pip-mirror.example/simple")
     assert _ensure(env)[0]
     main, jit = _steps(env.installs())
@@ -774,7 +748,6 @@ def test_a_pip_only_mirror_never_gives_uv_two_index_urls(env, monkeypatch):
 
 
 def test_status_reason_reports_a_transient_preflight_failure(monkeypatch):
-    # An OOM preflight is not memoised, but the model it put on torchao still reports why.
     torch = pytest.importorskip("torch")
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
@@ -799,7 +772,6 @@ def test_status_reason_reports_a_transient_preflight_failure(monkeypatch):
         "out of memory"
         in inst.nvfp4_backend_fields("torchao")["transformer_quant_backend_reason"].lower()
     )
-    # A later memoised preflight on the same device supersedes it.
     monkeypatch.setattr(ops, "_preflight_probe", lambda dev: False)
     ops.nvfp4_preflight(0)
     assert (
@@ -855,7 +827,6 @@ def test_local_only_load_never_installs(env):
 
 
 def test_status_reason_is_bound_to_the_backend_that_loaded():
-    # An image model left on torchao by a refused install keeps its reason after a video load succeeds.
     class _Backend:
         pass
 
@@ -874,7 +845,6 @@ def test_status_reason_is_bound_to_the_backend_that_loaded():
 
 
 def test_status_preflight_reason_is_the_loaded_device_only(monkeypatch):
-    # Image on GPU 0 and video on GPU 1 both fell back in preflight, for different reasons.
     class _Backend:
         pass
 
@@ -896,7 +866,6 @@ def test_status_preflight_reason_is_the_loaded_device_only(monkeypatch):
 
 
 def test_image_loader_binds_the_reason_only_after_the_resident_model_is_unloaded():
-    # A superseded load raises at the cancel check before the swap; the resident model keeps its reason.
     import inspect
 
     from core.inference import diffusion
@@ -910,7 +879,6 @@ def test_image_loader_binds_the_reason_only_after_the_resident_model_is_unloaded
 
 
 def test_video_loader_binds_the_reason_only_at_the_commit():
-    # A superseded video load can return from the install after a newer load committed; only the commit may bind.
     import inspect
 
     from core.inference import video
@@ -929,7 +897,6 @@ def test_video_loader_binds_the_reason_only_at_the_commit():
 
 
 def test_every_loader_commit_binds_a_reason_even_when_the_install_gate_skipped():
-    # A skipped gate (no hosted checkpoint) still replaces the previous model's reason at the commit.
     import inspect
 
     from core.inference import diffusion, video
@@ -953,7 +920,6 @@ def test_install_gates_skip_kinds_the_dense_quant_path_cannot_reach():
     vid = inspect.getsource(video.VideoBackend)
     gate = vid[vid.index("_nvfp4_install_wanted = (") + len("_nvfp4_install_wanted = (") :]
     assert gate.lstrip("( \n").startswith('kind == "pipeline"')
-    # Both video installs are behind that gate.
     body = _load_pipeline_body(_INFERENCE_DIR / "video.py")
     modular = body.index("ensure_flashinfer_for_nvfp4(")
     assert "if _nvfp4_install_wanted:" in body[body.index("if fam.modular_workflow:") : modular]
@@ -962,7 +928,6 @@ def test_install_gates_skip_kinds_the_dense_quant_path_cannot_reach():
 
 
 def test_jit_cache_step_drops_extra_index_sources_from_the_environment(env, monkeypatch):
-    # An extra index outranks uv's --index-url; under first-index one listing flashinfer-jit-cache hides the pin.
     extra = {
         "UV_INDEX": "https://corp.example/simple",
         "UV_EXTRA_INDEX_URL": "https://corp.example/extra",
@@ -990,8 +955,6 @@ def test_jit_cache_step_drops_extra_index_sources_from_the_environment(env, monk
 
 
 def test_pip_jit_cache_step_reads_no_pip_conf_but_keeps_its_transport(env, monkeypatch):
-    # pip searches a pip.conf extra-index-url / find-links beside --index-url, so a corporate or stale
-    # flashinfer-jit-cache there could be picked over the pinned index. The main step keeps pip.conf as designed.
     monkeypatch.setattr(inst, "_uv_executable", lambda: None)
     monkeypatch.setenv("PIP_TIMEOUT", "30")
     lines = [
@@ -1073,8 +1036,6 @@ def _track_imports(env, monkeypatch):
 
 
 def test_an_in_flight_install_by_another_process_is_waited_for_before_importing(env, monkeypatch):
-    # Another process has installed flashinfer-python and is still downloading the jit-cache: importing now would
-    # fix flashinfer's cache directory without it for this process's whole life.
     env.dists["flashinfer-python"] = "0.6.6"
     env.importable = True
     stamps = _track_imports(env, monkeypatch)
@@ -1092,8 +1053,6 @@ def test_an_in_flight_install_by_another_process_is_waited_for_before_importing(
 def test_a_complete_install_still_holding_the_lock_is_waited_for_in_case_it_rolls_back(
     env, monkeypatch
 ):
-    # Both distributions are on disk, but the other process is still in its drift checks and import verify: it
-    # rolls back here, so importing before it releases the lock would load a flashinfer that is then uninstalled.
     env.dists.update({"flashinfer-python": "0.6.6", "flashinfer-jit-cache": "0.6.6+cu130"})
     env.importable = True
     stamps = _track_imports(env, monkeypatch)
@@ -1137,8 +1096,6 @@ def test_a_user_flashinfer_never_waits_on_the_lock(env, monkeypatch):
 
 
 def test_a_timed_out_wait_for_an_in_flight_install_does_not_import(env, monkeypatch):
-    # The other process's install outlives the wait: importing now would pin flashinfer's cache directory
-    # without the jit-cache, so this load reports not ready and a later one retries.
     env.dists["flashinfer-python"] = "0.6.6"
     env.importable = True
     real = inst._env_install_lock
@@ -1163,7 +1120,6 @@ def test_a_uv_index_skips_the_pypi_probe_only_when_uv_installs(env, monkeypatch,
     monkeypatch.setattr(inst, "_uv_executable", lambda: uv)
     monkeypatch.setenv(name, "https://uv-mirror.example/simple")
     assert _ensure(env)[0]
-    # uv ranks these above its default index; pip does not read them, so its fallback still needs pypi.org.
     assert (inst._PYPI_PROBE_URL in probed) == (uv is None)
 
 
@@ -1176,7 +1132,6 @@ def test_a_uv_index_skips_the_pypi_probe_only_when_uv_installs(env, monkeypatch,
     ],
 )
 def test_a_jit_cache_built_for_another_cuda_refuses(env, monkeypatch, cuda, cache, nvcc):
-    # flashinfer only checks the public version and `==0.6.6` accepts any local tag, so the installer would keep it.
     env.cuda = cuda
     env.dists["flashinfer-jit-cache"] = cache
     monkeypatch.setattr(inst, "_nvcc_available", lambda: nvcc)
@@ -1193,8 +1148,6 @@ def test_a_jit_cache_of_the_running_cuda_is_kept(env):
 
 @pytest.mark.parametrize("policy", ["local_files_only", "opt_out"])
 def test_a_load_that_declined_installs_does_not_wait_on_another_install(env, monkeypatch, policy):
-    # Another process has flashinfer-python on disk and is still downloading the jit-cache. A local-only load, or a
-    # host with installs turned off, used to sit on the lock for up to ENV_LOCK_TIMEOUT_S before its own checks ran.
     env.dists["flashinfer-python"] = "0.6.6"
     env.importable = True
     stamps = _track_imports(env, monkeypatch)
@@ -1261,7 +1214,6 @@ def test_a_pip_conf_mirror_skips_the_pypi_probe_for_the_pip_fallback(env, monkey
 def test_a_pip_extra_index_skips_the_pypi_probe_for_the_pip_fallback(
     env, monkeypatch, lines, envvar
 ):
-    # pip falls through an unreachable pypi.org to the extra index, so a blocked pypi.org must not refuse the install.
     probed = []
     monkeypatch.setattr(
         inst, "_reachable", lambda url: probed.append(url) or url != inst._PYPI_PROBE_URL
@@ -1313,7 +1265,6 @@ def test_pip_settings_it_cannot_honor_refuse_before_installing(env, monkeypatch,
     ok, reason = inst.ensure_flashinfer_for_nvfp4(0, run = _pip_config(env, [line]))
     assert not ok and needle in reason
     assert env.installs() == [] and probed == []
-    # Not memoised: once the setting is gone, the same process installs.
     assert inst.ensure_flashinfer_for_nvfp4(0, run = _pip_config(env, []))[0]
 
 
@@ -1398,7 +1349,6 @@ def test_uv_config_discovery_finds_the_project_file_and_honors_no_config(
         '[project]\nname = "x"\n[tool.uv]\nindex-url = "https://corp.example/simple"\n',
         encoding = "utf-8",
     )
-    # A pyproject.toml without [tool.uv] does not stop the search, as in uv.
     (project / "pyproject.toml").write_text('[project]\nname = "y"\n', encoding = "utf-8")
     monkeypatch.chdir(project)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
@@ -1406,12 +1356,10 @@ def test_uv_config_discovery_finds_the_project_file_and_honors_no_config(
     monkeypatch.delenv("UV_NO_CONFIG")
     config = inst._installer_config("uv", env.run)
     assert config["mirror"] and config["own_index"]
-    # uv's own default index wins over a pip-only mirror, as its env settings already do.
     monkeypatch.setenv("PIP_INDEX_URL", "https://pip-mirror.example/simple")
     assert "--index-url" not in inst._installer_prefix("uv", own_index = config["own_index"])
     monkeypatch.setenv("UV_NO_CONFIG", "1")
     assert not inst._installer_config("uv", env.run)["own_index"]
-    # A user-level uv.toml is read too.
     monkeypatch.delenv("UV_NO_CONFIG")
     monkeypatch.chdir(tmp_path)
     (tmp_path / "xdg" / "uv").mkdir(parents = True)
@@ -1457,9 +1405,7 @@ def test_reachability_counts_a_tls_failure_as_a_route(monkeypatch):
 
 
 def test_an_install_killed_between_its_steps_completes_on_the_next_load(env):
-    # The server dies (closed, OOM-killed) after the first installer step and before the second. The next load must
-    # finish the install, not treat an importable flashinfer-python with no jit-cache as done: without the cache every
-    # kernel JIT-compiles, and without nvcc the preflight fails for the life of the environment.
+    # Killed between steps: the next load must finish the install, not treat jit-cache-less flashinfer as done.
     real_run = env.run
     calls = {"n": 0}
 
@@ -1472,7 +1418,6 @@ def test_an_install_killed_between_its_steps_completes_on_the_next_load(env):
 
     with pytest.raises(SystemExit):
         inst.ensure_flashinfer_for_nvfp4(0, run = dies_on_second_install)
-    # A fresh process: real flashinfer-python imports with or without its jit-cache.
     inst.reset_install_state()
     env.importable = "flashinfer-python" in env.dists
     ok, reason = inst.ensure_flashinfer_for_nvfp4(0, run = env.run)
@@ -1483,8 +1428,7 @@ def test_an_install_killed_between_its_steps_completes_on_the_next_load(env):
 
 @pytest.mark.parametrize("model", ["DiffusionStatusResponse", "VideoStatusResponse"])
 def test_the_status_reason_hides_host_paths_from_api_key_callers(model):
-    # The reason quotes installer and flashinfer JIT output, which names the environment and cache directories. The
-    # status routes redact host paths for API-key callers; the new field must not bypass that.
+    # Host paths must stay redacted for API-key callers.
     from hub.utils.host_paths import redact_host_paths
     from models import inference as models
 
@@ -1503,8 +1447,7 @@ def test_the_status_reason_hides_host_paths_from_api_key_callers(model):
 
 
 def test_a_concurrent_upgrade_by_another_installer_is_not_reverted(env):
-    # The built-in terminal does not take the env lock. An upgrade it makes during this transaction is the user's; the
-    # drift check still fails this install, but its rollback must not downgrade what it did not touch.
+    # A concurrent terminal upgrade fails drift but must not be downgraded by the rollback.
     env.concurrent_add = {"packaging": "26.0"}
     ok, reason = _ensure(env)
     assert not ok and "rolled back" in reason
@@ -1513,8 +1456,6 @@ def test_a_concurrent_upgrade_by_another_installer_is_not_reverted(env):
 
 
 def test_a_later_step_that_dies_unreported_is_still_rolled_back(env):
-    # One step reports, the next writes its files and then times out with no summary: both must be removed, or the
-    # half install imports next time and reads as done.
     real_run = env.run
 
     def run(cmd, **kwargs):
@@ -1531,7 +1472,6 @@ def test_a_later_step_that_dies_unreported_is_still_rolled_back(env):
 
 
 def test_a_failed_install_does_not_quote_index_credentials(env):
-    # The reason reaches the status route; an index URL in the installer's error must not carry its token there.
     real_run = env.run
 
     def run(cmd, **kwargs):
@@ -1548,8 +1488,7 @@ def test_a_failed_install_does_not_quote_index_credentials(env):
 
 
 def test_an_unreported_failure_does_not_revert_a_concurrent_upgrade(env):
-    # A step that dies with no summary gives the rollback no report to filter by. The constraints still held every
-    # installed package, so an upgrade made meanwhile by the built-in terminal is the user's and must stay.
+    # No report: constraints held everything, so a concurrent terminal upgrade stays.
     env.concurrent_add = {"packaging": "26.0"}
     real_run = env.run
 

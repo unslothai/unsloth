@@ -34,8 +34,7 @@ _REGISTER_LOCK = threading.Lock()
 _REGISTERED = False
 _PREFLIGHT_LOCK = threading.Lock()
 _PREFLIGHT: dict[int, dict] = {}
-# The last transient preflight failure per device index: never consulted to decide a backend, only to
-# report why a load that met it fell back. Dropped once a preflight on that index is memoised.
+# Last transient preflight failure per device index: reporting only, never used to pick a backend.
 _PREFLIGHT_TRANSIENT: dict[int, dict] = {}
 _WARNED: set = set()
 

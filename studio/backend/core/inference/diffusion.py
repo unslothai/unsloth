@@ -3352,11 +3352,7 @@ class DiffusionBackend:
         local_files_only: bool = False,
         loras: Any = None,
     ) -> bool:
-        """Whether an NVFP4 load will open a pre-quantised checkpoint, the only path FlashInfer serves
-        (``load_prequantized_transformer``). The on-the-fly build is torchao either way, so no hosted
-        checkpoint, a repo the Hub refuses (private, gated, unpublished) or a LoRA bake, which skips
-        the prequant, must not buy the multi-GB install. A local override counts; a cached checkpoint
-        counts; offline asks the cache only. Unanswerable answers no: the load still runs on torchao."""
+        """Whether an NVFP4 load opens a pre-quantised checkpoint (the only FlashInfer path); unanswerable -> False."""
         if not nvfp4_diffusion_enabled():
             return False
         try:
@@ -4465,15 +4461,9 @@ class DiffusionBackend:
                 _ensure_attention_backend_installed(preinstall_backend, logger)
         except Exception:  # noqa: BLE001 - the locked path re-resolves and validates
             pass
-        # Same hop for FlashInfer when this load asked for NVFP4: without it the flashinfer backend falls back to
-        # torchao. Never raises; the backend is still chosen by select_nvfp4_backend under the locks.
-        # Only for kinds the dense quant path can reach: a single-file load keeps its stored precision.
-        # Only when a pre-quantised checkpoint will load: FlashInfer serves nothing else, and the on-the-fly build is
-        # torchao, so a checkpoint this user cannot fetch must not buy the install. A plan that settled NVFP4 already
-        # listed the checkpoint on the Hub (or found it cached offline); otherwise ask.
+        # Install FlashInfer only when a pre-quantised checkpoint will load: the on-the-fly build is torchao.
         if (
             dense_quant_supported_kind(kind)
-            # The NVFP4 switch: off, no install is attempted and the Hub is not asked below.
             and nvfp4_diffusion_enabled()
             and TQ_NVFP4
             in (
@@ -4491,10 +4481,7 @@ class DiffusionBackend:
                     loras = loras,
                 )
             )
-            # A seed the prefetch settled against total CAPACITY is re-planned under the locks against live free
-            # memory and dropped when it would offload, leaving FlashInfer nothing to serve. That re-plan runs after
-            # the teardown, which the install must precede, so ask the same plan here with the memory the teardown
-            # hands back credited as free.
+            # The locked re-plan (after teardown) may drop the capacity-settled seed; ask it now with teardown memory credited.
             and not (
                 kind == "pipeline"
                 and _pipeline_prequant_planned == TQ_NVFP4
@@ -4513,7 +4500,6 @@ class DiffusionBackend:
         ):
             from .diffusion_nvfp4_install import ensure_flashinfer_for_nvfp4
 
-            # No owner yet: a cancel before the swap below must leave the resident model's reason alone.
             _nvfp4_install_outcome = ensure_flashinfer_for_nvfp4(
                 device, logger = logger, local_files_only = local_files_only
             )
@@ -4534,8 +4520,7 @@ class DiffusionBackend:
                     self._unload_locked()
                 finally:
                     self._release_teardown_locked()
-                # Every commit binds, a skipped gate included: an on-the-fly load must not inherit the previous
-                # model's install or offline reason.
+                # Bind even when the gate skipped, so no stale install reason survives.
                 from .diffusion_nvfp4_install import record_install_reason
 
                 record_install_reason(self, *(_nvfp4_install_outcome or (True, None)), device)
@@ -6484,8 +6469,7 @@ class DiffusionBackend:
         fetch_base: Optional[str],
         device_memory_override: Optional[DeviceMemory] = None,
     ):
-        """The full-pipeline memory plan priced on the pre-quantised ``scheme`` denoiser seeding it, or None when the
-        family table cannot size that artifact. The loader keeps the seed only when this plan stays resident."""
+        """Full-pipeline plan priced on the pre-quantised ``scheme`` seed, or None when the family table cannot size it."""
         seed_estimate = estimate_dense_quant(fam, scheme, base_repo = base, prequant_available = True)
         if seed_estimate is None:
             return None
@@ -6509,10 +6493,8 @@ class DiffusionBackend:
     def _seed_plan_stays_resident(
         self, scheme: str, target: Any, *args: Any, **kwargs: Any
     ) -> bool:
-        """Whether the seeded plan the loader will re-run after its teardown keeps ``scheme``, asked BEFORE that
-        teardown. Live free memory plus everything this process's allocator holds on the device stands in for the
-        post-teardown reading: the resident pipeline is freed then, and crediting the rest too can only err toward
-        keeping the seed (the old answer), never toward dropping one the loader would keep. Unanswerable keeps it."""
+        """Whether the post-teardown seeded plan keeps ``scheme``, asked before teardown with this process's allocation
+        credited as free (errs toward keeping the seed). Unanswerable keeps it."""
         try:
             memory = snapshot_device_memory(target)
             if getattr(target, "device", None) == "cuda" and memory.free_mib is not None:
