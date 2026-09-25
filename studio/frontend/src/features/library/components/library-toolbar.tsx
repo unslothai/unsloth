@@ -194,7 +194,7 @@ function NewMenu({ onSelect }: { onSelect: (action: NewAction) => void }) {
         <DropdownMenuSeparator className="mx-3" />
         <DropdownMenuItem onSelect={() => onSelect("upload")}>
           <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.75} className={ICON} />
-          {t("library.create.uploadFiles")}
+          {t("library.empty.uploadFiles")}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

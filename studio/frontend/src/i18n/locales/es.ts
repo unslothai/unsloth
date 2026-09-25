@@ -2903,7 +2903,6 @@ export const es = {
       tryAgain: "Volver a intentar",
     },
     sections: {
-      folders: "Carpetas",
       items: "Elementos",
     },
     breadcrumb: "Ruta de navegación",
@@ -2916,8 +2915,6 @@ export const es = {
     selectItem: "Seleccionar {name}",
     selection: {
       startChat: "Iniciar chat",
-      download: "Descargar",
-      moreActions: "Más acciones",
       move: "Mover",
       clear: "Borrar selección",
     },
@@ -2960,7 +2957,6 @@ export const es = {
       audio: "Audio",
       model: "Modelo",
       folder: "Carpeta",
-      uploadFiles: "Subir archivos",
       untitledNote: "Nota sin título",
     },
     list: {
@@ -2986,8 +2982,6 @@ export const es = {
       model: "Modelo",
     },
     dialog: {
-      name: "Nombre",
-      newFolder: "Nueva carpeta",
       create: "Crear",
       renameFolder: "Renombrar carpeta",
       renameFile: "Renombrar archivo",
@@ -3006,7 +3000,6 @@ export const es = {
       unsavedDescription: "{reason} Vuelve a intentarlo o descarta los cambios para cerrar el archivo.",
       keepEditing: "Seguir editando",
       discardChanges: "Descartar cambios",
-      tryAgain: "Volver a intentar",
     },
     preview: {
       code: "Código",
@@ -3030,8 +3023,6 @@ export const es = {
     viewer: {
       scale: "Escala",
       fit: "Ajustar",
-      download: "Descargar",
-      close: "Cerrar",
       moreActionsImage: "Más acciones para esta imagen",
       moreActionsVideo: "Más acciones para este vídeo",
       moreActionsClip: "Más acciones para este clip",

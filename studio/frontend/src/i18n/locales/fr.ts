@@ -2917,7 +2917,6 @@ export const fr = {
       tryAgain: "Réessayer",
     },
     sections: {
-      folders: "Dossiers",
       items: "Éléments",
     },
     breadcrumb: "Fil d'Ariane",
@@ -2930,8 +2929,6 @@ export const fr = {
     selectItem: "Sélectionner {name}",
     selection: {
       startChat: "Démarrer une discussion",
-      download: "Télécharger",
-      moreActions: "Plus d'actions",
       move: "Déplacer",
       clear: "Effacer la sélection",
     },
@@ -2974,7 +2971,6 @@ export const fr = {
       audio: "Audio",
       model: "Modèle",
       folder: "Dossier",
-      uploadFiles: "Importer des fichiers",
       untitledNote: "Note sans titre",
     },
     list: {
@@ -3000,8 +2996,6 @@ export const fr = {
       model: "Modèle",
     },
     dialog: {
-      name: "Nom",
-      newFolder: "Nouveau dossier",
       create: "Créer",
       renameFolder: "Renommer le dossier",
       renameFile: "Renommer le fichier",
@@ -3020,7 +3014,6 @@ export const fr = {
       unsavedDescription: "{reason} Réessayez, ou abandonnez vos modifications pour fermer le fichier.",
       keepEditing: "Continuer la modification",
       discardChanges: "Abandonner les modifications",
-      tryAgain: "Réessayer",
     },
     preview: {
       code: "Code",
@@ -3044,8 +3037,6 @@ export const fr = {
     viewer: {
       scale: "Échelle",
       fit: "Ajuster",
-      download: "Télécharger",
-      close: "Fermer",
       moreActionsImage: "Plus d'actions pour cette image",
       moreActionsVideo: "Plus d'actions pour cette vidéo",
       moreActionsClip: "Plus d'actions pour cet extrait",

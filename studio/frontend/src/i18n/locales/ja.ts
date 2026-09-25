@@ -2785,7 +2785,6 @@ export const ja = {
       tryAgain: "再試行",
     },
     sections: {
-      folders: "フォルダ",
       items: "項目",
     },
     breadcrumb: "パンくずリスト",
@@ -2798,8 +2797,6 @@ export const ja = {
     selectItem: "{name} を選択",
     selection: {
       startChat: "チャットを開始",
-      download: "ダウンロード",
-      moreActions: "その他の操作",
       move: "移動",
       clear: "選択を解除",
     },
@@ -2842,7 +2839,6 @@ export const ja = {
       audio: "音声",
       model: "モデル",
       folder: "フォルダ",
-      uploadFiles: "ファイルをアップロード",
       untitledNote: "無題のメモ",
     },
     list: {
@@ -2868,8 +2864,6 @@ export const ja = {
       model: "モデル",
     },
     dialog: {
-      name: "名前",
-      newFolder: "新規フォルダ",
       create: "作成",
       renameFolder: "フォルダ名を変更",
       renameFile: "ファイル名を変更",
@@ -2888,7 +2882,6 @@ export const ja = {
       unsavedDescription: "{reason} もう一度試すか、変更を破棄してファイルを閉じてください。",
       keepEditing: "編集を続ける",
       discardChanges: "変更を破棄",
-      tryAgain: "再試行",
     },
     preview: {
       code: "コード",
@@ -2912,8 +2905,6 @@ export const ja = {
     viewer: {
       scale: "拡大率",
       fit: "フィット",
-      download: "ダウンロード",
-      close: "閉じる",
       moreActionsImage: "この画像のその他の操作",
       moreActionsVideo: "この動画のその他の操作",
       moreActionsClip: "このクリップのその他の操作",

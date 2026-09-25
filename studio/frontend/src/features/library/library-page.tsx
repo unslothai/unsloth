@@ -617,7 +617,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
         <>
           {visibleFolders.length > 0 && (
             <>
-              {sectioned && <SectionHeading>{t("library.sections.folders")}</SectionHeading>}
+              {sectioned && <SectionHeading>{t("library.tabs.folders")}</SectionHeading>}
               <div className={cn(!sectioned && "mt-6")}>
                 <FolderGrid folders={visibleFolders} counts={counts} />
               </div>
@@ -746,7 +746,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
             nameDialog.target.kind === "item" ? nameDialog.target.item.name : nameDialog.target.folder.name,
         }
       : {
-          title: t("library.dialog.newFolder"),
+          title: t("library.menu.newFolder"),
           submitLabel: t("library.dialog.create"),
           initialValue: "",
         };
@@ -875,7 +875,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               )}
             >
               <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4" />
-              {t("library.selection.download")}
+              {t("library.menu.download")}
             </button>
             <button
               type="button"
@@ -893,7 +893,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
-                  aria-label={t("library.selection.moreActions")}
+                  aria-label={t("library.menu.moreActions")}
                   className={cn(BAR_ROUND, "data-[state=open]:bg-sidebar-accent")}
                 >
                   <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-5" />

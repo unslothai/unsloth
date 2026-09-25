@@ -205,8 +205,8 @@ export function MediaViewer({
           {actions.onDownload && (
             <button
               type="button"
-              aria-label={t("library.viewer.download")}
-              title={t("library.viewer.download")}
+              aria-label={t("library.menu.download")}
+              title={t("library.menu.download")}
               onClick={actions.onDownload}
               className={iconButton}
             >
@@ -262,7 +262,7 @@ export function MediaViewer({
             </DropdownMenu>
           )}
           <DialogClose asChild={true}>
-            <button type="button" aria-label={t("library.viewer.close")} className={iconButton}>
+            <button type="button" aria-label={t("common.close")} className={iconButton}>
               <HugeiconsIcon icon={Cancel01Icon} strokeWidth={1.75} className="size-5" />
             </button>
           </DialogClose>
