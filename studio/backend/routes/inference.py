@@ -24350,8 +24350,6 @@ async def _proxy_to_external_provider(
     )
 
 
-
-
 _NPU_CUT_SHORT_ERROR = {
     "message": "The NPU model stopped before finishing its reply.",
     "type": "upstream_error",
