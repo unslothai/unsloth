@@ -9,6 +9,7 @@ stack loads."""
 import builtins
 import contextlib
 import dataclasses
+import functools
 import sys
 import threading
 import time
@@ -4383,71 +4384,43 @@ def test_h3_modular_generation_ticks_and_cancels_through_the_scheduler(fake_runt
     assert pipe.scheduler.step.__func__ is _FakeH3Scheduler.step
 
 
-def _record_frame_conversion(monkeypatch):
-    seen: list = []
-
-    def _convert(frames, output_type):
-        seen.append(output_type)
-        return frames
-
-    monkeypatch.setattr("core.inference.video.to_uint8_frames", _convert)
-    return seen
-
-
-def test_frames_come_back_as_device_tensors_when_the_pipeline_takes_output_type(
+def test_the_pipeline_call_runs_with_uint8_frames_on_every_family(
     fake_runtime, tmp_path, monkeypatch
 ):
-    class _PipeWithOutputType(_FakePipe):
-        def __call__(
+    active: list = []
+
+    @contextlib.contextmanager
+    def _frames(pipe):
+        active.append(pipe)
+        try:
+            yield
+        finally:
+            active.remove(pipe)
+
+    monkeypatch.setattr("core.inference.video.uint8_video_frames", _frames)
+    seen_inside: list = []
+    for backend, pipe in (
+        (_load_ltx23_from_dir(tmp_path), None),
+        (VideoBackend(), "h3"),
+    ):
+        if pipe == "h3":
+            pipe = _load_h3_modular(backend)
+        else:
+            pipe = backend._state.pipe
+        original_call = type(pipe).__call__
+
+        def _call(
             self,
-            *,
-            prompt = None,
-            num_inference_steps = None,
-            width = None,
-            height = None,
-            num_frames = None,
-            generator = None,
-            callback_on_step_end = None,
-            output_type = "pil",
-            **kwargs,
+            *a,
+            _orig = original_call,
+            **k,
         ):
-            out = super().__call__(
-                prompt = prompt,
-                num_inference_steps = num_inference_steps,
-                width = width,
-                height = height,
-                num_frames = num_frames,
-                generator = generator,
-                callback_on_step_end = callback_on_step_end,
-                **kwargs,
-            )
-            self.last_kwargs["output_type"] = output_type
-            return out
+            seen_inside.append(list(active) == [self])
+            return _orig(self, *a, **k)
 
-    seen = _record_frame_conversion(monkeypatch)
-    backend = _load_ltx23_from_dir(tmp_path)
-    backend.generate(prompt = "a sloth")
-    assert "output_type" not in backend._state.pipe.last_kwargs and seen == []
-
-    backend._state.pipe.__class__ = _PipeWithOutputType
-    backend.generate(prompt = "a sloth")
-    assert backend._state.pipe.last_kwargs["output_type"] == "pt"
-    # The conversion is told what the pipeline would have returned, for the clips it hands back unchanged.
-    assert seen == ["pil"]
-
-
-def test_h3_modular_frames_follow_the_decode_block_default(fake_runtime, monkeypatch):
-    seen = _record_frame_conversion(monkeypatch)
-    backend = VideoBackend()
-    pipe = _load_h3_modular(backend)
-    backend.generate(prompt = "a fox", steps = 2)
-    assert "output_type" not in pipe.last_kwargs and seen == []
-
-    pipe.blocks = types.SimpleNamespace(
-        inputs = [types.SimpleNamespace(name = "output_type", default = "pil")]
-    )
-    backend.generate(prompt = "a fox", steps = 2)
-    assert pipe.last_kwargs["output_type"] == "pt" and seen == ["pil"]
+        monkeypatch.setattr(type(pipe), "__call__", functools.wraps(original_call)(_call))
+        backend.generate(prompt = "a fox", steps = 2)
+    assert seen_inside == [True, True] and active == []
 
 
 def test_h3_native_transcode_is_torch_free_and_keeps_audio(monkeypatch, tmp_path):

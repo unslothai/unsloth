@@ -3,76 +3,101 @@
 
 """Turn a decoded clip into the uint8 RGB frames the mp4 encoder takes, on the device that decoded it.
 
-diffusers' ``output_type="np"`` / ``"pil"`` copy the float clip to pageable host memory and round it on the CPU, and
-``encode_video`` range-checks and rounds an np clip again: about 3 s at 960x544x124 and 4 s at 1344x768x129. Video
-pipelines are asked for ``"pt"`` instead and the same ``(x * 255).round()`` runs in float32 on the GPU, then one
-uint8 copy goes through pinned memory. The frames are bit-identical: float32 multiply and round-half-to-even agree
-between numpy and torch. A clip with any value outside [0, 1] (NaN included), or on a device other than CUDA / CPU,
-is rebuilt as exactly the np or PIL object the pipeline would have returned, so it warns or fails as before.
+A video pipeline's np / pil postprocess copies the float clip to pageable host memory and rounds it on the CPU (PIL
+also builds one image per frame), then ``encode_video`` stacks and converts it again: about 1.4-1.9 s at 960x544x124
+and 3-7 s at 1344x768x141 on MiniMax-H3. Around the pipeline call, the processor's np / pil request instead runs the
+same ``(x * 255).round()`` in float32 on the GPU, slice by slice into pinned host memory, and hands back a CPU uint8
+(B, F, H, W, C) tensor, which ``encode_video`` takes as is. The frames are bit-identical: float32 multiply and
+round-half-to-even agree between numpy and torch, and the clip is range-checked first. A clip with any value outside
+[0, 1] (NaN included), or on a device other than CUDA / CPU, goes through the original postprocess unchanged.
 """
 
 from __future__ import annotations
 
-from typing import Any, Optional
+import contextlib
+from typing import Any, Iterator, Optional
 
 _SLICE_BYTES = 64 << 20
 
 
-def legacy_output_type(pipe: Any, call_params: Any, modular: bool) -> Optional[str]:
-    """What the pipeline returns when Studio passes no ``output_type`` ('np' or 'pil'); None when unknown, in which
-    case the caller keeps today's call."""
-    if modular:
-        try:
-            for param in getattr(getattr(pipe, "blocks", None), "inputs", None) or ():
-                if getattr(param, "name", None) == "output_type":
-                    default = getattr(param, "default", None)
-                    return default if default in ("np", "pil") else None
-        except Exception:  # noqa: BLE001
-            return None
-        return None
-    param = call_params.get("output_type") if hasattr(call_params, "get") else None
-    default = getattr(param, "default", None)
-    return default if default in ("np", "pil") else None
-
-
-def _legacy(frames: Any, output_type: str) -> Any:
-    from diffusers.image_processor import VaeImageProcessor
-
-    # The exact np / pil tail of VaeImageProcessor.postprocess after its denormalize, which "pt" already applied.
-    arr = VaeImageProcessor.pt_to_numpy(frames)
-    return VaeImageProcessor.numpy_to_pil(arr) if output_type == "pil" else arr
-
-
-def to_uint8_frames(frames: Any, output_type: str) -> Any:
-    """``frames`` is one clip from an ``output_type="pt"`` pipeline, (F, C, H, W). Returns a CPU uint8 (F, H, W, C)
-    tensor, or the legacy ``output_type`` object when the fast path does not apply."""
+def device_uint8(frames: Any) -> Optional[Any]:
+    """(F, C, H, W) float frames in [0, 1] -> CPU uint8 (F, H, W, C); None when the fast path does not apply."""
     import torch
 
-    tensor_cls = getattr(torch, "Tensor", None)
-    if tensor_cls is None or not isinstance(frames, tensor_cls):
-        return frames
     device = frames.device
-    if device.type not in ("cuda", "cpu") or frames.numel() == 0:
-        return _legacy(frames, output_type)
+    if device.type not in ("cuda", "cpu"):
+        return None
     try:
         lo, hi = torch.aminmax(frames)
-        in_range = bool(lo >= 0) and bool(hi <= 1)
-    except Exception:  # noqa: BLE001
-        in_range = False
-    if not in_range:
-        return _legacy(frames, output_type)
+        if not (bool(lo >= 0) and bool(hi <= 1)):
+            return None
+    except Exception:  # noqa: BLE001 - empty clip, or a dtype aminmax lacks
+        return None
     count, channels, height, width = frames.shape
+    host = None
+    if device.type == "cuda":
+        try:
+            host = torch.empty((count, height, width, channels), dtype = torch.uint8, pin_memory = True)
+        except Exception:  # noqa: BLE001 - pinned allocation refused (host limits); a pageable copy is still exact
+            host = None
+    pinned = host is not None
+    if host is None:
+        host = torch.empty((count, height, width, channels), dtype = torch.uint8)
     step = max(1, _SLICE_BYTES // max(1, channels * height * width * 4))
-    out = torch.empty((count, height, width, channels), dtype = torch.uint8, device = device)
     for start in range(0, count, step):
         piece = frames[start : start + step].to(torch.float32) * 255
-        out[start : start + step] = piece.round_().to(torch.uint8).permute(0, 2, 3, 1)
-    if device.type == "cpu":
-        return out
-    try:
-        host = torch.empty(out.shape, dtype = torch.uint8, pin_memory = True)
-        host.copy_(out, non_blocking = True)
+        piece = piece.round_().to(torch.uint8).permute(0, 2, 3, 1)
+        host[start : start + step].copy_(piece, non_blocking = pinned)
+    if pinned:
         torch.cuda.current_stream(device).synchronize()
-        return host
-    except Exception:  # noqa: BLE001 - pinned allocation refused (host limits); a pageable copy is still exact
-        return out.cpu()
+    return host
+
+
+@contextlib.contextmanager
+def uint8_video_frames(pipe: Any) -> Iterator[None]:
+    """While active, ``pipe.video_processor``'s np / pil ``postprocess_video`` returns CPU uint8 (B, F, H, W, C)."""
+    proc = getattr(pipe, "video_processor", None)
+    original = getattr(proc, "postprocess_video", None)
+    postprocess = getattr(proc, "postprocess", None)
+    if not callable(original) or not callable(postprocess):
+        yield
+        return
+    import torch
+
+    had_own = "postprocess_video" in vars(proc)
+
+    def postprocess_video(
+        video: Any,
+        output_type: str = "np",
+        **kwargs: Any,
+    ) -> Any:
+        if (
+            output_type not in ("np", "pil")
+            or not isinstance(video, torch.Tensor)
+            or video.ndim != 5
+        ):
+            return original(video, output_type, **kwargs)
+        clips = []
+        for batch in range(video.shape[0]):
+            # "pt" stops right after the denormalize the np / pil paths apply, on the same view they use.
+            clip = device_uint8(postprocess(video[batch].permute(1, 0, 2, 3), "pt", **kwargs))
+            if clip is None:
+                return original(video, output_type, **kwargs)
+            clips.append(clip)
+        return clips[0].unsqueeze(0) if len(clips) == 1 else torch.stack(clips)
+
+    try:
+        proc.postprocess_video = postprocess_video
+    except Exception:  # noqa: BLE001 - a processor that refuses instance attributes keeps its own path
+        yield
+        return
+    try:
+        yield
+    finally:
+        if had_own:
+            proc.postprocess_video = original
+        else:
+            try:
+                del proc.postprocess_video
+            except AttributeError:
+                pass
