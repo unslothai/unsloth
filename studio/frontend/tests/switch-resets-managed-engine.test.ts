@@ -20,7 +20,12 @@ const requested = new Function(
 
 function store(engine: string) {
   const state = {
-    params: { checkpoint: "org/A", engine, enginePrecision: "int4", engineParallelism: "data" },
+    params: {
+      checkpoint: "org/A",
+      engine,
+      enginePrecision: "int4",
+      engineParallelism: "data",
+    },
     activeGgufVariant: null,
     setParams(params: typeof state.params) {
       state.params = params;
@@ -31,9 +36,16 @@ function store(engine: string) {
 
 test("picking another model without a saved config leaves the resident's engine behind", () => {
   const { state, useChatRuntimeStore } = store("vllm");
-  assert.equal(requested(useChatRuntimeStore, "org/B", false, "org/B", null), "auto");
+  assert.equal(
+    requested(useChatRuntimeStore, "org/B", false, "org/B", null),
+    "auto",
+  );
   assert.deepEqual(
-    [state.params.engine, state.params.enginePrecision, state.params.engineParallelism],
+    [
+      state.params.engine,
+      state.params.enginePrecision,
+      state.params.engineParallelism,
+    ],
     ["auto", "auto", "tensor"],
   );
 });
@@ -41,12 +53,24 @@ test("picking another model without a saved config leaves the resident's engine 
 test("a saved config, a staged reload or the same model keep the engine", () => {
   const withConfig = store("vllm");
   assert.equal(
-    requested(withConfig.useChatRuntimeStore, { config: { engine: "sglang" } }, false, "org/B", null),
+    requested(
+      withConfig.useChatRuntimeStore,
+      { config: { engine: "sglang" } },
+      false,
+      "org/B",
+      null,
+    ),
     "sglang",
   );
   const staged = store("vllm");
-  assert.equal(requested(staged.useChatRuntimeStore, "org/B", true, "org/B", null), "vllm");
+  assert.equal(
+    requested(staged.useChatRuntimeStore, "org/B", true, "org/B", null),
+    "vllm",
+  );
   const same = store("vllm");
-  assert.equal(requested(same.useChatRuntimeStore, "org/A", false, "org/A", null), "vllm");
+  assert.equal(
+    requested(same.useChatRuntimeStore, "org/A", false, "org/A", null),
+    "vllm",
+  );
   assert.equal(same.state.params.enginePrecision, "int4");
 });
