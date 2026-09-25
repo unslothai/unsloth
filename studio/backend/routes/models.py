@@ -5239,9 +5239,9 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                         and _snapshot_can_serve_a_load(selected)
                     ):
                         continue
-                total_size = sum(
-                    (f.size_on_disk or 0) for rev in repo_info.revisions for f in rev.files
-                )
+                from hub.services.models.cache_inventory import repo_unique_size_bytes
+
+                total_size = repo_unique_size_bytes(repo_info)
                 if total_size == 0:
                     continue
                 weight_files = [

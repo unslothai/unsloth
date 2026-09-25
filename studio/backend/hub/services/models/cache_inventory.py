@@ -219,6 +219,16 @@ def _blob_key(file_obj, fallback: str) -> str:
     return f"inode:{st.st_dev}:{st.st_ino}" if st.st_ino else str(blob_path)
 
 
+def repo_unique_size_bytes(repo_info) -> int:
+    """Every file across revisions, each stored copy counted once (see ``_blob_key``)."""
+    unique: dict[str, int] = {}
+    for revision in repo_info.revisions:
+        rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
+        for f in cached_repo_files(revision):
+            unique[_blob_key(f, f"{rev_id}:{f.file_name}")] = int(f.size_on_disk or 0)
+    return sum(unique.values())
+
+
 def _repo_gguf_size_bytes(repo_info) -> int:
     """Sum primary GGUF blob sizes across revisions, deduped by blob path (HF hardlinks shared blobs); mmproj is excluded so a vision-adapter-only repo isn't classed as GGUF."""
     unique_blobs: dict[str, int] = {}
