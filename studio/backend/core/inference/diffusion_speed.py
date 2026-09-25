@@ -815,7 +815,11 @@ def _vae_eager_when_tiled(pipe: Any) -> bool:
 
 
 def _guard_compiled_decode(
-    vae: Any, compiled: Any, eager: Any, logger: Any, eager_when_tiled: bool = False
+    vae: Any,
+    compiled: Any,
+    eager: Any,
+    logger: Any,
+    eager_when_tiled: bool = False,
 ) -> Any:
     """``compiled`` behind an eager fallback: torch.compile is lazy, so lowering fails on the first call; OOMs still raise.
 
