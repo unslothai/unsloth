@@ -128,7 +128,7 @@ from .diffusion_speed import (
     compile_dynamic,
     compile_eligible,
     compiled_shapes_are_static,
-    dynamo_graph_count,
+    fresh_compile_count,
     normalize_speed_mode,
     resolve_speed_mode,
     restore_backend_flags,
@@ -185,6 +185,7 @@ from .diffusion_prequant import (
     hosted_fast_accum_conflict,
     load_prequantized_transformer,
     prequant_checkpoint_cached,
+    prequant_unreadable_reason,
     resolve_prequant_source,
     usable_prequant_source,
 )
@@ -1497,6 +1498,25 @@ def _clear_exception_frames(exc: BaseException) -> None:
         seen.add(id(error))
         traceback.clear_frames(error.__traceback__)
         errors.extend(cause for cause in (error.__cause__, error.__context__) if cause is not None)
+
+
+def _dense_fast_path_reason(
+    fam: Any,
+    scheme: Optional[str],
+    base: Optional[str],
+    kind: str,
+    path_override: Optional[str],
+    loras: Any = None,
+) -> str:
+    """Name an unreadable hosted checkpoint only when it was in play (not override/GGUF/LoRA bake)."""
+    note = (
+        prequant_unreadable_reason(fam, scheme, base_repo = base)
+        if kind == "pipeline" and not path_override and not _has_active_lora(loras)
+        else None
+    )
+    if note:
+        return f"engaged on the dense fast path; {note}, so the dense bf16 transformer was quantized instead"
+    return "engaged on the dense fast path"
 
 
 class DiffusionBackend:
@@ -5549,6 +5569,9 @@ class DiffusionBackend:
                     else:
                         uninstall_patches()
                         uninstall_arch_patches()
+                    from .diffusion_qwenimage21 import install_for_pipe as install_q21_fast_step
+
+                    install_q21_fast_step(pipe, logger)
 
                     self._raise_if_load_cancelled(_load_token)
                     # Pre-warmed torch.compile cache: a per-fingerprint inductor dir plus a bundle loaded before the
@@ -5720,7 +5743,14 @@ class DiffusionBackend:
                                 if transformer_quant_artifact is not None
                                 else "re-planned resident for the quantised artifact"
                                 if quant_plan is not None
-                                else "engaged on the dense fast path",
+                                else _dense_fast_path_reason(
+                                    fam,
+                                    transformer_quant_engaged,
+                                    base,
+                                    kind,
+                                    transformer_prequant_path,
+                                    loras,
+                                ),
                                 # Honored when the quant engaged AND when the ask was "off" (a request NOT to
                                 # quantise, which the GGUF build satisfies)
                                 RESOLVED_APPLIED
@@ -7430,7 +7460,8 @@ class DiffusionBackend:
                 images: list[Any] = []
                 per_image_seeds: list[int] = []
                 chunk_shapes: list[int] = []
-                graphs_before = dynamo_graph_count()
+                graphs_before = fresh_compile_count()
+                compile_cache.note_use(state.compile_cache_ctx)
                 try:
                     pending = list(chunks)
                     while pending:
@@ -7511,7 +7542,10 @@ class DiffusionBackend:
                     # A cancelled or failed render may already have generalised a graph that the next render reuses
                     # without compiling, so the success path below would never see the count grow: dirty it now.
                     try:
-                        if auto_dynamic_active(state.pipe) and dynamo_graph_count() > graphs_before:
+                        if (
+                            auto_dynamic_active(state.pipe)
+                            and fresh_compile_count() > graphs_before
+                        ):
                             compile_cache.mark_recompiled(state.compile_cache_ctx)
                     except Exception:  # noqa: BLE001 - bookkeeping must not mask the render's own error
                         pass
@@ -7536,7 +7570,7 @@ class DiffusionBackend:
                             (reg_width, reg_height, int(chunk_batch)),
                             static = static_shapes,
                         )
-                    if auto_dynamic_active(state.pipe) and dynamo_graph_count() > graphs_before:
+                    if auto_dynamic_active(state.pipe) and fresh_compile_count() > graphs_before:
                         # Automatic dynamic recompiles on the first new text length at an already-registered
                         # (width, height, batch): persist those graphs too, or every fresh process pays them again.
                         compile_cache.mark_recompiled(state.compile_cache_ctx)
@@ -7785,6 +7819,9 @@ class DiffusionBackend:
         from core.inference import diffusion_controlnet, diffusion_lora
         from hub.utils.gguf import extract_quant_token
 
+        resolved, speed_optims = cuda_graph.live_status(
+            state.resolved, state.speed_optims, getattr(state, "cuda_graphs", ())
+        )
         return {
             "loaded": True,
             "repo_id": state.repo_id,
@@ -7804,12 +7841,12 @@ class DiffusionBackend:
             "vae_tiling": state.vae_tiling,
             "memory_mode": state.memory_mode,
             "speed_mode": state.speed_mode,
-            "speed_optims": list(state.speed_optims),
+            "speed_optims": speed_optims,
             "text_encoder_quant": state.text_encoder_quant,
             "transformer_quant": state.transformer_quant,
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
-            "resolved": state.resolved,
+            "resolved": resolved,
             # Workflows the loaded family supports, so the UI can gate its tabs.
             "workflows": _family_workflows(state.family),
             "conditioning": conditioning_capabilities(
