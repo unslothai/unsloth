@@ -157,6 +157,7 @@ import {
   saveStoredChatMessage,
   saveStoredChatThread,
   trackStoredChatThreadRecord,
+  unmarkThreadIncognito,
   updateStoredChatThread,
 } from "./utils/chat-history-storage";
 import {
@@ -1331,6 +1332,70 @@ export async function ensureThreadRecord({
     if (existingAfterRace) {
       return;
     }
+    throw error;
+  }
+}
+
+/** Parents before children, so every saved message's parent already exists. */
+function parentsFirst(
+  items: readonly ExportedMessageRepositoryItem[],
+): ExportedMessageRepositoryItem[] {
+  const byId = new Map(items.map((item) => [item.message.id, item]));
+  const seen = new Set<string>();
+  const ordered: ExportedMessageRepositoryItem[] = [];
+  const visit = (item: ExportedMessageRepositoryItem) => {
+    if (seen.has(item.message.id)) return;
+    seen.add(item.message.id);
+    const parent = item.parentId ? byId.get(item.parentId) : undefined;
+    if (parent) visit(parent);
+    ordered.push(item);
+  };
+  items.forEach(visit);
+  return ordered;
+}
+
+/** Save a temporary chat to history: its row and every message on every branch, after which it
+ *  saves like any other chat. On failure it stays temporary; a retry completes what was written. */
+export async function persistTemporaryThread({
+  threadId,
+  modelType,
+  messages,
+}: {
+  threadId: string;
+  modelType: ModelType;
+  messages: readonly ExportedMessageRepositoryItem[];
+}): Promise<void> {
+  unmarkThreadIncognito(threadId);
+  try {
+    const times = messages
+      .map(({ message }) => message.createdAt?.getTime?.())
+      .filter((time): time is number => typeof time === "number");
+    await ensureThreadRecord({
+      threadId,
+      modelType,
+      projectId: null,
+      incognito: false,
+      createdAt: times.length > 0 ? Math.min(...times) : Date.now(),
+    });
+    for (const { parentId, message } of parentsFirst(messages)) {
+      const attachments =
+        message.role === "user" ? cloneAttachments(message.attachments) : [];
+      const metadata = message.metadata?.custom as
+        | Record<string, unknown>
+        | undefined;
+      await saveStoredChatMessage({
+        id: message.id,
+        threadId,
+        parentId: parentId ?? null,
+        role: message.role,
+        content: cloneContent(message.content),
+        ...(attachments.length > 0 && { attachments }),
+        ...(metadata && { metadata }),
+        createdAt: message.createdAt?.getTime?.() ?? Date.now(),
+      });
+    }
+  } catch (error) {
+    markThreadIncognito(threadId);
     throw error;
   }
 }
