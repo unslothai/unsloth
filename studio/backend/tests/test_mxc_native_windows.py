@@ -527,3 +527,32 @@ def test_native_cmd_timeout_reclaims_terminal_child_and_grandchild(monkeypatch):
     assert "Execution timed out after 2 seconds" in result
     pids = [int(value) for value in (workdir / "terminal-pids.txt").read_text().split()]
     _wait_for_dead(pids)
+
+
+@pytest.mark.native_mxc
+def test_native_mxc_pip_install_lands_in_the_session_and_imports_next_call():
+    """The interpreter is read-only in the container, so pip has to target the session packages."""
+    _require_native_mxc()
+    session = "__LOCALID_native_mxc_pip"
+    installed = tools._python_exec(
+        "import subprocess, sys\n"
+        "r = subprocess.run([sys.executable, '-m', 'pip', 'install', '--no-deps', "
+        "'--disable-pip-version-check', 'six==1.16.0'], capture_output=True, text=True)\n"
+        "print('PIP_EXIT', r.returncode)\n"
+        "print(r.stdout[-400:], r.stderr[-800:])\n",
+        None,
+        240,
+        session,
+        tool_execution_mode = "required",
+    )
+    assert "PIP_EXIT 0" in installed, installed
+    packages = Path(tools._get_workdir(session)) / os_sandbox.SESSION_PACKAGES_RELPATH
+    assert (packages / "six.py").is_file(), installed
+    imported = tools._python_exec(
+        "import six; print('SIX', six.__version__)",
+        None,
+        60,
+        session,
+        tool_execution_mode = "required",
+    )
+    assert "SIX 1.16.0" in imported, imported
