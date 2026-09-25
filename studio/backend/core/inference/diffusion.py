@@ -4153,7 +4153,8 @@ class DiffusionBackend:
                 return None
             total = 0
             uncached = 0
-            for source in sources.values():
+            table_priced = 0
+            for component, source in sources.items():
                 size = 0
                 kind = getattr(source, "kind", None)
                 if kind == "path":
@@ -4177,13 +4178,18 @@ class DiffusionBackend:
                     size = DiffusionBackend._union_over_cached_revs(str(source.location), _sizes)
                 if size > 0:
                     total += int(size)
+                    continue
+                uncached += 1
+                if component == "text_encoder_4":
+                    # Outside the table's encoder term: priced from its own dense size.
+                    total += int(HIDREAM_LLAMA_BF16_BYTES * TE_PREQUANT_BUDGET_SCALE)
                 else:
-                    uncached += 1
-            if uncached:
+                    table_priced += 1
+            if table_priced:
                 table = family_bf16_components_gb(fam, base)
                 if table is None:
                     return None
-                share = uncached / max(1, len(sources))
+                share = table_priced / max(1, len(sources))
                 total += int(table[1] * (1000.0**3) * TE_PREQUANT_BUDGET_SCALE * share)
             if total <= 0:
                 return None

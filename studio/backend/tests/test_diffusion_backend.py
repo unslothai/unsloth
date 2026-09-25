@@ -11994,6 +11994,18 @@ def test_precast_text_encoder_mib_prices_hidreams_standalone_fourth_encoder(monk
         fam, "HiDream-ai/HiDream-I1-Full", target, "fp8"
     ) == (7700, ("text_encoder_4",), True)
 
+    (snap / te_candidate_filenames(source)[0]).unlink()
+    from core.inference.diffusion_hidream import HIDREAM_LLAMA_BF16_BYTES
+    from core.inference.diffusion_te_prequant import TE_PREQUANT_BUDGET_SCALE
+
+    assert DiffusionBackend._precast_text_encoder_mib(
+        fam, "HiDream-ai/HiDream-I1-Full", target, "fp8"
+    ) == (
+        int(HIDREAM_LLAMA_BF16_BYTES * TE_PREQUANT_BUDGET_SCALE) // (1024 * 1024),
+        ("text_encoder_4",),
+        False,
+    )
+
 
 def test_precast_text_encoder_mib_prices_an_uncached_checkpoint_from_the_family_table(
     monkeypatch, tmp_path
