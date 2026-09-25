@@ -5523,8 +5523,7 @@ class DiffusionBackend:
                             threshold = transformer_cache_threshold,
                             # GGUF transformers are quantized too, so the cache needs the higher threshold.
                             quant_active = cache_quant_active,
-                            # Prefix-KV families (Qwen-Image-2.1) cache only when asked: at 40 steps the default
-                            # threshold skips about half the steps, too lossy for an automatic default.
+                            # Prefix-KV families (Qwen-Image-2.1): auto skips ~half of 40 steps, too lossy; explicit only.
                             length_changes_ok = not cache_auto,
                             logger = logger,
                         )
@@ -7497,8 +7496,7 @@ class DiffusionBackend:
                             static_chunks_run += 1
                             static_skip_pipe = state.pipe
                         elif state.transformer_cache:
-                            # Start every forward from a clean step cache: diffusers only resets FBCache after a SUCCESSFUL
-                            # __call__, so a raised call leaves a residual the next forward trips over.
+                            # diffusers resets FBCache only after a SUCCESSFUL __call__; a raised call leaves a stale residual.
                             self._reset_step_cache(state.pipe)
                         try:
                             # inference_mode is faster than no_grad and numerically identical here.

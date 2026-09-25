@@ -451,7 +451,6 @@ def stub_torch(monkeypatch):
     stub = _build_stub_torch()
     stub.float32 = "float32"
     monkeypatch.setitem(sys.modules, "torch", stub)
-    # Replayed outputs are rebuilt as plain _FakeTensor clones, which the layer stores via detach().
     monkeypatch.setattr(_FakeTensor, "detach", lambda self: self, raising = False)
     cg._POOL_BOX[0] = None
     cg._LIVE_WRAPPERS.clear()
@@ -485,7 +484,6 @@ def test_graph_sits_under_the_layer_and_sees_only_computed_steps(stub_torch, gra
 
     _graph_loop(pipe, 25)
     stats = handles[0].stats
-    # One key for every computed step: one capture, the rest replays, nothing eager, no extra key.
     assert stats["captures"] == 1
     assert stats["replays"] == 16
     assert stats["eager_calls"] == 0
