@@ -11913,7 +11913,6 @@ def test_auto_under_offload_on_nvidia_never_goes_native(fake_runtime, tmp_path, 
 def test_a_resident_nvidia_int8_that_cannot_compile_still_declines(
     fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
-    """The offload candidate skipped the compile check; a resident plan means torchao, which still needs it."""
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()

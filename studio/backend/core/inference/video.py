@@ -305,7 +305,7 @@ def _assert_video_precision_for_target(
         elif not dense_transformer_supported(target):
             reason = dense_transformer_unsupported_reason(target)
         elif forces_offload and pinned in NATIVE_OFFLOAD_SCHEMES and native_offload_host(target):
-            # NVIDIA int8 under offload: torchao-free W8A8. forces_offload is already False for the modular workflow.
+            # forces_offload is already False for the modular workflow.
             if (
                 native_quant_scheme(target, pinned, family = getattr(fam, "name", None), offload = True)
                 is None
@@ -4314,7 +4314,6 @@ class VideoBackend:
         # Why the quant did not engage, in the caller's terms; threaded into `resolved`.
         transformer_quant_decline: Optional[str] = None
         transformer_quant_decline_status = RESOLVED_FELL_BACK
-        # The plan is final here (quant re-plan included), so a resident NVIDIA plan keeps torchao.
         video_offload = plan.offload_policy != "none"
         native_scheme = (
             native_quant_scheme(

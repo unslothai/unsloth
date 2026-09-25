@@ -1107,8 +1107,7 @@ def _pin_vision_embedding_device(module: Any) -> int:
 
 
 def install_group_offload_buffer_restore() -> bool:
-    """diffusers' stream group offload onloads group-module buffers but restores only parameters, so buffers stayed
-    on the GPU; native int8 weights are buffers, so a quantised DiT ended up resident under an offload plan."""
+    """diffusers stream group offload restores only parameters, leaving buffers (native int8 weights) on the GPU."""
     try:
         from diffusers.hooks import group_offloading as go
     except Exception:  # noqa: BLE001 - no group offload in this diffusers

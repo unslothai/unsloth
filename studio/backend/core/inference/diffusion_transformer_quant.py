@@ -663,12 +663,10 @@ def native_quant_host(target: Any) -> bool:
         return False
 
 
-# int8 only: W8A8 is validated under offload on NVIDIA; a native fp8 there is not.
 NATIVE_OFFLOAD_SCHEMES = (TQ_INT8,)
 
 
 def native_offload_host(target: Any) -> bool:
-    """NVIDIA bf16 GPU (so sm_80+, where ``torch._int_mm`` runs) with the torchao path open."""
     if getattr(target, "device", None) != "cuda":
         return False
     if torch_is_rocm() or is_stubbed("torchao"):
@@ -687,13 +685,7 @@ def native_quant_scheme(
     *,
     offload: bool = False,
 ) -> Optional[str]:
-    """The torchao-free scheme an EXPLICIT ``requested`` runs as, or None to leave it to torchao.
-
-    ROCm / stub: int8 or fp8 anywhere. NVIDIA: int8 only under ``offload`` (hooks' ``Module.to()`` rejects torchao).
-
-    Separate from ``select_transformer_quant_scheme`` on purpose: that selector also feeds the hosted
-    prequant planners, and a hosted checkpoint is a torchao serialisation these paths cannot use. The
-    family deny list still applies, as it does to the torchao path."""
+    """Not ``select_transformer_quant_scheme``: that also feeds hosted prequant planners (torchao checkpoints)."""
     scheme = normalize_transformer_quant(requested)
     if scheme not in NATIVE_QUANT_SCHEMES:
         return None
@@ -707,7 +699,6 @@ def native_quant_scheme(
 
 
 def native_int8_act(target: Any) -> bool:
-    """W8A8 for a native int8: opt-in on AMD (unmeasured on gfx1151), default on the NVIDIA offload route."""
     if native_quant_host(target):
         return int8_act_requested()
     return not int8_act_disabled()
@@ -1423,7 +1414,7 @@ def quantize_transformer(
     Returns the scheme engaged, or None when disabled / unsupported / failed (caller loads GGUF).
     Best-effort: never raises for an unsupported environment (failure leaves it dense).
     ``fast_accum`` (fp8 only) overrides the per-GPU-class accumulate choice: None auto-detects,
-    True/False force it. ``offload`` / ``act_int8`` steer the torchao-free path; None is ``native_int8_act``."""
+    True/False force it."""
     native = native_quant_scheme(target, mode, family = family, offload = offload)
     if native is not None:
         if act_int8 is None:
@@ -1479,7 +1470,6 @@ def quantize_transformer(
 def _quantize_native(
     pipe: Any, scheme: str, *, family: Optional[str], min_features: int, act_int8: bool, logger: Any
 ) -> Optional[str]:
-    """The torchao-free branch of ``quantize_transformer``: the same layer filter."""
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
         return None

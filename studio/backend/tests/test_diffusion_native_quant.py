@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Torchao-free int8 / fp8 on AMD and the Windows-ROCm torchao stub, and int8 W8A8 on NVIDIA under offload.
-
-ROCm is simulated by patching ``torch_is_rocm`` / ``is_stubbed`` on the quant module, so the suite
-runs on any host. NVIDIA goes native only for an explicit int8 under offload; every other case stays inert.
-"""
+"""Torchao-free int8 / fp8 (AMD, ROCm stub) and NVIDIA int8 W8A8 under offload; ROCm is monkeypatched."""
 
 from __future__ import annotations
 
@@ -338,7 +334,6 @@ def test_rotation_only_applies_to_w8a8_and_divisible_inputs():
 
 
 def test_rotated_layer_keeps_the_model_basis():
-    """The stored weight is rotated, but ``.weight`` and the fallback forward still mean the dense layer."""
     torch.manual_seed(0)
     lin = torch.nn.Linear(512, 128).to(torch.bfloat16)
     layer = nq.native_linear_class()(lin, "int8", act_int8 = True, rot_group = 256)
@@ -395,7 +390,6 @@ def test_int8_act_kill_switch_reads_only_zero(monkeypatch):
         assert nq.int8_act_disabled() is disabled
 
 
-# ---- quantize_transformer ---------------------------------------------------------------------
 
 
 def _block_torchao(monkeypatch):
@@ -962,7 +956,6 @@ def _native_block(features = 64):
 
 
 def test_stream_group_offload_puts_native_weight_buffers_back_on_the_host():
-    # Stock diffusers' stream offload restores parameters only, so native int8 weights (buffers) stayed on the GPU.
     go = pytest.importorskip("diffusers.hooks.group_offloading")
     from core.inference.diffusion_memory import install_group_offload_buffer_restore
 
@@ -1039,7 +1032,6 @@ class _GateSeen(Exception):
     "memory", [{"memory_mode": "balanced"}, {"memory_mode": "low_vram"}, {"cpu_offload": True}]
 )
 def test_image_begin_load_rechecks_with_the_offload_request(monkeypatch, memory):
-    # The route admits eager int8 under offload on the native path; begin_load's re-check must see the same request.
     import core.inference.diffusion as d
 
     seen = {}

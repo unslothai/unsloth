@@ -2036,7 +2036,7 @@ def test_wan_a14b_dense_quant_applies_to_both_dits(fake_runtime, monkeypatch):
 
 def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
     # Offload hooks move modules with Module.to(), which torchao tensors reject, so any offload
-    # policy must SKIP a torchao quant (escape hatch: dense plus a record). fp8: NVIDIA int8 goes native.
+    # policy must SKIP a torchao quant (escape hatch: dense plus a record).
     import core.inference.video as video_mod
     from core.inference import diffusion_transformer_quant as tq
 
@@ -2107,7 +2107,6 @@ def test_the_video_load_places_on_the_selected_card_not_a_bare_device(fake_runti
 
 
 def test_explicit_dense_quant_refuses_under_offload(fake_runtime, monkeypatch):
-    # Strict default: an explicit fp8 the offload plan cannot honor refuses rather than silently run bf16.
     import dataclasses
 
     import core.inference.video as video_mod

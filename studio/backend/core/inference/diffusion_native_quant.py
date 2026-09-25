@@ -14,11 +14,9 @@ from typing import Any, Callable, Optional
 NATIVE_INT8 = "int8"
 NATIVE_FP8 = "fp8"
 _QMAX = {NATIVE_INT8: 127.0, NATIVE_FP8: 448.0}
-# int8 W8A8 switch: "1" opts AMD in, "0" opts the NVIDIA offload route out (``native_int8_act``).
 NATIVE_INT8_ACT_ENV = "UNSLOTH_NATIVE_INT8_ACT"
-# ConvRot Hadamard spreads the DiT outlier channels that pin the per-row int8 scale; "0" turns it off.
 NATIVE_INT8_ROT_ENV = "UNSLOTH_NATIVE_INT8_ROT"
-# torch._int_mm wants M > 16 and K, N multiples of 8; smaller or odd shapes keep the weight-only path.
+# torch._int_mm needs M > 16 and K, N multiples of 8.
 _INT_MM_MIN_ROWS = 17
 
 
@@ -81,7 +79,6 @@ def native_linear_class():
                     h = build_convrot_hadamard(self.rot_group, device = w.device, dtype = torch.float32)
                     g = self.rot_group
                     w = (w.reshape(self.out_features, -1, g) @ h.T).reshape(self.out_features, -1)
-                    # Non-persistent: rebuilt from the group size, exact in any float dtype (entries are +-2^-k).
                     self.register_buffer("rot_h", h.to(self.compute_dtype), persistent = False)
                 scale = w.abs().amax(dim = 1, keepdim = True).clamp(min = 1e-12) / _QMAX[scheme]
                 if scheme == NATIVE_INT8:
@@ -113,7 +110,6 @@ def native_linear_class():
             )
 
         def dequantized_weight(self, dtype: Any) -> Any:
-            """The weight in the model's own basis, rotation undone (``H`` is orthogonal and symmetric)."""
             w = self._stored_weight(torch.float32 if self.rot_group else dtype)
             if not self.rot_group:
                 return w
@@ -162,7 +158,6 @@ def native_linear_class():
                 and self._int_mm_ok(x.numel() // max(1, self.in_features))
             ):
                 return self._forward_int_mm(x)
-            # Rotated or not, x and the stored weight share a basis here, so no un-rotation is needed.
             return F.linear(x, self._stored_weight(x.dtype), self.bias)
 
         def extra_repr(self) -> str:

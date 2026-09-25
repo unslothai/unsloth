@@ -1781,7 +1781,6 @@ class DiffusionBackend:
                 and _memory_request_forces_offload(memory_mode, cpu_offload)
                 and native_offload_host(target)
             ):
-                # NVIDIA int8 under offload: torchao-free W8A8 on buffers the hooks can move; torch._int_mm needs no compile.
                 if (
                     native_quant_scheme(
                         target, pinned, family = getattr(fam, "name", None), offload = True
@@ -2485,7 +2484,6 @@ class DiffusionBackend:
             model_kind = resolve_model_kind(gguf_filename, model_kind),
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
-            # The same offload request the route checked: the native int8 path needs no compile only under offload.
             memory_mode = memory_mode,
             cpu_offload = cpu_offload,
             # An uncompiled torchao transformer loses to the bf16 it replaces, so 'eager' stays dense. Refusing
@@ -4448,7 +4446,6 @@ class DiffusionBackend:
                     if kind == "pipeline"
                     else None
                 )
-                # Only a candidate: the quant step takes it if the final plan offloads; a resident plan keeps torchao.
                 native_offload_scheme = (
                     native_quant_scheme(
                         target,
@@ -5422,7 +5419,6 @@ class DiffusionBackend:
                                     native_scheme,
                                     plan.offload_policy,
                                 )
-                            # Weight-only buffers are plain tensors, which the offload hooks move like any other.
                             if plan.offload_policy != OFFLOAD_NONE and native_scheme is None:
                                 logger.info(
                                     "diffusion.transformer_quant: skipped (the memory plan picked '%s' "
@@ -5435,7 +5431,7 @@ class DiffusionBackend:
                                     "that. Pin a resident memory mode to combine the two"
                                 )
                             elif native_scheme is None and pipeline_quant_uncompilable is not None:
-                                # Resident plan: torchao runs after all and still needs the compile check skipped above.
+                                # Resident plan: torchao still needs the compile check skipped above.
                                 logger.info(
                                     "diffusion.transformer_quant: skipped (%s)",
                                     pipeline_quant_uncompilable,
