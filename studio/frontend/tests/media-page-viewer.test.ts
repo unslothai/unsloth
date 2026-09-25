@@ -165,6 +165,12 @@ test("the Video viewer plays only if the inline clip was, and hands its place ba
   ]) {
     assert.ok(effect.includes(line), line);
   }
-  // Only a successful apply or a newer opening clears it.
-  assert.equal(page.split("handback.current = null;").length - 1, 2);
+  // Only a successful apply, a newer opening, or deleting the clip clears it.
+  assert.equal(page.split("handback.current = null;").length - 1, 3);
+  const remove = slice(page, "onDelete: () => {", "void handleDelete(viewerVideo.id);");
+  const cleared = remove.indexOf("handback.current = null;");
+  assert.ok(
+    cleared >= 0 && cleared < remove.indexOf("setViewer(null);"),
+    "a deleted clip is not handed back to play on",
+  );
 });

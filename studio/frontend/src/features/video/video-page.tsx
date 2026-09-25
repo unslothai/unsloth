@@ -4327,6 +4327,9 @@ function VideoGenerator({
                 onToggleFavorite: () => toggleFavorite(`video:${viewerVideo.id}`),
                 onAddToProject: (projectId) => addGalleryVideoToProject(viewerVideo.id, projectId),
                 onDelete: () => {
+                  // A clip on its way out is not handed back, or the inline player would resume it.
+                  viewerVideoRef.current?.pause();
+                  handback.current = null;
                   setViewer(null);
                   void handleDelete(viewerVideo.id);
                 },
