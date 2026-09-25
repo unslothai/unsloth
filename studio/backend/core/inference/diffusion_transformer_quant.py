@@ -230,11 +230,13 @@ def convrot_fqns(
     transformer: Any, filter_fn: Any, group: int, suffixes: tuple[str, ...]
 ) -> tuple[str, ...]:
     """The Linears ``filter_fn`` will quantize whose fqn ends in one of ``suffixes`` and whose input width
-    ``group`` divides."""
+    ``group`` divides. A LoRA-baked target is PEFT's ``<suffix>.base_layer``; rotating it is still exact, since the
+    adapter reads the unrotated input."""
     from .diffusion_convrot import rotatable_fqns
 
     rotatable, _ = rotatable_fqns(transformer, filter_fn, group)
-    return tuple(f for f in rotatable if any(f == s or f.endswith("." + s) for s in suffixes))
+    names = tuple(n for s in suffixes for n in (s, s + ".base_layer"))
+    return tuple(f for f in rotatable if any(f == n or f.endswith("." + n) for n in names))
 
 
 def apply_runtime_convrot(

@@ -301,3 +301,27 @@ def test_builder_publishes_rotated_and_plain_int8_under_different_names():
         build.upload_destination(fam, "fp8", rotated = False, safetensors = True, upload_repo = repo)
         == "Qwen-Image-2.1-FP8.safetensors"
     )
+
+
+def test_lora_baked_targets_rotate_their_base_layer_and_stay_exact():
+    # Studio attaches PEFT adapters before quantize_, so a LoRA target is "<suffix>.base_layer"
+    peft = pytest.importorskip("peft")
+    torch.manual_seed(0)
+    model = _Tiny().float()
+    cfg = peft.LoraConfig(
+        r = 4, lora_alpha = 8, target_modules = ["to_q", "to_v", "out"], init_lora_weights = False
+    )
+    model = peft.inject_adapter_in_model(cfg, model)
+    x, y = torch.randn(4, 512), torch.randn(4, 640)
+    with torch.no_grad():
+        ref = model(x, y)
+        rotated = tq.apply_runtime_convrot(
+            model, tq.TQ_INT8, "qwen-image-2.1", _filter("qwen-image-2.1")
+        )
+        got = model(x, y)
+    for i in range(2):
+        for n in ("attn.to_q", "attn.to_v", "img_mlp.out"):
+            assert f"transformer_blocks.{i}.{n}.base_layer" in rotated
+    assert len(rotated) == 12 and not any("lora_" in f for f in rotated)
+    for a, b in zip(ref, got):
+        torch.testing.assert_close(a, b, rtol = 1e-4, atol = 1e-4)
