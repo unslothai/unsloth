@@ -2604,6 +2604,7 @@ class FastLlamaModel:
             load_in_4bit = load_in_4bit,
             load_in_8bit = load_in_8bit,
             rewrite_modelopt = not _vllm_will_load_weights(fast_inference, num_labels),
+            token = token,
         )
         # The ModelOpt rewrite lives on model_config, so weights must load against it.
         from .modelopt_fp8 import (

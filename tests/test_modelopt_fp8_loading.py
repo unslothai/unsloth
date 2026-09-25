@@ -55,13 +55,13 @@ needs_per_tensor_fp8 = pytest.mark.skipif(
 
 
 def test_plan_maps_sarvam_block_to_static_per_tensor_fp8():
+    from transformers.quantizers.quantizers_utils import should_convert_module
+
     plan = modelopt_fp8_plan(SimpleNamespace(quantization_config = _sarvam_quant()))
-    assert plan == {
-        "quant_method": "fp8",
-        "weight_block_size": None,
-        "modules_to_not_convert": ["lm_head"],
-        "activation_scheme": "static",
-    }
+    skip = plan.pop("modules_to_not_convert")
+    assert plan == {"quant_method": "fp8", "weight_block_size": None, "activation_scheme": "static"}
+    assert not should_convert_module("lm_head", skip)
+    assert should_convert_module("model.layers.0.self_attn.q_proj", skip)
 
 
 def test_plan_accepts_hf_quant_config_spelling_and_weight_only():
@@ -69,8 +69,13 @@ def test_plan_accepts_hf_quant_config_spelling_and_weight_only():
         "quant_method": "modelopt",
         "quantization": {"quant_algo": "FP8", "exclude_modules": ["lm_head", "mlp.gate"]},
     }
+    from transformers.quantizers.quantizers_utils import should_convert_module
+
     plan = modelopt_fp8_plan(SimpleNamespace(quantization_config = legacy))
-    assert plan["modules_to_not_convert"] == ["lm_head", "mlp.gate"]
+    skip = plan["modules_to_not_convert"]
+    assert not should_convert_module("lm_head", skip)
+    assert not should_convert_module("model.layers.3.mlp.gate", skip)
+    assert should_convert_module("model.layers.3.mlp.gate_proj", skip)
     assert plan["activation_scheme"] == "static"
 
     weight_only = _sarvam_quant()
@@ -790,7 +795,7 @@ def test_modelopt_ignore_globs_keep_fnmatch_meaning():
     patterns = modelopt_fp8_plan(SimpleNamespace(quantization_config = quant))[
         "modules_to_not_convert"
     ]
-    assert patterns[0] == "lm_head"
+    assert not should_convert_module("lm_head", patterns)
     assert should_convert_module("backbone.layers.1.mixer.in_proj", patterns)
     assert should_convert_module("backbone.layers.10.mixer.in_proj", patterns)
     assert not should_convert_module("backbone.layers.16.mixer.in_proj", patterns)
@@ -920,3 +925,94 @@ def test_save_keeps_transformers_fp8_scale_names():
     model._weight_conversions = [other, *ours]
     keep_fp8_scale_names_on_save(model)
     assert model._weight_conversions == [other]
+
+
+def test_exact_ignore_names_keep_their_module_boundary():
+    from transformers.quantizers.quantizers_utils import should_convert_module
+
+    skip = modelopt_fp8_plan(
+        SimpleNamespace(quantization_config = _sarvam_quant(ignore = ["model.layers.1", "lm_head"]))
+    )["modules_to_not_convert"]
+    assert not should_convert_module("model.layers.1.self_attn.q_proj", skip)
+    assert should_convert_module("model.layers.10.self_attn.q_proj", skip)
+    assert should_convert_module("model.layers.11.mlp.down_proj", skip)
+    assert not should_convert_module("lm_head", skip)
+
+
+def test_vlm_ignore_globs_follow_the_instantiated_names():
+    from transformers.quantizers.quantizers_utils import should_convert_module
+
+    config = SimpleNamespace(
+        quantization_config = _sarvam_quant(ignore = ["visual*", "lm_head"]),
+        model_type = "qwen2_5_vl",
+        architectures = ["Qwen2_5_VLForConditionalGeneration"],
+    )
+    skip = modelopt_fp8_plan(config)["modules_to_not_convert"]
+    # Checkpoint `visual.*` is instantiated as `model.visual.*`; its bf16 weights have no fp8 scales.
+    assert not should_convert_module("model.visual.blocks.0.attn.qkv", skip)
+    assert not should_convert_module("model.visual.merger.mlp.0", skip)
+    assert should_convert_module("model.language_model.layers.0.self_attn.q_proj", skip)
+
+
+def _hf_quant_config_checkpoint(path, quant_algo = "FP8"):
+    from transformers import LlamaConfig
+
+    LlamaConfig(hidden_size = 64, num_hidden_layers = 1, num_attention_heads = 4).save_pretrained(path)
+    hf_quant = {
+        "producer": {"name": "modelopt", "version": "0.23.0"},
+        "quantization": {
+            "quant_algo": quant_algo,
+            "kv_cache_quant_algo": None,
+            "exclude_modules": ["lm_head"],
+        },
+    }
+    (path / "hf_quant_config.json").write_text(json.dumps(hf_quant))
+
+
+@needs_per_tensor_fp8
+def test_standalone_hf_quant_config_is_rewritten(tmp_path):
+    from transformers import AutoConfig
+
+    fp8, nvfp4, plain = tmp_path / "fp8", tmp_path / "nvfp4", tmp_path / "plain"
+    _hf_quant_config_checkpoint(fp8)
+    _hf_quant_config_checkpoint(nvfp4, quant_algo = "NVFP4")
+    from transformers import LlamaConfig
+
+    LlamaConfig(hidden_size = 64, num_hidden_layers = 1, num_attention_heads = 4).save_pretrained(plain)
+
+    config = AutoConfig.from_pretrained(str(fp8))
+    assert getattr(config, "quantization_config", None) is None
+    _, _, method = check_and_disable_bitsandbytes_loading(config, load_in_4bit = False, verbose = False)
+    assert method == "fp8" and config.quantization_config["quant_method"] == "fp8"
+    assert hasattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
+
+    for other in (nvfp4, plain):
+        config = AutoConfig.from_pretrained(str(other))
+        _, _, method = check_and_disable_bitsandbytes_loading(
+            config, load_in_4bit = False, verbose = False
+        )
+        assert method is None and getattr(config, "quantization_config", None) is None
+
+    # vLLM reads hf_quant_config.json itself.
+    config = AutoConfig.from_pretrained(str(fp8))
+    check_and_disable_bitsandbytes_loading(
+        config, load_in_4bit = False, verbose = False, rewrite_modelopt = False
+    )
+    assert getattr(config, "quantization_config", None) is None
+
+
+@needs_per_tensor_fp8
+def test_merged_save_detects_a_standalone_hf_quant_config(tmp_path, monkeypatch):
+    zoo_saving = pytest.importorskip("unsloth_zoo.saving_utils")
+    for name in ("_is_fp8_quant_config", "check_model_quantization_status"):
+        fn = getattr(zoo_saving, name)
+        monkeypatch.setattr(zoo_saving, name, getattr(fn, "__wrapped__", fn))
+    fp8, nvfp4 = tmp_path / "fp8", tmp_path / "nvfp4"
+    _hf_quant_config_checkpoint(fp8)
+    _hf_quant_config_checkpoint(nvfp4, quant_algo = "NVFP4")
+    status = lambda p: zoo_saving.check_model_quantization_status(str(p))
+    if status(fp8) == (True, "fp8"):
+        pytest.skip("this unsloth_zoo already reads hf_quant_config.json")
+    arm_modelopt_fp8_loading(SimpleNamespace(quantization_config = _sarvam_quant()), verbose = False)
+    assert status(fp8) == (True, "fp8")
+    assert status(nvfp4) == (False, None)

@@ -20,6 +20,9 @@ config block is rewritten to ``quant_method: fp8`` and the scales renamed via ``
 import fnmatch
 import functools
 import inspect
+import json
+import os
+import re
 import weakref
 from types import SimpleNamespace
 from typing import Optional
@@ -34,6 +37,7 @@ __all__ = [
     "keep_task_heads_unquantized",
     "modelopt_planner_quantization_config",
     "keep_fp8_scale_names_on_save",
+    "attach_hf_quant_config",
 ]
 
 UNSLOTH_MODELOPT_KEY_MAPPING_ATTR = "_unsloth_modelopt_key_mapping"
@@ -52,6 +56,54 @@ def _modelopt_pattern(name) -> str:
     name = str(name)
     if any(ch in name for ch in "*?["):
         return fnmatch.translate(name)
+    # transformers matches unanchored, so a bare `model.layers.1` would also skip layers 10-19.
+    return r"(?:.*\.)?" + re.escape(name) + r"(?:\.|$)"
+
+
+def _checkpoint_renames(config) -> list:
+    """Single-pattern renames transformers applies to this model's checkpoint keys (VLMs move
+    `visual.*` to `model.visual.*`). ModelOpt ignore entries use checkpoint names, while the fp8
+    quantizer matches them against the instantiated model."""
+    try:
+        from transformers.conversion_mapping import get_checkpoint_conversion_mapping
+    except Exception:
+        return []
+    keys = list(getattr(config, "architectures", None) or []) + [
+        getattr(config, "model_type", None)
+    ]
+    renames = []
+    for key in keys:
+        if not key:
+            continue
+        try:
+            conversions = get_checkpoint_conversion_mapping(key) or []
+        except Exception:
+            continue
+        for conversion in conversions:
+            if type(conversion).__name__ != "WeightRenaming":
+                continue
+            # 5.5 has no `_original_*` copies; later releases rewrite the live patterns in place.
+            src = (
+                getattr(conversion, "_original_source_patterns", None)
+                or getattr(conversion, "source_patterns", None)
+                or []
+            )
+            tgt = (
+                getattr(conversion, "_original_target_patterns", None)
+                or getattr(conversion, "target_patterns", None)
+                or []
+            )
+            if len(src) == 1 and len(tgt) == 1 and (src[0], tgt[0]) not in renames:
+                renames.append((src[0], tgt[0]))
+    return renames
+
+
+def _renamed(name: str, renames) -> str:
+    for src, tgt in renames:
+        try:
+            name = re.sub(src, tgt, name, count = 1)
+        except re.error:
+            pass
     return name
 
 
@@ -97,6 +149,20 @@ def _activations_map_onto_fp8(inputs) -> bool:
     return strategy in (None, "tensor")
 
 
+def _exclusion_patterns(ignore, renames) -> list:
+    patterns = []
+    for name in ignore:
+        variants = [str(name), _renamed(str(name), renames)]
+        # transformers also adds the base model prefix to an unprefixed checkpoint (5.5 has no
+        # registry rename for it); plain names already match under any prefix.
+        variants += ["model." + v for v in variants if not v.startswith(("*", "model."))]
+        for variant in variants:
+            pattern = _modelopt_pattern(variant)
+            if pattern not in patterns:
+                patterns.append(pattern)
+    return patterns
+
+
 def modelopt_fp8_plan(config) -> Optional[dict]:
     quant = _as_dict(getattr(config, "quantization_config", None))
     if quant is None:
@@ -139,13 +205,77 @@ def modelopt_fp8_plan(config) -> Optional[dict]:
     plan = {
         "quant_method": "fp8",
         "weight_block_size": None,
-        "modules_to_not_convert": [_modelopt_pattern(name) for name in (ignore or [])],
+        "modules_to_not_convert": _exclusion_patterns(ignore or [], _checkpoint_renames(config)),
     }
     if activation_scheme is not None:
         plan["activation_scheme"] = activation_scheme
     else:
         plan["activation_scheme"] = "dynamic"
     return plan
+
+
+def _hf_quant_config_path(
+    name,
+    revision = None,
+    token = None,
+) -> Optional[str]:
+    if not name:
+        return None
+    if os.path.isdir(name):
+        path = os.path.join(name, "hf_quant_config.json")
+        return path if os.path.isfile(path) else None
+    try:
+        from huggingface_hub import hf_hub_download, try_to_load_from_cache
+
+        cached = try_to_load_from_cache(name, "hf_quant_config.json", revision = revision)
+        if isinstance(cached, str):
+            return cached
+        if cached is not None:
+            # Cached as absent for this revision.
+            return None
+        return hf_hub_download(name, "hf_quant_config.json", revision = revision, token = token)
+    except Exception:
+        return None
+
+
+def _modelopt_block_from_hf_quant_config(path) -> Optional[dict]:
+    try:
+        with open(path, "r", encoding = "utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    producer = data.get("producer")
+    if not (isinstance(producer, dict) and str(producer.get("name", "")).lower() == "modelopt"):
+        return None
+    return {"quant_method": "modelopt", **data}
+
+
+def attach_hf_quant_config(config, token = None) -> bool:
+    """Older ModelOpt exports (nvidia/Llama-3.1-8B-Instruct-FP8) keep their quantization only in
+    hf_quant_config.json; config.json has none, so they loaded as unquantized fp8 bytes. Attach the
+    block when it is an FP8 plan this module loads; every other ModelOpt format is left as is."""
+    if getattr(config, "quantization_config", None) is not None:
+        return False
+    path = _hf_quant_config_path(
+        getattr(config, "_name_or_path", None), getattr(config, "_commit_hash", None), token
+    )
+    quant = _modelopt_block_from_hf_quant_config(path) if path else None
+    if quant is None:
+        return False
+    probe = SimpleNamespace(
+        quantization_config = quant,
+        model_type = getattr(config, "model_type", None),
+        architectures = getattr(config, "architectures", None),
+    )
+    if modelopt_fp8_plan(probe) is None:
+        return False
+    try:
+        config.quantization_config = quant
+    except Exception:
+        return False
+    return True
 
 
 def _transformers_accepts_fp8_plan(plan) -> bool:
@@ -233,6 +363,24 @@ def _dequantize_modelopt_on_merged_save() -> None:
 
     _is_fp8_quant_config._unsloth_modelopt = True
     zoo_saving._is_fp8_quant_config = _is_fp8_quant_config
+
+    status = getattr(zoo_saving, "check_model_quantization_status", None)
+    if status is None or getattr(status, "_unsloth_modelopt", False):
+        return
+
+    @functools.wraps(status)
+    def check_model_quantization_status(model_name_or_path, *args, **kwargs):
+        result = status(model_name_or_path, *args, **kwargs)
+        if result != (False, None):
+            return result
+        path = _hf_quant_config_path(model_name_or_path, token = kwargs.get("token"))
+        quant = _modelopt_block_from_hf_quant_config(path) if path else None
+        if quant is not None and _is_fp8_quant_config(quant):
+            return (True, "fp8")
+        return result
+
+    check_model_quantization_status._unsloth_modelopt = True
+    zoo_saving.check_model_quantization_status = check_model_quantization_status
 
 
 def keep_fp8_scale_names_on_save(model) -> None:
