@@ -9,13 +9,6 @@ import { toast } from "@/lib/toast";
 import { type LibraryItem, errorMessage, revealLibraryItem } from "./api";
 import { isLoopbackHost, revealLabelFor } from "./reveal-label";
 
-/**
- * The Reveal label, or null where Reveal cannot help. It opens the file manager of the machine
- * running Studio, so it is offered only there (the desktop app, or a browser on this machine), only
- * where that machine can show one (not a container or a headless server, as the server reports),
- * and only to the installation owner, as the backend requires. Named as the server's platform
- * names it.
- */
 export function useRevealLabel(): string | null {
   const t = useT();
   const owner = useIsAccountOwner();
@@ -27,7 +20,6 @@ export function useRevealLabel(): string | null {
   return key && t(key);
 }
 
-/** Chat attachments live inside their messages, so there is no file to show. */
 export function canReveal(item: LibraryItem): boolean {
   return !item.id.startsWith("attachment:");
 }

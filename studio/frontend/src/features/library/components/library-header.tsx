@@ -13,11 +13,8 @@ import {
 } from "react";
 import { RAISED_SURFACE } from "../surface";
 
-// Between the controls and the tabs they cover.
 const GAP_PX = 16;
-// How far the tabs fade out where they are cut off.
 const FADE_PX = 48;
-// Movement before a press on the tabs counts as a drag, so a plain click still switches tab.
 const DRAG_SLOP_PX = 4;
 
 export interface HeaderTab {
@@ -32,7 +29,6 @@ function fadeMask(left: boolean, right: boolean): string | undefined {
   return `linear-gradient(to right, ${start}, ${end})`;
 }
 
-/** The tabs in one line. Once they overflow they fade where cut off and scroll, or drag, sideways. */
 function TabStrip({
   tabs,
   active,
@@ -42,7 +38,6 @@ function TabStrip({
   tabs: HeaderTab[];
   active: string;
   onChange: (key: string) => void;
-  /** Room kept free on the right for the controls laid over the row. */
   reserve: number;
 }) {
   const t = useT();
@@ -71,7 +66,6 @@ function TabStrip({
     };
   }, []);
 
-  // A tab chosen, or left, out of view is brought back into it.
   useEffect(() => {
     const scroller = scrollerRef.current;
     const tab = scroller?.querySelector<HTMLElement>('[aria-current="page"]');
@@ -139,8 +133,6 @@ function TabStrip({
       onPointerCancel={onPointerEnd}
       onLostPointerCapture={onPointerEnd}
       onClickCapture={onClickCapture}
-      // A sideways scroller clips up and down too: the padding, taken back by the margin, holds the
-      // active tab's shadow, which reaches 8px below it, 6px aside and 4px above.
       className="-mx-2 -mb-3 -mt-1 overflow-x-auto px-2 pb-3 pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       style={{ marginRight: reserve || undefined, maskImage: mask, WebkitMaskImage: mask }}
     >
@@ -164,11 +156,6 @@ function TabStrip({
   );
 }
 
-/**
- * The page header, as ChatGPT's Library does it: the title scrolls away, the tab row sticks to the
- * top, and the controls ride up from the title row to settle on the tab row. Where they then cover
- * tabs, the tabs stop short of them, fade at the cut, and scroll sideways.
- */
 export function LibraryHeader({
   title,
   controls,
@@ -176,7 +163,6 @@ export function LibraryHeader({
 }: {
   title: ReactNode;
   controls: ReactNode;
-  /** None inside a folder; the row still sticks, to hold the controls. */
   tabs: { items: HeaderTab[]; active: string; onChange: (key: string) => void } | null;
 }) {
   const controlsRef = useRef<HTMLDivElement>(null);
@@ -199,7 +185,6 @@ export function LibraryHeader({
     };
     const observer = new ResizeObserver(schedule);
     observer.observe(controlsNode);
-    // Capture: the page scrolls inside the app shell, not the window.
     document.addEventListener("scroll", schedule, { capture: true, passive: true });
     window.addEventListener("resize", schedule);
     schedule();

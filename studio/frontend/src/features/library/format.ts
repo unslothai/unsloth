@@ -8,7 +8,6 @@ type Translate = (key: TranslationKey, values?: InterpolationValues) => string;
 
 const yesterdayFormatters = new Map<Locale, Intl.RelativeTimeFormat>();
 
-/** "Yesterday" as the locale words it. */
 function yesterday(locale: Locale): string {
   let formatter = yesterdayFormatters.get(locale);
   if (!formatter) {
@@ -47,7 +46,6 @@ export function formatCardTime(ts: number, locale: Locale, now: number = Date.no
   });
 }
 
-/** List rows: how long ago, down to the minute. A timestamp ahead of this clock shows its date. */
 export function formatActivityTime(ts: number, locale: Locale, t: Translate): string {
   const elapsed = Date.now() - ts;
   if (elapsed < -60_000) return formatCardTime(ts, locale);
@@ -90,7 +88,6 @@ export function formatSize(bytes: number | null, locale: Locale, t: Translate): 
   return t(unit, { value: formatted });
 }
 
-/** "{count} items", in the singular for one. */
 export function formatItemCount(count: number, t: Translate): string {
   return t(count === 1 ? "library.itemCountOne" : "library.itemCount", { count });
 }

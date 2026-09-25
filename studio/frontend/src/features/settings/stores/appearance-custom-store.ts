@@ -92,7 +92,6 @@ export const SIDEBAR_NAV_ITEM_IDS = [
   // Model hub leads: picking a model comes before the work that uses one.
   "hub",
   "projects",
-  // Every file Studio holds, next to the projects that organize chats.
   "library",
   "images",
   // Video and Audio sit directly under Images: the media tabs read as one group.
@@ -144,7 +143,6 @@ export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
   projects: true,
   library: true,
   images: true,
-  // Under "More" until a user pins them.
   video: false,
   audio: false,
   train: true,

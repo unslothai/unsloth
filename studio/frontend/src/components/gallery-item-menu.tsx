@@ -55,7 +55,6 @@ export function GalleryItemMenu({
 }: {
   pinned: boolean;
   archived: boolean;
-  /** Library favorite; the item is left out when the page does not track favorites. */
   favorite?: boolean;
   onToggleFavorite?: () => void;
   onTogglePin: () => void;
@@ -99,7 +98,6 @@ export function GalleryItemMenu({
           className={cn(
             // Circular hover, no border: focus returning on close would draw one. Keyboard focus tints instead.
             "rounded-full border-0 focus-visible:bg-muted dark:focus-visible:bg-muted/50",
-            // Reads over any thumbnail, whatever its colours. Open matches hover instead of ghost's darker open state.
             overlay &&
               "bg-background/80 text-foreground shadow-sm backdrop-blur hover:bg-background focus-visible:bg-background aria-expanded:bg-background dark:focus-visible:bg-background",
             row && "text-muted-foreground hover:text-foreground",

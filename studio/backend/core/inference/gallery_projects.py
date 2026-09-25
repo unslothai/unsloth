@@ -60,7 +60,6 @@ def _sandbox_dir(project_id: str) -> str:
     return sandbox_real
 
 
-# What Windows refuses in a file name, controls included, and its reserved device names.
 UNSAFE_NAME_CHARS = r"\\/:*?\"<>|\x00-\x1f\x7f"
 _BAD_NAME_RE = re.compile(f"[{UNSAFE_NAME_CHARS}]")
 RESERVED_NAMES = frozenset(
@@ -182,7 +181,6 @@ def copy_into_project(
         if not isinstance(source, Path):
             raise ValueError("An open file needs a name to be copied as.")
         name = source.name
-    # Refused on every OS, not only where it would fail: the project folder can be opened on Windows.
     if _bad_name(name):
         raise ValueError(f"Bad file name: {name!r}")
     sandbox = _sandbox_dir(project_id)

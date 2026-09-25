@@ -38,7 +38,6 @@ import { EMPTY_FILTERS, type LibraryFilters, filtersActive } from "../filters";
 import type { LibraryView } from "../settings-store";
 
 const ICON = "size-icon";
-// The active view is raised like the new-chat composer.
 const ROUND_BUTTON =
   "flex size-9 shrink-0 items-center justify-center rounded-full text-foreground outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring data-[active=true]:bg-white data-[active=true]:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:data-[active=true]:bg-card dark:data-[active=true]:shadow-none data-open:bg-muted";
 
@@ -92,7 +91,6 @@ function FilterMenu({
   ) => (
     <DropdownMenuItem
       key={value}
-      // Stay open so several filters can be picked in one go.
       onSelect={(event) => {
         event.preventDefault();
         toggle();
@@ -201,7 +199,6 @@ function NewMenu({ onSelect }: { onSelect: (action: NewAction) => void }) {
   );
 }
 
-/** The page's controls: filters, view, search, New and settings. The header places them. */
 export function LibraryToolbar({
   filters,
   onFiltersChange,
@@ -216,7 +213,6 @@ export function LibraryToolbar({
 }: {
   filters: LibraryFilters;
   onFiltersChange: (next: LibraryFilters) => void;
-  /** Folders has nothing to filter; Images only filters by source. */
   filterMode: "none" | "source" | "all";
   view: LibraryView;
   onViewChange: (view: LibraryView) => void;

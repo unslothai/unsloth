@@ -51,7 +51,6 @@ def _app(subject) -> TestClient:
 
 @pytest.fixture
 def client(monkeypatch):
-    # Only the Library's own uploads: the other sources read stores a test seeds for itself.
     monkeypatch.setattr(library, "_SOURCES", (library._upload_items,))
     library.invalidate_listing()
     library._THUMBNAILS.forget()
@@ -190,13 +189,10 @@ def _thumbnail_size(client, item_id):
 def test_uploads_are_listed_and_typed_by_their_extension_not_the_client(client, monkeypatch):
     import mimetypes
 
-    # (as sent, listed name, stored type)
     uploads = [
         (("note.md", b"# hi", "text/markdown"), "note.md", "text/markdown"),
-        # A client path keeps its last segment.
         (("C:\\Users\\me\\notes.txt", b"<script>", "text/html"), "notes.txt", "text/plain"),
         (("report.pdf", b"%PDF-1.7", "text/html"), "report.pdf", "application/pdf"),
-        # A list of types, or one a browser would run, is not stored for an unknown extension.
         (("track.xyz", b"x", "audio/x, text/html"), "track.xyz", "application/octet-stream"),
         (("data.bin2", b"x", "application/xhtml+xml"), "data.bin2", "application/octet-stream"),
     ]
@@ -209,8 +205,6 @@ def test_uploads_are_listed_and_typed_by_their_extension_not_the_client(client, 
     note = items[ids[0]]
     assert note["source"] == "uploaded" and note["sizeBytes"] == 4
     assert note["favorite"] is False and note["folderId"] is None
-    # By a fixed map, whatever the OS registry says: Windows apps remap types, and mimetypes calls
-    # .ts a video.
     monkeypatch.setattr(mimetypes, "guess_type", lambda *_a, **_k: ("video/mp2t", None))
     types = ("app.ts", "view.tsx", "mod.mts", "photo.JPG", "mystery.xyz")
     assert [library._guess_type(name) for name in types] == [
@@ -262,7 +256,6 @@ def test_rename_favorite_and_folders_are_an_overlay(client):
     assert "upload:gone" not in library_db.list_entries()
     # The type follows the file's own name, so a binary renamed to .txt never opens as text.
     assert item["fileName"] == "photo.png"
-    # Leaving the key off leaves it where it is; an explicit null moves it back out.
     _patch(client, id = image, favorite = False)
     assert _items(client)[0][image]["folderId"] == folder
     _patch(client, id = image, folderId = None)
@@ -284,7 +277,6 @@ def test_rename_favorite_and_folders_are_an_overlay(client):
 
 
 def test_notes_are_saved_in_their_own_encoding_and_deletable(client):
-    # Windows PowerShell 5 writes UTF-16LE with a BOM and CRLF endings.
     [note] = _upload(client, ("log.txt", "\ufeffold\r\n".encode("utf-16le"), "text/plain"))
     url = f"/api/library/uploads/{_ref(note)}/text"
     response = client.put(url, json = {"text": "\ufeffnew\r\n", "encoding": "utf-16le"})
@@ -307,7 +299,6 @@ def test_chat_attachments_holding_bytes_are_known_by_their_type_in_any_case(clie
     def attachment(attachment_id, content_type):
         return {"messageId": "m", "id": attachment_id, "type": "file", "contentType": content_type}
 
-    # A compare chat's audio part is typed by the inventory at best, and may carry no type at all.
     voice = {"messageId": "m:1", "id": "voice", "type": "audio", "contentType": None}
     monkeypatch.setattr(library, "_SOURCES", (library._attachment_items,))
     monkeypatch.setattr(
@@ -323,7 +314,6 @@ def test_chat_attachments_holding_bytes_are_known_by_their_type_in_any_case(clie
     clip, words = items["attachment:m:clip"], items["attachment:m:words"]
     assert (clip["contentType"], clip["textOnly"]) == ("video/webm", False)
     assert (words["contentType"], words["textOnly"]) == ("text/plain", True)
-    # Any string is a message id: encoded, so the colon in it is not the one after it.
     assert items["attachment:m%3A1:voice"]["textOnly"] is False
     deleted = []
     monkeypatch.setattr(studio_db, "delete_chat_attachment", lambda *ids: deleted.append(ids) or 1)
@@ -352,7 +342,6 @@ def test_a_gallery_file_that_cannot_be_deleted_keeps_its_name_star_and_folder(cl
     monkeypatch.setattr(library, "_SOURCES", (library._audio_items,))
     item_id = f"audio:{_gallery_audio('Kept')}"
     _patch(client, id = item_id, name = "Renamed", favorite = True)
-    # As on Windows while another app has it open: the gallery keeps it for another try.
     monkeypatch.setattr(audio_gallery, "delete", lambda _ref: False)
     assert _delete(client, item_id) == 500
     item = _items(client)[0][item_id]
@@ -375,8 +364,6 @@ def test_a_sandbox_delete_takes_only_the_file_it_was_listed_as(client, signed_in
     monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
     _directory, path = _sandbox_chat("a.txt", b"listed")
     listed = _items(client)[0][_SANDBOX_A]["fingerprint"]
-    # A tool makes the file again at the same path before the delete is confirmed. Held open
-    # meanwhile, so Linux, which fingerprints by inode alone, cannot hand its inode to the new one.
     with open(path, "rb"):
         os.unlink(path)
         _sandbox_chat("a.txt", b"made since")
@@ -438,12 +425,10 @@ def test_generated_audio_and_video_are_listed_and_deleted(client, monkeypatch):
     assert (item["source"], item["createdAt"]) == ("generated", 1_700_000_000_000)
     item = items[f"video:{video}"]
     assert (item["name"], item["contentType"]) == ("A calm sea.mp4", "video/mp4")
-    # Off the Video page's shelf, still the Library's.
     assert (item["archived"], items[f"video:{shelved}"]["archived"]) == (False, True)
     assert _delete(client, f"audio:{audio}") == 200
     assert audio_gallery.audio_path(audio) is None
 
-    # A clip whose job cannot be dropped stays listed, to delete again.
     forgotten = []
     monkeypatch.setattr(video_routes, "_forget_terminal_video", forgotten.append)
     monkeypatch.setattr(video_routes, "_forget_openai_job", lambda ref: False)
@@ -453,7 +438,6 @@ def test_generated_audio_and_video_are_listed_and_deleted(client, monkeypatch):
     monkeypatch.setattr(video_routes, "_forget_openai_job", lambda ref: forgotten.append(ref) or 1)
     assert _delete(client, f"video:{video}") == 200
     assert video_gallery.video_path(video) is None
-    # Same cleanup as the Video page, so no ghost card comes back.
     assert forgotten == [video, video]
 
 
@@ -492,13 +476,10 @@ def test_favorites_list_only_stars_the_source_still_has(client, monkeypatch):
     reads = []
     real = image_gallery._read_meta
     monkeypatch.setattr(image_gallery, "_read_meta", lambda path: reads.append(path) or real(path))
-    # Deleted by its gallery, not the Library: the star stays in the overlay but is not listed.
     assert set(_favorites(client)) == {starred, image}
-    # The gallery pages ask this for every star each time they open, so no PNG is decoded.
     assert reads == []
     image_gallery.image_path(_ref(image)).unlink()
     assert _favorites(client) == [starred]
-    # A delete drops the item's row, even when its source had already lost it.
     assert (_delete(client, starred), _delete(client, "image:gone")) == (200, 404)
     assert set(library_db.list_entries()) == {plain, image}
     assert _delete(client, "elsewhere:x") == 400
@@ -511,7 +492,6 @@ def test_leftovers_of_a_crash_are_swept_from_the_uploads_folder(client):
         client, ("k.txt", b"k", "text/plain"), ("i.txt", b"i", "text/plain")
     )
     directory = library.uploads_dir()
-    # A delete that stopped after setting its file aside: the row still lists it.
     aside = directory / f".{_ref(interrupted)}.deleting"
     os.replace(directory / _ref(interrupted), aside)
     stale = [directory / ".0123.tmp", directory / f".{'a' * 32}.deleting"]
@@ -546,7 +526,6 @@ def test_fine_tuned_models_are_listed_but_not_deleted_here(client, monkeypatch):
     (gguf / "model.Q4_K_M.gguf").write_bytes(b"x" * 10)
     (gguf / "model.Q8_0.gguf").write_bytes(b"x" * 20)
     try:
-        # A new run changes the stamp the remembered listing is kept by.
         assert library._model_stamp() != stamp
         items = {item["name"]: item for item in _items(client)[0].values()}
         item, export = items[run.name], items[gguf.name]
@@ -583,7 +562,6 @@ def test_the_slow_sources_are_remembered_briefly_and_forgotten_on_a_write(client
         raise RuntimeError("gallery unreadable")
 
     monkeypatch.setattr(library, "_sandbox_items", walked)
-    # A failing source is skipped rather than emptying the Library.
     monkeypatch.setattr(library, "_SOURCES", (library._remembered("_sandbox_items", 60), broken))
     # Listed only, never written: the star is kept for the file it would find.
     monkeypatch.setattr(library, "fingerprint", lambda _item_id: "1:1")
@@ -606,19 +584,16 @@ def test_an_overlay_row_stays_with_the_file_it_was_made_for(client, monkeypatch,
     _directory, path = _sandbox_chat("report.txt", b"v1")
 
     def make_again():
-        # Moved aside rather than unlinked, so no filesystem can hand the new file the old inode.
         os.replace(path, tmp_path / f"old-{len(os.listdir(tmp_path))}")
         Path(path).write_bytes(b"new")
         library.invalidate_listing()
 
-    # A row from before fingerprints is adopted by the file at its path.
     library_db.update_entry(_SANDBOX_ID, favorite = True)
     assert library_db.list_entries()[_SANDBOX_ID]["fingerprint"] is None
     item = _items(client)[0][_SANDBOX_ID]
     assert item["favorite"] is True and "_fingerprint" not in item
     assert library_db.list_entries()[_SANDBOX_ID]["fingerprint"] == library.fingerprint(_SANDBOX_ID)
 
-    # Edited in place, as a tool appending to its output: still the same file.
     _patch(client, id = _SANDBOX_ID, name = "Q3")
     with open(path, "ab") as handle:
         handle.write(b" and v2")
@@ -627,14 +602,12 @@ def test_an_overlay_row_stays_with_the_file_it_was_made_for(client, monkeypatch,
     assert (item["favorite"], item["name"]) == (True, "Q3")
     assert _favorites(client) == [_SANDBOX_ID]
 
-    # Made again at the path: the star is not the new file's, and a write drops the old row first.
     make_again()
     assert _favorites(client) == []
     _patch(client, id = _SANDBOX_ID, folderId = None)
     entry = library_db.list_entries()[_SANDBOX_ID]
     assert (entry["name"], entry["favorite"]) == (None, False)
 
-    # Nor does a listing carry it over: it prunes the row.
     _patch(client, id = _SANDBOX_ID, favorite = True, name = "Old")
     make_again()
     item = _items(client)[0][_SANDBOX_ID]
@@ -652,7 +625,6 @@ def test_an_older_database_is_upgraded_and_checked_once(client, monkeypatch, tmp
     conn.execute("INSERT INTO library_entries (item_id, favorite, updated_at) VALUES ('x', 1, 1)")
     conn.commit()
     conn.close()
-    # A home reached through a link: the unresolved path is not the key the schema was saved as.
     (tmp_path / "link").symlink_to(tmp_path / "real", target_is_directory = True)
     monkeypatch.setattr(library_db, "studio_db_path", lambda: tmp_path / "link" / "studio.db")
     # Its rows are kept and gain the opened and fingerprint columns.
@@ -674,11 +646,8 @@ def test_an_older_database_is_upgraded_and_checked_once(client, monkeypatch, tmp
 def test_a_failed_write_leaves_the_uploads_as_they_were(client, monkeypatch):
     [note] = _upload(client, ("n.md", b"old", "text/markdown"))
     for name, call in (
-        # The note's row cannot be updated: the old note goes back.
         ("touch_upload", lambda: library.write_upload_text(_ref(note), "new")),
-        # The file is set aside but its row cannot be dropped: the file comes back.
         ("delete_upload", lambda: library.delete_item(note)),
-        # A new upload's row cannot be written: its file goes.
         ("insert_upload", lambda: library.save_upload("a.txt", "text/plain", [b"hi"])),
     ):
         with monkeypatch.context() as patched:
@@ -709,7 +678,6 @@ def test_a_file_held_open_on_windows_answers_409(client, monkeypatch):
     monkeypatch.setattr(library.os, "replace", broken)
     for response in (client.put(url, json = {"text": "new"}), _post(client, "items/delete", id = note)):
         assert response.status_code == 500 and "/secret" not in response.text
-    # A save that failed leaves the previous text and nothing staged.
     assert [path.name for path in library.uploads_dir().iterdir()] == [_ref(note)]
     assert library.upload_path(_ref(note)).read_bytes() == b"old"
 
@@ -770,12 +738,10 @@ def test_a_desktop_drop_is_read_from_its_signed_path_once_the_whole_batch_checks
 ):
     lease = _sign(_file(tmp_path / "Quarterly report.pdf", "%PDF-1.7 report"))
     forged = _sign(_file(tmp_path / "other.txt", "hi"), secret = b"x" * 32)
-    # One bad grant refuses the batch before any grant is spent or any file kept.
     response = _send(
         client, [("kept.md", b"# hi", "text/markdown")], nativePathLeases = [lease, forged]
     )
     assert response.status_code == 400
-    # A generic reason: the grant's own can name a path in the workspace.
     assert response.json()["detail"] == "The dropped file could not be read. Drop it again."
     assert _items(client)[0] == {} and list(library.uploads_dir().iterdir()) == []
     folder = _folder(client, "Work", None)
@@ -810,7 +776,6 @@ def test_a_failed_batch_keeps_nothing_and_gives_its_grants_back(
         with pytest.raises(OSError):
             _send(client, [], nativePathLeases = leases)
     assert _items(client)[0] == {}
-    # A folder deleted meanwhile undoes the batch too.
     folder = _folder(client, "Work", None)
     with monkeypatch.context() as patched:
         patched.setattr(library_db, "update_entry", gone)
@@ -818,10 +783,8 @@ def test_a_failed_batch_keeps_nothing_and_gives_its_grants_back(
         response = _send(client, [plan], nativePathLeases = leases, folderId = folder)
         assert response.status_code == 404
     assert _items(client)[0] == {}
-    # The same grants work on a retry: nothing a failed batch spent stays spent.
     response = _send(client, [], nativePathLeases = leases)
     assert response.status_code == 200 and len(response.json()["ids"]) == 2
-    # And a grant that was used is still single use.
     assert _send(client, [], nativePathLeases = leases[:1]).status_code == 400
 
 
@@ -835,7 +798,6 @@ def test_an_oversized_desktop_drop_is_refused_before_copying(client, monkeypatch
         raise AssertionError("copied an oversized drop")
 
     monkeypatch.setattr(library, "save_upload", copied)
-    # Refused by the batch's check, before any grant is spent, and again when read, if it grew.
     for size in (10, 1):
         monkeypatch.setattr(
             library, "check_native_upload", lambda lease, size = size: ("big.bin", size)
@@ -867,13 +829,11 @@ def test_an_upload_is_copied_into_a_project_under_its_own_name(client, project, 
     [copied] = (project / "files").iterdir()
     assert copied.name.startswith("plan-") and copied.suffix == ".md"
     assert copied.read_bytes() == b"# plan"
-    # Adding it again finds the copy instead of making another.
     assert add(note, "p1").json() == {"already": True}
     assert add(note, "missing").status_code == 404
     assert add("upload:0123456789abcdef0123456789abcdef", "p1").status_code == 404
     assert add("attachment:m:a", "p1").status_code == 400
     assert add("model:training:/tmp/run", "p1").status_code == 400
-    # A name Windows cannot hold is refused on every OS; an open file copies from its descriptor.
     source = _file(tmp_path / "x.txt", "x")
     for bad in ("a:b.txt", "CON.txt", "trailing.", "tab\there.txt"):
         with pytest.raises(ValueError):
@@ -895,7 +855,6 @@ def test_an_upload_is_copied_into_a_project_under_its_own_name(client, project, 
         ("line\nbreak\ttab.md", "line break tab.md"),
         ("...", "file"),
         ("C:\\Users\\me\\x.txt", "x.txt"),
-        # Cut by UTF-8 bytes, a whole character at a time: 80 sloths are 320.
         pytest.param("\U0001f9a5" * 80 + ".txt", "\U0001f9a5" * 50 + ".txt", id = "sloths"),
     ],
 )
@@ -905,19 +864,16 @@ def test_names_written_to_disk_are_valid_on_windows(name, safe):
     assert library.safe_file_name(name) == safe
     project_name = library.safe_file_name(name, item_id = "upload:x")
     assert not _bad_name(project_name), project_name
-    # Add to project writes its copy under a longer temp name first.
     assert len(_tmp_name(project_name).encode()) <= 255
 
 
 def test_items_download_as_attachments_under_the_name_they_were_given(client, monkeypatch):
     [upload] = _upload(client, ("re:port*q3?.html", b"<script>1</script>", "text/html"))
-    # Checks its own credentials, header or query, rather than the overridden dependency.
     assert _download(client, upload).status_code == 401
     monkeypatch.setattr(library_routes, "subject_for_header_or_query_token", _signed_in_subject)
     response = _download(client, upload)
     assert (response.status_code, response.content) == (200, b"<script>1</script>")
     assert response.headers["content-type"] == "application/octet-stream"
-    # Stored as a bare id, so the header names it after the upload, not the file on disk.
     disposition = response.headers["content-disposition"]
     assert disposition.startswith('attachment; filename="re port q3.html"')
     assert response.headers["content-length"] == "18"
@@ -938,7 +894,6 @@ def test_generated_media_download_under_their_prompt(client, signed_in, project)
 
     image = _gallery_image('A red fox: "at dawn"')
     assert disposition(f"image:{image}").startswith('attachment; filename="A red fox at dawn.png"')
-    # The UTF-8 name rides along for a prompt ASCII cannot hold.
     image = _gallery_image("Café ☕ at noon")
     assert f"filename*=UTF-8''{quote('Café ☕ at noon.png')}" in disposition(f"image:{image}")
     # No prompt: the id, never an empty name.
@@ -946,8 +901,6 @@ def test_generated_media_download_under_their_prompt(client, signed_in, project)
     assert f'filename="{image}.png"' in disposition(f"image:{image}")
     assert 'filename="Hello there.wav"' in disposition(f"audio:{_gallery_audio('Hello there')}")
 
-    # A project copy keeps the stored name, as the Images page's own Add to project does, so
-    # adding from either place finds the other's copy; two alike stay two files.
     first, second = _gallery_image("Same prompt"), _gallery_image("Same prompt")
     for image in (first, second):
         response = _post(client, "items/project", id = f"image:{image}", projectId = "p1")
@@ -964,7 +917,6 @@ def test_a_sandbox_file_is_reachable_by_id_only_as_the_listing_walks_it(
     import routes.inference as inference
 
     monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
-    # The walk counts dotfiles too, which the Library then hides: .env, a.txt, b.txt.
     monkeypatch.setattr(inference, "_MAX_SNAPSHOT_FILES", 3)
     directory, _path = _sandbox_chat("a.txt", b"mine")
     for name in ("b.txt", "c.txt", ".env", "d1/d2/d3/d4/deep.txt"):
@@ -986,12 +938,10 @@ def test_a_sandbox_file_is_reachable_by_id_only_as_the_listing_walks_it(
         assert response.content == b"mine"
         assert 'filename="a.txt"' in response.headers["content-disposition"]
         assert status("b.txt") == 200 and len(walks) == 1
-        # Past the cap, hidden, too deep, outside, or in no chat.
         for name in ("c.txt", ".env", "d1/d2/d3/d4/deep.txt", "../x", ".hidden"):
             assert status(name) == 404, name
         assert _download(client, "sandbox:nope:a.txt").status_code == 404
     assert set(_items(client)[0]) == {"sandbox:t-lib:a.txt", "sandbox:t-lib:b.txt"}
-    # The listing leaves its walk for the per-item routes.
     library.invalidate_listing()
     _items(client)
     walks.clear()
@@ -1020,7 +970,6 @@ def test_a_sandbox_file_swapped_for_a_link_after_the_check_is_not_read(
     def swap_after_check(ref):
         checked = real(ref)
         if not swapped:
-            # Tool code racing the route: the name checked is a link by the time it is opened.
             os.unlink(path)
             os.symlink(secret, path)
             swapped.append(ref)
@@ -1049,7 +998,6 @@ def test_a_projects_own_files_are_listed(client, monkeypatch, tmp_path):
     item = _items(client)[0]["sandbox:project-p-lib:files/notes.txt"]
     assert item["threadTitle"] == "Research"
 
-    # One pointed at a folder of the user's own keeps its files out of the Library.
     own = tmp_path / "My code"
     conn = studio_db.get_connection()
     conn.execute("UPDATE chat_projects SET root_path = ? WHERE id = 'p-lib'", (str(own),))
@@ -1874,7 +1822,6 @@ def revealed(monkeypatch):
     import utils.paths.path_utils as path_utils
 
     calls = []
-    # CI runs on a headless Linux, where no file manager is reported.
     monkeypatch.setattr(file_manager, "file_manager_kind", lambda: "files")
     monkeypatch.setattr(path_utils, "reveal_in_file_manager", lambda path: calls.append(str(path)))
     return calls
@@ -1885,7 +1832,6 @@ def test_reveal_opens_an_items_own_file_or_a_location_by_key(client, revealed):
     [note] = _upload(client, ("plan.md", b"# plan", "text/markdown"))
     assert reveal("attachment:m:a") == 400
     assert reveal("upload:0123456789abcdef0123456789abcdef") == 404
-    # A model id carries its path, so one outside the outputs and exports roots is not opened.
     assert reveal("model:training:/etc") == 404
     assert _post(client, "locations/reveal", key = "/etc").status_code == 404
     assert revealed == []
@@ -1915,7 +1861,6 @@ def test_reveal_is_refused_to_a_managed_account_and_where_no_file_manager_is(
     assert reveal() == (503, 503)
     assert revealed == []
 
-    # Popen not finding xdg-open raises what a vanished file would; the file is there, so 503.
     def no_launcher(path):
         raise FileNotFoundError(2, "No such file or directory: 'xdg-open'")
 
@@ -1931,7 +1876,6 @@ def test_reveal_is_refused_to_a_managed_account_and_where_no_file_manager_is(
     [
         ("darwin", "posix", False, False, None, "finder"),
         ("win32", "nt", False, False, None, "explorer"),
-        # WSL reveals in the Windows host's Explorer.
         ("linux", "posix", True, False, None, "explorer"),
         ("linux", "posix", False, False, None, None),
         ("linux", "posix", False, False, "WAYLAND_DISPLAY", "files"),
@@ -1970,9 +1914,7 @@ def test_explorer_gets_the_documented_select_command(tmp_path, monkeypatch):
         windows.setattr(path_utils.sys, "platform", "win32")
         windows.setattr(path_utils.os, "name", "nt")
         path_utils.reveal_in_file_manager(target)
-    # One string: a list quotes "/select,<path>" whole, which Explorer misreads when it has a space.
     assert calls.pop() == f'explorer /select,"{target}"'
-    # WSL interop quotes each argument itself, so there the switch and the path go apart.
     windows_path = "C:\\Users\\me\\a b\\c.txt"
     monkeypatch.setattr(path_utils, "_IS_WSL", True)
     monkeypatch.setattr(
@@ -2030,7 +1972,6 @@ def _clip(width, height) -> bytes:
 
 
 def test_a_tall_clip_thumbnail_is_bounded_in_height_too(client):
-    # Small to decode, but a card showing it at full height would hold every row.
     [clip] = _upload(client, ("tall.mp4", _clip(32, 4000), "video/mp4"))
     assert _thumbnail_size(client, clip) == (8, 960)
 
@@ -2098,7 +2039,6 @@ def test_a_video_thumbnail_reads_its_container_by_type(client, monkeypatch):
         (True, "mp4"),
     ]
     assert seen[0][1]["max_pixels"] == library._THUMBNAIL_MAX_PIXELS
-    # A container with no demuxer on the list has no picture.
     assert _thumbnail(client, flv).status_code == 404
 
 
@@ -2106,7 +2046,6 @@ def test_an_attachment_is_read_for_its_thumbnail_only_within_the_decodes_count(c
     free = []
 
     def media(_ref):
-        # A 64 MiB clip and its base64 are held from here, so this has to wait its turn too.
         free.append(library._THUMBNAIL_DECODES._value)
         return "image/png", _png(8, 8, "RGB")
 
@@ -2127,9 +2066,7 @@ def test_thumbnails_are_cached_by_version_and_attachments_have_them_too(client, 
     for _ in range(3):
         assert _thumbnail_size(client, image) == (40, 30)
     assert calls == ["image/png"]
-    # Another account can have an item of the same id and version: its sign-in keys it apart.
     assert _thumbnail(client, image).headers["vary"] == "Authorization"
-    # A new version of the file is a new size and mtime, so a new picture.
     library.upload_path(_ref(image)).write_bytes(_png(30, 20, "RGB"))
     assert _thumbnail_size(client, image) == (30, 20)
     assert len(calls) == 2
@@ -2192,7 +2129,6 @@ def test_audio_and_video_stream_from_a_signed_link_with_ranges(client):
         assert (response.status_code, response.content) == (206, body), header
         assert response.headers["content-range"] == content_range, header
         assert response.headers["content-length"] == str(len(body)), header
-    # Several ranges, a malformed one, or an If-Range with nothing to match may be ignored.
     for headers in (
         {"Range": "bytes=0-1,5-6"},
         {"Range": "bytes=5-1"},
@@ -2208,7 +2144,6 @@ def test_audio_and_video_stream_from_a_signed_link_with_ranges(client):
         assert response.headers["content-range"] == "bytes */100"
     head = stream.head(url, headers = {"Range": "bytes=0-9"})
     assert (head.status_code, head.content, head.headers["content-length"]) == (206, b"", "10")
-    # Audio, and generated media under its gallery's type.
     for item_id, content_type, body in (
         (song, "audio/mpeg", b"ID3" + b"x" * 7),
         (f"video:{_gallery_video('A calm sea')}", "video/mp4", b"\0\0\0\x18ftypmp42"),
@@ -2227,7 +2162,6 @@ def test_only_audio_and_video_items_get_a_stream_link(client):
         # A declared type the extension map does not know is stored, but never streamed.
         ("clip.xyz", b"x", "video/x-custom"),
     )
-    # A sandbox file, too, streams only under an audio or video name.
     _sandbox_chat("notes.txt", b"text")
     mint = lambda item_id: _mint(client, item_id).status_code  # noqa: E731
     for item_id in (note, image, unknown, "sandbox:t-lib:notes.txt", "attachment:m:a"):
@@ -2238,7 +2172,6 @@ def test_only_audio_and_video_items_get_a_stream_link(client):
     # A link can never be made for one, so the stream refuses it even with a valid signature.
     response = _stream(note, library_routes._sign_stream_id(note))
     assert response.status_code == 404 and b"# hi" not in response.content
-    # Minted only for a caller signed in with the UI or a key.
     assert _mint(_app(None), note).status_code in (401, 403)
     client.app.dependency_overrides[request_admitted_without_credential] = lambda: True
     assert mint(note) == 403
@@ -2261,7 +2194,6 @@ def test_a_tampered_expired_foreign_or_other_kind_of_link_is_refused(client, mon
         "",
     ):
         assert _stream(clip, bad).status_code in (401, 422), bad
-    # Names one item: another's id with it reads nothing.
     response = _stream(other, token)
     assert response.status_code == 401 and b"other" not in response.content
 
@@ -2275,7 +2207,6 @@ def test_a_tampered_expired_foreign_or_other_kind_of_link_is_refused(client, mon
     assert _stream(f"video:{video}", video_token).status_code == 401
     library_token = library_routes._sign_stream_id(video)
     assert video_page(signed_url, params = {"token": library_token}).status_code == 401
-    # Each on its own route still plays.
     assert video_page(signed_url, params = {"token": video_token}).status_code == 200
 
     monkeypatch.setattr(library_routes, "_STREAM_LINK_TTL", -1)
@@ -2329,13 +2260,10 @@ def test_a_stream_link_reads_only_its_own_accounts_item(client, two_accounts):
     sign = lambda account, item_id: run_as(account, library_routes._sign_stream_id, item_id)  # noqa: E731
     with _account_client(alice) as as_alice, _account_client(bob) as as_bob:
         url = _stream_url(as_alice, mine_id)
-        # Bob cannot mint a link to Alice's item, however he spells it.
         assert _mint(as_bob, mine_id).status_code == 404
-    # The link is the credential: it plays Alice's file for whoever holds it, in her account.
     response = _app(None).get(url)
     assert (response.status_code, response.content) == (200, b"alice")
     response = _stream(theirs_id, sign(alice, theirs_id))
     assert response.status_code == 404 and b"bob" not in response.content
     assert _stream(theirs_id, sign(alice, mine_id)).status_code == 401
-    # An owner's link resolves in the owner's own Library, where Alice's upload is not.
     assert _stream(mine_id, sign(OWNER, mine_id)).status_code == 404

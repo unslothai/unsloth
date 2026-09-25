@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Library's state across failures: a chat handoff the composer refuses, a sign-out, an edit
-// whose rollback cannot reach the server, a deleted chat attachment, and a download of unknown size.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -13,7 +11,6 @@ import * as zustandMiddleware from "zustand/middleware";
 import { installLocalStorageFake } from "./helpers/kit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
-// The modules listen for sign-out when they load, so the window has to exist first.
 const { fireWindowEvent } = installLocalStorageFake();
 const SIGNED_OUT = "unsloth:auth-session-cleared";
 const { uniqueFileNames } = await import("../src/features/library/file-name.ts");
@@ -37,7 +34,6 @@ test("files the composer refuses wait for a model instead of being lost", async 
   assert.equal(await attachLibraryChatFiles("single:1", add), 1);
   assert.deepEqual(added, ["notes.md"]);
   assert.deepEqual(names(useLibraryChatHandoffStore.getState().held?.files), ["a.png"]);
-  // Another chat's retry leaves them; a failed retry keeps them; a loaded model takes them.
   assert.equal(await attachLibraryChatFiles("single:2", add, true), 0);
   assert.equal(await attachLibraryChatFiles("single:1", add, true), 1);
   modelLoaded = true;
@@ -121,7 +117,6 @@ test("a preview stops reading at its cap, whatever size the listing said", async
   const api = loadApi({ epoch: 1 }, async () => new Response(answer.body(), { headers: answer.headers }));
   const item = { name: "grew.png", fileUrl: "/f", sizeBytes: 4 };
   assert.equal((await api.fetchLibraryBlob(item, "image/png", 10)).size, 4);
-  // Grown since it was listed, with no length said, or a length past the cap.
   answer.body = () => bytes(4);
   await assert.rejects(api.fetchLibraryBlob(item, "image/png", 10), api.LibraryFileTooLarge);
   answer.body = () => "x".repeat(40);
@@ -222,7 +217,6 @@ test("a failed edit is undone locally when the refresh meant to undo it fails to
   await store.getState().refresh();
   online = false;
   await assert.rejects(store.getState().removeItem("upload:a"));
-  // Renamed twice, both failing: it ends as it was before either.
   await Promise.all([
     assert.rejects(store.getState().patchItem("upload:b", { name: "one" })),
     assert.rejects(store.getState().patchItem("upload:b", { name: "two" })),
@@ -336,7 +330,6 @@ test("deleting a chat attachment tells an open chat to drop it", async () => {
     emitted,
   );
   await store.getState().refresh();
-  // The message id comes encoded, as any string can be one.
   await store.getState().removeItem("attachment:m%3A1:content-part-x");
   await store.getState().removeItem("upload:a");
   assert.deepEqual(emitted, [{ messageId: "m:1", attachmentId: "content-part-x" }]);
@@ -421,7 +414,6 @@ test("a download started before a sign-in saves nothing of the next account's", 
     if (name === "a.txt") session.epoch += 1;
   };
   const downloadLibraryItems = loadDownloads({}, saved, { uniqueFileNames }, session, signInDuring);
-  // One by one, as a download past what a zip may hold goes.
   await downloadLibraryItems([
     { name: "a.txt", sizeBytes: null },
     { name: "b.txt", sizeBytes: null },

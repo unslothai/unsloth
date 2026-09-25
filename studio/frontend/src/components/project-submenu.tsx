@@ -16,7 +16,6 @@ import { NewProjectDialog, useChatProjects } from "@/features/chat";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 
-/** What the menu's item is, which its labels and messages name. */
 export type MediaNoun = "image" | "video" | "clip" | "file";
 
 const ADD_FAILED: Record<MediaNoun, TranslationKey> = {
@@ -33,10 +32,6 @@ const NEW_PROJECT_TITLE: Record<MediaNoun, TranslationKey> = {
   file: "library.project.newProjectFile",
 };
 
-/**
- * The Project submenu and its New project dialog, for any menu that copies an item into a project.
- * Render `submenu` inside the menu and `dialog` beside it.
- */
 export function useProjectSubmenu({
   noun,
   onAddToProject,
@@ -98,7 +93,6 @@ export function useProjectSubmenu({
     </DropdownMenuSub>
   ) : null;
 
-  // Mounted only while open, since the overlay renders once per tile.
   const dialog = creatingProject ? (
     <NewProjectDialog
       open={true}

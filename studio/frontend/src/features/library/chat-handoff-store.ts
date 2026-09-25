@@ -14,13 +14,11 @@ export interface LibraryChatHandoff {
 
 interface LibraryChatHandoffState {
   pending: { targetKey: string; handoff: LibraryChatHandoff } | null;
-  /** Files the composer turned away, most often for want of a loaded model that reads them. */
   held: { targetKey: string; files: File[] } | null;
   offer: (targetKey: string, handoff: LibraryChatHandoff) => void;
   take: (targetKey: string) => LibraryChatHandoff | null;
 }
 
-// Bumped by a sign-out, so a hand-off under way stops rather than going on in the next account.
 let session = 0;
 
 export const useLibraryChatHandoffStore = create<LibraryChatHandoffState>(
@@ -37,11 +35,6 @@ export const useLibraryChatHandoffStore = create<LibraryChatHandoffState>(
   }),
 );
 
-/**
- * Adds the files offered to `targetKey` with `add`, or with `retryHeld` those it refused before
- * (call that once a model loads). What `add` refuses is held for the next try rather than lost.
- * Returns how many are held.
- */
 export async function attachLibraryChatFiles(
   targetKey: string,
   add: (file: File) => Promise<unknown>,
@@ -64,7 +57,6 @@ export async function attachLibraryChatFiles(
     try {
       await add(file);
     } catch {
-      // The adapter already toasted why (unsupported type, no vision model).
       refused.push(file);
     }
   }

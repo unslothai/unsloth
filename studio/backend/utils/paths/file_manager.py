@@ -18,7 +18,6 @@ FileManager = Literal["finder", "explorer", "files"]
 
 
 def _in_container() -> bool:
-    # Docker, Podman, and the OCI convention of a `container` variable; Kubernetes sets its own.
     return (
         os.path.exists("/.dockerenv")
         or os.path.exists("/run/.containerenv")

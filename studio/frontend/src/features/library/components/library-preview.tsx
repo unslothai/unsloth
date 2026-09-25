@@ -40,10 +40,8 @@ import { canReveal, revealInFolder, useRevealLabel } from "../reveal";
 import { KindIcon } from "./library-cards";
 import { UnsavedChangesDialog } from "./library-dialogs";
 
-// Web pages zoom like a browser tab: the page reflows at the new size.
 const PAGE_SCALES = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
-// Past this the preview shows a read-only prefix; the full file is a download away.
 const MAX_TEXT_PREVIEW_BYTES = 1024 * 1024;
 
 type Body = "image" | "web" | "text" | "pdf" | "audio" | "video" | "model" | "none";
@@ -54,28 +52,22 @@ function bodyFor(item: LibraryItem): Body {
   if (item.textOnly) return "text";
   const kind = fileKind(item);
   if (kind === "web") return "web";
-  // The desktop app's CSP allows no blob: frames, and some webviews (WebKitGTK) have no PDF viewer
-  // at all; both get Download instead.
   if (kind === "pdf") return isTauri || navigator.pdfViewerEnabled === false ? "none" : "pdf";
   if (kind === "audio" || kind === "video") return kind;
   return isTextPreviewable(item) ? "text" : "none";
 }
 
-/** The page a generated file came from, which opens with it selected. None once archived: the
- *  page lists only its active shelf. */
 function generatedOn(item: LibraryItem) {
   if (item.archived) return null;
   const [kind, ...rest] = item.id.split(":");
   const search = { item: rest.join(":") };
   if (kind === "image") return { label: "library.preview.viewInImages", to: "/images", search } as const;
   if (kind === "video") return { label: "library.preview.viewInVideo", to: "/video", search } as const;
-  // Generated clips list in Speak mode.
   const speak = { ...search, task: "text-to-speech" } as const;
   if (kind === "audio") return { label: "library.preview.viewInAudio", to: "/audio", search: speak } as const;
   return null;
 }
 
-/** Library-owned text files can be edited in place; everything else is read-only. */
 function isEditable(item: LibraryItem): boolean {
   return item.id.startsWith("upload:") && bodyFor(item) === "text";
 }
@@ -98,7 +90,6 @@ interface LoadedText {
 function useItemText(item: LibraryItem | null, enabled: boolean) {
   const key = item ? itemVersion(item) : "";
   const [state, setState] = useState<LoadedText | null>(null);
-  // Closing lets it go, so every opening reads the file afresh.
   if (!item && state) setState(null);
   useEffect(() => {
     if (!enabled || !item) return;
@@ -195,7 +186,6 @@ function NoPreview({
   );
 }
 
-/** A round header button with a tooltip; `active` marks the view on screen. */
 function ViewButton({
   label,
   active,
@@ -243,11 +233,8 @@ function PreviewBody({
   itemText: ItemText;
   draft: string | null;
   onDraftChange: (value: string) => void;
-  /** Web pages: their source instead of the rendered page. */
   showCode: boolean;
-  /** Web pages: the rendered page's zoom. */
   pageScale: number;
-  /** The browser could not decode the image, audio or video (HEIC, TIFF, HEVC...). */
   mediaFailed: boolean;
   onMediaError: () => void;
   onDownload?: () => void;
@@ -259,7 +246,6 @@ function PreviewBody({
       ? body
       : null;
   const { url, error: urlError, retry } = useLibraryPreviewUrl(item, embedded);
-  // A streamed link that stopped working is minted again once before the preview gives up.
   const handleMediaError = () => {
     if (!retry()) onMediaError();
   };
@@ -274,7 +260,6 @@ function PreviewBody({
   if ((embedded && !url) || ((body === "text" || body === "web") && text === null)) {
     return <Spinner className="m-auto size-6" />;
   }
-  // What shows of a text file the preview only has the start of.
   const prefix = truncated ? `${text}\n\n…` : text!;
   switch (body) {
     case "model":
@@ -310,8 +295,6 @@ function PreviewBody({
         );
       }
       if (truncated) return <TextPrefix text={prefix} />;
-      // The chat canvas frame: served by the backend under its own CSP, so it renders the same in
-      // the browser and the desktop app, and honors the canvas network-access setting.
       return (
         <div className="size-full overflow-hidden rounded-xl">
           <div
@@ -402,12 +385,9 @@ export function LibraryPreview({
     setEdit(next);
   };
   const [saving, setSaving] = useState(false);
-  // Why the save on the way out failed; while set, the user chooses to retry or discard.
   const [closeError, setCloseError] = useState<string | null>(null);
-  // Tagged with the version that failed to decode, so a new file (or version) tries again.
   const [brokenMedia, setBrokenMedia] = useState<string | null>(null);
   const mediaFailed = version !== null && brokenMedia === version;
-  // Tagged too, and cleared on close, so every file opens on its preview at 100%.
   const [codeFor, setCodeFor] = useState<string | null>(null);
   const [zoom, setZoom] = useState<{ itemId: string; scale: number } | null>(null);
   if (item === null && (codeFor !== null || zoom !== null)) {
@@ -420,14 +400,11 @@ export function LibraryPreview({
   const navigate = useNavigate();
   const origin = item ? generatedOn(item) : null;
 
-  /** Null once the text on screen is on disk, else why it is not. */
   async function trySave(): Promise<string | null> {
     if (!item || draft === null || !unsaved) return null;
-    // The file's own BOM and line endings go back with the edit.
     const format = itemText.format ?? { encoding: "utf-8", bom: false, eol: "\n" };
     setSaving(true);
     try {
-      // Typing during a save makes a newer draft; send that too before anything moves on.
       let sent = draft;
       for (;;) {
         await writeLibraryText(item.id, encodeNote(sent, format), format.encoding);
@@ -454,7 +431,6 @@ export function LibraryPreview({
     return error === null;
   }
 
-  // Leaving the preview any other way saves first too.
   async function saveThen(action: () => void) {
     if (await save()) action();
   }
@@ -489,7 +465,6 @@ export function LibraryPreview({
       ].filter(Boolean)
     : [];
   const download = item && isFileItem(item) ? () => void saveThen(() => onDownload(item)) : undefined;
-  // A file the browser cannot decode gets no scale menu or zoom stage.
   const media = (body === "image" || body === "video") && !mediaFailed;
 
   return (
@@ -501,7 +476,6 @@ export function LibraryPreview({
       media={media}
       noun={media ? body : "file"}
       onKeyDown={(event) => {
-        // By key position too, so Caps Lock and non-Latin layouts save.
         const saveKey = event.code === "KeyS" || event.key.toLowerCase() === "s";
         if ((event.metaKey || event.ctrlKey) && saveKey) {
           event.preventDefault();
@@ -567,7 +541,6 @@ export function LibraryPreview({
                 revealLabel && canReveal(item)
                   ? {
                       label: revealLabel,
-                      // The file on disk should hold the text on screen.
                       onClick: () => void saveThen(() => revealInFolder(item.id)),
                     }
                   : undefined,
@@ -575,7 +548,6 @@ export function LibraryPreview({
               onToggleFavorite: () => onToggleFavorite(item),
               onAddToProject: hasOwnFile(item.id)
                 ? async (projectId) => {
-                    // The project gets the text on screen, not the last saved copy.
                     if (!(await save())) throw new Error(t("library.toast.saveNoteFirst"));
                     return addLibraryItemToProject(item.id, projectId);
                   }

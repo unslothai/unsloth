@@ -14,14 +14,8 @@ import {
 import { type EmbeddedBody, embeddedBlobType, itemVersion, streamsPreview } from "./file-name";
 import { acquireObjectUrl } from "./object-url-cache";
 
-// Past this a preview is not buffered into memory as a blob: the file is a download away.
 const MAX_BUFFERED_PREVIEW_BYTES = 256 * 1024 * 1024;
 
-/**
- * Where the preview element loads the item from. Audio and video with a file of their own stream
- * from a short-lived signed link, whatever their size. The rest, and those too where an older
- * server mints no link, come as a typed blob (see embeddedBlobType), refused past a size cap.
- */
 async function previewSource(
   item: LibraryItem,
   body: EmbeddedBody,
@@ -30,12 +24,10 @@ async function previewSource(
     try {
       return { url: await fetchLibraryStreamUrl(item), streamed: true };
     } catch {
-      // An older server without the route: the blob below still plays it.
     }
   }
   const tooLarge = () => new Error(translate("library.preview.tooLargeToPreview"));
   if (item.sizeBytes !== null && item.sizeBytes > MAX_BUFFERED_PREVIEW_BYTES) throw tooLarge();
-  // Held to the cap as it arrives too: the listed size can be out of date, or unknown.
   const type = embeddedBlobType(body, item.contentType);
   const blob = await fetchLibraryBlob(item, type, MAX_BUFFERED_PREVIEW_BYTES).catch((error) => {
     throw error instanceof LibraryFileTooLarge ? tooLarge() : error;
@@ -43,18 +35,11 @@ async function previewSource(
   return { url: URL.createObjectURL(blob), streamed: false };
 }
 
-/**
- * A URL the preview's `body` element can load the item from once `enabled`, null until then;
- * `error` once it cannot load. Not cached: a preview's file is released as soon as it closes.
- * `retry` is for the element's error: a streamed link gets minted afresh once (it expired, or the
- * backend restarted), and it says whether it did; otherwise the error stands.
- */
 export function useLibraryPreviewUrl(
   item: LibraryItem,
   body: EmbeddedBody | null,
 ): { url: string | null; error: string | null; retry: () => boolean } {
   const baseKey = `${itemVersion(item)}:${body ?? ""}`;
-  // The preview whose link was minted again, so another file (or version) starts afresh.
   const [reminted, setReminted] = useState<string | null>(null);
   const key = `${baseKey}#${reminted === baseKey ? 1 : 0}`;
   const [state, setState] = useState<{
@@ -80,7 +65,6 @@ export function useLibraryPreviewUrl(
   }, [key]);
   const current = body && state?.key === key ? state : null;
   const retry = () => {
-    // A signed link expires, or dies with a backend restart: one fresh link per opening.
     if (!current?.url || !current.streamed || reminted === baseKey) return false;
     setReminted(baseKey);
     return true;
@@ -137,7 +121,6 @@ export function useSeen(ref: RefObject<Element | null>): boolean {
   return seen;
 }
 
-/** Masonry column count for the container's width. */
 export function useColumnCount(
   ref: RefObject<HTMLElement | null>,
   minColumnWidth = 200,

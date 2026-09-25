@@ -69,7 +69,6 @@ function SortHeader({
   );
 }
 
-/** The checkbox in the page margin: shown on hover, or on every row once anything is selected. */
 function GutterCheckbox({
   checked,
   visible,
@@ -90,7 +89,6 @@ function GutterCheckbox({
         onCheckedChange={onCheckedChange}
         aria-label={label}
         className={cn(
-          // A shade darker than the input border in light mode, which vanished on white.
           "rounded-full border-neutral-300 opacity-0 transition-opacity focus-visible:opacity-100 dark:border-input",
           group === "row"
             ? "group-hover/library-row:opacity-100"

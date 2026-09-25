@@ -55,7 +55,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         try:
             conn.execute(f"ALTER TABLE library_entries ADD COLUMN {column} {kind}")
         except sqlite3.OperationalError as exc:
-            # Another process opening the same database added it first.
             if "duplicate column" not in str(exc).lower():
                 raise
     conn.execute(
@@ -116,7 +115,6 @@ def _folder(row: sqlite3.Row) -> dict:
     }
 
 
-# ── Folders ──────────────────────────────────────────────────────
 
 
 def list_folders() -> list[dict]:
@@ -243,7 +241,6 @@ def delete_folder(folder_id: str) -> bool:
         conn.close()
 
 
-# ── Item overlay ─────────────────────────────────────────────────
 
 
 def list_entries() -> dict[str, dict]:
@@ -373,7 +370,6 @@ def delete_entry(item_id: str) -> None:
         conn.close()
 
 
-# ── Uploads owned by the Library ─────────────────────────────────
 
 
 def _upload(row: sqlite3.Row) -> dict:
