@@ -222,7 +222,8 @@ def test_auto_never_installs_static(loop_runtime, monkeypatch, request_cache):
     )
     backend = VideoBackend()
     status = backend.load_pipeline(WAN_5B, model_kind = "pipeline", transformer_cache = request_cache)
-    assert status["transformer_cache"] == "fbcache"
+    # Auto resolves per speed tier (FBCache on max, else uncached); never to static.
+    assert status["transformer_cache"] in (None, "fbcache")
     backend.unload()
 
 
