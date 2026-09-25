@@ -2267,3 +2267,23 @@ def test_a_bwrap_planted_on_path_is_refused_before_it_runs(monkeypatch, tmp_path
     with pytest.raises(os_sandbox.SandboxUnavailableError, match = "trusted system installation"):
         sandbox_linux.prepare(plan)
     assert not marker.exists(), "the planted bwrap was executed"
+
+
+def test_studio_state_inside_a_runtime_path_is_carved_out(monkeypatch, tmp_path):
+    """A runtime root bound whole would hand over a Studio home that lives inside it, auth.db included."""
+    lib = tmp_path / "venv" / "lib"
+    state = lib / "studio-state"
+    (state / "auth").mkdir(parents = True)
+    (lib / "python3.12").mkdir()
+    managed = tmp_path / "home" / "studio" / "venv"
+    managed.mkdir(parents = True)
+    monkeypatch.setattr(
+        sandbox_linux, "studio_state_roots", lambda: (str(state), str(tmp_path / "home" / "studio"))
+    )
+
+    kept = sandbox_linux._without_state_inside((str(lib), str(managed)))
+
+    assert str(lib) not in kept
+    assert str(state) not in kept
+    assert str(lib / "python3.12") in kept
+    assert str(managed) in kept, "the managed venv inside the Studio home must stay readable"
