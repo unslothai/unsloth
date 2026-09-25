@@ -875,8 +875,13 @@ function Save-Baseline([string] $dir) {
 # PolicyName(Buffer) EventData fields. Matched on any field carrying the GUID
 # so a renamed field fails toward "not attributed", never toward an allow.
 function Test-EventFromPolicy($record, [string] $Guid, [string] $NamePattern = '*AuditNoISG*') {
+    return (Test-EventDataFromPolicy (Get-EventDataMap $record) $Guid $NamePattern)
+}
+
+function Test-EventDataFromPolicy($data, [string] $Guid, [string] $NamePattern = '*AuditNoISG*') {
+    # Same test on an EventData map already read, as collect keeps one per event.
+    if ($null -eq $data) { return $false }
     $bare = $Guid.Trim('{', '}').ToLowerInvariant()
-    $data = Get-EventDataMap $record
     foreach ($key in @($data.Keys)) {
         $value = [string] $data[$key]
         if (-not $value) { continue }
@@ -1707,12 +1712,32 @@ function Invoke-Collect {
 
     $ours = @($shaped | Where-Object { $_.Scope -ne 'other' })
     $blocks = @($ours | Where-Object { $_.Id -eq 3077 }).Count
-    $audits = @($ours | Where-Object { $_.Id -eq 3076 }).Count
+    # A 3076 is this probe's audit verdict only when the NoISG policy it installed raised it.
+    # Another audit-mode policy already on the machine logs 3076s as well, and a signed runtime
+    # file refused by an unrelated allow list is not a signature finding, so those are reported
+    # separately and flag the window. With no audit policy applied there is nothing to attribute.
+    $auditApplied = $false
+    $baselineForAttribution = Join-Path $dir 'baseline.json'
+    if (Test-Path -LiteralPath $baselineForAttribution) {
+        try {
+            $auditApplied = [bool] (Get-Content -LiteralPath $baselineForAttribution -Raw | ConvertFrom-Json).AuditPolicyApplied
+        } catch { $auditApplied = $false }
+    }
+    $isOurAudit = {
+        param($e)
+        $e.Id -eq 3076 -and (-not $auditApplied -or (Test-EventDataFromPolicy $e.EventData $NOISG_GUID))
+    }
+    $audits = @($ours | Where-Object { & $isOurAudit $_ }).Count
+    $otherPolicyAudits = @($ours | Where-Object { $_.Id -eq 3076 }).Count - $audits
+    if ($otherPolicyAudits -gt 0) {
+        $collectionProblems += "$otherPolicyAudits audit event(s) (3076) on Unsloth paths came from a policy other than the NoISG audit policy this probe installed; they are not counted as signature verdicts, and the machine carries another audit policy that can confound this cell"
+        Write-Warning "$otherPolicyAudits 3076 event(s) on Unsloth paths came from another policy and are not counted (see code-integrity-events.json)"
+    }
     $foreign = @($shaped | Where-Object { $_.Scope -eq 'other' }).Count
     Write-Host "Unsloth paths: $blocks enforced block(s) (3077), $audits audit would-block(s) (3076), $($ours.Count) event(s)"
     foreach ($g in ($ours | Group-Object Scope | Sort-Object Name)) {
         $b = @($g.Group | Where-Object { $_.Id -eq 3077 }).Count
-        $a = @($g.Group | Where-Object { $_.Id -eq 3076 }).Count
+        $a = @($g.Group | Where-Object { & $isOurAudit $_ }).Count
         Write-Host ("  {0,-10} {1} x 3077, {2} x 3076, {3} event(s)" -f $g.Name, $b, $a, $g.Count)
     }
     # Whether a model was actually loaded inside this window. Read here, ahead

@@ -1002,10 +1002,10 @@ def test_a_partial_collection_is_marked_inside_the_zip():
     collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
     # evtx export, staging, redaction failure, no-interpreter, an unverified
     # empty window, one that no policy could have filled, one Smart App Control
-    # was never shown to be refusing code in, and a scenario that loaded
-    # nothing: every path that would let the archive be read as more than it is
-    # records itself.
-    assert collect.count("$collectionProblems += ") == 8
+    # was never shown to be refusing code in, a scenario that loaded nothing,
+    # and audit events raised by a policy other than the one installed: every
+    # path that would let the archive be read as more than it is records itself.
+    assert collect.count("$collectionProblems += ") == 9
     redact = collect[collect.index("$redactor = Join-Path") :]
     assert redact.index('$collectionProblems += "log redaction failed') < redact.index(
         "Remove-Item -LiteralPath (Join-Path $dir 'studio-logs')"
@@ -2152,7 +2152,7 @@ exit 0
     _drive_probe(
         tmp_path,
         body,
-        ["Get-EventDataMap", "Test-EventFromPolicy", "Test-AuditPolicyEvaluating"],
+        ["Get-EventDataMap", "Test-EventFromPolicy", "Test-EventDataFromPolicy", "Test-AuditPolicyEvaluating"],
     )
 
 
@@ -2205,3 +2205,29 @@ def test_the_ci_verdict_needs_a_completed_exercise_before_an_allow():
     assert gate < verdict.index("No binary in the shipped runtime would be refused")
     assert gate < verdict.index('$summary = "## App Control audit (signature-only)')
     assert "exit 1" in verdict[gate : verdict.index('$summary = "## App Control audit')]
+
+
+def test_collect_counts_only_the_installed_policys_audit_events(tmp_path):
+    """Another audit-mode policy already on the machine logs 3076s too. A
+    signed runtime file refused by an unrelated allow list is not a signature
+    finding, so collect attributes each 3076 to the NoISG policy it installed
+    before counting it, and flags the window when another policy spoke."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
+    assert "Test-EventDataFromPolicy $e.EventData $NOISG_GUID" in collect
+    assert "$audits = @($ours | Where-Object { & $isOurAudit $_ }).Count" in collect
+    assert "$collectionProblems += \"$otherPolicyAudits audit event(s)" in collect
+    # The old unattributed count is gone.
+    assert "$audits = @($ours | Where-Object { $_.Id -eq 3076 }).Count" not in collect
+    body = r"""
+$NOISG = '{5283AC0F-FFF1-49AE-ADA1-8A933130CAD6}'
+$ours = [ordered]@{ 'File Name' = 'C:\s\llama.cpp\ggml.dll'; PolicyGUID = $NOISG.ToLower() }
+$byName = [ordered]@{ 'File Name' = 'C:\s\llama.cpp\ggml.dll'; PolicyNameBuffer = 'VerifiedAndReputableDesktopEvaluationAuditNoISG' }
+$other = [ordered]@{ 'File Name' = 'C:\s\llama.cpp\ggml.dll'; PolicyGUID = '{11111111-2222-3333-4444-555555555555}'; PolicyNameBuffer = 'ContosoAllowList' }
+if ($true -ne (Test-EventDataFromPolicy $ours $NOISG)) { exit 51 }
+if ($true -ne (Test-EventDataFromPolicy $byName $NOISG)) { exit 52 }
+if ($true -eq (Test-EventDataFromPolicy $other $NOISG)) { exit 53 }
+if ($true -eq (Test-EventDataFromPolicy $null $NOISG)) { exit 54 }
+exit 0
+"""
+    _drive_probe(tmp_path, body, ["Test-EventDataFromPolicy"])
