@@ -341,3 +341,54 @@ def test_xformers_is_never_selected_on_a_rocm_target(monkeypatch, hip, version):
         assert select_attention_backend(rocm, "auto", speed_active = speed) != "_native_cudnn"
     # aiter is the AMD kernel: misreading the wheel as NVIDIA drops the one that works here.
     assert select_attention_backend(rocm, "aiter", speed_active = True) == "aiter"
+
+
+def _metadata_free_version(name: str) -> str:
+    """transformers 5's version for a package with no dist-info."""
+    import importlib
+    return getattr(importlib.import_module(name), "__version__", "N/A")
+
+
+@pytest.mark.parametrize(
+    "install, name",
+    [
+        (install_torchao_windows_rocm_stub, "torchao"),
+        (install_xformers_windows_rocm_stub, "xformers"),
+    ],
+)
+def test_a_stub_reports_a_version_every_minimum_rejects(on_windows_rocm, install, name):
+    """Neither package has dist-info on Windows ROCm, so this is the version transformers 5 reads."""
+    from packaging.version import Version
+
+    install()
+    version = _metadata_free_version(name)
+    assert Version(version) < Version("0.0.1"), version
+
+
+def test_transformers_reads_the_torchao_stub_as_unavailable(on_windows_rocm, monkeypatch):
+    transformers = pytest.importorskip("transformers")
+    import importlib.metadata
+
+    from packaging.version import Version
+
+    if Version(transformers.__version__).major < 5:
+        pytest.skip("transformers 4.x reads torchao once, at its own import")
+
+    # Hide torchao's dist-info as on Windows ROCm, or a real install answers instead of the stub.
+    real_version = importlib.metadata.version
+
+    def no_torchao_metadata(name):
+        if name.lower().startswith("torchao"):
+            raise importlib.metadata.PackageNotFoundError(name)
+        return real_version(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", no_torchao_metadata)
+    install_torchao_windows_rocm_stub()
+    import_utils = pytest.importorskip("transformers.utils.import_utils")
+    probe = import_utils.is_torchao_available
+    clear = getattr(probe, "cache_clear", lambda: None)
+    clear()
+    try:
+        assert probe() is False
+    finally:
+        clear()

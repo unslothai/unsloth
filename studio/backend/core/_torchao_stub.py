@@ -52,10 +52,15 @@ def _make_stub_type(name):
     return _StubTypeMeta(name, (), {})
 
 
+# Below every minimum: without dist-info, transformers 5 parses this ("N/A" raised).
+STUB_VERSION = "0.0.0"
+
+
 def _make_mod_stub(mod_name):
     m = types.ModuleType(mod_name)
     m.__path__ = []
     m.__package__ = mod_name
+    m.__version__ = STUB_VERSION
     m._unsloth_stub = _STUB_SENTINEL
     m.__spec__ = importlib.machinery.ModuleSpec(mod_name, loader = None, is_package = True)
 
