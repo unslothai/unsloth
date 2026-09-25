@@ -4845,7 +4845,7 @@ def test_count_tokens_rejects_malformed_tool_before_switch(monkeypatch):
     [
         (True, False, "mlx", True, "Cannot count tokens for messages containing images."),
         ("mcp", False, "mlx", True, "Cannot count tokens for messages containing images."),
-        (False, True, "mlx", True, "Unsloth server tools on /v1/messages need a GGUF model"),
+        (False, True, "mlx", False, None),
         (False, False, "mlx", False, None),
         (False, False, "cuda", True, None),
     ],

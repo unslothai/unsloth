@@ -6772,6 +6772,7 @@ _COUNT_OPENAI_OTHER = {
     "function": {"name": "other", "description": "", "parameters": {"type": "object"}},
 }
 _COUNT_FORCED = {"type": "function", "function": {"name": "lookup"}}
+_IP_WEB_SEARCH = {"type": "web_search_20250305", "name": "web_search"}
 
 
 class TestInProcessCountTokens:
@@ -6825,7 +6826,7 @@ class TestInProcessCountTokens:
                     ],
                     "tool_choice": "none",
                 },
-                None,
+                [],
             ),
             (
                 {
@@ -6838,10 +6839,15 @@ class TestInProcessCountTokens:
                     "tools": [_COUNT_OPENAI_TOOL, _COUNT_OPENAI_OTHER],
                     "tool_choice": _COUNT_FORCED,
                 },
-                [_COUNT_OPENAI_TOOL],
+                ["lookup"],
+            ),
+            (
+                {"messages": [_COUNT_USER], "tools": [_IP_WEB_SEARCH]},
+                {"messages": [_COUNT_USER], "enable_tools": True, "enabled_tools": ["web_search"]},
+                ["web_search"],
             ),
         ],
-        ids = ["plain", "forced_client_tool"],
+        ids = ["plain", "forced_client_tool", "server_tool"],
     )
     def test_counts_what_chat_counts_for_the_translated_request(
         self, monkeypatch, policy, anthropic, chat, tools
@@ -6862,20 +6868,25 @@ class TestInProcessCountTokens:
         assert body == {"input_tokens": 7}
         assert calls == chat_calls
         # A hard --enable-tools policy prices no catalog the Messages route did not select.
-        assert calls[0][2]["tools"] == tools
+        assert [t["function"]["name"] for t in calls[0][2]["tools"] or []] == tools
+
+    def test_an_archived_thread_prices_only_the_selected_server_tools(self, monkeypatch):
+        import routes.inference as inf
+
+        # Chat's own selection adds search_conversation for an archived thread.
+        monkeypatch.setattr(inf, "_thread_has_conversation_archive", lambda _thread: True)
+        payload = AnthropicMessagesRequest(
+            messages = [_COUNT_USER], tools = [_IP_WEB_SEARCH], thread_id = "t"
+        )
+        _, calls = self._count(monkeypatch, inf.anthropic_count_tokens, payload)
+        assert [t["function"]["name"] for t in calls[0][2]["tools"]] == ["web_search"]
 
     @pytest.mark.parametrize(
         "fields, is_mlx, status, detail",
         [
-            (
-                {"enable_tools": True},
-                True,
-                400,
-                "Unsloth server tools on /v1/messages need a GGUF model",
-            ),
             ({"enable_tools": True}, False, 503, "No GGUF model loaded"),
         ],
-        ids = ["server_tools", "not_mlx"],
+        ids = ["not_mlx"],
     )
     def test_what_it_cannot_price_is_refused(self, monkeypatch, fields, is_mlx, status, detail):
         import routes.inference as inf
@@ -6900,7 +6911,14 @@ _IP_FORMAT = {"output_config": {"format": {"type": "json_schema", "schema": {}}}
 class TestInProcessMessages:
     """/v1/messages on an in-process model: chat's output through the passthrough translators."""
 
-    def _serve(self, monkeypatch, stream, *timing, **fields):
+    def _serve(
+        self,
+        monkeypatch,
+        stream,
+        *timing,
+        sse = _IP_SSE,
+        **fields,
+    ):
         stop_at, taken = timing or (None, -1)
         from starlette.requests import Request
         from starlette.responses import JSONResponse
@@ -6910,6 +6928,8 @@ class TestInProcessMessages:
 
         async def fake_chat(chat_req, request, subject):
             seen.update(req = chat_req, skip = request.state.skip_api_monitor)
+            seen["ui"] = inf._ui_stream_events_enabled(request)
+            seen["cap"] = inf._delegated_tool_names.get()
             if not chat_req.stream:
                 if stop_at is not None:
                     request.state.generation_cancel_event.set()
@@ -6917,7 +6937,7 @@ class TestInProcessMessages:
 
             async def body():
                 try:
-                    for i, line in enumerate(_IP_SSE.split("\n\n")[:-1]):
+                    for i, line in enumerate(sse.split("\n\n")[:-1]):
                         if i == stop_at:  # a Stop by the Messages id
                             seen["stopped"] = inf._cancel_by_keys([seen["message_id"]])
                             seen["runs"] = inf.active_generations.snapshot()
@@ -6995,7 +7015,7 @@ class TestInProcessMessages:
         [
             ({}, None, None),
             (_IP_FORMAT, "JSON output", None),
-            ({"enable_tools": True, "permission_mode": "off"}, "Unsloth server tools", None),
+            ({"enable_tools": True, "permission_mode": "off"}, None, None),
             (
                 {"messages": [{"role": "user", "content": [_IP_IMAGE, _IP_IMAGE]}], "vision": True},
                 None,
@@ -7025,3 +7045,45 @@ class TestInProcessMessages:
         assert ("req" in self.seen) is vision
         if not vision:
             assert err.value.detail.startswith("messages.2.content.1.image: ")
+
+    @pytest.mark.parametrize("stream", [1, 0])
+    def test_server_tools_run_in_chats_loop_and_answer_as_on_llama_server(
+        self, monkeypatch, stream
+    ):
+        frames = [
+            {"choices": [{"delta": {"reasoning_content": "plan"}}]},
+            {"choices": [{"delta": {"content": "Searching."}}]},
+            {
+                "type": "tool_start",
+                "tool_name": "web_search",
+                "tool_call_id": "c1",
+                "arguments": {},
+            },
+            {"type": "tool_status", "content": "Searching"},
+            {"type": "tool_end", "tool_name": "web_search", "tool_call_id": "c1", "result": "r"},
+            {"choices": [{"delta": {"reasoning_content": "ok"}}]},
+            {"choices": [{"delta": {"content": "Done."}, "finish_reason": "stop"}]},
+            {"choices": [], "usage": {"prompt_tokens": 9, "completion_tokens": 4}},
+        ]
+        sse = "".join(f"data: {json.dumps(f)}\n\n" for f in frames) + "data: [DONE]\n\n"
+        choice = {"type": "tool", "name": "web_search_20250305", "disable_parallel_tool_use": True}
+        out, seen = self._serve(
+            monkeypatch, stream, sse = sse, tools = [_IP_WEB_SEARCH], tool_choice = choice
+        )
+        req = seen["req"]
+        assert seen["ui"] is True and seen["cap"] == {"web_search"}
+        assert req.enabled_tools == ["web_search"]
+        assert req.tool_choice == {"type": "function", "function": {"name": "web_search"}}
+        assert req.confirm_tool_calls is False and req.parallel_tool_calls is False
+        if stream:
+            starts = [
+                json.loads(e.split("data: ")[1]) for e in out.split("\n\n") if "block_start" in e
+            ]
+            kinds = [s["content_block"]["type"] for s in starts]
+            assert out.endswith('{"type": "message_stop"}\n\n')
+        else:
+            body = json.loads(out)
+            kinds = [b["type"] for b in body["content"]]
+            assert body["usage"]["input_tokens"] == 9 and body["stop_reason"] == "end_turn"
+        tool_blocks = ["server_tool_use", "web_search_tool_result"]
+        assert kinds == ["thinking", "text", *tool_blocks, "thinking", "text"]
