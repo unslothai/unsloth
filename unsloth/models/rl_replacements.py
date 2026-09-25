@@ -2751,11 +2751,46 @@ def _patch_grpo_accumulated_loss_hidden_states_dispatch(function):
     return source
 
 
+def grpo_update_SamplingParams(
+    SamplingParams,
+    generation_kwargs,
+    vllm_sampling_params = None,
+):
+    good_sampling_params_keys = inspect.signature(SamplingParams).parameters.keys()
+
+    new_generation_kwargs = {}
+    for key in generation_kwargs.keys():
+        if key in good_sampling_params_keys:
+            new_generation_kwargs[key] = generation_kwargs[key]
+    generation_kwargs = new_generation_kwargs
+
+    if vllm_sampling_params is not None:
+        overwrites = getattr(vllm_sampling_params, "_set_kwargs", None)
+        if overwrites is None:
+            default_sampling_params = SamplingParams()
+            overwrites = {}
+            for key in good_sampling_params_keys:
+                if key.startswith("_") or not hasattr(vllm_sampling_params, key):
+                    continue
+                overwrited_key = getattr(vllm_sampling_params, key)
+                if overwrited_key != getattr(default_sampling_params, key, None):
+                    overwrites[key] = overwrited_key
+        for key, overwrited_key in overwrites.items():
+            if key in good_sampling_params_keys and key not in (
+                "seed",
+                "n",
+                "temperature",
+                "max_tokens",
+                "logprobs",
+            ):
+                generation_kwargs[key] = overwrited_key
+    return generation_kwargs
+
+
 grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]
 grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
 UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
 grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
-grpo_update_SamplingParams = RL_REPLACEMENTS["grpo_update_SamplingParams"]
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_kwargs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_model_config))
@@ -3600,9 +3635,28 @@ def vllm_generation_init_patch():
             override("generate", wrap_generation_call)
             override("chat", wrap_generation_call)
             override("collective_rpc", wrap_collective_rpc)
+            # TRL >= 0.28 builds `SamplingParams(**generation_kwargs)` inside this call, the one site the older-TRL source replacement in rl.py targets; route it through the same helper for this call only.
+            user_sampling_params = getattr(self, "_unsloth_vllm_sampling_params", None)
+            original_sampling_params = vllm_generation.__dict__.get("SamplingParams", None)
+            if user_sampling_params is not None and original_sampling_params is not None:
+
+                def unsloth_sampling_params(*sp_args, **sp_kwargs):
+                    if sp_args:
+                        return original_sampling_params(*sp_args, **sp_kwargs)
+                    return original_sampling_params(
+                        **grpo_update_SamplingParams(
+                            original_sampling_params, sp_kwargs, user_sampling_params
+                        )
+                    )
+
+                vllm_generation.SamplingParams = unsloth_sampling_params
+            else:
+                original_sampling_params = None
             try:
                 return original_generate(self, *args, **kwargs)
             finally:
+                if original_sampling_params is not None:
+                    vllm_generation.SamplingParams = original_sampling_params
                 for name, had_own, bound in reversed(saved):
                     try:
                         if had_own:

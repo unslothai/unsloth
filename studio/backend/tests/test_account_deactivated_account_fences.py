@@ -144,7 +144,8 @@ async def test_owner_run_cannot_take_a_deactivated_accounts_supervisor_slot(
             start = lambda run_id, **identity: started.append(run_id),
         )
         request = SimpleNamespace(
-            app = SimpleNamespace(state = SimpleNamespace(chat_generation_supervisor = supervisor))
+            app = SimpleNamespace(state = SimpleNamespace(chat_generation_supervisor = supervisor)),
+            headers = {},
         )
         committed: list = []
 

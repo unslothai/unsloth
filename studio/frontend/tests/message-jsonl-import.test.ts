@@ -114,6 +114,67 @@ test("ShareGPT import maps role aliases regardless of case and whitespace", () =
   );
 });
 
+function toolCallResults(conversation: ParsedConversation): string[] {
+  return conversation.messages.flatMap((message) =>
+    (message.content as ReadonlyArray<{ type: string; result?: unknown }>)
+      .filter((part) => part.type === "tool-call")
+      .map((part) => String(part.result)),
+  );
+}
+
+test("each turn keeps its own tool result when a chat file reuses call ids", () => {
+  const call =
+    '{"role":"assistant","content":null,"tool_calls":[{"id":"tool_call_0","type":"function","function":{"name":"get_time","arguments":"{}"}}]}';
+  const [conversation] = parseImportText(
+    [
+      '{"role":"user","content":"stopped"}',
+      call,
+      '{"role":"user","content":"first"}',
+      call,
+      '{"role":"tool","tool_call_id":"tool_call_0","name":"get_time","content":"RESULT_A"}',
+      '{"role":"assistant","content":"It is A"}',
+      '{"role":"user","content":"again"}',
+      call,
+      '{"role":"tool","tool_call_id":"tool_call_0","name":"get_time","content":"RESULT_B"}',
+      '{"role":"assistant","content":"It is B"}',
+    ].join("\n"),
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["undefined", "RESULT_A", "RESULT_B"]);
+});
+
+test("parallel calls sharing an id in one turn take their results in call order", () => {
+  const [conversation] = parseImportText(
+    [
+      '{"role":"user","content":"weather"}',
+      '{"role":"assistant","content":null,"tool_calls":[' +
+        '{"id":"call_0","type":"function","function":{"name":"get_weather","arguments":"{\\"city\\":\\"Paris\\"}"}},' +
+        '{"id":"call_0","type":"function","function":{"name":"get_weather","arguments":"{\\"city\\":\\"Tokyo\\"}"}}]}',
+      '{"role":"tool","tool_call_id":"call_0","name":"get_weather","content":"PARIS"}',
+      '{"role":"tool","tool_call_id":"call_0","name":"get_weather","content":"TOKYO"}',
+    ].join("\n"),
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["PARIS", "TOKYO"]);
+});
+
+test("out-of-order tool results with unique ids still reach their call", () => {
+  const [conversation] = parseImportText(
+    '{"role":"tool","tool_call_id":"call_early","name":"lookup","content":"EARLY"}\n' +
+      '{"role":"assistant","content":null,"tool_calls":[' +
+      '{"id":"call_early","type":"function","function":{"name":"lookup","arguments":"{}"}},' +
+      '{"id":"call_late","type":"function","function":{"name":"lookup","arguments":"{}"}}]}\n' +
+      '{"role":"assistant","content":"Waiting"}\n' +
+      '{"role":"user","content":"Any news?"}\n' +
+      '{"role":"tool","tool_call_id":"call_late","name":"lookup","content":"LATE"}',
+    "conversation-messages.jsonl",
+  );
+
+  assert.deepEqual(toolCallResults(conversation), ["EARLY", "LATE"]);
+});
+
 test("assistant images are represented explicitly in JSONL exports", () => {
   const exported = structuredClone(
     messageToOpenAI({

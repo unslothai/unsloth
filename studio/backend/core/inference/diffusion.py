@@ -77,6 +77,15 @@ from .diffusion_device import (
     resolve_diffusion_device_target,
     resolve_selected_cuda_ordinal,
 )
+from .diffusion_conditioning import (
+    LocalizedEdit,
+    check_conditioned_fields,
+    check_output_size,
+    conditioning_capabilities,
+    decode_condition_images,
+    effective_reference_resolution,
+    match_source_size,
+)
 from .diffusion_ideogram4 import ideogram4_repo_is_fp8, load_ideogram4_pipeline
 from .diffusion_hidream import (
     HIDREAM_FAMILY_NAME,
@@ -115,11 +124,15 @@ from .diffusion_speed import (
     SPEED_MAX,
     SPEED_OFF,
     apply_speed_optims,
+    auto_dynamic_active,
+    compile_dynamic,
     compile_eligible,
     compiled_shapes_are_static,
+    dynamo_graph_count,
     normalize_speed_mode,
     resolve_speed_mode,
     restore_backend_flags,
+    settle_compile_fallback,
     snapshot_backend_flags,
 )
 from .diffusion_attention import (
@@ -599,14 +612,29 @@ def _image_variant_hint(
     return " ".join(parts)
 
 
-def _compile_shape_dims(workflow: str, init_pil: Any, width: int, height: int) -> tuple[int, int]:
+def _is_source_sized(workflow: str, family: Any = None) -> bool:
+    """Whether ``workflow`` takes its output size from the source image rather than width/height.
+    "edit" is source-sized only on an edit-only family (Kontext, Qwen-Image-Edit), or when
+    ``family`` is None; the unified edit (Qwen-Image-2.1) renders at the requested size."""
+    if workflow == "edit":
+        return family is None or bool(getattr(family, "edit", False))
+    return workflow in ("img2img", "inpaint", "upscale")
+
+
+def _compile_shape_dims(
+    workflow: str,
+    init_pil: Any,
+    width: int,
+    height: int,
+    family: Any = None,
+) -> tuple[int, int]:
     """The (width, height) a generation's forward ACTUALLY runs at, for static compile-cache shape
-    registration. txt2img / reference / controlnet generate at the requested slider size, but the
-    image-conditioned workflows derive the output from the (resized/snapped) input image:
+    registration. txt2img / reference / controlnet / unified edit generate at the requested size,
+    but the source-sized workflows derive the output from the (resized/snapped) input image:
     registering the slider values there would mark a shape covered that was never compiled, so
     the truly-used shape never re-dirties the bundle and warm restarts keep paying its compile.
     Mirrors the width/height kwarg derivation in generate()."""
-    if workflow in ("txt2img", "reference", "controlnet") or init_pil is None:
+    if init_pil is None or not _is_source_sized(workflow, family):
         return int(width), int(height)
     iw, ih = init_pil.size
     return int(iw), int(ih)
@@ -1071,6 +1099,98 @@ def _install_gguf_prefix_strip(transformer_cls: Any, logger: Any) -> None:
         entry["checkpoint_mapping_fn"] = _stripped_mapping_fn
     except Exception as exc:  # noqa: BLE001 - loader-compat shim only, never fail the load
         logger.warning("diffusion.gguf: prefix-strip shim not installed: %s", exc)
+
+
+def _qwen_image_21_checkpoint_to_diffusers(checkpoint = None, **kwargs):
+    """sd.cpp / ComfyUI Qwen-Image-2.1 single file -> diffusers ``QwenImage21Transformer2DModel``.
+
+    The two layouts differ in exactly one way once the ``model.diffusion_model.`` container prefix
+    is gone: each block stores its MLP input projection FUSED, ``img_mlp.gate_up`` [24576, 4096],
+    where diffusers keeps ``img_mlp.gate_layer`` and ``img_mlp.proj`` [12288, 4096] apart. That is
+    265 tensors against 297, 32 blocks times one fused pair, and every other name and shape
+    matches. The order is gate first, then proj, checked against the upstream bf16 weights rather
+    than read off a reference implementation: both halves are bit-identical to their diffusers
+    tensors, and the swapped assignment is off by up to 1.08.
+
+    Splitting a GGUF tensor by rows is safe at any quant type: GGML packs blocks along the last
+    (input) dimension, so a row is always a whole number of blocks and ``GGUFParameter`` keeps its
+    quant type through the slice.
+
+    One-dimensional tensors are dequantised here, because diffusers only dequantises inside the
+    ``nn.Linear`` layers its GGUF quantizer swaps in. Everything 1-D in this model is a norm weight,
+    read straight off ``self.weight``, so a norm stored in any wrapped type reaches the forward as
+    raw bytes: the public Q4_K_M keeps ``txt_in.text_norm`` in BF16 and dies on the first step with
+    "size of tensor a (4096) must match ... b (8192)", and a build without the norm=f32 pin puts all
+    64 attention norms in Q8_0 the same way. They are a few KB in total, so there is nothing to save
+    by keeping them packed.
+    """
+    prefix = "model.diffusion_model."
+    fused = "img_mlp.gate_up.weight"
+    converted = {}
+    for key, value in (checkpoint or {}).items():
+        if key.startswith(prefix):
+            key = key[len(prefix) :]
+        quant_shape = getattr(value, "quant_shape", None)
+        if quant_shape is not None and len(quant_shape) == 1:
+            from diffusers.quantizers.gguf.utils import dequantize_gguf_tensor
+            value = dequantize_gguf_tensor(value)
+        if key.endswith("." + fused):
+            rows = int(value.shape[0])
+            if rows % 2:
+                raise ValueError(
+                    f"{key}: a fused gate_up with an odd row count ({rows}) cannot be split into "
+                    "gate_layer and proj; this is not a Qwen-Image-2.1 checkpoint"
+                )
+            stem = key[: -len("gate_up.weight")]
+            converted[stem + "gate_layer.weight"] = value[: rows // 2]
+            converted[stem + "proj.weight"] = value[rows // 2 :]
+            continue
+        converted[key] = value
+    return converted
+
+
+# Transformer classes the installed diffusers cannot load from a single file, with the converter
+# that lets it. Without an entry ``from_single_file`` refuses before reading a byte ("FromOriginalModelMixin is
+# currently only compatible with ..."), and on a CUDA, ROCm or XPU host that is every GGUF load of the
+# family, because a GPU backend routes GGUFs to diffusers. The native engine is no way round it
+# there: the pinned sd.cpp prebuilt carries no Windows GPU build at all.
+_UNREGISTERED_SINGLE_FILE_CLASSES: dict = {
+    "QwenImage21Transformer2DModel": _qwen_image_21_checkpoint_to_diffusers,
+}
+
+
+def _register_unregistered_single_file_classes(logger: Any = None) -> tuple:
+    """Add single-file support for the classes above that the installed diffusers lacks.
+
+    Never overwrites: a class diffusers registers itself wins, since upstream's mapping is
+    authoritative and ours only fills the gap until it lands. A class this diffusers does not ship
+    is skipped rather than registered, and that is load-bearing, not tidiness: diffusers resolves
+    EVERY registry entry with ``getattr(diffusers, name)`` on each ``from_single_file`` call, so one
+    entry naming a missing class would break single-file loads for every other family too.
+    Idempotent and best-effort; returns the names it added.
+    """
+    added: list = []
+    try:
+        import diffusers
+        from diffusers.loaders import single_file_model as sfm
+    except Exception:  # noqa: BLE001 - no diffusers, nothing to register into
+        return ()
+    for name, mapping_fn in _UNREGISTERED_SINGLE_FILE_CLASSES.items():
+        if name in sfm.SINGLE_FILE_LOADABLE_CLASSES:
+            continue
+        try:
+            if getattr(diffusers, name, None) is None:
+                continue
+        except Exception:  # noqa: BLE001 - a class whose module fails to import is not loadable
+            continue
+        sfm.SINGLE_FILE_LOADABLE_CLASSES[name] = {
+            "checkpoint_mapping_fn": mapping_fn,
+            "default_subfolder": "transformer",
+        }
+        added.append(name)
+    if added and logger is not None:
+        logger.info("diffusion.single_file: registered %s", ", ".join(added))
+    return tuple(added)
 
 
 def _restore_gguf_trimmed_dims(model: Any, state_dict: Any) -> Any:
@@ -5077,6 +5197,9 @@ class DiffusionBackend:
                                 # pipeline assembly below was already guarded; this call was not.
                                 "local_files_only": local_files_only,
                             }
+                            # Before the prefix shim below, which wraps whatever entry it finds and
+                            # finds nothing for a class that is not registered yet.
+                            _register_unregistered_single_file_classes(logger)
                             if kind == "gguf":
                                 # Dequantise the GGUF transformer on-device at the compute dtype.
                                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
@@ -5387,6 +5510,9 @@ class DiffusionBackend:
                         threshold = transformer_cache_threshold,
                         # GGUF transformers are quantized too, so the cache needs the higher threshold.
                         quant_active = cache_quant_active,
+                        # Prefix-KV families (Qwen-Image-2.1) cache only when asked: at 40 steps the default
+                        # threshold skips about half the steps, too lossy for an automatic default.
+                        length_changes_ok = not cache_auto,
                         logger = logger,
                     )
                     self._raise_if_load_cancelled(_load_token)
@@ -5407,6 +5533,8 @@ class DiffusionBackend:
                                 f"auto: {default_steps}-step default schedule is below "
                                 f"{FBCACHE_MIN_STEPS}; re-checked per generation"
                             )
+                    elif cache_request is not None and not cache_engaged:
+                        cache_reason = "requested, but this model does not support step caching; running uncached"
                     else:
                         cache_reason = "requested"
                     # The dense fast path sets gguf_filename, but its transformer is dense.
@@ -5443,7 +5571,13 @@ class DiffusionBackend:
                                 "fullgraph": cache_engaged is None
                                 and not cache_may_toggle
                                 and plan.offload_policy == OFFLOAD_NONE,
-                                "dynamic": effective_speed != SPEED_MAX,
+                                # max compiles DiTs with automatic dynamic (None), as does the default tier for
+                                # torchao weights. Key on the value apply_speed_optims resolves, so a bundle from a
+                                # static or explicit-dynamic build is not reused for an automatic-dynamic one.
+                                "dynamic": compile_dynamic(
+                                    getattr(pipe, "transformer", None),
+                                    None if effective_speed == SPEED_MAX else True,
+                                ),
                                 "mode": "max-autotune-no-cudagraphs"
                                 if effective_speed == SPEED_MAX
                                 else "default",
@@ -5714,13 +5848,16 @@ class DiffusionBackend:
                         clear_gpu_cache()
 
         logger.info(
-            "diffusion.loaded: repo=%s base=%s device=%s offload=%s tiling=%s reasons=%s",
+            # The estimates too: the verdict alone cannot be checked from a user's log, and a None among these terms
+            # is itself the explanation for a tier the planner skipped.
+            "diffusion.loaded: repo=%s base=%s device=%s offload=%s tiling=%s reasons=%s estimates=%s",
             repo_id,
             base,
             device,
             effective_policy,
             effective_tiling,
             "; ".join(plan.reasons),
+            plan.estimates,
         )
         return self.status()
 
@@ -6277,6 +6414,7 @@ class DiffusionBackend:
                 # A local fp8 mirror never string-matches base_repo, so detect fp8 from the shard headers (a local nf4
                 # mirror stays compressed).
                 is_narrow_base = ideogram4_repo_is_fp8(repo_id)
+            table = None
             if is_narrow_base:
                 table = family_bf16_components_gb(fam, fam.base_repo)
                 if table is not None:
@@ -6286,10 +6424,24 @@ class DiffusionBackend:
                     model_dense_mib = (
                         table_mib if model_dense_mib is None else max(model_dense_mib, table_mib)
                     )
-            companion_mib = None
-            # No companion total on this branch (the whole repo IS the model), so there is no split to hand the
-            # planner either. None, not a guess: it reproduces the old decision.
-            text_encoder_mib = None
+            # The whole repo is the model, but its companions still sit in their own subfolders, so the same walk the
+            # GGUF/single-file branch uses splits them out here too. Without the split both group tiers fail on None
+            # and a pipeline that does not fit resident can only ever reach whole-module offload.
+            companion = self._companion_cache_bytes(fetch_base or base, base_local_dir)
+            companion_mib = int(companion // (1024 * 1024)) if companion else None
+            text_encoder = self._text_encoder_cache_bytes(fetch_base or base, base_local_dir)
+            text_encoder_mib = int(text_encoder // (1024 * 1024)) if text_encoder else None
+            if is_narrow_base and table is not None:
+                # model_dense_mib was raised to the bf16 table above; the companions upcast with it, so take their
+                # share from the same table rather than leaving a narrow on-disk figure beside a bf16 total.
+                companion_mib = int(sum(table[1:]) * (1000.0**3) / (1024.0 * 1024.0))
+                text_encoder_mib = int(table[1] * (1000.0**3) / (1024.0 * 1024.0))
+            if companion_mib is not None and model_dense_mib is not None:
+                # The two terms come from different merges over the cache roots, so a repo only one of them can see
+                # must not report companions larger than the model.
+                companion_mib = min(companion_mib, model_dense_mib)
+                if text_encoder_mib is not None:
+                    text_encoder_mib = min(text_encoder_mib, companion_mib)
         else:
             if transformer_resident_override_mib is not None:
                 # Planning the dense-quant candidate: the auto-policy estimate replaces the file-size derivation.
@@ -6770,7 +6922,7 @@ class DiffusionBackend:
                     "fullgraph": state.transformer_cache is None
                     and not state.cache_auto
                     and state.offload_policy == OFFLOAD_NONE,
-                    "dynamic": True,
+                    "dynamic": compile_dynamic(getattr(state.pipe, "transformer", None), True),
                     "mode": "default",
                 },
                 logger = logger,
@@ -6816,8 +6968,9 @@ class DiffusionBackend:
         *,
         prompt: str,
         negative_prompt: Optional[str] = None,
-        width: int = 1024,
-        height: int = 1024,
+        # None on both (unified edit only) matches Image 1's aspect ratio.
+        width: Optional[int] = 1024,
+        height: Optional[int] = 1024,
         # Fallbacks; the route always sends the per-model values the UI seeds.
         steps: int = 9,
         guidance: float = 0.0,
@@ -6835,8 +6988,12 @@ class DiffusionBackend:
         strength: Optional[float] = None,
         # Upscale (hires fix): factor > 1 with an init image enlarges then re-denoises at low strength.
         upscale: Optional[float] = None,
-        # Reference (FLUX.2): additional reference images beyond init_image (a list). Ignored elsewhere.
+        # Reference / unified edit: additional images after init_image, in order. The family bounds the total.
         reference_images: Optional[list[str]] = None,
+        # Explicit "edit" / "reference"; None keeps the workflow the other arguments imply.
+        workflow: Optional[str] = None,
+        reference_resolution: Optional[int] = None,
+        localized_edit: Optional[LocalizedEdit] = None,
         loras: Optional[list[tuple[str, float]]] = None,
         # ControlNet (id, control_image_b64, control_type, strength, guidance_start, guidance_end). None = off.
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
@@ -6901,10 +7058,14 @@ class DiffusionBackend:
                 self._apply_loras(state, loras, cancel)
 
                 pipe = state.pipe
+                fam = state.family
                 init_pil = mask_pil = None
                 control_pil = None
                 cn_scale = cn_gstart = cn_gend = cn_mode = None
                 ref_extra: list = []
+                requested_workflow = workflow
+                if requested_workflow not in (None, "edit", "reference"):
+                    raise ValueError(f"Unknown workflow '{requested_workflow}'.")
                 if init_image is None:
                     if mask_image is not None:
                         raise ValueError("mask_image requires an input image (init_image).")
@@ -6912,32 +7073,66 @@ class DiffusionBackend:
                         raise ValueError("upscale requires an input image (init_image).")
                     if reference_images:
                         raise ValueError("reference_images require an input image (init_image).")
-                if reference_images and not getattr(state.family, "reference", False):
+                    if requested_workflow is not None:
+                        raise ValueError(
+                            f"The {requested_workflow} workflow requires a source image (init_image)."
+                        )
+                check_conditioned_fields(
+                    requested_workflow,
+                    fam,
+                    mask_image = mask_image,
+                    strength = strength,
+                    upscale = upscale,
+                    controlnet = controlnet,
+                    localized_edit = localized_edit,
+                )
+                if reference_images and not getattr(fam, "reference", False):
                     raise ValueError(
-                        f"Reference images are not supported for the '{state.family.name}' "
-                        "model family."
+                        f"Reference images are not supported for the '{fam.name}' model family."
                     )
-                if getattr(state.family, "edit", False):
+                conditioned = False
+                if getattr(fam, "edit", False):
+                    if requested_workflow == "reference":
+                        raise ValueError(
+                            f"The reference workflow is not supported for the '{fam.name}' "
+                            "model family."
+                        )
                     if init_image is None:
                         raise ValueError(
-                            f"{state.family.name} is an image-editing model: provide an input image."
+                            f"{fam.name} is an image-editing model: provide an input image."
                         )
                     if mask_image is not None:
                         raise ValueError(
-                            f"{state.family.name} is an image-editing model and does not "
+                            f"{fam.name} is an image-editing model and does not "
                             "support masks (mask_image)."
                         )
                     workflow = "edit"
                     init_pil = decode_b64_image(init_image, mode = "RGB")
+                elif requested_workflow == "edit":
+                    if not getattr(fam, "unified_edit", False):
+                        raise ValueError(
+                            f"Instruction editing is not supported for the '{fam.name}' "
+                            "model family."
+                        )
+                    workflow = "edit"
+                    conditioned = True
+                elif requested_workflow == "reference":
+                    if not getattr(fam, "reference", False):
+                        raise ValueError(
+                            f"The reference workflow is not supported for the '{fam.name}' "
+                            "model family."
+                        )
+                    workflow = "reference"
+                    conditioned = True
                 elif mask_image is not None and init_image is not None:
                     workflow = "inpaint"
-                    pipe = self._workflow_pipe(state, state.family.inpaint_pipeline_class, workflow)
+                    pipe = self._workflow_pipe(state, fam.inpaint_pipeline_class, workflow)
                     init_pil = decode_b64_image(init_image, mode = "RGB")
                     mask_pil = decode_b64_image(mask_image, mode = "L")
                 elif init_image is not None and upscale is not None and upscale > 1.0:
                     # Upscale (hires fix): enlarge with Lanczos, then re-run img2img at low strength to add detail.
                     workflow = "upscale"
-                    pipe = self._workflow_pipe(state, state.family.img2img_pipeline_class, workflow)
+                    pipe = self._workflow_pipe(state, fam.img2img_pipeline_class, workflow)
                     init_pil = decode_b64_image(init_image, mode = "RGB")
                     iw, ih = init_pil.size
                     # Cap the factor, then the absolute output (longest side 2048); round to a multiple of 16 (VAE
@@ -6958,21 +7153,37 @@ class DiffusionBackend:
                     init_pil = init_pil.resize((tw, th), Image.LANCZOS)
                     if strength is None:
                         strength = 0.35  # hires-fix default: preserve content, add detail
-                elif getattr(state.family, "reference", False) and init_image is not None:
-                    # FLUX.2 reference conditioning: the loaded pipe takes the reference via `image` and generates at
-                    # the REQUESTED size.
+                elif getattr(fam, "reference", False) and init_image is not None:
                     workflow = "reference"
-                    init_pil = decode_b64_image(init_image, mode = "RGB")
-                    # Additional references (FLUX.2 combines a list); capped to bound VRAM.
-                    ref_extra = [
-                        decode_b64_image(x, mode = "RGB") for x in (reference_images or [])[:3]
-                    ]
+                    conditioned = True
                 elif init_image is not None:
                     workflow = "img2img"
-                    pipe = self._workflow_pipe(state, state.family.img2img_pipeline_class, workflow)
+                    pipe = self._workflow_pipe(state, fam.img2img_pipeline_class, workflow)
                     init_pil = decode_b64_image(init_image, mode = "RGB")
                 else:
                     workflow = "txt2img"
+                ref_resolution = None
+                if conditioned:
+                    images_in = decode_condition_images(
+                        fam, init_image, reference_images, localized_edit
+                    )
+                    init_pil, ref_extra = images_in[0], images_in[1:]
+                    ref_resolution = effective_reference_resolution(fam, reference_resolution)
+                elif reference_resolution is not None:
+                    raise ValueError(
+                        "reference_resolution applies only to the reference and edit workflows."
+                    )
+                source_sized = _is_source_sized(workflow, fam)
+                if not source_sized:
+                    if width is None or height is None:
+                        if not conditioned:
+                            raise ValueError("width and height are required for this workflow.")
+                        width, height = match_source_size(
+                            fam, init_pil.size, ref_resolution or 1024
+                        )
+                    check_output_size(fam, int(width), int(height))
+                elif width is None or height is None:
+                    width = height = 1024
 
                 # ControlNet (diffusers): txt2img only. Builds the family CN pipeline around resident modules.
                 if controlnet is not None:
@@ -7028,7 +7239,7 @@ class DiffusionBackend:
                     )
                 # Snap odd-sized inputs (and the mask) to a multiple of 16 where the OUTPUT size comes from the input
                 # image.
-                if init_pil is not None and workflow in ("img2img", "inpaint", "edit"):
+                if init_pil is not None and source_sized and workflow != "upscale":
                     # img2img/inpaint take output size from the upload, so bound the longest side to 2048 (a phone
                     # photo would OOM).
                     if workflow == "img2img":
@@ -7072,15 +7283,21 @@ class DiffusionBackend:
                     # (cfg_trunc_ratio=0.25); the 1.0 default oversaturates.
                     kwargs["cfg_trunc_ratio"] = 0.25
                 if init_pil is not None:
-                    # Reference passes the whole list (FLUX.2 combines); others take the single image.
+                    # Reference / unified edit pass the whole ordered list; others take the single image.
                     kwargs["image"] = [init_pil, *ref_extra] if ref_extra else init_pil
+                    if ref_resolution is not None:
+                        if "output_resolution" not in call_params:
+                            raise ValueError(
+                                "This pipeline does not accept a reference resolution."
+                            )
+                        kwargs["output_resolution"] = ref_resolution
                     if mask_pil is not None and "mask_image" in call_params:
                         kwargs["mask_image"] = mask_pil
                     if strength is not None and "strength" in call_params:
                         kwargs["strength"] = strength
                 # width/height: txt2img uses the slider; image-conditioned pipes must use the INPUT IMAGE's size or
                 # the latents mismatch, and many drop them, so pass only when accepted.
-                if workflow in ("txt2img", "reference", "controlnet"):
+                if not source_sized:
                     # These generate at the REQUESTED size (reference/control image resized to match).
                     kwargs["width"] = width
                     kwargs["height"] = height
@@ -7118,7 +7335,7 @@ class DiffusionBackend:
                     # their output size from the input image. Same derivation the compile-cache shape registration
                     # uses further down.
                     guard_width, guard_height = _compile_shape_dims(
-                        workflow, init_pil, width, height
+                        workflow, init_pil, width, height, fam
                     )
                     guard_batch = _activation_guard_batch(chunks)
                     raise_on_image_activation_shortfall(
@@ -7138,7 +7355,17 @@ class DiffusionBackend:
                         # img2img is bounded by the Resolution control (see _fit_within), so "generate at a smaller
                         # resolution" is actionable there; the rest size from the upload alone and get the upload-side
                         # remedy.
-                        source_driven = workflow in ("inpaint", "upscale", "edit"),
+                        source_driven = source_sized and workflow != "img2img",
+                        condition_pixels = (
+                            int(
+                                (1 + len(ref_extra))
+                                * ref_resolution
+                                * ref_resolution
+                                * getattr(fam, "condition_pixel_weight", 1.0)
+                            )
+                            if ref_resolution is not None
+                            else 0
+                        ),
                         logger = logger,
                     )
                 except ValueError:
@@ -7203,76 +7430,92 @@ class DiffusionBackend:
                 images: list[Any] = []
                 per_image_seeds: list[int] = []
                 chunk_shapes: list[int] = []
-                pending = list(chunks)
-                while pending:
-                    chunk = pending.pop(0)
-                    chunk_kwargs = dict(kwargs)
-                    shared = uniform_prompt(chunk)
-                    generators = [
-                        torch.Generator(device = state.device).manual_seed(s) for _, s in chunk
-                    ]
-                    if len(jobs) == 1:
-                        chunk_kwargs["prompt"] = shared
-                        chunk_kwargs["generator"] = generators[0]
-                        chunk_kwargs["num_images_per_prompt"] = 1
-                    elif shared is not None:
-                        chunk_kwargs["prompt"] = shared
-                        chunk_kwargs["generator"] = generators
-                        chunk_kwargs["num_images_per_prompt"] = len(chunk)
-                    else:
-                        # Distinct prompts: one image per prompt in a single forward. The negative prompt must be
-                        # broadcast to match, else the pipeline asserts or fails in the txt/img concat.
-                        chunk_kwargs["prompt"] = [p for p, _ in chunk]
-                        chunk_kwargs["generator"] = generators
-                        chunk_kwargs["num_images_per_prompt"] = 1
-                        if isinstance(chunk_kwargs.get("negative_prompt"), str):
-                            chunk_kwargs["negative_prompt"] = [
-                                chunk_kwargs["negative_prompt"]
-                            ] * len(chunk)
-                    # A step cache keys residuals on the cond/uncond context, which a graph key
-                    # cannot see. Per chunk because an AUTO decision is re-taken per generation.
-                    if state.cuda_graphs:
-                        cuda_graph.set_bypass(state.cuda_graphs, bool(state.transformer_cache))
-                    # Start every forward from a clean step cache: diffusers only resets FBCache after a SUCCESSFUL
-                    # __call__, so a raised call leaves a residual the next forward trips over.
-                    if state.transformer_cache:
-                        self._reset_step_cache(state.pipe)
+                graphs_before = dynamo_graph_count()
+                try:
+                    pending = list(chunks)
+                    while pending:
+                        chunk = pending.pop(0)
+                        chunk_kwargs = dict(kwargs)
+                        shared = uniform_prompt(chunk)
+                        generators = [
+                            torch.Generator(device = state.device).manual_seed(s) for _, s in chunk
+                        ]
+                        if len(jobs) == 1:
+                            chunk_kwargs["prompt"] = shared
+                            chunk_kwargs["generator"] = generators[0]
+                            chunk_kwargs["num_images_per_prompt"] = 1
+                        elif shared is not None:
+                            chunk_kwargs["prompt"] = shared
+                            chunk_kwargs["generator"] = generators
+                            chunk_kwargs["num_images_per_prompt"] = len(chunk)
+                        else:
+                            # Distinct prompts: one image per prompt in a single forward. The negative prompt must be
+                            # broadcast to match, else the pipeline asserts or fails in the txt/img concat.
+                            chunk_kwargs["prompt"] = [p for p, _ in chunk]
+                            chunk_kwargs["generator"] = generators
+                            chunk_kwargs["num_images_per_prompt"] = 1
+                            if isinstance(chunk_kwargs.get("negative_prompt"), str):
+                                chunk_kwargs["negative_prompt"] = [
+                                    chunk_kwargs["negative_prompt"]
+                                ] * len(chunk)
+                        # A step cache keys residuals on the cond/uncond context, which a graph key
+                        # cannot see. Per chunk because an AUTO decision is re-taken per generation.
+                        if state.cuda_graphs:
+                            cuda_graph.set_bypass(state.cuda_graphs, bool(state.transformer_cache))
+                        # Start every forward from a clean step cache: diffusers only resets FBCache after a SUCCESSFUL
+                        # __call__, so a raised call leaves a residual the next forward trips over.
+                        if state.transformer_cache:
+                            self._reset_step_cache(state.pipe)
+                        try:
+                            # inference_mode is faster than no_grad and numerically identical here.
+                            with torch.inference_mode():
+                                out = pipe(**chunk_kwargs).images
+                        except Exception as exc:  # noqa: BLE001 - reraised unless a splittable OOM
+                            oom = is_oom_error(exc)
+                            if oom:
+                                # Drop the graphs on ANY OOM, before the split decision: they are shaped for the failed
+                                # attempt and empty_cache() cannot reclaim them (live statics and outputs, and a graph
+                                # pool is segregated from the ordinary allocator), so the halved retry below and the
+                                # user's next smaller request would both run a step's worth of VRAM short. The shape
+                                # that finally renders re-captures on its first step.
+                                cuda_graph.reset_all(state.cuda_graphs)
+                            if len(chunk) < 2 or not oom:
+                                raise
+                            # OOM backoff: halve the failed chunk and retry; per-image seeds keep every retry
+                            # reproducible.
+                            empty_cache = getattr(getattr(torch, "cuda", None), "empty_cache", None)
+                            if callable(empty_cache):
+                                empty_cache()
+                            first_half, second_half = split_chunk(chunk)
+                            pending[:0] = [first_half, second_half]
+                            gen.total_steps += steps  # one extra chunk to run
+                            logger.warning(
+                                "diffusion.generate: batch of %d hit OOM; retrying as %d + %d",
+                                len(chunk),
+                                len(first_half),
+                                len(second_half),
+                            )
+                            continue
+                        finally:
+                            # A guarded block that fell back to eager (compile failed at its first forward) no longer
+                            # runs compiled: report it on every exit, cancel and error included, so status, LoRA gating
+                            # and the compile-cache shape registry stop treating it as compiled.
+                            settle_compile_fallback(state, state.pipe, logger)
+                        if cancel.is_set():
+                            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                        images.extend(out)
+                        per_image_seeds.extend(s for _, s in chunk)
+                        chunk_shapes.append(len(chunk))
+                        steps_done[0] += steps
+                except BaseException:
+                    # A cancelled or failed render may already have generalised a graph that the next render reuses
+                    # without compiling, so the success path below would never see the count grow: dirty it now.
                     try:
-                        # inference_mode is faster than no_grad and numerically identical here.
-                        with torch.inference_mode():
-                            out = pipe(**chunk_kwargs).images
-                    except Exception as exc:  # noqa: BLE001 - reraised unless a splittable OOM
-                        oom = is_oom_error(exc)
-                        if oom:
-                            # Drop the graphs on ANY OOM, before the split decision: they are shaped for the failed
-                            # attempt and empty_cache() cannot reclaim them (live statics and outputs, and a graph
-                            # pool is segregated from the ordinary allocator), so the halved retry below and the
-                            # user's next smaller request would both run a step's worth of VRAM short. The shape
-                            # that finally renders re-captures on its first step.
-                            cuda_graph.reset_all(state.cuda_graphs)
-                        if len(chunk) < 2 or not oom:
-                            raise
-                        # OOM backoff: halve the failed chunk and retry; per-image seeds keep every retry
-                        # reproducible.
-                        empty_cache = getattr(getattr(torch, "cuda", None), "empty_cache", None)
-                        if callable(empty_cache):
-                            empty_cache()
-                        first_half, second_half = split_chunk(chunk)
-                        pending[:0] = [first_half, second_half]
-                        gen.total_steps += steps  # one extra chunk to run
-                        logger.warning(
-                            "diffusion.generate: batch of %d hit OOM; retrying as %d + %d",
-                            len(chunk),
-                            len(first_half),
-                            len(second_half),
-                        )
-                        continue
-                    if cancel.is_set():
-                        raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-                    images.extend(out)
-                    per_image_seeds.extend(s for _, s in chunk)
-                    chunk_shapes.append(len(chunk))
-                    steps_done[0] += steps
+                        if auto_dynamic_active(state.pipe) and dynamo_graph_count() > graphs_before:
+                            compile_cache.mark_recompiled(state.compile_cache_ctx)
+                    except Exception:  # noqa: BLE001 - bookkeeping must not mask the render's own error
+                        pass
+                    raise
                 # Keep progress ACTIVE through the post-denoise work: the route persists the image after this returns,
                 # so a mount probe reading idle would refresh the gallery too early. Persist the warm compile bundle;
                 # a STATIC compile makes new artifacts per (w,h,batch), so register this shape. The write itself is
@@ -7281,7 +7524,9 @@ class DiffusionBackend:
                 try:
                     # Register the dims the forward ACTUALLY compiled with, and every distinct chunk size (a static
                     # compile makes one artifact per batch size too).
-                    reg_width, reg_height = _compile_shape_dims(workflow, init_pil, width, height)
+                    reg_width, reg_height = _compile_shape_dims(
+                        workflow, init_pil, width, height, fam
+                    )
                     static_shapes = "compiled" in (
                         state.speed_optims or ()
                     ) and compiled_shapes_are_static(state.pipe, state.speed_mode)
@@ -7291,6 +7536,10 @@ class DiffusionBackend:
                             (reg_width, reg_height, int(chunk_batch)),
                             static = static_shapes,
                         )
+                    if auto_dynamic_active(state.pipe) and dynamo_graph_count() > graphs_before:
+                        # Automatic dynamic recompiles on the first new text length at an already-registered
+                        # (width, height, batch): persist those graphs too, or every fresh process pays them again.
+                        compile_cache.mark_recompiled(state.compile_cache_ctx)
                     compile_cache.save_async(state.compile_cache_ctx, logger = logger)
                 except Exception:  # noqa: BLE001 - cache persistence is best-effort
                     pass
@@ -7333,6 +7582,8 @@ class DiffusionBackend:
                     # The workflow this generation ACTUALLY ran, so a conditioned image is not replayed as a plain
                     # Create recipe.
                     "workflow": workflow,
+                    "reference_resolution": ref_resolution,
+                    "localized_edit": localized_edit.mode if localized_edit is not None else None,
                 }
             finally:
                 with self._generation_cancel_lock:
@@ -7526,6 +7777,7 @@ class DiffusionBackend:
                 "attention_backend": None,
                 "transformer_cache": None,
                 "workflows": [],
+                "conditioning": None,
                 "supports_lora": False,
                 "supports_controlnet": False,
                 "resolved": None,
@@ -7560,6 +7812,9 @@ class DiffusionBackend:
             "resolved": state.resolved,
             # Workflows the loaded family supports, so the UI can gate its tabs.
             "workflows": _family_workflows(state.family),
+            "conditioning": conditioning_capabilities(
+                state.family, _family_workflows(state.family)
+            ),
             "supports_lora": diffusion_lora.supports_lora(
                 engine = "diffusers",
                 family = state.family.name,
@@ -7588,6 +7843,9 @@ def _family_workflows(fam: DiffusionFamily) -> list[str]:
     # Reference families (FLUX.2) add reference conditioning via their pipeline's image arg.
     if getattr(fam, "reference", False):
         workflows.append("reference")
+    # Unified families (Qwen-Image-2.1) also follow edit instructions through that same pipeline.
+    if getattr(fam, "unified_edit", False):
+        workflows.append("edit")
     if getattr(fam, "img2img_pipeline_class", None):
         # Upscale runs on the img2img pipeline, so available exactly when img2img is.
         workflows.append("img2img")
