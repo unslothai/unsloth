@@ -16,6 +16,7 @@ export const en = {
     sendAlwaysDescription: "{mod} + Enter sends. Enter adds a new line.",
     followUp: "Follow-up behavior",
     followUpDescription: "What happens when you send during a response. Press {shortcut} to do the opposite once.",
+    followUpMultilineShortcut: "{shortcut} ({multiline} in a multiline prompt)",
     queue: "Queue",
     steer: "Steer",
     steerDescription: "Steer stops the current response and sends your follow-up next.",

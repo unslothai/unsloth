@@ -27,6 +27,15 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const labels = composerShortcutLabels(prefs.sendShortcut, isMacPlatform());
+  // The multiline mode's chord changes once the prompt has a line break.
+  const multiline = composerShortcutLabels(prefs.sendShortcut, isMacPlatform(), "\n");
+  const oppositeShortcut =
+    labels.opposite === multiline.opposite
+      ? labels.opposite
+      : t("composerSettings.followUpMultilineShortcut", {
+          shortcut: labels.opposite,
+          multiline: multiline.opposite,
+        });
   const mod = isMacPlatform() ? "\u2318" : "Ctrl";
   const sendDescriptionKey = {
     enter: "composerSettings.sendEnterDescription",
@@ -89,7 +98,7 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
           <SettingsRow
             label={t("composerSettings.followUp")}
             description={t("composerSettings.followUpDescription", {
-              shortcut: labels.opposite,
+              shortcut: oppositeShortcut,
             })}
             hint={t("composerSettings.steerDescription")}
           >
