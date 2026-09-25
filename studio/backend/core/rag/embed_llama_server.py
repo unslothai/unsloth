@@ -174,6 +174,9 @@ class LlamaServerBackend:
         self._operation_condition = threading.Condition()
         self._active_operations = 0
         self._operation_local = threading.local()
+        # Immutable repo/pooling pair from this thread's last completed encode. The backend object
+        # itself is shared and can switch models before its caller constructs the vector identity.
+        self._served_identity_local = threading.local()
         self._closed = False
         self._process: subprocess.Popen | None = None
         self._port: int | None = None
@@ -1130,8 +1133,15 @@ class LlamaServerBackend:
         """Embed texts -> (N, dim) float32. ``model_name`` pins which GGUF serves
         the request, so a Settings change cannot answer it from another model.
         Normalizes in Python to match the ST backend."""
-        with self._operation():
-            return self._encode_active(texts, normalize = normalize, model_name = model_name)
+        self._served_identity_local.value = None
+        with self._operation(), self._serve_lock:
+            vectors = self._encode_active(texts, normalize = normalize, model_name = model_name)
+            self._served_identity_local.value = (self._model_repo, self._model_pooling)
+            return vectors
+
+    def served_embedding_identity(self) -> tuple[str | None, str | None] | None:
+        """Repo and pooling captured by this thread's last completed encode."""
+        return getattr(self._served_identity_local, "value", None)
 
     def _encode_active(
         self,

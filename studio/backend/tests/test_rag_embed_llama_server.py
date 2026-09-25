@@ -1797,6 +1797,78 @@ def test_llama_identity_rechecks_a_stopped_backends_replaced_gguf(monkeypatch, t
     assert embeddings._identity(True, model, backend) == legacy + ":last"
 
 
+def test_encode_identity_keeps_the_callers_snapshot_when_another_model_takes_over(monkeypatch):
+    """The shared backend can switch models after an encode returns. Each thread must retain
+    the immutable repo and pooling that served its own vectors, not the backend's later state."""
+    backend = LlamaServerBackend()
+    model_a, model_b = "org/a", "org/b"
+    repo_a, repo_b = "org/a-GGUF", "org/b-GGUF"
+    identities = {}
+    first_waiting = threading.Event()
+    second_done = threading.Event()
+
+    monkeypatch.setattr(embeddings, "_get_backend", lambda _model = None: backend)
+    monkeypatch.setattr(
+        config,
+        "effective_gguf_repo_for_embedding_model",
+        lambda model: repo_a if model == model_a else repo_b,
+    )
+
+    def fake_ready(model):
+        backend._model_repo = repo_a if model == model_a else repo_b
+        backend._model_pooling = "last" if model == model_a else "mean"
+
+    monkeypatch.setattr(backend, "_ensure_ready", fake_ready)
+
+    def fake_encode_active(
+        texts,
+        *,
+        model_name = None,
+        **_kwargs,
+    ):
+        backend._ensure_ready(model_name)
+        return np.zeros((len(texts), 2), dtype = np.float32)
+
+    monkeypatch.setattr(backend, "_encode_active", fake_encode_active)
+    real_identity = embeddings._identity
+
+    def delayed_identity(
+        is_llama,
+        name,
+        served = None,
+        served_identity = None,
+    ):
+        if name == model_a:
+            first_waiting.set()
+            assert second_done.wait(timeout = 2)
+        else:
+            second_done.set()
+        if served_identity is None:
+            return real_identity(is_llama, name, served)
+        return real_identity(is_llama, name, served, served_identity)
+
+    monkeypatch.setattr(embeddings, "_identity", delayed_identity)
+
+    def run(model):
+        identities[model] = embeddings.encode_with_identity(["x"], model_name = model)[1]
+
+    first = threading.Thread(target = run, args = (model_a,))
+    second = threading.Thread(target = run, args = (model_b,))
+    first.start()
+    assert first_waiting.wait(timeout = 2)
+    second.start()
+    first.join(timeout = 2)
+    second.join(timeout = 2)
+
+    assert not first.is_alive() and not second.is_alive()
+    assert identities[model_a] == config.embedding_identity(
+        "llama-server", model_a, gguf_repo = repo_a, pooling = "last"
+    )
+    assert identities[model_b] == config.embedding_identity(
+        "llama-server", model_b, gguf_repo = repo_b, pooling = "mean"
+    )
+
+
 def test_llama_identity_is_not_predicted_from_a_fallback_repo(monkeypatch, tmp_path):
     """The loader serves only the desired repo from cache before going online, so a
     fallback repo's cached GGUF may not be what the next encode loads."""
