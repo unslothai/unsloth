@@ -87,7 +87,7 @@ def is_denied_system_path(path: str) -> bool:
         # \\?\UNC\server\share is \\server\share. Self-contained: tests lift this function out.
         for extended, plain in (("\\\\?\\unc\\", "\\\\"), ("\\\\?\\", "")):
             if check.startswith(extended):
-                check = plain + check[len(extended):]
+                check = plain + check[len(extended) :]
                 break
     elif system == "Darwin":
         # APFS and HFS+ ignore case by default: /LIBRARY is /Library.

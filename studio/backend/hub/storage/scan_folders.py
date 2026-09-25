@@ -86,7 +86,7 @@ def _comparable_path(path: str) -> str:
         check = os.path.normcase(path)
         for extended, plain in _EXTENDED_PREFIXES:
             if check.startswith(extended):
-                return plain + check[len(extended):]
+                return plain + check[len(extended) :]
         return check
     if system == "Darwin":
         return path.casefold()
@@ -99,7 +99,9 @@ def is_within_any(path: str, prefixes) -> bool:
     check = _comparable_path(path)
     for prefix in prefixes:
         prefix = _comparable_path(str(prefix)).rstrip(os.sep) or os.sep
-        if check == prefix or check.startswith(prefix if prefix.endswith(os.sep) else prefix + os.sep):
+        if check == prefix or check.startswith(
+            prefix if prefix.endswith(os.sep) else prefix + os.sep
+        ):
             return True
     return False
 
