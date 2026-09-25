@@ -655,21 +655,6 @@ def _accelerator_indices(device_map):
     return indices
 
 
-def _keep_in_fp32_names(model, target_dtype):
-    names = set()
-    for module in model.modules():
-        for attr, applies in (
-            ("_keep_in_fp32_modules_strict", True),
-            ("_keep_in_fp32_modules", target_dtype == torch.float16),
-        ):
-            keep = getattr(module, attr, None) if applies else None
-            if isinstance(keep, str):
-                keep = (keep,)
-            if isinstance(keep, (list, tuple, set, frozenset)):
-                names.update(k for k in keep if isinstance(k, str) and k)
-    return names
-
-
 def _model_spans_devices(model):
     """Judged from real placement, not ``is_model_parallel`` (also True for a model on one non-default card)."""
     for module in model.modules():
@@ -685,37 +670,16 @@ def _model_spans_devices(model):
     return len(devices) > 1
 
 
-def _full_eval_autocasts(trainer):
-    accelerator = getattr(trainer, "accelerator", None)
-    if accelerator is not None and hasattr(accelerator, "native_amp"):
-        # native_amp is False for fp16 on CPU: no autocast there.
-        handler = getattr(accelerator, "autocast_handler", None)
-        return (
-            bool(accelerator.native_amp)
-            and getattr(accelerator, "mixed_precision", None) in ("fp16", "bf16")
-            and getattr(handler, "enabled", True) is not False
-        )
-    args = getattr(trainer, "args", None)
-    return bool(getattr(args, "fp16", False) or getattr(args, "bf16", False))
-
-
-def _cast_frozen_for_full_eval(trainer, model, target_dtype, device):
-    """Cast only frozen fp32 params (never updated, so training is unaffected), only under autocast; split models are not moved."""
-    if _full_eval_autocasts(trainer):
-        keep = _keep_in_fp32_names(model, target_dtype)
-        with torch.no_grad():
-            for name, param in model.named_parameters():
-                if param.requires_grad or param.dtype not in (torch.float32, torch.float64):
-                    continue
-                if keep and any(f".{k}." in f".{name}." for k in keep):
-                    continue
-                param.data = param.data.to(dtype = target_dtype)
-    if device is not None and not _model_spans_devices(model):
-        device = torch.device(device)
-        if device.type == "cuda" and device.index is None and torch.cuda.is_available():
-            device = torch.device("cuda", torch.cuda.current_device())
-        if any(t.device != device for t in model.parameters()):
-            model.to(device = device)
+def _place_for_full_eval(model, device):
+    """Move to ``args.device`` (``Trainer.__init__`` skips placement under full eval); never cast: an in-place cast of
+    frozen weights rounds fp32 bases for later training and corrupts packed ``Params4bit`` float quant storage."""
+    if device is None or _model_spans_devices(model):
+        return
+    device = torch.device(device)
+    if device.type == "cuda" and device.index is None and torch.cuda.is_available():
+        device = torch.device("cuda", torch.cuda.current_device())
+    if any(t.device != device for t in model.parameters()):
+        model.to(device = device)
 
 
 def _wrap_full_eval_keeps_trainable_dtype(trainer_cls):
@@ -740,14 +704,10 @@ def _wrap_full_eval_keeps_trainable_dtype(trainer_cls):
                     or getattr(self, "is_fsdp_enabled", False)
                 ):
                     return original(self, *args, **kwargs)
-                target_dtype = torch.float16 if fp16_full_eval else torch.bfloat16
                 try:
-                    _cast_frozen_for_full_eval(
-                        self, model, target_dtype, getattr(train_args, "device", None)
-                    )
+                    _place_for_full_eval(model, getattr(train_args, "device", None))
                 except Exception as e:
-                    # Only frozen weights can have been cast, so evaluating as they are is safe.
-                    logger.info(f"Unsloth: Full eval runs without casting the frozen weights: {e}")
+                    logger.info(f"Unsloth: Full eval could not move the model to args.device: {e}")
                 try:
                     train_args.fp16_full_eval = False
                     train_args.bf16_full_eval = False

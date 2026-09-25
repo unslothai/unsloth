@@ -18,10 +18,8 @@ from real_accelerator import has_real_cuda
 SOURCE_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl.py"
 HELPERS = (
     "_accelerator_indices",
-    "_keep_in_fp32_names",
     "_model_spans_devices",
-    "_full_eval_autocasts",
-    "_cast_frozen_for_full_eval",
+    "_place_for_full_eval",
     "_wrap_full_eval_keeps_trainable_dtype",
 )
 
@@ -83,8 +81,8 @@ def test_wrapper_is_applied_to_every_generated_trainer():
 transformers = pytest.importorskip("transformers")
 
 
-def _tiny_model(frozen_dtype = torch.float32):
-    """Attention projections trainable in fp32; the rest frozen in ``frozen_dtype``."""
+def _tiny_model():
+    """Attention projections trainable, the rest frozen, all fp32."""
     torch.manual_seed(0)
     config = transformers.LlamaConfig(
         vocab_size = 64,
@@ -100,8 +98,6 @@ def _tiny_model(frozen_dtype = torch.float32):
     for name, param in model.named_parameters():
         trainable = "q_proj" in name or "v_proj" in name
         param.requires_grad_(trainable)
-        if not trainable:
-            param.data = param.data.to(frozen_dtype)
     return model
 
 
@@ -163,15 +159,11 @@ def _trainer(
     )
 
 
-def _half(precision):
-    return torch.float16 if precision == "fp16" else torch.bfloat16
-
-
 def _state(model):
     return {
         name: (t.data_ptr(), t.dtype, t.detach().clone())
         for name, t in list(model.named_parameters()) + list(model.named_buffers())
-        if t.is_floating_point() and (not isinstance(t, torch.nn.Parameter) or t.requires_grad)
+        if t.is_floating_point()
     }
 
 
@@ -196,7 +188,7 @@ def test_premise_transformers_leaves_the_whole_model_cast(tmp_path):
 
 @pytest.mark.parametrize("precision", ["bf16", "fp16"])
 @pytest.mark.parametrize("entry", ["evaluate", "predict"])
-def test_standalone_eval_casts_only_frozen_weights(tmp_path, precision, entry):
+def test_standalone_eval_leaves_every_weight_untouched(tmp_path, precision, entry):
     trainer = _trainer(tmp_path, precision)
     model = trainer.model
     before = _state(model)
@@ -208,22 +200,13 @@ def test_standalone_eval_casts_only_frozen_weights(tmp_path, precision, entry):
         trainer.predict(_Rows())
 
     _assert_untouched(model, before)
-    # No fp16 autocast on CPU, so nothing may be cast there.
-    frozen = _half(precision) if trainer.accelerator.native_amp else torch.float32
-    for name, param in model.named_parameters():
-        if not param.requires_grad:
-            assert param.dtype is frozen, name
     assert getattr(trainer.args, f"{precision}_full_eval") is True
 
 
 @pytest.mark.parametrize("precision", ["bf16", "fp16"])
 def test_standalone_eval_matches_an_eval_inside_train(tmp_path, precision):
-    half = _half(precision)
-    first = _trainer(tmp_path / "a", precision, model = _tiny_model(half))
-    if not first.accelerator.native_amp:
-        pytest.skip(f"no {precision} autocast on this device, so a half base cannot run here")
-    standalone = first.evaluate()
-    in_train = _trainer(tmp_path / "b", precision, model = _tiny_model(half))
+    standalone = _trainer(tmp_path / "a", precision).evaluate()
+    in_train = _trainer(tmp_path / "b", precision)
     in_train.is_in_train = True
     try:
         reference = in_train.evaluate()
@@ -246,14 +229,10 @@ def test_evaluate_then_train_matches_train_alone(tmp_path):
     first.evaluate()
     first.train()
     second = _trainer(tmp_path / "b", "bf16")
-    for p in second.model.parameters():
-        if not p.requires_grad:
-            p.data = p.data.to(torch.bfloat16)
     second.train()
     for (name, p1), (_, p2) in zip(first.model.named_parameters(), second.model.named_parameters()):
-        if p1.requires_grad:
-            assert p1.dtype is torch.float32, name
-            assert torch.equal(p1, p2), name
+        assert p1.dtype is p2.dtype, name
+        assert torch.equal(p1, p2), name
 
 
 def test_evaluate_after_train_then_resume(tmp_path):
@@ -292,27 +271,15 @@ def test_no_full_eval_is_untouched(tmp_path):
     assert {p.dtype for p in trainer.model.parameters()} == {torch.float32}
 
 
-def test_keep_in_fp32_modules_are_not_cast(tmp_path):
-    model = _tiny_model()
-    model._keep_in_fp32_modules_strict = ["lm_head"]
-    trainer = _trainer(tmp_path, "bf16", model = model)
-    trainer.evaluate()
-    assert model.lm_head.weight.dtype is torch.float32
-    assert model.model.embed_tokens.weight.dtype is torch.bfloat16
-
-
 def test_split_model_is_not_moved():
     """Split model must not be collapsed; cpu/meta simulates a split."""
     helpers = _load_helpers()
-
-    class _Trainer:
-        args = transformers.TrainingArguments(output_dir = "unused", use_cpu = True, bf16 = True)
 
     model = _tiny_model()
     model.model.layers[1].to("meta")
     model.hf_device_map = {"model.layers.0": "cpu", "model.layers.1": "meta"}
     before = {n: p.device for n, p in model.named_parameters()}
-    helpers["_cast_frozen_for_full_eval"](_Trainer(), model, torch.bfloat16, torch.device("cpu"))
+    helpers["_place_for_full_eval"](model, torch.device("cpu"))
     assert {n: p.device for n, p in model.named_parameters()} == before
 
     spans = helpers["_model_spans_devices"]
@@ -328,13 +295,13 @@ def test_split_model_is_not_moved():
     assert not spans(_tiny_model())
 
 
-def test_a_failing_cast_still_evaluates(tmp_path):
+def test_a_failing_placement_still_evaluates(tmp_path):
     helpers = _load_helpers()
 
-    def cast_then_fail(trainer, model, target_dtype, device):
+    def fail(model, device):
         raise RuntimeError("boom")
 
-    helpers["_cast_frozen_for_full_eval"] = cast_then_fail
+    helpers["_place_for_full_eval"] = fail
     trainer = _trainer(tmp_path, "bf16", helpers = helpers)
     before = _state(trainer.model)
     assert "eval_loss" in trainer.evaluate()
@@ -343,18 +310,18 @@ def test_a_failing_cast_still_evaluates(tmp_path):
     assert any("boom" in m for m in helpers["logger"].messages)
 
 
-@pytest.mark.parametrize("where", ["cast", "eval"])
+@pytest.mark.parametrize("where", ["place", "eval"])
 def test_keyboard_interrupt_leaves_flags_and_weights(tmp_path, where):
     """BaseException propagates with flags restored."""
     helpers = _load_helpers()
-    if where == "cast":
-        real_cast = helpers["_cast_frozen_for_full_eval"]
+    if where == "place":
+        real_place = helpers["_place_for_full_eval"]
 
-        def cast_then_interrupt(trainer, model, target_dtype, device):
-            real_cast(trainer, model, target_dtype, device)
+        def place_then_interrupt(model, device):
+            real_place(model, device)
             raise KeyboardInterrupt
 
-        helpers["_cast_frozen_for_full_eval"] = cast_then_interrupt
+        helpers["_place_for_full_eval"] = place_then_interrupt
     trainer = _trainer(tmp_path, "fp16", helpers = helpers)
     if where == "eval":
 
@@ -424,9 +391,9 @@ def test_split_model_evaluate_train_evaluate_on_two_gpus(tmp_path):
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not _cuda_kernels_run(1), reason = "runs the generated SFTTrainer on a GPU")
-@pytest.mark.parametrize("dtype", ["float16", "bfloat16"])
+@pytest.mark.parametrize("dtype", ["float16", "bfloat16", "float32"])
 def test_generated_sft_trainer_evaluate_then_train(tmp_path, dtype):
-    """On main fp16 raised "Attempting to unscale FP16 gradients"."""
+    """On main fp16 raised "Attempting to unscale FP16 gradients"; a float32 base stays float32 (frozen too)."""
     from unsloth import FastLanguageModel
     from datasets import Dataset
     from trl import SFTConfig, SFTTrainer
@@ -461,11 +428,11 @@ def test_generated_sft_trainer_evaluate_then_train(tmp_path, dtype):
         ),
     )
     assert trainer.args.fp16_full_eval or trainer.args.bf16_full_eval
-    before = {n: p.dtype for n, p in trainer.model.named_parameters() if p.requires_grad}
-    assert set(before.values()) == {torch.float32}
+    before = {n: p.dtype for n, p in trainer.model.named_parameters()}
+    assert {before[n] for n, p in trainer.model.named_parameters() if p.requires_grad} == {
+        torch.float32
+    }
     trainer.evaluate()
-    after = {n: p.dtype for n, p in trainer.model.named_parameters() if p.requires_grad}
-    assert after == before
+    assert {n: p.dtype for n, p in trainer.model.named_parameters()} == before
     trainer.train()
-    after = {n: p.dtype for n, p in trainer.model.named_parameters() if p.requires_grad}
-    assert after == before
+    assert {n: p.dtype for n, p in trainer.model.named_parameters()} == before
