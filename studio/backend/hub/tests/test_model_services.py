@@ -1490,6 +1490,38 @@ def test_local_inventory_lists_a_registered_hf_home(monkeypatch, tmp_path, regis
     assert [(row.source, row.model_id) for row in rows] == [("hf_cache", "Org/Model-GGUF")]
 
 
+def test_local_inventory_checks_for_hf_home_hub_off_the_event_loop(monkeypatch, tmp_path):
+    _hf_home_with_gguf(tmp_path / "hf_home")
+    monkeypatch.setattr(local_inventory, "note_scan_folder_scanned", lambda *_a, **_k: None)
+    real = local_inventory.hf_cache_scan.scan_folder_hf_caches
+    on_loop = []
+
+    def _spy(folder):
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return real(folder)
+
+    monkeypatch.setattr(local_inventory.hf_cache_scan, "scan_folder_hf_caches", _spy)
+    asyncio.run(
+        local_inventory._collect_models_from_default_sources(
+            tmp_path / "models",
+            tmp_path / "hf",
+            tmp_path / "legacy",
+            tmp_path / "default",
+            (),
+            (),
+            (),
+            (),
+            [{"path": str(tmp_path / "hf_home")}],
+        )
+    )
+
+    assert on_loop and not any(on_loop)
+
+
 def test_list_local_gguf_variants_skips_big_endian_sibling(tmp_path):
     (tmp_path / "model-Q4_K_M-be.gguf").write_bytes(b"x" * 100)
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"y" * 10)

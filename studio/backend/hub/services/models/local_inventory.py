@@ -694,7 +694,7 @@ async def _collect_models_from_default_sources(
     for folder in custom_folders:
         folder_path = Path(normalize_path(folder["path"])).expanduser()
         hf_caches = []
-        for cache_dir in hf_cache_scan.scan_folder_hf_caches(folder_path):
+        for cache_dir in await asyncio.to_thread(hf_cache_scan.scan_folder_hf_caches, folder_path):
             discovered = await _scan_source(
                 "custom HF cache",
                 lambda path: _discover_hf_cache(path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES),
