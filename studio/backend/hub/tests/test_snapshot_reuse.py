@@ -374,11 +374,13 @@ def test_superseded_partial_is_removed_unless_protected(tmp_path):
         [ExpectedFile("model.safetensors", len(data), digest)],
         protected_blob_hashes = frozenset({digest}),
     )
-    assert protected.reused == ("model.safetensors",)
+    # A peer is downloading it: no pointer, or its finished blob would stay behind as a copy.
+    assert protected.reused == ()
+    assert not (repo_dir / "snapshots" / NEW / "model.safetensors").exists()
     assert partial.exists()
 
-    (repo_dir / "snapshots" / NEW / "model.safetensors").unlink()
     _reuse(tmp_path, [ExpectedFile("model.safetensors", len(data), digest)])
+    assert (repo_dir / "snapshots" / NEW / "model.safetensors").exists()
     assert not partial.exists()
 
 

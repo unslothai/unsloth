@@ -357,6 +357,10 @@ def reuse_unchanged_snapshot_files(
             digest = getattr(item, "sha256", None)
             if not expected_path_is_safe(path) or size <= 0 or digest_kind(digest) is None:
                 continue
+            # A peer is fetching this blob: a pointer placed now makes huggingface_hub keep its
+            # finished blob in blobs/ as a second copy (it links only when the pointer is absent).
+            if digest in protected_blob_hashes:
+                continue
             if _needs_reuse(repo_dir, target_root / path, digest):
                 pending[path] = (size, digest)
         if not pending:
