@@ -109,8 +109,7 @@ fn should_restore_saved_layout(config_dir: &Path, state_file_name: &str) -> bool
     is_initialized(config_dir) || !is_setup_window_size(width, height)
 }
 
-/// Decide before Tauri constructs the main window: plugin resize events can
-/// replace its saved size while the renderer is still checking the backend.
+/// Checked before the main window exists, so setup-size resize events cannot overwrite the saved state.
 pub(crate) fn should_restore_initial_window_state(
     config_dir: &Path,
     state_file_name: &str,

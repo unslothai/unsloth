@@ -157,8 +157,7 @@ export async function finalizeAppWindowLayout<Monitor extends WorkAreaMonitor>({
   isCurrent,
 }: FinalizeAppWindowLayoutOptions<Monitor>): Promise<void> {
   if (!isCurrent()) return;
-  // The plugin returns before native restore events necessarily apply its size.
-  // Revealing now can expose the hidden setup-sized window for one frame.
+  // restoreState returns before native resize lands; showing now flashes the setup size.
   if (restored) {
     await waitForSettled?.();
     if (!isCurrent()) return;
@@ -168,8 +167,7 @@ export async function finalizeAppWindowLayout<Monitor extends WorkAreaMonitor>({
   // A restored hidden autostart cannot reliably resolve its saved monitor yet.
   // Keep the plugin-restored geometry untouched until native tray reveal.
   if (restored && !shown) return;
-  // Showing can change the resolved monitor (e.g. a compact secondary), so
-  // remeasure before applying its bounds without exposing the old geometry.
+  // Showing can change the resolved monitor (e.g. a compact secondary).
   if (restored) {
     if (!isCurrent()) return;
     measured = (await measure()) ?? measured;

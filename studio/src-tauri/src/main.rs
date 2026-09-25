@@ -2091,10 +2091,8 @@ fn main() {
 
     let mut context = tauri::generate_context!();
     extend_csp_with_hf_endpoints(&mut context);
-    // Restore a previously usable app layout while the native window is still
-    // hidden. Otherwise its initial setup dimensions can overwrite the plugin
-    // cache before the renderer gets a chance to restore the saved size.
-    // A missing backend still starts in the small setup window.
+    // Restore while hidden, else the 760x560 setup size overwrites the saved layout.
+    // Without an installed backend the window stays setup-sized.
     let restore_initial_layout = dirs::config_dir().is_some_and(|dir| {
         app_layout::should_restore_initial_window_state(
             &dir.join(&context.config().identifier),
