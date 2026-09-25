@@ -202,3 +202,28 @@ class TestOvercommitNotice:
         msg = LlamaCppBackend._cuda_context_overcommit_notice(65536, 32768, None)
         for word in ("cannot load", "refused", "aborted", "will not start"):
             assert word not in msg.lower()
+
+
+def _launch_explicit_ctx(tmp_path, monkeypatch, model_gb, n_ctx):
+    from test_llama_cpp_placement import _backend as _placement_backend, _launch
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    backend, gguf = _placement_backend(tmp_path, vulkan = False, memory = [(0, 24_576, 24_576)])
+    backend._get_gguf_size_bytes = lambda _path: int(model_gb * GIB)
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx) * 64 * 1024
+    backend._estimate_compute_buffer_bytes = lambda **k: 1
+    cmd = _launch(backend, gguf, n_ctx = n_ctx)["cmd"]
+    assert cmd[cmd.index("--fit") + 1] == "on"
+    return backend.last_load_warning or ""
+
+
+def test_the_notice_names_a_context_that_fits(tmp_path, monkeypatch):
+    warning = _launch_explicit_ctx(tmp_path, monkeypatch, model_gb = 18, n_ctx = 131072)
+    assert "does not fit in this GPU's memory" in warning
+
+
+def test_no_context_is_offered_when_the_weights_alone_overflow(tmp_path, monkeypatch):
+    """40 GB of weights on a 24 GB card: no context fits, so none may be offered."""
+    warning = _launch_explicit_ctx(tmp_path, monkeypatch, model_gb = 40, n_ctx = 32768)
+    assert "The largest that fits is" not in warning

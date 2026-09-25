@@ -77,6 +77,7 @@ from core.inference.llama_server_args import (
     _CACHE_RAM_FLAGS,
     _CTX_CHECKPOINTS_FLAGS,
     _DEVICE_FLAGS,
+    _FIT_FLAGS,
     _GPU_LAYER_FLAGS,
     _LAYER_OFFLOAD_FLAGS,
     _MOE_OFFLOAD_FLAGS,
@@ -85,6 +86,7 @@ from core.inference.llama_server_args import (
     _TENSOR_SPLIT_FLAGS,
     _effective_tensor_parallel,
     _flag_name,
+    _last_flag_value,
     _tensor_parallel_matches_loaded,
     LLAMA_CTX_CHECKPOINTS_DEFAULT,
     apply_load_mode_policy,
@@ -14582,29 +14584,42 @@ class LlamaCppBackend:
         return max(deltas) if deltas else None
 
     @staticmethod
-    def _argv_claims_full_offload(argv: Optional[Sequence[str]]) -> bool:
+    def _argv_claims_full_offload(
+        argv: Optional[Sequence[str]], env: Optional[Mapping[str, str]] = None
+    ) -> bool:
         """Whether this argv (after retry rungs rewrote it) still pins every layer; last-wins."""
         if not argv:
             return False
-        tokens = list(argv)
+        tokens = [str(t) for t in argv]
+        try:
+            ngl = _last_flag_value(tokens, _GPU_LAYER_FLAGS)
+            fit = _last_flag_value(tokens, _FIT_FLAGS)
+        except ValueError:
+            return False
+        if (ngl or "").strip() != "-1" or (
+            fit or ""
+        ).strip().lower() not in _LLAMA_ARG_FALSE_VALUES:
+            return False
+        # User extras are appended after the pin and can keep weights or the KV cache on
+        # the host deliberately (--cpu-moe, -ot, -nkvo, --device none): not a spill.
+        source_env = os.environ if env is None else env
+        return not (
+            _args_place_tensors_on_cpu(tokens)
+            or _env_places_tensors_on_cpu(source_env)
+            or _device_selection_is_cpu(tokens, source_env)
+            or not _kv_offload_from_args(tokens, source_env)
+        )
 
-        def _last(flag_names, default = None):
-            value = default
-            for i, tok in enumerate(tokens[:-1]):
-                if tok in flag_names:
-                    value = tokens[i + 1]
-            return value
-
-        ngl = _last({"-ngl", "--gpu-layers", "--n-gpu-layers"})
-        fit = _last({"-fit", "--fit"})
-        return ngl == "-1" and fit == "off"
-
-    def _sample_residency_baseline(self, argv: Optional[Sequence[str]] = None) -> None:
+    def _sample_residency_baseline(
+        self,
+        argv: Optional[Sequence[str]] = None,
+        env: Optional[Mapping[str, str]] = None,
+    ) -> None:
         """Read free VRAM on the pinned cards right before each spawn; disarm on any failure."""
         pinned = self._pin_gpu_indices
         if self._pin_resident_floor_bytes is None or not pinned:
             return
-        if not self._argv_claims_full_offload(argv):
+        if not self._argv_claims_full_offload(argv, env):
             self._pin_resident_floor_bytes = None
             self._pin_gpu_indices = None
             self._pin_baseline_free_mib = None
@@ -24031,6 +24046,7 @@ class LlamaCppBackend:
                 # launched context. Flushed past those two, appending if one spoke.
                 _unmeasured_ctx_notice: Optional[str] = None
                 _cuda_ctx_notice: Optional[str] = None
+                _ctx_cap_fits = False
                 total_by_idx: dict[int, int] = {}
                 _gpu_mem: list[tuple[int, int, int]] = []
                 model_size = None  # set in the fit try; used by the APU RAM guard
@@ -25513,6 +25529,7 @@ class LlamaCppBackend:
                                     best_cap = max(best_cap, capped)
                             if best_cap > 0:
                                 max_available_ctx = best_cap
+                                _ctx_cap_fits = True
                             else:
                                 # Weights exceed 90% of every GPU subset, so no
                                 # context fits. Anchor the UI "safe zone" at the
@@ -25552,7 +25569,9 @@ class LlamaCppBackend:
                             )
                             # No silent shrink: effective_ctx stays == requested_ctx.
                             # use_fit = the pin failed; warn (Windows spills silently).
-                            if use_fit and not _cuda_ctx_notice:
+                            # Only when some context fits: else max_available_ctx is the
+                            # Auto fallback anchor, and "lower it to N" would not fit either.
+                            if use_fit and _ctx_cap_fits and not _cuda_ctx_notice:
                                 _q8_fits = False
                                 if (cache_type_kv or "f16").strip().lower() in (
                                     "f16",
@@ -29122,7 +29141,7 @@ class LlamaCppBackend:
                             supports_cache_ram = bool(server_caps.get("supports_cache_ram")),
                         )
                         # After teardown of any replaced model; outside the spawn lock.
-                        self._sample_residency_baseline(run_cmd)
+                        self._sample_residency_baseline(run_cmd, env)
                         # Check with publication under one lock: a spawn either
                         # publishes first and the sweep kills it, or sees the flag
                         # and never starts. Across Popen only, never the wait.

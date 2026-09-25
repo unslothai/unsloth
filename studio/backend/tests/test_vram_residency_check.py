@@ -138,7 +138,6 @@ def test_baseline_is_taken_after_a_replaced_model_is_torn_down(on_windows):
     assert backend._verify_vram_residency() is None, "teardown was booked as a shortfall"
 
 
-
 NVIDIA_LUID = "luid_0x00000000_0x0000c350_phys_0"
 IGPU_LUID = "luid_0x00000000_0x00001234_phys_0"
 
@@ -262,6 +261,36 @@ def test_the_spill_plan_disarms_the_check(on_windows):
         ["llama-server", "-m", "x.gguf", "-ot", "blk\\.[0-9]+\\.ffn=CPU", "--fit", "on"]
     )
     assert backend._pin_resident_floor_bytes is None
+
+
+@pytest.mark.parametrize(
+    "extra, env",
+    [
+        (["--cpu-moe"], {}),
+        (["-ot", "exps=CPU"], {}),
+        (["--n-cpu-moe", "30"], {}),
+        (["-nkvo"], {}),
+        (["--device", "none"], {}),
+        (["--gpu-layers=10"], {}),
+        (["--fit=on"], {}),
+        ([], {"LLAMA_ARG_CPU_MOE": "1"}),
+        ([], {"LLAMA_ARG_NO_KV_OFFLOAD": "1"}),
+    ],
+)
+def test_user_host_placement_after_the_pin_is_not_a_spill(on_windows, extra, env):
+    """User extras follow the pin, so host placement they ask for is not a spill."""
+    backend = _Backend([(0, 16384.0 - 3000.0, 16384)])
+    backend._arm_residency_check(QWEN3_VL_8B_FLOOR, [0])
+    backend._sample_residency_baseline(PIN_ARGV + extra, env)
+    assert backend._verify_vram_residency() is None
+    assert backend._warnings == []
+
+
+def test_a_plain_pin_under_a_clean_env_stays_armed(on_windows):
+    backend = _Backend([(0, 16384.0 - 3000.0, 16384)])
+    backend._arm_residency_check(QWEN3_VL_8B_FLOOR, [0])
+    backend._sample_residency_baseline(PIN_ARGV + ["--n-cpu-moe", "0"], {})
+    assert backend._verify_vram_residency() is not None
 
 
 def test_abstains_when_free_memory_did_not_drop(on_windows):
