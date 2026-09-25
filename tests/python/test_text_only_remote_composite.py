@@ -2,6 +2,7 @@
 
 import ast
 import copy
+import functools
 import json
 import re
 import sys
@@ -39,6 +40,7 @@ _HELPERS = (
     "_get_remote_composite_text_only",
     "_merge_key_mapping",
     "_rebase_user_quantization_config",
+    "_trusted_remote_code_commit",
     "_adapter_fits_text_model",
 )
 
@@ -1191,6 +1193,42 @@ def test_loader_and_vision_forward_code_revision_to_the_plan():
                 break
             j += 1
         assert 'code_revision = kwargs.get("code_revision"),' in src[i : j + 1], path.name
+
+
+def test_trusted_commit_names_the_code_revision_commit(tmp_path, monkeypatch):
+    # With code_revision the load ran repo code at that revision, so the export's trusted re-read must be
+    # pinned to its commit, never the weights' commit, whose code the caller did not select.
+    import shutil
+
+    ns = _ns()
+    repo, _ = _write_repo(tmp_path, name = "stamp")
+    repo_id, weights_sha = _cache_as_hub_repo(tmp_path, monkeypatch, repo, repo_id = "fake-org/stamp")
+    root = tmp_path / "hub_cache" / "models--fake-org--stamp"
+    code_sha = "c" * 40
+    shutil.copytree(repo, root / "snapshots" / code_sha)
+    (root / "refs" / "code-branch").write_text(code_sha)
+    # transformers 4.x reads its default cache path at import time, so name the cache explicitly.
+    stamp = functools.partial(
+        ns["_trusted_remote_code_commit"], cache_dir = str(tmp_path / "hub_cache")
+    )
+    assert stamp(repo_id, weights_sha) == weights_sha
+    assert (
+        stamp(repo_id, weights_sha, code_revision = "code-branch", local_files_only = True) == code_sha
+    )
+    assert stamp(repo_id, weights_sha, code_revision = "d" * 40, local_files_only = True) == "d" * 40
+    # Unresolvable: an empty commit, which unsloth-zoo refuses, not None, which it would replace with
+    # the weights' commit.
+    assert stamp(repo_id, weights_sha, code_revision = "gone", local_files_only = True) == ""
+    # A local directory has no commit to pin: unchanged.
+    assert stamp(str(repo), None, code_revision = "code-branch") is None
+
+
+def test_vision_stamp_uses_the_code_revision_commit():
+    vision = VISION_PATH.read_text(encoding = "utf-8")
+    i_stamp = vision.index("model._unsloth_trust_remote_code_commit = (")
+    stamp = vision[i_stamp : vision.index("\n        )\n", i_stamp)]
+    assert "_trusted_remote_code_commit(" in stamp
+    assert 'code_revision = kwargs.get("code_revision"),' in stamp
 
 
 # ---------------------------------------------------------------- adapters on wrapper-only modules

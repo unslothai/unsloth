@@ -82,6 +82,7 @@ from ._utils import (
     _get_remote_composite_text_only,
     _merge_key_mapping,
     _rebase_user_quantization_config,
+    _trusted_remote_code_commit,
     _select_moe_detection_targets,
     set_task_config_attr,
 )
@@ -2219,7 +2220,14 @@ class FastBaseModel:
         # An export that re-reads the repo's config with its code pins it to this commit, never the
         # branch head, which may have changed since the reviewed revision was loaded.
         model._unsloth_trust_remote_code_commit = (
-            (_trusted_code_commit or getattr(model.config, "_commit_hash", None))
+            _trusted_remote_code_commit(
+                model_name,
+                _trusted_code_commit or getattr(model.config, "_commit_hash", None),
+                code_revision = kwargs.get("code_revision"),
+                token = token,
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = local_files_only,
+            )
             if trust_remote_code
             else None
         )

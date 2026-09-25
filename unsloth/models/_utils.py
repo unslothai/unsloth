@@ -1511,6 +1511,47 @@ def _rebase_user_quantization_config(kwargs, key_mapping):
     kwargs["quantization_config"] = qc
 
 
+def _trusted_remote_code_commit(
+    model_name,
+    commit,
+    code_revision = None,
+    token = None,
+    cache_dir = None,
+    local_files_only = False,
+):
+    # The commit whose repo code a trusted load ran, which the export's trusted config re-read pins to (unsloth-zoo).
+    # from_pretrained runs a Hub repo's code at code_revision when given, not at the weights' commit.
+    import os
+
+    if code_revision is None or os.path.isdir(str(model_name)):
+        return commit
+    if re.fullmatch(r"[0-9a-f]{40}", str(code_revision)):
+        return code_revision
+    resolved = None
+    try:
+        from transformers.utils.hub import cached_file, extract_commit_hash
+        path = cached_file(
+            model_name,
+            "config.json",
+            revision = code_revision,
+            token = token,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+        )
+        resolved = extract_commit_hash(path, None)
+    except Exception:
+        pass
+    if resolved is None and not local_files_only:
+        try:
+            from huggingface_hub import HfApi
+            resolved = HfApi().model_info(model_name, revision = code_revision, token = token).sha
+        except Exception:
+            pass
+    # Unresolved: "" rather than None, which unsloth-zoo would replace with config._commit_hash (the
+    # weights' commit, whose code the caller did not select); an empty commit makes it refuse the re-read.
+    return resolved or ""
+
+
 def _merge_key_mapping(kwargs, mapping):
     # Add mapping to from_pretrained kwargs, under any user mapping.
     user_mapping = kwargs.get("key_mapping", None)
