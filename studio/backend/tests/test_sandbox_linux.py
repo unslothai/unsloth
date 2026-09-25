@@ -2226,6 +2226,6 @@ def test_a_bwrap_planted_on_path_is_refused_before_it_runs(monkeypatch, tmp_path
         timeout_seconds = 5,
     )
 
-    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "refusing the bubblewrap on PATH"):
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "trusted system installation"):
         sandbox_linux.prepare(plan)
     assert not marker.exists(), "the planted bwrap was executed"
