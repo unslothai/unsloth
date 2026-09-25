@@ -284,7 +284,9 @@ def _attachment_items() -> list[dict]:
 
     items = []
     for attachment in list_chat_attachments():
-        content_type = attachment.get("contentType") or ""
+        # The essence, as the attachment route reads it: a type is case-insensitive, and a
+        # recorded clip's carries parameters (video/webm;codecs=vp9).
+        content_type = str(attachment.get("contentType") or "").split(";", 1)[0].strip().lower()
         has_bytes = attachment.get("type") == "image" or content_type.startswith(
             ("image/", "audio/", "video/")
         )

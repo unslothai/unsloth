@@ -259,7 +259,12 @@ def get_item_thumbnail(
     return Response(
         content = data,
         media_type = "image/webp",
-        headers = {"Cache-Control": "private, max-age=31536000, immutable", **_NOSNIFF},
+        # Kept apart per sign-in: another account can have an item of the same id and version.
+        headers = {
+            "Cache-Control": "private, max-age=31536000, immutable",
+            "Vary": "Authorization",
+            **_NOSNIFF,
+        },
     )
 
 

@@ -151,6 +151,8 @@ export async function deleteLibraryItem(id: string): Promise<void> {
 export interface LibraryUploadBatch {
   files?: File[];
   nativePathLeases?: string[];
+  /** The session the batch was gathered in, when that came before the upload (a drop's grants). */
+  sessionEpoch?: number;
 }
 
 // The backend's cap per file and per request; a larger batch goes as several requests.
@@ -190,7 +192,10 @@ export async function uploadLibraryFiles(
   for (const lease of leases) requests[0]!.append("nativePathLeases", lease);
   // A sign-out mid-batch ends it, before the next request or a retry: the token would be another
   // account's.
-  const check = sameSession(getAuthSessionEpoch(), "library.toast.signedOutBeforeUpload");
+  const check = sameSession(
+    batch.sessionEpoch ?? getAuthSessionEpoch(),
+    "library.toast.signedOutBeforeUpload",
+  );
   const ids: string[] = [];
   for (const form of requests) {
     check();
