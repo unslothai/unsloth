@@ -344,5 +344,22 @@ def test_a_dynamic_row_count_compiles_one_graph_for_short_and_long_captions():
             want = wrapped(x)
         assert got.shape == (1, m, 48)
         assert torch.equal(got, want), m
-    assert counters["stats"]["unique_graphs"] == 1
+    # torch < 2.8 specialises max() on a symbolic row count (one extra graph, same values); 2.8+ keeps it symbolic.
+    if tuple(int(v) for v in torch.__version__.split(".")[:2]) >= (2, 8):
+        assert counters["stats"]["unique_graphs"] == 1
+    torch._dynamo.reset()
+
+
+@pytest.mark.parametrize("dynamic", [None, False])
+def test_a_static_row_count_still_compiles_fullgraph(dynamic):
+    # A concrete M (dynamic=False, or the first call under automatic dynamic) must trace too: torch.sym_max on an int
+    # is unsupported by dynamo, and a fullgraph region that fails to trace drops the whole DiT to eager.
+    torch.manual_seed(0)
+    wrapped = PadToMinM(nn.Linear(64, 48), min_m = 17, pad_to = 32).eval()
+    torch._dynamo.reset()
+    compiled = torch.compile(wrapped, backend = "eager", dynamic = dynamic, fullgraph = True)
+    for m in (1, 19, 32, 540):
+        x = torch.randn(2, m, 64)
+        with torch.no_grad():
+            assert torch.equal(compiled(x), wrapped(x)), m
     torch._dynamo.reset()

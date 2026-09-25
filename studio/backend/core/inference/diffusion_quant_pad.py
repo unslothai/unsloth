@@ -151,7 +151,9 @@ class PadToMinM(nn.Module):
         if torch.compiler.is_compiling():
             # Traced without a branch on m: `m < pad_to` would guard a dynamic row count to one side, and the first
             # caption past it (H3 i2v: ~540 rows) would recompile. Same rows as below: m's own, then row 0 up to pad_to.
-            rows = torch.arange(torch.sym_max(m, self.pad_to), device = flat.device)
+            # max(m, pad_to) as arithmetic: dynamo on torch 2.8 and older rejects torch.sym_max on a concrete m, and max()
+            # left an `m <= pad_to` guard behind on an inductor cache hit.
+            rows = torch.arange((m + self.pad_to + abs(m - self.pad_to)) // 2, device = flat.device)
             out = self.inner(flat.index_select(0, torch.where(rows < m, rows, 0)))[:m]
         elif m < self.pad_to:
             # Everything below pad_to normalises to pad_to, not just what is below min_m. Clearing the floor takes only
