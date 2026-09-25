@@ -5546,18 +5546,27 @@ def test_attention_trim_installed_and_reported(fake_runtime, monkeypatch):
     assert "hunyuan_attn_trim" in status["speed_optims"]
 
 
-def test_attention_trim_skipped_for_static_shape_and_off_tiers(fake_runtime, monkeypatch):
-    # speed=off must stay bit-identical, and speed=max compiles the blocks with dynamic=False,
-    # where the prompt-dependent trimmed text length would make every prompt a fresh graph.
-    for mode in ("off", "max"):
-        calls = _trim_spy(monkeypatch)
-        backend = VideoBackend()
-        status = backend.load_pipeline(
-            "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = mode
-        )
-        assert status["loaded"] is True, mode
-        assert calls == [], mode
-        assert "hunyuan_attn_trim" not in status["speed_optims"], mode
+def test_attention_trim_skipped_on_the_off_tier(fake_runtime, monkeypatch):
+    calls = _trim_spy(monkeypatch)
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "off"
+    )
+    assert status["loaded"] is True
+    assert calls == []
+    assert "hunyuan_attn_trim" not in status["speed_optims"]
+
+
+@pytest.mark.parametrize("mode", ["eager", "default", "max"])
+def test_attention_trim_installed_on_every_speed_tier(fake_runtime, monkeypatch, mode):
+    calls = _trim_spy(monkeypatch)
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = mode
+    )
+    assert status["loaded"] is True
+    assert len(calls) == 1
+    assert "hunyuan_attn_trim" in status["speed_optims"]
 
 
 def test_every_video_fetch_resolves_both_cache_roots():
