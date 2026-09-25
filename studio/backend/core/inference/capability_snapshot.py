@@ -9,13 +9,13 @@ import functools
 import time
 
 
-def memoize_capability_snapshot(is_complete, retry_after_s: float = 60.0):
+def memoize_capability_snapshot(is_complete, retry_after_s: float = 5.0):
     """Memoize a family-capability snapshot; an incomplete one expires.
 
     A strict probe that races the startup import warm fails transiently (a half-imported
     transformers raised "cannot import name 'CLIPImageProcessor'" for FluxPipeline), so a
     snapshot missing a family is re-probed after ``retry_after_s`` instead of pinned for the
-    process lifetime."""
+    process lifetime. A settled re-probe costs ~0.05 ms, so the next status poll heals it."""
 
     def decorate(fn):
         cache: dict = {}
