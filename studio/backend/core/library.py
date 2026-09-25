@@ -1681,10 +1681,14 @@ def _move_file(entry: Path, dest: Path, log: _MoveLog) -> None:
     if not kept:
         if _renamed(entry, dest, log) is not False:
             return
+        # Copied under a hidden name and renamed into place whole: a crash part way leaves no
+        # partial file under the real name, which the next pass would take for another file.
+        staged = _staging_name(dest)
         try:
-            shutil.copy2(entry, dest, follow_symlinks = False)
+            shutil.copy2(entry, staged, follow_symlinks = False)
+            os.replace(staged, dest)
         except BaseException as exc:
-            _discard(dest)
+            _discard(staged)
             if isinstance(exc, FileNotFoundError) and not os.path.lexists(entry):
                 return
             if isinstance(exc, PermissionError):
@@ -1699,6 +1703,25 @@ def _move_file(entry: Path, dest: Path, log: _MoveLog) -> None:
             _discard(dest)
         raise _in_use_error(entry, exc) from exc
     log.moved.append((entry, dest, kept))
+
+
+_STAGING_SUFFIX = ".moving.tmp"
+
+
+def _staging_name(dest: Path) -> Path:
+    """Where a copy across drives is written before it takes `dest`'s name. A dotted `.tmp`, so
+    a listing hides it and a move passes it by as a save in progress."""
+    return dest.with_name(f".{dest.name}{_STAGING_SUFFIX}")
+
+
+def _clear_staging(folder: Path) -> None:
+    """Drop copies a crash cut short, before the move they belonged to starts again."""
+    try:
+        leftovers = list(folder.rglob(f".*{_STAGING_SUFFIX}"))
+    except OSError:
+        return
+    for leftover in leftovers:
+        _discard(leftover)
 
 
 def _same_bytes(a: Path, b: Path) -> bool:
@@ -1924,6 +1947,7 @@ def _resume_move(key: str) -> None:
             # were leaving takes new ones meanwhile, and the first start with the drive back
             # finishes it.
             logger.warning("library.move_resume_unavailable: %s", target)
+            relocations.wait_for_move(key)
             return
         if not relocations.moving_from_available(key):
             # What is still on its drive waits for it: the move stays open, and is finished on the
@@ -1931,6 +1955,7 @@ def _resume_move(key: str) -> None:
             logger.warning("library.move_resume_source_unavailable: %s", source)
             return
         try:
+            _clear_staging(target)
             if source.is_dir():
                 _move_entries(source, target, _MoveLog())
         except OSError:
@@ -1966,8 +1991,29 @@ class DeleteIncomplete(RuntimeError):
     """A delete that stopped part way; the item is still there to delete again."""
 
 
+# Held by a delete and by an open's check and write, so an open cannot land between a delete's
+# removal of the item and of its row, and bring the row back.
+_overlay_lock = threading.Lock()
+
+
+def mark_opened(item_id: str) -> bool:
+    """Record that the item was just opened, kept for the file it is now. False when it is not
+    there, or is a path whose file is gone."""
+    with _overlay_lock:
+        found = fingerprint(item_id)
+        if found is None and (path_derived(item_id) or not item_exists(item_id)):
+            return False
+        library_db.mark_opened(item_id, fingerprint = found)
+        return True
+
+
 def delete_item(item_id: str) -> bool:
     """Delete an item from its source. Returns False when the source no longer has it."""
+    with _overlay_lock:
+        return _delete_item(item_id)
+
+
+def _delete_item(item_id: str) -> bool:
     kind, _, ref = item_id.partition(":")
     deleted = False
     if kind == "upload":

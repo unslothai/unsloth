@@ -188,13 +188,15 @@ def _source_available(entry: dict) -> bool:
 def _in_use(entry: dict) -> Optional[Path]:
     """The folder `entry` saves into now: its own, or, while a move cut short waits for the drive
     it was moving onto, the folder the files were leaving, where those not moved yet still are.
-    None while neither is there."""
+    That stays in use until the move is taken up again, even once the drive is back: the chosen
+    folder alone would hide what the folder standing in holds. None while neither is there."""
+    source = entry.get("moving_from")
+    standing_in = bool(source) and _source_available(entry) and Path(source).is_dir()
+    if standing_in and entry.get("waiting"):
+        return Path(source)
     if not _unavailable(entry):
         return Path(entry["path"])
-    source = entry.get("moving_from")
-    if source and _source_available(entry) and Path(source).is_dir():
-        return Path(source)
-    return None
+    return Path(source) if standing_in else None
 
 
 def location_dir(key: str, default: Path) -> Path:
@@ -226,6 +228,16 @@ def chosen_available(key: str) -> bool:
     folder a move was leaving stands in for it."""
     entry = _chosen_entry(key)
     return entry is None or not _unavailable(entry)
+
+
+def wait_for_move(key: str) -> None:
+    """Mark `key`'s move cut short as waiting for its chosen folder's drive, which keeps the folder
+    it was leaving in use until the move is taken up again. For this process only: the next load
+    tries the move again."""
+    with _lock:
+        entry = _cache.get(_db_key(), {}).get(key)
+        if entry is not None and entry.get("moving_from"):
+            entry["waiting"] = True
 
 
 def moving_from(key: str) -> Optional[Path]:

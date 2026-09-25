@@ -1560,8 +1560,11 @@ def test_a_move_cut_short_waits_for_the_drive_it_was_moving_onto(client, tmp_pat
     assert _images() == old and len(_files(old)) == 2
     assert _location(client, "images")["available"] is True
     assert "moving_from" in str(get_app_setting("library.locations", {}))
-    # Plugged back in, the next start brings the rest over.
+    # Plugged back in, the old folder stays in use until the move is taken up again: the new one
+    # alone would hide what the old one holds.
     shutil.move(tmp_path / "unplugged", new)
+    assert _images() == old and len(_files(old)) == 2
+    # The next start brings the rest over.
     forget_cache()
     assert _images() == new.resolve() and len(_files(new)) == 3
     assert "moving_from" not in str(get_app_setting("library.locations", {}))
@@ -1576,6 +1579,59 @@ def test_a_move_cut_short_waits_for_the_drive_it_was_moving_onto(client, tmp_pat
     assert str((tmp_path / "Other").resolve()) in response.text
     assert _images() == new.resolve()
     assert "moving_from" not in str(get_app_setting("library.locations", {}))
+
+
+def test_a_copy_across_drives_cut_short_leaves_no_partial_file_for_the_next_start(
+    client, tmp_path, monkeypatch
+):
+    import shutil
+
+    from utils.paths.relocations import forget_cache
+
+    old, new = _images(), tmp_path / "Pictures"
+    _fill(old)
+    monkeypatch.setattr(library, "_rename", _cross_device)
+    real_copy, real_discard = shutil.copy2, library._discard
+
+    def dying_copy(_src, dst, **_kwargs):
+        Path(dst).write_bytes(b"pn")
+        raise _Crash
+
+    monkeypatch.setattr(library.shutil, "copy2", dying_copy)
+    monkeypatch.setattr(library, "_discard", lambda _path: None)
+    with pytest.raises(_Crash):
+        library.move_location("images", str(new))
+    assert [name for name in os.listdir(new) if not name.startswith(".")] == []
+    monkeypatch.setattr(library.shutil, "copy2", real_copy)
+    monkeypatch.setattr(library, "_discard", real_discard)
+    forget_cache()
+    # Each file once, whole, under its own name; nothing half-copied is left.
+    assert _images() == new.resolve()
+    assert _files(new) == ["0.png", "1.png", "2.png"]
+    assert (new / "0.png").read_bytes() == b"png0"
+
+
+def test_an_open_cannot_land_between_a_delete_and_its_row(client, monkeypatch):
+    import threading
+
+    [upload] = _upload(client, ("a.txt", b"a", "text/plain"))
+    _patch(client, id = upload, favorite = True)
+    real = library.item_exists
+
+    def a_delete_meanwhile(item_id, *args):
+        # The item is there when the open looks; a delete then gets as far as it can in a moment.
+        found = real(item_id, *args)
+        deleting = threading.Thread(target = library.delete_item, args = (upload,))
+        deleting.start()
+        deleting.join(0.3)
+        threads.append(deleting)
+        return found
+
+    threads = []
+    monkeypatch.setattr(library, "item_exists", a_delete_meanwhile)
+    assert _post(client, "items/opened", id = upload).status_code == 200
+    threads[0].join()
+    assert upload not in library_db.list_entries()
 
 
 def test_a_new_move_finishes_one_cut_short_first_or_waits_for_its_drive(

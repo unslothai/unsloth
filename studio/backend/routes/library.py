@@ -157,9 +157,8 @@ def patch_item(body: ItemPatch, current_subject: str = Depends(get_current_subje
 def mark_item_opened(body: ItemRef, current_subject: str = Depends(get_current_subject)) -> dict:
     # Only an item that is there, and kept for the file it is now: an open landing after a delete
     # must not leave a row that a file made at the same path later would take for its own.
-    if not library.item_exists(body.id):
+    if not library.mark_opened(body.id):
         raise HTTPException(status_code = 404, detail = "Item not found")
-    library_db.mark_opened(body.id, fingerprint = library.fingerprint(body.id))
     return {"ok": True}
 
 
