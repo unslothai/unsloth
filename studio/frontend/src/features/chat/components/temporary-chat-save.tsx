@@ -1,23 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  AlertDialog,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogMedia,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useAui, useAuiState } from "@assistant-ui/react";
-import { Bookmark02Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
+import { Bookmark02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { useEffect, useId, useState } from "react";
@@ -150,54 +148,59 @@ export function SaveTemporaryChatButton({ className }: { className?: string }) {
           {label}
         </TooltipContent>
       </Tooltip>
-      <AlertDialog
+      <Dialog
         open={open}
         onOpenChange={(next) => {
           if (!saving) setOpen(next);
           if (!next) setDontShowAgain(false);
         }}
       >
-        <AlertDialogContent size="sm" className="gap-4 py-5">
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="absolute top-3 right-3"
-            aria-label="Close"
-            onClick={() => setOpen(false)}
-            disabled={saving}
-          >
-            <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} />
-          </Button>
-          <AlertDialogHeader>
-            <AlertDialogMedia className="bg-primary/15 text-primary mb-1 size-11">
-              <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} className="size-5" />
-            </AlertDialogMedia>
-            <AlertDialogTitle>Save this chat to history?</AlertDialogTitle>
-            <AlertDialogDescription>
-              All messages in this conversation, including earlier messages, will be saved to your
-              chat history. New messages will also be saved.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={saving}>Keep temporary</AlertDialogCancel>
-            <Button onClick={() => void save()} disabled={saving}>
-              {saving ? "Saving…" : "Save chat"}
-            </Button>
-          </AlertDialogFooter>
-          <label
-            htmlFor={checkboxId}
-            className="text-muted-foreground flex cursor-pointer items-center justify-center gap-2 text-sm"
-          >
-            <Checkbox
-              id={checkboxId}
-              checked={dontShowAgain}
-              onCheckedChange={(checked) => setDontShowAgain(checked === true)}
-              disabled={saving}
-            />
-            Don&apos;t show this again
-          </label>
-        </AlertDialogContent>
-      </AlertDialog>
+        <DialogContent
+          className="corner-squircle dialog-soft-surface sm:max-w-md"
+          showCloseButton={!saving}
+        >
+          <DialogHeader className="gap-3">
+            <DialogTitle className="flex items-center gap-2">
+              <HugeiconsIcon
+                icon={Bookmark02Icon}
+                strokeWidth={2}
+                className="text-foreground/80 size-5 shrink-0"
+              />
+              Save this chat to history?
+            </DialogTitle>
+            <DialogDescription>
+              The whole conversation is saved to your history, and new messages are saved too.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex-wrap items-center gap-2 sm:justify-between">
+            <label
+              htmlFor={checkboxId}
+              className="text-muted-foreground flex cursor-pointer items-center gap-2 text-sm"
+            >
+              <Checkbox
+                id={checkboxId}
+                checked={dontShowAgain}
+                onCheckedChange={(checked) => setDontShowAgain(checked === true)}
+                disabled={saving}
+              />
+              Don&apos;t show this again
+            </label>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setOpen(false)}
+                disabled={saving}
+              >
+                Keep temporary
+              </Button>
+              <Button type="button" onClick={() => void save()} disabled={saving}>
+                {saving ? "Saving…" : "Save chat"}
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
