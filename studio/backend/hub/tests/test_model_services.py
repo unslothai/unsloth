@@ -6779,6 +6779,17 @@ def test_the_lmstudio_walk_does_not_descend_into_a_pipeline(tmp_path):
     assert not names & {"vae", "transformer", "text_encoder"}
 
 
+def test_the_walk_does_not_descend_into_an_interrupted_pipeline_copy(tmp_path):
+    root = tmp_path / "scan"
+    pipeline = _write_pipeline(root / "MiniMax-H3-local")
+    (pipeline / "transformer" / "diffusion_pytorch_model.safetensors").unlink()
+
+    names = {Path(row.path).name for row in local_inventory._scan_lmstudio_dir(root)}
+
+    assert names == {"MiniMax-H3-local"}
+    assert model_common._diffusers_pipeline_artifact_kind(pipeline) is None
+
+
 def test_a_scan_folder_pointed_straight_at_a_pipeline_is_not_walked_as_a_publisher(tmp_path):
     """The same walk, entered AT the pipeline. A user adding the model folder itself as a scan
     folder is the obvious thing to do, and it published vae / transformer / text_encoder as three
@@ -6869,10 +6880,12 @@ def test_a_modular_pipeline_root_is_recognised(tmp_path):
         )
     )
     (root / "transformer").mkdir()
-    assert local_inventory._is_diffusers_pipeline_dir(root) is False
+    # Incomplete: still one pipeline to the walk, but not an override-eligible artifact.
+    assert local_inventory._is_diffusers_pipeline_dir(root) is True
+    assert model_common._diffusers_pipeline_artifact_kind(root) is None
     (root / "transformer" / "config.json").write_text("{}")
     (root / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
-    assert local_inventory._is_diffusers_pipeline_dir(root) is True
+    assert model_common._diffusers_pipeline_artifact_kind(root) == "diffusers_modular_pipeline"
 
     conventional = tmp_path / "conventional"
     conventional.mkdir()
@@ -6884,11 +6897,12 @@ def test_a_modular_pipeline_root_is_recognised(tmp_path):
             }
         )
     )
-    assert local_inventory._is_diffusers_pipeline_dir(conventional) is False
+    assert local_inventory._is_diffusers_pipeline_dir(conventional) is True
+    assert model_common._diffusers_pipeline_artifact_kind(conventional) is None
     (conventional / "transformer").mkdir()
     (conventional / "transformer" / "config.json").write_text("{}")
     (conventional / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
-    assert local_inventory._is_diffusers_pipeline_dir(conventional) is True
+    assert model_common._diffusers_pipeline_artifact_kind(conventional) == "diffusers_pipeline"
 
     neither = tmp_path / "neither"
     neither.mkdir()

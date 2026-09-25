@@ -123,7 +123,14 @@ def _diffusers_pipeline_artifact_kind(path: Optional[Path]) -> Optional[LocalArt
 
 
 def _is_diffusers_pipeline_dir(path: Path) -> bool:
-    return _diffusers_pipeline_artifact_kind(path) is not None
+    # Traversal/classification boundary: an interrupted copy is still one pipeline, not loose
+    # components. Completeness gates only artifact_kind.
+    try:
+        return (path / "model_index.json").is_file() or (
+            path / "modular_model_index.json"
+        ).is_file()
+    except OSError:
+        return False
 
 
 def _local_inventory_id(
