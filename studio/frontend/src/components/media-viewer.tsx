@@ -167,8 +167,8 @@ export function MediaViewer({
       >
         <div className="flex items-center gap-2 py-3 pl-6 pr-4">
           <div className="min-w-0 flex-1">
-            <DialogTitle className="truncate text-[15px] font-medium">{title}</DialogTitle>
-            <DialogDescription className="mt-0.5 truncate text-[13px]">
+            <DialogTitle className="truncate text-ui-15 font-medium">{title}</DialogTitle>
+            <DialogDescription className="mt-0.5 truncate text-ui-13">
               {meta}
             </DialogDescription>
           </div>

@@ -23,7 +23,7 @@ function targetKey(target: LibraryTarget): string {
 
 const ROW_INSET = "pl-4 pr-6";
 
-const CELL = "hidden text-[13px] text-muted-foreground sm:block";
+const CELL = "hidden text-ui-13 text-muted-foreground sm:block";
 const ACTIVITY_COLUMN = "w-48 shrink-0";
 const MODIFIED_COLUMN = "w-40 shrink-0";
 const SIZE_COLUMN = "w-28 shrink-0";
@@ -148,7 +148,7 @@ function Row({
         className="flex min-w-0 flex-1 items-center gap-4 rounded-lg py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {tile}
-        <span className="flex min-w-0 items-center gap-2 text-[14px] text-foreground">{name}</span>
+        <span className="flex min-w-0 items-center gap-2 text-ui-14 text-foreground">{name}</span>
         {activity ? (
           <span className={cn(ACTIVITY_COLUMN, CELL, "ml-auto")}>
             {(opened ?? 0) > modified
@@ -208,7 +208,7 @@ export function LibraryList({
       <div className="pb-2">
         <div
           className={cn(
-            "group/library-head relative flex items-center gap-4 text-[13px] text-muted-foreground",
+            "group/library-head relative flex items-center gap-4 text-ui-13 text-muted-foreground",
             ROW_INSET,
           )}
         >

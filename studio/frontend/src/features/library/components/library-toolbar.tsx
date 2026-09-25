@@ -176,7 +176,7 @@ function NewMenu({ onSelect }: { onSelect: (action: NewAction) => void }) {
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className="flex h-9 shrink-0 items-center gap-1.5 rounded-full bg-foreground pl-4 pr-3 font-medium text-[14px] text-background outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex h-9 shrink-0 items-center gap-1.5 rounded-full bg-foreground pl-4 pr-3 font-medium text-ui-14 text-background outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring"
         >
           {t("common.new")}
           <ChevronDownIcon className="size-4" strokeWidth={2} />
@@ -260,7 +260,7 @@ export function LibraryToolbar({
             value={search}
             onChange={(event) => onSearchChange(event.target.value)}
             placeholder={searchPlaceholder}
-            className="ml-2.5 min-w-0 flex-1 bg-transparent text-[14px] outline-none placeholder:text-muted-foreground dark:placeholder:text-foreground/55 [&::-webkit-search-cancel-button]:hidden"
+            className="ml-2.5 min-w-0 flex-1 bg-transparent text-ui-14 outline-none placeholder:text-muted-foreground dark:placeholder:text-foreground/55 [&::-webkit-search-cancel-button]:hidden"
           />
         </label>
         <NewMenu onSelect={onNew} />
