@@ -51,8 +51,7 @@ def device_locked() -> bool:
 
 
 def runtime_unavailable_reason() -> str | None:
-    # extras-no-deps.txt installs laya only on Python 3.10+, its own floor, and laya runs on torch,
-    # which a --no-torch install leaves out.
+    # laya is installed only on Python 3.10+ (extras-no-deps.txt) and needs torch (absent on --no-torch).
     if sys.version_info < (3, 10):
         return "The Decision API needs Python 3.10 or newer."
     try:

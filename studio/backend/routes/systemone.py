@@ -20,9 +20,7 @@ from utils import systemone_settings
 MAX_QUESTIONS = 64
 MAX_CHOICES = 255
 MAX_SCORE_LEVELS = 10
-# Laya reads about a thousand tokens of state; far past that only costs tokenizer time under the model lock.
 MAX_STATE_CHARS = 200_000
-# Laya keeps ~192 tokens of a question head; this only bounds tokenizer work under the model lock.
 MAX_QUESTION_CHARS = 20_000
 _TYPES = ("noul", "choice", "score")
 
@@ -41,8 +39,7 @@ class QuestionIn(BaseModel):
 
 
 class SystemOneRequest(BaseModel):
-    # Unknown top-level fields are refused below, not dropped: an OpenJev extension such as
-    # `images` silently ignored would answer a different question than the caller asked.
+    # Unknown fields refused, not dropped: an ignored OpenJev extension (`images`) answers a different question.
     model_config = ConfigDict(extra = "allow")
 
     state: JSONContent

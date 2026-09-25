@@ -36,7 +36,6 @@ import {
 } from "../api/systemone";
 import { SettingsRow } from "./settings-row";
 
-/** One download slot for every Laya checkpoint, so switching models while one downloads reports busy rather than racing. */
 const DOWNLOAD_SCOPE = "systemone";
 const POLL_MS = 5000;
 const RECOMMENDED_MODEL = "laya-multilingual";
@@ -69,7 +68,6 @@ export function DecisionApiSection(): ReactElement | null {
 
   const enabled = settings?.enabled ?? false;
   const model = settings?.model ?? null;
-  // Keyed by model so a switch shows "Checking" until its own plan lands, never the previous model's.
   const plan = planState && planState.model === model ? planState.plan : null;
 
   useEffect(() => {
@@ -88,7 +86,6 @@ export function DecisionApiSection(): ReactElement | null {
     };
   }, []);
 
-  // Residency changes on API traffic this dialog never sees, so poll while the feature is on and the tab is visible.
   useEffect(() => {
     if (!enabled) return;
     const timer = window.setInterval(() => {
@@ -135,7 +132,6 @@ export function DecisionApiSection(): ReactElement | null {
         inventoryKind: "model",
         expectedBytes: next.sizeBytes,
       });
-      // The download manager shows its own panel and progress, so a start needs no toast of its own.
       if (outcome === "started") return;
       if (outcome === "conflict" || outcome === "busy") {
         toast.info(t("settings.apiKeys.decisionApi.downloadBusy"));
@@ -212,7 +208,6 @@ export function DecisionApiSection(): ReactElement | null {
     </>
   );
 
-  // A failed first load still shows the section, so the owner sees why its controls are missing.
   if (!settings) {
     return error ? (
       <section

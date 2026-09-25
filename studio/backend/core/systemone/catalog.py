@@ -63,7 +63,6 @@ def default_checkpoint() -> Checkpoint:
     configured = get_model()
     if configured in CHECKPOINTS:
         return CHECKPOINTS[configured]
-    # A directory holds a fine-tuned or pre-downloaded Laya checkpoint; the subfolder is optional.
     subfolder = os.environ.get("UNSLOTH_SYSTEMONE_SUBFOLDER", "").strip() or None
     return Checkpoint(LOCAL_NAME, configured, subfolder, "Local Laya checkpoint.")
 

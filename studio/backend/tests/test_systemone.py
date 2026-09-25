@@ -308,7 +308,6 @@ def test_a_package_installed_by_hand_clears_the_old_install_error(client, monkey
     monkeypatch.setattr(laya_runtime, "FAILURE_BACKOFF_S", 0.0)
     pip = FakePip(monkeypatch, returncode = 1, stderr = "offline")
     assert _post(client).status_code == 503
-    # With no backoff the failed request starts a retry load; let it fail before the package appears.
     laya_runtime._loader.join(5)
     pip.installed = True
     assert _post(client).status_code == 200
@@ -653,7 +652,6 @@ def test_managed_account_reads_the_owner_switch(monkeypatch):
 def test_studio_app_serves_systemone_routes():
     from main import app
 
-    # FastAPI keeps included routers as one entry each, so route through the app instead of listing it.
     client = TestClient(app)
     body = {"state": "x", "model": "jev-latest", "questions": {"q": {"type": "noul"}}}
     assert client.post("/v1/systemone", json = body).status_code == 401
@@ -754,7 +752,6 @@ def test_load_probes_the_download_registry_without_holding_runtime_state(client,
     seen, blocked = [], []
 
     def active_job_refs(repo = None):
-        # What DownloadRegistry.claim's admission check does while holding the registry lock.
         probe = threading.Thread(target = lambda: seen.append(laya_runtime.loading_repo_ids()))
         probe.start()
         probe.join(2)

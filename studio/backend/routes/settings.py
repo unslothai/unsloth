@@ -1336,13 +1336,11 @@ def _systemone_response() -> SystemOneSettingsResponse:
 
     enabled = systemone_settings.get_enabled()
     if enabled:
-        # Covers an installation turned on before the package existed; a no-op once it is installed.
         laya_runtime.install_in_background()
     runtime = laya_runtime.status()
     model = catalog.default_checkpoint().name
     error = runtime["error"]
     if runtime["error_model"] not in (None, model):
-        # A client named another checkpoint and its load failed; the selected model is unaffected.
         error = None
     return SystemOneSettingsResponse(
         enabled = enabled,

@@ -19,8 +19,7 @@ logger = logging.getLogger(__name__)
 
 LOAD_WAIT_S = 20.0
 RUN_WAIT_S = 30.0
-# Requests past this answer 529 at once: each waiter holds a worker from the threadpool every sync
-# route in Studio shares, so an unbounded queue behind a first download would stall the whole backend.
+# Bounded: each waiter holds a shared threadpool worker, so an unbounded queue stalls every sync route.
 MAX_PENDING = 8
 FAILURE_BACKOFF_S = 60.0
 _REQUIRED_DIRS = ("encoder", "tokenizer")
@@ -59,8 +58,7 @@ class Unavailable(Exception):
 def _device() -> str:
     from utils.systemone_settings import get_device as preferred_device
 
-    # CPU unless asked, for the reason core.rag.embeddings._device gives: a CUDA context opened in the
-    # backend process is never returned while it lives.
+    # CPU unless asked: a CUDA context opened in the backend process is never returned (see core.rag.embeddings._device).
     if preferred_device() != "gpu":
         return "cpu"
     from utils.hardware.hardware import DeviceType, get_device
@@ -142,8 +140,7 @@ def _install_command() -> list[str]:
 
     from utils.mlx_repair import _uv_executable
 
-    # No deps: laya only needs torch, transformers, safetensors, huggingface_hub and numpy, which Studio pins,
-    # so the install can never move them.
+    # No deps: laya's deps are all Studio pins, so the install can never move them.
     uv = _uv_executable()
     if uv:
         return [uv, "pip", "install", "--python", sys.executable, "--no-deps", LAYA_REQUIREMENT]
@@ -153,7 +150,6 @@ def _install_command() -> list[str]:
 def ensure_package() -> None:
     global _install_failure
     if package_available():
-        # Installed some other way (by hand, or by an update) after a failed attempt.
         _install_failure = None
         return
     with _install_lock:
@@ -167,8 +163,7 @@ def ensure_package() -> None:
 
         from utils.mlx_repair import _MLX_ENV_ALLOWLIST, _venv_root
 
-        # The same allowlisted environment as the MLX self-heal, so the unattended install cannot be steered by secrets
-        # or package-source variables in the Studio process.
+        # Same allowlisted env as the MLX self-heal: secrets/package-source vars cannot steer the install.
         env = {key: os.environ[key] for key in _MLX_ENV_ALLOWLIST if key in os.environ}
         if (venv_root := _venv_root()) is not None:
             env["VIRTUAL_ENV"] = venv_root
@@ -420,8 +415,7 @@ def _to_laya(question: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-# Tokens past a question's room are dropped, so a long state is tokenized in growing prefixes; the margin keeps the
-# kept tokens clear of the cut, where a prefix can tokenize differently from the whole text.
+# Long states tokenized in growing prefixes; margin keeps kept tokens clear of the cut (prefix tokenization differs).
 _PREFIX_MARGIN = 64
 _HEAD_CACHE_SIZE = 1024
 
@@ -445,7 +439,6 @@ def _head(agent, question: dict[str, Any], max_len: int, head_max_len: int):
 
     from laya.common import build_sequence, render_options
 
-    # Cached on the agent, so it goes with the model on unload or a checkpoint switch.
     cache = agent.__dict__.setdefault("_unsloth_heads", {})
     key = json.dumps(question, ensure_ascii = False)
     if key not in cache:
@@ -460,7 +453,6 @@ def _head(agent, question: dict[str, Any], max_len: int, head_max_len: int):
 
 
 def _predict(agent, state, questions: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], bool]:
-    # laya's Agent.predict with the state tokenized once instead of once per question.
     import numpy as np
     from laya.common import QTYPES, confidence_from_probs
 
@@ -645,7 +637,6 @@ def _decide(checkpoint: Checkpoint, state, questions: dict[str, dict[str, Any]])
 
 def status() -> dict[str, Any]:
     with _state_lock:
-        # Past its backoff a failure no longer blocks the next attempt, so it is not the current state.
         failure = _failure if _failure and time.monotonic() < _failure[2] else None
         return {
             "loaded_model": _loaded.name if _loaded else None,
