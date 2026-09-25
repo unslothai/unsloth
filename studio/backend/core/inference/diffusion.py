@@ -1038,6 +1038,29 @@ def _account_owned_load(method):
     return wrapped
 
 
+def _release_render_on_unload(method):
+    """Free VRAM when an unload lands mid-render: the cancelled render's traceback pins ``pipe`` past
+    the teardown's cache clear, so drop its frames and clear again once the last reference is gone."""
+
+    @functools.wraps(method)
+    def wrapped(self, *args, **kwargs):
+        token, teardowns = self._load_token, self._teardown_epoch
+        try:
+            return method(self, *args, **kwargs)
+        except BaseException as exc:
+            _clear_exception_frames(exc)
+            raise
+        finally:
+            # Epoch too: a replacing load bumps the token before this render starts, then tears down.
+            if self._load_token != token or self._teardown_epoch != teardowns:
+                try:
+                    clear_gpu_cache()
+                except Exception as exc:
+                    logger.debug("diffusion.generate: cache release after unload failed: %s", exc)
+
+    return wrapped
+
+
 @dataclass
 class _GenState:
     """An in-flight generation, updated per denoising step for the progress bar."""
@@ -1558,6 +1581,8 @@ class DiffusionBackend:
         self._transition_owns_slot = False
         # Teardowns waiting to free this pipeline; a count supports concurrent reservations.
         self._teardown_waiters = 0
+        # Monotonic count of reserved teardowns; lets a render detect one ran under it.
+        self._teardown_epoch = 0
         # Set when no teardown is reserved; an Event keeps waiting independent of _lock.
         self._teardown_drained = threading.Event()
         self._teardown_drained.set()
@@ -1623,6 +1648,7 @@ class DiffusionBackend:
         """Fence queued generations off the pipeline this teardown is about to free. Call only while
         holding ``_lock``, so the count and the gate move together."""
         self._teardown_waiters += 1
+        self._teardown_epoch += 1
         self._teardown_drained.clear()
 
     def _release_teardown_locked(self) -> None:
@@ -7054,6 +7080,7 @@ class DiffusionBackend:
             attention_engaged or "native",
         )
 
+    @_release_render_on_unload
     def generate(
         self,
         *,

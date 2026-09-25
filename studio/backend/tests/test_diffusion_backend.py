@@ -7159,6 +7159,189 @@ def test_pipeline_load_uses_predownloaded_dir(fake_runtime, tmp_path):
     backend.unload()
 
 
+def test_unload_mid_render_releases_the_pipeline(fake_runtime, monkeypatch):
+    # Regression: the cancelled render's traceback pinned the pipe past unload's cache clear, leaking VRAM.
+    import threading
+    import weakref
+
+    backend = DiffusionBackend()
+    # Skip the real hardware probe (nvidia-smi can take >10 s on a busy host) so step 0 arrives promptly.
+    monkeypatch.setattr(
+        backend, "_pick_device_and_dtype", lambda: ("cpu", sys.modules["torch"].float32)
+    )
+    at_step0 = threading.Event()
+    resume = threading.Event()
+
+    class _SteppingPipe:
+        def __init__(self) -> None:
+            self._interrupt = False
+
+        def __call__(
+            self,
+            *,
+            callback_on_step_end = None,
+            num_inference_steps = 8,
+            **kwargs,
+        ):
+            for i in range(num_inference_steps):
+                if self._interrupt:
+                    break
+                if callback_on_step_end is not None:
+                    callback_on_step_end(self, i, 0.0, {})
+                if i == 0:
+                    at_step0.set()
+                    resume.wait(5)
+            return types.SimpleNamespace(images = [_FakeImage()])
+
+    pipe = _SteppingPipe()
+    pipe_ref = weakref.ref(pipe)
+    backend._state = _LoadState(
+        pipe = pipe,
+        family = detect_family("unsloth/Z-Image-GGUF"),
+        repo_id = "r",
+        base_repo = "b",
+        device = "cpu",
+        dtype = "float32",
+        cpu_offload = False,
+    )
+    del pipe
+    cleared_with_pipe_gone = []
+    monkeypatch.setattr(
+        "core.inference.diffusion.clear_gpu_cache",
+        lambda: cleared_with_pipe_gone.append(pipe_ref() is None),
+    )
+
+    out: dict = {}
+
+    def _run():
+        try:
+            out["res"] = backend.generate(prompt = "p", steps = 8)
+        except Exception as exc:  # noqa: BLE001
+            out["exc"] = exc
+
+    t = threading.Thread(target = _run)
+    t.start()
+    assert at_step0.wait(5)
+    u = threading.Thread(target = backend.unload)
+    u.start()
+    assert backend._active_generate_cancel.wait(5)
+    resume.set()
+    t.join(5)
+    u.join(5)
+    assert "cancelled" in str(out["exc"]).lower()
+    assert pipe_ref() is None, "the cancelled render's traceback still pins the pipeline"
+    assert True in cleared_with_pipe_gone
+
+
+@pytest.mark.parametrize("transition_ends_first", [False, True])
+def test_replacing_load_mid_render_releases_the_pipeline(
+    fake_runtime, monkeypatch, transition_ends_first
+):
+    # Render starts after begin_load's token bump; teardown clears while the pipe is pinned, render must re-clear.
+    import threading
+    import weakref
+
+    from core.inference import diffusion as diffusion_mod
+
+    backend = DiffusionBackend()
+    # Skip the real hardware probe (nvidia-smi can take >10 s on a busy host) so step 0 arrives promptly.
+    monkeypatch.setattr(
+        backend, "_pick_device_and_dtype", lambda: ("cpu", sys.modules["torch"].float32)
+    )
+    at_step0 = threading.Event()
+    resume = threading.Event()
+    teardown_cleared = threading.Event()
+    render_done = threading.Event()
+
+    class _SteppingPipe:
+        def __init__(self) -> None:
+            self._interrupt = False
+
+        def __call__(
+            self,
+            *,
+            callback_on_step_end = None,
+            num_inference_steps = 8,
+            **kwargs,
+        ):
+            for i in range(num_inference_steps):
+                if self._interrupt:
+                    break
+                if callback_on_step_end is not None:
+                    callback_on_step_end(self, i, 0.0, {})
+                if i == 0:
+                    at_step0.set()
+                    resume.wait(5)
+            return types.SimpleNamespace(images = [_FakeImage()])
+
+    pipe = _SteppingPipe()
+    pipe_ref = weakref.ref(pipe)
+    backend._state = _LoadState(
+        pipe = pipe,
+        family = detect_family("unsloth/Z-Image-GGUF"),
+        repo_id = "r",
+        base_repo = "b",
+        device = "cpu",
+        dtype = "float32",
+        cpu_offload = False,
+    )
+    del pipe
+    cleared_with_pipe_gone = []
+
+    def _clear():
+        cleared_with_pipe_gone.append(pipe_ref() is None)
+        teardown_cleared.set()
+
+    monkeypatch.setattr("core.inference.diffusion.clear_gpu_cache", _clear)
+    real_clear_frames = diffusion_mod._clear_exception_frames
+
+    transition_done = threading.Event()
+
+    def _late_clear_frames(exc):
+        (transition_done if transition_ends_first else teardown_cleared).wait(5)
+        real_clear_frames(exc)
+
+    monkeypatch.setattr(diffusion_mod, "_clear_exception_frames", _late_clear_frames)
+    backend._load_token += 1
+    out: dict = {}
+
+    def _run():
+        try:
+            out["res"] = backend.generate(prompt = "p", steps = 8)
+        except Exception as exc:  # noqa: BLE001
+            out["exc"] = exc
+        render_done.set()
+
+    def _replacing_load():
+        with backend._lock:
+            with backend._generation_cancel_lock:
+                backend._active_generate_cancel.set()
+            backend._reserve_teardown_locked()
+        with backend._model_transition_slot():
+            with backend._lock:
+                try:
+                    backend._unload_locked()
+                finally:
+                    backend._release_teardown_locked()
+            if not transition_ends_first:
+                render_done.wait(5)
+        transition_done.set()
+
+    t = threading.Thread(target = _run)
+    t.start()
+    assert at_step0.wait(5)
+    ld = threading.Thread(target = _replacing_load)
+    ld.start()
+    assert backend._active_generate_cancel.wait(5)
+    resume.set()
+    t.join(5)
+    ld.join(5)
+    assert "cancelled" in str(out["exc"]).lower()
+    assert pipe_ref() is None
+    assert cleared_with_pipe_gone[0] is False, "the forced order did not happen"
+    assert True in cleared_with_pipe_gone
+
+
 def test_unload_waits_for_in_flight_denoise_before_teardown():
     # Regression: unload() must wait for a running denoise to exit before _unload_locked() tears down process-wide state it depends on.
     import threading
