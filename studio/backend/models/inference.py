@@ -3808,7 +3808,8 @@ class DiffusionLoadRequest(BaseModel):
         "~2x smaller, "
         "CUDA cc>=8.9), fp8_dynamic (torchao compute fp8 on the tensor cores, ~2x + faster, "
         "cc>=8.9), int8 (torchao compute int8 with per-family keep-bf16 layers; falls back to "
-        "fp8 where no schedule exists; cc>=8.0), or nvfp4 (~4x smaller, Blackwell sm_100+). A "
+        "fp8 where no schedule exists; cc>=8.0), or nvfp4 (torchao weight-only, ~3.5x smaller, "
+        "dequantised to bf16 per forward so the prompt encode is slower; cc>=8.0). A "
         "memory-vs-quality tradeoff (shifts fine detail), not free; pairs well with balanced mode. "
         "Fails CLOSED when NOTHING could be cast (409, or a load-progress error); an int8 request "
         "downgraded to fp8 loads and is reported through the status resolved record instead.",
@@ -4889,9 +4890,10 @@ class VideoLoadRequest(BaseModel):
         "the largest resident component. fp8 = diffusers layerwise casting (memory only, cc >= "
         "8.9); fp8_dynamic = torchao per-row fp8 COMPUTE on the tensor cores (cc >= 8.9); int8 = "
         "torchao int8 COMPUTE with per-family keep-bf16 selection (cc >= 8.0; falls back to fp8 "
-        "for a family without a measured schedule); nvfp4 = torchao 4-bit weight-only (Blackwell "
-        "sm_100+). null/auto leaves the choice to the backend, which keeps the encoder dense on "
-        "every family except MiniMax-H3, where it takes the hosted quantized conditioner; "
+        "for a family without a measured schedule); nvfp4 = torchao 4-bit weight-only, "
+        "dequantised to bf16 per forward (cc >= 8.0). null/auto leaves the choice to the backend, "
+        "which keeps the encoder dense on every family except MiniMax-H3, where it takes the "
+        "hosted quantized conditioner; "
         "none/off always keeps the released bf16 encoder, which on MiniMax-H3 is the only way "
         "to ask for it. Mirrors the image backend's field.",
     )

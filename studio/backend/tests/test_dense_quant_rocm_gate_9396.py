@@ -134,6 +134,7 @@ def test_layerwise_fp8_text_encoder_still_supported_on_rocm(monkeypatch):
 def test_torchao_text_encoder_modes_still_supported_on_cuda(monkeypatch, mode):
     _stub_torch(monkeypatch, hip = None, version_str = "2.10.0+cu128", cc = (10, 0))
     monkeypatch.setattr(dp, "is_stubbed", lambda name: False)
+    monkeypatch.setattr(dp, "nvfp4_weight_only_importable", lambda: True)
     assert dp.te_quant_supported(_target(), mode) is True
 
 

@@ -15,8 +15,9 @@ This shrinks it in place, with four backends:
                 with per-layer keep-bf16 selection. Degrades on large encoders unless the
                 sensitive decoder blocks stay bf16, so applied only for families with a
                 measured schedule (else falls back to fp8). ~2x smaller; cc >= 8.0.
-  nvfp4       - torchao NVFP4 weight-only: 4-bit float, two-level microscaling, Blackwell
-                sm_100+ FP4 cores. ~4x smaller (lowest VRAM) but a steeper quality cost.
+  nvfp4       - torchao NVFP4 weight-only: 4-bit float storage, two-level microscaling, each
+                weight dequantised to bf16 per forward (no FP4 GEMM). ~3.5x smaller (lowest
+                VRAM) but a steeper quality cost and a slower prompt encode; cc >= 8.0.
 
 All keep norms / embeddings full precision, are a memory-vs-quality tradeoff (off by default),
 and pair well with streamed (group) offload where the text encoder stays resident. Quantify
@@ -160,10 +161,42 @@ def torchao_quantize_importable() -> bool:
     return not is_stubbed("torchao")
 
 
+# what each mode needs from the host, worded for the refusal a user reads
+_TE_QUANT_REQUIREMENTS = {
+    TE_QUANT_FP8: "an NVIDIA or AMD GPU that runs bf16 (NVIDIA Ampere sm_80 or newer)",
+    TE_QUANT_FP8_DYNAMIC: "an NVIDIA GPU with fp8 tensor cores (Ada sm_89 or newer)",
+    TE_QUANT_INT8: "an NVIDIA GPU that runs bf16 (Ampere sm_80 or newer)",
+    TE_QUANT_NVFP4: (
+        "an NVIDIA GPU that runs bf16 (Ampere sm_80 or newer) and torchao 0.15 or newer on "
+        "torch 2.8 or newer"
+    ),
+}
+
+
+def te_quant_unsupported_reason(mode: str) -> str:
+    """Why ``te_quant_supported`` declined ``mode``, naming what that mode needs."""
+    return f"text-encoder '{mode}' needs {_TE_QUANT_REQUIREMENTS[mode]}, which this host does not provide"
+
+
+@lru_cache(maxsize = 1)
+def nvfp4_weight_only_importable() -> bool:
+    """Whether this torchao ships ``NVFP4WeightOnlyConfig`` (0.15+) and accepts the installed torch.
+
+    Studio pins torchao 0.14 for torch 2.9 and older, which only has the dynamic NVFP4 config, so
+    without this the pre-load gate passes and ``_cast_nvfp4`` fails after the download."""
+    try:
+        from torchao.prototype.mx_formats import NVFP4WeightOnlyConfig
+        from .diffusion_transformer_quant import _quiet_config
+        _quiet_config(NVFP4WeightOnlyConfig)
+    except Exception:  # noqa: BLE001 -- older torchao, or a torch the config rejects
+        return False
+    return True
+
+
 def te_quant_supported(target: Any, mode: str) -> bool:
-    """Whether ``mode`` is usable for ``target``: a CUDA bf16 device plus the tensor-core class
-    each backend needs -- fp8 dtype (fp8), fp8 GEMM sm_89+ (fp8_dynamic), int8 sm_80+ (int8),
-    Blackwell sm_100+ (nvfp4)."""
+    """Whether ``mode`` is usable for ``target``: a CUDA bf16 device plus what each backend
+    needs -- fp8 dtype (fp8, nvfp4 block scales), fp8 GEMM sm_89+ (fp8_dynamic), int8 sm_80+
+    (int8). nvfp4 is weight-only, so it has no FP4 tensor-core requirement."""
     if getattr(target, "device", None) != "cuda":
         return False
     # Torchao modes cannot use the Windows stub or ROCm's non-SM capability values. Plain fp8 is only a dtype cast and
@@ -183,7 +216,8 @@ def te_quant_supported(target: Any, mode: str) -> bool:
         if mode == TE_QUANT_INT8:
             return torch.cuda.get_device_capability()[0] >= 8  # int8 cores: Ampere sm_80+
         if mode == TE_QUANT_NVFP4:
-            return torch.cuda.get_device_capability()[0] >= 10  # NVFP4 cores: Blackwell sm_100+
+            # weight-only nvfp4 dequantises to bf16 and runs a plain gemm; the block scales are stored as e4m3
+            return hasattr(torch, "float8_e4m3fn") and nvfp4_weight_only_importable()
     except Exception:
         return False
     return False
@@ -257,8 +291,7 @@ def quantize_text_encoders(
         _note(logger, f"text-encoder '{mode}' is not supported on this device; left dense")
         return TEQuantOutcome(
             None,
-            f"this device cannot run text-encoder '{mode}' (it needs a CUDA GPU in bf16 with the "
-            "tensor cores that backend requires), so the dense bf16 encoder was kept",
+            f"{te_quant_unsupported_reason(mode)}, so the dense bf16 encoder was kept",
             RESOLVED_UNSUPPORTED,
         )
     if mode == TE_QUANT_INT8:
@@ -488,8 +521,7 @@ def _has_layerwise_hooks(encoder: Any) -> bool:
 
 
 def _cast_nvfp4(encoder: Any, target: Any) -> None:
-    # Weight-only NVFP4: linear weights become 4-bit NVFP4 on Blackwell FP4 cores, norms / embeddings untouched. Same
-    # exclusions as the int8/fp8 TE modes; require_bf16 skips non-bf16 Linears so the cast engages instead of aborting.
+    # weight-only nvfp4: weights stored 4-bit, dequantised to bf16 per forward; same exclusions as the int8/fp8 modes
     from torchao.quantization import quantize_
     from torchao.prototype.mx_formats import NVFP4WeightOnlyConfig
     from .diffusion_transformer_quant import (
