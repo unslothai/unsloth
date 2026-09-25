@@ -119,10 +119,7 @@ _KEEP_ATTR = "_unsloth_offload_keep_cpu"
 
 
 def keep_cpu_weights_on_offload(pipe: Any, logger: Any = None) -> int:
-    """Offload by re-pointing each weight at its pre-onload host tensor instead of copying it back.
-
-    Weights written or replaced on the device, and tensor subclasses, take the stock copy. diffusers
-    rebuilds the hooks on every call (maybe_free_model_hooks), so enable_model_cpu_offload is wrapped too."""
+    """Offload by re-pointing unmodified weights at their host tensors; enable_model_cpu_offload is wrapped since diffusers rebuilds hooks."""
     if (os.environ.get(OFFLOAD_KEEP_CPU_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return 0
     try:
@@ -192,7 +189,6 @@ def _wrap_cpu_offload_hook(hook: Any, module: Any) -> None:
                 host[name] = p.data
                 owner[name] = p
 
-    # attach already ran the stock init_hook, so the host tensors are current.
     _capture(module)
     version.clear()
     init_hook, pre_forward = hook.init_hook, hook.pre_forward
@@ -223,7 +219,6 @@ def _wrap_cpu_offload_hook(hook: Any, module: Any) -> None:
     def _pre_forward(mod: Any, *args: Any, **kwargs: Any) -> Any:
         onload = not version
         if onload:
-            # Drop entries replaced or re-pointed since the last offload so they take the stock copy.
             for name, p in mod.named_parameters():
                 kept = host.get(name)
                 if kept is not None and (
