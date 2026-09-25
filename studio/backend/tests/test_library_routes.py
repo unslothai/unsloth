@@ -658,6 +658,25 @@ def test_a_failed_write_leaves_the_uploads_as_they_were(client, monkeypatch):
     assert note in _items(client)[0]
 
 
+def test_a_note_save_keeps_the_old_file_on_disk_not_in_memory(client, monkeypatch):
+    from pathlib import Path
+
+    [note] = _upload(client, ("n.md", b"old", "text/markdown"))
+    path = library.upload_path(_ref(note))
+    read = Path.read_bytes
+    with monkeypatch.context() as patched:
+        patched.setattr(
+            Path, "read_bytes", lambda self: pytest.fail("read") if self == path else read(self)
+        )
+        patched.setattr(library_db, "touch_upload", _fail)
+        with pytest.raises(sqlite3.OperationalError):
+            library.write_upload_text(_ref(note), "new")
+    assert path.read_bytes() == b"old"
+    assert library.write_upload_text(_ref(note), "new")
+    assert path.read_bytes() == b"new"
+    assert [p.name for p in library.uploads_dir().iterdir()] == [_ref(note)]
+
+
 def test_a_file_held_open_on_windows_answers_409(client, monkeypatch):
     [note] = _upload(client, ("n.md", b"old", "text/markdown"))
     url = f"/api/library/uploads/{_ref(note)}/text"

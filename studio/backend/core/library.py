@@ -222,14 +222,27 @@ def write_upload_text(
     with _upload_lock:
         if library_db.get_upload(upload_id) is None:
             return False
-        previous = path.read_bytes() if path.exists() else None
-        _swap_in(path, data)
+        # The old file stays on disk under a second name for the rollback, not in memory: an
+        # upload can be 512 MiB. Where links are not supported, it is held in memory as before.
+        kept, previous = None, None
+        if path.exists():
+            kept = path.with_name(f".{upload_id}.{uuid.uuid4().hex}.tmp")
+            try:
+                os.link(path, kept)
+            except OSError:
+                kept, previous = None, path.read_bytes()
         try:
+            _swap_in(path, data)
             library_db.touch_upload(upload_id, len(data))
         except BaseException:
-            if previous is not None:
+            if kept is not None:
+                os.replace(kept, path)
+            elif previous is not None:
                 _swap_in(path, previous)
             raise
+        finally:
+            if kept is not None:
+                kept.unlink(missing_ok = True)
     return True
 
 
