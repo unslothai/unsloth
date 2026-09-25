@@ -29,9 +29,26 @@ _lock = threading.Lock()
 _cache: dict[str, dict[str, dict]] = {}
 
 
+# Resolving the owner's database path walks the filesystem, and the galleries ask on every file
+# lookup. It only moves when the variables that place Studio's home do, so it is kept per them.
+_HOME_VARIABLES = ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME", "UNSLOTH_HOME")
+_db_keys: dict[tuple, str] = {}
+
+
 def _db_key() -> str:
-    from utils.paths.storage_roots import studio_db_path
-    return str(studio_db_path())
+    from utils.paths import storage_roots
+
+    # The function itself too, so a test that swaps it is not answered from before.
+    placed = (
+        *(os.environ.get(name) for name in _HOME_VARIABLES),
+        id(storage_roots.studio_db_path),
+    )
+    key = _db_keys.get(placed)
+    if key is None:
+        key = str(storage_roots.studio_db_path())
+        _db_keys.clear()
+        _db_keys[placed] = key
+    return key
 
 
 def _entry(value) -> Optional[dict]:
@@ -186,3 +203,4 @@ def forget_cache() -> None:
     """For tests that swap the database under a live process."""
     with _lock:
         _cache.clear()
+        _db_keys.clear()
