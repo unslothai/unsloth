@@ -43,9 +43,13 @@ def test_a_video_family_without_a_usable_hosted_seed_spends_no_smoke_probe(monke
 
     calls = []
     monkeypatch.setattr(
-        tq, "_child_probe_table", lambda card: calls.append(card) or {s: None for s in tq.TQ_SCHEMES}
+        tq,
+        "_child_probe_table",
+        lambda card: calls.append(card) or {s: None for s in tq.TQ_SCHEMES},
     )
-    monkeypatch.setattr(tq, "_smoke_probe", lambda s, d, unproven_ok = False: calls.append(s) or unproven_ok)
+    monkeypatch.setattr(
+        tq, "_smoke_probe", lambda s, d, unproven_ok = False: calls.append(s) or unproven_ok
+    )
     monkeypatch.setattr(tq, "dense_transformer_supported", lambda t: True)
     monkeypatch.setattr(tq, "_capability", lambda: (10, 0))
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
