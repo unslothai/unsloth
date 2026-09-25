@@ -69,14 +69,14 @@ import { EMPTY_FILTERS, type LibraryFilters, filtersActive, matchesFilters } fro
 import { LIBRARY_TABS, type LibrarySearch, type LibraryTab } from "./search";
 import { useLibraryStore } from "./store";
 import {
+  SORT_STATES,
   compareBySort,
-  nextSort,
-  sortParam,
-  sortState,
-  useLibraryViewStore,
   includedBySettings,
   lastActivity,
+  nextSort,
+  sortParam,
   useLibrarySettingsStore,
+  useLibraryViewStore,
   useLibraryVisitStore,
 } from "./settings-store";
 
@@ -119,7 +119,6 @@ const KIND_TABS: Partial<Record<LibraryTab, (item: LibraryItem) => boolean>> = {
   models: isModelItem,
 };
 
-
 const DELETE_NOTES: Record<string, TranslationKey> = {
   upload: "library.dialog.deleteUpload",
   attachment: "library.dialog.deleteAttachment",
@@ -143,7 +142,6 @@ const BAR_PILL =
   "flex h-9 items-center gap-2 rounded-full px-4 text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
 const BAR_ROUND =
   "flex size-9 items-center justify-center rounded-full outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring";
-
 
 function EmptyState({
   icon,
@@ -244,9 +242,8 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const tab: LibraryTab =
     search.show ??
     (tabVisible(preferred) ? preferred : (LIBRARY_TABS.find(tabVisible) ?? "all"));
-  // A column click or a ?sort link wins over the Sort setting. It lives in the URL, so a Storage
-  // link always lands sorted by size, even over an earlier click on the same tab.
-  const sort = sortState(search.sort ?? settings.sort);
+  // A column click or ?sort link (in the URL, so a Storage link always lands by size) beats the setting.
+  const sort = SORT_STATES[search.sort ?? settings.sort];
   const folderId = search.folder ?? null;
   const folderById = useMemo(() => new Map(folders.map((f) => [f.id, f])), [folders]);
   const currentFolder = folderId ? (folderById.get(folderId) ?? null) : null;
@@ -587,11 +584,12 @@ function LibraryView({ search }: { search: LibrarySearch }) {
 
   const cardSelection = {
     selection,
-    toggle: (key: string) => {
-      const next = new Set(selection);
-      if (!next.delete(key)) next.add(key);
-      setSelection(next);
-    },
+    toggle: (key: string) =>
+      setSelection((current) => {
+        const next = new Set(current);
+        if (!next.delete(key)) next.add(key);
+        return next;
+      }),
   };
 
   const selectedTargets = (): LibraryTarget[] => {
@@ -891,8 +889,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
                   onChange: (next) => go({ show: next as LibraryTab }),
                 }
           }
-          // Inset past the title so list checkboxes, which hang left of the rows, have room.
-          tabsClassName="pl-3"
         />
         <div className="pl-3">{renderBody()}</div>
 

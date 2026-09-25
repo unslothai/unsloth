@@ -172,11 +172,9 @@ export function LibraryHeader({
   title,
   controls,
   tabs,
-  tabsClassName,
 }: {
   title: ReactNode;
   controls: ReactNode;
-  tabsClassName?: string;
   /** None inside a folder; the row still sticks, to hold the controls. */
   tabs: { items: HeaderTab[]; active: string; onChange: (key: string) => void } | null;
 }) {
@@ -232,7 +230,8 @@ export function LibraryHeader({
         className="sticky top-0 z-20 -mx-6 mt-2 bg-background px-6 py-4 sm:-mx-10 sm:px-10"
       >
         {tabs ? (
-          <div className={tabsClassName}>
+          // Inset past the title so list checkboxes, which hang left of the rows, have room.
+          <div className="pl-3">
             <TabStrip
               tabs={tabs.items}
               active={tabs.active}

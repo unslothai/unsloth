@@ -8,19 +8,16 @@ import type { LibraryTab } from "./search";
 export const LIBRARY_SETTINGS_STORAGE_KEY = "unsloth_library_settings";
 export const LIBRARY_VIEW_STORAGE_KEY = "unsloth_library_view";
 
-export type LibraryCardSize = "small" | "medium" | "large";
-export type LibraryImageLayout = "masonry" | "square";
-export type LibrarySort = "recent" | "oldest" | "name" | "size";
-export type LibraryStartTab = "last" | "suggested" | "favorites" | "folders" | "all";
+type LibrarySort = "recent" | "oldest" | "name" | "size";
 /** "auto" shows a tab once it has something in it. */
 export type LibraryTabVisibility = "always" | "auto" | "hidden";
 
 export interface LibrarySettings {
-  cardSize: LibraryCardSize;
-  imageLayout: LibraryImageLayout;
+  cardSize: "small" | "medium" | "large";
+  imageLayout: "masonry" | "square";
   showCardDates: boolean;
   sort: LibrarySort;
-  startTab: LibraryStartTab;
+  startTab: "last" | "suggested" | "favorites" | "folders" | "all";
   /** Where "Last visited" reopens. */
   lastTab: LibraryTab;
   tabs: Record<LibraryTab, LibraryTabVisibility>;
@@ -60,7 +57,7 @@ export const DEFAULT_LIBRARY_SETTINGS: LibrarySettings = {
 export const SUGGESTED_LIMITS = [20, 40, 80] as const;
 
 /** Smallest card width and most columns per row, per card size. */
-export const CARD_COLUMNS: Record<LibraryCardSize, { minWidth: number; max: number }> = {
+export const CARD_COLUMNS: Record<LibrarySettings["cardSize"], { minWidth: number; max: number }> = {
   small: { minWidth: 170, max: 6 },
   medium: { minWidth: 200, max: 5 },
   large: { minWidth: 240, max: 4 },
@@ -130,17 +127,12 @@ export function includedBySettings(itemId: string, settings: LibrarySettings): b
 
 /** A list column and direction; the Sort setting is one of these. */
 export type LibrarySortKey = "name" | "modified" | "size";
-export interface LibrarySortState {
-  key: LibrarySortKey;
-  desc: boolean;
-}
-
-export const LIBRARY_SORTS: readonly LibrarySort[] = ["recent", "oldest", "name", "size"];
+export type LibrarySortState = { key: LibrarySortKey; desc: boolean };
 
 /** A page's `?sort=`: the setting's four orders plus the two a column click can add. */
 export type LibraryUrlSort = LibrarySort | "name-desc" | "size-asc";
 
-const SORT_STATES: Record<LibraryUrlSort, LibrarySortState> = {
+export const SORT_STATES: Record<LibraryUrlSort, LibrarySortState> = {
   recent: { key: "modified", desc: true },
   oldest: { key: "modified", desc: false },
   name: { key: "name", desc: false },
@@ -150,10 +142,6 @@ const SORT_STATES: Record<LibraryUrlSort, LibrarySortState> = {
 };
 
 export const LIBRARY_URL_SORTS = Object.keys(SORT_STATES) as LibraryUrlSort[];
-
-export function sortState(sort: LibraryUrlSort): LibrarySortState {
-  return SORT_STATES[sort];
-}
 
 /** The `?sort=` value for a column and direction. */
 export function sortParam(state: LibrarySortState): LibraryUrlSort {
