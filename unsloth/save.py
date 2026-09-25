@@ -5462,7 +5462,7 @@ def unsloth_generic_save(
         raise NotImplementedError(
             f"Unsloth: this model is the text core of `{_composed_parent}` (loaded with text_only = True), "
             f"so `{save_method}` would write the wrapper's weights under the text core's config. "
-            "Save the adapter with `save_method = \"lora\"` and reload it with `text_only = True` instead."
+            'Save the adapter with `save_method = "lora"` and reload it with `text_only = True` instead.'
         )
 
     # Rebound rather than kept in a new local, because the `locals()` below is forwarded as
