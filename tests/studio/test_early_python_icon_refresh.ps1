@@ -70,10 +70,14 @@ if (-not (Get-StudioEarlyPython)) {
             if ("$src" -match '(?i)[\\/]Microsoft[\\/]WindowsApps[\\/]') { continue }
             $here = Split-Path -Parent $src
             if ([string]::IsNullOrWhiteSpace($here)) { continue }
+            # In a job with a deadline: a shim that starts and never exits must be a skip, not a hang.
+            $job = Start-Job -ArgumentList $src, $here -ScriptBlock {
+                param($exe, $dir)
+                "$(& $exe -I -S -c "import pathlib,sys`nsys.exit(2) if sys.version_info < (3,8) else None`nsys.stdout.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)))" $dir 2>$null)"
+            }
             $answer = ""
-            try {
-                $answer = "$(& $src -I -S -c "import pathlib,sys`nsys.exit(2) if sys.version_info < (3,8) else None`nsys.stdout.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)))" $here 2>$null)".Trim()
-            } catch { $answer = "" }
+            if (Wait-Job $job -Timeout 30) { $answer = "$(Receive-Job $job -ErrorAction SilentlyContinue)".Trim() } else { Stop-Job $job }
+            Remove-Job $job -Force
             if (-not [string]::IsNullOrWhiteSpace($answer)) { $usable = $src }
         }
     }
