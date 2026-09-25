@@ -274,8 +274,6 @@ def test_check_and_disable_rewrites_only_when_asked():
     assert hasattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
 
 
-
-
 def _fp8_quantizer(**config_kwargs):
     try:
         from transformers import FineGrainedFP8Config
@@ -388,8 +386,6 @@ def test_wrapper_hides_only_modulelist_experts():
     with pytest.raises(RuntimeError):
         _wrap_fp8_replace_for_modulelist_experts(boom)(model)
     assert list(model.model.layers[1].mlp._modules) == ["gate", "experts"]
-
-
 
 
 def _write_tiny_modelopt_llama(path):
