@@ -12,9 +12,8 @@ Measured on Flux.1-dev (28 steps, 1024px, B200): ~1.4x on top of torch.compile (
 at LPIPS ~0.08 -- deep inside the speed-for-quality bar.
 
 Explicit ``fbcache`` works on every tier; unset / ``auto`` engages only on ``max`` with 20+ steps.
-It composes with torch.compile only at ``fullgraph=False`` (the
-cache's compiler-disabled decision is a graph break), which the speed layer switches to
-automatically. Best-effort: an incompatible
+It composes with torch.compile only at ``fullgraph=False`` (the cache's compiler-disabled decision
+is a graph break), which the speed layer switches to automatically. Best-effort: an incompatible
 model is caught and the load proceeds uncached. torch / diffusers imported lazily.
 """
 
