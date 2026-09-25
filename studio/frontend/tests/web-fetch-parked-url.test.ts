@@ -39,7 +39,6 @@ function find<T extends ts.Node>(
   return hits;
 }
 
-/** The opening tag of every element named `name`, paired or self-closing. */
 function tagsNamed(name: string): ts.JsxOpeningLikeElement[] {
   const hits: ts.JsxOpeningLikeElement[] = [];
   walk(source, (node) => {
@@ -55,7 +54,6 @@ function tagsNamed(name: string): ts.JsxOpeningLikeElement[] {
   return hits;
 }
 
-/** The attribute named `name`, whichever of its two initializer forms it uses. */
 function attributeOf(
   opening: ts.JsxOpeningLikeElement,
   name: string,
@@ -66,7 +64,6 @@ function attributeOf(
   );
 }
 
-/** The literal `data-slot` value of an opening tag, if it has one. */
 function dataSlotOf(opening: ts.JsxOpeningLikeElement): string | undefined {
   const initializer = attributeOf(opening, "data-slot")?.initializer;
   return initializer && ts.isStringLiteral(initializer)
