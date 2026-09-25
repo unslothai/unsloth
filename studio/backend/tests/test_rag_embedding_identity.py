@@ -220,6 +220,7 @@ def test_identity_distinguishes_the_backends_and_the_gguf_repo(monkeypatch):
 
 def test_llama_identity_uses_the_resolved_stored_repo(monkeypatch):
     monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: True)
+    monkeypatch.setattr(embeddings, "_llama_pooling", lambda *_a, **_k: None)
     monkeypatch.setattr(
         config,
         "effective_gguf_repo_for_embedding_model",

@@ -4204,6 +4204,41 @@ def fork_chat_thread(
         conn.close()
 
 
+def remap_chat_thread_document_ids(thread_id: str, document_ids: dict[str, str]) -> None:
+    if not document_ids:
+        return
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _ensure_chat_attachment_inventory_current(conn)
+        rows = conn.execute(
+            "SELECT id, content_json, attachments_json, metadata_json FROM chat_messages "
+            "WHERE thread_id = ?",
+            (thread_id,),
+        ).fetchall()
+        for row in rows:
+            content_json, metadata_json = row["content_json"], row["metadata_json"]
+            for old, new in document_ids.items():
+                content_json = content_json.replace(old, new)
+                metadata_json = metadata_json and metadata_json.replace(old, new)
+            if (content_json, metadata_json) != (row["content_json"], row["metadata_json"]):
+                conn.execute(
+                    "UPDATE chat_messages SET content_json = ?, metadata_json = ? "
+                    "WHERE thread_id = ? AND id = ?",
+                    (content_json, metadata_json, thread_id, row["id"]),
+                )
+                _replace_chat_attachment_inventory(
+                    conn, row["id"], row["attachments_json"], content_json
+                )
+        _mark_chat_attachment_inventory_clean(conn)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def count_forks_for_message(thread_id: str, message_id: str) -> int:
     conn = get_connection()
     try:
