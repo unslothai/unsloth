@@ -97,6 +97,7 @@ from .loader_utils import (
     planner_kwargs_with_max_memory,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
+    _dequantize_leftover_fp8_params,
     _restore_dropped_fp8_scales,
     planner_class_mismatch_reason,
     planner_model_class,
@@ -2075,6 +2076,18 @@ class FastBaseModel:
                     variant = kwargs.get("variant"),
                     dtype = torch_dtype,
                 )
+                if load_in_16bit and not load_in_4bit and not load_in_8bit:
+                    _dequantize_leftover_fp8_params(
+                        model,
+                        model_name,
+                        torch_dtype,
+                        local_files_only = local_files_only,
+                        token = token,
+                        revision = kwargs.get("revision"),
+                        subfolder = kwargs.get("subfolder"),
+                        cache_dir = kwargs.get("cache_dir"),
+                        variant = kwargs.get("variant"),
+                    )
                 if hasattr(model, "generate"):
                     model.fast_generate = make_fast_generate_wrapper(model.generate)
                     model.fast_generate_batches = error_out_no_vllm
