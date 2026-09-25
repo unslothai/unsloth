@@ -320,8 +320,12 @@ export function applyActiveModelStatusToStore(
     incoming: status.requested_context_length,
     // MLX reports a requested context as well, so the rule below is about any
     // backend that sizes its own window, not llama.cpp alone.
-    isGguf: (status.is_gguf ?? true) || (status.is_mlx ?? false),
-    isMlx: status.is_mlx ?? false,
+    isGguf:
+      (status.is_gguf ?? true) ||
+      (status.is_mlx ?? false) ||
+      (status.is_npu ?? false),
+    // An NPU status echoes the request itself (null for Auto), so like MLX a positive one is a pin.
+    isMlx: (status.is_mlx ?? false) || (status.is_npu ?? false),
     seedLoadParams,
     modelChanged: slotsModelChanged,
     // Both fields: a record written before the MLX pin moved still carries it in maxSeqLength.

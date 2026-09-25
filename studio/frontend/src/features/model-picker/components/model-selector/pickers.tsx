@@ -71,6 +71,13 @@ import {
 } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import {
+  type NpuModel,
+  type NpuPickerSource,
+  NpuSetupNotice,
+  npuRowsFor,
+  useNpuCatalog,
+} from "@/features/npu";
+import {
   useDebouncedValue,
   useDenseQuantSchemes,
   useGpuInfo,
@@ -595,12 +602,13 @@ function ParamChip({ label }: { label: string }) {
   );
 }
 
-// Format colours: gguf blue, mlx amber, safetensors/checkpoint pink, adapter.
+// Format colours: gguf blue, mlx amber, safetensors/checkpoint pink, adapter, npu cyan.
 const FORMAT_TONE_DOT: Record<FormatTone, string> = {
   gguf: "bg-format-gguf",
   mlx: "bg-format-mlx",
   checkpoint: "bg-format-checkpoint",
   adapter: "bg-format-adapter",
+  npu: "bg-format-npu",
 };
 
 /** Format as a coloured dot ahead of the name, named on hover: a word like "Safetensors" is
@@ -1235,12 +1243,13 @@ function ModelRow({
             </span>
           ) : null}
           <span className="min-w-0 flex-1 truncate">{name}</span>
-          {/* Here it eats name width instead of moving the meta columns. */}
+          {/* Here it eats name width instead of moving the meta columns. self-center: on the
+              baseline the empty dot sat the tag low. */}
           {aligned && loaded && (
             <DotTag
               tone="success"
               label="Loaded"
-              className="ml-2 h-[calc(18px*var(--ui-space-scale,1))] shrink-0 gap-1 rounded-md px-1.5"
+              className="ml-2 h-[calc(18px*var(--ui-space-scale,1))] shrink-0 gap-1 self-center rounded-md px-1.5"
               dotClassName="size-[calc(5px*var(--ui-space-scale,1))]"
             />
           )}
@@ -2563,13 +2572,15 @@ const FORMAT_FILTER_LABELS: Record<FormatFilter, string> = {
   gguf: "GGUF",
   mlx: "MLX",
   safetensors: "Safetensors",
+  npu: "NPU",
 };
 
-// Dot colors match the row format tags: gguf blue, mlx amber, safetensors pink.
+// Dot colors match the row format tags: gguf blue, mlx amber, safetensors pink, npu cyan.
 const FORMAT_FILTER_DOTS: Partial<Record<FormatFilter, string>> = {
   gguf: "bg-format-gguf",
   mlx: "bg-format-mlx",
   safetensors: "bg-format-checkpoint",
+  npu: "bg-format-npu",
 };
 
 const FORMAT_FILTER_OPTIONS: HubOption<FormatFilter>[] = (
@@ -2590,6 +2601,9 @@ const FORMAT_FILTER_OPTIONS: HubOption<FormatFilter>[] = (
     ),
   };
 });
+const FORMAT_FILTER_OPTIONS_WITHOUT_NPU = FORMAT_FILTER_OPTIONS.filter(
+  (option) => option.value !== "npu",
+);
 
 // Connected has no size, download date or load history, so it sorts by what a hosted catalogue
 // does offer: the connection, or the name.
@@ -2752,6 +2766,7 @@ export function HubModelPicker({
   task,
   catalog,
   communityModelPolicy = "none",
+  npu,
 }: {
   models: ModelOption[];
   /** Task-runtime downloads using a cache layout the shared Hub inventory cannot represent (for
@@ -2784,6 +2799,7 @@ export function HubModelPicker({
   /** Also surface community models carrying `task`'s pipeline tags, below the unsloth rows.
    *  Opt-in, since the runtime has to load an arbitrary publisher's checkpoint: true of audio. */
   communityModelPolicy?: CommunityModelPolicy;
+  npu?: NpuPickerSource;
 }) {
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
@@ -3435,7 +3451,12 @@ export function HubModelPicker({
   const [downloadedSort, setDownloadedSort] = useState<LocalSortKey>("recent");
   const [customSort, setCustomSort] = useState<LocalSortKey>("recent");
   // Format filter toggle for the Unsloth listing.
-  const [formatFilter, setFormatFilter] = useState<FormatFilter>("all");
+  const [chosenFormatFilter, setFormatFilter] = useState<FormatFilter>("all");
+  const npuCatalog = useNpuCatalog(npu);
+  const formatFilter: FormatFilter =
+    chosenFormatFilter === "npu" && !npuCatalog ? "all" : chosenFormatFilter;
+  const [npuOnDeviceCollapsed, setNpuOnDeviceCollapsed] = useState(false);
+  const [npuBrowseCollapsed, setNpuBrowseCollapsed] = useState(true);
   // What this picker's task filter has already established about every row it can show; chat
   // passes none and keeps the full set.
   const capabilityScope = useMemo<readonly (keyof ModelCapabilities)[] | null>(() => {
@@ -4390,6 +4411,23 @@ export function HubModelPicker({
     formatFilter,
     loadTimes,
   ]);
+  const npuModels = npuCatalog?.models ?? null;
+  const npuListed =
+    npuCatalog !== null && (formatFilter === "all" || formatFilter === "npu");
+  const npuOnDeviceRows = useMemo(
+    () =>
+      npuListed
+        ? npuRowsFor(npuModels, { onDevice: true, query: debouncedQuery })
+        : [],
+    [npuListed, npuModels, debouncedQuery],
+  );
+  const npuBrowseRows = useMemo(
+    () =>
+      npuListed
+        ? npuRowsFor(npuModels, { onDevice: false, query: debouncedQuery })
+        : [],
+    [npuListed, npuModels, debouncedQuery],
+  );
   const unslothAdditionalOnDeviceModels = useMemo(
     () =>
       visibleAdditionalOnDeviceModels.filter((model) =>
@@ -4536,7 +4574,13 @@ export function HubModelPicker({
     validated: boolean;
     downloaded: ReadonlySet<string>;
     visionByRepo: ReadonlyMap<string, boolean>;
-  }>({ validated: false, downloaded: new Set(), visionByRepo: new Map() });
+    sizes: ReadonlyMap<string, number>;
+  }>({
+    validated: false,
+    downloaded: new Set(),
+    visionByRepo: new Map(),
+    sizes: new Map(),
+  });
   const prunePinnedQuantValidation = useCallback(
     (repoId: string, quant: string) => {
       const key = pinKey(repoId, quant);
@@ -4566,17 +4610,24 @@ export function HubModelPicker({
             { preferLocalCache: true },
           );
           const normalized = normalizeGgufVariantsResponse(response);
+          const downloaded = normalized.variants.filter(
+            (variant) => variant.downloaded === true,
+          );
           return {
             repoId,
             hasVision: normalized.hasVision,
-            downloaded: normalized.variants
-              .filter((variant) => variant.downloaded === true)
-              .map((variant) => pinKey(repoId, variant.quant)),
+            downloaded: downloaded.map((variant) =>
+              pinKey(repoId, variant.quant),
+            ),
+            sizes: downloaded.map(
+              (variant) =>
+                [pinKey(repoId, variant.quant), variant.size_bytes] as const,
+            ),
           };
         } catch {
           // If the backend cannot verify a quant, hiding the direct-load row is safer than claiming a
           // missing file is downloaded.
-          return { repoId, hasVision: undefined, downloaded: [] };
+          return { repoId, hasVision: undefined, downloaded: [], sizes: [] };
         }
       }),
     ).then((groups) => {
@@ -4591,6 +4642,7 @@ export function HubModelPicker({
                 : [[group.repoId, group.hasVision] as const],
             ),
           ),
+          sizes: new Map(groups.flatMap((group) => group.sizes)),
         });
       }
     });
@@ -4642,14 +4694,45 @@ export function HubModelPicker({
     return rows;
   }, [pinnedIds, pinnedQuants, pinnedCachedModelRows]);
 
+  // A repo whose only quant is pinned moves its sole-quant row into Pinned instead of showing
+  // twice. Multi-quant repos stay, since their row picks the other quants.
+  const pinnedSoleQuantRows = useMemo(() => {
+    const rows = new Map<
+      string,
+      { repo: (typeof sortedCachedGguf)[number]; sole: SoleDownloadedQuant }
+    >();
+    for (const entry of pinnedQuants) {
+      const sole = soleQuants.quants.get(entry.repoId);
+      const repo = sortedCachedGguf.find((c) => c.repo_id === entry.repoId);
+      if (sole && repo && sole.variant.quant === entry.quant) {
+        rows.set(pinKey(entry.repoId, entry.quant), { repo, sole });
+      }
+    }
+    return rows;
+  }, [pinnedQuants, soleQuants.quants, sortedCachedGguf]);
+  const pinnedSoleQuantRepoIds = useMemo(
+    () => new Set([...pinnedSoleQuantRows.values()].map(({ repo }) => repo.repo_id)),
+    [pinnedSoleQuantRows],
+  );
+
   // Split downloaded models so non-Unsloth repos get their own "Other models" section above Fine-tuned.
   const unslothCachedGguf = useMemo(
-    () => visibleCachedGguf.filter((c) => isUnslothPublisherRepoId(c.repo_id)),
-    [visibleCachedGguf],
+    () =>
+      visibleCachedGguf.filter(
+        (c) =>
+          isUnslothPublisherRepoId(c.repo_id) &&
+          !pinnedSoleQuantRepoIds.has(c.repo_id),
+      ),
+    [visibleCachedGguf, pinnedSoleQuantRepoIds],
   );
   const otherCachedGguf = useMemo(
-    () => visibleCachedGguf.filter((c) => !isUnslothPublisherRepoId(c.repo_id)),
-    [visibleCachedGguf],
+    () =>
+      visibleCachedGguf.filter(
+        (c) =>
+          !isUnslothPublisherRepoId(c.repo_id) &&
+          !pinnedSoleQuantRepoIds.has(c.repo_id),
+      ),
+    [visibleCachedGguf, pinnedSoleQuantRepoIds],
   );
   const unslothCachedModelRows = useMemo(
     () =>
@@ -5004,7 +5087,9 @@ export function HubModelPicker({
       keys.push(
         ...pinnedRows.map((row) =>
           row.entry
-            ? makeModelOptionKey("pinned-quant", row.key)
+            ? pinnedSoleQuantRows.has(row.key)
+              ? makeModelOptionKey("downloaded-gguf", row.entry.repoId)
+              : makeModelOptionKey("pinned-quant", row.key)
             : makeModelOptionKey("downloaded-model", row.model.repo_id),
         ),
       );
@@ -5123,6 +5208,7 @@ export function HubModelPicker({
     collapsedConnectedGroups,
     pinnedRows,
     pinnedCollapsed,
+    pinnedSoleQuantRows,
     downloadedCollapsed,
     fineTunedRows,
     fineTunedCollapsed,
@@ -5368,6 +5454,7 @@ export function HubModelPicker({
     visibleCachedGguf.length === 0 &&
     visibleCachedModelRows.length === 0 &&
     visibleAdditionalOnDeviceModels.length === 0 &&
+    npuOnDeviceRows.length === 0 &&
     sortedLmStudio.length === 0 &&
     sortedLocalDir.length === 0 &&
     // Fine-tuned models are on-device too: do not show the empty state above a non-empty Fine-tuned section.
@@ -5638,6 +5725,9 @@ export function HubModelPicker({
 
   // A pinned quant: repo name with the quant as a grey chip, loaded in one click.
   const renderPinnedQuantRow = (entry: { repoId: string; quant: string }) => {
+    // Its repo's own sole-quant row, with that row's load target and selection state.
+    const soleRow = pinnedSoleQuantRows.get(pinKey(entry.repoId, entry.quant));
+    if (soleRow) return renderSoleQuantGgufRow(soleRow.repo, soleRow.sole);
     const optionKey = makeModelOptionKey(
       "pinned-quant",
       pinKey(entry.repoId, entry.quant),
@@ -5654,6 +5744,13 @@ export function HubModelPicker({
       pinnedQuantValidation.visionByRepo.get(entry.repoId) === false
         ? false
         : undefined;
+    // Same size and vision mark as this quant's row below.
+    const sizeBytes = pinnedQuantValidation.sizes.get(
+      pinKey(entry.repoId, entry.quant),
+    );
+    const hasVision =
+      pinnedQuantValidation.visionByRepo.get(entry.repoId) ??
+      sortedCachedGguf.find((c) => c.repo_id === entry.repoId)?.has_vision;
     return (
       <div
         key={optionKey}
@@ -5666,8 +5763,11 @@ export function HubModelPicker({
             tooltipText={`${entry.repoId} (${ggufQuantDetailLabel(
               entry.quant,
             )})`}
-            meta="GGUF"
+            meta={
+              sizeBytes ? `GGUF · ${formatBytes(sizeBytes)}` : "GGUF"
+            }
             quantChip={ggufQuantChipLabel(entry.quant)}
+            showVision={hasVision}
             // Same runtime gate the sole-quant row applies: a pinned quant can belong to an image, video
             // or audio task, which load through the media planner, so the KV estimator would measure
             // the wrong runtime and fall back to the file size.
@@ -6182,6 +6282,94 @@ export function HubModelPicker({
     );
   };
 
+  const renderNpuRow = (model: NpuModel, onDevice: boolean) => {
+    if (!npuCatalog) return null;
+    const optionKey = makeModelOptionKey(
+      onDevice ? "npu-on-device" : "npu",
+      model.id,
+    );
+    const isSelected = value === model.model_path;
+    const isLoaded = loadedModelId === model.model_path;
+    const downloading = model.id in npuCatalog.downloads;
+    const progress = npuCatalog.downloads[model.id];
+    const size =
+      model.size_gb == null
+        ? null
+        : model.size_gb < 1
+          ? `${Math.round(model.size_gb * 1000)} MB`
+          : `${model.size_gb.toFixed(1)} GB`;
+    const pick = () =>
+      onSelect(model.model_path, {
+        source: "local",
+        isLora: false,
+        isDownloaded: true,
+      });
+    const row = (
+      <ModelRow
+        label={model.id}
+        meta={
+          downloading
+            ? `NPU · Downloading${progress == null ? "" : ` ${Math.round(progress)}%`}`
+            : `NPU${size ? ` · ${size}` : ""}`
+        }
+        selected={isSelected}
+        loaded={isLoaded}
+        downloaded={!onDevice && model.downloaded}
+        capabilities={{
+          vision: model.supports_vision,
+          reasoning: model.supports_reasoning,
+          audio: false,
+          imageGen: false,
+          videoGen: false,
+        }}
+        alignMeta={onDevice ? "device" : "hub"}
+        optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
+        onClick={() => {
+          if (downloading) return;
+          if (model.downloaded) {
+            pick();
+            return;
+          }
+          const before = useChatRuntimeStore.getState();
+          const chosen = before.params.checkpoint;
+          void npuCatalog.download(model).then((done) => {
+            const now = useChatRuntimeStore.getState();
+            // A model picked while this downloaded is the user's newer choice; keep it.
+            if (done && now.params.checkpoint === chosen && !now.loadingModelPick) {
+              pick();
+            }
+          });
+        }}
+        vramStatus={null}
+        className={onDevice ? downloadedRowButtonClassName : undefined}
+      />
+    );
+    if (!onDevice) return <div key={model.id}>{row}</div>;
+    return (
+      <div key={model.id} className={downloadedRowShellClassName(isSelected)}>
+        <div className="min-w-0 flex-1">{row}</div>
+        <span className={cn(ROW_ACTIONS_CLASS, "h-6")}>
+          <ModelDeleteAction
+            ariaLabel={`Delete ${model.id}`}
+            title={`Delete ${model.id}?`}
+            description="This removes the model's NPU files from this device."
+            successMessage={`Deleted ${model.id}`}
+            disabled={isLoaded}
+            onConfirm={() => npuCatalog.remove(model)}
+          />
+        </span>
+      </div>
+    );
+  };
+
+  const npuBrowseForcedOpen = formatFilter === "npu" || showHfSection;
+  const npuBrowseFolded = !npuBrowseForcedOpen && npuBrowseCollapsed;
+  const showNpuBrowse =
+    npuCatalog !== null &&
+    npuListed &&
+    section === "recommended" &&
+    (!showHfSection || npuBrowseRows.length > 0);
+
   return (
     <CapabilityScope.Provider value={capabilityScope}>
       <div className="relative space-y-2">
@@ -6272,7 +6460,11 @@ export function HubModelPicker({
             <div className="flex max-w-full min-w-0 flex-wrap items-center gap-2">
               <HubOptionMenu
                 value={formatFilter}
-                options={FORMAT_FILTER_OPTIONS}
+                options={
+                  npuCatalog
+                    ? FORMAT_FILTER_OPTIONS
+                    : FORMAT_FILTER_OPTIONS_WITHOUT_NPU
+                }
                 onValueChange={setFormatFilter}
                 ariaLabel="Filter by format"
                 align="end"
@@ -6553,6 +6745,26 @@ export function HubModelPicker({
                         renderAdditionalOnDeviceModelRow,
                       )}
                   </div>
+                ) : null}
+
+                {showDownloaded && npuOnDeviceRows.length > 0 ? (
+                  <>
+                    <ListLabel
+                      divider={
+                        pinnedRows.length > 0 ||
+                        unslothCachedGguf.length > 0 ||
+                        unslothCachedModelRows.length > 0 ||
+                        unslothAdditionalOnDeviceModels.length > 0 ||
+                        hasOtherModels
+                      }
+                      collapsed={npuOnDeviceCollapsed}
+                      onToggle={() => setNpuOnDeviceCollapsed((v) => !v)}
+                    >
+                      NPU
+                    </ListLabel>
+                    {!npuOnDeviceCollapsed &&
+                      npuOnDeviceRows.map((model) => renderNpuRow(model, true))}
+                  </>
                 ) : null}
 
                 {/* Fine-tuned models: always shown on On Device so the train shortcut has a target. Hidden
@@ -7234,8 +7446,37 @@ export function HubModelPicker({
                   </>
                 ) : null}
 
-                {showRecommendedSection ? (
+                {showNpuBrowse && npuCatalog ? (
                   <>
+                    <ListLabel
+                      collapsed={npuBrowseFolded}
+                      onToggle={
+                        npuBrowseForcedOpen
+                          ? undefined
+                          : () => setNpuBrowseCollapsed((v) => !v)
+                      }
+                    >
+                      NPU
+                    </ListLabel>
+                    {npuBrowseFolded ? null : (
+                      <>
+                        {showHfSection ? null : (
+                          <NpuSetupNotice catalog={npuCatalog} />
+                        )}
+                        {npuBrowseRows.map((model) =>
+                          renderNpuRow(model, false),
+                        )}
+                      </>
+                    )}
+                  </>
+                ) : null}
+
+                {showRecommendedSection && formatFilter !== "npu" ? (
+                  <>
+                    {/* Below the NPU group, the curated list needs its own heading. */}
+                    {showNpuBrowse ? (
+                      <ListLabel divider={!npuBrowseFolded}>Unsloth</ListLabel>
+                    ) : null}
                     {recommendedSearch.isLoading &&
                     recommendedRows.length === 0 ? (
                       <div className="flex items-center gap-2 px-5 py-3">
@@ -7476,7 +7717,9 @@ export function HubModelPicker({
                   </>
                 ) : null}
 
-                {showHfSection && section === "recommended" ? (
+                {showHfSection &&
+                section === "recommended" &&
+                formatFilter !== "npu" ? (
                   <>
                     {searchRowIds.length === 0 && !isLoading ? (
                       filteredRecommendedIds.length === 0 ? (
