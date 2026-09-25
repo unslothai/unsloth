@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for the in-memory prompt-conditioning cache (``diffusion_prompt_cache.py``), on CPU with
-stub pipes: keying, byte-bounded LRU, bypass rules, clone-on-hit, invalidation, and the MiniMax-H3 shim."""
+"""CPU tests for ``diffusion_prompt_cache.py`` with stub pipes."""
 
 from __future__ import annotations
 
@@ -175,7 +174,6 @@ def test_lora_owner_is_read_for_workflow_pipes():
 
 
 def test_workflow_pipes_share_the_owner_budget():
-    # One load, one bound: img2img / inpaint / ControlNet pipes store into the base pipe's cache.
     owner = _EncodePipe()
     aux = _EncodePipe()
     assert prompt_cache.install(owner, identity = {"family": "f"})
@@ -184,7 +182,7 @@ def test_workflow_pipes_share_the_owner_budget():
     )
     assert prompt_cache.cache_for(aux) is prompt_cache.cache_for(owner)
     owner.encode_prompt("a cat")
-    aux.encode_prompt("a cat")  # a different workflow is a different key, never the base entry
+    aux.encode_prompt("a cat")
     assert owner.calls == 1 and aux.calls == 1
     assert len(prompt_cache.cache_for(owner)) == 2
 
@@ -217,7 +215,7 @@ def test_install_is_idempotent_and_signature_preserved():
 
 
 def test_composes_with_the_disk_cache(tmp_path, monkeypatch):
-    pytest.importorskip("safetensors")  # the disk cache writes safetensors files
+    pytest.importorskip("safetensors")
     monkeypatch.setenv("UNSLOTH_DIFFUSION_COND_CACHE_DIR", str(tmp_path))
     pipe = _EncodePipe()
     assert cond_cache.install(pipe, family = "fam", repo_id = "r", dtype = torch.float32)
@@ -284,7 +282,6 @@ def test_h3_shim_caches_text_only_calls(monkeypatch):
     assert calls["n"] == 1 and torch.equal(a, b) and a.data_ptr() != b.data_ptr()
     shim(pipe.text_encoder, None, [1, 2, 4], {}, 50, "cpu", torch.float32)
     assert calls["n"] == 2
-    # Vision inputs bypass; an unregistered encoder runs the original.
     shim(
         pipe.text_encoder,
         None,
@@ -296,7 +293,6 @@ def test_h3_shim_caches_text_only_calls(monkeypatch):
     )
     shim(torch.nn.Linear(2, 2), None, [1, 2, 3], {}, 50, "cpu", torch.float32)
     assert calls["n"] == 4
-    # A second pipe reuses the shim, no double wrap.
     other = _Modular()
     prompt_cache.install(other)
     assert module.get_qwen3vl_prompt_embeds is shim

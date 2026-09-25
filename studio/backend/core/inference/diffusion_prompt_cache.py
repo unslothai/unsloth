@@ -1,28 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""In-memory prompt-conditioning cache for the diffusion and video backends.
+"""In-memory, host-RAM LRU of text-encoder outputs for diffusion/video pipes.
 
-A repeated prompt returns the text-encoder output it produced last time instead of running the
-encoder again. Under an offload policy that also means the encoder never moves to the device, which
-for MiniMax-H3's 32B Qwen3-VL conditioner is most of a render's prompt cost.
-
-On by default (``UNSLOTH_DIFFUSION_PROMPT_CACHE=0`` turns it off), bounded by bytes
-(``UNSLOTH_DIFFUSION_PROMPT_CACHE_MB``, default 256, scaled down on small hosts), least recently
-used first out. Entries live in host memory, so the cache never takes VRAM from a render. The
-cache lives on the pipeline object, so an unload or a reload starts empty;
-``release`` frees it eagerly on teardown.
-
-Keying: every bound argument of the encode call except placement (``device``) and RNG
-(``generator``), plus the identity of each text encoder module and the attached LoRA set. A call
-carrying anything that is not a plain value (a tensor ``prompt_embeds``, a PIL image) bypasses the
-cache. A hit returns fresh tensors, never the stored ones, so a pipeline that edits its embeddings
-in place cannot poison a later render. The stored tensors are exact copies of the encoder output,
-so a cached render is bit-identical to an uncached one.
-
-Hooks: ``pipe.encode_prompt`` (per instance, composes with the opt-in disk cache in
-``diffusion_cond_cache``) and MiniMax-H3's modular ``get_qwen3vl_prompt_embeds``, which its
-text-encoder steps call as a module global. torch is imported lazily.
+``UNSLOTH_DIFFUSION_PROMPT_CACHE=0`` disables; ``UNSLOTH_DIFFUSION_PROMPT_CACHE_MB`` (default 256, capped on
+small hosts) bounds it. Hits return fresh copies so in-place edits cannot poison later renders.
 """
 
 from __future__ import annotations
@@ -55,7 +37,7 @@ def budget_bytes() -> int:
         mb = float(raw) if raw else float(_DEFAULT_BUDGET_MB)
     except ValueError:
         mb = float(_DEFAULT_BUDGET_MB)
-        raw = ""  # a malformed override is treated as unset, so the automatic cap still applies
+        raw = ""  # malformed = unset, so the automatic cap still applies
     budget = int(max(0.0, mb) * 1024 * 1024)
     if not raw:
         total = _host_ram_bytes()
@@ -65,7 +47,7 @@ def budget_bytes() -> int:
 
 
 def _host_ram_bytes() -> int:
-    """Physical RAM, capped by an enforcing cgroup limit (pinned entries are charged to it)."""
+    """Pinned entries are charged to the cgroup, so its limit caps RAM."""
     try:
         total = int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
     except (AttributeError, ValueError, OSError):
@@ -87,7 +69,6 @@ def _torch():
 
 
 def _plain(value: Any) -> Any:
-    """``value`` as a JSON-safe key component, or raise TypeError when it is not a plain value."""
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, (list, tuple)):
@@ -105,8 +86,6 @@ def _is_tensor(obj: Any) -> bool:
 
 
 def _map_tensors(obj: Any, fn: Any) -> Any:
-    """Apply ``fn`` to every tensor in a nested tuple / list / dict of tensors and plain values;
-    raise TypeError on anything else (such a result is simply not cached)."""
     if _is_tensor(obj):
         return fn(obj)
     if isinstance(obj, tuple):
@@ -132,7 +111,6 @@ def _nbytes(obj: Any) -> int:
 
 
 class PromptCache:
-    """A bytes-bounded LRU of encode results. Thread-safe; every method is best-effort."""
 
     def __init__(self, budget: Optional[int] = None) -> None:
         self.budget = budget_bytes() if budget is None else int(budget)
@@ -191,9 +169,6 @@ class PromptCache:
 
 
 def _store_copy(t: Any) -> Any:
-    """The stored copy of an encoder output tensor, always in host memory so the cache never holds VRAM a render
-    could need (pinned when the source is on CUDA, so the copy back is asynchronous). Remembers the source device,
-    which is where a hit lands unless the caller names one."""
     t = t.detach()
     device = t.device
     stored = t.to("cpu", copy = True)
@@ -248,12 +223,7 @@ def install(
     lora_owner: Any = None,
     logger: Any = None,
 ) -> bool:
-    """Wrap ``pipe.encode_prompt`` (when present) and register the pipe's text encoder for the
-    MiniMax-H3 hook. No-op (False) when disabled or when the pipe has nothing to cache.
-
-    ``lora_owner`` is the pipe that records the attached adapters, for a workflow pipe built with
-    ``from_pipe`` around the loaded one (same text encoders, adapters tracked on the original). Such a
-    pipe shares the owner's store, so one load stays within one budget."""
+    """``lora_owner``: the ``from_pipe`` source that tracks adapters; its store is shared."""
     if not enabled() or pipe is None:
         return False
     if cache_for(pipe) is not None:
@@ -287,7 +257,6 @@ def install(
 
 
 def release(pipe: Any) -> None:
-    """Drop every cached entry now (teardown), rather than whenever the pipe is collected."""
     cache = cache_for(pipe)
     if cache is not None:
         cache.clear()
@@ -342,8 +311,7 @@ def _wrap_encode_prompt(
     return True
 
 
-# MiniMax-H3 steps call this module global (which fires the offload hook). One process-wide shim routes each call to
-# its text encoder's cache; unregistered encoders and vision inputs run the original.
+# MiniMax-H3 steps call this module global, so it is shimmed process-wide and routed per text encoder.
 _H3_MODULE = "diffusers.modular_pipelines.minimax_h3.encoders"
 _H3_FUNC = "get_qwen3vl_prompt_embeds"
 _H3_REGISTRY: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
@@ -374,7 +342,6 @@ def _register_h3(pipe: Any, cache: PromptCache, load_fp: Any, logger: Any) -> bo
 
 
 def _modular_text_encoder(pipe: Any) -> Any:
-    """The text encoder of a modular (MiniMax-H3) pipeline, or None for an ordinary pipeline."""
     if callable(getattr(pipe, "encode_prompt", None)):
         return None
     if not hasattr(pipe, "blocks") and "Modular" not in type(pipe).__name__:
