@@ -54,10 +54,26 @@ cmake --build build -j4
 ```
 * **`-j4`**: Tells the compiler to use 4 parallel threads/jobs. This speeds up compilation substantially. You can change `4` to the number of CPU cores you have (e.g., `-j8`).
 
-### 4. Install for Unsloth Studio
-To let Unsloth Studio automatically use your optimized SYCL build, place the `llama-server` binary in your path (e.g., user-local bin or system bin):
+### 4. Install for Unsloth Studio (Wrapper Script)
+Unsloth Studio launches `llama-server` in a clean environment, meaning it won't be able to find Intel's math libraries (like `libsvml.so`) automatically. To fix this, we create a wrapper script.
+
+First, copy your compiled binary as `.bin`:
 ```bash
-cp build/bin/llama-server ~/.local/bin/llama-server
-# Or globally:
-# sudo cp build/bin/llama-server /usr/bin/llama-server
+mkdir -p ~/.local/bin
+cp build/bin/llama-server ~/.local/bin/llama-server.bin
 ```
+
+Then, create a wrapper script at `~/.local/bin/llama-server`:
+```bash
+cat << 'EOF' > ~/.local/bin/llama-server
+#!/bin/bash
+# Source Intel oneAPI environment dynamically
+source /opt/intel/oneapi/setvars.sh --force > /dev/null 2>&1
+# (Use source ~/intel/oneapi/setvars.sh if installed locally)
+
+exec ~/.local/bin/llama-server.bin "$@"
+EOF
+chmod +x ~/.local/bin/llama-server
+```
+
+Because `~/.local/bin` takes precedence in your `PATH`, Unsloth Studio will automatically use this wrapper script to load the correct environment and execute your optimized SYCL build!
