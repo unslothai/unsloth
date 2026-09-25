@@ -1858,6 +1858,27 @@ def _bf16_offloads_quant_fits(monkeypatch, threshold_mib = 21_000):
     )
 
 
+def _measured_resident(monkeypatch):
+    """Pin a resident plan with a measured budget: fake_runtime has no CUDA, so the host fallback is unmeasured on
+    some runners (macOS / Windows), which rightly keeps int8."""
+    import dataclasses
+
+    import core.inference.video as video_mod
+
+    real = video_mod.plan_diffusion_memory
+
+    def _plan(**kw):
+        plan = real(**kw)
+        estimates = {
+            **plan.estimates,
+            "safe_device_budget_mib": 80_000,
+            "resident_required_mib": 30_000,
+        }
+        return dataclasses.replace(plan, offload_policy = "none", estimates = estimates)
+
+    monkeypatch.setattr(video_mod, "plan_diffusion_memory", _plan)
+
+
 def _quant_spy(monkeypatch):
     import core.inference.video as video_mod
 
@@ -1875,6 +1896,7 @@ def _quant_spy(monkeypatch):
 def test_video_auto_quant_keeps_a_resident_bf16_dit(fake_runtime, monkeypatch, speed):
     # Where bf16 already fits resident the compiled int8 DiT is slower and further from bf16, so auto keeps bf16.
     calls = _quant_spy(monkeypatch)
+    _measured_resident(monkeypatch)
     status = VideoBackend().load_pipeline(
         "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = speed
     )
