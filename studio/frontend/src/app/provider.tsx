@@ -381,7 +381,9 @@ async function applyAppWindowLayout(
         await win.show();
         return true;
       },
-      waitForSettled: hiddenAtLaunch ? undefined : layoutObserver?.waitForSettled,
+      waitForSettled: hiddenAtLaunch
+        ? undefined
+        : layoutObserver?.waitForSettled,
       measure: () => measureTauriWindowLayout(windowModule, win, isCurrent),
       setMinimumConstraints: (minimum) =>
         win.setSizeConstraints({
