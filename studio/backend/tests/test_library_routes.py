@@ -1510,6 +1510,44 @@ def test_a_folder_chosen_before_mount_points_were_recorded_still_resolves(client
         relocations.forget_cache()
 
 
+def test_a_folder_chosen_before_mount_points_learns_its_mount_once_present(
+    client, tmp_path, monkeypatch
+):
+    from core.inference import image_gallery
+    from storage.studio_db import get_app_setting, upsert_app_settings
+    from utils.paths import relocations
+    from utils.paths.relocations import LocationUnavailable
+
+    drive = tmp_path / "mnt-usb"
+    folder = drive / "Unsloth Images"
+    mounts = set()
+    _mounted(monkeypatch, mounts)
+    upsert_app_settings({"library.locations": {"images": str(folder)}}, read_back = False)
+    try:
+        # Its drive is out: nothing to learn yet, so the bare path is kept as it was.
+        relocations.forget_cache()
+        with pytest.raises(LocationUnavailable):
+            image_gallery.gallery_dir()
+        assert get_app_setting("library.locations", {})["images"] == str(folder)
+
+        # Back in: the mount is recorded, and saved.
+        folder.mkdir(parents = True)
+        mounts.add(str(drive.resolve()))
+        relocations.forget_cache()
+        assert image_gallery.gallery_dir() == folder
+        saved = get_app_setting("library.locations", {})["images"]
+        assert saved == {"path": str(folder), "mount": str(drive.resolve())}
+
+        # Unplugged again, its empty mount point left behind: now that is caught.
+        mounts.clear()
+        relocations.forget_cache()
+        with pytest.raises(LocationUnavailable):
+            image_gallery.gallery_dir()
+    finally:
+        upsert_app_settings({"library.locations": {}}, read_back = False)
+        relocations.forget_cache()
+
+
 def test_an_unplugged_folder_is_reported_once_and_the_bar_falls_back(client, tmp_path, monkeypatch):
     import shutil
 

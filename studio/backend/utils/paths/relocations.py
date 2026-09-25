@@ -49,18 +49,43 @@ def _load() -> dict[str, dict]:
     with _lock:
         if key in _cache:
             return _cache[key]
-    from storage.studio_db import get_app_setting
+    from storage.studio_db import get_app_setting, upsert_app_settings
 
     raw = get_app_setting(_SETTING, {})
     chosen = {}
+    upgraded = False
     if isinstance(raw, dict):
         for kind, value in raw.items():
             entry = _entry(value) if kind in MOVABLE else None
-            if entry is not None:
-                chosen[kind] = entry
+            if entry is None:
+                continue
+            # A choice saved before mount points were recorded learns its own the first time its
+            # folder is there to ask. While it is not, it waits: the drive is what it would name.
+            if isinstance(value, str) and Path(entry["path"]).is_dir():
+                entry["mount"] = mount_point(Path(entry["path"]))
+                upgraded = True
+            chosen[kind] = entry
+    if upgraded:
+        try:
+            upsert_app_settings({_SETTING: _stored(raw, chosen)}, read_back = False)
+        except (sqlite3.Error, OSError):
+            pass
     with _lock:
         _cache[key] = chosen
     return chosen
+
+
+def _stored(raw: dict, chosen: dict[str, dict]) -> dict:
+    """What to save for `chosen`: a choice still waiting for its drive keeps its bare path, so it
+    is upgraded once the drive is back."""
+    return {
+        kind: raw[kind]
+        if isinstance(raw.get(kind), str)
+        and entry["mount"] is None
+        and not Path(entry["path"]).is_dir()
+        else entry
+        for kind, entry in chosen.items()
+    }
 
 
 def _chosen_entry(key: str) -> Optional[dict]:
@@ -142,12 +167,17 @@ def set_chosen(key: str, path: Optional[Path]) -> None:
         raise ValueError(f"{key} files cannot move")
     from storage.studio_db import upsert_app_settings
 
+    from storage.studio_db import get_app_setting
+
     updated = dict(_load())
     if path is None:
         updated.pop(key, None)
     else:
         updated[key] = {"path": str(path), "mount": mount_point(path)}
-    upsert_app_settings({_SETTING: updated}, read_back = False)
+    raw = get_app_setting(_SETTING, {})
+    upsert_app_settings(
+        {_SETTING: _stored(raw if isinstance(raw, dict) else {}, updated)}, read_back = False
+    )
     with _lock:
         _cache[_db_key()] = updated
 
