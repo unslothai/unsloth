@@ -1429,6 +1429,16 @@ def item_exists(item_id: str, recorded: Optional[str] = None) -> bool:
             from storage.studio_db import get_chat_attachment
             message_id, _, attachment_id = ref.partition(":")
             return get_chat_attachment(message_id, attachment_id) is not None
+        if kind in ("image", "video", "audio"):
+            # Its file being there is enough. Reading the recipe to name it, as local_path does,
+            # decodes a whole PNG, and the galleries ask this for every star when they open.
+            from core.inference import audio_gallery, image_gallery, video_gallery
+            resolve = {
+                "image": image_gallery.image_path,
+                "video": video_gallery.video_path,
+                "audio": audio_gallery.audio_path,
+            }[kind]
+            return resolve(ref) is not None
         path = local_path(item_id)
     except (LookupError, ValueError):
         return False
