@@ -1564,14 +1564,14 @@ def test_startup_deadline_counts_engine_silence(isolated, monkeypatch, chatty):
 
     active(isolated)
     monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda _: 0.8)
-    monkeypatch.setattr(managed_engine, "STARTUP_STALL_S", 1.0)
+    monkeypatch.setattr(managed_engine, "STARTUP_STALL_S", 5.0)
     engine = ManagedEngine("vllm")
 
     def command(python, model, port, key, context, memory, tensor_parallel_size):
         code = (
             "import time, sys\n"
             "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
-            f"for i in range(30):\n print('Downloading shard', i, flush = True) if {chatty} else None; time.sleep(0.1)\n"
+            f"for i in range(40):\n print('Downloading shard', i, flush = True) if {chatty} else None; time.sleep(0.25)\n"
             "class Handler(BaseHTTPRequestHandler):\n"
             " def do_GET(self):\n"
             "  self.send_response(200); self.end_headers()\n"
