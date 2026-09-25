@@ -39,6 +39,8 @@ export interface RunnerEvents {
   onOutcome: (outcome: VariantOutcome) => void;
   onResult: (result: RunResult) => void;
   onProgress: (text: string) => void;
+  /** Chat's model could not be put back after the sweep; the finished run is still kept. */
+  onRestoreError?: (message: string) => void;
 }
 
 export class BenchSetupError extends Error {}
@@ -529,7 +531,12 @@ export async function runBenchmark(
     if (config.restoreAfter && original.active_model && (run || swapped)) {
       events.onProgress("Restoring your original settings");
       // Restore the model chat had open, not the one a tuneModel run swapped in.
-      await restore(original, chatBaseLoad(original)).catch(() => undefined);
+      // Keep the finished run, but tell the user if chat was left on the benchmark model.
+      await restore(original, chatBaseLoad(original)).catch((err) =>
+        events.onRestoreError?.(
+          err instanceof Error ? err.message : String(err),
+        ),
+      );
     }
   }
   // A Stop during setup, before any row: reject as a cancel, the restore above already ran.

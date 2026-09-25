@@ -273,10 +273,21 @@ export const useBenchmarksStore = create<BenchmarksState>()(
               onResult: (res) =>
                 patchLive((r) => ({ ...r, results: [...r.results, res] })),
               onProgress: (text) => patchLive((r) => r, text),
+              onRestoreError: (message) =>
+                set({
+                  error: `The run finished but your chat model could not be restored: ${message}`,
+                }),
             },
             controller.signal,
           );
-          if (run.results.length) {
+          // Keep the run when it measured rows, or when it only produced failure/skip
+          // diagnostics, so those reasons survive in History. A bare cancel is dropped.
+          const worthSaving =
+            run.results.length > 0 ||
+            run.outcomes.some(
+              (o) => o.state === "error" || o.state === "skipped",
+            );
+          if (worthSaving) {
             let saved = run;
             try {
               // Let any queued checkpoint save land first: every PUT replaces all rows, so

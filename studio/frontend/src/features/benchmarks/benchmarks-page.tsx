@@ -282,7 +282,11 @@ function useModelShape(
   status: InferenceStatusResponse | null,
   model: string | null,
   variant: string | null,
-): { shape: ModelShape | null; contextLength: number | null } {
+): {
+  shape: ModelShape | null;
+  contextLength: number | null;
+  pending: boolean;
+} {
   const [picked, setPicked] = useState<{
     key: string;
     shape: ModelShape;
@@ -308,15 +312,21 @@ function useModelShape(
   }, [model, variant, key]);
   if (key) {
     const p = picked?.key === key ? picked : null;
-    return { shape: p?.shape ?? null, contextLength: p?.contextLength ?? null };
+    return {
+      shape: p?.shape ?? null,
+      contextLength: p?.contextLength ?? null,
+      pending: !p,
+    };
   }
-  if (!status?.active_model) return { shape: null, contextLength: null };
+  if (!status?.active_model)
+    return { shape: null, contextLength: null, pending: false };
   return {
     shape: {
       layers: status.n_layers ?? null,
       moeLayers: status.n_moe_layers ?? null,
     },
     contextLength: null,
+    pending: false,
   };
 }
 
@@ -334,7 +344,11 @@ export function BenchmarksPage(): ReactElement {
   const status = useLoadedModel(Boolean(live));
   const config = useBenchmarksStore((s) => s.config);
   const choosePreset = useBenchmarksStore((s) => s.choosePreset);
-  const { shape, contextLength: pickedContext } = useModelShape(
+  const {
+    shape,
+    contextLength: pickedContext,
+    pending: pickedPending,
+  } = useModelShape(
     status,
     config.tuneModel ?? null,
     config.tuneVariant ?? null,
@@ -384,9 +398,13 @@ export function BenchmarksPage(): ReactElement {
           ? nextModel
           : null;
 
+  // Offload and context rows are scaled to the picked model; block Run until its header
+  // resolves so the sweep can't start on the resident model's shape or window.
+  const rowsPending = pickedPending && (offloadSweep || contextSweep);
   const preview = (
     <RunPreviewCard
       status={status}
+      metadataPending={rowsPending}
       onRun={() => void start()}
       onViewRun={() => setTab("benchmark")}
     />

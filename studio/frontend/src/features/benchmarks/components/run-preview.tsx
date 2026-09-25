@@ -108,10 +108,12 @@ const SHOWN_SETTINGS = ["max_seq_length", "cache_type_kv", "n_parallel"];
 
 export function RunPreviewCard({
   status,
+  metadataPending = false,
   onRun,
   onViewRun,
 }: {
   status: InferenceStatusResponse | null;
+  metadataPending?: boolean;
   onRun: () => void;
   onViewRun: () => void;
 }): ReactElement {
@@ -141,7 +143,7 @@ export function RunPreviewCard({
       ? (config.tuneVariant ?? null)
       : status?.gguf_variant;
   const hasModel = Boolean(modelPath);
-  const ready = hasModel && active.length > 0;
+  const ready = hasModel && active.length > 0 && !metadataPending;
   const perRow = config.warmup + config.repetitions;
   const prompts =
     config.promptSet === CUSTOM_PROMPT_ID
