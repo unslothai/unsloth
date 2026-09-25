@@ -498,6 +498,23 @@ function reorder(
   };
 }
 
+/** Whether two plans land the row identically. `place` is ignored: it names the same slot
+ *  from different neighbours. */
+export function equivalentDrop(a: SidebarDropPlan, b: SidebarDropPlan): boolean {
+  const landing = (plan: SidebarDropPlan) =>
+    JSON.stringify({
+      action: plan.action,
+      orders: plan.effects.orders.map(({ scope, ids }) => ({ scope, ids })),
+      pinChat: plan.effects.pinChat,
+      unpinChat: plan.effects.unpinChat,
+      pinProject: plan.effects.pinProject,
+      unpinProject: plan.effects.unpinProject,
+      moveChat: plan.effects.moveChat,
+      switchSort: plan.effects.switchSort,
+    });
+  return landing(a) === landing(b);
+}
+
 /** Changes exactly when the painted state does, so equal plans skip a re-render. */
 export function planKey(plan: SidebarDropPlan | null): string {
   if (!plan) return "";

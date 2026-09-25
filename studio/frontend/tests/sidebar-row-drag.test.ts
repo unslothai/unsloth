@@ -9,6 +9,7 @@ import test from "node:test";
 
 import {
   dropEdgeAt,
+  equivalentDrop,
   folderRingKey,
   planKey,
   planSidebarDrop,
@@ -847,7 +848,8 @@ test("the gesture is pointer events, not the HTML5 drag API", () => {
 test("a cue over nothing is cleared without trusting dragleave", () => {
   assert.match(HOOK, /for \(const element of document\.elementsFromPoint\(x, y\)\)/);
   // No answer here lets the zone around it answer instead.
-  assert.match(HOOK, /if \(outcome\) return \{ hit, outcome \};\n\s*\}\n\s*return null;/);
+  assert.match(HOOK, /if \(!outcome\) continue;/);
+  assert.match(HOOK, /return \{ hit, outcome \};\n\s*\}\n\s*return null;/);
   assert.match(
     HOOK,
     /if \(!aimed \|\| aimed\.outcome === STAY\) \{\n\s*\/\/[^\n]*\n\s*cancelSpring\(\);\n\s*showPlan\(null\);\n\s*return;\n\s*\}/,
@@ -1310,4 +1312,42 @@ test("a chat can be dropped at the bottom of a pinned project", () => {
     ),
     STAY,
   );
+});
+
+test("the two edges of one gap are one drop, and draw one line", () => {
+  const ctx = context({
+    orders: { ...context().orders, recents: ["r1", "r2", "r3"] },
+  });
+  const drag = chat("r3", "recents", RECENTS_ORDER_SCOPE, null);
+  const underR1 = plannedDrop(
+    planSidebarDrop(drag, chatRow("recents", RECENTS_ORDER_SCOPE, "r1"), "bottom", ctx),
+  );
+  const overR2 = plannedDrop(
+    planSidebarDrop(drag, chatRow("recents", RECENTS_ORDER_SCOPE, "r2"), "top", ctx),
+  );
+  // Two cues, one landing.
+  assert.notDeepEqual(underR1.cue, overR2.cue);
+  assert.ok(equivalentDrop(underR1, overR2));
+
+  // A folder's last chat and the next folder are different drops.
+  const homeScope = projectOrderScope("home");
+  const intoHome = plannedDrop(
+    planSidebarDrop(
+      drag,
+      {
+        ...chatRow("projects", homeScope, "c3", "home", { index: 0, count: 1 }),
+        blockEnd: { scope: homeScope, id: "c3" },
+      },
+      "bottom",
+      ctx,
+    ),
+  );
+  const overMisc = plannedDrop(
+    planSidebarDrop(drag, folderRow("projects", PROJECT_ORDER_SCOPE, "misc"), "top", ctx),
+  );
+  assert.ok(!equivalentDrop(intoHome, overMisc));
+
+  // The hook only swaps lines for equivalent drops.
+  assert.match(HOOK, /planSidebarDrop\(dragged, below\.zone, "top", context\)/);
+  assert.match(HOOK, /equivalentDrop\(alt, outcome\)/);
 });

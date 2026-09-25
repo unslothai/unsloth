@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   dropEdgeAt,
+  equivalentDrop,
   planKey,
   planSidebarDrop,
   rowKey,
@@ -78,6 +79,43 @@ function zonesUnder(x: number, y: number): ZoneHit[] {
     }
   }
   return hits;
+}
+
+/** Max distance between a row's bottom and the next row's top for them to share a gap. */
+const ADJACENT_PX = 3;
+
+/** The row drawn directly under row `key`. Header zones are skipped. */
+function rowBelow(key: string): ZoneHit | null {
+  if (typeof document === "undefined") return null;
+  const rows: ZoneHit[] = [];
+  for (const element of document.querySelectorAll(`[${DROP_ZONE_ATTR}]`)) {
+    try {
+      const parsed = JSON.parse(element.getAttribute(DROP_ZONE_ATTR) ?? "") as {
+        zone: SidebarDropZone;
+        closed?: boolean;
+      };
+      if (!parsed.zone.row || parsed.zone.header) continue;
+      rows.push({
+        zone: parsed.zone,
+        closed: Boolean(parsed.closed),
+        rect: element.getBoundingClientRect(),
+      });
+    } catch {
+      // Unreadable zones are not rows.
+    }
+  }
+  const self = rows.find(
+    (hit) => hit.zone.row && rowKey(hit.zone.row.scope, hit.zone.row.id) === key,
+  );
+  if (!self) return null;
+  let below: ZoneHit | null = null;
+  for (const hit of rows) {
+    if (hit === self || hit.rect.top <= self.rect.top) continue;
+    if (Math.abs(hit.rect.top - self.rect.bottom) > ADJACENT_PX) continue;
+    if (hit.rect.right <= self.rect.left || hit.rect.left >= self.rect.right) continue;
+    if (!below || hit.rect.top < below.rect.top) below = hit;
+  }
+  return below;
 }
 
 /** The list the row scrolls while it is carried: the nearest ancestor that actually scrolls. */
@@ -183,7 +221,29 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
           dropEdgeAt(hit.rect, y),
           context,
         );
-        if (outcome) return { hit, outcome };
+        if (!outcome) continue;
+        // One line per gap: if the row below lands the drop identically, draw its top line
+        // instead of this row's bottom one. Different drops (a folder's last chat vs the next
+        // row) keep their own lines.
+        if (
+          outcome !== STAY &&
+          "line" in outcome.cue &&
+          outcome.cue.line.edge === "bottom"
+        ) {
+          const below = rowBelow(outcome.cue.line.rowKey);
+          const alt = below
+            ? planSidebarDrop(dragged, below.zone, "top", context)
+            : null;
+          if (
+            alt &&
+            alt !== STAY &&
+            "line" in alt.cue &&
+            equivalentDrop(alt, outcome)
+          ) {
+            return { hit, outcome: alt };
+          }
+        }
+        return { hit, outcome };
       }
       return null;
     },
