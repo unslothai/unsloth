@@ -943,6 +943,11 @@ class EstimateMemoryResponse(BaseModel):
     )
     weights_bytes: int = Field(0, description = "Resident model files: weights, projector, drafter")
     kv_bytes: int = Field(0, description = "KV cache at the requested context and slots")
+    kv_checkpoint_bytes: int = Field(
+        0,
+        description = "Context checkpoints in host RAM: included in kv_bytes and total_bytes, "
+        "excluded from gpu_bytes.",
+    )
     compute_bytes: int = Field(0, description = "Compute / graph buffers, flat plus context-linear")
     drafter_runtime_bytes: int = Field(
         0,
@@ -1047,6 +1052,9 @@ class MemoryEstimate(BaseModel):
     )
 
     kv_bytes: int = Field(0, description = "KV cache at the requested context and slots")
+    kv_checkpoint_bytes: int = Field(
+        0, description = "The host-RAM part of kv_bytes: per-slot context checkpoints"
+    )
     compute_bytes: int = Field(0, description = "Compute / graph buffers, flat plus context-linear")
     drafter_runtime_bytes: int = Field(
         0, description = "A separate drafter's own KV cache and rollback state"
@@ -1269,6 +1277,10 @@ class _InferenceRuntimeFields(BaseModel):
         ),
     )
     is_mlx: bool = Field(False, description = "Whether the active model is served by the MLX backend")
+    is_npu: bool = Field(
+        False,
+        description = "Whether the active model runs on the AMD Ryzen AI NPU (FastFlowLM through Lemonade)",
+    )
     mlx_kv_bits: Optional[int] = Field(
         None, description = "MLX KV quantization bit width actually applied, if any"
     )
