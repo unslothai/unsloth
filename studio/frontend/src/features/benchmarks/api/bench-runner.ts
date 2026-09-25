@@ -345,7 +345,7 @@ export async function runBenchmark(
     const sampling = chatSampling(useChatRuntimeStore.getState());
     config = { ...config, temperature: sampling.temperature };
     run = {
-      id: `run-${Date.now().toString(36)}`,
+      id: `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       createdAt: Date.now(),
       finishedAt: null,
       model: status.active_model,
@@ -430,6 +430,9 @@ export async function runBenchmark(
       let rowFailure: string | null = null;
       // Only a genuine memory/limit/floor failure should skip the hungrier rows after it.
       let rowFailureLimited = false;
+      // A soft speed-floor stop, not a real OOM: an offload row with experts in RAM runs
+      // slow by design, so it must not skip the hungrier placements that would fit and run fast.
+      let rowFloorStop = false;
       for (let rep = 0; rep < total; rep++) {
         if (signal.aborted) throw abortError();
         const warmup = rep < config.warmup;
@@ -493,6 +496,7 @@ export async function runBenchmark(
         ) {
           rowFailure = `ran at ${rate.toFixed(1)} tok/s, far below the other rows, which means it spilled out of VRAM. Stopped to keep the machine responsive`;
           rowFailureLimited = true;
+          rowFloorStop = true;
           break;
         }
         if (!warmup) fastest = Math.max(fastest, rate);
@@ -501,7 +505,8 @@ export async function runBenchmark(
         if (rowFailureLimited) {
           if (ctx !== undefined && demand === null && contextSweep)
             failedContext = Math.min(failedContext ?? ctx, ctx);
-          if (demand !== null)
+          // A slow offload row is not out of memory, so it must not skip the GPU-heavier rows.
+          if (demand !== null && !rowFloorStop)
             failedDemand = Math.min(failedDemand ?? demand, demand);
         }
         setOutcome({
