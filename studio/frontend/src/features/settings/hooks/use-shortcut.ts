@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import {
   SHORTCUT_SLOTS,
   type ShortcutBinding,
@@ -115,36 +115,68 @@ export interface UseShortcutOptions {
   claims?: () => boolean;
 }
 
-/** Mounted handlers, for running an action without its chord (the desktop menu). Newest last. */
-const triggers = new Map<ShortcutId, Array<() => boolean>>();
+/** A mounted handler, for running an action without its chord (the desktop menu). */
+export interface ShortcutTrigger {
+  /** The handler's `claims`, asked the same way a key press asks it. */
+  claims: () => boolean;
+  run: () => void;
+}
+
+/** Newest last. */
+const triggers = new Map<ShortcutId, ShortcutTrigger[]>();
 const triggerListeners = new Set<() => void>();
+const notifyTriggerListeners = () => triggerListeners.forEach((listener) => listener());
 
 /** Exported for the test. Returns the unregister. */
 export function registerShortcutTrigger(
   id: ShortcutId,
-  trigger: () => boolean,
+  trigger: ShortcutTrigger,
 ): () => void {
   triggers.set(id, [...(triggers.get(id) ?? []), trigger]);
-  triggerListeners.forEach((listener) => listener());
+  notifyTriggerListeners();
   return () => {
     triggers.set(id, (triggers.get(id) ?? []).filter((t) => t !== trigger));
-    triggerListeners.forEach((listener) => listener());
+    notifyTriggerListeners();
   };
 }
 
 /** Run `id` as if its chord were pressed, minus the key checks. False when nothing took it. */
 export function triggerShortcut(id: ShortcutId): boolean {
-  return [...(triggers.get(id) ?? [])].reverse().some((trigger) => trigger());
+  const trigger = [...(triggers.get(id) ?? [])].reverse().find((t) => t.claims());
+  trigger?.run();
+  return trigger !== undefined;
 }
 
-/** Whether a mounted, enabled handler would take `id` right now. */
-export function useShortcutMounted(id: ShortcutId): boolean {
-  return useSyncExternalStore(
-    (listener) => {
-      triggerListeners.add(listener);
-      return () => triggerListeners.delete(listener);
-    },
-    () => (triggers.get(id)?.length ?? 0) > 0,
+// Claims mostly ask whether a modal covers the surface, which shows as aria-hidden or inert.
+let modalObserver: MutationObserver | null = null;
+function subscribeTriggers(listener: () => void, watchModals: boolean): () => void {
+  triggerListeners.add(listener);
+  if (watchModals && !modalObserver && typeof MutationObserver !== "undefined") {
+    modalObserver = new MutationObserver(notifyTriggerListeners);
+    modalObserver.observe(document.documentElement, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["aria-hidden", "inert"],
+    });
+  }
+  return () => {
+    triggerListeners.delete(listener);
+    if (triggerListeners.size === 0) {
+      modalObserver?.disconnect();
+      modalObserver = null;
+    }
+  };
+}
+
+/** Whether a mounted handler would take `id` right now, claims included. `watchModals` also
+ *  re-asks when a modal opens or closes; the desktop menu passes it, the web has no use for it. */
+export function useShortcutAvailable(id: ShortcutId, watchModals: boolean): boolean {
+  const subscribe = useCallback(
+    (listener: () => void) => subscribeTriggers(listener, watchModals),
+    [watchModals],
+  );
+  return useSyncExternalStore(subscribe, () =>
+    (triggers.get(id) ?? []).some((t) => t.claims()),
   );
 }
 
@@ -203,10 +235,9 @@ export function useShortcut(
   // Registered even with no chord bound: the menu still reaches the action.
   useEffect(() => {
     if (!enabled) return;
-    return registerShortcutTrigger(id, () => {
-      if (latestRef.current.claims?.() === false) return false;
-      latestRef.current.handler(new KeyboardEvent("keydown"));
-      return true;
+    return registerShortcutTrigger(id, {
+      claims: () => latestRef.current.claims?.() !== false,
+      run: () => latestRef.current.handler(new KeyboardEvent("keydown")),
     });
   }, [id, enabled]);
 

@@ -10,13 +10,14 @@ import {
 } from "@/features/rag/api/rag-api";
 import { markProjectSourcesPending } from "@/features/rag/components/project-source-dropzone";
 import { toast } from "@/lib/toast";
-import { createChatProject, deleteChatProject } from "../hooks/use-chat-projects";
+import { createChatProject } from "../hooks/use-chat-projects";
 import type { ProjectRecord } from "../types";
 
 let opening = false;
 
 /** File > Open Folder: pick a folder, make a project named after it with the folder linked, and
- *  land on its Sources. Resolves to the new project, or null when cancelled or failed. */
+ *  land on its Sources. Resolves to the project, even when only the link failed, or null when
+ *  cancelled or no project was made. */
 export async function openFolderAsProject(): Promise<ProjectRecord | null> {
   if (opening) return null;
   opening = true;
@@ -32,14 +33,16 @@ export async function openFolderAsProject(): Promise<ProjectRecord | null> {
         selected.displayName,
       );
       watchProjectFolderJob(project.id, job.id);
+      announceProjectSourcesUpdated(project.id);
     } catch (error) {
-      // An empty project named after a folder it does not hold would only mislead.
-      await deleteChatProject(project.id).catch(() => undefined);
-      throw error;
+      // Kept, not deleted: chats may have joined it meanwhile, and deleting a project deletes
+      // them. Its Sources has Link folder to retry.
+      toast.error("Could not link folder", {
+        description: error instanceof Error ? error.message : String(error),
+      });
     } finally {
       noteProjectWork(project.id, -1);
     }
-    announceProjectSourcesUpdated(project.id);
     markProjectSourcesPending(project.id);
     return project;
   } catch (error) {

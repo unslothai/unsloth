@@ -37,7 +37,7 @@ import {
   useInterfaceScaleStore,
   useSettingsDialogStore,
   useShortcut,
-  useShortcutMounted,
+  useShortcutAvailable,
 } from "@/features/settings";
 import { useLowDiskNotice } from "@/features/settings/hooks/use-low-disk-notice";
 import { useTrainingUnloadGuard } from "@/features/training";
@@ -47,6 +47,7 @@ import { useRagAvailabilityStore } from "@/features/rag";
 import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { type TranslationKey, useT } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
 import {
   Outlet,
   createRootRoute,
@@ -509,11 +510,11 @@ function RootLayout() {
   // The desktop File and View menus. Open Folder links the folder, so it needs path leases and RAG.
   const pathLeasesSupported = useNativePathLeasesSupported();
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
-  // Menu items for web shortcuts are live exactly while a handler for them is mounted.
-  const sidebarMounted = useShortcutMounted("toggleSidebar");
-  const findMounted = useShortcutMounted("findInPage");
-  const previousChatMounted = useShortcutMounted("previousChat");
-  const nextChatMounted = useShortcutMounted("nextChat");
+  // Menu items for web shortcuts are live exactly while a mounted handler would take them.
+  const sidebarMounted = useShortcutAvailable("toggleSidebar", isTauri);
+  const findMounted = useShortcutAvailable("findInPage", isTauri);
+  const previousChatMounted = useShortcutAvailable("previousChat", isTauri);
+  const nextChatMounted = useShortcutAvailable("nextChat", isTauri);
   const viaShortcut = (id: Parameters<typeof triggerShortcut>[0], mounted: boolean) =>
     mounted ? () => void triggerShortcut(id) : null;
   const zoomBy = (direction: 1 | -1) => () => {

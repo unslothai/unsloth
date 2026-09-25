@@ -50,9 +50,18 @@ const VIEW_ROWS: &[Row] = &[
 #[cfg(target_os = "macos")]
 const ID_PREFIX: &str = "app-menu:";
 
-/// The action items, by action name.
 #[cfg(target_os = "macos")]
-pub struct AppMenuActions(Vec<(&'static str, MenuItem<tauri::Wry>)>);
+struct ActionItem {
+    action: &'static str,
+    item: MenuItem<tauri::Wry>,
+    submenu: tauri::menu::Submenu<tauri::Wry>,
+    /// The chord it shows, which muda cannot report back.
+    accelerator: Option<String>,
+}
+
+/// The action items, replaced in place when a chord is cleared.
+#[cfg(target_os = "macos")]
+pub struct AppMenuActions(std::sync::Mutex<Vec<ActionItem>>);
 
 /// Put the Unsloth rows at the top of the File and View menus, keeping each menu's native items
 /// (Close, Enter Full Screen) below them.
@@ -83,7 +92,12 @@ pub fn setup_app_menus(
                         .enabled(false)
                         .build(app)?;
                     submenu.append(&item)?;
-                    actions.push((*action, item));
+                    actions.push(ActionItem {
+                        action,
+                        item,
+                        submenu: submenu.clone(),
+                        accelerator: Some(accelerator.to_string()),
+                    });
                 }
                 Row::Separator => submenu.append(&PredefinedMenuItem::separator(app)?)?,
             }
@@ -97,7 +111,7 @@ pub fn setup_app_menus(
             }
         }
     }
-    app.manage(AppMenuActions(actions));
+    app.manage(AppMenuActions(std::sync::Mutex::new(actions)));
     Ok(())
 }
 
@@ -116,15 +130,67 @@ pub fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
     }
 }
 
-/// Enable exactly the listed actions. A no-op where there are no app menus.
+/// Enable exactly the listed actions, and show the chord each is bound to now (None for none).
+/// A no-op where there are no app menus.
 #[tauri::command]
-pub fn set_app_menu_actions(app: tauri::AppHandle, enabled: Vec<String>) {
+pub fn set_app_menu_actions(
+    app: tauri::AppHandle,
+    enabled: Vec<String>,
+    accelerators: std::collections::HashMap<String, Option<String>>,
+) {
     #[cfg(target_os = "macos")]
     if let Some(actions) = app.try_state::<AppMenuActions>() {
-        for (action, item) in &actions.0 {
-            let _ = item.set_enabled(enabled.iter().any(|name| name == action));
+        let Ok(mut actions) = actions.0.lock() else {
+            return;
+        };
+        for entry in actions.iter_mut() {
+            if let Some(wanted) = accelerators.get(entry.action) {
+                if *wanted != entry.accelerator {
+                    if let Err(error) = set_item_accelerator(&app, entry, wanted.as_deref()) {
+                        log::warn!("Could not update the {} shortcut: {error}", entry.action);
+                    }
+                }
+            }
+            let _ = entry
+                .item
+                .set_enabled(enabled.iter().any(|name| name == entry.action));
         }
     }
     #[cfg(not(target_os = "macos"))]
-    let _ = (app, enabled);
+    let _ = (app, enabled, accelerators);
+}
+
+/// muda's `set_accelerator(None)` leaves the native key equivalent in place, so clearing one
+/// swaps in a fresh item without it. A chord muda cannot parse is cleared too.
+#[cfg(target_os = "macos")]
+fn set_item_accelerator(
+    app: &tauri::AppHandle,
+    entry: &mut ActionItem,
+    accelerator: Option<&str>,
+) -> tauri::Result<()> {
+    use tauri::menu::MenuItemBuilder;
+
+    if let Some(accelerator) = accelerator {
+        if entry.item.set_accelerator(Some(accelerator)).is_ok() {
+            entry.accelerator = Some(accelerator.to_string());
+            return Ok(());
+        }
+    }
+    if entry.accelerator.is_none() {
+        return Ok(());
+    }
+    let position = entry
+        .submenu
+        .items()?
+        .iter()
+        .position(|item| item.id() == entry.item.id())
+        .unwrap_or(0);
+    let fresh = MenuItemBuilder::with_id(entry.item.id().clone(), entry.item.text()?)
+        .enabled(entry.item.is_enabled()?)
+        .build(app)?;
+    entry.submenu.remove(&entry.item)?;
+    entry.submenu.insert(&fresh, position)?;
+    entry.item = fresh;
+    entry.accelerator = None;
+    Ok(())
 }

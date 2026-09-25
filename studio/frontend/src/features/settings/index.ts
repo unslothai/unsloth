@@ -84,7 +84,7 @@ export {
   useShortcut,
   useShortcutLabel,
   useShortcutLabels,
-  useShortcutMounted,
+  useShortcutAvailable,
 } from "./hooks/use-shortcut";
 export { Shortcut } from "./components/shortcut";
 export {
