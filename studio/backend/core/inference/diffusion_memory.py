@@ -307,7 +307,6 @@ def _wrap_cpu_offload_hook(
     host, owner, version = state["host"], state["owner"], state["version"]
 
     def _capture(mod: Any) -> None:
-        # owner: a Parameter replaced while offloaded (e.g. a reloaded LoRA) must not inherit the old tensor.
         host.clear()
         owner.clear()
         for name, p in mod.named_parameters():
