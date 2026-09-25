@@ -139,8 +139,9 @@ function TabStrip({
       onPointerCancel={onPointerEnd}
       onLostPointerCapture={onPointerEnd}
       onClickCapture={onClickCapture}
-      // The padding keeps the active tab's shadow clear of the scroller's clipping.
-      className="-m-1 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      // A sideways scroller clips up and down too: the padding, taken back by the margin, holds the
+      // active tab's shadow, which reaches 8px below it, 6px aside and 4px above.
+      className="-mx-2 -mb-3 -mt-1 overflow-x-auto px-2 pb-3 pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       style={{ marginRight: reserve || undefined, maskImage: mask, WebkitMaskImage: mask }}
     >
       <nav ref={listRef} className="flex w-max gap-1" aria-label={t("library.tabs.ariaLabel")}>
