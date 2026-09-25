@@ -7,7 +7,6 @@ import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { libraryFileName, libraryFileType } from "./file-name";
 import { type DecodedNote, type NoteEncoding, decodeNote } from "./note-text";
-import { streamUrlPath } from "./stream-source";
 
 export type LibrarySource = "uploaded" | "generated";
 
@@ -273,7 +272,8 @@ export async function fetchLibraryBlob(item: LibraryItem, type: string): Promise
  * this one item only, so no long-lived token ends up in a URL.
  */
 export async function fetchLibraryStreamUrl(item: LibraryItem): Promise<string> {
-  const response = await ensureOk(await authFetch(streamUrlPath(item.id)));
+  const params = new URLSearchParams({ id: item.id });
+  const response = await ensureOk(await authFetch(`/api/library/items/stream-url?${params}`));
   const { url } = (await response.json()) as { url?: string };
   if (!url) throw new Error(translate("library.toast.noMediaLink"));
   // Absolute, since the element fetches it without authFetch, and under Tauri a relative path

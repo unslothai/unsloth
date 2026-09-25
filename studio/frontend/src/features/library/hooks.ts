@@ -9,12 +9,11 @@ import {
   fetchLibraryStreamUrl,
   fetchLibraryThumbnail,
 } from "./api";
-import { type EmbeddedBody, embeddedBlobType } from "./file-name";
+import { type EmbeddedBody, embeddedBlobType, streamsPreview } from "./file-name";
 import { acquireObjectUrl } from "./object-url-cache";
-import { shouldRemint, streamsPreview } from "./stream-source";
 
 // Past this a preview is not buffered into memory as a blob: the file is a download away.
-export const MAX_BUFFERED_PREVIEW_BYTES = 256 * 1024 * 1024;
+const MAX_BUFFERED_PREVIEW_BYTES = 256 * 1024 * 1024;
 
 type PreviewSource = { url: string; revoke: boolean; streamed: boolean };
 
@@ -80,7 +79,8 @@ export function useLibraryPreviewUrl(
   }, [key]);
   const current = body && state?.key === key ? state : null;
   const retry = () => {
-    if (!current?.url || !shouldRemint(current.streamed ?? false, remints)) return false;
+    // A signed link expires, or dies with a backend restart: one fresh link per opening.
+    if (!current?.url || !current.streamed || remints >= 1) return false;
     setRemint({ key: baseKey, count: remints + 1 });
     return true;
   };

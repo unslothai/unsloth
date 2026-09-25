@@ -31,7 +31,7 @@ import {
   modelLabelKey,
 } from "../file-kind";
 import { formatCardTime, formatPercent, formatSize } from "../format";
-import type { EmbeddedBody } from "../file-name";
+import { type EmbeddedBody, hasOwnFile } from "../file-name";
 import { useLibraryPreviewUrl } from "../hooks";
 import { type NoteFormat, type NoteReadOnlyReason, encodeNote } from "../note-text";
 import { canReveal, revealInFolder, useRevealLabel } from "../reveal";
@@ -80,11 +80,6 @@ function generatedOn(item: LibraryItem) {
     } as const;
   }
   return null;
-}
-
-/** Items with a file of their own; chat attachments live inside messages, fine-tunes are folders. */
-function canAddToProject(item: LibraryItem): boolean {
-  return /^(upload|image|video|audio|sandbox):/.test(item.id);
 }
 
 /** Library-owned text files can be edited in place; everything else is read-only. */
@@ -600,7 +595,7 @@ export function LibraryPreview({
                   : undefined,
               favorite: item.favorite,
               onToggleFavorite: () => onToggleFavorite(item),
-              onAddToProject: canAddToProject(item)
+              onAddToProject: hasOwnFile(item.id)
                 ? async (projectId) => {
                     // The project gets the text on screen, not the last saved copy.
                     if (!(await save())) throw new Error(t("library.toast.saveNoteFirst"));

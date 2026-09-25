@@ -14,6 +14,7 @@ import {
 import { SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import type { IconSvgElement } from "@hugeicons/react";
 import type { LibraryItem } from "./api";
+import { fileExtension } from "./file-name";
 
 export type LibraryFileKind =
   | "image"
@@ -81,11 +82,6 @@ const EXTENSION_KINDS: Record<string, LibraryFileKind> = {
   webm: "video",
   mkv: "video",
 };
-
-export function fileExtension(name: string): string {
-  const dot = name.lastIndexOf(".");
-  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
-}
 
 export function isModelItem(item: LibraryItem): boolean {
   return item.model != null;
