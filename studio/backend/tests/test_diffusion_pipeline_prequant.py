@@ -1006,6 +1006,24 @@ def test_an_uncompilable_family_still_seeds_an_explicit_scheme(monkeypatch):
     assert _settle(backend, transformer_quant = "fp8") == "fp8"
 
 
+def _operator_checkpoint(monkeypatch, tmp_path):
+    ckpt = tmp_path / "transformer_fp8.pt"
+    ckpt.write_bytes(b"x")
+    monkeypatch.setenv(pqmod.ALLOW_LOCAL_PREQUANT_PATH_ENV, str(tmp_path))
+    return str(ckpt)
+
+
+def test_an_uncompilable_family_still_plans_an_operators_checkpoint(monkeypatch, tmp_path):
+    backend = _settle_backend(monkeypatch)
+    _offload_when_bf16_sized(monkeypatch, "none")
+    _uncompilable(monkeypatch)
+    path = _operator_checkpoint(monkeypatch, tmp_path)
+    monkeypatch.setattr(pqmod, "local_prequant_scheme", lambda _path: "fp8")
+    assert _settle(backend, transformer_prequant_path = path) is not None
+    # An unloadable path is no ask: the released weights still win.
+    assert _settle(backend, transformer_prequant_path = str(tmp_path / "missing.pt")) is None
+
+
 def test_a_compilable_family_seeds_as_before(monkeypatch):
     backend = _settle_backend(monkeypatch)
     monkeypatch.setattr(dmod, "family_compiles_regionally", lambda _fam: True)
@@ -1023,6 +1041,22 @@ def test_an_uncompilable_family_loads_auto_unquantised(fake_runtime, monkeypatch
     resolved = status["resolved"]["transformer_quant"]
     assert (resolved["value"], resolved["source"], resolved["status"]) == ("off", "auto", "applied")
     assert "cannot be regionally compiled" in resolved["reason"]
+
+
+def test_an_uncompilable_family_loads_an_operators_checkpoint_under_auto(
+    fake_runtime, monkeypatch, tmp_path
+):
+    backend, spy = _load_backend(monkeypatch)
+    _uncompilable(monkeypatch)
+    status = _load(
+        backend,
+        transformer_prequant_path = _operator_checkpoint(monkeypatch, tmp_path),
+        _pipeline_prequant_planned = None,
+        _pipeline_prequant_skipped = (),
+    )
+
+    assert spy.quantised == ["auto"]
+    assert "cannot be regionally compiled" not in str(status["resolved"]["transformer_quant"])
 
 
 def test_a_compilable_family_loads_without_the_bf16_replan(fake_runtime, monkeypatch):

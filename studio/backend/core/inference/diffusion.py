@@ -185,6 +185,7 @@ from .diffusion_denoiser_prequant import (
 from .diffusion_prequant import (
     hosted_fast_accum_conflict,
     load_prequantized_transformer,
+    local_prequant_path_ready,
     prequant_checkpoint_cached,
     resolve_prequant_source,
     usable_prequant_source,
@@ -1530,9 +1531,16 @@ def _plan_proves_resident(plan: Any) -> bool:
     )
 
 
-def _auto_quant_eager_reason(fam: Any, plan: Any) -> Optional[str]:
-    """Why AUTO skips quantising an uncompilable family (eager quant is far slower than bf16), or None."""
+def _auto_quant_eager_reason(
+    fam: Any,
+    plan: Any,
+    prequant_path: Optional[str] = None,
+) -> Optional[str]:
+    """Why AUTO skips quantising an uncompilable family (eager quant is far slower than bf16), or None.
+    An operator's own loadable checkpoint is an explicit ask, so it is never overridden."""
     if not _plan_proves_resident(plan) or family_compiles_regionally(fam):
+        return None
+    if prequant_path and local_prequant_path_ready(prequant_path):
         return None
     return (
         f"'{getattr(fam, 'name', None)}' cannot be regionally compiled (its transformer declares no "
@@ -3044,7 +3052,8 @@ class DiffusionBackend:
                     # Offline without the released shards, bf16 cannot assemble: a cached seed is the only way.
                     if (
                         bf16_plan is not None
-                        and _auto_quant_eager_reason(fam, bf16_plan) is not None
+                        and _auto_quant_eager_reason(fam, bf16_plan, transformer_prequant_path)
+                        is not None
                         and not (
                             local_files_only
                             and not any(
@@ -4535,6 +4544,7 @@ class DiffusionBackend:
                                 if _te_prequant_resolved and not local_files_only
                                 else None,
                             ),
+                            transformer_prequant_path,
                         )
                     )
                     is not None
