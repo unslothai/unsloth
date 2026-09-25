@@ -3817,82 +3817,19 @@ _VRAM_FLOOR_RESERVE_MIB = 512.0
 # ... default: 1024"): what the fallback fitter leaves when we pass nothing.
 _LLAMA_FIT_TARGET_DEFAULT_MIB = 1024.0
 
-# Windows + discrete NVIDIA only. Since driver 536.40 a cudaMalloc that does not fit in
-# VRAM does not fail: WDDM satisfies it out of host RAM ("shared GPU memory") and the
-# load succeeds, exit code 0, /health green, nvidia-smi showing a healthy card. Decode
-# then re-reads the spilled bytes over PCI-E every token, which is the 5-10x collapse in
-# unslothai/unsloth#11349. Linux has no such path: the same allocation returns
-# "cudaMalloc failed: out of memory" and llama-server exits, which is what makes a thin
-# margin self-correcting there and silent here.
-#
-# So on that one platform the margin stops being a tuning preference and becomes the only
-# thing standing between an under-estimate and a silent 5-10x. 1024 MiB is not a new
-# magic number: it is _LLAMA_FIT_TARGET_DEFAULT_MIB, the per-device margin llama.cpp's own
-# fitter keeps when nobody tells it otherwise. Where our estimate carries all the risk, we
-# should be at least as conservative as the child would have been.
+# Windows + discrete NVIDIA: since driver 536.40 WDDM serves VRAM overflow from host RAM
+# instead of failing (unslothai/unsloth#11349), so match llama.cpp's own fit margin.
 _WINDOWS_SYSMEM_FALLBACK_RESERVE_MIB = _LLAMA_FIT_TARGET_DEFAULT_MIB
 
-# ── Post-start VRAM residency check (Windows sysmem fallback) ──────────────
-#
-# On Windows, cudaMalloc does not allocate device memory directly: it asks the WDDM
-# kernel memory manager, which treats VRAM and system RAM as one demand-paged pool.
-# Since driver 536.40 an allocation past the end of VRAM therefore SUCCEEDS, served
-# from host RAM over PCIe, instead of returning out-of-memory. The process starts,
-# answers /health and reports healthy VRAM to nvidia-smi, while decode -- which
-# re-reads the whole KV cache every token -- runs 5-10x slower. Measured on Linux for
-# contrast: the same allocation fails outright ("cudaMalloc failed: out of memory")
-# and llama-server exits, which is why every rung of the spawn loop's recovery ladder
-# is gated on a non-zero exit code. That ladder is dead on the one platform that needs
-# it, so a load that mispredicts here is silently slow forever.
-#
-# This check compares what the child actually took on the device against a HARD LOWER
-# BOUND on what full offload must place there. It reports; it does not recover.
-#
-# The bound deliberately excludes every padded term the planner carries (the mmproj
-# 1.4x safety multiplier, _CUDA_CONTEXT_RESERVE_BYTES, pipeline overhead): those are
-# over-estimates, and comparing against an over-estimate would flag healthy loads.
-# Weights and KV cache are the two terms that MUST be device-resident when all layers
-# are offloaded, so a reading materially below their sum means part of the load is not
-# on the card.
-#
-# Both conditions must hold before anything is said. The baseline is sampled immediately
-# before the spawn (see _sample_residency_baseline), so it does not carry plan-time
-# staleness, but it is still a DEVICE-level reading: any other process on the card moving
-# memory between the two samples lands in the same delta.
-#   - the shortfall is at least 10% of the bound, absorbing driver bookkeeping,
-#     allocator rounding and a co-tenant's churn; and
-#   - the shortfall is at least 1 GiB in absolute terms, so a small model cannot trip
-#     the check on noise.
-# A spill large enough to produce the reported collapse is several GiB, well clear of
-# both. The cost of this asymmetry is sensitivity: a spill under 1 GiB is not reported.
+# Post-start residency check: bound is weights + KV only (padded terms would flag healthy
+# loads); needs a >=10% and >=1 GiB shortfall to absorb co-tenant churn on the device delta.
 _RESIDENCY_SHORTFALL_RATIO = 0.90
 _RESIDENCY_SHORTFALL_MIN_BYTES = 1024 * 1024 * 1024
 
-# The DIRECT signal, and the primary one on Windows. Windows exposes the spilled bytes
-# itself: '\GPU Adapter Memory(*)\Shared Usage' is the counter behind Task Manager's
-# "shared GPU memory" figure. nvidia-smi cannot see this -- on WDDM it reports DEDICATED
-# VRAM only, which is exactly why a spill looks like "the card plateaus near capacity
-# while the child took less than it needed" rather than like usage above total.
-#
-# Threshold is far tighter than the inferred path's 1 GiB because the measurement is
-# direct rather than a difference of two independent readings. It has to be: the
-# measured overshoot for Qwen3-VL-8B at -c 65536 on a 16 GiB card is about 74 MiB, so a
-# 1 GiB floor could never see the case that motivated this check at all. 32 MiB leaves
-# roughly 2.3x margin under that 74 MiB while staying above the few MiB of jitter the
-# desktop compositor contributes over a load window. It is not lower because the counter
-# is PER-ADAPTER: idle compositing keeps a nonzero baseline on it, and a delta over the
-# load window still catches whatever else the desktop did in those seconds.
-#
-# The remaining attribution risk -- another application allocating shared memory during
-# the same window -- is handled by conjunction rather than by raising the threshold: the
-# counter is only believed when the device side ALSO shows the child short of its floor.
-# If everything the model needed is resident, a rise in shared usage is someone else's.
+# Direct spill signal (Task Manager's shared GPU memory; nvidia-smi on WDDM sees dedicated
+# only). 32 MiB: the Qwen3-VL-8B -c 65536 overshoot was ~74 MiB, so 1 GiB would miss it.
 _SHARED_USAGE_DELTA_MIN_BYTES = 32 * 1024 * 1024
 
-# PowerShell 5.1 Desktop is present on every supported Windows host, so this needs no
-# new dependency. Bounded hard: the baseline read overlaps the nvidia-smi probe it sits
-# next to, and any timeout, localisation miss or missing counter degrades to the
-# device-delta path rather than raising.
 _SHARED_USAGE_TIMEOUT_S = 6
 _SHARED_USAGE_PS_COMMAND = (
     "$ErrorActionPreference='Stop';"
@@ -3900,10 +3837,7 @@ _SHARED_USAGE_PS_COMMAND = (
     " ForEach-Object { $_.InstanceName + '=' + [int64]$_.CookedValue }"
 )
 
-# What the user is told. Names the per-executable driver setting, because that is the
-# only thing that turns the fallback off -- there is no CUDA flag or environment
-# variable for it, and NVML cannot report per-process memory on WDDM, so this is also
-# the only way to make the condition fail loudly instead of silently.
+# The per-executable driver setting is the only way to turn the fallback off.
 _VRAM_SPILL_ADVICE = (
     "Only {resident_gb:.1f} GB of the {expected_gb:.1f} GB this model needs is resident "
     "in GPU memory; about {shortfall_gb:.1f} GB appears to be running from shared system "
@@ -3916,9 +3850,7 @@ _VRAM_SPILL_ADVICE = (
 )
 
 
-# ... but never more than an eighth of the card, so the floor stays proportionate on small
-# GPUs. A flat 1024 is 12.5% of an 8 GiB card and 25% of a 4 GiB one; the cap makes 12.5%
-# the worst case at every size. Above 8 GiB the constant binds and the cap never applies.
+# Cap at 1/8 of the card so the floor stays proportionate on small GPUs.
 _WINDOWS_SYSMEM_FALLBACK_MAX_FRACTION = 0.125
 
 
@@ -3933,23 +3865,8 @@ def _vram_reserve_floor_mib(total_mib: float, *, sysmem_fallback: bool = False) 
     rises with the fraction, and at or below the default the percentage term always
     wins, so an unset budget is untouched on every card size.
 
-    ``sysmem_fallback`` raises that floor for a host whose driver absorbs an overshoot
-    into system RAM instead of failing (see ``_WINDOWS_SYSMEM_FALLBACK_RESERVE_MIB``).
-    It does NOT reintroduce the non-monotonicity the paragraph above describes: that bug
-    came from a floor which was below the percentage term at the default and above it
-    just past the default, so the slider crossed it. This floor is above the percentage
-    term at EVERY fraction on every card it applies to, so the reserve is flat in ``frac``
-    rather than rising with it, and the budget is non-decreasing as the slider goes up.
-    Worked against the docstring's own example: an 8 GiB card reserves 1024 MiB at 0.97
-    and 1024 MiB at 0.971, offering 7168 MiB at both, so raising the slider still never
-    hands back less.
-
-    This overrides a user who set the budget to 100%, and deliberately. The existing 512
-    MiB floor already does so on any card above ~17 GiB, for the same reason: the setting
-    says how much of the card to fill, and on this platform "fill it completely" is not a
-    thing the hardware will refuse, it is a thing the driver will quietly emulate with
-    host RAM. There is no coherent user intent to spill, so the floor is a correctness
-    backstop rather than a preference to be outvoted.
+    ``sysmem_fallback`` raises the floor (flat in ``frac``, so still monotonic) on hosts
+    whose driver spills an overshoot into system RAM; it overrides a 100% budget on purpose.
     """
     floor = min(_VRAM_FLOOR_RESERVE_MIB, (1.0 - _CTX_FIT_VRAM_FRACTION) * total_mib)
     if not sysmem_fallback:
@@ -3979,12 +3896,8 @@ def _vram_usable_mib(
     still has to keep a margin: there the free reading is the only scale available,
     and it agrees with the known-total form at the default.
 
-    ``sysmem_fallback`` is the Windows + discrete-NVIDIA signal from
-    ``LlamaCppBackend._sysmem_fallback_risk()``. It defaults False so every caller that
-    has not been taught about it keeps byte-for-byte the budget it had, and so Linux and
-    macOS are unreachable from the new branch by construction rather than by inspection.
-    ``pooled`` still returns early: those MiB already paid a per-card reserve, raised
-    floor included, and charging the floor again would take it twice.
+    ``sysmem_fallback``: see ``LlamaCppBackend._sysmem_fallback_risk()``; ``pooled``
+    ignores it since those MiB already paid a per-card reserve.
     """
     if total_mib and total_mib > 0:
         reserve = max(
@@ -7160,17 +7073,10 @@ class LlamaCppBackend:
         self._pending_variant_fallback: Optional[tuple[str, str]] = None
         # Set per launch by _record_carveout_advice; None on nearly every load.
         self._last_carveout_advice: Optional[dict] = None
-        # Hard lower bound on the bytes a full-GPU pin must place on the device
-        # (weights + KV only, no padded terms), and the free-VRAM reading the pin was
-        # decided against. Both are set only where the launch claims full offload, and
-        # are consumed once by _verify_vram_residency after the child reports healthy.
-        # None on every other placement, which is what keeps the check a no-op there.
+        # Full-GPU pin promise for _verify_vram_residency; None = check is a no-op.
         self._pin_resident_floor_bytes: Optional[int] = None
         self._pin_baseline_free_mib: Optional[dict[int, float]] = None
         self._pin_gpu_indices: Optional[list[int]] = None
-        # Per-adapter '\GPU Adapter Memory(*)\Shared Usage' before the spawn, for the
-        # direct spill measurement. None off Windows and whenever the counter is
-        # unreadable, which drops the check to the device-delta inference.
         self._pin_baseline_shared_usage: Optional[dict[str, int]] = None
         self._model_identifier: Optional[str] = None
         self._gguf_path: Optional[str] = None
@@ -10043,47 +9949,15 @@ class LlamaCppBackend:
         backends = LlamaCppBackend._installed_ggml_backends(binary)
         return "vulkan" in backends and not backends.intersection({"cuda", "hip"})
 
-    # Per resolved binary, because the answer is a property of the installed build and
-    # the planner asks once per candidate GPU SUBSET (_fit_context_to_vram runs inside
-    # that loop), which would otherwise be one directory listing each. Keyed rather than
-    # a flat bool so a test, or a host with two installs, cannot read another's answer.
-    # A backend swapped in place under a running Studio keeps the cached value until
-    # restart; that is the same staleness every other _installed_ggml_backends caller
-    # accepts within a load, and an llama.cpp update restarts the server anyway.
+    # Keyed per binary: the planner asks once per candidate GPU subset.
     _SYSMEM_FALLBACK_RISK: dict[Optional[str], bool] = {}
 
     @staticmethod
     def _sysmem_fallback_risk(binary: Optional[str] = None) -> bool:
         """True when an over-budget allocation would be absorbed by host RAM, not refused.
 
-        Exactly one host does that: Windows with a discrete NVIDIA GPU, where WDDM has
-        served CUDA overflow out of system memory since driver 536.40 rather than
-        returning out-of-memory. The consequence is why this exists -- the load starts,
-        answers /health and exits 0, so nothing downstream can tell it went wrong, and
-        decode pays PCI-E for part of the KV cache on every token.
-
-        Three things have to hold, and each is cheap:
-
-        ``sys.platform`` first, so every non-Windows caller pays one string compare and
-        the rest of the function never runs.
-
-        A CUDA ggml lib beside llama-server, which is a directory listing (and the same
-        source ``_is_vulkan_backend`` already trusts to identify a build), not a driver
-        query. ROCm and Vulkan are excluded: this is an NVIDIA driver behaviour, AMD's
-        equivalent is a different mechanism with a different remedy, and a Vulkan build
-        does not go through CUDA allocation at all. A multi-backend build carrying both
-        CUDA and HIP counts, because if CUDA is present it is what a discrete NVIDIA card
-        will be driven by.
-
-        Discreteness needs no probe, and that is not an assumption: every integrated CUDA
-        part (Jetson, DGX Spark class) is Linux-only, which ``_offload_target_shares_
-        system_memory`` already relies on at its ROCm-only branch for this same reason.
-        Windows plus a CUDA build therefore means a discrete card. That matters because
-        the alternative -- ``get_device_properties`` -- would pin a ~700 MiB primary CUDA
-        context (see ``_get_gpu_memory``) on a path whose whole job is to measure free
-        VRAM, and measuring it would consume it.
-
-        Never raises: a host we cannot classify answers False and keeps today's budget.
+        Windows + CUDA build only. Discreteness needs no probe: integrated CUDA parts are
+        Linux-only, and get_device_properties would pin a ~700 MiB CUDA context.
         """
         if sys.platform != "win32":
             return False
@@ -14624,30 +14498,17 @@ class LlamaCppBackend:
     ) -> None:
         """Record what a full-GPU pin promised, for _verify_vram_residency to test.
 
-        Armed only where the launch claims every layer is on a discrete NVIDIA card
-        under Windows, because that is the only combination where the promise can be
-        broken silently (see the _VRAM_SPILL_ADVICE block for why). Everywhere else
-        this leaves the state None and the check never runs.
-
-        Arming only records the promise. The baseline free reading is taken later, by
-        _sample_residency_baseline immediately before the spawn, and deliberately NOT
-        reused from the plan: a load that replaces a resident model plans while the old
-        child still holds its VRAM and spawns after the teardown released it. Measuring
-        against the pre-teardown reading would book that release as memory the new child
-        failed to take, and report a spill on a perfectly healthy load.
+        The baseline is sampled right before spawn, not reused from the plan: a replaced
+        model's teardown would otherwise read as a spill.
         """
         self._pin_resident_floor_bytes = None
         self._pin_baseline_free_mib = None
         self._pin_baseline_shared_usage = None
         self._pin_gpu_indices = None
         if os.name != "nt":
-            # Linux and macOS have no sysmem fallback: an over-subscription fails at
-            # cudaMalloc and the spawn loop's existing ladder handles it.
             return
         if not floor_bytes or floor_bytes <= 0 or not gpu_indices:
             return
-        # NVIDIA only. The advice names an NVIDIA Control Panel setting, and AMD's
-        # Windows shared-memory behaviour is a different mechanism with a different fix.
         if self._nvml_library() is None:
             return
         try:
@@ -14656,29 +14517,13 @@ class LlamaCppBackend:
             integrated = set()
         pinned = [int(i) for i in gpu_indices]
         if not pinned or any(i in integrated for i in pinned):
-            # An integrated CUDA SoC shares one pool with the host by design, so
-            # "resident on the device" is not a question that has an answer there.
             return
         self._pin_resident_floor_bytes = int(floor_bytes)
         self._pin_gpu_indices = pinned
 
     @staticmethod
     def _shared_gpu_memory_bytes() -> Optional[dict[str, int]]:
-        """Bytes each GPU adapter currently has in SHARED (host) memory, by LUID.
-
-        The Windows counter behind Task Manager's "shared GPU memory", which is the one
-        place the spill is directly visible: nvidia-smi on WDDM reports dedicated VRAM
-        only, so the bytes served from host RAM appear in neither memory.used nor
-        memory.free.
-
-        Keyed by adapter instance and returned raw, because the value is PER-ADAPTER and
-        includes whatever the desktop compositor and every other application are holding.
-        Only a DELTA across the spawn is meaningful, and the caller takes one.
-
-        None on any failure: not Windows, no PowerShell, the counter absent, a localised
-        counter name that does not resolve, or a timeout. Every one of those degrades to
-        the device-delta path rather than raising.
-        """
+        """Per-adapter SHARED (host) GPU memory bytes; only a delta is meaningful. None on failure."""
         if os.name != "nt":
             return None
         try:
@@ -14702,8 +14547,7 @@ class LlamaCppBackend:
             logger.debug(f"Shared GPU memory counter failed: {e}")
             return None
         if result.returncode != 0:
-            # Localised Windows renames performance counters, so the English path above
-            # simply does not resolve there. Not an error worth surfacing.
+            # Localised Windows renames the counter.
             logger.debug(
                 f"Shared GPU memory counter unavailable (rc={result.returncode}): "
                 f"{(result.stderr or '').strip()[:200]}"
@@ -14724,17 +14568,7 @@ class LlamaCppBackend:
     def _shared_usage_growth_bytes(
         cls, before: Optional[dict[str, int]], after: Optional[dict[str, int]]
     ) -> Optional[int]:
-        """How much shared memory one adapter gained across the spawn, or None.
-
-        Per-instance so a second adapter (an iGPU compositing, say) cannot be added to
-        the discrete card's figure. The largest single positive delta is taken as this
-        load's, since the child is the thing that just started.
-
-        None means "no usable answer, fall back": either reading missing, no instance in
-        common, or MORE THAN ONE adapter grew past the threshold, which is genuinely
-        ambiguous -- attributing the spill to a particular card is the whole point, and a
-        guess there would name the wrong one.
-        """
+        """Largest per-adapter shared-memory gain; None if unreadable or >1 adapter grew."""
         if not before or not after:
             return None
         shared_instances = set(before) & set(after)
@@ -14749,19 +14583,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _argv_claims_full_offload(argv: Optional[Sequence[str]]) -> bool:
-        """Whether this exact argv still promises every layer on the GPU.
-
-        Read off the tokens rather than the planning flags, because the retry rungs
-        rewrite the argv after the plan was made. The `--fit off` to `--fit on` rung
-        says so itself -- "the --fit on retry gives up the confirmed full offload" --
-        and llama.cpp's fitter may then place whole layers in host RAM, which is a
-        shortfall by design, not a spill. Checking the argv covers the spill-plan
-        revert and the CPU replay for the same reason, and covers any rung added later
-        without it having to remember this check exists.
-
-        Last-wins on both flags, matching llama.cpp's own argument handling, so a user
-        extra that overrides Unsloth's token is read the way the child will read it.
-        """
+        """Whether this argv (after retry rungs rewrote it) still pins every layer; last-wins."""
         if not argv:
             return False
         tokens = list(argv)
@@ -14775,23 +14597,10 @@ class LlamaCppBackend:
 
         ngl = _last({"-ngl", "--gpu-layers", "--n-gpu-layers"})
         fit = _last({"-fit", "--fit"})
-        # -1 is llama.cpp's "all layers"; the pin emits exactly `-ngl -1 --fit off`.
-        # An explicit count means a manual placement, which owes no full-offload promise.
         return ngl == "-1" and fit == "off"
 
     def _sample_residency_baseline(self, argv: Optional[Sequence[str]] = None) -> None:
-        """Read free VRAM on the pinned cards, immediately before the child spawns.
-
-        Costs one probe, on the small minority of loads that armed the check, at the
-        last moment where the reading still describes a machine without this child on
-        it. Any failure disarms rather than guesses: a check with no baseline can only
-        produce a fabricated verdict.
-
-        Called once per spawn attempt, so the baseline always describes the machine the
-        attempt actually starts against, and a retry that rewrote the argv away from a
-        full-GPU pin disarms here instead of being measured against a promise it no
-        longer makes.
-        """
+        """Read free VRAM on the pinned cards right before each spawn; disarm on any failure."""
         pinned = self._pin_gpu_indices
         if self._pin_resident_floor_bytes is None or not pinned:
             return
@@ -14801,17 +14610,10 @@ class LlamaCppBackend:
             self._pin_baseline_free_mib = None
             self._pin_baseline_shared_usage = None
             return
-        # Overlapped with the nvidia-smi probe below rather than run before it, so the
-        # pre-spawn cost is max(smi, counter) instead of their sum. Both readings must
-        # describe the machine before the child exists, so neither can be deferred past
-        # the spawn; bounding them and running them together is the whole budget.
+        # Overlap the counter read with nvidia-smi: cost is max, not sum.
         _shared_box: dict[str, Optional[dict[str, int]]] = {}
 
         def _read_shared():
-            # Belt and braces: _shared_gpu_memory_bytes swallows its own failures, but an
-            # exception escaping a thread here would be an unhandled-thread-exception
-            # traceback on a load that is otherwise fine. Absence of a reading is already
-            # a supported state, so degrade to it.
             try:
                 _shared_box["usage"] = self._shared_gpu_memory_bytes()
             except Exception as e:
@@ -14833,10 +14635,7 @@ class LlamaCppBackend:
             self._pin_gpu_indices = None
             return
         finally:
-            # Joined either way so the reader cannot still be running when the child
-            # starts allocating and turn its own baseline into a post-spawn reading.
-            # A thread that misses the join is abandoned and its result discarded, which
-            # simply leaves the direct signal unavailable for this load.
+            # Join before spawn so the baseline cannot become a post-spawn reading.
             _shared_thread.join(_SHARED_USAGE_TIMEOUT_S)
             self._pin_baseline_shared_usage = _shared_box.get("usage")
         if any(i not in free_by_idx for i in pinned):
@@ -14847,13 +14646,7 @@ class LlamaCppBackend:
         self._pin_baseline_free_mib = {i: free_by_idx[i] for i in pinned}
 
     def _verify_vram_residency(self) -> Optional[str]:
-        """Compare bytes actually taken on the pinned cards against the promised floor.
-
-        Returns the advisory it recorded, or None when it abstained or found nothing
-        wrong. Disarms the state on every path so a later load cannot read this one's
-        numbers. Never raises: this is an advisory, and a probe failure must not touch
-        a server that is already up and serving.
-        """
+        """Record and return a spill advisory, else None. Always disarms; never raises."""
         floor = self._pin_resident_floor_bytes
         baseline = self._pin_baseline_free_mib
         baseline_shared = self._pin_baseline_shared_usage
@@ -14872,36 +14665,24 @@ class LlamaCppBackend:
             logger.debug(f"VRAM residency probe failed: {e}")
             return None
         if any(i not in now for i in baseline):
-            # A card the pin used is no longer being reported. Abstain rather than
-            # guess: a missing row is not evidence of a spill.
             return None
         used_mib = sum(baseline[i] - now[i] for i in baseline)
         if used_mib <= 0:
-            # Free memory did not drop at all, so the reading is dominated by something
-            # other than this child (a concurrent release, or a probe that answers a
-            # different device set than the one the pin named). No claim either way.
             return None
         resident = used_mib * 1024 * 1024
         shortfall = floor - resident
 
-        # PRIMARY: Windows says outright how many bytes went to host memory. Believed
-        # only when the device side agrees the child is short of what it needed, because
-        # the counter is per-adapter -- if everything required is resident, a rise in
-        # shared usage belongs to some other application, not to this load.
+        # Per-adapter counter is believed only when the device side also shows a shortfall.
         try:
             spilled = self._shared_usage_growth_bytes(
                 baseline_shared, self._shared_gpu_memory_bytes()
             )
         except Exception as e:
-            # Same contract as the baseline half: no reading is a supported state, and
-            # losing the direct signal must not also lose the inferred verdict below.
             logger.debug(f"Shared GPU memory read failed: {e}")
             spilled = None
         direct_hit = (
             spilled is not None and spilled >= _SHARED_USAGE_DELTA_MIN_BYTES and shortfall > 0
         )
-        # FALLBACK: no usable counter reading, so infer from the device delta alone.
-        # Much blunter, hence the far larger floor.
         inferred_hit = (
             resident < floor * _RESIDENCY_SHORTFALL_RATIO
             and shortfall >= _RESIDENCY_SHORTFALL_MIN_BYTES
@@ -14927,21 +14708,11 @@ class LlamaCppBackend:
             expected_gb = floor / (1024**3),
             shortfall_gb = shortfall / (1024**3),
         )
-        # Logs at warning level and surfaces on /status as memory_warning. The load
-        # response may already have been sent -- this runs after the child is healthy --
-        # but the notice lives as long as the resident model, so the UI still shows it.
         self._record_load_warning(message)
         return message
 
     def _start_residency_check(self) -> None:
-        """Run _verify_vram_residency off the load path.
-
-        A daemon thread because the probe shells out to nvidia-smi with a 10 s timeout
-        on its slowest path, and the load must not wait on an advisory. Returns
-        immediately when the check was never armed or never got a baseline, which is
-        every load on Linux and macOS and every placement that is not a discrete
-        full-GPU pin.
-        """
+        """Run _verify_vram_residency on a daemon thread; the load never waits on it."""
         if self._pin_resident_floor_bytes is None or not self._pin_baseline_free_mib:
             return
         threading.Thread(
@@ -15519,27 +15290,9 @@ class LlamaCppBackend:
     ) -> Optional[str]:
         """Advisory when a hand-set context exceeds what a discrete GPU holds (else None).
 
-        The Metal branch REFUSES the same situation (_metal_context_overcommit_message)
-        because there the GPU and the system share one wired pool and the load panics the
-        machine. A discrete GPU has somewhere to spill to, so refusing would block loads
-        that work today, and this is an advisory instead. What it buys is a user who knows
-        why generation got slow, because neither outcome says so on its own:
-
-          Linux/macOS-eGPU: cudaMalloc fails, llama.cpp's own fitter moves layers to the
-          host, and the load succeeds at a fraction of the speed. Measured on an
-          RTX PRO 6000 at 12 GiB free, a Qwen3-VL-8B at -c 65536 asks for one 9216 MiB KV
-          block and the server exits "failed to allocate buffer for kv cache".
-
-          Windows: the allocation does NOT fail. Since driver 536.40 the WDDM sysmem
-          fallback policy satisfies it out of host RAM, so the server starts, answers
-          /health, reports healthy VRAM, and decodes 5-10x slow forever. Every recovery
-          path we have keys off the child crashing, and nothing crashes, so this notice is
-          the only thing standing between the user and a silent regression (#11349).
-
-        ``quantised_ctx_fits`` is the caller's verdict from pricing the same context at
-        q8_0, not a guess: the Metal helper's blanket "roughly halves" hint is true of the
-        cache but says nothing about whether the load then fits, and a suggestion that
-        does not actually help is worse than none.
+        Metal refuses this (shared wired pool panics the machine); a discrete GPU spills, to
+        the CPU on Linux or silently to host RAM on Windows (#11349), so only warn.
+        ``quantised_ctx_fits`` is the caller's q8_0 pricing verdict, not a guess.
         """
         if requested_ctx <= 0 or max_available_ctx <= 0:
             return None
@@ -15553,9 +15306,6 @@ class LlamaCppBackend:
         ):
             kv_hint = " Setting the KV cache to q8_0 makes this context fit without shortening it."
         if windows:
-            # The remedy is NVIDIA's and is named as such: this helper has no vendor
-            # signal in scope, and sending an AMD or Intel owner to the NVIDIA Control
-            # Panel would be a wrong instruction rather than a merely useless one.
             cause = (
                 "On Windows the driver does not report this as an error: it serves the "
                 "overflow from system memory over PCIe, so the model loads and generation "
@@ -16080,9 +15830,6 @@ class LlamaCppBackend:
 
         # Per-GPU usable budget: free minus the reserve when total is known, else
         # the legacy free*frac (also covers a total-0 two-column probe).
-        # This is the decision the Windows sysmem fallback punishes: saying "it fits"
-        # here pins every layer on the GPU with --fit off, and if the estimate was low
-        # the driver makes up the difference out of host RAM instead of refusing.
         _sysmem_fallback = LlamaCppBackend._sysmem_fallback_risk()
 
         def _usable(idx: int, free_mib: int) -> float:
@@ -17478,9 +17225,6 @@ class LlamaCppBackend:
             flat_mtp = mtp_engaged and mtp_overhead_fn is None
             budget_frac = _active_vram_fraction() - (_MTP_VRAM_RESERVE_FRAC if flat_mtp else 0.0)
         # Absolute reserve off total when known, else fraction-of-free; clamp >=0.
-        # The Auto path's context cap comes out of this budget, so the raised Windows
-        # floor shortens the context it settles on rather than letting the last stretch
-        # of KV land in host RAM. `pooled` budgets ignore the flag by construction.
         budget_mib = _vram_usable_mib(
             available_mib,
             total_mib or 0,
@@ -21388,11 +21132,7 @@ class LlamaCppBackend:
             # Through the shared helper, so the floor reserve the ranking and the
             # layer path apply is charged here too. Tensor mode has no --fit valve,
             # so a budget spent above the floor fails at startup rather than
-            # offloading -- except on the sysmem-fallback host, where it does not
-            # fail either, it just runs slowly forever. That makes the raised floor
-            # matter MORE here than on the layer path, not less: there is no valve
-            # to catch the overshoot and no error to notice it by.
-            # Clamped on both branches, unlike _select_gpus: this pool
+            # offloading. Clamped on both branches, unlike _select_gpus: this pool
             # is summed, and one negative card must not fund another.
             t = total_by_idx.get(idx, 0) if total_by_idx else 0
             return max(
@@ -21593,9 +21333,7 @@ class LlamaCppBackend:
             return False
 
         _tp_frac = vram_fraction if vram_fraction is not None else _active_vram_fraction()
-        # Same budget as the planner, which now includes the sysmem-fallback floor: if
-        # this check priced the old floor it would pass a split the planner rejected,
-        # which is exactly the disagreement the docstring above says must not exist.
+        # Must match the planner's floor, or this passes splits the planner rejected.
         _tp_sysmem_fallback = LlamaCppBackend._sysmem_fallback_risk()
 
         def _usable(idx: int, free_mib: int) -> float:
@@ -24292,18 +24030,12 @@ class LlamaCppBackend:
                 # the slot from a memory warning on the one path that also raises the
                 # launched context. Flushed past those two, appending if one spoke.
                 _unmeasured_ctx_notice: Optional[str] = None
-                # Same flush point, same reason: a hand-set context a discrete GPU cannot
-                # hold is an advisory, not a refusal (_cuda_context_overcommit_notice).
                 _cuda_ctx_notice: Optional[str] = None
                 total_by_idx: dict[int, int] = {}
                 _gpu_mem: list[tuple[int, int, int]] = []
                 model_size = None  # set in the fit try; used by the APU RAM guard
-                # Bound here for the same reason as model_size: the residency floor
-                # below subtracts it, and the fit try has arms that never set it.
+                # The fit try has arms that never set it.
                 mmproj_size = 0
-                # Hard lower bound on device-resident bytes for a full-GPU pin, filled
-                # once the context is final. None until then, and left None on every
-                # path that does not claim full offload.
                 _resident_floor_bytes: Optional[int] = None
                 _mtp_will_engage = False
                 _separate_draft_launches = False  # a sidecar displaces an embedded head
@@ -24494,8 +24226,6 @@ class LlamaCppBackend:
                         )
                         _fit_target_delta_mib = (_CTX_FIT_VRAM_FRACTION - _vram_frac) * _scale
 
-                    # One classification for the whole plan: it cannot change between
-                    # two GPUs of the same load, and the helper reads a directory.
                     _sysmem_fallback = self._sysmem_fallback_risk(binary)
 
                     def _gpu_usable(g, frac = _vram_frac):
@@ -25821,13 +25551,7 @@ class LlamaCppBackend:
                                 split_extra_bytes = _cc_split_extra(effective_ctx),
                             )
                             # No silent shrink: effective_ctx stays == requested_ctx.
-                            #
-                            # It does get a notice, though. use_fit here means the pin
-                            # failed and llama.cpp's fitter is about to move layers to
-                            # the host; on Windows the driver spills to system RAM
-                            # instead and nothing reports anything at all. Gated on
-                            # use_fit as well as the ceiling so a context we DID pin
-                            # never warns, whatever the slider ceiling says.
+                            # use_fit = the pin failed; warn (Windows spills silently).
                             if use_fit and not _cuda_ctx_notice:
                                 _q8_fits = False
                                 if (cache_type_kv or "f16").strip().lower() in (
@@ -25835,9 +25559,6 @@ class LlamaCppBackend:
                                     "fp16",
                                     "",
                                 ):
-                                    # Price the same context with a q8_0 cache and ask
-                                    # the same question, so the hint is only offered
-                                    # when it would actually change the answer.
                                     _q8_kv = self._estimate_kv_cache_bytes(
                                         effective_ctx,
                                         "q8_0",
@@ -26455,13 +26176,8 @@ class LlamaCppBackend:
                         )
 
                     kv_cache_bytes = _kv_bytes(effective_ctx)
-                    # The floor the post-start residency check measures against, priced
-                    # at the SAME final context as the launch. Weights and KV only: both
-                    # must be on the device once every layer is offloaded. The mmproj is
-                    # deliberately excluded -- the text-only fallback can pin the
-                    # projector to the host, and a term that is sometimes resident would
-                    # turn a healthy load into a false alarm. Under-counting is the safe
-                    # direction here; it costs sensitivity, not correctness.
+                    # Weights + KV only: mmproj may be pinned to the host by the text-only
+                    # fallback, and a sometimes-resident term would cause false alarms.
                     _resident_floor_bytes = max(
                         0, (model_size or 0) - max(0, mmproj_size or 0)
                     ) + max(0, kv_cache_bytes)
@@ -27259,12 +26975,8 @@ class LlamaCppBackend:
                     # and offloads ~1 GB at --parallel 4 even though the model fits.
                     cmd.extend(["-ngl", "-1", "--fit", "off"])
                     fully_gpu_offloaded = True
-                    # This is the claim the residency check verifies: every layer on
-                    # these cards. Armed only here, so a spill plan, a --fit hand-over
-                    # or a manual layer count never reaches the check -- those place
-                    # weights on the host deliberately, and a shortfall is expected.
-                    # Metal's full-offload arm above is left unarmed too: unified memory
-                    # has no device/host split for this to measure.
+                    # Armed only here: spill plans, --fit and manual -ngl place weights on
+                    # the host deliberately; Metal has no device/host split.
                     self._arm_residency_check(_resident_floor_bytes, gpu_indices)
 
                 # Expose Prometheus /metrics for the engine-stats logger, only
@@ -29409,11 +29121,7 @@ class LlamaCppBackend:
                             run_cmd,
                             supports_cache_ram = bool(server_caps.get("supports_cache_ram")),
                         )
-                        # Last moment the machine is still described without this child
-                        # on it, and after the teardown of any model this load replaced.
-                        # No-op unless the launch armed the check. Outside the spawn
-                        # lock: it is a read-only probe and must not widen that
-                        # critical section by a subprocess timeout.
+                        # After teardown of any replaced model; outside the spawn lock.
                         self._sample_residency_baseline(run_cmd)
                         # Check with publication under one lock: a spawn either
                         # publishes first and the sweep kills it, or sees the flag
@@ -29470,10 +29178,7 @@ class LlamaCppBackend:
                                 # Proved on this host: every later child skips the
                                 # prepend instead of crashing into it first.
                                 self._remember_bundle_only_rocm(binary)
-                            # The one rung that does not need a crash. Everything below
-                            # is gated on a non-zero exit, which a Windows sysmem-fallback
-                            # load never produces: it comes up healthy and runs slowly.
-                            # Off-thread, so a healthy load never waits on the probe.
+                            # Sysmem fallback never crashes, so the ladder below cannot see it.
                             self._start_residency_check()
                             return True
                         if getattr(self, "_health_wait_cancelled", False):
@@ -29945,9 +29650,6 @@ class LlamaCppBackend:
                     else:
                         self._record_load_warning(_unmeasured_ctx_notice)
 
-                # Same treatment, and after the unmeasured notice because the two are
-                # mutually exclusive in practice: one fires when the KV could not be
-                # sized, the other only when it could.
                 if _cuda_ctx_notice:
                     if self._last_load_warning:
                         self._amend_load_warning(" " + _cuda_ctx_notice)

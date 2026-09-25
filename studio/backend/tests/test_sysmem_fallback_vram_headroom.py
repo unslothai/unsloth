@@ -1,18 +1,7 @@
-"""Windows sysmem-fallback headroom in the VRAM budget (unslothai/unsloth#11349).
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-On Windows with a discrete NVIDIA GPU, a cudaMalloc that does not fit in VRAM is served
-out of host RAM by WDDM instead of failing, so an over-optimistic fit estimate produces a
-load that starts, answers /health, exits 0 and decodes 5-10x slow. Linux refuses the same
-allocation outright ("cudaMalloc failed: out of memory"), which is what makes a thin
-margin self-correcting there and silent on Windows.
-
-These tests pin the two halves of the fix:
-  * the raised floor applies ONLY on Windows + a CUDA build, and
-  * every other host keeps byte-for-byte the budget it had.
-
-The second half is the one worth guarding: the regression risk of this change is entirely
-"did it leak onto a platform it was not meant for".
-"""
+"""Windows sysmem-fallback headroom in the VRAM budget (unslothai/unsloth#11349)."""
 
 import sys
 
@@ -52,7 +41,6 @@ class TestFlagDefaultsToTodaysBehaviour:
         )
 
     def test_unknown_total_branch_also_defaults_off(self):
-        # A MIG/vGPU or two-column probe reports free with no total.
         assert _vram_usable_mib(9000, 0, 0.97) == _vram_usable_mib(
             9000, 0, 0.97, sysmem_fallback = False
         )
@@ -72,13 +60,11 @@ class TestRaisedFloor:
 
     @pytest.mark.parametrize("total", [8 * GIB, 12 * GIB, 16 * GIB, 24 * GIB, 48 * GIB])
     def test_adopts_llama_cpp_own_fit_target_above_8gib(self, total):
-        # Not a new magic number: llama.cpp's own per-device --fit-target default.
         assert _vram_reserve_floor_mib(total, sysmem_fallback = True) == pytest.approx(
             _LLAMA_FIT_TARGET_DEFAULT_MIB
         )
 
     def test_small_cards_stay_proportionate(self):
-        # A flat 1024 would be a quarter of a 4 GiB card; the cap holds it to an eighth.
         assert _vram_reserve_floor_mib(4 * GIB, sysmem_fallback = True) == pytest.approx(512.0)
 
     def test_reserve_constant_is_llama_cpp_fit_target(self):
@@ -87,12 +73,7 @@ class TestRaisedFloor:
 
 
 class TestMonotonicity:
-    """Raising the VRAM-budget slider must never hand back LESS context.
-
-    This is the property `_vram_reserve_floor_mib`'s docstring exists to protect, and the
-    reason the pre-existing floor is capped rather than flat. A raised floor could plausibly
-    reintroduce the bug, so it is checked on both platforms at every card size.
-    """
+    """Raising the VRAM-budget slider must never hand back LESS context."""
 
     @pytest.mark.parametrize("sysmem_fallback", [False, True])
     @pytest.mark.parametrize("total", CARD_SIZES_MIB)
@@ -104,7 +85,6 @@ class TestMonotonicity:
             assert higher >= lower - 1e-9
 
     def test_docstring_8gib_example_unchanged_on_linux(self):
-        # The worked example in the docstring: 7946 MiB at both 0.97 and 0.971.
         t = 8 * GIB
         assert _vram_usable_mib(t, t, 0.97) == pytest.approx(7946.2, abs = 0.5)
         assert _vram_usable_mib(t, t, 0.971) == pytest.approx(7946.2, abs = 0.5)
@@ -117,8 +97,6 @@ class TestMonotonicity:
         assert past_default == pytest.approx(at_default)
 
     def test_a_lowered_slider_can_still_reserve_more_than_the_floor(self):
-        # The floor only ever overrides upward. A user asking for a bigger margin
-        # than the floor must still get it.
         t = 8 * GIB
         assert _vram_usable_mib(t, t, 0.80, sysmem_fallback = True) == pytest.approx(t - 0.20 * t)
 
@@ -126,8 +104,6 @@ class TestMonotonicity:
 class TestPooledIsNotChargedTwice:
     @pytest.mark.parametrize("frac", [0.90, _CTX_FIT_VRAM_FRACTION, 1.0])
     def test_pooled_ignores_the_flag(self, frac):
-        # Pooled MiB are already absolute: each card paid its own reserve, raised floor
-        # included. Charging the floor again here would take it twice.
         assert _vram_usable_mib(9000, 0, frac, pooled = True, sysmem_fallback = True) == (
             _vram_usable_mib(9000, 0, frac, pooled = True)
         )
@@ -136,17 +112,12 @@ class TestPooledIsNotChargedTwice:
 class TestRiskClassifier:
     @pytest.fixture(autouse = True)
     def _clear_cache(self):
-        # The classifier memoises per binary; a value cached by one case would
-        # otherwise answer for the next and the platform gates would look correct
-        # while never actually running.
         LlamaCppBackend._SYSMEM_FALLBACK_RISK.clear()
         yield
         LlamaCppBackend._SYSMEM_FALLBACK_RISK.clear()
 
     def test_false_off_windows(self, monkeypatch):
         monkeypatch.setattr(sys, "platform", "linux")
-        # Would be True on Windows with this backend set; the platform gate must win,
-        # and must short-circuit before the backend is even consulted.
         monkeypatch.setattr(
             LlamaCppBackend,
             "_installed_ggml_backends",
@@ -186,7 +157,6 @@ class TestRiskClassifier:
         assert LlamaCppBackend._sysmem_fallback_risk() is False
 
     def test_multi_backend_build_with_cuda_counts(self, monkeypatch):
-        # If a CUDA lib is present it is what a discrete NVIDIA card will be driven by.
         monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setattr(
             LlamaCppBackend,
@@ -202,11 +172,9 @@ class TestRiskClassifier:
             raise OSError("lib dir vanished mid-load")
 
         monkeypatch.setattr(LlamaCppBackend, "_installed_ggml_backends", staticmethod(_boom))
-        # An advisory must never be what fails a model load.
         assert LlamaCppBackend._sysmem_fallback_risk() is False
 
     def test_read_error_is_not_cached(self, monkeypatch):
-        # A transient failure must not pin the safe-but-wrong answer for the process.
         monkeypatch.setattr(sys, "platform", "win32")
         calls = {"n": 0}
 
@@ -235,7 +203,6 @@ class TestRiskClassifier:
         assert LlamaCppBackend._sysmem_fallback_risk("C:\\vulkan-build\\llama-server.exe") is False
 
     def test_second_call_does_not_relist_the_directory(self, monkeypatch):
-        # The planner asks once per candidate GPU subset; that must not be a syscall each.
         monkeypatch.setattr(sys, "platform", "win32")
         calls = {"n": 0}
 
@@ -250,11 +217,7 @@ class TestRiskClassifier:
 
 
 class TestQwen3VL8BOn16GiBCard:
-    """The issue-11349 shape, and the near-miss band the fix actually changes.
-
-    Numbers are the measured ones: 36 layers, 8 KV heads, 128/128 head dims, so f16 KV is
-    144 KiB/token, plus 4.80 GiB of weights and a 1.40 GiB mmproj-F16.
-    """
+    """The issue-11349 shape, and the near-miss band the fix actually changes."""
 
     WEIGHTS_MIB = 4.80 * GIB
     MMPROJ_MIB = 1.40 * GIB
@@ -279,12 +242,9 @@ class TestQwen3VL8BOn16GiBCard:
         )
 
     def test_kv_matches_the_measured_allocation(self):
-        # llama-server asked for exactly 9216.00 MiB at -c 65536 on the real card.
         assert self.kv_mib(65536) == pytest.approx(9216.0)
 
     def test_65536_was_already_rejected_and_still_is(self):
-        # Honesty check: the reporter's exact context does NOT change decision. It
-        # overflowed the budget before the fix too, so Studio already handed it to --fit.
         fp = self.footprint(65536)
         assert fp > _vram_usable_mib(self.FREE_MIB, self.TOTAL_MIB, _CTX_FIT_VRAM_FRACTION)
         assert fp > _vram_usable_mib(
@@ -292,8 +252,6 @@ class TestQwen3VL8BOn16GiBCard:
         )
 
     def test_near_miss_context_flips_from_pin_to_fit(self):
-        # This is what the fix is for: a footprint that fitted with only ~350 MiB of
-        # slack, which any fragmentation spike turns into a silent host-RAM spill.
         fp = self.footprint(49152)
         before = _vram_usable_mib(self.FREE_MIB, self.TOTAL_MIB, _CTX_FIT_VRAM_FRACTION)
         after = _vram_usable_mib(
@@ -303,15 +261,12 @@ class TestQwen3VL8BOn16GiBCard:
         assert fp > after, "after the fix it is handed to --fit instead"
 
     def test_comfortable_context_is_untouched(self):
-        # The fix must not disturb loads with real headroom.
         fp = self.footprint(32768)
         assert fp <= _vram_usable_mib(
             self.FREE_MIB, self.TOTAL_MIB, _CTX_FIT_VRAM_FRACTION, sysmem_fallback = True
         )
 
     def test_flip_band_is_bounded(self):
-        # Bounding the regression: only footprints inside this band change behaviour,
-        # and the band is the difference between the two floors, nothing more.
         before = _vram_usable_mib(self.FREE_MIB, self.TOTAL_MIB, _CTX_FIT_VRAM_FRACTION)
         after = _vram_usable_mib(
             self.FREE_MIB, self.TOTAL_MIB, _CTX_FIT_VRAM_FRACTION, sysmem_fallback = True

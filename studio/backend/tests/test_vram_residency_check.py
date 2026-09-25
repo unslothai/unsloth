@@ -1,19 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""A full-GPU pin that Windows served from system RAM must not pass silently.
-
-Every rung of the spawn loop's recovery ladder is gated on the child exiting non-zero.
-On Windows an over-subscribed CUDA allocation does not fail: since driver 536.40 the WDDM
-memory manager serves it from host RAM over PCIe, so llama-server starts, answers /health,
-and decodes 5-10x slower forever. The ladder is therefore dead on the one platform that
-needs it (#11349, #11336).
-
-Measured on an RTX PRO 6000 for the arithmetic these tests encode: Qwen3-VL-8B-Instruct
-needs a 9.00 GiB f16 KV cache at -c 65536 on top of 4.80 GiB of weights, and on Linux with
-12 GiB free that allocation fails outright ("cudaMalloc failed: out of memory") rather than
-spilling. These tests pin the Windows half: the check fires on a real shortfall, abstains
-on every ambiguous reading, and stays a no-op off Windows.
-"""
+"""A full-GPU pin that Windows served from system RAM must not pass silently."""
 
 from __future__ import annotations
 
@@ -33,21 +20,13 @@ from core.inference.llama_cpp import LlamaCppBackend
 GIB = 1024**3
 MIB = 1024 * 1024
 
-# The reported case: weights + f16 KV at -c 65536, the two terms that must be resident.
 QWEN3_VL_8B_FLOOR = int(4.80 * GIB) + 9 * GIB
 
-# What the discrete full-GPU pin emits. The check reads the argv, not the plan, so the
-# retry rungs that rewrite it disarm on their own.
 PIN_ARGV = ["llama-server", "-m", "x.gguf", "-ngl", "-1", "--fit", "off"]
 
 
 class _Backend:
-    """Just the residency surface of LlamaCppBackend, over a stubbed VRAM probe.
-
-    ``rows`` is what the probe answers AFTER the child is up; ``baseline_rows`` what it
-    answered just before the spawn. Two readings because the real check samples its
-    baseline immediately before Popen, not at plan time.
-    """
+    """Just the residency surface of LlamaCppBackend, over a stubbed VRAM probe."""
 
     def __init__(
         self,
@@ -64,8 +43,6 @@ class _Backend:
         self._rows = rows
         self._baseline_rows = baseline_rows
         self._sampled = False
-        # Counter readings before and after the spawn. Default None on both, i.e. the
-        # counter is unavailable, which is the device-delta fallback most tests exercise.
         self._baseline_shared = baseline_shared
         self._shared = shared
         self._shared_reads = 0
@@ -112,7 +89,6 @@ def _arm(backend, floor = QWEN3_VL_8B_FLOOR):
 
 def test_spill_is_reported(on_windows):
     """3 GiB short of the floor, on a card whose free memory barely moved."""
-    # 16384 free before; 16384 - 11469 = 4915 MiB taken, against a ~14.1 GiB floor.
     backend = _Backend([(0, 16384.0 - 11469.0, 16384)])
     _arm(backend)
     message = backend._verify_vram_residency()
@@ -132,12 +108,7 @@ def test_healthy_load_is_silent(on_windows):
 
 
 def test_small_shortfall_is_tolerated(on_windows):
-    """A 5% gap is allocator rounding and a stale baseline, not a spill.
-
-    The floor deliberately under-counts (no mmproj, no CUDA context reserve), so a
-    healthy load routinely reads a little under it. Flagging that would train users to
-    ignore the warning.
-    """
+    """A 5% gap is allocator rounding and a stale baseline, not a spill."""
     used_mib = (QWEN3_VL_8B_FLOOR * 0.95) / MIB
     backend = _Backend([(0, 16384.0 - used_mib, 16384)])
     _arm(backend)
@@ -155,30 +126,18 @@ def test_sub_gib_shortfall_is_tolerated(on_windows):
 
 
 def test_baseline_is_taken_after_a_replaced_model_is_torn_down(on_windows):
-    """The reason the baseline is not the plan-time reading.
-
-    Loading over a resident model plans while the old child still holds ~8 GiB and
-    spawns once the teardown released it. Sampling before Popen sees the freed card, so
-    the new child's own allocation is measured; sampling at plan time would book the
-    teardown as memory this load failed to take and cry spill on a healthy load.
-    """
+    """The reason the baseline is not the plan-time reading."""
     used_mib = QWEN3_VL_8B_FLOOR / MIB
     backend = _Backend(
         [(0, 16384.0 - used_mib, 16384)],
         baseline_rows = ((0, 16384.0, 16384),),  # post-teardown: card is free
     )
-    # Plan-time reading, 8 GiB still held by the outgoing model. Passed to arm, and
-    # deliberately ignored by it.
     backend._arm_residency_check(QWEN3_VL_8B_FLOOR, [0])
     backend._sample_residency_baseline(PIN_ARGV)
     assert backend._pin_baseline_free_mib == {0: 16384.0}, "arm reused the stale reading"
     assert backend._verify_vram_residency() is None, "teardown was booked as a shortfall"
 
 
-# ── The direct signal: '\GPU Adapter Memory(*)\Shared Usage' ────────────────────
-# nvidia-smi on WDDM reports DEDICATED VRAM only, so the spilled bytes appear in neither
-# memory.used nor memory.free. This counter is the one place Windows states them, and it
-# is what Task Manager's "shared GPU memory" shows.
 
 NVIDIA_LUID = "luid_0x00000000_0x0000c350_phys_0"
 IGPU_LUID = "luid_0x00000000_0x00001234_phys_0"
@@ -192,12 +151,7 @@ def _shared(nvidia_mib, igpu_mib = 64):
 
 
 def test_the_74_mib_case_the_inferred_floor_could_never_see(on_windows):
-    """The measurement that motivated the whole check.
-
-    Qwen3-VL-8B at -c 65536 on a 16 GiB card overshoots by about 74 MiB. That is three
-    orders of magnitude under the 1 GiB inferred floor, so the device-delta path is
-    structurally blind to it. The direct counter is not.
-    """
+    """The measurement that motivated the whole check."""
     used_mib = (QWEN3_VL_8B_FLOOR / MIB) - 74  # 74 MiB short of the floor
     backend = _Backend(
         [(0, 16384.0 - used_mib, 16384)],
@@ -231,12 +185,7 @@ def test_shared_growth_below_the_counter_threshold_is_tolerated(on_windows):
 
 
 def test_another_app_growing_shared_memory_is_not_our_spill(on_windows):
-    """The counter is per-adapter. Conjunction with the device side is what saves us.
-
-    Shared usage jumps 500 MiB, but the child got everything its floor demanded, so the
-    growth belongs to some other application. Reporting here would blame this load for a
-    browser opening a tab.
-    """
+    """The counter is per-adapter: a rise needs a device-side shortfall to count."""
     used_mib = QWEN3_VL_8B_FLOOR / MIB  # fully resident
     backend = _Backend(
         [(0, 16384.0 - used_mib, 16384)],
@@ -249,12 +198,7 @@ def test_another_app_growing_shared_memory_is_not_our_spill(on_windows):
 
 
 def test_growth_on_two_adapters_is_ambiguous_and_falls_back(on_windows):
-    """Attributing the spill to a card is the point; a guess would name the wrong one.
-
-    Both adapters grew past the threshold, so the direct signal abstains. The device
-    delta still decides, and here it is a real multi-GiB shortfall, so this still reports
-    -- via the fallback, not the counter.
-    """
+    """Attributing the spill to a card is the point; a guess would name the wrong one."""
     used_mib = (QWEN3_VL_8B_FLOOR / MIB) - 4096  # 4 GiB short
     backend = _Backend(
         [(0, 16384.0 - used_mib, 16384)],
@@ -275,21 +219,13 @@ def test_counter_failure_degrades_to_the_device_delta(on_windows):
 
     backend._shared_gpu_memory_bytes = _boom
     backend._arm_residency_check(QWEN3_VL_8B_FLOOR, [0])
-    # A raising counter must not escape the baseline thread, and must not cost the
-    # inferred verdict. Both halves swallow it, so the same stub can stay in place.
     backend._sample_residency_baseline(PIN_ARGV)
     assert backend._pin_baseline_shared_usage is None
     assert backend._verify_vram_residency() is not None
 
 
 def test_the_fit_on_retry_disarms_the_check(on_windows):
-    """The retry rungs rewrite the argv, and the check must follow them.
-
-    The `--fit off` -> `--fit on` rung says in its own comment that it "gives up the
-    confirmed full offload": llama.cpp's fitter may then place whole layers in host RAM.
-    That is a shortfall by design. Measuring the retry against the original pin's floor
-    would report a spill on every single one of them.
-    """
+    """The retry rungs rewrite the argv, and the check must follow them."""
     used_mib = 4096.0  # fitter left most of it on CPU
     backend = _Backend([(0, 16384.0 - used_mib, 16384)])
     backend._arm_residency_check(QWEN3_VL_8B_FLOOR, [0])
@@ -415,11 +351,7 @@ def test_state_is_disarmed_after_one_read(on_windows):
 
 
 def test_start_spawns_no_thread_when_unarmed(on_windows, monkeypatch):
-    """No thread and no probe on the overwhelming majority of loads.
-
-    Asserted by counting Thread constructions, not by observing an absence: an earlier
-    version of this test checked a list nothing ever appended to and passed vacuously.
-    """
+    """No thread and no probe on the overwhelming majority of loads."""
     started = []
     monkeypatch.setattr(
         mod.threading,
