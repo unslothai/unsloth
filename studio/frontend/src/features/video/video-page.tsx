@@ -38,7 +38,13 @@ import {
   sortGalleryItems,
   subscribeGalleryChanged,
 } from "@/lib/gallery-flags";
-import { readLastPrompt, saveLastPrompt } from "@/lib/last-prompt";
+import {
+  dismissExample,
+  isExampleDismissed,
+  readLastPrompt,
+  saveLastPrompt,
+} from "@/lib/last-prompt";
+
 import { useDiffusionGpuChoices } from "@/hooks/use-gpu-info";
 import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
@@ -192,6 +198,10 @@ import {
   unloadVideoModel,
 } from "./api";
 import { videoThumbnailQueue, withThumbnailRetries } from "./thumbnail-request-queue";
+
+/** Placeholder hint until the prompt box is first focused. */
+const VIDEO_EXAMPLE_PROMPT =
+  "A slow cinematic shot down a quiet Kyoto street at sunrise, cherry blossom petals drifting in the air, a shopkeeper opening a wooden storefront, warm natural light.";
 
 // Curated models come from the shared catalog, one group per model with a format second level,
 // which also surfaces LTX-2.3 in Recommended since its HF pipeline_tag is image-to-video.
@@ -908,13 +918,9 @@ function VideoGenerator({
   const denseQuantSchemes = useDenseQuantSchemes();
   const videoModels = useVideoModels(hostClass, denseQuantSchemes);
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
-  // Starts from the last prompt generated with, else a short example.
-  const [prompt, setPrompt] = useState(() =>
-    readLastPrompt(
-      "video",
-      "A slow cinematic shot down a quiet Kyoto street at sunrise, cherry blossom petals drifting in the air, a shopkeeper opening a wooden storefront, warm natural light.",
-    ),
-  );
+  // Starts from the last prompt generated with; the example is only a placeholder.
+  const [prompt, setPrompt] = useState(() => readLastPrompt("video"));
+  const [exampleDismissed, setExampleDismissed] = useState(() => isExampleDismissed("video"));
   const [negativePrompt, setNegativePrompt] = useState("");
   const [negativeOpen, setNegativeOpen] = useState(false);
   const [steps, setSteps] = useState(DEFAULT_GEN.steps);
@@ -3694,7 +3700,13 @@ function VideoGenerator({
           <Field label="Prompt">
             <Textarea
               rows={4}
+              placeholder={exampleDismissed ? undefined : VIDEO_EXAMPLE_PROMPT}
               value={prompt}
+              onFocus={() => {
+                if (exampleDismissed) return;
+                dismissExample("video");
+                setExampleDismissed(true);
+              }}
               onChange={(e) => setPrompt(e.target.value)}
             />
           </Field>

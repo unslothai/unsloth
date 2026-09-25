@@ -445,6 +445,117 @@ def test_docx_reads_one_branch_of_alternate_content(tmp_path):
     assert text == "Preferred"
 
 
+def test_docx_keeps_rows_and_cells_wrapped_in_content_controls(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    ns = nsdecls("w")
+    table = document.add_table(rows = 1, cols = 2)
+    table.cell(0, 0).text = "Name"
+    tr = table.rows[0]._tr
+    tc = table.cell(0, 1)._tc
+    tr.remove(tc)
+    tr.append(
+        parse_xml(
+            f"<w:sdt {ns}><w:sdtContent><w:tc><w:p><w:r><w:t>CELL-WRAPPED</w:t></w:r></w:p></w:tc>"
+            "</w:sdtContent></w:sdt>"
+        )
+    )
+    table._tbl.append(
+        parse_xml(
+            f"<w:sdt {ns}><w:sdtContent><w:sdt><w:sdtContent><w:tr>"
+            "<w:tc><w:p><w:r><w:t>ROW-A</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>ROW-B</w:t></w:r></w:p></w:tc>"
+            "</w:tr></w:sdtContent></w:sdt></w:sdtContent></w:sdt>"
+        )
+    )
+    path = tmp_path / "wrapped.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert "Name | CELL-WRAPPED" in text
+    assert "ROW-A | ROW-B" in text
+
+
+def test_docx_skips_placeholder_text_and_keeps_field_and_bidi_runs(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    ns = nsdecls("w")
+
+    def sdt(props, inner):
+        return parse_xml(
+            f"<w:sdt {ns}><w:sdtPr>{props}</w:sdtPr><w:sdtContent>{inner}</w:sdtContent></w:sdt>"
+        )
+
+    body = document.element.body
+    body.insert(
+        len(body) - 1,
+        sdt("<w:showingPlcHdr/>", "<w:p><w:r><w:t>BLOCK-PROMPT</w:t></w:r></w:p>"),
+    )
+    p = document.add_paragraph("Name: ")._p
+    p.append(sdt("<w:showingPlcHdr/>", "<w:r><w:t>Click or tap here to enter text.</w:t></w:r>"))
+    p = document.add_paragraph("Client: ")._p
+    p.append(sdt('<w:showingPlcHdr w:val="0"/>', "<w:r><w:t>ACME</w:t></w:r>"))
+    p = document.add_paragraph("Ref ")._p
+    p.append(
+        parse_xml(
+            f'<w:fldSimple {ns} w:instr=" MERGEFIELD Name "><w:r><w:t>FIELD</w:t></w:r></w:fldSimple>'
+        )
+    )
+    p.append(parse_xml(f'<w:dir {ns} w:val="rtl"><w:r><w:t> RTL</w:t></w:r></w:dir>'))
+    table = document.add_table(rows = 1, cols = 2)
+    table.cell(0, 0).text = "Owner"
+    table.cell(0, 1)._tc.append(
+        sdt("<w:showingPlcHdr/>", "<w:p><w:r><w:t>CELL-PROMPT</w:t></w:r></w:p>")
+    )
+    path = tmp_path / "placeholders.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert "PROMPT" not in text and "Click or tap" not in text
+    assert "Client: ACME" in text
+    assert "Ref FIELD RTL" in text
+    assert "Owner | " in text
+
+
+def test_docx_skips_placeholder_rows_and_cells_but_keeps_columns(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    ns = nsdecls("w")
+    table = document.add_table(rows = 1, cols = 3)
+    table.cell(0, 0).text = "Name"
+    table.cell(0, 2).text = "END"
+    tr = table.rows[0]._tr
+    tc = table.cell(0, 1)._tc
+    idx = tr.index(tc)
+    tr.remove(tc)
+    tr.insert(
+        idx,
+        parse_xml(
+            f"<w:sdt {ns}><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent>"
+            "<w:tc><w:p><w:r><w:t>CELL-PROMPT</w:t></w:r></w:p></w:tc></w:sdtContent></w:sdt>"
+        ),
+    )
+    table._tbl.append(
+        parse_xml(
+            f"<w:sdt {ns}><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent><w:tr>"
+            "<w:tc><w:p><w:r><w:t>ROW-PROMPT</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p/></w:tc><w:tc><w:p/></w:tc></w:tr></w:sdtContent></w:sdt>"
+        )
+    )
+    path = tmp_path / "placeholder_cells.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert "PROMPT" not in text
+    assert "Name |  | END" in text
+
+
 def _parse_html(tmp_path, body):
     from core.rag import parsers
 

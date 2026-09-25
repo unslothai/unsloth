@@ -314,7 +314,7 @@ export function AudioPage({
 
   const [status, setStatus] = useState<InferenceStatusResponse | null>(null);
   // Starts from the last text generated with.
-  const [prompt, setPrompt] = useState(() => readLastPrompt("audio", ""));
+  const [prompt, setPrompt] = useState(() => readLastPrompt("audio"));
   const [audioInstructions, setAudioInstructions] = useState("");
   const [audioLanguage, setAudioLanguage] = useState("");
   const [temperature, setTemperature] = useState(0.6);

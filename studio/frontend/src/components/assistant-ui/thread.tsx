@@ -25,6 +25,7 @@ import { ComposerDraftPreview } from "@/components/assistant-ui/composer-draft-p
 import { PromptQueueList } from "@/components/assistant-ui/lazy-prompt-queue-list";
 import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
+import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { attachThreadFastCopy } from "@/components/assistant-ui/thread-fast-copy";
 import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
@@ -58,6 +59,7 @@ import {
   composerSubmitIntent,
   composerFollowUpBehavior,
   composerShortcutLabels,
+  effectiveSendShortcut,
   followUpSubmitIntent,
   steeringInsertionIndex,
   cancelPreStreamRunForThreadIds,
@@ -321,7 +323,6 @@ import {
   FolderAttachmentIcon,
   Folder01Icon,
   FolderAddIcon,
-  HelpCircleIcon,
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
@@ -5668,7 +5669,7 @@ function useImeComposerInputHandlers({
         setCompositionState(false);
       }
       if (submitOnEnter && !skipEnterRef?.current) {
-        const intent = composerSubmitIntent(e, sendShortcut);
+        const intent = composerSubmitIntent(e, sendShortcut, e.currentTarget?.value);
         if (intent) {
           e.preventDefault();
           if (onSubmitKey) onSubmitKey(e, intent);
@@ -6906,7 +6907,13 @@ const ComposerRightControls: FC<{
   const t = useT();
   const followUpBehavior = useChatPreferencesStore((s) => s.followUpBehavior);
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
-  const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform());
+  // A boolean, so typing re-renders this only when a line break comes or goes.
+  const multiline = useAuiState(({ composer }) => composer.text.includes("\n"));
+  const shortcutLabels = composerShortcutLabels(
+    sendShortcut,
+    isMacPlatform(),
+    multiline ? "\n" : "",
+  );
   const followUpLabel = t(
     followUpBehavior === "queue"
       ? "promptQueue.queueButton"
@@ -8443,6 +8450,7 @@ const AssistantActionBar: FC = () => {
           >
             {/* Prevent an outside dismissal from triggering Delete. */}
             <MenuDismissGuard triggerRef={moreMenuTriggerRef} />
+            <MessageMenuTime onShowDetails={() => setDetailsOpen(true)} />
             {!inlineReadAloud && ttsEnabled && (
               <MessagePrimitive.If speaking={false}>
                 <ActionBarPrimitive.Speak asChild={true}>
@@ -8532,17 +8540,6 @@ const AssistantActionBar: FC = () => {
                 Save to project sources
               </ActionBarMorePrimitive.Item>
             )}
-            <ActionBarMorePrimitive.Item
-              onSelect={() => setDetailsOpen(true)}
-              className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
-            >
-              <HugeiconsIcon
-                icon={HelpCircleIcon}
-                strokeWidth={1.75}
-                className="size-icon"
-              />
-              See response details
-            </ActionBarMorePrimitive.Item>
           </ActionBarMorePrimitive.Content>
         </ActionBarMorePrimitive.Root>
         <MessageTiming side="top" className="h-8 px-2" />
@@ -8629,6 +8626,7 @@ const UserActionBar: FC = () => {
 const EditComposer: FC = () => {
   const aui = useAui();
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
+  const editMultiline = useAuiState(({ composer }) => composer.text.includes("\n"));
   const { inputProps, isComposingRef } = useImeComposerInputHandlers();
   const resendAfterCancelRef = useRef(false);
   const researchActive = useThreadResearchActive();
@@ -8665,7 +8663,11 @@ const EditComposer: FC = () => {
         }}
       >
         <ComposerPrimitive.Input
-          submitMode={sendShortcut === "mod-enter" ? "ctrlEnter" : "enter"}
+          submitMode={
+            effectiveSendShortcut(sendShortcut, editMultiline ? "\n" : "") === "mod-enter"
+              ? "ctrlEnter"
+              : "enter"
+          }
           className="aui-edit-composer-input min-h-14 w-full resize-none bg-transparent p-4 text-foreground text-sm font-[450] outline-none"
           autoFocus={true}
           // See main composer above for the dir="auto" rationale.
