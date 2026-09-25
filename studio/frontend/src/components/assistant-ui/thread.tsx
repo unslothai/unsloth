@@ -3553,9 +3553,7 @@ const Composer: FC<{
     ({ threadListItem }) => threadListItem.remoteId,
   );
   const referenceThreadId = threadId ?? activeThreadId ?? null;
-  // Thread switches reuse this composer, so the upload owner is the list item
-  // id, not referenceThreadId: that one moves from null to the remote id when
-  // a new chat first persists, which is still the same composer.
+  // Not referenceThreadId: it moves null -> remote id on first persist of the same composer.
   const composerIdentity = threadListItemId ?? "";
   composerIdentityRef.current = composerIdentity;
   const chatActive = useChatActive();
@@ -3570,8 +3568,7 @@ const Composer: FC<{
   const focusAudioUploadDraft = useCallback(() => {
     inputRef.current?.focus({ preventScroll: true });
   }, []);
-  // Keep the live mic's existing availability. The old upload trigger had
-  // send/attachment gates that must not leak into the unified Dictate action.
+  // Old upload trigger's send/attachment gates must not leak into Dictate.
   const dictationEntryDisabled = !chatActive;
   const audioUpload = useChatAudioUpload({
     owner: composerIdentity,
@@ -4629,8 +4626,7 @@ const Composer: FC<{
     }
     preStreamRunReservationRef.current = reservationToken;
     try {
-      // The send owns the draft only after the reservation succeeds. A refused
-      // send must leave an in-flight transcript available to finish or cancel.
+      // Only after reservation succeeds: a refused send keeps the in-flight transcript.
       cancelAudioUpload();
       const sentText = aui.composer().getState().text;
       // Stamp the send BEFORE send() starts awaiting every incomplete attachment: a document

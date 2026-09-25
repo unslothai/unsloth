@@ -16,9 +16,7 @@ function isLoopbackHostname(hostname: string): boolean {
   );
 }
 
-/** Insecure HTTP on another device cannot open the page microphone. Everything
- * else stays on the existing live path so its capability and permission errors
- * remain visible instead of silently switching workflows. */
+/** Only insecure remote HTTP (no page mic) falls back; else live path keeps its errors visible. */
 export function dictationEntryMode({
   isSecureContext,
   protocol,
@@ -51,8 +49,7 @@ export function insecureDictationGuidance(mode: DictationEntryMode): string {
 
 export type RecordingPickerPlatform = "android" | "ios" | "other";
 
-/** Presentation only: native recorder availability still belongs to the
- * browser. iPadOS can identify as Macintosh, so touch capability is included. */
+/** Presentation only; touch check because iPadOS can identify as Macintosh. */
 export function recordingPickerPlatform({
   userAgent,
   platform = "",
