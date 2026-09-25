@@ -16,7 +16,7 @@ import { isTauri } from "@/lib/api-base";
 import { downloadFile, downloadUrlStreaming, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { MAX_VIDEO_SIZE } from "@/lib/video-utils";
-import { type LibraryItem, libraryDownloadUrl, libraryItemFile } from "./api";
+import { type LibraryItem, errorMessage, libraryDownloadUrl, libraryItemFile } from "./api";
 import { fileKind } from "./file-kind";
 import { hasOwnFile, libraryFileName, uniqueFileNames } from "./file-name";
 import {
@@ -47,10 +47,6 @@ function chatSizeLimit(item: LibraryItem): number {
 
 function fitsInChat(item: LibraryItem): boolean {
   return item.sizeBytes === null || item.sizeBytes <= chatSizeLimit(item);
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 export async function downloadLibraryItem(item: LibraryItem): Promise<void> {

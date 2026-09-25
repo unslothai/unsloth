@@ -45,7 +45,7 @@ import {
   downloadLibraryItem,
   downloadLibraryItems,
 } from "./actions";
-import type { LibraryFolder, LibraryItem, LibraryUploadBatch } from "./api";
+import { type LibraryFolder, type LibraryItem, type LibraryUploadBatch, errorMessage } from "./api";
 import { fileKind, isFileItem, isModelItem } from "./file-kind";
 import {
   type LibraryActions,
@@ -326,7 +326,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   // ── Actions ────────────────────────────────────────────────────
 
   const fail = (message: string) => (err: unknown) =>
-    toast.error(message, { description: err instanceof Error ? err.message : String(err) });
+    toast.error(message, { description: errorMessage(err) });
 
   // Every file under the folder, subfolders included. Only files can be attached; a model in the
   // folder stays behind.
@@ -406,10 +406,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
         { id },
       );
     } catch (err) {
-      toast.error(t("library.toast.uploadFailed"), {
-        id,
-        description: err instanceof Error ? err.message : String(err),
-      });
+      toast.error(t("library.toast.uploadFailed"), { id, description: errorMessage(err) });
     }
   }
 

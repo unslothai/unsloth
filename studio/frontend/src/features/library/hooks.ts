@@ -5,6 +5,7 @@ import { translate } from "@/i18n";
 import { type RefObject, useEffect, useState } from "react";
 import {
   type LibraryItem,
+  errorMessage,
   fetchLibraryBlob,
   fetchLibraryStreamUrl,
   fetchLibraryThumbnail,
@@ -66,9 +67,7 @@ export function useLibraryPreviewUrl(
     const next = previewSource(item, body);
     next.then(
       ({ url, streamed }) => !cancelled && setState({ key, url, streamed }),
-      (err: unknown) =>
-        !cancelled &&
-        setState({ key, url: null, error: err instanceof Error ? err.message : String(err) }),
+      (err: unknown) => !cancelled && setState({ key, url: null, error: errorMessage(err) }),
     );
     return () => {
       cancelled = true;

@@ -56,6 +56,10 @@ export interface LibrarySnapshot {
   folders: LibraryFolder[];
 }
 
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 async function ensureOk(response: Response): Promise<Response> {
   if (!response.ok) throw new Error(await readFastApiError(response));
   return response;
@@ -135,20 +139,6 @@ export async function addLibraryItemToProject(
 /** Shows the item's file in the OS file manager on the machine running Studio. */
 export async function revealLibraryItem(id: string): Promise<void> {
   await ensureOk(await sendWrite("/api/library/items/reveal", jsonInit("POST", { id })));
-}
-
-export interface LibraryLocation {
-  key: "uploads" | "images" | "videos" | "audio" | "fineTunes" | "exports";
-  path: string;
-}
-
-export async function getLibraryLocations(): Promise<LibraryLocation[]> {
-  const response = await ensureOk(await authFetch("/api/library/locations"));
-  return (await response.json()).locations;
-}
-
-export async function revealLibraryLocation(key: LibraryLocation["key"]): Promise<void> {
-  await ensureOk(await sendWrite("/api/library/locations/reveal", jsonInit("POST", { key })));
 }
 
 export async function deleteLibraryItem(id: string): Promise<void> {

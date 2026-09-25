@@ -20,6 +20,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
   type LibraryItem,
   addLibraryItemToProject,
+  errorMessage,
   fetchLibraryText,
   writeLibraryText,
 } from "../api";
@@ -114,9 +115,7 @@ function useItemText(item: LibraryItem | null, enabled: boolean) {
     fetchLibraryText(item, MAX_TEXT_PREVIEW_BYTES).then(
       ({ text, truncated, format, readOnlyReason }) =>
         !cancelled && setState({ key, itemId, text, truncated, format, readOnlyReason }),
-      (err: unknown) =>
-        !cancelled &&
-        setState({ key, itemId, error: err instanceof Error ? err.message : String(err) }),
+      (err: unknown) => !cancelled && setState({ key, itemId, error: errorMessage(err) }),
     );
     return () => {
       cancelled = true;
@@ -461,7 +460,7 @@ export function LibraryPreview({
       onSaved();
       return null;
     } catch (error) {
-      return error instanceof Error ? error.message : String(error);
+      return errorMessage(error);
     } finally {
       setSaving(false);
     }
