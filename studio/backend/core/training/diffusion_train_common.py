@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from core._torchao_stub import (
+    hide_xformers_built_for_another_torch,
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
     is_stubbed,
@@ -39,6 +40,7 @@ from utils.paths.path_utils import drop_appledouble_metadata
 # The trainers run in a spawned child that imports diffusers itself, so the inference-side install does not carry
 # over. Both import this module first.
 install_xformers_windows_rocm_stub()
+hide_xformers_built_for_another_torch()
 install_torchao_windows_rocm_stub()
 # Same child: the DiT trainer's int8 base-weight quantisation goes through torchao.
 install_torchao_int_mm_patch()

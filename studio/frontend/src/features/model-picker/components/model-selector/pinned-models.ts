@@ -27,6 +27,30 @@ export function makePinRank(
   return (key) => pinIndex.get(key) ?? Number.MAX_SAFE_INTEGER;
 }
 
+/**
+ * The key to `movePinned` onto so `fromKey` lands on `edge` of `targetKey`, or null if nothing
+ * moves. `movePinned` takes the target's slot, so the other edge aims at the neighbour.
+ */
+export function pinDropAnchor(
+  pinned: readonly string[],
+  fromKey: string,
+  targetKey: string,
+  edge: "top" | "bottom",
+): string | null {
+  const from = pinned.indexOf(fromKey);
+  const to = pinned.indexOf(targetKey);
+  if (from < 0 || to < 0 || from === to) return null;
+  const slot =
+    from < to
+      ? edge === "bottom"
+        ? to
+        : to - 1
+      : edge === "top"
+        ? to
+        : to + 1;
+  return slot === from ? null : (pinned[slot] ?? null);
+}
+
 /** The pinned GGUF quants, in pin order. Plain repo pins are excluded. */
 export function pinnedQuantEntries(pinned: string[]): PinnedQuantEntry[] {
   const out: PinnedQuantEntry[] = [];
