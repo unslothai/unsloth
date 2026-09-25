@@ -199,6 +199,68 @@ def forget_layouts(model: Any) -> None:
         pass
 
 
+def _cached_step(
+    model: Any,
+    lay: _Layout,
+    text_dtype: Any,
+    hidden_states: Any,
+    timestep: Any,
+    encoder_hidden_states_mask: Any,
+    kv_cache: Any,
+) -> Any:
+    """One ``cached`` (decode) step on a layout whose tail rows are all image rows: the stock ops on
+    the rows the blocks read, with no host sync. Returns the ``proj_out`` output."""
+    import torch
+
+    batch_size = hidden_states.shape[0]
+    device = hidden_states.device
+    prefix_len = lay.prefix_len
+    hidden_states = model.img_in(hidden_states)
+    # The buffer keeps the stock (batch, total, dim) layout so the blocks see the same strides.
+    full = torch.empty((batch_size, lay.total, hidden_states.shape[2]), dtype = text_dtype, device = device)
+    full[:, prefix_len:] = hidden_states[:, hidden_states.shape[1] - (lay.total - prefix_len) :]
+
+    timestep = timestep.to(hidden_states.dtype)
+    timestep = torch.cat([timestep, timestep.new_zeros(1)], dim = 0)
+    temb = model.time_text_embed(timestep, hidden_states)
+    modulation = model.modulation(temb)
+
+    attention_mask = None
+    if encoder_hidden_states_mask is not None:
+        joint_key_valid = torch.ones(batch_size, lay.total, dtype = torch.bool, device = device)
+        joint_key_valid[:, lay.text_positions] = encoder_hidden_states_mask.bool()[
+            :, _vlm_text(lay, encoder_hidden_states_mask.shape[1])
+        ]
+        attention_mask = joint_key_valid[:, None, None, :]
+
+    joint_hidden_states = full[:, prefix_len:]
+    rotary_emb = lay.rotary_emb[prefix_len:]
+    modulation_mask = lay.target_token_mask[prefix_len:]
+    for index_block, block in enumerate(model.transformer_blocks):
+        joint_hidden_states = block(
+            hidden_states = joint_hidden_states,
+            modulation = modulation,
+            rotary_emb = rotary_emb,
+            attention_mask = attention_mask,
+            target_token_mask = modulation_mask,
+            layer_cache = kv_cache.get_layer(index_block),
+            kv_cache_mode = "cached",
+            cache_write_slice = None,
+            segments = None,
+            key_valid = None,
+        )
+    joint_hidden_states = model.norm_out(joint_hidden_states, temb, modulation_mask)
+    return model.proj_out(joint_hidden_states)
+
+
+def _text_dtype(model: Any, encoder_hidden_states: Any) -> tuple:
+    """``(key, dtype)``: the text projection's output dtype, which the stock joint buffer takes,
+    remembered from a full step and keyed on what decides it (None until a full step ran)."""
+    weight = getattr(getattr(model.txt_in, "out_layer", None), "weight", None)
+    key = (encoder_hidden_states.dtype, id(weight), getattr(weight, "dtype", None))
+    return key, model.__dict__.setdefault("_unsloth_q21_text_dtype", {}).get(key)
+
+
 def _make_forward(mod: Any, stock: Any) -> Any:
     """The fast forward for ``mod``'s class; ``stock`` is the installed forward (decorated)."""
     import torch
@@ -251,40 +313,32 @@ def _make_forward(mod: Any, stock: Any) -> Any:
 
         device = hidden_states.device
         lay = _layout_for(self, mod, img_mask, img_shapes, device)
-        hidden_states = self.img_in(hidden_states)
+        dtype_key, text_dtype = _text_dtype(self, encoder_hidden_states)
+        if (
+            kv_cache_mode == "cached"
+            and lay.tail_is_image
+            and text_dtype is not None
+            and self.config.causal_condition
+        ):
+            output = _cached_step(
+                self, lay, text_dtype, hidden_states, timestep, encoder_hidden_states_mask, kv_cache
+            )
+            return (output,) if not return_dict else mod.Transformer2DModelOutput(sample = output)
 
-        # The stock joint buffer takes the text projection's output dtype; remembered from a full step
-        # and keyed on what decides it, so a swapped or recast projection is learned again.
-        weight = getattr(getattr(self.txt_in, "out_layer", None), "weight", None)
-        dtype_key = (encoder_hidden_states.dtype, id(weight), getattr(weight, "dtype", None))
-        dtypes = self.__dict__.setdefault("_unsloth_q21_text_dtype", {})
-        text_dtype = dtypes.get(dtype_key)
+        hidden_states = self.img_in(hidden_states)
         prefix_len = lay.prefix_len
-        if kv_cache_mode == "cached" and lay.tail_is_image and text_dtype is not None:
-            # Only rows [prefix_len:] reach the blocks, and they are the tail of hidden_states. The
-            # buffer keeps the stock (batch, total, dim) layout so the blocks see the same strides.
-            full = torch.empty(
-                (batch_size, lay.total, hidden_states.shape[2]),
-                dtype = text_dtype,
-                device = encoder_hidden_states.device,
-            )
-            full[:, prefix_len:] = hidden_states[:, hidden_states.shape[1] - (lay.total - prefix_len) :]
-            joint_hidden_states = full
-        else:
-            encoder_hidden_states = self.txt_in(encoder_hidden_states)
-            dtypes[dtype_key] = encoder_hidden_states.dtype
-            target_tokens = math.prod(img_shapes[0][-1])
-            joint_hidden_states = torch.cat(
-                [
-                    encoder_hidden_states,
-                    encoder_hidden_states.new_zeros(batch_size, target_tokens // 4, encoder_hidden_states.shape[2]),
-                ],
-                dim = 1,
-            )
-            joint_hidden_states = joint_hidden_states.repeat_interleave(
-                lay.repeats, dim = 1, output_size = lay.total
-            )
-            joint_hidden_states[:, lay.image_positions] = hidden_states
+        encoder_hidden_states = self.txt_in(encoder_hidden_states)
+        self.__dict__["_unsloth_q21_text_dtype"][dtype_key] = encoder_hidden_states.dtype
+        target_tokens = math.prod(img_shapes[0][-1])
+        joint_hidden_states = torch.cat(
+            [
+                encoder_hidden_states,
+                encoder_hidden_states.new_zeros(batch_size, target_tokens // 4, encoder_hidden_states.shape[2]),
+            ],
+            dim = 1,
+        )
+        joint_hidden_states = joint_hidden_states.repeat_interleave(lay.repeats, dim = 1, output_size = lay.total)
+        joint_hidden_states[:, lay.image_positions] = hidden_states
 
         rotary_emb = lay.rotary_emb
         target_token_mask = lay.target_token_mask
