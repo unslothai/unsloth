@@ -272,7 +272,7 @@ class ManagedEngine:
                 info = installed(self.engine)
                 if info is None:
                     raise RuntimeError("The selected engine is no longer installed.")
-                # SGLang derives an auxiliary port by adding 10000 to HTTP.
+                # SGLang raises when its derived gRPC port (HTTP + 10000) exceeds 65535.
                 for _ in range(100):
                     with socket.socket() as sock:
                         sock.bind(("127.0.0.1", 0))

@@ -313,7 +313,6 @@ export function useInferenceGpuInfo(): GpuInfo {
   return useGpuInfoSource("inference_gpu");
 }
 
-/** A GPU an optional engine (vLLM, SGLang) can be placed on. */
 export function isEngineGpuDevice(device: SystemGpuDevice): boolean {
   return device.indexKind === "physical" && /nvidia/i.test(device.name);
 }

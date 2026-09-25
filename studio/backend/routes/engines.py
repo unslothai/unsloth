@@ -16,8 +16,7 @@ router = APIRouter(dependencies = [Depends(get_current_subject)])
 
 
 def _reap_crashed_engine() -> None:
-    """A crashed engine keeps its lease until reaped, so its status reads in use and repair or
-    removal is refused."""
+    """A crashed engine holds its lease until reaped, blocking repair and removal."""
     from routes.inference import _peek_inference_backend
 
     backend = _peek_inference_backend()
