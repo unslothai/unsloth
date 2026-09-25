@@ -54,8 +54,9 @@ _HTML_BLOCK_TAGS = frozenset(
     "address article aside blockquote br caption center dd details dialog dir div dl dt"
     " fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 header hgroup hr legend li"
     " listing main menu nav ol optgroup option p plaintext pre search section summary table"
-    " td th title tr ul xmp".split()
+    " td text textarea th title tr ul xmp".split()
 )
+_HTML_PRE_TAGS = frozenset(("listing", "plaintext", "pre", "textarea", "xmp"))
 
 
 class _Stripper(HTMLParser):
@@ -71,7 +72,7 @@ class _Stripper(HTMLParser):
     def _flush(self) -> None:
         text = "".join(self._line)
         self._line = []
-        # Whitespace inside <pre> is content; elsewhere it is layout.
+        # Whitespace inside <pre>/<textarea> is content; elsewhere it is layout.
         text = text.strip("\n") if self._pre else " ".join(text.split())
         if text.strip():
             self.out.append(text)
@@ -81,7 +82,7 @@ class _Stripper(HTMLParser):
             self._skip += 1
         elif tag in _HTML_BLOCK_TAGS and not self._skip:
             self._flush()
-            if tag == "pre":
+            if tag in _HTML_PRE_TAGS:
                 self._pre += 1
 
     def handle_endtag(self, tag):
@@ -90,7 +91,7 @@ class _Stripper(HTMLParser):
                 self._skip -= 1
         elif tag in _HTML_BLOCK_TAGS and not self._skip:
             self._flush()
-            if tag == "pre" and self._pre:
+            if tag in _HTML_PRE_TAGS and self._pre:
                 self._pre -= 1
 
     def handle_data(self, data):

@@ -378,6 +378,15 @@ def test_html_pre_keeps_its_layout(tmp_path):
     assert text == "Code:\ndef f():\n    return 1"
 
 
+def test_html_textarea_keeps_its_layout_and_svg_labels_stay_apart(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<textarea>line one\n    indented</textarea>"
+        '<svg><text x="0">Revenue</text><text x="0" y="20">Cost</text></svg>',
+    )
+    assert text == "line one\n    indented\nRevenue\nCost"
+
+
 def test_html_skips_script_style_and_template(tmp_path):
     text = _parse_html(
         tmp_path,
