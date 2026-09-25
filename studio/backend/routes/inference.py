@@ -5722,13 +5722,19 @@ class _TrackedCancel:
         run_id = None,
         model = None,
         kind = "chat",
+        track_run = True,
     ):
         self.event = event
         self.keys = tuple(_account_cancel_key(k) for k in keys if k)
         # kind reaches the swap prompt: embeddings and raw completions have no conversation, so
         # naming them chats would offer to stop something the user never started from a thread.
-        self._active = active_generations.ActiveGeneration(
-            event, thread_id = thread_id, run_id = run_id, model = model, kind = kind
+        # track_run=False only adds cancel keys to a run another tracker already records.
+        self._active = (
+            active_generations.ActiveGeneration(
+                event, thread_id = thread_id, run_id = run_id, model = model, kind = kind
+            )
+            if track_run
+            else None
         )
         self._slot = None
 
@@ -5755,11 +5761,12 @@ class _TrackedCancel:
             for k in self.keys:
                 if k and _PENDING_CANCELS.pop(k, None) is not None:
                     should_cancel = True
-        self._active.__enter__()
-        self._slot = routed_slot.get()
-        if self._slot is not None:
-            with model_slots.lock:
-                self._slot.generations.add(self.event)
+        if self._active is not None:
+            self._active.__enter__()
+            self._slot = routed_slot.get()
+            if self._slot is not None:
+                with model_slots.lock:
+                    self._slot.generations.add(self.event)
         if should_cancel:
             self.event.set()
         return self.event
@@ -5773,7 +5780,8 @@ class _TrackedCancel:
                 bucket.discard(self.event)
                 if not bucket:
                     _CANCEL_REGISTRY.pop(k, None)
-        self._active.__exit__(*exc)
+        if self._active is not None:
+            self._active.__exit__(*exc)
         if self._slot is not None:
             with model_slots.lock:
                 self._slot.generations.discard(self.event)
@@ -8003,6 +8011,8 @@ def _monitor_anthropic_response(
             if cancel_event is not None:
                 cancel_event.set()
             api_monitor.finish(monitor_id, "cancelled")
+            # Cancelled at a yield, the wrapped stream is suspended too; its cleanup must not wait for GC.
+            await _close_openai_admitted_stream_iterator(body_iterator, cancelled = True)
             raise
         except Exception as exc:
             api_monitor.fail(monitor_id, _friendly_error(exc))
@@ -40035,10 +40045,16 @@ class _InProcessChatStream:
         self.cancel_event = cancel_event
 
     @classmethod
-    async def open(cls, chat_req: ChatCompletionRequest, request, current_subject):
+    async def open(
+        cls,
+        chat_req: ChatCompletionRequest,
+        request,
+        current_subject,
+        cancel_event: Optional[threading.Event] = None,
+    ):
         chat_req.stream = True
         chat_req.stream_options = {"include_usage": True}
-        cancel_event = threading.Event()
+        cancel_event = cancel_event or threading.Event()
         with _delegated_request_state(
             request, skip_api_monitor = True, generation_cancel_event = cancel_event
         ):
@@ -42406,6 +42422,197 @@ def _set_or_prepend_system_message(
     return [system, *others]
 
 
+def _in_process_model_resident() -> bool:
+    return bool(getattr(_peek_inference_backend(), "active_model_name", None))
+
+
+async def _anthropic_in_process_input_tokens(fields: dict, request, current_subject) -> int:
+    """``message_start`` input tokens: the count route's total, or 0 where it cannot price one."""
+    try:
+        counted = await chat_count_tokens(
+            ChatCountTokensRequest(**fields), current_subject, request
+        )
+    except HTTPException:
+        return 0
+    return int(json.loads(counted.body)["input_tokens"])
+
+
+def _anthropic_in_process_sse(
+    source: "_InProcessChatStream",
+    *,
+    request,
+    monitor_id,
+    message_id: str,
+    model_name: str,
+    input_tokens: int,
+    disable_parallel_tool_use: bool,
+):
+    """Chat's stream as Anthropic SSE, ending the way the llama-server passthrough ends."""
+    from core.inference.llama_keepwarm import mark_response_failed
+
+    emitter = AnthropicPassthroughEmitter(reasoning_as_thinking = True)
+    # The chat handler's tracker holds cancel_id and session_id; the message id is Messages' own.
+    tracker = _TrackedCancel(source.cancel_event, message_id, track_run = False)
+    tracker.__enter__()
+
+    async def _stream():
+        cancelled = False
+        try:
+            for line in emitter.start(message_id, model_name, input_tokens):
+                yield line
+            async for chunk in source.chunks():
+                if chunk is _LLAMA_STREAM_KEEPALIVE:
+                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    continue
+                lines, failed = _anthropic_passthrough_chunk_lines(
+                    emitter, chunk, request, disable_parallel_tool_use
+                )
+                for line in lines:
+                    yield line
+                if failed:
+                    return
+        except asyncio.CancelledError:
+            cancelled = True
+            source.cancel_event.set()
+            raise
+        except Exception as e:
+            if not source.cancelled:
+                logger.error("anthropic_messages in-process stream error: %s", e)
+                mark_response_failed(getattr(request, "scope", None))
+                event = _anthropic_stream_error_event(e, force = True)
+                if event is not None:
+                    yield event
+                return
+        finally:
+            if source.cancelled:
+                mark_response_failed(getattr(request, "scope", None))
+            try:
+                await source.close(cancelled = cancelled)
+            finally:
+                tracker.__exit__(None, None, None)
+
+        for line in emitter.finish():
+            yield line
+
+    async def _unstarted_cleanup() -> None:
+        api_monitor.finish(monitor_id, "cancelled")
+        try:
+            await source.close(cancelled = True)
+        finally:
+            tracker.__exit__(None, None, None)
+
+    return _sse_streaming_response(_stream(), unstarted_cleanup = _unstarted_cleanup)
+
+
+async def _anthropic_in_process_messages(
+    payload: AnthropicMessagesRequest, request, current_subject
+):
+    """Serve /v1/messages from an in-process model (MLX, transformers) through chat."""
+    backend = await asyncio.to_thread(get_inference_backend)
+    entry = (getattr(backend, "models", {}) or {}).get(backend.active_model_name) or {}
+    image_location = not entry.get("is_vision") and _anthropic_top_level_image_location(payload)
+    if image_location:
+        # Named as on llama-server, so a client can drop the image and keep the session going.
+        raise HTTPException(
+            status_code = 400,
+            detail = f"{image_location}: Image provided but current model does not support vision.",
+        )
+    fields = _anthropic_chat_fields(payload, reads_images = bool(entry.get("is_vision")))
+    model_name = _orchestrator_public_model_id(backend) or payload.model
+    message_id = f"msg_{uuid.uuid4().hex[:24]}"
+    disable_parallel = bool(
+        isinstance(payload.tool_choice, dict)
+        and payload.tool_choice.get("disable_parallel_tool_use")
+    )
+    # Omitted sampling fields stay omitted, so chat applies the model's recommended values.
+    sampling = {
+        name: getattr(payload, name)
+        for name in (
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "repetition_penalty",
+            "presence_penalty",
+            "seed",
+            "nudge_tool_calls",
+        )
+        if getattr(payload, name) is not None
+    }
+    chat_req = ChatCompletionRequest(
+        **fields,
+        **sampling,
+        max_tokens = payload.max_tokens,
+        stop = payload.stop_sequences or None,
+        parallel_tool_calls = False if disable_parallel else None,
+        cancel_id = payload.cancel_id,
+        session_id = payload.session_id,
+        thread_id = payload.thread_id,
+    )
+
+    monitor_id = None
+    context_length = _monitor_context_length()
+    if not getattr(getattr(request, "state", None), "skip_api_monitor", False):
+        monitor_id = api_monitor.start(
+            endpoint = getattr(getattr(request, "url", None), "path", "/v1/messages"),
+            method = getattr(request, "method", "POST"),
+            via_api_key = _request_used_api_key(request),
+            model = model_name,
+            prompt = _monitor_prompt_from_messages(fields["messages"]),
+            context_length = context_length,
+            subject = current_subject,
+        )
+    cancel_event = threading.Event()
+    try:
+        if payload.stream:
+            input_tokens = await _anthropic_in_process_input_tokens(
+                fields, request, current_subject
+            )
+            source = await _InProcessChatStream.open(
+                chat_req, request, current_subject, cancel_event = cancel_event
+            )
+            response = _anthropic_in_process_sse(
+                source,
+                request = request,
+                monitor_id = monitor_id,
+                message_id = message_id,
+                model_name = model_name,
+                input_tokens = input_tokens,
+                disable_parallel_tool_use = disable_parallel,
+            )
+        else:
+            perf: dict = {"monitor_id": monitor_id, "context_length": context_length}
+            sink_token = _monitor_perf_sink.set(perf if monitor_id else None)
+            try:
+                with _delegated_request_state(
+                    request, skip_api_monitor = True, generation_cancel_event = cancel_event
+                ):
+                    result = await openai_chat_completions(chat_req, request, current_subject)
+            finally:
+                _monitor_perf_sink.reset(sink_token)
+            # A stopped run returns what it had; the llama-server path never answers one.
+            if cancel_event.is_set():
+                raise asyncio.CancelledError()
+            response = _anthropic_message_from_openai_completion(
+                json.loads(result.body),
+                message_id,
+                model_name,
+                openai_tools = chat_req.tools,
+                allowed_tools = None,
+                disable_parallel_tool_use = disable_parallel,
+                response_format = None,
+                parse_think = True,
+            )
+    except asyncio.CancelledError:
+        cancel_event.set()
+        api_monitor.finish(monitor_id, "cancelled")
+        raise
+    except Exception as exc:
+        api_monitor.fail(monitor_id, _friendly_error(exc))
+        raise
+    return _monitor_anthropic_response(response, monitor_id, context_length, cancel_event)
+
+
 @router.post("/messages")
 @account_access.gpu_busy_route
 async def anthropic_messages(
@@ -42430,7 +42637,11 @@ async def anthropic_messages(
     # an automatic load can run (auto-switch or a standalone idle TTL), fall through
     # so validation runs before the reload hook gets a chance to restore the model.
     # Plain detail, not _no_model_loaded_error: that helper leaves this case unchanged.
-    if not llama_backend.is_loaded and not _automatic_model_load_may_run():
+    if (
+        not llama_backend.is_loaded
+        and not _in_process_model_resident()
+        and not _automatic_model_load_may_run()
+    ):
         raise HTTPException(
             status_code = 503,
             detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
@@ -42550,6 +42761,31 @@ async def anthropic_messages(
                 ),
             )
 
+    # What an in-process model cannot serve here is refused before a non-GGUF target loads.
+    _chat_req_pre = ChatCompletionRequest(
+        messages = _anthropic_chat_fields(payload, reads_images = True)["messages"]
+    )
+    _chat_parts = _extract_content_parts(_chat_req_pre.messages, keep_tool_images = True)
+    _in_process_refusal = None
+    if not _chat_parts[1]:
+        _in_process_refusal = "At least one non-system message is required."
+    elif _response_format is not None and not (
+        (_has_client_tool or _server_tools_requested_pre)
+        and anthropic_tool_choice_to_openai(payload.tool_choice) != "none"
+    ):
+        _in_process_refusal = (
+            "A JSON output format needs the llama.cpp grammar engine, and "
+            f"'{payload.model}' is not a GGUF model."
+        )
+    elif _server_tools_requested_pre:
+        _in_process_refusal = _anthropic_server_tools_need_gguf(payload)
+    # Chat's image checks for a non-GGUF target; b64s stays what a GGUF target validates.
+    _anthropic_image_preflight = None
+    if _anthropic_has_image:
+        _anthropic_image_preflight = {
+            **_chat_image_preflight(_chat_req_pre, _chat_parts[2]),
+            "b64s": _anthropic_image_b64s,
+        }
     # require_vision rejects a swap to a text-only target before it runs, so an
     # image request can't evict the resident vision model only to hit the vision
     # guard (_normalize_anthropic_openai_images) below after the load.
@@ -42563,18 +42799,20 @@ async def anthropic_messages(
         # the middleware claims on a 2xx, so a rejected request never strands a preview-owned
         # model.
         claim_resident = False,
-        gguf_only = True,
-        image_preflight = (
-            {
-                "b64": _anthropic_image_b64s[0],
-                "b64s": _anthropic_image_b64s,
-                "multiple": False,
-            }
-            if _anthropic_image_b64s
-            else None
-        ),
+        gguf_only = _in_process_refusal is not None,
+        gguf_only_reason = _in_process_refusal,
+        image_preflight = _anthropic_image_preflight,
     )
     llama_backend = get_llama_cpp_backend()
+    if not llama_backend.is_loaded and _in_process_model_resident():
+        if _in_process_refusal is not None:
+            raise HTTPException(
+                status_code = 400,
+                detail = anthropic_error_body(
+                    _in_process_refusal, status = 400, err_type = "invalid_request_error"
+                ),
+            )
+        return await _anthropic_in_process_messages(payload, request, current_subject)
     if not llama_backend.is_loaded:
         _status, _detail = await _no_model_loaded_error(
             "No GGUF model loaded. Load a GGUF model first.",

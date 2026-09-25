@@ -3,6 +3,7 @@
 
 """Tests for Anthropic Messages API schemas and translation layer (no server/GPU)."""
 
+import contextlib
 import sys
 import os
 import json
@@ -6884,3 +6885,143 @@ class TestInProcessCountTokens:
             self._count(monkeypatch, inf.anthropic_count_tokens, payload, is_mlx = is_mlx)
         assert exc.value.status_code == status
         assert detail in json.dumps(exc.value.detail)
+
+
+_IP_CHUNKS = [{"delta": {"content": "hi"}}, {"delta": {}, "finish_reason": "stop"}]
+_IP_SSE = (
+    "".join(f"data: {json.dumps({'choices': [c]})}\n\n" for c in _IP_CHUNKS) + "data: [DONE]\n\n"
+)
+_IP_JSON = {"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]}
+_IP_SOURCE = {"type": "base64", "media_type": "image/png", "data": "QUJD"}
+_IP_IMAGE = {"type": "image", "source": _IP_SOURCE}
+_IP_FORMAT = {"output_config": {"format": {"type": "json_schema", "schema": {}}}}
+
+
+class TestInProcessMessages:
+    """/v1/messages on an in-process model: chat's output through the passthrough translators."""
+
+    def _serve(self, monkeypatch, stream, *timing, **fields):
+        stop_at, taken = timing or (None, -1)
+        from starlette.requests import Request
+        from starlette.responses import JSONResponse
+        import routes.inference as inf
+
+        seen = self.seen = {"closed": [], "unstarted": 0, "monitor": []}
+
+        async def fake_chat(chat_req, request, subject):
+            seen.update(req = chat_req, skip = request.state.skip_api_monitor)
+            if not chat_req.stream:
+                if stop_at is not None:
+                    request.state.generation_cancel_event.set()
+                return JSONResponse(_IP_JSON)
+
+            async def body():
+                try:
+                    for i, line in enumerate(_IP_SSE.split("\n\n")[:-1]):
+                        if i == stop_at:  # a Stop by the Messages id
+                            seen["stopped"] = inf._cancel_by_keys([seen["message_id"]])
+                            seen["runs"] = inf.active_generations.snapshot()
+                        yield line + "\n\n"
+                except BaseException as exc:
+                    seen["closed"].append(type(exc).__name__ + "!" * seen.get("late", 0))
+                    raise
+
+            unstarted = lambda: seen.update(unstarted = 1) or asyncio.sleep(0)  # noqa: E731
+            return inf._SameTaskStreamingResponse(body(), unstarted_cleanup = unstarted)
+
+        entry = {"is_mlx": True, "is_vision": fields.pop("vision", False)}
+        backend = SimpleNamespace(active_model_name = "m", models = {"m": entry})
+        backend.count_chat_tokens = lambda *a, **k: (5, "m")
+        switch = lambda *a, **k: seen.update(switch = k) or asyncio.sleep(0)  # noqa: E731
+        for name, value in [
+            ("openai_chat_completions", fake_chat),
+            ("get_inference_backend", lambda: backend),
+            ("get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)),
+            ("_maybe_auto_switch_model", switch),
+            ("_detect_safetensors_features", lambda *a, **k: {}),
+        ]:
+            monkeypatch.setattr(inf, name, value)
+        monkeypatch.setattr(inf.api_monitor, "finish", lambda _id, *a: seen["monitor"].append(a))
+        scope = {"type": "http", "method": "POST", "path": "/v1/messages", "headers": []}
+        request = seen["request"] = Request(scope)
+        fields.setdefault("messages", [_COUNT_USER])
+        payload = AnthropicMessagesRequest(model = "m", max_tokens = 16, stream = bool(stream), **fields)
+
+        async def run():
+            response = await inf.anthropic_messages(payload, request, "t")
+            if not stream or taken is None:
+                return response.body.decode() if not stream else await response._unstarted_cleanup()
+            out, it = [], response.body_iterator
+            async for part in it:
+                out.append(part)
+                if "message_start" in part:
+                    seen["message_id"] = json.loads(part.split("data: ", 1)[1])["message"]["id"]
+                if len(out) == taken:
+                    with pytest.raises(asyncio.CancelledError):
+                        await it.athrow(asyncio.CancelledError())
+                    seen["late"] = 1  # closing only at loop shutdown is a leak
+            return "".join(out)
+
+        return asyncio.run(run()), seen
+
+    @pytest.mark.parametrize(
+        "stream, stop_at, taken, closed",
+        [
+            (1, 1, -1, ["GeneratorExit"]),
+            (1, None, None, []),
+            (1, None, 2, ["CancelledError"]),
+            (0, 0, -1, []),
+        ],
+        ids = ["stop_by_message_id", "never_started", "outer_cancel", "stopped_json"],
+    )
+    def test_stop_ends_as_on_llama_server(self, monkeypatch, stream, stop_at, taken, closed):
+        import routes.inference as inf
+
+        with pytest.raises(asyncio.CancelledError) if not stream else contextlib.nullcontext():
+            out, seen = self._serve(monkeypatch, stream, stop_at, taken, session_id = "s1")
+        if not stream:
+            return  # the llama-server JSON path never answers a stopped run either
+        assert seen["skip"] is True and seen["req"].session_id == "s1"
+        assert seen["closed"] == closed and seen["unstarted"] == (taken is None)
+        assert ("cancelled",) in seen["monitor"]
+        assert not [k for k in inf._CANCEL_REGISTRY if "msg_" in str(k)]
+        if stop_at is not None:
+            assert seen["stopped"] == 1 and out.endswith('{"type": "message_stop"}\n\n')
+            assert seen["runs"] == []  # chat's own tracker records the run
+            assert seen["request"].scope.get("_unsloth_keepwarm_response_failed")
+
+    @pytest.mark.parametrize(
+        "fields, reason, multiple",
+        [
+            ({}, None, None),
+            (_IP_FORMAT, "JSON output", None),
+            ({"enable_tools": True, "permission_mode": "off"}, "Unsloth server tools", None),
+            (
+                {"messages": [{"role": "user", "content": [_IP_IMAGE, _IP_IMAGE]}], "vision": True},
+                None,
+                True,
+            ),
+            ({"messages": []}, "non-system", None),
+        ],
+        ids = ["plain", "json_format", "server_tools", "two_images", "no_turn"],
+    )
+    def test_refused_before_a_load(self, monkeypatch, fields, reason, multiple):
+        with pytest.raises(HTTPException) if reason else contextlib.nullcontext():
+            self._serve(monkeypatch, 0, **fields)
+        sw = self.seen["switch"]
+        assert sw["gguf_only"] is (reason is not None)
+        assert reason in sw["gguf_only_reason"] if reason else sw["gguf_only_reason"] is None
+        assert (sw["image_preflight"] or {}).get("multiple") is multiple
+
+    @pytest.mark.parametrize("vision", [True, False])
+    def test_an_image_on_a_text_only_model_names_its_block(self, monkeypatch, vision):
+        turns = [
+            {"role": "user", "content": "Hi."},
+            {"role": "assistant", "content": "Hello."},
+            {"role": "user", "content": [{"type": "text", "text": "What?"}, _IP_IMAGE]},
+        ]
+        with contextlib.nullcontext() if vision else pytest.raises(HTTPException) as err:
+            self._serve(monkeypatch, 0, messages = turns, vision = vision)
+        assert ("req" in self.seen) is vision
+        if not vision:
+            assert err.value.detail.startswith("messages.2.content.1.image: ")
