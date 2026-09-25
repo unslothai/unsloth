@@ -1163,6 +1163,20 @@ def resolve_remote_code_model_class(
         return True, None
 
 
+def attention_class_for_load(model_class, builds_remote_class, remote_class, supports_sdpa):
+    """(class, supports_sdpa) for `resolve_attention_implementation`. A remote class replaces only a
+    native class it shadows; otherwise it may only rule sdpa out, so remote code that loaded
+    before keeps its attention route."""
+    if not builds_remote_class:
+        return model_class, supports_sdpa
+    if model_class is None and remote_class is None:
+        return None, supports_sdpa
+    return (
+        remote_class if model_class is not None else None,
+        bool(supports_sdpa) and bool(getattr(remote_class, "_supports_sdpa", False)),
+    )
+
+
 def _is_family_text_decoder(parent_model_type, text_model_type):
     # True only for the family's own text variant (gemma3 -> gemma3_text); a generic reused decoder (llava -> llama) would load random weights, so keep the full model.
     return bool(parent_model_type) and str(text_model_type).startswith(parent_model_type)

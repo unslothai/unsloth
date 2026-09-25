@@ -245,6 +245,26 @@ def test_remote_class_is_what_attention_is_resolved_for(unsloth_loaded, shadow_r
     assert remote._supports_flash_attn is False
 
 
+def test_remote_class_only_replaces_a_native_class_it_shadows(unsloth_loaded):
+    from unsloth.models._utils import attention_class_for_load
+
+    class Native:
+        _supports_sdpa = True
+
+    class Remote:
+        _supports_flash_attn_2 = True
+        _supports_sdpa = False
+
+    assert attention_class_for_load(Native, True, Remote, True) == (Remote, False)
+    # No native class shadowed: remote flags must not route a working load onto flash attention.
+    assert attention_class_for_load(None, True, Remote, True) == (None, False)
+    Remote._supports_sdpa = True
+    assert attention_class_for_load(None, True, Remote, True) == (None, True)
+    assert attention_class_for_load(None, True, None, True) == (None, True)
+    assert attention_class_for_load(Native, True, None, True) == (None, False)
+    assert attention_class_for_load(Native, False, None, True) == (Native, True)
+
+
 def test_remote_class_not_used_without_trust(unsloth_loaded, shadow_repo):
     from transformers import AutoModelForCausalLM, LlamaConfig
     from unsloth.models._utils import resolve_remote_code_model_class

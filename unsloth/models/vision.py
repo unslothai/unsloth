@@ -74,6 +74,7 @@ from ._utils import (
     _prepare_model_for_qat,
     resolve_model_class,
     resolve_remote_code_model_class,
+    attention_class_for_load,
     _REMOTE_CLASS_HUB_OPTIONS,
     resolve_attention_implementation,
     _get_text_only_config,
@@ -1478,15 +1479,14 @@ class FastBaseModel:
             torch_dtype = torch.bfloat16
         # What attention actually runs in, not the load dtype: the UNSLOTH_FORCE_CUSTOM_DTYPE families (csm, falcon_h1, nemotron_h) load float32 for Mamba precision then cast projections back to correct_dtype, so flash stays.
         attn_dtype = correct_dtype if correct_dtype is not None else torch_dtype
+        _attn_class, _attn_supports_sdpa = attention_class_for_load(
+            model_class, _builds_remote_class, _remote_class, supports_sdpa
+        )
         attn_impl = resolve_attention_implementation(
-            _remote_class if _builds_remote_class else model_class,
+            _attn_class,
             auto_config,
             requested_attn_implementation = kwargs.get("attn_implementation", None),
-            supports_sdpa = (
-                bool(supports_sdpa) and bool(getattr(_remote_class, "_supports_sdpa", False))
-                if _builds_remote_class
-                else supports_sdpa
-            ),
+            supports_sdpa = _attn_supports_sdpa,
             dtype = attn_dtype,
         )
 
