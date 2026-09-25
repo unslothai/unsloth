@@ -7756,7 +7756,7 @@ class DiffusionBackend:
         try:
             clear_gpu_cache()
         finally:
-            # Pinned chunks are only free once the pipe is gone; finally, so a sticky CUDA fault still unlocks them.
+            # finally: a sticky CUDA fault must not keep the pinned chunks locked.
             release_pinned_host_memory()
 
     def status(self) -> dict[str, Any]:

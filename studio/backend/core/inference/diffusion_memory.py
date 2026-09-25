@@ -355,7 +355,7 @@ def _wrap_cpu_offload_hook(
                     host.pop(name, None)
                     owner.pop(name, None)
         if onload and not state.get("pin_tried"):
-            # Once per module, on its first onload: no load-time cost, and a machine without the RAM never pins.
+            # Once per module, on its first onload, so loading pays nothing.
             state["pin_tried"] = True
             try:
                 pinned = _pin_host_weights(mod, host, logger)
