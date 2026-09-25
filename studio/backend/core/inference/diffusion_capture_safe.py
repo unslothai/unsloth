@@ -204,7 +204,7 @@ _REWRITES: dict[str, tuple[str, Callable[[Callable], Callable]]] = {
     ),
 }
 
-# class name -> why its stock forward cannot be captured; declined at load instead of refusing every step.
+# Declined at load so status says "off" instead of arming a wrapper that refuses every step.
 _UNCAPTURABLE: dict[str, str] = {
     "QwenImage21Transformer2DModel": "its pipeline passes the prefix KV cache as a Python object "
     "on every step and its forward syncs the host",

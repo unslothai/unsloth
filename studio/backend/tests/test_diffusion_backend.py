@@ -11707,7 +11707,6 @@ def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypa
 
 
 def test_status_reports_cuda_graph_off_once_every_armed_step_ran_eager():
-    """A graph armed at load that refused every step must not keep reporting "on" in status."""
     backend = DiffusionBackend()
     handle = types.SimpleNamespace(
         cache = {},

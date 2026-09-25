@@ -654,11 +654,10 @@ def stats(handles: Any) -> dict:
 
 
 def never_engaged(handles: Any) -> Optional[str]:
-    """Why the armed graphs never replayed a step; None before the first call or once any captured."""
+    """Why the armed graphs never replayed a step; None before the first call or once any engaged."""
     if not handles:
         return None
     s = stats(handles)
-    # A poisoned wrapper never replays again, whatever it captured before the failure.
     if all(getattr(h, "poisoned", False) for h in handles):
         error = s["capture_error"] or {}
         return f"capture failed ({error.get('type') or 'error'}); every denoiser step runs eager"
@@ -679,7 +678,7 @@ def never_engaged(handles: Any) -> Optional[str]:
 
 
 def live_status(resolved: Any, speed_optims: Any, handles: Any) -> tuple:
-    """Status ``(resolved, speed_optims)`` with ``cuda_graph`` off when it never engaged; copies, never mutates."""
+    """Copies, never mutates: the load-time record stays as recorded."""
     why = never_engaged(handles)
     optims = list(speed_optims or ())
     if why is None:

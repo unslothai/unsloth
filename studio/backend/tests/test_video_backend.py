@@ -1826,9 +1826,126 @@ def test_video_speed_off_suppresses_auto_dtype_quant(fake_runtime, monkeypatch):
     ), f"the record reports {resolved['requested']!r} as the user's request; nothing was asked for"
     assert resolved["source"] == "auto"
 
-    # Control: with speed NOT off the auto precision promotion still engages, so the suppression above is specific to speed=off.
+    # Control: speed NOT off still quantises where that keeps the DiT resident.
+    _bf16_offloads_quant_fits(monkeypatch)
     backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
     assert calls == [True]
+
+
+def _bf16_offloads_quant_fits(monkeypatch, threshold_mib = 21_000):
+    """Plan a bf16-sized Wan TI2V-5B (~23 GB) at model offload and its int8-sized re-plan (~19 GB) resident."""
+    import dataclasses
+
+    import core.inference.video as video_mod
+
+    real = video_mod.plan_diffusion_memory
+
+    def _plan(**kw):
+        plan = real(**kw)
+        if (kw.get("model_dense_mib") or 0) > threshold_mib:
+            return dataclasses.replace(plan, offload_policy = "model")
+        return plan
+
+    monkeypatch.setattr(video_mod, "plan_diffusion_memory", _plan)
+    monkeypatch.setattr(
+        video_mod,
+        "select_transformer_quant_scheme",
+        lambda target, mode, family = None, **_k: "int8",
+    )
+    monkeypatch.setattr(
+        video_mod, "apply_memory_plan", lambda pipe, plan, **_k: (plan.offload_policy, False)
+    )
+
+
+def _measured_resident(monkeypatch):
+    """Resident plan with a measured budget (fake_runtime's host fallback is unmeasured on macOS / Windows)."""
+    import dataclasses
+
+    import core.inference.video as video_mod
+
+    real = video_mod.plan_diffusion_memory
+
+    def _plan(**kw):
+        plan = real(**kw)
+        estimates = {
+            **plan.estimates,
+            "safe_device_budget_mib": 80_000,
+            "resident_required_mib": 30_000,
+        }
+        return dataclasses.replace(plan, offload_policy = "none", estimates = estimates)
+
+    monkeypatch.setattr(video_mod, "plan_diffusion_memory", _plan)
+
+
+def _quant_spy(monkeypatch):
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    calls: list = []
+    monkeypatch.setattr(
+        video_mod,
+        "quantize_transformer",
+        lambda view, target, **kw: calls.append(kw.get("mode")) or "int8",
+    )
+    return calls
+
+
+@pytest.mark.parametrize("speed", ["default", "max", "eager", None])
+def test_video_auto_quant_keeps_a_resident_bf16_dit(fake_runtime, monkeypatch, speed):
+    calls = _quant_spy(monkeypatch)
+    _measured_resident(monkeypatch)
+    status = VideoBackend().load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = speed
+    )
+    assert calls == []
+    assert status["transformer_quant"] is None
+    assert status["offload_policy"] == "none"
+    resolved = status["resolved"]["transformer_quant"]
+    assert (resolved["requested"], resolved["value"], resolved["source"], resolved["status"]) == (
+        None,
+        "off",
+        "auto",
+        "applied",
+    )
+    assert "fits resident" in resolved["reason"]
+
+
+def test_video_auto_quant_engages_when_it_avoids_offload(fake_runtime, monkeypatch):
+    calls = _quant_spy(monkeypatch)
+    _bf16_offloads_quant_fits(monkeypatch)
+    status = VideoBackend().load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "default"
+    )
+    assert calls == ["auto"]
+    assert status["transformer_quant"] == "int8"
+    assert status["offload_policy"] == "none"
+
+
+def test_video_auto_quant_stays_off_when_even_the_quant_offloads(fake_runtime, monkeypatch):
+    calls = _quant_spy(monkeypatch)
+    _bf16_offloads_quant_fits(monkeypatch, threshold_mib = 1)
+    status = VideoBackend().load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "default"
+    )
+    assert calls == []
+    assert status["offload_policy"] == "model"
+
+
+@pytest.mark.parametrize("scheme", ["int8", "fp8"])
+def test_video_explicit_quant_is_honoured_while_resident(fake_runtime, monkeypatch, scheme):
+    calls = _quant_spy(monkeypatch)
+    monkeypatch.setattr(
+        "core.inference.video.select_transformer_quant_scheme",
+        lambda target, mode, family = None, **_k: scheme,
+    )
+    status = VideoBackend().load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        model_kind = "pipeline",
+        speed_mode = "default",
+        transformer_quant = scheme,
+    )
+    assert calls == [scheme]
+    assert status["offload_policy"] == "none"
 
 
 def test_video_step_cache_auto_from_default_schedule(fake_runtime, tmp_path):
@@ -9650,3 +9767,34 @@ def test_video_status_reports_cuda_graph_off_once_every_armed_step_ran_eager(fak
     assert st["speed_optims"] == ["compiled"]
     assert resolved["cuda_graph"]["value"] == "on"
     backend.unload()
+
+
+def test_video_auto_quant_on_a_host_without_dense_quant_reports_as_before(fake_runtime):
+    status = VideoBackend().load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "default"
+    )
+    resolved = status["resolved"]["transformer_quant"]
+    assert (resolved["value"], resolved["source"]) == ("off", "auto")
+    assert resolved["reason"] == "not engaged (dense bf16 DiT loaded)"
+
+
+def test_video_auto_quant_still_engages_when_the_budget_is_unknown(fake_runtime, monkeypatch):
+    import dataclasses
+
+    import core.inference.video as video_mod
+
+    calls = _quant_spy(monkeypatch)
+    real = video_mod.plan_diffusion_memory
+    monkeypatch.setattr(
+        video_mod,
+        "plan_diffusion_memory",
+        lambda **kw: dataclasses.replace(
+            real(**kw),
+            offload_policy = "none",
+            estimates = {"safe_device_budget_mib": None, "resident_required_mib": None},
+        ),
+    )
+    VideoBackend().load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "default"
+    )
+    assert calls == ["auto"]

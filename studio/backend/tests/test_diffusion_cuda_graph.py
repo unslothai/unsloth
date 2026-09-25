@@ -896,7 +896,6 @@ def test_live_status_turns_off_when_a_graph_that_replayed_is_poisoned(stub_torch
         "capture failed (RuntimeError); every denoiser step runs eager"
     )
     assert optims == ["compiled"]
-    # One of two wrappers still replaying keeps the claim open.
     other = _armed()
     other(_t(), timestep = _t((1,)), return_dict = False)
     assert cg.never_engaged((handle, other)) is None

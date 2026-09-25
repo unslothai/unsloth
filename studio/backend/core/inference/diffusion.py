@@ -185,6 +185,7 @@ from .diffusion_prequant import (
     hosted_fast_accum_conflict,
     load_prequantized_transformer,
     prequant_checkpoint_cached,
+    prequant_unreadable_reason,
     resolve_prequant_source,
     usable_prequant_source,
 )
@@ -1497,6 +1498,25 @@ def _clear_exception_frames(exc: BaseException) -> None:
         seen.add(id(error))
         traceback.clear_frames(error.__traceback__)
         errors.extend(cause for cause in (error.__cause__, error.__context__) if cause is not None)
+
+
+def _dense_fast_path_reason(
+    fam: Any,
+    scheme: Optional[str],
+    base: Optional[str],
+    kind: str,
+    path_override: Optional[str],
+    loras: Any = None,
+) -> str:
+    """Name an unreadable hosted checkpoint only when it was in play (not override/GGUF/LoRA bake)."""
+    note = (
+        prequant_unreadable_reason(fam, scheme, base_repo = base)
+        if kind == "pipeline" and not path_override and not _has_active_lora(loras)
+        else None
+    )
+    if note:
+        return f"engaged on the dense fast path; {note}, so the dense bf16 transformer was quantized instead"
+    return "engaged on the dense fast path"
 
 
 class DiffusionBackend:
@@ -5549,6 +5569,9 @@ class DiffusionBackend:
                     else:
                         uninstall_patches()
                         uninstall_arch_patches()
+                    from .diffusion_qwenimage21 import install_for_pipe as install_q21_fast_step
+
+                    install_q21_fast_step(pipe, logger)
 
                     self._raise_if_load_cancelled(_load_token)
                     # Pre-warmed torch.compile cache: a per-fingerprint inductor dir plus a bundle loaded before the
@@ -5720,7 +5743,14 @@ class DiffusionBackend:
                                 if transformer_quant_artifact is not None
                                 else "re-planned resident for the quantised artifact"
                                 if quant_plan is not None
-                                else "engaged on the dense fast path",
+                                else _dense_fast_path_reason(
+                                    fam,
+                                    transformer_quant_engaged,
+                                    base,
+                                    kind,
+                                    transformer_prequant_path,
+                                    loras,
+                                ),
                                 # Honored when the quant engaged AND when the ask was "off" (a request NOT to
                                 # quantise, which the GGUF build satisfies)
                                 RESOLVED_APPLIED
