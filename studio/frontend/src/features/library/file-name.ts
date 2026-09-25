@@ -1,70 +1,65 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Kept free of app imports, so the naming rules can be tested on their own.
+// How a Library file is named, typed and served. Kept free of app imports, so it can be tested.
 import { isTextAttachmentName } from "../chat/text-attachment-accept.ts";
 
-// Characters no Windows file name may hold. "/" also ends a name for the desktop app's save
-// dialog, which keeps only what follows it.
+// Characters no Windows file name may hold; "/" also cuts the desktop save dialog's name short.
 const INVALID_CHARS = new Set('<>:"/\\|?*');
 // Device names Windows reserves whatever the extension: CON.txt opens the console.
 const RESERVED_STEM = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]|conin\$|conout\$)$/i;
 // Well inside every file system's 255, with room for a "(1)" the browser may add.
 const MAX_NAME_CHARS = 200;
 const FALLBACK_STEM = "file";
+const OPAQUE_TYPE = "application/octet-stream";
 
-function extensionOf(name: string): string {
+export function fileExtension(name: string): string {
   const dot = name.lastIndexOf(".");
   return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+}
+
+/** Stem and ".ext"; a leading dot (".env") starts a name, not an extension. */
+function splitName(name: string): [stem: string, suffix: string] {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
 }
 
 function clean(name: string): string {
   let out = "";
   for (const char of name) {
     const code = char.codePointAt(0)!;
-    // Controls too, which no file manager shows usefully.
     out += INVALID_CHARS.has(char) || code < 0x20 || code === 0x7f ? "_" : char;
   }
   // Windows drops trailing dots and spaces, so "notes." and "notes" would collide.
   return out.replace(/[. ]+$/, "").trim();
 }
 
-/**
- * A name the item's file can be saved or attached under on any OS. The shown name may have been
- * renamed to anything, so it is cleaned, and gets back the extension of the file it names, which
- * is what says what the bytes are. Text-only chat uploads say so with a .txt.
- */
+/** A name the item's file can be saved or attached under on any OS: the shown name, cleaned, with
+ *  the extension of the file it names (which a rename may have dropped). Text-only uploads get .txt. */
 export function libraryFileName(item: {
   name: string;
   fileName?: string;
   textOnly?: boolean;
 }): string {
-  const extension = item.textOnly ? "txt" : extensionOf(item.fileName ?? item.name);
-  const cleanExtension = clean(extension);
+  const extension = clean(item.textOnly ? "txt" : fileExtension(item.fileName ?? item.name));
   let name = clean(item.name) || FALLBACK_STEM;
-  if (cleanExtension && extensionOf(name) !== cleanExtension) name = `${name}.${cleanExtension}`;
-  const dot = name.lastIndexOf(".");
-  // A leading dot (".env") starts a name, not an extension.
-  let stem = dot > 0 ? name.slice(0, dot) : name;
-  const suffix = dot > 0 ? name.slice(dot) : "";
-  if (!stem.trim()) stem = FALLBACK_STEM;
+  if (extension && fileExtension(name) !== extension) name = `${name}.${extension}`;
+  const [base, suffix] = splitName(name);
+  let stem = base.trim() ? base : FALLBACK_STEM;
   // The device check reads up to the first dot: "con.backup.txt" is reserved too.
-  const device = stem.split(".", 1)[0]!.trim();
-  if (RESERVED_STEM.test(device)) stem = `_${stem}`;
+  if (RESERVED_STEM.test(stem.split(".", 1)[0]!.trim())) stem = `_${stem}`;
   if (stem.length + suffix.length > MAX_NAME_CHARS) {
     stem = clean(stem.slice(0, Math.max(1, MAX_NAME_CHARS - suffix.length)));
   }
   return `${stem}${suffix}`;
 }
 
-/** The names, with a " (2)", " (3)"... before the extension of any already taken (ignoring case,
- *  as Windows and macOS do), so a folder of downloads keeps every file. */
+/** The names, with " (2)", " (3)"... before the extension of any already taken (ignoring case, as
+ *  Windows and macOS do), so a folder of downloads keeps every file. */
 export function uniqueFileNames(names: string[]): string[] {
   const taken = new Set<string>();
   return names.map((name) => {
-    const dot = name.lastIndexOf(".");
-    const stem = dot > 0 ? name.slice(0, dot) : name;
-    const suffix = dot > 0 ? name.slice(dot) : "";
+    const [stem, suffix] = splitName(name);
     let candidate = name;
     for (let n = 2; taken.has(candidate.toLowerCase()); n++) candidate = `${stem} (${n})${suffix}`;
     taken.add(candidate.toLowerCase());
@@ -106,17 +101,17 @@ const EXTENSION_TYPES: Record<string, string> = {
   pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 };
 
-const OPAQUE_TYPE = "application/octet-stream";
+/** "text/x-python; charset=utf-8" as "text/x-python". */
+function baseType(type: string): string {
+  return type.split(";", 1)[0]!.trim().toLowerCase();
+}
 
-/**
- * The type a File under `fileName` should carry. The server's own type wins when it says anything;
- * otherwise (a Windows server knows no type for .py) it comes from the extension, and a name the
- * composer reads as text is plain text.
- */
+/** The type a File under `fileName` should carry: the server's, unless it says nothing (a Windows
+ *  server knows no type for .py); then the extension's, or plain text for what the composer reads. */
 export function libraryFileType(fileName: string, serverType: string): string {
-  const type = serverType.split(";", 1)[0]!.trim().toLowerCase();
+  const type = baseType(serverType);
   if (type && type !== OPAQUE_TYPE) return type;
-  const byExtension = EXTENSION_TYPES[extensionOf(fileName)];
+  const byExtension = EXTENSION_TYPES[fileExtension(fileName)];
   if (byExtension) return byExtension;
   return isTextAttachmentName(fileName) ? "text/plain" : OPAQUE_TYPE;
 }
@@ -132,14 +127,27 @@ const SCRIPTABLE_TYPES = new Set([
 
 export type EmbeddedBody = "image" | "pdf" | "audio" | "video";
 
-/**
- * The type for an object URL a preview embeds directly. A PDF frame is always a PDF, and nothing
- * embedded is ever typed as a document that could run script: a web page previews only in the
- * sandboxed canvas frame. Media the server typed otherwise is left for the element to sniff.
- */
+/** The type for an object URL a preview embeds: a PDF frame is always a PDF, and nothing is ever
+ *  typed as a document that could run script (web pages preview only in the sandboxed canvas
+ *  frame). Media the server typed otherwise is left for the element to sniff. */
 export function embeddedBlobType(body: EmbeddedBody, serverType: string): string {
   if (body === "pdf") return "application/pdf";
-  const type = serverType.split(";", 1)[0]!.trim().toLowerCase();
-  if (type.startsWith(`${body}/`) && !SCRIPTABLE_TYPES.has(type)) return type;
-  return OPAQUE_TYPE;
+  const type = baseType(serverType);
+  return type.startsWith(`${body}/`) && !SCRIPTABLE_TYPES.has(type) ? type : OPAQUE_TYPE;
+}
+
+/** Items with a file of their own, which the Library serves by id. Chat attachments live inside
+ *  their messages, and fine-tunes are folders. */
+export function hasOwnFile(itemId: string): boolean {
+  return /^(upload|image|video|audio|sandbox):/.test(itemId);
+}
+
+// Sources the backend streams from a signed link.
+const STREAMED_SOURCES = new Set(["upload", "audio", "video", "sandbox"]);
+
+/** Whether a preview plays from a signed, range-capable link rather than a buffered blob. */
+export function streamsPreview(itemId: string, body: string | null): boolean {
+  if (body !== "audio" && body !== "video") return false;
+  const colon = itemId.indexOf(":");
+  return colon > 0 && STREAMED_SOURCES.has(itemId.slice(0, colon));
 }

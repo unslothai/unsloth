@@ -100,7 +100,7 @@ function NameForm({
         value={value}
         maxLength={255}
         onChange={(event) => setValue(event.target.value)}
-        aria-label={t("library.dialog.name")}
+        aria-label={t("library.list.name")}
       />
       <DialogFooter className="mt-5">
         <Button type="button" variant="ghost" onClick={onClose}>
@@ -177,7 +177,7 @@ export function UnsavedChangesDialog({
           <AlertDialogAction variant="destructive" onClick={onDiscard}>
             {t("library.dialog.discardChanges")}
           </AlertDialogAction>
-          <AlertDialogAction onClick={onRetry}>{t("library.dialog.tryAgain")}</AlertDialogAction>
+          <AlertDialogAction onClick={onRetry}>{t("library.empty.tryAgain")}</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

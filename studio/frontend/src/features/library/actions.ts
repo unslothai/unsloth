@@ -16,9 +16,9 @@ import { isTauri } from "@/lib/api-base";
 import { downloadFile, downloadUrlStreaming, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { MAX_VIDEO_SIZE } from "@/lib/video-utils";
-import { type LibraryItem, libraryDownloadUrl, libraryItemFile } from "./api";
+import { type LibraryItem, errorMessage, libraryDownloadUrl, libraryItemFile } from "./api";
 import { fileKind } from "./file-kind";
-import { libraryFileName, uniqueFileNames } from "./file-name";
+import { hasOwnFile, libraryFileName, uniqueFileNames } from "./file-name";
 import {
   type LibraryChatHandoff,
   useLibraryChatHandoffStore,
@@ -49,19 +49,11 @@ function fitsInChat(item: LibraryItem): boolean {
   return item.sizeBytes === null || item.sizeBytes <= chatSizeLimit(item);
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-// Items with a file of their own, which the Library can serve by id. Chat attachments live inside
-// messages and stay small.
-const STREAMABLE = /^(upload|image|video|audio|sandbox):/;
-
 export async function downloadLibraryItem(item: LibraryItem): Promise<void> {
   try {
     // The desktop app streams to the chosen path: a Blob plus its IPC copy would hold the file
     // in memory twice.
-    if (isTauri && !item.textOnly && STREAMABLE.test(item.id)) {
+    if (isTauri && !item.textOnly && hasOwnFile(item.id)) {
       await downloadUrlStreaming(await libraryDownloadUrl(item), libraryFileName(item));
       return;
     }
@@ -124,15 +116,6 @@ export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> 
   }
 }
 
-// crypto.randomUUID only exists in secure contexts, and Studio is also served over plain http to
-// the LAN.
-function createNonce(): string {
-  if (typeof globalThis.crypto?.randomUUID === "function") {
-    return globalThis.crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
 function resetToNewChat(): void {
   clearNewChatDraft();
   const runtime = useChatRuntimeStore.getState();
@@ -146,7 +129,8 @@ function startLibraryChat(
   navigate: Navigate,
   handoff: LibraryChatHandoff,
 ): void {
-  const nonce = createNonce();
+  // A UUID, or a fallback where plain http to the LAN has no crypto.randomUUID.
+  const nonce = createModelConfigHandoffRequestId();
   resetToNewChat();
   useLibraryChatHandoffStore.getState().offer(`single:${nonce}`, handoff);
   void navigate({ to: "/chat", search: { new: nonce } });

@@ -2837,7 +2837,6 @@ export const ar = {
       tryAgain: "إعادة المحاولة",
     },
     sections: {
-      folders: "المجلدات",
       items: "العناصر",
     },
     breadcrumb: "مسار التنقل",
@@ -2850,8 +2849,6 @@ export const ar = {
     selectItem: "تحديد {name}",
     selection: {
       startChat: "بدء محادثة",
-      download: "تنزيل",
-      moreActions: "إجراءات أخرى",
       move: "نقل",
       clear: "مسح التحديد",
     },
@@ -2894,7 +2891,6 @@ export const ar = {
       audio: "صوت",
       model: "نموذج",
       folder: "مجلد",
-      uploadFiles: "رفع ملفات",
       untitledNote: "ملاحظة بلا عنوان",
     },
     list: {
@@ -2920,8 +2916,6 @@ export const ar = {
       model: "نموذج",
     },
     dialog: {
-      name: "الاسم",
-      newFolder: "مجلد جديد",
       create: "إنشاء",
       renameFolder: "إعادة تسمية المجلد",
       renameFile: "إعادة تسمية الملف",
@@ -2940,7 +2934,6 @@ export const ar = {
       unsavedDescription: "{reason} أعد المحاولة، أو تجاهل تغييراتك لإغلاق الملف.",
       keepEditing: "متابعة التحرير",
       discardChanges: "تجاهل التغييرات",
-      tryAgain: "إعادة المحاولة",
     },
     preview: {
       code: "الكود",
@@ -2964,8 +2957,6 @@ export const ar = {
     viewer: {
       scale: "التكبير",
       fit: "ملاءمة",
-      download: "تنزيل",
-      close: "إغلاق",
       moreActionsImage: "إجراءات أخرى لهذه الصورة",
       moreActionsVideo: "إجراءات أخرى لهذا الفيديو",
       moreActionsClip: "إجراءات أخرى لهذا المقطع",

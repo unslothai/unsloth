@@ -2865,7 +2865,6 @@ export const ru = {
       tryAgain: "Повторить",
     },
     sections: {
-      folders: "Папки",
       items: "Элементы",
     },
     breadcrumb: "Путь навигации",
@@ -2878,8 +2877,6 @@ export const ru = {
     selectItem: "Выбрать «{name}»",
     selection: {
       startChat: "Начать чат",
-      download: "Скачать",
-      moreActions: "Другие действия",
       move: "Переместить",
       clear: "Снять выделение",
     },
@@ -2922,7 +2919,6 @@ export const ru = {
       audio: "Аудио",
       model: "Модель",
       folder: "Папка",
-      uploadFiles: "Загрузить файлы",
       untitledNote: "Заметка без названия",
     },
     list: {
@@ -2948,8 +2944,6 @@ export const ru = {
       model: "Модель",
     },
     dialog: {
-      name: "Название",
-      newFolder: "Новая папка",
       create: "Создать",
       renameFolder: "Переименовать папку",
       renameFile: "Переименовать файл",
@@ -2968,7 +2962,6 @@ export const ru = {
       unsavedDescription: "{reason} Повторите попытку или отмените изменения, чтобы закрыть файл.",
       keepEditing: "Продолжить редактирование",
       discardChanges: "Отменить изменения",
-      tryAgain: "Повторить",
     },
     preview: {
       code: "Код",
@@ -2992,8 +2985,6 @@ export const ru = {
     viewer: {
       scale: "Масштаб",
       fit: "По размеру",
-      download: "Скачать",
-      close: "Закрыть",
       moreActionsImage: "Другие действия с изображением",
       moreActionsVideo: "Другие действия с видео",
       moreActionsClip: "Другие действия с клипом",

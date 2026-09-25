@@ -167,55 +167,45 @@ function CardFrame({
   );
 }
 
-export function ItemCard({ item, showTime = true }: { item: LibraryItem; showTime?: boolean }) {
+export function ItemCard({ item }: { item: LibraryItem }) {
   const locale = useLocale();
   const actions = useLibraryActions();
-  const menu = <LibraryActionsMenu target={{ kind: "item", item }} variant="overlay" />;
-
-  if (hasThumbnail(item)) {
-    return (
-      <CardFrame
-        selectKey={`item:${item.id}`}
-        label={item.name}
-        onOpen={() => actions.openItem(item)}
-        menu={
-          <LibraryActionsMenu
-            target={{ kind: "item", item }}
-            variant="overlay"
-            className={GLASS_CONTROL}
-          />
-        }
-        glass
-        className={cn("bg-muted", CARD_SHADOW)}
-      >
-        <ImageThumb item={item} />
-      </CardFrame>
-    );
-  }
+  const thumb = hasThumbnail(item);
   return (
     <CardFrame
       selectKey={`item:${item.id}`}
       label={item.name}
       onOpen={() => actions.openItem(item)}
-      menu={menu}
-      className={CARD_SURFACE}
+      menu={
+        <LibraryActionsMenu
+          target={{ kind: "item", item }}
+          variant="overlay"
+          className={thumb ? GLASS_CONTROL : undefined}
+        />
+      }
+      glass={thumb}
+      className={thumb ? cn("bg-muted", CARD_SHADOW) : CARD_SURFACE}
     >
-      <div className="flex aspect-square flex-col px-5 pb-3.5 pt-5">
-        <p className="line-clamp-2 break-all pr-7 font-medium text-[14px] leading-snug text-foreground">
-          {item.name}
-        </p>
-        <div className="flex flex-1 items-center justify-center">
-          <KindIcon item={item} className="size-9" />
+      {thumb ? (
+        <ImageThumb item={item} />
+      ) : (
+        <div className="flex aspect-square flex-col px-5 pb-3.5 pt-5">
+          <p className="line-clamp-2 break-all pr-7 font-medium text-[14px] leading-snug text-foreground">
+            {item.name}
+          </p>
+          <div className="flex flex-1 items-center justify-center">
+            <KindIcon item={item} className="size-9" />
+          </div>
+          <p className="truncate pr-6 text-[12.5px] text-muted-foreground">
+            {formatCardTime(item.updatedAt, locale)}
+          </p>
         </div>
-        <p className="truncate pr-6 text-[12.5px] text-muted-foreground">
-          {showTime && formatCardTime(item.updatedAt, locale)}
-        </p>
-      </div>
+      )}
     </CardFrame>
   );
 }
 
-export function FolderCard({
+function FolderCard({
   folder,
   itemCount,
 }: {
