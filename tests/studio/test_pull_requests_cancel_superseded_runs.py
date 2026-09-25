@@ -119,7 +119,12 @@ def _context(ref: str, event_name: str = "pull_request") -> dict[str, str]:
     }
 
 
-def _cancels(value, *, ref: str, event_name: str = "pull_request") -> bool:
+def _cancels(
+    value,
+    *,
+    ref: str,
+    event_name: str = "pull_request",
+) -> bool:
     """Whether ``cancel-in-progress: <value>`` is truthy for a ``event_name`` run on ``ref``.
 
     A literal ``true`` is a bool once YAML has read it. Everything else in this repo is an
