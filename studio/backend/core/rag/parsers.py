@@ -48,30 +48,82 @@ def _page(text: str, page_number: int | None) -> Page:
     return Page(text = text, page_number = page_number, char_count = len(text))
 
 
+_HTML_SKIP_TAGS = frozenset(("script", "style", "template"))
+_HTML_BLOCK_TAGS = frozenset(
+    "address article aside blockquote br caption center dd details dialog dir div dl dt"
+    " fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 header hgroup hr legend li"
+    " listing main menu nav ol optgroup option p plaintext pre search section summary table"
+    " td text textarea th title tr ul xmp".split()
+)
+_HTML_PRE_TAGS = frozenset(("listing", "plaintext", "pre", "textarea", "xmp"))
+# Atomic inline boxes: their text never runs into a neighbour's, but they do not break the line.
+_HTML_BOX_TAGS = frozenset(("button", "img", "input", "select"))
+
+
 class _Stripper(HTMLParser):
-    """Collect visible text, skipping <script>/<style>."""
+    """Collect visible text, one line per block element."""
 
     def __init__(self) -> None:
         super().__init__()
         self._skip = 0
+        self._pre = 0
+        self._templates: list[bool] = []
+        self._line: list[str] = []
         self.out: list[str] = []
 
+    def _flush(self) -> None:
+        text = "".join(self._line)
+        self._line = []
+        # Whitespace inside <pre>/<textarea> is content; elsewhere it is layout.
+        text = text.strip("\n") if self._pre else " ".join(text.split())
+        if text.strip():
+            self.out.append(text)
+
     def handle_starttag(self, tag, attrs):
-        if tag in ("script", "style"):
+        if tag == "template":
+            # A declarative shadow root (shadowrootmode=open|closed) is rendered; other templates are inert.
+            inert = (dict(attrs).get("shadowrootmode") or "").lower() not in ("open", "closed")
+            self._templates.append(inert)
+            self._skip += inert
+        elif tag in _HTML_SKIP_TAGS:
             self._skip += 1
+        elif tag in _HTML_BLOCK_TAGS and not self._skip:
+            self._flush()
+            if tag in _HTML_PRE_TAGS:
+                self._pre += 1
+        elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:
+            self._line.append(" ")
+        elif tag == "tspan" and not self._skip and any(k in ("x", "y") for k, _ in attrs):
+            # An absolute x/y starts a new SVG text chunk (a separate label or line).
+            self._flush()
 
     def handle_endtag(self, tag):
-        if tag in ("script", "style") and self._skip:
-            self._skip -= 1
+        if tag == "template":
+            if self._templates and self._templates.pop() and self._skip:
+                self._skip -= 1
+        elif tag in _HTML_SKIP_TAGS:
+            if self._skip:
+                self._skip -= 1
+        elif tag in _HTML_BLOCK_TAGS and not self._skip:
+            self._flush()
+            if tag in _HTML_PRE_TAGS and self._pre:
+                self._pre -= 1
+        elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:
+            self._line.append(" ")
 
     def handle_data(self, data):
-        if not self._skip and data.strip():
-            self.out.append(data.strip())
+        if not self._skip:
+            self._line.append(data)
+
+    def close(self):
+        super().close()
+        self._flush()
 
 
 def _html(raw: str) -> list[Page]:
     parser = _Stripper()
     parser.feed(raw)
+    parser.close()
     return [_page("\n".join(parser.out), 1)]
 
 
