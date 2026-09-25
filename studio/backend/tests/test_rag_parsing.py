@@ -479,7 +479,6 @@ def test_docx_keeps_rows_and_cells_wrapped_in_content_controls(tmp_path):
 
 
 def test_docx_skips_placeholder_text_and_keeps_field_and_bidi_runs(tmp_path):
-    # An unfilled content control stores Word's prompt with w:showingPlcHdr; it is not the field's value.
     document, docx, parsers = _shared_setup_1()
     from docx.oxml import parse_xml
     from docx.oxml.ns import nsdecls
