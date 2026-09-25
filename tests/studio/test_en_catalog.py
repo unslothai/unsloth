@@ -187,7 +187,7 @@ def test_the_paths_filter_is_read_in_order(paths, included):
 
 
 def _pull_request_runs_on(workflow: dict, path: str) -> bool:
-    """Whether a pull request that changes only `path` triggers `workflow`."""
+    """Whether a pull request into main that changes only `path` triggers `workflow`."""
     # PyYAML reads a bare `on:` key as True and a quoted `"on":` as the string.
     triggers = workflow.get(True, workflow.get("on"))
     if isinstance(triggers, str):
@@ -197,6 +197,11 @@ def _pull_request_runs_on(workflow: dict, path: str) -> bool:
     if not isinstance(triggers, dict) or "pull_request" not in triggers:
         return False
     event = triggers["pull_request"] or {}
+    # Branch filters name the target branch, and pull requests here target main.
+    if "branches" in event and not _paths_include(event["branches"] or [], "main"):
+        return False
+    if "branches-ignore" in event and _paths_include(event["branches-ignore"] or [], "main"):
+        return False
     if "paths" in event:
         return _paths_include(event["paths"] or [], path)
     if "paths-ignore" in event:
@@ -225,6 +230,10 @@ def _pull_request_runs_on(workflow: dict, path: str) -> bool:
             },
             True,
         ),
+        ({True: {"pull_request": {"branches": ["release"]}}}, False),
+        ({True: {"pull_request": {"branches": ["main", "release/**"]}}}, True),
+        ({True: {"pull_request": {"branches-ignore": ["main"]}}}, False),
+        ({True: {"pull_request": {"branches-ignore": ["release/**"]}}}, True),
     ],
 )
 def test_the_pull_request_trigger_is_read_in_full(workflow, runs):
