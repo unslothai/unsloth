@@ -467,6 +467,54 @@ def _docx(path: str) -> list[Page]:
     return [_page("\n".join(lines), None)]
 
 
+# Where a page names its charset: <meta charset="..."> or the http-equiv Content-Type. Browsers look for it in
+# the first 1024 bytes.
+_META_CHARSET = re.compile(rb"<meta[^>]+charset\s*=\s*[\"']?\s*([\w.:-]+)", re.IGNORECASE)
+
+
+def _declared_charset(data: bytes) -> str | None:
+    """The charset an HTML page declares near its top. Like a browser, only an encoding that writes ASCII as
+    ASCII counts, since only such an encoding could have written the declaration this way."""
+    match = _META_CHARSET.search(data[:1024])
+    if match is None:
+        return None
+    name = match.group(1).decode("ascii")
+    try:
+        return name if "<meta>".encode(name) == b"<meta>" else None
+    except (LookupError, UnicodeError):
+        return None
+
+
+def _decode_text(data: bytes, *, html: bool = False) -> str:
+    """Decode a text, Markdown or HTML file. A byte-order mark decides first, then UTF-8, then the charset an
+    HTML page declares. Bytes that are UTF-8 nowhere come from a legacy code page, most often the Windows-1252
+    ("ANSI") that Notepad and Excel write in Western Europe; read as UTF-8 they would lose every accented letter
+    to U+FFFD. A file that is UTF-8 apart from a few damaged bytes keeps its text, as before."""
+    # Check UTF-32 before its overlapping UTF-16 prefix.
+    for bom, codec in (
+        (codecs.BOM_UTF32_LE, "utf-32"),
+        (codecs.BOM_UTF32_BE, "utf-32"),
+        (codecs.BOM_UTF16_LE, "utf-16"),
+        (codecs.BOM_UTF16_BE, "utf-16"),
+    ):
+        if data.startswith(bom):
+            return data.decode(codec, errors = "replace")
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    declared = _declared_charset(data) if html else None
+    if declared:
+        try:
+            return data.decode(declared, errors = "replace")
+        except UnicodeError:
+            pass
+    text = data.decode("utf-8-sig", errors = "replace")
+    if any("\x7f" < ch != "\ufffd" for ch in text):
+        return text
+    return data.decode("cp1252", errors = "replace")
+
+
 def parse(path: str, *, want_images: bool = False):
     """Parse a file into pages by extension. Returns ``list[Page]``, or
     ``(list[Page], list[ParsedImage])`` when ``want_images=True`` (only PDFs yield
@@ -482,22 +530,10 @@ def parse(path: str, *, want_images: bool = False):
         return (pages, []) if want_images else pages
 
     if ext in (".html", ".htm", ".txt", ".md", ".markdown"):
-        # Honor Unicode BOMs; check UTF-32 before its overlapping UTF-16 prefix.
+        is_html = ext in (".html", ".htm")
         with open(path, "rb") as f:
-            prefix = f.read(4)
-        encoding = "utf-8-sig"
-        for bom, codec in (
-            (codecs.BOM_UTF32_LE, "utf-32"),
-            (codecs.BOM_UTF32_BE, "utf-32"),
-            (codecs.BOM_UTF16_LE, "utf-16"),
-            (codecs.BOM_UTF16_BE, "utf-16"),
-        ):
-            if prefix.startswith(bom):
-                encoding = codec
-                break
-        with open(path, encoding = encoding, errors = "replace") as f:
-            raw = f.read()
-        pages = _html(raw) if ext in (".html", ".htm") else [_page(raw, None)]
+            raw = _decode_text(f.read(), html = is_html)
+        pages = _html(raw) if is_html else [_page(raw, None)]
         return (pages, []) if want_images else pages
 
     raise ValueError(f"unsupported file type: {ext}")
