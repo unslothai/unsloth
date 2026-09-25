@@ -138,6 +138,6 @@ def system_one(payload: SystemOneRequest, current_subject: str = Depends(get_cur
         result = laya_runtime.decide(checkpoint, payload.state, questions)
     except laya_runtime.Unavailable as exc:
         raise _error(exc.status, exc.error_type, exc.message, exc.retry_after) from None
-    truncated = result.pop("truncated")
-    headers = {"X-Unsloth-State-Truncated": "1"} if truncated else None
-    return JSONResponse(result, headers = headers)
+    if result.pop("truncated"):
+        raise _error(422, "invalid_request_error", "State exceeds the Laya context window")
+    return JSONResponse(result)

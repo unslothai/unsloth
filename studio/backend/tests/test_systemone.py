@@ -231,11 +231,13 @@ def test_laya_refusal_becomes_a_bad_request(client, monkeypatch):
     assert "head_max_len" in response.json()["detail"]["message"]
 
 
-def test_truncated_state_is_flagged(client, monkeypatch):
+def test_truncated_state_is_rejected(client, monkeypatch):
     monkeypatch.setattr(
         laya_runtime, "_predict", lambda agent, state, qs: (agent.predict(state, qs), True)
     )
-    assert _post(client).headers["X-Unsloth-State-Truncated"] == "1"
+    response = _post(client)
+    assert response.status_code == 422
+    assert "context window" in response.json()["detail"]["message"]
 
 
 def test_failed_load_backs_off_and_reports_why(client, monkeypatch):
@@ -825,7 +827,9 @@ def test_real_laya_answers_through_the_route(client, monkeypatch):
     assert body["answers"]["team"]["choice"] in {"outage", "billing"}
     assert 0.0 <= body["answers"]["tone"]["score"] <= 2.0
     assert "X-Unsloth-State-Truncated" not in response.headers
-    assert _post(client, state = "word " * 3000).headers.get("X-Unsloth-State-Truncated") == "1"
+    long_response = _post(client, state = "word " * 3000)
+    assert long_response.status_code == 422
+    assert "context window" in long_response.json()["detail"]["message"]
 
 
 class WordTokenizer:
