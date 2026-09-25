@@ -147,6 +147,12 @@ export function embeddedBlobType(body: EmbeddedBody, serverType: string): string
   return type.startsWith(`${body}/`) && !SCRIPTABLE_TYPES.has(type) ? type : OPAQUE_TYPE;
 }
 
+/** Which version of an item's file a cache holds: its time, and its size, since a chat attachment
+ *  rewritten in place keeps its message's time. */
+export function itemVersion(item: { id: string; updatedAt: number; sizeBytes: number | null }): string {
+  return `${item.id}@${item.updatedAt}.${item.sizeBytes ?? ""}`;
+}
+
 /** Items with a file of their own, which the Library serves by id. Chat attachments live inside
  *  their messages, and fine-tunes are folders. */
 export function hasOwnFile(itemId: string): boolean {

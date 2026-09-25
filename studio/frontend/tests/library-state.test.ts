@@ -202,13 +202,19 @@ test("deleting a chat attachment tells an open chat to drop it", async () => {
   assert.deepEqual(emitted, [{ messageId: "m:1", attachmentId: "content-part-x" }]);
 });
 
-function loadDownloads(fflate: object, saved: (File | Blob)[], fileNames: object) {
+function loadDownloads(
+  fflate: object,
+  saved: (File | Blob)[],
+  fileNames: object,
+  session: { epoch: number } = { epoch: 0 },
+  fetched: (name: string) => void = () => {},
+) {
   const toast = Object.assign(() => {}, { loading: () => 0, dismiss: () => {}, error: () => {} });
   return loadWithStubs<{
     downloadLibraryItems: (items: { name: string; sizeBytes: number | null }[]) => Promise<void>;
   }>(new URL("../src/features/library/actions.ts", import.meta.url), {
     fflate,
-    "@/features/auth": { getAuthSessionEpoch: () => 0 },
+    "@/features/auth": { getAuthSessionEpoch: () => session.epoch },
     "@/features/chat": {},
     "@/features/model-picker": {},
     "@/i18n": { translate: (key: string) => key },
@@ -220,7 +226,13 @@ function loadDownloads(fflate: object, saved: (File | Blob)[], fileNames: object
     },
     "@/lib/toast": { toast },
     "@/lib/video-utils": {},
-    "./api": { errorMessage: String, libraryItemFile: async (i: { name: string }) => file(i.name) },
+    "./api": {
+      errorMessage: String,
+      libraryItemFile: async (i: { name: string }) => {
+        fetched(i.name);
+        return file(i.name);
+      },
+    },
     "./file-kind": {},
     "./file-name": { hasOwnFile: () => true, ...fileNames },
     "./chat-handoff-store": {},
@@ -240,6 +252,24 @@ test("a browser download with a file of unknown size goes one by one, never as a
     { name: "clip.webm", sizeBytes: null },
   ]);
   assert.deepEqual(names(saved), ["a.txt", "clip.webm"]);
+});
+
+test("a download started before a sign-in saves nothing of the next account's", async () => {
+  const saved: File[] = [];
+  const session = { epoch: 1 };
+  const fetched: string[] = [];
+  const signInDuring = (name: string) => {
+    fetched.push(name);
+    if (name === "a.txt") session.epoch += 1;
+  };
+  const downloadLibraryItems = loadDownloads({}, saved, { uniqueFileNames }, session, signInDuring);
+  // One by one, as a download past what a zip may hold goes.
+  await downloadLibraryItems([
+    { name: "a.txt", sizeBytes: null },
+    { name: "b.txt", sizeBytes: null },
+  ]);
+  assert.deepEqual(names(saved), []);
+  assert.deepEqual(fetched, ["a.txt"]);
 });
 
 test("a file named __proto__ is kept in a zipped download", async () => {

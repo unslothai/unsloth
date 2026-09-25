@@ -143,15 +143,19 @@ def _gallery_audio(prompt: str) -> str:
     )["id"]
 
 
-def _sandbox_chat(name, body):
-    """A file ``name`` in chat t-lib's sandbox: (sandbox directory, its path)."""
+def _sandbox_chat(
+    name,
+    body,
+    thread = "t-lib",
+):
+    """A file ``name`` in the chat's sandbox: (sandbox directory, its path)."""
     from core.inference.tools import resolve_sandbox_workdir
     from storage import studio_db
 
     studio_db.upsert_chat_thread(
-        {"id": "t-lib", "title": "T", "modelType": "base", "modelId": "m", "createdAt": 1}
+        {"id": thread, "title": "T", "modelType": "base", "modelId": "m", "createdAt": 1}
     )
-    directory = resolve_sandbox_workdir("t-lib")
+    directory = resolve_sandbox_workdir(thread)
     path = os.path.join(directory, name)
     os.makedirs(os.path.dirname(path), exist_ok = True)
     Path(path).write_bytes(body)
@@ -337,6 +341,16 @@ def test_a_gallery_file_that_cannot_be_deleted_keeps_its_name_star_and_folder(cl
     assert _delete(client, item_id) == 500
     item = _items(client)[0][item_id]
     assert (item["name"], item["favorite"]) == ("Renamed", True)
+
+
+def test_a_sandbox_file_of_a_chat_whose_id_has_a_colon_is_reachable(client, signed_in, monkeypatch):
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    _sandbox_chat("a.txt", b"mine", thread = "imported:1")
+    [item_id] = _items(client)[0]
+    assert item_id == "sandbox:imported%3A1:a.txt"
+    assert _download(client, item_id).content == b"mine"
+    assert _delete(client, item_id) == 200
+    assert _items(client)[0] == {}
 
 
 def test_a_sandbox_file_written_twice_in_a_second_is_a_new_version(client, signed_in, monkeypatch):
@@ -1131,6 +1145,19 @@ def test_a_video_thumbnail_reads_its_container_by_type(client, monkeypatch):
     assert seen[0][1]["max_pixels"] == library._THUMBNAIL_MAX_PIXELS
     # A container with no demuxer on the list has no picture.
     assert _thumbnail(client, flv).status_code == 404
+
+
+def test_an_attachment_is_read_for_its_thumbnail_only_within_the_decodes_count(client, monkeypatch):
+    free = []
+
+    def media(_ref):
+        # A 64 MiB clip and its base64 are held from here, so this has to wait its turn too.
+        free.append(library._THUMBNAIL_DECODES._value)
+        return "image/png", _png(8, 8, "RGB")
+
+    monkeypatch.setattr(library, "_attachment_media", media)
+    assert _thumbnail(client, "attachment:m:a").status_code == 200
+    assert free == [1]
 
 
 def test_thumbnails_are_cached_by_version_and_attachments_have_them_too(client, monkeypatch):
