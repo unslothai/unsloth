@@ -33278,6 +33278,13 @@ def _guard_anthropic_client_tool_catalog(
     )
 
 
+def _anthropic_client_tools_for_turn(openai_client_tools, openai_tool_choice, openai_messages):
+    """Withdraw a disabled catalog unless replayed history still needs its schemas."""
+    if openai_tool_choice == "none" and not _has_openai_tool_history(openai_messages):
+        return []
+    return openai_client_tools
+
+
 def _anthropic_requested_studio_tools(tools: Optional[list]) -> set[str]:
     requested: set[str] = set()
     for tool in tools or []:
@@ -34290,7 +34297,6 @@ async def anthropic_count_tokens(
     openai_messages = _sanitize_anthropic_openai_messages(openai_messages, llama_backend)
     # /apply-template fetches remote media even though token counting only needs its marker.
     _placeholder_remote_images_for_count(openai_messages)
-    openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
     # Only the client-tool passthrough is forwarded verbatim, so reproduce /messages' own
     # routing rather than "any tools": a Studio server-tool alias, or a template without
     # passthrough support, falls through to plain generation there and does carry the date.
@@ -34305,14 +34311,19 @@ async def anthropic_count_tokens(
         and llama_backend.supports_tools
         and not _anthropic_request_has_image(payload, tool_results = llama_backend.is_vision)
     )
-    _count_openai_client_tools = [
-        tool
-        for tool in anthropic_tools_to_openai(payload.tools or [])
-        if tool.get("function", {}).get("name") not in _count_studio_tools
-    ]
+    _count_openai_tool_choice = anthropic_tool_choice_to_openai(payload.tool_choice) or "auto"
+    _count_openai_client_tools = _anthropic_client_tools_for_turn(
+        [
+            tool
+            for tool in anthropic_tools_to_openai(payload.tools or [])
+            if tool.get("function", {}).get("name") not in _count_studio_tools
+        ],
+        _count_openai_tool_choice,
+        openai_messages,
+    )
     _guard_anthropic_client_tool_catalog(
         _count_openai_client_tools,
-        anthropic_tool_choice_to_openai(payload.tool_choice) or "auto",
+        _count_openai_tool_choice,
         _count_server_tools,
         llama_backend,
     )
@@ -34321,6 +34332,7 @@ async def anthropic_count_tokens(
         and bool(_count_openai_client_tools)
         and getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools)
     )
+    openai_tools = _count_openai_client_tools if _count_client_tools else None
     if _count_client_tools:
         from core.inference.chat_template_helpers import (
             forced_tool_catalog,
@@ -34332,10 +34344,7 @@ async def anthropic_count_tokens(
             openai_tools, None, getattr(llama_backend, "markup_profile", None)
         )
         openai_tools = (
-            forced_tool_catalog(
-                anthropic_tool_choice_to_openai(payload.tool_choice), _count_safe_tools
-            )
-            or openai_tools
+            forced_tool_catalog(_count_openai_tool_choice, _count_safe_tools) or openai_tools
         )
     else:
         openai_messages = _prepend_current_date_to_messages(
@@ -34686,11 +34695,15 @@ async def anthropic_messages(
     # Match /v1/chat/completions: server tools reject caller attachments but
     # accept replayed images. Check original blocks because promotion also sets
     # _has_image. Tool selection and mixed-mode rejection preceded the switch.
-    openai_client_tools = [
-        tool
-        for tool in anthropic_tools_to_openai(payload.tools or [])
-        if tool.get("function", {}).get("name") not in requested_studio_tools
-    ]
+    openai_client_tools = _anthropic_client_tools_for_turn(
+        [
+            tool
+            for tool in anthropic_tools_to_openai(payload.tools or [])
+            if tool.get("function", {}).get("name") not in requested_studio_tools
+        ],
+        openai_tool_choice,
+        openai_messages,
+    )
 
     # An Anthropic server-tool declaration implies server-tool mode, but only
     # when tools aren't explicitly disabled (CLI --disable-tools or per-request

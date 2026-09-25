@@ -183,6 +183,44 @@ def test_format_rides_along_with_uncallable_client_tools(monkeypatch, stream):
 
     [sent] = upstream
     assert sent["response_format"] == _EXPECTED
+    assert "tools" not in sent
+    assert "tool_choice" not in sent
+
+
+def test_format_keeps_client_tools_needed_by_replayed_history(monkeypatch):
+    _calls, upstream = _install(monkeypatch, supports_tool_passthrough = True)
+
+    _run(
+        _payload(
+            messages = [
+                {"role": "user", "content": "Look up a scientist."},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": "lookup",
+                            "input": {"name": "Ada"},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_1", "content": "Ada"}
+                    ],
+                },
+            ],
+            tools = [_CLIENT_TOOL],
+            tool_choice = {"type": "none"},
+            output_config = {"format": {"type": "json_schema", "schema": _SCHEMA}},
+        )
+    )
+
+    [sent] = upstream
+    assert sent["response_format"] == _EXPECTED
+    assert [tool["function"]["name"] for tool in sent["tools"]] == ["lookup"]
     assert sent["tool_choice"] == "none"
 
 
@@ -329,6 +367,49 @@ def test_count_tokens_matches_schema_routing_under_tool_choice_none(monkeypatch,
     assert response.status_code == 200
     [(_messages, tools)] = counted
     assert bool(tools) is not with_format
+
+
+@pytest.mark.parametrize("replayed_history", [False, True])
+def test_count_tokens_matches_withdrawn_client_tools(monkeypatch, replayed_history):
+    counted = []
+
+    def _count(messages, _template, tools, **_kwargs):
+        counted.append((messages, tools))
+        return 2
+
+    _install(monkeypatch, supports_tool_passthrough = True, count_chat_tokens = _count)
+    fields = {
+        "tools": [_CLIENT_TOOL],
+        "tool_choice": {"type": "none"},
+        "output_config": {"format": {"type": "json_schema", "schema": _SCHEMA}},
+    }
+    if replayed_history:
+        fields["messages"] = [
+            {"role": "user", "content": "Look up a scientist."},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "lookup",
+                        "input": {"name": "Ada"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "Ada"}],
+            },
+        ]
+
+    response = asyncio.run(
+        inf_mod.anthropic_count_tokens(_payload(**fields), request = _Request(), current_subject = "t")
+    )
+
+    assert response.status_code == 200
+    [(_messages, tools)] = counted
+    assert bool(tools) is replayed_history
 
 
 @pytest.mark.parametrize("stream", [False, True])
