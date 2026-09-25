@@ -308,7 +308,7 @@ def test_text_only_helper_preserves_quantization_config():
 
 
 class _ReadOnlyTextConfigProxy:
-    # Mirrors unsloth_zoo's Gemma-4 _Gemma4KVSharedSafeProxy: __slots__, no __dict__, forwards reads.
+    # Mirrors unsloth_zoo's _Gemma4KVSharedSafeProxy.
     __slots__ = ("_real",)
 
     def __init__(self, real):
@@ -335,8 +335,6 @@ def test_text_only_helper_copies_config_behind_read_only_proxy():
 
 
 def test_text_only_helper_unwraps_read_only_proxy_without_quantization():
-    # 16-bit text_only load: no quantization_config to attach, but the proxy must still be unwrapped
-    # so resolve_model_class maps the real text config class.
     transformers = pytest.importorskip("transformers")
     ns = _load_text_only_namespace()
     helper, resolve = ns["_get_text_only_config"], ns["resolve_model_class"]
@@ -468,8 +466,6 @@ def _module_function(tree, name):
 
 
 def test_base_fast_generate_tolerates_missing_architectures():
-    # A text_only load keeps the text sub-config (architectures is None), so generate must not
-    # iterate or index self.config.architectures directly.
     method = _module_function(ast.parse(_source(VISION_PATH)), "unsloth_base_fast_generate")
 
     def is_raw_architectures(node):

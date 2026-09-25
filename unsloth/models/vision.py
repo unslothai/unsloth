@@ -882,7 +882,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     if do_bfloat16_mixed_precision:
         dtype = torch.bfloat16
 
-    # A text_only load keeps the text sub-config, whose architectures is None; use the loaded class.
+    # text_only configs have architectures=None.
     architectures = getattr(self.config, "architectures", None) or [type(self).__name__]
     is_vlm = any(
         x.endswith(("ForConditionalGeneration", "ForVisionText2Text")) for x in architectures
