@@ -7,6 +7,7 @@ app = 'unsloth'
 primary_region = 'lhr'
 
 [build]
+  image = "unsloth/unsloth:studio"
 
 [http_service]
   internal_port = 8888
@@ -21,3 +22,9 @@ primary_region = 'lhr'
   cpu_kind = 'shared'
   cpus = 1
   memory_mb = 8192
+
+[mounts]
+  source = "myapp_data"
+  destination = "/data"
+  processes = ["disk"] # optional - attach volumes to Machines that belong to one or more process groups
+  initial_size = "64gb" # optional - the size of the volume created on first deploy
