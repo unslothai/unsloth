@@ -1862,6 +1862,26 @@ def test_no_snapshot_is_no_verdict(local_dir):
     assert tq.stored_denoiser_precision(local_dir) is None
 
 
+def _cached_snapshot(cache, repo_id, dtype):
+    snap = cache / f"models--{repo_id.replace('/', '--')}" / "snapshots" / "abc123"
+    _write_shard(snap, "transformer", dtype)
+    (cache / f"models--{repo_id.replace('/', '--')}" / "refs").mkdir()
+    (cache / f"models--{repo_id.replace('/', '--')}" / "refs" / "main").write_text("abc123")
+
+
+def test_an_offline_hub_id_reads_its_cached_snapshot(tmp_path, monkeypatch):
+    """An offline load passes a repo id (nothing staged); the cached snapshot still carries the headers."""
+    import torch
+    from huggingface_hub import constants
+
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+    _cached_snapshot(tmp_path, "org/narrow-dit", torch.float8_e4m3fn)
+    _cached_snapshot(tmp_path, "org/wide-dit", torch.bfloat16)
+    assert tq.stored_denoiser_precision("org/narrow-dit") == "fp8"
+    assert tq.stored_denoiser_precision("org/wide-dit") is None
+    assert tq.stored_denoiser_precision("org/not-cached") is None
+
+
 def test_a_recovered_source_precision_blocks_the_quant(tmp_path):
     """The recovered marker feeds the same refusal the Ideogram loader's marker does."""
     import torch
