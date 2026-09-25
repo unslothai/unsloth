@@ -957,6 +957,44 @@ def test_the_rebuilt_fp8_artifacts_are_listed_for_both_schemes(family, repo):
         assert family_prequant_repo(fam, scheme) == repo
 
 
+def _encoders_streamed(**_k):
+    return types.SimpleNamespace(offload_policy = "group", stream_transformer = False)
+
+
+def test_an_artifact_that_fits_once_the_encoders_stream_is_seeded(monkeypatch):
+    """An artifact-sized plan streaming only the encoders keeps the torchao seed."""
+    backend = _settle_backend(monkeypatch)
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", lambda *_a, **k: _encoders_streamed(**k))
+    assert _settle(backend) == "fp8"
+
+
+def test_an_artifact_plan_that_streams_the_transformer_still_declines(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        lambda *_a, **_k: types.SimpleNamespace(offload_policy = "group", stream_transformer = True),
+    )
+    assert _settle(backend) == PIPELINE_SEED_DECLINED
+
+
+def test_a_seed_whose_load_plan_streams_only_the_encoders_is_kept(fake_runtime, monkeypatch):
+    backend, spy = _load_backend(monkeypatch, offload = "group")
+    real_plan = DiffusionBackend._plan_memory
+
+    def _plan(self, *a, **kwargs):
+        plan = real_plan(self, *a, **kwargs)
+        if kwargs.get("transformer_resident_override_mib") is not None:
+            plan.stream_transformer = False
+        return plan
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _plan)
+    status = _load(backend)
+
+    assert spy.seeds and spy.restored == []
+    assert status["transformer_quant"] == "fp8"
+
+
 _MEASURED = {"safe_device_budget_mib": 170_000, "resident_required_mib": 60_000}
 
 
