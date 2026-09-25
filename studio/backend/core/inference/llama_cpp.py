@@ -15472,9 +15472,17 @@ class LlamaCppBackend:
             ]:
                 if os.path.isdir(cuda_lib):
                     lib_dirs.append(cuda_lib)
+
+            # Vendored dirs go last: rescue only, never displace a runtime already found.
+            from utils.llama_cpp_freshness import read_install_marker
+            from utils.prebuilt.runtime_libs import vendored_cuda_runtime_dirs
+
+            marker_binary = str(_resolve_llama_binary(binary))
+            vendored_cuda_dirs = vendored_cuda_runtime_dirs(read_install_marker(marker_binary))
             existing_ld = env.get("LD_LIBRARY_PATH", "")
-            new_ld = ":".join(lib_dirs)
-            env["LD_LIBRARY_PATH"] = f"{new_ld}:{existing_ld}" if existing_ld else new_ld
+            env["LD_LIBRARY_PATH"] = ":".join(
+                path for path in [*lib_dirs, existing_ld, *vendored_cuda_dirs] if path
+            )
 
         return env
 

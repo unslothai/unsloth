@@ -217,6 +217,7 @@ export function isMultimodalResponse(
 
 export interface LoadModelResponse {
   is_mlx?: boolean;
+  is_npu?: boolean;
   status: string;
   model: string;
   display_name: string;
@@ -332,6 +333,7 @@ export interface UnloadModelRequest {
 
 export interface InferenceStatusResponse {
   is_mlx?: boolean;
+  is_npu?: boolean;
   active_model: string | null;
   model_identifier?: string | null;
   is_vision: boolean;
