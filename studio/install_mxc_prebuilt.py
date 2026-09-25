@@ -94,10 +94,14 @@ def _validate_archive_entries(bundle: zipfile.ZipFile) -> dict[str, zipfile.ZipI
     result: dict[str, zipfile.ZipInfo] = {}
     for name, (target, size) in members.items():
         if len(approved[name]) != 1:
-            raise MxcInstallError(f"the Microsoft MXC archive does not contain one approved {target}")
+            raise MxcInstallError(
+                f"the Microsoft MXC archive does not contain one approved {target}"
+            )
         entry = approved[name][0]
         if entry.is_dir() or entry.file_size != size:
-            raise MxcInstallError(f"the approved {target} archive member has an unexpected shape or size")
+            raise MxcInstallError(
+                f"the approved {target} archive member has an unexpected shape or size"
+            )
         result[target] = entry
     return result
 
@@ -159,7 +163,7 @@ def _is_elevated() -> bool:
 
 
 def _run_elevated(executable: Path, arguments: list[str], directory: str) -> int:
-    """UAC prompt via ShellExecuteExW("runas"); the manifest demands admin, so CreateProcess cannot start it."""
+    """UAC prompt via ShellExecuteExW("runas"): CreateProcess cannot start this exe unelevated."""
     import ctypes
     from ctypes import wintypes
 

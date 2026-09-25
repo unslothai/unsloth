@@ -184,7 +184,9 @@ _BOTH_WARNINGS = [
     ],
     ids = ["both", "null_device", "prepared", "garbage", "not_object", "failed"],
 )
-def test_host_prep_probe_reads_wxc_probe_warnings(runtime, monkeypatch, stdout, returncode, expected):
+def test_host_prep_probe_reads_wxc_probe_warnings(
+    runtime, monkeypatch, stdout, returncode, expected
+):
     seen: dict = {}
 
     def run(argv, **kwargs):

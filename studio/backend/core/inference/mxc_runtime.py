@@ -235,7 +235,9 @@ def _acquire(select, package_root: Path | None) -> RuntimeLease:
         guard = _open_artifact_guard(info.path)
         try:
             if select(package_root = package_root) != info:
-                raise MxcRuntimeUnavailable(f"the managed {info.path.name} changed during acquisition")
+                raise MxcRuntimeUnavailable(
+                    f"the managed {info.path.name} changed during acquisition"
+                )
         except Exception:
             guard.close()
             raise
