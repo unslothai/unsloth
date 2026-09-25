@@ -1223,11 +1223,7 @@ def _cast_unquantized_floats(model, dtype):
 
 
 def _inherit_gradient_checkpointing_support(model):
-    """Let a wrapper advertise the gradient checkpointing its submodels support.
-
-    Remote-code wrappers (Nemotron-3-Nano-Omni) keep transformers' default False,
-    so Trainer refused to enable it. Returns True when the flag was set.
-    """
+    """Remote-code wrappers (Nemotron-3-Nano-Omni) keep the default False; inherit from submodels."""
     if getattr(model, "supports_gradient_checkpointing", False):
         return False
     if not hasattr(model, "gradient_checkpointing_enable"):
@@ -1239,7 +1235,6 @@ def _inherit_gradient_checkpointing_support(model):
     for name, module in model.named_modules():
         if module is model or not name:
             continue
-        # A nested model that says yes, or a transformers checkpointing layer.
         if (
             getattr(module, "supports_gradient_checkpointing", False)
             and hasattr(module, "gradient_checkpointing_enable")
@@ -1279,7 +1274,6 @@ _COLLATOR_SUPPLIED_KEYS = frozenset(
 
 
 def _required_non_text_inputs(forward):
-    """Required parameters that a text collator does not supply."""
     try:
         parameters = inspect.signature(forward).parameters
     except (TypeError, ValueError):
@@ -1295,15 +1289,7 @@ def _required_non_text_inputs(forward):
 
 
 def _text_trainable_core(model, text_intent = True):
-    """The child a text batch can train when the wrapper's forward cannot take one.
-
-    Nemotron-3-Nano-Omni's forward requires `pixel_values`, so text SFT failed on
-    the first step. If exactly one direct PreTrainedModel child (preferring
-    `language_model` / `thinker`) takes a text batch and has both embeddings, it is
-    returned and its siblings are dropped. Only when `text_intent` (the caller
-    passed `text_only = True`); otherwise the wrapper is kept and a hint printed.
-    `UNSLOTH_KEEP_COMPOSED_WRAPPER=1` turns this off.
-    """
+    """Nemotron-3-Nano-Omni's forward requires `pixel_values`: with text_only, train the one text child instead."""
     if os.environ.get("UNSLOTH_KEEP_COMPOSED_WRAPPER", "0") == "1":
         return model
     forward = getattr(type(model), "forward", None)
@@ -1376,11 +1362,7 @@ _LOADER_STATE_ATTRIBUTES = (
 
 
 def _carry_loader_state_to_core(model, core, name):
-    """Move what from_pretrained recorded on the wrapper onto the child that replaces it.
-
-    PEFT reads `is_loaded_in_4bit` to choose `lora.bnb.Linear4bit` over `lora.Linear`.
-    The device map is re-keyed from the wrapper's names to the core's.
-    """
+    """PEFT reads `is_loaded_in_4bit` to choose `lora.bnb.Linear4bit` over `lora.Linear`."""
     for attribute in _LOADER_STATE_ATTRIBUTES:
         if attribute in vars(core):
             continue
@@ -1416,12 +1398,7 @@ def _carry_loader_state_to_core(model, core, name):
 
 @contextlib.contextmanager
 def _tolerate_dtype_cast_on_quantized_model(enabled):
-    """Let a remote-code from_pretrained call model.to(dtype) on a bitsandbytes model.
-
-    Phi-4-reasoning-vision ends from_pretrained with `model.to(dtype)`, which
-    transformers refuses on any bitsandbytes model. Inside this context only the
-    unquantized floats are cast; device moves pass through.
-    """
+    """Phi-4-reasoning-vision calls `model.to(dtype)`, which transformers refuses on bitsandbytes models."""
     if not enabled:
         yield
         return
@@ -1998,7 +1975,6 @@ class FastBaseModel:
                 _cfg_val = kwargs.pop("max_position_embeddings", None)
                 if _cfg_val is not None:
                     setattr(model_config, "max_position_embeddings", _cfg_val)
-                # A remote-code from_pretrained may call model.to(dtype); bitsandbytes refuses it.
                 with _tolerate_dtype_cast_on_quantized_model(
                     bool(trust_remote_code) and (load_in_4bit or load_in_8bit)
                 ):
@@ -2010,7 +1986,6 @@ class FastBaseModel:
                         trust_remote_code = trust_remote_code,
                         **kwargs,
                     )
-                # Only the caller knows: a wrapper with an audio-only config has no vision_config either.
                 model = _text_trainable_core(
                     model, text_intent = bool(text_only) if text_intent is None else bool(text_intent)
                 )
