@@ -494,13 +494,14 @@ def test_an_api_key_lists_fine_tunes_by_reference_and_can_still_act_on_them(clie
     outputs_root().mkdir(parents = True, exist_ok = True)
     run = outputs_root() / "library-key-run"
     run.mkdir()
-    (run / "adapter_config.json").write_text('{"base_model_name_or_path": "unsloth/base"}')
+    local_base = str(outputs_root() / "my-local-base")
+    (run / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": local_base}))
     (run / "adapter_model.safetensors").write_bytes(b"x" * 10)
     try:
         library.invalidate_listing()
         client.app.dependency_overrides[library_routes.authenticated_via_api_key] = lambda: True
         body = client.get("/api/library").text
-        assert str(run) not in body
+        assert str(run) not in body and local_base not in body
         [item] = [i for i in json.loads(body)["items"] if i["name"] == run.name]
         _patch(client, id = item["id"], favorite = True)
         assert str(run) not in json.dumps(_favorites(client))
@@ -508,6 +509,16 @@ def test_an_api_key_lists_fine_tunes_by_reference_and_can_still_act_on_them(clie
         assert f"model:training:{run}" in _favorites(client)
     finally:
         shutil.rmtree(run)
+
+
+def test_a_file_part_kept_as_a_data_url_decodes():
+    import base64
+
+    from routes.chat_history import _decode_attachment_base64
+
+    clip = base64.b64encode(_CLIP).decode()
+    assert _decode_attachment_base64(f"data:video/mp4;base64,{clip}") == _CLIP
+    assert _decode_attachment_base64(clip) == _CLIP
 
 
 def test_an_empty_parent_or_folder_id_is_refused(client):

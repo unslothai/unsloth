@@ -87,11 +87,22 @@ def _from_caller(item_id: str) -> str:
 
 
 def _items_for_caller(items: list[dict], via_api_key: bool) -> list[dict]:
-    from hub.utils.host_paths import host_paths_visible, redact_inventory_host_paths
+    from hub.utils.host_paths import (
+        cache_reference,
+        host_paths_visible,
+        redact_inventory_host_paths,
+    )
 
     if host_paths_visible(via_api_key):
         return items
-    shown = [{**item, "id": _for_caller(item["id"], via_api_key)} for item in items]
+    shown = []
+    for item in items:
+        item = {**item, "id": _for_caller(item["id"], via_api_key)}
+        base = (item.get("model") or {}).get("baseModel")
+        # A fine-tune of a local model names that folder; a Hub repo id is kept.
+        if isinstance(base, str) and os.path.isabs(base):
+            item["model"] = {**item["model"], "baseModel": cache_reference(base)}
+        shown.append(item)
     return redact_inventory_host_paths(shown, via_api_key = via_api_key)
 
 
