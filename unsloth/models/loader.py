@@ -282,11 +282,7 @@ def _adapter_weight_keys(
     local_files_only = False,
     cache_dir = None,
 ):
-    """Tensor names of a saved adapter without materialising its weights, or None.
-
-    PEFT fetches the same file right after, so resolving it here (cache first, offline
-    honoured) costs no extra download.
-    """
+    """Tensor names of a saved adapter without loading weights, or None."""
     filenames = ("adapter_model.safetensors", "adapter_model.bin")
     try:
         local = os.path.expanduser(adapter_name)
@@ -317,7 +313,6 @@ def _adapter_weight_keys(
 
 
 def _composition_children(model_config):
-    """Top-level module names of a composition (Qwen3-Omni: thinker, talker, code2wav)."""
     names = [
         name[: -len("_config")]
         for name in (getattr(model_config, "sub_configs", None) or {})
@@ -333,11 +328,8 @@ def _adapter_targets_text_core(
 ):
     """True when an adapter was trained on an extracted thinker (`text_only = True`).
 
-    A thinker's own weights are keyed `model.layers...`; anything trained on the kept
-    wrapper (the thinker, or only the talker / code2wav) is keyed under one of the
-    wrapper's children, so the saved keys decide. Without them, fall back to Unsloth's
-    saved regex, which names the wrapper's children when the wrapper was trained.
-    A plain list of leaf names matches either layout, so it cannot decide on its own.
+    Saved keys decide (wrapper-trained keys are rooted at a wrapper child); else the saved
+    regex. A leaf-name list matches either layout, so it cannot decide alone.
     """
     children = set(wrapper_children)
     if weight_keys:
@@ -2038,9 +2030,7 @@ class FastModel(FastBaseModel):
                 and resolve_model_class(AutoModelForCausalLM, model_config) is None
                 and _resolve_omni_auto_model(model_config) is not None
             ):
-                # Qwen3-Omni keeps its vision config under thinker_config and has no causal-LM
-                # class, so AutoModelForCausalLM cannot load it. Load the full composition
-                # through its own auto class; text_intent still hands it to its thinker.
+                # Qwen3-Omni has no causal-LM class; load the composition, text_intent picks the thinker.
                 load_text_only = False
             else:
                 is_vlm = False
