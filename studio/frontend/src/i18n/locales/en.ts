@@ -1625,10 +1625,10 @@ export const en = {
       showResponseModel: "Show response model",
       showResponseModelDescription:
         "Show model details in assistant responses.",
-      inlineReadAloud: "Show Read aloud on responses",
+      inlineReadAloud: "Read aloud on responses",
       inlineReadAloudDescription:
         "Keep Read aloud on every response, instead of in the More menu.",
-      inlineEditResponse: "Show Edit response on responses",
+      inlineEditResponse: "Edit response on responses",
       inlineEditResponseDescription:
         "Keep Edit response on every response, instead of in the More menu.",
       modelDisclaimer: "Show model disclaimer",
