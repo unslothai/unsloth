@@ -1842,8 +1842,9 @@ class DiffusionBackend:
                 is None
             ):
                 # An explicit scheme is never swapped for another, so a None here means this GPU (or this family's
-                # measured deny list) rules it out.
-                reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
+                # measured deny list) rules it out. The same base: a gate record that lifted the deny for it must not be
+                # blamed when it is the GPU that declined.
+                reason = explain_unusable_scheme(getattr(fam, "name", None), pinned, base_repo)
             if reason is not None:
                 raise RuntimeError(
                     precision_refusal_message(
