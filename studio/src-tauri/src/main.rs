@@ -2096,7 +2096,6 @@ fn main() {
         app_layout::should_restore_initial_window_state(
             &dir.join(&context.config().identifier),
             tauri_plugin_window_state::DEFAULT_FILENAME,
-            process::find_unsloth_binary().is_some(),
         )
     });
     info!("Native saved app layout restore enabled: {restore_initial_layout}");

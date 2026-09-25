@@ -110,12 +110,12 @@ fn should_restore_saved_layout(config_dir: &Path, state_file_name: &str) -> bool
 }
 
 /// Checked before the main window exists, so setup-size resize events cannot overwrite the saved state.
+/// An attached external server may run without a managed launcher; setup will resize on demand.
 pub(crate) fn should_restore_initial_window_state(
     config_dir: &Path,
     state_file_name: &str,
-    backend_installed: bool,
 ) -> bool {
-    backend_installed && should_restore_saved_layout(config_dir, state_file_name)
+    should_restore_saved_layout(config_dir, state_file_name)
 }
 
 fn mark_initialized(config_dir: &Path) -> Result<(), String> {
@@ -266,21 +266,22 @@ mod tests {
     }
 
     #[test]
-    fn native_startup_restores_only_installed_full_app_layouts() {
+    fn native_startup_restores_saved_full_app_layouts_without_managed_backend() {
         let dir = temp_dir("native-startup");
         fs::create_dir_all(&dir).unwrap();
         let state_file = ".window-state.json";
         let state_path = dir.join(state_file);
-        assert!(!should_restore_initial_window_state(&dir, state_file, true));
+        assert!(!should_restore_initial_window_state(&dir, state_file));
         fs::write(&state_path, window_state(1200, 800, false)).unwrap();
-        assert!(!should_restore_initial_window_state(
-            &dir, state_file, false
-        ));
-        assert!(should_restore_initial_window_state(&dir, state_file, true));
+        assert!(should_restore_initial_window_state(&dir, state_file));
         reset_initialized(&dir).unwrap();
-        assert!(!should_restore_initial_window_state(&dir, state_file, true));
+        assert!(!should_restore_initial_window_state(&dir, state_file));
         mark_initialized(&dir).unwrap();
-        assert!(should_restore_initial_window_state(&dir, state_file, true));
+        assert!(should_restore_initial_window_state(&dir, state_file));
+        fs::write(&state_path, window_state(760, 560, false)).unwrap();
+        assert!(should_restore_initial_window_state(&dir, state_file));
+        reset_initialized(&dir).unwrap();
+        assert!(!should_restore_initial_window_state(&dir, state_file));
         let _ = fs::remove_dir_all(dir);
     }
 
