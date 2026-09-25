@@ -1527,3 +1527,20 @@ def test_a_later_step_that_dies_unreported_is_still_rolled_back(env):
     assert not ok and "rolled back" in reason
     assert "flashinfer-python" not in env.dists, reason
     assert "flashinfer-jit-cache" not in env.dists, reason
+
+
+def test_a_failed_install_does_not_quote_index_credentials(env):
+    # The reason reaches the status route; an index URL in the installer's error must not carry its token there.
+    real_run = env.run
+
+    def run(cmd, **kwargs):
+        if "install" in cmd and "uninstall" not in cmd:
+            return _Result(
+                1,
+                "error: https://__token__:pypi-SECRET@corp.example/simple/ ?token=SECRET2 returned 401",
+            )
+        return real_run(cmd, **kwargs)
+
+    ok, reason = inst.ensure_flashinfer_for_nvfp4(0, run = run)
+    assert not ok and "the installer failed" in reason
+    assert "SECRET" not in reason

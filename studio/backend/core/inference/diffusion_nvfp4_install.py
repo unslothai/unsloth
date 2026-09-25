@@ -786,7 +786,7 @@ def _verify_child(run: Callable[..., Any]) -> tuple[bool, str]:
     )
     ok, output = _run(run, [sys.executable, "-c", code], _VERIFY_TIMEOUT_S)
     if not ok:
-        return False, f"import flashinfer failed after the install: {output[-300:]}"
+        return False, f"import flashinfer failed after the install: {_quoted(output, 300)}"
     version = output.strip().splitlines()[-1] if output.strip() else ""
     if version != FLASHINFER_VERSION:
         return (
@@ -850,6 +850,12 @@ def _requirement_closure(roots: set[str], candidates: set[str]) -> set[str]:
     return found
 
 
+def _quoted(output: str, limit: int) -> str:
+    """Installer output for a reason or log line: index URLs can carry credentials the user must not see."""
+    from utils.log_redaction import redact_log_text
+    return redact_log_text(" ".join(str(output).split())[-limit:])
+
+
 def _rollback(
     run: Callable[..., Any],
     uv: Optional[str],
@@ -891,7 +897,7 @@ def _rollback(
                 "nvfp4.flashinfer: rollback %s %s%s",
                 "removed" if ok else "could not remove",
                 ", ".join(added),
-                "" if ok else f": {output[-500:]}",
+                "" if ok else f": {_quoted(output, 500)}",
             )
     if moved:
         # --no-deps: restore exactly these, and nothing a resolver would pull back in.
@@ -903,7 +909,7 @@ def _rollback(
         )
         notes.append(("restored " if ok else "could not restore ") + ", ".join(specs))
         if not ok and logger is not None:
-            logger.warning("nvfp4.flashinfer: rollback restore failed: %s", output[-500:])
+            logger.warning("nvfp4.flashinfer: rollback restore failed: %s", _quoted(output, 500))
     return "; ".join(notes) or "nothing to roll back"
 
 
@@ -1016,7 +1022,7 @@ def _install(
             step_reported = _reported_installs(output)
             reported |= step_reported
             if not ok:
-                failure = "the installer failed: " + " ".join(output.split())[-400:]
+                failure = "the installer failed: " + _quoted(output, 400)
                 unreported_step = not step_reported
                 break
     finally:
