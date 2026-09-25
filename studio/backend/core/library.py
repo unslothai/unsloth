@@ -825,7 +825,8 @@ class _Memo:
 
 _SANDBOX_TTL_SECONDS = 5.0
 _MODEL_TTL_SECONDS = 60.0
-_LISTING = _Memo()
+# Bounded: sandboxes of chats and accounts nobody lists again would otherwise stay forever.
+_LISTING = _Memo(size = 1024)
 invalidate_listing = _LISTING.forget
 
 

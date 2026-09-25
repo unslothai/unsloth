@@ -485,6 +485,49 @@ def test_fine_tuned_models_are_listed_but_not_deleted_here(client, monkeypatch):
         shutil.rmtree(run)
 
 
+def test_an_api_key_lists_fine_tunes_by_reference_and_can_still_act_on_them(client, monkeypatch):
+    import shutil
+
+    from utils.paths.storage_roots import outputs_root
+
+    monkeypatch.setattr(library, "_SOURCES", (library._model_items,))
+    outputs_root().mkdir(parents = True, exist_ok = True)
+    run = outputs_root() / "library-key-run"
+    run.mkdir()
+    (run / "adapter_config.json").write_text('{"base_model_name_or_path": "unsloth/base"}')
+    (run / "adapter_model.safetensors").write_bytes(b"x" * 10)
+    try:
+        library.invalidate_listing()
+        client.app.dependency_overrides[library_routes.authenticated_via_api_key] = lambda: True
+        body = client.get("/api/library").text
+        assert str(run) not in body
+        [item] = [i for i in json.loads(body)["items"] if i["name"] == run.name]
+        _patch(client, id = item["id"], favorite = True)
+        assert str(run) not in json.dumps(_favorites(client))
+        client.app.dependency_overrides[library_routes.authenticated_via_api_key] = lambda: False
+        assert f"model:training:{run}" in _favorites(client)
+    finally:
+        shutil.rmtree(run)
+
+
+def test_an_empty_parent_or_folder_id_is_refused(client):
+    assert _post(client, "folders", name = "x", parentId = "").status_code == 422
+    assert (
+        client.patch("/api/library/items", json = {"id": "upload:x", "folderId": ""}).status_code
+        == 422
+    )
+
+
+def test_an_upload_file_is_revalidated_after_a_note_save(client):
+    [note] = _upload(client, ("plan.md", b"# plan", "text/markdown"))
+    response = client.get(_items(client)[0][note]["fileUrl"])
+    assert "no-cache" in response.headers["cache-control"]
+
+
+def test_the_listing_memo_is_bounded():
+    assert library._LISTING.size > 0
+
+
 def test_the_slow_sources_are_remembered_briefly_and_forgotten_on_a_write(client, monkeypatch):
     calls = []
 
