@@ -9,6 +9,7 @@ made model(input_ids = ...) reach nn.Module.forward.
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 
 transformers = pytest.importorskip("transformers")
 omni_config = pytest.importorskip(
@@ -19,7 +20,7 @@ omni_modeling = pytest.importorskip("transformers.models.qwen3_omni_moe.modeling
 
 VOCAB = 64
 # Unsloth's patched kernels are Triton on a GPU host, so the tiny model runs where they do.
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DEVICE = "cuda" if has_real_cuda() else "cpu"
 
 
 def _tiny_config():
@@ -137,7 +138,7 @@ def _capture_fast_base_kwargs(monkeypatch, tmp_path, text_only):
         FastModel.from_pretrained(str(tmp_path), text_only = text_only, load_in_4bit = False)
     except RuntimeError as error:
         if str(error) != "captured":
-            if not torch.cuda.is_available():
+            if not has_real_cuda():
                 pytest.skip(f"FastModel.from_pretrained needs a GPU here: {error}")
             raise
     else:
@@ -355,7 +356,7 @@ def _capture_adapter_reload(monkeypatch, tmp_path, target_modules):
         FastModel.from_pretrained(str(adapter), load_in_4bit = False)
     except RuntimeError as error:
         if str(error) != "captured":
-            if not torch.cuda.is_available():
+            if not has_real_cuda():
                 pytest.skip(f"FastModel.from_pretrained needs a GPU here: {error}")
             raise
     return seen
@@ -398,7 +399,7 @@ def test_an_omni_adapter_reloads_onto_the_model_it_was_trained_on(
 ):
     # A leaf-name list reloads as a set that matches either layout, so the saved weight
     # keys (model.layers vs thinker.model.layers) are what decide.
-    if not torch.cuda.is_available():
+    if not has_real_cuda():
         pytest.skip("FastModel needs a GPU")
     from unsloth import FastModel
 
