@@ -3014,6 +3014,11 @@ export const en = {
       gridView: "Grid view",
       listView: "List view",
       settings: "Library settings",
+      sort: "Sort",
+      sortDefault: "Default order",
+      sortName: "Name",
+      sortModified: "Modified",
+      sortSize: "Size",
     },
     // Entries of the New menu.
     create: {
