@@ -955,7 +955,7 @@ def max_cache_bytes() -> Optional[int]:
         gb = float(raw) if raw else _DEFAULT_MAX_GB
     except ValueError:
         gb = _DEFAULT_MAX_GB
-    if not math.isfinite(gb):
+    if not math.isfinite(gb * (1 << 30)):
         gb = _DEFAULT_MAX_GB
     if not gb > 0:
         return None
@@ -1069,6 +1069,8 @@ def evict(
                 continue
             left = _remove_key_dir(path)
             if left is None:
+                if not path.exists():
+                    total -= size  # a concurrent eviction took it: gone all the same
                 continue
             total -= size - left
             removed.append(path.name)

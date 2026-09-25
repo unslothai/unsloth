@@ -1424,3 +1424,27 @@ def test_a_warm_hit_enforces_the_budget_without_a_save(monkeypatch, tmp_path, fa
         assert ctx.manifest_path.exists() and ctx.bundle.exists()
     finally:
         cc.restore(ctx)
+
+
+def test_max_cache_bytes_overflowing_value_keeps_the_default(monkeypatch):
+    monkeypatch.setenv(cc._ENV_MAX_GB, "1e300")  # finite, but not once converted to bytes
+    assert cc.max_cache_bytes() == int(cc._DEFAULT_MAX_GB * (1 << 30))
+
+
+def test_evict_counts_a_key_another_evictor_took(monkeypatch, tmp_path):
+    """Losing the race for a key to a concurrent eviction still frees its bytes, so no extra key goes for it."""
+    import os
+    import shutil
+
+    taken = _key_dir(tmp_path, "a" * 32, 1000, age_s = 5 * 86400)
+    nxt = _key_dir(tmp_path, "b" * 32, 1000, age_s = 4 * 86400)
+    real_rename = os.rename
+
+    def another_process_got_there_first(src, dst):
+        if str(src) == str(taken):
+            shutil.rmtree(taken)
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(os, "rename", another_process_got_there_first)
+    assert cc.evict(root = tmp_path, max_bytes = 1500) == []
+    assert not taken.exists() and nxt.exists()
