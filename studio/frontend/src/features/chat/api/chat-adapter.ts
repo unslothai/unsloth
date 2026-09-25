@@ -187,6 +187,7 @@ import {
   getGroundedExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
+  providerSupportsPreserveThinking,
   getProviderCapabilities,
   isGeminiCustomOpenAICompatBase,
   providerHostsCodeExecution,
@@ -300,6 +301,7 @@ import {
   hasRenderableContent,
   incompleteLabel,
   type IncompleteReason,
+  noteRunStartedThisSession,
   readIncompleteInfo,
   resolveIncompleteReason,
   readContinuationRequest,
@@ -1511,8 +1513,8 @@ function isAbandonedAssistantTurn(
 ): boolean {
   if (message.role !== "assistant") return false;
   if (assistantTurnCarriesPayload(message)) return false;
-  // A turn that finished on reasoning alone is a reply, even though external requests strip
-  // reasoning and serialise it empty.
+  // A turn that finished on reasoning alone is a reply, even when the selected provider
+  // omits reasoning and serialises it empty.
   if (
     !assistantTurnEndedEarly(message) &&
     (message.content ?? []).some((part) => part.type === "reasoning")
@@ -4961,14 +4963,15 @@ export function createOpenAIStreamAdapter(
         readsImages: targetReadsImages,
         localMarkers: mcpImagesLocalMarkers,
       });
-      const survivingMessages = pruneOutboundHistory(
-        messages,
-        !isExternalRequest,
+      const replayReasoning = !isExternalRequest || (
+        providerSupportsPreserveThinking(externalProvider?.providerType) &&
+        runtime.preserveThinking
       );
+      const survivingMessages = pruneOutboundHistory(messages, replayReasoning);
       // toOpenAIMessages emits assistant tool_calls plus role="tool" follow-ups; the backend Gemini
       // translator rebuilds the functionCall/functionResponse parts.
       let outboundMessages = survivingMessages
-        .flatMap((message) => toOpenAIMessages(message, !isExternalRequest))
+        .flatMap((message) => toOpenAIMessages(message, replayReasoning))
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
         );
@@ -6235,7 +6238,11 @@ export function createOpenAIStreamAdapter(
             return {
               model: externalSelection.modelId,
               messages: outboundMessages,
+              ...(providerSupportsPreserveThinking(externalProvider?.providerType)
+                ? { preserve_thinking: runtime.preserveThinking }
+                : {}),
               stream: true,
+              stream_options: { include_usage: true },
               // Never forwarded upstream (the proxy sends an explicit field list); the trailing assistant
               // turn is what asks a provider to continue.
               ...(continuation ? { continue_final_message: true } : {}),
@@ -8373,6 +8380,8 @@ export function createOpenAIStreamAdapter(
   } satisfies ChatModelAdapter;
   return {
     async *run(args) {
+      // Only runs started here may auto-continue a Max Tokens cut.
+      noteRunStartedThisSession(args.unstable_assistantMessageId);
       invalidateMinPRecoveries();
       const preStreamThreadIds = preStreamRunThreadIdsForAdapter(
         args.unstable_threadId,

@@ -249,6 +249,18 @@ def test_records_carry_default_flags():
     assert record["pinned"] is False and record["archived"] is False
 
 
+def test_records_carry_the_listing_sort_key():
+    # A batch shares one created_at; the listing sorts by mtime, so records must say so.
+    a = gallery.save(_img(), _meta(created_at = 100.0))
+    b = gallery.save(_img(), _meta(created_at = 100.0))
+    os.utime(gallery.gallery_dir() / f"{a['id']}.png", (150.0, 150.0))
+    os.utime(gallery.gallery_dir() / f"{b['id']}.png", (120.0, 120.0))
+    assert [(r["id"], r["order_at"]) for r in gallery.list_images()] == [
+        (a["id"], 150.0),
+        (b["id"], 120.0),
+    ]
+
+
 def test_pinned_images_sort_ahead_of_newer_ones():
     old = _save_with_mtime("old", 100.0)
     _save_with_mtime("new", 200.0)

@@ -141,7 +141,11 @@ def test_fast_inference():
     # The trainer must actually route rollouts through vLLM, otherwise it would
     # fall back to HF generation and never exercise WorkerLoRAManager.
     assert trainer.args.use_vllm, "GRPO is not configured to use vLLM"
-    assert getattr(trainer, "llm", None) is not None, "GRPO did not bind a vLLM engine"
+    # TRL >= 0.28 keeps the engine on trainer.vllm_generation.llm instead of trainer.llm.
+    engine = getattr(trainer, "llm", None) or getattr(
+        getattr(trainer, "vllm_generation", None), "llm", None
+    )
+    assert engine is not None, "GRPO did not bind a vLLM engine"
 
     with header_footer_context("GRPO train (vLLM LoRA rollout)"):
         trainer_stats = trainer.train()

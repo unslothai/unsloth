@@ -2,7 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { readImageModel, rememberImageModel, matchesRememberedModel, type RememberedImageModel } from "./image-model-recall";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  type ReactNode,
+  type SetStateAction,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
@@ -13,7 +21,6 @@ import {
   Image03Icon,
   ImageAdd02Icon,
   InformationCircleIcon,
-  PinIcon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -75,7 +82,11 @@ import type {
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
-import { GalleryItemMenu } from "@/components/gallery-item-menu";
+import { GalleryItemMenu, GalleryPinBadge } from "@/components/gallery-item-menu";
+import { MediaRailResizeHandle } from "@/components/media-rail-resize-handle";
+import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-width";
+import { StripDropLine } from "@/components/gallery-strip-reorder";
+import { useStripReorder } from "@/hooks/use-strip-reorder";
 import { MediaPageLink } from "@/components/media-page-link";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
@@ -85,6 +96,7 @@ import {
   fetchWhileStable,
   hasUnknownRecord,
   mergeGenerated,
+  moveGalleryItem,
   newRecordProbeBaseline,
   nextSelectedId,
   pinnedOrder,
@@ -94,9 +106,15 @@ import {
   sortGalleryItems,
   subscribeGalleryChanged,
 } from "@/lib/gallery-flags";
+import {
+  dismissExample,
+  isExampleDismissed,
+  readLastPrompt,
+  saveLastPrompt,
+} from "@/lib/last-prompt";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useImageWorkflowStore } from "./stores/image-workflow-store";
-import { WORKFLOW_TABS, type WorkflowId } from "./workflows";
+import { WORKFLOW_EXAMPLE_PROMPTS, WORKFLOW_TABS, type WorkflowId } from "./workflows";
 import { ParamSlider } from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import {
@@ -190,6 +208,8 @@ import {
   getGenerateProgress,
   listDiffusionControlNets,
   listDiffusionLoras,
+  addGalleryImageToProject,
+  moveGalleryImage,
   setGalleryImageFlags,
   getDiffusionDownloadPlan,
   loadDiffusionModel,
@@ -1046,12 +1066,18 @@ function RecipePopover({
           Recipe
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" side="top" className="w-80 p-0">
-        <div className="border-b border-border/60 px-4 py-2.5">
+      {/* Fits the viewport: only the settings scroll, and overflow-hidden keeps the corners round. */}
+      <PopoverContent
+        align="end"
+        side="top"
+        collisionPadding={12}
+        className="flex max-h-[var(--radix-popover-content-available-height)] w-80 flex-col gap-0 overflow-hidden p-0"
+      >
+        <div className="shrink-0 border-b border-border/60 px-4 py-2.5">
           <p className="text-sm font-semibold">Generation settings</p>
           <p className="text-ui-11 text-muted-foreground">{formatTimestamp(image.created_at)}</p>
         </div>
-        <div className="flex flex-col gap-2 px-4 py-3 text-xs">
+        <div className="flex min-h-0 flex-col gap-2 overflow-y-auto overscroll-contain px-4 py-3 text-xs">
           <RecipeRow label="Prompt" value={image.prompt} wrap />
           {image.negative_prompt ? (
             <RecipeRow label="Negative" value={image.negative_prompt} wrap />
@@ -1086,7 +1112,7 @@ function RecipePopover({
           <RecipeRow label="Guidance" value={String(image.guidance)} />
           <RecipeRow label="Seed" value={String(image.seed)} mono />
         </div>
-        <div className="border-t border-border/60 px-3 py-2.5">
+        <div className="shrink-0 border-t border-border/60 px-3 py-2.5">
           <Button size="sm" className="w-full gap-1.5" onClick={() => onRestore(image)}>
             <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="size-4" />
             Restore these settings
@@ -1224,9 +1250,31 @@ export function ImagesPage({
   const hostClass = useHostClass();
   const denseQuantSchemes = useDenseQuantSchemes();
   const imageModels = useImageModels(hostClass, denseQuantSchemes);
+  const { rootStyle: railRootStyle } = useMediaRailWidth("images");
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
-  const [prompt, setPrompt] = useState(
-    "Cinematic wide shot of a whimsical Alice in Wonderland tea party in an overgrown Victorian garden. Exactly three figures at a long white lace-draped table: a tall eccentric gentleman in an oversized emerald velvet top hat pouring tea from a silver pot mid-motion; a young woman in a pale blue Victorian dress seated left, holding a porcelain teacup with both hands, looking up and laughing; an older woman in deep burgundy seated right in profile, reaching for a tiered cake stand. Detailed embroidered fabrics, realistic skin texture, natural expressions. The table holds mismatched porcelain, antique silverware, towering pastel cakes, and wildflowers. Giant red-capped mushrooms rise behind the table, with ancient trees overhead and golden sunlight streaming through leaves. Shot on 85mm, f/2.8, focus on the gentleman, soft background falloff. Photorealistic, saturated storybook color, warm amber and deep green palette.",
+  // One prompt per workflow, starting from the last one generated with.
+  const [prompts, setPrompts] = useState<Record<WorkflowId, string>>(() =>
+    Object.fromEntries(
+      WORKFLOW_TABS.map(({ id }) => [id, readLastPrompt(`images:${id}`)]),
+    ) as Record<WorkflowId, string>,
+  );
+  // Workflows whose example hint is gone: it shows as a placeholder until the box is first focused.
+  const [examplesDismissed, setExamplesDismissed] = useState<Record<WorkflowId, boolean>>(() =>
+    Object.fromEntries(
+      WORKFLOW_TABS.map(({ id }) => [id, isExampleDismissed(`images:${id}`)]),
+    ) as Record<WorkflowId, boolean>,
+  );
+  const setPromptFor = useCallback((id: WorkflowId, next: SetStateAction<string>) => {
+    setPrompts((prev) => ({
+      ...prev,
+      [id]: typeof next === "function" ? next(prev[id]) : next,
+    }));
+  }, []);
+  // Writes the active workflow's prompt, read at call time so a stale closure cannot write another's.
+  const setPrompt = useCallback(
+    (next: SetStateAction<string>) =>
+      setPromptFor(useImageWorkflowStore.getState().workflow, next),
+    [setPromptFor],
   );
   const [negativePrompt, setNegativePrompt] = useState("");
   const [negativeOpen, setNegativeOpen] = useState(false);
@@ -1276,6 +1324,7 @@ export function ImagesPage({
   // Active workflow tab: create = text-to-image, transform = img2img, inpaint = mask-guided
   // redraw. Workflow and page mode live in a store so the sidebar submenu can drive them.
   const workflow = useImageWorkflowStore((s) => s.workflow);
+  const prompt = prompts[workflow];
   const setWorkflow = useImageWorkflowStore((s) => s.setWorkflow);
   const supported = useImageWorkflowStore((s) => s.supported);
   const setSupported = useImageWorkflowStore((s) => s.setSupported);
@@ -2006,6 +2055,69 @@ export function ImagesPage({
     [resyncWindow],
   );
 
+  // Drag-to-reorder: applied optimistically, then the server's record (key and pin) is adopted.
+  const handleMove = useCallback(
+    async (id: string, afterId: string | null) => {
+      const next = moveGalleryItem(galleryCache.images, id, afterId);
+      if (next === galleryCache.images) return;
+      const guessedPinned = Boolean(next.find((i) => i.id === id)?.pinned);
+      // Takes a pin token too: a pin clicked after this drop must not be undone by its response.
+      const attempt = (pinSeq.current += 1);
+      pinAttempt.current.set(id, attempt);
+      stripEpoch.current += 1;
+      galleryCache.images = next;
+      setImages(next);
+      try {
+        // Shares the pin queue, since both rewrite the order.
+        const record = await serializeById("image-pin", () => moveGalleryImage(id, afterId));
+        if (pinAttempt.current.get(id) !== attempt) return;
+        pinAttempt.current.delete(id);
+        setImages((prev) => {
+          const patched = prev.map((i) =>
+            i.id === id ? { ...i, pinned: record.pinned, order_at: record.order_at } : i,
+          );
+          // Re-sort only if the local pin guess was wrong.
+          const out =
+            Boolean(record.pinned) === guessedPinned ? patched : sortGalleryItems(patched);
+          galleryCache.images = out;
+          return out;
+        });
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to move image");
+        // Restore the server's order.
+        stripEpoch.current += 1;
+        const epoch = stripEpoch.current;
+        try {
+          await resyncWindow(galleryCache.images.length, () => stripEpoch.current === epoch);
+        } catch {
+          void loadGallery();
+        }
+      }
+    },
+    [resyncWindow, loadGallery],
+  );
+  // One-click download of the original PNG.
+  const handleQuickDownload = useCallback(
+    async (image: GalleryImage) => {
+      const src = srcById[image.id];
+      if (src) {
+        await downloadImage(src, image, "png");
+        return;
+      }
+      try {
+        const blob = await fetchGalleryBlob(image.url);
+        await downloadFile(blob, exportFilename(image, "png"), blob.type);
+      } catch (error) {
+        if (isDownloadCancelled(error)) return;
+        toast.error("Could not save image", {
+          description: error instanceof Error ? error.message : undefined,
+        });
+      }
+    },
+    [srcById],
+  );
+  const stripReorder = useStripReorder((id, afterId) => void handleMove(id, afterId));
+
   const handleArchive = useCallback(
     async (id: string) => {
       // Held for the whole round trip: the server shortens the shelf when it processes this, so a
@@ -2039,7 +2151,6 @@ export function ImagesPage({
   );
 
   const restoreSettings = useCallback((image: GalleryImage) => {
-    setPrompt(image.prompt);
     // Negative prompt only applies when guidance>0; do not restore a hidden value.
     const restoredNegative = image.guidance > 0 ? (image.negative_prompt ?? "") : "";
     setNegativePrompt(restoredNegative);
@@ -2080,6 +2191,7 @@ export function ImagesPage({
     const reopened: WorkflowId =
       image.workflow === "edit" ? "edit" : image.workflow === "reference" ? "reference" : "create";
     setWorkflow(reopened);
+    setPromptFor(reopened, image.prompt);
     setInitImage(null);
     setMaskImage(null);
     setReferenceImages(
@@ -2109,7 +2221,7 @@ export function ImagesPage({
     } else {
       toast.success("Settings restored to inputs", rescaled);
     }
-  }, [setWorkflow, sizeLimits]);
+  }, [setPromptFor, setWorkflow, sizeLimits]);
 
   // A locked ratio keeps the paired dimension in step; "custom" frees both, Flip swaps W/H. ratioHW is h/w for [a,b].
   const ratioHW = (a: number, b: number) => (portrait ? a / b : b / a);
@@ -3595,6 +3707,128 @@ export function ImagesPage({
       </Field>
     ) : null;
 
+  // Aspect ratio, Resolution and 2K presets. Unified Edit shows them under Output size when Custom is
+  // picked, next to the choice that reveals them; every other workflow keeps them in place.
+  const sizeControls = (
+    <>
+      <Field
+        label="Aspect ratio"
+        hint="Pick a ratio to lock the proportions, then set the size below. Flip swaps width and height."
+      >
+        <div className="flex items-center gap-2">
+          <Select
+            value={aspect}
+            onValueChange={changeAspect}
+            open={active && aspectOpen}
+            onOpenChange={(o) => setAspectOpen(active && o)}
+          >
+            <SelectTrigger className="flex-1">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {ASPECT_OPTIONS.map((key) => (
+                <SelectItem key={key} value={key}>
+                  {key === "custom"
+                    ? "Custom"
+                    : `${ASPECT_LABELS[key]} (${key})`}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <Button
+                type="button"
+                variant="secondary"
+                size="icon"
+                aria-label="Flip width and height"
+                onClick={flipDimensions}
+              >
+                {/* Arrows turn with the orientation, showing which way it flips. */}
+                <HugeiconsIcon
+                  icon={ArrowLeftRightIcon}
+                  className={cn(
+                    "size-4 transition-transform duration-200",
+                    portrait && "rotate-90",
+                  )}
+                />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              {portrait ? "Switch to landscape" : "Switch to portrait"}
+            </TooltipContent>
+          </Tooltip>
+        </div>
+      </Field>
+      <Field
+        label="Resolution"
+        hint={
+          // Image-conditioned workflows size from the source, so "this is the output size" is wrong
+          // there: Transform caps the source by this box, the rest ignore it.
+          workflow === "transform"
+            ? "Caps the output size. The source image is scaled down to fit inside this box, keeping its aspect ratio, so the result may be smaller than the values shown."
+            : workflow === "inpaint" ||
+                workflow === "extend" ||
+                workflow === "upscale" ||
+                (workflow === "edit" && !unifiedEdit)
+              ? "Not used by this workflow: the output size comes from the source image. Upload a smaller image to generate at a smaller size."
+              : `Width and height in pixels. Sizes run from ${MIN_DIM} to ${sizeLimits.maxSide} in steps of ${sizeLimits.multiple}${sizeLimits.maxPixels < sizeLimits.maxSide * sizeLimits.maxSide ? `, up to ${(sizeLimits.maxPixels / 1e6).toFixed(1)} megapixels` : ""}. Most models are trained around 1 megapixel, so much larger sizes can look worse.`
+        }
+      >
+        <div className="flex items-center gap-2">
+          <DimensionSelect
+            icon={ArrowLeftRightIcon}
+            label="Width"
+            value={width}
+            open={active && widthOpen}
+            onOpenChange={(o) => setWidthOpen(active && o)}
+            onChange={changeWidth}
+            limits={sizeLimits}
+          />
+          <DimensionSelect
+            icon={ArrowUpDownIcon}
+            label="Height"
+            value={height}
+            open={active && heightOpen}
+            onOpenChange={(o) => setHeightOpen(active && o)}
+            onChange={changeHeight}
+            limits={sizeLimits}
+          />
+        </div>
+      </Field>
+      {showOfficialPresets && (
+        <Field
+          label="2K presets"
+          hint="The model's native 2K sizes. They take several times the memory and time of a 1 megapixel image."
+        >
+          <Select
+            value=""
+            onValueChange={(v) => {
+              const preset = officialPresets.find((p) => `${p.width}x${p.height}` === v);
+              if (!preset) return;
+              setWidth(preset.width);
+              setHeight(preset.height);
+              const m = matchAspect(preset.width, preset.height);
+              setAspect(m.key);
+              setPortrait(m.portrait);
+            }}
+          >
+            <SelectTrigger aria-label="2K presets">
+              <SelectValue placeholder="Choose a 2K size" />
+            </SelectTrigger>
+            <SelectContent>
+              {officialPresets.map((p) => (
+                <SelectItem key={`${p.width}x${p.height}`} value={`${p.width}x${p.height}`}>
+                  {`${p.label} (${p.width} × ${p.height})`}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+      )}
+    </>
+  );
+
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) {
       toast.error("Prompt is empty");
@@ -3731,6 +3965,8 @@ export function ImagesPage({
       return;
     }
 
+    // Saved only once the request passes validation, so a rejected attempt is not kept.
+    saveLastPrompt(`images:${workflow}`, prompt);
     setBusy("generating");
     setGenDone(0);
     setGenStep(null);
@@ -4037,7 +4273,7 @@ export function ImagesPage({
       />
       <AdvancedSelect
         label="Speed"
-        hint="Auto picks per model: GGUF compiles at load; a dense model keeps the first two images exact and eager, then compiles from the 3rd (~2x from there). eager = fused kernels, no compile. default/max add torch.compile (max also TF32 + fused QKV)."
+        hint="Auto picks per model: GGUF compiles at load; a dense model keeps the first two images exact and eager, then compiles from the 3rd (~2x from there). eager = fused kernels, no compile. default/max add torch.compile (max also TF32 + fused QKV, plus the step cache on 20+ step models)."
         badge={<ResolvedBadge status={status} controlKey="speed_mode" />}
         value={speedMode}
         onValueChange={(v) => setSpeedMode(v as typeof speedMode)}
@@ -4150,7 +4386,7 @@ export function ImagesPage({
       )}
       <AdvancedSelect
         label="Step cache"
-        hint="First-Block-Cache reuses the transformer tail across steps for many-step models (~1.4x). Auto turns it on at 20+ steps and off for few-step distilled models, re-checked per image."
+        hint="First-Block-Cache reuses the transformer tail across steps for many-step models (~1.4x, small quality cost). Auto turns it on only on the Max speed tier at 20+ steps, re-checked per image."
         badge={<ResolvedBadge status={status} controlKey="transformer_cache" />}
         value={transformerCache}
         onValueChange={(v) => setTransformerCache(v as typeof transformerCache)}
@@ -4193,12 +4429,18 @@ export function ImagesPage({
   return (
     // The chat-style layout gives this page no outer top inset, so clear the custom titlebar here as chat does.
     // 34px on win/linux, 0 under macOS's native one.
-    <div className="diffusion-surface @container flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
+    <div
+      {...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}
+      style={railRootStyle}
+      className="diffusion-surface @container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
+    >
+      {/* Page-level, so the handle covers the divider through the header too (Create and Train). */}
+      <MediaRailResizeHandle kind="images" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
       {active && <GuidedTour {...tour.tourProps} />}
-      {/* Keep the tabs centered over the preview at every width: the model rail holds at 408px when
-          space permits and shrinks only to preserve the controls. */}
-      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,calc(408px*var(--ui-space-scale,1)))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
+      {/* Keep the tabs centered over the preview at every width: the model rail holds at its
+          (draggable) width when space permits and shrinks only to preserve the controls. */}
+      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
         <div
           className={cn(
             "pointer-events-none flex h-full min-w-0 items-start overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
@@ -4234,6 +4476,7 @@ export function ImagesPage({
                 triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
                 task={IMAGE_GEN_TASKS}
                 catalog={IMAGE_CATALOG}
+                hubCapability="diffusion"
                 placeholder="Select image model"
                 open={active && selectorOpen}
                 onOpenChange={(o) => setSelectorOpen(active && o)}
@@ -4310,7 +4553,7 @@ export function ImagesPage({
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
         <div
           data-tour="images-settings"
-          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[min(calc(408px*var(--ui-space-scale,1)),calc(100%-13rem))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
+          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-13rem))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
         >
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div
@@ -4725,6 +4968,7 @@ export function ImagesPage({
                       : `${editSize.width} × ${editSize.height}`}
                   </p>
                 </Field>
+                {editSizing === "custom" && sizeControls}
                 {referenceDetailControl}
                 {engineNotes}
                 {unifiedEdit && (
@@ -4745,9 +4989,14 @@ export function ImagesPage({
               <Textarea
                 rows={4}
                 placeholder={
-                  workflow === "edit" ? "Describe the edit, e.g. make the sky sunset orange" : undefined
+                  examplesDismissed[workflow] ? undefined : WORKFLOW_EXAMPLE_PROMPTS[workflow]
                 }
                 value={prompt}
+                onFocus={() => {
+                  if (examplesDismissed[workflow]) return;
+                  dismissExample(`images:${workflow}`);
+                  setExamplesDismissed((prev) => ({ ...prev, [workflow]: true }));
+                }}
                 onChange={(e) => setPrompt(e.target.value)}
               />
             </Field>
@@ -4894,125 +5143,7 @@ export function ImagesPage({
                 </div>
               </Field>
             )}
-            {!(unifiedEditActive && editSizing === "source") && (
-            <>
-            <Field
-              label="Aspect ratio"
-              hint="Pick a ratio to lock the proportions, then set the size below. Flip swaps width and height."
-            >
-              <div className="flex items-center gap-2">
-                <Select
-                  value={aspect}
-                  onValueChange={changeAspect}
-                  open={active && aspectOpen}
-                  onOpenChange={(o) => setAspectOpen(active && o)}
-                >
-                  <SelectTrigger className="flex-1">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ASPECT_OPTIONS.map((key) => (
-                      <SelectItem key={key} value={key}>
-                        {key === "custom"
-                          ? "Custom"
-                          : `${ASPECT_LABELS[key]} (${key})`}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Tooltip>
-                  <TooltipTrigger asChild={true}>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="icon"
-                      aria-label="Flip width and height"
-                      onClick={flipDimensions}
-                    >
-                      {/* Arrows turn with the orientation, showing which way it flips. */}
-                      <HugeiconsIcon
-                        icon={ArrowLeftRightIcon}
-                        className={cn(
-                          "size-4 transition-transform duration-200",
-                          portrait && "rotate-90",
-                        )}
-                      />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {portrait ? "Switch to landscape" : "Switch to portrait"}
-                  </TooltipContent>
-                </Tooltip>
-              </div>
-            </Field>
-            <Field
-              label="Resolution"
-              hint={
-                // Image-conditioned workflows size from the source, so "this is the output size" is wrong
-                // there: Transform caps the source by this box, the rest ignore it.
-                workflow === "transform"
-                  ? "Caps the output size. The source image is scaled down to fit inside this box, keeping its aspect ratio, so the result may be smaller than the values shown."
-                  : workflow === "inpaint" ||
-                      workflow === "extend" ||
-                      workflow === "upscale" ||
-                      (workflow === "edit" && !unifiedEdit)
-                    ? "Not used by this workflow: the output size comes from the source image. Upload a smaller image to generate at a smaller size."
-                    : `Width and height in pixels. Sizes run from ${MIN_DIM} to ${sizeLimits.maxSide} in steps of ${sizeLimits.multiple}${sizeLimits.maxPixels < sizeLimits.maxSide * sizeLimits.maxSide ? `, up to ${(sizeLimits.maxPixels / 1e6).toFixed(1)} megapixels` : ""}. Most models are trained around 1 megapixel, so much larger sizes can look worse.`
-              }
-            >
-              <div className="flex items-center gap-2">
-                <DimensionSelect
-                  icon={ArrowLeftRightIcon}
-                  label="Width"
-                  value={width}
-                  open={active && widthOpen}
-                  onOpenChange={(o) => setWidthOpen(active && o)}
-                  onChange={changeWidth}
-                  limits={sizeLimits}
-                />
-                <DimensionSelect
-                  icon={ArrowUpDownIcon}
-                  label="Height"
-                  value={height}
-                  open={active && heightOpen}
-                  onOpenChange={(o) => setHeightOpen(active && o)}
-                  onChange={changeHeight}
-                  limits={sizeLimits}
-                />
-              </div>
-            </Field>
-            {showOfficialPresets && (
-              <Field
-                label="2K presets"
-                hint="The model's native 2K sizes. They take several times the memory and time of a 1 megapixel image."
-              >
-                <Select
-                  value=""
-                  onValueChange={(v) => {
-                    const preset = officialPresets.find((p) => `${p.width}x${p.height}` === v);
-                    if (!preset) return;
-                    setWidth(preset.width);
-                    setHeight(preset.height);
-                    const m = matchAspect(preset.width, preset.height);
-                    setAspect(m.key);
-                    setPortrait(m.portrait);
-                  }}
-                >
-                  <SelectTrigger aria-label="2K presets">
-                    <SelectValue placeholder="Choose a 2K size" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {officialPresets.map((p) => (
-                      <SelectItem key={`${p.width}x${p.height}`} value={`${p.width}x${p.height}`}>
-                        {`${p.label} (${p.width} × ${p.height})`}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-            )}
-            </>
-            )}
+            {!unifiedEditActive && sizeControls}
 
             {/* First of the one-line sliders, so it takes a bigger break than the gap gives. */}
             <div className="pt-2">
@@ -5111,7 +5242,8 @@ export function ImagesPage({
                 />
                 {/* Actions grouped in one glass toolbar so they stay legible over any image. Size and seed
                     live in the Recipe popover. */}
-                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur">
+                {/* No button borders: focus returning from a menu would draw one. Keyboard focus tints instead. */}
+                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
                   <RecipePopover image={selected} onRestore={restoreSettings} active={active} />
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild={true}>
@@ -5148,6 +5280,8 @@ export function ImagesPage({
                     }
                     onToggleArchive={() => void handleArchive(selected.id)}
                     onDelete={() => void handleDelete(selected.id)}
+                    onDownload={() => void handleQuickDownload(selected)}
+                    onAddToProject={(projectId) => addGalleryImageToProject(selected.id, projectId)}
                   />
                 </div>
               </>
@@ -5198,6 +5332,7 @@ export function ImagesPage({
           {(images.length > 0 || busy === "generating") && (
             <div
               ref={stripRef}
+              {...stripReorder.stripProps}
               // The rule spans the pane; only the thumbnail contents receive the 40px gutter.
               className="hover-scrollbar flex shrink-0 gap-2 overflow-x-auto border-t border-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] px-10 max-sm:px-5 py-3"
               onScroll={(e) => {
@@ -5220,8 +5355,16 @@ export function ImagesPage({
                 <div
                   key={image.id}
                   data-image-id={image.id}
-                  className="group relative size-16 shrink-0"
+                  {...stripReorder.tileProps(image.id)}
+                  className={cn(
+                    "group relative size-16 shrink-0",
+                    // Fade the tile being dragged.
+                    stripReorder.draggingId === image.id && "opacity-40",
+                  )}
                 >
+                  {stripReorder.cue?.id === image.id && (
+                    <StripDropLine edge={stripReorder.cue.edge} />
+                  )}
                   <button
                     type="button"
                     onClick={() => setSelectedId(image.id)}
@@ -5231,6 +5374,7 @@ export function ImagesPage({
                       <img
                         src={srcById[image.id]}
                         alt={image.prompt}
+                        draggable={false}
                         className="size-full object-cover"
                       />
                     ) : (
@@ -5243,11 +5387,13 @@ export function ImagesPage({
                       <span className="pointer-events-none absolute inset-0 rounded-[10px] border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
                     )}
                   </button>
-                  {/* Pin marker, bottom-left so it never sits under the menu. */}
+                  {/* Pin marker and Unpin button, bottom-left so it clears the menu. */}
                   {image.pinned && (
-                    <span className="pointer-events-none absolute bottom-0.5 left-0.5 rounded-full bg-background/80 p-0.5 text-foreground shadow-sm ring-1 ring-border backdrop-blur">
-                      <HugeiconsIcon icon={PinIcon} className="size-3" />
-                    </span>
+                    <GalleryPinBadge
+                      noun="image"
+                      className="bottom-0.5 left-0.5"
+                      onUnpin={() => void handleTogglePin(image.id, false)}
+                    />
                   )}
                   <div className="absolute right-0.5 top-0.5">
                     <GalleryItemMenu
@@ -5259,6 +5405,8 @@ export function ImagesPage({
                       onTogglePin={() => void handleTogglePin(image.id, !image.pinned)}
                       onToggleArchive={() => void handleArchive(image.id)}
                       onDelete={() => void handleDelete(image.id)}
+                    onDownload={() => void handleQuickDownload(image)}
+                    onAddToProject={(projectId) => addGalleryImageToProject(image.id, projectId)}
                     />
                   </div>
                 </div>
