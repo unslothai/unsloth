@@ -32,18 +32,19 @@ class FastMultipleNegativesRankingLoss(MultipleNegativesRankingLoss):
             or merge_feature_batches is None
             or not hasattr(self, "compute_loss_from_embeddings")
             or getattr(self, "gather_across_devices", False)
-            or any(
-                isinstance(module, torch.nn.modules.batchnorm._BatchNorm)
-                for module in self.model.modules()
-            )
+            or torch.is_autocast_enabled("cuda")
+            or torch.is_autocast_enabled("cpu")
             or parameter is None
             or parameter.device.type not in ("cpu", "cuda")
             or any(
                 value.dtype != torch.float32 or value.device != parameter.device
                 for value in self.model.parameters()
             )
-            or torch.is_autocast_enabled("cuda")
-            or torch.is_autocast_enabled("cpu")
+            # Full module walk last: 16-bit and autocast runs exit above in microseconds.
+            or any(
+                isinstance(module, torch.nn.modules.batchnorm._BatchNorm)
+                for module in self.model.modules()
+            )
         ):
             self.fallback_calls += 1
             return super().forward(features, labels)
