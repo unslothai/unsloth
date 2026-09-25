@@ -36,7 +36,7 @@ test("the API tab renders the section and search finds it", () => {
 test("only the owner sees it, below the chat usage examples", () => {
   assert.match(
     API_TAB,
-    /<UsageExamples[\s\S]*?\/>\s*\{\/\*[^*]*\*\/\}\s*\{isOwner \? <DecisionApiSection \/> : null\}/,
+    /<UsageExamples[\s\S]*?\/>\s*(?:\{\/\*[^*]*\*\/\}\s*)?\{isOwner \? <DecisionApiSection \/> : null\}/,
   );
   assert.doesNotMatch(SECTION, /useIsAccountOwner/);
 });
