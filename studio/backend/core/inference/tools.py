@@ -10967,6 +10967,15 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
         # A migration that moved the tree but could not rename it into place leaves the only copy under a marked name,
         # at any root.
         ours = _marked_sandbox_in(root, session_id)
+        if ours and _STAGING_SUFFIX in os.path.basename(ours):
+            # A live move marks its staging tree before renaming it into place, so this can also be one still moving,
+            # which the rename is about to take away. Movers hold the session's lock for the whole move, so once it is
+            # free a staging tree that is still there is a stranded one, and one that landed or rolled back is found
+            # where it went.
+            lock = _legacy_lock_peek(_sandbox_name(session_id))
+            if lock is not None:
+                with lock:
+                    ours = _marked_sandbox_in(root, session_id)
         if ours:
             return ours
         # Right after an upgrade the files can still be at the legacy root: the move runs in the background and can

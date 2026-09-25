@@ -695,11 +695,15 @@ def test_the_legacy_migration_is_startup_work(tmp_path, monkeypatch):
     assert resolved.resolve().is_relative_to(Path(tools.sandbox_root()).resolve())
 
 
-def test_a_read_does_not_answer_from_inside_a_legacy_move_s_staging_window(tmp_path, monkeypatch):
+@pytest.mark.parametrize("paused_after", ["move", "mark"])
+def test_a_read_does_not_answer_from_inside_a_legacy_move_s_staging_window(
+    tmp_path, monkeypatch, paused_after
+):
     """A listing or download that lands while a session sits in staging must wait for the move.
 
-    Through that window the session is in neither root, so answering then hands back the
-    destination before it exists: the sandbox lists empty and every file card 404s.
+    Through that window the session is in neither root. Before the staging tree is marked a read
+    falls through to the destination before it exists; after, it finds the staging tree, which
+    the rename is about to take away. Either way the sandbox lists empty and every file card 404s.
     """
     fake_home = tmp_path / "userprofile"
     fake_home.mkdir()
@@ -715,14 +719,26 @@ def test_a_read_does_not_answer_from_inside_a_legacy_move_s_staging_window(tmp_p
     release = threading.Event()
     real_move = shutil.move
 
+    real_mark = tools._mark_sandbox
+
+    def pause_in_staging():
+        staged.set()  # the source is gone and the destination is not in place yet
+        release.wait(10)
+
     def gated_move(source, destination, *args, **kwargs):
         moved = real_move(source, destination, *args, **kwargs)
-        if "__LOCALID_reading" in str(destination):
-            staged.set()  # the source is gone and the destination is not in place yet
-            release.wait(10)
+        if paused_after == "move" and "__LOCALID_reading" in str(destination):
+            pause_in_staging()
         return moved
 
+    def gated_mark(path, name):
+        marked = real_mark(path, name)
+        if paused_after == "mark" and tools._STAGING_SUFFIX in os.path.basename(path):
+            pause_in_staging()
+        return marked
+
     monkeypatch.setattr(tools.shutil, "move", gated_move)
+    monkeypatch.setattr(tools, "_mark_sandbox", gated_mark)
 
     mover = tools.migrate_legacy_sandbox_in_background()
     assert staged.wait(10), "the migration never reached the staging window"
