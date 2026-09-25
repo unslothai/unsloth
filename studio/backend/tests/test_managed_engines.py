@@ -29,7 +29,6 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(install, "support_reason", lambda engine = "vllm": None)
     monkeypatch.setattr(install, "_jobs", {})
     monkeypatch.setattr(install, "_cancels", {})
-    # Studio without torch: engines get a complete isolated environment.
     monkeypatch.setattr(install, "_studio_packages", lambda: {})
     return tmp_path
 
@@ -118,7 +117,6 @@ def test_shared_environment_installs_only_what_studio_lacks(isolated, monkeypatc
     install._install(engine, threading.Event())
     info = install.installed(engine)
     assert info["shared"] is True
-    # Only packages at the locked version are shared; a different fastapi is installed.
     assert info["provided"] == {
         name: version for name, version in studio.items() if name != "fastapi"
     }
@@ -131,7 +129,6 @@ def test_shared_environment_installs_only_what_studio_lacks(isolated, monkeypatc
     assert "site.addsitedir(" in pth.read_text()
     assert install.status(engine)["current"] is True
 
-    # A Studio update that changes a provided package invalidates the environment.
     studio["numpy"] = "0.0.1"
     status = install.status(engine)
     assert status["installed"] is True and status["current"] is False
@@ -239,7 +236,6 @@ def test_explicit_rollback_allows_old_profile_until_replaced(isolated, monkeypat
     install._install(engine, threading.Event())
     assert install.status(engine)["current"] is True
     install.rollback(engine)
-    # Restoration survives a new process reading the on-disk marker.
     monkeypatch.setattr(install, "_jobs", {})
     assert install.status(engine)["current"] is False
     assert install.status(engine)["restored"] is True
@@ -384,7 +380,6 @@ def test_engine_stream_waits_for_the_first_token_deadline(monkeypatch, deadline,
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
             self.wfile.flush()
-            # A long prefill sends nothing before the first token.
             time.sleep(1)
             try:
                 self.wfile.write(
@@ -728,7 +723,6 @@ def test_failed_managed_stop_during_load_cancel_keeps_chat_busy(monkeypatch):
         backend.cancel_load("model")
     assert backend._managed_engine is not None
 
-    # The mirrors are cleared, so only the engine itself can keep the claim.
     monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: backend)
     monkeypatch.setattr(
         inference_route,
@@ -913,7 +907,6 @@ def test_shutdown_during_adoption_reaps_child(isolated, monkeypatch, kind):
 
     def adopt(pid):
         original_adopt(pid)
-        # Simulate a shutdown sweep completing just before adoption.
         shutting_down.set()
 
     monkeypatch.setattr(process_lifetime, "spawn_on_lifetime_thread", spawn)
@@ -1096,7 +1089,6 @@ def test_multi_gpu_preflight_checks_every_device(engine, monkeypatch):
     request = LoadRequest(model_path = "model", gpu_ids = [1, 0], engine = engine)
     managed_engine.validate_load(engine, request)
     assert checked == [1, 0]
-    # An outdated profile needs an update, unless the user explicitly restored it.
     info["profile_digest"] = "outdated"
     with pytest.raises(ValueError, match = "Update"):
         managed_engine.validate_load(engine, request)
@@ -1400,7 +1392,6 @@ def test_non_tensor_modes_validate_prequantized_bitsandbytes(tmp_path, engine, m
     if engine == "sglang" and mode == "pipeline":
         with pytest.raises(ValueError, match = "SGLang cannot load prequantized BitsAndBytes"):
             validate_model(config, gpu_ids = [0, 1], engine = engine, parallelism = mode)
-        # A retained pipeline selection still permits a single-device load.
         assert (
             validate_model(config, gpu_ids = [0], engine = engine, parallelism = mode)["load_format"]
             == "bitsandbytes"

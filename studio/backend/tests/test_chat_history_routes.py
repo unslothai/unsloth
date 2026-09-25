@@ -637,7 +637,6 @@ def test_chat_inference_settings_covers_frontend_persisted_fields():
         source = fh.read()
     block = re.search(r"interface InferenceParams \{(.*?)\n\}", source, re.DOTALL)
     assert block, "InferenceParams interface not found in runtime.ts"
-    # The same exclusions PersistedInferenceParams makes (checkpoint, engine load settings).
     omitted = re.search(
         r"PersistedInferenceParams = Partial<\s*Omit<InferenceParams,([^>]*)>", source
     )

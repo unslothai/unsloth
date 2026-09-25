@@ -30,7 +30,6 @@ def test_tool_parser_uses_template_not_model_family(tmp_path, engine, expected):
     args = ADAPTERS[engine].command("python", "model", 40000, "key", 4096, 0.5, options = options)
     assert args[args.index("--tool-call-parser") + 1] == expected
     assert ("--enable-auto-tool-choice" in args) == (engine == "vllm")
-    # Native tokenizer priority: the standalone Jinja file overrides embedded metadata.
     (tmp_path / "chat_template.jinja").write_text("{{ tools }}<tool_call><function=example>")
     assert validate_model(config, engine = engine)["tool_parser"] == "qwen3_coder"
     (tmp_path / "chat_template.jinja").write_text("{{ messages }}")
@@ -120,7 +119,6 @@ def native(monkeypatch):
             }
         ]
         if not finished:
-            # Split arguments across chunks to exercise native streaming rather than text healing.
             chunks += [
                 {
                     "id": "native-id",

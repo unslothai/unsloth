@@ -3075,7 +3075,6 @@ def test_the_chat_picker_marks_ollama_targets_unloadable_by_the_api():
     """A settings target opened from the Chat model picker carried no apiLoadable, so the
     `??"""
     handoff = " ".join(_read("features/model-picker/model-config/model-config-handoff.ts").split())
-    # Safetensors configs are mirrored too, so API auto-loads keep an optional engine choice.
     assert (
         "apiLoadable: !meta.isLora && !isOllamaLinkPath(id) && !isOllamaLinkPath(loadId),"
         in handoff

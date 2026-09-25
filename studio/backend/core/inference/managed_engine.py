@@ -59,10 +59,8 @@ def validate_load(engine: str, request) -> list[int]:
         raise ValueError(
             f"Studio's packages changed since {engine} was installed. Repair it in Settings > System > Inference engines."
         )
-    # The picker's rule too: an outdated profile loads only after an explicit restore.
     if info.get("profile_digest") != profile_digest(engine) and not info.get("restored"):
         raise ValueError(f"Update {engine} in Settings > System > Inference engines first.")
-    # Also judges /validate requests, which carry no LoRA or template fields.
     if (
         request.gguf_variant
         or request.model_path.lower().endswith(".gguf")
@@ -163,8 +161,7 @@ def validate_model(
         else "auto",
     }
     if precision == "fp8":
-        # Use eager TorchAO FP8 storage on Ampere. Triton cannot compile
-        # its FP8 casts, and SGLang's online FP8 kernels produce invalid output.
+        # Eager TorchAO FP8 on Ampere: Triton cannot compile its casts, SGLang online FP8 is invalid.
         result = subprocess.run(
             [
                 "nvidia-smi",
@@ -181,7 +178,6 @@ def validate_model(
             check = True,
         )
         options["disable_cuda_graph"] = any(float(cap) < 8.9 for cap in result.stdout.splitlines())
-    # Multimodal architectures keep their language-model dimensions here.
     metadata = metadata.get("text_config") or metadata
     size = len(gpu_ids or [0])
     if size > 1 and parallelism == "tensor":
@@ -194,8 +190,6 @@ def validate_model(
                 )
         kv_heads = metadata.get("num_key_value_heads", metadata.get("num_attention_heads"))
         if isinstance(kv_heads, int) and kv_heads > 0:
-            # Both engines replicate KV heads when there are more ranks than
-            # KV heads; otherwise each rank receives an equal number of heads.
             if max(kv_heads, size) % min(kv_heads, size):
                 raise ValueError(
                     f"This model's {kv_heads} KV heads are incompatible with {size} GPUs. "
@@ -219,8 +213,7 @@ class ManagedEngine:
         self._reader = None
         self._tail = deque(maxlen = 200)
         self.base_url = ""
-        # A URL-safe token can start with '-', which native CLI parsers read as
-        # another option instead of the API key.
+        # A URL-safe token can start with '-', which CLI parsers read as an option.
         self.key = "studio-" + secrets.token_urlsafe(32)
 
     def alive(self) -> bool:
@@ -280,7 +273,6 @@ class ManagedEngine:
                 child_env.pop("VIRTUAL_ENV", None)
                 child_env.pop("LD_PRELOAD", None)
                 child_env.pop("LD_LIBRARY_PATH", None)
-                # A shared environment also runs console scripts of the packages Studio provides.
                 child_env["PATH"] = os.pathsep.join(
                     [
                         info["path"] + "/bin",
@@ -292,8 +284,7 @@ class ManagedEngine:
                 child_env["PYTHONNOUSERSITE"] = "1"
                 from .engine_install import engine_root
 
-                # Pinned compilers can reuse incompatible artifacts across dtype
-                # and GPU changes. Reuse only within the same launch configuration.
+                # Compiler caches are keyed per launch config: reuse across dtype/GPU changes breaks.
                 policy = Path(__file__).with_name("engine_adapters.py").read_bytes()
                 if self.engine == "sglang":
                     policy += Path(__file__).with_name("sglang_server.py").read_bytes()
@@ -533,9 +524,7 @@ class ManagedEngine:
         ):
             if params.get(key) is not None:
                 payload[key] = params[key]
-        # Max can arrive as -1 or the whole context window. Forwarding the
-        # latter leaves no room for the prompt, so the server rejects it.
-        # Omit both forms and let the engine budget the remaining context.
+        # -1 or full context leaves no room for the prompt; let the engine budget it.
         limit = params.get("max_new_tokens") or 0
         if limit > 0 and (not self.context or limit < self.context):
             payload["max_tokens"] = limit

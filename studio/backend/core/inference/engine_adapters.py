@@ -15,7 +15,6 @@ def tool_parser_for_template(template, engine):
     """Select a native output parser from the model's own tool syntax."""
     if not isinstance(template, str) or "tools" not in template:
         return None
-    # Specific nested formats precede the generic JSON tool-call envelope.
     formats = (
         (("<tool_call>", "<function="), "qwen3_coder", "qwen3_coder"),
         (("<tool_call>", "<arg_key>"), "glm45", "glm"),
@@ -47,14 +46,10 @@ class EngineAdapter:
         if self.name == "vllm" and gpu_count > 1:
             return {"VLLM_HOST_IP": "127.0.0.1"}
         if self.name == "sglang" and gpu_count > 1:
-            # SGLang otherwise rejects GPUs whose free capacities differ by
-            # more than 10%, including idle 24/48 GiB cards. Studio budgets
-            # every device and SGLang sizes KV pools from the minimum free
-            # memory across ranks, so equal capacities are not required.
+            # Else SGLang rejects GPUs whose free memory differs >10%; KV pools size from the minimum anyway.
             return {
                 "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "0",
-                # CuTe RMSNorm can compile for rank zero's architecture on every
-                # rank. The CUDA implementation supports mixed Ampere/Ada groups.
+                # CuTe RMSNorm compiles for rank zero's arch only; CUDA path handles mixed Ampere/Ada.
                 "FLASHINFER_USE_CUDA_NORM": "1",
             }
         return {}
@@ -79,8 +74,6 @@ class EngineAdapter:
             if self.name == "vllm":
                 tool_args.append("--enable-auto-tool-choice")
         mode = options.get("parallelism", "tensor")
-        # Exactly one parallel dimension spans the selected devices;
-        # the others stay at one.
         parallel_args = ["--tensor-parallel-size", str(gpu_count if mode == "tensor" else 1)]
         if mode != "tensor":
             flag = "--pipeline-parallel-size" if mode == "pipeline" else "--data-parallel-size"
@@ -103,9 +96,7 @@ class EngineAdapter:
         elif self.name == "vllm" and (
             precision in ("int8", "fp8") or (precision == "int4" and mode == "pipeline")
         ):
-            # Native online INT8 only converts MoE experts; online FP8 and
-            # BitsAndBytes INT4 pipeline loads can return invalid output.
-            # Use the native TorchAO loader for those configurations.
+            # Native online INT8 converts only MoE experts; online FP8 / BNB INT4 return invalid output.
             config = {
                 "_type": {
                     "int4": "Int4WeightOnlyConfig",
@@ -162,7 +153,6 @@ class EngineAdapter:
                 model,
             ]
         elif mode == "data":
-            # The native serve CLI owns data-parallel worker/API orchestration.
             entrypoint = ["-m", "vllm.entrypoints.cli.main", "serve", model]
         else:
             entrypoint = ["-m", self.module, self.model_option, model]
@@ -269,12 +259,10 @@ def gpu_memory_fraction(gpu_ids: list[int]) -> float:
             total, free = (float(value.strip()) for value in row.split(","))
             if total <= 0 or free <= 512 or free > total:
                 raise ValueError("Insufficient available GPU memory")
-            # The engines accept one fraction for all ranks. The most
-            # constrained GPU must bound that fraction, not the first GPU.
+            # One fraction for all ranks: the most constrained GPU bounds it.
             fraction = min(fraction, (free - 512) / total)
         if fraction < 0.05:
             raise ValueError("Insufficient available GPU memory")
-        # Round down, so the reservation cannot exceed the measured free memory.
         return int(fraction * 1000) / 1000
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise RuntimeError(

@@ -1485,7 +1485,6 @@ export function SharedComposer({
         // active model's shared snapshot, which resolveFitMaxSeqLength would treat as a pin. A GGUF pane
         // with no explicit context loads at native (0 -> n_ctx_train), not the session maxSeqLength.
         const effectiveCustomContextLength = ownConfig.customContextLength;
-        // This pane's remembered vLLM / SGLang settings, sent as the single-model load sends them.
         const paneEngine = targetIsGguf ? "auto" : (ownConfig.engine ?? "auto");
         const paneEngineFields = {
           engine: paneEngine,

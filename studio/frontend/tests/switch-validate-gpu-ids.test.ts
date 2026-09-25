@@ -5,7 +5,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readSrc } from "./helpers/kit.ts";
 
-// Execute the shipped GPU selection for the preflight and for the load after a per-model reset.
 const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
 const slice = (from: string, to: string) => {
   const start = runtime.indexOf(from);

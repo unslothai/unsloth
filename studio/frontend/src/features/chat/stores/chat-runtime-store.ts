@@ -2118,8 +2118,6 @@ export function loadedGpuMemoryFields(resp: {
     // Clear the GPU pick / offload baseline a prior GGUF load left, else a stale loadedGpuIds reads as
     // dirty. gpuIdsDirty is ungated, so Reset would restore it while the picker is hidden. gpuMemoryMode
     // is kept as the standing preference, but its loaded baseline clears to null.
-    // Optional engines also place on a physical GPU. Preserve that selection
-    // across load responses and page refreshes, without GGUF offload controls.
     const managed = resp.engine === "vllm" || resp.engine === "sglang";
     const gpuIds = managed
       ? (requestedGpuIdsFromResponse(resp) ?? resp.gpu_ids ?? [0])

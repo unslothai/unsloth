@@ -1047,7 +1047,6 @@ class TestLoadHubDownloadExclusion:
         backend = LlamaCppBackend.__new__(LlamaCppBackend)
         backend.__init__()
         supplied = {
-            # GGUF always uses Studio's default backend selection.
             "engine",
             "engine_parallelism",
             "engine_precision",

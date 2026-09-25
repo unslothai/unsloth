@@ -5,7 +5,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readSrc } from "./helpers/kit.ts";
 
-// Execute the shipped compare-pane engine fields, like managed-engine-rollback.test.ts.
 const composer = readSrc("features/chat/shared-composer.tsx");
 const start = composer.indexOf("const paneEngine = ");
 const end = composer.indexOf("let loadTrustRemoteCode", start);
@@ -40,7 +39,6 @@ test("a compare pane loads its remembered vLLM or SGLang settings", () => {
     load_in_4bit: false,
     gpu_ids: [1, 2],
   });
-  // Both the preflight and the load carry them.
   assert.equal(composer.match(/\.\.\.paneEngineFields,/g)?.length, 2);
 });
 

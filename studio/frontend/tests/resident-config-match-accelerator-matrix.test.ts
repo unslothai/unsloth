@@ -482,7 +482,6 @@ test("every PerModelConfig field is either compared or deliberately excluded", (
   const excluded = new Set([
     // A client-side generation cap: no status echoes it, so it cannot force a reload.
     "maxSeqLength",
-    // Optional engine precision is covered separately below.
     "enginePrecision",
     "engineParallelism",
     // Qualifies selectedGpuIds rather than adding a dimension of its own: it is read, as

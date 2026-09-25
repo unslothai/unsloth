@@ -303,7 +303,6 @@ def test_the_image_budget_refusal_goes_through_the_callers_reject(monkeypatch):
 def test_managed_engine_preserves_native_image_parts(monkeypatch, engine, remote):
     from core.inference import external_provider
 
-    # Studio fetches remote images through its guarded fetch; the engine only sees bytes.
     monkeypatch.setattr(
         external_provider, "safe_fetch_remote_image_sync", lambda *a, **k: ("image/webp", "QUJD")
     )

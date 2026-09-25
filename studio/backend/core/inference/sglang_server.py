@@ -21,8 +21,7 @@ def _apply_torchao_config(
     filter_fn = torchao_utils.proj_filter,
 ):
     if torchao_config in ("int8wo", "int4wo-32", "fp8wo"):
-        # SGLang imports removed float8 aliases even for INT8. Use TorchAO's
-        # current config API while retaining SGLang's own projection filter.
+        # SGLang imports removed TorchAO float8 aliases even for INT8; use the current config API.
         from torchao.quantization import (
             Int8WeightOnlyConfig,
             Int4WeightOnlyConfig,

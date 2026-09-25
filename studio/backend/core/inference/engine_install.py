@@ -39,12 +39,10 @@ PROFILES = {
         "module": "sglang",
         "cuda": "cu130",
         "driver": 580,
-        # Excluded from the lock: outlines-core 0.1.26 has no Python 3.13 wheel, and
-        # SGLang imports outlines only for --grammar-backend outlines, which Studio never selects.
+        # Excluded: outlines-core 0.1.26 has no py3.13 wheel; only --grammar-backend outlines needs it.
         "omit": ("outlines", "outlines-core"),
     },
 }
-# The Python version the locks are compiled for.
 PYTHON = (3, 13)
 _BASE_PTH = "zz_unsloth_studio_base.pth"
 _REQUIREMENTS = Path(__file__).resolve().parents[2] / "requirements" / "engines"
@@ -164,8 +162,7 @@ def stale(info: dict) -> bool:
     return any(studio.get(name) != version for name, version in info.get("provided", {}).items())
 
 
-# Run by the engine's own interpreter, so it sees exactly what the engine imports across
-# both layers: every locked package at its locked version, with its requirements met.
+# Runs in the engine's interpreter, so it checks both layers as the engine imports them.
 _CHECK = r"""
 import importlib.metadata as metadata, re, sys
 from packaging.requirements import Requirement
@@ -318,7 +315,6 @@ def status(engine: str) -> dict:
         "installed_version": info.get("version") if info else None,
         "installed": info is not None,
         "in_use": in_use,
-        # A shared environment whose Studio packages changed needs a repair either way.
         "current": bool(
             info and info.get("profile_digest") == profile_digest(engine) and not outdated
         ),
@@ -384,8 +380,7 @@ def install_environment() -> dict[str, str]:
     env["UV_NO_CONFIG"] = "1"
     env["UV_CONCURRENT_DOWNLOADS"] = "4"
     env["UV_HTTP_RETRIES"] = "5"
-    # uv's clone fallback can hardlink. Only opt into clones after probing the
-    # actual cache and environment filesystems; otherwise keep writes isolated.
+    # uv's clone fallback can hardlink: opt into clones only after probing both filesystems.
     env["UV_LINK_MODE"] = "copy"
     return env
 
@@ -403,7 +398,6 @@ def package_link_mode(destination: Path) -> str:
         ):
             source.write(b"Studio package clone probe")
             source.flush()
-            # FICLONE: a distinct inode sharing copy-on-write extents.
             fcntl.ioctl(target.fileno(), 0x40049409, source.fileno())
         return "clone"
     except OSError:
@@ -469,8 +463,7 @@ def _run(engine: str, argv: list[str], cancel: threading.Event) -> None:
     reader = threading.Thread(target = drain, daemon = True)
     deadline = time.monotonic() + 3600
     try:
-        # A shutdown sweep may have finished between spawning and adoption.
-        # Recheck even when the child has already exited successfully.
+        # A shutdown sweep may have finished between spawn and adoption; recheck even on clean exit.
         if is_process_shutting_down() or cancel.is_set():
             raise RuntimeError("Installation cancelled or Studio is shutting down.")
         reader.start()
@@ -527,7 +520,6 @@ def _install(
                 if plan["shared"]
                 else "Preparing an isolated Python environment",
             )
-            # Studio's interpreter when it is the one the lock targets; uv's otherwise.
             interpreter = (
                 sys.executable if sys.version_info[:2] == PYTHON else "{}.{}".format(*PYTHON)
             )
@@ -621,8 +613,7 @@ def _install(
                     else None,
                 },
             )
-            # Keep only the active environment and one previous version. All
-            # runtime leases are excluded here, including other Studio instances.
+            # Keep the active env and one previous version; every runtime lease (any Studio) is excluded.
             keep = {destination.name, prior["directory"] if prior else None}
             for old in root.glob("env-*"):
                 if old.name not in keep and old.is_dir() and not old.is_symlink():
@@ -734,7 +725,6 @@ def rollback(engine: str) -> dict:
 
 
 def _record_manifest(engine: str) -> None:
-    # Additive evidence only. These are never prerequisites for Studio startup.
     try:
         from studio.install_manifest import update_manifest
 

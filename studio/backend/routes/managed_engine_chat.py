@@ -241,7 +241,6 @@ async def managed_tool_chat(
                     line = stripper.strip(line)
                     if line is None:
                         continue
-                # Non-streaming collection needs usage even without stream_options.
                 if (
                     payload.stream
                     and not api._wants_stream_usage(payload)
@@ -309,8 +308,6 @@ async def managed_tool_chat(
             unstarted_cleanup = unstarted_cleanup,
         )
 
-    # Client-owned calls use the native JSON response. Studio-owned calls are
-    # consumed internally and only their final text and summed usage are returned.
     result = {
         "id": completion_id,
         "object": "chat.completion",

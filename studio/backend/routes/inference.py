@@ -3860,7 +3860,6 @@ def _detect_safetensors_features(
         return {
             "supports_tools": bool(backend.models[model_id].get("supports_tools")),
             "supports_reasoning": False,
-            # Response schemas require a style even when reasoning is disabled.
             "reasoning_style": "enable_thinking",
             "reasoning_always_on": False,
             "supports_preserve_thinking": False,
@@ -7312,7 +7311,6 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         if hasattr(llama_backend, name) or hasattr(llama_backend, f"_{name}")
     }
     fields.update(
-        # Managed engines belong to the orchestrator, never the GGUF backend.
         engine = "auto",
         engine_parallelism = "tensor",
         engine_precision = "auto",
@@ -16915,8 +16913,7 @@ async def _load_model_impl(
             _restore_marker_if_prior_preview_still_resident()
             _restore_alias_if_failed_load_left_the_prior_model(backend, _prior_alias, _prior_active)
             if request.engine != "auto":
-                # A managed startup raises when its workers are cancelled.
-                # Report the same 409 as the other scoped load cancellation paths.
+                # Cancelled managed startup raises; report the scoped-cancel 409.
                 _raise_if_scoped_load_cancelled()
             raise
 
@@ -27439,8 +27436,7 @@ async def produce_openai_chat_completions(
 
     _managed_promoted_parts: list = []
     if _managed_images:
-        # Native servers accept OpenAI image parts. Preserve every turn without flattening
-        # or resizing, but fetch remote URLs here: the engine's own fetch has no SSRF guard.
+        # Fetch remote image URLs here: the engine's own fetch has no SSRF guard.
         if _messages_have_remote_image(payload.messages):
             try:
                 await asyncio.to_thread(_inline_request_remote_images, payload)

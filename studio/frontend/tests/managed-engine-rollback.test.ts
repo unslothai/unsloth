@@ -5,7 +5,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readSrc } from "./helpers/kit.ts";
 
-// Execute the shipped status patch and rollback payload, like reasoning-budget-rollback.test.ts.
 const applier = readSrc("features/chat/lib/apply-inference-status-to-store.ts");
 const start = applier.indexOf("    residentCheckpoint: checkpointId,");
 const end = applier.indexOf("  });", start);

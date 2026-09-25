@@ -2054,7 +2054,6 @@ export function useChatModelRuntime() {
           ) {
             await ensureGpuDeviceCache();
           }
-          // The staged config's GPUs, or none: what a switch that resets per-model settings loads with.
           const stagedGpuIds =
             pendingLoadConfig?.selectedGpuIds !== undefined
               ? reconcilePersistedGpuIds(

@@ -5467,8 +5467,6 @@ export function HubModelPicker({
       selected && "bg-sidebar-accent",
     );
 
-  // Discovery rows need the same pre-load settings as downloaded models, so a
-  // first-time user can select and install an optional engine before loading.
   const renderHubModelRow = (id: string, row: ReactNode) => {
     if (isKnownGgufRepo(id) || !onConfigure) return row;
     return (
@@ -7296,8 +7294,7 @@ export function HubModelPicker({
                                 hubUrl={hubRepoUrl(id)}
                                 alignMeta="hub"
                                 showSize={hubRowsShowSize}
-                                // A community row without its owner reads as an unsloth upload, and two
-                                // publishers would collide.
+                                // Without the owner a community row reads as an unsloth upload.
                                 hideOwner={isUnslothOwned(id)}
                                 downloaded={cachedIdFor(id) !== null}
                                 partial={isPartialRow(id)}
@@ -7419,8 +7416,6 @@ export function HubModelPicker({
                                 id.toLowerCase(),
                               )}
                               capabilities={capsById.get(id)}
-                              // Same meta the unfiltered Recommended row shows, so a model keeps its size chip when reached by
-                              // typing.
                               meta={
                                 isKnownGgufRepo(id)
                                   ? (recommendedMeta.get(id)?.meta ?? "GGUF")
@@ -7539,9 +7534,6 @@ export function HubModelPicker({
                                 hubUrl={hubRepoUrl(id)}
                                 alignMeta="hub"
                                 showSize={hubRowsShowSize}
-                                // Typed results are Hub rows like any other, so a repo left
-                                // half-downloaded is marked here too. Without it the row reads
-                                // as never fetched while the click resumes a download.
                                 partial={isPartialRow(id)}
                                 partialResumable={partialResumableSet.has(
                                   id.toLowerCase(),
