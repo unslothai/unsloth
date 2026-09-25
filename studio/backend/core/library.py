@@ -22,6 +22,7 @@ and layers its overlay (name, favorite, folder) on top.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import filecmp
 import functools
@@ -1623,6 +1624,10 @@ def _move_file(entry: Path, dest: Path, log: _MoveLog) -> None:
     a move never overwrites or deletes a file it did not bring. Across drives the file is copied,
     then the original removed; if the original cannot go (open in another program on Windows) the
     copy goes instead, so each file is only ever in one place."""
+    if entry.name == _FLAGS_STORE and os.path.lexists(dest):
+        # Copied over before the switch and written there since: the one left behind is older.
+        _unlink(entry)
+        return
     kept = os.path.lexists(dest) and _same_bytes(entry, dest)
     if os.path.lexists(dest) and not kept:
         dest = _free_name(dest)
@@ -1654,6 +1659,7 @@ def _move_file(entry: Path, dest: Path, log: _MoveLog) -> None:
 
 
 _STAGING_SUFFIX = ".moving.tmp"
+_FLAGS_STORE = ".flags.json"
 
 
 def _staging_name(dest: Path) -> Path:
@@ -1830,8 +1836,17 @@ def move_location(key: str, path: Optional[str]) -> Optional[str]:
         _refuse_short_space(current, target)
         previous, previous_from = relocations.chosen(key), relocations.moving_from(key)
         before = {entry.name for entry in target.iterdir()}
-        # Recorded with the folder the files leave, so a crash part way is finished on restart.
-        relocations.set_chosen(key, target, moving_from = current)
+        from core.inference import gallery_flags
+
+        # The pin/archive store is copied over first, under its lock: a flag set in the new folder
+        # before it arrived would start an empty store there, and Clear then deletes the archive.
+        # Only where a store is: the lock makes a lock file, which would then move as a file.
+        store = current / _FLAGS_STORE
+        with gallery_flags.exclusive(current) if store.is_file() else contextlib.nullcontext():
+            if store.is_file() and not os.path.lexists(target / _FLAGS_STORE):
+                shutil.copy2(store, target / _FLAGS_STORE)
+            # Recorded with the folder the files leave, so a crash part way is finished on restart.
+            relocations.set_chosen(key, target, moving_from = current)
         log = _MoveLog()
         try:
             _move_entries(current, target, log)

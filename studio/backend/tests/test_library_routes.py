@@ -1021,7 +1021,6 @@ def test_a_projects_own_files_are_listed(client, monkeypatch, tmp_path):
     assert "sandbox:project-p-lib:files/notes.txt" not in _items(client)[0]
 
 
-
 @pytest.fixture(autouse = True)
 def _temp_folders_are_ordinary(monkeypatch):
     # macOS keeps pytest's temp folders under /private/var, which the real checks refuse, and they
@@ -1211,6 +1210,35 @@ def test_a_folder_that_cannot_take_the_files_is_refused(client, tmp_path, key, t
     assert response.status_code == 400
     assert detail in response.json()["detail"]
     assert (tree(), _location(client)) == (before, folders)
+
+
+def test_a_flag_set_during_a_move_keeps_the_ones_set_before(client, tmp_path, monkeypatch):
+    from core.inference import gallery_flags, image_gallery
+
+    kept = _gallery_image("archived long ago")
+    image_gallery.set_flags(kept, archived = True)
+    fresh = _gallery_image("archived during the move")
+
+    # The images first and the store last, the order that loses it (directory order is the OS's).
+    def store_last(
+        source,
+        target,
+        log,
+        only = None,
+    ):
+        for entry in sorted(source.iterdir(), key = lambda p: p.name.startswith(".")):
+            if (only is None or only(entry)) and not library._inside(target, entry):
+                if entry.name == ".flags.json":
+                    assert image_gallery.set_flags(fresh, archived = True) is not None
+                library._move_entry(entry, target / entry.name, log)
+
+    monkeypatch.setattr(library, "_move_entries", store_last)
+    assert _move(client, "images", str(tmp_path / "Pics")).status_code == 200
+    flags = gallery_flags.read(_images())
+    assert gallery_flags.is_archived(flags, kept) and gallery_flags.is_archived(flags, fresh)
+    assert not list(_images().glob(".flags (*"))
+    image_gallery.clear()
+    assert {p.stem for p in _images().glob("*.png")} == {kept, fresh}
 
 
 def test_only_the_installation_owner_can_move(client, tmp_path, monkeypatch):
