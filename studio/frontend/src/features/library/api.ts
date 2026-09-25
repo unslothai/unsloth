@@ -290,7 +290,7 @@ export async function fetchLibraryText(
     const truncated = bytes.length > maxBytes;
     return { ...decodeNote(bytes.subarray(0, maxBytes), truncated), truncated };
   }
-  const chunks: Uint8Array[] = [];
+  const chunks: Uint8Array<ArrayBuffer>[] = [];
   let read = 0;
   let truncated = false;
   for (;;) {
@@ -298,7 +298,6 @@ export async function fetchLibraryText(
     if (done) break;
     if (read + value.length > maxBytes) {
       chunks.push(value.subarray(0, maxBytes - read));
-      read = maxBytes;
       truncated = true;
       void reader.cancel();
       break;
@@ -306,12 +305,7 @@ export async function fetchLibraryText(
     chunks.push(value);
     read += value.length;
   }
-  const bytes = new Uint8Array(read);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.length;
-  }
+  const bytes = new Uint8Array(await new Blob(chunks).arrayBuffer());
   return { ...decodeNote(bytes, truncated), truncated };
 }
 

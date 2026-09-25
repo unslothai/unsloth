@@ -116,15 +116,6 @@ export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> 
   }
 }
 
-// crypto.randomUUID only exists in secure contexts, and Studio is also served over plain http to
-// the LAN.
-function createNonce(): string {
-  if (typeof globalThis.crypto?.randomUUID === "function") {
-    return globalThis.crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
 function resetToNewChat(): void {
   clearNewChatDraft();
   const runtime = useChatRuntimeStore.getState();
@@ -138,7 +129,8 @@ function startLibraryChat(
   navigate: Navigate,
   handoff: LibraryChatHandoff,
 ): void {
-  const nonce = createNonce();
+  // A UUID, or a fallback where plain http to the LAN has no crypto.randomUUID.
+  const nonce = createModelConfigHandoffRequestId();
   resetToNewChat();
   useLibraryChatHandoffStore.getState().offer(`single:${nonce}`, handoff);
   void navigate({ to: "/chat", search: { new: nonce } });
