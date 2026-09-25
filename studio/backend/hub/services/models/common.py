@@ -89,6 +89,7 @@ def _is_model_directory(d: Path) -> bool:
                 or name.startswith("model")
                 or name.startswith("adapter_model")
                 or name.startswith("consolidated")
+                or name.startswith("openvino_model")
             )
         return False
 

@@ -1640,6 +1640,9 @@ app.include_router(picker_templates_router, prefix = "/api/picker", tags = ["pic
 app.include_router(hub_token_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(youtube_router, prefix = "/api/youtube", tags = ["youtube"])
 
+from routes.convert import router as convert_router
+app.include_router(convert_router)
+
 # Re-wrap /v1/* client errors into OpenAI/Anthropic envelopes; non-/v1 keeps {"detail": ...}.
 install_api_error_handlers(app)
 

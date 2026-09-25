@@ -151,6 +151,7 @@ export const en = {
       hub: "Model hub",
       train: "Train",
       recipes: "Recipes",
+      convert: "Convert",
       images: "Images",
       video: "Video",
       audio: "Audio",

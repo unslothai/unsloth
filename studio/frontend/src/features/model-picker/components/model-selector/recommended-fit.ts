@@ -41,6 +41,7 @@ export function isRecommendableFormat(
   isMac: boolean,
 ): boolean {
   if (isGgufId(id, hintedIsGguf)) return true;
+  if (id.toLowerCase().includes("int4") || id.toLowerCase().includes("int8") || id.toLowerCase().includes("openvino")) return true;
   return isMac;
 }
 

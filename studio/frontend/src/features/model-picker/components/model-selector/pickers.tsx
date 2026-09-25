@@ -2764,7 +2764,7 @@ export function HubModelPicker({
   onConfigure?: (id: string, meta: ModelSelectorChangeMeta) => void;
   deleteDisabled?: boolean;
   /** Section shown when not searching. Search spans all sections. */
-  section?: "downloaded" | "recommended" | "connected";
+  section?: "downloaded" | "recommended" | "connected" | "converted";
   sectionToggle?: ReactNode;
   onEject?: () => void;
   /** Restrict results to a pipeline task; undefined = all tasks (the chat default). */
@@ -4340,7 +4340,7 @@ export function HubModelPicker({
 
   // Non-GGUF cached rows are hidden in chat-only mode, so the empty-state logic must use this or the
   // picker can go blank. A task-scoped picker is exempt: the image backend loads local pipelines.
-  const visibleCachedModelRows = chatOnly && !task ? [] : visibleCachedModels;
+  const visibleCachedModelRows = chatOnly && !task ? visibleCachedModels.filter(c => c.repo_id.toLowerCase().includes("int4") || c.repo_id.toLowerCase().includes("int8") || c.repo_id.toLowerCase().includes("openvino")) : visibleCachedModels;
 
   const visibleAdditionalOnDeviceModels = useMemo(() => {
     const alreadyListed = new Set(
@@ -7238,6 +7238,32 @@ export function HubModelPicker({
                           </div>
                         );
                       })}
+                  </>
+                ) : null}
+
+                {(!showHfSection && section === "converted") ? (
+                  <>
+                    {(() => {
+                      const convertedModels = [...visibleCachedGguf, ...visibleCachedModelRows].filter(c => 
+                        c.repo_id.toLowerCase().includes("int4") || 
+                        c.repo_id.toLowerCase().includes("int8") || 
+                        c.repo_id.toLowerCase().includes("ov_") || 
+                        c.repo_id.toLowerCase().includes("openvino") ||
+                        c.repo_id.toLowerCase().includes("-ov")
+                      );
+                      if (convertedModels.length === 0) {
+                        return (
+                          <div className="px-5 py-8 text-center text-sm text-muted-foreground">
+                            No converted models found. <br/>Use the Convert tool in the sidebar to compress your models.
+                          </div>
+                        );
+                      }
+                      return convertedModels.map(c => 
+                        visibleCachedGguf.includes(c as any)
+                          ? renderDownloadedGgufRow(c as any) 
+                          : renderDownloadedModelRow(c as any)
+                      );
+                    })()}
                   </>
                 ) : null}
 

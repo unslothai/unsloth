@@ -22,6 +22,7 @@ import {
   CheckmarkCircle02Icon,
   CloudIcon,
   Download01Icon,
+  Exchange01Icon,
   RemoveCircleIcon,
   StarIcon,
 } from "@hugeicons/core-free-icons";
@@ -279,7 +280,7 @@ function ModelSelectorTrigger({
   );
 }
 
-type HubSection = "downloaded" | "recommended" | "connected";
+type HubSection = "downloaded" | "recommended" | "connected" | "converted";
 
 // The user's most recently clicked Hub section, restored on every open.
 const HUB_SECTION_KEY = "unsloth_model_selector_section";
@@ -315,6 +316,11 @@ const HUB_SECTION_TABS: { value: string; label: string; icon?: ReactNode }[] = [
     value: "recommended",
     label: "Recommended",
     icon: <HugeiconsIcon icon={StarIcon} className="size-3.5 shrink-0" />,
+  },
+  {
+    value: "converted",
+    label: "Converted",
+    icon: <HugeiconsIcon icon={Exchange01Icon} className="size-3.5 shrink-0" />,
   },
   {
     value: "downloaded",
