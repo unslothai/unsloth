@@ -1712,7 +1712,11 @@ def _format_context_length_line(load_result: dict) -> Optional[str]:
 @studio_app.callback(invoke_without_command = True)
 def studio_default(
     ctx: typer.Context,
-    force_global_env: bool = typer.Option(False, "--force-global-env", help="Bypass the Unsloth Studio venv check and run in the current global python environment. Useful for custom AI stacks like Intel XPU (Arc GPUs) or OpenVINO which are not currently autodetected by the default studio setup script."),
+    force_global_env: bool = typer.Option(
+        False,
+        "--force-global-env",
+        help = "Bypass the Unsloth Studio venv check and run in the current global python environment. Useful for custom AI stacks like Intel XPU (Arc GPUs) or OpenVINO which are not currently autodetected by the default studio setup script.",
+    ),
     port: int = typer.Option(8888, "--port", "-p"),
     host: str = typer.Option("127.0.0.1", "--host", "-H"),
     frontend: Optional[Path] = typer.Option(None, "--frontend", "-f"),
@@ -2153,7 +2157,11 @@ _RUN_PANEL_ADVANCED = "Advanced"
 )
 def run(
     ctx: typer.Context,
-    force_global_env: bool = typer.Option(False, "--force-global-env", help="Bypass the Unsloth Studio venv check and run in the current global python environment. Useful for custom AI stacks like Intel XPU (Arc GPUs) or OpenVINO which are not currently autodetected by the default studio setup script."),
+    force_global_env: bool = typer.Option(
+        False,
+        "--force-global-env",
+        help = "Bypass the Unsloth Studio venv check and run in the current global python environment. Useful for custom AI stacks like Intel XPU (Arc GPUs) or OpenVINO which are not currently autodetected by the default studio setup script.",
+    ),
     model: Optional[str] = typer.Option(
         None,
         "--model",
