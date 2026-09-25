@@ -980,9 +980,12 @@ def test_gpu_out_of_memory_falls_back_to_cpu_like_laya(monkeypatch, gpu_agent):
 
     monkeypatch.setattr(laya_runtime, "_run_model", run)
     monkeypatch.setattr(laya_runtime, "_device_name", "cuda:0")
+    released = []
+    monkeypatch.setattr(laya_runtime, "_release_memory", lambda: released.append(ran_on[:]))
     logits, tokens = laya_runtime._forward(agent, _items())
     assert logits.tolist() == [[0.5, 1.5]] and tokens == 3
     assert ran_on == ["cuda", "cpu"]
+    assert released == [["cuda"]]
     assert (agent.device.type, agent.dtype, agent.model.moved_to) == ("cpu", torch.float32, ["cpu"])
     assert laya_runtime._device_name == "cpu"
     laya_runtime._forward(agent, _items())

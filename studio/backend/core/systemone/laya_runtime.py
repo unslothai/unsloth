@@ -562,6 +562,7 @@ def _forward(agent, items: list[dict[str, Any]]):
         agent.device, agent.dtype = torch.device("cpu"), torch.float32
         agent.model.to(agent.device)
         _device_name = "cpu"
+        _release_memory()
         logits = _run_model(agent, batch)
     return logits.float().cpu().numpy(), int(batch["attention_mask"].sum())
 
