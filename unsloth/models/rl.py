@@ -250,44 +250,50 @@ def PatchRL(FastLanguageModel):
         # Force logits during eval, but restore the user's prior setting after so an explicit UNSLOTH_RETURN_LOGITS="1" is not silently turned off.
         _old_return_logits = os.environ.get("UNSLOTH_RETURN_LOGITS", "0")
         os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
-        with torch.no_grad():
-            if has_labels or loss_without_labels:
-                with self.compute_loss_context_manager():
-                    try:
-                        num_items_in_batch = self._get_num_items_in_batch(
-                            [inputs], self.args.device
+        try:
+            with torch.no_grad():
+                if has_labels or loss_without_labels:
+                    with self.compute_loss_context_manager():
+                        try:
+                            num_items_in_batch = self._get_num_items_in_batch(
+                                [inputs], self.args.device
+                            )
+                        except (AttributeError, TypeError):
+                            num_items_in_batch = None
+                        loss, outputs = self.compute_loss(
+                            model,
+                            inputs,
+                            return_outputs = True,
+                            num_items_in_batch = num_items_in_batch,
                         )
-                    except (AttributeError, TypeError):
-                        num_items_in_batch = None
-                    loss, outputs = self.compute_loss(
-                        model,
-                        inputs,
-                        return_outputs = True,
-                        num_items_in_batch = num_items_in_batch,
-                    )
-                loss = loss.mean().detach()
+                    loss = loss.mean().detach()
 
-                if isinstance(outputs, dict):
-                    logits = tuple(v for k, v in outputs.items() if k not in ignore_keys + ["loss"])
+                    if isinstance(outputs, dict):
+                        logits = tuple(
+                            v for k, v in outputs.items() if k not in ignore_keys + ["loss"]
+                        )
+                    else:
+                        logits = outputs[1:]
                 else:
-                    logits = outputs[1:]
-            else:
-                loss = None
-                with self.compute_loss_context_manager():
-                    tokenized_output = self.processing_class(
-                        inputs["prompt"],
-                        padding = True,
-                        truncation = True,
-                        return_tensors = "pt",
-                    ).to(model.device)
-                    outputs = model(**tokenized_output)
-                if isinstance(outputs, dict):
-                    logits = tuple(v for k, v in outputs.items() if k not in ignore_keys)
-                else:
-                    logits = outputs
-                if self.args.past_index >= 0:
-                    self._past = outputs[self.args.past_index - 1]
-        os.environ["UNSLOTH_RETURN_LOGITS"] = _old_return_logits
+                    loss = None
+                    with self.compute_loss_context_manager():
+                        tokenized_output = self.processing_class(
+                            inputs["prompt"],
+                            padding = True,
+                            truncation = True,
+                            return_tensors = "pt",
+                        ).to(model.device)
+                        outputs = model(**tokenized_output)
+                    if isinstance(outputs, dict):
+                        logits = tuple(v for k, v in outputs.items() if k not in ignore_keys)
+                    else:
+                        logits = outputs
+                    if self.args.past_index >= 0:
+                        self._past = outputs[self.args.past_index - 1]
+        finally:
+            # An eval that raises must not leave logits forced on: UNSLOTH_RETURN_LOGITS=1 also
+            # blocks packing and padding-free for the next train() in this process.
+            os.environ["UNSLOTH_RETURN_LOGITS"] = _old_return_logits
         if prediction_loss_only:
             return (loss, None, None)
 
