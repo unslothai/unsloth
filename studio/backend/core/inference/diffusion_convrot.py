@@ -214,12 +214,7 @@ def _install_rotation(module: Any, group_size: int) -> None:
 
 
 def warm_rotation_cache(transformer: Any, device: Any, dtype: Any) -> int:
-    """Build the Hadamard every rotated Linear of ``transformer`` will ask for at ``(device, dtype)``.
-
-    The forward reads ``_HADAMARD_CACHE``, so dynamo guards on whether the key is present: a first
-    compile that had to BUILD the matrix records "absent", and the second call recompiles the block
-    once the entry exists. Filling the cache before the first forward removes that recompile.
-    Returns the number of distinct groups warmed."""
+    """Prefill ``_HADAMARD_CACHE``: dynamo guards on key absence, so a cold first compile recompiles on call 2."""
     import torch
 
     device = torch.device(device)

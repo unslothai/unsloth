@@ -390,8 +390,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # The artifacts are safetensors, not the historical torch.save pickle, so the family has to
         # NAME them: every derived fallback ends in .pt, and without these rows the loader would ask
         # the Hub for a file that is not there and silently fall back to the dense bf16 download.
-        # int8 names the ConvRot build (diffusion_transformer_quant._INT8_FAMILY_CONVROT); the derived chain keeps
-        # the plain Qwen-Image-2.1-INT8.safetensors behind it, so a repo without the rotated file still resolves it.
+        # int8 = ConvRot build; the derived chain still falls back to the plain INT8 file.
         prequant_filenames = (
             ("fp8", "Qwen-Image-2.1-FP8.safetensors"),
             ("int8", "Qwen-Image-2.1-INT8-ConvRot.safetensors"),

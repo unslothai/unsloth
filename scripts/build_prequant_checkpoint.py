@@ -100,8 +100,7 @@ def upload_destination(
         and upload_repo
         and convrot_spec_for_scheme(scheme, getattr(fam, "name", None))[0]
     ):
-        # the declared name is this family's ROTATED artifact; a plain build goes to the derived name the chain keeps
-        # behind it, rather than over the rotated one
+        # declared name is the ROTATED artifact; a plain build must not overwrite it
         from core.inference.diffusion_prequant import prequant_repo_filename
         return prequant_repo_filename(upload_repo, scheme, ".safetensors")
     preferred = family_prequant_filename(fam, scheme)
@@ -217,8 +216,7 @@ def main(argv = None) -> int:
     if fam is None:
         print(f"error: unknown family '{args.family}'", flush = True)
         return 2
-    # Unset follows the runtime path's family spec, so offline == runtime; an explicit group rotates every rotatable
-    # quantized Linear, and 0 builds plain.
+    # unset = runtime family spec (offline == runtime); explicit group rotates all; 0 = plain
     convrot_suffixes: tuple = ()
     if args.convrot_groupsize is None:
         convrot_group, convrot_suffixes = convrot_spec_for_scheme(scheme, fam.name)

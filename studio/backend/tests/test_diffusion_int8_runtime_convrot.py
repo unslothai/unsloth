@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Runtime ConvRot on the int8 quantize path (Qwen-Image-2.1): which Linears rotate, that the dense model is
-unchanged by it, and that it happens before quantize_ and only for the families that declare it."""
+"""Runtime int8 ConvRot: target Linears, dense exactness, ordering before quantize_, family gating."""
 
 import sys
 import types
@@ -205,13 +204,10 @@ def test_quantize_transformer_leaves_fp8_unrotated(monkeypatch):
 
 
 def test_runtime_convrot_warms_the_hadamard_for_the_target_device():
-    # the forward looks the matrix up in a module-level cache; if the first compile has to build it, dynamo guards on
-    # its absence and the block recompiles on the second call
     from core.inference import diffusion_convrot as cr
 
     cr._HADAMARD_CACHE.clear()
     model = _Tiny()
-    # the indexed torch_device wins over the bare "cuda" a DiffusionDeviceTarget keeps in .device
     target = types.SimpleNamespace(device = "cuda", torch_device = "cpu", dtype = torch.bfloat16)
     tq.apply_runtime_convrot(
         model, tq.TQ_INT8, "qwen-image-2.1", _filter("qwen-image-2.1"), target = target
@@ -249,7 +245,6 @@ def test_unreachable_hub_still_loads_the_plain_artifact_already_cached(monkeypat
 
     plain = tmp_path / "Qwen-Image-2.1-INT8.safetensors"
     plain.write_bytes(b"weights")
-    # readability is torchao's to answer, and the runners without it are not what this is about
     monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda *a, **k: True)
     monkeypatch.setattr(
         "huggingface_hub.try_to_load_from_cache",

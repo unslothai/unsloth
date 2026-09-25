@@ -196,11 +196,7 @@ def apply_small_m_padding(
     return wrapped
 
 
-# Int8 PER-FAMILY ConvRot (diffusion_convrot) for the runtime quantize path and the offline builder: the block
-# Hadamard group, and the fqn suffixes whose input gets rotated. Qwen-Image-2.1 in Studio, 1024x1024 / 40 steps, 48
-# prompt-seed pairs against the bf16 transformer: plain int8 LPIPS 0.054, every block Linear rotated 0.031; rotating
-# only q/k/v + img_mlp.out is 0.044 (worse, paired). B200 compiled step: bf16 60.7 ms, plain 46.5, rotated 53.0.
-# Not an exclusion, so a plain artifact still validates and keeps loading as it did.
+# Per-family int8 ConvRot (group, rotated fqn suffixes); not an exclusion, so plain artifacts still validate.
 _INT8_FAMILY_CONVROT: dict[str, tuple[int, tuple[str, ...]]] = {
     "qwen-image-2.1": (
         256,
@@ -229,9 +225,7 @@ def convrot_spec_for_scheme(
 def convrot_fqns(
     transformer: Any, filter_fn: Any, group: int, suffixes: tuple[str, ...]
 ) -> tuple[str, ...]:
-    """The Linears ``filter_fn`` will quantize whose fqn ends in one of ``suffixes`` and whose input width
-    ``group`` divides. A LoRA-baked target is PEFT's ``<suffix>.base_layer``; rotating it is still exact, since the
-    adapter reads the unrotated input."""
+    """Quantized Linears matching ``suffixes`` with width divisible by ``group`` (LoRA ``base_layer`` stays exact)."""
     from .diffusion_convrot import rotatable_fqns
 
     rotatable, _ = rotatable_fqns(transformer, filter_fn, group)
@@ -248,8 +242,7 @@ def apply_runtime_convrot(
     target: Any = None,
     logger: Any = None,
 ) -> tuple[str, ...]:
-    """Rotate this family's ConvRot Linears BEFORE quantize_. A failure after this leaves an exact dense model
-    (rotated weights with the online rotation installed), so the caller's fallback stays correct."""
+    """Rotate BEFORE quantize_; a later failure leaves an exact dense model, so fallback stays correct."""
     group, suffixes = convrot_spec_for_scheme(scheme, family)
     if not group:
         return ()
@@ -259,7 +252,7 @@ def apply_runtime_convrot(
         transformer, convrot_fqns(transformer, filter_fn, group, suffixes), group
     )
     if rotated:
-        # the device the forward will run on, which is not where the weights sit when a load quantizes on CPU first
+        # forward device, not the weights' (CPU-first quantize)
         weight = transformer.get_submodule(rotated[0]).weight
         device = getattr(target, "torch_device", None) or getattr(target, "device", None)
         dtype = getattr(target, "dtype", None)

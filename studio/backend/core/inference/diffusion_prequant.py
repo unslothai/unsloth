@@ -1055,8 +1055,7 @@ def _resolve_checkpoint_path(
                 # happened. Offline, a cache miss is the only verdict there is, so the chain is
                 # walked exactly as for a 404.
                 if not local_files_only or last:
-                    # Unreachable, but a later name already in the cache still loads without a fetch
-                    # (a newer artifact declared ahead of the one the user downloaded earlier).
+                    # a later, already-cached name (older download) still loads without a fetch
                     cached = (
                         None
                         if last
