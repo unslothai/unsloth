@@ -1154,7 +1154,7 @@ def test_the_app_control_verdict_polls_before_reporting_an_allow():
     assert "Start-Sleep -Seconds 3" in verdict
     # The scoping still happens inside the loop, or polling proves nothing.
     assert verdict.index("foreach ($attempt in 1..10) {") < verdict.index(
-        '$_.Message -like "*$tail*"'
+        '$tail -and $subject -like "*$tail*"'
     )
 
 
@@ -1967,3 +1967,118 @@ def test_events_are_scoped_by_the_evaluated_file_not_the_requesting_process():
     # EventData map is read once and exported as before.
     assert "$subject = $msg" in shaped
     assert "EventData   = $data" in shaped
+
+
+def _verdict_scope_snippet():
+    workflow = WORKFLOW.read_text(encoding = "utf-8")
+    verdict = workflow[workflow.index("      - name: Verdict\n        if: always()") :]
+    verdict = verdict[: verdict.index("      - name: Export the CodeIntegrity events")]
+    start = verdict.index("            $ours = @($events | Where-Object {")
+    end = verdict.index("            })\n", start) + len("            })\n")
+    return verdict[start:end]
+
+
+def test_the_app_control_verdict_scopes_by_the_evaluated_file(tmp_path):
+    """A 3076 message names the requesting process and the file it tried to
+    load, so matching the whole message counted an in-runtime llama-server
+    loading a file outside the runtime as a runtime file blocked. The verdict
+    scopes by the EventData file name, as the probe's collector does, and
+    falls back to the message only when the event carries none."""
+    import shutil
+
+    snippet = _verdict_scope_snippet()
+    assert "$_.Message -like" not in snippet
+    assert "'File Name'" in snippet and "'FileNameBuffer'" in snippet
+    assert "([xml] $_.ToXml()).Event.EventData.Data" in snippet
+    assert '$tail -and $subject -like "*$tail*"' in snippet
+
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is required to drive the verdict scoping")
+    driver = tmp_path / "drive.ps1"
+    driver.write_text(
+        r"""
+param([string]$Snippet)
+function New-Ev([string]$msg, [hashtable]$data) {
+  $x = '<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><EventData>'
+  foreach ($k in $data.Keys) { $x += "<Data Name='$k'>$([Security.SecurityElement]::Escape($data[$k]))</Data>" }
+  $x += '</EventData></Event>'
+  $o = [pscustomobject]@{ Message = $msg; Tag = '' }
+  $o | Add-Member -MemberType ScriptMethod -Name ToXml -Value ([scriptblock]::Create("'" + $x.Replace("'", "''") + "'"))
+  $o
+}
+$tail = [Management.Automation.WildcardPattern]::Escape('\a\rt') + '\'
+$rt = '\Device\HarddiskVolume3\a\rt\'
+$out = '\Device\HarddiskVolume3\elsewhere\x.dll'
+$e1 = New-Ev "Process $($rt)llama-server.exe attempted to load $out" @{ 'File Name' = $out; 'Process Name' = "$($rt)llama-server.exe" }
+$e1.Tag = 'outside'
+$e2 = New-Ev "Process C:\w\pwsh.exe attempted to load $($rt)ggml.dll" @{ 'File Name' = "$($rt)ggml.dll"; 'Process Name' = 'C:\w\pwsh.exe' }
+$e2.Tag = 'inside'
+$e3 = New-Ev "Process $($rt)llama-server.exe attempted to load $out" @{ 'FileNameBuffer' = $out }
+$e3.Tag = 'outside-buffer'
+$e4 = New-Ev "no data, loaded $($rt)cuda.dll" @{ }
+$e4.Tag = 'fallback'
+$events = @($e1, $e2, $e3, $e4)
+. ([scriptblock]::Create($Snippet))
+($ours | ForEach-Object Tag) -join ','
+""",
+        encoding = "utf-8",
+    )
+    proc = subprocess.run(
+        [pwsh, "-NoProfile", "-File", str(driver), "-Snippet", snippet],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    assert proc.returncode == 0, proc.stdout[-1500:] + proc.stderr[-1500:]
+    assert proc.stdout.strip() == "inside,fallback", proc.stdout + proc.stderr
+
+
+def test_a_studio_whose_record_cannot_be_written_is_stopped_and_fails(tmp_path):
+    """An elevated Studio with no probe-studio.json is one revert can neither
+    stop nor report, so a failed record write must stop the process tree and
+    fail the stage instead of warning and carrying on."""
+    import shutil
+
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is required to drive the probe functions")
+    driver = tmp_path / "drive.ps1"
+    driver.write_text(
+        r"""
+param([string]$Src,[string]$Run)
+$a=[System.Management.Automation.Language.Parser]::ParseFile($Src,[ref]$null,[ref]$null)
+foreach($f in $a.FindAll({$args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true)){
+  if($f.Name -eq 'Start-Studio'){ Invoke-Expression $f.Extent.Text } }
+$global:stopped = @()
+function Get-RunDir { $Run }
+function Stop-ProbeStudio($d){ $true }
+function Test-StudioResponding($p){ $true }
+function Start-Sleep { }
+function Stop-ProcessTree([int]$id){ $global:stopped += $id }
+function Start-Process { [pscustomobject]@{ Id = 4242; StartTime = [datetime]::UtcNow } }
+function Set-Content { throw 'disk full' }
+$threw = $false
+try { Start-Studio 'py' 8888 "$Run/log" | Out-Null } catch { $threw = $true; Write-Host $_ }
+if (-not $threw) { exit 21 }
+if ($global:stopped -notcontains 4242) { exit 22 }
+exit 0
+""",
+        encoding = "utf-8",
+    )
+    proc = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-File",
+            str(driver),
+            "-Src",
+            str(PROBE_DIR / "sac-probe.ps1"),
+            "-Run",
+            str(tmp_path),
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    assert proc.returncode == 0, proc.stdout[-1500:] + proc.stderr[-1500:]

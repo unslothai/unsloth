@@ -464,7 +464,21 @@ jobs:
                 exit 1
               }
             }
-            $ours = @($events | Where-Object { $tail -and $_.Message -like "*$tail*" })
+            # The evaluated file, not the whole message: a 3076 message names
+            # the requesting process as well as the file it tried to load, so
+            # an in-runtime process loading something outside the runtime would
+            # otherwise count as a runtime file blocked. Same field order the
+            # probe's collector uses; Message only when no file name is carried.
+            $ours = @($events | Where-Object {
+              $subject = $_.Message
+              try {
+                foreach ($node in ([xml] $_.ToXml()).Event.EventData.Data) {
+                  if ($node.Name -eq 'File Name' -and $node.'#text') { $subject = [string] $node.'#text'; break }
+                  if ($node.Name -eq 'FileNameBuffer' -and $node.'#text') { $subject = [string] $node.'#text' }
+                }
+              } catch { }
+              $tail -and $subject -like "*$tail*"
+            })
             if ($ours.Count -gt 0) { break }
             if ($attempt -lt 10) { Start-Sleep -Seconds 3 }
           }

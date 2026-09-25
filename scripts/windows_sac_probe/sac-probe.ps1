@@ -567,13 +567,15 @@ function Start-Studio([string] $python, [int] $port, [string] $logPath) {
     # Every stage is elevated, so this Studio and every terminal or Python tool
     # it spawns carry an administrator token. Recorded so revert stops exactly
     # this instance and nothing the operator started.
-    # Best effort: a missing record only means revert cannot stop it, which it
-    # then says, so it must never fail the start itself.
+    # Not best effort: an elevated Studio with no record is one revert can
+    # neither stop nor report, so a failed write stops it and fails the stage.
     try {
         @{ Id = $proc.Id; StartTicks = $proc.StartTime.ToUniversalTime().Ticks } | ConvertTo-Json |
-            Set-Content -LiteralPath (Join-Path (Get-RunDir) 'probe-studio.json') -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path (Get-RunDir) 'probe-studio.json') -Encoding UTF8 -ErrorAction Stop
     } catch {
-        Write-Warning "could not record the Studio process for revert: $_"
+        $recordError = $_
+        Stop-ProcessTree $proc.Id
+        throw "could not record the elevated Studio process for revert, so it was stopped rather than left running unrecorded: $recordError"
     }
 
     # Studio imports torch on a warm thread, so first start is slow. Poll rather
