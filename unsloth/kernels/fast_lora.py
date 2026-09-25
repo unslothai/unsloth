@@ -157,7 +157,7 @@ class LoRA_MLP(torch.autograd.Function):
             and downW_quant.shape[1] == 1
             and downW_quant.numel() > 1
         ):
-            # Row scales belong to downW, not downW.t(); a square shape cannot distinguish them.
+            # downW.t() hides which axis the scales index when downW is square.
             downW_dequant = fast_dequantize(downW, downW_quant)
             DW = matmul_lora(dY, downW_dequant.t(), None, downB, downA, downS)
             del downW_dequant
@@ -185,8 +185,7 @@ class LoRA_MLP(torch.autograd.Function):
         d_gateA.addmm_(X.t(), de @ gateB.t(), alpha = gateS, beta = 0)
         d_gateB.addmm_(gateA.t() @ X.t(), de, alpha = gateS, beta = 0)
 
-        # dX = matmul_lora(df, upW.t(), ...) + matmul_lora(de, gateW.t(), ...), expanded below.
-        # Dequantize in the stored orientation to preserve FP8 scale axes.
+        # Dequantize W, not W.t(): FP8 scale axes follow the stored orientation.
         upW = fast_dequantize(upW, upW_quant)
         dX = torch.matmul(df, upW, out = X if ctx.inplace else None)
         del upW
@@ -468,7 +467,6 @@ class LoRA_QKV(torch.autograd.Function):
         d_VA.addmm_(X.t(), dV @ VB.t(), alpha = VS, beta = 0)
         d_VB.addmm_(VA.t() @ X.t(), dV, alpha = VS, beta = 0)
 
-        # Combine the per-projection derivatives into dX.
         QW = fast_dequantize(QW, QW_quant)
         dX = torch.matmul(dQ, QW, out = X if ctx.inplace else None)
         del QW
@@ -599,7 +597,6 @@ class LoRA_W(torch.autograd.Function):
         d_A.addmm_(X.t(), dY @ B.t(), alpha = S, beta = 0)
         d_B.addmm_(A.t() @ X.t(), dY, alpha = S, beta = 0)
 
-        # Get derivative for dX
         W = fast_dequantize(W, W_quant)
         dX = dY @ W
         del W
