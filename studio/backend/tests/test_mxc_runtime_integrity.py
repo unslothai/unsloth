@@ -95,14 +95,17 @@ def test_reparse_runtime_directory_is_rejected(runtime, tmp_path):
 
 
 def test_release_identity_is_fixed_to_microsoft_v080():
+    # The npm package ships the v0.8.0 release's x64 binaries byte for byte, without symbols.
     assert mxc_runtime.RELEASE_URL == (
-        "https://github.com/microsoft/mxc/releases/download/v0.8.0/mxc-release-binaries.zip"
+        "https://registry.npmjs.org/@microsoft/mxc-sdk/-/mxc-sdk-0.8.0.tgz"
     )
     assert mxc_runtime.MXC_REVISION == "7dac1a952f0c9ad13f0a4cb089c4e0e8b3e0013a"
-    assert mxc_runtime.RELEASE_ARCHIVE_SIZE == 358_007_638
+    assert mxc_runtime.RELEASE_ARCHIVE_SIZE == 25_881_758
     assert mxc_runtime.RELEASE_ARCHIVE_SHA256 == (
-        "5c3a27073ba18eddf97efb4caad0f8b201c40a18d17b70f3a1e3847fb6232e3c"
+        "06bb2399d7e98ab1907acf851e12a4e44748dd467b79d3e53c2f2fbf569da14e"
     )
+    assert mxc_runtime.RELEASE_MEMBER == "package/bin/x64/wxc-exec.exe"
+    assert mxc_runtime.RELEASE_HOST_PREP_MEMBER == "package/bin/x64/wxc-host-prep.exe"
     assert mxc_runtime.WXC_EXEC_SIZE == 9_478_968
     assert mxc_runtime.WXC_EXEC_SHA256 == (
         "6049c64723af1173c3739dc6cd6b2f33f6c021bb2832c4216233cba7f71aee9a"

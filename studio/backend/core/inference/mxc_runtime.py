@@ -21,15 +21,17 @@ MXC_SCHEMA_VERSION = "0.8.0-alpha"
 PROFILE_ID = "unsloth-mxc-windows-processcontainer-v2"
 RELEASE_REPOSITORY = "microsoft/mxc"
 RELEASE_TAG = "v0.8.0"
-RELEASE_ASSET = "mxc-release-binaries.zip"
-RELEASE_URL = "https://github.com/microsoft/mxc/releases/download/v0.8.0/mxc-release-binaries.zip"
-RELEASE_ARCHIVE_SIZE = 358_007_638
-RELEASE_ARCHIVE_SHA256 = "5c3a27073ba18eddf97efb4caad0f8b201c40a18d17b70f3a1e3847fb6232e3c"
-RELEASE_MEMBER = "x64/wxc-exec.exe"
+# Microsoft's @microsoft/mxc-sdk 0.8.0 npm package: every x64 binary is byte-identical to the
+# v0.8.0 release zip (358 MB, which adds only .pdb/.dwp symbols), at 26 MB.
+RELEASE_ASSET = "@microsoft/mxc-sdk@0.8.0"
+RELEASE_URL = "https://registry.npmjs.org/@microsoft/mxc-sdk/-/mxc-sdk-0.8.0.tgz"
+RELEASE_ARCHIVE_SIZE = 25_881_758
+RELEASE_ARCHIVE_SHA256 = "06bb2399d7e98ab1907acf851e12a4e44748dd467b79d3e53c2f2fbf569da14e"
+RELEASE_MEMBER = "package/bin/x64/wxc-exec.exe"
 WXC_EXEC_SIZE = 9_478_968
 WXC_EXEC_SHA256 = "6049c64723af1173c3739dc6cd6b2f33f6c021bb2832c4216233cba7f71aee9a"
 # Tier 3 host preparation, elevated; never needed by the BaseContainer path.
-RELEASE_HOST_PREP_MEMBER = "x64/wxc-host-prep.exe"
+RELEASE_HOST_PREP_MEMBER = "package/bin/x64/wxc-host-prep.exe"
 WXC_HOST_PREP_SIZE = 913_728
 WXC_HOST_PREP_SHA256 = "a9b8b14a11a1c5888641297c26abca547c2afa4435085c03ccfebd1deface310"
 HOST_PREP_STEPS = ("prepare-system-drive", "prepare-null-device")

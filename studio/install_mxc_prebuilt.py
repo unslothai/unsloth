@@ -9,13 +9,12 @@ import argparse
 import os
 from pathlib import Path, PurePosixPath
 import shutil
-import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import urllib.error
 import urllib.request
-import zipfile
 
 _STUDIO_DIR = Path(__file__).resolve().parent
 if str(_STUDIO_DIR) not in sys.path:
@@ -42,7 +41,7 @@ def _download(destination: Path) -> None:
     except (OSError, urllib.error.URLError) as exc:
         destination.unlink(missing_ok = True)
         raise MxcInstallError(
-            f"could not download the pinned Microsoft MXC release: {exc}"
+            f"could not download the pinned Microsoft MXC package: {exc}"
         ) from exc
 
 
@@ -65,12 +64,12 @@ def _already_installed(install_dir: Path) -> bool:
     return True
 
 
-def _validate_archive_entries(bundle: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
+def _validate_archive_entries(bundle: tarfile.TarFile) -> dict[str, tarfile.TarInfo]:
     members = _approved_members()
     seen: set[str] = set()
-    approved: dict[str, list[zipfile.ZipInfo]] = {name: [] for name in members}
-    for entry in bundle.infolist():
-        name = entry.filename
+    approved: dict[str, list[tarfile.TarInfo]] = {name: [] for name in members}
+    for entry in bundle.getmembers():
+        name = entry.name
         path = PurePosixPath(name)
         if (
             not name
@@ -79,23 +78,22 @@ def _validate_archive_entries(bundle: zipfile.ZipFile) -> dict[str, zipfile.ZipI
             or any(part in {"", ".", ".."} for part in path.parts)
         ):
             raise MxcInstallError("the Microsoft MXC archive contains an unsafe member path")
-        folded = name.casefold()
+        folded = name.rstrip("/").casefold()
         if folded in seen:
             raise MxcInstallError("the Microsoft MXC archive contains a duplicate member")
         seen.add(folded)
-        mode = (entry.external_attr >> 16) & 0xFFFF
-        if stat.S_ISLNK(mode):
-            raise MxcInstallError("the Microsoft MXC archive contains a symbolic link")
+        if not (entry.isfile() or entry.isdir()):
+            raise MxcInstallError("the Microsoft MXC archive contains a link or special file")
         if name in approved:
             approved[name].append(entry)
-    result: dict[str, zipfile.ZipInfo] = {}
+    result: dict[str, tarfile.TarInfo] = {}
     for name, (target, size) in members.items():
         if len(approved[name]) != 1:
             raise MxcInstallError(
                 f"the Microsoft MXC archive does not contain one approved {target}"
             )
         entry = approved[name][0]
-        if entry.is_dir() or entry.file_size != size:
+        if not entry.isfile() or entry.size != size:
             raise MxcInstallError(
                 f"the approved {target} archive member has an unexpected shape or size"
             )
@@ -118,7 +116,7 @@ def install_mxc_release(install_dir: Path) -> bool:
 
         stage = Path(tempfile.mkdtemp(prefix = f".{install_dir.name}-", dir = install_dir.parent))
         try:
-            archive = stage / ".mxc-release.zip"
+            archive = stage / ".mxc-sdk.tgz"
             _download(archive)
             actual_size = archive.stat().st_size
             if actual_size != mxc_runtime.RELEASE_ARCHIVE_SIZE:
@@ -133,13 +131,17 @@ def install_mxc_release(install_dir: Path) -> bool:
                     f"expected {mxc_runtime.RELEASE_ARCHIVE_SHA256}, got {actual_digest}"
                 )
             try:
-                with zipfile.ZipFile(archive) as bundle:
+                with tarfile.open(archive, "r:gz") as bundle:
                     for target, entry in _validate_archive_entries(bundle).items():
-                        with bundle.open(entry) as source, (stage / target).open("wb") as output:
+                        # Streamed by name, never tar.extract: the member path is not trusted.
+                        source = bundle.extractfile(entry)
+                        if source is None:
+                            raise MxcInstallError(f"the approved {target} member is unreadable")
+                        with source, (stage / target).open("wb") as output:
                             shutil.copyfileobj(source, output, length = 1024 * 1024)
                             output.flush()
                             os.fsync(output.fileno())
-            except (OSError, zipfile.BadZipFile) as exc:
+            except (OSError, tarfile.TarError) as exc:
                 raise MxcInstallError("the pinned Microsoft MXC archive is invalid") from exc
             archive.unlink()
             mxc_runtime._validate_runtime(stage)

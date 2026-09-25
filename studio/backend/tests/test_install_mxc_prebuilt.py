@@ -8,7 +8,7 @@ import io
 import os
 from pathlib import Path
 import stat
-import zipfile
+import tarfile
 
 import pytest
 
@@ -21,15 +21,22 @@ assert _SPEC.loader is not None
 _SPEC.loader.exec_module(installer)
 
 
+_HARDLINK = -1
+
+
 def _archive(entries: list[tuple[str, bytes, int | None]]) -> bytes:
     output = io.BytesIO()
-    with zipfile.ZipFile(output, "w") as bundle:
+    with tarfile.open(fileobj = output, mode = "w:gz") as bundle:
         for name, payload, mode in entries:
-            info = zipfile.ZipInfo(name)
-            if mode is not None:
-                info.create_system = 3
-                info.external_attr = mode << 16
-            bundle.writestr(info, payload)
+            info = tarfile.TarInfo(name)
+            if mode == _HARDLINK or (mode is not None and stat.S_ISLNK(mode)):
+                info.type = tarfile.LNKTYPE if mode == _HARDLINK else tarfile.SYMTYPE
+                info.linkname = payload.decode()
+                bundle.addfile(info)
+                continue
+            info.size = len(payload)
+            info.mode = 0o644
+            bundle.addfile(info, io.BytesIO(payload))
     return output.getvalue()
 
 
@@ -63,11 +70,11 @@ def official_release(tmp_path, monkeypatch):
             ("README.txt", b"Microsoft MXC release", None),
             (installer.mxc_runtime.RELEASE_MEMBER, payload, stat.S_IFREG | 0o644),
             (installer.mxc_runtime.RELEASE_HOST_PREP_MEMBER, _HOST_PREP, stat.S_IFREG | 0o644),
-            ("arm64/wxc-host-prep.exe", b"arm64", stat.S_IFREG | 0o644),
+            ("package/bin/arm64/wxc-host-prep.exe", b"arm64", stat.S_IFREG | 0o644),
         ]
     )
     _pin_host_prep(monkeypatch)
-    source = tmp_path / "official.zip"
+    source = tmp_path / "official.tgz"
     source.write_bytes(archive)
     monkeypatch.setattr(installer.sys, "platform", "win32")
     monkeypatch.setattr(installer.mxc_runtime.sys, "platform", "win32")
@@ -150,8 +157,9 @@ def test_archive_checksum_mismatch_never_becomes_active(tmp_path, monkeypatch, o
             (installer.mxc_runtime.RELEASE_MEMBER, b"official-wxc", None),
             (installer.mxc_runtime.RELEASE_MEMBER, b"official-wxc", None),
         ],
-        [("../x64/wxc-exec.exe", b"official-wxc", None)],
+        [("../package/bin/x64/wxc-exec.exe", b"official-wxc", None)],
         [(installer.mxc_runtime.RELEASE_MEMBER, b"target", stat.S_IFLNK | 0o777)],
+        [(installer.mxc_runtime.RELEASE_MEMBER, b"package/other.exe", _HARDLINK)],
         [(installer.mxc_runtime.RELEASE_MEMBER, b"official-wxc", None)],
         [
             (installer.mxc_runtime.RELEASE_MEMBER, b"official-wxc", None),
@@ -168,6 +176,7 @@ def test_archive_checksum_mismatch_never_becomes_active(tmp_path, monkeypatch, o
         "duplicate",
         "traversal",
         "symlink",
+        "hardlink",
         "host_prep_missing",
         "host_prep_size",
         "host_prep_duplicate",
