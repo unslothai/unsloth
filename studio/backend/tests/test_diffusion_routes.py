@@ -2753,9 +2753,7 @@ def test_a_gpu_refusal_on_a_gated_base_is_not_blamed_on_the_family_deny(monkeypa
     monkeypatch.setattr(
         diffusion_module, "_pipeline_quant_uncompilable_reason", lambda *a, **k: None
     )
-    monkeypatch.setattr(
-        diffusion_module, "select_transformer_quant_scheme", lambda *a, **k: None
-    )
+    monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", lambda *a, **k: None)
     import core.inference.diffusion_transformer_quant as tq
 
     monkeypatch.setattr(tq, "torchao_unavailable_reason", lambda: None)

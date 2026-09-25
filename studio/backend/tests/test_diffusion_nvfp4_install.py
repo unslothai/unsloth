@@ -1554,8 +1554,10 @@ def test_an_unreported_failure_does_not_revert_a_concurrent_upgrade(env):
 
     def run(cmd, **kwargs):
         result = real_run(cmd, **kwargs)
-        if "install" in cmd and "uninstall" not in cmd and any(
-            a.startswith("flashinfer-python==") for a in cmd
+        if (
+            "install" in cmd
+            and "uninstall" not in cmd
+            and any(a.startswith("flashinfer-python==") for a in cmd)
         ):
             return _Result(1, "")
         return result
