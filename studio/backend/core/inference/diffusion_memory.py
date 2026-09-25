@@ -917,7 +917,6 @@ def _streamable_components(pipe: Any, torch: Any) -> dict[str, tuple[Any, str]]:
 
 
 def _module_storage_bytes(module: Any, seen: set[int]) -> int:
-    """Bytes held by ``module``'s parameters and buffers, counting each tensor in ``seen`` once."""
     storage_bytes = 0
     for tensor in list(module.parameters(recurse = True)) + list(module.buffers(recurse = True)):
         if id(tensor) in seen:
@@ -928,9 +927,7 @@ def _module_storage_bytes(module: Any, seen: set[int]) -> int:
 
 
 def loaded_text_encoder_mib(pipe: Any) -> Optional[int]:
-    """MiB the assembled pipeline's text encoders hold as loaded, or None when there is nothing to
-    measure. Reads the weights themselves, so a hosted pre-cast fp8 encoder counts at its fp8 size
-    and one whose injection fell back counts dense."""
+    """MiB the pipe's text encoders hold as loaded (pre-cast fp8 counts at fp8 size), or None."""
     try:
         import torch
 
@@ -946,8 +943,7 @@ def loaded_text_encoder_mib(pipe: Any) -> Optional[int]:
 
 
 def largest_streamable_companion_mib(pipe: Any) -> Optional[int]:
-    """MiB of the largest text encoder ``refine_memory_plan_for_components`` could stream, measured as
-    loaded, or None when there is nothing to measure."""
+    """MiB of the largest text encoder refinement could stream, as loaded, or None."""
     try:
         import torch
         mib = 1024 * 1024
@@ -962,7 +958,6 @@ def largest_streamable_companion_mib(pipe: Any) -> Optional[int]:
 
 
 def _holds_torchao_tensors(module: Any) -> bool:
-    """Whether ``module`` carries torchao-quantised weights."""
     try:
         from torchao.utils import TorchAOBaseTensor
     except Exception:  # noqa: BLE001 - no torchao, nothing quantised by it
@@ -995,8 +990,7 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
         transformer = getattr(pipe, "transformer", None)
         if not isinstance(components, dict) or not isinstance(transformer, torch.nn.Module):
             return plan
-        # Streaming cannot move torchao weights, and the loader quantised under whole-module offload only because the
-        # quantised transformer and every text encoder fit the budget (a torchao numel reads at its bf16 size here).
+        # Streaming cannot move torchao weights; the loader already checked fit (torchao numel reads bf16-sized here).
         if _holds_torchao_tensors(transformer):
             return plan
         streamable = _streamable_components(pipe, torch)

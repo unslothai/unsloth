@@ -1772,9 +1772,7 @@ class DiffusionBackend:
                 or normalize_memory_mode(memory_mode) == MEMORY_MODE_BALANCED
             ):
                 # Not a measurement: balanced and low_vram name their policy outright, and the legacy flag forces
-                # model offload. A pipeline quantises under whole-module offload only (see load_pipeline), and a GGUF
-                # pick swaps in the dense quantised transformer only when it fits resident, so the strict refusal
-                # would land after the resident model was already gone.
+                # model offload; refusing late would land after the resident model was already evicted.
                 requested_memory = normalize_memory_mode(memory_mode) or "cpu_offload"
                 reason = (
                     f"'{requested_memory}' memory places the transformer under CPU offload, and a "
@@ -5293,10 +5291,8 @@ class DiffusionBackend:
                     )
 
                     # Quantise dense bf16 pipeline denoisers in place. The blocker excludes UNet and pre-quantised
-                    # pipelines; an offloaded plan stays dense unless it is whole-module (see below). The pipeline is
-                    # still on the CPU here, unlike the GGUF path, which quantises after _assemble_pipe places it. Both
-                    # orders give bit-identical output: apply_memory_plan's one-shot `pipe.to(placement)` is survived
-                    # by the subclasses (measured on sm_89, fp8 and int8, max|diff| 0.0).
+                    # pipelines; offloaded plans stay dense unless whole-module. Quantising on CPU (before placement)
+                    # is bit-identical to the GGUF order (sm_89, fp8 + int8, max|diff| 0.0).
                     if (
                         pipe is not None
                         and kind == "pipeline"
@@ -5334,9 +5330,7 @@ class DiffusionBackend:
                                     if preview_scheme is not None
                                     else None
                                 )
-                                # The table's encoder is bf16, but a hosted pre-cast fp8 encoder is
-                                # already in the pipe at about half that. Size what the pipe holds
-                                # (a failed injection measures dense), capped at the table.
+                                # Table encoder is bf16; a pre-cast fp8 one is ~half, so size what the pipe holds, capped.
                                 loaded_te_mib = loaded_text_encoder_mib(pipe)
                                 if (
                                     estimate is not None
@@ -5377,11 +5371,9 @@ class DiffusionBackend:
                                             plan.offload_policy,
                                         )
                                         plan = replanned
-                            # Only whole-module offload moves torchao weights through Studio's render: diffusers'
-                            # group-offload stream cache aliases them (its .cpu() returns the live weight) and the
-                            # streamless path cannot swap_tensors a compiled module's parameters. Whole-module offload
-                            # onloads one component at a time, so the transformer must fit resident by the planner's
-                            # own accounting and no text encoder may need the streaming this rules out.
+                            # Group offload is WRONG for torchao: its stream cache aliases weights (.cpu() returns the
+                            # live tensor) and streamless swap_tensors fails on compiled modules. So whole-module only,
+                            # with the transformer and every text encoder fitting unstreamed.
                             quant_budget = int(plan.estimates.get("safe_device_budget_mib") or 0)
                             quant_overhead = int(
                                 plan.estimates.get("runtime_headroom_mib") or 0
@@ -7510,8 +7502,7 @@ class DiffusionBackend:
                         if state.transformer_cache:
                             self._reset_step_cache(state.pipe)
                         try:
-                            # torchao tensors cannot change device under inference_mode (their aten.to fails torch's
-                            # aliasing check), and every offload tier moves the quantised transformer mid-forward.
+                            # torchao aten.to fails torch's aliasing check under inference_mode; offload moves weights.
                             grad_mode = (
                                 torch.no_grad
                                 if state.transformer_quant and state.offload_policy != OFFLOAD_NONE

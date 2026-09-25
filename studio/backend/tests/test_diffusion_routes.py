@@ -2162,10 +2162,7 @@ def test_cancel_generation_route_requires_auth():
 )
 def test_an_offloading_memory_request_refuses_an_explicit_precision(monkeypatch, memory):
     """balanced and low_vram name their offload policy outright, and the legacy cpu_offload flag
-    forces whole-module offload. A GGUF pick swaps in the dense quantised transformer only when it
-    fits resident, so the loader skips the dense build -- and the strict refusal then arrived after
-    the resident image model had already been torn down. The two requests are incompatible on
-    their face, so the refusal is owed before anything is staged or evicted."""
+    forces whole-module offload, so the refusal is owed before anything is staged or evicted."""
     from core.inference.diffusion import DiffusionBackend
 
     backend = DiffusionBackend.__new__(DiffusionBackend)
@@ -2203,8 +2200,7 @@ def _pipeline_precision_gate(monkeypatch, **memory):
 
 @pytest.mark.parametrize("memory", [{"memory_mode": "low_vram"}, {"cpu_offload": True}])
 def test_a_whole_module_offload_request_admits_a_pipeline_precision(monkeypatch, memory):
-    """A pipeline quantises under whole-module offload, which low_vram and cpu_offload pick, so the
-    gate must not 409 a combination the loader runs."""
+    """low_vram and cpu_offload pick whole-module offload, which a pipeline quantises under."""
     _pipeline_precision_gate(monkeypatch, **memory)
 
 

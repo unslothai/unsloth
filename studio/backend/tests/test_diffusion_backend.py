@@ -854,8 +854,7 @@ def fake_runtime(monkeypatch):
     torch.Generator = _FakeGenerator
     torch.cuda = types.SimpleNamespace(is_available = lambda: False)
     torch.backends = types.SimpleNamespace(mps = None)
-    # generate() wraps the pipe call in torch.inference_mode() (no_grad for an offloaded quantised
-    # transformer); no-op CMs here.
+    # generate() enters inference_mode / no_grad; no-op CMs here.
     torch.inference_mode = lambda: contextlib.nullcontext()
     torch.no_grad = lambda: contextlib.nullcontext()
 
@@ -11290,7 +11289,6 @@ def _offload_plan(
     budget_mib = 1_000_000,
     runtime_headroom_mib = 0,
 ):
-    """_plan_memory, forced to ``offload_policy`` with ``budget_mib`` of safe device budget."""
     real_plan = DiffusionBackend._plan_memory
 
     def _plan(self, *args, **kwargs):
@@ -11310,8 +11308,6 @@ def _offload_plan(
 
 
 def test_a_pipeline_pick_quantises_under_whole_module_offload(fake_runtime, tmp_path, monkeypatch):
-    """Whole-module offload onloads the transformer alone, so a quantised transformer that fits
-    the budget no longer costs the quantisation."""
     backend = DiffusionBackend()
     calls = _stub_pipeline_dense_quant(backend, monkeypatch)
     monkeypatch.setattr(DiffusionBackend, "_plan_memory", _offload_plan("model"))
@@ -11329,8 +11325,7 @@ def test_a_pipeline_pick_quantises_under_whole_module_offload(fake_runtime, tmp_
 def test_an_offloaded_quantised_transformer_renders_outside_inference_mode(
     fake_runtime, tmp_path, monkeypatch, offload_policy, expected
 ):
-    """torchao tensors cannot change device under inference_mode, and every offload tier moves the
-    transformer inside the forward, so an offloaded quantised render must run under no_grad."""
+    """torchao tensors cannot change device under inference_mode, so offloaded quant renders use no_grad."""
     import torch
 
     backend = DiffusionBackend()
@@ -11360,8 +11355,7 @@ def test_an_offloaded_quantised_transformer_renders_outside_inference_mode(
 def test_the_offload_replan_sizes_the_text_encoder_the_pipe_holds(
     fake_runtime, tmp_path, monkeypatch
 ):
-    """The measured encoder replaces the table's bf16 figure only when smaller, so a pre-cast
-    fp8 encoder is not double-counted and a dense fallback is never under-sized."""
+    """Measured encoder replaces the table's bf16 figure only when smaller."""
     from core.inference import diffusion as dmod
 
     real_plan = DiffusionBackend._plan_memory
@@ -11398,8 +11392,6 @@ def test_the_offload_replan_sizes_the_text_encoder_the_pipe_holds(
 def test_a_pipeline_pick_stays_dense_under_streamed_offload(
     fake_runtime, tmp_path, monkeypatch, offload_policy
 ):
-    """Group offload's stream cache aliases torchao weights and its streamless path cannot swap a
-    compiled module's parameters, so only whole-module offload quantises."""
     backend = DiffusionBackend()
     calls = _stub_pipeline_dense_quant(backend, monkeypatch)
     monkeypatch.setattr(DiffusionBackend, "_plan_memory", _offload_plan(offload_policy))
@@ -11421,9 +11413,7 @@ def test_a_pipeline_pick_stays_dense_under_streamed_offload(
 def test_a_pipeline_pick_stays_dense_when_the_quantised_transformer_exceeds_the_budget(
     fake_runtime, tmp_path, monkeypatch, budget_mib, runtime_headroom_mib, companion_mib
 ):
-    """Whole-module offload onloads each component whole, and streaming cannot move torchao
-    weights, so the quantised transformer (with the forward's runtime headroom) and every text
-    encoder must fit, or the dense plan keeps the streaming it may need."""
+    """Quantised transformer (plus runtime headroom) and every text encoder must fit unstreamed."""
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()

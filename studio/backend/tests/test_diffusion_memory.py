@@ -775,9 +775,7 @@ def test_refine_model_offload_streams_only_when_a_component_exceeds_budget(monke
 
 
 def test_loaded_text_encoder_mib_counts_every_encoder_the_pipe_holds_once(monkeypatch):
-    """The quant replan sizes the encoder from the weights the pipe holds, so a pre-cast fp8
-    encoder counts at its fp8 size and a failed injection counts dense. One module in two slots
-    is one set of weights."""
+    """One module in two slots counts once."""
     Module = _install_sized_torch(monkeypatch)
     shared = Module(300)
     pipe = types.SimpleNamespace(
@@ -795,8 +793,6 @@ def test_loaded_text_encoder_mib_counts_every_encoder_the_pipe_holds_once(monkey
 
 
 def test_largest_streamable_companion_mib_measures_only_the_text_encoders(monkeypatch):
-    """The loader checks this before quantising under whole-module offload, so it must size exactly
-    what refinement would stream besides the transformer."""
     from core.inference.diffusion_memory import largest_streamable_companion_mib
 
     Module = _install_sized_torch(monkeypatch)
@@ -818,8 +814,7 @@ def test_largest_streamable_companion_mib_measures_only_the_text_encoders(monkey
 
 
 def test_refine_keeps_model_offload_for_a_torchao_transformer(monkeypatch):
-    """Streaming cannot move torchao weights, and the loader quantised under whole-module offload
-    only because the quantised transformer fits, so its bf16-shaped size must not force streaming."""
+    """A torchao transformer's bf16-shaped size must not force streaming."""
     Module = _install_sized_torch(monkeypatch)
     plan = MemoryPlan(
         requested_mode = "low_vram",
