@@ -5,6 +5,7 @@ stub torch with the driver libraries hidden."""
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -68,7 +69,7 @@ def _run(tmp_path, cuda, archs, caps):
     )
     out = subprocess.run(
         [sys.executable, "-c", _check_source()],
-        env = {"PYTHONPATH": str(stub), "PATH": "/usr/bin:/bin"},
+        env = {**os.environ, "PYTHONPATH": str(stub)},
         capture_output = True,
         text = True,
         timeout = 60,
