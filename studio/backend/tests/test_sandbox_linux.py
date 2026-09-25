@@ -1873,6 +1873,24 @@ def test_a_model_folder_that_is_a_system_directory_is_refused(monkeypatch):
     assert os_sandbox.model_library_roots() == ()
 
 
+def test_a_model_folder_that_is_a_credential_directory_is_refused(monkeypatch, tmp_path):
+    """OLLAMA_MODELS=~/.ssh would otherwise grant the keys the approval gate still asks about."""
+    from core.inference import os_sandbox, tool_path_approval
+
+    keys = tmp_path / ".ssh"
+    models = tmp_path / "models"
+    keys.mkdir()
+    models.mkdir()
+    monkeypatch.setattr(tool_path_approval, "_scan_folder_roots", lambda: (str(keys),))
+    monkeypatch.setattr(
+        "utils.paths.storage_roots.well_known_model_dirs",
+        lambda: (str(models),),
+        raising = False,
+    )
+
+    assert os_sandbox.model_library_roots() == (os.path.realpath(models),)
+
+
 def _bind_unix_socket(path):
     """Create a bound AF_UNIX socket at *path*."""
     import socket
