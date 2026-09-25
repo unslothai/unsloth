@@ -7777,6 +7777,26 @@ def test_reusable_from_older_snapshot_targets_the_main_ref_when_unpinned(monkeyp
     assert reusable() == set()
 
 
+def test_reusable_from_older_snapshot_keeps_the_anonymous_token_sentinel(monkeypatch, tmp_path):
+    from hub.utils import snapshot_reuse
+
+    tokens = []
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        snapshot_reuse,
+        "hub_remote_digests",
+        lambda repo_type, repo_id, token: tokens.append(token) or (lambda commit, paths: {}),
+    )
+
+    for token in (False, "", None, "hf_x"):
+        DiffusionBackend._reusable_from_older_snapshot(
+            "unsloth/Qwen-Image-2.1-FP8", ["te.safetensors"], "2" * 40, {"te.safetensors": 1}, token
+        )
+
+    # A managed account without its own token must stay anonymous (False), never fall back to None.
+    assert tokens == [False, None, None, "hf_x"]
+
+
 def test_download_plan_is_empty_when_every_required_file_is_cached(monkeypatch):
     _fake_flux_hub(monkeypatch)
     _all_cached(monkeypatch)

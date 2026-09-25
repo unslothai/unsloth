@@ -3823,7 +3823,10 @@ class DiffusionBackend:
                 revision,
                 {name: int(declared_sizes.get(name) or 0) for name in names},
                 hub_cache = hub_cache_dir(),
-                remote_digests = hub_remote_digests("model", repo_id, hf_token or None),
+                # False is the managed-account anonymous sentinel; None would send the installation token.
+                remote_digests = hub_remote_digests(
+                    "model", repo_id, hf_token if hf_token is False else (hf_token or None)
+                ),
                 digest_revision = digest_revision,
             )
         except Exception:  # noqa: BLE001 -- counting the bytes is the conservative answer
