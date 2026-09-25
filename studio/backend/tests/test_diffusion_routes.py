@@ -2737,3 +2737,37 @@ def test_the_precision_gate_judges_an_explicit_scheme_on_the_pipeline_base(monke
         repo_id = "Qwen/Qwen-Image-2512",
     )
     assert seen == ["Qwen/Qwen-Image-2512"]
+
+
+def test_a_gpu_refusal_on_a_gated_base_is_not_blamed_on_the_family_deny(monkeypatch):
+    """Qwen-Image-2512's gate record lifts the qwen-image NVFP4 deny for that base only. When the GPU then declines
+    the scheme, the refusal must say so, not claim no accuracy record covers the base."""
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend, "_resolve_device_target", lambda self, fam: _cuda_target()
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        diffusion_module, "_pipeline_quant_uncompilable_reason", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        diffusion_module, "select_transformer_quant_scheme", lambda *a, **k: None
+    )
+    import core.inference.diffusion_transformer_quant as tq
+
+    monkeypatch.setattr(tq, "torchao_unavailable_reason", lambda: None)
+    base = "Qwen/Qwen-Image-2512"
+    assert not tq.family_denies_scheme("qwen-image", "nvfp4", base)
+    with pytest.raises(RuntimeError) as err:
+        backend.assert_precision_available(
+            types.SimpleNamespace(name = "qwen-image"),
+            model_kind = "pipeline",
+            transformer_quant = "nvfp4",
+            repo_id = base,
+        )
+    message = str(err.value)
+    assert "on this GPU" in message
+    assert "accuracy-gate record" not in message
