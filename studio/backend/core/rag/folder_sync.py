@@ -1485,6 +1485,7 @@ def _reconcile_folder(job_id: str) -> None:
                 model_name = embedding_model,
                 background = False,
                 content_hash = content_hash,
+                reuse_identical = not rebuild,
             )
             result = ingestion.get_job_status(ingestion_job)
             if result is None:
