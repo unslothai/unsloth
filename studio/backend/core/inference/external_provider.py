@@ -884,6 +884,8 @@ def _create_shared_http_client() -> httpx.AsyncClient:
 
 
 _http_client = _create_shared_http_client()
+# Studio's own loopback runtime: an env proxy would receive its key and prompts, or fail to reach it.
+_loopback_http_client = httpx.AsyncClient(trust_env = False)
 
 
 class _PinnedPublicTransport(httpx.AsyncBaseTransport):
@@ -1368,6 +1370,7 @@ class ExternalProviderClient:
         self.base_url = (
             base_url.rstrip("/") if managed_loopback else validate_provider_base_url(base_url)
         )
+        self._managed_loopback = managed_loopback
         # Strip a legacy `/openai` suffix from Google-hosted bases so configs saved before the native switch still
         # route correctly. Custom proxy paths ending in `/openai` are left untouched.
         if self.provider_type == "gemini":
@@ -1735,7 +1738,9 @@ class ExternalProviderClient:
         )
 
         try:
-            async with _client().stream(
+            async with (
+                _loopback_http_client if getattr(self, "_managed_loopback", False) else _client()
+            ).stream(
                 "POST",
                 url,
                 json = body,
