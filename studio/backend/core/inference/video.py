@@ -4285,15 +4285,13 @@ class VideoBackend:
         # Why the quant did not engage, in the caller's terms; threaded into `resolved`.
         transformer_quant_decline: Optional[str] = None
         transformer_quant_decline_status = RESOLVED_FELL_BACK
-        # Auto quantises a video DiT only to keep it resident. With bf16 already resident the int8 DiT is at best modestly
-        # faster (parity to 1.27x) and fails the default-on accuracy bar: LPIPS vs bf16 0.07-0.13 on Wan2.2-TI2V-5B (a
-        # bit-stable model) and 0.23-0.28 on HunyuanVideo-1.5 against its 0.09-0.13 run-to-run floor. Explicit still engages.
+        # Auto quantises a video DiT only to keep it resident: with bf16 resident, int8 fails the default LPIPS bar.
         if (
             kind == "pipeline"
             and normalize_transformer_quant(transformer_quant) == TQ_AUTO
             and not quant_replanned
             and plan.offload_policy == "none"
-            # A "none" taken because the budget could not be measured proves no fit; keep the smaller int8 there.
+            # An unmeasured budget also plans "none" without proving a fit.
             and plan.estimates.get("safe_device_budget_mib") is not None
             and plan.estimates.get("resident_required_mib") is not None
             and dense_transformer_supported(target)

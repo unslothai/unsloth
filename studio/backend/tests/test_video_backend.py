@@ -1826,8 +1826,7 @@ def test_video_speed_off_suppresses_auto_dtype_quant(fake_runtime, monkeypatch):
     ), f"the record reports {resolved['requested']!r} as the user's request; nothing was asked for"
     assert resolved["source"] == "auto"
 
-    # Control: with speed NOT off the auto precision promotion still engages where it keeps the DiT resident, so the
-    # suppression above is specific to speed=off.
+    # Control: speed NOT off still quantises where that keeps the DiT resident.
     _bf16_offloads_quant_fits(monkeypatch)
     backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
     assert calls == [True]
@@ -1859,8 +1858,7 @@ def _bf16_offloads_quant_fits(monkeypatch, threshold_mib = 21_000):
 
 
 def _measured_resident(monkeypatch):
-    """Pin a resident plan with a measured budget: fake_runtime has no CUDA, so the host fallback is unmeasured on
-    some runners (macOS / Windows), which rightly keeps int8."""
+    """Resident plan with a measured budget (fake_runtime's host fallback is unmeasured on macOS / Windows)."""
     import dataclasses
 
     import core.inference.video as video_mod
@@ -1894,7 +1892,6 @@ def _quant_spy(monkeypatch):
 
 @pytest.mark.parametrize("speed", ["default", "max", "eager", None])
 def test_video_auto_quant_keeps_a_resident_bf16_dit(fake_runtime, monkeypatch, speed):
-    # Where bf16 already fits resident the compiled int8 DiT is slower and further from bf16, so auto keeps bf16.
     calls = _quant_spy(monkeypatch)
     _measured_resident(monkeypatch)
     status = VideoBackend().load_pipeline(
@@ -9746,7 +9743,6 @@ def test_the_boundary_marker_waits_out_a_busy_capture_lock(fake_runtime, monkeyp
 
 
 def test_video_auto_quant_on_a_host_without_dense_quant_reports_as_before(fake_runtime):
-    # No dense int8/fp8 on this host at all, so there is no resident-vs-quant decision to report.
     status = VideoBackend().load_pipeline(
         "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "default"
     )
@@ -9756,7 +9752,6 @@ def test_video_auto_quant_on_a_host_without_dense_quant_reports_as_before(fake_r
 
 
 def test_video_auto_quant_still_engages_when_the_budget_is_unknown(fake_runtime, monkeypatch):
-    # The planner stays resident when it cannot measure the card; that proves no fit, so keep today's int8.
     import dataclasses
 
     import core.inference.video as video_mod
