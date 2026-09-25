@@ -4629,6 +4629,19 @@ class VideoBackend:
                 }
             )
 
+            from . import diffusion_prompt_cache
+
+            diffusion_prompt_cache.install(
+                pipe,
+                identity = {
+                    "family": fam.name,
+                    "repo": str(repo_id),
+                    "base": str(base),
+                    "dtype": str(dtype),
+                    "te_quant": str(text_encoder_quant_engaged),
+                },
+                logger = logger,
+            )
             with self._lock:
                 if _load_token is not None and _load_token != self._load_token:
                     del pipe
@@ -5375,6 +5388,20 @@ class VideoBackend:
                     text_encoder_quant_reason,
                 ),
             }
+        )
+        from . import diffusion_prompt_cache
+
+        diffusion_prompt_cache.install(
+            pipe,
+            identity = {
+                "family": fam.name,
+                "repo": str(repo_id),
+                "base": str(base),
+                "dtype": str(dtype),
+                "workflow": str(workflow),
+                "te_quant": str(text_encoder_quant_engaged),
+            },
+            logger = logger,
         )
         with self._lock:
             if _load_token is not None and _load_token != self._load_token:
@@ -6926,6 +6953,9 @@ class VideoBackend:
             from . import diffusion_cuda_graph
 
             diffusion_gguf_compile.uninstall_all()
+            from . import diffusion_prompt_cache
+
+            diffusion_prompt_cache.release(getattr(state, "pipe", None))
             # Before clear_gpu_cache(), or the graph pool stays reserved.
             diffusion_cuda_graph.uninstall_all(
                 getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or ()
