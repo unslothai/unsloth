@@ -28,6 +28,17 @@ from typing import Any, Optional, Sequence
 
 BACKEND = Path(__file__).resolve().parent.parent / "studio" / "backend"
 
+# Mirrors core.inference.diffusion_prequant.DEFAULT_PREQUANT_COMPONENT; the backend joins sys.path only in main().
+DEFAULT_COMPONENT = "transformer"
+
+
+def resolve_build_family(base: str, override: Optional[str] = None) -> Optional[Any]:
+    """The image family for ``base`` / ``override``, else the video family (Wan, HunyuanVideo), else None."""
+    from core.inference.diffusion_families import detect_family
+    from core.inference.video_families import detect_video_family
+
+    return detect_family(base, override = override) or detect_video_family(base, override = override)
+
 
 def convrot_refusal(
     group: int, rotatable: Sequence[str], not_divisible: Sequence[str]
@@ -55,6 +66,7 @@ def upload_destination(
     safetensors: bool = False,
     override: Optional[str] = None,
     upload_repo: Optional[str] = None,
+    component: str = DEFAULT_COMPONENT,
 ) -> str:
     """The repo-root filename this build should publish under.
 
@@ -87,6 +99,26 @@ def upload_destination(
                 "would publish an artifact nothing can open. Rename the upload, or change --out."
             )
         return override
+    if component and component != DEFAULT_COMPONENT:
+        # A second denoiser (Wan A14B's transformer_2) resolves ONLY its task-specific row, with no
+        # fallback, so any other name would publish an artifact the loader never asks for.
+        from core.inference.diffusion_families import family_prequant_filename
+
+        specific = family_prequant_filename(fam, scheme, task = component)
+        if specific is None or specific == family_prequant_filename(fam, scheme):
+            raise ValueError(
+                f"family {getattr(fam, 'name', fam)!r} declares no prequant_filenames entry for "
+                f"({scheme!r}, {component!r}), so the loader would never ask for this component. "
+                "Add the entry to the family table, or pass --upload-filename."
+            )
+        wanted = ".safetensors" if safetensors else ".pt"
+        if not specific.lower().endswith(wanted):
+            raise ValueError(
+                f"family {getattr(fam, 'name', fam)!r} declares {specific!r} for "
+                f"({scheme!r}, {component!r}), which does not end in {wanted!r} like --out. "
+                "Rename --out, or pass --upload-filename."
+            )
+        return specific
     from core.inference.diffusion_prequant import prequant_filename
 
     if not rotated and not safetensors:
@@ -157,6 +189,12 @@ def main(argv = None) -> int:
     )
     p.add_argument("--scheme", required = True, help = "quant scheme: int8 | fp8 | nvfp4 | mxfp8")
     p.add_argument(
+        "--component",
+        default = DEFAULT_COMPONENT,
+        help = "denoiser subfolder to quantise, recorded in the checkpoint (e.g. transformer_2 for "
+        "Wan2.2 A14B's second expert)",
+    )
+    p.add_argument(
         "--out",
         required = True,
         help = "output path; a .safetensors extension writes the safetensors container, anything "
@@ -193,8 +231,7 @@ def main(argv = None) -> int:
     import torchao
     import diffusers
 
-    from core.inference.diffusion_families import detect_family
-    from core.inference.diffusion_prequant import DEFAULT_PREQUANT_COMPONENT, prequant_format_for
+    from core.inference.diffusion_prequant import prequant_format_for
 
     # Reuse the runtime quant factory + filter so offline == runtime (the LPIPS-0 invariant).
     from core.inference.diffusion_transformer_quant import (
@@ -211,7 +248,8 @@ def main(argv = None) -> int:
     if scheme not in TQ_SCHEMES:
         print(f"error: --scheme must be one of {TQ_SCHEMES} (not 'auto')", flush = True)
         return 2
-    fam = detect_family(args.base, override = args.family)
+    component = (args.component or "").strip() or DEFAULT_COMPONENT
+    fam = resolve_build_family(args.base, override = args.family)
     if fam is None:
         print(f"error: unknown family '{args.family}'", flush = True)
         return 2
@@ -280,16 +318,17 @@ def main(argv = None) -> int:
                 safetensors = is_safetensors_out,
                 override = args.upload_filename,
                 upload_repo = args.upload_repo,
+                component = component,
             )
         except ValueError as exc:
             print(f"error: {exc}", flush = True)
             return 2
 
     print(f"== build prequant ({fam.name}/{scheme}, min_feat={args.min_features}) ==", flush = True)
-    print(f"  loading dense transformer from {args.base} (subfolder=transformer) ...", flush = True)
+    print(f"  loading dense transformer from {args.base} (subfolder={component}) ...", flush = True)
     t0 = time.time()
     transformer = transformer_cls.from_pretrained(
-        args.base, subfolder = "transformer", torch_dtype = torch.bfloat16, token = args.hf_token
+        args.base, subfolder = component, torch_dtype = torch.bfloat16, token = args.hf_token
     ).to("cuda")
     print(f"  quantising in place ({scheme}) ...", flush = True)
     filter_settings = quant_filter_settings(scheme, fam.name)
@@ -349,7 +388,7 @@ def main(argv = None) -> int:
         "quant_backend": "torchao",
         "transformer_class": fam.transformer_class,
         # The subfolder built above: the loader refuses it as another denoiser (e.g. transformer_2).
-        "component": DEFAULT_PREQUANT_COMPONENT,
+        "component": component,
         "torch_version": torch.__version__,
         "torchao_version": getattr(torchao, "__version__", "?"),
         "diffusers_version": diffusers.__version__,
