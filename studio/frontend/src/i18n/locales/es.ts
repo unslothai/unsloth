@@ -1667,6 +1667,10 @@ export const es = {
       showResponseModel: "Mostrar el modelo de respuesta",
       showResponseModelDescription:
         "Muestra los metadatos del modelo en las respuestas del asistente.",
+      inlineReadAloud: "Lectura en voz alta en las respuestas",
+      inlineReadAloudDescription: "Mostrar Lectura en voz alta en cada respuesta, en lugar de en el menú Más.",
+      inlineEditResponse: "Editar respuesta en las respuestas",
+      inlineEditResponseDescription: "Mostrar Editar respuesta en cada respuesta, en lugar de en el menú Más.",
       modelDisclaimer: "Mostrar aviso del modelo",
       modelDisclaimerDescription:
         'Muestra "Los LLM pueden cometer errores" bajo el cuadro de chat.',

@@ -1599,6 +1599,10 @@ export const zhCN = {
       pastedTextThresholdOff: "关闭",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
+      inlineReadAloud: "在回复上显示朗读",
+      inlineReadAloudDescription: "在每条回复上显示朗读，而不是放在“更多”菜单中。",
+      inlineEditResponse: "在回复上显示编辑回复",
+      inlineEditResponseDescription: "在每条回复上显示编辑回复，而不是放在“更多”菜单中。",
       modelDisclaimer: "显示模型免责声明",
       modelDisclaimerDescription:
         "在聊天框下方显示“LLM 可能会出错”。",

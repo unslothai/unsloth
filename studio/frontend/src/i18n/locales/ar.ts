@@ -1638,6 +1638,10 @@ export const ar = {
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
         "إظهار البيانات الوصفية للنموذج في ردود المساعد.",
+      inlineReadAloud: "القراءة بصوت عالٍ في الردود",
+      inlineReadAloudDescription: "إبقاء القراءة بصوت عالٍ على كل رد بدلًا من قائمة المزيد.",
+      inlineEditResponse: "تعديل الرد في الردود",
+      inlineEditResponseDescription: "إبقاء تعديل الرد على كل رد بدلًا من قائمة المزيد.",
       modelDisclaimer: "إظهار إخلاء مسؤولية النموذج",
       modelDisclaimerDescription:
         'إظهار عبارة "LLMs can make mistakes" أسفل مربع المحادثة.',

@@ -1651,6 +1651,10 @@ export const ru = {
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:
         "Показывать метаданные модели в ответах ассистента.",
+      inlineReadAloud: "Чтение вслух в ответах",
+      inlineReadAloudDescription: "Показывать «Чтение вслух» у каждого ответа, а не в меню «Ещё».",
+      inlineEditResponse: "Изменение ответа в ответах",
+      inlineEditResponseDescription: "Показывать «Изменить ответ» у каждого ответа, а не в меню «Ещё».",
       modelDisclaimer: "Показывать предупреждение о модели",
       modelDisclaimerDescription:
         "Показывать сообщение «LLM могут ошибаться» под полем ввода.",
