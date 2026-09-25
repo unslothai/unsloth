@@ -3050,29 +3050,19 @@ def _active_video_backend():
 
 
 def _forget_gone_library_entries(source: str, folder: Path) -> None:
-    """Drop the Library entries of models that were in `folder` and are gone now. A GGUF export is
-    listed by one of its files, so deleting that variant ends the entry."""
+    """Drop the Library's name, folder and star for models that were in `folder` and are gone now,
+    so they never land on a new model saved to the same path. A GGUF export is listed by one of
+    its files, so deleting that variant ends its entry. The files are gone already, so a failure
+    here only logs."""
     try:
         from storage import library_db
         prefix = f"model:{source}:"
         for item_id in library_db.list_entries():
             path = item_id[len(prefix) :] if item_id.startswith(prefix) else ""
-            if not path or os.path.lexists(path):
-                continue
-            if _is_path_under(Path(path), folder):
+            if path and not os.path.lexists(path) and _is_path_under(Path(path), folder):
                 library_db.delete_entry(item_id)
     except Exception as e:
         logger.warning("Could not clear the Library entries under %s: %s", folder, e)
-
-
-def _forget_library_entry(item_id: str) -> None:
-    """Drop the Library's name, folder and star for a deleted model, so they never land on a new
-    model saved to the same path. The model is already gone, so a failure here only logs."""
-    try:
-        from storage import library_db
-        library_db.delete_entry(item_id)
-    except Exception as e:
-        logger.warning("Could not clear the Library entry for %s: %s", item_id, e)
 
 
 def _prune_empty_parents(start: Path, stop_at: Path) -> None:
@@ -3436,7 +3426,7 @@ async def delete_finetuned_model(
             )
 
         _prune_empty_parents(target_path, allowed_root)
-        _forget_library_entry(f"model:{source}:{model_path}")
+        _forget_gone_library_entries(source, target_path)
 
         await _invalidate_local_scans()
         logger.info("Deleted fine-tuned model at %s", target_path)

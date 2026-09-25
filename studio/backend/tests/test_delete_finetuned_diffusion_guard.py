@@ -67,6 +67,8 @@ def client(tmp_path, monkeypatch):
     outputs.mkdir()
     monkeypatch.setattr(models_module, "outputs_root", lambda: outputs)
     monkeypatch.setattr(models_module, "exports_root", lambda: tmp_path / "exports")
+    entries = {f"model:training:{outputs / 'my-diffusion-model'}": {}, "upload:abc": {}}
+    monkeypatch.setattr(library_db, "list_entries", lambda: entries)
     # No chat model is resident, so only the diffusion / video guards can refuse.
     monkeypatch.setattr(models_module, "get_inference_backend", lambda: _NoChat())
 
