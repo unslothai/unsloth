@@ -33,7 +33,11 @@ class _Cache:
         self.layer_caches = [_Layer() for _ in range(n)]
 
 
-def _prefill_like_inductor(cache, seq = 64, prefix = 3):
+def _prefill_like_inductor(
+    cache,
+    seq = 64,
+    prefix = 3,
+):
     """What the compiled prefill leaves behind: the stored prefix is a view of the full K/V buffer."""
     for layer in cache.layer_caches:
         full_k = torch.randn(1, seq, 4, 8)
@@ -68,7 +72,11 @@ def test_other_cache_layouts_are_walked_too():
     """FLUX.2 klein keeps two lists of ``k_ref`` / ``v_ref`` layers; empty layers are skipped."""
 
     class _RefLayer:
-        def __init__(self, k = None, v = None):
+        def __init__(
+            self,
+            k = None,
+            v = None,
+        ):
             self.k_ref = k
             self.v_ref = v
 
@@ -91,7 +99,12 @@ class _PrefixKVDenoiser(torch.nn.Module):
         super().__init__()
         self.calls = []
 
-    def forward(self, hidden_states, kv_cache = None, kv_cache_mode = None):
+    def forward(
+        self,
+        hidden_states,
+        kv_cache = None,
+        kv_cache_mode = None,
+    ):
         self.calls.append(kv_cache_mode)
         if kv_cache_mode == "extract":
             _prefill_like_inductor(kv_cache)
@@ -122,7 +135,11 @@ def test_install_is_idempotent_and_skips_denoisers_without_a_prefix_cache():
     assert len(module._forward_hooks) == 1
 
     class _Plain(torch.nn.Module):
-        def forward(self, hidden_states, timestep = None):
+        def forward(
+            self,
+            hidden_states,
+            timestep = None,
+        ):
             return hidden_states
 
     assert install_prefix_kv_compaction(_Plain()) is False
