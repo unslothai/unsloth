@@ -13373,7 +13373,7 @@ def _gguf_candidate_backend(monkeypatch, tmp_path, *, initial_policy, candidate_
     backend = _cuda_backend(tmp_path, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_: "int8"
     )
     monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: "prequant/path")
     monkeypatch.setattr(
