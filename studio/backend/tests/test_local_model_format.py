@@ -613,6 +613,42 @@ def test_local_pipeline_completeness_accepts_a_standard_weight_variant(tmp_path)
     assert local_pipeline_components_are_complete(pipeline, "model_index.json") is True
 
 
+def test_local_pipeline_completeness_ignores_list_valued_pipeline_config(tmp_path):
+    # Krea-2-Turbo's model_index carries text_encoder_select_layers: [2, 5, ...].
+    from core.inference.diffusion_families import local_pipeline_components_are_complete
+
+    pipeline = tmp_path / "krea2"
+    manifest = _pipeline_manifest(pipeline)
+    payload = json.loads(manifest.read_text())
+    payload["text_encoder_select_layers"] = [2, 5, 8, 11]
+    manifest.write_text(json.dumps(payload))
+
+    assert local_pipeline_components_are_complete(pipeline, "model_index.json") is True
+
+
+def test_local_pipeline_completeness_allows_hidream_caller_supplied_encoder(tmp_path):
+    # HiDream-I1 repos declare text_encoder_4/tokenizer_4 but ship neither; the loader passes them in.
+    from core.inference.diffusion_families import local_pipeline_components_are_complete
+
+    pipeline = tmp_path / "hidream"
+    manifest = _pipeline_manifest(pipeline)
+    payload = json.loads(manifest.read_text())
+    payload["_class_name"] = "HiDreamImagePipeline"
+    payload["text_encoder_4"] = ["transformers", "LlamaForCausalLM"]
+    payload["tokenizer_4"] = ["transformers", "PreTrainedTokenizerFast"]
+    manifest.write_text(json.dumps(payload))
+
+    assert local_pipeline_components_are_complete(pipeline, "model_index.json") is True
+    # A present-but-broken copy is still checked.
+    (pipeline / "text_encoder_4").mkdir()
+    assert local_pipeline_components_are_complete(pipeline, "model_index.json") is False
+    # Other pipelines get no such exemption.
+    payload["_class_name"] = "DiffusionPipeline"
+    manifest.write_text(json.dumps(payload))
+    (pipeline / "text_encoder_4").rmdir()
+    assert local_pipeline_components_are_complete(pipeline, "model_index.json") is False
+
+
 def test_local_pipeline_completeness_can_exclude_an_injected_denoiser(tmp_path):
     from core.inference.diffusion_families import local_pipeline_components_are_complete
 

@@ -1346,13 +1346,23 @@ def local_pipeline_manifest_is_valid(root: Path | str, filename: str) -> bool:
         if isinstance(blocks_class, str) and blocks_class.strip():
             return True
     return any(
-        not str(name).startswith("_")
-        and isinstance(spec, (list, tuple))
-        and len(spec) >= 2
-        and spec[0] is not None
-        and spec[1] is not None
-        for name, spec in payload.items()
+        not str(name).startswith("_") and _is_component_spec(spec) for name, spec in payload.items()
     )
+
+
+def _is_component_spec(spec: object) -> bool:
+    # Diffusers components are ``[library, class]`` string pairs; other lists are config values
+    # (Krea-2's ``text_encoder_select_layers: [2, 5, ...]``).
+    return (
+        isinstance(spec, (list, tuple))
+        and len(spec) >= 2
+        and isinstance(spec[0], str)
+        and isinstance(spec[1], str)
+    )
+
+
+# Declared in the manifest but never shipped: the loader passes them in (hidream_te4_kwargs).
+_CALLER_SUPPLIED_COMPONENTS = {"HiDreamImagePipeline": frozenset({"text_encoder_4", "tokenizer_4"})}
 
 
 _LOCAL_PIPELINE_BASE_WEIGHT_INDEXES = (
@@ -1594,20 +1604,16 @@ def local_pipeline_components_are_complete(
         return False
     base = Path(root).expanduser()
     declared: list[tuple[str, str, str, object]] = []
+    caller_supplied = _CALLER_SUPPLIED_COMPONENTS.get(str(payload.get("_class_name")), frozenset())
     for name, spec in payload.items():
-        if (
-            not isinstance(name, str)
-            or name.startswith("_")
-            or not isinstance(spec, (list, tuple))
-            or len(spec) < 2
-            or spec[0] is None
-            or spec[1] is None
-        ):
+        if not isinstance(name, str) or name.startswith("_") or not _is_component_spec(spec):
             continue
         # Component keys are pipeline constructor arguments and therefore one local directory,
         # never a path. Refusing separators also prevents a hand-authored manifest escaping root.
         if name in {"", ".", ".."} or Path(name).name != name or "/" in name or "\\" in name:
             return False
+        if name in caller_supplied and not (base / name).exists():
+            continue
         if name not in excluded_components:
             source_spec = (
                 spec[2] if filename == "modular_model_index.json" and len(spec) >= 3 else None
