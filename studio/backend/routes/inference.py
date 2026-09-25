@@ -3661,6 +3661,7 @@ from utils.utils import is_hf_authentication_error, safe_error_detail, log_and_h
 
 import io
 import base64
+import zlib
 
 from utils.current_date_prompt_settings import (
     contains_current_date_prompt_line,
@@ -33341,17 +33342,97 @@ def _pil_to_png_b64(img) -> str:
 
 
 def _image_bytes_to_png_b64(raw: bytes) -> str:
-    """Decode raw image bytes and re-encode to a base64-ascii PNG string.
-
-    llama-server's stb_image only handles a few formats (JPEG/PNG/BMP/...); re-
-    encoding to PNG keeps JPEG/WebP/... inputs loadable. Raises on undecodable
-    input; callers wrap the call in ``try`` -> HTTPException(400)."""
+    """Convert image bytes to base64 PNG for formats llama-server cannot decode."""
     from PIL import Image
 
     img = _scaled_from_16_bit(Image.open(io.BytesIO(raw))).convert("RGB")
     buf = io.BytesIO()
     img.save(buf, format = "PNG")
     return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def _stb_reads_jpeg(raw: bytes) -> bool:
+    """Accept 8-bit SOF0-SOF2 JPEG frames with one or three components."""
+    i = 2
+    while i + 4 <= len(raw):
+        if raw[i] != 0xFF:
+            return False
+        marker = raw[i + 1]
+        if marker == 0xFF:  # Fill byte before a marker.
+            i += 1
+            continue
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            if marker not in (0xC0, 0xC1, 0xC2) or i + 10 > len(raw):
+                return False
+            height = int.from_bytes(raw[i + 5 : i + 7], "big")
+            width = int.from_bytes(raw[i + 7 : i + 9], "big")
+            return raw[i + 4] == 8 and height > 0 and width > 0 and raw[i + 9] in (1, 3)
+        if marker in (0xD9, 0xDA):  # EOI or scan data before any frame header.
+            return False
+        i += 2 + int.from_bytes(raw[i + 2 : i + 4], "big")
+    return False
+
+
+def _stb_reads_png(raw: bytes) -> bool:
+    """Accept PNGs whose chunks end at IEND and whose IDAT zlib stream is complete.
+
+    Pillow decodes a PNG whose deflate stream or IEND is cut short once the rows are
+    complete; stb_image rejects those, and unknown critical chunks. Pillow also stops
+    at the last row, so inflation is capped near the IHDR size: a compressed tail past
+    it would otherwise cost unbounded CPU here and memory in stb_image.
+    """
+    i = len(_PNG_SIGNATURE)
+    inflater = zlib.decompressobj()
+    budget = 0
+    try:
+        while i + 12 <= len(raw):
+            kind = raw[i + 4 : i + 8]
+            end = i + 12 + int.from_bytes(raw[i : i + 4], "big")
+            if end > len(raw) or (kind == b"IHDR") != (i == len(_PNG_SIGNATURE)):
+                return False
+            if kind == b"IHDR":
+                if end - i != 25:
+                    return False
+                width = int.from_bytes(raw[i + 8 : i + 12], "big")
+                height = int.from_bytes(raw[i + 12 : i + 16], "big")
+                bits = raw[i + 16] * {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}.get(raw[i + 17], 4)
+                # Doubled for Adam7, whose pass rows each add a filter byte and padding.
+                budget = 2 * height * ((width * bits + 7) // 8 + 1) + 64
+            elif kind == b"IEND":
+                return inflater.eof
+            elif kind == b"IDAT":
+                data = raw[i + 8 : end - 4]
+                while data and not inflater.eof:
+                    budget -= len(inflater.decompress(data, 1 << 20))
+                    if budget < 0:
+                        return False
+                    data = inflater.unconsumed_tail
+            elif kind != b"PLTE" and not kind[0] & 0x20:
+                return False
+            i = end
+    except zlib.error:
+        pass
+    return False
+
+
+def _llama_image_data_url(raw: bytes) -> str:
+    """Preserve PNG and JPEG bytes stb_image reads; convert other images to PNG.
+
+    Avoid inflating photos while still rejecting corrupt images with Pillow:
+    stb_image silently accepts some truncated JPEGs. Callers map failures to HTTP 400.
+    """
+    from PIL import Image
+
+    with Image.open(io.BytesIO(raw)) as img:
+        img.load()
+    if raw.startswith(_PNG_SIGNATURE) and _stb_reads_png(raw):
+        return f"data:image/png;base64,{base64.b64encode(raw).decode('ascii')}"
+    if raw.startswith(b"\xff\xd8") and _stb_reads_jpeg(raw):
+        return f"data:image/jpeg;base64,{base64.b64encode(raw).decode('ascii')}"
+    return f"data:image/png;base64,{_image_bytes_to_png_b64(raw)}"
 
 
 # Match llama-server's per-image limit and add a per-request budget.
@@ -33435,7 +33516,7 @@ def _inline_remote_image_url(
     rejection = _remote_image_scheme_rejection(scheme)
     if rejection is not None:
         raise HTTPException(status_code = rejection[0], detail = rejection[1])
-    # llama-server never read the content type, and the bytes are decoded and re-encoded here.
+    # Detect the MIME type from the fetched bytes.
     fetched = safe_fetch_remote_image_sync(
         url,
         "image/png",
@@ -33493,15 +33574,11 @@ def _inline_request_remote_images(payload) -> None:
                 part.image_url.url = fetches.inline(part.image_url.url)
 
 
-def _normalize_openai_image_parts_to_png(openai_messages: list[dict], on_image = None) -> bool:
-    """Re-encode every base64-data-URL ``image_url`` part to PNG, in place.
+def _normalize_openai_image_parts_for_llama(openai_messages: list[dict], on_image = None) -> bool:
+    """Fetch and normalize image URLs for llama-server in place.
 
-    Remote URLs are fetched here so llama-server receives bytes rather than a URL. All images
-    are converted to PNG for llama-server's limited image decoder.
-
-    ``on_image`` runs once per image part before conversion, so a caller can
-    apply its own guard. Returns ``True`` when any image part was seen. Raises
-    HTTPException(400) when an image cannot be decoded or fetched.
+    Calls ``on_image`` before processing each image. Returns whether any image was
+    seen; raises HTTP 400 if fetching or decoding fails.
     """
     has_image = False
     fetches = _RemoteImageFetches()
@@ -33529,15 +33606,14 @@ def _normalize_openai_image_parts_to_png(openai_messages: list[dict], on_image =
             try:
                 _, b64data = url.split(",", 1)
                 raw = base64.b64decode(b64data)
-                png_b64 = _image_bytes_to_png_b64(raw)
+                data_url = _llama_image_data_url(raw)
             except Exception:
                 raise HTTPException(
                     status_code = 400,
                     detail = "Failed to process image.",
                 )
-            # Only the url is re-encoded; `detail` is the client's request, not
-            # part of the encoding, and replacing the object would drop it.
-            image_url["url"] = f"data:image/png;base64,{png_b64}"
+            # Preserve the client's `detail` setting.
+            image_url["url"] = data_url
 
     return has_image
 
@@ -33550,7 +33626,7 @@ def _normalize_anthropic_openai_images(openai_messages: list[dict], is_vision: b
                 detail = "Image provided but current GGUF model does not support vision.",
             )
 
-    return _normalize_openai_image_parts_to_png(openai_messages, on_image = _guard)
+    return _normalize_openai_image_parts_for_llama(openai_messages, on_image = _guard)
 
 
 def _validate_anthropic_client_tools(tools) -> None:
@@ -34604,8 +34680,7 @@ async def anthropic_messages(
 
     openai_messages = _sanitize_anthropic_openai_messages(openai_messages, llama_backend)
 
-    # Enforce vision guard + re-encode embedded images to PNG so the Anthropic
-    # endpoint matches /v1/chat/completions.
+    # Apply the same vision guard and image normalization as /v1/chat/completions.
     # Promoted parts count too: _anthropic_has_image was read off the original
     # blocks, so a replay-only request took the synchronous branch and re-decoded up
     # to eight promoted PNGs on the shared loop.
@@ -37123,31 +37198,14 @@ def _openai_messages_for_passthrough(
     normalize_images: bool = True,
     promote_mcp_images: bool = True,
 ) -> list[dict]:
-    """Build OpenAI-format message dicts for the /v1/chat/completions
-    passthrough path.
+    """Build /v1/chat/completions messages, preserving tool calls and results.
 
-    ``payload.messages`` are dumped through Pydantic (dropping unset optional
-    fields), so they're already standard OpenAI format -- including
-    ``role="tool"`` tool-result messages and assistant messages carrying
-    structured ``tool_calls``. Base64-data-URL images already in the list are
-    re-encoded to PNG exactly as ``_openai_messages_for_gguf_chat`` does, so
-    turning tools on does not change which formats llama-server can decode, and
-    a remote URL is fetched here rather than by llama-server, for the same
-    reason and by the same helper. The vision guard lives in the callers,
-    which reject a non-vision model before the body is built.
+    Uses the same image normalizer as GGUF chat; callers enforce vision support.
+    ``normalize_images=False`` preserves bytes for callers that decode and resize
+    images themselves, avoiding an intermediate RGB conversion.
 
-    ``normalize_images=False`` is for callers that decode these bytes themselves: re-encoding
-    converts to RGB, which the resize they apply would then resample.
-
-    When a client uses Unsloth's legacy ``image_base64`` top-level field, the
-    image is spliced into the last user message as an OpenAI ``image_url`` content part -- as PNG
-    while normalizing, since llama-server's stb_image is limited, byte-for-byte otherwise.
-
-    Only when it is a real second image, matching ``_openai_messages_for_gguf_chat`` and
-    what admission charges for. Studio echoes the current image into both spellings, so
-    splicing that unconditionally sent a tools or response_format request two copies
-    against a reservation for one: 4417 reserved against 8466 charged, which overcommits
-    the KV cache wherever the slot count lets that gap accumulate.
+    Adds legacy ``image_base64`` to the last user message only if it is distinct,
+    matching GGUF chat and admission accounting to avoid duplicate images.
     """
     messages = _strip_provider_synthetic_tool_history(
         _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
@@ -37158,7 +37216,7 @@ def _openai_messages_for_passthrough(
         messages = promote_mcp_history_images(messages, vision = vision)
 
     if normalize_images:
-        _normalize_openai_image_parts_to_png(messages)
+        _normalize_openai_image_parts_for_llama(messages)
 
     if not _legacy_image_is_distinct(payload):
         return messages
@@ -37166,13 +37224,12 @@ def _openai_messages_for_passthrough(
     if normalize_images:
         try:
             raw = base64.b64decode(payload.image_base64)
-            png_b64 = _image_bytes_to_png_b64(raw)
+            data_url = _llama_image_data_url(raw)
         except Exception:
             raise HTTPException(
                 status_code = 400,
                 detail = "Failed to process image.",
             )
-        data_url = f"data:image/png;base64,{png_b64}"
     else:
         # As it arrived; the media type is never read back.
         data_url = f"data:application/octet-stream;base64,{payload.image_base64}"
@@ -37256,8 +37313,7 @@ def _openai_messages_for_gguf_chat(
     # part already here and must not be spliced twice, but a legacy image the thread
     # does not hold is a real attachment. Admission charges on the same predicate.
     if _legacy_image_is_distinct(payload):
-        # Legacy bytes can be any format; the normalizer below sniffs and
-        # re-encodes to PNG, so the declared mime is rewritten anyway.
+        # The normalizer detects the MIME type from the bytes.
         image_part = {
             "type": "image_url",
             "image_url": {
