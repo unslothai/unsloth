@@ -2986,7 +2986,14 @@ const Composer: FC<{
   useEffect(() => {
     if (!nativeAttachmentTargetKey) return;
     const targetKey = nativeAttachmentTargetKey;
-    const add = (file: File) => aui.composer().addAttachment(file);
+    let disposed = false;
+    // aui.composer() is whichever chat is open now: a switch mid-batch must not take the rest.
+    const add = async (file: File) => {
+      if (disposed || nativeAttachmentTargetKeyRef.current !== targetKey) {
+        throw new Error("The chat changed before this file was attached.");
+      }
+      await aui.composer().addAttachment(file);
+    };
     const drain = async () => {
       const held = await attachLibraryChatFiles(targetKey, add);
       if (held > 0) toast(translate("library.toast.chatFilesWaiting", { count: held }));
@@ -3021,6 +3028,7 @@ const Composer: FC<{
       }
     });
     return () => {
+      disposed = true;
       offers();
       loads();
     };

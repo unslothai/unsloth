@@ -179,7 +179,7 @@ function loadStore(
       zustand.StoreApi<{
         items: Item[];
         refresh: () => Promise<void>;
-        removeItem: (id: string) => Promise<void>;
+        removeItem: (id: string, fingerprint?: string) => Promise<void>;
         patchItem: (id: string, patch: Partial<Item>) => Promise<void>;
       }>
     >;
@@ -320,15 +320,20 @@ test("undoing a mirrored star leaves a newer toggle of it alone", () => {
 
 test("a sandbox file is deleted as the file it was listed as", async () => {
   const deleted: unknown[] = [];
+  let fingerprint = "7:1.5";
   const store = loadStore({
     getLibrary: async () => ({
-      items: [{ ...item("sandbox:t:a.png"), fingerprint: "7:1.5" }],
+      items: [{ ...item("sandbox:t:a.png"), fingerprint }],
       folders: [],
     }),
     deleteLibraryItem: async (...args: unknown[]) => void deleted.push(args),
   });
   await store.getState().refresh();
-  await store.getState().removeItem("sandbox:t:a.png");
+  const shown = store.getState().items[0] as Item & { fingerprint: string };
+  // Replaced while the confirmation was open: the refresh must not lend the delete its fingerprint.
+  fingerprint = "9:2.5";
+  await store.getState().refresh();
+  await store.getState().removeItem(shown.id, shown.fingerprint);
   assert.deepEqual(deleted, [["sandbox:t:a.png", "7:1.5"]]);
 });
 

@@ -137,7 +137,9 @@ def _read_meta(path: Path, *, strict_io: bool = False) -> Optional[dict[str, Any
 
     try:
         with Image.open(path) as im:
-            raw = im.text.get(_META_KEY)  # type: ignore[attr-defined]
+            # _png_bytes writes the chunk before IDAT, so the header parse has it; im.text would
+            # decode every pixel looking for chunks after IDAT.
+            raw = im.info.get(_META_KEY) or im.text.get(_META_KEY)  # type: ignore[attr-defined]
     except OSError as exc:
         if strict_io and exc.errno not in (None, errno.ENOENT):
             raise

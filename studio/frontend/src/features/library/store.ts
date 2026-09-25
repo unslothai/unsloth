@@ -33,7 +33,7 @@ interface LibraryState {
   error: string | null;
   refresh: () => Promise<void>;
   patchItem: (id: string, patch: ItemPatch) => Promise<void>;
-  removeItem: (id: string) => Promise<void>;
+  removeItem: (id: string, fingerprint: string | undefined) => Promise<void>;
   markOpened: (id: string) => void;
   upload: (batch: LibraryUploadBatch, folderId: string | null) => Promise<string[]>;
   addFolder: (name: string, parentId: string | null) => Promise<LibraryFolder>;
@@ -180,10 +180,9 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
         star?.undo,
       );
     },
-    removeItem: (id) => {
-      const listed = get().items.find((item) => item.id === id);
-      const model = listed?.model;
-      const fingerprint = listed?.fingerprint;
+    // The fingerprint the confirmation was opened on: a refresh since may list a replacement file.
+    removeItem: (id, fingerprint) => {
+      const model = get().items.find((item) => item.id === id)?.model;
       const star = useLibraryFavoritesStore.getState().mark(id, false);
       return optimistic(
         (state) => ({ items: state.items.filter((item) => item.id !== id) }),
