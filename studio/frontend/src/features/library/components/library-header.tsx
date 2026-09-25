@@ -217,12 +217,14 @@ export function LibraryHeader({
         className="sticky top-0 z-20 -mx-6 mt-2 bg-background px-6 py-4 sm:-mx-10 sm:px-10"
       >
         {tabs ? (
-          <TabStrip
-            tabs={tabs.items}
-            active={tabs.active}
-            onChange={tabs.onChange}
-            reserve={covered ? controlsWidth + GAP_PX : 0}
-          />
+          <div className="pl-3">
+            <TabStrip
+              tabs={tabs.items}
+              active={tabs.active}
+              onChange={tabs.onChange}
+              reserve={covered ? controlsWidth + GAP_PX : 0}
+            />
+          </div>
         ) : (
           <div className="h-9" />
         )}

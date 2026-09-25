@@ -203,6 +203,7 @@ function loadStore(
       getAuthSessionEpoch: () => session.epoch,
     },
     "@/features/chat": {
+      deleteFineTunedModel: async () => {},
       emitChatAttachmentDeleted: (event: unknown) => emitted.push(event),
     },
     "@/i18n": { translate: (key: string) => key },

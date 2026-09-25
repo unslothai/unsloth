@@ -5,8 +5,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrc } from "./helpers/kit.ts";
-
 import {
   embeddedBlobType,
   itemVersion,
@@ -15,13 +13,27 @@ import {
   streamsPreview,
   uniqueFileNames,
 } from "../src/features/library/file-name.ts";
+import { formatCardTime } from "../src/features/library/format.ts";
 import { decodeNote, encodeNote } from "../src/features/library/note-text.ts";
 import {
   acquireObjectUrl,
   cachedObjectUrlCount,
   clearCachedObjectUrls,
 } from "../src/features/library/object-url-cache.ts";
+import { parentFolder } from "../src/features/library/paths.ts";
 import { isLoopbackHost, revealLabelFor } from "../src/features/library/reveal-label.ts";
+import {
+  DEFAULT_LIBRARY_SETTINGS,
+  type LibrarySortKey,
+  SORT_STATES,
+  compareBySort,
+  includedBySettings,
+  lastActivity,
+  migrateLibrarySettings,
+  nextSort,
+  sortParam,
+} from "../src/features/library/settings-store.ts";
+import { readSrc } from "./helpers/kit.ts";
 
 function table<A extends unknown[], O>(name: string, run: (...args: A) => O, rows: [A, O][]) {
   test(name, () => {
@@ -198,4 +210,118 @@ test("a hit is the same URL, and stays valid while anyone holds it", async () =>
   await fill("filler", 305);
   assert.ok(!revoked.has(url));
   second.release();
+});
+
+// A Wednesday afternoon, local time. ICU may put a narrow no-break space before AM.
+const now = new Date(2026, 8, 23, 15, 0).getTime();
+const at = (month: number, day: number, year = 2026) => new Date(year, month, day, 10, 30).getTime();
+const cardTime = (ts: number, locale: Parameters<typeof formatCardTime>[1]) =>
+  formatCardTime(ts, locale, now).replace(/\s/g, " ");
+
+table("card times read in the app's language; a time ahead of this clock shows its date", cardTime, [
+  [[at(8, 22), "en"], "Yesterday"],
+  [[at(8, 22), "de"], "Gestern"],
+  [[at(8, 22), "fr"], "Hier"],
+  [[at(8, 22), "ja"], "昨日"],
+  [[at(8, 20), "en"], "Sunday"],
+  [[at(8, 20), "es"], "domingo"],
+  [[at(8, 23), "en"], "10:30 AM"],
+  [[at(7, 1), "en"], "Aug 1"],
+  [[at(7, 1, 2025), "en"], "Aug 1, 2025"],
+  [[at(8, 25), "en"], "Sep 25"],
+  [[at(0, 2, 2027), "en"], "Jan 2, 2027"],
+  [[Number.NaN, "en"], ""],
+]);
+
+table("the folder picker starts in the folder above, drive and share roots included", parentFolder, [
+  [["/Users/me/Pictures/Unsloth Images"], "/Users/me/Pictures"],
+  [["/Unsloth Images"], "/"],
+  [["/Users/me/Pictures/"], "/Users/me"],
+  [["D:\\Unsloth Images"], "D:\\"],
+  [["D:/Unsloth Images"], "D:/"],
+  [["C:\\Users\\me\\Unsloth"], "C:\\Users\\me"],
+  [["\\\\server\\share\\Unsloth Images"], "\\\\server\\share\\"],
+  [["\\\\server\\share\\a\\b"], "\\\\server\\share\\a"],
+  [["/"], undefined],
+  [["D:\\"], undefined],
+  [["\\\\server\\share"], undefined],
+  [["relative"], undefined],
+  [[""], undefined],
+]);
+
+const hidden = { ...DEFAULT_LIBRARY_SETTINGS, showChatAttachments: false, showFineTunes: false };
+const included = (id: string, more?: Partial<typeof hidden>) => includedBySettings(id, { ...hidden, ...more });
+
+table("sources hidden in settings drop out, Library uploads always stay", included, [
+  [["upload:abc"], true],
+  [["attachment:m:a"], false],
+  [["model:training:/runs/x"], false],
+  [["sandbox:t:out.csv"], true],
+  [["image:1", { showGeneratedMedia: false }], false],
+]);
+
+const sortable = [
+  { name: "b 10", updatedAt: 2, sizeBytes: 5 },
+  { name: "b 9", updatedAt: 3, sizeBytes: null },
+  { name: "a", updatedAt: 1, sizeBytes: 50 },
+];
+const sortedNames = (sort: keyof typeof SORT_STATES) =>
+  [...sortable].sort(compareBySort(SORT_STATES[sort])).map((item) => item.name);
+
+table("sort orders by recency, name and size", sortedNames, [
+  [["recent"], ["b 9", "b 10", "a"]],
+  [["oldest"], ["a", "b 10", "b 9"]],
+  [["name"], ["a", "b 9", "b 10"]],
+  [["size"], ["a", "b 10", "b 9"]],
+]);
+
+table("a column click flips its direction or starts a new column naturally", (key: LibrarySortKey) => nextSort(SORT_STATES.size, key), [
+  [["size"], { key: "size", desc: false }],
+  [["name"], { key: "name", desc: false }],
+  [["modified"], { key: "modified", desc: true }],
+]);
+
+table("last activity is the later of modified and opened", lastActivity, [
+  [[{ updatedAt: 5, openedAt: null }], 5],
+  [[{ updatedAt: 5, openedAt: 9 }], 9],
+  [[{ updatedAt: 9, openedAt: 5 }], 9],
+]);
+
+test("every column order has a ?sort value that reads back the same", () => {
+  for (const key of ["name", "modified", "size"] as const) {
+    for (const desc of [true, false]) assert.deepEqual(SORT_STATES[sortParam({ key, desc })], { key, desc });
+  }
+});
+
+test("the v1 media switch becomes one setting per tab", () => {
+  const migrated = migrateLibrarySettings({ mediaTabs: "always", sort: "name" }, 1);
+  assert.equal(migrated.mediaTabs, undefined);
+  assert.equal(migrated.sort, "name");
+  const media = { images: "always", videos: "always", audio: "always" };
+  assert.deepEqual(migrated.tabs, { ...DEFAULT_LIBRARY_SETTINGS.tabs, ...media });
+});
+
+test("an empty Fine-tunes tab hides by default, and for settings saved before that", () => {
+  assert.equal(DEFAULT_LIBRARY_SETTINGS.tabs.models, "auto");
+  const saved = { ...DEFAULT_LIBRARY_SETTINGS.tabs, models: "always" };
+  assert.equal((migrateLibrarySettings({ tabs: saved }, 2).tabs as typeof saved).models, "auto");
+  const hidden = { ...saved, models: "hidden" };
+  assert.equal((migrateLibrarySettings({ tabs: hidden }, 2).tabs as typeof saved).models, "hidden");
+});
+
+test("a card's date shows on hover, on keyboard focus and always on touch", () => {
+  const date = /"([^"]*)",\s*\)}\s*>\s*\{formatCardTime/.exec(readSrc("features/library/components/library-cards.tsx"))?.[1].split(" ");
+  for (const reveal of [
+    "group-hover/library-card:opacity-100",
+    "group-has-[:focus-visible]/library-card:opacity-100",
+    "pointer-coarse:opacity-100",
+  ]) {
+    assert.ok(date?.includes(reveal), reveal);
+  }
+});
+
+test("a moved folder's files are read again by the galleries and the Library", () => {
+  const move = /async function move\([\s\S]*?\n {2}\}\n/.exec(readSrc("features/settings/tabs/library-tab.tsx"))?.[0] ?? "";
+  assert.match(move, /notifyGalleryChanged\(location\.key\)/);
+  assert.match(move, /useLibraryStore\.getState\(\)[\s\S]*\.refresh\(\)/);
 });

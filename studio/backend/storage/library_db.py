@@ -46,10 +46,14 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    entry_columns = {row["name"] for row in conn.execute("PRAGMA table_info(library_entries)")}
-    if "fingerprint" not in entry_columns:
+    # Added after the first release of the table, in place: a studio.db from before keeps its
+    # rows, fingerprinted on first sight.
+    entry_columns = {row[1] for row in conn.execute("PRAGMA table_info(library_entries)")}
+    for column, kind in (("opened_at", "INTEGER"), ("fingerprint", "TEXT")):
+        if column in entry_columns:
+            continue
         try:
-            conn.execute("ALTER TABLE library_entries ADD COLUMN fingerprint TEXT")
+            conn.execute(f"ALTER TABLE library_entries ADD COLUMN {column} {kind}")
         except sqlite3.OperationalError as exc:
             if "duplicate column" not in str(exc).lower():
                 raise
@@ -245,6 +249,7 @@ def list_entries() -> dict[str, dict]:
                 "favorite": bool(row["favorite"]),
                 "folderId": row["folder_id"],
                 "updatedAt": row["updated_at"],
+                "openedAt": row["opened_at"],
                 "fingerprint": row["fingerprint"],
             }
             for row in rows
@@ -302,6 +307,30 @@ def update_entry(
                 "UPDATE library_entries SET folder_id = ? WHERE item_id = ?", (folder_id, item_id)
             )
         conn.execute("UPDATE library_entries SET updated_at = ? WHERE item_id = ?", (now, item_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_opened(item_id: str, fingerprint: Optional[str] = None) -> None:
+    """Record that the item was just opened, for Suggested's Last activity. ``fingerprint`` is as
+    for ``update_entry``: a row kept for another file at the path is dropped, not carried over."""
+    conn = get_connection()
+    try:
+        _lock(conn)
+        now = _now_ms()
+        if fingerprint is not None:
+            conn.execute(
+                "DELETE FROM library_entries WHERE item_id = ? AND fingerprint IS NOT NULL AND fingerprint != ?",
+                (item_id, fingerprint),
+            )
+        conn.execute(
+            "INSERT INTO library_entries (item_id, updated_at, opened_at, fingerprint) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(item_id) DO UPDATE SET opened_at = "
+            "excluded.opened_at, fingerprint = COALESCE(library_entries.fingerprint, "
+            "excluded.fingerprint)",
+            (item_id, now, now, fingerprint),
+        )
         conn.commit()
     finally:
         conn.close()

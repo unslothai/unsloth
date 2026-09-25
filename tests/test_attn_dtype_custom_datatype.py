@@ -122,6 +122,7 @@ def test_custom_datatype_load_does_not_disable_flash_attention():
 
     class SupportsFlashAndSdpa:
         _supports_flash_attn_2 = True
+        _supports_flash_attn = True  # the flag transformers >= 4.53 dispatches on
         _supports_flex_attn = False
         _supports_sdpa = True
 

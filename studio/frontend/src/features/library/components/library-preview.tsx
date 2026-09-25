@@ -27,6 +27,7 @@ import {
 import {
   fileKind,
   hasImagePreview,
+  isDeletable,
   isFileItem,
   isTextPreviewable,
   modelLabelKey,
@@ -565,7 +566,7 @@ export function LibraryPreview({
                     return addLibraryItemToProject(item.id, projectId);
                   }
                 : undefined,
-              onDelete: isFileItem(item) ? () => onDelete(item) : undefined,
+              onDelete: isDeletable(item) ? () => onDelete(item) : undefined,
             }
           : {}
       }
