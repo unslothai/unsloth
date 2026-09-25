@@ -480,7 +480,9 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     if (targets.some((t) => t.kind === "item" && t.item.id === search.item)) closePreview();
     const results = await Promise.allSettled(
       targets.map((target) =>
-        target.kind === "item" ? removeItem(target.item.id) : removeFolder(target.folder.id),
+        target.kind === "item"
+          ? removeItem(target.item.id, target.item.fingerprint)
+          : removeFolder(target.folder.id),
       ),
     );
     const failed = results.find((result) => result.status === "rejected");
