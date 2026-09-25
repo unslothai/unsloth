@@ -28,8 +28,9 @@ class _Keyboard:
 
     def press(self, key: str) -> None:
         self.pressed.append(key)
-        if key == "Escape" and self._page.menu_closes_on_escape:
-            self._page.menu_open = False
+        # Escape dismisses the top layer only.
+        if key == "Escape" and self._page.menus and self._page.menu_closes_on_escape:
+            self._page.menus.pop()
 
 
 class _Button:
@@ -37,8 +38,11 @@ class _Button:
         self._page = page
 
     def click(self, timeout = None) -> None:
-        if self._page.click_opens_menu:
-            self._page.menu_open = True  # Radix opens on pointerdown
+        page = self._page
+        if page.click_dismisses_open_menu:
+            page.menus.clear()  # a non-modal menu lets the outside pointerdown through and closes
+        if page.click_opens_menu:
+            page.menus.append("attachments")  # Radix opens on pointerdown
         raise TimeoutError(f"Timeout {timeout}ms exceeded.")
 
 
@@ -55,18 +59,24 @@ class _Locator:
 
 
 class _Page:
-    """The page calls `image_upload` makes up to and including a click that times out."""
+    """The page calls `image_upload` makes up to and including a click that times out.
+
+    Open menus are a stack of identities, so a menu that replaced another is a different one.
+    """
 
     def __init__(
         self,
         *,
         click_opens_menu: bool,
         menu_closes_on_escape: bool = True,
-        menu_already_open: bool = False,
+        already_open: tuple = (),
+        click_dismisses_open_menu: bool = False,
     ) -> None:
         self.click_opens_menu = click_opens_menu
         self.menu_closes_on_escape = menu_closes_on_escape
-        self.menu_open = menu_already_open
+        self.click_dismisses_open_menu = click_dismisses_open_menu
+        self.menus: list[str] = list(already_open)
+        self._before: set[str] = set()
         self.keyboard = _Keyboard(self)
 
     def locator(self, _selector: str) -> _Locator:
@@ -77,8 +87,13 @@ class _Page:
         script,
         arg = None,
     ):
+        if "__sbMenusBefore = " in script:
+            self._before = set(self.menus)
+            return None
+        if "__sbMenusBefore" in script:
+            return any(menu not in self._before for menu in self.menus)
         if '[role="menu"]' in script:
-            return self.menu_open
+            return bool(self.menus)  # a presence-only query
         return 0  # the attachment count
 
     def wait_for_timeout(self, _ms) -> None:
@@ -108,7 +123,7 @@ def test_a_click_that_opened_the_menu_and_timed_out_closes_it():
 
     assert result.ran is False
     assert "could not be clicked: TimeoutError" in result.reason
-    assert page.menu_open is False, "the modal menu was left open over the next action"
+    assert page.menus == [], "the modal menu was left open over the next action"
     assert page.keyboard.pressed == ["Escape"]
     assert "closed the menu it opened" in result.reason
 
@@ -134,10 +149,35 @@ def test_a_menu_that_will_not_close_is_reported_and_bounded():
 
 def test_a_menu_that_was_already_open_is_left_alone():
     """Not this action's to close: it can be what blocked the click, and it belongs to its opener."""
-    page = _Page(click_opens_menu = False, menu_already_open = True)
+    page = _Page(click_opens_menu = False, already_open = ("model-picker",))
     result = _upload(page)
 
     assert result.ran is False
     assert page.keyboard.pressed == []
-    assert page.menu_open is True
+    assert page.menus == ["model-picker"]
     assert result.reason == "the attachments button could not be clicked: TimeoutError"
+
+
+def test_a_menu_that_replaced_an_open_one_is_still_closed():
+    """A non-modal menu lets the click through and closes, and the attachments menu opens in its
+    place: something was open before and something is open after, and they are not the same menu."""
+    page = _Page(
+        click_opens_menu = True,
+        already_open = ("model-picker",),
+        click_dismisses_open_menu = True,
+    )
+    result = _upload(page)
+
+    assert result.ran is False
+    assert page.menus == [], "the attachments menu that replaced the old one was left open"
+    assert "closed the menu it opened" in result.reason
+
+
+def test_only_the_menu_this_attempt_opened_is_closed():
+    """Escape takes the top layer, which is the new one, and stops before an older one below it."""
+    page = _Page(click_opens_menu = True, already_open = ("model-picker",))
+    result = _upload(page)
+
+    assert result.ran is False
+    assert page.keyboard.pressed == ["Escape"]
+    assert page.menus == ["model-picker"]

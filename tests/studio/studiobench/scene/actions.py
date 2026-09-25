@@ -1639,31 +1639,36 @@ _COUNT_COMPOSER_ATTACHMENT_CONTAINERS_JS = (
 )
 
 
-#: Any open menu. The composer's "Tools and attachments" menu is a MODAL Radix dropdown, and a modal
-#: one sets `pointer-events: none` on everything outside itself for as long as it is open.
-_OPEN_MENU_JS = """() => Boolean(document.querySelector('[role="menu"]'))"""
+#: The composer's "Tools and attachments" menu is a MODAL Radix dropdown, and a modal one sets
+#: `pointer-events: none` on everything outside itself for as long as it is open. Menus are told apart
+#: by identity, not presence: the chat UI also has non-modal menus, whose outside pointerdown is let
+#: through, so the attachments click can dismiss one of those and open its own in the same moment.
+_MARK_MENUS_BEFORE_JS = """() => {
+  window.__sbMenusBefore = new WeakSet(document.querySelectorAll('[role="menu"]'));
+}"""
+_NEW_MENU_OPEN_JS = """() => {
+  const before = window.__sbMenusBefore || new WeakSet();
+  return Array.from(document.querySelectorAll('[role="menu"]')).some(m => !before.has(m));
+}"""
 
 
-def _close_open_menu(ctx: ActionContext, menu_before: bool) -> Optional[bool]:
-    """Escape until no menu is open, bounded. True when one was open and is now closed, False when
-    none was or one was already open before this action touched the page, None when one is still
-    open after the attempts.
-
-    A menu that predates the attempt is not this action's to close: it can be the very thing that
-    made the click time out, and it belongs to whatever opened it. It stays, and the parity digest
-    already records it.
+def _close_open_menu(ctx: ActionContext) -> Optional[bool]:
+    """Escape until no menu opened by this attempt is left, bounded. True when one was open and is
+    now closed, False when none was, None when one is still open after the attempts.
 
     An action that gives up must leave the page as it found it. A menu this action opened and then
     abandoned is not this action's failure alone: the next action's click hit-tests to nothing, it
     reports the control as unclickable, and a run that allows this action not to run still fails on
-    the one after it.
+    the one after it. A menu that was already open is not this action's to close: it can be the very
+    thing that made the click time out, and it belongs to whatever opened it. Escape dismisses the top
+    layer first, which is the one this attempt opened, so the loop stops before reaching an older one.
     """
-    if menu_before or _ev(ctx, _OPEN_MENU_JS) is not True:
+    if _ev(ctx, _NEW_MENU_OPEN_JS) is not True:
         return False
     for _ in range(3):
         ctx.page.keyboard.press("Escape")
         ctx.page.wait_for_timeout(100)
-        if _ev(ctx, _OPEN_MENU_JS) is not True:
+        if _ev(ctx, _NEW_MENU_OPEN_JS) is not True:
             return True
     return None
 
@@ -1710,7 +1715,7 @@ def image_upload(ctx: ActionContext) -> ActionResult:
             + json.dumps(_ev(ctx, IMAGE_BUTTON_DIAGNOSTIC) or {})
         )
     before = _ev(ctx, _COUNT_COMPOSER_ATTACHMENTS_JS)
-    menu_before = _ev(ctx, _OPEN_MENU_JS) is True
+    _ev(ctx, _MARK_MENUS_BEFORE_JS)
     started = time.monotonic()
     # Bounded by what is left of the slot, never by Playwright's 30s default.
     try:
@@ -1719,7 +1724,7 @@ def image_upload(ctx: ActionContext) -> ActionResult:
         # A click can open the menu and still time out: Radix opens it on pointerdown. Left open, it
         # blocked the next action's New chat button (thread_reopen NOT RUN, "no point on the control
         # hit-tests to it") on a run that allowed only this action not to run.
-        closed = _close_open_menu(ctx, menu_before)
+        closed = _close_open_menu(ctx)
         return not_run(
             f"the attachments button could not be clicked: {type(exc).__name__}"
             + _left_menu_note(closed)
@@ -1733,7 +1738,7 @@ def image_upload(ctx: ActionContext) -> ActionResult:
             }""")
         fc.value.set_files(png)
     except Exception as exc:  # noqa: BLE001
-        closed = _close_open_menu(ctx, menu_before)
+        closed = _close_open_menu(ctx)
         return not_run(
             f"the file chooser never opened: {type(exc).__name__}: {exc}" + _left_menu_note(closed)
         )
