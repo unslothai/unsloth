@@ -151,7 +151,6 @@ def _effective_env(settings: HubSettings) -> tuple[dict[str, str | None], str]:
     if settings.source == MODELSCOPE:
         try:
             from hub.modelscope.router import internal_endpoint
-
             env = {
                 "HF_ENDPOINT": internal_endpoint(),
                 "HF_DATASETS_SERVER": operator["HF_DATASETS_SERVER"],
