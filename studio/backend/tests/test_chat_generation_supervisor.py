@@ -284,8 +284,7 @@ async def test_a_prefill_reporting_only_progress_renews_the_lease(durable_run, m
     async def body():
         for processed in (1024, 8192, 65536):
             yield f"data: {json.dumps(_progress(processed))}\n\n"
-        # Polled, not slept: the idle flush is on a timer
-        # (_EVENT_FLUSH_SECONDS) and a sleep sized against it flakes under load.
+        # Polled, not slept: a sleep sized against the flush timer flakes under load.
         _deadline = time.monotonic() + 10.0
         while time.monotonic() < _deadline:
             sampled["events"] = [
