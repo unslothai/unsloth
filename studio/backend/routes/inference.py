@@ -33578,7 +33578,9 @@ def _validate_anthropic_client_tools(tools) -> None:
             )
 
 
-def _anthropic_response_format(payload) -> Optional[dict]:
+def _anthropic_response_format(
+    payload, *, require_llama_compatibility: bool = True
+) -> Optional[dict]:
     output_config = payload.output_config if isinstance(payload.output_config, dict) else {}
     fmt = output_config.get("format")
     if fmt is None:
@@ -33592,7 +33594,18 @@ def _anthropic_response_format(payload) -> Optional[dict]:
     ):
         logger.warning("Ignoring unsupported Anthropic output format: %r", fmt)
         return None
-    return {"type": "json_schema", "json_schema": {"name": "response", "schema": fmt["schema"]}}
+    schema = fmt["schema"]
+    if require_llama_compatibility and _llama_compatible_tool_schema(schema) != schema:
+        raise HTTPException(
+            status_code = 400,
+            detail = anthropic_error_body(
+                "The output format schema contains constraints that llama.cpp cannot enforce "
+                "without weakening them; use anchored patterns and supported repetition bounds.",
+                status = 400,
+                err_type = "invalid_request_error",
+            ),
+        )
+    return {"type": "json_schema", "json_schema": {"name": "response", "schema": schema}}
 
 
 def _append_to_codex_instructions(messages: list[dict], addition: str) -> list[dict]:
@@ -34229,6 +34242,8 @@ async def anthropic_count_tokens(
     # Reject malformed tools before the switch, like /messages, so an invalid
     # count request can't evict the loaded model.
     _validate_anthropic_client_tools(payload.tools)
+    # Counting compiles no output grammar, matching Anthropic's count_tokens behavior.
+    _count_response_format = _anthropic_response_format(payload, require_llama_compatibility = False)
     # Count with the requested model's tokenizer, like the sibling /messages.
     # Carry the vision guard too: an image count naming a text-only GGUF must not
     # evict a loaded vision model for a swap that can't serve the request.
@@ -34308,7 +34323,7 @@ async def anthropic_count_tokens(
     )
     _count_openai_tool_choice = anthropic_tool_choice_to_openai(payload.tool_choice) or "auto"
     _count_schema_disables_server_tools = (
-        _count_openai_tool_choice == "none" and _anthropic_response_format(payload) is not None
+        _count_openai_tool_choice == "none" and _count_response_format is not None
     )
     _count_server_tools = (
         _anthropic_selects_server_tools(payload, _count_studio_tools, _count_has_client_tool)

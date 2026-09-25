@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from fastapi import HTTPException
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -236,6 +237,30 @@ def test_unsupported_format_is_ignored_as_before(monkeypatch, fmt):
 
     assert status == 200
     assert [path for path, _kwargs in calls] == ["plain"]
+    assert upstream == []
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {
+            "type": "object",
+            "properties": {"name": {"type": "string", "pattern": "[0-9]+"}},
+            "required": ["name"],
+        },
+        {"type": "array", "items": {"type": "string"}, "maxItems": 1998},
+    ],
+    ids = ["unanchored-pattern", "excessive-repetition-bound"],
+)
+def test_format_rejects_schema_constraints_llama_would_drop(monkeypatch, schema):
+    calls, upstream = _install(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc:
+        _run(_payload(output_config = {"format": {"type": "json_schema", "schema": schema}}))
+
+    assert exc.value.status_code == 400
+    assert "cannot enforce" in exc.value.detail["error"]["message"]
+    assert calls == []
     assert upstream == []
 
 
@@ -471,6 +496,32 @@ def test_count_tokens_omits_server_tool_date_when_selection_is_empty(monkeypatch
     [(messages, tools)] = counted
     assert tools is None
     assert messages == [{"role": "user", "content": "Name a scientist."}]
+
+
+def test_count_tokens_accepts_schema_constraints_without_compiling(monkeypatch):
+    counted = []
+
+    def _count(*_args, **_kwargs):
+        counted.append(True)
+        return 2
+
+    _install(monkeypatch, count_chat_tokens = _count)
+    schema = {
+        "type": "object",
+        "properties": {"name": {"type": "string", "pattern": "[0-9]+"}},
+        "required": ["name"],
+    }
+
+    response = asyncio.run(
+        inf_mod.anthropic_count_tokens(
+            _payload(output_config = {"format": {"type": "json_schema", "schema": schema}}),
+            request = _Request(),
+            current_subject = "t",
+        )
+    )
+
+    assert response.status_code == 200
+    assert counted == [True]
 
 
 @pytest.mark.parametrize("replayed_history", [False, True])
