@@ -1114,8 +1114,7 @@ def resolve_model_class(auto_model, config):
 
 @functools.lru_cache(maxsize = None)
 def _auto_loader_prefers_explicit_local_code():
-    """transformers 5 lets a non-transformers class registered for the exact config class win
-    over the repo's auto_map; 4.x always builds the remote class once trust_remote_code is set."""
+    """5 lets a class registered for the exact config class beat auto_map; 4.x never does."""
     try:
         import inspect
         from transformers.models.auto.auto_factory import _BaseAutoModelClass
@@ -1124,7 +1123,6 @@ def _auto_loader_prefers_explicit_local_code():
         return True
 
 
-# from_pretrained options that also decide which remote module file is fetched.
 _REMOTE_CLASS_HUB_OPTIONS = ("code_revision", "cache_dir", "proxies", "force_download")
 
 
@@ -1135,18 +1133,14 @@ def resolve_remote_code_model_class(
     trust_remote_code = False,
     **hub_kwargs,
 ):
-    """(True, class) when `auto_model.from_pretrained` will build the repo's own remote-code class rather than a transformers one, (True, None) when it will but the class cannot be fetched here, (False, None) when the load takes the class `resolve_model_class` reports.
-
-    `resolve_model_class` matches a config by class NAME, so a remote `AfmoeConfig` finds transformers' native `AfmoeForCausalLM` although the load builds the repo's `modeling_afmoe.AfmoeForCausalLM`. Reading attention support off the native class then asks the remote one for flash_attention_2, which it refuses (Trinity-Large). Mirrors the choice in transformers' `_BaseAutoModelClass.from_pretrained`."""
+    """(True, cls) if the load builds the remote class, (True, None) if unfetchable, else (False, None); `resolve_model_class` matches by NAME and misses remote shadows (Trinity-Large)."""
     if not trust_remote_code or config is None or model_name is None:
         return False, None
     auto_map = getattr(config, "auto_map", None)
     auto_name = getattr(auto_model, "__name__", None)
     if not isinstance(auto_map, dict) or auto_name not in auto_map:
         return False, None
-    # A class registered by hand, or by an earlier load of this repo, wins over the auto_map,
-    # but only an exact registration of this config class, as transformers checks it
-    # (`type(config) in cls._model_mapping`): a subclass of some registered config does not.
+    # Exact match only, as transformers checks `type(config) in cls._model_mapping`.
     try:
         mapping = auto_model._model_mapping
         if type(config) in mapping and _auto_loader_prefers_explicit_local_code():
@@ -1248,18 +1242,14 @@ def _get_text_only_key_mapping(parent_config, text_config):
     }
 
 
-# text model_type -> the VLM model_type whose checkpoint a text-only load remaps onto the decoder.
 _TEXT_ONLY_PARENT_MODEL_TYPES = {}
-# Per-thread {decoder model_type: parent conversions} for the conversion lookup, set only for
-# the duration of one text-only `get_model_conversion_mapping` call.
+# Per-thread, set only during one text-only `get_model_conversion_mapping` call.
 _TEXT_ONLY_LOOKUP_OVERRIDES = threading.local()
 _TEXT_ONLY_PREFIX_RENAME = r"^language_model\.model\."
 
 
 def _parent_conversions_for_text_only(parent_model_type):
-    """The VLM's checkpoint conversions a decoder-only load still needs.
-
-    transformers looks conversions up by the loaded model's own type, so a decoder built from a VLM checkpoint gets none of the VLM's: MiniMax-M3's `block_sparse_moe` -> `mlp` rename, its per-expert w1/w3 merge and its indexer renames were dropped, leaving every MoE layer randomly initialised. Renames anchored at the start of a key move the VLM's top-level prefixes and are what the text-only key_mapping replaces, so they are left out; everything else is kept, and a transform matching no text key does nothing."""
+    """VLM conversions a decoder-only load needs, minus start-anchored prefix renames the text-only key_mapping replaces."""
     try:
         from transformers.conversion_mapping import get_checkpoint_conversion_mapping
         from transformers.core_model_loading import WeightRenaming
@@ -1277,7 +1267,7 @@ def _parent_conversions_for_text_only(parent_model_type):
 
 
 def _install_text_only_conversion_carry():
-    """Wrap the conversion lookup `from_pretrained` uses so a text-only load of a VLM checkpoint also gets the VLM's conversions (see `_parent_conversions_for_text_only`). Only loads carrying Unsloth's text-only key_mapping, for a decoder type with no conversions of its own, are touched."""
+    """Give text-only VLM loads (Unsloth key_mapping, no own conversions) the VLM's conversions."""
     try:
         import transformers.conversion_mapping as conversion_mapping
         import transformers.modeling_utils as modeling_utils
@@ -1288,8 +1278,7 @@ def _install_text_only_conversion_carry():
     if original is None or getattr(original, "_unsloth_text_only_carry", False):
         return
 
-    # Installed once and left in place: swapping the module global per call would let two
-    # concurrent loads see each other's lookup, or restore the original under the other.
+    # Installed once, never swapped per call: concurrent loads would race on the module global.
     if not getattr(lookup, "_unsloth_text_only_carry", False):
 
         @functools.wraps(lookup)
@@ -1321,9 +1310,7 @@ def _install_text_only_conversion_carry():
             return original(model, key_mapping, *args, **kwargs)
         extra = _parent_conversions_for_text_only(parent_model_type)
 
-        # For this one call, on this thread, the decoder type has the VLM's conversions, as if
-        # transformers had registered them: same place in the list, and the quantizer then
-        # rewrites them with the rest (FP8 dequantize before an expert merge).
+        # Same list position as a native registration so the quantizer rewrites them too (FP8).
         previous = getattr(_TEXT_ONLY_LOOKUP_OVERRIDES, "value", None)
         _TEXT_ONLY_LOOKUP_OVERRIDES.value = {**(previous or {}), text_model_type: extra}
         try:

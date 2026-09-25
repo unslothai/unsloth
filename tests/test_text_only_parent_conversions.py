@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""A text-only load of a VLM checkpoint must still apply the VLM's checkpoint conversions.
-
-`text_only = True` builds the family's own decoder (MiniMaxM3VLForCausalLM) straight from the
-VLM checkpoint, remapping `language_model.model.*` onto `model.*`. transformers looks
-conversions up by the LOADED model's type, and `minimax_m3_vl_text` has none, so everything the
-VLM's mapping does besides moving prefixes was lost: `block_sparse_moe` -> `mlp`, the per-expert
-w1 / w3 merge into `gate_up_proj`, the indexer renames. The load finished with every MoE layer,
-the dense MLPs and the sparse-attention indexer randomly initialised, and trained on that.
-
-The checkpoint here is a tiny random MiniMax-M3 saved by transformers itself, which writes the
-original layout back out, so its keys are the ones the real repo ships.
-"""
+"""A text-only load of a VLM checkpoint (MiniMax-M3) must still apply the VLM's checkpoint conversions, else MoE / indexer weights load randomly initialised."""
 
 import pytest
 
@@ -136,7 +125,6 @@ def test_only_prefix_moves_are_left_to_the_key_mapping():
 
 
 def test_other_loads_are_untouched(tiny_minimax):
-    """Without Unsloth's text-only key_mapping the lookup is transformers' own."""
     import torch
     from transformers import AutoModelForImageTextToText
 
@@ -147,8 +135,7 @@ def test_other_loads_are_untouched(tiny_minimax):
 
 
 def test_the_parent_conversions_are_per_thread(tiny_minimax):
-    """The carried conversions are visible only to the load that asked for them: a second load
-    on another thread sees transformers' own lookup, and the lookup is never swapped out."""
+    """Carried conversions are thread-local to the requesting load; the lookup is never swapped."""
     import threading
 
     import transformers.conversion_mapping as conversion_mapping

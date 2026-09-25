@@ -224,8 +224,6 @@ def _config_uses_remote_code(config):
             auto_map = cfg.get("auto_map", auto_map)
         if not auto_map:
             return False
-        # An AutoConfig entry read by transformers' own config class did not run: the repo ships
-        # a config for converters and transformers builds the model (MiniMax-M3).
         config_is_native = (getattr(type(cfg), "__module__", "") or "").startswith("transformers.")
         # A custom tokenizer, processor or feature extractor is not code the compiler traces.
         return any(

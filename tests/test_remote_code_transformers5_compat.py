@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Remote code written for transformers 4.x, and config-only remote code, on transformers 5.
-
-Three failures seen loading real checkpoints with `trust_remote_code = True`:
-
-* `arcee-ai/Trinity-Large-Thinking` ships `modeling_afmoe.py` from the 4.x templates. On
-  transformers 5 it reads `config.pad_token_id` (no longer on the base config), indexes
-  `ROPE_INIT_FUNCTIONS["default"]` (dropped), and calls `create_causal_mask(input_embeds = ...,
-  cache_position = ...)` (renamed / dropped).
-* The same repo's `AfmoeConfig` shares its class name with transformers' native one, so the
-  attention resolver read `_supports_flash_attn` off the native `AfmoeForCausalLM` and asked the
-  remote class, which does not support it, for flash_attention_2.
-* `MiniMaxAI/MiniMax-M3` ships only a config class, so transformers builds its own model around
-  a config whose `vision_config` is a bare `PretrainedConfig` and raises on `temporal_patch_size`.
-
-Each tiny repo below reproduces one of these on CPU.
-"""
+"""Tiny CPU repros of 4.x remote code (Trinity-Large), a remote class shadowing a native name, and config-only remote code (MiniMax-M3) on transformers 5."""
 
 import json
 import textwrap
@@ -39,7 +24,6 @@ def _write(path, name, source):
     (path / name).write_text(textwrap.dedent(source))
 
 
-# --------------------------------------------------------------------------- 4.x remote model
 
 _LEGACY_CONFIG = """
 from transformers import PretrainedConfig
@@ -59,7 +43,6 @@ class LegacyToyConfig(PretrainedConfig):
         super().__init__(**kwargs)
 """
 
-# The parts of the transformers 4.x decoder template that transformers 5 broke.
 _LEGACY_MODELING = """
 import torch
 from torch import nn
@@ -154,16 +137,13 @@ def test_transformers4_remote_model_builds_and_runs(unsloth_loaded, legacy_repo)
     input_ids = torch.randint(0, 64, (1, 8))
     out = model(input_ids = input_ids, attention_mask = torch.ones_like(input_ids), labels = input_ids)
     assert torch.isfinite(out.loss)
-    # The default RoPE of 4.x: 1 / theta ** (arange(0, dim, 2) / dim), head_dim 16 here.
     dim = 32 // 2
     expected = 1.0 / (10000.0 ** (torch.arange(0, dim, 2).float() / dim))
     assert torch.allclose(model.rotary_emb.inv_freq.float(), expected)
 
 
 def test_a_remote_file_edited_between_loads_is_patched_again(unsloth_loaded, legacy_repo):
-    """transformers 5.4 re-executes a changed local remote file inside the same module object
-    (5.17 puts the content hash in the module name), so the classes it defines the second time
-    need the defaults as well."""
+    """transformers 5.4 re-executes a changed remote file in the same module object; new classes need the defaults too."""
     from transformers import AutoConfig
 
     assert AutoConfig.from_pretrained(legacy_repo, trust_remote_code = True).pad_token_id is None
@@ -181,15 +161,12 @@ def test_checkpoint_token_ids_still_win(unsloth_loaded, legacy_repo):
     (legacy_repo / "config.json").write_text(json.dumps(config_json))
     config = AutoConfig.from_pretrained(legacy_repo, trust_remote_code = True)
     assert config.pad_token_id == 3
-    # A default filled in by the fix is a class attribute, so it never reaches a saved config
-    # (transformers 4.x sets None on the instance itself, as it always did).
     assert vars(config).get("bos_token_id") is None
     assert config.to_dict().get("bos_token_id") is None
 
 
 def test_native_rope_registry_is_left_alone(unsloth_loaded, legacy_repo):
-    """transformers 5 spreads ROPE_INIT_FUNCTIONS over each native model's own default in
-    `_init_weights`, so a "default" key there would replace every native model's own."""
+    """A "default" key in ROPE_INIT_FUNCTIONS would override every native model's own in `_init_weights`."""
     from transformers import AutoConfig, AutoModelForCausalLM
     from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 
@@ -205,7 +182,6 @@ def test_legacy_defaults_touch_only_remote_classes(unsloth_loaded):
         assert name not in PretrainedConfig.__dict__
 
 
-# ------------------------------------------------------------- remote class shadowing a native
 
 _SHADOW_CONFIG = """
 from transformers import LlamaConfig as _NativeLlamaConfig
@@ -260,7 +236,6 @@ def test_remote_class_is_what_attention_is_resolved_for(unsloth_loaded, shadow_r
 
     config = AutoConfig.from_pretrained(shadow_repo, trust_remote_code = True)
     assert type(config).__module__.startswith("transformers_modules")
-    # The by-name lookup still lands on transformers' own class, which claims flash support.
     native = resolve_model_class(AutoModelForCausalLM, config)
     assert native is not None and native.__module__.startswith("transformers.")
 
@@ -280,7 +255,6 @@ def test_remote_class_not_used_without_trust(unsloth_loaded, shadow_repo):
     assert resolve_remote_code_model_class(
         AutoModelForCausalLM, config, str(shadow_repo), trust_remote_code = False
     ) == (False, None)
-    # An auto class the repo does not map keeps the native class.
     from transformers import AutoModelForSequenceClassification
 
     assert resolve_remote_code_model_class(
@@ -289,8 +263,7 @@ def test_remote_class_not_used_without_trust(unsloth_loaded, shadow_repo):
 
 
 def test_only_an_exact_registration_overrides_remote_code(unsloth_loaded):
-    """transformers keeps the repo's auto_map class unless THIS config class is registered;
-    a registered parent config (matched by isinstance) does not count."""
+    """Only an exact registration of this config class overrides auto_map, not a registered parent."""
     import torch.nn as nn
     from transformers import AutoConfig, AutoModelForCausalLM, PretrainedConfig
     from unsloth.models._utils import resolve_remote_code_model_class
@@ -343,7 +316,6 @@ def test_the_remote_class_lookup_uses_the_loads_code_revision(unsloth_loaded, mo
     assert {k: seen.get(k) for k in options} == options
     import inspect
 
-    # The load forwards every option that decides which module file it fetches.
     assert set(options) <= set(vision._REMOTE_CLASS_HUB_OPTIONS)
     assert "for k in _REMOTE_CLASS_HUB_OPTIONS" in inspect.getsource(vision)
 
@@ -358,7 +330,6 @@ def test_unfetchable_remote_class_is_unknown_not_native(unsloth_loaded):
     ) == (True, None)
 
 
-# ------------------------------------------------------------------ config-only remote code
 
 _CONFIG_ONLY = """
 from transformers import PretrainedConfig
@@ -405,7 +376,6 @@ def test_config_only_remote_code_loads_the_native_config(unsloth_loaded, tmp_pat
     config = AutoConfig.from_pretrained(repo, trust_remote_code = True)
     assert type(config) is LlavaConfig
     assert type(config.vision_config).__name__ == "CLIPVisionConfig"
-    # Without the flag transformers already picks its own class.
     assert type(AutoConfig.from_pretrained(repo)) is LlavaConfig
 
 
@@ -441,5 +411,4 @@ def test_native_config_with_config_only_auto_map_keeps_the_compiler(unsloth_load
     assert _config_uses_remote_code(native) is False
     native.auto_map = {"AutoConfig": "c.X", "AutoModelForCausalLM": "m.X"}
     assert _config_uses_remote_code(native) is True
-    # Duck-typed configs keep the conservative answer.
     assert _config_uses_remote_code(SimpleNamespace(auto_map = {"AutoConfig": "c.X"})) is True

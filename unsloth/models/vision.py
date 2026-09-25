@@ -1460,7 +1460,7 @@ class FastBaseModel:
                 local_files_only = local_files_only,
                 revision = _revision,
             )
-        # Attention support is read off the class the load really builds: a remote-code repo shadowing a native architecture name builds its own class, whose flags can differ.
+        # Remote classes shadowing a native name can differ in attention flags.
         _builds_remote_class, _remote_class = resolve_remote_code_model_class(
             auto_model,
             auto_config,
@@ -1469,7 +1469,6 @@ class FastBaseModel:
             token = token,
             revision = _revision,
             local_files_only = local_files_only,
-            # The remote code the load itself fetches: same pin, cache and Hub options.
             **{k: kwargs.get(k, None) for k in _REMOTE_CLASS_HUB_OPTIONS},
         )
         model_class = resolve_model_class(auto_model, auto_config)
