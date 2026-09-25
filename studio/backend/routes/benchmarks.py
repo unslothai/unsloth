@@ -85,8 +85,7 @@ def get_runs(
 ):
     return {
         "runs": [
-            _redact_run(run, via_api_key = via_api_key)
-            for run in list_runs(limit = MAX_RUNS_LISTED)
+            _redact_run(run, via_api_key = via_api_key) for run in list_runs(limit = MAX_RUNS_LISTED)
         ]
     }
 
