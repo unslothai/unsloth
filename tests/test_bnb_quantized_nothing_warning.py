@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class Params4bit(torch.nn.Parameter):
-    """Stands in for bitsandbytes.nn.Params4bit: only the type name is read."""
+    """Only the type name is read."""
 
 
 class Linear4bit(torch.nn.Linear):
@@ -39,7 +39,6 @@ def test_bits_requested_reads_objects_and_dicts():
     assert _bnb_bits_requested({"quant_method": "bitsandbytes", "load_in_4bit": True}) == 4
     assert _bnb_bits_requested({"quant_method": "fp8", "load_in_4bit": True}) is None
     assert _bnb_bits_requested({"quant_method": "gptq", "bits": 4}) is None
-    # The dict shorthand without quant_method is still bitsandbytes.
     assert _bnb_bits_requested({"load_in_4bit": True}) == 4
     assert _bnb_bits_requested({"load_in_8bit": True}) == 8
     assert _bnb_bits_requested({}) is None
@@ -57,7 +56,7 @@ def test_silent_when_a_linear_or_a_packed_parameter_is_quantized(capsys):
         warn_if_bitsandbytes_quantized_nothing(torch.nn.Sequential(Linear4bit(4, 4)), _bnb4(), "m")
         is False
     )
-    experts = torch.nn.Module()  # a 3-D expert stack packed in place, no Linear4bit anywhere
+    experts = torch.nn.Module()  # packed 3-D experts: Params4bit without any Linear4bit
     experts.gate_up_proj = Params4bit(torch.zeros(8, 1), requires_grad = False)
     assert (
         warn_if_bitsandbytes_quantized_nothing(
@@ -80,8 +79,6 @@ def test_silent_without_a_bitsandbytes_request(capsys):
     [("unsloth/models/vision.py", 1), ("unsloth/models/llama.py", 2)],
 )
 def test_every_in_process_load_is_checked(relpath, expected):
-    """Each transformers from_pretrained that can take a bitsandbytes config is followed
-    by the check, fed the same kwargs the load received."""
     src = (ROOT / relpath).read_text(encoding = "utf-8")
     calls = [
         node

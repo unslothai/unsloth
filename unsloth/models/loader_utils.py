@@ -1408,7 +1408,7 @@ _BNB_QUANTIZED_TYPES = ("Params4bit", "Int8Params", "Linear4bit", "Linear8bitLt"
 
 
 def _bnb_bits_requested(quantization_config):
-    """4 or 8 when ``quantization_config`` (a config object or a dict) asks bitsandbytes to quantize, else None."""
+    """4 or 8 if a bitsandbytes config object or dict asks to quantize, else None."""
     if quantization_config is None:
         return None
     if isinstance(quantization_config, dict):
@@ -1434,7 +1434,7 @@ def warn_if_bitsandbytes_quantized_nothing(
     quantization_config,
     model_name = "",
 ):
-    """Warn (and return True) when a bitsandbytes load quantized no weight, e.g. every Linear was skipped."""
+    """Warn and return True when a bitsandbytes load quantized no weight (e.g. every Linear skipped)."""
     bits = _bnb_bits_requested(quantization_config)
     if bits is None or model is None:
         return False

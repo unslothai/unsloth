@@ -2751,12 +2751,12 @@ class FastLlamaModel:
                         and not _head.weight.is_floating_point()
                     ):
                         _head.to(dtype)
-                # Attach dispatch hooks for bnb multi-device loads. The hooks stand aside only when vLLM
-                # owns the weights, which it never does here: vLLM has no classification head, so this
-                # branch loaded the weights in-process even though the caller asked for fast_inference.
                 warn_if_bitsandbytes_quantized_nothing(
                     model, kwargs.get("quantization_config", None), model_name
                 )
+                # Attach dispatch hooks for bnb multi-device loads. The hooks stand aside only when vLLM
+                # owns the weights, which it never does here: vLLM has no classification head, so this
+                # branch loaded the weights in-process even though the caller asked for fast_inference.
                 from unsloth.models.vision import _attach_bnb_multidevice_hooks
                 from unsloth.models._remote_code_buffers import (
                     restore_remote_code_non_persistent_buffers,
