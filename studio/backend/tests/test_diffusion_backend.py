@@ -10716,8 +10716,9 @@ def test_plan_memory_hands_the_planner_the_text_encoder_split(monkeypatch, tmp_p
     assert plan.estimates["companion_dense_mib"] == 200
     assert plan.estimates["text_encoder_dense_mib"] == 150
     assert plan.estimates["group_floor_streamed_te_mib"] == 2198
-    # The companions fit as they are, so the cheaper tier still wins and nothing streams.
-    assert plan.offload_policy == OFFLOAD_GROUP and plan.stream_text_encoders is False
+    assert plan.estimates["resident_transformer_floor_mib"] == 2498
+    assert plan.offload_policy == OFFLOAD_GROUP
+    assert plan.stream_text_encoders is True and plan.stream_transformer is False
 
 
 def test_plan_memory_streams_the_text_encoders_instead_of_offloading_everything(
@@ -12065,6 +12066,325 @@ def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypa
         failures
     ), "a configured prequant that is not in its repo left the plan calling itself complete"
     assert "prequant artifact missing" in str(failures[0])
+
+
+def test_plan_memory_prices_the_hosted_precast_text_encoder(monkeypatch, tmp_path):
+    snapshot = _base_snapshot_with_sizes(
+        tmp_path, monkeypatch, {"vae/diffusion_pytorch_model.safetensors": 50}
+    )
+    target = _small_card(monkeypatch)
+    seen = {}
+
+    def _precast(
+        fam,
+        base,
+        tgt,
+        text_encoder_quant,
+        staged_dir = None,
+    ):
+        seen["quant"] = text_encoder_quant
+        return (2800, ("text_encoder",), True) if text_encoder_quant == "fp8" else None
+
+    monkeypatch.setattr(DiffusionBackend, "_precast_text_encoder_mib", staticmethod(_precast))
+
+    def _plan(**kw):
+        return DiffusionBackend()._plan_memory(
+            target,
+            None,
+            "bfl/base",
+            types.SimpleNamespace(name = "flux.1"),
+            None,
+            False,
+            kind = "gguf",
+            transformer_resident_override_mib = 300,
+            base_local_dir = str(snapshot),
+            **kw,
+        )
+
+    before = _plan()
+    assert before.estimates["companion_dense_mib"] == 50
+    assert before.estimates["text_encoder_dense_mib"] is None
+    after = _plan(text_encoder_quant = "fp8")
+    assert seen["quant"] == "fp8"
+    assert after.estimates["text_encoder_dense_mib"] == 2800
+    assert after.estimates["companion_dense_mib"] == 2850
+    assert after.estimates["model_dense_mib"] == 3150
+
+
+def test_plan_memory_prices_cached_dense_shards_over_a_cached_precast(monkeypatch, tmp_path):
+    snapshot = _base_snapshot_with_sizes(
+        tmp_path,
+        monkeypatch,
+        {
+            "text_encoder/model.safetensors": 4000,
+            "vae/diffusion_pytorch_model.safetensors": 50,
+        },
+    )
+    target = _small_card(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_precast_text_encoder_mib",
+        staticmethod(lambda *a, **k: (2600, ("text_encoder",), True)),
+    )
+    plan = DiffusionBackend()._plan_memory(
+        target,
+        None,
+        "bfl/base",
+        types.SimpleNamespace(name = "flux.1"),
+        None,
+        False,
+        kind = "gguf",
+        transformer_resident_override_mib = 300,
+        base_local_dir = str(snapshot),
+        text_encoder_quant = "fp8",
+    )
+    assert plan.estimates["text_encoder_dense_mib"] == 4000
+    assert plan.estimates["companion_dense_mib"] == 4050
+    assert plan.estimates["model_dense_mib"] == 4350
+
+
+def test_cached_dense_shards_keep_the_24g_denoiser_resident(monkeypatch, tmp_path):
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_memory import OFFLOAD_GROUP, DeviceMemory
+
+    snapshot = _base_snapshot_with_sizes(
+        tmp_path,
+        monkeypatch,
+        {
+            "text_encoder/model.safetensors": 16689,
+            "vae/diffusion_pytorch_model.safetensors": 1288,
+        },
+    )
+    monkeypatch.setattr(
+        dmod,
+        "settled_snapshot_device_memory",
+        lambda t: DeviceMemory("cuda", "cuda", "discrete_vram", 23000, 24576),
+    )
+    monkeypatch.setattr(dmod, "estimate_image_runtime_mib", lambda **kw: 8192)
+    target = types.SimpleNamespace(device = "cuda", backend = "cuda", supports_model_cpu_offload = True)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_precast_text_encoder_mib",
+        staticmethod(lambda *a, **k: (8959, ("text_encoder",), True)),
+    )
+    plan = DiffusionBackend()._plan_memory(
+        target,
+        None,
+        "bfl/base",
+        types.SimpleNamespace(name = "qwen-image"),
+        None,
+        False,
+        kind = "gguf",
+        transformer_resident_override_mib = 7650,
+        base_local_dir = str(snapshot),
+        text_encoder_quant = "fp8",
+    )
+    assert plan.estimates["text_encoder_dense_mib"] == 16689
+    assert plan.offload_policy == OFFLOAD_GROUP
+    assert plan.stream_transformer is False and plan.stream_text_encoders is True
+
+
+def _flux_like_plan(tmp_path, monkeypatch, precast):
+    snapshot = _base_snapshot_with_sizes(
+        tmp_path,
+        monkeypatch,
+        {
+            "text_encoder/model.safetensors": 235,
+            "text_encoder_2/model.safetensors": 4000,
+            "vae/diffusion_pytorch_model.safetensors": 50,
+        },
+    )
+    target = _small_card(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend, "_precast_text_encoder_mib", staticmethod(lambda *a, **k: precast)
+    )
+    return DiffusionBackend()._plan_memory(
+        target,
+        None,
+        "bfl/base",
+        types.SimpleNamespace(name = "flux.1"),
+        None,
+        False,
+        kind = "gguf",
+        transformer_resident_override_mib = 300,
+        base_local_dir = str(snapshot),
+        text_encoder_quant = "fp8",
+    )
+
+
+def test_plan_memory_swaps_only_the_encoder_the_precast_checkpoint_replaces(monkeypatch, tmp_path):
+    plan = _flux_like_plan(tmp_path, monkeypatch, (4200, ("text_encoder_2",), True))
+    assert plan.estimates["text_encoder_dense_mib"] == 235 + 4200
+    assert plan.estimates["companion_dense_mib"] == 50 + 235 + 4200
+
+
+def test_plan_memory_never_prices_an_uncached_precast_below_the_dense_shards(monkeypatch, tmp_path):
+    plan = _flux_like_plan(tmp_path, monkeypatch, (2600, ("text_encoder_2",), False))
+    assert plan.estimates["text_encoder_dense_mib"] == 235 + 4000
+
+
+def test_a_table_priced_pipeline_does_not_add_the_precast_encoder_on_top(monkeypatch, tmp_path):
+    # A base-repo pipeline prices its encoders from the bf16 table, which already covers the dense encoder.
+    snapshot = _base_snapshot_with_sizes(
+        tmp_path,
+        monkeypatch,
+        {
+            "transformer/diffusion_pytorch_model.safetensors": 13500,
+            "vae/diffusion_pytorch_model.safetensors": 1288,
+        },
+    )
+    target = _small_card(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_precast_text_encoder_mib",
+        staticmethod(lambda *a, **k: (8959, ("text_encoder",), True)),
+    )
+    fam = types.SimpleNamespace(name = "qwen-image-2.1", base_repo = "bfl/base")
+
+    def _plan(quant):
+        return (
+            DiffusionBackend()
+            ._plan_memory(
+                target,
+                None,
+                "bfl/base",
+                fam,
+                None,
+                False,
+                kind = "pipeline",
+                repo_id = "bfl/base",
+                base_local_dir = str(snapshot),
+                text_encoder_quant = quant,
+            )
+            .estimates
+        )
+
+    dense, precast = _plan(None), _plan("fp8")
+    assert dense["text_encoder_dense_mib"] == 16689
+    for key in ("model_dense_mib", "companion_dense_mib", "text_encoder_dense_mib"):
+        assert precast[key] == dense[key]
+
+
+def test_plan_memory_leaves_a_callers_companion_override_alone(monkeypatch, tmp_path):
+    target = _small_card(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend, "_precast_text_encoder_mib", staticmethod(lambda *a, **k: 2600)
+    )
+    plan = DiffusionBackend()._plan_memory(
+        target,
+        None,
+        "bfl/base",
+        types.SimpleNamespace(name = "flux.1"),
+        None,
+        False,
+        kind = "gguf",
+        transformer_resident_override_mib = 300,
+        companion_override_mib = 700,
+        text_encoder_override_mib = 600,
+        text_encoder_quant = "fp8",
+    )
+    assert plan.estimates["companion_dense_mib"] == 700
+    assert plan.estimates["text_encoder_dense_mib"] == 600
+
+
+def _q21_precast_cache(tmp_path, monkeypatch, *, mib):
+    """unsloth/Qwen-Image-2.1-FP8 cached under the live root, holding only the pre-cast encoder."""
+    live, _other = _split_cache_roots(tmp_path, monkeypatch)
+    repo = live / "models--unsloth--Qwen-Image-2.1-FP8"
+    rev = "b" * 40
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text(rev)
+    snap = repo / "snapshots" / rev
+    snap.mkdir(parents = True)
+    if mib:
+        with open(snap / "Qwen-Image-2.1-text_encoder-FP8.safetensors", "wb") as fh:
+            fh.truncate(mib * 1024 * 1024)
+    return snap
+
+
+def _bf16_cuda_target():
+    import torch
+    return types.SimpleNamespace(
+        device = "cuda", backend = "cuda", dtype = torch.bfloat16, supports_model_cpu_offload = True
+    )
+
+
+def test_precast_text_encoder_mib_reads_the_cached_checkpoint(monkeypatch, tmp_path):
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    assert fam is not None and fam.name == "qwen-image-2.1"
+    _q21_precast_cache(tmp_path, monkeypatch, mib = 8959)
+    target = _bf16_cuda_target()
+    assert DiffusionBackend._precast_text_encoder_mib(
+        fam, "Qwen/Qwen-Image-2.1", target, "fp8"
+    ) == (
+        8959,
+        ("text_encoder",),
+        True,
+    )
+    assert (
+        DiffusionBackend._precast_text_encoder_mib(fam, "Qwen/Qwen-Image-2.1", target, None) is None
+    )
+    assert (
+        DiffusionBackend._precast_text_encoder_mib(fam, "Qwen/Qwen-Image-2.1", target, "none")
+        is None
+    )
+
+
+def test_precast_text_encoder_mib_prices_hidreams_standalone_fourth_encoder(monkeypatch, tmp_path):
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_te_prequant import te_candidate_filenames, te_prequant_sources
+
+    fam = detect_family("HiDream-ai/HiDream-I1-Full")
+    assert fam is not None and fam.name == "hidream-i1"
+    target = _bf16_cuda_target()
+    source = te_prequant_sources(
+        fam, te_quant_mode = "fp8", target = target, components = ("text_encoder_4",)
+    )["text_encoder_4"]
+    live, _other = _split_cache_roots(tmp_path, monkeypatch)
+    repo = live / ("models--" + source.location.replace("/", "--"))
+    rev = "c" * 40
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text(rev)
+    snap = repo / "snapshots" / rev
+    snap.mkdir(parents = True)
+    with open(snap / te_candidate_filenames(source)[0], "wb") as fh:
+        fh.truncate(7700 * 1024 * 1024)
+    assert DiffusionBackend._precast_text_encoder_mib(
+        fam, "HiDream-ai/HiDream-I1-Full", target, "fp8"
+    ) == (7700, ("text_encoder_4",), True)
+
+    (snap / te_candidate_filenames(source)[0]).unlink()
+    from core.inference.diffusion_hidream import HIDREAM_LLAMA_BF16_BYTES
+    from core.inference.diffusion_te_prequant import TE_PREQUANT_BUDGET_SCALE
+
+    assert DiffusionBackend._precast_text_encoder_mib(
+        fam, "HiDream-ai/HiDream-I1-Full", target, "fp8"
+    ) == (
+        int(HIDREAM_LLAMA_BF16_BYTES * TE_PREQUANT_BUDGET_SCALE) // (1024 * 1024),
+        ("text_encoder_4",),
+        False,
+    )
+
+
+def test_precast_text_encoder_mib_prices_an_uncached_checkpoint_from_the_family_table(
+    monkeypatch, tmp_path
+):
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_te_prequant import TE_PREQUANT_BUDGET_SCALE
+
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    _q21_precast_cache(tmp_path, monkeypatch, mib = 0)
+    got = DiffusionBackend._precast_text_encoder_mib(
+        fam, "Qwen/Qwen-Image-2.1", _bf16_cuda_target(), "fp8"
+    )
+    assert got == (
+        int(17.5 * 1000**3 * TE_PREQUANT_BUDGET_SCALE) // (1024 * 1024),
+        ("text_encoder",),
+        False,
+    )
+    assert got[0] > 8959
 
 
 def _stub_amd_weight_only_host(backend, monkeypatch):
