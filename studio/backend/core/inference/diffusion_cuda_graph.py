@@ -273,8 +273,7 @@ class GraphedForward:
         _LIVE_WRAPPERS.add(self)
 
     def install(self) -> "GraphedForward":
-        """Write ``forward`` into the instance ``__dict__``; ``__setattr__`` would inspect it.
-        An outer layer (the static step skip) stays outermost, deciding which steps reach the graph."""
+        """Set ``forward`` via ``__dict__`` (``__setattr__`` would inspect it), under any outer step-skip layer."""
         outer = _outer_layer(self.module)
         if outer is not None:
             outer.inner = self
