@@ -6283,8 +6283,14 @@ export function HubModelPicker({
             pick();
             return;
           }
+          const before = useChatRuntimeStore.getState();
+          const chosen = before.params.checkpoint;
           void npuCatalog.download(model).then((done) => {
-            if (done) pick();
+            const now = useChatRuntimeStore.getState();
+            // A model picked while this downloaded is the user's newer choice; keep it.
+            if (done && now.params.checkpoint === chosen && !now.loadingModelPick) {
+              pick();
+            }
           });
         }}
         vramStatus={null}

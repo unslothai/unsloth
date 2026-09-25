@@ -40,3 +40,15 @@ test("the run releases the slot through its owner and settles last", () => {
   assert.doesNotMatch(npuLoad, /\bresetLoadingUi\(\)/);
   assert.ok(cleanup.indexOf("resetLoadingUiForRun") < cleanup.indexOf("markLoadRunSettled();"));
 });
+
+test("a finished NPU download does not replace a model picked meanwhile", () => {
+  const pickers = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/model-picker/components/model-selector/pickers.tsx", import.meta.url),
+    ),
+    "utf8",
+  );
+  const flow = pickers.slice(pickers.indexOf("void npuCatalog.download(model).then("));
+  const guard = flow.indexOf("now.params.checkpoint === chosen");
+  assert.ok(guard !== -1 && guard < flow.indexOf("pick();"));
+});
