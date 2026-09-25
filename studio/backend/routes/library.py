@@ -101,14 +101,14 @@ def get_favorites(current_subject: str = Depends(get_current_subject)) -> dict:
         "ids": [
             item_id
             for item_id, entry in library_db.list_entries().items()
-            if entry["favorite"] and _still_there(item_id)
+            if entry["favorite"] and _still_there(item_id, entry["fingerprint"])
         ]
     }
 
 
-def _still_there(item_id: str) -> bool:
+def _still_there(item_id: str, fingerprint: Optional[str]) -> bool:
     try:
-        return library.item_exists(item_id)
+        return library.item_exists(item_id, fingerprint)
     except Exception:
         # A store that cannot be read right now keeps its stars rather than dropping them.
         logger.debug("library.favorite_check_failed: %s", item_id, exc_info = True)
@@ -127,6 +127,8 @@ def patch_item(body: ItemPatch, current_subject: str = Depends(get_current_subje
             favorite = body.favorite,
             folder_id = body.folderId,
             move = "folderId" in body.model_fields_set,
+            # A path can name another file later; the row is kept for this one.
+            fingerprint = library.fingerprint(body.id),
         )
     except KeyError:
         raise HTTPException(status_code = 404, detail = "Folder not found")

@@ -1306,3 +1306,204 @@ def test_the_schema_is_checked_once_per_database(client, monkeypatch, tmp_path):
     for _ in range(3):
         library_db.get_connection().close()
     assert runs == []
+
+
+def test_an_overlay_row_stays_with_the_file_it_was_made_for(client, monkeypatch, tmp_path):
+    import os
+
+    from storage import library_db
+
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    directory, path = _sandbox_chat(monkeypatch, body = b"v1")
+    item_id = "sandbox:t-lib:report.txt"
+    client.patch("/api/library/items", json = {"id": item_id, "favorite": True, "name": "Q3"})
+    assert _items(client)[0][item_id]["favorite"] is True
+
+    # Edited in place, as a tool appending to its output: still the same file.
+    with open(path, "ab") as handle:
+        handle.write(b" and v2")
+    library.invalidate_listing()
+    assert (_items(client)[0][item_id]["favorite"], _items(client)[0][item_id]["name"]) == (
+        True,
+        "Q3",
+    )
+    assert client.get("/api/library/favorites").json() == {"ids": [item_id]}
+
+    # Deleted outside the Library and made again at the path. Moved aside rather than unlinked,
+    # so no filesystem can hand the new file the old one's inode.
+    os.replace(path, tmp_path / "old-report.txt")
+    with open(path, "wb") as handle:
+        handle.write(b"new")
+    assert client.get("/api/library/favorites").json() == {"ids": []}
+    library.invalidate_listing()
+    item = _items(client)[0][item_id]
+    assert (item["favorite"], item["name"]) == (False, "report.txt")
+    # Pruned, so starring the new file starts from nothing.
+    assert item_id not in library_db.list_entries()
+    client.patch("/api/library/items", json = {"id": item_id, "favorite": True})
+    assert library_db.list_entries()[item_id]["name"] is None
+
+
+def test_a_patch_for_a_new_file_at_the_path_drops_the_old_files_row(client, monkeypatch, tmp_path):
+    import os
+
+    from storage import library_db
+
+    directory, path = _sandbox_chat(monkeypatch)
+    item_id = "sandbox:t-lib:report.txt"
+    client.patch("/api/library/items", json = {"id": item_id, "name": "Old name"})
+    os.replace(path, tmp_path / "old.txt")
+    with open(path, "wb") as handle:
+        handle.write(b"new")
+    library.invalidate_listing()
+    # No listing in between: the write itself sees the row belongs to another file.
+    client.patch("/api/library/items", json = {"id": item_id, "favorite": True})
+    entry = library_db.list_entries()[item_id]
+    assert (entry["name"], entry["favorite"]) == (None, True)
+
+
+def test_a_row_from_before_fingerprints_is_adopted(client, monkeypatch):
+    from storage import library_db
+
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    _sandbox_chat(monkeypatch)
+    item_id = "sandbox:t-lib:report.txt"
+    library_db.update_entry(item_id, favorite = True)
+    assert library_db.list_entries()[item_id]["fingerprint"] is None
+    assert _items(client)[0][item_id]["favorite"] is True
+    assert library_db.list_entries()[item_id]["fingerprint"] == library.fingerprint(item_id)
+    assert "_fingerprint" not in _items(client)[0][item_id]
+
+
+def test_an_older_database_gains_the_fingerprint_column(client, monkeypatch, tmp_path):
+    from storage import library_db
+
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE library_entries (item_id TEXT NOT NULL PRIMARY KEY, name TEXT, "
+        "favorite INTEGER NOT NULL DEFAULT 0, folder_id TEXT, updated_at INTEGER NOT NULL)"
+    )
+    conn.execute("INSERT INTO library_entries (item_id, favorite, updated_at) VALUES ('x', 1, 1)")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(library_db, "studio_db_path", lambda: db)
+    assert library_db.list_entries()["x"] == {
+        "name": None,
+        "favorite": True,
+        "folderId": None,
+        "updatedAt": 1,
+        "fingerprint": None,
+    }
+
+
+def _gallery_image(prompt: str) -> str:
+    from PIL import Image
+
+    from core.inference import image_gallery
+
+    record = image_gallery.save(
+        Image.new("RGB", (4, 4)),
+        {
+            "prompt": prompt,
+            "width": 4,
+            "height": 4,
+            "steps": 1,
+            "guidance": 1,
+            "seed": 1,
+            "created_at": 1,
+        },
+    )
+    return record["id"]
+
+
+def test_generated_media_download_under_their_prompt(client, signed_in, project):
+    from urllib.parse import quote
+
+    from core.inference import audio_gallery
+
+    image = _gallery_image('A red fox: "at dawn"')
+    response = client.get("/api/library/items/download", params = {"id": f"image:{image}"})
+    assert response.status_code == 200
+    assert response.headers["content-disposition"].startswith(
+        'attachment; filename="A red fox at dawn.png"'
+    )
+    # The UTF-8 name rides along for a prompt ASCII cannot hold.
+    image = _gallery_image("Café ☕ at noon")
+    disposition = client.get(
+        "/api/library/items/download", params = {"id": f"image:{image}"}
+    ).headers["content-disposition"]
+    assert f"filename*=UTF-8''{quote('Café ☕ at noon.png')}" in disposition
+    # No prompt: the id, never an empty name.
+    image = _gallery_image("  ")
+    disposition = client.get(
+        "/api/library/items/download", params = {"id": f"image:{image}"}
+    ).headers["content-disposition"]
+    assert f'filename="{image}.png"' in disposition
+
+    clip = audio_gallery.save(
+        b"RIFF0000WAVE",
+        {
+            "prompt": "Hello there",
+            "model": "sample-tts",
+            "audio_type": "snac",
+            "sample_rate": 24000,
+            "duration_s": 1.0,
+            "created_at": 1,
+        },
+    )
+    disposition = client.get(
+        "/api/library/items/download", params = {"id": f"audio:{clip['id']}"}
+    ).headers["content-disposition"]
+    assert 'filename="Hello there.wav"' in disposition
+
+    # Add to project names the copy after the prompt too, the id keeping two alike apart.
+    first, second = _gallery_image("Same prompt"), _gallery_image("Same prompt")
+    for image in (first, second):
+        response = client.post(
+            "/api/library/items/project", json = {"id": f"image:{image}", "projectId": "p1"}
+        )
+        assert response.json() == {"already": False}
+    names = sorted(path.name for path in (project / "images").iterdir())
+    assert len(names) == 2
+    assert all(name.startswith("Same prompt-") and name.endswith(".png") for name in names)
+
+
+def test_a_sandbox_file_past_the_listing_cap_is_not_reachable_by_id(client, signed_in, monkeypatch):
+    import os
+
+    import routes.inference as inference
+
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    # The walk counts dotfiles too, which the Library then hides: .env, a.txt, b.txt.
+    monkeypatch.setattr(inference, "_MAX_SNAPSHOT_FILES", 3)
+    directory, _path = _sandbox_chat(monkeypatch, name = "a.txt")
+    for name in ("b.txt", "c.txt", ".env"):
+        with open(os.path.join(directory, name), "w") as handle:
+            handle.write("x")
+    os.makedirs(os.path.join(directory, "d1", "d2", "d3", "d4"))
+    with open(os.path.join(directory, "d1", "d2", "d3", "d4", "deep.txt"), "w") as handle:
+        handle.write("x")
+    download = lambda name: client.get(  # noqa: E731
+        "/api/library/items/download", params = {"id": f"sandbox:t-lib:{name}"}
+    ).status_code
+    # Cold: this sandbox is walked once, and the answer serves every card after it.
+    walks = []
+    real = inference._sandbox_listing_names
+    monkeypatch.setattr(
+        inference, "_sandbox_listing_names", lambda path: walks.append(path) or real(path)
+    )
+    assert (download("a.txt"), download("b.txt")) == (200, 200)
+    assert len(walks) == 1
+    for name in ("c.txt", ".env", "d1/d2/d3/d4/deep.txt"):
+        assert download(name) == 404, name
+    assert set(_items(client)[0]) == {"sandbox:t-lib:a.txt", "sandbox:t-lib:b.txt"}
+    # The listing leaves its walk for the per-item routes.
+    library.invalidate_listing()
+    _items(client)
+    walks.clear()
+    assert download("a.txt") == 200 and download("c.txt") == 404
+    assert walks == []
+    response = client.post("/api/library/items/delete", json = {"id": "sandbox:t-lib:c.txt"})
+    assert response.status_code == 404
+    assert os.path.exists(os.path.join(directory, "c.txt"))
