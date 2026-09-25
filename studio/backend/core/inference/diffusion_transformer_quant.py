@@ -30,7 +30,7 @@ from typing import Any, Optional
 
 # stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
 from core._torchao_stub import is_stubbed, torch_is_rocm
-from .diffusion_native_quant import is_native_linear
+from .diffusion_native_quant import int8_act_disabled, int8_act_requested, is_native_linear
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 
 # Also runs in the spawned smoke-probe child, which imports this module and nothing else of the backend.
@@ -686,19 +686,45 @@ def native_quant_host(target: Any) -> bool:
         return False
 
 
+NATIVE_OFFLOAD_SCHEMES = (TQ_INT8,)
+
+
+def native_offload_host(target: Any) -> bool:
+    if getattr(target, "device", None) != "cuda":
+        return False
+    if torch_is_rocm() or is_stubbed("torchao"):
+        return False
+    try:
+        import torch
+        return getattr(target, "dtype", None) is torch.bfloat16
+    except Exception:
+        return False
+
+
 def native_quant_scheme(
     target: Any,
     requested: Optional[str],
     family: Optional[str] = None,
+    *,
+    offload: bool = False,
 ) -> Optional[str]:
-    """The weight-only scheme an EXPLICIT ``requested`` runs as on a ``native_quant_host``, or None.
-    Not in ``select_transformer_quant_scheme``: that also feeds hosted torchao prequant planners."""
+    """Not ``select_transformer_quant_scheme``: that also feeds hosted prequant planners (torchao checkpoints)."""
     scheme = normalize_transformer_quant(requested)
-    if scheme not in NATIVE_QUANT_SCHEMES or not native_quant_host(target):
+    if scheme not in NATIVE_QUANT_SCHEMES:
+        return None
+    if not native_quant_host(target) and not (
+        offload and scheme in NATIVE_OFFLOAD_SCHEMES and native_offload_host(target)
+    ):
         return None
     if _family_denied(family, scheme):
         return None
     return scheme
+
+
+def native_int8_act(target: Any) -> bool:
+    if native_quant_host(target):
+        return int8_act_requested()
+    return not int8_act_disabled()
 
 
 def select_transformer_quant_scheme(
@@ -1404,16 +1430,25 @@ def quantize_transformer(
     min_features: int = DEFAULT_MIN_LINEAR_FEATURES,
     fast_accum: Optional[bool] = None,
     logger: Any = None,
+    offload: bool = False,
+    act_int8: Optional[bool] = None,
 ) -> Optional[str]:
     """Quantise ``pipe.transformer``'s FLOP-heavy linears in place with the arch-chosen scheme.
     Returns the scheme engaged, or None when disabled / unsupported / failed (caller loads GGUF).
     Best-effort: never raises for an unsupported environment (failure leaves it dense).
     ``fast_accum`` (fp8 only) overrides the per-GPU-class accumulate choice: None auto-detects,
-    True/False force it. On a ``native_quant_host`` an explicit int8 / fp8 runs weight-only without torchao."""
-    native = native_quant_scheme(target, mode, family = family)
+    True/False force it."""
+    native = native_quant_scheme(target, mode, family = family, offload = offload)
     if native is not None:
+        if act_int8 is None:
+            act_int8 = native_int8_act(target)
         return _quantize_native(
-            pipe, native, family = family, min_features = min_features, logger = logger
+            pipe,
+            native,
+            family = family,
+            min_features = min_features,
+            act_int8 = bool(act_int8) and native == TQ_INT8,
+            logger = logger,
         )
     scheme = select_transformer_quant_scheme(target, mode, family = family)
     if scheme is None:
@@ -1456,9 +1491,8 @@ def quantize_transformer(
 
 
 def _quantize_native(
-    pipe: Any, scheme: str, *, family: Optional[str], min_features: int, logger: Any
+    pipe: Any, scheme: str, *, family: Optional[str], min_features: int, act_int8: bool, logger: Any
 ) -> Optional[str]:
-    """The torchao-free branch of ``quantize_transformer``: the same layer filter, weight-only."""
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
         return None
@@ -1471,7 +1505,9 @@ def _quantize_native(
             exclude_name_tokens = exclude_tokens_for_scheme(scheme, family) + ("lora_",),
             require_bf16 = True,
         )
-        if not apply_native_weight_quant(transformer, scheme, filter_fn = filter_fn, logger = logger):
+        if not apply_native_weight_quant(
+            transformer, scheme, filter_fn = filter_fn, act_int8 = act_int8, logger = logger
+        ):
             return None
         try:
             transformer._unsloth_runtime_quant = scheme

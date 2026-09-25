@@ -12475,6 +12475,178 @@ def test_an_explicit_scheme_on_nvidia_keeps_the_torchao_path_and_its_wording(
     backend.unload()
 
 
+def _stub_nvidia_offload_host(
+    backend,
+    monkeypatch,
+    *,
+    engages = "int8",
+):
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_transformer_quant as tq
+
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch, engages = engages)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: mode
+    )
+    monkeypatch.setattr(tq, "native_quant_host", lambda target: False)
+    monkeypatch.setattr(tq, "native_offload_host", lambda target: True)
+    monkeypatch.setattr(dmod, "native_offload_host", lambda target: True)
+    monkeypatch.delenv("UNSLOTH_NATIVE_INT8_ACT", raising = False)
+    reasons: list = []
+
+    def _reason(module, scheme):
+        reasons.append(scheme)
+        return f"W8A8: {scheme} (stub)"
+
+    monkeypatch.setattr(dmod, "native_quant_reason", _reason)
+    return calls, reasons
+
+
+@pytest.mark.parametrize(
+    "memory",
+    [{"memory_mode": "balanced"}, {"memory_mode": "low_vram"}, {"cpu_offload": True}],
+)
+def test_an_explicit_int8_under_offload_on_nvidia_runs_native_w8a8(
+    fake_runtime, tmp_path, monkeypatch, memory
+):
+    backend = DiffusionBackend()
+    calls, reasons = _stub_nvidia_offload_host(backend, monkeypatch)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        transformer_quant = "int8",
+        _base_local_dir = str(tmp_path),
+        **memory,
+    )
+    assert len(calls) == 1
+    assert calls[0]["offload"] is True and calls[0]["act_int8"] is True
+    assert status["offload_policy"] != "none"
+    assert status["transformer_quant"] == "int8"
+    resolved = status["resolved"]["transformer_quant"]
+    assert resolved["value"] == "int8" and resolved["status"] == "applied"
+    assert resolved["reason"].startswith("W8A8") and reasons == ["int8"]
+    backend.unload()
+
+
+def test_the_act_kill_switch_keeps_nvidia_offload_native_but_weight_only(
+    fake_runtime, tmp_path, monkeypatch
+):
+    backend = DiffusionBackend()
+    calls, _ = _stub_nvidia_offload_host(backend, monkeypatch)
+    monkeypatch.setenv("UNSLOTH_NATIVE_INT8_ACT", "0")
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        transformer_quant = "int8",
+        memory_mode = "balanced",
+        _base_local_dir = str(tmp_path),
+    )
+    assert calls[0]["offload"] is True and calls[0]["act_int8"] is False
+    assert status["transformer_quant"] == "int8"
+    backend.unload()
+
+
+@pytest.mark.parametrize("fallback", ["0", "1"])
+def test_an_explicit_fp8_under_offload_on_nvidia_is_still_declined(
+    fake_runtime, tmp_path, monkeypatch, fallback
+):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", fallback)
+    backend = DiffusionBackend()
+    calls, reasons = _stub_nvidia_offload_host(backend, monkeypatch, engages = "fp8")
+    kwargs = dict(
+        model_kind = "pipeline",
+        transformer_quant = "fp8",
+        memory_mode = "balanced",
+        _base_local_dir = str(tmp_path),
+    )
+    if fallback == "0":
+        with pytest.raises(RuntimeError, match = "Module.to"):
+            backend.load_pipeline("Qwen/Qwen-Image-2512", **kwargs)
+    else:
+        status = backend.load_pipeline("Qwen/Qwen-Image-2512", **kwargs)
+        assert status["transformer_quant"] is None
+        assert "Module.to()" in status["resolved"]["transformer_quant"]["reason"]
+        backend.unload()
+    assert calls == [] and reasons == []
+
+
+def test_an_explicit_int8_resident_on_nvidia_keeps_torchao(fake_runtime, tmp_path, monkeypatch):
+    backend = DiffusionBackend()
+    calls, reasons = _stub_nvidia_offload_host(backend, monkeypatch)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        transformer_quant = "int8",
+        memory_mode = "fast",
+        _base_local_dir = str(tmp_path),
+    )
+    assert status["offload_policy"] == "none"
+    assert len(calls) == 1 and "offload" not in calls[0] and "act_int8" not in calls[0]
+    assert status["transformer_quant"] == "int8"
+    assert reasons == []
+    assert "W8A8" not in status["resolved"]["transformer_quant"]["reason"]
+    backend.unload()
+
+
+def test_auto_under_offload_on_nvidia_never_goes_native(fake_runtime, tmp_path, monkeypatch):
+    backend = DiffusionBackend()
+    calls, reasons = _stub_nvidia_offload_host(backend, monkeypatch)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        memory_mode = "balanced",
+        _base_local_dir = str(tmp_path),
+    )
+    assert calls == [] and reasons == []
+    assert status["transformer_quant"] is None
+    backend.unload()
+
+
+def test_a_resident_nvidia_int8_that_cannot_compile_still_declines(
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
+):
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    calls, _ = _stub_nvidia_offload_host(backend, monkeypatch)
+    monkeypatch.setattr(
+        dmod, "_pipeline_quant_uncompilable_reason", lambda *a, **k: "no compile here (stub)"
+    )
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        transformer_quant = "int8",
+        memory_mode = "fast",
+        _base_local_dir = str(tmp_path),
+    )
+    assert calls == []
+    assert status["transformer_quant"] is None
+    assert status["resolved"]["transformer_quant"]["reason"] == "no compile here (stub)"
+    backend.unload()
+
+
+def test_an_offloaded_nvidia_int8_ignores_the_compile_requirement(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    calls, _ = _stub_nvidia_offload_host(backend, monkeypatch)
+    monkeypatch.setattr(
+        dmod, "_pipeline_quant_uncompilable_reason", lambda *a, **k: "no compile here (stub)"
+    )
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        transformer_quant = "int8",
+        memory_mode = "low_vram",
+        _base_local_dir = str(tmp_path),
+    )
+    assert len(calls) == 1 and calls[0]["offload"] is True
+    assert status["transformer_quant"] == "int8"
+    backend.unload()
+
+
 def _record_step_cache(
     monkeypatch,
     *,
