@@ -129,8 +129,8 @@ const BAR_PILL =
 const BAR_ROUND =
   "flex size-9 items-center justify-center rounded-full outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring";
 
-// Media tabs appear once there is something to show in them, so a fresh Library stays uncluttered.
-const MEDIA_TABS = new Set<LibraryTab>(["images", "videos", "audio"]);
+// Kind tabs appear once there is something to show in them, so a fresh Library stays uncluttered.
+const KIND_ONLY_TABS = new Set<LibraryTab>(["images", "videos", "audio", "models"]);
 
 function EmptyState({
   icon,
@@ -243,7 +243,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     () =>
       LIBRARY_TABS.filter(
         (entry) =>
-          !MEDIA_TABS.has(entry) || entry === tab || items.some(KIND_TABS[entry]!),
+          !KIND_ONLY_TABS.has(entry) || entry === tab || items.some(KIND_TABS[entry]!),
       ),
     [items, tab],
   );
