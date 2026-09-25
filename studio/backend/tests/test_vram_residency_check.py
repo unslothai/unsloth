@@ -13,6 +13,8 @@ _TESTS_DIR = Path(__file__).resolve().parent
 _BACKEND_DIR = str(_TESTS_DIR.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
+if str(_TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TESTS_DIR))
 
 from core.inference import llama_cpp as mod
 from core.inference.llama_cpp import LlamaCppBackend
@@ -583,3 +585,16 @@ def test_a_retry_with_the_same_layout_stays_armed(on_windows):
     backend._sampled = False  # the respawn reads a fresh pre-spawn baseline
     backend._sample_residency_baseline(argv, {})
     assert backend._verify_vram_residency() is not None
+
+
+def test_an_empty_backend_scan_is_not_cached(monkeypatch):
+    """An unreadable lib dir scans empty; that must not pin False for the revision."""
+    monkeypatch.setattr(mod.sys, "platform", "win32")
+    monkeypatch.setattr(LlamaCppBackend, "_SYSMEM_FALLBACK_RISK", {})
+    monkeypatch.setattr(LlamaCppBackend, "_binary_revision", staticmethod(lambda b: (b, 1)))
+    scans = [frozenset(), frozenset({"cuda"})]
+    monkeypatch.setattr(
+        LlamaCppBackend, "_installed_ggml_backends", staticmethod(lambda b = None: scans.pop(0))
+    )
+    assert LlamaCppBackend._sysmem_fallback_risk("/llama-server") is False
+    assert LlamaCppBackend._sysmem_fallback_risk("/llama-server") is True

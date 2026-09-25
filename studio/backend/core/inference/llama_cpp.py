@@ -9980,10 +9980,13 @@ class LlamaCppBackend:
         if cached is not None:
             return cached
         try:
-            risk = "cuda" in LlamaCppBackend._installed_ggml_backends(binary)
+            backends = LlamaCppBackend._installed_ggml_backends(binary)
         except Exception as e:  # noqa: BLE001 - an unreadable lib dir is not a load failure
             logger.debug("sysmem-fallback classification failed, keeping the base budget: %s", e)
             return False  # not cached: a transient read error must not pin False forever
+        if not backends:
+            return False  # an unreadable dir scans empty; same rule, not cached
+        risk = "cuda" in backends
         LlamaCppBackend._SYSMEM_FALLBACK_RISK[key] = risk
         return risk
 
