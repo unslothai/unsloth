@@ -20,8 +20,6 @@ needs_cuda = pytest.mark.skipif(
 )
 
 
-
-
 @pytest.fixture(autouse = True)
 def _clean_env(monkeypatch):
     for name in (
@@ -147,8 +145,6 @@ def test_decode_scope_pins_and_restores_fp16_accumulation():
             ), "the process-wide flag must be restored"
     finally:
         matmul.allow_fp16_accumulation = prev
-
-
 
 
 def _tiny_vae():
@@ -407,8 +403,6 @@ def test_apply_skips_when_already_applied(monkeypatch):
     encoder_forward = vae.encoder.forward
     assert H.apply_h3_vae_speedups(vae, speed_mode = "max", workflow = "fl2va") == engaged
     assert vae.encoder.forward is encoder_forward
-
-
 
 
 @needs_cuda
@@ -861,8 +855,6 @@ def test_the_fast_path_needs_a_verified_triton(monkeypatch, version, ok):
         pass
 
     assert H.cuda_fast_path_available(AutoencoderKLMiniMaxH3()) is ok
-
-
 
 
 @pytest.mark.parametrize(

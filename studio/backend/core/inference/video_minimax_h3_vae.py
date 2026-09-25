@@ -75,8 +75,6 @@ def plan_h3_vae_levers(
     return tuple(levers)
 
 
-
-
 @lru_cache(maxsize = 1)
 def _kernels() -> Optional[types.SimpleNamespace]:
     """Compile-on-first-use Triton kernels, or None when Triton is unavailable."""
@@ -409,8 +407,6 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
 def _next_pow2(n: int) -> int:
     return 1 << max(0, int(n) - 1).bit_length()
-
-
 
 
 def _is_oom(exc: BaseException) -> bool:
@@ -764,8 +760,6 @@ def _stock_encoder_forward(self: Any, hidden_states: Any) -> Any:
     return self._unsloth_stock_forward(hidden_states.to(torch.float16)).to(out_dtype)
 
 
-
-
 def _add_rmsnorm(h: Any, o: Any, scale: Any, norm: Any, out_dtype: Any) -> Any:
     """``h += o * scale`` (skipped when ``o`` is None), then ``rmsnorm(h) * norm.weight`` in ``out_dtype``."""
     import torch
@@ -966,8 +960,6 @@ def _install_decoder(vae: Any) -> bool:
     return True
 
 
-
-
 def _tile_batch_size(z: Any) -> int:
     import torch
 
@@ -1039,8 +1031,6 @@ def _install_tile_batch(vae: Any) -> bool:
         return False
     vae._decode_clip = types.MethodType(_batched_decode_clip, vae)
     return True
-
-
 
 
 def _int8_linear(linear: Any, x: Any) -> Any:
@@ -1172,8 +1162,6 @@ def _int8_linear_class():
     return H3Int8Linear
 
 
-
-
 def _install_decode_scope(vae: Any, *, fp16_accum: bool) -> bool:
     """Hold ``allow_fp16_accumulation`` ON only when planned, else OFF, for the decode, via the shared owner."""
     import torch
@@ -1190,8 +1178,6 @@ def _install_decode_scope(vae: Any, *, fp16_accum: bool) -> bool:
 
     vae.decode = types.MethodType(decode, vae)
     return True
-
-
 
 
 @lru_cache(maxsize = 4)
