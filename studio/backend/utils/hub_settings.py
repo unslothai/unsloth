@@ -182,11 +182,34 @@ def apply_hub_settings() -> None:
             else:
                 os.environ.pop(name, None)
         os.environ[SOURCE_ENV] = source
+        if source == MODELSCOPE:
+            _bypass_proxy_for(env["HF_ENDPOINT"])
         normalize_hf_endpoint_env()
         _refresh_imported_hub_libraries()
         utils_module = sys.modules.get("utils.utils")
         if utils_module is not None:
             utils_module.reset_hf_reachability_cache()
+
+
+def _bypass_proxy_for(url: str) -> None:
+    """Keep the loopback adapter off a configured proxy: httpx proxies 127.0.0.1 too unless NO_PROXY lists it."""
+    from urllib.request import getproxies
+
+    host = urlsplit(url).hostname
+    proxies = getproxies()
+    if not host or not any(proxies.get(k) for k in ("http", "all")):
+        return
+    names = [n for n in ("no_proxy", "NO_PROXY") if n in os.environ] or ["no_proxy", "NO_PROXY"]
+    changed = False
+    for name in names:
+        entries = [e.strip() for e in os.environ.get(name, "").split(",") if e.strip()]
+        if host not in entries:
+            os.environ[name] = ",".join([*entries, host])
+            changed = True
+    http = sys.modules.get("huggingface_hub.utils._http")
+    if changed and http is not None:
+        # Its shared client read the proxies when it was built; the next call rebuilds it.
+        http.close_session()
 
 
 def _refresh_imported_hub_libraries() -> None:
