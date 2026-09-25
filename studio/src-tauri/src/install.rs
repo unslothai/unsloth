@@ -57,9 +57,12 @@ fn unavailable_script_message(script: &Path) -> Option<String> {
     ))
 }
 
-/// Recheck for quarantine during launch, but prefer a more specific AMSI error.
+/// Recheck for quarantine during launch, but prefer AMSI and structured installer errors.
 fn failure_message(context: &InstallFailureContext, code: i32, script: &Path) -> String {
-    if context.security_block.is_none() {
+    if context.security_block.is_none()
+        && context.explicit_error.is_none()
+        && context.default_error.is_none()
+    {
         if let Some(message) = unavailable_script_message(script) {
             return message;
         }
@@ -1603,6 +1606,21 @@ mod tests {
         assert_eq!(unavailable_script_message(&script), None);
 
         let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:ERROR] Python could not be installed");
+        assert_eq!(
+            failure_message(&context, 1, &script),
+            "Installation failed: Python could not be installed"
+        );
+    }
+
+    #[test]
+    fn a_removed_script_does_not_hide_a_structured_failure() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = dir.path().join("install.ps1");
+        assert!(unavailable_script_message(&script).is_some());
+
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:STEP] Installing Python");
         context.observe_stdout("[TAURI:ERROR] Python could not be installed");
         assert_eq!(
             failure_message(&context, 1, &script),
