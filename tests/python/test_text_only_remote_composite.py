@@ -866,3 +866,53 @@ def test_nested_own_repo_code_still_takes_the_plan(tmp_path):
     )
     assert type(model).__name__ == "TinyTextLM"
     assert not info["missing_keys"]
+
+
+# ---------------------------------------------------------------- subfolder checkpoints
+
+
+@needs_tf5
+def test_subfolder_checkpoint_is_probed_where_the_load_reads_it(tmp_path, monkeypatch):
+    # Config at the root, weights under subfolder = "weights" (what from_pretrained(subfolder = ...) reads).
+    import shutil
+
+    ns = _ns()
+    repo, weights = _write_repo(tmp_path, name = "sub")
+    (repo / "weights").mkdir()
+    shutil.move(str(repo / "model.safetensors"), str(repo / "weights" / "model.safetensors"))
+    parent = _load_parent_config(repo)
+    assert ns["_checkpoint_weight_names"](str(repo)) is None
+    assert ns["_checkpoint_weight_names"](str(repo), subfolder = "weights") == set(weights)
+    text_config, mapping = ns["_get_remote_composite_text_only"](
+        parent, str(repo), trust_remote_code = True, subfolder = "weights"
+    )
+    model, info = transformers.AutoModelForCausalLM.from_pretrained(
+        repo,
+        config = text_config,
+        key_mapping = mapping,
+        subfolder = "weights",
+        trust_remote_code = True,
+        dtype = torch.float32,
+        local_files_only = True,
+        output_loading_info = True,
+    )
+    assert not info["missing_keys"]
+    assert torch.equal(model.lm_head.weight, weights["language_model.lm_head.weight"])
+    # And from the Hub cache, offline.
+    repo_id, _ = _cache_as_hub_repo(tmp_path, monkeypatch, repo, repo_id = "fake-org/sub")
+    assert ns["_checkpoint_weight_names"](
+        repo_id, local_files_only = True, subfolder = "weights"
+    ) == set(weights)
+
+
+def test_loader_and_vision_forward_subfolder_to_the_plan():
+    for path in (LOADER_PATH, VISION_PATH):
+        src = path.read_text(encoding = "utf-8")
+        i = src.index("_get_remote_composite_text_only(\n")
+        depth, j = 0, i
+        while True:
+            depth += {"(": 1, ")": -1}.get(src[j], 0)
+            if src[j] == ")" and depth == 0:
+                break
+            j += 1
+        assert 'subfolder = kwargs.get("subfolder"),' in src[i : j + 1], path.name

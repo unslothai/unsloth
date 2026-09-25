@@ -1211,6 +1211,7 @@ def _checkpoint_weight_names(
     token = None,
     revision = None,
     local_files_only = False,
+    subfolder = None,
 ):
     # Tensor names stored in a checkpoint, read from a safetensors index or header, or a sharded .bin index. None when unknown.
     # An unsharded pytorch_model.bin is never unpickled just to list its names.
@@ -1220,6 +1221,8 @@ def _checkpoint_weight_names(
     single_name = "model.safetensors"
     bin_index_name = "pytorch_model.bin.index.json"
     if os.path.isdir(str(model_name)):
+        # from_pretrained(subfolder = ...) reads the weights there, whatever folder the config came from.
+        model_name = os.path.join(model_name, subfolder) if subfolder else model_name
         index_path = os.path.join(model_name, index_name)
         if os.path.isfile(index_path):
             with open(index_path, "r", encoding = "utf-8") as f:
@@ -1241,6 +1244,7 @@ def _checkpoint_weight_names(
             index_name,
             token = token,
             revision = revision,
+            subfolder = subfolder or None,
             local_files_only = local_files_only,
         )
         with open(index_path, "r", encoding = "utf-8") as f:
@@ -1255,13 +1259,15 @@ def _checkpoint_weight_names(
             single_name,
             token = token,
             revision = revision,
+            subfolder = subfolder or None,
             local_files_only = True,
         )
         with safe_open(single_path, framework = "pt") as f:
             return set(f.keys())
     except Exception:
         pass
-    if not local_files_only:
+    if not local_files_only and not subfolder:
+        # get_safetensors_metadata reads the repo root only.
         try:
             from huggingface_hub import get_safetensors_metadata
 
@@ -1277,6 +1283,7 @@ def _checkpoint_weight_names(
             bin_index_name,
             token = token,
             revision = revision,
+            subfolder = subfolder or None,
             local_files_only = local_files_only,
         )
         with open(bin_index_path, "r", encoding = "utf-8") as f:
@@ -1363,6 +1370,7 @@ def _get_remote_composite_text_only(
     revision = None,
     local_files_only = False,
     fast_inference = False,
+    subfolder = None,
 ):
     # Text-only load plan for a repo-code composite (Nemotron-Omni: llm_config + vision/sound) whose text sub-model is a whole causal LM stored under one prefix.
     # Returns (text_config, key_mapping) or None; None keeps the previous full-model load.
@@ -1426,7 +1434,11 @@ def _get_remote_composite_text_only(
     except Exception:
         return None
     names = _checkpoint_weight_names(
-        model_name, token = token, revision = revision, local_files_only = local_files_only
+        model_name,
+        token = token,
+        revision = revision,
+        local_files_only = local_files_only,
+        subfolder = subfolder,
     )
     prefix = _infer_text_submodel_prefix(expected, names)
     if prefix is None:

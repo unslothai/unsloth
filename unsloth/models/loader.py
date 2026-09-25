@@ -1922,6 +1922,7 @@ class FastModel(FastBaseModel):
                         revision = base_revision if not is_peft else None,
                         local_files_only = local_files_only,
                         fast_inference = fast_inference,
+                        subfolder = kwargs.get("subfolder"),
                     )
                 if (
                     remote_text_only is not None
