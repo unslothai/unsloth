@@ -34521,7 +34521,16 @@ async def anthropic_messages(
     _selects_server_tools = _anthropic_selects_server_tools(
         payload, requested_studio_tools, _has_client_tool
     )
-    _server_tools_requested_pre = _selects_server_tools and not _anthropic_top_level_image
+    _response_format = _anthropic_response_format(payload)
+    _schema_disables_server_tools = (
+        _response_format is not None
+        and anthropic_tool_choice_to_openai(payload.tool_choice) == "none"
+    )
+    _server_tools_requested_pre = (
+        _selects_server_tools
+        and not _anthropic_top_level_image
+        and not _schema_disables_server_tools
+    )
     if _server_tools_requested_pre:
         from core.inference.tools import ALL_TOOLS as _ALL_TOOLS_PRE
 
@@ -34705,7 +34714,7 @@ async def anthropic_messages(
 
     # Decided on the final routing: a tool request that cannot run tools (image, tool-less
     # template, tool_choice none) still gets its schema.
-    response_format = _anthropic_response_format(payload)
+    response_format = _response_format
     if (
         response_format is not None
         and (server_tools or client_tools)

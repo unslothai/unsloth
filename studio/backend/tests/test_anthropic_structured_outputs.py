@@ -291,6 +291,24 @@ def test_format_kept_when_server_tools_are_disabled_by_tool_choice(monkeypatch):
     assert "tools" not in sent
 
 
+def test_format_with_tool_choice_none_does_not_require_server_tool_permission(monkeypatch):
+    calls, upstream = _install(monkeypatch)
+
+    status, _body = _run(
+        _payload(
+            enable_tools = True,
+            tool_choice = {"type": "none"},
+            output_config = {"format": {"type": "json_schema", "schema": _SCHEMA}},
+        )
+    )
+
+    assert status == 200
+    assert calls == []
+    [sent] = upstream
+    assert sent["response_format"] == _EXPECTED
+    assert "tools" not in sent
+
+
 @pytest.mark.parametrize("with_format", [False, True])
 def test_count_tokens_matches_schema_routing_under_tool_choice_none(monkeypatch, with_format):
     counted = []
