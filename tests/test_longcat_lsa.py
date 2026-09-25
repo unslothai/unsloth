@@ -1,16 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""LongCat-Flash-Lite-Sparse (``LongcatCausalLM``) loads and runs on transformers' own
-``longcat_flash`` through ``unsloth/models/longcat_lsa.py``.
-
-The published config.json has no ``model_type``, no ``auto_map`` and no modeling code, so
-``AutoConfig`` raised "Unrecognized model" before this module. The tests build a tiny
-checkpoint in the published key layout (per-expert weights, ``oe_embed_*`` n-gram tables,
-the lightning indexer on ``self_attn.0``, the MTP head, an F32 router) and check the load,
-the forward against a reference transcribed from SGLang's LongCat model (the only stack that
-serves this checkpoint), the cache, and that a save writes the published layout back.
-"""
+"""LongCat-Flash-Lite-Sparse loads via ``unsloth/models/longcat_lsa.py``: load, forward vs an
+SGLang-transcribed reference, cache, and save back to the published layout, on a tiny checkpoint."""
 
 import json
 import math
@@ -189,9 +181,7 @@ def _load(path, dtype = torch.float32):
     return AutoModelForCausalLM.from_pretrained(path, dtype = dtype)
 
 
-# Reference transcribed from SGLang (python/sglang/srt/models/longcat_flash.py and the
-# deepseek_v2 MLA, rotary_embedding deepseek_yarn, the n-gram id kernel in
-# jit/csrc/speculative/ngram_embedding.cuh), written against the raw checkpoint keys.
+# Reference from SGLang longcat_flash.py, deepseek_v2 MLA, deepseek_yarn, ngram_embedding.cuh.
 
 
 def _ref_ngram_ids(cfg, tokens):
@@ -426,9 +416,7 @@ def test_ngram_ids_follow_the_sglang_kernel(tiny):
 @pytest.mark.gpu
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 def test_split_model_keeps_the_token_table_where_accelerate_put_it(tiny):
-    # device_map placed embed_tokens and the n-gram embedding on different cards; each module's
-    # accelerate hook moves every argument with a `.to`, so the n-gram module must not be
-    # handed the embed_tokens module itself.
+    # Accelerate hooks move every `.to`-able arg: never pass the embed_tokens module itself.
     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
     path, cfg, sd = tiny
@@ -461,8 +449,7 @@ def test_cached_decode_matches_full_forward(tiny):
 
 
 def test_ngram_history_follows_beam_reorder_and_crop(tiny):
-    # Beam search reorders the cache and assisted decoding crops it; the n-gram history the
-    # next step reads must move with the key/value layers or rows mix their histories.
+    # Beam reorder and crop must move the n-gram history with the KV cache.
     path, cfg, sd = tiny
     model = _load(path).eval()
     ids = _tokens(cfg, 2, 14)
@@ -480,8 +467,7 @@ def test_ngram_history_follows_beam_reorder_and_crop(tiny):
 
 
 def test_cache_reset_clears_the_ngram_history(tiny):
-    # transformers reuses a static cache between generate calls after reset(); the previous
-    # prompt's tokens must not feed the next prompt's n-gram ids.
+    # A reset() static cache must not leak the previous prompt into n-gram ids.
     import transformers
     from transformers.cache_utils import StaticCache
 
@@ -503,7 +489,6 @@ def test_cache_reset_clears_the_ngram_history(tiny):
 
 
 def test_inputs_embeds_is_refused(tiny):
-    # The n-gram half of the input embedding needs the token ids.
     path, cfg, sd = tiny
     model = _load(path).eval()
     ids = _tokens(cfg, 1, 9)
@@ -585,8 +570,7 @@ def test_cached_decode_past_index_topk_warns(tmp_path):
 
 
 def test_4bit_keeps_the_mla_up_projections_in_16bit():
-    # NF4 on q_b_proj / kv_b_proj alone took the real Flash-Lite-Sparse loss from 0.70 to 2.73.
-    # The device-map planner must size them the way the load keeps them.
+    # The device-map planner must size q_b_proj / kv_b_proj unquantized, as the load keeps them.
     import ast
 
     from unsloth.models.vision import _architecture_skip_modules

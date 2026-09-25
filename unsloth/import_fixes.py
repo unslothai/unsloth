@@ -9584,14 +9584,8 @@ def disable_sentencepiece_on_windows():
 
 
 def fix_transformers_longcat_lsa_config():
-    """Load LongCat-Flash-Lite-Sparse, whose config.json names ``LongcatCausalLM`` but has no
-    ``model_type``, no ``auto_map`` and no modeling code (it is served only by SGLang).
-
-    ``AutoConfig.from_pretrained`` raises "Unrecognized model" on such a config. This wraps it
-    so that exactly that failure, on a config the LongCat module recognises, is answered with
-    Unsloth's config built on transformers' own ``longcat_flash`` (``models/longcat_lsa.py``);
-    every other config and every other error is untouched, so a load that works today takes
-    the same path. The model classes are registered with the Auto factories at that moment."""
+    """Answer AutoConfig's "Unrecognized model" on a LongcatCausalLM config (no model_type,
+    auto_map or modeling code) with ``models/longcat_lsa.py``; all other loads are untouched."""
     try:
         from transformers import AutoConfig
         from transformers.configuration_utils import PretrainedConfig
@@ -9604,7 +9598,7 @@ def fix_transformers_longcat_lsa_config():
     try:
         import transformers.models.longcat_flash  # noqa: F401
     except Exception:
-        return  # a transformers without longcat_flash cannot build this model either
+        return
 
     def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
         try:

@@ -11,37 +11,12 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""LongCat-Flash-Lite-Sparse (``LongcatCausalLM``) on transformers' own ``longcat_flash``.
+"""LongCat-Flash-Lite-Sparse (``LongcatCausalLM``, no model_type/auto_map/modeling code) on transformers' ``longcat_flash``.
 
-The checkpoint ships no ``model_type``, no ``auto_map`` and no modeling code; it is served
-only by SGLang. Its network is LongCat-Flash-Lite (transformers' native ``longcat_flash``
-decoder plus the n-gram embedding of the Lite remote code) with LongCat Sparse Attention
-(LSA) on top: one DSA-style lightning indexer per decoder layer picks ``index_topk`` keys
-for each query, and the second attention of the layer reuses that choice.
-
-When a sequence is no longer than ``index_topk`` (2048) the top-k selects every causal
-position (SGLang's indexer skips its logits for exactly that reason), so the model is the
-dense network and the indexer weights take no part in the forward. That is what this module
-builds: the dense decoder, the n-gram embedding, and the indexer weights kept as frozen
-parameters so they load and save with the checkpoint. Longer sequences train with dense
-attention, which differs from the sparse attention used at inference, and a one-time
-warning says so.
-
-Deltas against the Lite checkpoint, all translated here:
-- n-gram weights are ``model.oe_embed_tokens{i}`` / ``model.oe_embed_proj{i}`` instead of
-  ``model.ngram_embeddings.embedders.{i}`` / ``post_projs.{i}`` (the same rename SGLang does),
-- the n-gram fields are ``oe_vocab_size_ratio`` / ``oe_neighbor_num`` / ``oe_split_num``,
-- ``rope_scaling.rope_type`` is ``deepseek_yarn``: SGLang rewrites every MLA rope to
-  ``deepseek_yarn`` (Lite's ``yarn`` included), and it computes the same inverse
-  frequencies and cos/sin scale as transformers' ``yarn`` with ``mscale`` and
-  ``mscale_all_dim`` set; the attention softmax ``mscale**2`` factor is applied by
-  ``longcat_flash`` for any non-default rope type,
-- SGLang builds the MLA ``q_a_layernorm`` / ``kv_a_layernorm`` with ``rms_norm_eps``
-  where ``longcat_flash`` uses 1e-6, and runs the F32 router in F32.
-
-The multi-token-prediction head (``model.mtp.*``) is for speculative decoding only and is
-not loaded. Identity (zero) experts follow transformers, vLLM and Meituan's HF code, which
-scale them by ``routed_scaling_factor``; SGLang's kernel leaves them unscaled.
+At seq_len <= index_topk the LSA indexer selects every causal position, so the model is the dense
+Lite network; the indexer weights are kept frozen only to load/save. Longer sequences train dense
+(differs from sparse inference; warned once). Identity experts are scaled by routed_scaling_factor
+as in transformers/vLLM (SGLang leaves them unscaled). The MTP head is not loaded.
 """
 
 import sys
@@ -59,8 +34,7 @@ __all__ = [
 LONGCAT_LSA_MODEL_TYPE = "longcat_flash_lsa"
 _LONGCAT_LSA_ARCHITECTURES = ("LongcatCausalLM",)
 
-# Checkpoint key prefix -> module key prefix (``oe_embed_tokens3`` -> ``embedders.3``). Plain
-# prefixes with no groups or escapes, so the pair also runs backwards when saving.
+# Plain prefixes (no regex groups) so the mapping also runs backwards on save.
 _OE_RENAMES = (
     ("model.oe_embed_tokens", "model.ngram_embeddings.embedders."),
     ("model.oe_embed_proj", "model.ngram_embeddings.post_projs."),
@@ -68,8 +42,7 @@ _OE_RENAMES = (
 
 
 def is_longcat_lsa_config_dict(config_dict) -> bool:
-    """A LongCat-Flash-Lite-Sparse style config: saved by this module, or the published
-    checkpoint's config.json, which names ``LongcatCausalLM`` and carries no model_type."""
+    """Config saved by this module, or the published one (``LongcatCausalLM``, no model_type)."""
     if not isinstance(config_dict, dict):
         return False
     model_type = config_dict.get("model_type")
@@ -80,7 +53,6 @@ def is_longcat_lsa_config_dict(config_dict) -> bool:
     architectures = config_dict.get("architectures") or []
     if not any(arch in _LONGCAT_LSA_ARCHITECTURES for arch in architectures):
         return False
-    # The n-gram embedding is part of the network; a config without it is not this model.
     return config_dict.get("oe_vocab_size_ratio") is not None or (
         config_dict.get("ngram_vocab_size_ratio") is not None
     )
@@ -105,8 +77,7 @@ _NGRAM_TRACKING_CACHES = {}
 
 
 def _ngram_tracking_cache_class(cls):
-    """``cls`` with its beam reorder, batch select / repeat and crop also applied to the token
-    history the n-gram embedding reads, so the history follows the key/value layers."""
+    """``cls`` whose reorder/select/repeat/crop also move the n-gram token history."""
     tracked = _NGRAM_TRACKING_CACHES.get(cls)
     if tracked is not None:
         return tracked
@@ -154,8 +125,7 @@ def _ngram_tracking_cache_class(cls):
 
 
 def _classes():
-    """Build the config and model classes on first use, so importing Unsloth does not import
-    transformers' longcat_flash modules."""
+    """Build classes lazily so importing Unsloth does not import longcat_flash."""
     global _CLASSES
     if _CLASSES is not None:
         return _CLASSES
@@ -182,7 +152,6 @@ def _classes():
             index_topk = None,
             **kwargs,
         ):
-            # The Lite remote code spells the n-gram fields differently; accept both.
             if oe_vocab_size_ratio is None:
                 oe_vocab_size_ratio = kwargs.pop("ngram_vocab_size_ratio", None)
             if oe_neighbor_num is None:
@@ -199,23 +168,20 @@ def _classes():
                 kwargs["rope_scaling"] = _translate_rope_scaling(kwargs["rope_scaling"])
             if isinstance(kwargs.get("rope_parameters"), dict):
                 kwargs["rope_parameters"] = _translate_rope_scaling(kwargs["rope_parameters"])
-            # The rotary table is sized by head_dim, which LongCat configs omit (the class
-            # default 64 only matches because qk_rope_head_dim is 64 there).
+            # Configs omit head_dim; the rotary table must use qk_rope_head_dim.
             if "head_dim" not in kwargs and "qk_rope_head_dim" in kwargs:
                 kwargs["head_dim"] = kwargs["qk_rope_head_dim"]
             super().__init__(**kwargs)
 
     class _FrozenWeight(nn.Module):
-        """A bare ``weight`` so the checkpoint key loads and saves, but no Linear for
-        LoRA's ``all-linear`` or bitsandbytes to pick up."""
+        """Bare ``weight``, not a Linear, so LoRA all-linear and bitsandbytes skip it."""
 
         def __init__(self, *shape):
             super().__init__()
             self.weight = nn.Parameter(torch.empty(*shape), requires_grad = False)
 
     class LongcatLsaIndexer(nn.Module):
-        """The lightning indexer's weights. At ``seq_len <= index_topk`` its top-k is every
-        causal position, so the forward never reads them."""
+        """Lightning indexer weights; unused by the dense forward."""
 
         def __init__(self, config):
             super().__init__()
@@ -226,10 +192,8 @@ def _classes():
             self.weights_proj = _FrozenWeight(heads, config.hidden_size)
 
     class LongcatNgramEmbedding(nn.Module):
-        """The n-gram embedding of LongCat-Flash-Lite (``NgramEmbedding`` in the Lite remote
-        code), with the per-row EOS reset vectorized. The model's ``embed_tokens`` output is
-        passed in at call time; passing the module itself would let an accelerate hook on a
-        split model move the whole token table to this module's card."""
+        """Lite's ``NgramEmbedding``. Takes embed_tokens' output, not the module: an accelerate
+        hook would otherwise move the whole token table to this card."""
 
         def __init__(self, config):
             super().__init__()
@@ -249,8 +213,7 @@ def _classes():
             )
 
         def _shifted(self, context, shift):
-            """``context`` shifted right by ``shift`` inside each EOS-terminated segment
-            (the EOS closes its own segment), zero where the shift leaves the segment."""
+            """``context`` shifted right within each EOS-terminated segment, zero outside it."""
             length = context.shape[-1]
             positions = torch.arange(length, device = context.device)
             ends = torch.where(
@@ -301,14 +264,10 @@ def _classes():
         def __init__(self, config):
             super().__init__(config)
             self.ngram_embeddings = LongcatNgramEmbedding(config)
-            # transformers 5's fused LongcatFlashExperts sizes gate_up_proj for routed plus zero
-            # experts, but only routed experts have weights (the checkpoint stacks
-            # n_routed_experts, down_proj is sized the same) and the identity experts never read
-            # a row, so size it to the routed experts or the checkpoint cannot load.
+            # transformers 5 sizes gate_up_proj for routed + zero experts; the checkpoint has routed only.
             routed = config.n_routed_experts
             for layer in self.layers:
-                # SGLang, the checkpoint's only serving stack, builds the MLA latent norms with
-                # rms_norm_eps; longcat_flash leaves them at the RMSNorm default of 1e-6.
+                # SGLang uses rms_norm_eps for the MLA latent norms; longcat_flash uses 1e-6.
                 for attn in getattr(layer, "self_attn", ()):
                     for norm_name in ("q_a_layernorm", "kv_a_layernorm"):
                         norm = getattr(attn, norm_name, None)
@@ -338,7 +297,6 @@ def _classes():
             **kwargs,
         ):
             if inputs_embeds is not None:
-                # The n-gram embedding is part of the network and is built from token ids.
                 raise ValueError(
                     "Unsloth: LongCat-Flash-Lite-Sparse builds its input embeddings from token ids "
                     "(word plus n-gram embeddings), so pass `input_ids`, not `inputs_embeds`."
@@ -375,8 +333,7 @@ def _classes():
                     except TypeError:
                         past_key_values = DynamicCache()
                 if past_key_values is not None:
-                    # The whole id history rides on the cache and follows its beam reorders and
-                    # crops; the key/value layers alone cannot give the n-gram ids back.
+                    # Id history rides on the cache so beam reorders and crops move it.
                     seen = input_ids if history is None else torch.cat([history, input_ids], dim = -1)
                     past_key_values._unsloth_ngram_history = seen
                     cache_class = type(past_key_values)
@@ -393,11 +350,9 @@ def _classes():
             )
 
     class LongcatCausalLM(LongcatFlashForCausalLM):
-        # The published architecture name, so a saved config keeps it.
         config_class = LongcatLsaConfig
         _keys_to_ignore_on_load_unexpected = [r"model\.mtp\..*"]
-        # The router and the indexer's weights_proj ship in F32 and SGLang runs them in F32;
-        # keep them there under bf16 loads (and in saved checkpoints).
+        # Router and indexer weights_proj stay F32 as in SGLang.
         _keep_in_fp32_modules_strict = ["router", "weights_proj"]
 
         def __init__(self, config):
@@ -407,16 +362,13 @@ def _classes():
             self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias = False)
             self.post_init()
 
-        # transformers 5 renames the n-gram keys both ways through the conversion registry.
-        # transformers 4 only applies key_mapping to VLM class names, so pass it on load and
-        # undo it on save, keeping saved checkpoints in the published key layout.
+        # transformers 4 applies key_mapping only to VLM classes: pass it on load, undo it on save.
         @classmethod
         def from_pretrained(cls, *args, **kwargs):
             if not _has_conversion_registry() and kwargs.get("key_mapping") is None:
                 kwargs["key_mapping"] = {"^" + src: dst for src, dst in _OE_RENAMES}
             loaded = super().from_pretrained(*args, **kwargs)
-            # Loading swaps the parameters in, dropping requires_grad = False; the indexer
-            # takes no part in the dense forward, so it stays frozen.
+            # Loading drops requires_grad = False; re-freeze the indexer.
             model = loaded[0] if isinstance(loaded, tuple) else loaded
             for module in model.modules():
                 if isinstance(module, LongcatLsaIndexer):
@@ -456,9 +408,7 @@ _CONVERSIONS_REGISTERED = False
 
 
 def _register_conversions():
-    """transformers 5 merges the per-expert checkpoint weights into 3-D stacks through the
-    conversion registry, keyed by model_type; give this model_type longcat_flash's own
-    conversions plus the n-gram renames."""
+    """Give this model_type longcat_flash's transformers 5 conversions plus the n-gram renames."""
     global _CONVERSIONS_REGISTERED
     if _CONVERSIONS_REGISTERED:
         return
@@ -479,9 +429,7 @@ def _register_conversions():
         LONGCAT_LSA_MODEL_TYPE, renames + list(base), overwrite = True
     )
     _CONVERSIONS_REGISTERED = True
-    # peft converts per-expert LoRA adapters (trained on transformers 4) onto the stacked
-    # experts by model_type through this table, and copies it when it is imported. Added
-    # after the registration above, which builds the conversion cache from the table.
+    # peft's per-expert LoRA conversion table; must come after the registration above.
     for module_name in (
         "transformers.conversion_mapping",
         "peft.utils.transformers_weight_conversion",

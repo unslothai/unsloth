@@ -315,7 +315,6 @@ del check_transformers_prequantized_vlm_quant_state
 # RoPE base frequency. Ordered here, before any config is built, so the object-style delegation
 # retry in models/llama.py sees a config that kept its base (#2405).
 fix_transformers_rope_scaling_drops_theta()
-# Answers only AutoConfig's "Unrecognized model" on a LongcatCausalLM config; every other load is untouched.
 fix_transformers_longcat_lsa_config()
 # Remote code written for 4.x reads plain RoPE as rope_scaling None and imports is_torch_fx_available.
 fix_transformers_remote_rope_scaling_none()

@@ -1207,15 +1207,13 @@ def _get_total_transformer_layers(model):
 
 
 def _architecture_skip_modules(model_types):
-    """Modules an architecture keeps out of bitsandbytes quantization, beyond
-    SKIP_QUANTIZATION_MODULES. The device-map planner and the load read the same list."""
+    """Extra modules kept out of bitsandbytes; shared by the device-map planner and the load."""
     model_types = model_types or []
     skip = []
     # Nemotron-H uses 'mixer' (not 'mamba') for Mamba layers, whose fused kernels pass out_proj.weight straight to F.linear and fail with quantized Params4bit, so skip out_proj.
     if any(mt == "nemotron_h" for mt in model_types):
         skip.append("out_proj")
-    # LongCat-Flash MLA: NF4 on q_b_proj / kv_b_proj alone lifts Flash-Lite-Sparse's loss from
-    # 0.70 to 2.73, every other Linear group costs under 0.04. Both are small next to the experts.
+    # LongCat-Flash MLA: NF4 on q_b_proj / kv_b_proj badly hurts loss; both are small.
     if any(mt in ("longcat_flash", "longcat_flash_lsa") for mt in model_types):
         skip.extend(("q_b_proj", "kv_b_proj"))
     return skip
