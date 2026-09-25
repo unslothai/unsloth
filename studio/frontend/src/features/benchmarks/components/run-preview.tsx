@@ -109,11 +109,15 @@ const SHOWN_SETTINGS = ["max_seq_length", "cache_type_kv", "n_parallel"];
 export function RunPreviewCard({
   status,
   metadataPending = false,
+  metadataError = null,
+  onRetryMetadata,
   onRun,
   onViewRun,
 }: {
   status: InferenceStatusResponse | null;
   metadataPending?: boolean;
+  metadataError?: string | null;
+  onRetryMetadata?: () => void;
   onRun: () => void;
   onViewRun: () => void;
 }): ReactElement {
@@ -143,7 +147,8 @@ export function RunPreviewCard({
       ? (config.tuneVariant ?? null)
       : status?.gguf_variant;
   const hasModel = Boolean(modelPath);
-  const ready = hasModel && active.length > 0 && !metadataPending;
+  const ready =
+    hasModel && active.length > 0 && !metadataPending && !metadataError;
   const perRow = config.warmup + config.repetitions;
   const prompts =
     config.promptSet === CUSTOM_PROMPT_ID
@@ -249,6 +254,24 @@ export function RunPreviewCard({
       </section>
 
       <div className="-mx-6 h-px bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]" />
+
+      {metadataError && !live && (
+        <div className="-mt-2 flex flex-col gap-2 rounded-xl bg-destructive/10 px-3 py-2.5 text-ui-12 text-destructive">
+          <span className="break-words">
+            The model's details could not be read, so the rows can't be built:{" "}
+            {metadataError}
+          </span>
+          {onRetryMetadata && (
+            <button
+              type="button"
+              onClick={onRetryMetadata}
+              className="self-start font-medium underline underline-offset-2 hover:no-underline"
+            >
+              Try again
+            </button>
+          )}
+        </div>
+      )}
 
       <Button
         size="lg"
