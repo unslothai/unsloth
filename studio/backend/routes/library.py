@@ -131,8 +131,6 @@ def _still_there(item_id: str, fingerprint: Optional[str]) -> bool:
         return True
 
 
-
-
 @router.patch("/items")
 def patch_item(body: ItemPatch, current_subject: str = Depends(get_current_subject)) -> dict:
     fingerprint = library.fingerprint(body.id)
@@ -338,7 +336,6 @@ def _send(
     )
 
 
-
 # An audio or video preview plays from a link the element fetches itself, with range requests, so
 # a long file is never buffered whole and can seek. The bearer mints the link; the link alone then
 # serves that one item, in that one account, until it expires. A secret and domain of its own, so
@@ -366,7 +363,10 @@ def _stream_link_account(token: str, item_id: str):
     if len(parts) != 3:
         return None
     target, expires, signature = parts
-    if not hmac.compare_digest(signature, _stream_signature(f"{target}.{expires}")):
+    # Bytes: compare_digest raises TypeError on a non-ASCII str.
+    if not hmac.compare_digest(
+        signature.encode(), _stream_signature(f"{target}.{expires}").encode()
+    ):
         return None
     if not expires.isdigit() or int(expires) < time.time():
         return None
@@ -522,7 +522,6 @@ async def move_location(
     }
 
 
-
 def _chunks(stream, name: str):
     total = 0
     while chunk := stream.read(_CHUNK_BYTES):
@@ -646,8 +645,6 @@ def put_upload_text(
     if not written:
         raise HTTPException(status_code = 404, detail = "File not found")
     return {"ok": True}
-
-
 
 
 @router.post("/folders")
