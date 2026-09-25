@@ -20,8 +20,6 @@ export const MessageCircleIcon = BubbleChatIcon.slice(
   1,
 ) as typeof BubbleChatIcon;
 
-// HugeIcons' free "sheet" (stroke rounded, MIT), which first shipped after the version pinned here.
-// Copied verbatim from @hugeicons/core-free-icons 4.3.5; drop it for the import once that is bumped.
 export const SheetIcon: IconSvgElement = [
   ["path", { d: "M2.49219 9.5H21.4922", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "0" }],
   ["path", { d: "M2.99219 15.5H20.9922", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: "1.5", key: "1" }],
@@ -38,8 +36,6 @@ export const SheetIcon: IconSvgElement = [
   ],
 ];
 
-// Five-point star with lightly softened tips; HugeIcons' StarIcon reads as a blob when filled.
-// Path from Lucide's "star" (ISC).
 export const StarPointedIcon: IconSvgElement = [
   [
     "path",

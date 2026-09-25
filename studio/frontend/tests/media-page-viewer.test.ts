@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Images and Video pages open the Library's viewer: prompt-derived names, the clip's playback
-// handed each way, and a chat hand-off that survives a dead signed link.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -27,10 +25,8 @@ test("a prompt becomes a safe file name, cut by code point", () => {
     ["...", "mp4", "Untitled.mp4"],
     ["a sunset...", "png", "a sunset.png"],
     [".hidden prompt", "png", "hidden prompt.png"],
-    // The cut can land just after a space or a dot.
     [`${a59} tail`, "png", `${a59}.png`],
     [`${a59}.tail`, "png", `${a59}.png`],
-    // By UTF-16 unit, 60 would split a cat.
     [`a${"🐱".repeat(80)}`, "png", `a${"🐱".repeat(59)}.png`],
   ]) {
     assert.equal(mediaFileName(prompt, extension), expected, prompt);
@@ -47,7 +43,6 @@ test("the preview's name keeps a short prompt, cut at a word", () => {
     [" \n ", 80, ""],
     [long, 40, "a very detailed painting of a lighthouse…"],
     [long, 38, "a very detailed painting of a…"],
-    // No space to cut at: cut where the limit falls.
     ["x".repeat(50), 10, `${"x".repeat(10)}…`],
     [`a${"🐱".repeat(20)}`, 10, `a${"🐱".repeat(9)}…`],
   ] as const) {
@@ -90,9 +85,7 @@ test("playback is the player's own once positioned, else the start with the play
   for (const [video, positioned, expected] of [
     [player(), undefined, loaded],
     [player({ paused: true }), undefined, { ...loaded, playing: false }],
-    // Ended is not paused, but there is nothing left to resume.
     [player({ ended: true }), undefined, { ...loaded, playing: false }],
-    // Before metadata its volume is unset; muted is set as it mounts.
     [player({ currentTime: 0, paused: true, readyState: 0, volume: 1 }), undefined, { ...START, muted: true }],
     [notSeeked, false, { ...START, muted: true }],
     [notSeeked, true, { time: 0, playing: false, muted: true, volume: 0.8 }],
@@ -126,7 +119,6 @@ test("a refusal of sound retries muted; an abort or a muted refusal is not retri
   }
 });
 
-// Between two markers of a page's source.
 function slice(page: string, from: string, to: string): string {
   const start = page.indexOf(from);
   assert.ok(start >= 0, from);
@@ -146,16 +138,13 @@ test("the Video viewer plays only if the inline clip was, and hands its place ba
   assert.ok(!/^\s*autoPlay(=|\s*$)/m.test(viewer), "no autoPlay");
   for (const line of [
     "if (viewer.from.playing) void playWithMutedFallback(video);",
-    // Its time is only its own once it has seeked there.
     "viewerPositioned.current = true;",
     "readPlayback(event.currentTarget, viewer.from, viewerPositioned.current)",
   ]) {
     assert.ok(viewer.includes(line), line);
   }
-  // Opened from its Open button: the native controls also take clicks on the frame.
   const inline = slice(page, "ref={previewRef}", "/>");
   assert.ok(!inline.includes("onClick") && !inline.includes("openViewer"));
-  // The handback waits while another clip is shown and for its own clip's link, then keeps its pause.
   const effect = slice(page, "const last = handback.current;", "}, [viewer, shownId, selectedSrc]);");
   for (const line of [
     "if (viewer || !last || last.id !== shownId) return;",
@@ -165,7 +154,6 @@ test("the Video viewer plays only if the inline clip was, and hands its place ba
   ]) {
     assert.ok(effect.includes(line), line);
   }
-  // Only a successful apply, a newer opening, or deleting the clip clears it.
   assert.equal(page.split("handback.current = null;").length - 1, 3);
   const remove = slice(page, "onDelete: () => {", "void handleDelete(viewerVideo.id);");
   const cleared = remove.indexOf("handback.current = null;");

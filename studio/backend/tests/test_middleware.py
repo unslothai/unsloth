@@ -267,7 +267,6 @@ class TestMaxBodyMiddleware:
         assert cap > default_request_body_limit_bytes()  # not the plain default body cap
 
     def test_library_uploads_are_capped_before_parsing(self, main_module):
-        # Unprotected, a multipart batch of any size was spooled before the route could refuse it.
         from utils.upload_limits import (
             LIBRARY_UPLOAD_MAX_BYTES,
             default_request_body_limit_bytes,
@@ -279,7 +278,6 @@ class TestMaxBodyMiddleware:
             assert main_module._get_upload_passthrough_request_max_bytes(path) == (
                 upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
             ), path
-        # Its JSON siblings keep the default cap.
         path = "/api/library/uploads/abc/text"
         assert path not in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS
         assert main_module._get_upload_passthrough_request_max_bytes(path) == (

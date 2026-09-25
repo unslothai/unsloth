@@ -32,7 +32,6 @@ interface NameDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-/** One text field, used for New folder and every Rename. */
 export function NameDialog({ open, title, onOpenChange, ...form }: NameDialogProps) {
   const [busy, setBusy] = useState(false);
   return (
@@ -64,7 +63,6 @@ function NameForm({
   const [value, setValue] = useState(initialValue);
   const input = useRef<HTMLInputElement>(null);
 
-  // Select the stem so a rename keeps its extension by default.
   useEffect(() => {
     const dot = initialValue.lastIndexOf(".");
     const frame = requestAnimationFrame(() =>
@@ -81,7 +79,6 @@ function NameForm({
       await onSubmit(trimmed);
       onClose();
     } catch {
-      // The caller toasted; keep the dialog open so the name can be fixed.
     } finally {
       setBusy(false);
     }
@@ -148,14 +145,12 @@ export function ConfirmDeleteDialog({
   );
 }
 
-/** A note that could not be saved on the way out: try again, keep editing, or close without it. */
 export function UnsavedChangesDialog({
   error,
   onRetry,
   onDiscard,
   onKeepEditing,
 }: {
-  /** Why the save failed; the dialog shows while this is set. */
   error: string | null;
   onRetry: () => void;
   onDiscard: () => void;

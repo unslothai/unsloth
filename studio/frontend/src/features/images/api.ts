@@ -516,14 +516,12 @@ export async function clearGallery(): Promise<void> {
   if (!res.ok) throw new Error(await readFastApiError(res));
 }
 
-/** Fetch an auth-protected gallery image, body unread, for a caller that checks its size first. */
 export async function fetchGalleryResponse(url: string): Promise<Response> {
   const res = await authFetch(url);
   if (!res.ok) throw new Error(await readFastApiError(res));
   return res;
 }
 
-/** Fetch an auth-protected gallery image as its original blob. */
 export async function fetchGalleryBlob(url: string): Promise<Blob> {
   return (await fetchGalleryResponse(url)).blob();
 }

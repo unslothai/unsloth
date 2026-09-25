@@ -8,7 +8,6 @@ export type LibraryTarget =
   | { kind: "item"; item: LibraryItem }
   | { kind: "folder"; folder: LibraryFolder };
 
-/** Everything a card, row or menu can ask the page to do. */
 export interface LibraryActions {
   folders: LibraryFolder[];
   openItem: (item: LibraryItem) => void;

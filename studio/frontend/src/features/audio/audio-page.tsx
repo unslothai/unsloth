@@ -1790,16 +1790,12 @@ export function AudioPage({
   // counter, not effect cleanup, retires a lookup: clearing the query must not cancel its own.
   const routedItem = active ? routeSearch.item : undefined;
   const routedLookup = useRef(0);
-  // Leaving the page does retire it: hidden pages stay mounted and would keep paging.
   useEffect(() => {
     if (!active) routedLookup.current += 1;
   }, [active]);
   useEffect(() => {
     if (!routedItem) return;
     const lookup = ++routedLookup.current;
-    // The item leaves the URL at once, whoever clears the task: a mode switch refused while the
-    // page is busy keeps ?task= for its retry, and a lingering ?item= would start this lookup
-    // over whenever these callbacks change.
     void navigateSelf({
       to: "/audio",
       search: (prev) => ({ ...prev, item: undefined }),

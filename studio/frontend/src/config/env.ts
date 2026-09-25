@@ -21,7 +21,6 @@ export const env = {
 
 export type DeviceType = "mac" | "windows" | "linux" | string;
 
-/** What Reveal opens on the server's host; null where it can open nothing anyone would see. */
 export type FileManager = "finder" | "explorer" | "files" | null;
 
 interface PlatformState {
@@ -31,8 +30,6 @@ interface PlatformState {
   // deviceType === "mac", which includes Intel Macs with a discrete GPU, where spilling
   // to system RAM is exactly what happens. Mirrors the backend's is_apple_silicon gate.
   appleSilicon: boolean;
-  // From /api/health (authed), beside deviceType: undefined until reported, or from a backend
-  // too old to say.
   fileManager: FileManager | undefined;
   chatOnly: boolean;
   // Why chatOnly is set (null when training is enabled), from /api/health.
@@ -202,7 +199,6 @@ export async function fetchDeviceType(options?: {
       // on an Intel Mac, and on a Mac browser pointed at a Linux host.
       const appleSilicon =
         data.apple_silicon ?? (keepPlatform ? previous.appleSilicon : false);
-      // Same terms: it describes the host device_type names.
       const fileManager =
         data.device_type !== undefined
           ? data.file_manager

@@ -1242,7 +1242,6 @@ type LoadAdvanced = Pick<
   | "gpu_ids"
 >;
 
-/** The preview's accessible name: what it does, and which image, as its alt would have said. */
 function openImageLabel(t: ReturnType<typeof useT>, prompt: string): string {
   const text = shortPrompt(prompt);
   return text ? t("library.viewer.openImageNamed", { prompt: text }) : t("library.viewer.openImage");
@@ -1766,13 +1765,11 @@ export function ImagesPage({
     [images, selectedId],
   );
   const selectedSrc = selected ? srcById[selected.id] : undefined;
-  // The Library's full-window viewer, bound to the image that opened it: a batch finishing moves only the selection.
   const [viewerId, setViewerId] = useState<string | null>(null);
   const viewerImage = viewerId ? (images.find((image) => image.id === viewerId) ?? null) : null;
   const viewerSrc = viewerImage ? srcById[viewerImage.id] : undefined;
-  // Leaving the page closes it: the dialog portals to the body, past the hidden page.
   if (viewerId && (!active || !viewerImage)) setViewerId(null);
-  // Read by the cache pruning below, which must not revoke the image on screen.
+  // Pruning below must not revoke the image on screen.
   const viewerIdRef = useRef<string | null>(null);
   useEffect(() => {
     viewerIdRef.current = viewerId;
@@ -3282,7 +3279,6 @@ export function ImagesPage({
   // counter, not effect cleanup, retires a lookup: clearing the query must not cancel its own.
   const routedItem = active ? routeSearch?.item : undefined;
   const routedLookup = useRef(0);
-  // Leaving the page does retire it: hidden pages stay mounted and would keep paging.
   useEffect(() => {
     if (!active) routedLookup.current += 1;
   }, [active]);

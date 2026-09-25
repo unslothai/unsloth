@@ -225,7 +225,6 @@ def first_frame_webp(
     if isinstance(source, Path):
         target, protocols = str(source), "file"
     else:
-        # An open stream is read through its own callbacks, so no protocol at all is needed.
         target, protocols = source, "none"
     options = {"protocol_whitelist": protocols} if container else {}
     try:
@@ -236,14 +235,11 @@ def first_frame_webp(
             if max_pixels is not None:
                 if stream.width * stream.height > max_pixels:
                     raise RuntimeError(f"{stream.width}x{stream.height} is too large to thumbnail.")
-                # The header can understate the frames: the decoder itself refuses a larger one.
                 stream.codec_context.options = {"max_pixels": str(max_pixels)}
             frame = next(src.decode(stream), None)
             if frame is None:
                 raise RuntimeError("Thumbnail generation failed: the clip has no decodable frames.")
             image = frame.to_image()
-            # Both sides: a frame a few pixels wide and very tall is small to decode but not to
-            # show, and every card on screen would hold it.
             scale = min(1, width / image.width, (max_height or width * 4) / image.height)
             if scale < 1:
                 image = image.resize(

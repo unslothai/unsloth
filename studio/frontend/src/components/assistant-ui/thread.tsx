@@ -2983,13 +2983,17 @@ const Composer: FC<{
   const nativeAttachmentTargetKeyRef = useRef(nativeAttachmentTargetKey);
   nativeAttachmentTargetKeyRef.current = nativeAttachmentTargetKey;
 
-  // Library "Chat about this" opens a fresh chat and leaves its files for it; the composer may
-  // already be mounted, so listen as well as look. Files it refuses (image or video generation
-  // unloaded the chat model) wait for the next model to load rather than being dropped.
   useEffect(() => {
     if (!nativeAttachmentTargetKey) return;
     const targetKey = nativeAttachmentTargetKey;
-    const add = (file: File) => aui.composer().addAttachment(file);
+    let disposed = false;
+    // aui.composer() is whichever chat is open now: a switch mid-batch must not take the rest.
+    const add = async (file: File) => {
+      if (disposed || nativeAttachmentTargetKeyRef.current !== targetKey) {
+        throw new Error("The chat changed before this file was attached.");
+      }
+      await aui.composer().addAttachment(file);
+    };
     const drain = async () => {
       const held = await attachLibraryChatFiles(targetKey, add);
       if (held > 0) toast(translate("library.toast.chatFilesWaiting", { count: held }));
@@ -2998,7 +3002,6 @@ const Composer: FC<{
     const offers = useLibraryChatHandoffStore.subscribe((state) => {
       if (state.pending?.targetKey === targetKey) void drain();
     });
-    // One retry at a time; a change during one runs another after it, as it may have read too early.
     let retrying = false;
     let again = false;
     const retry = async () => {
@@ -3025,6 +3028,7 @@ const Composer: FC<{
       }
     });
     return () => {
+      disposed = true;
       offers();
       loads();
     };

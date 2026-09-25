@@ -1298,7 +1298,6 @@ _VIDEO_MULTIPART_UPLOAD_PATHS = (
     "/v1/videos",
     "/api/inference/videos",
 )
-# Library uploads cap each file at LIBRARY_UPLOAD_MAX_BYTES and a request at that too. EXACT path.
 _LIBRARY_UPLOAD_PATH = "/api/library/uploads"
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
     *_DATASET_UPLOAD_PASSTHROUGH_PREFIXES,
@@ -1994,8 +1993,6 @@ async def health_check(request: Request):
         authed["chat_only_detail"] = snapshot[2]
         authed["device_type"] = device_type
         authed["apple_silicon"] = is_apple_silicon()
-        # Whether Reveal can open a window anyone sees, and which: rides with device_type, whose
-        # host it describes. None on a headless or containerised server.
         from utils.paths.file_manager import file_manager_kind
 
         authed["file_manager"] = file_manager_kind()
