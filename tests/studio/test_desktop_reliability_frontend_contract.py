@@ -2425,13 +2425,67 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert layout.count("p-6 px-10 @[50rem]:pt-[60px]") == 2
 
 
+# The Train scroller's classes other than its two right-padding steps. See
+# test_image_train_rail_matches_create_and_header for why they are pinned.
+TRAIN_SCROLLER_LAYOUT = (
+    "flex",
+    "min-h-0",
+    "w-full",
+    "min-w-0",
+    "flex-1",
+    "flex-col",
+    "overflow-y-auto",
+    "overflow-x-hidden",
+    "@[50rem]:flex-row",
+    "@[50rem]:overflow-hidden",
+)
+
+
 def test_image_train_rail_matches_create_and_header():
     source = _ui_source(DIFFUSION_TRAIN_PANEL)
     layout = source.split("overflow-x-hidden: an unset overflow-x", 1)[1]
 
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
-    # The Create rail's width and clamp, so switching Create and Train keeps the divider still.
-    assert "pl-10 max-sm:pl-5 " + RAIL_WIDTH in layout
+    # The Create rail's width and clamp, so switching Create and Train keeps the divider still. The
+    # Train rail sits inside a scroller with right padding, so its 100% is that padding narrower
+    # than Create's and the clamp adds exactly that padding back (#11765). Read both numbers rather
+    # than pin either: the divider only lines up while they are the same spacing step.
+    # A spacing step as Tailwind v4 spells it: a multiple of 0.25 written canonically. `8.0` or
+    # `08` still render inside --spacing() but emit no pr- rule, so the two would stop agreeing.
+    step = r"(?:0|[1-9]\d*)(?:\.(?:25|5|75))?"
+    rail = re.search(
+        r"(?<=[\s\"])pl-10 max-sm:pl-5 @\[50rem\]:w-\[min\(var\(--media-rail-width,408px\),"
+        rf"calc\(100%-13rem\+--spacing\(({step})\)\)\)\](?=[\s\"])",
+        layout,
+    )
+    assert rail, "the Train rail no longer uses the Create rail's width variable and clamp"
+    classes = re.search(r'className="([^"]*overflow-y-auto overflow-x-hidden[^"]*)"', layout)
+    assert classes, "the Train scroller moved; the rail clamp depends on its padding"
+    # The class list is all that sets the scroller's padding: an inline style, a spread or any
+    # other attribute on the tag could set padding the list below never sees, so none is allowed.
+    opening = layout[layout.rfind("<", 0, classes.start()) : classes.start()]
+    assert re.fullmatch(r"<div\s+", opening) and re.match(r"\s*>", layout[classes.end() :]), (
+        "the Train scroller's opening tag carries more than its className, which could override "
+        "the right padding the rail clamp adds back"
+    )
+    # Every other class on the scroller is pinned. Anything that narrows or re-boxes it (padding
+    # under any variant or spelling, a border, box-content, an arbitrary property, !important)
+    # changes what the rail's 100% measures, and no pattern list has kept up with Tailwind's
+    # spellings. A change here is a prompt to re-check the clamp, then update this set. Only the
+    # two right-padding steps move freely, and the sm: one is held to the clamp below.
+    tokens = classes.group(1).split()
+    below = [t for t in tokens if re.fullmatch(rf"pr-{step}", t)]
+    at_rail = [t for t in tokens if re.fullmatch(rf"sm:pr-{step}", t)]
+    rest = sorted(t for t in tokens if t not in below and t not in at_rail)
+    assert len(below) == 1 and rest == sorted(TRAIN_SCROLLER_LAYOUT), (
+        f"the Train scroller's classes changed ({classes.group(1)}); the rail clamp adds back only "
+        f"its sm: right padding, so re-check the clamp before updating TRAIN_SCROLLER_LAYOUT"
+    )
+    assert len(at_rail) == 1, f"expected one sm: right padding on the Train scroller, got {at_rail}"
+    assert rail.group(1) == at_rail[0].removeprefix("sm:pr-"), (
+        f"the Train rail adds back --spacing({rail.group(1)}) but its scroller pads "
+        f"{at_rail[0]}, so the divider no longer lines up with Create's"
+    )
     assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
     assert "@container hover-scrollbar" in layout
     assert "@[50rem]:pt-[42px]" in layout
