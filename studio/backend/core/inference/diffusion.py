@@ -5550,10 +5550,9 @@ class DiffusionBackend:
                         uninstall_patches()
                         uninstall_arch_patches()
                     # Every tier: bit-identical, it only stops rebuilding the token layout on every step.
-                    if type(getattr(pipe, "transformer", None)).__name__ == "QwenImage21Transformer2DModel":
-                        from .diffusion_qwenimage21 import install as install_q21_fast_step
+                    from .diffusion_qwenimage21 import install_for_pipe as install_q21_fast_step
 
-                        install_q21_fast_step(logger)
+                    install_q21_fast_step(pipe, logger)
 
                     self._raise_if_load_cancelled(_load_token)
                     # Pre-warmed torch.compile cache: a per-fingerprint inductor dir plus a bundle loaded before the

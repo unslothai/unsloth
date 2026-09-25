@@ -298,3 +298,15 @@ def test_digest_ignores_docstrings_comments_and_blank_lines_only():
         exec(compile(text, name, "exec"), scope)
         digests.append(q._digest(scope["f"]))
     assert digests[0] == digests[1] != digests[2]
+
+
+def test_install_for_pipe_only_touches_qwen_image_21_and_never_raises(monkeypatch):
+    calls = []
+    monkeypatch.setattr(q, "install", lambda logger = None: calls.append(1) or True)
+    assert q.install_for_pipe(types.SimpleNamespace(transformer = object())) is False
+    assert q.install_for_pipe(types.SimpleNamespace()) is False
+    assert calls == []
+    pipe = types.SimpleNamespace(transformer = qmod.QwenImage21Transformer2DModel.__new__(qmod.QwenImage21Transformer2DModel))
+    assert q.install_for_pipe(pipe) is True and calls == [1]
+    monkeypatch.setattr(q, "install", lambda logger = None: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert q.install_for_pipe(pipe) is False

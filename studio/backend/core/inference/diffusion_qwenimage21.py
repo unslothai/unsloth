@@ -455,6 +455,18 @@ def install(logger: Any = None) -> bool:
     return True
 
 
+def install_for_pipe(pipe: Any, logger: Any = None) -> bool:
+    """``install`` when ``pipe``'s denoiser is Qwen-Image-2.1; never raises."""
+    if type(getattr(pipe, "transformer", None)).__name__ != _CLASS:
+        return False
+    try:
+        return install(logger)
+    except Exception as exc:  # noqa: BLE001 - optimisation only: the stock forward still runs
+        if logger is not None:
+            logger.warning("diffusion.qwenimage21: fast step unavailable: %s", exc)
+        return False
+
+
 def uninstall() -> None:
     """Restore every stock forward this module replaced. Idempotent."""
     with _LOCK:
