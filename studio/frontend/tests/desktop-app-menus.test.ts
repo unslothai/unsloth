@@ -150,7 +150,9 @@ test("every menu item stays disabled while the desktop app is not showing the ap
   const hook = readSrc("app/use-app-menu-actions.ts");
   const provider = readSrc("app/provider.tsx");
   // The root sits above TauriWrapper, so the wrapper publishes whether the app is mounted.
-  assert.match(provider, /setDesktopShellReady\(canMountApp\);\s*return \(\) => setDesktopShellReady\(false\);/);
+  // Published as the same predicate that reveals the app, not just "backend up".
+  assert.match(provider, /setDesktopShellReady\(canMountApp && appShellReady\);\s*return \(\) => setDesktopShellReady\(false\);/);
+  assert.match(provider, /const showApp = canMountApp && appShellReady;/);
   assert.match(ROOT, /\}, desktopShellReady\);/);
   assert.match(hook, /const enabled = ready\s*\?/);
   assert.match(hook, /latest\.current = ready \? handlers : \{\};/);

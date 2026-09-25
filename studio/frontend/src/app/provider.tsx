@@ -639,11 +639,12 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const [nativeMacControlsHidden, setNativeMacControlsHidden] = useState(false);
   const [appShellReady, setAppShellReady] = useState(false);
   const canMountApp = status === "running" && desktopAuthReady;
+  // Same as showApp below: until the shell is ready the app sits hidden behind the startup screen.
   useEffect(() => {
     if (!isTauri) return;
-    setDesktopShellReady(canMountApp);
+    setDesktopShellReady(canMountApp && appShellReady);
     return () => setDesktopShellReady(false);
-  }, [canMountApp]);
+  }, [canMountApp, appShellReady]);
 
   // Readiness is delivered by the mounted AppReadinessBoundary, not the
   // global reload-snapshot event: an obsolete async load cannot reveal us.
