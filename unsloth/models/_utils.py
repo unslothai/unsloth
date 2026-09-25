@@ -3966,7 +3966,7 @@ def _shadow_accepts_loss_kwargs(
         try:
             setattr(m, "accepts_loss_kwargs", value)
             if guessed:
-                m.__dict__[_GUESSED_LOSS_KWARGS] = True
+                m.__dict__[_GUESSED_LOSS_KWARGS] = value
             else:
                 m.__dict__.pop(_GUESSED_LOSS_KWARGS, None)
         except Exception:
@@ -4019,11 +4019,17 @@ def _loss_kwargs_chain(model):
         m = nxt
 
 
+def _is_guess(d):
+    # Still the heuristic's value; an assignment made since (e.g. by the user) is a declaration.
+    return _GUESSED_LOSS_KWARGS in d and d.get("accepts_loss_kwargs") == d[_GUESSED_LOSS_KWARGS]
+
+
 def _clear_guessed_accepts_loss_kwargs(model):
     for m in _loss_kwargs_chain(model):
         d = getattr(m, "__dict__", {})
-        if d.pop(_GUESSED_LOSS_KWARGS, False):
+        if _is_guess(d):
             d.pop("accepts_loss_kwargs", None)
+        d.pop(_GUESSED_LOSS_KWARGS, None)
 
 
 def _instance_accepts_loss_kwargs(model):
@@ -4034,7 +4040,7 @@ def _instance_accepts_loss_kwargs(model):
             return None
         seen.add(id(m))
         d = getattr(m, "__dict__", {})
-        value = None if d.get(_GUESSED_LOSS_KWARGS) else d.get("accepts_loss_kwargs", None)
+        value = None if _is_guess(d) else d.get("accepts_loss_kwargs", None)
         if value is not None:
             return value
         nxt = getattr(m, "base_model", None)
@@ -4086,13 +4092,19 @@ def _is_const(node, allowed):
     return isinstance(node, ast.Constant) and node.value in allowed
 
 
-def _ce_calls_all_mean(source):
-    all_mean, found = _scan_ce_calls(source)
+def _ce_calls_all_mean(source, namespace = None):
+    all_mean, found = _scan_ce_calls(source, namespace)
     # A mention in a comment or docstring is not a call.
     return all_mean and found
 
 
-def _scan_ce_calls(source):
+_TORCH_CE = {
+    "CrossEntropyLoss": torch.nn.CrossEntropyLoss,
+    "cross_entropy": torch.nn.functional.cross_entropy,
+}
+
+
+def _scan_ce_calls(source, namespace = None):
     # A sum / "none" reduction (modern or legacy, keyword or positional) is the model's own objective, not a micro-batch mean.
     # Returns (every call is a mean, at least one call was seen).
     try:
@@ -4111,6 +4123,10 @@ def _scan_ce_calls(source):
             name = func.attr
         else:
             name = getattr(func, "id", None)
+            # A bare name counts only if the forward's module binds it to the PyTorch op.
+            if namespace is not None and name in _TORCH_CE and name in namespace:
+                if namespace[name] is not _TORCH_CE[name]:
+                    continue
         params = _CE_PARAMS.get(name)
         if params is None:
             continue
@@ -4176,7 +4192,8 @@ def _forward_ignores_num_items_in_batch(model):
     ]
     if any(sub.reduction != "mean" for sub in used):
         return None
-    all_mean, found = _scan_ce_calls(source)
+    namespace = getattr(getattr(forward, "__func__", forward), "__globals__", None)
+    all_mean, found = _scan_ce_calls(source, namespace)
     if not all_mean or not (found or used):
         return None
     return m

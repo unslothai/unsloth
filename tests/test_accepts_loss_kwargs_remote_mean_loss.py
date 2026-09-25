@@ -47,6 +47,8 @@ _NAMES = {
     "_GUESSED_LOSS_KWARGS",
     "_loss_kwargs_chain",
     "_clear_guessed_accepts_loss_kwargs",
+    "_is_guess",
+    "_TORCH_CE",
     "apply_accepts_loss_kwargs_fix",
 }
 
@@ -485,5 +487,44 @@ def test_a_forward_replaced_after_load_is_checked_again(tmp_path):
         return None
 
     model.forward = consuming_forward
+    ns["apply_accepts_loss_kwargs_fix"](model)
+    assert not hasattr(model, "accepts_loss_kwargs")
+
+
+def test_an_assignment_after_the_guess_wins(tmp_path):
+    ns = _load()
+    mods = _models(tmp_path)
+    model = mods.NemotronHForCausalLM()
+    ns["apply_accepts_loss_kwargs_fix"](model)
+    assert model.accepts_loss_kwargs is False
+    model.accepts_loss_kwargs = True
+    ns["apply_accepts_loss_kwargs_fix"](_PeftLike(model))
+    assert model.accepts_loss_kwargs is True
+
+
+_OWN_HELPER_MODEL = """
+import torch
+from torch import nn
+
+
+def cross_entropy(logits, labels):
+    return torch.nn.functional.cross_entropy(logits, labels, reduction="sum")
+
+
+class OwnHelperForCausalLM(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.model = nn.Identity()
+
+    def forward(self, input_ids=None, labels=None, **kwargs):
+        logits = torch.zeros(1, 2)
+        return cross_entropy(logits, labels)
+"""
+
+
+def test_a_bare_name_bound_to_a_model_helper_is_not_the_torch_op(tmp_path):
+    ns = _load()
+    mods = _models(tmp_path, _OWN_HELPER_MODEL, "own_helper_for_ga_test")
+    model = mods.OwnHelperForCausalLM()
     ns["apply_accepts_loss_kwargs_fix"](model)
     assert not hasattr(model, "accepts_loss_kwargs")
