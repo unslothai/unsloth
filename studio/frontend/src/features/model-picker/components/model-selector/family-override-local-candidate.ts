@@ -44,7 +44,6 @@ export function resolvedFamilyOverrideSelection(
   if (typeof control?.value === "string" && control.value.trim()) {
     return control.value;
   }
-  // Compatibility with a response that predates the engaged-value field.
   return typeof control?.requested === "string" && control.requested.trim()
     ? control.requested
     : undefined;

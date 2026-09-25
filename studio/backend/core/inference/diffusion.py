@@ -956,7 +956,6 @@ class _LoadState:
     device: str
     dtype: str
     cpu_offload: bool
-    # Logical picker identity when repo_id is an exact local snapshot. Never used for loading.
     display_repo_id: Optional[str] = None
     # Defaulted so older positional constructions keep working.
     offload_policy: str = OFFLOAD_NONE
@@ -2473,12 +2472,7 @@ class DiffusionBackend:
         display_repo_id = (
             display_repo_id.strip() if isinstance(display_repo_id, str) else display_repo_id
         ) or None
-        # Resolved ONCE, here, and carried to the worker: outside it so a bad pick is the route's 400 rather than a load
-        # that dies mid-download, and only once so free VRAM cannot re-rank the choice after the weights land. Gated on
-        # the resolved backend, since XPU / MPS / CPU ignore physical ids and would otherwise 400 a selection the
-        # contract says to drop. Re-ranked only when the caller did not already do it: free VRAM moves between the
-        # route's preflight and here (network preflight, engine activation, arbiter eviction), so resolving twice can
-        # approve a scheme against one card and place the weights on another.
+        # Resolve once, here: re-ranking after free VRAM moves can approve one card and place weights on another.
         if gpu_ordinal is None:
             gpu_ordinal = (
                 resolve_selected_cuda_ordinal(gpu_ids)
@@ -6271,10 +6265,6 @@ class DiffusionBackend:
                 return plan
             if kind != "pipeline":
                 return plan
-            # A scanner-pinned Hub pipeline loads from its immutable snapshot path. Recover the
-            # logical Hub identity from that path for table lookups; unlike display_repo_id this
-            # provenance is not caller-controlled. Ordinary local directories retain their
-            # measured on-disk size and never borrow a coarse family estimate.
             local_base = _is_local_path(base)
             table_base = self._configured_hf_cache_repo_id(base) if local_base else base
             if local_base and table_base is None:
@@ -6324,12 +6314,7 @@ class DiffusionBackend:
 
     @staticmethod
     def _configured_hf_cache_repo_id(path: str) -> Optional[str]:
-        """Recover a repo id only from a snapshot below a configured HF cache root.
-
-        ``hf_cache_repo_id`` deliberately recognizes the portable directory shape alone. That is
-        useful for display identity, but not sufficient provenance for memory sizing: an arbitrary
-        local derivative can mimic that shape while containing substantially larger weights.
-        """
+        """Recover a repo id only from a snapshot below a configured HF cache root."""
         repo_id = hf_cache_repo_id(path)
         if repo_id is None:
             return None

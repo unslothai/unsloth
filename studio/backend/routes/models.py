@@ -98,7 +98,6 @@ class CachedModelRepo(BaseModel):
     load_id: Optional[str] = None
     # "adapter" for a cached LoRA/PEFT repo; pickers that offer whole models filter on it.
     model_format: Optional[str] = None
-    # Root-manifest contract; declared here or FastAPI's response model drops it.
     artifact_kind: Optional[LocalArtifactKind] = None
     # False for an encoder-only repo (embedding/CLIP/ViT); undeclared, response_model drops it.
     can_chat: Optional[bool] = None
@@ -5280,17 +5279,10 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                         "size_bytes": total_size,
                         "task": row_task,
                     }
-                    # This is a structural load contract, not family detection: a root manifest
-                    # proves the selected snapshot is a Diffusers pipeline artifact even when
-                    # its name/card leaves task unknown. A missing selected snapshot cannot
-                    # establish that snapshot-scoped contract from a sibling revision.
                     pipeline_artifact_kind = _diffusers_pipeline_artifact_kind(selected)
                     if pipeline_artifact_kind is not None:
                         row["artifact_kind"] = pipeline_artifact_kind
-                    # A structural family override is a narrow trust exception. Pin the exact
-                    # snapshot whose manifest earned it even in the active cache; refs/main may
-                    # otherwise move between inventory and load. Ordinary rows retain the bare id
-                    # whenever it resolves to the selected copy.
+                    # Pin the snapshot whose manifest earned the override: refs/main may move before load.
                     if (
                         row_task is None
                         and pipeline_artifact_kind is not None

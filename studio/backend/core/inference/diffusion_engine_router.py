@@ -459,12 +459,7 @@ def family_buildable_here(fam: Optional[DiffusionFamily], *, model_kind: Optiona
 
 @functools.lru_cache(maxsize = 1)
 def _supported_family_capabilities() -> tuple[str, ...]:
-    """Process-static Diffusers capability snapshot used by status responses.
-
-    The strict probes can force Diffusers and Torch lazy modules to import. Cache the answer so a
-    status poll never repeats that work; the async route runs the one cold call off the event-loop
-    thread. Installed runtime capabilities do not change without restarting this process.
-    """
+    """Process-static Diffusers capability snapshot used by status responses."""
     return tuple(pipeline_available_family_names())
 
 

@@ -1324,9 +1324,7 @@ def _read_local_pipeline_manifest(root: Path | str, filename: str) -> Optional[d
         path = Path(root).expanduser() / filename
         if not path.is_file() or path.stat().st_size > _MAX_PIPELINE_MANIFEST_BYTES:
             return None
-        # Match pipeline_class_from_index: PowerShell commonly writes hand-authored JSON with a
-        # UTF-8 BOM, which Diffusers can otherwise load and must not disappear at inventory or
-        # preflight.
+        # PowerShell writes JSON with a UTF-8 BOM; match pipeline_class_from_index.
         payload = json.loads(path.read_text(encoding = "utf-8-sig"))
     except (OSError, ValueError, RecursionError):
         return None
@@ -1351,8 +1349,6 @@ def local_pipeline_manifest_is_valid(root: Path | str, filename: str) -> bool:
 
 
 def _is_component_spec(spec: object) -> bool:
-    # Diffusers components are ``[library, class]`` string pairs; other lists are config values
-    # (Krea-2's ``text_encoder_select_layers: [2, 5, ...]``).
     return (
         isinstance(spec, (list, tuple))
         and len(spec) >= 2
@@ -1361,7 +1357,6 @@ def _is_component_spec(spec: object) -> bool:
     )
 
 
-# Declared in the manifest but never shipped: the loader passes them in (hidream_te4_kwargs).
 _CALLER_SUPPLIED_COMPONENTS = {"HiDreamImagePipeline": frozenset({"text_encoder_4", "tokenizer_4"})}
 
 
@@ -1424,9 +1419,7 @@ def _local_weight_index_is_complete(component: Path, index: Path) -> bool:
         if not shards:
             return False
         for shard in shards:
-            # Weight maps are POSIX-relative even on Windows. Reject alternate separators and
-            # drive prefixes before converting to the host Path, or ``..\\outside`` / ``C:`` can
-            # escape the component only on the platform where the pipeline is eventually loaded.
+            # Weight maps are POSIX-relative: reject other separators and drive prefixes, or ..\\ / C: escape on Windows.
             if "\\" in shard or ":" in shard:
                 return False
             relative = PurePosixPath(shard)
@@ -1441,8 +1434,6 @@ def _local_weight_index_is_complete(component: Path, index: Path) -> bool:
 
 
 def _local_model_component_is_complete(component: Path) -> bool:
-    # Diffusers treats a matching index as authoritative. A corrupt/partial index must not fall
-    # through to an unrelated unsharded file that the loader will never choose.
     indexes = [
         child
         for child in component.iterdir()
@@ -1464,12 +1455,7 @@ def _local_model_component_is_complete(component: Path) -> bool:
 
 
 def _local_metadata_component_is_complete(component: Path, class_name: str) -> Optional[bool]:
-    """Completeness for known config-only Diffusers/Transformers component classes.
-
-    ``None`` means the component is not known to be metadata-only and must take the model-weight
-    path for built-in library classes. Extension libraries are handled separately because their
-    serialization contracts need not match these filenames.
-    """
+    """Completeness for known config-only Diffusers/Transformers component classes."""
     identity = class_name.replace("_", "").lower()
     for tokens, config_names in _LOCAL_PIPELINE_METADATA_CONFIGS:
         if not any(token in identity for token in tokens):
@@ -1483,7 +1469,6 @@ def _local_metadata_component_is_complete(component: Path, class_name: str) -> O
             return False
         if tokens not in (("tokenizer",), ("processor",)):
             return True
-        # ByT5 constructs its byte vocabulary in code and intentionally ships no vocab asset.
         if "byt5tokenizer" in identity:
             return True
         try:
@@ -1492,7 +1477,6 @@ def _local_metadata_component_is_complete(component: Path, class_name: str) -> O
                 for asset in _LOCAL_PIPELINE_SELF_CONTAINED_TOKENIZER_ASSETS
             ):
                 return True
-            # A byte-level BPE's vocab and merges are a pair; neither file is useful alone.
             return all(
                 (component / asset).is_file() and (component / asset).stat().st_size > 0
                 for asset in ("vocab.json", "merges.txt")
@@ -1509,9 +1493,6 @@ def _local_pipeline_component_is_complete(
         if not component.is_dir():
             return False
         if library_name not in {"diffusers", "transformers"}:
-            # Extension classes own their serialization contract. Do not import user code while
-            # scanning, or assume their configs/weights use Diffusers' standard filenames.
-            # Presence is all we can establish here; from_pretrained validates the contents.
             return any(
                 child.is_file() and child.stat().st_size > 0 for child in component.iterdir()
             )
@@ -1535,12 +1516,7 @@ def _external_pipeline_component_is_complete(
     *,
     config_only_model_components: bool,
 ) -> Optional[bool]:
-    """Completeness at a modular component's explicit source, or ``None`` for no source.
-
-    A Hub id is a loadable external contract but cannot be inspected without network access, so
-    it is accepted here just as a remote pipeline id is. Explicit local sources are checked at
-    their actual subfolder; missing path-shaped sources and escaping subfolders fail closed.
-    """
+    """Completeness at a modular component's explicit source, or ``None`` for no source."""
     if not isinstance(source_spec, dict):
         return None
     source = source_spec.get("pretrained_model_name_or_path") or source_spec.get("repo")
@@ -1582,23 +1558,7 @@ def local_pipeline_components_are_complete(
     excluded_components: Sequence[str] = (),
     config_only_model_components: bool = False,
 ) -> bool:
-    """Check local component presence and known Diffusers/Transformers serialization layouts.
-
-    Interrupted copies commonly leave the index but omit a component, config, weight, or shard.
-    Inventory and both media preflights share this import-free check. Extension libraries own
-    their serialization contracts, so only their component directories and file presence are
-    checked here; their loaders remain responsible for validating contents. A companion base may
-    exclude the denoiser component supplied by a separately selected GGUF/safetensors checkpoint;
-    every remaining declared component is still checked, and at least one must remain. Modular
-    manifests may explicitly source a component from another local root or Hub repository.
-
-    ``config_only_model_components`` permits model weights to come from a whole-pipeline
-    single-file checkpoint while keeping component and metadata configs strict.
-
-    Saved modular pipelines also declare their components alongside ``_blocks_class_name``. A
-    block-only file is not enough evidence that the local snapshot is hydrated, so it is rejected
-    just like a conventional manifest with no components.
-    """
+    """Check local component presence and known Diffusers/Transformers serialization layouts."""
     payload = _read_local_pipeline_manifest(root, filename)
     if payload is None or not local_pipeline_manifest_is_valid(root, filename):
         return False
@@ -1608,8 +1568,6 @@ def local_pipeline_components_are_complete(
     for name, spec in payload.items():
         if not isinstance(name, str) or name.startswith("_") or not _is_component_spec(spec):
             continue
-        # Component keys are pipeline constructor arguments and therefore one local directory,
-        # never a path. Refusing separators also prevents a hand-authored manifest escaping root.
         if name in {"", ".", ".."} or Path(name).name != name or "/" in name or "\\" in name:
             return False
         if name in caller_supplied and not (base / name).exists():
@@ -1955,11 +1913,7 @@ def family_pipeline_strictly_available(fam: Optional[DiffusionFamily]) -> bool:
 
 
 def pipeline_available_family_names() -> tuple[str, ...]:
-    """Family overrides whose diffusers pipeline can be built on this host.
-
-    Unlike ``supported_family_names()``, this is suitable for a selector that reveals opaque
-    pipeline roots: every name it advertises must survive the loader's pipeline-class gate.
-    """
+    """Family overrides whose diffusers pipeline can be built on this host."""
     return tuple(fam.name for fam in _FAMILIES if family_pipeline_strictly_available(fam))
 
 

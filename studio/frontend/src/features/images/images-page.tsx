@@ -1424,7 +1424,6 @@ export function ImagesPage({
   const gpuChoices = useDiffusionGpuChoices();
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
-  // The last load descriptor, so "Reapply" can reload the same model with new advanced options without the user re-picking it.
   const lastLoad = useRef<({ repoId: string } & ImageLoadOptions) | null>(null);
   // Render-safe mirror of whether a page-initiated load supplied a complete Reapply target.
   const [canReapply, setCanReapply] = useState(false);
@@ -2551,11 +2550,6 @@ export function ImagesPage({
     const seedKey = `${repoId}\0${residentDefaults}`;
     if (seededResident.current === seedKey) return;
     seededResident.current = seedKey;
-    // Wire Reapply to the resident model too, so an advanced-option reload works without
-    // re-picking. Only a full pipeline is reloadable by repo id alone; a resident GGUF/single_file
-    // carries no checkpoint filename, so leave the target null for those and the button hidden.
-    // Set before the recipe decision below: whether Reapply has a target is a separate question
-    // from whether the model's defaults should seed the form.
     if (status?.model_kind === "pipeline") {
       lastLoad.current = {
         repoId,
@@ -2568,8 +2562,6 @@ export function ImagesPage({
       residentSeeded.current = true;
       if (imagePresets.storedRecipe) return;
     }
-    // The explicit family identifies an opaque local pipeline; named variants retain their more
-    // specific base-repo recipe. The same semantic key guards reseeding above.
     const d = defaultsFor(residentDefaults);
     setPendingModelDefaults(null);
     setSteps(d.steps);

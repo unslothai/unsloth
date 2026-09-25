@@ -2095,7 +2095,6 @@ def test_validate_gates_untrusted_base_repo(fake_runtime, tmp_path):
             model_kind = "gguf",
             base_repo = str(bad_base),
         )
-    # A present but malformed index still fails before eviction.
     (tmp_path / "model_index.json").write_text("{")
     with pytest.raises(ValueError, match = "valid model_index.json"):
         backend.validate_load_request(
@@ -2104,8 +2103,6 @@ def test_validate_gates_untrusted_base_repo(fake_runtime, tmp_path):
             model_kind = "gguf",
             base_repo = str(tmp_path),
         )
-    # A transformer-only checkpoint supplies the denoiser, so its local companion may omit those
-    # weights while every component it still supplies must be complete.
     (tmp_path / "model_index.json").write_text(
         json.dumps(
             {
@@ -2125,7 +2122,6 @@ def test_validate_gates_untrusted_base_repo(fake_runtime, tmp_path):
     )
     assert fam is not None
 
-    # The same directory is not complete when selected as the full pipeline.
     with pytest.raises(FileNotFoundError, match = "valid model_index.json"):
         backend.validate_load_request(str(tmp_path), family_override = "qwen-image")
 
@@ -10387,12 +10383,7 @@ def test_the_resident_size_table_never_shrinks_a_local_checkpoint(fake_runtime, 
 def test_the_resident_size_table_recovers_a_pinned_hub_snapshot_identity(
     fake_runtime, tmp_path, monkeypatch
 ):
-    """A cache snapshot is a local load target but still has trustworthy Hub provenance.
-
-    The inventory pins opaque pipelines to the exact snapshot it inspected. Treating that path as
-    an arbitrary local directory skips the post-cast table and can reject fp32-sharded pipelines
-    that fit once loaded as bf16.
-    """
+    """A cache snapshot is a local load target but still has trustworthy Hub provenance."""
     import torch
 
     from core.inference.diffusion_device import DiffusionDeviceTarget

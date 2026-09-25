@@ -772,7 +772,6 @@ def _detect_load_family(
     logical_id = display_repo_id.strip() if isinstance(display_repo_id, str) else ""
     fam = detect_video_family(repo_id, family_override) if family_override else None
     if fam is None and not family_override:
-        # The picker identity is more specific than an arbitrary cache parent path.
         fam = detect_video_family(logical_id) if logical_id else None
         fam = fam or detect_video_family(repo_id)
     fam = fam or (
@@ -812,7 +811,6 @@ class _VideoLoadState:
     device: str
     dtype: str
     kind: str
-    # Logical picker identity when repo_id is an exact local snapshot. Never used for loading.
     display_repo_id: Optional[str] = None
     engine: str = "diffusers"
     # The torch ordinal this pipeline's weights were placed on, or None for an automatic pick. Committed WITH the
@@ -1352,11 +1350,7 @@ def _probe_target(request_shape: dict[str, Any]) -> Any:
 
 @functools.lru_cache(maxsize = None)
 def _video_family_capabilities(device: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Process-static family snapshot for one device backend.
-
-    Strict availability can import Diffusers/Torch lazily. Cache it so polling remains a status
-    read; the route moves the one cold probe off the event-loop thread.
-    """
+    """Process-static family snapshot for one device backend."""
     available = pipeline_available_video_families(device = device)
     return (
         tuple(fam.name for fam in available),
@@ -1527,14 +1521,10 @@ class VideoBackend:
                         f"can be applied and the dense weights cannot be quantized in place. "
                         f"{hint}"
                     )
-        # Validate a local pipeline's structural contract before probing optional Diffusers
-        # classes. A malformed local pick is a request error even on hosts where Diffusers is
-        # absent or too old, and it must fail before the resident pipeline is evicted.
         if kind == "pipeline":
             from .diffusion_families import local_pipeline_components_are_complete
 
             root = Path(repo_id).expanduser()
-            # Gate on .exists() (not .is_dir()) so a local FILE picked as a pipeline is rejected too.
             indexes = (
                 ("modular_model_index.json",) if fam.modular_workflow else ("model_index.json",)
             )
@@ -3269,9 +3259,6 @@ class VideoBackend:
             family_override,
             display_repo_id,
         )
-        # Family detection resolves the selected model identity before its filename, so a mixed
-        # repo answers its media family for every file in it, a csm quant included. Refuse before
-        # the plan stages a byte.
         _assert_pick_is_not_speech(repo_id, gguf_filename, hf_token)
         kind = resolve_video_model_kind(gguf_filename, model_kind)
         from .video_minimax_h3 import is_h3_native
@@ -4050,11 +4037,7 @@ class VideoBackend:
                 hf_token = hf_token,
                 memory_mode = memory_mode,
                 family_override = family_override,
-                # RAW, not normalised. Both normalisers fold "none"/"off" into the same None an omitted request
-                # produces, and for a modular workflow those are opposite answers: unset means "pick the hosted
-                # quantized components", "none" means "keep the released bfloat16 ones". validate_load_request above
-                # already rejected malformed values with both normalisers; the modular loader normalises after reading
-                # the tri-state.
+                # RAW, not normalised: for modular workflows unset (hosted quantized) and "none" (bf16) mean opposite things.
                 transformer_quant = transformer_quant,
                 text_encoder_quant = text_encoder_quant,
                 # The speed layer lives BELOW this dispatch, which the modular branch never reached: no channels_last

@@ -871,11 +871,9 @@ def test_validate_rejects_local_pipeline_without_model_index(tmp_path):
     # A local dir missing model_index.json is not a loadable pipeline; it must fail preflight BEFORE eviction.
     with pytest.raises(ValueError, match = "model_index.json"):
         backend.validate_load_request(str(d), family_override = "ltx-2")
-    # A malformed index is still rejected before eviction.
     (d / "model_index.json").write_text("{}")
     with pytest.raises(ValueError, match = "valid model_index.json"):
         backend.validate_load_request(str(d), family_override = "ltx-2")
-    # With a valid model_index.json it is a valid local pipeline pick and passes preflight.
     (d / "model_index.json").write_text(
         json.dumps(
             {
@@ -977,7 +975,6 @@ def test_validate_rejects_local_base_repo_without_model_index(tmp_path):
             model_kind = "gguf",
             base_repo = str(bad_base),
         )
-    # A transformer-only checkpoint supplies the denoiser, so the companion base may omit it.
     (bad_base / "model_index.json").write_text(
         json.dumps(
             {
@@ -1026,8 +1023,6 @@ def test_detect_load_family_filename_fallback():
 
 
 def test_detect_load_family_uses_logical_id_for_an_opaque_pinned_snapshot():
-    # A complete cached Hub pipeline loads from its exact revision directory. That physical
-    # identity can be only a commit hash, while the picker still carries the logical repo id.
     fam = _detect_load_family(
         "/cache/snapshots/deadbeef",
         None,
@@ -1036,7 +1031,6 @@ def test_detect_load_family_uses_logical_id_for_an_opaque_pinned_snapshot():
     )
     assert fam is not None and fam.name == "minimax-h3"
 
-    # The logical identity outranks incidental tokens in a cache parent directory.
     fam = _detect_load_family(
         "/cache/wan2.2/snapshots/deadbeef",
         None,

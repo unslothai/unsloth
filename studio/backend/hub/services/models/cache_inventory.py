@@ -1147,10 +1147,6 @@ def _scan_cached_models(
                     "repo_id": repo_id,
                     "size_bytes": payload.size_bytes,
                     "cache_path": str(repo_info.repo_path),
-                    # A selected snapshot with a root pipeline index is a Diffusers pipeline
-                    # artifact even when its repo name/card cannot identify a family. Keep this
-                    # structural fact separate from task inference: an explicit family choice may
-                    # use it, while components and loose checkpoints remain ineligible.
                     "artifact_kind": pipeline_artifact_kind or "unknown",
                     "task": row_task,
                     "audio_type": audio_type,
@@ -1202,18 +1198,14 @@ def _scan_cached_models(
                         tts_only = is_output_audio,
                     )
                 )
-                # An explicit family is the authority for an otherwise opaque community
-                # pipeline. Hand that trust exception an immutable snapshot, never the bare Hub
-                # id: refs/main can move after this structural scan and invalidate the manifest
-                # contract that admitted the row.
+                # Pin the immutable snapshot, not the bare id: refs/main can move after this structural scan.
                 if (
                     row_task is None
                     and pipeline_artifact_kind is not None
                     and load_snapshot is not None
                 ):
                     row["load_id"] = str(load_snapshot)
-                # Native backend selection reads the load identity itself, so a custom native fork addressed only by
-                # repo id is indistinguishable from an ordinary LLM.
+                # Native backend selection reads the load identity itself, so a custom native fork addressed only by repo id is indistinguishable from an ordinary LLM.
                 if native_audio_type and load_snapshot is not None:
                     row["load_id"] = str(load_snapshot)
                 if _prefer_cache_row(row, existing):
