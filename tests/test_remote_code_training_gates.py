@@ -428,3 +428,46 @@ def test_a_required_cache_control_is_a_missing_text_input():
 
     assert _required_non_text_inputs(needs_cache) == ["cache_position"]
     assert _required_non_text_inputs(plain) == []
+
+
+def test_non_bitsandbytes_quantizers_keep_their_own_dtype_handling(monkeypatch):
+    """GPTQ / HQQ / Quark refuse or special-case dtype casts; the shim must not take them over."""
+    import unsloth.models.vision as vision
+
+    called = []
+    monkeypatch.setattr(vision, "_cast_unquantized_floats", lambda m, d: called.append(d))
+    model = _CausalLM(_Cfg())
+    model.quantization_method = "gptq"
+    with vision._tolerate_dtype_cast_on_quantized_model(True):
+        try:
+            model.to(torch.bfloat16)
+        except Exception:
+            pass
+    assert called == []
+    model.quantization_method = "bitsandbytes"
+    with vision._tolerate_dtype_cast_on_quantized_model(True):
+        model.to(torch.bfloat16)
+    assert called == [torch.bfloat16]
+
+
+def test_core_keeps_the_wrapper_generation_config():
+    """generation_config.json lands on the wrapper; the child only had config defaults."""
+    model = _OmniWrapper(_Cfg())
+    from transformers import GenerationConfig
+
+    model.generation_config = GenerationConfig(eos_token_id = [7, 8])
+    core = _text_trainable_core(model)
+    assert core.generation_config.eos_token_id == [7, 8]
+
+
+@pytest.mark.parametrize("spelling", ["LoRA", "lora ", "LORA"])
+def test_adapter_save_spellings_of_a_text_core_are_not_refused(spelling, tmp_path):
+    from unsloth.save import unsloth_generic_save
+
+    core = _text_trainable_core(_OmniWrapper(_Cfg()))
+    try:
+        unsloth_generic_save(core, None, str(tmp_path), save_method = spelling)
+    except NotImplementedError as error:
+        pytest.fail(f"adapter save refused: {error}")
+    except Exception:
+        pass
