@@ -61,6 +61,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import math
 import os
 import shutil
 import tempfile
@@ -846,8 +847,7 @@ def save_async(ctx: Optional[CacheContext], *, logger: Any = None) -> bool:
     """
     if ctx is None:
         return False
-    if time.time() - ctx.last_touch > _TOUCH_INTERVAL_SECONDS:
-        _touch_last_used(ctx)
+    note_use(ctx)
     if not _save_enabled(ctx.mode) or ctx.saved:
         return False
     if sync_saves():
@@ -921,6 +921,15 @@ def _unregister_live(cdir: Path) -> None:
             _live_dirs.pop(str(cdir), None)
 
 
+def note_use(ctx: Optional[CacheContext]) -> None:
+    """Keep ``ctx``'s key out of other processes' eviction while it is in use. Throttled; never raises.
+
+    Called before a render as well as after it: a render can compile into the key's inductor dir for
+    minutes, and a key last touched over the grace window ago would otherwise be fair game meanwhile."""
+    if ctx is not None and time.time() - ctx.last_touch > _TOUCH_INTERVAL_SECONDS:
+        _touch_last_used(ctx)
+
+
 def _touch_last_used(ctx: CacheContext) -> None:
     """Mark the key as used now. Never raises: a read-only cache root just evicts by manifest age."""
     ctx.last_touch = time.time()
@@ -938,6 +947,8 @@ def max_cache_bytes() -> Optional[int]:
     try:
         gb = float(raw) if raw else _DEFAULT_MAX_GB
     except ValueError:
+        gb = _DEFAULT_MAX_GB
+    if not math.isfinite(gb):
         gb = _DEFAULT_MAX_GB
     if not gb > 0:
         return None

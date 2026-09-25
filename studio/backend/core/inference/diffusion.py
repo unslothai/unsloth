@@ -7431,6 +7431,7 @@ class DiffusionBackend:
                 per_image_seeds: list[int] = []
                 chunk_shapes: list[int] = []
                 graphs_before = fresh_compile_count()
+                compile_cache.note_use(state.compile_cache_ctx)
                 try:
                     pending = list(chunks)
                     while pending:

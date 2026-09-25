@@ -1195,6 +1195,10 @@ def test_max_cache_bytes_env(monkeypatch):
     assert cc.max_cache_bytes() is None
     monkeypatch.setenv(cc._ENV_MAX_GB, "not-a-number")
     assert cc.max_cache_bytes() == int(cc._DEFAULT_MAX_GB * (1 << 30))
+    for raw in ("nan", "inf", "-inf"):
+        # float() accepts these; none of them may silently switch the bound off or make it infinite.
+        monkeypatch.setenv(cc._ENV_MAX_GB, raw)
+        assert cc.max_cache_bytes() == int(cc._DEFAULT_MAX_GB * (1 << 30))
 
 
 def test_evict_removes_least_recently_used_keys_until_under_budget(tmp_path):
@@ -1294,3 +1298,39 @@ def test_fresh_compile_count_ignores_a_retrace_the_cache_serves():
         counters["stats"]["unique_graphs"] -= 3
         counters["inductor"]["fxgraph_cache_hit"] -= 3
         counters["inductor"]["fxgraph_cache_miss"] -= 1
+
+
+def test_a_render_marks_its_key_used_before_it_compiles(monkeypatch, tmp_path):
+    """Another process's eviction must not take a key whose render is compiling into it right now."""
+    import os
+    import time
+
+    ctx = cc.CacheContext(
+        key = "e" * 32,
+        dir = tmp_path / ("e" * 32),
+        bundle = tmp_path / "b",
+        manifest_path = tmp_path / "m",
+        env_fp = {},
+        model_fp = {},
+        mode = "auto",
+    )
+    d = _key_dir(tmp_path, "e" * 32, 1000, age_s = 5 * 86400)
+    ctx.last_touch = time.time() - 2 * cc._TOUCH_INTERVAL_SECONDS
+    cc.note_use(ctx)
+    assert time.time() - os.stat(d / cc._LAST_USED_NAME).st_mtime < 60
+    assert cc.evict(root = tmp_path, max_bytes = 1) == []
+    stamp = os.stat(d / cc._LAST_USED_NAME).st_mtime
+    cc.note_use(ctx)  # throttled: a second call inside the interval does not touch the disk
+    assert os.stat(d / cc._LAST_USED_NAME).st_mtime == stamp
+    cc.note_use(None)
+
+
+def test_generate_marks_the_key_used_before_the_render():
+    import inspect
+
+    from core.inference import diffusion
+
+    src = inspect.getsource(diffusion.DiffusionBackend)
+    before = src.index("graphs_before = fresh_compile_count()")
+    render = src.index("pending = list(chunks)", before)
+    assert "compile_cache.note_use(state.compile_cache_ctx)" in src[before:render]
