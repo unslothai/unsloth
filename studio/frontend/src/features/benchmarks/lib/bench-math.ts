@@ -601,8 +601,14 @@ export function servedMismatch(
   st: ServedStatus,
 ): string | null {
   const want = variant.load.speculative_type;
-  // Only rows that pick a mode can be let down by one; a KV or context row keeps whatever ran before.
-  if (want !== undefined && want !== null && st.spec_fallback_reason)
+  // Only rows that pick a forced mode can be let down by a fallback; the Auto row asks Studio to
+  // choose, so its fallback (ngram, speculation off) is the Studio-default config we mean to measure.
+  if (
+    want !== undefined &&
+    want !== null &&
+    canonicalSpec(want) !== "auto" &&
+    st.spec_fallback_reason
+  )
     return describeFallback(st.spec_fallback_reason);
   if (want !== undefined && want !== null && canonicalSpec(want) !== "auto") {
     const got = canonicalSpec(st.speculative_type);
@@ -984,13 +990,12 @@ export function depthSeries(
 ): DepthSeries[] {
   const byFamily = new Map<Family, DepthPoint[]>();
   for (const r of rows) {
-    const n = variants.find((v) => v.label === r.label)?.load.spec_draft_n_max;
+    const load = variants.find((v) => v.label === r.label)?.load;
+    const n = load?.spec_draft_n_max;
     if (r.family === "off" || typeof n !== "number") continue;
-    // Tuned ngram rows share a depth with the plain one; the depth line keeps plain rows only.
-    if (
-      variants.find((v) => v.label === r.label)?.load.llama_extra_args?.length
-    )
-      continue;
+    // Tuned ngram and draft-cache variants share a depth with the plain row; the depth line
+    // keeps plain rows only, so it doesn't stack several measurements at one x.
+    if (load?.llama_extra_args?.length || load?.spec_draft_cache_type) continue;
     const list = byFamily.get(r.family) ?? [];
     list.push({ n, mean: r.mean, min: r.min, max: r.max, label: r.label });
     byFamily.set(r.family, list);
