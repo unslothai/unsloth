@@ -25,3 +25,9 @@ swap_size_mb = 8196
   cpu_kind = 'shared'
   cpus = 1
   memory_mb = 1024
+
+[mounts]
+  source = "myapp_data"
+  destination = "/data"
+  processes = ["disk"] # optional - attach volumes to Machines that belong to one or more process groups
+  initial_size = "32gb" # optional - the size of the volume created on first deploy
