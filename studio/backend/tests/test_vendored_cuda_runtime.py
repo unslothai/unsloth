@@ -108,7 +108,8 @@ def test_rejects_payloads_without_major_soname_links(tmp_path):
 
 
 @pytest.mark.skipif(
-    os.geteuid() == 0, reason = "root can read mode-000 files despite missing permission bits"
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason = "root can read mode-000 files despite missing permission bits",
 )
 def test_rejects_unreadable_major_soname_links(tmp_path):
     runtime_dir = _make_runtime(tmp_path, "cuda_v13")
@@ -217,7 +218,8 @@ def test_checks_loader_defaults_even_when_cache_is_readable(tmp_path, monkeypatc
 
 
 @pytest.mark.skipif(
-    os.geteuid() == 0, reason = "root can read mode-000 files despite missing permission bits"
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason = "root can read mode-000 files despite missing permission bits",
 )
 def test_unreadable_loader_default_files_do_not_block_the_vendored_rescue(tmp_path, monkeypatch):
     runtime_dir = _make_runtime(tmp_path, "cuda_v13")
