@@ -2156,6 +2156,8 @@ class FastBaseModel:
             tokenizer,
             fix_tokenizer = fix_tokenizer,
             config = auto_config if auto_config is not None else getattr(model, "config", None),
+            cache_dir = kwargs.get("cache_dir"),
+            revision = _tokenizer_revision,
         )
         patch_saving_functions(tokenizer, vision = True)
 
