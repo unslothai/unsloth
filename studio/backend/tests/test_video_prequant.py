@@ -1177,9 +1177,6 @@ def test_an_unreadable_card_keeps_the_rotation(monkeypatch):
 
 
 def test_unreadability_is_reported_only_when_it_is_what_kept_bfloat16(monkeypatch):
-    """The status may blame an unreadable hosted checkpoint only when every other condition for
-    taking it held. speed off, a derivative base or a card the hosted denoiser does not fit keep
-    bfloat16 for their own reasons, and must not be reported as a torchao problem."""
     try:
         import importlib
         import importlib.metadata
@@ -1215,7 +1212,6 @@ def test_unreadability_is_reported_only_when_it_is_what_kept_bfloat16(monkeypatc
     assert ask(base_repo = "someone/MiniMax-H3") is None and fired == []
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 10 * 1000**3)
     assert ask() is None and fired == []
-    # Readable again: the pick is made and nothing is reported.
     monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda *a, **k: True)
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
     assert ask() == vid.H3_AUTO_FALLBACK_SCHEME and fired == []

@@ -1169,9 +1169,8 @@ def _h3_auto_denoiser_scheme(
     from .diffusion_prequant import restricted_prequant_load_supported
 
     if not restricted_prequant_load_supported(H3_AUTO_FALLBACK_SCHEME):
-        # An install that cannot restrict the deserialization cannot open a checkpoint at all, and this runs BEFORE the
-        # download plan: choosing one would drop the dense denoiser shards for an artifact the loader is going to
-        # refuse. Asked last, so ``on_unreadable`` fires only when this is the one thing that kept bfloat16.
+        # Runs BEFORE the download plan, so never pick an artifact the loader will refuse. Asked last so
+        # ``on_unreadable`` fires only when this alone kept bfloat16.
         if on_unreadable is not None:
             on_unreadable()
         return None

@@ -101,15 +101,14 @@ def _torchao_helpers() -> Optional[tuple]:
         )
     except Exception:  # noqa: BLE001 - torchao absent, too old, or the module moved
         return None
-    # 0.14 ships the module under the same path but a different layout and no Int8Tensor, so a
-    # published artifact fails inside unflatten (KeyError '_data') after planning counted on it.
+    # 0.14 has this module but no Int8Tensor: unflatten fails (KeyError '_data') after planning.
     if _version_tuple(_torchao_version()) < MIN_TORCHAO_VERSION:
         return None
     return flatten_tensor_state_dict, unflatten_tensor_state_dict
 
 
 def _version_tuple(version: Optional[str]) -> tuple:
-    """``(major, minor)`` of a version string; unparseable reads as new enough (feature import decides)."""
+    """Unparseable reads as new enough (the feature import decides)."""
     try:
         parts = str(version).split("+")[0].split(".")
         return (int(parts[0]), int(parts[1]))
@@ -301,9 +300,6 @@ def _drop_field(value: Any, name: str, removed: list) -> Any:
 def _header_without_inert_tensor_field(
     header: dict, tensors: dict, name: str, *, path: str
 ) -> Optional[dict]:
-    """``header`` with tensor field ``name`` dropped from every subclass, and its tensors popped
-    from ``tensors``, when every one of them is all zeros. None when no subclass carries it; a
-    non-zero one raises, for the same reason a live JSON field does."""
     import torch
 
     pruned = dict(header)
@@ -322,7 +318,6 @@ def _header_without_inert_tensor_field(
         flat_key = f"{module_fqn}._{weight_name}_{name}"
         tensor = tensors.get(flat_key)
         if tensor is None:
-            # Absent is not all-zero: the value it held is unknown, so the file is incomplete.
             raise ValueError(
                 f"{path} lists {name!r} for {key} but has no {flat_key!r} tensor; the checkpoint "
                 "is incomplete or was edited"
@@ -392,8 +387,7 @@ def _header_without_unconstructible_fields(
                     continue
                 pruned[key] = json.dumps(_drop_field(parsed, name, removed))
             if not removed:
-                # Not a JSON field: a TENSOR one, e.g. the all-zero ``zero_point`` 0.18 writes for a
-                # symmetric Int8Tensor and 0.16's constructor does not take.
+                # Tensor field, e.g. 0.18's all-zero ``zero_point`` that 0.16 cannot take.
                 pruned = _header_without_inert_tensor_field(header, tensors, name, path = path)
                 if pruned is None:
                     break

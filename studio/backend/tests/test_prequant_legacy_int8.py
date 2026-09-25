@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hosted INT8 ``.pt`` checkpoints on a torchao that deleted the v1 int8 classes (0.18+).
-
-The hermetic tests pin the routing (when the rebuild engages, what planning is told). The file
-tests write a checkpoint with the exact pickle layout torchao <= 0.17 produced and read it back
-through the loader; they need a torchao where the rebuild applies and are skipped elsewhere.
-"""
+"""Legacy v1 INT8 ``.pt`` pre-quants on torchao 0.18+; file tests need a torchao where the rebuild applies."""
 
 from __future__ import annotations
 
@@ -17,9 +12,6 @@ import pytest
 
 import core.inference.diffusion_prequant as pq
 import core.inference.prequant_legacy_int8 as li
-
-
-# ---------------------------------------------------------------------------------------- routing
 
 
 def test_only_the_deleted_int8_names_trigger_the_rebuild():
@@ -38,8 +30,6 @@ def test_a_torchao_that_still_ships_the_classes_keeps_the_old_path(monkeypatch):
 
 
 def test_int8_support_is_answered_by_the_rebuild_when_the_classes_are_gone(monkeypatch):
-    """torchao 0.18: the int8 constructors cannot be allowlisted, so without the rebuild planning
-    is told no, the hosted checkpoint is skipped and the dense bf16 transformer is downloaded."""
     monkeypatch.setattr(pq, "_register_prequant_safe_globals", lambda: True)
     monkeypatch.setattr(pq, "_RESOLVED_SAFE_GLOBALS", set(pq._SCHEME_REQUIRED_GLOBALS["fp8"]))
     monkeypatch.setattr(li, "legacy_int8_decode_supported", lambda: False)
@@ -47,7 +37,6 @@ def test_int8_support_is_answered_by_the_rebuild_when_the_classes_are_gone(monke
     monkeypatch.setattr(li, "legacy_int8_decode_supported", lambda: True)
     assert pq.restricted_prequant_load_supported("int8", "X-INT8.pt")
     assert pq.restricted_prequant_load_supported("int8")
-    # fp8 never depended on it, and an unknown scheme gets no free pass.
     assert pq.restricted_prequant_load_supported("fp8", "X-FP8.pt")
     monkeypatch.setattr(pq, "_RESOLVED_SAFE_GLOBALS", {"torch.torch_version.TorchVersion"})
     assert not pq.restricted_prequant_load_supported("fp8", "X-FP8.pt")
@@ -86,7 +75,6 @@ def test_unreadable_hosted_checkpoint_is_named_for_status(monkeypatch):
     )
     note = pq.prequant_unreadable_reason(fam, "int8")
     assert "org/Model-FP8" in note and "no longer ships" in note
-    # A derived safetensors name alone is a guess, not a readable artifact.
     monkeypatch.setattr(
         pq,
         "restricted_prequant_load_supported",
@@ -95,7 +83,7 @@ def test_unreadable_hosted_checkpoint_is_named_for_status(monkeypatch):
     assert pq.prequant_unreadable_reason(fam, "int8") is not None
     monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda scheme, name = None: True)
     assert pq.prequant_unreadable_reason(fam, "int8") is None
-    assert pq.prequant_unreadable_reason(fam, "fp8") is None  # nothing hosted for it
+    assert pq.prequant_unreadable_reason(fam, "fp8") is None
     assert pq.prequant_unreadable_reason(fam, None) is None
 
 
@@ -109,7 +97,6 @@ def test_the_dense_fast_path_reason_says_why_the_hosted_checkpoint_was_skipped(m
     )
     reason = d._dense_fast_path_reason(object(), "int8", "org/base", "pipeline", None)
     assert "cannot be read here" in reason and "dense bf16 transformer" in reason
-    # A local override or a GGUF pick never had a hosted checkpoint to skip.
     assert (
         d._dense_fast_path_reason(object(), "int8", "org/base", "pipeline", "/p.pt")
         == "engaged on the dense fast path"
@@ -118,16 +105,12 @@ def test_the_dense_fast_path_reason_says_why_the_hosted_checkpoint_was_skipped(m
         d._dense_fast_path_reason(object(), "int8", "org/base", "gguf", None)
         == "engaged on the dense fast path"
     )
-    # A LoRA bake always takes the dense transformer, readable checkpoint or not.
     assert (
         d._dense_fast_path_reason(
             object(), "int8", "org/base", "pipeline", None, [("org/lora", 1.0)]
         )
         == "engaged on the dense fast path"
     )
-
-
-# ------------------------------------------------------------------------------------ real files
 
 
 _needs_rebuild = pytest.mark.skipif(
@@ -138,8 +121,7 @@ _needs_rebuild = pytest.mark.skipif(
 
 @pytest.fixture(autouse = True)
 def _no_foreign_legacy_registrations():
-    """Other test files register placeholder objects under these names process-wide; a real 0.18
-    install has nothing there, which is the situation under test."""
+    """Other test files register placeholders under these names process-wide."""
     torch = pytest.importorskip("torch")
     saved = torch.serialization.get_safe_globals()
     legacy = {*li.LEGACY_INT8_CLASS_NAMES, li._ACT_QUANT}
@@ -153,7 +135,6 @@ def _no_foreign_legacy_registrations():
 
 
 def _legacy_modules():
-    """Classes and a function under the module paths torchao <= 0.17 pickled them from."""
     import enum
 
     import torch
@@ -285,7 +266,6 @@ def test_a_legacy_int8_pickle_loads_as_int8tensor_with_the_same_weights(monkeypa
 
     path = tmp_path / "Model-INT8.pt"
     qdata, scale = _write_legacy_checkpoint(monkeypatch, path)
-    # The plain load is what 0.18 refuses; the loader must not.
     with pytest.raises(
         Exception, match = "LinearActivationQuantizedTensor|was not an allowed global"
     ):
@@ -299,7 +279,6 @@ def test_a_legacy_int8_pickle_loads_as_int8tensor_with_the_same_weights(monkeypa
     assert type(w.act_quant_kwargs.granularity).__name__ == "PerRow"
     assert torch.equal(w.dequantize(), qdata.to(torch.bfloat16) * scale.reshape(8, 1))
     assert type(ckpt["state_dict"]["blk.norm.weight"]) is torch.Tensor
-    # The stand-ins were registered for that load only.
     assert not any(
         isinstance(g, tuple) and g[1] == li._LAQT for g in torch.serialization.get_safe_globals()
     )
@@ -330,9 +309,7 @@ def test_an_asymmetric_legacy_weight_is_refused(monkeypatch, tmp_path):
 
 @_needs_rebuild
 def test_a_plain_load_that_overlaps_a_legacy_one_is_rebuilt_too(monkeypatch, tmp_path):
-    """While one thread's legacy load has the stand-ins registered, another thread's plain
-    weights_only load of an int8 pickle succeeds against them. It must not hand inert stand-ins
-    to load_state_dict."""
+    """A concurrent plain load must not hand inert stand-ins to load_state_dict."""
     import torch
 
     path = tmp_path / "Model-INT8.pt"

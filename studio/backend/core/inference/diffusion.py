@@ -1508,10 +1508,7 @@ def _dense_fast_path_reason(
     path_override: Optional[str],
     loras: Any = None,
 ) -> str:
-    """The dense-quantise reason, naming a hosted checkpoint this install could not read: that is
-    the one case where "engaged" hides a full bf16 download the user did not expect. Not said when
-    the checkpoint was never in play (a local override, a GGUF pick, a LoRA bake, which always
-    needs the dense transformer)."""
+    """Name an unreadable hosted checkpoint only when it was in play (not override/GGUF/LoRA bake)."""
     note = (
         prequant_unreadable_reason(fam, scheme, base_repo = base)
         if kind == "pipeline" and not path_override and not _has_active_lora(loras)

@@ -1418,14 +1418,12 @@ def _warn(logger: Any, what: str, exc: Exception) -> None:
 
 
 def last_prequant_failure() -> Optional[str]:
-    """Why the last ``load_prequantized_transformer`` on THIS thread returned None, once."""
     text = getattr(_LAST_FAILURE, "text", None)
     _LAST_FAILURE.text = None
     return text
 
 
 def _unreadable_why(scheme: str) -> str:
-    """Why this install cannot open a ``scheme`` pickle, in the user's terms."""
     try:
         import torch
         import torchao
@@ -1455,11 +1453,7 @@ def prequant_unreadable_reason(
     base_repo: Optional[str] = None,
     task: Optional[str] = None,
 ) -> Optional[str]:
-    """A status line when ``fam`` hosts a ``scheme`` checkpoint this install cannot open, else None.
-
-    The planners treat an unreadable artifact as absent and quietly take the dense bf16 path, which
-    for the large families is a download and a resident size several times the hosted one. This is
-    the sentence that says so. Pure registry work plus the (memoised) allowlist probe; never raises."""
+    """Status line when ``fam`` hosts a ``scheme`` checkpoint this install cannot open; never raises."""
     if not scheme:
         return None
     try:

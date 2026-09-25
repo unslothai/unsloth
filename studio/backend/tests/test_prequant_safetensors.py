@@ -519,10 +519,6 @@ def test_a_field_carrying_a_real_setting_is_refused_rather_than_dropped():
 
 
 def test_an_all_zero_tensor_field_a_newer_torchao_added_is_dropped():
-    """torchao 0.18 writes a symmetric Int8Tensor with an all-zero ``zero_point`` TENSOR, which
-    0.16's constructor does not take: the published Qwen-Image-2.1 int8 artifact failed on torch
-    2.10 installs with ``Int8Tensor.__new__() got an unexpected keyword argument 'zero_point'``
-    and fell back to the dense download."""
     torch = pytest.importorskip("torch")
 
     def _unflatten(tensors, header):
@@ -571,8 +567,6 @@ def test_a_non_zero_tensor_field_is_refused_rather_than_dropped():
 
 
 def test_a_missing_tensor_field_is_refused_rather_than_read_as_zero():
-    """One weight carries its all-zero ``zero_point`` (so 0.16 asks for the field to go) while
-    another lists one but its tensor is gone: that one's value is unknown, not zero."""
     torch = pytest.importorskip("torch")
 
     def _unflatten(tensors, header):
@@ -592,12 +586,9 @@ def test_a_missing_tensor_field_is_refused_rather_than_read_as_zero():
 
 
 def test_torchao_older_than_the_floor_is_not_safetensors_support(monkeypatch):
-    """torchao 0.14 has the module at the same path but no Int8Tensor and another layout: planning
-    must not count on a safetensors artifact it will fail to read."""
     assert ps._version_tuple("0.14.0") < ps.MIN_TORCHAO_VERSION
     assert ps._version_tuple("0.16.0+cu130") >= ps.MIN_TORCHAO_VERSION
     assert ps._version_tuple("0.19.0+git492be6c") >= ps.MIN_TORCHAO_VERSION
-    # Unparseable reads as new enough: the feature import decides, as before.
     assert ps._version_tuple(None) >= ps.MIN_TORCHAO_VERSION
     assert ps._version_tuple("dev") >= ps.MIN_TORCHAO_VERSION
     monkeypatch.setattr(ps, "_torchao_version", lambda: "0.14.0")

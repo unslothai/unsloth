@@ -27,8 +27,7 @@ from core.inference.diffusion_te_prequant import (
 
 @pytest.fixture(autouse = True)
 def _safetensors_readable_regardless_of_the_installed_torchao(monkeypatch):
-    """These tests are about resolution and planning, not torchao compatibility: keep the torchao
-    >= 0.16 floor from turning them into a statement about whichever release CI installed."""
+    """Pin the torchao floor so planning tests ignore the installed release."""
     import core.inference.prequant_safetensors as prequant_safetensors
     monkeypatch.setattr(prequant_safetensors, "_torchao_version", lambda: None)
 

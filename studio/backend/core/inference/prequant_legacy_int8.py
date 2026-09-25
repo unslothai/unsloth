@@ -1,24 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Read the hosted INT8 ``.pt`` pre-quant checkpoints on a torchao that no longer ships their classes.
+"""Read hosted INT8 ``.pt`` pre-quants on torchao >= 0.18, which deleted the v1 int8 classes they pickle.
 
-Every published INT8 pickle except Qwen-Image-2.1's names torchao's v1 int8 stack:
-``LinearActivationQuantizedTensor`` over an ``AffineQuantizedTensor`` with a ``PlainAQTTensorImpl``
-and ``PlainLayout``, activations quantized by ``_int8_symm_per_token_reduced_range_quant``.
-torchao 0.18 deleted all five, so the constructor allowlist has nothing to point those names at,
-the load is refused, and Studio falls back to the dense bf16 transformer (66 GB for MiniMax-H3).
-
-The data inside is plain: an int8 ``[N, K]`` matrix and one scale per output row. So the pickle is
-still read with ``weights_only = True``, but with Unsloth-owned stand-ins registered under the five
-deleted names. The stand-ins only hold attributes (their ``__torch_dispatch__`` raises), nothing in
-the file is ever called, and each weight is checked to be exactly symmetric per-row int8 before it
-is rebuilt as the installed torchao's ``Int8Tensor`` with per-row dynamic activation quant, i.e.
-what ``Int8DynamicActivationInt8WeightConfig`` itself produces on that release. Weights are
-unchanged bit for bit; activations are quantized the way that torchao does it now.
-
-Only engaged when the classes are really gone. A torchao that still ships them keeps loading the
-pickle as before.
+Still ``weights_only = True``: inert stand-ins (dispatch raises) are registered under the deleted names
+only for that load, and each weight is validated as symmetric per-row int8, then rebuilt bit-identical
+as the installed torchao's ``Int8Tensor``. A torchao that still ships the classes loads as before.
 """
 
 from __future__ import annotations
@@ -34,8 +21,7 @@ _LAYOUT = "torchao.dtypes.utils.PlainLayout"
 _ACT_QUANT = "torchao.quantization.quant_api._int8_symm_per_token_reduced_range_quant"
 _ZERO_POINT_DOMAIN = "torchao.quantization.quant_primitives.ZeroPointDomain"
 
-# The classes whose absence this module exists for. All or nothing: a torchao shipping some of
-# them would hand back a mix of real and stand-in objects, which nothing here is written against.
+# All or nothing: a partial torchao would mix real and stand-in objects.
 LEGACY_INT8_CLASS_NAMES = (_LAQT, _AQT, _IMPL, _LAYOUT)
 
 
@@ -49,18 +35,15 @@ def _resolve(name: str) -> Any:
 
 
 def legacy_int8_classes_missing() -> bool:
-    """True when torchao ships NONE of the v1 int8 classes (0.18 and later)."""
     return all(_resolve(n) is None for n in LEGACY_INT8_CLASS_NAMES)
 
 
 def names_legacy_int8_class(exc: BaseException) -> bool:
-    """Whether a refused ``weights_only`` load was refused for one of the deleted v1 int8 names."""
     text = str(exc)
     return any(name in text for name in (*LEGACY_INT8_CLASS_NAMES, _ACT_QUANT))
 
 
 def _int8_tensor_api() -> Optional[tuple]:
-    """``(Int8Tensor, QuantizeTensorToInt8Kwargs, PerRow)`` or None."""
     try:
         from core._torchao_stub import is_stubbed
         if is_stubbed("torchao"):
@@ -82,7 +65,6 @@ _SUPPORTED: Optional[bool] = None
 
 
 def legacy_int8_decode_supported() -> bool:
-    """Whether this install needs AND can use the rebuild below. Memoised."""
     global _SUPPORTED
     if _SUPPORTED is not None:
         return _SUPPORTED
@@ -94,8 +76,7 @@ def legacy_int8_decode_supported() -> bool:
         torch_ok = (int(parts[0]), int(parts[1])) >= (2, 6)
         api = _int8_tensor_api()
         if torch_ok and api is not None and legacy_int8_classes_missing():
-            # Build one tiny weight the way the rebuild does, so a release whose constructor moved
-            # answers no here rather than after a plan has dropped the dense shards.
+            # Probe the constructor now, not after a plan has dropped the dense shards.
             _to_int8_tensor(
                 torch.zeros(2, 4, dtype = torch.int8),
                 torch.ones(2, dtype = torch.bfloat16),
@@ -114,8 +95,7 @@ _STANDINS_LOCK = threading.Lock()
 
 
 def _standins() -> dict:
-    """The stand-in objects, keyed by the pickled name they replace. Built lazily (importing this
-    module needs no torch) and per torch module, since tests swap ``sys.modules["torch"]``."""
+    """Keyed per torch module: tests swap ``sys.modules["torch"]``."""
     global _STANDINS
     import torch
 
@@ -175,7 +155,7 @@ def _standins() -> dict:
 def _to_int8_tensor(qdata: Any, scale: Any, dtype: Any, api: tuple) -> Any:
     Int8Tensor, QuantizeTensorToInt8Kwargs, PerRow = api
     n, k = qdata.shape
-    # Scale kept in its stored dtype: the dequantized weight is then exactly what the v1 tensor held.
+    # Scale kept in its stored dtype so dequant is bit-identical to v1.
     return Int8Tensor(
         qdata,
         scale.reshape(n, 1),
@@ -186,7 +166,6 @@ def _to_int8_tensor(qdata: Any, scale: Any, dtype: Any, api: tuple) -> Any:
 
 
 def _rebuild_weight(name: str, w: Any, standins: dict, api: tuple) -> Any:
-    """One stand-in ``LinearActivationQuantizedTensor`` -> ``Int8Tensor``, or raise on anything else."""
     import torch
 
     def bad(why: str) -> ValueError:
@@ -236,12 +215,7 @@ _LOAD_LOCK = threading.Lock()
 
 
 def load_legacy_int8_pickle(path: str, **kwargs: Any) -> Any:
-    """``torch.load(path, weights_only = True)`` with the stand-ins, legacy weights rebuilt.
-
-    The stand-ins are registered only for the duration of the load and only under names this
-    torchao does not ship. The lock keeps two overlapping reads from removing each other's
-    registration; a plain load that lands inside the window is rebuilt the same way by
-    ``rebuild_stray_standins``."""
+    """Lock stops overlapping loads unregistering each other; plain loads in the window: ``rebuild_stray_standins``."""
     import torch
 
     api = _int8_tensor_api()
@@ -256,8 +230,6 @@ def load_legacy_int8_pickle(path: str, **kwargs: Any) -> Any:
 
 
 def rebuild_stray_standins(ckpt: Any) -> Any:
-    """Rebuild stand-ins a PLAIN ``weights_only`` load picked up while another thread's legacy
-    load had them registered. A no-op in a process that never ran one."""
     cached = _STANDINS
     api = _int8_tensor_api() if cached is not None else None
     if cached is None or api is None:
