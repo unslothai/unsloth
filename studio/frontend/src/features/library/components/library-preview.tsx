@@ -33,7 +33,7 @@ import {
   modelLabelKey,
 } from "../file-kind";
 import { formatCardTime, formatSize } from "../format";
-import { type EmbeddedBody, hasOwnFile } from "../file-name";
+import { type EmbeddedBody, hasOwnFile, itemVersion } from "../file-name";
 import { useLibraryPreviewUrl } from "../hooks";
 import { type NoteFormat, type NoteReadOnlyReason, encodeNote } from "../note-text";
 import { canReveal, revealInFolder, useRevealLabel } from "../reveal";
@@ -96,7 +96,7 @@ interface LoadedText {
  * swapped for a spinner, and never loses focus, when its own save bumps the version.
  */
 function useItemText(item: LibraryItem | null, enabled: boolean) {
-  const key = item ? `${item.id}@${item.updatedAt}` : "";
+  const key = item ? itemVersion(item) : "";
   const [state, setState] = useState<LoadedText | null>(null);
   // Closing lets it go, so every opening reads the file afresh.
   if (!item && state) setState(null);
@@ -377,7 +377,7 @@ export function LibraryPreview({
   const locale = useLocale();
   const body = item ? bodyFor(item) : "none";
   const itemText = useItemText(item, body === "text" || body === "web");
-  const version = item && `${item.id}@${item.updatedAt}`;
+  const version = item && itemVersion(item);
   // Tagged with its item, so a draft never follows the preview to another file.
   // `savedAt` marks text already written: the item version it was saved over, shown until the
   // refreshed item's text has loaded, so the editor never falls back to the old text.

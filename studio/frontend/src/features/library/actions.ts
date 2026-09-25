@@ -49,15 +49,24 @@ function fitsInChat(item: LibraryItem): boolean {
   return item.sizeBytes === null || item.sizeBytes <= chatSizeLimit(item);
 }
 
-export async function downloadLibraryItem(item: LibraryItem): Promise<void> {
+/** Saves the item's file. `epoch` is the session the item came from: one signed in meanwhile
+ *  could have an item of the same id, and its link would carry that account's token. */
+export async function downloadLibraryItem(
+  item: LibraryItem,
+  epoch = getAuthSessionEpoch(),
+): Promise<void> {
+  if (getAuthSessionEpoch() !== epoch) return;
   try {
     // The desktop app streams to the chosen path: a Blob plus its IPC copy would hold the file
     // in memory twice.
     if (isTauri && !item.textOnly && hasOwnFile(item.id)) {
-      await downloadUrlStreaming(await libraryDownloadUrl(item), libraryFileName(item));
+      const url = await libraryDownloadUrl(item);
+      if (getAuthSessionEpoch() !== epoch) return;
+      await downloadUrlStreaming(url, libraryFileName(item));
       return;
     }
     const file = await libraryItemFile(item);
+    if (getAuthSessionEpoch() !== epoch) return;
     await downloadFile(file, file.name, file.type);
   } catch (error) {
     if (isDownloadCancelled(error)) return;
@@ -77,8 +86,9 @@ const MAX_ZIP_BYTES = 256 * 1024 * 1024;
  * a zip can hold in memory they go one by one, and the user is told what the browser may ask.
  */
 export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> {
+  const epoch = getAuthSessionEpoch();
   if (items.length <= 1 || isTauri) {
-    for (const item of items) await downloadLibraryItem(item);
+    for (const item of items) await downloadLibraryItem(item, epoch);
     return;
   }
   // A file of unknown size could be any size, so it never goes into a zip held in memory.
@@ -87,10 +97,9 @@ export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> 
     toast(translate("library.toast.downloadingMany", { count: items.length }), {
       description: translate("library.toast.downloadingManyDescription"),
     });
-    for (const item of items) await downloadLibraryItem(item);
+    for (const item of items) await downloadLibraryItem(item, epoch);
     return;
   }
-  const epoch = getAuthSessionEpoch();
   const progress = toast.loading(translate("library.toast.preparingMany", { count: items.length }));
   try {
     const files: File[] = [];

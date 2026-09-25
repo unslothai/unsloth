@@ -255,6 +255,19 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     [navigate],
   );
 
+  // A folder that is not there (a stale link, or deleted from another tab) has nothing to show and
+  // takes no uploads: back to where it was, or to Folders.
+  const [parentOfOpen, setParentOfOpen] = useState<string | null>(null);
+  if (currentFolder && currentFolder.parentId !== parentOfOpen) {
+    setParentOfOpen(currentFolder.parentId);
+  }
+  const folderGone = status === "ready" && folderId !== null && currentFolder === null;
+  useEffect(() => {
+    if (!folderGone) return;
+    const parent = parentOfOpen && folderById.has(parentOfOpen) ? parentOfOpen : undefined;
+    go({ folder: parent, show: "folders" }, true);
+  }, [folderGone, parentOfOpen, folderById, go]);
+
   // ── Derived views ──────────────────────────────────────────────
 
   const counts = useMemo(() => {
