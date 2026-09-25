@@ -168,14 +168,24 @@ from .diffusion_batched import (
 from .diffusion_cache import (
     FBCACHE_MIN_STEPS,
     TC_AUTO,
+    TC_STATIC,
     apply_step_cache,
     auto_step_cache_allowed,
+    cache_breaks_graph,
     effective_denoise_steps,
     effective_request_strength,
     maybe_toggle_step_cache,
     normalize_transformer_cache,
     resolve_auto_step_cache,
     step_cache_supported,
+)
+from .diffusion_step_skip import (
+    install_static_step_skip,
+    mark_step_end,
+    reset_static_step_skip,
+    static_skip_stats,
+    static_skip_view,
+    uninstall_static_step_skip,
 )
 from .diffusion_precision import (
     TE_QUANT_FP8,
@@ -976,6 +986,7 @@ class _LoadState:
     attention_backend: Optional[str] = None
     # Caller original attention request, so deferred engagement re-runs the same selection.
     attention_request: Optional[str] = None
+    # Step cache engaged ("fbcache" | "static") or None; only fbcache breaks the graph.
     transformer_cache: Optional[str] = None
     # Auto only: generate() toggles it across FBCACHE_MIN_STEPS; explicit never toggles
     cache_auto: bool = False
@@ -5938,17 +5949,22 @@ class DiffusionBackend:
                             gguf_filename, repo_id, base, fam.name
                         )
                         cache_request = resolve_auto_step_cache(effective_speed, default_steps)
-                    cache_engaged = apply_step_cache(
-                        pipe,
-                        mode = cache_request,
-                        threshold = transformer_cache_threshold,
-                        # GGUF transformers are quantized too, so the cache needs the higher threshold.
-                        quant_active = cache_quant_active,
-                        # Prefix-KV families (Qwen-Image-2.1) cache only when asked: at 40 steps the default
-                        # threshold skips about half the steps, too lossy for an automatic default.
-                        length_changes_ok = not cache_auto,
-                        logger = logger,
-                    )
+                    if cache_request == TC_STATIC:
+                        # Explicit only: auto never resolves to static.
+                        cache_engaged = install_static_step_skip(pipe, logger = logger)
+                    else:
+                        cache_engaged = apply_step_cache(
+                            pipe,
+                            mode = cache_request,
+                            threshold = transformer_cache_threshold,
+                            # GGUF transformers are quantized too, so the cache needs the higher threshold.
+                            quant_active = cache_quant_active,
+                            # Prefix-KV families (Qwen-Image-2.1) cache only when asked: at 40 steps the default
+                            # threshold skips about half the steps, too lossy for an automatic default.
+                            length_changes_ok = not cache_auto,
+                            logger = logger,
+                        )
+                    cache_graph_break = cache_breaks_graph(cache_engaged)
                     self._raise_if_load_cancelled(_load_token)
                     # Arm only where FBCache can engage: a live toggle drops fullgraph and retries every generation.
                     cache_may_toggle = cache_auto_live and (
@@ -6017,7 +6033,7 @@ class DiffusionBackend:
                             compile_kwargs = {
                                 # Mirrors apply_speed_optims' fullgraph decision (a step cache or planned offload
                                 # graph-breaks), so the bundle keys on the same setting.
-                                "fullgraph": cache_engaged is None
+                                "fullgraph": not cache_graph_break
                                 and not cache_may_toggle
                                 and plan.offload_policy == OFFLOAD_NONE,
                                 # max compiles DiTs with automatic dynamic (None), as does the default tier for
@@ -6041,8 +6057,8 @@ class DiffusionBackend:
                         is_gguf = gguf_transformer,
                         family = fam,
                         speed_mode = effective_speed,
-                        cache_active = cache_engaged is not None or cache_may_toggle,
-                        cache_engaged = cache_engaged is not None,
+                        cache_active = cache_graph_break or cache_may_toggle,
+                        cache_engaged = cache_graph_break,
                         offload_active = plan.offload_policy != OFFLOAD_NONE,
                         logger = logger,
                     )
@@ -6317,6 +6333,7 @@ class DiffusionBackend:
                         compile_cache.restore(compile_ctx, logger = logger)
                         gguf_compile.uninstall_all()  # idempotent
                         cuda_graph.uninstall_all(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
+                        uninstall_static_step_skip(pipe)
                         if eager_patched:
                             uninstall_patches()
                             uninstall_arch_patches()
@@ -7583,7 +7600,7 @@ class DiffusionBackend:
                 attention_backend = attention_engaged,
                 compile_kwargs = {
                     # Mirrors the load-time fullgraph decision: a step cache or an offload graph-breaks.
-                    "fullgraph": state.transformer_cache is None
+                    "fullgraph": not cache_breaks_graph(state.transformer_cache)
                     and not state.cache_auto
                     and state.offload_policy == OFFLOAD_NONE,
                     "dynamic": compile_dynamic(getattr(state.pipe, "transformer", None), True),
@@ -7598,8 +7615,8 @@ class DiffusionBackend:
             is_gguf = gguf_transformer,
             family = state.family,
             speed_mode = SPEED_DEFAULT,
-            cache_active = state.transformer_cache is not None or state.cache_auto,
-            cache_engaged = state.transformer_cache is not None,
+            cache_active = cache_breaks_graph(state.transformer_cache) or state.cache_auto,
+            cache_engaged = cache_breaks_graph(state.transformer_cache),
             offload_active = state.offload_policy != OFFLOAD_NONE,
             logger = logger,
         )
@@ -7685,6 +7702,8 @@ class DiffusionBackend:
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not
                 # read idle.
                 self._gen = _GenState(total_steps = steps)
+            # Reset in the finally, so a failed or cancelled generation frees its reused outputs.
+            static_skip_pipe = None
             restore_vae: Optional[Callable[[], None]] = None
             try:
                 self._state_device_target(state)
@@ -8069,7 +8088,12 @@ class DiffusionBackend:
                 # _on_step).
                 steps_done = [0]
 
+                static_skip = state.transformer_cache == TC_STATIC
+                static_chunks_run = 0
+
                 def _on_step(pipe, step_index, timestep, callback_kwargs):
+                    if static_skip:
+                        mark_step_end(state.pipe)
                     # Monotonic: a wall-clock adjustment (NTP) mid-denoise would skew the ETA.
                     now = time.monotonic()
                     gen.step = steps_done[0] + step_index + 1
@@ -8085,10 +8109,9 @@ class DiffusionBackend:
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
 
-                # Re-check an AUTO cache decision against the ACTUAL step count; explicit choices never toggle.
-                if state.cache_auto:
-                    # Key on the EFFECTIVE denoise steps: img2img at strength < 1 denoises a fraction of `steps`, so
-                    # fold it in to keep FBCache off short trajectories.
+                # EFFECTIVE steps (img2img at strength < 1 runs fewer): the AUTO cache and the static schedule key on it.
+                denoise_steps = steps
+                if state.cache_auto or static_skip:
                     strength_applied = effective_request_strength(
                         strength,
                         init_pil is not None,
@@ -8096,6 +8119,8 @@ class DiffusionBackend:
                         call_params["strength"].default if "strength" in call_params else None,
                     )
                     denoise_steps = effective_denoise_steps(steps, strength_applied)
+                # Re-check an AUTO cache decision against the ACTUAL step count; explicit choices never toggle.
+                if state.cache_auto:
                     toggled = maybe_toggle_step_cache(
                         state.pipe,
                         steps = denoise_steps,
@@ -8151,10 +8176,21 @@ class DiffusionBackend:
                         # A step cache keys residuals on the cond/uncond context, which a graph key
                         # cannot see. Per chunk because an AUTO decision is re-taken per generation.
                         if state.cuda_graphs:
-                            cuda_graph.set_bypass(state.cuda_graphs, bool(state.transformer_cache))
-                        # Start every forward from a clean step cache: diffusers only resets FBCache after a SUCCESSFUL
-                        # __call__, so a raised call leaves a residual the next forward trips over.
-                        if state.transformer_cache:
+                            cuda_graph.set_bypass(
+                                state.cuda_graphs, cache_breaks_graph(state.transformer_cache)
+                            )
+                        if static_skip:
+                            reset_static_step_skip(
+                                state.pipe,
+                                denoise_steps,
+                                step_signal = "callback_on_step_end" in chunk_kwargs,
+                                keep_stats = static_chunks_run > 0,
+                                owner = current_account_id(),
+                            )
+                            static_chunks_run += 1
+                            static_skip_pipe = state.pipe
+                        elif state.transformer_cache:
+                            # diffusers resets FBCache only after a SUCCESSFUL __call__; a raised call leaves a stale residual.
                             self._reset_step_cache(state.pipe)
                         try:
                             # inference_mode is faster than no_grad and numerically identical here.
@@ -8209,6 +8245,8 @@ class DiffusionBackend:
                     except Exception:  # noqa: BLE001 - bookkeeping must not mask the render's own error
                         pass
                     raise
+                if static_skip:
+                    logger.debug("diffusion.step_skip: %s", static_skip_stats(state.pipe))
                 # Keep progress ACTIVE through the post-denoise work: the route persists the image after this returns,
                 # so a mount probe reading idle would refresh the gallery too early. Persist the warm compile bundle;
                 # a STATIC compile makes new artifacts per (w,h,batch), so register this shape. The write itself is
@@ -8279,6 +8317,11 @@ class DiffusionBackend:
                     "localized_edit": localized_edit.mode if localized_edit is not None else None,
                 }
             finally:
+                if static_skip_pipe is not None:
+                    try:
+                        reset_static_step_skip(static_skip_pipe, None)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("diffusion.step_skip: reset failed: %s", exc)
                 if restore_vae is not None:
                     restore_vae()
                 with self._generation_cancel_lock:
@@ -8432,6 +8475,7 @@ class DiffusionBackend:
         compile_cache.restore(state.compile_cache_ctx, logger = logger)
         # Before clear_gpu_cache(), or the graph pool stays reserved for the life of the process.
         cuda_graph.uninstall_all(state.cuda_graphs)
+        uninstall_static_step_skip(state.pipe)
         prompt_cache.release(state.pipe)
         for aux in (*self._aux_pipes.values(), *self._cn_pipes.values()):
             prompt_cache.release(aux)
@@ -8458,6 +8502,11 @@ class DiffusionBackend:
         # Must follow clear_gpu_cache() (runs gc) so the freed staging buffers can be returned.
         reclaim_host_memory(logger = logger)
 
+    def static_skip_view(self) -> tuple:
+        """(owner, ``transformer_cache_stats``) from one read; the owner is never part of status()."""
+        state = self._state
+        return static_skip_view(state.pipe) if state is not None else (None, None)
+
     def status(self) -> dict[str, Any]:
         state = self._state
         if state is None:
@@ -8480,6 +8529,7 @@ class DiffusionBackend:
                 "transformer_quant": None,
                 "attention_backend": None,
                 "transformer_cache": None,
+                "transformer_cache_stats": None,
                 "workflows": [],
                 "conditioning": None,
                 "supports_lora": False,
@@ -8516,6 +8566,7 @@ class DiffusionBackend:
             "transformer_quant": state.transformer_quant,
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
+            "transformer_cache_stats": static_skip_stats(state.pipe),
             "resolved": resolved,
             # Workflows the loaded family supports, so the UI can gate its tabs.
             "workflows": _family_workflows(state.family),
