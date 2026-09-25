@@ -3500,11 +3500,11 @@ function Resolve-ShadowingGfxPick {
     if ($script:ShadowingIntegratedGfx -notcontains $Picked) { return $Picked }
     $distinctArches = @($AllArches | Select-Object -Unique)
     if ($distinctArches.Count -lt 2) { return $Picked }
-    # Deposing a supported APU for a discrete card with no Windows wheels (gfx1036 + an
-    # older gfx1010) resolves to no index and drops the host to CPU, worse than the
+    # Deposing a supported APU for a discrete card with no Windows wheels (gfx1036 + a
+    # gfx803) resolves to no index and drops the host to CPU, worse than the
     # shadowing itself. So prefer a wheel-backed discrete card, and fall back to an
     # unsupported one only when the pick has no wheels either: taking the first
-    # non-integrated arch instead sent gfx90c,gfx1010,gfx1200 to CPU torch despite the
+    # non-integrated arch instead sent gfx90c,gfx803,gfx1200 to CPU torch despite the
     # supported gfx1200. Mirrors _dedup_pick()'s `_withWheels or (...)`.
     $pickedHasWheels = Test-GfxHasWheels $Picked
     $others = @($AllArches | Where-Object { $script:ShadowingIntegratedGfx -notcontains $_ })
@@ -3514,8 +3514,8 @@ function Resolve-ShadowingGfxPick {
                   else { @() }
     $discreteArch = $candidates | Select-Object -First 1
     if (-not $discreteArch) { return $Picked }
-    # Not always device 1: on gfx1036,gfx1010,gfx1200 the pick is device 2, and
-    # naming 1 would expose the gfx1010 the wheels do not target.
+    # Not always device 1: on gfx1036,gfx803,gfx1200 the pick is device 2, and
+    # naming 1 would expose the gfx803 the wheels do not target.
     $discreteIdx = [array]::IndexOf(@($AllArches), $discreteArch)
     if ($discreteIdx -lt 0) { $discreteIdx = 1 }
     substep "multiple AMD GPUs detected ($($distinctArches -join ', ')); installing for the discrete $discreteArch instead of the integrated $Picked" "Cyan"
@@ -3742,14 +3742,10 @@ if (-not $HasNvidiaSmi) {
         } catch {}
     }
 
-    # GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover: RDNA 1
-    # and Polaris 10/20/30 (unslothai#8529). Kept apart from $nameArchTable on purpose: it
-    # only WORDS a message, never selects a wheel index or a prebuilt. AMD's TheRock ships
-    # RDNA 1 wheels, but not on the repo.amd.com indexes routed here, and never gfx803.
-    # The (?!0) guards stop "RX 570" swallowing an "RX 5700". Names from LLVM's AMDGPU
-    # tables plus libdrm amdgpu.ids/pci.ids for the Navi 10/14 professional parts LLVM
-    # omits; nothing is guessed, so Polaris 11/12 (RX 460/550/560, a different die) is
-    # left out.
+    # GPU name -> gfx arch for AMD generations no ROCm wheel covers: Polaris 10/20/30
+    # (unslothai#8529). Kept apart from $nameArchTable on purpose: it only WORDS a message,
+    # never selects a wheel index or a prebuilt. The (?!0) guards stop "RX 570" swallowing
+    # an "RX 5700"; Polaris 11/12 (RX 460/550/560, a different die) is left out.
     $unsupportedNameArchTable = @(
         @{ P = "RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100"; A = "gfx803"  }  # Polaris 10/20/30
     )
