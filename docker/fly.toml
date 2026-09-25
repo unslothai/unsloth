@@ -1,10 +1,11 @@
-# fly.toml app configuration file generated for unsloth on 2026-09-25T07:51:57Z
+# fly.toml app configuration file generated for unsloth on 2026-09-25T07:55:03Z
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
 app = 'unsloth'
 primary_region = 'iad'
+swap_size_mb = 8196
 
 [experimental]
   entrypoint = ['/usr/local/bin/unsloth-entrypoint']
@@ -14,7 +15,7 @@ primary_region = 'iad'
 [http_service]
   internal_port = 8888
   force_https = true
-  auto_stop_machines = 'stop'
+  auto_stop_machines = true
   auto_start_machines = true
   min_machines_running = 0
   processes = ['app']
