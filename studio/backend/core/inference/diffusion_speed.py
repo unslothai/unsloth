@@ -24,7 +24,7 @@ this). On opt-in it applies the near-lossless speedups in the diffusers-recommen
 ``default`` is the cheap always-amortising compile; ``max`` pays the larger regional tax for the
 bigger warm speedup. The compiled dequant is skipped under ``max`` (the regional compile subsumes
 it; a separate compiled dequant would break that graph). ``supports_torch_compile`` + bf16/CUDA
-checks gate regional compile.
+(or fp16 on Turing+ NVIDIA) checks gate regional compile.
 
 The flags this flips (TF32, cudnn.benchmark) are PROCESS-WIDE, so ``snapshot_backend_flags`` /
 ``restore_backend_flags`` let the caller restore prior values at unload, keeping a later ``off``
@@ -35,8 +35,10 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
+from contextlib import contextmanager
 from functools import lru_cache
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from . import diffusion_gguf_compile as gguf_compile
 
@@ -58,6 +60,52 @@ _INDUCTOR_FLAGS = (
 _INDUCTOR_TRITON_FLAGS = (("unique_kernel_names", "inductor_triton_unique_kernel_names"),)
 
 
+# allow_fp16_accumulation has one owner: writes during an open scope go to the recorded process value, so closing
+# the scope restores the latest value, not a stale copy.
+_FP16_ACCUM_LOCK = threading.RLock()
+_fp16_accum_scopes: list = []
+_fp16_accum_base: Optional[bool] = None
+
+
+def _read_fp16_accum(matmul: Any) -> bool:
+    with _FP16_ACCUM_LOCK:
+        if _fp16_accum_scopes:
+            return bool(_fp16_accum_base)
+        return bool(matmul.allow_fp16_accumulation)
+
+
+def _write_fp16_accum(matmul: Any, value: Any) -> None:
+    global _fp16_accum_base
+    with _FP16_ACCUM_LOCK:
+        if _fp16_accum_scopes:
+            _fp16_accum_base = bool(value)
+        else:
+            matmul.allow_fp16_accumulation = bool(value)
+
+
+@contextmanager
+def fp16_accumulation_scope(value: bool) -> Iterator[None]:
+    """Hold ``allow_fp16_accumulation`` at ``value`` for the body, then restore the latest process value."""
+    global _fp16_accum_base
+    import torch
+
+    matmul = torch.backends.cuda.matmul
+    token = object()
+    with _FP16_ACCUM_LOCK:
+        if not _fp16_accum_scopes:
+            _fp16_accum_base = bool(matmul.allow_fp16_accumulation)
+        _fp16_accum_scopes.append((token, bool(value)))
+        matmul.allow_fp16_accumulation = bool(value)
+    try:
+        yield
+    finally:
+        with _FP16_ACCUM_LOCK:
+            _fp16_accum_scopes[:] = [e for e in _fp16_accum_scopes if e[0] is not token]
+            matmul.allow_fp16_accumulation = (
+                _fp16_accum_scopes[-1][1] if _fp16_accum_scopes else bool(_fp16_accum_base)
+            )
+
+
 def snapshot_backend_flags() -> Optional[dict]:
     """Capture the process-wide torch backend flags this layer may mutate, for restore on unload. None
     without torch. Each flag is read defensively: a build missing one still captures the rest."""
@@ -70,7 +118,7 @@ def snapshot_backend_flags() -> Optional[dict]:
     if matmul is not None and hasattr(matmul, "allow_tf32"):
         state["matmul_tf32"] = bool(matmul.allow_tf32)
     if matmul is not None and hasattr(matmul, "allow_fp16_accumulation"):
-        state["matmul_fp16_accum"] = bool(matmul.allow_fp16_accumulation)
+        state["matmul_fp16_accum"] = _read_fp16_accum(matmul)
     cudnn = getattr(torch.backends, "cudnn", None)
     if cudnn is not None:
         if hasattr(cudnn, "allow_tf32"):
@@ -122,7 +170,15 @@ def restore_backend_flags(state: Optional[dict]) -> None:
             pass
     matmul = getattr(getattr(torch.backends, "cuda", None), "matmul", None)
     _set(matmul, "allow_tf32", "matmul_tf32")
-    _set(matmul, "allow_fp16_accumulation", "matmul_fp16_accum")
+    if (
+        matmul is not None
+        and "matmul_fp16_accum" in state
+        and hasattr(matmul, "allow_fp16_accumulation")
+    ):
+        try:
+            _write_fp16_accum(matmul, state["matmul_fp16_accum"])
+        except Exception:  # noqa: BLE001 - best-effort per-flag restore
+            pass
     cudnn = getattr(torch.backends, "cudnn", None)
     _set(cudnn, "allow_tf32", "cudnn_tf32")
     _set(cudnn, "benchmark", "cudnn_benchmark")
@@ -204,11 +260,8 @@ def torch_compile_runtime_available() -> bool:
 
 
 def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
-    """Whether the denoiser's repeated block should be regionally compiled.
-
-    Only on CUDA (incl. ROCm), for a bf16 transformer, on a compile-friendly family, in a process
-    that can run inductor. ``is_gguf`` no longer disqualifies (GGUF compiles fine and ~2.3x
-    faster); the param is kept for compat."""
+    """Whether the denoiser's repeated block should be regionally compiled: CUDA (incl. ROCm) bf16, or fp16 on NVIDIA
+    sm_75+, on a compile-friendly family with inductor available. ``is_gguf`` is kept for compat only."""
     del is_gguf
     if not torch_compile_runtime_available():
         return False
@@ -216,7 +269,18 @@ def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
         return False
     if not bool(getattr(family, "supports_torch_compile", True)):
         return False
-    return _is_bfloat16(getattr(target, "dtype", None))
+    dtype = getattr(target, "dtype", None)
+    if _is_bfloat16(dtype):
+        return True
+    # fp16-incompatible families run in fp32 though video passes the fp16 target; fp32 compile is unmeasured.
+    if bool(getattr(family, "fp16_incompatible", False)):
+        return False
+    return _is_float16(dtype) and _fp16_compile_capable(target)
+
+
+def fp16_compile_explicit_only(target: Any) -> bool:
+    """fp16 compiles only on an explicit tier, never the deferred profile (T4 SDXL-Turbo: ~245 s for ~0.1 s/image)."""
+    return _is_float16(getattr(target, "dtype", None))
 
 
 def _is_bfloat16(dtype: Any) -> bool:
@@ -225,6 +289,35 @@ def _is_bfloat16(dtype: Any) -> bool:
         return dtype is torch.bfloat16
     except Exception:
         return str(dtype).endswith("bfloat16")
+
+
+def _is_float16(dtype: Any) -> bool:
+    try:
+        import torch
+        return dtype is torch.float16
+    except Exception:
+        return str(dtype).endswith("float16") and not str(dtype).endswith("bfloat16")
+
+
+# Only sm_75 (T4) was measured; Volta and older stay eager.
+_FP16_COMPILE_MIN_CAPABILITY = (7, 5)
+
+
+def _fp16_compile_capable(target: Any) -> bool:
+    if getattr(target, "backend", "cuda") != "cuda":
+        return False
+    try:
+        import torch
+
+        ordinal = getattr(target, "ordinal", None)
+        cap = (
+            torch.cuda.get_device_capability()
+            if ordinal is None
+            else torch.cuda.get_device_capability(ordinal)
+        )
+        return tuple(cap)[:2] >= _FP16_COMPILE_MIN_CAPABILITY
+    except Exception:  # noqa: BLE001 - an unanswerable probe keeps today's eager path
+        return False
 
 
 def apply_speed_optims(
@@ -289,7 +382,9 @@ def apply_speed_optims(
         # Asked directly: this arm never reaches compile_eligible(), unlike the dense arm below.
         if is_gguf and on_cuda and family_allows_compile and torch_compile_runtime_available():
             applied["compiled_dequant"] = gguf_compile.install_compiled_dequant(logger)
-        elif compile_eligible(target, is_gguf = is_gguf, family = family):
+        elif compile_eligible(target, is_gguf = is_gguf, family = family) and not fp16_unet_offloaded(
+            target, pipe, offload_active = offload_active
+        ):
             # A U-Net (SDXL) fuses QKV BEFORE its whole-module compile: 36.3 vs 39.3 ms/step (LPIPS 0.033). DiTs were
             # neutral, so they keep the fuse on max only.
             if _denoiser_unet(pipe) is not None:
@@ -301,7 +396,11 @@ def apply_speed_optims(
                 cache_active = cache_active,
                 offload_active = offload_active,
             )
-    elif mode == SPEED_MAX and compile_eligible(target, is_gguf = is_gguf, family = family):
+    elif (
+        mode == SPEED_MAX
+        and compile_eligible(target, is_gguf = is_gguf, family = family)
+        and not fp16_unet_offloaded(target, pipe, offload_active = offload_active)
+    ):
         applied["compiled"] = _compile_repeated_blocks(
             pipe,
             logger,
@@ -350,6 +449,15 @@ def apply_speed_optims(
                 _warn(logger, "cuda graph capture", exc)
 
     return applied
+
+
+def fp16_unet_offloaded(target: Any, pipe: Any, *, offload_active: bool) -> bool:
+    """An offloaded fp16 U-Net stays eager: fused QKV costs more transfer than compile saves (L4: 5.43 vs 4.86 s)."""
+    return (
+        bool(offload_active)
+        and _is_float16(getattr(target, "dtype", None))
+        and _denoiser_unet(pipe) is not None
+    )
 
 
 def _vae_channels_last(pipe: Any, logger: Any) -> bool:
@@ -488,6 +596,12 @@ def _compile_repeated_blocks(
         # compile_repeated_blocks is lazy: inductor only runs on the first forward, inside generate(), where a lowering
         # bug would fail the render. Guard every compiled block so such a failure drops this DiT to eager instead.
         guard_compiled_blocks(transformer, logger)
+        # Inductor turns the prefix KV cache's clone into a view of the full K/V buffer, which pins it for the render.
+        try:
+            from .diffusion_prefix_kv import install_prefix_kv_compaction
+            install_prefix_kv_compaction(transformer, logger)
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            _warn(logger, "prefix kv compaction", exc)
         # A step cache engaged BEFORE this compile already wrapped each block forward in a disabled hook, so the compute
         # branch would run eager and forfeit the regional compile. Re-point the hooks' inner forward at compiled
         # wrappers (no-op without them).
@@ -803,7 +917,7 @@ def _enable_fp16_accumulation(
 
         if not _is_consumer_gpu():
             return False
-        matmul.allow_fp16_accumulation = True
+        _write_fp16_accum(matmul, True)
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "fp16_accum", exc)

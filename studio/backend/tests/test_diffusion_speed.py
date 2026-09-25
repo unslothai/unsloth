@@ -126,12 +126,174 @@ def test_compile_eligible_requires_bf16_cuda_friendly(monkeypatch):
     assert compile_eligible(_target(), is_gguf = False, family = _family()) is True
     # GGUF is compile-eligible too (measured ~2.3x, PSNR ~37 dB vs eager).
     assert compile_eligible(_target(), is_gguf = True, family = _family()) is True
-    # fp16 (non-bf16) is excluded.
+    # fp16 is excluded when the card's capability cannot be read (this stub has no probe).
     assert compile_eligible(_target(dtype = "float16"), is_gguf = False, family = _family()) is False
     # A family flagged not compile-friendly is excluded.
     assert compile_eligible(_target(), is_gguf = False, family = _family(compile_ok = False)) is False
     # No compile support (e.g. XPU/MPS) is excluded.
     assert compile_eligible(_target(compile_ok = False), is_gguf = False, family = _family()) is False
+
+
+def _stub_torch_capability(
+    monkeypatch,
+    cap,
+    seen = None,
+):
+    torch = _stub_torch(monkeypatch)
+    torch.float16 = "float16"
+
+    def get_device_capability(*args):
+        if seen is not None:
+            seen.append(args)
+        return cap
+
+    torch.cuda = types.SimpleNamespace(
+        is_available = lambda: True, get_device_capability = get_device_capability
+    )
+    return torch
+
+
+def _fp16_target(**kw):
+    t = _target(dtype = "float16")
+    for k, v in kw.items():
+        setattr(t, k, v)
+    return t
+
+
+@pytest.mark.parametrize("cap", [(7, 5), (8, 6), (8, 9), (12, 0)])
+def test_compile_eligible_fp16_on_turing_or_newer(monkeypatch, cap):
+    _stub_torch_capability(monkeypatch, cap)
+    assert compile_eligible(_fp16_target(), is_gguf = False, family = _family()) is True
+    assert compile_eligible(_fp16_target(backend = "cuda"), is_gguf = True, family = _family()) is True
+
+
+@pytest.mark.parametrize("cap", [(7, 0), (6, 1), (6, 0), (5, 2)])
+def test_compile_eligible_fp16_stays_eager_below_turing(monkeypatch, cap):
+    _stub_torch_capability(monkeypatch, cap)
+    assert compile_eligible(_fp16_target(), is_gguf = False, family = _family()) is False
+
+
+def test_compile_eligible_fp16_asks_the_selected_card(monkeypatch):
+    seen = []
+    _stub_torch_capability(monkeypatch, (7, 5), seen)
+    assert compile_eligible(_fp16_target(ordinal = 3), is_gguf = False, family = _family()) is True
+    assert seen == [(3,)]
+
+
+def test_compile_eligible_fp16_refusals(monkeypatch):
+    _stub_torch_capability(monkeypatch, (7, 5))
+    fam = types.SimpleNamespace(supports_torch_compile = True, fp16_incompatible = True)
+    assert compile_eligible(_fp16_target(), is_gguf = False, family = fam) is False
+    assert compile_eligible(_fp16_target(backend = "rocm"), is_gguf = False, family = _family()) is False
+    assert (
+        compile_eligible(_fp16_target(), is_gguf = False, family = _family(compile_ok = False)) is False
+    )
+    assert (
+        compile_eligible(
+            _fp16_target(supports_default_torch_compile = False), is_gguf = False, family = _family()
+        )
+        is False
+    )
+    assert compile_eligible(_target(dtype = "float32"), is_gguf = False, family = _family()) is False
+
+
+def test_compile_eligible_fp16_probe_failure_stays_eager(monkeypatch):
+    torch = _stub_torch_capability(monkeypatch, (7, 5))
+
+    def boom(*args):
+        raise RuntimeError("no device")
+
+    torch.cuda.get_device_capability = boom
+    assert compile_eligible(_fp16_target(), is_gguf = False, family = _family()) is False
+
+
+def test_fp16_compile_is_explicit_tier_only(monkeypatch):
+    _stub_torch_capability(monkeypatch, (7, 5))
+    assert ds_mod.fp16_compile_explicit_only(_fp16_target()) is True
+    assert compile_eligible(_fp16_target(), is_gguf = False, family = _family()) is True
+    assert ds_mod.fp16_compile_explicit_only(_target()) is False
+    assert ds_mod.fp16_compile_explicit_only(_target(dtype = "float32")) is False
+
+
+def test_compile_eligible_bf16_never_probes_capability(monkeypatch):
+    seen = []
+    _stub_torch_capability(monkeypatch, (7, 0), seen)
+    fam = types.SimpleNamespace(supports_torch_compile = True, fp16_incompatible = True)
+    assert compile_eligible(_target(), is_gguf = False, family = fam) is True
+    assert seen == []
+
+
+def test_apply_speed_optims_compiles_fp16_dit(monkeypatch):
+    _stub_torch_capability(monkeypatch, (7, 5))
+    monkeypatch.setattr(ds_mod, "_compile_repeated_blocks", lambda *a, **k: True)
+    applied = apply_speed_optims(
+        types.SimpleNamespace(),
+        _fp16_target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+    )
+    assert applied["compiled"] is True
+
+
+def _unet_pipe():
+    UNet2DConditionModel = type("UNet2DConditionModel", (), {})
+    return types.SimpleNamespace(unet = UNet2DConditionModel())
+
+
+@pytest.mark.parametrize("mode", [SPEED_DEFAULT, SPEED_MAX])
+def test_fp16_unet_stays_eager_under_offload(monkeypatch, mode):
+    _stub_torch_capability(monkeypatch, (7, 5))
+    calls = []
+    monkeypatch.setattr(ds_mod, "_compile_repeated_blocks", lambda *a, **k: calls.append(1) or True)
+    monkeypatch.setattr(ds_mod, "_fuse_qkv", lambda *a, **k: True)
+    off = apply_speed_optims(
+        _unet_pipe(),
+        _fp16_target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = mode,
+        offload_active = True,
+    )
+    assert off["compiled"] is False and calls == []
+    if mode == SPEED_DEFAULT:
+        assert off["fused_qkv"] is False
+    resident = apply_speed_optims(
+        _unet_pipe(),
+        _fp16_target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = mode,
+        offload_active = False,
+    )
+    assert resident["compiled"] is True
+
+
+def test_fp16_offloaded_dit_and_bf16_unet_still_compile(monkeypatch):
+    _stub_torch_capability(monkeypatch, (7, 5))
+    monkeypatch.setattr(ds_mod, "_compile_repeated_blocks", lambda *a, **k: True)
+    monkeypatch.setattr(ds_mod, "_fuse_qkv", lambda *a, **k: True)
+    dit = apply_speed_optims(
+        types.SimpleNamespace(),
+        _fp16_target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+        offload_active = True,
+    )
+    assert dit["compiled"] is True
+    bf16 = apply_speed_optims(
+        _unet_pipe(),
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+        offload_active = True,
+    )
+    assert bf16["compiled"] is True
+    assert ds_mod.fp16_unet_offloaded(_target(), _unet_pipe(), offload_active = True) is False
+    assert ds_mod.fp16_unet_offloaded(_fp16_target(), _unet_pipe(), offload_active = True) is True
+    assert ds_mod.fp16_unet_offloaded(_fp16_target(), _unet_pipe(), offload_active = False) is False
 
 
 # ── backend-flag snapshot / restore (TF32 / cudnn.benchmark leak guard) ────────

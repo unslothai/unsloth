@@ -114,13 +114,293 @@ def _resolve_host_memory_reclaimer() -> Optional[Callable[[], None]]:
     return reclaim
 
 
+OFFLOAD_KEEP_CPU_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_KEEP_CPU"
+_KEEP_ATTR = "_unsloth_offload_keep_cpu"
+
+
+def keep_cpu_weights_on_offload(pipe: Any, logger: Any = None) -> int:
+    """Offload by re-pointing unmodified weights at their host tensors; enable_model_cpu_offload is wrapped since diffusers rebuilds hooks."""
+    if (os.environ.get(OFFLOAD_KEEP_CPU_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return 0
+    try:
+        from accelerate.hooks import CpuOffload
+    except Exception:  # noqa: BLE001 - no accelerate, no offload hooks to wrap
+        return 0
+    enable = getattr(pipe, "enable_model_cpu_offload", None)
+    if callable(enable) and not getattr(enable, _KEEP_ATTR, False):
+
+        def _enable(*args: Any, **kwargs: Any) -> Any:
+            out = enable(*args, **kwargs)
+            _wrap_cpu_offload_hooks(pipe, CpuOffload, logger)
+            return out
+
+        setattr(_enable, _KEEP_ATTR, True)
+        try:
+            pipe.enable_model_cpu_offload = _enable
+        except Exception:  # noqa: BLE001 - a pipeline refusing the attribute keeps the stock hooks
+            return 0
+    return _wrap_cpu_offload_hooks(pipe, CpuOffload, logger)
+
+
+def _keepable(param: Any) -> bool:
+    import torch
+    return type(param.data) is torch.Tensor
+
+
+def _wrap_cpu_offload_hooks(
+    pipe: Any,
+    hook_cls: type,
+    logger: Any = None,
+) -> int:
+    wrapped = 0
+    components = getattr(pipe, "components", None) or {}
+    for module in components.values():
+        hook = getattr(module, "_hf_hook", None)
+        if not isinstance(hook, hook_cls) or getattr(hook, _KEEP_ATTR, False):
+            continue
+        try:
+            _wrap_cpu_offload_hook(hook, module, logger)
+            wrapped += 1
+        except Exception as exc:  # noqa: BLE001 - that module keeps the stock copy
+            if logger is not None:
+                logger.debug(
+                    "diffusion.memory: keep-cpu offload not applied to %s: %s",
+                    type(module).__name__,
+                    exc,
+                )
+    return wrapped
+
+
+OFFLOAD_PIN_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_PIN"
+# The host allocator rounds every block up to a power of two, so weights share chunks instead of one pin each.
+_PIN_CHUNK_BYTES = 1 << 30
+_PIN_ALIGN = 256
+_PIN_RESERVE_MIN_BYTES = 4 << 30
+_PIN_RESERVE_FRACTION = 0.15
+
+
+def _pin_mode() -> str:
+    raw = (os.environ.get(OFFLOAD_PIN_ENV) or "").strip().lower()
+    if raw in ("0", "off", "false", "no"):
+        return "off"
+    if raw in ("1", "on", "true", "yes", "force"):
+        return "on"
+    return "auto"
+
+
+def _pow2_ceil(n: int) -> int:
+    return 1 << max(0, int(n) - 1).bit_length()
+
+
+def release_pinned_host_memory() -> None:
+    _host_empty_cache()
+
+
+def _host_empty_cache() -> None:
+    try:
+        import torch
+        empty = getattr(torch._C, "_host_emptyCache", None)
+        if callable(empty) and torch.cuda.is_available():
+            empty()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _pin_host_weights(
+    module: Any,
+    host: dict,
+    logger: Any = None,
+) -> int:
+    """Pack kept host weights into page-locked chunks; returns bytes pinned. Contiguous only, so channels_last survives."""
+    import torch
+
+    mode = _pin_mode()
+    if mode == "off" or not torch.cuda.is_available():
+        return 0
+    params = [
+        (name, p)
+        for name, p in module.named_parameters()
+        if host.get(name) is not None
+        and p.device.type == "cpu"
+        and _keepable(p)
+        and p.data.is_contiguous()
+        and not p.data.is_pinned()
+    ]
+    sizes = [-(-p.data.nbytes // _PIN_ALIGN) * _PIN_ALIGN for _, p in params]
+    if not sizes or sum(sizes) == 0:
+        return 0
+    # Lay out chunks first so the RAM gate counts chunk tails and last-chunk rounding, not just weight bytes.
+    chunk = max(_PIN_CHUNK_BYTES, _pow2_ceil(max(sizes)))
+    chunks: list = []
+    slots: list = []
+    off, left = 0, sum(sizes)
+    for size in sizes:
+        if not chunks or off + size > chunks[-1]:
+            chunks.append(chunk if left >= chunk else _pow2_ceil(left))
+            off = 0
+        slots.append((len(chunks) - 1, off))
+        off += size
+        left -= size
+    need = sum(chunks)
+    if mode == "auto":
+        try:
+            import psutil
+            vm = psutil.virtual_memory()
+        except Exception:  # noqa: BLE001 - no way to size it, so do not lock memory
+            return 0
+        # psutil reads the host; pinned pages are charged to an enforcing cgroup, so size from the container.
+        available, total = vm.available, vm.total
+        remainder = _cgroup_available_memory_mib()
+        if remainder is not None:
+            available = min(available, int(remainder) << 20)
+        limit = _cgroup_memory_limit_mib()
+        if limit is not None:
+            total = min(total, int(limit) << 20)
+        reserve = max(_PIN_RESERVE_MIN_BYTES, int(total * _PIN_RESERVE_FRACTION))
+        if available - need < reserve:
+            if logger is not None:
+                logger.info(
+                    "diffusion.memory: not pinning %s (%.1f GiB): %.1f GiB of host RAM available",
+                    type(module).__name__,
+                    need / 2**30,
+                    available / 2**30,
+                )
+            return 0
+    bufs: list = []
+    placed: list = []
+    try:
+        for (name, p), (index, start) in zip(params, slots):
+            if index == len(bufs):
+                bufs.append(torch.empty(chunks[index], dtype = torch.uint8, pin_memory = True))
+            view = bufs[index][start : start + p.data.nbytes].view(p.dtype).view(p.shape)
+            view.copy_(p.data)
+            placed.append((name, p, view))
+    except Exception as exc:  # noqa: BLE001 - e.g. a WSL pinned-memory cap: keep the pageable weights
+        bufs.clear()
+        placed.clear()
+        view = None
+        _host_empty_cache()
+        if logger is not None:
+            logger.info(
+                "diffusion.memory: pinning %s failed (%s); weights stay pageable",
+                type(module).__name__,
+                exc,
+            )
+        return 0
+    for name, p, view in placed:
+        p.data = view
+        host[name] = view
+    return need
+
+
+def _wrap_cpu_offload_hook(
+    hook: Any,
+    module: Any,
+    logger: Any = None,
+) -> None:
+    # Keyed by name: a move can hand the module new Parameter objects, and a stale key must miss, not alias.
+    state = module.__dict__.get(_KEEP_ATTR)
+    if state is None:
+        state = {"host": {}, "owner": {}, "version": {}}
+        module.__dict__[_KEEP_ATTR] = state
+    state.setdefault("owner", {})
+    host, owner, version = state["host"], state["owner"], state["version"]
+
+    def _capture(mod: Any) -> None:
+        host.clear()
+        owner.clear()
+        for name, p in mod.named_parameters():
+            if p.device.type == "cpu" and _keepable(p):
+                host[name] = p.data
+                owner[name] = p
+
+    _capture(module)
+    version.clear()
+    init_hook, pre_forward = hook.init_hook, hook.pre_forward
+
+    def _init_hook(mod: Any) -> Any:
+        for name, p in mod.named_parameters():
+            kept = host.get(name)
+            seen = version.get(name)
+            # Identity and data_ptr too: a replacement can match the version, and `p.data = ...` does not bump it.
+            if (
+                kept is None
+                or p.device.type == "cpu"
+                or seen is None
+                or seen[0] is not p
+                or seen[1] != p._version
+                or seen[2] != p.data_ptr()
+            ):
+                continue
+            try:
+                p.data = kept
+            except Exception:  # noqa: BLE001 - incompatible tensor types: the stock copy below handles it
+                pass
+        out = init_hook(mod)
+        _capture(mod)
+        version.clear()
+        return out
+
+    def _pre_forward(mod: Any, *args: Any, **kwargs: Any) -> Any:
+        # `host` gate: an all-subclass module (GGUF, torchao) never fills `version`, so would rescan every forward.
+        onload = not version and bool(host)
+        if onload:
+            for name, p in mod.named_parameters():
+                kept = host.get(name)
+                if kept is not None and (
+                    owner.get(name) is not p
+                    or p.device.type != "cpu"
+                    or p.data.data_ptr() != kept.data_ptr()
+                ):
+                    host.pop(name, None)
+                    owner.pop(name, None)
+        if onload and not state.get("pin_tried"):
+            # Once per module, on its first onload, so loading pays nothing.
+            state["pin_tried"] = True
+            try:
+                pinned = _pin_host_weights(mod, host, logger)
+            except Exception:  # noqa: BLE001 - pinning is an optimisation, never a failure
+                pinned = 0
+            if pinned and logger is not None:
+                logger.info(
+                    "diffusion.memory: pinned %.1f GiB of %s host weights",
+                    pinned / 2**30,
+                    type(mod).__name__,
+                )
+        out = pre_forward(mod, *args, **kwargs)
+        if onload:
+            for name, p in mod.named_parameters():
+                if name in host and owner.get(name) is p and p.device.type != "cpu":
+                    version[name] = (p, p._version, p.data_ptr())
+        return out
+
+    try:
+        import torch
+
+        # Same as accelerate's own pre_forward: a compiled forward must not trace the hook.
+        _init_hook, _pre_forward = (
+            torch.compiler.disable(_init_hook),
+            torch.compiler.disable(_pre_forward),
+        )
+    except Exception:  # noqa: BLE001 - older torch: the hook runs outside any compiled region anyway
+        pass
+    hook.init_hook, hook.pre_forward = _init_hook, _pre_forward
+    setattr(hook, _KEEP_ATTR, True)
+
+
 def reclaim_offload_host_memory(offload_policy: str, logger: Any = None) -> bool:
     """Return unused allocator pages after whole-model CPU offload, without touching live
     tensors, Python GC, or device caches. Unsupported allocators and failures are non-fatal."""
-    global _host_memory_reclaim_warning_logged
-    global _host_memory_reclaim_unsupported_logged
     if offload_policy != OFFLOAD_MODEL:
         return False
+    return reclaim_host_memory(logger = logger)
+
+
+def reclaim_host_memory(logger: Any = None) -> bool:
+    """Return freed allocator pages to the OS regardless of offload policy (unload / teardown).
+    Best effort: unsupported allocators and failures return False."""
+    global _host_memory_reclaim_warning_logged
+    global _host_memory_reclaim_unsupported_logged
     try:
         reclaim = _resolve_host_memory_reclaimer()
         if reclaim is None:
@@ -130,13 +410,14 @@ def reclaim_offload_host_memory(offload_policy: str, logger: Any = None) -> bool
                 try:
                     logger.info(
                         "diffusion.memory: no host allocator pressure API on this platform "
-                        "(%s); offloaded host pages will not be returned early",
+                        "(%s); freed host pages will not be returned early",
                         sys.platform,
                     )
                 except Exception:  # noqa: BLE001
                     pass
             return False
         reclaim()
+        _host_empty_cache()
         return True
     except Exception as exc:  # noqa: BLE001
         if logger is not None and not _host_memory_reclaim_warning_logged:
@@ -1059,12 +1340,14 @@ def apply_memory_plan(
         # case where the decode spike can OOM, so turn tiling on now.
         nonlocal tiling_engaged
         pipe.enable_model_cpu_offload(device = placement)
+        keep_cpu_weights_on_offload(pipe, logger)
         if not tiling_engaged:
             tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
 
     policy = plan.offload_policy
     if policy == OFFLOAD_MODEL:
         pipe.enable_model_cpu_offload(device = placement)
+        keep_cpu_weights_on_offload(pipe, logger)
     elif policy == OFFLOAD_GROUP:
         # getattr, not attribute access: manually built / duck-typed plans predate this field.
         group_kwargs: dict[str, Any] = {
@@ -1145,8 +1428,7 @@ def _pin_vision_embedding_device(module: Any) -> int:
 
 # ``0`` never pins the streamed-encoder tiers, ``1`` always does.
 GROUP_OFFLOAD_PIN_ENV = "UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN"
-_PIN_RESERVE_MIN_MIB = 4096
-_PIN_RESERVE_FRACTION = 0.15
+_PIN_RESERVE_MIN_MIB = _PIN_RESERVE_MIN_BYTES >> 20
 
 
 def _module_host_mib(module: Any) -> int:
@@ -1173,6 +1455,10 @@ def _pin_budget_mib() -> Optional[int]:
     available = _available_system_memory_mib()
     if total is None or available is None:
         return None
+    # Same container sizing as _pin_host_weights: pinned pages are charged to an enforcing cgroup.
+    limit = _cgroup_memory_limit_mib()
+    if limit is not None:
+        total = min(int(total), int(limit))
     reserve = max(_PIN_RESERVE_MIN_MIB, int(int(total) * _PIN_RESERVE_FRACTION))
     return max(0, int(available) - reserve)
 
