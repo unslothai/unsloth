@@ -4,6 +4,7 @@
 import os
 import sys
 import threading
+import weakref
 from types import SimpleNamespace
 
 import pytest
@@ -961,6 +962,75 @@ def test_unrelated_gpu_errors_are_not_retried_on_cpu(monkeypatch, gpu_agent):
     with pytest.raises(RuntimeError, match = "shape mismatch"):
         laya_runtime._forward(agent, _items())
     assert agent.device.type == "cuda" and agent.model.moved_to == []
+
+
+def test_mlx_out_of_memory_falls_back_to_cpu(monkeypatch, gpu_agent):
+    import torch
+
+    class Model:
+        def __init__(self, message):
+            self.message = message
+
+        def logits(self, batch):
+            raise RuntimeError(self.message)
+
+    cpu = SimpleNamespace(model = MovableModel(), device = torch.device("cpu"), dtype = torch.float32)
+    loads, mlx_models, cleared = [], [], []
+
+    def load(path, device):
+        # The MLX model and MLX's buffer cache are both released before the CPU copy loads.
+        assert mlx_models[-1]() is None and cleared
+        loads.append((path, device))
+        if len(loads) == 1:
+            raise MemoryError
+        return cpu
+
+    def run_out_of_memory(message):
+        agent.model = Model(message)
+        mlx_models.append(weakref.ref(agent.model))
+        cleared.clear()
+        monkeypatch.setattr(laya_runtime, "_agent", agent)
+        monkeypatch.setattr(laya_runtime, "_loaded", "checkpoint")
+        return laya_runtime._forward(agent, _items())
+
+    monkeypatch.setitem(sys.modules, "laya", SimpleNamespace(load = load))
+    monkeypatch.setitem(
+        sys.modules, "mlx.core", SimpleNamespace(clear_cache = lambda: cleared.append(True))
+    )
+    ran_on = []
+    monkeypatch.setattr(
+        laya_runtime,
+        "_run_model",
+        lambda agent, batch: ran_on.append(agent.device.type) or torch.tensor([[0.5, 1.5]]),
+    )
+    monkeypatch.setattr(laya_runtime, "_device_name", "mlx")
+    agent = laya_runtime._MLXAgent.__new__(laya_runtime._MLXAgent)
+    agent.folder, agent.tok, agent.model = "ckpt", gpu_agent.tok, Model("shape mismatch")
+    with pytest.raises(RuntimeError, match = "shape mismatch"):
+        laya_runtime._forward(agent, _items())
+    assert loads == [] and agent.device == "mlx"
+
+    with pytest.raises(MemoryError):
+        run_out_of_memory("[malloc] Unable to allocate 2147483648 bytes.")
+    assert (laya_runtime._agent, laya_runtime._loaded, laya_runtime._device_name) == (
+        None,
+        None,
+        None,
+    )
+
+    logits, tokens = run_out_of_memory(
+        "[METAL] Command buffer execution failed: Insufficient Memory."
+    )
+    assert logits.tolist() == [[0.5, 1.5]] and tokens == 3
+    assert loads == [("ckpt", "cpu")] * 2
+    assert (agent.model, agent.device.type, agent.dtype, laya_runtime._device_name) == (
+        cpu.model,
+        "cpu",
+        torch.float32,
+        "cpu",
+    )
+    laya_runtime._forward(agent, _items())
+    assert ran_on == ["cpu", "cpu"] and len(loads) == 2
 
 
 def test_fast_path_matches_laya_predict():

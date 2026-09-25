@@ -289,7 +289,8 @@ class _MLXAgent:
         from transformers import AutoTokenizer
         from unsloth_zoo.mlx.decision import load_decision_model
 
-        self.cfg = json.loads((folder / "rl_agent_config.json").read_text())
+        self.folder = folder
+        self.cfg = json.loads((folder / "rl_agent_config.json").read_text(encoding = "utf-8"))
         self.tok = AutoTokenizer.from_pretrained(str(folder / "tokenizer"))
         self.temperature = [
             clamp_temperature(t) for t in self.cfg.get("temperature", [1.0, 1.0, 1.0])
@@ -515,13 +516,33 @@ def _predict(agent, state, questions: dict[str, dict[str, Any]]) -> tuple[dict[s
 
 
 def _forward(agent, items: list[dict[str, Any]]):
-    global _device_name
+    global _agent, _loaded, _device_name
     import torch
     from laya.common import collate_items
 
     batch = collate_items([items], agent.tok.pad_token_id)
-    if isinstance(agent, _MLXAgent):
-        return agent.model.logits(batch), int(batch["attention_mask"].sum())
+    if agent.device == "mlx":
+        try:
+            return agent.model.logits(batch), int(batch["attention_mask"].sum())
+        except RuntimeError as exc:
+            # MLX reports exhausted memory as "[malloc] Unable to allocate ..." or "Insufficient Memory".
+            reason = str(exc).lower()
+            if "memory" not in reason and "allocate" not in reason:
+                raise
+        # Past the handler, so the traceback no longer keeps the MLX arrays alive while the CPU copy loads.
+        import laya
+
+        logger.warning("Laya ran out of GPU memory; moving it to CPU")
+        agent.model = None
+        _release_memory()
+        try:
+            cpu = laya.load(str(agent.folder), device = "cpu")
+        except Exception:
+            # Callers hold _run_lock, so drop the half-moved agent here; the next request loads it again.
+            _agent = _loaded = _device_name = None
+            raise
+        agent.model, agent.device, agent.dtype = cpu.model, cpu.device, cpu.dtype
+        _device_name = "cpu"
     try:
         logits = _run_model(agent, batch)
     except (RuntimeError, torch.cuda.OutOfMemoryError) as exc:
