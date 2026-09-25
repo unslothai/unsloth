@@ -7523,9 +7523,12 @@ cuda = load("libcuda.so.1", "libcuda.so")  # cuDriverGetVersion needs no cuInit
 if cuda is None or cuda.cuDriverGetVersion(ctypes.byref(driver)) != 0:
     driver.value = 0
 family = "cu126" if min(missing) < (7, 5) else ("cu130" if driver.value >= 13000 else "cu128")
+status = "none" if len(missing) == len(caps) else "some"
+# No wheel to point at (pre-Maxwell, or the family already installed): warn, never fail the install.
+if min(missing) < (5, 0) or family == "cu" + torch.version.cuda.replace(".", ""):
+    status = "nofix"
 fmt = lambda cs: ",".join(f"{a}.{b}" for a, b in cs)
-print("UNSLOTH_ARCH_CHECK=%s|%s|%s|%s|%s" % (
-    "none" if len(missing) == len(caps) else "some", fmt(missing), torch.__version__, " ".join(archs), family))
+print("UNSLOTH_ARCH_CHECK=%s|%s|%s|%s|%s" % (status, fmt(missing), torch.__version__, " ".join(archs), family))
 ' 2>/dev/null | sed -n 's/^UNSLOTH_ARCH_CHECK=//p' | tail -n 1 || true)
             if [ -n "$_arch_check" ]; then
                 IFS='|' read -r _ac_status _ac_caps _ac_torch _ac_archs _ac_family <<EOF_ARCH
@@ -7544,7 +7547,11 @@ EOF_ARCH
                     exit 1
                 fi
                 substep "[WARN] PyTorch $_ac_torch has no kernels for the GPUs with compute capability $_ac_caps." "$C_WARN"
-                substep "[WARN] It was built for: $_ac_archs. Those GPUs will not be usable; for them, re-run with $_ac_pin" "$C_WARN"
+                if [ "$_ac_status" = "nofix" ]; then
+                    substep "[WARN] It was built for: $_ac_archs. Those GPUs will not be usable for training." "$C_WARN"
+                else
+                    substep "[WARN] It was built for: $_ac_archs. Those GPUs will not be usable; for them, re-run with $_ac_pin" "$C_WARN"
+                fi
             fi
             ;;
     esac
