@@ -696,8 +696,17 @@ def test_the_legacy_migration_is_startup_work(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("paused_after", ["move", "mark"])
+@pytest.mark.parametrize(
+    "session_id",
+    [
+        "__LOCALID_reading",
+        # Kept its legacy folder under the literal id, so its move is locked under that name while
+        # its marker carries the derived one.
+        "_id-reading",
+    ],
+)
 def test_a_read_does_not_answer_from_inside_a_legacy_move_s_staging_window(
-    tmp_path, monkeypatch, paused_after
+    tmp_path, monkeypatch, paused_after, session_id
 ):
     """A listing or download that lands while a session sits in staging must wait for the move.
 
@@ -709,7 +718,7 @@ def test_a_read_does_not_answer_from_inside_a_legacy_move_s_staging_window(
     fake_home.mkdir()
     _shared_setup_11(fake_home, monkeypatch, tmp_path)
 
-    session = fake_home / "studio_sandbox" / "__LOCALID_reading"
+    session = fake_home / "studio_sandbox" / session_id
     session.mkdir(parents = True)
     (session / "data.csv").write_text("a\n")
 
@@ -727,7 +736,7 @@ def test_a_read_does_not_answer_from_inside_a_legacy_move_s_staging_window(
 
     def gated_move(source, destination, *args, **kwargs):
         moved = real_move(source, destination, *args, **kwargs)
-        if paused_after == "move" and "__LOCALID_reading" in str(destination):
+        if paused_after == "move" and tools._STAGING_SUFFIX in os.path.basename(destination):
             pause_in_staging()
         return moved
 
@@ -746,7 +755,7 @@ def test_a_read_does_not_answer_from_inside_a_legacy_move_s_staging_window(
     result = {}
     reader = threading.Thread(
         target = lambda: result.update(
-            workdir = Path(tools.resolve_sandbox_workdir("__LOCALID_reading")),
+            workdir = Path(tools.resolve_sandbox_workdir(session_id)),
         ),
         daemon = True,
     )

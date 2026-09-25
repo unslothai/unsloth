@@ -10564,15 +10564,9 @@ def _legacy_lock_peek(name: str) -> "threading.Lock | None":
 _LEGACY_SHARED_BUCKET = "_invalid"
 
 
-def _legacy_session_dir(session_id: str) -> "str | None":
-    """This session's directory at the legacy root, while one is still there.
-
-    Both names, like the migration itself: a chat from before the upgrade whose
-    id starts with the derived prefix kept its folder under the literal id.
-    """
-    if not is_owner_context():
-        return None
-    legacy_root = _legacy_sandbox_root()
+def _legacy_names(session_id: str) -> "list[str]":
+    """Every name this session's folder can have at the legacy root, which is also the key its move
+    is locked under."""
     names = [_sandbox_name(session_id)]
     if not _usable_session_id(session_id):
         # Before this change an id the filesystem could not hold shared one bucket with every other such chat: read
@@ -10582,7 +10576,19 @@ def _legacy_session_dir(session_id: str) -> "str | None":
         # Only the derived-prefix case: an id the old code could hold kept its folder under the literal name while
         # _sandbox_name now hashes it. A fallback name is nobody's chat: every session-less call ran in there.
         names.append(session_id)
-    for name in names:
+    return names
+
+
+def _legacy_session_dir(session_id: str) -> "str | None":
+    """This session's directory at the legacy root, while one is still there.
+
+    Both names, like the migration itself: a chat from before the upgrade whose
+    id starts with the derived prefix kept its folder under the literal id.
+    """
+    if not is_owner_context():
+        return None
+    legacy_root = _legacy_sandbox_root()
+    for name in _legacy_names(session_id):
         candidate = os.path.join(legacy_root, name)
         if os.path.islink(candidate):
             continue
@@ -10972,9 +10978,16 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
             # which the rename is about to take away. Movers hold the session's lock for the whole move, so once it is
             # free a staging tree that is still there is a stranded one, and one that landed or rolled back is found
             # where it went.
-            lock = _legacy_lock_peek(_sandbox_name(session_id))
-            if lock is not None:
-                with lock:
+            # Under whichever name it was moved from: a chat whose id starts with the derived prefix moves under the
+            # literal id, and its staging tree is still marked with the derived one.
+            locks = [_legacy_lock_peek(name) for name in _legacy_names(session_id)]
+            locks = [lock for lock in locks if lock is not None]
+            if locks:
+                # All at once, so no move can start between the wait and the look. A mover only ever holds one of
+                # these, so taking several in a fixed order cannot deadlock against it.
+                with contextlib.ExitStack() as held:
+                    for lock in locks:
+                        held.enter_context(lock)
                     ours = _marked_sandbox_in(root, session_id)
         if ours:
             return ours
