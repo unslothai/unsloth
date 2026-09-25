@@ -1013,8 +1013,7 @@ def LlamaModel_fast_forward(
         and attention_mask.ndim == 2
         and not torch.any(attention_mask[:, 1:] > attention_mask[:, :-1])
     ):
-        # Only right padding is invisible to real tokens under causal attention.
-        # Zeroing left-pad embeddings (e.g. Online DPO) still changes the softmax denominator.
+        # Only right padding is invisible under causal attention; left pads (Online DPO) need the mask.
         attention_mask = None
         padding_mask = None
     else:
