@@ -52,6 +52,7 @@ def test_off_unless_requested(monkeypatch):
     "name",
     [
         "NVIDIA B200",
+        "NVIDIA B100",
         "NVIDIA A100-SXM4-40GB",
         "NVIDIA H100 80GB HBM3",
         "NVIDIA GB200",
