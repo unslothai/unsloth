@@ -4,22 +4,33 @@
 """Library API: one view over uploads, chat attachments, generated images and audio, fine-tuned
 models and sandbox files, plus folders, favorites and renames. See ``core.library`` for the sources."""
 
+import base64
+import hashlib
+import hmac
 import os
 import re
+import secrets
+import time
 from typing import Literal, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
-from auth.authentication import get_current_subject, subject_for_header_or_query_token
+from auth.authentication import (
+    get_current_subject,
+    request_admitted_without_credential,
+    subject_for_header_or_query_token,
+)
 from core import library
 from hub.services.models import account_access
 from loggers import get_logger
 from storage import library_db
 from storage.studio_db import ChatMessageProtectedError
+from utils.account_context import run_as
 from utils.upload_limits import LIBRARY_UPLOAD_MAX_BYTES
 from utils.utils import log_and_http_error, safe_curated_detail
 
@@ -278,6 +289,197 @@ async def download_item(
         return Response(status_code = 200, media_type = "application/octet-stream", headers = headers)
     return StreamingResponse(
         _read_exactly(item), media_type = "application/octet-stream", headers = headers
+    )
+
+
+# ── Streamed previews ────────────────────────────────────────────
+
+# An audio or video preview plays from a link the element fetches itself, with range requests, so
+# a long file is never buffered whole and can seek. The bearer mints the link; the link alone then
+# serves that one item, for that one account, until it expires. A secret and domain of its own, so
+# a gallery's media link never works here, nor one of these there.
+_STREAM_LINK_TTL = 6 * 3600
+_STREAM_LINK_SECRET = secrets.token_bytes(32)
+_STREAM_LINK_DOMAIN = b"unsloth-library-stream\0"
+
+
+def _stream_signature(payload: str) -> str:
+    return hmac.new(
+        _STREAM_LINK_SECRET, _STREAM_LINK_DOMAIN + payload.encode(), hashlib.sha256
+    ).hexdigest()
+
+
+def _sign_stream_id(item_id: str) -> str:
+    """A link token for ``item_id`` in the calling account."""
+    target = base64.urlsafe_b64encode(account_access.media_link_target(item_id).encode())
+    payload = f"{target.decode().rstrip('=')}.{int(time.time()) + _STREAM_LINK_TTL}"
+    return f"{payload}.{_stream_signature(payload)}"
+
+
+def _stream_link_account(token: str, item_id: str):
+    """The account a valid, unexpired token for ``item_id`` was minted in, else None."""
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+    target, expires, signature = parts
+    if not hmac.compare_digest(signature, _stream_signature(f"{target}.{expires}")):
+        return None
+    if not expires.isdigit() or int(expires) < time.time():
+        return None
+    try:
+        signed = base64.urlsafe_b64decode(target + "=" * (-len(target) % 4)).decode()
+    except ValueError:
+        return None
+    return account_access.media_link_account(signed, item_id)
+
+
+def _stream_type(item_id: str) -> Optional[str]:
+    """The exact audio or video type an item plays as, from the Library's fixed map; None for
+    anything else, which this route never serves. Read in the item's own account; LookupError for
+    an upload it does not have."""
+    kind, _, ref = item_id.partition(":")
+    if kind == "audio":
+        value = "audio/wav"
+    elif kind == "video":
+        value = "video/mp4"
+    elif kind == "upload":
+        record = library_db.get_upload(ref)
+        if record is None:
+            raise LookupError(item_id)
+        value = library.media_type(record["contentType"])
+    elif kind == "sandbox":
+        value = library.content_types().get(os.path.splitext(ref)[1].lower())
+    else:
+        return None
+    playable = {
+        known
+        for known in library.content_types().values()
+        if known.startswith(("audio/", "video/"))
+    }
+    return value if value in playable else None
+
+
+class _Unsatisfiable(Exception):
+    pass
+
+
+def _byte_range(request: Request, size: int) -> Optional[tuple[int, int]]:
+    """The one ``bytes=`` range asked for, as (first, last) inclusive; None for the whole file.
+
+    What RFC 9110 lets a server ignore is ignored (another unit, several ranges, a malformed one,
+    an ``If-Range`` this route has no validator to match); a range past the end is unsatisfiable."""
+    header = request.headers.get("range")
+    if not header or request.headers.get("if-range"):
+        return None
+    unit, _, spec = header.partition("=")
+    if unit.strip().lower() != "bytes" or "," in spec:
+        return None
+    first, dash, last = spec.strip().partition("-")
+    if (
+        not dash
+        or not (first.isdigit() or last.isdigit())
+        or not all(part.isdigit() for part in (first, last) if part)
+    ):
+        return None
+    if not first:
+        suffix = int(last)
+        if suffix == 0 or size == 0:
+            raise _Unsatisfiable
+        return max(0, size - suffix), size - 1
+    start = int(first)
+    end = int(last) if last else size - 1
+    if last and end < start:
+        return None
+    if start >= size:
+        raise _Unsatisfiable
+    return start, min(end, size - 1)
+
+
+def _read_range(item, start: int, length: int):
+    """``length`` bytes from ``start`` of the open file, never past them."""
+    with item:
+        item.handle.seek(start)
+        remaining = length
+        while remaining > 0:
+            chunk = item.handle.read(min(_CHUNK_BYTES, remaining))
+            if not chunk:
+                return
+            remaining -= len(chunk)
+            yield chunk
+
+
+@router.get("/items/stream-url")
+async def get_item_stream_url(
+    id: str = Query(max_length = 4096),
+    current_subject: str = Depends(get_current_subject),
+    no_credential: bool = Depends(request_admitted_without_credential),
+) -> dict:
+    """A short-lived link an ``<audio>`` or ``<video>`` element plays an item from, with range
+    requests. Relative, so it works behind any proxy the page is served through."""
+    if no_credential:
+        raise HTTPException(
+            status_code = 403,
+            detail = "Media links can only be created from the Unsloth UI or with an API key.",
+        )
+    try:
+        content_type = await run_in_threadpool(_stream_type, id)
+    except LookupError:
+        raise HTTPException(status_code = 404, detail = "Item not found")
+    if content_type is None:
+        raise HTTPException(status_code = 400, detail = "Only audio and video items can be streamed")
+    if not await run_in_threadpool(library.item_exists, id):
+        raise HTTPException(status_code = 404, detail = "Item not found")
+    query = urlencode({"id": id, "token": _sign_stream_id(id)})
+    return {"url": f"/api/library/items/stream?{query}"}
+
+
+@router.api_route("/items/stream", methods = ["GET", "HEAD"])
+async def stream_item(
+    request: Request,
+    id: str = Query(max_length = 4096),
+    token: str = Query(max_length = 8192),
+):
+    """An audio or video item, gated by its link rather than the bearer so it can be a plain
+    ``src``, and range-capable so it seeks. Opened once in the link's account and read from that
+    descriptor, so a sandbox name swapped for a link after the check is never followed."""
+    account = _stream_link_account(token, id)
+    if account is None:
+        raise HTTPException(status_code = 401, detail = "Invalid or expired media link.")
+
+    def _open():
+        content_type = _stream_type(id)
+        if content_type is None:
+            raise LookupError(id)
+        return content_type, library.open_item(id)
+
+    try:
+        content_type, item = await run_in_threadpool(run_as, account, _open)
+    except (LookupError, ValueError):
+        raise HTTPException(status_code = 404, detail = "Item not found")
+    headers = {"Accept-Ranges": "bytes", "Cache-Control": "private", **_NOSNIFF}
+    try:
+        requested = _byte_range(request, item.size)
+    except _Unsatisfiable:
+        item.close()
+        return Response(
+            status_code = 416, headers = {"Content-Range": f"bytes */{item.size}", **headers}
+        )
+    start, end = requested or (0, item.size - 1)
+    length = max(0, end - start + 1)
+    headers["Content-Length"] = str(length)
+    if requested is not None:
+        headers["Content-Range"] = f"bytes {start}-{end}/{item.size}"
+    status_code = 206 if requested is not None else 200
+    if request.method.upper() == "HEAD":
+        item.close()
+        return Response(status_code = status_code, media_type = content_type, headers = headers)
+    return StreamingResponse(
+        _read_range(item, start, length),
+        status_code = status_code,
+        media_type = content_type,
+        headers = headers,
+        # A player that hangs up mid-range leaves the generator unfinished: the file still closes.
+        background = BackgroundTask(item.close),
     )
 
 
