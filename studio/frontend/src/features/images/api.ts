@@ -253,6 +253,8 @@ export interface GalleryImage {
   // Library state, not recipe: stored beside the PNG, absent on records written before this existed.
   pinned?: boolean;
   archived?: boolean;
+  /** The server's unpinned sort key: the drag key, else the file mtime. */
+  order_at?: number | null;
 }
 
 export interface DiffusionGenerateResponse {
@@ -465,6 +467,31 @@ export async function getGallery(offset = 0, limit = 50, archived = false): Prom
 }
 
 /** Pin/unpin or archive/restore one image; omitted flags are left alone. Returns the new record. */
+/** Move one image to just after `afterId` (null = front). The server also decides the pin. */
+export async function moveGalleryImage(id: string, afterId: string | null): Promise<GalleryImage> {
+  return parseJson(
+    await authFetch(`/api/inference/images/gallery/${id}/move`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ after_id: afterId }),
+    }),
+  );
+}
+
+/** Copy one image into a chat project's folder. */
+export async function addGalleryImageToProject(
+  id: string,
+  projectId: string,
+): Promise<{ path: string; already: boolean }> {
+  return parseJson(
+    await authFetch(`/api/inference/images/gallery/${id}/project`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project_id: projectId }),
+    }),
+  );
+}
+
 export async function setGalleryImageFlags(
   id: string,
   flags: { pinned?: boolean; archived?: boolean },

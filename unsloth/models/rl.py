@@ -250,44 +250,50 @@ def PatchRL(FastLanguageModel):
         # Force logits during eval, but restore the user's prior setting after so an explicit UNSLOTH_RETURN_LOGITS="1" is not silently turned off.
         _old_return_logits = os.environ.get("UNSLOTH_RETURN_LOGITS", "0")
         os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
-        with torch.no_grad():
-            if has_labels or loss_without_labels:
-                with self.compute_loss_context_manager():
-                    try:
-                        num_items_in_batch = self._get_num_items_in_batch(
-                            [inputs], self.args.device
+        try:
+            with torch.no_grad():
+                if has_labels or loss_without_labels:
+                    with self.compute_loss_context_manager():
+                        try:
+                            num_items_in_batch = self._get_num_items_in_batch(
+                                [inputs], self.args.device
+                            )
+                        except (AttributeError, TypeError):
+                            num_items_in_batch = None
+                        loss, outputs = self.compute_loss(
+                            model,
+                            inputs,
+                            return_outputs = True,
+                            num_items_in_batch = num_items_in_batch,
                         )
-                    except (AttributeError, TypeError):
-                        num_items_in_batch = None
-                    loss, outputs = self.compute_loss(
-                        model,
-                        inputs,
-                        return_outputs = True,
-                        num_items_in_batch = num_items_in_batch,
-                    )
-                loss = loss.mean().detach()
+                    loss = loss.mean().detach()
 
-                if isinstance(outputs, dict):
-                    logits = tuple(v for k, v in outputs.items() if k not in ignore_keys + ["loss"])
+                    if isinstance(outputs, dict):
+                        logits = tuple(
+                            v for k, v in outputs.items() if k not in ignore_keys + ["loss"]
+                        )
+                    else:
+                        logits = outputs[1:]
                 else:
-                    logits = outputs[1:]
-            else:
-                loss = None
-                with self.compute_loss_context_manager():
-                    tokenized_output = self.processing_class(
-                        inputs["prompt"],
-                        padding = True,
-                        truncation = True,
-                        return_tensors = "pt",
-                    ).to(model.device)
-                    outputs = model(**tokenized_output)
-                if isinstance(outputs, dict):
-                    logits = tuple(v for k, v in outputs.items() if k not in ignore_keys)
-                else:
-                    logits = outputs
-                if self.args.past_index >= 0:
-                    self._past = outputs[self.args.past_index - 1]
-        os.environ["UNSLOTH_RETURN_LOGITS"] = _old_return_logits
+                    loss = None
+                    with self.compute_loss_context_manager():
+                        tokenized_output = self.processing_class(
+                            inputs["prompt"],
+                            padding = True,
+                            truncation = True,
+                            return_tensors = "pt",
+                        ).to(model.device)
+                        outputs = model(**tokenized_output)
+                    if isinstance(outputs, dict):
+                        logits = tuple(v for k, v in outputs.items() if k not in ignore_keys)
+                    else:
+                        logits = outputs
+                    if self.args.past_index >= 0:
+                        self._past = outputs[self.args.past_index - 1]
+        finally:
+            # An eval that raises must not leave logits forced on: UNSLOTH_RETURN_LOGITS=1 also
+            # blocks packing and padding-free for the next train() in this process.
+            os.environ["UNSLOTH_RETURN_LOGITS"] = _old_return_logits
         if prediction_loss_only:
             return (loss, None, None)
 
@@ -1007,6 +1013,16 @@ def _pin_pristine_sft_loss_type(config_cls):
 
 
 _UNSLOTH_KBIT_PREP_GUARD_FLAG = "_unsloth_skips_kbit_prep_for_peft_models"
+
+# The one assignment of `self.aux_loss_enabled` in TRL's GRPOTrainer.__init__, whatever its right-hand
+# side. TRL 1.7.0 wrote `is_moe and args.router_aux_loss_coef != 0.0`; TRL main (#7248) reads the
+# coefficient from the model config when it is None. Anchoring on the exact expression lost the
+# fail-fast below on the first rewrite. Read without importing by tests/version_compat.
+_GRPO_AUX_LOSS_ENABLED_LINE = r"^([ \t]*)self\.aux_loss_enabled = [^\n]+$"
+_GRPO_AUX_LOSS_REJECT = (
+    'if self.aux_loss_enabled: raise NotImplementedError("Unsloth GRPO does not compute the MoE router '
+    'auxiliary loss; set router_aux_loss_coef = 0 (the Unsloth default).")'
+)
 
 
 def _guard_kbit_prep_against_peft_models():
@@ -2957,10 +2973,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
             if trl_version >= Version("1.7.0"):
                 # router_aux_loss_coef / aux_loss_enabled arrived in TRL 1.7.0, and the optimized GRPO forward cannot compute the MoE router aux loss, so reject an explicit opt-in at init.
-                RLTrainer_source = RLTrainer_source.replace(
-                    "self.aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0",
-                    "self.aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0\n"
-                    '        if self.aux_loss_enabled: raise NotImplementedError("Unsloth GRPO does not compute the MoE router auxiliary loss; set router_aux_loss_coef = 0 (the Unsloth default).")',
+                RLTrainer_source = re.sub(
+                    _GRPO_AUX_LOSS_ENABLED_LINE,
+                    lambda m: m.group(0) + "\n" + m.group(1) + _GRPO_AUX_LOSS_REJECT,
+                    RLTrainer_source,
+                    count = 1,
+                    flags = re.MULTILINE,
                 )
 
         elif trl_version >= Version("0.27.0"):
@@ -3252,6 +3270,12 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 + "if (getattr(args, 'use_vllm', False) == False):\n"
                 + " " * 16
                 + "args.use_vllm = True\n"
+                # TRL >= 0.27 hands args.top_k to vLLM's SamplingParams unchanged, and it rejects None;
+                # the config-time guard misses this when vLLM comes only from fast_inference.
+                + " " * 12
+                + "if getattr(args, 'top_k', -1) is None or getattr(args, 'top_k', -1) == 0:\n"
+                + " " * 16
+                + "args.top_k = -1\n"
             )
 
             if "grpo" in trainer_file and trl_version >= Version("0.18.0"):
