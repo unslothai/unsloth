@@ -66,6 +66,14 @@ export const hi = {
     queueingOnHint: "नए संदेश अपनी बारी का इंतज़ार करते हैं।",
     queueingHintShared: "कतार बनी रहती है।",
   },
+  turns: {
+    label: "टर्न {number}",
+    pinnedLabel: "टर्न {number}, पिन किया गया",
+    pinned: "पिन किया गया",
+    pin: "टर्न पिन करें",
+    unpin: "टर्न अनपिन करें",
+    navigator: "टर्न",
+  },
   picker: {
     onDevice: "डिवाइस पर",
     huggingFace: "Hugging Face",
@@ -1637,6 +1645,9 @@ export const hi = {
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
         "असिस्टेंट के जवाबों में मॉडल का मेटाडेटा दिखाएँ।",
+      turnNavigation: "टर्न नेविगेशन",
+      turnNavigationDescription:
+        "हर टर्न को नंबर दें, टर्न पिन करें और लंबी चैट के किनारे की पट्टी से उनके बीच जाएँ।",
       modelDisclaimer: "मॉडल अस्वीकरण दिखाएं",
       modelDisclaimerDescription:
         'चैट बॉक्स के नीचे "LLMs can make mistakes" दिखाएं।',

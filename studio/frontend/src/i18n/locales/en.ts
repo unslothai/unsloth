@@ -68,6 +68,14 @@ export const en = {
     queueingOnHint: "New messages wait their turn.",
     queueingHintShared: "The queue is kept.",
   },
+  turns: {
+    label: "Turn {number}",
+    pinnedLabel: "Turn {number}, pinned",
+    pinned: "Pinned",
+    pin: "Pin turn",
+    unpin: "Unpin turn",
+    navigator: "Turns",
+  },
   picker: {
     onDevice: "On Device",
     huggingFace: "Hugging Face",
@@ -1625,6 +1633,9 @@ export const en = {
       showResponseModel: "Show response model",
       showResponseModelDescription:
         "Show model details in assistant responses.",
+      turnNavigation: "Turn navigation",
+      turnNavigationDescription:
+        "Number each turn, pin turns, and jump between them from a rail beside long chats.",
       modelDisclaimer: "Show model disclaimer",
       modelDisclaimerDescription:
         'Show "LLMs can make mistakes" under the chat box.',

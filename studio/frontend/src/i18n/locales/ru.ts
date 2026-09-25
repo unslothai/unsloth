@@ -66,6 +66,14 @@ export const ru = {
     queueingOnHint: "Новые сообщения ждут своей очереди.",
     queueingHintShared: "Очередь сохраняется.",
   },
+  turns: {
+    label: "Ход {number}",
+    pinnedLabel: "Ход {number}, закреплён",
+    pinned: "Закреплено",
+    pin: "Закрепить ход",
+    unpin: "Открепить ход",
+    navigator: "Ходы",
+  },
   picker: {
     onDevice: "На устройстве",
     huggingFace: "Hugging Face",
@@ -1644,6 +1652,9 @@ export const ru = {
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:
         "Показывать метаданные модели в ответах ассистента.",
+      turnNavigation: "Навигация по ходам",
+      turnNavigationDescription:
+        "Нумеровать каждый ход, закреплять ходы и переходить между ними с помощью полосы рядом с длинными чатами.",
       modelDisclaimer: "Показывать предупреждение о модели",
       modelDisclaimerDescription:
         "Показывать сообщение «LLM могут ошибаться» под полем ввода.",

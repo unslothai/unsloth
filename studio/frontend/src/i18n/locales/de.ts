@@ -66,6 +66,14 @@ export const de = {
     queueingOnHint: "Neue Nachrichten warten auf ihren Platz.",
     queueingHintShared: "Die Warteschlange bleibt erhalten.",
   },
+  turns: {
+    label: "Runde {number}",
+    pinnedLabel: "Runde {number}, angeheftet",
+    pinned: "Angeheftet",
+    pin: "Runde anheften",
+    unpin: "Runde lösen",
+    navigator: "Runden",
+  },
   picker: {
     onDevice: "Auf dem Gerät",
     huggingFace: "Hugging Face",
@@ -1669,6 +1677,9 @@ export const de = {
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:
         "Modellmetadaten in Antworten des Assistenten anzeigen.",
+      turnNavigation: "Rundennavigation",
+      turnNavigationDescription:
+        "Jede Runde nummerieren, Runden anheften und in langen Chats über eine Leiste am Rand zwischen ihnen springen.",
       modelDisclaimer: "Modell-Hinweis anzeigen",
       modelDisclaimerDescription:
         "Zeigt „LLMs können Fehler machen“ unter dem Chatfeld an.",

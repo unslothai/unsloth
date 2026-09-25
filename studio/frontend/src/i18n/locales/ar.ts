@@ -66,6 +66,14 @@ export const ar = {
     queueingOnHint: "الرسائل الجديدة تنتظر دورها.",
     queueingHintShared: "يبقى الطابور كما هو.",
   },
+  turns: {
+    label: "الدور {number}",
+    pinnedLabel: "الدور {number}، مثبّت",
+    pinned: "مثبّت",
+    pin: "تثبيت الدور",
+    unpin: "إلغاء تثبيت الدور",
+    navigator: "الأدوار",
+  },
   picker: {
     onDevice: "على الجهاز",
     huggingFace: "Hugging Face",
@@ -1631,6 +1639,9 @@ export const ar = {
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
         "إظهار البيانات الوصفية للنموذج في ردود المساعد.",
+      turnNavigation: "التنقل بين الأدوار",
+      turnNavigationDescription:
+        "ترقيم كل دور وتثبيت الأدوار والانتقال بينها من شريط بجانب المحادثات الطويلة.",
       modelDisclaimer: "إظهار إخلاء مسؤولية النموذج",
       modelDisclaimerDescription:
         'إظهار عبارة "LLMs can make mistakes" أسفل مربع المحادثة.',

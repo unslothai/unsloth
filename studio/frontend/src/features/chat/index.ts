@@ -137,6 +137,7 @@ export {
 } from "./lib/sidebar-drag";
 export { useSidebarDrag, SPRING_OPEN_DELAY_MS } from "./hooks/use-sidebar-drag";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
+export { usePinnedTurnsStore } from "./stores/pinned-turns-store";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export {
   applyManualOrder,

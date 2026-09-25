@@ -67,6 +67,14 @@ export const ja = {
     queueingOnHint: "新しいメッセージは順番待ちになります。",
     queueingHintShared: "キューは保持されます。",
   },
+  turns: {
+    label: "ターン {number}",
+    pinnedLabel: "ターン {number}（ピン留め済み）",
+    pinned: "ピン留め済み",
+    pin: "ターンをピン留め",
+    unpin: "ピン留めを解除",
+    navigator: "ターン",
+  },
   picker: {
     onDevice: "デバイス上",
     huggingFace: "Hugging Face",
@@ -1616,6 +1624,9 @@ export const ja = {
       showResponseModel: "応答モデルを表示",
       showResponseModelDescription:
         "アシスタントの応答にモデルのメタデータを表示します。",
+      turnNavigation: "ターンナビゲーション",
+      turnNavigationDescription:
+        "各ターンに番号を付け、ターンをピン留めし、長いチャットの横のバーからターン間を移動します。",
       modelDisclaimer: "モデルの免責事項を表示",
       modelDisclaimerDescription: 'チャットボックスの下に "LLMs can make mistakes" と表示します。',
       projectAttachments: "プロジェクト全体でファイルを共有",
