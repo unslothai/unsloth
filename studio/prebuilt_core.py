@@ -30,6 +30,7 @@ from __future__ import annotations
 import errno
 import functools
 import hashlib
+import http.client
 import json
 import os
 import stat
@@ -440,6 +441,11 @@ def is_retryable_url_error(exc: Exception) -> bool:
     if isinstance(exc, TimeoutError):
         return True
     if isinstance(exc, socket.timeout):
+        return True
+    # urllib wraps only a failure to send in URLError. A server that drops the connection
+    # before answering (RemoteDisconnected), a reset mid-body, or a body cut short
+    # (IncompleteRead) reaches here raw, and one of those would otherwise skip every retry.
+    if isinstance(exc, (ConnectionError, http.client.IncompleteRead)):
         return True
     return False
 
