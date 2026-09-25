@@ -168,8 +168,8 @@ from .diffusion_step_skip import (
     install_static_step_skip,
     mark_step_end,
     reset_static_step_skip,
-    static_skip_owner,
     static_skip_stats,
+    static_skip_view,
     uninstall_static_step_skip,
 )
 from .diffusion_precision import (
@@ -7796,10 +7796,10 @@ class DiffusionBackend:
         del state
         clear_gpu_cache()
 
-    def static_skip_owner(self) -> Optional[str]:
-        """Account whose generation produced ``transformer_cache_stats``; never part of status()."""
+    def static_skip_view(self) -> tuple:
+        """(owner, ``transformer_cache_stats``) from one read; the owner is never part of status()."""
         state = self._state
-        return static_skip_owner(state.pipe) if state is not None else None
+        return static_skip_view(state.pipe) if state is not None else (None, None)
 
     def status(self) -> dict[str, Any]:
         state = self._state

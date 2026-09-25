@@ -262,6 +262,8 @@ class StaticStepSkip:
         self.last_stats = dict(self.stats)
         # Account whose generation produced the counters; status shows them to that account only.
         self.owner: Optional[str] = None
+        # Of the last armed forward: the post-render reset empties the plan but status still reports it.
+        self.planned_skips = 0
         self.reset(None)
 
     def reset(
@@ -281,6 +283,8 @@ class StaticStepSkip:
         )
         skips = [i for i, compute in enumerate(self.plan) if not compute]
         self.last_skip = skips[-1] if skips else -1
+        if steps is not None:
+            self.planned_skips = len(skips)
         self.step_signal = bool(step_signal)
         # An empty schedule still counts, so status never reports the previous generation's skips.
         self.counting = steps is not None
@@ -294,8 +298,9 @@ class StaticStepSkip:
             self.last_stats = dict(self.stats)
         self.stats = {"calls": 0, "computed": 0, "skipped": 0}
         if steps is not None and owner != self.owner:
-            self.owner = owner
+            # Counters cleared before the owner moves: static_skip_view reads the owner first.
             self.last_stats = dict(self.stats)
+            self.owner = owner
         return self
 
     def step_end(self) -> None:
@@ -309,7 +314,7 @@ class StaticStepSkip:
             "tail": self.tail,
             "every": self.every,
             "armed": bool(self.armed),
-            "planned_skips": sum(1 for c in self.plan if not c),
+            "planned_skips": self.planned_skips,
             "stats": dict(self.stats if self.stats["calls"] else self.last_stats),
         }
 
@@ -520,9 +525,13 @@ def static_skip_stats(pipe: Any) -> Optional[dict]:
     return skip.describe() if skip is not None else None
 
 
-def static_skip_owner(pipe: Any) -> Optional[str]:
+def static_skip_view(pipe: Any) -> tuple:
+    """(owner, stats) read in that order, so a new owner is never paired with the previous owner's counts."""
     skip = _find(pipe)
-    return skip.owner if skip is not None else None
+    if skip is None:
+        return None, None
+    owner = skip.owner
+    return owner, skip.describe()
 
 
 def uninstall_static_step_skip(pipe: Any) -> bool:
