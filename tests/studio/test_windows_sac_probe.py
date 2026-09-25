@@ -485,7 +485,7 @@ def test_the_powershell_probe_handles_retries_skips_and_occupied_drives():
     # Rollback state is on disk before the refresh that can fail.
     applied = ps1.index("$baseline.AuditPolicyApplied = $true")
     refresh = ps1.index("Invoke-Native 'CiTool.exe' @('-r')")
-    persist = ps1.index("Set-Content -LiteralPath $baselinePath", applied)
+    persist = ps1.index("Save-ProbeBaseline $baseline $baselinePath", applied)
     assert applied < persist < refresh
     # The interpreter locator shares Get-StudioHome's precedence (STUDIO_HOME alias included).
     locator = ps1[
@@ -689,7 +689,7 @@ def test_rollback_state_is_persisted_before_the_efi_partition_changes_and_stays_
     assert block.index("Copy-Item -LiteralPath $NOISG_DEST -Destination $ROLLBACK_POLICY") < persist
     assert (
         persist
-        < block.index("Set-Content -LiteralPath $baselinePath", persist)
+        < block.index("Save-ProbeBaseline $baseline $baselinePath", persist)
         < block.index("Copy-Item -LiteralPath $AuditPolicy -Destination $NOISG_DEST")
     )
     assert "Join-Path (Join-Path $dir 'rollback') 'preexisting-policy.cip'" in ps1
@@ -2271,3 +2271,61 @@ exit 0
 """
     )
     _drive_probe(tmp_path, body, ["Test-EventDataFromPolicy"])
+
+
+def test_a_baseline_write_that_dies_keeps_the_previous_snapshot(tmp_path):
+    """revert restores Defender, the event log and the audit policy from
+    baseline.json, so a rewrite that fails part way (a full volume, an
+    interrupt) must leave the last good snapshot, not a truncated file."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    helper = ps1[
+        ps1.index("function Save-ProbeBaseline") : ps1.index("function Test-EventFromPolicy")
+    ]
+    rest = ps1.replace(helper, "")
+    # Every baseline write goes through the helper.
+    assert "ConvertTo-Json -Depth 6 | Set-Content" not in rest
+    assert rest.count("Save-ProbeBaseline ") >= 9
+    body = r"""
+$path = Join-Path $Work 'baseline.json'
+Save-ProbeBaseline ([pscustomobject]@{ Label = 'first'; AuditPolicyApplied = $true }) $path
+if ((Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).Label -ne 'first') { exit 61 }
+Save-ProbeBaseline ([pscustomobject]@{ Label = 'second'; AuditPolicyApplied = $true }) $path
+if ((Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).Label -ne 'second') { exit 62 }
+if (Test-Path -LiteralPath "$path.tmp") { exit 63 }
+function Set-Content {
+  param([string]$LiteralPath, [string]$Encoding, [Parameter(ValueFromPipeline = $true)]$InputObject)
+  process {
+    [System.IO.File]::WriteAllText($LiteralPath, '{"Lab')
+    throw 'disk full'
+  }
+}
+try { Save-ProbeBaseline ([pscustomobject]@{ Label = 'third' }) $path; exit 64 } catch { }
+$after = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+if ($after.Label -ne 'second' -or $true -ne $after.AuditPolicyApplied) { exit 65 }
+exit 0
+"""
+    _drive_probe(tmp_path, body, ["Save-ProbeBaseline"])
+
+
+def test_collect_reads_the_studio_home_run_recorded(tmp_path):
+    """With a custom UNSLOTH_STUDIO_HOME that has no interpreter of its own,
+    the selected venv is the legacy one while the backend writes its logs under
+    the configured home, so the home is recorded by run rather than inferred
+    from the venv."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    run = ps1[ps1.index("function Invoke-Run") : ps1.index("function Invoke-Collect")]
+    assert "Get-StudioHome | Set-Content -LiteralPath (Join-Path $dir 'studio-home.txt')" in run
+    assert "'venv-selection.txt', 'studio-home.txt'," in ps1
+    body = r"""
+$legacyHome = Join-Path $Work 'legacy-home'
+$script:legacyVenv = Join-Path $legacyHome 'unsloth_studio'
+function Resolve-VenvDir([string] $dir) { return $script:legacyVenv }
+function Get-StudioHome { return 'C:\live' }
+$d = Join-Path $Work 'label'
+New-Item -ItemType Directory -Force -Path $d | Out-Null
+if ((Resolve-StudioHomeFor $d) -ne $legacyHome) { exit 71 }
+Set-Content -LiteralPath (Join-Path $d 'studio-home.txt') -Value 'D:\custom-home' -Encoding UTF8
+if ((Resolve-StudioHomeFor $d) -ne 'D:\custom-home') { exit 72 }
+exit 0
+"""
+    _drive_probe(tmp_path, body, ["Resolve-StudioHomeFor"])

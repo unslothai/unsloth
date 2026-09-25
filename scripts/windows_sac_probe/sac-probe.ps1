@@ -443,6 +443,16 @@ function Resolve-VenvDir([string] $dir) {
 # Deriving from the venv is also more accurate than Get-StudioHome on its own,
 # since Get-StudioPython already falls back to the legacy root.
 function Resolve-StudioHomeFor([string] $dir) {
+    # run records the home the backend was launched with. The venv is only a fallback: with a
+    # custom home that has no interpreter of its own the venv is the legacy one, while the
+    # backend still writes its logs under the configured home.
+    if ($dir) {
+        $recordedHome = Join-Path $dir 'studio-home.txt'
+        if (Test-Path -LiteralPath $recordedHome) {
+            $homePath = "$(Get-Content -LiteralPath $recordedHome -Raw)".Trim()
+            if ($homePath) { return $homePath }
+        }
+    }
     $venv = Resolve-VenvDir $dir
     if ($venv) {
         $parent = Split-Path -Parent $venv
@@ -747,7 +757,7 @@ function Initialize-Studio([string] $dir, [bool] $allowInstall) {
             # administrator-owned, which is the failure this record exists for.
             $b.StudioInstallRoots = @(@($b.StudioInstallRoots) + $created |
                 Where-Object { $_ } | Select-Object -Unique)
-            $b | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $baselinePath -Encoding UTF8
+            Save-ProbeBaseline $b $baselinePath
         }
         if (-not $python) {
             # prepare cannot go on: there is no Studio to start, so nothing
@@ -844,7 +854,7 @@ function Save-Baseline([string] $dir) {
         RevertCompletedAt       = $null
     }
     $path = Join-Path $dir 'baseline.json'
-    $baseline | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $path -Encoding UTF8
+    Save-ProbeBaseline $baseline $path
     Write-Host "baseline written to $path"
     return $baseline
 }
@@ -874,6 +884,19 @@ function Save-Baseline([string] $dir) {
 # the records themselves that is the PolicyGUID / PolicyID(Buffer) and
 # PolicyName(Buffer) EventData fields. Matched on any field carrying the GUID
 # so a renamed field fails toward "not attributed", never toward an allow.
+# baseline.json is what revert restores Defender, the event log and the audit policy from, so a
+# write that dies half way must leave the previous snapshot intact rather than a truncated one.
+# Serialise to a sibling temp file and swap it in only once that write has finished.
+function Save-ProbeBaseline($Baseline, [string] $Path) {
+    $tmp = "$Path.tmp"
+    $Baseline | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $tmp -Encoding UTF8
+    if (Test-Path -LiteralPath $Path) {
+        [System.IO.File]::Replace($tmp, $Path, [NullString]::Value)
+    } else {
+        Move-Item -LiteralPath $tmp -Destination $Path
+    }
+}
+
 function Test-EventFromPolicy($record, [string] $Guid, [string] $NamePattern = '*AuditNoISG*') {
     return (Test-EventDataFromPolicy (Get-EventDataMap $record) $Guid $NamePattern)
 }
@@ -1122,7 +1145,7 @@ function Invoke-Prepare {
             # interruption between the copy and this write would leave a
             # baseline saying no policy was applied, and revert would skip it.
             $baseline.AuditPolicyApplied = $true
-            $baseline | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $baselinePath -Encoding UTF8
+            Save-ProbeBaseline $baseline $baselinePath
             New-Item -ItemType Directory -Force -Path (Split-Path $NOISG_DEST) | Out-Null
             Copy-Item -LiteralPath $AuditPolicy -Destination $NOISG_DEST -Force
             Invoke-Native 'CiTool.exe' @('-r')
@@ -1159,7 +1182,7 @@ function Invoke-Prepare {
             throw "the audit policy $NOISG_GUID is listed as active but an unsigned control binary raised no 3076 or 3077 attributed to that policy, so it is not evaluating loads on this machine; a run with no events would be meaningless. Run revert and re-apply the policy."
         }
         $baseline.AuditPolicyControlFired = $controlFired
-        $baseline | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $baselinePath -Encoding UTF8
+        Save-ProbeBaseline $baseline $baselinePath
     } else {
         Write-Host ''
         Write-Host 'No -AuditPolicy given. Download the sample policies from https://aka.ms/sacauditpolicies'
@@ -1186,7 +1209,7 @@ function Invoke-Prepare {
             # prepare of this label predates the field, and setting a property a
             # PSCustomObject does not carry throws.
             $baseline | Add-Member -NotePropertyName SacControlFired -NotePropertyValue $sacFired -Force
-            $baseline | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $baselinePath -Encoding UTF8
+            Save-ProbeBaseline $baseline $baselinePath
         }
     }
 
@@ -1203,7 +1226,7 @@ function Invoke-Prepare {
     # machine state revert has to restore, which the retry did not change.
     foreach ($stale in @(
         'scenario-status.json', 'scenario-results.json', 'runtime-selection.json',
-        'venv-selection.txt',
+        'venv-selection.txt', 'studio-home.txt',
         'signature-inventory.json', 'signature-inventory.csv',
         'venv-signature-inventory.json', 'venv-signature-inventory.csv',
         'code-integrity-events.json', 'code-integrity-events.txt',
@@ -1360,8 +1383,7 @@ function Invoke-Run {
                     throw "the audit policy $NOISG_GUID is listed as active but an unsigned control raised no 3076 or 3077 attributed to that policy on this boot, so it is not evaluating loads and this run would be meaningless. Run revert and prepare again."
                 }
                 $runBaseline.AuditPolicyControlFired = $controlFired
-                $runBaseline | ConvertTo-Json -Depth 6 |
-                    Set-Content -LiteralPath $runBaselinePath -Encoding UTF8
+                Save-ProbeBaseline $runBaseline $runBaselinePath
             }
         } elseif ([string]$runBaseline.Sac.Mode -eq 'enforcement') {
             # The same revalidation for the cell with no audit policy, where the
@@ -1406,8 +1428,7 @@ function Invoke-Run {
                     throw "Smart App Control reads as 'enforcement' but an unsigned control ran on this boot without being refused with a 3077, so it is not enforcing against unsigned code and this run would be meaningless. Run revert and prepare again."
                 }
                 $runBaseline | Add-Member -NotePropertyName SacControlFired -NotePropertyValue $sacFired -Force
-                $runBaseline | ConvertTo-Json -Depth 6 |
-                    Set-Content -LiteralPath $runBaselinePath -Encoding UTF8
+                Save-ProbeBaseline $runBaseline $runBaselinePath
             }
         }
     }
@@ -1433,6 +1454,7 @@ function Invoke-Run {
     # It is staged into the zip like everything else in the run directory, so
     # the reader can see which venv the counts were taken over.
     $venvDir | Set-Content -LiteralPath (Join-Path $dir 'venv-selection.txt') -Encoding UTF8
+    Get-StudioHome | Set-Content -LiteralPath (Join-Path $dir 'studio-home.txt') -Encoding UTF8
     $venvInventory = @(Get-SignatureInventory $venvDir)
     ConvertTo-Json -InputObject @($venvInventory) -Depth 4 |
         Set-Content -LiteralPath (Join-Path $dir 'venv-signature-inventory.json') -Encoding UTF8
@@ -2068,7 +2090,7 @@ function Invoke-Revert {
         # Only once the refresh succeeded: a rerun after a failed one must
         # still find AuditPolicyApplied set.
         $baseline.AuditPolicyApplied = $false
-        $baseline | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $dir 'baseline.json') -Encoding UTF8
+        Save-ProbeBaseline $baseline (Join-Path $dir 'baseline.json')
       } catch {
         $policyError = $_
         Write-Warning "audit policy was not reverted: $_ (continuing with the other settings; run revert again)"
@@ -2255,7 +2277,7 @@ function Invoke-Revert {
     # rest of the run's evidence.
     $baseline | Add-Member -NotePropertyName RevertCompletedAt `
         -NotePropertyValue ((Get-Date).ToString('o')) -Force
-    $baseline | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $baselinePath -Encoding UTF8
+    Save-ProbeBaseline $baseline $baselinePath
     Write-Host 'revert complete. Smart App Control itself was never changed by this script.'
 }
 
