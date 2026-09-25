@@ -7190,8 +7190,8 @@ def _evict_xformers_built_for_another_torch() -> bool:
         return False
     _uninstall_distribution("xformers")
     _note(
-        f"windows on arm: the wheelhouse xformers was built for torch "
-        f"{built_for}, not {resident} -- removed; attention uses torch SDPA"
+        f"xFormers was built for torch {built_for}, not {resident} -- "
+        f"removed; attention uses torch SDPA"
     )
     return True
 
@@ -11766,6 +11766,15 @@ def install_python_stack() -> int:
                 f"{_torch_after_repair} during the repair -- re-selecting torchao"
             )
             _install_torchao_for_torch(_torch_after_repair)
+            # Same gap as torchao above, for xFormers (#11545): its extension is linked
+            # against one (torch, CUDA) pair, and a repair that moves torch (a CPU-only
+            # venv onto a CUDA build, as on an old-architecture GPU the CPU-only wheel was
+            # wrongly landed on) leaves whatever xFormers is already resident -- often not
+            # even from this venv's own install -- built for a torch that is no longer
+            # there. Its ops then go mute or raise instead of erroring at import, and
+            # diffusers/peft import xFormers eagerly, so the mismatch surfaces as an
+            # unrelated-looking crash the first time an image/diffusion model is loaded.
+            _evict_xformers_built_for_another_torch()
 
     # 13w. Windows torch flavor invariant, separate from step 13's Linux-shaped repair set
     # but in the same position: last, after the with-deps steps re-resolved torch.
