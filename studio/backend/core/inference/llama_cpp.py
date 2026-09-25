@@ -13257,23 +13257,6 @@ class LlamaCppBackend:
         if rocm_gpus:
             return rocm_gpus
 
-        # ── Intel XPU via torch.xpu ──────────────────────────────────
-        try:
-            import torch
-            if hasattr(torch, "xpu") and torch.xpu.is_available():
-                from utils.hardware.hardware import trusted_mem_get_info
-
-                xpu_gpus = []
-                for ordinal in range(torch.xpu.device_count()):
-                    free_bytes, total_bytes = trusted_mem_get_info(ordinal, module = torch.xpu)
-                    xpu_gpus.append(
-                        (ordinal, free_bytes // (1024 * 1024), total_bytes // (1024 * 1024))
-                    )
-                if xpu_gpus:
-                    return xpu_gpus
-        except Exception:
-            pass
-
         # ── Torch fallback (covers AMD ROCm and missing nvidia-smi) ──
         try:
             import torch
