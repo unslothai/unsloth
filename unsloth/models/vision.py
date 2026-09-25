@@ -73,6 +73,9 @@ from ._utils import (
     importlib_version,
     _prepare_model_for_qat,
     resolve_model_class,
+    resolve_remote_code_model_class,
+    attention_class_for_load,
+    _REMOTE_CLASS_HUB_OPTIONS,
     resolve_attention_implementation,
     _get_text_only_config,
     _is_family_text_decoder,
@@ -100,6 +103,7 @@ from .loader_utils import (
     planner_quantization_kwargs,
     requested_device_map,
     resolve_unsloth_device_map,
+    warn_if_bitsandbytes_quantized_nothing,
 )
 # `unsloth.save` imports `.models.loader_utils`, so binding a name out of it here at module
 # scope closes a cycle and a cold `import unsloth.save` fails on the half-built module.
@@ -1460,6 +1464,17 @@ class FastBaseModel:
                 local_files_only = local_files_only,
                 revision = _revision,
             )
+        # Remote classes shadowing a native name can differ in attention flags.
+        _builds_remote_class, _remote_class = resolve_remote_code_model_class(
+            auto_model,
+            auto_config,
+            model_name,
+            trust_remote_code = trust_remote_code,
+            token = token,
+            revision = _revision,
+            local_files_only = local_files_only,
+            **{k: kwargs.get(k, None) for k in _REMOTE_CLASS_HUB_OPTIONS},
+        )
         model_class = resolve_model_class(auto_model, auto_config)
         # Forced float32 loads in bfloat16 then casts to float16. Resolved here, not at the load, because attention resolution and the device-map planner both size the same dtype.
         torch_dtype = dtype
@@ -1467,11 +1482,14 @@ class FastBaseModel:
             torch_dtype = torch.bfloat16
         # What attention actually runs in, not the load dtype: the UNSLOTH_FORCE_CUSTOM_DTYPE families (csm, falcon_h1, nemotron_h) load float32 for Mamba precision then cast projections back to correct_dtype, so flash stays.
         attn_dtype = correct_dtype if correct_dtype is not None else torch_dtype
+        _attn_class, _attn_supports_sdpa = attention_class_for_load(
+            model_class, _builds_remote_class, _remote_class, supports_sdpa
+        )
         attn_impl = resolve_attention_implementation(
-            model_class,
+            _attn_class,
             auto_config,
             requested_attn_implementation = kwargs.get("attn_implementation", None),
-            supports_sdpa = supports_sdpa,
+            supports_sdpa = _attn_supports_sdpa,
             dtype = attn_dtype,
         )
 
@@ -1755,6 +1773,9 @@ class FastBaseModel:
                     trust_remote_code = trust_remote_code,
                     **kwargs,
                 )
+                warn_if_bitsandbytes_quantized_nothing(
+                    model, kwargs.get("quantization_config", None), model_name
+                )
                 if text_only_decoder:
                     # Must run before offload / hooks capture the weights.
                     _cast_text_only_prequantized_params(model, torch_dtype)
@@ -1783,6 +1804,7 @@ class FastBaseModel:
                     subfolder = kwargs.get("subfolder"),
                     cache_dir = kwargs.get("cache_dir"),
                     variant = kwargs.get("variant"),
+                    dtype = torch_dtype,
                 )
                 if hasattr(model, "generate"):
                     model.fast_generate = make_fast_generate_wrapper(model.generate)

@@ -24,6 +24,7 @@ from loggers import get_logger
 import shutil
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -6996,6 +6997,12 @@ def _extra_args_have_tensor_split(
         if str(token).split("=", 1)[0] in ("--tensor-split", "-ts", "--tensor_split"):
             return True
     return bool(str((env or {}).get("LLAMA_ARG_TENSOR_SPLIT", "")).strip())
+
+
+@functools.lru_cache(maxsize = 1)
+def _count_ssl_context() -> ssl.SSLContext:
+    # httpx loads the CA bundle per Client (~15 ms); admission counts once per chat request.
+    return ssl.create_default_context()
 
 
 class LlamaCppBackend:
@@ -15446,9 +15453,17 @@ class LlamaCppBackend:
             ]:
                 if os.path.isdir(cuda_lib):
                     lib_dirs.append(cuda_lib)
+
+            # Vendored dirs go last: rescue only, never displace a runtime already found.
+            from utils.llama_cpp_freshness import read_install_marker
+            from utils.prebuilt.runtime_libs import vendored_cuda_runtime_dirs
+
+            marker_binary = str(_resolve_llama_binary(binary))
+            vendored_cuda_dirs = vendored_cuda_runtime_dirs(read_install_marker(marker_binary))
             existing_ld = env.get("LD_LIBRARY_PATH", "")
-            new_ld = ":".join(lib_dirs)
-            env["LD_LIBRARY_PATH"] = f"{new_ld}:{existing_ld}" if existing_ld else new_ld
+            env["LD_LIBRARY_PATH"] = ":".join(
+                path for path in [*lib_dirs, existing_ld, *vendored_cuda_dirs] if path
+            )
 
         return env
 
@@ -38839,6 +38854,7 @@ class LlamaCppBackend:
         chat_template_kwargs = None,
         continue_final_message: bool = False,
         should_abort = None,
+        prefer_native: bool = False,
     ) -> int:
         """Count prompt tokens for a chat request via llama-server.
 
@@ -38852,6 +38868,8 @@ class LlamaCppBackend:
         ``should_abort`` is polled between the two llama-server calls. Admission is the
         caller's job; this only stops a count that was admitted while idle from spending its
         second round trip once the answer stopped mattering. Raises when it fires.
+
+        ``prefer_native`` tries /v1/chat/completions/input_tokens first (one round trip).
         """
         if not self.is_loaded:
             if strict:
@@ -38900,7 +38918,12 @@ class LlamaCppBackend:
         tools = neutralize_tool_descriptions(tools, None, _profile)
 
         try:
-            with httpx.Client(timeout = 10, headers = self._auth_headers, trust_env = False) as client:
+            with httpx.Client(
+                timeout = 10,
+                headers = self._auth_headers,
+                trust_env = False,
+                verify = _count_ssl_context(),
+            ) as client:
 
                 def _tokenize(text: str) -> int:
                     r = client.post(
@@ -38947,6 +38970,22 @@ class LlamaCppBackend:
                     if continue_final_message:
                         template_body["continue_final_message"] = True
                         template_body["add_generation_prompt"] = False
+                    if prefer_native:
+                        if should_abort is not None and should_abort():
+                            raise CountAborted()
+                        try:
+                            native = client.post(
+                                f"{self.base_url}/v1/chat/completions/input_tokens",
+                                json = template_body,
+                            )
+                            if native.status_code == 200:
+                                count = native.json().get("input_tokens")
+                                if type(count) is int and count > 0:
+                                    return count
+                        except Exception:
+                            pass
+                        if should_abort is not None and should_abort():
+                            raise CountAborted()
                     resp = client.post(
                         f"{self.base_url}/apply-template",
                         json = template_body,

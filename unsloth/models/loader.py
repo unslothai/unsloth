@@ -224,17 +224,61 @@ def _config_uses_remote_code(config):
             auto_map = cfg.get("auto_map", auto_map)
         if not auto_map:
             return False
+        config_is_native = (getattr(type(cfg), "__module__", "") or "").startswith("transformers.")
         # A custom tokenizer, processor or feature extractor is not code the compiler traces.
-        return any(str(k).startswith(("AutoModel", "AutoConfig")) for k in auto_map)
+        return any(
+            str(k).startswith("AutoModel")
+            or (str(k).startswith("AutoConfig") and not config_is_native)
+            for k in auto_map
+        )
 
-    if _remote(config):
-        return True
-    for sub in ("text_config", "vision_config", "audio_config"):
-        cfg = getattr(config, sub, None)
-        if cfg is None and isinstance(config, dict):
-            cfg = config.get(sub)
-        if cfg is not None and _remote(cfg):
+    # Sub-configs go beyond text/vision/audio (Qwen-Omni thinker_config, nested llm_config) and nest;
+    # a remote child read as native puts the compiler on untraceable code, so walk every level.
+    try:
+        from transformers import PretrainedConfig as _config_class
+    except Exception:
+        _config_class = ()
+
+    def _is_config(value):
+        return isinstance(value, dict) or (bool(_config_class) and isinstance(value, _config_class))
+
+    def _children(node):
+        if isinstance(node, dict):
+            return [value for value in node.values() if _is_config(value)]
+        names = ["text_config", "vision_config", "audio_config"]
+        # Instance read: transformers 4.57 makes backbone configs' `sub_configs` a property.
+        sub_configs = getattr(node, "sub_configs", None)
+        for sub in sub_configs if isinstance(sub_configs, dict) else ():
+            if sub not in names:
+                names.append(sub)
+        # A callable (e.g. a Mock) is not a config.
+        children = [
+            child
+            for child in (getattr(node, name, None) for name in names)
+            if child is not None and (_is_config(child) or not callable(child))
+        ]
+        try:
+            children.extend(value for value in vars(node).values() if _is_config(value))
+        except TypeError:
+            pass
+        return children
+
+    pending = [(config, 0)]
+    seen = set()
+    while pending:
+        current, depth = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if _remote(current):
             return True
+        children = _children(current)
+        if not children:
+            continue
+        # Past the bound, answer conservatively.
+        if depth >= 8:
+            return True
+        pending.extend((child, depth + 1) for child in children)
     return False
 
 
@@ -674,8 +718,11 @@ class FastLanguageModel(FastLlamaModel):
                     f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
                     f"4bit/8bit/fp8 loading is disabled and the model will "
                     f"load in 16bit, which needs far more VRAM. Unsloth loads "
-                    f"4bit by default; point at the 4bit repo instead if you "
-                    f"wanted that."
+                    f"4bit by default. To train in 4bit, point at a 4bit repo or "
+                    f"pass quantization_config = BitsAndBytesConfig(load_in_4bit = True, "
+                    f"bnb_4bit_use_double_quant = True, bnb_4bit_quant_type = 'nf4', "
+                    f"bnb_4bit_compute_dtype = torch.bfloat16), which quantizes this "
+                    f"checkpoint while it loads."
                 )
             load_in_4bit = False
             load_in_8bit = False
@@ -863,8 +910,11 @@ class FastLanguageModel(FastLlamaModel):
                         f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
                         f"4bit/8bit/fp8 loading is disabled and the model will "
                         f"load in 16bit, which needs far more VRAM. Unsloth loads "
-                        f"4bit by default; point at the 4bit repo instead if you "
-                        f"wanted that."
+                        f"4bit by default. To train in 4bit, point at a 4bit repo or "
+                        f"pass quantization_config = BitsAndBytesConfig(load_in_4bit = True, "
+                        f"bnb_4bit_use_double_quant = True, bnb_4bit_quant_type = 'nf4', "
+                        f"bnb_4bit_compute_dtype = torch.bfloat16), which quantizes this "
+                        f"checkpoint while it loads."
                     )
                 load_in_4bit = False
                 load_in_8bit = False
@@ -1457,8 +1507,11 @@ class FastModel(FastBaseModel):
                     f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
                     f"4bit/8bit/fp8 loading is disabled and the model will "
                     f"load in 16bit, which needs far more VRAM. Unsloth loads "
-                    f"4bit by default; point at the 4bit repo instead if you "
-                    f"wanted that."
+                    f"4bit by default. To train in 4bit, point at a 4bit repo or "
+                    f"pass quantization_config = BitsAndBytesConfig(load_in_4bit = True, "
+                    f"bnb_4bit_use_double_quant = True, bnb_4bit_quant_type = 'nf4', "
+                    f"bnb_4bit_compute_dtype = torch.bfloat16), which quantizes this "
+                    f"checkpoint while it loads."
                 )
             load_in_4bit = False
             load_in_8bit = False
@@ -1796,8 +1849,11 @@ class FastModel(FastBaseModel):
                         f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
                         f"4bit/8bit/fp8 loading is disabled and the model will "
                         f"load in 16bit, which needs far more VRAM. Unsloth loads "
-                        f"4bit by default; point at the 4bit repo instead if you "
-                        f"wanted that."
+                        f"4bit by default. To train in 4bit, point at a 4bit repo or "
+                        f"pass quantization_config = BitsAndBytesConfig(load_in_4bit = True, "
+                        f"bnb_4bit_use_double_quant = True, bnb_4bit_quant_type = 'nf4', "
+                        f"bnb_4bit_compute_dtype = torch.bfloat16), which quantizes this "
+                        f"checkpoint while it loads."
                     )
                 load_in_4bit = False
                 load_in_8bit = False
