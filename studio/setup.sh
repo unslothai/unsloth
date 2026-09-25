@@ -3349,6 +3349,7 @@ _setup_nvidia_physical=false
 _setup_gfx_all=""
 _setup_gfx=""
 _setup_hip_map_missing=0
+_setup_amd_probe=""
 _setup_mkt=""
 _setup_amd_records=""
 
@@ -3580,6 +3581,7 @@ if [ "$_setup_nvidia_usable" != true ]; then
     fi
     if [ -n "$_setup_gfx_all" ]; then
         _setup_amd_detected=true
+        _setup_amd_probe=rocminfo
     elif command -v amd-smi >/dev/null 2>&1 && \
          _setup_run_smi amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
         _setup_amd_detected=true
@@ -3636,7 +3638,12 @@ if [ "$_setup_nvidia_usable" = true ]; then
     # behind on the common path where there is no driver string to print.
     if [ -n "$_setup_nv_driver" ]; then substep "Driver: $_setup_nv_driver"; fi
 elif [ "$_setup_amd_detected" = true ]; then
-    _setup_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
+    # rocminfo output is already ROCr-filtered and reordered, so only HIP indexes it (as install.sh).
+    if [ "$_setup_amd_probe" = rocminfo ]; then
+        _setup_vis="${HIP_VISIBLE_DEVICES:-}"
+    else
+        _setup_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
+    fi
     _setup_vis_idx=0
     if [ -n "$_setup_vis" ] && [ "$_setup_vis" != "-1" ]; then
         _setup_first="${_setup_vis%%,*}"

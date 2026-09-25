@@ -141,6 +141,7 @@ summary() {
         ${STUB_AMDSMI_MUTE_STATIC:+STUB_AMDSMI_MUTE_STATIC=1} \
         ${STUB_AMDSMI_E:+STUB_AMDSMI_E="$STUB_AMDSMI_E"} \
         ${3:+HIP_VISIBLE_DEVICES="$3"} \
+        ${STUB_ROCR:+ROCR_VISIBLE_DEVICES="$STUB_ROCR"} \
         /bin/bash -c 'set -euo pipefail; . "$1"; printf "%s|%s\n" "$_setup_gfx" "$_setup_mkt"' \
         _ "$WORK/block.sh"
 }
@@ -449,6 +450,56 @@ assert_eq "one adapter resolves without a map" \
 # rocminfo is an HSA client, so its agent list is already in ROCr order.
 assert_eq "the rocminfo path is not reordered by a HIP map" "gfx1100|AMD Radeon RX 7900 XTX" \
     "$(STUB_AMDSMI_E="$WORK/smi_e_reversed" summary "$WORK/roc_three_dup" "$WORK/empty" 1)"
+
+# rocminfo output is already filtered and ordered by ROCR_VISIBLE_DEVICES (ROCr renumbers
+# its survivors from 0), so these fixtures are post-mask agent lists. Indexing them by the
+# ROCr ordinal again applies the mask twice.
+cat > "$WORK/roc_rocr_1_0" <<'EOF'
+Agent 1
+*******
+  Name:                    AMD Ryzen 9 7950X 16-Core Processor
+  Device Type:             CPU
+*******
+Agent 2
+*******
+  Name:                    gfx1201
+  Marketing Name:          AMD Radeon AI PRO R9700
+  Device Type:             GPU
+*******
+Agent 3
+*******
+  Name:                    gfx1036
+  Marketing Name:          AMD Radeon Graphics
+  Device Type:             GPU
+EOF
+cat > "$WORK/roc_rocr_1_2" <<'EOF'
+Agent 1
+*******
+  Name:                    AMD Ryzen 9 7950X 16-Core Processor
+  Device Type:             CPU
+*******
+Agent 2
+*******
+  Name:                    gfx1100
+  Marketing Name:          AMD Radeon RX 7900 XTX
+  Device Type:             GPU
+*******
+Agent 3
+*******
+  Name:                    gfx1201
+  Marketing Name:          AMD Radeon AI PRO R9700
+  Device Type:             GPU
+EOF
+echo "=== ROCR_VISIBLE_DEVICES over rocminfo ==="
+assert_eq "ROCR=1,0 selects the first rocminfo survivor, not the iGPU at ordinal 1" \
+    "gfx1201|AMD Radeon AI PRO R9700" "$(STUB_ROCR=1,0 summary "$WORK/roc_rocr_1_0" "$WORK/empty")"
+assert_eq "ROCR=1,2 on three cards selects survivor 0 (physical 1)" \
+    "gfx1100|AMD Radeon RX 7900 XTX" "$(STUB_ROCR=1,2 summary "$WORK/roc_rocr_1_2" "$WORK/empty")"
+assert_eq "HIP still indexes the ROCr survivors" \
+    "gfx1201|AMD Radeon AI PRO R9700" "$(STUB_ROCR=1,2 summary "$WORK/roc_rocr_1_2" "$WORK/empty" 1)"
+assert_eq "amd-smi is not ROCr-filtered, so its list is still indexed by the ROCr ordinal" \
+    "gfx1100|AMD Radeon RX 7900 XTX" \
+    "$(STUB_ROCR=1 STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three")"
 
 echo "=== detected, but no arm produced a record ==="
 # Under `set -euo pipefail` an unassigned variable is not an empty string, it is a fatal
