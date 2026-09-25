@@ -16,8 +16,6 @@ def _utils():
     return _utils
 
 
-
-
 def test_old_flag_alone_is_not_flash_support_on_new_transformers():
     U = _utils()
     from transformers.modeling_utils import PreTrainedModel
@@ -67,8 +65,6 @@ def test_resolver_does_not_request_flash_for_old_flag_remote_class(monkeypatch):
     config = SimpleNamespace(model_type = "nemotron_h", _attn_implementation = None)
     impl = U.resolve_attention_implementation(NewRemote, config, dtype = torch.bfloat16)
     assert impl == "flash_attention_2"
-
-
 
 
 def _install_fake_remote_modules(monkeypatch, package = "transformers_modules.fake_repo.abc123"):
@@ -197,8 +193,6 @@ def test_remote_config_without_auto_class_entry_stays_native(monkeypatch):
     config, _ = _install_fake_remote_modules(monkeypatch)
     config.auto_map = {"AutoConfig": "configuration_llama.LlamaConfig"}
     assert U.resolve_model_class(AutoModelForCausalLM, config) is LlamaForCausalLM
-
-
 
 
 class _Expert(torch.nn.Module):

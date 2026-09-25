@@ -797,7 +797,6 @@ def _model_class_supports_flash_attention(model_class):
 def _flash_dispatch_reads_legacy_flag(PreTrainedModel) -> bool:
     # Read from source: later versions keep the legacy name only in the error message.
     import inspect
-
     for name in ("_flash_attn_can_dispatch", "_flash_attn_2_can_dispatch"):
         check = getattr(PreTrainedModel, name, None)
         if check is None:
