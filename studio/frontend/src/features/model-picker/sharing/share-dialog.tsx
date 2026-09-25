@@ -126,7 +126,6 @@ export function ShareRunConfigDialog({
   const [includeVariant, setIncludeVariant] = useState(
     shareableModel && Boolean(target.ggufVariant),
   );
-  const [includeFormat, setIncludeFormat] = useState(shareableModel);
   const [destination, setDestination] = useState(() =>
     !isTauri && loopbackHostname.test(window.location.hostname)
       ? "browser"
@@ -155,8 +154,9 @@ export function ShareRunConfigDialog({
           ...(includeModel ? { model } : {}),
           ...(includeVariant && target.ggufVariant
             ? { ggufVariant: target.ggufVariant }
-            : {}),
-          ...(includeFormat ? { isGguf: target.isGguf } : {}),
+            : includeModel
+              ? { isGguf: target.isGguf }
+              : {}),
           config: Object.fromEntries(
             [...selected].map((key) => [key, config[key]]),
           ),
@@ -170,7 +170,6 @@ export function ShareRunConfigDialog({
       model,
       includeVariant,
       target.ggufVariant,
-      includeFormat,
       target.isGguf,
       destination,
     ],
@@ -256,13 +255,6 @@ export function ShareRunConfigDialog({
                 setIncludeVariant,
                 target.ggufVariant,
               )}
-            {choice(
-              "format",
-              "Model format",
-              includeFormat,
-              setIncludeFormat,
-              target.isGguf ? "GGUF" : "Native weights",
-            )}
           </div>
           <div className="hover-scrollbar min-h-0 flex-1 divide-y divide-border/50 overflow-y-auto rounded-2xl border border-border/60 px-4 [scrollbar-gutter:stable_both-edges] sm:max-h-75">
             {fields.map(({ key, valid, detail }) =>

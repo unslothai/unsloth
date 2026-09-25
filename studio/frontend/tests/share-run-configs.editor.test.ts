@@ -53,6 +53,7 @@ const { SharedRunConfigReview } = loadWithStubs<{
     "react/jsx-runtime": stubJsxRuntime(),
     react: {},
     "@/components/ui/button": {},
+    "lucide-react": { ChevronDown: "chevron" },
     "../model-config/model-config-draft": {},
     "./inbox": {},
     "./import-config": {},
@@ -75,6 +76,10 @@ function text(node: unknown): string {
   return typeof node === "string" || typeof node === "number"
     ? String(node)
     : "";
+}
+
+function summaryText(node: unknown): string {
+  return text(elements(node).find((element) => element.type === "summary"));
 }
 
 function shareDialogHarness(
@@ -226,6 +231,53 @@ test("local sharing preserves the recipient's quant unless the sender explicitly
   const shareable = shareDialogHarness(DEFAULT_PER_MODEL_CONFIG)();
   assert.equal(shareable.choice("variant")?.props.checked, true);
   assert.equal(shareable.value.ggufVariant, "Q4_K_M");
+});
+
+test("the model format travels with the model only when no shared variant implies it", () => {
+  const recipient = {
+    params: { checkpoint: "" },
+    activeGgufVariant: null,
+    loadedIsGguf: null,
+    activeNativePathToken: null,
+    activeLoadId: null,
+    models: [{ id: "owner/model", isGguf: true, isLora: false }],
+    loras: [],
+  };
+  const opens = (
+    value: Parameters<typeof targetModule.resolveRunConfigTarget>[0],
+  ) => targetModule.resolveRunConfigTarget(value, recipient)?.meta.isGguf;
+  const render = shareDialogHarness(DEFAULT_PER_MODEL_CONFIG);
+  const initial = render();
+  assert.equal(initial.choice("format"), undefined);
+  assert.equal(initial.value.ggufVariant, "Q4_K_M");
+  assert.equal(Object.hasOwn(initial.value, "isGguf"), false);
+  assert.equal(opens(initial.value), true);
+  (
+    initial.choice("variant")?.props.onCheckedChange as (
+      checked: boolean,
+    ) => void
+  )(false);
+  const modelOnly = render();
+  assert.equal(modelOnly.value.isGguf, true);
+  assert.equal(opens(modelOnly.value), true);
+  (
+    modelOnly.choice("model")?.props.onCheckedChange as (
+      checked: boolean,
+    ) => void
+  )(false);
+  const settingsOnly = render();
+  assert.equal(Object.hasOwn(settingsOnly.value, "model"), false);
+  assert.equal(Object.hasOwn(settingsOnly.value, "isGguf"), false);
+  const native = shareDialogHarness(DEFAULT_PER_MODEL_CONFIG, true, {
+    id: "owner/model",
+    displayName: "Model",
+    isGguf: false,
+    apiLoadable: true,
+    meta: { source: "hub", isLora: false },
+  })();
+  assert.equal(native.choice("format"), undefined);
+  assert.equal(native.value.isGguf, false);
+  assert.equal(opens(native.value), false);
 });
 
 for (const [address, destination] of [
@@ -413,6 +465,7 @@ test("Share opens and closes its dialog", () => {
         useEffect: () => undefined,
       },
       "@/components/ui/button": { Button: button },
+      "lucide-react": { ChevronDown: "chevron" },
       "../model-config/model-config-draft": {
         modelConfigDraftKey,
       },
@@ -604,16 +657,10 @@ test("review renders field labels and argument values as text", () => {
     draftConfig: { ...DEFAULT_PER_MODEL_CONFIG, ...imported },
     currentConfig: { ...DEFAULT_PER_MODEL_CONFIG, ...imported },
   });
-  assert.ok(text(tree).includes("Settings changed by link (3)"));
+  assert.equal(summaryText(tree), "Settings changed by link3");
   assert.ok(text(tree).includes("Parallel slots"));
   assert.ok(text(tree).includes("--rope-scaling yarn"));
   assert.ok(text(tree).includes("Default"));
-  assert.match(text(tree), /checked saves these settings for future loads/);
-  assert.match(
-    text(tree),
-    /unchecked deletes any saved settings for this model/,
-  );
-  assert.match(text(tree), /without loading to keep your saved settings/);
   assert.ok(
     elements(tree).every(
       (element) => !("dangerouslySetInnerHTML" in element.props),
@@ -670,7 +717,44 @@ test("review renders field labels and argument values as text", () => {
     currentConfig: { ...DEFAULT_PER_MODEL_CONFIG, llamaExtraArgs: [] },
   });
   assert.ok(text(adjusted).includes("No extra arguments"));
-  assert.ok(text(adjusted).includes("Requested: --rope-scaling yarn"));
+  assert.ok(
+    text(adjusted).includes(
+      "Requested --rope-scaling yarn, adjusted for this device or model.",
+    ),
+  );
+});
+
+test("review states what loading does to this model's saved settings", () => {
+  const config = { nParallel: 3 };
+  const draftConfig = { ...DEFAULT_PER_MODEL_CONFIG, ...config };
+  const note = (remember: boolean, hasSavedSettings: boolean) =>
+    text(
+      SharedRunConfigReview({
+        config,
+        draftConfig,
+        currentConfig: draftConfig,
+        remember,
+        hasSavedSettings,
+      }),
+    );
+  assert.match(
+    note(true, true),
+    /Loading replaces your saved settings for this model\. Close without loading to keep them\./,
+  );
+  assert.match(
+    note(true, false),
+    /Loading saves these settings for this model\./,
+  );
+  assert.match(
+    note(false, true),
+    /Loading clears your saved settings for this model\. Close without loading to keep them\./,
+  );
+  assert.match(
+    note(false, false),
+    /To keep these settings for next time, tick “Remember for this model”\./,
+  );
+  assert.doesNotMatch(note(true, false), /replaces|clears|Close without/);
+  assert.doesNotMatch(note(false, false), /replaces|clears|saves these/);
 });
 
 test("GPU reconciliation keeps imported settings visible and explains removed or filtered GPU choices", () => {
@@ -702,7 +786,7 @@ test("GPU reconciliation keeps imported settings visible and explains removed or
       draftConfig,
       currentConfig,
     });
-    assert.ok(text(tree).includes("Settings changed by link (3)"));
+    assert.equal(summaryText(tree), "Settings changed by link3");
     const values = elements(tree)
       .filter((element) => element.type === "dd")
       .map(text);
@@ -712,8 +796,11 @@ test("GPU reconciliation keeps imported settings visible and explains removed or
         value.startsWith(reconciled.ids ? "[0]" : "Default"),
       ),
     );
-    assert.ok(text(tree).includes("Requested: [0,1]"));
-    assert.ok(text(tree).includes("unsupported values will not be used"));
+    assert.ok(
+      text(tree).includes(
+        "Requested [0,1], adjusted for this device or model.",
+      ),
+    );
   }
 });
 
@@ -722,17 +809,14 @@ test("review identifies a linked repository and explains uncached downloads, inc
     const draftConfig = { ...DEFAULT_PER_MODEL_CONFIG, ...config };
     const props = { config, draftConfig, currentConfig: draftConfig };
     const tree = SharedRunConfigReview({ ...props, model: "owner/model" });
+    assert.ok(summaryText(tree).endsWith("owner/model"));
     assert.match(
       text(tree),
-      /This link selected owner\/model from Hugging Face/,
-    );
-    assert.match(
-      text(tree),
-      /Loading downloads any model files that are not already cached/,
+      /If the model isn’t on this device, loading downloads it from Hugging Face\./,
     );
     assert.doesNotMatch(
       text(SharedRunConfigReview(props)),
-      /This link selected/,
+      /owner\/model|Hugging Face|downloads/,
     );
   }
 });
@@ -748,10 +832,14 @@ test("review identifies an explicit quant selection and possible download withou
         draftConfig,
         currentConfig: draftConfig,
       });
-      assert.match(text(tree), /This link selected GGUF variant Q8_0/);
+      assert.ok(
+        summaryText(tree).endsWith(model ? `${model} · Q8_0` : "Q8_0"),
+      );
       assert.match(
         text(tree),
-        /Loading downloads any model files that are not already cached/,
+        model
+          ? /If the model isn’t on this device, loading downloads it from Hugging Face\./
+          : /If this variant isn’t on this device, loading downloads it\./,
       );
       assert.doesNotMatch(text(tree), /Link settings already match/);
       if (!model) assert.doesNotMatch(text(tree), /from Hugging Face/);

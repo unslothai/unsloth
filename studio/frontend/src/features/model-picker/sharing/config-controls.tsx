@@ -34,7 +34,7 @@ export function SharedRunConfigReview({
       {props.config && (
         <LazyImportBoundary
           fallback={
-            <p role="alert" className="mb-5 text-sm text-muted-foreground">
+            <p role="alert" className="mb-5 text-ui-12 text-muted-foreground">
               The link settings summary could not load. Reload Studio and reopen
               the link to review it.
             </p>
@@ -48,7 +48,7 @@ export function SharedRunConfigReview({
       {isRunConfigVariantUnresolved(target) && (
         <p
           role="status"
-          className="mb-5 rounded-lg border p-3 text-sm text-muted-foreground"
+          className="mb-5 rounded-2xl border border-border/60 px-4 py-3 text-ui-12 leading-relaxed text-muted-foreground"
         >
           The GGUF variant could not be resolved. You can edit and share these
           settings offline. Reopen the link when the Hugging Face model is

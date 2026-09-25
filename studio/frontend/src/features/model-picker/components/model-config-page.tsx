@@ -3176,6 +3176,8 @@ export function ModelConfigPage({
         ggufVariant={importedConfig?.ggufVariant}
         draftConfig={configState}
         currentConfig={config}
+        remember={remember}
+        hasSavedSettings={savedRemember}
       />
       <div className="space-y-5">
         {target.isGguf && (

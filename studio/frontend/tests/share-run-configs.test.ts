@@ -356,3 +356,33 @@ for (const isGguf of [false, true]) {
     assert.equal(target?.meta.loadId, selection.activeLoadId);
   });
 }
+
+for (const [model, isGguf] of [
+  ["owner/Model-GGUF", true],
+  ["owner/native", false],
+] as const) {
+  test(`a settings-only link's format does not decide how the recipient's own model opens: GGUF=${isGguf}`, () => {
+    const unknown = {
+      ...selection,
+      loadedIsGguf: null,
+      activeGgufVariant: null,
+      activeNativePathToken: null,
+    };
+    const value = { isGguf: !isGguf, config: { nParallel: 3 } };
+    for (const target of [
+      resolveRunConfigTarget(
+        value,
+        { ...unknown, params: { checkpoint: "" } },
+        model,
+      ),
+      resolveRunConfigTarget(value, {
+        ...unknown,
+        params: { checkpoint: model },
+      }),
+    ]) {
+      assert.equal(target?.id, model);
+      assert.equal(target?.meta.isGguf, isGguf);
+      assert.equal(target?.meta.ggufVariant, undefined);
+    }
+  });
+}

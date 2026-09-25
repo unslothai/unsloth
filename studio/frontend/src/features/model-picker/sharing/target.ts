@@ -53,7 +53,9 @@ function resolveFormat(
   const value =
     selectedModel && (isStandaloneGgufPath(id) || isOllamaModelId(id))
       ? { ...shared, isGguf: true, ggufVariant: undefined }
-      : shared;
+      : shared.model
+        ? shared
+        : { ...shared, isGguf: undefined };
   const format = value.model ? value.isGguf : (knownFormat ?? value.isGguf);
   const ggufVariant =
     format === false || isStandaloneGgufPath(id)
