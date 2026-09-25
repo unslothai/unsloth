@@ -310,3 +310,9 @@ test("a card's date shows on hover, on keyboard focus and always on touch", () =
     assert.ok(date?.includes(reveal), reveal);
   }
 });
+
+test("a moved folder's files are read again by the galleries and the Library", () => {
+  const move = /async function move\([\s\S]*?\n {2}\}\n/.exec(readSrc("features/settings/tabs/library-tab.tsx"))?.[0] ?? "";
+  assert.match(move, /notifyGalleryChanged\(location\.key\)/);
+  assert.match(move, /useLibraryStore\.getState\(\)[\s\S]*\.refresh\(\)/);
+});

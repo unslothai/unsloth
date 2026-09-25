@@ -48,6 +48,7 @@ import { useIsAccountOwner } from "@/features/auth";
 import { FolderBrowser } from "@/features/model-picker";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
+import { notifyGalleryChanged } from "@/lib/gallery-flags";
 import { toast } from "@/lib/toast";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -254,8 +255,16 @@ function LocationsSection() {
     try {
       const result = await moveLibraryLocation(location.key, path);
       setLocations(result.locations);
-      // The files may now sit on another disk, which the storage bar measures.
+      // The files may now sit on another disk, which the storage bar measures, and the pages
+      // already showing them read them again from where they are now.
       refreshLibraryStorage();
+      if (location.key === "images" || location.key === "videos" || location.key === "audio") {
+        notifyGalleryChanged(location.key);
+      }
+      void import("@/features/library/store").then(({ useLibraryStore }) => {
+        const library = useLibraryStore.getState();
+        if (library.status !== "idle") void library.refresh();
+      });
       toast.success(t("settings.library.locationMoved", { name }), {
         id,
         description: result.leftBehind
