@@ -140,15 +140,15 @@ function EmptyState({
   return (
     <div className="mx-auto mt-16 flex max-w-md flex-col items-center gap-2 text-center">
       <HugeiconsIcon icon={icon} strokeWidth={1.5} className="mb-2 size-7" />
-      <h2 className="font-medium text-[20px] text-foreground">{title}</h2>
-      <p className="text-[15px] text-muted-foreground">{description}</p>
+      <h2 className="font-medium text-ui-21 text-foreground">{title}</h2>
+      <p className="text-ui-15 text-muted-foreground">{description}</p>
       {action && <div className="mt-3">{action}</div>}
     </div>
   );
 }
 
 function SectionHeading({ children }: { children: ReactNode }) {
-  return <h2 className="mb-4 mt-8 font-medium text-[18px] text-foreground">{children}</h2>;
+  return <h2 className="mb-4 mt-8 font-medium text-ui-18 text-foreground">{children}</h2>;
 }
 
 function LoadingGrid() {
