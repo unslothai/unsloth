@@ -471,6 +471,8 @@ export interface ServedStatus {
   speculative_type?: string | null;
   spec_fallback_reason?: string | null;
   cache_type_kv?: string | null;
+  /** Slots the server actually serves after load_model's clamps. */
+  parallel_slots?: number | null;
 }
 
 const NGRAM_FLAGS = [
@@ -546,6 +548,17 @@ export function servedMismatch(
     st.cache_type_kv !== variant.load.cache_type_kv
   ) {
     return `Studio served KV ${st.cache_type_kv} instead of ${variant.load.cache_type_kv}`;
+  }
+  // A build without --kv-unified clamps multi-slot loads back to one, so a 2- or 4-slot row
+  // would measure the same one-slot server; skip it instead of charting it as its own config.
+  const wantSlots = variant.load.n_parallel;
+  if (
+    wantSlots != null &&
+    wantSlots > 1 &&
+    typeof st.parallel_slots === "number" &&
+    st.parallel_slots < wantSlots
+  ) {
+    return `Studio served ${st.parallel_slots} parallel slot${st.parallel_slots === 1 ? "" : "s"} instead of ${wantSlots}`;
   }
   return null;
 }

@@ -138,8 +138,15 @@ export const useBenchmarksStore = create<BenchmarksState>()(
           disabled: [],
         })),
       applyToChat: async (run) => {
+        // Never apply a row that errored mid-run: its partial sample stays in aggregate,
+        // so restrict the verdict to rows whose outcome reached "done".
+        const done = new Set(
+          run.outcomes.filter((o) => o.state === "done").map((o) => o.label),
+        );
         const verdict = tuneVerdict(
-          aggregate(run.results, run.config.variants, null),
+          aggregate(run.results, run.config.variants, null).filter((r) =>
+            done.has(r.label),
+          ),
           run.config.variants,
         );
         const variant =

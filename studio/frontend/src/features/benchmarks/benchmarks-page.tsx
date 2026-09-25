@@ -353,6 +353,13 @@ export function BenchmarksPage(): ReactElement {
       choosePreset("offload", maxContext, shape);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the shape's value
   }, [offloadSweep, shapeKey]);
+  // Context rows are scaled to the model's window, so a new model or a late header rebuilds them.
+  const contextSweep = config.sweep === "context";
+  useEffect(() => {
+    if (contextSweep && !live && maxContext)
+      choosePreset("context", maxContext, shape);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the resolved window
+  }, [contextSweep, maxContext]);
   const [tab, setTab] = useState<BenchTab>("benchmark");
 
   useEffect(() => {

@@ -30,14 +30,19 @@ export function TuneVerdictCard({
   const applyToChat = useBenchmarksStore((s) => s.applyToChat);
   const live = useBenchmarksStore((s) => s.live);
   const colors = useFamilyColors();
-  const verdict = useMemo(
-    () =>
-      tuneVerdict(
-        aggregate(run.results, run.config.variants, null),
-        run.config.variants,
+  const verdict = useMemo(() => {
+    // Only rows that ran to the end can be handed to chat: a row that measured a sample
+    // then errored on a later rep leaves that sample in aggregate, so drop it here.
+    const done = new Set(
+      run.outcomes.filter((o) => o.state === "done").map((o) => o.label),
+    );
+    return tuneVerdict(
+      aggregate(run.results, run.config.variants, null).filter((r) =>
+        done.has(r.label),
       ),
-    [run],
-  );
+      run.config.variants,
+    );
+  }, [run]);
   if (!verdict) return null;
   const variant = run.config.variants.find(
     (v) => v.label === verdict.pick.label,

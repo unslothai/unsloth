@@ -73,9 +73,15 @@ function scoreRun(run: BenchRunSummary): {
     }))
     .sort((a, b) => b.tps - a.tps);
   const base = rows.find((r) => r.isBase) ?? null;
-  const best = rows.find((r) => !r.isBase) ?? base;
+  const challenger = rows.find((r) => !r.isBase) ?? null;
+  // Fastest row overall wins the card, which can be the baseline (an offload sweep's Studio fit).
+  const best =
+    base && (!challenger || base.tps >= challenger.tps)
+      ? base
+      : (challenger ?? base);
+  // The best challenger measured against the baseline, below 1× when nothing beat it.
   const speedup =
-    best && base && best !== base && base.tps > 0 ? best.tps / base.tps : null;
+    challenger && base && base.tps > 0 ? challenger.tps / base.tps : null;
   return { rows, best, base, speedup };
 }
 
