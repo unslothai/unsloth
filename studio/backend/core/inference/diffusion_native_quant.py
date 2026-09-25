@@ -18,6 +18,7 @@ NATIVE_INT8_ACT_ENV = "UNSLOTH_NATIVE_INT8_ACT"
 NATIVE_INT8_ROT_ENV = "UNSLOTH_NATIVE_INT8_ROT"
 # torch._int_mm needs M > 16 and K, N multiples of 8.
 _INT_MM_MIN_ROWS = 17
+_INT_MM_CHUNK_ELEMS = 1 << 25
 
 
 def int8_act_requested() -> bool:
@@ -132,9 +133,8 @@ def native_linear_class():
                 and self.out_features % 8 == 0
             )
 
-        def _forward_int_mm(self, x: Any) -> Any:
+        def _int_mm_rows(self, x2: Any) -> Any:
             # Must stay fast in eager (Windows ROCm has no Triton): upcasts ride mixed-dtype ops, no .float() copies.
-            x2 = x.reshape(-1, self.in_features)
             x_scale = torch.linalg.vector_norm(
                 x2, ord = float("inf"), dim = 1, keepdim = True, dtype = torch.float32
             )
@@ -147,7 +147,23 @@ def native_linear_class():
                 out = torch.addcmul(self.bias.float(), out, w_scale)
             else:
                 out = out.mul_(w_scale)
-            return out.to(x.dtype).reshape(*x.shape[:-1], self.out_features)
+            return out
+
+        def _forward_int_mm(self, x: Any) -> Any:
+            x2 = x.reshape(-1, self.in_features)
+            rows = x2.shape[0]
+            # Eager materialises fp32 [rows, features] temporaries (inductor fuses them): cap them per chunk.
+            chunk = _INT_MM_CHUNK_ELEMS // max(self.in_features, self.out_features)
+            if torch.compiler.is_compiling() or rows <= chunk or chunk < 2 * _INT_MM_MIN_ROWS:
+                out = self._int_mm_rows(x2).to(x.dtype)
+            else:
+                out = torch.cat(
+                    [
+                        self._int_mm_rows(part).to(x.dtype)
+                        for part in torch.tensor_split(x2, -(-rows // chunk))
+                    ]
+                )
+            return out.reshape(*x.shape[:-1], self.out_features)
 
         def forward(self, x: Any) -> Any:
             if self.rot_group:

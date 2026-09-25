@@ -1077,3 +1077,21 @@ def test_qkv_fusion_skips_a_native_quantised_denoiser():
     assert diffusion_speed._fuse_qkv(native, None) is False and not calls
     dense = types.SimpleNamespace(transformer = _Dit(native = False))
     assert diffusion_speed._fuse_qkv(dense, None) is True and len(calls) == 1
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "the W8A8 path runs on CUDA inputs only")
+def test_eager_w8a8_chunks_long_inputs_without_changing_the_result(monkeypatch):
+    torch.manual_seed(0)
+    layer = nq.native_linear_class()(
+        torch.nn.Linear(64, 32).to(torch.bfloat16), "int8", act_int8 = True
+    ).cuda()
+    x = torch.randn(300, 64, dtype = torch.bfloat16, device = "cuda")
+    whole = layer(x)
+    seen = []
+    rows = layer._int_mm_rows
+    monkeypatch.setattr(
+        layer, "_int_mm_rows", lambda part: seen.append(part.shape[0]) or rows(part)
+    )
+    monkeypatch.setattr(nq, "_INT_MM_CHUNK_ELEMS", 64 * 40)
+    assert torch.equal(layer(x), whole)
+    assert len(seen) > 1 and sum(seen) == 300 and min(seen) >= 17
