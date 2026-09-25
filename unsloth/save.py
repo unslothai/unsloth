@@ -3771,14 +3771,7 @@ def _model_basename(name_or_path, default = "model") -> str:
 
 
 def _assert_export_target_is_not_base_with_lora_layers(self):
-    """Fail loudly when a PEFT wrapper re-exposes a method bound to its base model.
-
-    `patch_saving_functions` binds methods on the object it is handed.  When callers
-    then wrap that same base with ``peft.PeftModel.from_pretrained`` and call the
-    export through the wrapper, the method still sees the base as ``self``.  That used
-    to silently export the un-merged base model, so detect a live LoRA layer and give
-    the supported routes instead.
-    """
+    """`peft.PeftModel.from_pretrained` forwards to the base's bound export method, which would silently write the un-merged base (unsloth#11698)."""
     if isinstance(self, (PeftModel, PeftModelForCausalLM)):
         return
 
@@ -3792,8 +3785,7 @@ def _assert_export_target_is_not_base_with_lora_layers(self):
             "Unsloth: This model has LoRA layers, but the save method was called on the "
             "base model. This happens when the adapter is attached with "
             "`peft.PeftModel.from_pretrained`. Load the adapter folder with "
-            "`FastModel.from_pretrained`, or call `model = model.merge_and_unload()` "
-            "before saving."
+            "`FastModel.from_pretrained(<adapter folder>)` instead."
         )
 
 
@@ -6810,6 +6802,7 @@ def unsloth_save_pretrained_torchao(
     `save_directory`: local folder, or a hub id when `push_to_hub` is True.
     `torchao_config` (TorchAOBaseConfig): required for PTQ, None for QAT. https://docs.pytorch.org/ao/main/api_ref_quantization.html#inference-apis-for-quantize
     """
+    _assert_export_target_is_not_base_with_lora_layers(self)
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
 

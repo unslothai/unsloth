@@ -21,6 +21,7 @@ _EXPORT_FUNCTIONS = {
     "unsloth_push_to_hub_gguf",
     "unsloth_generic_save_pretrained_merged",
     "unsloth_generic_push_to_hub_merged",
+    "unsloth_save_pretrained_torchao",
 }
 
 
@@ -95,7 +96,7 @@ def _load_guard(monkeypatch):
 
 def test_a_base_model_with_lora_layers_raises_before_export(peft_guard_env):
     guard = _load_guard(None)
-    with pytest.raises(RuntimeError, match = "PeftModel.from_pretrained"):
+    with pytest.raises(RuntimeError, match = "FastModel.from_pretrained"):
         guard(_Model(_FakeBaseTunerLayer()))
 
 
