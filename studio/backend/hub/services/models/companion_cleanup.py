@@ -139,18 +139,37 @@ def _variant_is_a_required_companion_asset(repo_id: str, variant: str) -> bool:
     return _impl(repo_id, variant)
 
 
-def _delete_impact_blocking(repo_id: str, variant: Optional[str]) -> dict:
+def _delete_impact_blocking(
+    repo_id: str, variant: Optional[str], cache_path: Optional[str] = None
+) -> dict:
     scans = _account_scans()
     by_id = _repos_by_id(scans)
     key = repo_id.strip().lower()
-    repos = by_id.get(key, [])
+    all_copies = by_id.get(key, [])
+    from hub.utils.gguf_sources import cached_gguf_action_path
+
+    cache_path = cached_gguf_action_path(repo_id, variant, cache_path)
+    repos = all_copies
+    surviving = []
+    if cache_path:
+        from hub.utils.hf_cache_state import resolve_delete_target_root
+
+        root = resolve_delete_target_root(
+            "model",
+            repo_id,
+            cache_path,
+            {Path(repo.repo_path).parent.resolve() for repo in all_copies},
+        )
+        repos = [repo for repo in all_copies if Path(repo.repo_path).parent.resolve() == root]
+        surviving = [repo for repo in all_copies if repo not in repos]
 
     reclaimed = 0
     for repo_info in repos:
         reclaimed += _variant_bytes(repo_info, variant) if variant else _repo_blob_bytes(repo_info)
 
-    # Would this delete leave the repo with no runnable checkpoint? Only then can its companions become reclaimable; while a sibling quant survives they stay in use.
-    removes_last_checkpoint = True
+    # Would this delete leave the repo with no runnable checkpoint? Only then can its companions become reclaimable;
+    # while a sibling quant survives they stay in use.
+    removes_last_checkpoint = not any(_repo_holds_denoiser(repo) for repo in surviving)
     if variant:
         for repo_info in repos:
             if _remaining_main_gguf_variants(repo_info, excluding = variant):
@@ -186,6 +205,7 @@ def _delete_impact_blocking(repo_id: str, variant: Optional[str]) -> dict:
         "repo_id": repo_id,
         "variant": variant,
         "reclaimed_bytes": reclaimed,
+        "cache_path": cache_path,
         "retained_companions": retained,
         "freeable_companions": freeable,
         # Same predicate the destructive path uses: the native Qwen-Image encoder is a named quant inside a chat GGUF repo, so previewing only whole-repo deletes left Delete enabled and the refusal arriving after the user confirmed.
@@ -205,14 +225,16 @@ class _SingleRepoScan:
         self.repos = repos
 
 
-async def delete_impact_response(repo_id: str, variant: Optional[str] = None) -> dict:
+async def delete_impact_response(
+    repo_id: str, variant: Optional[str] = None, cache_path: Optional[str] = None
+) -> dict:
     """What a delete of *repo_id* (/*variant*) would reclaim, retain, and be blocked by."""
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
     variant = (variant or "").strip() or None
     if variant is not None and not _is_valid_gguf_variant(variant):
         raise HTTPException(status_code = 400, detail = f"Invalid gguf_variant: {variant!r}")
-    return await asyncio.to_thread(_delete_impact_blocking, repo_id, variant)
+    return await asyncio.to_thread(_delete_impact_blocking, repo_id, variant, cache_path)
 
 
 def _orphan_companions_blocking() -> dict:

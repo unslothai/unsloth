@@ -3049,6 +3049,21 @@ def _resolve_repo_id_casing(hf_repo: str) -> str:
         return hf_repo
 
 
+def _cached_gguf_snapshots(repo_id: str):
+    """Retain the existing active-cache lookup; add remembered chat copies once."""
+    from utils.models.model_config import _iter_hf_cache_snapshots
+    from hub.utils.gguf_sources import gguf_cache_snapshots
+
+    seen = set()
+    for snapshots in (_iter_hf_cache_snapshots(repo_id), gguf_cache_snapshots(repo_id)):
+        for snapshot in snapshots:
+            key = str(snapshot.resolve())
+            if key not in seen:
+                seen.add(key)
+                yield snapshot
+
+
+
 def _cached_colocated_split_main(
     repo_id: str, main_filename: str, shards: Iterable[str], expected_sizes: dict[str, int]
 ) -> Optional[str]:
@@ -3064,8 +3079,7 @@ def _cached_colocated_split_main(
     if not main_parts or any(part in (".", "..") for part in main_parts):
         return None
     try:
-        from utils.models.model_config import _iter_hf_cache_snapshots
-        for snap in _iter_hf_cache_snapshots(repo_id):
+        for snap in _cached_gguf_snapshots(repo_id):
             main_path = snap.joinpath(*main_parts)
             if not main_path.is_file():
                 continue
@@ -3099,8 +3113,12 @@ def _cached_variant_candidates(
 ) -> Generator[tuple[str, str, list[str], Path], None, None]:
     """Yield complete cached variant copies in snapshot preference order."""
     try:
-        from utils.models.model_config import _iter_hf_cache_snapshots
-        for snap in _iter_hf_cache_snapshots(repo_id):
+        from hub.utils.gguf_sources import (
+            cached_gguf_manifest_complete,
+            cached_gguf_source_partial,
+        )
+        pending_downloads = []
+        for snap in _cached_gguf_snapshots(repo_id):
             cached_files = _gguf_snapshot_files(snap)
             matches = _gguf_files_for_variant(cached_files, hf_variant)
             if not matches:
@@ -3123,7 +3141,15 @@ def _cached_variant_candidates(
                 continue
             if require_mmproj and not _pick_mmproj(cached_files):
                 continue
-            yield str(main_path), main, shards, snap
+            candidate = (str(main_path), main, shards, snap)
+            if not cached_gguf_manifest_complete(
+                repo_id, hf_variant, snap
+            ) or cached_gguf_source_partial(repo_id, hf_variant, snap):
+                pending_downloads.append(candidate)
+                continue
+            yield candidate
+        # Keep existing reuse semantics when no completed duplicate is available.
+        yield from pending_downloads
     except Exception as e:
         logger.debug(f"Cache lookup for variant failed: {e}")
 
