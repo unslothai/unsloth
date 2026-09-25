@@ -2618,7 +2618,8 @@ class DiffusionBackend:
                 gpu_ordinal = kwargs.get("gpu_ordinal"),
                 repo_id = kwargs["repo_id"],
                 fast_accum = kwargs.get("transformer_quant_fast_accum"),
-                text_encoder_quant = te_quant_planned,
+                # Pre-cast sizing only once the hosted artifact resolved; otherwise the pull keeps the dense encoder.
+                text_encoder_quant = te_quant_planned if te_prequant_files else None,
                 local_files_only = local_files_only,
             )
             if local_files_only and pipeline_planned not in (None, PIPELINE_SEED_DECLINED):
@@ -3583,7 +3584,7 @@ class DiffusionBackend:
                 gpu_ordinal = load_kwargs.get("gpu_ordinal"),
                 repo_id = repo_id,
                 fast_accum = load_kwargs.get("transformer_quant_fast_accum"),
-                text_encoder_quant = te_quant_planned,
+                text_encoder_quant = te_quant_planned if te_files else None,
             )
             if allow_device_probe
             else None
@@ -6387,26 +6388,21 @@ class DiffusionBackend:
 
     @staticmethod
     def _released_transformer_cached(base: Optional[str]) -> bool:
-        """Whether one snapshot of ``base`` (or the local directory) holds a complete ``transformer/``: every
-        shard its index names, or its single weights file. One tree, not a union, since the load reads one."""
+        """Whether the snapshot the loader will read holds a complete ``transformer/``: every shard its index
+        names, or its single weights file. A local directory is that snapshot; for a Hub id it is the ``refs/main``
+        snapshot of the first root (live, then import-time) with a ``model_index.json``, the order
+        ``_assert_base_repo_accessible`` resolves an offline base in."""
         if not base:
             return False
         try:
             local = Path(base).expanduser()
-            candidates: list[Path] = [local] if local.is_dir() else []
-            if not candidates:
-                for repo_dir in DiffusionBackend._hub_cache_repo_dirs(base):
-                    live = DiffusionBackend._live_snapshot_dir(repo_dir)
-                    if live is not None:
-                        candidates.append(live)
-                        continue
-                    try:
-                        candidates.extend(
-                            rev for rev in (repo_dir / "snapshots").iterdir() if rev.is_dir()
-                        )
-                    except OSError:
-                        continue
-            return any(_transformer_folder_complete(c / "transformer") for c in candidates)
+            if local.is_dir():
+                return _transformer_folder_complete(local / "transformer")
+            for repo_dir in DiffusionBackend._hub_cache_repo_dirs(base):
+                snapshot = DiffusionBackend._live_snapshot_dir(repo_dir)
+                if snapshot is not None and (snapshot / "model_index.json").is_file():
+                    return _transformer_folder_complete(snapshot / "transformer")
+            return False
         except Exception:  # noqa: BLE001 -- unreadable cache: treat the shards as missing
             return False
 

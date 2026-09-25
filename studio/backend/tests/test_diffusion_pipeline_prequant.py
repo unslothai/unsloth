@@ -1226,6 +1226,7 @@ def test_shards_scattered_across_revisions_are_not_a_cached_release(monkeypatch,
         folder = repo_dir / "snapshots" / rev / "transformer"
         _write_index(folder, shards)
         (folder / shard).write_bytes(b"x")
+    (repo_dir / "snapshots" / "aaa" / "model_index.json").write_text("{}")
     (repo_dir / "refs").mkdir()
     (repo_dir / "refs" / "main").write_text("aaa")
     monkeypatch.setattr(
@@ -1350,3 +1351,39 @@ def test_a_hidream_pipeline_is_repriced_with_its_standalone_encoder(monkeypatch)
         + repriced.overrides["companion_override_mib"]
     )
     assert total_mib >= int(table_gb * 1000.0**3 / (1024 * 1024)) - 2
+
+
+def test_the_offline_shard_check_reads_the_root_the_loader_reads(monkeypatch, tmp_path):
+    """The live root's manifest pins the offline load there, so a complete copy under the other root is no help."""
+    live, other = tmp_path / "live" / "models--org--repo", tmp_path / "other" / "models--org--repo"
+    for repo_dir, with_transformer in ((live, False), (other, True)):
+        snapshot = repo_dir / "snapshots" / "rev"
+        snapshot.mkdir(parents = True)
+        (snapshot / "model_index.json").write_text("{}")
+        if with_transformer:
+            (snapshot / "transformer").mkdir()
+            (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+        (repo_dir / "refs").mkdir()
+        (repo_dir / "refs" / "main").write_text("rev")
+    monkeypatch.setattr(
+        DiffusionBackend, "_hub_cache_repo_dirs", staticmethod(lambda _repo: [live, other])
+    )
+    assert not DiffusionBackend._released_transformer_cached("org/repo")
+    (live / "snapshots" / "rev" / "model_index.json").unlink()
+    assert DiffusionBackend._released_transformer_cached("org/repo")
+
+
+@pytest.mark.parametrize("resolved", [{}, {"text_encoder": ("repo", [("te.safetensors", 1)])}])
+def test_pre_cast_sizing_waits_for_a_resolved_encoder_artifact(monkeypatch, resolved):
+    backend, _seen, _fetched = _run_load_backend(monkeypatch, planned = None)
+    monkeypatch.setattr(DiffusionBackend, "_te_prequant_plan_files", lambda *_a, **_k: resolved)
+    heard: dict = {}
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_pipeline_planned_denoiser_scheme",
+        lambda _self, _fam, **k: heard.update(k),
+    )
+    backend._run_load(
+        repo_id = Z_IMAGE_REPO, model_kind = "pipeline", text_encoder_quant = "fp8", _load_token = 1
+    )
+    assert heard["text_encoder_quant"] == ("fp8" if resolved else None)
