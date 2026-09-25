@@ -159,7 +159,15 @@ pub fn reset_app_window_layout_initialized(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     crate::native_intents::ensure_main_window(&window)?;
-    reset_initialized(&app_config_dir(&app)?)
+    reset_initialized(&app_config_dir(&app)?)?;
+    // The initial native restore may still be maximized when repair starts.
+    // Compact it before the frontend can reveal setup or a fallback window.
+    window.unmaximize().map_err(|error| error.to_string())?;
+    window.set_resizable(true).map_err(|error| error.to_string())?;
+    window
+        .set_size(tauri::LogicalSize::new(SETUP_WINDOW_WIDTH, SETUP_WINDOW_HEIGHT))
+        .map_err(|error| error.to_string())?;
+    window.center().map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

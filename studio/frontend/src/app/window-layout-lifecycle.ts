@@ -14,6 +14,8 @@ export async function prepareSetupWindow(options: {
   resetLayout: () => Promise<unknown>;
   unmaximize: () => Promise<void>;
   clearConstraints: () => Promise<void>;
+  enableResize: () => Promise<void>;
+  resizeForSetup: () => Promise<boolean>;
   disableResize: () => Promise<void>;
   isCurrent: WindowLayoutGuard;
 }): Promise<boolean> {
@@ -21,6 +23,8 @@ export async function prepareSetupWindow(options: {
     resetLayout,
     unmaximize,
     clearConstraints,
+    enableResize,
+    resizeForSetup,
     disableResize,
     isCurrent,
   } = options;
@@ -30,6 +34,10 @@ export async function prepareSetupWindow(options: {
   if (!isCurrent()) return false;
   await clearConstraints();
   if (!isCurrent()) return false;
+  // GTK can ignore a size change on a non-resizable restored window.
+  await enableResize();
+  if (!isCurrent()) return false;
+  if (!(await resizeForSetup()) || !isCurrent()) return false;
   await disableResize();
   return isCurrent();
 }

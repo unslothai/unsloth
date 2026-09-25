@@ -53,6 +53,14 @@ test("repair setup unmaximizes before sizing or locking the window", async () =>
       events.push("clear");
       return done;
     },
+    enableResize: () => {
+      events.push("unlocked");
+      return done;
+    },
+    resizeForSetup: () => {
+      events.push("sized");
+      return Promise.resolve(true);
+    },
     disableResize: () => {
       events.push("fixed");
       return done;
@@ -61,7 +69,7 @@ test("repair setup unmaximizes before sizing or locking the window", async () =>
   });
   assert.equal(completed, true);
   assert.equal(maximized, false);
-  assert.deepEqual(events, ["reset", "unmaximize", "clear", "fixed"]);
+  assert.deepEqual(events, ["reset", "unmaximize", "clear", "unlocked", "sized", "fixed"]);
 });
 
 test("waits for the first native restore event before settling", () => {

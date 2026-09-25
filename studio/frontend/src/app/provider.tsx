@@ -274,20 +274,23 @@ async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
       resetLayout: () => invoke("reset_app_window_layout_initialized"),
       unmaximize: () => win.unmaximize(),
       clearConstraints: () => win.setSizeConstraints(null),
+      enableResize: () => win.setResizable(true),
+      resizeForSetup: async () => {
+        const measured = await measureTauriWindowLayout(windowModule, win, isCurrent);
+        if (!measured) return false;
+        const setupSize = fitWindowSize(
+          PREFERRED_SETUP_WINDOW_SIZE,
+          measured.bounds.maximum,
+        );
+        await placeWindow(win, windowModule, measured, setupSize, isCurrent);
+        return isCurrent();
+      },
       disableResize: () => win.setResizable(false),
       isCurrent,
     }))
   ) {
     return;
   }
-  const measured = await measureTauriWindowLayout(windowModule, win, isCurrent);
-  if (!measured) return;
-  const setupSize = fitWindowSize(
-    PREFERRED_SETUP_WINDOW_SIZE,
-    measured.bounds.maximum,
-  );
-  await placeWindow(win, windowModule, measured, setupSize, isCurrent);
-  if (!isCurrent()) return;
   if (await wasLaunchedHidden()) return;
   if (!isCurrent()) return;
   await win.show();
