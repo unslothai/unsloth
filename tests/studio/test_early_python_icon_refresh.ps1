@@ -30,7 +30,13 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPs1, [r
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 has parse errors" }
 foreach ($name in @(
     "Invoke-StudioEarlyPythonScript", "Invoke-StudioEarlyPython", "Get-StudioEarlyPython",
-    "Invoke-StudioPythonShellIconRefresh"
+    "Invoke-StudioPythonShellIconRefresh",
+    # What Get-StudioEarlyPython reaches on Windows: the elevation gate and its helpers. Off
+    # Windows it never calls them, which is how a missing one once passed here and failed CI.
+    "Test-StudioChildScriptDirectoryElevated", "Get-StudioSystem32Tool", "Test-StudioPathUnderAdminRoot",
+    "Test-StudioSddlRightsAreWrite", "Test-StudioSddlPrincipalIsAdminOnly",
+    "Test-StudioSddlWritableByNonAdmin", "Test-StudioDirectoryIsAdminOnly",
+    "Get-StudioLexicalParent", "Write-StudioFinalPathDegraded", "Write-StudioLine"
 )) {
     $fn = $ast.FindAll({ param($n)
         $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name
@@ -61,6 +67,8 @@ if (-not (Get-StudioEarlyPython)) {
     # So ask the same question Invoke-StudioEarlyPython asks, of the same candidates, and only then
     # decide. The WindowsApps aliases are excluded WITHOUT running them: they are zero-length stubs
     # that open the Microsoft Store, which a test must not do to whoever is running it.
+    $elevatedHost = $false
+    if ($env:OS -eq "Windows_NT") { try { $elevatedHost = [bool](Test-StudioChildScriptDirectoryElevated) } catch { $elevatedHost = $true } }
     $usable = $null
     foreach ($n in @("python3", "python")) {
         foreach ($src in @(Get-Command $n -All -CommandType Application -ErrorAction SilentlyContinue |
@@ -68,6 +76,9 @@ if (-not (Get-StudioEarlyPython)) {
             if ($usable) { break }
             if ([string]::IsNullOrWhiteSpace($src)) { continue }
             if ("$src" -match '(?i)[\\/]Microsoft[\\/]WindowsApps[\\/]') { continue }
+            # The installer's own elevated rule: an elevated run refuses an interpreter a standard user
+            # can replace, so such a candidate is not one discovery should have found.
+            if ($elevatedHost -and -not (Test-StudioPathUnderAdminRoot -Path $src)) { continue }
             $here = Split-Path -Parent $src
             if ([string]::IsNullOrWhiteSpace($here)) { continue }
             # In a job with a deadline: a shim that starts and never exits must be a skip, not a hang.

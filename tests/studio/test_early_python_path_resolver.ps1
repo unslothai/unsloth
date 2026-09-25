@@ -97,6 +97,8 @@ try {
         # So ask the same question Invoke-StudioEarlyPython asks, of the same candidates, and only then
         # decide. The WindowsApps aliases are excluded WITHOUT running them: they are zero-length stubs
         # that open the Microsoft Store, which a test must not do to whoever is running it.
+        $elevatedHost = $false
+        if ($env:OS -eq "Windows_NT") { try { $elevatedHost = [bool](Test-StudioChildScriptDirectoryElevated) } catch { $elevatedHost = $true } }
         $usable = $null
         foreach ($n in @("python3", "python")) {
             foreach ($src in @(Get-Command $n -All -CommandType Application -ErrorAction SilentlyContinue |
@@ -104,6 +106,9 @@ try {
                 if ($usable) { break }
                 if ([string]::IsNullOrWhiteSpace($src)) { continue }
                 if ("$src" -match '(?i)[\\/]Microsoft[\\/]WindowsApps[\\/]') { continue }
+                # The installer's own elevated rule: an elevated run refuses an interpreter a standard user
+                # can replace, so such a candidate is not one discovery should have found.
+                if ($elevatedHost -and -not (Test-StudioPathUnderAdminRoot -Path $src)) { continue }
                 $here = Split-Path -Parent $src
                 if ([string]::IsNullOrWhiteSpace($here)) { continue }
                 # In a job with a deadline: a shim that starts and never exits must be a skip, not a hang.
@@ -640,6 +645,24 @@ try {
         $script:StudioEarlyPythonProbedWithoutVenv = $false
         Check "control: an unelevated run still finds one" (
             -not [string]::IsNullOrWhiteSpace((Get-StudioEarlyPython)))
+        # The existing install's own venv interpreter is the exception: the elevated run executes it
+        # anyway, so refusing it only left every elevated upgrade with an inexact identity. Off
+        # Windows only: a python.exe linked into another directory cannot find its standard library.
+        $hostPy = (Get-Command python3 -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+        if ($savedOsElev -ne "Windows_NT" -and $hostPy) {
+            $venvRoot = Join-Path $tmp "elevated-venv"
+            New-Item -ItemType Directory -Force -Path (Join-Path $venvRoot "bin") | Out-Null
+            $venvPy = Join-Path $venvRoot "bin/python3"
+            New-Item -ItemType SymbolicLink -Path $venvPy -Target $hostPy | Out-Null
+            function Test-StudioChildScriptDirectoryElevated { return $true }
+            $VenvDir = $venvRoot
+            $script:StudioEarlyPythonProbed = $false
+            $script:StudioEarlyPython = $null
+            $script:StudioEarlyPythonProbedWithoutVenv = $false
+            Check "an elevated run still uses the existing install's venv interpreter" (
+                (Get-StudioEarlyPython) -eq $venvPy)
+            Remove-Variable -Name VenvDir -ErrorAction SilentlyContinue
+        }
     } finally {
         Remove-Item Function:Test-StudioChildScriptDirectoryElevated -ErrorAction SilentlyContinue
         if ($null -eq $savedOsElev) { Remove-Item Env:OS -ErrorAction SilentlyContinue } else { $env:OS = $savedOsElev }

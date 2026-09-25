@@ -2590,9 +2590,10 @@ function Install-UnslothStudio {
         # 0 restores the previous ladder, like UNSLOTH_NVIDIA_LIBRARY_PROBE.
         if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") { return $null }
         $candidates = @()
+        $venvCandidates = @()
         if ($venvKnown) {
-            $candidates += (Join-Path $venvDirValue "Scripts\python.exe")
-            $candidates += (Join-Path $venvDirValue "bin/python3")
+            $venvCandidates = @((Join-Path $venvDirValue "Scripts\python.exe"), (Join-Path $venvDirValue "bin/python3"))
+            $candidates += $venvCandidates
         }
         foreach ($name in @("python3", "python")) {
             try {
@@ -2613,7 +2614,11 @@ function Install-UnslothStudio {
             if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
             # Elevated: only an interpreter a medium-integrity process cannot replace, since it
             # runs with the administrator token. Declining costs only the exact path identity.
-            if ($requireAdminRoot -and -not (Test-StudioPathUnderAdminRoot -Path $candidate)) {
+            # The existing install's own venv interpreter is the exception: this elevated run
+            # executes it anyway (platform checks, uv pip install --python, the torch probes), so
+            # refusing it here protected nothing and left every elevated upgrade inexact.
+            if ($requireAdminRoot -and ($venvCandidates -notcontains $candidate) -and
+                -not (Test-StudioPathUnderAdminRoot -Path $candidate)) {
                 $rejectedForWritability = $true
                 continue
             }
