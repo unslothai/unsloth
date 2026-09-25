@@ -3835,9 +3835,13 @@ _SHARED_USAGE_DELTA_MIN_BYTES = 32 * 1024 * 1024
 _SHARED_USAGE_TIMEOUT_S = 6
 _SHARED_USAGE_PS_COMMAND = (
     "$ErrorActionPreference='Stop';"
-    "(Get-Counter -Counter '\\GPU Adapter Memory(*)\\Shared Usage').CounterSamples |"
-    " ForEach-Object { $_.InstanceName + '=' + [int64]$_.CookedValue }"
+    "(Get-Counter -Counter '\\GPU Adapter Memory(*)\\Shared Usage',"
+    "'\\GPU Adapter Memory(*)\\Dedicated Usage').CounterSamples |"
+    " ForEach-Object { $_.Path.Split('\\')[-1] + '|' + $_.InstanceName + '=' +"
+    " [int64]$_.CookedValue }"
 )
+# Dedicated-usage readings share the dict with shared usage under this key prefix.
+_DEDICATED_USAGE_KEY = "dedicated|"
 
 # The per-executable driver setting is the only way to turn the fallback off.
 _VRAM_SPILL_ADVICE = (
@@ -14496,7 +14500,10 @@ class LlamaCppBackend:
             self._last_load_warning = message
 
     def _arm_residency_check(
-        self, floor_bytes: Optional[int], gpu_indices: Optional[Iterable[int]]
+        self,
+        floor_bytes: Optional[int],
+        gpu_indices: Optional[Iterable[int]],
+        binary: Optional[str] = None,
     ) -> None:
         """Record what a full-GPU pin promised, for _verify_vram_residency to test.
 
@@ -14511,7 +14518,9 @@ class LlamaCppBackend:
             return
         if not floor_bytes or floor_bytes <= 0 or not gpu_indices:
             return
-        if self._nvml_library() is None:
+        # CUDA builds only: a Vulkan launch has no CUDA sysmem fallback, and its
+        # ordinals are not the NVML indices the probe reports.
+        if not self._sysmem_fallback_risk(binary) or self._nvml_library() is None:
             return
         try:
             integrated = self._integrated_cuda_gpu_ids()
@@ -14557,9 +14566,12 @@ class LlamaCppBackend:
             return None
         usage: dict[str, int] = {}
         for line in (result.stdout or "").splitlines():
-            name, _, value = line.strip().rpartition("=")
+            counter, _, sample = line.strip().partition("|")
+            name, _, value = sample.rpartition("=")
             if not name:
                 continue
+            if counter.strip().lower() == "dedicated usage":
+                name = _DEDICATED_USAGE_KEY + name
             try:
                 usage[name] = int(float(value))
             except ValueError:
@@ -14570,18 +14582,24 @@ class LlamaCppBackend:
     def _shared_usage_growth_bytes(
         cls, before: Optional[dict[str, int]], after: Optional[dict[str, int]]
     ) -> Optional[int]:
-        """Largest per-adapter shared-memory gain; None if unreadable or >1 adapter grew."""
+        """Shared-memory gain on the adapters this load landed on, or None if unreadable.
+
+        The counter covers every adapter, including a display iGPU whose shared usage moves
+        on its own, so only adapters whose dedicated VRAM grew across the spawn count.
+        """
         if not before or not after:
             return None
-        shared_instances = set(before) & set(after)
-        if not shared_instances:
+        common = set(before) & set(after)
+        loaded = [
+            key[len(_DEDICATED_USAGE_KEY) :]
+            for key in common
+            if key.startswith(_DEDICATED_USAGE_KEY)
+            and after[key] - before[key] >= _SHARED_USAGE_DELTA_MIN_BYTES
+        ]
+        loaded = [i for i in loaded if i in common]
+        if not loaded:
             return None
-        deltas = [after[i] - before[i] for i in shared_instances]
-        grew = [d for d in deltas if d >= _SHARED_USAGE_DELTA_MIN_BYTES]
-        if len(grew) > 1:
-            logger.debug(f"Shared GPU memory grew on {len(grew)} adapters; ambiguous")
-            return None
-        return max(deltas) if deltas else None
+        return sum(after[i] - before[i] for i in loaded)
 
     @staticmethod
     def _argv_claims_full_offload(
@@ -14660,15 +14678,32 @@ class LlamaCppBackend:
             return
         self._pin_baseline_free_mib = {i: free_by_idx[i] for i in pinned}
 
-    def _verify_vram_residency(self) -> Optional[str]:
-        """Record and return a spill advisory, else None. Always disarms; never raises."""
-        floor = self._pin_resident_floor_bytes
-        baseline = self._pin_baseline_free_mib
-        baseline_shared = self._pin_baseline_shared_usage
+    def _take_residency_state(self) -> tuple:
+        """Snapshot and disarm (floor, baseline free MiB, baseline shared usage)."""
+        state = (
+            self._pin_resident_floor_bytes,
+            self._pin_baseline_free_mib,
+            self._pin_baseline_shared_usage,
+        )
         self._pin_resident_floor_bytes = None
         self._pin_baseline_free_mib = None
         self._pin_baseline_shared_usage = None
         self._pin_gpu_indices = None
+        return state
+
+    def _verify_vram_residency(
+        self,
+        state: Optional[tuple] = None,
+        process = None,
+    ) -> Optional[str]:
+        """Record and return a spill advisory, else None. Always disarms; never raises.
+
+        ``process`` is the child the check was started for: a result for a child that is
+        no longer current is dropped rather than attached to its replacement.
+        """
+        floor, baseline, baseline_shared = (
+            state if state is not None else self._take_residency_state()
+        )
         if not floor or not baseline:
             return None
         try:
@@ -14723,6 +14758,8 @@ class LlamaCppBackend:
             expected_gb = floor / (1024**3),
             shortfall_gb = shortfall / (1024**3),
         )
+        if process is not None and getattr(self, "_process", None) is not process:
+            return None
         self._record_load_warning(message)
         return message
 
@@ -14732,6 +14769,7 @@ class LlamaCppBackend:
             return
         threading.Thread(
             target = self._verify_vram_residency,
+            args = (self._take_residency_state(), getattr(self, "_process", None)),
             daemon = True,
             name = "vram-residency-check",
         ).start()
@@ -26996,7 +27034,7 @@ class LlamaCppBackend:
                     fully_gpu_offloaded = True
                     # Armed only here: spill plans, --fit and manual -ngl place weights on
                     # the host deliberately; Metal has no device/host split.
-                    self._arm_residency_check(_resident_floor_bytes, gpu_indices)
+                    self._arm_residency_check(_resident_floor_bytes, gpu_indices, binary)
 
                 # Expose Prometheus /metrics for the engine-stats logger, only
                 # when the binary advertises it (older/custom binaries may not).

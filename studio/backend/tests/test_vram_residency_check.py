@@ -53,6 +53,7 @@ class _Backend:
     _sample_residency_baseline = LlamaCppBackend.__dict__["_sample_residency_baseline"]
     _verify_vram_residency = LlamaCppBackend.__dict__["_verify_vram_residency"]
     _start_residency_check = LlamaCppBackend.__dict__["_start_residency_check"]
+    _take_residency_state = LlamaCppBackend.__dict__["_take_residency_state"]
 
     def _shared_gpu_memory_bytes(self):
         self._shared_reads += 1
@@ -70,6 +71,10 @@ class _Backend:
     @staticmethod
     def _nvml_library():
         return object()  # NVIDIA present
+
+    @staticmethod
+    def _sysmem_fallback_risk(binary = None):
+        return True  # CUDA build
 
     @staticmethod
     def _integrated_cuda_gpu_ids():
@@ -142,10 +147,16 @@ NVIDIA_LUID = "luid_0x00000000_0x0000c350_phys_0"
 IGPU_LUID = "luid_0x00000000_0x00001234_phys_0"
 
 
-def _shared(nvidia_mib, igpu_mib = 64):
+def _shared(
+    nvidia_mib,
+    igpu_mib = 64,
+    nvidia_dedicated_mib = 0,
+):
     return {
         NVIDIA_LUID: int(nvidia_mib * MIB),
         IGPU_LUID: int(igpu_mib * MIB),
+        "dedicated|" + NVIDIA_LUID: int(nvidia_dedicated_mib * MIB),
+        "dedicated|" + IGPU_LUID: 128 * MIB,
     }
 
 
@@ -155,7 +166,7 @@ def test_the_74_mib_case_the_inferred_floor_could_never_see(on_windows):
     backend = _Backend(
         [(0, 16384.0 - used_mib, 16384)],
         baseline_shared = _shared(120),
-        shared = _shared(120 + 74),  # the spill, as Windows reports it
+        shared = _shared(120 + 74, nvidia_dedicated_mib = 12000),  # the spill, as Windows reports it
     )
     _arm(backend)
     message = backend._verify_vram_residency()
@@ -177,7 +188,7 @@ def test_shared_growth_below_the_counter_threshold_is_tolerated(on_windows):
     backend = _Backend(
         [(0, 16384.0 - used_mib, 16384)],
         baseline_shared = _shared(120),
-        shared = _shared(140),  # +20 MiB
+        shared = _shared(140, nvidia_dedicated_mib = 12000),  # +20 MiB
     )
     _arm(backend)
     assert backend._verify_vram_residency() is None
@@ -189,7 +200,7 @@ def test_another_app_growing_shared_memory_is_not_our_spill(on_windows):
     backend = _Backend(
         [(0, 16384.0 - used_mib, 16384)],
         baseline_shared = _shared(120),
-        shared = _shared(620),
+        shared = _shared(620, nvidia_dedicated_mib = 12000),
     )
     _arm(backend)
     assert backend._verify_vram_residency() is None
@@ -202,7 +213,7 @@ def test_growth_on_two_adapters_is_ambiguous_and_falls_back(on_windows):
     backend = _Backend(
         [(0, 16384.0 - used_mib, 16384)],
         baseline_shared = _shared(120, igpu_mib = 64),
-        shared = _shared(2120, igpu_mib = 1064),  # +2000 and +1000 MiB
+        shared = _shared(2120, igpu_mib = 1064, nvidia_dedicated_mib = 12000),  # +2000 and +1000 MiB
     )
     _arm(backend)
     assert backend._verify_vram_residency() is not None
@@ -408,3 +419,72 @@ class _NeverStarts:
 
     def join(self, timeout = None):
         pass
+
+
+def test_an_igpu_growing_shared_memory_is_not_the_nvidia_spill(on_windows):
+    """Optimus: the display iGPU's shared usage moves on its own; only the loaded card counts."""
+    used_mib = (QWEN3_VL_8B_FLOOR / MIB) - 300  # benign: tok_embd stays on the host
+    backend = _Backend(
+        [(0, 16384.0 - used_mib, 16384)],
+        baseline_shared = _shared(120, igpu_mib = 64),
+        shared = _shared(120, igpu_mib = 564, nvidia_dedicated_mib = 12000),
+    )
+    _arm(backend)
+    assert backend._verify_vram_residency() is None
+    assert backend._warnings == []
+
+
+def test_a_spill_beside_igpu_churn_is_still_reported(on_windows):
+    used_mib = (QWEN3_VL_8B_FLOOR / MIB) - 300
+    backend = _Backend(
+        [(0, 16384.0 - used_mib, 16384)],
+        baseline_shared = _shared(120, igpu_mib = 64),
+        shared = _shared(420, igpu_mib = 564, nvidia_dedicated_mib = 12000),
+    )
+    _arm(backend)
+    assert backend._verify_vram_residency() is not None
+
+
+def test_not_armed_for_a_non_cuda_build(on_windows):
+    """A Vulkan build on an NVIDIA host has no CUDA sysmem fallback, and other indices."""
+    backend = _Backend([(0, 16384.0 - 3000.0, 16384)])
+    backend._sysmem_fallback_risk = lambda binary = None: False
+    backend._arm_residency_check(QWEN3_VL_8B_FLOOR, [0], "/vulkan/llama-server")
+    assert backend._pin_resident_floor_bytes is None
+
+
+def test_a_check_for_a_replaced_process_records_nothing(on_windows):
+    """A reload before the probe finishes must not inherit the old model's warning."""
+    backend = _Backend([(0, 16384.0 - 3000.0, 16384)])
+    old_process, new_process = object(), object()
+    backend._process = old_process
+    _arm(backend)
+    state = backend._take_residency_state()
+    backend._process = new_process
+    assert backend._verify_vram_residency(state, old_process) is None
+    assert backend._warnings == []
+
+
+def test_the_thread_gets_a_snapshot_so_a_rearm_cannot_steal_it(on_windows, monkeypatch):
+    started = []
+
+    class _Capture:
+        def __init__(
+            self,
+            target,
+            args = (),
+            **kw,
+        ):
+            started.append((target, args))
+
+        def start(self):
+            pass
+
+    backend = _Backend([(0, 16384.0 - 3000.0, 16384)])
+    backend._process = object()
+    _arm(backend)
+    monkeypatch.setattr(mod.threading, "Thread", _Capture)
+    backend._start_residency_check()
+    assert backend._pin_resident_floor_bytes is None, "state left armed for the next load"
+    ((_target, args),) = started
+    assert args[0][0] == QWEN3_VL_8B_FLOOR and args[1] is backend._process
