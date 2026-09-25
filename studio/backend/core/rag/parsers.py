@@ -94,6 +94,9 @@ class _Stripper(HTMLParser):
                 self._pre += 1
         elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:
             self._line.append(" ")
+        elif tag == "tspan" and not self._skip and any(k in ("x", "y") for k, _ in attrs):
+            # An absolute x/y starts a new SVG text chunk (a separate label or line).
+            self._flush()
 
     def handle_endtag(self, tag):
         if tag == "template":

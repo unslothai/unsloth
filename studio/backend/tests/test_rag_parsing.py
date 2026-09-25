@@ -394,6 +394,15 @@ def test_html_textarea_keeps_its_layout_and_svg_labels_stay_apart(tmp_path):
     assert text == "line one\n    indented\nRevenue\nCost"
 
 
+def test_html_positioned_svg_tspans_are_separate_labels(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        '<svg><text><tspan x="0" y="0">Revenue</tspan><tspan x="0" dy="20">Cost</tspan>'
+        "</text><text>Bold<tspan>er</tspan></text></svg>",
+    )
+    assert text == "Revenue\nCost\nBolder"
+
+
 def test_html_skips_script_style_and_template(tmp_path):
     text = _parse_html(
         tmp_path,
