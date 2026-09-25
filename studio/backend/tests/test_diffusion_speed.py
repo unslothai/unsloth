@@ -1425,7 +1425,6 @@ def test_auto_dynamic_active_follows_the_torchao_marker():
 
 
 def test_automatic_dynamic_compile_arms_the_prompt_length_allowlist(monkeypatch):
-    # dynamic=True is already fully dynamic, so only automatic dynamic arms the allowlist.
     from core.inference import diffusion_dynamic_text
 
     armed = []

@@ -22,8 +22,6 @@ def _cfg():
 
 
 class QwenImage21Transformer2DModel(torch.nn.Module):
-    """Stand-in carrying the real class name; records the allowlist its forward sees."""
-
     def __init__(self, raise_in_forward = False):
         super().__init__()
         self.seen = None
@@ -185,7 +183,6 @@ def test_qwen_image_text_stream_is_armed():
 
 
 def test_qwen_image_hook_paths_match_on_regex_torch():
-    # FBCache hooks pass inputs via ``L['kwargs']`` or a resumed frame's stack; image stream and RoPE stay static.
     builder = pytest.importorskip("torch._dynamo.variables.builder")
     is_dynamic = getattr(builder, "is_dynamic_source", None)
     if is_dynamic is None:
@@ -213,7 +210,6 @@ def test_qwen_image_hook_paths_match_on_regex_torch():
 
 
 def test_torch_that_reads_the_allowlist_once_is_not_armed(monkeypatch):
-    # torch 2.7 reads dynamic_sources once per process, so scoping would be ignored or leak; keep today's behaviour.
     from torch._dynamo.variables import builder
 
     monkeypatch.delattr(builder, "is_dynamic_source")
