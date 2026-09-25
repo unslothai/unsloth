@@ -1205,8 +1205,7 @@ def _video_auto_denoiser_scheme(
     speed_mode: Optional[str] = None,
 ) -> Optional[str]:
     """The scheme a CONVENTIONAL video load would seed from a hosted checkpoint, or None."""
-    # load_pipeline rewrites only an AUTO precision to "off" under Speed="off"; an EXPLICIT scheme is still honored
-    # (and upgrades the speed), so it keeps its seed. Same split diffusion.py applies.
+    # Only an AUTO precision becomes "off" under Speed="off"; an EXPLICIT scheme is honored, so it keeps its seed.
     auto = requested is None or str(requested).strip().lower() in ("", "auto")
     if auto and speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF:
         return None
@@ -1987,7 +1986,6 @@ class VideoBackend:
             video_seed_declined = video_auto_denoiser == DENOISER_SEED_DECLINED
             if video_seed_declined:
                 video_auto_denoiser = None
-            # Conventional loads seed only the planned pick; the modular path keeps the raw request.
             conventional_denoiser = kind == "pipeline" and not getattr(
                 fam, "modular_workflow", None
             )
@@ -3220,7 +3218,6 @@ class VideoBackend:
         from core.inference.diffusion_nvfp4_flag import nvfp4_repo_blocked
 
         if nvfp4_repo_blocked(location):
-            # The NVFP4 switch is off: never ask the Hub about a *-NVFP4 repo; the dense DiT is planned.
             return None, []
         try:
             info = api.model_info(location, files_metadata = True)
@@ -3576,7 +3573,6 @@ class VideoBackend:
         if video_planned == DENOISER_SEED_DECLINED:
             video_planned = None
         if kind == "pipeline" and not getattr(fam, "modular_workflow", None):
-            # The planned scheme IS the seed decision; the raw request would stage an unused one.
             transformer_quant = video_planned
         else:
             transformer_quant = video_planned or transformer_quant
@@ -4499,7 +4495,6 @@ class VideoBackend:
                 base_repo = base,
                 speed_mode = speed_mode,
             )
-        # Before the refusal: unresolvable artifacts drop the seed while the dense plan is judged.
         denoiser_seed_sources: dict[str, Any] = {}
         if denoiser_seed_scheme is not None:
             from .video_denoiser_prequant import denoiser_prequant_sources
@@ -4596,7 +4591,6 @@ class VideoBackend:
             )
             pipe_kwargs.update(denoiser_injected)
             if not denoiser_injected:
-                # The plan above was priced on the seed landing: re-plan and re-run the refusal.
                 logger.warning(
                     "video.denoiser_prequant: no pre-quantized denoiser was seeded; re-planning "
                     "memory at the dense bf16 DiT size"

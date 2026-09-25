@@ -490,7 +490,6 @@ def normalize_transformer_quant(value: Optional[str]) -> Optional[str]:
         raise ValueError(
             f"Unsupported transformer_quant '{value}'. Use one of: {', '.join(TQ_MODES)}."
         )
-    # The NVFP4 switch (diffusion_nvfp4_flag) refuses the scheme at validation, never swaps it.
     if nvfp4_blocked(normalized):
         raise ValueError(nvfp4_disabled_message("transformer_quant"))
     return normalized
@@ -818,8 +817,7 @@ def _auto_scheme_order(family: Optional[str], device: Any, cap: tuple[int, int])
         if prefer.consumer_ok or not _is_consumer_gpu(device):
             head = prefer.schemes
     order: list[str] = []
-    # Filtered here, so the NVFP4 switch reaches every reader of the order: the selector, both
-    # candidate lists and the /api/system ladder.
+    # Filtered here so the NVFP4 switch reaches every reader of the order.
     for scheme in without_nvfp4(head + tier):
         if scheme not in order:
             order.append(scheme)
@@ -864,7 +862,6 @@ def _scheme_supported(
 ) -> bool:
     """CUDA + (for fp8) the fp8 dtype + a cached quantise+matmul smoke test for ``scheme``."""
     if nvfp4_blocked(scheme):
-        # Switched off: no probe (child or in-process) is spent on a scheme nothing may use.
         return False
     try:
         import torch

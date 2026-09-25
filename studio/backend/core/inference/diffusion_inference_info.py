@@ -35,7 +35,6 @@ def family_inference_infos() -> list[dict[str, Any]]:
         estimated = {"bf16": _round1(transformer_gb + companions_gb)}
         for scheme, factor in _QUANT_STEADY_FACTOR.items():
             if nvfp4_blocked(scheme):
-                # Not advertised while the NVFP4 switch is off: the UI cannot offer it either.
                 continue
             estimated[scheme] = _round1(transformer_gb * factor + companions_gb)
         infos.append(

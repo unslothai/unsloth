@@ -1186,7 +1186,6 @@ def family_prequant_repo(
     refuses the artifact well after the plan was made. A base whose weights really differ belongs
     in ``prequant_excluded_bases``, which returns None here instead."""
     if nvfp4_blocked(scheme):
-        # The NVFP4 switch is off: no hosted *-NVFP4 repo exists as far as any caller can tell.
         return None
     # Both tables are keyed on lowercased upstream ids.
     base = canonical_base(base_repo).lower()

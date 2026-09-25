@@ -446,7 +446,6 @@ class _CountedBytes(_Bytes):
 
 
 def test_a_class_whose_payload_slots_all_read_none_is_not_fingerprinted():
-    # Renamed payload attrs must read uncovered, not as the md5 of an empty stream.
     from core.inference.diffusion_prequant import packed_weight_fingerprint
 
     renamed = Float8Tensor(b"q0")
@@ -2180,7 +2179,6 @@ def test_the_checkpoint_is_released_before_the_device_copy(monkeypatch, tmp_path
 
     _FakeTransformer.calls = {}
     _stub_torch_accelerate(monkeypatch, None)
-    # Built per call so the stub itself holds no reference: what stays alive is what the loader kept.
     monkeypatch.setattr(
         pq,
         "_torch_load_prequant",

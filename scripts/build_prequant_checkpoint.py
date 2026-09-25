@@ -354,7 +354,6 @@ def main(argv = None) -> int:
         "torchao_version": getattr(torchao, "__version__", "?"),
         "diffusers_version": diffusers.__version__,
     }
-    # The loader recomputes this over the packed bytes and refuses a checkpoint corrupted in between.
     from core.inference.diffusion_prequant import packed_weight_fingerprint
 
     metadata["fingerprint"] = packed_weight_fingerprint(state_dict)
