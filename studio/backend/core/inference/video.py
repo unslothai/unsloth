@@ -1207,8 +1207,7 @@ def _video_auto_denoiser_scheme(
     speed_mode: Optional[str] = None,
 ) -> Optional[str]:
     """The scheme a CONVENTIONAL video load would seed from a hosted checkpoint, or None."""
-    # load_pipeline rewrites only an AUTO precision to "off" under Speed="off"; an EXPLICIT scheme is still honored
-    # (and upgrades the speed), so it keeps its seed. Same split diffusion.py applies.
+    # Only an AUTO precision becomes "off" under Speed="off"; an EXPLICIT scheme is honored, so it keeps its seed.
     auto = requested is None or str(requested).strip().lower() in ("", "auto")
     if auto and speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF:
         return None
@@ -1222,7 +1221,6 @@ def _video_auto_denoiser_scheme(
             requested,
             family = getattr(fam, "name", None),
             base_repo = base_repo,
-            # Same resolver as the coverage check below, so auto picks only a fully covered scheme.
             has_prequant = lambda candidate: (
                 denoiser_prequant_sources(fam, candidate, base_repo) is not None
             ),
@@ -2021,7 +2019,6 @@ class VideoBackend:
             video_seed_declined = video_auto_denoiser == DENOISER_SEED_DECLINED
             if video_seed_declined:
                 video_auto_denoiser = None
-            # Conventional loads seed only the planned pick; the modular path keeps the raw request.
             conventional_denoiser = kind == "pipeline" and not getattr(
                 fam, "modular_workflow", None
             )
@@ -2889,8 +2886,7 @@ class VideoBackend:
         *,
         local_files_only: bool = False,
     ) -> Optional[tuple[bool, str]]:
-        """The conventional load's FlashInfer install, asked once its live-memory plan has settled the seed. FlashInfer
-        serves only a seeded NVFP4 denoiser, so a seed the plan dropped (it would offload) installs nothing."""
+        """FlashInfer install for a conventional load, only when the settled plan kept the NVFP4 seed."""
         if not wanted or seed_scheme != "nvfp4":
             return None
         from .diffusion_nvfp4_install import ensure_flashinfer_for_nvfp4
@@ -2908,18 +2904,13 @@ class VideoBackend:
         kind: str = "pipeline",
         planned: Optional[str] = None,
     ) -> bool:
-        """Whether an NVFP4 video load will open hosted pre-quantised denoisers, the only path FlashInfer
-        serves (``load_prequantized_transformer`` / the seeded denoiser). The on-the-fly build is torchao
-        either way, so no hosted checkpoint, a repo the Hub refuses (private, gated, unpublished) or a
-        conventional load whose plan declined the seed must not buy the multi-GB install. A cached
-        checkpoint counts; offline asks the cache only. Unanswerable answers no."""
+        """Whether an NVFP4 video load opens hosted pre-quantised denoisers (the only FlashInfer path); unanswerable -> False."""
         if not nvfp4_diffusion_enabled():
             return False
         try:
             modular = bool(getattr(fam, "modular_workflow", None))
             if planned == DENOISER_SEED_DECLINED and not modular:
                 return False
-            # The partition the modular load will bring up, so the probe reads the file that load opens.
             task = (h3_task or getattr(fam, "modular_workflow", None)) if modular else h3_task
             if not self._denoiser_prequant_covered(fam, "nvfp4", base, task, kind = kind):
                 return False
@@ -3326,7 +3317,6 @@ class VideoBackend:
         from core.inference.diffusion_nvfp4_flag import nvfp4_repo_blocked
 
         if nvfp4_repo_blocked(location):
-            # The NVFP4 switch is off: never ask the Hub about a *-NVFP4 repo; the dense DiT is planned.
             return None, []
         try:
             info = api.model_info(location, files_metadata = True)
@@ -3682,7 +3672,6 @@ class VideoBackend:
         if video_planned == DENOISER_SEED_DECLINED:
             video_planned = None
         if kind == "pipeline" and not getattr(fam, "modular_workflow", None):
-            # The planned scheme IS the seed decision; the raw request would stage an unused one.
             transformer_quant = video_planned
         else:
             transformer_quant = video_planned or transformer_quant
@@ -4416,17 +4405,10 @@ class VideoBackend:
 
         target = self._device_target(gpu_ordinal)
         device = target.device
-        # An NVFP4 load wants FlashInfer, else its backend falls back to torchao. Outside every lock, like the
-        # diffusion loader's pre-install hop; never raises, and select_nvfp4_backend still decides.
-        # The video dense quant path is pipeline-only, so a GGUF or single-file load never installs.
-        # Only when hosted pre-quantised denoisers will load: FlashInfer serves nothing else, and the on-the-fly build
-        # is torchao, so a checkpoint this user cannot fetch must not buy the install. A plan that settled NVFP4
-        # already listed it on the Hub (or found it cached offline); otherwise ask. The MiniMax-H3 modular dispatch
-        # below installs here and is handed the outcome; a conventional load installs once its live-memory plan has
-        # kept the NVFP4 seed, since a seed the prefetch settled against capacity can still be dropped there.
+        # FlashInfer only serves hosted pre-quantised denoisers. Modular H3 installs below; a conventional load installs
+        # after its live-memory plan keeps the seed (a capacity-settled seed can still be dropped).
         _nvfp4_install_wanted = (
             kind == "pipeline"
-            # The NVFP4 switch: off, no install is attempted and the Hub is not asked below.
             and nvfp4_diffusion_enabled()
             and "nvfp4"
             in (
@@ -4446,8 +4428,7 @@ class VideoBackend:
                 )
             )
         )
-        # No owner: a superseded load can return from an install after a newer one committed, so the outcome is bound
-        # only at the commit below, past the token check.
+        # Bound only at the commit past the token check: a superseded load may return from the install late.
         _nvfp4_install_outcome: Optional[tuple[bool, str]] = None
         # Video DiTs are bf16-native; fp16 overflows, so a resolved fp16 promotes to float32.
         dtype = target.dtype
@@ -4644,7 +4625,6 @@ class VideoBackend:
                 base_repo = base,
                 speed_mode = speed_mode,
             )
-        # Before the refusal: unresolvable artifacts drop the seed while the dense plan is judged.
         denoiser_seed_sources: dict[str, Any] = {}
         if denoiser_seed_scheme is not None:
             from .video_denoiser_prequant import denoiser_prequant_sources
@@ -4723,8 +4703,6 @@ class VideoBackend:
                 denoiser_seed_scheme = None
                 denoiser_seed_gb = None
                 plan, bf16_plan, quant_replanned = _plan_for_te_scale(settled_te_scale, log = False)
-        # The memory plan is settled: install only for a seed it kept, before the seeded denoiser is built. Still
-        # past the teardown and outside every lock.
         _nvfp4_install_outcome = self._install_flashinfer_for_seed(
             _nvfp4_install_wanted, denoiser_seed_scheme, device, local_files_only = local_files_only
         )
@@ -4746,7 +4724,6 @@ class VideoBackend:
             )
             pipe_kwargs.update(denoiser_injected)
             if not denoiser_injected:
-                # The plan above was priced on the seed landing: re-plan and re-run the refusal.
                 logger.warning(
                     "video.denoiser_prequant: no pre-quantized denoiser was seeded; re-planning "
                     "memory at the dense bf16 DiT size"
@@ -5196,7 +5173,6 @@ class VideoBackend:
                     del pipe
                     clear_gpu_cache()
                     raise RuntimeError("Video load was cancelled or superseded.")
-                # Every commit binds, a skipped gate included, so no stale install reason survives the swap.
                 from .diffusion_nvfp4_install import record_install_reason
 
                 record_install_reason(self, *(_nvfp4_install_outcome or (True, None)), device)
@@ -5914,7 +5890,6 @@ class VideoBackend:
                 del pipe
                 clear_gpu_cache()
                 raise RuntimeError("Video load was cancelled or superseded.")
-            # Every commit binds, a skipped gate included, so no stale install reason survives the swap.
             from .diffusion_nvfp4_install import record_install_reason
 
             record_install_reason(self, *(_nvfp4_install_outcome or (True, None)), device)
@@ -6822,7 +6797,6 @@ class VideoBackend:
                     if cancel.is_set():
                         raise _VideoGenerationCancelled()
 
-                # Driven off scheduler.step: not every family exposes the callback below.
                 from .diffusion_nvfp4_protect import protect_generation
 
                 protect_ctx = protect_generation(pipe, steps, logger = logger)

@@ -3,17 +3,8 @@
 
 """Install FlashInfer on demand for an NVFP4 load, without ever moving the resident torch stack.
 
-The NVFP4 flashinfer backend (``diffusion_nvfp4_ops``) falls back to torchao whenever ``import
-flashinfer`` fails, so a Blackwell host without the package silently runs the slower kernels. This
-installs it the first time an NVFP4 load asks, under the same rules as the other lazy installs
-(``diffusion_attention``, ``utils/ssm_runtime``): env opt-out, offline refusal, once per process.
-
-What is installed is fixed, not resolved: ``flashinfer-python`` at the one version whose private
-layout ``diffusion_nvfp4_dispatch`` and the fake impls in ``diffusion_nvfp4_ops`` were checked
-against, plus the ``flashinfer-jit-cache`` built for the running CUDA, because without it every
-kernel is JIT-compiled through nvcc, which a Studio host usually does not have. Every distribution
-already installed is pinned to its exact version through a constraints file, so the resolver can
-only ADD packages; the result is then verified in a fresh interpreter and rolled back on any drift.
+Pinned flashinfer-python plus the CUDA-matched jit-cache; every installed distribution is constrained to its
+exact version, verified in a fresh interpreter, and rolled back on any drift.
 """
 
 from __future__ import annotations
@@ -39,29 +30,23 @@ FLASHINFER_PACKAGE = "flashinfer-python"
 FLASHINFER_JIT_CACHE_PACKAGE = "flashinfer-jit-cache"
 FLASHINFER_CUBIN_PACKAGE = "flashinfer-cubin"
 FLASHINFER_JIT_CACHE_INDEX = "https://flashinfer.ai/whl/{tag}"
-# CUDA builds flashinfer-jit-cache 0.6.6 is published for (linux x86_64 and aarch64 only).
 FLASHINFER_JIT_CACHE_CUDA = ((12, 8), (12, 9), (13, 0))
 
-# Reachability probe for the default index. A HEAD with a short timeout, so a host with no route
-# refuses in seconds instead of leaving pip to retry for minutes inside a model load.
+# Short-timeout HEAD: a host with no route refuses in seconds, not minutes of pip retries.
 _PYPI_PROBE_URL = "https://pypi.org/simple/flashinfer-python/"
 _CUSTOM_INDEX_ENVS = ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "PIP_INDEX_URL")
 # uv ranks these above its default index and stops at the first that has a package; pip never reads them.
 _UV_INDEX_ENVS = ("UV_INDEX", "UV_EXTRA_INDEX_URL", "UV_FIND_LINKS")
 _PIP_EXTRA_INDEX_ENVS = ("PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS")
 
-# The jit-cache wheel is 1.2-1.8 GB; the timeout covers a slow link, not a hung resolver.
 _INSTALL_TIMEOUT_S = 1800
 _VERIFY_TIMEOUT_S = 300
 
 _INSTALL_LOCK = threading.Lock()
-# (ok, reason) of the one install this process attempted. Policy refusals (opt-out, offline, no
-# network) are NOT recorded here, so a later load on a changed environment can still install.
+# Outcome of this process's one install; policy refusals are not recorded, so a changed env can still install.
 _OUTCOME: Optional[tuple[bool, str]] = None
-# The last reason any call gave for flashinfer being unavailable.
 _LAST_REASON: Optional[str] = None
-# The same, per backend object (image vs video), so a status route reports the reason for ITS loaded model and not
-# whatever another backend's later load saw.
+# Per backend object, so each status route reports its own model's reason.
 _REASONS: "weakref.WeakKeyDictionary[Any, Optional[str]]" = weakref.WeakKeyDictionary()
 
 StatusCb = Optional[Callable[[str], None]]
@@ -78,8 +63,7 @@ def last_install_reason() -> Optional[str]:
 
 
 def _cached_preflight_failure(index: Optional[int] = None) -> Optional[str]:
-    """A memoised failed preflight, read without running one: this feeds a polled status route. With
-    ``index`` only that device's record counts; without it, the first failed record on any device."""
+    """A memoised failed preflight, without running one; ``index`` limits it to that device."""
     try:
         from . import diffusion_nvfp4_ops as ops
         with ops._PREFLIGHT_LOCK:
@@ -128,8 +112,7 @@ def record_install_reason(
     reason: Optional[str],
     device: Any = None,
 ) -> None:
-    """Bind an ensure outcome to ``owner`` (the loading backend) and the device it loaded on. Call it
-    once the load has replaced the resident model, so a cancelled attempt cannot relabel it."""
+    """Bind an ensure outcome to ``owner``; call after the swap so a cancelled load cannot relabel it."""
     if owner is None:
         return
     try:
@@ -139,9 +122,7 @@ def record_install_reason(
 
 
 def nvfp4_backend_fields(backend: Optional[str], owner: Any = None) -> dict:
-    """The two status keys for a loaded NVFP4 denoiser: the backend it runs and, when that is torchao,
-    why flashinfer is not serving it (the install refusal or failure, else a failed preflight). ``owner``
-    is the backend object whose load asked; without it the process-wide last reason is used."""
+    """Status keys for a loaded NVFP4 denoiser: its backend and, on torchao, why flashinfer is not serving it."""
     reason = None
     from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
 
@@ -209,8 +190,7 @@ def _env_lock_path() -> str:
 
 @contextlib.contextmanager
 def _env_install_lock(timeout: float = ENV_LOCK_TIMEOUT_S):
-    """Hold the cross-process install lock. Yields False when another process kept it past
-    ``timeout``; yields True without locking when filelock is unavailable (the old behaviour)."""
+    """Hold the cross-process install lock; False on timeout, True unlocked when filelock is missing."""
     try:
         from filelock import FileLock, Timeout
     except ImportError:
@@ -229,14 +209,8 @@ def _env_install_lock(timeout: float = ENV_LOCK_TIMEOUT_S):
 
 
 def _await_inflight_install(wait: bool = True) -> bool:
-    """Wait for another Studio process installing flashinfer into this environment, without touching it.
-
-    flashinfer resolves its jit-cache directory once, at import, so a process that imports it between the
-    flashinfer-python and the jit-cache steps of another process's install JIT-compiles for its whole life.
-    The pinned flashinfer-python can be that window, or, with its jit-cache present, an install still in its drift
-    checks that may roll back, so only other states (already imported, absent, another version) skip the lock.
-    False when the other install outlived the wait, so importing now would still miss the cache. ``wait=False`` makes
-    one attempt, for a load that has declined any install and so should not sit behind someone else's download."""
+    """Wait out another process's flashinfer install here: importing mid-install misses the jit-cache for life.
+    False when it outlived the wait; ``wait=False`` tries once."""
     if "flashinfer" in sys.modules:
         return True
     installed = _dist_version(FLASHINFER_PACKAGE)
@@ -319,11 +293,7 @@ def _parse_cuda(version: Optional[str]) -> Optional[tuple[int, int]]:
 
 
 def jit_cache_tag(cuda_version: Optional[str]) -> Optional[str]:
-    """The ``cuXYZ`` jit-cache index for the running CUDA, or None when none is published.
-
-    The newest build with the same major and a minor no newer than the running one: CUDA minor
-    version compatibility lets a 12.8 build load on a 12.9 runtime, never the other way round, and
-    never across a major (the libraries' sonames change)."""
+    """The ``cuXYZ`` jit-cache index: same major, newest minor <= running (minor compat only), or None."""
     running = _parse_cuda(cuda_version)
     if running is None:
         return None
@@ -358,8 +328,7 @@ def _nvcc_available() -> bool:
 
 
 def _reachable(url: str) -> bool:
-    """A HEAD answered. A failed TLS handshake still proves a route: the installer's own trust settings (pip's
-    ``cert``, uv's native TLS, trusted hosts) decide that, not this probe's."""
+    """A HEAD answered; a failed TLS handshake still proves a route (the installer's trust settings decide TLS)."""
     import ssl
     import urllib.error
     import urllib.request
@@ -416,8 +385,7 @@ def _flag(value: Any) -> Optional[bool]:
 
 
 def _pip_settings(run: Callable[..., Any]) -> dict[str, str]:
-    """pip's effective ``install`` options as pip resolves them: environment over ``[install]`` over ``[global]``,
-    across PIP_CONFIG_FILE and the site, user and global pip.conf. Empty when pip cannot answer."""
+    """pip's effective ``install`` options (env over ``[install]`` over ``[global]``); empty when pip cannot answer."""
     try:
         result = run(
             [sys.executable, "-m", "pip", "config", "list"],
@@ -455,10 +423,7 @@ class _Unreadable(Exception):
 
 
 def _uv_config_tables() -> Optional[list[tuple[dict, dict]]]:
-    """``(top level, [pip])`` of each uv configuration file ``uv pip install`` reads, highest priority first:
-    UV_CONFIG_FILE alone (it wins over UV_NO_CONFIG, as in uv), else the nearest project ``uv.toml`` or
-    ``pyproject.toml`` with a ``[tool.uv]`` table, then the user and the system ``uv.toml``. None when one exists
-    that cannot be parsed here."""
+    """``(top level, [pip])`` per uv config file ``uv pip install`` reads, highest priority first; None if unparseable."""
     explicit = (os.environ.get("UV_CONFIG_FILE") or "").strip()
     if not explicit and _flag(os.environ.get("UV_NO_CONFIG")):
         return []
@@ -527,18 +492,12 @@ def _uv_config_tables() -> Optional[list[tuple[dict, dict]]]:
     return tables
 
 
-# Index sources in uv or pip settings: any of them may serve flashinfer-python instead of pypi.org.
 _CONFIG_INDEX_KEYS = ("index", "index-url", "extra-index-url", "find-links")
 
 
 def _installer_config(uv: Optional[str], run: Callable[..., Any]) -> dict[str, Any]:
-    """What the installer that will run is configured to do beyond this module's own flags, from its environment AND
-    its configuration files. ``refusal`` names a setting this install cannot honor (checked before anything is
-    touched); ``mirror`` means pypi.org may not be its index; ``own_index`` that it has a default index of its own;
-    ``unprobed`` that it reaches the network through a proxy the reachability probe would not use."""
-    # Deliberately not handled here: a PIP_CONSTRAINT / UV_CONSTRAINT that conflicts fails the resolve before anything
-    # moves; a UV_OVERRIDE that moves a pinned package is caught by the drift check and rolled back; UV_PYTHON,
-    # UV_PROJECT_ENVIRONMENT and VIRTUAL_ENV lose to the explicit --python.
+    """Installer config beyond our flags (env + files): ``refusal`` an unhonorable setting, ``mirror`` pypi.org may
+    not be the index, ``own_index`` a default index of its own, ``unprobed`` a proxy the probe would not use."""
     config: dict[str, Any] = {
         "refusal": None,
         "mirror": False,
@@ -559,7 +518,6 @@ def _installer_config(uv: Optional[str], run: Callable[..., Any]) -> dict[str, A
             return config
 
         def _first(key: str) -> Any:
-            # [pip] overrides the top level for uv pip; files are already in priority order.
             for section in (1, 0):
                 for table in tables:
                     if key in table[section]:
@@ -647,13 +605,10 @@ def _installer_prefix(
     *,
     own_index: bool = False,
 ) -> list[str]:
-    """The install command up to its packages. ``index_url`` is the one index this step must use; it
-    replaces the mirror rather than joining it, since uv refuses a repeated ``--index-url``. ``own_index``: the
-    installer's configuration files already name its default index, so no other installer's mirror is handed over."""
+    """The install command up to its packages; ``index_url`` replaces any mirror (uv refuses a repeated --index-url)."""
     if uv:
         cmd = [uv, "pip", "install", "--python", sys.executable]
-        # uv reads only its own index settings; a pip-only mirror would otherwise be skipped for pypi.org, which the
-        # preflight did not probe because a mirror is configured.
+        # uv ignores pip-only mirrors (and pip uv's, below); the preflight skipped pypi.org because one is configured.
         pip_index = (os.environ.get("PIP_INDEX_URL") or "").strip()
         if (
             index_url is None
@@ -664,7 +619,6 @@ def _installer_prefix(
             cmd += ["--index-url", pip_index]
     else:
         cmd = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check"]
-        # The converse: pip ignores uv's settings, and the preflight skipped the pypi.org probe for them.
         uv_index = (
             os.environ.get("UV_DEFAULT_INDEX") or os.environ.get("UV_INDEX_URL") or ""
         ).strip()
@@ -678,9 +632,7 @@ def _installer_prefix(
     if index_url is not None:
         cmd += ["--index-url", index_url]
         if uv:
-            # A uv.toml [[index]] or extra-index-url outranks --index-url, and under uv's first-index strategy one
-            # listing flashinfer-jit-cache at all (pypi.org does, with no files) hides the pinned index. --index ranks
-            # above every configured index.
+            # --index outranks configured indexes; under uv's first-index strategy one listing jit-cache hides ours.
             cmd += ["--index", index_url]
     return cmd
 
@@ -692,8 +644,7 @@ def _uninstall_cmd(uv: Optional[str], names: list[str]) -> list[str]:
 
 
 def _pinnable(dists: dict[str, str]) -> dict[str, str]:
-    """The distributions a constraints file can hold: versions that are not PEP 440 are left out rather than
-    handed to a resolver that would reject the whole file."""
+    """Distributions a constraints file can hold; non-PEP 440 versions are dropped so the file stays valid."""
     try:
         from packaging.version import InvalidVersion, Version
     except Exception:  # noqa: BLE001
@@ -721,8 +672,7 @@ def _write_constraints(pins: dict[str, str]) -> str:
         return path
 
 
-# Index sources the installers read from the environment. The jit-cache step drops them: an extra index outranks
-# uv's --index-url, and under uv's first-index strategy one carrying any flashinfer-jit-cache hides the pinned index.
+# Env index sources the jit-cache step drops: under uv's first-index strategy they can hide the pinned index.
 _INDEX_SOURCE_ENVS = (
     "UV_INDEX",
     "UV_EXTRA_INDEX_URL",
@@ -735,16 +685,13 @@ _INDEX_SOURCE_ENVS = (
 )
 
 
-# pip settings the jit-cache step still needs once pip.conf is not read: how pip reaches the pinned index at all
-# (a corporate proxy or CA bundle), not where it looks for packages.
+# pip transport settings (proxy, CA) the jit-cache step keeps once pip.conf is skipped.
 _PIP_TRANSPORT_SETTINGS = ("proxy", "cert", "client-cert", "trusted-host", "timeout", "retries")
 
 
 def _pinned_index_env(pip_settings: Optional[dict[str, str]] = None) -> dict[str, str]:
-    """The jit-cache step's environment. ``pip_settings`` (the pip fallback's effective settings, None under uv): pip
-    reads ``extra-index-url`` and ``find-links`` from pip.conf and searches them beside ``--index-url``, so a matching
-    cache wheel there could win over the pinned index. PIP_CONFIG_FILE=os.devnull skips every pip configuration file
-    (global, user, site); the transport settings they held are handed over as environment variables instead."""
+    """The jit-cache step's env: pip.conf is skipped (its extra indexes could beat the pinned one) and the transport
+    settings in ``pip_settings`` are re-exported."""
     env = _child_env()
     for name in _INDEX_SOURCE_ENVS:
         env.pop(name, None)
@@ -821,8 +768,7 @@ def _reported_installs(output: str) -> set[str]:
 
 
 def _requirement_closure(roots: set[str], candidates: set[str]) -> set[str]:
-    """``roots`` plus their installed dependencies, restricted to ``candidates``: for an install that reported nothing,
-    without reaching packages outside flashinfer's dependency tree."""
+    """``roots`` plus installed dependencies within ``candidates``, for an install that reported nothing."""
     from importlib.metadata import distribution
 
     try:
@@ -870,11 +816,7 @@ def _rollback(
     reported: Optional[set[str]] = None,
     unreported_step: bool = False,
 ) -> str:
-    """Remove what this install added and put back anything it moved. Returns a one-line summary.
-
-    Only distributions this transaction installed are removed, as its installer reported them: the built-in terminal
-    or another installer that skips the env lock may have added packages in the meantime, and those stay. Only when
-    the installer reported nothing (timed out, died) does it fall back to the flashinfer dependency tree."""
+    """Remove what this install reported adding and restore what it moved; returns a one-line summary."""
     after = installed_distributions()
     new = set(after) - set(before)
     ours = set(reported or ()) & new
@@ -889,18 +831,15 @@ def _rollback(
         )
     moved = _drift(before, after)
     if reported and not unreported_step:
-        # Put back only what this transaction's installer says it changed: a package another installer (the built-in
-        # terminal) upgraded meanwhile is that user's change, not ours to revert.
+        # Revert only what our installer reported: concurrent changes by another installer are not ours.
         moved = {name: change for name, change in moved.items() if name in reported}
     elif unreported_step:
-        # No report to go by, but the constraints held every pinned package where it was, so drift there is another
-        # installer's; only a package the constraints could not pin can have been moved by this one.
+        # No report: constraints pinned everything, so only unpinnable packages can be ours.
         pinned = _pinnable(before)
         moved = {name: change for name, change in moved.items() if name not in pinned}
     notes = []
     if added:
         ok, output = _run(run, _uninstall_cmd(uv, added), _VERIFY_TIMEOUT_S)
-        # The count goes to the status line, the names to the log.
         notes.append(f"{'removed' if ok else 'could not remove'} {len(added)} added package(s)")
         if logger is not None:
             logger.warning(
@@ -940,8 +879,7 @@ def _install(
             "JIT-compile its kernels",
             True,
         )
-    # A stray jit-cache or cubin of another version makes `import flashinfer` raise, and it is not
-    # ours to replace.
+    # A stray jit-cache or cubin of another version breaks `import flashinfer`; not ours to replace.
     for extra in (FLASHINFER_JIT_CACHE_PACKAGE, FLASHINFER_CUBIN_PACKAGE):
         present = _dist_version(extra)
         if present is not None and present.split("+", 1)[0] != FLASHINFER_VERSION:
@@ -951,8 +889,7 @@ def _install(
                 f"flashinfer-python {FLASHINFER_VERSION} would refuse to import beside it",
                 True,
             )
-    # flashinfer only checks the public version, and `==0.6.6` is satisfied by any local tag, so a cache left from
-    # another torch CUDA build would be kept and serve kernels built for the wrong CUDA. Not ours to replace either.
+    # flashinfer checks only the public version, so a jit-cache for another CUDA would be kept; not ours to replace.
     cache = _dist_version(FLASHINFER_JIT_CACHE_PACKAGE)
     if cache is not None and not _same_version(cache, _jit_cache_version(tag)):
         return (
@@ -967,9 +904,7 @@ def _install(
     if config["refusal"]:
         # Configuration, not a failure: not memoised, so a later load after it changes can still install.
         return False, f"flashinfer not installed: {config['refusal']}", False
-    # A configured mirror is the installer's to reach (and may carry credentials a HEAD cannot send), so pypi.org is
-    # only probed when it is the index the installer will use. The jit-cache index is fixed, so it always is, unless
-    # the installer goes through a proxy the probe would not.
+    # A configured mirror is the installer's to reach; probe pypi.org only when it is the index (and not proxied).
     probes = [] if config["mirror"] else [_PYPI_PROBE_URL]
     if tag is not None:
         probes.append(
@@ -993,9 +928,7 @@ def _install(
     reported: set[str] = set()
     try:
         steps = []
-        # The jit-cache goes in FIRST: flashinfer-python imports without it, so a process killed between the two steps
-        # would otherwise leave an importable flashinfer that every later load reads as "already installed" and never
-        # completes. Cache first, an interrupted install leaves nothing importable and the next load finishes it.
+        # jit-cache FIRST: an interrupted install must not leave an importable flashinfer that reads as installed.
         if tag is not None:
             steps.append(
                 (
@@ -1011,8 +944,7 @@ def _install(
                 )
             )
         steps.append(
-            # Constrained, not --no-deps: flashinfer cannot import without apache-tvm-ffi and friends,
-            # and the constraints make every package already here immovable, torch included.
+            # Constrained, not --no-deps: flashinfer needs apache-tvm-ffi; constraints keep everything present immovable.
             (
                 _installer_prefix(uv, own_index = config["own_index"])
                 + [
@@ -1092,12 +1024,8 @@ def ensure_flashinfer_for_nvfp4(
     local_files_only: bool = False,
     owner: Any = None,
 ) -> tuple[bool, str]:
-    """See ``_ensure``. ``owner`` (the loading backend object) keys the reason its status route reports,
-    recorded at once; a loader that can still be cancelled with a model resident passes no owner and
-    calls ``record_install_reason`` after the swap. ``local_files_only`` loads never install.
-
-    With the NVFP4 switch (``UNSLOTH_NVFP4_DIFFUSION``) off this returns at once: no import of
-    flashinfer, no lock, no subprocess, no network, and no reason recorded for the status route."""
+    """See ``_ensure``. ``owner`` keys the status reason (a cancellable loader passes none and calls
+    ``record_install_reason`` after the swap). Switch off: returns at once, no import, lock, subprocess or network."""
     from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
 
     if not nvfp4_diffusion_enabled():
@@ -1117,20 +1045,15 @@ def _ensure(
     run: Callable[..., Any] = subprocess.run,
     local_files_only: bool = False,
 ) -> tuple[bool, str]:
-    """Make ``import flashinfer`` work for an NVFP4 load on ``device``, installing it if allowed.
-
-    ``(ok, reason)``; never raises. Only an eligible host installs (Linux, CUDA torch, a device in
-    the flashinfer NVFP4 set), only once per process, and never while offline. The caller does not
-    need the answer to be True: ``select_nvfp4_backend`` still decides, and a False here leaves it
-    on torchao exactly as before, with the reason logged and kept for the status route."""
+    """Make ``import flashinfer`` work for an NVFP4 load on ``device``. ``(ok, reason)``; never raises; False leaves
+    ``select_nvfp4_backend`` on torchao."""
     global _OUTCOME
     try:
         from .diffusion_nvfp4_ops import BACKEND_TORCHAO, nvfp4_backend_env
 
         if nvfp4_backend_env() == BACKEND_TORCHAO:
             return _finish(False, "UNSLOTH_NVFP4_BACKEND=torchao", None, None)
-        # A load that may not install is not held up to ENV_LOCK_TIMEOUT_S behind another process's download: it
-        # checks the lock once and, if the install is still running, stays off flashinfer (never importing it midway).
+        # A load that may not install checks the lock once instead of waiting behind another process's download.
         declined = (
             "local-only load"
             if local_files_only
@@ -1173,7 +1096,6 @@ def _ensure(
             )
         refusal = _host_refusal(device)
         if refusal is not None:
-            # Not a failure worth a warning: this host would never select flashinfer anyway.
             return _finish(False, f"flashinfer not installed: {refusal}", logger, None, warn = False)
         cached = _OUTCOME
         if cached is not None:
@@ -1197,8 +1119,7 @@ def _ensure(
             # A concurrent load may have installed it while this one waited.
             if _OUTCOME is not None:
                 return _finish(_OUTCOME[0], _OUTCOME[1], None, None)
-            # The rollback diffs installed distributions against a snapshot, so the whole transaction must
-            # also exclude another Studio process installing into the same environment.
+            # The rollback diffs a snapshot, so also exclude other Studio processes installing here.
             with _env_install_lock() as held:
                 if not held:
                     return _finish(

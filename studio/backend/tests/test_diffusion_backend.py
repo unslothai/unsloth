@@ -5040,10 +5040,7 @@ def test_dense_quant_prequant_proceeds_but_forbids_dense_fallback(
 @pytest.mark.parametrize(
     "unreachable,expected_mib,expected_fallback",
     [
-        # The prefetch found the hosted checkpoint refused: size the dense bf16 build it falls back to, and keep that
-        # fallback open (the plan staged the shards for exactly this).
         (("fp8",), 28_561, True),
-        # Positive control: a reachable checkpoint keeps the prequant-sized budget and forbids the dense fallback.
         ((), 22_930, False),
     ],
 )
@@ -5072,7 +5069,6 @@ def test_dense_quant_replan_sizes_an_unreachable_prequant_as_dense(
             return types.SimpleNamespace(
                 transient_transformer_mib = 28_561, companions_mib = 1, prequant = False, scheme = "fp8"
             )
-        # The family table names a hosted checkpoint whether or not this user can read it.
         return types.SimpleNamespace(
             transient_transformer_mib = 22_930, companions_mib = 1, prequant = True, scheme = "fp8"
         )
@@ -5091,7 +5087,6 @@ def test_dense_quant_replan_sizes_an_unreachable_prequant_as_dense(
             self, *a, transformer_resident_override_mib = transformer_resident_override_mib, **k
         )
         if transformer_resident_override_mib is None:
-            # GGUF plan offloads, so the candidate replan decides the fast path.
             return dataclasses.replace(real, offload_policy = "model")
         sized.append(transformer_resident_override_mib)
         return dataclasses.replace(real, offload_policy = "none")
@@ -5113,9 +5108,6 @@ def test_dense_quant_replan_sizes_an_unreachable_prequant_as_dense(
 def test_dense_quant_unreachable_prequant_does_not_skip_the_dense_decline(
     fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
-    # GGUF plan resident, dense bf16 does not fit. A reachable prequant still proceeds with the dense fallback forbidden
-    # (test above); one this user cannot fetch is no prequant, so the explicit scheme declines with the dense reason
-    # instead of downloading a checkpoint that answers 401.
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()
@@ -11358,7 +11350,6 @@ def test_generation_in_flight_never_builds_a_backend(fake_runtime, monkeypatch):
 
 
 def test_the_download_plan_resolves_the_same_nvfp4_rung_the_load_does(monkeypatch):
-    # A planner that drops the base or the checkpoint probe answers a different scheme than the load.
     from types import SimpleNamespace
 
     import core.inference.diffusion as dmod
@@ -11914,11 +11905,8 @@ def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypa
     assert "prequant artifact missing" in str(failures[0])
 
 
-# ── FlashInfer install gate: only a pre-quantised NVFP4 checkpoint that will actually load buys the install ──────────
-
-
 class _StopAfterInstallGate(Exception):
-    """Raised at the first step past the FlashInfer pre-install hop, so the gate is all these tests run."""
+    """Raised just past the FlashInfer pre-install hop."""
 
 
 def _hub_refusal(cls):
@@ -11937,10 +11925,7 @@ def _nvfp4_install_probe(
     refusal = None,
     cached = False,
 ):
-    """Record every FlashInfer install and every Hub listing an image load makes before its locks.
-
-    ``listing`` is the sibling list the Hub returns for the NVFP4 repo, ``refusal`` an exception it
-    raises instead (private / gated / unpublished), ``cached`` whether the checkpoint is on disk."""
+    """Record FlashInfer installs and Hub listings; ``refusal`` is raised instead of ``listing``."""
     import core.inference.diffusion as diffusion_mod
     import core.inference.diffusion_prequant as prequant_mod
     from core.inference import diffusion_nvfp4_install as inst
@@ -11966,7 +11951,6 @@ def _nvfp4_install_probe(
 
     monkeypatch.setattr(inst, "ensure_flashinfer_for_nvfp4", _ensure)
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
-    # Whether this install can open the checkpoint is covered in test_diffusion_prequant.py.
     monkeypatch.setattr(
         prequant_mod, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
     )
@@ -12006,8 +11990,7 @@ def _load_to_the_install_gate(
 def test_an_nvfp4_checkpoint_the_hub_refuses_installs_no_flashinfer(
     fake_runtime, monkeypatch, error
 ):
-    # A private / gated / unpublished NVFP4 repo: the load builds NVFP4 on the fly on torchao, which FlashInfer never
-    # serves, so the 1.2-1.8 GB wheel must not be installed for it.
+    # Private / gated repo: on-the-fly torchao build, FlashInfer unused.
     import huggingface_hub.errors as hub_errors
 
     installs, listed = _nvfp4_install_probe(
@@ -12066,9 +12049,7 @@ def test_a_reachable_nvfp4_checkpoint_still_installs_flashinfer(fake_runtime, mo
 def test_with_the_nvfp4_switch_off_a_reachable_checkpoint_installs_nothing(
     fake_runtime, monkeypatch
 ):
-    # This module runs with UNSLOTH_NVFP4_DIFFUSION=1 (conftest); unset it for the shipped default. A plan
-    # that settled nvfp4 is the path that reaches the gate without an explicit request, which the switch
-    # refuses before the load (test_nvfp4_diffusion_flag.py).
+    # conftest sets UNSLOTH_NVFP4_DIFFUSION=1; unset for the shipped default.
     monkeypatch.delenv("UNSLOTH_NVFP4_DIFFUSION", raising = False)
     installs, listed = _nvfp4_install_probe(
         monkeypatch, listing = [_FakeSibling("Z-Image-Turbo-NVFP4.safetensors", 6 * GB)]
@@ -12088,7 +12069,6 @@ def test_with_the_nvfp4_switch_off_a_reachable_checkpoint_installs_nothing(
 
 
 def test_a_plan_that_settled_nvfp4_installs_without_asking_the_hub_again(fake_runtime, monkeypatch):
-    # The download plan only pins NVFP4 after listing the checkpoint (or finding it cached offline).
     installs, listed = _nvfp4_install_probe(
         monkeypatch, refusal = RuntimeError("no request expected")
     )
@@ -12101,9 +12081,6 @@ def test_a_plan_that_settled_nvfp4_installs_without_asking_the_hub_again(fake_ru
 def test_a_settled_nvfp4_seed_the_live_memory_plan_would_drop_installs_no_flashinfer(
     fake_runtime, monkeypatch, reserved_gb, installs_expected
 ):
-    # The prefetch settles NVFP4 against total CAPACITY; under the locks the load re-plans against live free memory
-    # and drops the seed when it would offload, so FlashInfer would serve nothing. The install runs before that
-    # teardown, so it asks the same plan with this process's own allocation (freed by the teardown) credited back.
     import core.inference.diffusion as diffusion_mod
     from core.inference.diffusion_memory import DeviceMemory
 
@@ -12129,7 +12106,6 @@ def test_a_settled_nvfp4_seed_the_live_memory_plan_would_drop_installs_no_flashi
 
 
 def test_an_nvfp4_lora_bake_installs_no_flashinfer(fake_runtime, monkeypatch):
-    # A LoRA bake needs the dense transformer, so the prequant (the only FlashInfer path) is skipped.
     installs, listed = _nvfp4_install_probe(
         monkeypatch, listing = [_FakeSibling("Z-Image-Turbo-NVFP4.safetensors", 6 * GB)]
     )

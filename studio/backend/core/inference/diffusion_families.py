@@ -392,7 +392,6 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         prequant_repos = (
             ("int8", "unsloth/Qwen-Image-2.1-FP8"),
             ("fp8", "unsloth/Qwen-Image-2.1-FP8"),
-            # Policy ``qwen21_r020_v1``, GPTQ, baked activation scales.
             ("nvfp4", "unsloth/Qwen-Image-2.1-NVFP4"),
         ),
         # The artifacts are safetensors, not the historical torch.save pickle, so the family has to
@@ -488,7 +487,6 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         prequant_repos = (
             ("int8", "unsloth/Z-Image-Turbo-FP8"),
             ("fp8", "unsloth/Z-Image-Turbo-FP8"),
-            # Policy ``zimg_rg76_v1``, GPTQ, baked activation scales.
             ("nvfp4", "unsloth/Z-Image-Turbo-NVFP4"),
         ),
         # Both hosted checkpoints are baked from the distilled Turbo transformer, so the undistilled base has none and
@@ -1194,7 +1192,6 @@ def family_prequant_repo(
     refuses the artifact well after the plan was made. A base whose weights really differ belongs
     in ``prequant_excluded_bases``, which returns None here instead."""
     if nvfp4_blocked(scheme):
-        # The NVFP4 switch is off: no hosted *-NVFP4 repo exists as far as any caller can tell.
         return None
     # Both tables are keyed on lowercased upstream ids.
     base = canonical_base(base_repo).lower()

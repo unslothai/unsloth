@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The NVFP4 switch (``UNSLOTH_NVFP4_DIFFUSION``), default OFF.
-
-Off means NVFP4 is unavailable for image and video generation in general: ``auto`` never picks it,
-an explicit transformer or text-encoder request is refused with a clear message, no hosted
-``*-NVFP4`` repo is resolved, planned or asked about, and nothing advertises it. The modules that
-test the NVFP4 behaviour itself run with the switch ON (see the conftest fixture); this one runs
-with the environment cleared, so it sees the shipped default, and turns it on only where it proves
-the enabled path is still reachable end to end.
-"""
+"""The NVFP4 switch (``UNSLOTH_NVFP4_DIFFUSION``), default OFF."""
 
 from __future__ import annotations
 
@@ -34,10 +26,6 @@ def _default_off(monkeypatch):
 
 def _enable(monkeypatch):
     monkeypatch.setenv(ENV, "1")
-
-
-# ---------------------------------------------------------------------------------------------
-# Parsing
 
 
 def test_the_default_is_off_and_lives_in_one_constant():
@@ -85,10 +73,6 @@ def test_only_nvfp4_is_blocked():
     assert not flag.nvfp4_repo_blocked(None)
 
 
-# ---------------------------------------------------------------------------------------------
-# Dense transformer quant: auto and explicit
-
-
 def _blackwell(monkeypatch, *, supported = ("int8", "fp8", "nvfp4", "mxfp8")):
     """A datacenter sm_100 host whose smoke probe passes ``supported``, nothing allocated."""
     import torch
@@ -102,7 +86,6 @@ def _blackwell(monkeypatch, *, supported = ("int8", "fp8", "nvfp4", "mxfp8")):
         tq, "_smoke_probe", lambda scheme, device, unproven_ok = False: scheme in supported
     )
     monkeypatch.setattr(tq, "_SMOKE_CACHE", {})
-    # nvfp4 in the ladder AND at the head of a family prefer row, the two ways auto could reach it.
     monkeypatch.setattr(
         tq,
         "_AUTO_LADDER",
@@ -117,8 +100,7 @@ def _blackwell(monkeypatch, *, supported = ("int8", "fp8", "nvfp4", "mxfp8")):
 
 
 def _auto(target, family):
-    """``auto`` on ``family`` as a load asks it, with a hosted checkpoint for every scheme where
-    the selector requires one for nvfp4, so only the switch stands between auto and nvfp4."""
+    """``auto`` on ``family`` with a hosted checkpoint for every scheme, so only the switch blocks nvfp4."""
     kwargs = {}
     if "has_prequant" in inspect.signature(tq.select_transformer_quant_scheme).parameters:
         kwargs["has_prequant"] = lambda scheme: True
@@ -180,7 +162,6 @@ def test_an_explicit_nvfp4_transformer_quant_is_refused_not_swapped(monkeypatch)
     with pytest.raises(ValueError, match = DISABLED):
         tq.select_transformer_quant_scheme(target, "nvfp4", family = "z-image")
     assert DISABLED in tq.explain_unusable_scheme("z-image", "nvfp4")
-    # Every other scheme is untouched.
     assert tq.normalize_transformer_quant("fp8") == tq.TQ_FP8
     assert tq.select_transformer_quant_scheme(target, "mxfp8", family = "z-image") == tq.TQ_MXFP8
 
@@ -223,7 +204,6 @@ def test_every_load_and_plan_route_400s_an_nvfp4_request(monkeypatch, field, con
     from routes import video as video_routes
 
     touched = []
-    # Nothing past the refusal may run: not the account checks, not the backend.
     monkeypatch.setattr(
         image_routes.account_access, "managed_account", lambda: touched.append("acct") or False
     )
@@ -247,10 +227,6 @@ def test_every_load_and_plan_route_400s_an_nvfp4_request(monkeypatch, field, con
     assert touched == []
 
 
-# ---------------------------------------------------------------------------------------------
-# Text encoder
-
-
 def test_text_encoder_nvfp4_is_refused():
     from core.inference import diffusion_precision as dp
 
@@ -258,7 +234,6 @@ def test_text_encoder_nvfp4_is_refused():
         dp.normalize_te_quant("nvfp4")
     with pytest.raises(ValueError, match = DISABLED):
         dp.resolve_te_quant_request("nvfp4", None)
-    # A family default of nvfp4 is simply no default while it is off, never a refused load.
     assert dp.resolve_te_quant_request(None, "nvfp4") == (None, False)
     assert dp.resolve_te_quant_request("auto", "fp8") == ("fp8", True)
     target = types.SimpleNamespace(device = "cuda", dtype = None)
@@ -272,10 +247,6 @@ def test_no_hosted_nvfp4_text_encoder_is_resolved():
         te_prequant_repos = (("nvfp4", "text_encoder", "unsloth/Some-Model-NVFP4"),)
     )
     assert family_te_prequant_repo(fam, "nvfp4", "text_encoder") is None
-
-
-# ---------------------------------------------------------------------------------------------
-# Hosted prequant: no lookup, no seed, no Hub request
 
 
 _WAN_T2V = "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
@@ -360,8 +331,6 @@ def _wan_plan(monkeypatch):
         "_hub_file_is_cached",
         staticmethod(lambda repo_id, filename, revision = None, expected_size = None, **kw: False),
     )
-    # The selector is what the switch filters; forcing its answer proves the resolver below it
-    # holds on its own too.
     monkeypatch.setattr(video_mod, "select_transformer_quant_scheme", lambda *a, **k: "nvfp4")
     monkeypatch.setattr(
         diffusion_prequant, "restricted_prequant_load_supported", lambda *a, **k: True
@@ -407,13 +376,8 @@ def test_the_image_hub_entry_never_asks_about_an_nvfp4_repo(monkeypatch):
         kind = "repo", location = "unsloth/Z-Image-Turbo-NVFP4", filename = "x-NVFP4.pt"
     )
     assert DiffusionBackend._prequant_source_hub_entry(source, None, scheme = "nvfp4") is None
-    # The repo-name backstop holds even when a caller forgets the scheme.
     assert DiffusionBackend._prequant_source_hub_entry(source, None) is None
     assert asked == []
-
-
-# ---------------------------------------------------------------------------------------------
-# Capability and info payloads
 
 
 def test_the_info_payload_and_estimates_omit_nvfp4(monkeypatch):
@@ -438,11 +402,6 @@ def test_api_system_reports_the_switch(monkeypatch):
     assert main._nvfp4_diffusion_enabled() is True
 
 
-# ---------------------------------------------------------------------------------------------
-# Enabled: the same entry points reach the real NVFP4 code, so an internal run with the switch on
-# exercises exactly today's behaviour.
-
-
 def test_enabled_the_nvfp4_path_is_reachable_end_to_end(monkeypatch):
     _enable(monkeypatch)
     from core.inference import diffusion_precision as dp
@@ -450,14 +409,11 @@ def test_enabled_the_nvfp4_path_is_reachable_end_to_end(monkeypatch):
     from core.inference.video_denoiser_prequant import denoiser_prequant_sources
     from core.inference.video_families import video_family_prequant_repo
 
-    # auto: a prefer row that leads with nvfp4 is honoured again.
     target = _blackwell(monkeypatch)
     assert _auto(target, "wan2.2-t2v-a14b") == "nvfp4"
-    # explicit: accepted, validated and selected like any other scheme.
     assert tq.normalize_transformer_quant("nvfp4") == "nvfp4"
     assert tq.select_transformer_quant_scheme(target, "nvfp4", family = "z-image") == "nvfp4"
     assert dp.normalize_te_quant("nvfp4") == "nvfp4"
-    # prequant lookup: the hosted repo resolves and every expert seeds.
     fam = _wan_a14b()
     assert video_family_prequant_repo(fam, "nvfp4") == "unsloth/Wan2.2-T2V-A14B-NVFP4"
     sources = denoiser_prequant_sources(fam, "nvfp4", _WAN_T2V)
@@ -480,10 +436,6 @@ def test_enabled_the_routes_let_nvfp4_through_the_switch(monkeypatch):
     _refuse_disabled_nvfp4_request(
         types.SimpleNamespace(transformer_quant = "nvfp4", text_encoder_quant = "nvfp4")
     )
-
-
-# ---------------------------------------------------------------------------------------------
-# Per-layer image policies, gated auto rows and the flashinfer backend (studio-nvfp4-image)
 
 
 def _record_nvfp4_probes(monkeypatch):
@@ -568,11 +520,6 @@ def test_the_per_layer_policy_factor_is_not_applied(monkeypatch):
     assert policy_steady_factor("z-image", "Tongyi-MAI/Z-Image-Turbo") is not None
 
 
-# ---------------------------------------------------------------------------------------------
-# flashinfer kernel dispatch (studio-nvfp4-kernels): reached only through the preflight and the
-# NVFP4 layers, so the switch keeps it cold.
-
-
 def test_the_fast_dispatch_is_never_probed_or_verified(monkeypatch):
     from core.inference import diffusion_nvfp4_dispatch as dispatch
     from core.inference import diffusion_nvfp4_ops as ops
@@ -583,10 +530,6 @@ def test_the_fast_dispatch_is_never_probed_or_verified(monkeypatch):
     assert ops.nvfp4_preflight(0, refresh = True)["ok"] is False
     assert ops.select_nvfp4_backend(0) == ops.BACKEND_TORCHAO
     assert touched == []
-
-
-# ---------------------------------------------------------------------------------------------
-# flashinfer auto-install (studio-nvfp4-flashinfer-autoinstall)
 
 
 def test_no_flashinfer_install_is_attempted(monkeypatch):
@@ -641,10 +584,6 @@ def test_enabled_the_install_gate_is_reached(monkeypatch):
     monkeypatch.setattr(inst, "_ensure", lambda *a, **k: seen.append("ensure") or (True, None))
     assert inst.ensure_flashinfer_for_nvfp4(0) == (True, None)
     assert seen == ["ensure"]
-
-
-# ---------------------------------------------------------------------------------------------
-# An NVFP4 checkpoint loaded directly as the model
 
 
 def _prequant_dir(root, name, scheme):
@@ -722,7 +661,6 @@ def test_the_image_family_nvfp4_repos_are_recognised_by_the_table():
     from core.inference.diffusion_prequant import hosted_nvfp4_repo_ids
 
     ids = hosted_nvfp4_repo_ids()
-    # A (scheme, repo) row and a (base, scheme, repo) variant row.
     assert "unsloth/z-image-turbo-nvfp4" in ids
     assert "unsloth/flux.1-schnell-nvfp4" in ids
     assert not any("fp8" in repo and "nvfp4" not in repo for repo in ids)
@@ -739,7 +677,6 @@ def test_a_cached_repo_is_judged_by_its_metadata_not_its_name(tmp_path, monkeypa
 
 
 def test_a_local_dir_whose_metadata_declares_nvfp4_is_refused(tmp_path):
-    # No NVFP4 in the name: the recorded scheme is the evidence.
     folder = _prequant_dir(tmp_path, "my-checkpoint", "nvfp4")
     with pytest.raises(ValueError, match = DISABLED):
         flag.refuse_disabled_nvfp4_checkpoint(str(folder))
@@ -785,7 +722,6 @@ def test_a_local_dir_with_another_scheme_is_not_refused(tmp_path):
     plain.mkdir()
     (plain / "model_index.json").write_text("{}")
     flag.refuse_disabled_nvfp4_checkpoint(str(plain))
-    # A pipeline loads from its component folders, so a stray root artifact is not the model.
     pipeline = _prequant_dir(tmp_path, "pipeline-with-extra", "nvfp4")
     (pipeline / "model_index.json").write_text("{}")
     flag.refuse_disabled_nvfp4_checkpoint(str(pipeline))

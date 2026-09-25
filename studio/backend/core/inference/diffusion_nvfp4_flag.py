@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The one switch for NVFP4 in Studio's image and video paths.
-
-Off by default until the hosted ``unsloth/*-NVFP4`` checkpoints are public. While it is off NVFP4
-is unavailable in general, not only the hosted checkpoints: ``auto`` never picks it for the
-transformer, an explicit ``transformer_quant`` or ``text_encoder_quant`` of ``nvfp4`` is refused,
-no ``*-NVFP4`` repo is resolved, planned, sized or downloaded, no flashinfer install or preflight
-runs for it, and the capability payloads do not advertise it. ``UNSLOTH_NVFP4_DIFFUSION=1``
-restores the full NVFP4 behaviour.
-
-Torch-free and read at CALL time (never cached), so a test can flip it with ``monkeypatch.setenv``
-and a restarted backend picks up a new value without an import-order dependency.
-
-The offline builder scripts (``scripts/build_prequant_checkpoint.py`` and the gate scripts) do not
-consult this: they are developer tools for producing the checkpoints in the first place.
-"""
+"""The one NVFP4 switch for Studio image/video; read at call time, never cached, so tests can monkeypatch it."""
 
 from __future__ import annotations
 
@@ -24,8 +10,7 @@ from typing import Iterable, Optional
 
 NVFP4_DIFFUSION_ENV = "UNSLOTH_NVFP4_DIFFUSION"
 
-# The default when the variable is unset. Flipping NVFP4 on for everyone, once the hosted repos are
-# public, is this one line.
+# Flip to True once the hosted *-NVFP4 repos are public.
 NVFP4_DIFFUSION_DEFAULT = False
 
 NVFP4_SCHEME = "nvfp4"
@@ -35,10 +20,7 @@ _FALSY = frozenset({"0", "false", "no", "off"})
 
 
 def nvfp4_diffusion_enabled() -> bool:
-    """Whether NVFP4 may be used, planned or advertised for image and video generation.
-
-    ``1`` / ``true`` / ``yes`` / ``on`` enable it and ``0`` / ``false`` / ``no`` / ``off`` disable
-    it. Unset, empty or unrecognised values take ``NVFP4_DIFFUSION_DEFAULT``, which is off."""
+    """Whether NVFP4 may be used; unrecognised values take ``NVFP4_DIFFUSION_DEFAULT``."""
     raw = os.environ.get(NVFP4_DIFFUSION_ENV)
     if raw is None:
         return NVFP4_DIFFUSION_DEFAULT
@@ -63,8 +45,7 @@ def nvfp4_blocked(scheme: Optional[str]) -> bool:
 
 
 def nvfp4_repo_blocked(repo_id: Optional[str]) -> bool:
-    """True for a hosted ``*-NVFP4`` repo while the switch is off. A backstop for the helpers that
-    talk to the Hub, behind the scheme gates that normally stop the lookup long before."""
+    """True for a hosted ``*-NVFP4`` repo while the switch is off (Hub-helper backstop)."""
     if nvfp4_diffusion_enabled() or not repo_id:
         return False
     return str(repo_id).strip().rstrip("/").lower().endswith("-nvfp4")
@@ -88,10 +69,7 @@ def nvfp4_disabled_message(control: str = "transformer_quant") -> str:
 def refuse_disabled_nvfp4(
     *, transformer_quant: Optional[str] = None, text_encoder_quant: Optional[str] = None
 ) -> None:
-    """Raise ``ValueError`` (the routes' 400) when a request names NVFP4 while the switch is off.
-
-    Runs ahead of every other precision check, including the opt-in silent fallback, so a disabled
-    scheme is refused outright rather than quietly swapped for another one."""
+    """Raise ``ValueError`` (400) for NVFP4 while off, before any silent fallback could swap it."""
     if nvfp4_diffusion_enabled():
         return
     if is_nvfp4(transformer_quant):
@@ -110,9 +88,7 @@ def nvfp4_checkpoint_disabled_message() -> str:
 
 
 def refuse_disabled_nvfp4_checkpoint(*model_paths: Optional[str]) -> None:
-    """Raise ``ValueError`` (the routes' 400) when a model path is an NVFP4 checkpoint while the
-    switch is off: a hosted ``*-NVFP4`` repo, or any repo or local path whose pre-quant metadata
-    declares ``nvfp4``. Loaded directly as the model it bypasses every scheme gate above."""
+    """Raise ``ValueError`` (400) for an NVFP4 checkpoint model path while off; it bypasses the scheme gates."""
     if nvfp4_diffusion_enabled():
         return
     from .diffusion_prequant import declares_nvfp4_checkpoint

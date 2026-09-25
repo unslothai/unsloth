@@ -9112,8 +9112,7 @@ def test_a_checkpoint_that_will_not_load_falls_back_to_the_dense_quant(fake_runt
 
 
 def test_a_superseded_nvfp4_load_cannot_overwrite_the_install_reason(fake_runtime, monkeypatch):
-    # An older NVFP4 load blocked in the FlashInfer install returns after a newer load committed. Its outcome must not
-    # replace the newer load's per-device reason: only the load that commits _VideoLoadState may record one.
+    # A superseded load returning from the install must not overwrite the newer load's reason.
     import threading
 
     import core.inference.video as video_mod
@@ -9143,7 +9142,6 @@ def test_a_superseded_nvfp4_load_cannot_overwrite_the_install_reason(fake_runtim
         return outcome
 
     monkeypatch.setattr(inst, "ensure_flashinfer_for_nvfp4", _ensure)
-    # The hosted checkpoint is reachable, so both loads reach the install; no Hub request from a unit test.
     monkeypatch.setattr(
         VideoBackend, "_nvfp4_denoiser_checkpoint_will_load", lambda self, *a, **k: True
     )
@@ -9178,8 +9176,7 @@ def test_a_superseded_nvfp4_load_cannot_overwrite_the_install_reason(fake_runtim
 
 
 def test_an_on_the_fly_nvfp4_load_clears_the_previous_install_reason(fake_runtime, monkeypatch):
-    # The gate skips the install when no hosted checkpoint will load; the commit must still drop the reason the
-    # previous model recorded, or status() reports that model's install refusal for the new one.
+    # A skipped install must still clear the previous model's reason.
     import core.inference.video as video_mod
     from core.inference import diffusion_nvfp4_install as inst
 
@@ -9331,7 +9328,6 @@ def test_a_seed_the_plan_declined_is_not_re_taken_by_the_load(fake_runtime, monk
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(video_mod, "quantize_transformer", lambda *a, **k: "nvfp4")
     calls, _modules = _stub_denoiser_seed(monkeypatch, plan_scheme = None)
-    # The load's own probe would answer yes on this roomy card.
     monkeypatch.setattr(video_mod, "_video_auto_denoiser_scheme", lambda fam, **kw: "nvfp4")
 
     backend = VideoBackend()
@@ -9430,7 +9426,6 @@ def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
     }
     monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: sources)
     monkeypatch.setattr(video_mod, "_video_auto_denoiser_scheme", lambda fam, **kw: "nvfp4")
-    # Its residency question reads live free VRAM, which a shared test card moves under the test.
     monkeypatch.setattr(video_mod, "_video_seed_stays_resident", lambda fam, **kw: True)
 
     plan = VideoBackend().download_plan(
@@ -9454,8 +9449,7 @@ def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
 
 
 def test_an_explicit_scheme_under_speed_off_stages_the_hosted_experts(monkeypatch):
-    """An EXPLICIT scheme under speed_mode="off" is still quantized, so the plan keeps its seed and
-    stages the hosted checkpoint rather than the ~56 GB of dense experts."""
+    """An EXPLICIT scheme under speed_mode="off" is still quantized, so the plan keeps its seed."""
     import core.inference.video as video_mod
     import core.inference.video_denoiser_prequant as dq
 
@@ -9492,7 +9486,6 @@ def test_an_explicit_scheme_under_speed_off_stages_the_hosted_experts(monkeypatc
         ),
     }
     monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: sources)
-    # The runner's own GPU and memory must not decide the seed: this pins the speed-off rule only.
     monkeypatch.setattr(
         video_mod, "select_transformer_quant_scheme", lambda target, requested, **kw: requested
     )
@@ -9675,7 +9668,6 @@ def test_a_dense_encoder_fallback_that_forces_offload_also_drops_the_seed(
     def _plan(**kwargs):
         seen.append(kwargs.get("model_dense_mib"))
         planned = real_plan(**kwargs)
-        # The artifact-sized plan with the pre-cast encoder fits; every plan after it offloads.
         return planned if len(seen) == 1 else dataclasses.replace(planned, offload_policy = "model")
 
     monkeypatch.setattr(video_mod, "plan_diffusion_memory", _plan)
@@ -10340,11 +10332,8 @@ def test_a_failed_replacement_keeps_the_resident_models_nvfp4_state(monkeypatch,
     assert resets == ([] if resident else [True])
 
 
-# ── FlashInfer install gate: only hosted pre-quantised NVFP4 denoisers that will actually load buy the install ──────
-
-
 class _StopAfterInstallGate(Exception):
-    """Raised at the first step past the FlashInfer pre-install hop, so the gate is all these tests run."""
+    """Raised just past the FlashInfer pre-install hop."""
 
 
 class _Sibling:
@@ -10373,7 +10362,7 @@ def _video_install_probe(
     cached = False,
     free_mib = 180_000,
 ):
-    """Record every FlashInfer install and Hub listing a video load makes, stopping right after the hop."""
+    """Record FlashInfer installs and Hub listings, stopping after the hop."""
     import core.inference.video as video_mod
     from core.inference import diffusion_nvfp4_install as inst
     from core.inference.diffusion import DiffusionBackend
@@ -10389,7 +10378,6 @@ def _video_install_probe(
     real_hop = VideoBackend._install_flashinfer_for_seed
 
     def _hop(*args, **kwargs):
-        # The conventional install runs once the memory plan settled the seed; nothing past it is under test.
         real_hop(*args, **kwargs)
         raise _StopAfterInstallGate()
 
@@ -10424,13 +10412,11 @@ def _video_install_probe(
     )
     from core.inference.diffusion_memory import DeviceMemory
 
-    # A card the seeded plan fits resident on, so the install gate sees the seed survive the live-memory plan.
     monkeypatch.setattr(
         video_mod,
         "settled_snapshot_device_memory",
         lambda target: DeviceMemory("cuda", "cuda", "discrete_vram", free_mib, 183_000),
     )
-    # The fake runtime has no Blackwell to pick NVFP4 for an explicit request; the hosted-coverage checks still run.
     monkeypatch.setattr(
         video_mod,
         "_video_auto_denoiser_scheme",
@@ -10459,8 +10445,7 @@ def _video_load_to_the_install_gate(repo_id = "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
 def test_an_nvfp4_video_checkpoint_the_hub_refuses_installs_no_flashinfer(
     fake_runtime, monkeypatch, error, repo_id, hosted
 ):
-    # A private / gated / unpublished NVFP4 repo: the load quantises on the fly on torchao, which FlashInfer never
-    # serves. On Wan-5B the install used to fire even when the load was then refused on memory.
+    # Private / gated repo: on-the-fly torchao build, FlashInfer unused.
     import huggingface_hub.errors as hub_errors
 
     installs, listed, _ = _video_install_probe(
@@ -10472,7 +10457,7 @@ def test_an_nvfp4_video_checkpoint_the_hub_refuses_installs_no_flashinfer(
 
 
 def test_an_nvfp4_video_repo_missing_a_denoiser_installs_no_flashinfer(fake_runtime, monkeypatch):
-    # A14B needs BOTH denoisers; a repo holding only one means the load keeps its dense shards.
+    # A14B needs BOTH denoisers.
     installs, listed, _ = _video_install_probe(monkeypatch, listing = ["Wan2.2-T2V-A14B-NVFP4.pt"])
     _video_load_to_the_install_gate()
     assert installs == []
@@ -10504,7 +10489,6 @@ def test_a_reachable_nvfp4_video_checkpoint_still_installs_flashinfer(fake_runti
 def test_with_the_nvfp4_switch_off_a_reachable_video_checkpoint_installs_nothing(
     fake_runtime, monkeypatch
 ):
-    # This module runs with UNSLOTH_NVFP4_DIFFUSION=1 (conftest); unset it for the shipped default.
     monkeypatch.delenv("UNSLOTH_NVFP4_DIFFUSION", raising = False)
     installs, listed, _ = _video_install_probe(
         monkeypatch,
@@ -10527,7 +10511,6 @@ def test_a_video_plan_that_settled_nvfp4_installs_without_asking_the_hub_again(
 
 
 def test_a_video_seed_the_plan_declined_installs_no_flashinfer(fake_runtime, monkeypatch):
-    # A declined seed is never re-taken by the load, so the denoiser is quantised on the fly on torchao.
     from core.inference.video import DENOISER_SEED_DECLINED
 
     installs, listed, _ = _video_install_probe(
@@ -10540,9 +10523,7 @@ def test_a_video_seed_the_plan_declined_installs_no_flashinfer(fake_runtime, mon
 
 
 def test_a_video_seed_the_live_memory_plan_drops_installs_no_flashinfer(fake_runtime, monkeypatch):
-    # The prefetch settled NVFP4 against CAPACITY, but live free memory is short (another tenant holds most of the
-    # card), so the load's plan offloads, drops the seed and builds the released bf16 denoiser. FlashInfer would
-    # serve nothing: the ~1.5 GB install must not run.
+    # Live free memory short: the plan offloads and drops the capacity-settled seed, so no install.
     installs, listed, _ = _video_install_probe(
         monkeypatch, refusal = RuntimeError("no request expected"), free_mib = 4_000
     )
@@ -10569,8 +10550,7 @@ def test_an_offline_nvfp4_video_load_asks_only_the_cache(fake_runtime, monkeypat
 
 
 def _stub_h3_nvfp4_checkpoint(monkeypatch):
-    """Register a hosted NVFP4 denoiser for MiniMax-H3 (none is published), so the modular path reaches the install
-    hop. Records the task each registry lookup is asked for."""
+    """Register a fake hosted NVFP4 MiniMax-H3 denoiser; records each lookup's task."""
     import core.inference.diffusion_prequant as prequant_mod
     import core.inference.video as video_mod
 
@@ -10622,7 +10602,6 @@ def test_the_minimax_h3_modular_path_skips_the_install_for_a_refused_checkpoint(
     assert installs == []
     assert listed == ["unsloth/MiniMax-H3-NVFP4"]
     assert dispatched == [None], "the modular load was handed an install outcome it never earned"
-    # No h3_task asks about the partition the modular load brings up: the family's default workflow.
     assert "fl2va" in tasks
 
 

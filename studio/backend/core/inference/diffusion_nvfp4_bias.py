@@ -22,7 +22,6 @@ _TRUE_TOKENS = ("1", "true", "yes", "on")
 _FALSE_TOKENS = ("0", "false", "no", "off")
 
 _BLOCK = 4096
-# Below this the launch outruns the bandwidth win.
 _FAST_BIAS_MIN_NUMEL = 12 * 1024 * 1024
 # The kernel indexes with int32 offsets.
 _FAST_BIAS_MAX_NUMEL = 2**31 - 1

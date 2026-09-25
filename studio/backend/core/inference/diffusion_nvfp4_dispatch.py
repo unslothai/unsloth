@@ -192,14 +192,12 @@ def _fast_quantize(
     *,
     force: bool = False,
 ):
-    """``nvfp4_quantize(do_shuffle = False)`` minus the per-call device queries."""
     if not x.is_contiguous():
         return None, None
     got = quant_fn(x.device, force = force)
     if got is None:
         return None, None
     fn, pdl = got
-    # Exactly what nvfp4_quantize(do_shuffle = False, sfLayout = 128x4) passes through.
     xq, sf = fn(x, global_sf, 16, False, True, False, pdl)
     return xq, sf.reshape((-1, x.shape[-1] // 16))
 
@@ -278,7 +276,6 @@ def _build_plan(key: tuple, device: Any, operands: list):
         runner = get_cutlass_fp4_gemm_module(major, minor).cutlass_fp4_gemm_runner()
         xq, wq_t, x_sf, w_sf_t, alpha, out = operands
         inputs = [xq, wq_t, x_sf, w_sf_t, alpha, torch.bfloat16, out, 16, True, workspace]
-        # Probe FlashInfer's OWN tactic cache, so this runs the tactic the public path would.
         _, tactic = AutoTuner.get().choose_one(
             "fp4_gemm", [runner], _MM_FP4_TUNING_CONFIG_128x4, inputs
         )
@@ -288,7 +285,7 @@ def _build_plan(key: tuple, device: Any, operands: list):
 
 
 def forget_availability() -> None:
-    """Re-probe on the next ``available()``. For an install that just made flashinfer importable."""
+    """Re-probe on the next ``available()``."""
     global _AVAILABLE
     with _LOCK:
         _AVAILABLE = None
