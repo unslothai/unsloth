@@ -1,0 +1,127 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+// The Library's state across failures: an edit whose rollback cannot reach the server, a deleted
+// chat attachment, and a download of unknown size.
+
+import assert from "node:assert/strict";
+import test from "node:test";
+import * as zustand from "zustand";
+import * as zustandMiddleware from "zustand/middleware";
+
+import { installLocalStorageFake } from "./helpers/kit.ts";
+import { loadWithStubs } from "./helpers/module-stubs.ts";
+
+// The modules listen for sign-out when they load, so the window has to exist first.
+installLocalStorageFake();
+const SIGNED_OUT = "unsloth:auth-session-cleared";
+
+const file = (name: string) => new File(["x"], name);
+
+type Item = { id: string; name: string; favorite: boolean; folderId: string | null };
+
+function loadStore(api: Record<string, unknown>, emitted: unknown[] = []) {
+  return loadWithStubs<{
+    useLibraryStore: zustand.UseBoundStore<
+      zustand.StoreApi<{
+        items: Item[];
+        refresh: () => Promise<void>;
+        removeItem: (id: string) => Promise<void>;
+        patchItem: (id: string, patch: Partial<Item>) => Promise<void>;
+      }>
+    >;
+  }>(new URL("../src/features/library/store.ts", import.meta.url), {
+    zustand,
+    "zustand/middleware": zustandMiddleware,
+    "@/features/auth": { AUTH_SESSION_CLEARED_EVENT: SIGNED_OUT, getAuthSessionEpoch: () => 0 },
+    "@/features/chat/utils/chat-attachment-events": {
+      emitChatAttachmentDeleted: (event: unknown) => emitted.push(event),
+    },
+    "@/i18n": { translate: (key: string) => key },
+    "@/lib/gallery-flags": { notifyGalleryChanged: () => {} },
+    "./api": { errorMessage: String, ...api },
+    "./favorites-store": {
+      useLibraryFavoritesStore: {
+        getState: () => ({ begin: () => ({}), adopt: (_: unknown, ids: unknown) => ids, mark: () => () => {} }),
+      },
+    },
+    "./object-url-cache": { clearCachedObjectUrls: () => {} },
+  }).useLibraryStore;
+}
+
+const item = (id: string, name = id): Item => ({ id, name, favorite: false, folderId: null });
+
+test("a failed edit is undone locally when the refresh meant to undo it fails too", async () => {
+  let online = true;
+  const store = loadStore({
+    getLibrary: async () => {
+      if (!online) throw new Error("offline");
+      return { items: [item("upload:a"), item("upload:b")], folders: [] };
+    },
+    deleteLibraryItem: async () => {
+      throw new Error("offline");
+    },
+    updateLibraryItem: async () => {
+      throw new Error("offline");
+    },
+  });
+  await store.getState().refresh();
+  online = false;
+  await assert.rejects(store.getState().removeItem("upload:a"));
+  // Renamed twice, both failing: it ends as it was before either.
+  await Promise.all([
+    assert.rejects(store.getState().patchItem("upload:b", { name: "one" })),
+    assert.rejects(store.getState().patchItem("upload:b", { name: "two" })),
+  ]);
+  assert.deepEqual(store.getState().items, [item("upload:a"), item("upload:b")]);
+});
+
+test("deleting a chat attachment tells an open chat to drop it", async () => {
+  const emitted: unknown[] = [];
+  const store = loadStore(
+    {
+      getLibrary: async () => ({ items: [item("attachment:m-1:content-part-x")], folders: [] }),
+      deleteLibraryItem: async () => {},
+    },
+    emitted,
+  );
+  await store.getState().refresh();
+  await store.getState().removeItem("attachment:m-1:content-part-x");
+  await store.getState().removeItem("upload:a");
+  assert.deepEqual(emitted, [{ messageId: "m-1", attachmentId: "content-part-x" }]);
+});
+
+test("a browser download with a file of unknown size goes one by one, never as a zip", async () => {
+  const saved: string[] = [];
+  const toast = Object.assign(() => {}, { loading: () => 0, dismiss: () => {}, error: () => {} });
+  const { downloadLibraryItems } = loadWithStubs<{
+    downloadLibraryItems: (items: { name: string; sizeBytes: number | null }[]) => Promise<void>;
+  }>(new URL("../src/features/library/actions.ts", import.meta.url), {
+    fflate: {
+      zipSync: () => {
+        throw new Error("zipped in memory");
+      },
+    },
+    "@/features/auth": { getAuthSessionEpoch: () => 0 },
+    "@/features/chat": {},
+    "@/features/model-picker": {},
+    "@/i18n": { translate: (key: string) => key },
+    "@/lib/audio-utils": {},
+    "@/lib/api-base": { isTauri: false },
+    "@/lib/native-files": {
+      downloadFile: async (f: File) => saved.push(f.name),
+      isDownloadCancelled: () => false,
+    },
+    "@/lib/toast": { toast },
+    "@/lib/video-utils": {},
+    "./api": { errorMessage: String, libraryItemFile: async (i: { name: string }) => file(i.name) },
+    "./file-kind": {},
+    "./file-name": { hasOwnFile: () => true, uniqueFileNames: (n: string[]) => n },
+    "./chat-handoff-store": {},
+  });
+  await downloadLibraryItems([
+    { name: "a.txt", sizeBytes: 10 },
+    { name: "clip.webm", sizeBytes: null },
+  ]);
+  assert.deepEqual(saved, ["a.txt", "clip.webm"]);
+});

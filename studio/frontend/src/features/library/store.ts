@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { AUTH_SESSION_CLEARED_EVENT, getAuthSessionEpoch } from "@/features/auth";
+import { emitChatAttachmentDeleted } from "@/features/chat/utils/chat-attachment-events";
 import { translate } from "@/i18n";
 import { type GalleryKind, notifyGalleryChanged } from "@/lib/gallery-flags";
 import {
@@ -44,6 +45,25 @@ const GALLERIES: Record<string, GalleryKind> = { image: "images", video: "videos
 
 // Bumped by every refresh and by sign-out, so only the newest request may commit its snapshot.
 let refreshGeneration = 0;
+// Bumped each time a snapshot lands, so a caller can tell whether its refresh brought one.
+let snapshots = 0;
+
+/** `now`, with the entries an edit changed (`before` it, `after` it) back as they were. */
+function undoEdit<T extends { id: string }>(now: T[], before: T[], after: T[] | undefined): T[] {
+  if (!after) return now;
+  const edited = new Map(after.map((entry) => [entry.id, entry]));
+  const prior = new Map(
+    before.filter((entry) => edited.get(entry.id) !== entry).map((entry) => [entry.id, entry]),
+  );
+  const restored = now.map((entry) => prior.get(entry.id) ?? entry);
+  const present = new Set(now.map((entry) => entry.id));
+  for (const entry of prior.values()) {
+    if (!present.has(entry.id)) {
+      restored.splice(Math.min(before.indexOf(entry), restored.length), 0, entry);
+    }
+  }
+  return restored;
+}
 
 // Edits apply locally first so menus feel instant, and roll back to the server's view on failure.
 export const useLibraryStore = create<LibraryState>((set, get) => {
@@ -53,23 +73,41 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
   let inFlight = 0;
   let edits = 0;
   let stale = false;
+  // Failed edits, undone by hand if the refresh that should replace them brings nothing (an outage).
+  let undos: (() => void)[] = [];
   async function optimistic(
     apply: (state: LibraryState) => Partial<LibraryState>,
     request: () => Promise<void>,
   ): Promise<void> {
-    set(apply(get()));
+    const before = get();
+    const after = apply(before);
+    const epoch = getAuthSessionEpoch();
+    set(after);
     edits += 1;
     inFlight += 1;
     try {
       await request();
     } catch (error) {
       stale = true;
+      undos.push(() => {
+        // Signed out meanwhile: the store is the next account's now.
+        if (getAuthSessionEpoch() !== epoch) return;
+        set((state) => ({
+          items: undoEdit(state.items, before.items, after.items),
+          folders: undoEdit(state.folders, before.folders, after.folders),
+        }));
+      });
       throw error;
     } finally {
       inFlight -= 1;
       if (inFlight === 0 && stale) {
         stale = false;
+        const pending = undos;
+        undos = [];
+        const landed = snapshots;
         await get().refresh();
+        // Latest first, so an entry edited twice ends as it was before either.
+        if (snapshots === landed) for (const undo of pending.reverse()) undo();
       }
     }
   }
@@ -97,6 +135,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
           favoritesStart,
           new Set(items.filter((item) => item.favorite).map((item) => item.id)),
         );
+        snapshots += 1;
         set({
           items: items.map((item) =>
             favorites.has(item.id) === item.favorite
@@ -135,9 +174,14 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
         (state) => ({ items: state.items.filter((item) => item.id !== id) }),
         async () => {
           await deleteLibraryItem(id);
-          // Those pages stay mounted off-screen and would keep showing it.
-          const gallery = GALLERIES[id.slice(0, id.indexOf(":"))];
+          // Those pages stay mounted off-screen and would keep showing it; an open chat would
+          // keep an attachment, and write it back with its next save.
+          const [kind, messageId, ...rest] = id.split(":");
+          const gallery = GALLERIES[kind];
           if (gallery) notifyGalleryChanged(gallery);
+          if (kind === "attachment" && messageId && rest.length > 0) {
+            emitChatAttachmentDeleted({ messageId, attachmentId: rest.join(":") });
+          }
         },
       ),
     upload: async (batch, folderId) => {
