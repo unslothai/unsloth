@@ -255,6 +255,7 @@ from .import_fixes import (
     fix_transformers_fully_masked_rows,
     fix_transformers_longcat_lsa_config,
     fix_transformers_rope_scaling_drops_theta,
+    fix_transformers_validate_rope_ignore_keys,
     fix_transformers_remote_rope_scaling_none,
     fix_transformers_is_torch_fx_available,
     fix_xformers_performance_issue,
@@ -315,6 +316,7 @@ del check_transformers_prequantized_vlm_quant_state
 # RoPE base frequency. Ordered here, before any config is built, so the object-style delegation
 # retry in models/llama.py sees a config that kept its base (#2405).
 fix_transformers_rope_scaling_drops_theta()
+fix_transformers_validate_rope_ignore_keys()
 fix_transformers_longcat_lsa_config()
 # Remote code written for 4.x reads plain RoPE as rope_scaling None and imports is_torch_fx_available.
 fix_transformers_remote_rope_scaling_none()
@@ -374,6 +376,7 @@ patch_accelerate_recursively_apply()
 
 del fix_transformers5_bare_annotation_configs
 del fix_transformers_rope_scaling_drops_theta
+del fix_transformers_validate_rope_ignore_keys
 del fix_transformers_longcat_lsa_config
 del fix_transformers_remote_rope_scaling_none
 del fix_transformers_is_torch_fx_available

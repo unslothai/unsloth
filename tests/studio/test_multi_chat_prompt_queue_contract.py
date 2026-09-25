@@ -651,10 +651,22 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert failure.index("if (abortCtrl.signal.aborted)") < failure.index(
         "const rollbackResponse = await loadModel("
     )
-    cancellation = MODEL_RUNTIME.split("const cancelLoading = useCallback(", 1)[1]
-    assert cancellation.index("notifyLocalPromptQueueLoadFailed(") < cancellation.index(
-        "loadAbortRef.current?.abort()"
+    # Cancellation no longer notifies from the picker's own path: it aborts the controller the run
+    # owns, which sends the load coroutine into the failure handler above. That handler is the only
+    # place the local queue learns the model went away, so the abort target is the contract.
+    cancellation = _between(
+        MODEL_RUNTIME,
+        "const cancelLoading = useCallback(",
+        "const cancelLoadingForReplacement = useCallback(",
     )
+    assert "cancelLoadingWithCheckpointPolicy(false)" in cancellation
+    cancel_run = _between(
+        MODEL_RUNTIME,
+        "const cancelLoadRun = useCallback(",
+        "const cancelLoadingWithCheckpointPolicy = useCallback(",
+    )
+    assert "run.abortController.abort();" in cancel_run
+    assert "abortCtrl.signal.aborted" in failure
     assert "endModelLoading(compareLifecycleLease)" in SHARED_COMPOSER
     assert SHARED_COMPOSER.count("releaseCompareModelLifecycle();") >= 3
     compare_upgrade = _between(
