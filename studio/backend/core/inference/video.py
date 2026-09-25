@@ -123,6 +123,7 @@ from .diffusion_precision import (
     te_quant_supported,
     torchao_quantize_importable,
 )
+from .capability_snapshot import memoize_capability_snapshot
 from .video_families import (
     VIDEO_CANCELLED_MSG,
     VIDEO_GENERATION_BUSY_MSG,
@@ -1348,9 +1349,9 @@ def _probe_target(request_shape: dict[str, Any]) -> Any:
     return types.SimpleNamespace(device = request_shape.get("device"), dtype = dtype)
 
 
-@functools.lru_cache(maxsize = None)
+@memoize_capability_snapshot(lambda caps: len(caps[0]) == len(supported_video_family_names()))
 def _video_family_capabilities(device: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Process-static family snapshot for one device backend."""
+    """Family capability snapshot for one device backend."""
     available = pipeline_available_video_families(device = device)
     return (
         tuple(fam.name for fam in available),

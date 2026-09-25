@@ -473,3 +473,28 @@ def test_the_prediction_agrees_with_the_selection_about_an_incapable_build(monke
     _set_binary(monkeypatch, None)
     monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: None)
     assert r.predict_engine(fam, model_kind = "gguf") == ENGINE_SD_CPP
+
+
+def test_an_incomplete_family_snapshot_is_reprobed_not_pinned(monkeypatch):
+    # A strict probe racing the startup import warm drops a family transiently (FluxPipeline
+    # hit a half-imported transformers); the status selector must recover it.
+    import core.inference.capability_snapshot as snap
+
+    clock = [1000.0]
+    monkeypatch.setattr(snap.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(r, "supported_family_names", lambda: ("flux.1", "sdxl"))
+    answers = [("sdxl",), ("flux.1", "sdxl")]
+    calls = []
+    monkeypatch.setattr(
+        r, "pipeline_available_family_names", lambda: calls.append(1) or answers[len(calls) - 1]
+    )
+    r._supported_family_capabilities.cache_clear()
+
+    assert r.annotate_status({})["supported_families"] == ["sdxl"]
+    assert r.annotate_status({})["supported_families"] == ["sdxl"]
+    assert len(calls) == 1
+    clock[0] += 61
+    assert r.annotate_status({})["supported_families"] == ["flux.1", "sdxl"]
+    clock[0] += 10_000
+    assert r.annotate_status({})["supported_families"] == ["flux.1", "sdxl"]
+    assert len(calls) == 2
