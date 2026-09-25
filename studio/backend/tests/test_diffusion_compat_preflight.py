@@ -1740,7 +1740,12 @@ QWEN_1X_FAMILY = types.SimpleNamespace(name = "qwen-image", single_file_is_pipel
 QWEN_21_FAMILY = types.SimpleNamespace(name = "qwen-image-2.1", single_file_is_pipeline = False)
 
 
-def _qwen_img_in_header(hidden: int, tmp_path, *, siblings = 4):
+def _qwen_img_in_header(
+    hidden: int,
+    tmp_path,
+    *,
+    siblings = 4,
+):
     """Header-only GGUF with ``img_in.weight`` sized like a Qwen-Image Linear(64, hidden).
 
     Torch stores [hidden, 64]; ``GGUFWriter`` reverses for on-disk order, matching production
@@ -1775,15 +1780,12 @@ def _qwen_img_in_header(hidden: int, tmp_path, *, siblings = 4):
 @pytest.mark.parametrize("hidden", [3072, 4096])
 def test_qwen_img_in_hidden_is_read_from_a_header_with_no_tensor_data(hidden, tmp_path):
     from core.inference.diffusion_families import gguf_qwen_image_hidden_dim_from_header
-
     assert gguf_qwen_image_hidden_dim_from_header(_qwen_img_in_header(hidden, tmp_path)) == hidden
 
 
 def test_qwen_2_1_gguf_against_1x_base_is_refused_from_the_header(monkeypatch, tmp_path):
     # #11890: Studio built QwenImageTransformer2DModel (3072) against a 2.1 GGUF (4096).
-    requests = _stub_range_reads(
-        monkeypatch, {QWEN_21_FILE: _qwen_img_in_header(4096, tmp_path)}
-    )
+    requests = _stub_range_reads(monkeypatch, {QWEN_21_FILE: _qwen_img_in_header(4096, tmp_path)})
 
     with pytest.raises(ValueError) as excinfo:
         diffusion_compat.assert_qwen_image_pick_compatible(
