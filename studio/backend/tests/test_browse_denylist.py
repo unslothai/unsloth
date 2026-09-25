@@ -156,6 +156,10 @@ def test_is_denied_system_path_windows_allows_non_system(path):
     assert is_denied(path) is False
 
 
+# A POSIX or macOS host simulated on Windows still joins with os.sep "\\", so these only run there.
+_POSIX_SEP = pytest.mark.skipif(sys.platform == "win32", reason = "simulates a POSIX host")
+
+
 @pytest.mark.parametrize(
     "system, path, denied",
     [
@@ -164,12 +168,12 @@ def test_is_denied_system_path_windows_allows_non_system(path):
         ("Windows", r"\\?\C:\WINDOWS", True),
         ("Windows", r"\\?\D:\models", False),
         ("Windows", r"\\?\UNC\server\share\Windows", False),
-        ("Darwin", "/LIBRARY/x", True),
-        ("Darwin", "/library", True),
-        ("Darwin", "/private/TMP/x", True),
-        ("Darwin", "/SYSTEM/Volumes", True),
-        ("Darwin", "/Users/me/Library-Backup", False),
-        ("Darwin", "/Volumes/Drive/library", False),
+        pytest.param("Darwin", "/LIBRARY/x", True, marks = _POSIX_SEP),
+        pytest.param("Darwin", "/library", True, marks = _POSIX_SEP),
+        pytest.param("Darwin", "/private/TMP/x", True, marks = _POSIX_SEP),
+        pytest.param("Darwin", "/SYSTEM/Volumes", True, marks = _POSIX_SEP),
+        pytest.param("Darwin", "/Users/me/Library-Backup", False, marks = _POSIX_SEP),
+        pytest.param("Darwin", "/Volumes/Drive/library", False, marks = _POSIX_SEP),
     ],
 )
 def test_is_denied_system_path_sees_through_spelling(system, path, denied, monkeypatch):
@@ -182,6 +186,7 @@ def test_is_denied_system_path_sees_through_spelling(system, path, denied, monke
     assert scan_folders.is_denied_system_path(path) is denied
 
 
+@_POSIX_SEP
 def test_is_within_any_compares_like_the_disk(monkeypatch):
     monkeypatch.setattr(scan_folders.platform, "system", lambda: "Darwin")
     assert scan_folders.is_within_any("/Users/Me/Library/CACHES/x", ["/Users/me/Library/Caches"])
@@ -191,6 +196,7 @@ def test_is_within_any_compares_like_the_disk(monkeypatch):
     assert scan_folders.is_within_any("/tmp", ["/tmp/"])
 
 
+@_POSIX_SEP
 def test_a_case_sensitive_macos_volume_keeps_case_apart(monkeypatch):
     monkeypatch.setattr(scan_folders.platform, "system", lambda: "Darwin")
     for module in (scan_folders, studio_db):

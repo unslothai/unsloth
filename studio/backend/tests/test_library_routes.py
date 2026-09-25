@@ -1062,7 +1062,7 @@ def _fill(folder):
 
 
 def _files(folder):
-    return sorted(str(p.relative_to(folder)) for p in folder.rglob("*") if p.is_file())
+    return sorted(p.relative_to(folder).as_posix() for p in folder.rglob("*") if p.is_file())
 
 
 def _cross_device(_src, _dst):
@@ -1170,7 +1170,13 @@ def _studio(sub = ""):
     "key, target, detail",
     [
         ("images", lambda _: "relative/folder", "absolute"),
-        ("images", lambda _: "/etc/unsloth-images", "System"),
+        (
+            "images",
+            lambda _: os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "unsloth-images")
+            if os.name == "nt"
+            else "/etc/unsloth-images",
+            "System",
+        ),
         ("images", lambda tmp: tmp / "missing" / "deeper", "parent folder"),
         ("images", _read_only, "cannot write"),
         (
@@ -1533,7 +1539,12 @@ def test_temporary_and_cache_folders_cannot_hold_library_files(monkeypatch):
     monkeypatch.setattr(
         library, "_scratch_and_system_folders", lambda: [*_REAL_SCRATCH(), "/scratch-for-test"]
     )
-    for folder in (Path(tempfile.gettempdir()) / "images", Path("/var/tmp/images")):
+    scratch = (
+        Path(os.environ.get("SystemRoot", r"C:\Windows")) / "Temp" / "images"
+        if os.name == "nt"
+        else Path("/var/tmp/images")
+    )
+    for folder in (Path(tempfile.gettempdir()) / "images", scratch):
         with pytest.raises(ValueError, match = "cannot hold these files"):
             library._refuse_denied(folder.resolve())
     assert not _REAL_DENIED("/scratch-for-test/images")
@@ -1640,7 +1651,7 @@ def test_a_move_cut_short_waits_for_the_drive_it_was_moving_onto(client, tmp_pat
     forget_cache()
     response = _move(client, "images", str(new))
     assert response.status_code == 200, response.text
-    assert str((tmp_path / "Other").resolve()) in response.text
+    assert response.json()["leftBehind"] == str((tmp_path / "Other").resolve())
     assert _images() == new.resolve()
     assert "moving_from" not in str(get_app_setting("library.locations", {}))
 
@@ -1709,7 +1720,7 @@ def test_a_new_move_finishes_one_cut_short_first_or_waits_for_its_drive(
     shutil.move(new, tmp_path / "unplugged")
     forget_cache()
     response = _move(client, "images", str(other))
-    assert response.status_code == 400 and str(new.resolve()) in response.text
+    assert response.status_code == 400 and str(new.resolve()) in response.json()["detail"]
     shutil.move(tmp_path / "unplugged", new)
     assert _move(client, "images", str(other)).status_code == 200
     assert _images() == other.resolve() and len(_files(other)) == 3
