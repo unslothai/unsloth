@@ -34126,6 +34126,7 @@ async def openai_responses(
 _STUDIO_ANTHROPIC_TOOL_ALIASES = {
     "web_search": "web_search",
     "web_search_20250305": "web_search",
+    "web_search_20260209": "web_search",
     "web_fetch": "web_search",
     "web_fetch_20250910": "web_search",
     "web_fetch_20260209": "web_search",
