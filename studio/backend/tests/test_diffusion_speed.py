@@ -1532,3 +1532,19 @@ def test_auto_dynamic_active_follows_the_torchao_marker():
     dit._unsloth_auto_dynamic = True
     assert ds_mod.auto_dynamic_active(pipe) is True
     assert isinstance(ds_mod.dynamo_graph_count(), int)
+
+
+def test_speed_max_compiles_a_quantised_stream_merging_dit_static(monkeypatch):
+    """A torchao FLUX block under automatic dynamic hits CantSplit on the first new resolution and drops to eager;
+    max compiles it static instead, and reports its artifacts as per-shape."""
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    monkeypatch.setattr(ds_mod, "_carries_torchao_weights", lambda module: True)
+    pipe = _Pipe(with_compile = True)
+    pipe.transformer._repeated_blocks = ["FluxSingleTransformerBlock"]
+    block = FluxSingleTransformerBlock()
+    pipe.transformer.named_modules = lambda: [("blocks.0", block)]
+    apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX)
+    assert pipe.compile_kwargs["dynamic"] is False
+    assert ds_mod.auto_dynamic_active(pipe) is False
+    assert ds_mod.compiled_shapes_are_static(pipe, SPEED_MAX) is True
