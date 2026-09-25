@@ -33380,24 +33380,37 @@ def _stb_reads_png(raw: bytes) -> bool:
     """Accept PNGs whose chunks end at IEND and whose IDAT zlib stream is complete.
 
     Pillow decodes a PNG whose deflate stream or IEND is cut short once the rows are
-    complete; stb_image rejects those, and unknown critical chunks.
+    complete; stb_image rejects those, and unknown critical chunks. Pillow also stops
+    at the last row, so inflation is capped near the IHDR size: a compressed tail past
+    it would otherwise cost unbounded CPU here and memory in stb_image.
     """
     i = len(_PNG_SIGNATURE)
     inflater = zlib.decompressobj()
+    budget = 0
     try:
         while i + 12 <= len(raw):
             kind = raw[i + 4 : i + 8]
             end = i + 12 + int.from_bytes(raw[i : i + 4], "big")
             if end > len(raw) or (kind == b"IHDR") != (i == len(_PNG_SIGNATURE)):
                 return False
-            if kind == b"IEND":
+            if kind == b"IHDR":
+                if end - i != 25:
+                    return False
+                width = int.from_bytes(raw[i + 8 : i + 12], "big")
+                height = int.from_bytes(raw[i + 12 : i + 16], "big")
+                bits = raw[i + 16] * {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}.get(raw[i + 17], 4)
+                # Doubled for Adam7, whose pass rows each add a filter byte and padding.
+                budget = 2 * height * ((width * bits + 7) // 8 + 1) + 64
+            elif kind == b"IEND":
                 return inflater.eof
-            if kind == b"IDAT":
+            elif kind == b"IDAT":
                 data = raw[i + 8 : end - 4]
                 while data and not inflater.eof:
-                    inflater.decompress(data, 1 << 20)
+                    budget -= len(inflater.decompress(data, 1 << 20))
+                    if budget < 0:
+                        return False
                     data = inflater.unconsumed_tail
-            elif kind not in (b"IHDR", b"PLTE") and not kind[0] & 0x20:
+            elif kind != b"PLTE" and not kind[0] & 0x20:
                 return False
             i = end
     except zlib.error:

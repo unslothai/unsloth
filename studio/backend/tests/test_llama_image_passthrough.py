@@ -6,6 +6,7 @@
 import base64
 import os
 import sys
+import zlib
 from io import BytesIO
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
@@ -36,6 +37,11 @@ def _encode(img, fmt, **kw) -> bytes:
     buf = BytesIO()
     img.save(buf, format = fmt, **kw)
     return buf.getvalue()
+
+
+def _chunk(kind: bytes, data: bytes) -> bytes:
+    crc = zlib.crc32(kind + data).to_bytes(4, "big")
+    return len(data).to_bytes(4, "big") + kind + data + crc
 
 
 def _split(url: str) -> tuple[str, bytes]:
@@ -136,6 +142,18 @@ def test_png_chunks_stb_rejects_are_reencoded():
     assert head == "data:image/png;base64"
     assert _stb_reads_png(out)
     assert Image.open(BytesIO(out)).size == (64, 64)
+
+
+def test_png_with_a_compressed_tail_past_its_rows_is_not_inflated_to_the_end():
+    # 1x1 greyscale: Pillow stops after its two-byte row, a megabyte of zeros follows it.
+    deflate = zlib.compressobj(9)
+    body = deflate.compress(b"\0\0") + deflate.compress(bytes(1 << 20)) + deflate.flush()
+    raw = _encode(Image.new("L", (1, 1)), "PNG")
+    start = raw.index(b"IDAT") - 4
+    idat_len = int.from_bytes(raw[start : start + 4], "big")
+    raw = raw[:start] + _chunk(b"IDAT", body) + raw[start + 12 + idat_len :]
+    Image.open(BytesIO(raw)).load()
+    assert not _stb_reads_png(raw)
 
 
 @pytest.mark.parametrize(
