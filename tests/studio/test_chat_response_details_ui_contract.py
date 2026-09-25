@@ -352,18 +352,54 @@ def _without_comments(tag: str) -> str:
     return re.sub(r"/\*.*?\*/", " ", "\n".join(kept), flags = re.S)
 
 
+def _prop_value(tag: str, name: str) -> str | None:
+    """The expression inside `name={...}` on an opening tag, brace-aware, wherever it sits."""
+    at = re.search(rf"(?:^|[\s{{]){re.escape(name)}=\{{", tag)
+    if at is None:
+        return None
+    depth, index = 1, at.end()
+    while index < len(tag) and depth:
+        depth += {"{": 1, "}": -1}.get(tag[index], 0)
+        index += 1
+    return tag[at.end() : index - 1] if depth == 0 else None
+
+
+def _opens_details(value: str, source: str) -> bool:
+    """Whether a callback opens the sheet: inline, or the name of one this file defines."""
+    if re.search(r"\bsetDetailsOpen\(\s*true\s*\)", value):
+        return True
+    name = re.fullmatch(r"\s*([A-Za-z_$][\w$]*)\s*", value)
+    if name is None:
+        return False
+    return bool(
+        re.search(
+            rf"(?:const|let|function)\s+{re.escape(name.group(1))}\b[^;]*?"
+            r"\bsetDetailsOpen\(\s*true\s*\)",
+            source,
+            re.S,
+        )
+    )
+
+
 def test_assistant_more_menu_exposes_response_details_action():
     """The More menu still opens the details sheet. Since #11928 the item that does it lives in
     MessageMenuTime, beside the response's timestamp, so the action is followed through the prop
-    the thread hands it rather than looked for in thread.tsx itself."""
-    src = THREAD_TSX.read_text(encoding = "utf-8")
+    the thread hands it rather than looked for in thread.tsx itself. Comments are removed first,
+    so a commented-out element or handler does not count, and the prop is read wherever it sits
+    and however the callback is spelled."""
+    src = _without_block_comments(THREAD_TSX.read_text(encoding = "utf-8"))
     assert "MessageResponseDetailsSheet" in src
-    assert re.search(
-        r"<MessageMenuTime\s+onShowDetails=\{\(\)\s*=>\s*setDetailsOpen\(true\)\}", src
-    )
-    menu = MESSAGE_MENU_TIME_TSX.read_text(encoding = "utf-8")
+    tags = _opening_tags(src, "<MessageMenuTime")
+    assert tags, "thread.tsx no longer renders MessageMenuTime"
+    callbacks = [_prop_value(tag, "onShowDetails") for tag in tags]
+    assert any(
+        value is not None and _opens_details(value, src) for value in callbacks
+    ), f"no MessageMenuTime is handed a callback that opens the details sheet: {callbacks}"
+    menu = _without_block_comments(MESSAGE_MENU_TIME_TSX.read_text(encoding = "utf-8"))
     assert "See response details" in menu
-    assert "onSelect={onShowDetails}" in menu
+    assert re.search(
+        r"onSelect=\{[^{}]*\bonShowDetails\b", menu
+    ), "the item no longer calls onShowDetails"
 
 
 def test_response_details_sheet_uses_unsloth_sheet_and_key_sections():
