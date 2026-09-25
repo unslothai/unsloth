@@ -236,11 +236,17 @@ def planner_quantization_kwargs(
     load_in_8bit = False,
     quantization_config = None,
     extra_skip_modules = None,
+    rewritten_quantization_config = None,
 ):
     """The quantization the planner must size for, as the load will really apply it. The config or the flags, never both, since transformers refuses both and loader.py clears the flags whenever it forwards a config; bare flags would describe a full-precision load and raise `DeviceMapInfeasible` on one that would have fit. The skip list travels with the flags: SKIP_QUANTIZATION_MODULES stays in compute dtype as `modules_to_not_convert`, and sizing it at 4bit understates the head device by GiBs on a large-vocab VLM. A pre-quantized checkpoint carries its own list in config.json."""
+    rewritten = (
+        {}
+        if rewritten_quantization_config is None
+        else {"rewritten_quantization_config": rewritten_quantization_config}
+    )
     if quantization_config is not None:
-        return {"quantization_config": quantization_config}
-    kwargs = {"load_in_4bit": load_in_4bit, "load_in_8bit": load_in_8bit}
+        return {"quantization_config": quantization_config, **rewritten}
+    kwargs = {"load_in_4bit": load_in_4bit, "load_in_8bit": load_in_8bit, **rewritten}
     if load_in_4bit or load_in_8bit:
         try:
             from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
@@ -1944,12 +1950,37 @@ def check_and_disable_bitsandbytes_loading(
     load_in_4bit = True,
     load_in_8bit = False,
     verbose = True,
+    rewrite_modelopt = True,
+    token = None,
+    model_name = None,
+    revision = None,
+    hub_kwargs = None,
 ):
-    """Disable bitsandbytes loading (load_in_4bit/load_in_8bit) when the model already carries a non-bitsandbytes quantization config. Returns ``(load_in_4bit, load_in_8bit, quant_method)``, with both flags False if they were disabled and quant_method the detected method or None."""
+    """Disable bitsandbytes loading (load_in_4bit/load_in_8bit) when the model already carries a non-bitsandbytes quantization config. Returns ``(load_in_4bit, load_in_8bit, quant_method)``, with both flags False if they were disabled and quant_method the detected method or None. ``rewrite_modelopt`` converts ModelOpt FP8 to fp8; pass False when vLLM loads it natively."""
     quant_method = get_quant_type(model_config)
+    if quant_method is None:
+        # Also under vLLM: it reads the file itself, but the bitsandbytes flags must still drop.
+        from .modelopt_fp8 import attach_hf_quant_config
+        if attach_hf_quant_config(
+            model_config,
+            token = token,
+            model_name = model_name,
+            revision = revision,
+            hub_kwargs = hub_kwargs,
+        ):
+            quant_method = get_quant_type(model_config)
 
     if quant_method is None or quant_method == "bitsandbytes":
         return load_in_4bit, load_in_8bit, quant_method
+
+    if str(quant_method).lower() == "modelopt":
+        # Whoever loads the weights (vLLM included), a merged_16bit save must dequantize them.
+        from .modelopt_fp8 import enable_modelopt_merged_save
+        enable_modelopt_merged_save(model_config)
+    if rewrite_modelopt and str(quant_method).lower() == "modelopt":
+        from .modelopt_fp8 import arm_modelopt_fp8_loading
+        if arm_modelopt_fp8_loading(model_config, verbose = verbose) is not None:
+            quant_method = "fp8"
 
     # A non-bitsandbytes quantization config (compressed-tensors, gptq, awq) means BOTH bitsandbytes loading flags must be disabled to avoid config conflicts.
     if load_in_4bit or load_in_8bit:

@@ -2028,8 +2028,31 @@ class FastBaseModel:
         )
 
         load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(
-            auto_config, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit
+            auto_config,
+            load_in_4bit = load_in_4bit,
+            load_in_8bit = load_in_8bit,
+            rewrite_modelopt = not (fast_inference and is_vLLM_available()),
+            token = token,
+            model_name = model_name,
+            revision = _revision,
+            hub_kwargs = {
+                "cache_dir": kwargs.get("cache_dir"),
+                "subfolder": kwargs.get("subfolder"),
+                "local_files_only": local_files_only,
+            },
         )
+        from .modelopt_fp8 import (
+            keep_fp8_scale_names_on_save,
+            keep_task_heads_unquantized,
+            modelopt_planner_quantization_config,
+            modelopt_rewritten,
+            pop_modelopt_key_mapping,
+        )
+
+        _modelopt_rewritten = modelopt_rewritten(auto_config)
+        if _modelopt_rewritten:
+            keep_task_heads_unquantized(auto_config, auto_model, model_class)
+        pop_modelopt_key_mapping(auto_config, kwargs, model_class)
         # Correct UNSLOTH_MODEL_NAME's bnb tokens now the effective bnb state is known (the per-load env was built before remap/disable). gpt-oss only.
         sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit)
 
@@ -2089,6 +2112,11 @@ class FastBaseModel:
                 load_in_4bit = load_in_4bit,
                 load_in_8bit = load_in_8bit,
                 quantization_config = user_quantization_config,
+                rewritten_quantization_config = modelopt_planner_quantization_config(
+                    auto_config, dequantize = load_in_16bit
+                )
+                if _modelopt_rewritten
+                else None,
                 extra_skip_modules = _architecture_skip_modules(model_types) or None,
             ),
         )
@@ -2224,9 +2252,14 @@ class FastBaseModel:
                         )
                     quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING["bitsandbytes_4bit"]
                 else:
-                    quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING[quant_method]
+                    quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING.get(quant_method)
+                # In process, an unknown method would load quantized tensors unscaled; only vLLM may.
+                if quantizer is None and not (fast_inference and is_vLLM_available()):
+                    raise KeyError(
+                        f"Unsloth: transformers cannot load this `{quant_method}` checkpoint in process."
+                    )
                 quantizer_kwargs = {}
-                if quant_method == "compressed-tensors":
+                if quant_method == "compressed-tensors" or quantizer is None:
                     pass
                 else:
                     # Cannot dequantize, since gpt-oss-20b MXFP4 would become gpt-oss-20b-BF16.
@@ -2452,6 +2485,8 @@ class FastBaseModel:
         finally:
             raise_handler.remove()
             os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
+        if _modelopt_rewritten:
+            keep_fp8_scale_names_on_save(model)
 
         if os.environ.get("UNSLOTH_HIGH_PRECISION_LAYERNORM", "0") == "1":
             for jj, (name, module) in enumerate(model.named_modules()):
