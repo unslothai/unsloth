@@ -662,11 +662,12 @@ def never_engaged(handles: Any) -> Optional[str]:
     if not handles:
         return None
     s = stats(handles)
-    if s["captures"] or s["replays"] or not s["eager_calls"]:
-        return None
-    if s["poisoned"]:
+    # A poisoned wrapper never replays again, whatever it captured before the failure.
+    if all(getattr(h, "poisoned", False) for h in handles):
         error = s["capture_error"] or {}
         return f"capture failed ({error.get('type') or 'error'}); every denoiser step runs eager"
+    if s["captures"] or s["replays"] or not s["eager_calls"]:
+        return None
     parts = [
         f"{s[field]} {label}"
         for field, label in (

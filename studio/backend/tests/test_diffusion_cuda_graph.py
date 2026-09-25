@@ -885,6 +885,26 @@ def test_live_status_names_float_refusals_and_a_poisoned_capture(stub_torch):
     )
 
 
+def test_live_status_turns_off_when_a_graph_that_replayed_is_poisoned(stub_torch):
+    handle = _armed()
+    handle(_t(), timestep = _t((1,)), return_dict = False)
+    handle(_t(), timestep = _t((1,)), return_dict = False)
+    assert handle.stats["replays"] == 2 and cg.never_engaged((handle,)) is None
+    # A later shape whose capture fails poisons the wrapper: it never replays again.
+    handle(_t(device_type = "cpu"), timestep = _t((1,)), return_dict = False)
+    assert handle.poisoned
+    resolved, optims = cg.live_status(_RESOLVED_ON, ("compiled", "cuda_graph"), (handle,))
+    assert resolved["cuda_graph"]["value"] == "off"
+    assert resolved["cuda_graph"]["reason"] == (
+        "capture failed (RuntimeError); every denoiser step runs eager"
+    )
+    assert optims == ["compiled"]
+    # One of two wrappers still replaying keeps the claim open.
+    other = _armed()
+    other(_t(), timestep = _t((1,)), return_dict = False)
+    assert cg.never_engaged((handle, other)) is None
+
+
 def test_live_status_keeps_on_once_a_graph_replayed(stub_torch):
     handle = _armed()
     handle(_t(), timestep = _t((1,)), return_dict = False)
