@@ -390,7 +390,6 @@ def test_available_never_raises_on_a_host_without_the_launcher():
         assert backend.SANDBOX_EXEC in reason
 
 
-
 _darwin_only = pytest.mark.skipif(
     sys.platform != "darwin" or not os.path.exists(backend.SANDBOX_EXEC),
     reason = "needs a real macOS host: only a Darwin kernel can compile or enforce an SBPL profile",
