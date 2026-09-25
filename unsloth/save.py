@@ -5492,10 +5492,11 @@ def unsloth_generic_save(
             "if you're planning to do multiple saves.\n"
             "If you are certain, change `save_method` to `merged_4bit_forced`."
         )
-    _saved_core = model.get_base_model() if isinstance(model, PeftModel) else model
-    _composed_parent = getattr(_saved_core, "_unsloth_composed_parent", None)
+    # Only a PEFT merge re-reads the repo's shards (the wrapper's layout); a full finetune saves its resident weights.
+    _composed_parent = isinstance(model, PeftModel) and getattr(
+        model.get_base_model(), "_unsloth_composed_parent", None
+    )
     if _composed_parent and not _is_adapter_save_method(save_method):
-        # The merge re-reads the repo's shards, which hold the wrapper's layout, not this child's.
         raise NotImplementedError(
             f"Unsloth: this model is the text core of `{_composed_parent}` (loaded with text_only = True), "
             f"so `{save_method}` would write the wrapper's weights under the text core's config. "
