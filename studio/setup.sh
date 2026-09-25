@@ -3638,10 +3638,14 @@ if [ "$_setup_nvidia_usable" = true ]; then
     # behind on the common path where there is no driver string to print.
     if [ -n "$_setup_nv_driver" ]; then substep "Driver: $_setup_nv_driver"; fi
 elif [ "$_setup_amd_detected" = true ]; then
-    # rocminfo output is already ROCr-filtered and reordered, so only the HIP-layer masks index it
-    # (HIP, then its CUDA alias, as install.sh).
+    # rocminfo output is already ROCr-filtered and reordered, so only the HIP-layer masks index it:
+    # the first SET of HIP, then its CUDA alias, as install.sh (an empty HIP mask shadows CUDA).
     if [ "$_setup_amd_probe" = rocminfo ]; then
-        _setup_vis="${HIP_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-}}"
+        if [ -n "${HIP_VISIBLE_DEVICES+x}" ]; then
+            _setup_vis="$HIP_VISIBLE_DEVICES"
+        else
+            _setup_vis="${CUDA_VISIBLE_DEVICES:-}"
+        fi
     else
         _setup_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
     fi

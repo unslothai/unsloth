@@ -143,6 +143,7 @@ summary() {
         ${3:+HIP_VISIBLE_DEVICES="$3"} \
         ${STUB_ROCR:+ROCR_VISIBLE_DEVICES="$STUB_ROCR"} \
         ${STUB_CUDA:+CUDA_VISIBLE_DEVICES="$STUB_CUDA"} \
+        ${STUB_HIP_EMPTY:+HIP_VISIBLE_DEVICES=} \
         /bin/bash -c 'set -euo pipefail; . "$1"; printf "%s|%s\n" "$_setup_gfx" "$_setup_mkt"' \
         _ "$WORK/block.sh"
 }
@@ -500,6 +501,9 @@ assert_eq "HIP still indexes the ROCr survivors" \
     "gfx1201|AMD Radeon AI PRO R9700" "$(STUB_ROCR=1,2 summary "$WORK/roc_rocr_1_2" "$WORK/empty" 1)"
 assert_eq "CUDA_VISIBLE_DEVICES, HIP's alias, also indexes the ROCr survivors" \
     "gfx1036|AMD Radeon Graphics" "$(STUB_ROCR=1,0 STUB_CUDA=1 summary "$WORK/roc_rocr_1_0" "$WORK/empty")"
+assert_eq "a set-but-empty HIP mask shadows CUDA, as install.sh" \
+    "gfx1201|AMD Radeon AI PRO R9700" \
+    "$(STUB_ROCR=1,0 STUB_CUDA=1 STUB_HIP_EMPTY=1 summary "$WORK/roc_rocr_1_0" "$WORK/empty")"
 assert_eq "amd-smi is not ROCr-filtered, so its list is still indexed by the ROCr ordinal" \
     "gfx1100|AMD Radeon RX 7900 XTX" \
     "$(STUB_ROCR=1 STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three")"
