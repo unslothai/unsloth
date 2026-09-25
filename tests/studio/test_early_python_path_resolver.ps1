@@ -142,12 +142,39 @@ try {
     try {
         New-Item -ItemType SymbolicLink -Path $dangling -Target (Join-Path $tmp "gone") -ErrorAction Stop | Out-Null
         $danglingOk = $true
-    } catch {}
+    } catch {
+        # Windows PowerShell 5.1 refuses a link to a missing target, so link first and then
+        # remove the target, which leaves the same dangling entry.
+        try {
+            $gone = Join-Path $tmp "gone"
+            New-Item -ItemType Directory -Force -Path $gone | Out-Null
+            New-Item -ItemType SymbolicLink -Path $dangling -Target $gone -ErrorAction Stop | Out-Null
+            Remove-Item -LiteralPath $gone -Recurse -Force
+            $danglingOk = $true
+        } catch {}
+    }
     if ($danglingOk) {
         foreach ($suffix in @("", "studio", "a\b")) {
             $probePath = if ($suffix) { Join-Path $dangling $suffix } else { $dangling }
             $info = Resolve-StudioFinalPathInfo -Path $probePath
             Check "a dangling link is not exact (suffix '$suffix')" ($info.Exact -eq $false)
+        }
+        # Where Test-Path follows the link and reports it missing, the walk strips it and hands
+        # the resolver an ordinary ancestor. The stripped entry is still a reparse point, and
+        # that alone has to keep the answer inexact.
+        function Test-Path {
+            param([string]$LiteralPath)
+            if ($LiteralPath.StartsWith($dangling)) { return $false }
+            return (Microsoft.PowerShell.Management\Test-Path -LiteralPath $LiteralPath)
+        }
+        try {
+            foreach ($suffix in @("", "studio", "a\b")) {
+                $probePath = if ($suffix) { Join-Path $dangling $suffix } else { $dangling }
+                $info = Resolve-StudioFinalPathInfo -Path $probePath
+                Check "a dangling link Test-Path reports missing is not exact (suffix '$suffix')" ($info.Exact -eq $false)
+            }
+        } finally {
+            Remove-Item Function:Test-Path
         }
     }
 
