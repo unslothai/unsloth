@@ -2291,7 +2291,8 @@ class DiffusionBackend:
         # A hosted prequant repo is a checkpoint store, not a pipeline: it has no model_index.json, so a pipeline pick of
         # it passed every check here, staged its checkpoints (14 GB for Qwen-Image-2.1-FP8), then 404d in
         # from_pretrained. Table-driven and network-free, so both routes refuse it before anything is staged.
-        if kind == "pipeline" and repo_id.strip().lower() in prequant_only_repo_ids():
+        # A local dir cloned to that exact relative name is a real pipeline, though; let the local manifest check below rule.
+        if kind == "pipeline" and repo_id.strip().lower() in prequant_only_repo_ids() and not _is_local_path(repo_id):
             bases, schemes, te_schemes = prequant_repo_role(fam, repo_id)
             shown = " or ".join(bases) or fam.base_repo
             knobs = []
