@@ -5460,7 +5460,9 @@ def _push_merged_to_hub_revision(save_kwargs):
 
 def _refuse_unsaveable_text_core(model, save_method):
     """A helper, not inline: unsloth_generic_save forwards its own locals() as keywords."""
-    get_base_model = getattr(model, "get_base_model", None) if isinstance(model, PeftModel) else None
+    get_base_model = (
+        getattr(model, "get_base_model", None) if isinstance(model, PeftModel) else None
+    )
     core = get_base_model() if callable(get_base_model) else model
     # A str set by _text_trainable_core; mocks answer any attribute with a truthy stand-in.
     parent = getattr(core, "_unsloth_composed_parent", None)
