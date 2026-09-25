@@ -3441,6 +3441,8 @@ export function useChatModelRuntime() {
         return;
       }
       loadLifecycleLeaseRef.current = lease;
+      // A local pick still in its preflight must yield to this one.
+      modelSelectionIntentEpoch += 1;
       const displayName = modelDisplayName(
         modelPath.slice(modelPath.indexOf(":") + 1),
       );
