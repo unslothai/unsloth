@@ -6208,6 +6208,34 @@ case "$_torch_index_leaf" in
                 echo "  [WARN] (~/.bashrc, ~/.profile) as well, or the next terminal restores it." >&2
             fi
         fi
+        # RDNA 4 has the same null HIP _grouped_mm kernel below ROCm 7.13 (TheRock #5284), so
+        # generic rocm7.2-and-older wheels make the trainer swap in a Python fallback. AMD's
+        # gfx120X-all index serves the fixed 2.11+rocm7.13 build; install.ps1 already routes
+        # Windows there. The leaf is rewritten too, so the rocm6.4 floor below cannot undo it.
+        _rdna4_gfx=""
+        if [ "$_gfx906_env" != "gfx906" ]; then
+            case "$_runtime_gfx" in
+                gfx1200|gfx1201) _rdna4_gfx="$_runtime_gfx" ;;
+            esac
+        fi
+        if [ -n "$_rdna4_gfx" ] && _rocm_leaf_below "$_torch_index_leaf" 7 13; then
+            echo "" >&2
+            echo "  [WARN] $_rdna4_gfx (RDNA 4) detected -- routing to the AMD arch-specific index" >&2
+            echo "  [WARN] torch 2.11+rocm7.13 fixes the RDNA 4 _grouped_mm kernel that the" >&2
+            echo "  [WARN] $_torch_index_leaf wheels lack, so training does not fall back to a slow path." >&2
+            echo "" >&2
+            _amd_rdna4_base="${UNSLOTH_AMD_ROCM_MIRROR:-https://repo.amd.com/rocm/whl}"
+            while [ "${_amd_rdna4_base%/}" != "$_amd_rdna4_base" ]; do
+                _amd_rdna4_base="${_amd_rdna4_base%/}"
+            done
+            # Literal, not _amd_arch_index_family_for_gfx: tests lift this arm out whole.
+            TORCH_INDEX_URL="${_amd_rdna4_base}/gfx120X-all/"
+            TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
+            TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
+            TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
+            _amd_gpu_radeon=false
+            _torch_index_leaf="gfx120x-all"
+        fi
         # Navi 33 (gfx1102) and RDNA 4 (gfx1200/gfx1201) have no kernels in the
         # older generic wheel families. The floor is per arch, read from the
         # rocBLAS and hipBLASLt Tensile library names in each leaf's cp312 wheels:

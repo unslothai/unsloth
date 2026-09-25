@@ -231,7 +231,9 @@ def test_the_mirror_override_is_honoured():
 # ── the neighbours this must not disturb ─────────────────────────────────────
 
 
-@pytest.mark.parametrize("gfx", ["gfx1100", "gfx1102", "gfx1030", "gfx1201"])
+# Not RDNA 4: its generic wheels below 7.13 carry the null _grouped_mm kernel, so it is
+# rerouted like Strix (test_rocm_support.py covers that route).
+@pytest.mark.parametrize("gfx", ["gfx1100", "gfx1102", "gfx1030", "gfx1101"])
 def test_a_supported_arch_keeps_the_generic_index(gfx):
     calls = _run_install(gfx_devices = (gfx,))
     assert _GENERIC in calls, calls
@@ -590,7 +592,7 @@ def test_a_leading_integrated_gpu_does_not_pick_the_family(apu):
     """Enumeration order alone puts the APU first on a Ryzen box with a Radeon card. The
     family is chosen for ONE arch, so letting the APU decide strands the discrete card the
     generic index was serving. _SHADOWING_INTEGRATED_GFX is the existing policy (#7776)."""
-    calls = _run_install(gfx_devices = (apu, "gfx1200"))
+    calls = _run_install(gfx_devices = (apu, "gfx1100"))
     assert _GENERIC in calls, calls
     assert _AMD not in calls, calls
 
@@ -745,7 +747,7 @@ def test_a_stale_per_arch_family_is_replaced_when_the_target_goes_generic():
     HIP_VISIBLE_DEVICES at one, and those wheels carry no kernels for the new target,
     while torch.version.hip keeps rocm_torch_ready true and the fallback from running."""
     calls = _run_install(
-        gfx_devices = ("gfx1200",),
+        gfx_devices = ("gfx1030",),
         torch_probe = _ROCM_ARCH_TORCH,
         installed_family = "gfx110x-all",
     )
@@ -1107,7 +1109,7 @@ def test_a_generic_wheel_is_judged_by_its_own_rocm_tag():
     assert f"{_AMD}/gfx120X-all/" in calls, calls
     # The wheel that does carry it is left alone, whatever the host version reads.
     assert _AMD not in _run_install(
-        gfx_devices = ("gfx1200",),
+        gfx_devices = ("gfx1102",),
         rocm_version = (6, 3),
         torch_probe = _ROCM_GENERIC_TORCH_72,
         torch_owns_rocm = False,
@@ -1206,22 +1208,28 @@ def test_a_target_no_index_can_serve_is_not_worth_a_reinstall():
     )
 
 
-@pytest.mark.parametrize("gfx", ["gfx1200", "gfx1201"])
 @pytest.mark.parametrize(
     "rocm_version, rerouted",
-    [((6, 0), True), ((6, 3), True), ((6, 4), False), ((7, 1), False)],
+    [((6, 0), True), ((6, 2), True), ((6, 3), False), ((7, 1), False)],
 )
-def test_generic_kernel_support_is_keyed_by_the_tag_the_version_selects(
-    gfx, rocm_version, rerouted
-):
+def test_generic_kernel_support_is_keyed_by_the_tag_the_version_selects(rocm_version, rerouted):
     """Which arches the generic wheel carries belongs to the wheel a version resolves to, not
-    the index as a whole. AMD puts production RDNA 4 at ROCm 6.4, so a current amdgpu beside a
-    stale /opt/rocm gets a rocm6.3 wheel with no kernels while a gfx120X-all leaf exists."""
-    calls = _run_install(gfx_devices = (gfx,), rocm_version = rocm_version)
+    the index as a whole. gfx1102 first ships in rocm6.3, so a stale /opt/rocm gets an older
+    wheel with no kernels while a gfx110X-all leaf exists."""
+    calls = _run_install(gfx_devices = ("gfx1102",), rocm_version = rocm_version)
     if rerouted:
-        assert f"{_AMD}/gfx120X-all/" in calls, calls
+        assert f"{_AMD}/gfx110X-all/" in calls, calls
     else:
         assert _AMD not in calls and _GENERIC in calls, calls
+
+
+@pytest.mark.parametrize("gfx", ["gfx1200", "gfx1201"])
+@pytest.mark.parametrize("rocm_version", [(6, 0), (6, 3), (6, 4), (7, 1)])
+def test_rdna4_takes_the_amd_index_at_every_generic_tag(gfx, rocm_version):
+    """RDNA 4 lacks kernels below rocm6.4 and a working _grouped_mm below 7.13, so every
+    generic tag goes to gfx120X-all."""
+    calls = _run_install(gfx_devices = (gfx,), rocm_version = rocm_version)
+    assert f"{_AMD}/gfx120X-all/" in calls, calls
 
 
 @pytest.mark.parametrize("rocm_version", [(6, 0), (7, 1)])
@@ -1268,7 +1276,7 @@ def test_a_masked_gfx906_on_a_mixed_host_is_not_demoted_to_another_dead_wheel():
     assert _GENERIC not in calls, calls
     # The same stale family with a routable target is still demoted.
     _run_install(
-        gfx_devices = ("gfx1100", "gfx1200"),
+        gfx_devices = ("gfx1100", "gfx1030"),
         env = {"HIP_VISIBLE_DEVICES": "1"},
         torch_probe = _ROCM_ARCH_TORCH,
         installed_family = "gfx110x-all",

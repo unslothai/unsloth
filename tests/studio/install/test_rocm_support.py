@@ -1159,6 +1159,39 @@ class TestEnsureRocmTorch:
         assert "gfx1150" in torch_call
         assert "torch>=2.11.0,<2.12.0" in torch_call
 
+    @pytest.mark.parametrize("gfx", ("gfx1200", "gfx1201"))
+    def test_rocm_714_rdna4_routes_to_amd_arch_index(self, gfx):
+        """RDNA 4 on the rocm7.2 cap keeps the null _grouped_mm kernel; use AMD gfx120X-all."""
+        mock_pip, _ = run_ensure_rocm_torch(
+            "2.11.0+rocm7.2|7.14.60850|",
+            _has_rocm_gpu = True,
+            _detect_rocm_version = (7, 14),
+            _detect_amd_gfx_codes = [gfx],
+        )
+        torch_call = str(mock_pip.call_args_list[0])
+        assert "gfx120X-all" in torch_call
+        assert "torch>=2.11.0,<2.12.0" in torch_call
+
+    def test_rocm_714_rdna3_stays_on_generic_cap(self):
+        """Control: gfx1100 has no such floor, so the same host stays on rocm7.2."""
+        mock_pip, _ = run_ensure_rocm_torch(
+            "",
+            _has_rocm_gpu = True,
+            _detect_rocm_version = (7, 14),
+            _detect_amd_gfx_codes = ["gfx1100"],
+        )
+        torch_call = str(mock_pip.call_args_list[0])
+        assert "rocm7.2" in torch_call
+        assert "repo.amd.com" not in torch_call
+
+    @pytest.mark.parametrize(
+        ("gfx", "pending"), (("gfx1201", True), ("gfx1200", True), ("gfx1100", False))
+    )
+    def test_rdna4_generic_wheel_is_a_pending_reroute(self, gfx, pending, monkeypatch):
+        monkeypatch.setattr(stack_mod, "_installed_rocm_wheel_family", lambda: None)
+        got = stack_mod._rocm_compat_reroute_pending(gfx, (7, 14), "2.11.0+rocm7.2")
+        assert bool(got) is pending
+
     @patch.object(stack_mod, "IS_MACOS", False)
     @patch("platform.machine", return_value = "x86_64")
     @patch.object(stack_mod, "IS_WINDOWS", False)
@@ -1189,7 +1222,7 @@ class TestEnsureRocmTorch:
                         _ensure_rocm_torch()
         calls = str(mock_pip.call_args_list) + str(mock_pip_try.call_args_list)
         assert "gfx1151" not in calls
-        assert "non-Strix runtime target (gfx1100)" in buf.getvalue()
+        assert "selects another runtime target (gfx1100)" in buf.getvalue()
 
     # The venv is described by mocks like the hardware: the Strix skip arm asks
     # _already_on_amd_arch_leaf, which reads this interpreter's own metadata, so on a host
@@ -1906,6 +1939,9 @@ class TestGfx906LegacyReroute:
 # the first family carrying gfx1102/gfx1200/gfx1201, so gfx1102 floors at 6.3; gfx1200 and
 # gfx1201 floor at 6.4 to match _GENERIC_WHEEL_GFX_MIN_ROCM and AMD's production matrix.
 _GFX_FLOOR_TAG = {"gfx1102": "rocm6.3", "gfx1200": "rocm6.4", "gfx1201": "rocm6.4"}
+# RDNA 4 on any generic leaf below 7.13 is rerouted to AMD's per-arch index, so a mask
+# that selects the gfx120X card shows up as this leaf rather than as the rocm6.4 floor.
+_RDNA4_LEAF = "gfx120x-all"
 
 
 class TestGfx1102Rocm64Floor:
@@ -1919,6 +1955,7 @@ class TestGfx1102Rocm64Floor:
         pinned: bool = False,
         rocm_ver: tuple = (6, 1),
         probe_stdout: str = "\n",  # CPU torch -> repair
+        wheel_family = None,
     ):
         m = stack_mod
         for name in (
@@ -1950,8 +1987,8 @@ class TestGfx1102Rocm64Floor:
             # unpatched these read the RUNNING interpreter's torch instead: on a gfx1151
             # Strix Halo runner holding 2.11.0+rocm7.13.0 the per-arch repick arm called
             # pip_install, failing the assert_not_called tests on hardware only.
-            patch.object(m, "_torch_requires_rocm_sdk", return_value = False),
-            patch.object(m, "_installed_rocm_wheel_family", return_value = None),
+            patch.object(m, "_torch_requires_rocm_sdk", return_value = wheel_family is not None),
+            patch.object(m, "_installed_rocm_wheel_family", return_value = wheel_family),
             patch.object(m, "_infer_linux_amd_gfx_arch", return_value = None),
             patch.object(m, "_detect_rocm_version", return_value = rocm_ver),
             patch.object(m, "_detect_amd_gfx_codes", return_value = [gfx]),
@@ -2027,12 +2064,43 @@ class TestGfx1102Rocm64Floor:
     def test_installed_64_wheel_left_alone_on_newer_host(self, monkeypatch):
         """A wheel that already has the kernels must not be reinstalled."""
         pip = self._ensure_for_gfx(
-            "gfx1200",
+            "gfx1102",
             monkeypatch,
             rocm_ver = (6, 4),
             probe_stdout = _MARK + "2.8.0+rocm6.4|6.4.43482|\n",
         )
         pip.assert_not_called()
+
+    def test_rdna4_generic_64_wheel_moves_to_amd_arch_index(self, monkeypatch):
+        """RDNA 4 on a generic wheel below 7.13 lacks the _grouped_mm fix, so it moves."""
+        pip = self._ensure_for_gfx(
+            "gfx1200",
+            monkeypatch,
+            rocm_ver = (6, 4),
+            probe_stdout = _MARK + "2.8.0+rocm6.4|6.4.43482|\n",
+        )
+        torch_call = str(pip.call_args_list[0])
+        assert "gfx120X-all" in torch_call
+        assert "torch>=2.11.0,<2.12.0" in torch_call
+
+    def test_rdna4_already_on_amd_arch_wheel_is_left_alone(self, monkeypatch):
+        """No churn: the AMD gfx120X-all build is what the reroute would install."""
+        pip = self._ensure_for_gfx(
+            "gfx1201",
+            monkeypatch,
+            rocm_ver = (7, 14),
+            probe_stdout = _MARK + "2.11.0+rocm7.13.0|7.13.99004|\n",
+            wheel_family = "gfx120x-all",
+        )
+        pip.assert_not_called()
+
+    def test_rdna4_pinned_index_stays_authoritative(self, monkeypatch):
+        """An explicit index pin still wins over the RDNA 4 reroute."""
+        torch_call = str(
+            self._ensure_for_gfx("gfx1201", monkeypatch, pinned = True).call_args_list[0]
+        )
+        assert "whl/rocm6.1" in torch_call
+        assert "repo.amd.com" not in torch_call
 
     def test_unaffected_arch_not_repaired_on_newer_host(self, monkeypatch):
         """gfx1100 has kernels in the older families, so its wheel stays untouched."""
@@ -2063,11 +2131,11 @@ class TestGfx1102Rocm64Floor:
         pin_start = source.rfind('if [ "$_torch_index_pinned" = false ]; then', 0, start)
         assert floor_pos >= 0 and pin_start >= 0 and pin_start < start
 
-        for gfx, expected in (
-            ("gfx1100", "rocm6.1"),
-            ("gfx1102", "rocm6.3"),
-            ("gfx1200", "rocm6.4"),
-            ("gfx1201", "rocm6.4"),
+        for gfx, expected_url, expected in (
+            ("gfx1100", "rocm6.1", "rocm6.1"),
+            ("gfx1102", "rocm6.3", "rocm6.3"),
+            ("gfx1200", "gfx120X-all", _RDNA4_LEAF),
+            ("gfx1201", "gfx120X-all", _RDNA4_LEAF),
         ):
             script = (
                 "set -euo pipefail\n"
@@ -2083,7 +2151,10 @@ class TestGfx1102Rocm64Floor:
             )
             result = subprocess.run([shell, "-c", script], capture_output = True, text = True)
             assert result.returncode == 0, result.stderr
-            assert result.stdout.strip().endswith(f"/{expected} LEAF:{expected}"), result.stdout
+            out = result.stdout.strip()
+            assert out.endswith(f"/{expected_url} LEAF:{expected}") or out.endswith(
+                f"/{expected_url}/ LEAF:{expected}"
+            ), out
 
     @staticmethod
     def _install_sh_routing_result(
@@ -2133,8 +2204,8 @@ class TestGfx1102Rocm64Floor:
     @pytest.mark.parametrize(
         ("mask", "expected"),
         (
-            ("CUDA_VISIBLE_DEVICES=1", "rocm6.4"),
-            ("HIP_VISIBLE_DEVICES=1", "rocm6.4"),
+            ("CUDA_VISIBLE_DEVICES=1", _RDNA4_LEAF),
+            ("HIP_VISIBLE_DEVICES=1", _RDNA4_LEAF),
             ("CUDA_VISIBLE_DEVICES=0", "rocm6.1"),
             # a set-but-empty hip mask selects no gpu instead of deferring to cuda
             ("HIP_VISIBLE_DEVICES= CUDA_VISIBLE_DEVICES=1", "rocm6.1"),
@@ -2198,8 +2269,8 @@ class TestGfx1102Rocm64Floor:
     @pytest.mark.parametrize(
         ("mask", "expected"),
         (
-            ("HIP_VISIBLE_DEVICES=2", "rocm6.4"),
-            ("CUDA_VISIBLE_DEVICES=2", "rocm6.4"),
+            ("HIP_VISIBLE_DEVICES=2", _RDNA4_LEAF),
+            ("CUDA_VISIBLE_DEVICES=2", _RDNA4_LEAF),
             ("HIP_VISIBLE_DEVICES=1", "rocm6.1"),
             ("HIP_VISIBLE_DEVICES=0", "rocm6.1"),
         ),
@@ -2213,8 +2284,8 @@ class TestGfx1102Rocm64Floor:
         ("rocr", "arches", "expected"),
         (
             # rocminfo reports the rocr selection in runtime order, so index 0 is the target
-            ("1,0", ("gfx1200", "gfx1100"), "rocm6.4"),
-            ("1", ("gfx1200",), "rocm6.4"),
+            ("1,0", ("gfx1200", "gfx1100"), _RDNA4_LEAF),
+            ("1", ("gfx1200",), _RDNA4_LEAF),
             ("0,1", ("gfx1100", "gfx1200"), "rocm6.1"),
         ),
     )
@@ -2227,7 +2298,7 @@ class TestGfx1102Rocm64Floor:
 
     @pytest.mark.parametrize(
         ("mask", "expected"),
-        (("HIP_VISIBLE_DEVICES=2", "rocm6.4"), ("HIP_VISIBLE_DEVICES=1", "rocm6.1")),
+        (("HIP_VISIBLE_DEVICES=2", _RDNA4_LEAF), ("HIP_VISIBLE_DEVICES=1", "rocm6.1")),
     )
     def test_install_sh_splits_amd_smi_gpu_headers(self, mask, expected):
         """amd-smi heads each device with "GPU: N", so two gfx1100 cards stay two entries."""
@@ -2272,7 +2343,7 @@ class TestGfx1102Rocm64Floor:
             + self._amd_smi_stub("gfx1200", "gfx1200")
             + "export ROCR_VISIBLE_DEVICES=GPU-deadbeefdeadbeef"
         )
-        assert self._run_install_sh_routing(preamble) == "rocm6.4"
+        assert self._run_install_sh_routing(preamble) == _RDNA4_LEAF
 
     def test_install_sh_declines_an_ordinal_when_amd_smi_gives_no_hip_map(self):
         """Without `list -e` there is no HIP order, so an ordinal names no known device.
@@ -2291,10 +2362,11 @@ class TestGfx1102Rocm64Floor:
     @pytest.mark.parametrize(
         ("gfx", "leaf", "expected_leaf", "expected_target"),
         (
-            # already at or above the floor: no reroute, but the arch still needs it
-            ("gfx1200", "rocm6.4", "rocm6.4", "true"),
-            ("gfx1200", "rocm7.2", "rocm7.2", "true"),
-            ("gfx1200", "rocm6.1", "rocm6.4", "true"),
+            # RDNA 4 below 7.13 goes to AMD's per-arch build whatever generic leaf it had,
+            # and the floor target stays set for the migrated repair either way
+            ("gfx1200", "rocm6.4", _RDNA4_LEAF, "true"),
+            ("gfx1200", "rocm7.2", _RDNA4_LEAF, "true"),
+            ("gfx1200", "rocm6.1", _RDNA4_LEAF, "true"),
             ("gfx1100", "rocm6.4", "rocm6.4", "false"),
             ("gfx1100", "rocm6.1", "rocm6.1", "false"),
         ),
@@ -2414,7 +2486,22 @@ class TestGfx1102Rocm64Floor:
     def test_install_sh_normalizes_gcn_arch_name_override(self, override):
         """UNSLOTH_ROCM_GFX_ARCH copied from a HIP gcnArchName still matches the floor."""
         preamble = f'export UNSLOTH_ROCM_GFX_ARCH="{override}"'
-        assert self._run_install_sh_routing(preamble) == "rocm6.4"
+        assert self._run_install_sh_routing(preamble) == _RDNA4_LEAF
+
+    @pytest.mark.parametrize(
+        ("gfx", "leaf", "expected"),
+        (
+            ("gfx1201", "rocm7.2", _RDNA4_LEAF),
+            ("gfx1200", "rocm7.2", _RDNA4_LEAF),
+            # controls: a generic leaf at the 7.13 fix, and an arch without the kernel bug
+            ("gfx1201", "rocm7.13", "rocm7.13"),
+            ("gfx1100", "rocm7.2", "rocm7.2"),
+        ),
+    )
+    def test_install_sh_routes_rdna4_below_713_to_amd_arch_index(self, gfx, leaf, expected):
+        """The rocm7.2 cap on a ROCm 7.14 host keeps RDNA 4's null _grouped_mm kernel."""
+        preamble = f'export UNSLOTH_ROCM_GFX_ARCH="{gfx}"'
+        assert self._install_sh_routing_result(preamble, leaf = leaf)[0] == expected
 
 
 # TEST: install_python_stack.py -- torch-index MARKER mechanism (PR #6692)
