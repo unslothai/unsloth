@@ -379,6 +379,11 @@ def _prop_value(tag: str, name: str) -> str | None:
         return None
     depth, index = 1, at.end()
     while index < len(tag) and depth:
+        # A quoted brace (`track("{")`) is data, not the end of the expression.
+        literal = _STRING_LITERAL.match(tag, index) if tag[index] in "\"'`" else None
+        if literal:
+            index = literal.end()
+            continue
         depth += {"{": 1, "}": -1}.get(tag[index], 0)
         index += 1
     return tag[at.end() : index - 1] if depth == 0 else None
@@ -429,40 +434,58 @@ def _definition_body(name: str, source: str) -> str | None:
 
 def _opens_details(value: str, source: str) -> bool:
     """Whether a callback opens the sheet: inline, or the name of one this file defines."""
-    if re.search(r"\bsetDetailsOpen\(\s*true\s*\)", value):
+    # `analytics("setDetailsOpen(true)")` names the setter inside a string without calling it.
+    if re.search(r"\bsetDetailsOpen\(\s*true\s*\)", _without_strings(value)):
         return True
     name = re.fullmatch(r"\s*([A-Za-z_$][\w$]*)\s*", value)
     if name is None:
         return False
     # A commented-out setter inside the body does not open anything.
     body = _definition_body(name.group(1), _without_block_comments(source))
-    return body is not None and bool(re.search(r"\bsetDetailsOpen\(\s*true\s*\)", body))
+    return body is not None and bool(
+        re.search(r"\bsetDetailsOpen\(\s*true\s*\)", _without_strings(body))
+    )
 
 
 DETAILS_LABEL = "See response details"
 
 
-def _calls_show_details(value: str | None) -> bool:
+def _calls_show_details(
+    value: str | None,
+    source: str = "",
+    _seen: frozenset = frozenset(),
+) -> bool:
     """Whether an `onSelect` value hands over `onShowDetails` or calls it.
 
     `onSelect={() => onShowDetails}` mentions the name without calling it, so a bare mention
-    inside a larger expression does not count.
+    inside a larger expression does not count. A bare name of a local handler
+    (`onSelect={handleShowDetails}`) is followed to its definition in `source`.
     """
     if value is None:
         return False
     # `analytics("onShowDetails()")` names the call inside a string without making it.
     value = _without_strings(value)
-    return bool(
-        re.fullmatch(r"\s*onShowDetails\s*", value)
-        or re.search(r"\bonShowDetails\s*(?:\?\.)?\(", value)
+    if re.fullmatch(r"\s*onShowDetails\s*", value) or re.search(
+        r"\bonShowDetails\s*(?:\?\.)?\(", value
+    ):
+        return True
+    name = re.fullmatch(r"\s*([A-Za-z_$][\w$]*)\s*", value)
+    if name is None or name.group(1) in _seen:
+        return False
+    body = _definition_body(name.group(1), _without_block_comments(source))
+    if body is None:
+        return False
+    # The body of `const h = () => onShowDetails();` or `function h() { onShowDetails(); }`,
+    # or `const h = onShowDetails;` which is the handler itself under another name.
+    return _calls_show_details(body, source, _seen | {name.group(1)}) or bool(
+        re.search(r"\bonShowDetails\s*(?:\?\.)?\(", _without_strings(body))
     )
 
 
 def _names_details(tag: str) -> bool:
     """Whether the tag's own accessible name is the details label, literal or by catalog key."""
-    if re.search(
-        rf"""(?<![\w-])aria-label=(?:"{DETAILS_LABEL}"|\{{\s*"{DETAILS_LABEL}"\s*\}})""", tag
-    ):
+    quoted = rf"""(?:"{DETAILS_LABEL}"|'{DETAILS_LABEL}')"""
+    if re.search(rf"(?<![\w-])aria-label=(?:{quoted}|\{{\s*{quoted}\s*\}})", tag):
         return True
     key = re.search(r"""(?<![\w-])aria-label=\{\s*t\(\s*["']([\w.]+)["']\s*\)\s*\}""", tag)
     if key is None:
@@ -484,7 +507,7 @@ def _details_item_opens_sheet(menu: str) -> bool:
         if (
             tag
             and _names_details(tag)
-            and _calls_show_details(_prop_value(tag, "onSelect"))
+            and _calls_show_details(_prop_value(tag, "onSelect"), menu)
             # A later `{...props}` can replace either prop, so the explicit ones prove nothing.
             and not _spread_overrides(tag, "aria-label")
             and not _spread_overrides(tag, "onSelect")
@@ -567,6 +590,8 @@ def test_assistant_more_menu_exposes_response_details_action():
         ),
         ("showDetails", "const showDetails = () => setDetailsOpen(false);", False),
         ("missing", "const showDetails = () => setDetailsOpen(true);", False),
+        ('() => analytics("setDetailsOpen(true)")', "", False),
+        ("showDetails", 'const showDetails = () => analytics("setDetailsOpen(true)");', False),
     ],
 )
 def test_the_callback_reader_follows_a_named_callback_to_its_end(value, source, opens):
@@ -614,6 +639,33 @@ def test_the_callback_reader_follows_a_named_callback_to_its_end(value, source, 
             '<Item {...itemProps} aria-label="See response details" onSelect={onShowDetails}>',
             True,
         ),
+        ("<Item aria-label='See response details' onSelect={onShowDetails}>", True),
+        ("<Item aria-label={'See response details'} onSelect={onShowDetails}>", True),
+        (
+            '<Item onSelect={() => { track("{"); onShowDetails(); }} aria-label="See response details">',
+            True,
+        ),
+        (
+            "const handleShowDetails = () => onShowDetails();\n"
+            '<Item aria-label="See response details" onSelect={handleShowDetails}>',
+            True,
+        ),
+        (
+            "function handleShowDetails() {\n  track();\n  onShowDetails();\n}\n"
+            '<Item aria-label="See response details" onSelect={handleShowDetails}>',
+            True,
+        ),
+        (
+            "const handleShowDetails = onShowDetails;\n"
+            '<Item aria-label="See response details" onSelect={handleShowDetails}>',
+            True,
+        ),
+        (
+            "const handleShowDetails = () => onShowDetails;\n"
+            '<Item aria-label="See response details" onSelect={handleShowDetails}>',
+            False,
+        ),
+        ('<Item aria-label="See response details" onSelect={handleShowDetails}>', False),
     ],
 )
 def test_the_details_item_must_carry_both_the_label_and_the_call(menu, opens):

@@ -153,6 +153,32 @@ def _github_glob(pattern: str) -> re.Pattern[str]:
     return re.compile("".join(out))
 
 
+def _paths_include(paths: list[str], path: str) -> bool:
+    """Whether a `paths` filter selects `path`: patterns apply in order, the last match wins."""
+    included = False
+    for pattern in paths:
+        negated = pattern.startswith("!")
+        if _github_glob(pattern[1:] if negated else pattern).fullmatch(path):
+            included = not negated
+    return included
+
+
+@pytest.mark.parametrize(
+    "paths, included",
+    [
+        (["tests/studio/_en_catalog.py"], True),
+        (["tests/studio/*"], True),
+        (["tests/**"], True),
+        (["tests/*"], False),
+        (["tests/studio/*", "!tests/studio/_en_catalog.py"], False),
+        (["!tests/studio/_en_catalog.py", "tests/studio/*"], True),
+        (["tests/**", "!tests/studio/**", "tests/studio/_en_*.py"], True),
+    ],
+)
+def test_the_paths_filter_is_read_in_order(paths, included):
+    assert _paths_include(paths, "tests/studio/_en_catalog.py") is included
+
+
 def test_every_workflow_running_a_catalog_driver_also_triggers_on_the_catalog_reader():
     """A PR that changes only `_en_catalog.py` must still run the browser drivers built on it."""
     import yaml
@@ -178,6 +204,6 @@ def test_every_workflow_running_a_catalog_driver_also_triggers_on_the_catalog_re
         paths = (pull_request or {}).get("paths") if isinstance(pull_request, dict) else None
         if not paths:
             continue  # No path filter: every PR runs it.
-        if not any(_github_glob(p).fullmatch(reader) for p in paths if not p.startswith("!")):
+        if not _paths_include(paths, reader):
             unguarded[workflow.name] = runs
     assert not unguarded, f"these workflows run catalog drivers but skip {reader}: {unguarded}"
