@@ -4457,6 +4457,8 @@ class DiffusionBackend:
                 normalize_transformer_quant(transformer_quant),
                 _pipeline_prequant_planned,
             )
+            # A declined seed loads the released denoiser (torchao or no quant), so no checkpoint for FlashInfer.
+            and _pipeline_prequant_planned != PIPELINE_SEED_DECLINED
             and (
                 _pipeline_prequant_planned == TQ_NVFP4
                 or self._nvfp4_checkpoint_will_load(
@@ -4486,7 +4488,6 @@ class DiffusionBackend:
             )
         ):
             from .diffusion_nvfp4_install import ensure_flashinfer_for_nvfp4
-
             _nvfp4_install_outcome = ensure_flashinfer_for_nvfp4(
                 device, logger = logger, local_files_only = local_files_only
             )

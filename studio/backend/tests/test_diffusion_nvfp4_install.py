@@ -865,6 +865,14 @@ def test_status_preflight_reason_is_the_loaded_device_only(monkeypatch):
     inst.reset_install_state()
 
 
+def test_image_loader_skips_the_install_when_the_plan_declined_the_seed():
+    # A declined seed loads the released denoiser, and the Hub probe alone would still buy the install.
+    body = _load_pipeline_body(_INFERENCE_DIR / "diffusion.py")
+    gate = body[: body.index("ensure_flashinfer_for_nvfp4(")].rsplit("if (", 1)[-1]
+    declined = gate.index("_pipeline_prequant_planned != PIPELINE_SEED_DECLINED")
+    assert declined < gate.index("self._nvfp4_checkpoint_will_load(")
+
+
 def test_image_loader_binds_the_reason_only_after_the_resident_model_is_unloaded():
     import inspect
 
