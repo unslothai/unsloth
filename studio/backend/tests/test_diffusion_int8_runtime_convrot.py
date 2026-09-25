@@ -323,7 +323,9 @@ def _check_base_layers_rotated(model):
     x, y = torch.randn(4, 512), torch.randn(4, 640)
     with torch.no_grad():
         ref = model(x, y)
-        rotated = tq.apply_runtime_convrot(model, tq.TQ_INT8, "qwen-image-2.1", _filter("qwen-image-2.1"))
+        rotated = tq.apply_runtime_convrot(
+            model, tq.TQ_INT8, "qwen-image-2.1", _filter("qwen-image-2.1")
+        )
         got = model(x, y)
     for i in range(2):
         for n in ("attn.to_q", "attn.to_v", "img_mlp.out"):
@@ -347,9 +349,13 @@ def test_lora_baked_targets_rotate_their_base_layer_and_stay_exact():
 def test_real_peft_adapters_rotate_their_base_layer_and_stay_exact():
     peft = pytest.importorskip("peft")
     torch.manual_seed(0)
-    cfg = peft.LoraConfig(r = 4, lora_alpha = 8, target_modules = ["to_q", "to_v", "out"], init_lora_weights = False)
+    cfg = peft.LoraConfig(
+        r = 4, lora_alpha = 8, target_modules = ["to_q", "to_v", "out"], init_lora_weights = False
+    )
     try:
         model = peft.inject_adapter_in_model(cfg, _Tiny().float())
-    except ImportError as exc:  # peft < 0.19 with torchao >= 0.18, patched only once unsloth is imported
+    except (
+        ImportError
+    ) as exc:  # peft < 0.19 with torchao >= 0.18, patched only once unsloth is imported
         pytest.skip(f"peft cannot dispatch LoRA on this torchao: {exc}")
     _check_base_layers_rotated(model)
