@@ -212,6 +212,19 @@ def _holds_studio_state(path: str) -> bool:
     return any(_within(real, root) or _within(root, real) for root in studio_state_roots())
 
 
+def _without_state_inside(paths: tuple[str, ...]) -> tuple[str, ...]:
+    """Carve Studio state out of a runtime path that contains it; a runtime INSIDE the state (the managed venv) stays."""
+    state = studio_state_roots()
+    kept: list[str] = []
+    for path in paths:
+        real = os.path.realpath(path)
+        if any(_within(root, real) for root in state):
+            kept.extend(_without_studio_state((path,)))
+        else:
+            kept.append(path)
+    return tuple(dict.fromkeys(kept))
+
+
 def _without_studio_state(roots: tuple[str, ...], depth: int = 4) -> tuple[str, ...]:
     """Bind a system root's children instead of the root when Studio's own state lives inside it."""
     state = studio_state_roots()
@@ -634,7 +647,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     )
     if os.path.isdir(_NIX_STORE) and _within(os.path.realpath(sys.executable), _NIX_STORE):
         system_roots += (_NIX_STORE,)
-    runtime_paths = _runtime_read_paths(workdir, system_roots, inner)
+    runtime_paths = _without_state_inside(_runtime_read_paths(workdir, system_roots, inner))
     silent_roots = tuple(
         root
         for root in model_library_roots()
