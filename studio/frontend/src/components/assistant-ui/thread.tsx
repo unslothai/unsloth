@@ -58,6 +58,7 @@ import {
   composerSubmitIntent,
   composerFollowUpBehavior,
   composerShortcutLabels,
+  effectiveSendShortcut,
   followUpSubmitIntent,
   steeringInsertionIndex,
   cancelPreStreamRunForThreadIds,
@@ -5668,7 +5669,7 @@ function useImeComposerInputHandlers({
         setCompositionState(false);
       }
       if (submitOnEnter && !skipEnterRef?.current) {
-        const intent = composerSubmitIntent(e, sendShortcut);
+        const intent = composerSubmitIntent(e, sendShortcut, e.currentTarget?.value);
         if (intent) {
           e.preventDefault();
           if (onSubmitKey) onSubmitKey(e, intent);
@@ -6906,7 +6907,13 @@ const ComposerRightControls: FC<{
   const t = useT();
   const followUpBehavior = useChatPreferencesStore((s) => s.followUpBehavior);
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
-  const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform());
+  // A boolean, so typing re-renders this only when a line break comes or goes.
+  const multiline = useAuiState(({ composer }) => composer.text.includes("\n"));
+  const shortcutLabels = composerShortcutLabels(
+    sendShortcut,
+    isMacPlatform(),
+    multiline ? "\n" : "",
+  );
   const followUpLabel = t(
     followUpBehavior === "queue"
       ? "promptQueue.queueButton"
@@ -8629,6 +8636,7 @@ const UserActionBar: FC = () => {
 const EditComposer: FC = () => {
   const aui = useAui();
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
+  const editMultiline = useAuiState(({ composer }) => composer.text.includes("\n"));
   const { inputProps, isComposingRef } = useImeComposerInputHandlers();
   const resendAfterCancelRef = useRef(false);
   const researchActive = useThreadResearchActive();
@@ -8665,7 +8673,11 @@ const EditComposer: FC = () => {
         }}
       >
         <ComposerPrimitive.Input
-          submitMode={sendShortcut === "mod-enter" ? "ctrlEnter" : "enter"}
+          submitMode={
+            effectiveSendShortcut(sendShortcut, editMultiline ? "\n" : "") === "mod-enter"
+              ? "ctrlEnter"
+              : "enter"
+          }
           className="aui-edit-composer-input min-h-14 w-full resize-none bg-transparent p-4 text-foreground text-sm font-[450] outline-none"
           autoFocus={true}
           // See main composer above for the dir="auto" rationale.
