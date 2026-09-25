@@ -925,12 +925,20 @@ def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[di
     ext = path.suffix.lower()
     try:
         if ext == ".csv":
-            df = pd.read_csv(path, nrows = preview_size, encoding = "utf-8-sig")
+            # Values as written: type inference turned 007 into 7, a whole number beside an empty
+            # cell into 3.0, and NA, N/A or None into missing, and the rewrite below saved that.
+            csv_options = {
+                "encoding": "utf-8-sig",
+                "dtype": str,
+                "keep_default_na": False,
+                "na_values": [""],
+            }
+            df = pd.read_csv(path, nrows = preview_size, **csv_options)
             df.columns = df.columns.str.strip()
             unnamed = [c for c in df.columns if c == "" or c.startswith("Unnamed:")]
             if unnamed:
                 df = df.drop(columns = unnamed)
-                full_df = pd.read_csv(path, encoding = "utf-8-sig")
+                full_df = pd.read_csv(path, **csv_options)
                 full_df.columns = full_df.columns.str.strip()
                 full_df = full_df.drop(columns = unnamed)
                 tmp_csv = path.with_suffix(".tmp.csv")
