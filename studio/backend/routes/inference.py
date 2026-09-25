@@ -2566,10 +2566,8 @@ def _openai_llama_admission_recost(
             if cancel_event is not None and cancel_event.is_set():
                 return
         else:
-            # Every term the OPENING reservation charges, charged again here. Counting fewer
-            # things than the reservation it replaces would SHRINK a correctly sized lease --
-            # and since the callback fires at the top of round zero, before any growth, it
-            # would hand back room llama-server is already using.
+            # Charge every term the opening reservation did: fewer would shrink the lease at round
+            # zero and hand back room llama-server is already using.
             estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
                 conversation,
                 vision = bool(getattr(llama_backend, "is_vision", False)),
@@ -2580,9 +2578,7 @@ def _openai_llama_admission_recost(
             # Anthropic keeps `system` and `tools` out of the message list entirely, so for
             # that route this is most of the prompt.
             prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
-            # mtmd embeddings, KV the message text cannot show: image parts compact to
-            # "[image]" for the text estimate, so their real cost comes from the compaction
-            # count. A screenshot tool adds more of them, so this grows with the rounds.
+            # mtmd embeddings: image parts compact to "[image]" in the text estimate.
             prompt_tokens += _openai_llama_admission_media_tokens(
                 payload,
                 message_image_parts = message_image_parts,
