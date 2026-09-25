@@ -76,10 +76,9 @@ export function ProjectSwitcher({
             strokeWidth={1.75}
             className="size-icon shrink-0 text-foreground/70"
           />
-          <span className="flex min-w-0 flex-1 items-baseline">
-            <span className="min-w-0 flex max-w-[calc(150px*var(--ui-space-scale,1))] flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground">
-              {label}
-            </span>
+          {/* A block, not a flex box: text-overflow only puts the ellipsis on block text. */}
+          <span className="min-w-0 max-w-[calc(150px*var(--ui-space-scale,1))] truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground">
+            {label}
           </span>
           <span className="flex size-4 shrink-0 items-center justify-center">
             <HugeiconsIcon
