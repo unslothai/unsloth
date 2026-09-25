@@ -14,9 +14,11 @@ and which product it fuses depends on how nvcc compiled it for the card: on B200
 ``install`` asks the card: it multiplies a probe on the device and classifies each half against the
 two fused forms (exact in float64 on inputs in [1, 2)), and the compiled form then uses the same
 fusion per lane via ``addcmul``, which inductor lowers to a single ``fma`` (torch 2.12+, and 2.11
-under ``emulate_precision_casts``, which Studio's compiled tiers set). Written over
-the full head dim (``swap_pairs(x)`` against interleaved cos / sin tables) the rotation fuses with
-the norm into one kernel and matches the complex multiply bit for bit. A card whose multiply matches
+under ``emulate_precision_casts``, which Studio's compiled tiers set). Written over the full head dim
+(``swap_pairs(x)`` against interleaved cos / sin tables) the rotation fuses with the norm into one
+kernel and matches the complex multiply bit for bit. Inductor may schedule the fused norm's reduction
+differently from the unfused one: identical on B200 and RTX PRO 6000, a few 1-ulp elements on A100
+and L4, as many as the stock compile already has against eager. A card whose multiply matches
 neither form, torch <= 2.10 (no ``fma`` lowering), ROCm and eager calls keep the complex form.
 
 Installed on the diffusers module global only when the installed ``apply_rotary_emb_qwen`` and its
