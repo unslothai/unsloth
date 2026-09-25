@@ -220,8 +220,13 @@ def test_a_windows_cuda_build_is_not_told_the_driver_spills(tmp_path, monkeypatc
     assert "NVIDIA Control Panel" not in warning
 
 
-@pytest.mark.parametrize("q8_scratch_gib, offered", [(0, True), (8, False)])
-def test_the_q8_hint_prices_q8_compute_scratch(tmp_path, monkeypatch, q8_scratch_gib, offered):
+@pytest.mark.parametrize(
+    "q8_scratch_gib, extra_args, offered",
+    [(0, [], True), (8, [], False), (0, ["--flash-attn", "off"], False)],
+)
+def test_the_q8_hint_prices_q8_compute_scratch(
+    tmp_path, monkeypatch, q8_scratch_gib, extra_args, offered
+):
     """q8_0 adds dequant scratch; the hint must hold with it, not with the f16 figure."""
     from test_llama_cpp_placement import _backend as _placement_backend, _launch
 
@@ -238,7 +243,7 @@ def test_the_q8_hint_prices_q8_compute_scratch(tmp_path, monkeypatch, q8_scratch
     backend._compute_buffer_ctx_bytes = lambda ctx, ub, cache_type = None, **k: (
         q8_scratch_gib * GIB if str(cache_type).startswith("q8") else 0
     )
-    _launch(backend, gguf, n_ctx = 196608)
+    _launch(backend, gguf, n_ctx = 196608, extra_args = extra_args)
     warning = backend.last_load_warning or ""
     assert "does not fit in this GPU's memory" in warning
     assert ("q8_0" in warning) is offered
@@ -248,5 +253,15 @@ def test_no_notice_when_the_kv_cache_stays_on_the_host(tmp_path, monkeypatch):
     """-nkvo keeps the cache off the GPU, so the priced KV overflow does not happen."""
     warning = _launch_explicit_ctx(
         tmp_path, monkeypatch, model_gb = 18, n_ctx = 131072, extra_args = ["-nkvo"]
+    )
+    assert "does not fit in this GPU's memory" not in warning
+
+
+@pytest.mark.parametrize(
+    "extra_args", [["--device", "none"], ["-ot", "exps=CPU"], ["--gpu-layers", "10"]]
+)
+def test_no_notice_for_a_deliberate_cpu_placement(tmp_path, monkeypatch, extra_args):
+    warning = _launch_explicit_ctx(
+        tmp_path, monkeypatch, model_gb = 18, n_ctx = 131072, extra_args = extra_args
     )
     assert "does not fit in this GPU's memory" not in warning

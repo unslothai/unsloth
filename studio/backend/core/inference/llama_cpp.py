@@ -3849,7 +3849,7 @@ _VRAM_SPILL_ADVICE = (
     "memory over PCIe instead of GPU memory, which makes generation several times slower. Windows does this "
     "instead of reporting out of memory. To fix it, either lower the context size{kv_hint}, "
     "or open NVIDIA Control Panel -> Manage 3D "
-    "settings -> Program Settings, add llama-server.exe, and set "
+    "settings -> Program Settings, add {exe}, and set "
     "'CUDA - Sysmem Fallback Policy' to 'Prefer No Sysmem Fallback' (the model must be "
     "reloaded for that to take effect)."
 )
@@ -14530,6 +14530,7 @@ class LlamaCppBackend:
         # q8_0 advice only helps a cache that is still f16.
         self._pin_kv_hint = (cache_type_kv or "f16").strip().lower() in ("f16", "fp16", "")
         self._pin_kv_layout = None
+        self._pin_exe = Path(binary).name if binary else "llama-server.exe"
         if os.name != "nt":
             return
         if not floor_bytes or floor_bytes <= 0 or not gpu_indices:
@@ -14808,6 +14809,7 @@ class LlamaCppBackend:
                 else f"{max(1, round(amount / (1024**2)))} MiB"
             ),
             kv_hint = " or set the KV cache to q8_0" if kv_hint else "",
+            exe = getattr(self, "_pin_exe", None) or "llama-server.exe",
         )
         if getattr(self, "_last_load_warning", None):
             logger.warning(message)
@@ -25655,9 +25657,15 @@ class LlamaCppBackend:
                                 and _ctx_cap_fits
                                 and not _cuda_ctx_notice
                                 and _kv_offload_from_args(extra_args)
+                                and not _args_place_tensors_on_cpu(extra_args)
+                                and not _env_places_tensors_on_cpu()
+                                and not _device_selection_is_cpu(extra_args, os.environ)
+                                and not _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS)
                             ):
                                 _q8_fits = False
-                                if (cache_type_kv or "f16").strip().lower() in (
+                                if planned_flash_attn and (
+                                    cache_type_kv or "f16"
+                                ).strip().lower() in (
                                     "f16",
                                     "fp16",
                                     "",
@@ -26286,6 +26294,23 @@ class LlamaCppBackend:
                     _resident_floor_bytes = max(
                         0, (model_size or 0) - max(0, mmproj_size or 0)
                     ) + max(0, kv_cache_bytes)
+                    if self._sysmem_fallback_risk(binary):
+                        # Host-only tensors: token_embd stays on the CPU unless the file is
+                        # tied, and the MTP blocks load only when the embedded head drafts.
+                        _floor_layout = self._tensor_spill_layout(model_path, all_shards = True)
+                        if _floor_layout is not None and getattr(_floor_layout, "complete", True):
+                            if int(getattr(_floor_layout, "lm_head_bytes", 0) or 0):
+                                _resident_floor_bytes -= int(
+                                    getattr(_floor_layout, "token_embd_bytes", 0) or 0
+                                )
+                            if (
+                                not (_mtp_will_engage and not _separate_draft_launches)
+                                and self._nextn_predict_layers
+                            ):
+                                _resident_floor_bytes -= int(
+                                    getattr(_floor_layout, "excluded_block_bytes", 0) or 0
+                                )
+                            _resident_floor_bytes = max(0, _resident_floor_bytes)
                     # Everything the spill planner needs, snapshotted as plain ints
                     # where it is already evaluated.
                     _spill_inputs = {

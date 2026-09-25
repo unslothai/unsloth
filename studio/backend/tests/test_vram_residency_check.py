@@ -598,3 +598,35 @@ def test_an_empty_backend_scan_is_not_cached(monkeypatch):
     )
     assert LlamaCppBackend._sysmem_fallback_risk("/llama-server") is False
     assert LlamaCppBackend._sysmem_fallback_risk("/llama-server") is True
+
+
+def test_the_advice_names_the_launched_executable(on_windows):
+    backend = _Backend([(0, 16384.0 - 11469.0, 16384)])
+    backend._arm_residency_check(QWEN3_VL_8B_FLOOR, [0], "/opt/rt/my-server.exe")
+    backend._sample_residency_baseline(PIN_ARGV, {})
+    assert "add my-server.exe," in backend._verify_vram_residency()
+
+
+@pytest.mark.parametrize("tied, expect_gib", [(False, 7), (True, 8)])
+def test_the_floor_leaves_out_a_host_pinned_input_embedding(
+    tmp_path, monkeypatch, tied, expect_gib
+):
+    """An untied token_embd stays on the CPU at full offload, so it is not owed to the card."""
+    from types import SimpleNamespace
+
+    from test_llama_cpp_placement import _backend as _placement_backend, _launch
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(LlamaCppBackend, "_sysmem_fallback_risk", staticmethod(lambda b = None: True))
+    backend, gguf = _placement_backend(tmp_path, vulkan = False, memory = [(0, 24_576, 24_576)])
+    backend._get_gguf_size_bytes = lambda _path: 8 * GIB
+    backend._tensor_spill_layout = lambda *a, **k: SimpleNamespace(
+        complete = True,
+        token_embd_bytes = 1 * GIB,
+        lm_head_bytes = 0 if tied else 1 * GIB,
+        excluded_block_bytes = 0,
+    )
+    floors = []
+    backend._arm_residency_check = lambda floor, *a, **k: floors.append(floor)
+    _launch(backend, gguf, n_ctx = 2048)
+    assert floors == [expect_gib * GIB]
