@@ -27330,13 +27330,19 @@ async def produce_openai_chat_completions(
                 # context COPY, so only a slot opened first reaches `_friendly_error`.
                 context_refusal.open_slot()
                 drain_task = asyncio.create_task(asyncio.to_thread(_drain_gguf_tool_loop))
-                (
-                    full_text,
-                    completion_usage,
-                    completion_finish,
-                    completion_timings,
-                    completion_context_truncation,
-                ) = await asyncio.shield(drain_task)
+                disconnect_watcher = asyncio.create_task(
+                    _await_disconnect_then_cancel(request, cancel_event)
+                )
+                try:
+                    (
+                        full_text,
+                        completion_usage,
+                        completion_finish,
+                        completion_timings,
+                        completion_context_truncation,
+                    ) = await asyncio.shield(drain_task)
+                finally:
+                    await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                 reasoning_text, visible_text = _extract_responses_reasoning(
                     full_text,
                     parse_think_markers = _responses_should_parse_think_markers(
@@ -28053,17 +28059,23 @@ async def produce_openai_chat_completions(
                 # See the tool-loop drain: the slot has to exist before the copies.
                 context_refusal.open_slot()
                 drain_task = asyncio.create_task(asyncio.to_thread(_drain_gguf_choices))
-                (
-                    _n,
-                    _choices,
-                    _monitor_replies,
-                    _prompt_tokens,
-                    _sum_completion,
-                    _prompt_details,
-                    _last_timings,
-                    _last_finish,
-                    _context_truncation,
-                ) = await asyncio.shield(drain_task)
+                disconnect_watcher = asyncio.create_task(
+                    _await_disconnect_then_cancel(request, cancel_event)
+                )
+                try:
+                    (
+                        _n,
+                        _choices,
+                        _monitor_replies,
+                        _prompt_tokens,
+                        _sum_completion,
+                        _prompt_details,
+                        _last_timings,
+                        _last_finish,
+                        _context_truncation,
+                    ) = await asyncio.shield(drain_task)
+                finally:
+                    await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
 
                 _mark_cancelled_json_response_failed(request, cancel_event)
 
@@ -28102,7 +28114,9 @@ async def produce_openai_chat_completions(
                         else None
                     ),
                 )
-                api_monitor.finish(monitor_id)
+                api_monitor.finish(
+                    monitor_id, "cancelled" if cancel_event.is_set() else "completed"
+                )
                 return _model_json_response_with_context_truncation(response, _context_truncation)
 
             except asyncio.CancelledError:
