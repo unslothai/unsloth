@@ -901,10 +901,6 @@ export function applyCustomizationToDocument(
       ? "min(100%, max(calc(72rem - 1.5rem), calc(100% - 1.5rem)))"
       : null,
   );
-  setVar(
-    "--custom-chat-welcome-padding",
-    c.chatWidth === "standard" ? null : "0px",
-  );
 
   syncImportedFonts(c.importedFonts);
 
