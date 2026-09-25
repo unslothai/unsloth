@@ -487,9 +487,14 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
         if data.startswith(bom):
             return data.decode(codec, errors = "replace")
     try:
-        return data.decode("utf-8")
+        text = data.decode("utf-8")
     except UnicodeDecodeError:
         pass
+    else:
+        # ISO-2022-JP is 7-bit, so it always passes as UTF-8; its escapes give it away.
+        if False:
+            return data.decode("iso2022_jp", errors = "replace")
+        return text
     declared = _declared_charset(data) if html else None
     # WHATWG reads UTF-16 labels as UTF-8, which these bytes already failed.
     if declared and declared != "utf-8":

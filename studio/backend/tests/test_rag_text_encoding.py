@@ -61,6 +61,13 @@ def test_an_html_page_is_read_in_the_charset_it_declares(tmp_path):
         assert _text(tmp_path, f"{charset}.html", page.encode(charset)) == text
 
 
+def test_a_declared_iso_2022_jp_page_is_not_read_as_its_escape_sequences(tmp_path):
+    page = (
+        '<html><head><meta charset="iso-2022-jp"></head><body><p>日本語のページ</p></body></html>'
+    )
+    assert _text(tmp_path, "jis.html", page.encode("iso2022_jp")) == "日本語のページ"
+
+
 def test_an_http_equiv_content_type_declares_the_charset_too(tmp_path):
     page = (
         '<html><head><meta http-equiv="Content-Type" content="text/html; charset=iso-8859-2">'
