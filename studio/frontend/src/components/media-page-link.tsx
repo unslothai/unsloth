@@ -31,7 +31,6 @@ export function MediaPageLink({
   arrowClassName,
 }: {
   to: "/images" | "/video" | "/audio" | "/library";
-  /** The Library tab to open, so each page lands on its own kind of output. */
   libraryTab?: LibraryTab;
   label: string;
   icon: IconSvgElement;
@@ -83,7 +82,6 @@ export function MediaPageLink({
   );
 }
 
-/** The link out to the Library, opened on `tab`, named in the app's language. */
 export function LibraryPageLink({
   tab,
   labelClassName,

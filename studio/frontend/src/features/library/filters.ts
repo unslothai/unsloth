@@ -15,7 +15,6 @@ export function filtersActive(filters: LibraryFilters): boolean {
   return filters.sources.size > 0 || filters.types.size > 0;
 }
 
-/** Source always applies; file type only where the view offers it (not on Images). */
 export function matchesFilters(
   item: LibraryItem,
   filters: LibraryFilters,

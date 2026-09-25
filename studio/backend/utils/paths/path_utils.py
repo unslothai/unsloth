@@ -360,8 +360,6 @@ def _wsl_reveal_in_explorer(path: Path, is_file: bool) -> bool:
         ).stdout.strip()
         if not windows_path:
             return False
-        # Interop quotes each argument that has a space, and Explorer misreads a quoted
-        # "/select,<path>"; "/select," then the path is the form it documents.
         subprocess.Popen(
             ["explorer.exe", "/select,", windows_path]
             if is_file
@@ -405,9 +403,6 @@ def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
         subprocess.Popen(cmd)
     elif os.name == "nt":
         if is_file and '"' not in target:
-            # One string, as Explorer documents it: from a list, a path with a space is quoted whole
-            # as "/select,C:\a b\c.txt", which Explorer misreads and opens Documents instead.
-            # A Windows path cannot hold a quote; one that somehow does opens its folder instead.
             subprocess.Popen(f'explorer /select,"{target}"')
         elif is_file:
             os.startfile(str(path.parent))  # noqa: S606 - local user's own file manager

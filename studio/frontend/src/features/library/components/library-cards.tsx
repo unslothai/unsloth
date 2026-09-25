@@ -21,45 +21,34 @@ import { GLASS_CONTROL, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
 import { CardSelectionContext } from "./card-selection";
 import { LibraryActionsMenu } from "./library-actions";
 
-// A faint shadow all round rather than the composer's lower edge, so a wall of cards reads as
-// separate tiles without outlines.
 const CARD_SHADOW =
   "shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_16px_rgba(0,0,0,0.06)] dark:shadow-none";
 
-// On hover the card goes flat grey, as ChatGPT's do. Keyed to the card group, so moving onto its
-// menu button keeps it.
 const CARD_SURFACE = cn(
   RAISED_SURFACE,
   CARD_SHADOW,
   "group-hover/library-card:bg-neutral-100 group-hover/library-card:shadow-none dark:group-hover/library-card:bg-accent/60",
 );
 
-/** The item's type icon, tinted per kind. */
 export function KindIcon({ item, className }: { item: LibraryItem; className?: string }) {
   const kind = fileKind(item);
   return (
     <HugeiconsIcon
       icon={KIND_ICONS[kind]}
       strokeWidth={1.5}
-      // The test tube reads heavier than the other glyphs, so it sits a touch smaller.
       className={cn(KIND_ICON_CLASS[kind], className, kind === "model" && "scale-95")}
     />
   );
 }
 
-// Thumbnails keep their own shape between these heights (as a share of the width) and crop past
-// them: 3:2 at the widest, 2:3 at the tallest.
 const MIN_THUMB_RATIO = 2 / 3;
 const MAX_THUMB_RATIO = 3 / 2;
 
-/** A lazily loaded image or video frame, sized by its own aspect ratio once it arrives. */
 function ImageThumb({ item, className }: { item: LibraryItem; className?: string }) {
   const holder = useRef<HTMLDivElement>(null);
   const { url, failed } = useLibraryThumbnail(item, useSeen(holder));
-  // Height over width, once the picture has loaded.
   const [ratio, setRatio] = useState<number | null>(null);
   const loaded = ratio !== null;
-  // Fetched but undecodable (bytes that are not the image their name says) falls back too.
   const [brokenUrl, setBrokenUrl] = useState<string | null>(null);
   if (failed || (url !== null && url === brokenUrl)) {
     return (
@@ -89,7 +78,6 @@ function ImageThumb({ item, className }: { item: LibraryItem; className?: string
             setRatio(naturalWidth > 0 ? naturalHeight / naturalWidth : 1);
           }}
           onError={() => setBrokenUrl(url)}
-          // A tall one is cropped from the top, where a screenshot or document starts.
           className={cn(
             "absolute inset-0 block size-full object-cover",
             !loaded && "opacity-0",
@@ -98,7 +86,6 @@ function ImageThumb({ item, className }: { item: LibraryItem; className?: string
         />
       )}
       {loaded && fileKind(item) === "video" && (
-        // A white play mark on glass in both modes.
         <span className="pointer-events-none absolute inset-0 m-auto flex aspect-square w-1/4 max-w-10 items-center justify-center rounded-full bg-white/30 text-white backdrop-blur-md dark:bg-black/40">
           <HugeiconsIcon icon={PlayIcon} strokeWidth={2} className="size-1/2 [&_path]:fill-current" />
         </span>
@@ -122,25 +109,20 @@ function CardFrame({
   children: ReactNode;
   className?: string;
   label: string;
-  /** Over a picture: frosted controls, since the picture can match any solid fill. */
   glass?: boolean;
 }) {
   const t = useT();
   const select = useContext(CardSelectionContext);
   const selected = select?.selection.has(selectKey) ?? false;
-  // Once anything is selected, a click adds to the selection instead of opening.
   const selecting = (select?.selection.size ?? 0) > 0;
   return (
     <div className="group/library-card relative">
       <button
         type="button"
         aria-label={label}
-        // A toggle only while selecting; otherwise the card opens its file.
         aria-pressed={select && selecting ? selected : undefined}
         onClick={select && selecting ? () => select.toggle(selectKey) : onOpen}
         className={cn(
-          // The offset only with focus: Tailwind draws it into box-shadow, so left on it rims every
-          // shadowed card in the page color.
           "block w-full overflow-hidden rounded-xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
           selected && "ring-3 ring-foreground",
           className,
@@ -154,7 +136,6 @@ function CardFrame({
           onCheckedChange={() => select.toggle(selectKey)}
           aria-label={t("library.selectItem", { name: label })}
           className={cn(
-            // Level with the date line, as ChatGPT's sits. Same fill as the ⋯ button.
             OVERLAY_CONTROL,
             "absolute bottom-4 right-4 size-5 rounded-full border-0 opacity-0 transition-opacity group-hover/library-card:opacity-100 focus-visible:opacity-100 data-checked:bg-white data-checked:text-foreground dark:data-checked:bg-neutral-200 dark:data-checked:text-neutral-900 [&_svg]:size-3.5",
             glass && GLASS_CONTROL,
@@ -239,8 +220,6 @@ function FolderCard({
   );
 }
 
-/** Staggered columns: images keep their shape, so cards fill row by row into the shortest-looking
- *  column. Round-robin keeps newest-first reading order without measuring anything. */
 export function Masonry<T>({
   items,
   getKey,
@@ -267,8 +246,6 @@ export function Masonry<T>({
   );
 }
 
-/** Uniform columns for folders, which are all the same shape. Same column count as the masonry
- *  below it, so the two sections line up. */
 export function FolderGrid({
   folders,
   counts,
@@ -291,7 +268,6 @@ export function FolderGrid({
   );
 }
 
-/** Small square used by list rows: the image itself, or the type icon on a tile. */
 export function ItemTile({ item }: { item: LibraryItem }) {
   if (hasThumbnail(item)) {
     return (

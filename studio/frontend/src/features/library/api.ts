@@ -11,30 +11,23 @@ import { type DecodedNote, type NoteEncoding, decodeNote } from "./note-text";
 export type LibrarySource = "uploaded" | "generated";
 
 export interface LibraryItem {
-  /** `<source>:<ref>`: upload, attachment, image, audio, model or sandbox. */
   id: string;
-  /** Shown, and changed by Rename. */
   name: string;
-  /** The file's own name, which a rename leaves alone: its type comes from this. */
   fileName?: string;
   source: LibrarySource;
   contentType: string;
   sizeBytes: number | null;
-  /** The file a path-derived item (sandbox) was listed as; a delete only takes that file. */
   fingerprint?: string;
   createdAt: number;
   updatedAt: number;
-  /** Served by the item's own source route; always fetched with auth. */
   fileUrl: string;
   threadId: string | null;
   threadTitle: string | null;
-  /** Chat uploads of documents keep only their extracted text. */
   textOnly: boolean;
   favorite: boolean;
   folderId: string | null;
   /** Set for fine-tuned models, which are directories: opened in chat, never downloaded. */
   model: LibraryModel | null;
-  /** Generated media off its gallery page's active shelf. */
   archived?: boolean;
 }
 
@@ -85,10 +78,8 @@ export async function getLibraryFavorites(): Promise<string[]> {
   return ((await response.json()) as { ids: string[] }).ids;
 }
 
-// Writes to one item or folder, in the order they were made.
 const writeQueues = new Map<string, Promise<void>>();
 
-/** Throws once the session that `epoch` came from has ended. */
 function sameSession(epoch: number, message: TranslationKey): () => void {
   return () => {
     if (getAuthSessionEpoch() !== epoch) throw new Error(translate(message));
@@ -113,7 +104,6 @@ function inOrder(target: string, send: (check: () => void) => Promise<Response>)
   const request = (writeQueues.get(key) ?? Promise.resolve())
     .catch(() => {})
     .then(async () => {
-      // Queued behind a write that outlived a sign-out: it belongs to the account that left.
       const check = sameSession(epoch, "library.toast.signedOutBeforeSave");
       check();
       await ensureOk(await send(check));
@@ -135,7 +125,6 @@ export function updateLibraryItem(
   );
 }
 
-/** Copies the item's file into a project's folder; the Library keeps its item. */
 export async function addLibraryItemToProject(
   id: string,
   projectId: string,
@@ -146,7 +135,6 @@ export async function addLibraryItemToProject(
   return response.json();
 }
 
-/** Shows the item's file in the OS file manager on the machine running Studio. */
 export async function revealLibraryItem(id: string): Promise<void> {
   await ensureOk(await sendWrite("/api/library/items/reveal", jsonInit("POST", { id })));
 }
@@ -157,18 +145,14 @@ export async function deleteLibraryItem(id: string, fingerprint?: string): Promi
   );
 }
 
-/** Browser Files, or desktop drops as signed path grants the backend reads itself. */
 export interface LibraryUploadBatch {
   files?: File[];
   nativePathLeases?: string[];
-  /** The session the batch was gathered in, when that came before the upload (a drop's grants). */
   sessionEpoch?: number;
 }
 
-// The backend's cap per file and per request; a larger batch goes as several requests.
 export const MAX_LIBRARY_UPLOAD_BYTES = 512 * 1024 * 1024;
 
-/** Batches of files that each fit one request, in order. */
 function uploadGroups(files: File[]): File[][] {
   const groups: File[][] = [];
   let bytes = Infinity;
@@ -188,7 +172,6 @@ export async function uploadLibraryFiles(
   folderId: string | null,
 ): Promise<string[]> {
   const files = batch.files ?? [];
-  // Refused here with its name, before anything is sent, rather than as a bare 413.
   const tooLarge = files.find((file) => file.size > MAX_LIBRARY_UPLOAD_BYTES);
   if (tooLarge) throw new Error(translate("library.toast.uploadTooLarge", { name: tooLarge.name }));
   const leases = batch.nativePathLeases ?? [];
@@ -197,11 +180,8 @@ export async function uploadLibraryFiles(
     for (const file of group) form.append("files", file, file.name);
     return form;
   });
-  // Desktop drops are grants, not bytes: they ride with the first request.
   if (requests.length === 0) requests.push(new FormData());
   for (const lease of leases) requests[0]!.append("nativePathLeases", lease);
-  // A sign-out mid-batch ends it, before the next request or a retry: the token would be another
-  // account's.
   const check = sameSession(
     batch.sessionEpoch ?? getAuthSessionEpoch(),
     "library.toast.signedOutBeforeUpload",
@@ -218,7 +198,6 @@ export async function uploadLibraryFiles(
   return ids;
 }
 
-/** Only Library-owned uploads (`upload:<id>`) are writable. */
 export async function writeLibraryText(
   itemId: string,
   text: string,
@@ -262,12 +241,8 @@ export function deleteLibraryFolder(id: string): Promise<void> {
   );
 }
 
-/** A file past the most the caller would hold, found from what the server sends. */
 export class LibraryFileTooLarge extends Error {}
 
-/** The item's bytes as `type`: sources serve most files as opaque downloads, so the caller says
- *  what they are (see file-name.ts for the rules). Past `maxBytes` it stops reading and throws
- *  LibraryFileTooLarge: the listed size can be out of date, or unknown. */
 export async function fetchLibraryBlob(
   item: LibraryItem,
   type: string,
@@ -299,22 +274,14 @@ export async function fetchLibraryBlob(
   return new Blob(chunks, { type });
 }
 
-/**
- * A short-lived signed link an <audio> or <video> element streams the item from, with range
- * requests, instead of buffering the whole file. Bearer-gated to mint, HMAC to use, and good for
- * this one item only, so no long-lived token ends up in a URL.
- */
 export async function fetchLibraryStreamUrl(item: LibraryItem): Promise<string> {
   const params = new URLSearchParams({ id: item.id });
   const response = await ensureOk(await authFetch(`/api/library/items/stream-url?${params}`));
   const { url } = (await response.json()) as { url?: string };
   if (!url) throw new Error(translate("library.toast.noMediaLink"));
-  // Absolute, since the element fetches it without authFetch, and under Tauri a relative path
-  // resolves against the webview.
   return apiUrl(url);
 }
 
-/** A video item's first frame, drawn by the backend. The version keeps a stale frame out of caches. */
 export async function fetchLibraryThumbnail(item: LibraryItem): Promise<Blob> {
   const params = new URLSearchParams({ id: item.id, v: itemVersion(item) });
   const response = await ensureOk(await authFetch(`/api/library/items/thumbnail?${params}`));
@@ -352,11 +319,6 @@ export async function fetchLibraryText(
   return { ...decodeNote(bytes, truncated), truncated };
 }
 
-/**
- * An absolute URL for the item's bytes that carries its own token, for the desktop app's native
- * save, which sends no header. The HEAD goes through authFetch first, which refreshes an expired
- * token; the URL alone cannot.
- */
 export async function libraryDownloadUrl(item: LibraryItem): Promise<string> {
   const path = `/api/library/items/download?${new URLSearchParams({ id: item.id })}`;
   await ensureOk(await authFetch(path, { method: "HEAD" }));
@@ -364,7 +326,6 @@ export async function libraryDownloadUrl(item: LibraryItem): Promise<string> {
   return apiUrl(token ? `${path}&token=${encodeURIComponent(token)}` : path);
 }
 
-/** What Download and "Chat about this" hand over: a name safe on any OS, typed for the composer. */
 export async function libraryItemFile(item: LibraryItem): Promise<File> {
   const name = libraryFileName(item);
   const type = libraryFileType(name, item.textOnly ? "text/plain" : item.contentType);

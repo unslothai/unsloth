@@ -3282,7 +3282,6 @@ export function ImagesPage({
   // counter, not effect cleanup, retires a lookup: clearing the query must not cancel its own.
   const routedItem = active ? routeSearch?.item : undefined;
   const routedLookup = useRef(0);
-  // Leaving the page does retire it: hidden pages stay mounted and would keep paging.
   useEffect(() => {
     if (!active) routedLookup.current += 1;
   }, [active]);

@@ -46,7 +46,6 @@ export const Route = createRoute({
     ...(typeof search.loadId === "string" && search.loadId.trim()
       ? { loadId: search.loadId }
       : {}),
-    // A Library "View in" link: the clip to select.
     ...(typeof search.item === "string" ? { item: search.item } : {}),
   }),
   beforeLoad: () => requireAuth(),

@@ -28,7 +28,6 @@ export type LibraryFileKind =
   | "video"
   | "model";
 
-/** The buckets the File type filter offers. */
 export type LibraryTypeFilter =
   | "images"
   | "videos"
@@ -87,7 +86,6 @@ export function isModelItem(item: LibraryItem): boolean {
   return item.model != null;
 }
 
-/** Only files have bytes to download or delete here; a model is managed from the model picker. */
 export function isFileItem(item: LibraryItem): boolean {
   return !isModelItem(item);
 }
@@ -104,7 +102,6 @@ export type ModelLabelKey =
   | (typeof MODEL_LABELS)[keyof typeof MODEL_LABELS]
   | "library.modelKind.model";
 
-/** The message key naming how a fine-tuned model was made, or null for a file. */
 export function modelLabelKey(item: LibraryItem): ModelLabelKey | null {
   const model = item.model;
   if (!model) return null;
@@ -143,7 +140,6 @@ export function hasImagePreview(item: LibraryItem): boolean {
   );
 }
 
-/** Cards show a picture for raster images, and for videos their first frame. */
 export function hasThumbnail(item: LibraryItem): boolean {
   return hasImagePreview(item) || (!item.textOnly && fileKind(item) === "video");
 }
@@ -171,14 +167,12 @@ export const KIND_ICONS: Record<LibraryFileKind, IconSvgElement> = {
   model: TestTubeOutlineIcon,
 };
 
-/** Tints for a few recognizable kinds; the rest use the foreground color. */
 export const KIND_ICON_CLASS: Partial<Record<LibraryFileKind, string>> = {
   spreadsheet: "text-emerald-500",
   pdf: "text-red-500",
   presentation: "text-orange-500",
 };
 
-/** Kinds whose content reads as text, so the preview can show it. */
 export function isTextPreviewable(item: LibraryItem): boolean {
   if (item.textOnly) return true;
   const kind = fileKind(item);

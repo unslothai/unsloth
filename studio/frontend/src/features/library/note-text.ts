@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// How a text file reads, and how an edit goes back in the same shape. Kept free of app imports, so
-// it can be tested on its own.
 
 export type NoteEncoding = "utf-8" | "utf-16le" | "utf-16be";
 
@@ -10,16 +8,12 @@ export interface NoteFormat {
   encoding: NoteEncoding;
   /** The file started with a byte order mark, which a save must keep. */
   bom: boolean;
-  /** The file's line ending: text on screen always uses "\n". */
   eol: "\n" | "\r\n";
 }
 
-/** Why a note opens read-only: saves go back in the file's own encoding, so only text that decodes
- *  cleanly is editable. */
 export type NoteReadOnlyReason = "utf16" | "notUtf8";
 
 export interface DecodedNote {
-  /** With "\n" line endings, as a textarea reports its value. */
   text: string;
   format: NoteFormat;
   readOnlyReason: NoteReadOnlyReason | null;
@@ -45,13 +39,11 @@ export function decodeNote(bytes: Uint8Array, truncated = false): DecodedNote {
   let raw: string;
   let readOnlyReason: NoteReadOnlyReason | null = null;
   try {
-    // The decoder drops the BOM itself.
     raw = new TextDecoder(encoding, { fatal: true }).decode(bytes, { stream: truncated });
   } catch {
     raw = new TextDecoder(encoding).decode(bytes, { stream: truncated });
     readOnlyReason = encoding === "utf-8" ? "notUtf8" : "utf16";
   }
-  // The ending most lines use; a file with no line breaks gets "\n".
   const crlf = raw.match(/\r\n/g)?.length ?? 0;
   const lf = (raw.match(/\n/g)?.length ?? 0) - crlf;
   return {
@@ -61,9 +53,7 @@ export function decodeNote(bytes: Uint8Array, truncated = false): DecodedNote {
   };
 }
 
-/** The text to write for an edit of a file read as `format`: its line endings and BOM restored. */
 export function encodeNote(text: string, format: NoteFormat): string {
-  // "\r\n" typed or pasted in collapses first, so it is not doubled.
   const lines = text.replace(/\r\n/g, "\n");
   const body = format.eol === "\r\n" ? lines.replace(/\n/g, "\r\n") : lines;
   return format.bom ? `\uFEFF${body}` : body;
