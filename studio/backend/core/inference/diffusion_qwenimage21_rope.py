@@ -3,27 +3,8 @@
 
 """Qwen-Image-2.1 RoPE in real arithmetic under ``torch.compile``, bit-identical to the complex form.
 
-The stock ``apply_rotary_emb_qwen(..., use_real=False)`` multiplies ``view_as_complex`` tensors. Inductor
-cannot generate complex arithmetic, so inside the compiled block the multiply falls back to ATen's
-complex kernel with a copy kernel on each side, and the query/key RMSNorm in front of it cannot fuse
-with it. That chain is about 6% of the bf16 kernel time on Qwen-Image-2.1.
-
-ATen's CUDA complex multiply computes each half of ``(a + bi) * (c + di)`` with one fused multiply-add,
-and which product it fuses depends on how nvcc compiled it for the card: on B200 it is
-``real = fma(a, c, -(b * d)), imag = fma(b, c, a * d)``, on A100 ``imag = fma(a, d, b * c)``. So
-``install`` asks the card: it multiplies a probe on the device and classifies each half against the
-two fused forms (exact in float64 on inputs in [1, 2)), and the compiled form then uses the same
-fusion per lane via ``addcmul``, which inductor lowers to a single ``fma`` (torch 2.12+, and 2.11
-under ``emulate_precision_casts``, which Studio's compiled tiers set). Written over the full head dim
-(``swap_pairs(x)`` against interleaved cos / sin tables) the rotation fuses with the norm into one
-kernel and matches the complex multiply bit for bit. Inductor may schedule the fused norm's reduction
-differently from the unfused one: identical on B200; on other cards some compiles move a few elements
-by one ulp at the rotation's input, about as many as the stock compile moves against eager. A card
-whose multiply matches neither form, torch <= 2.10 (no ``fma`` lowering), ROCm and eager calls keep
-the complex form.
-
-Installed on the diffusers module global only when the installed ``apply_rotary_emb_qwen`` and its
-caller are the functions this was written against (source fingerprint). Kill switch:
+Inductor cannot fuse complex multiply; ATen's fma placement differs per card (B200 vs A100), so
+``install`` probes the card and mirrors it via ``addcmul`` (one ``fma``). Kill switch:
 ``UNSLOTH_DIFFUSION_Q21_REAL_ROPE=0``.
 """
 
@@ -44,8 +25,6 @@ REAL_ROPE_ENV = "UNSLOTH_DIFFUSION_Q21_REAL_ROPE"
 
 _MODULE = "diffusers.models.transformers.transformer_qwenimage21"
 
-# Source digests (``_digest``) of the stock functions, from the diffusers commit that added
-# Qwen-Image 2.1 through current main.
 _FINGERPRINTS: dict[str, frozenset] = {
     "apply_rotary_emb_qwen": frozenset({"ba81dd3fc907c23a"}),
     "_qwenimage21_prepare_qkv": frozenset({"574bacc8f355456d"}),
@@ -53,8 +32,7 @@ _FINGERPRINTS: dict[str, frozenset] = {
 
 _LOCK = threading.Lock()
 _INSTALLED: dict = {}
-# One wrapper per stock function: dynamo guards on the global's identity, so a reinstall that reused
-# a fresh wrapper would recompile every block.
+# Reuse one wrapper per stock function: dynamo guards on the global's identity.
 _WRAPPERS: dict = {}
 
 
@@ -63,8 +41,7 @@ def real_rope_disabled() -> bool:
 
 
 def _digest(fn: Any) -> Optional[str]:
-    """Hash of ``fn``'s source without docstrings, comments or blank lines, or None when unreadable.
-    Source text, not ``ast.dump``, whose output changes between Python versions."""
+    """Source text, not ``ast.dump`` (varies across Python versions), minus docstrings/comments."""
     try:
         src = textwrap.dedent(inspect.getsource(inspect.unwrap(fn)))
         tree = ast.parse(src)
@@ -103,8 +80,7 @@ def why_unsupported(module: Any) -> Optional[str]:
 
 @functools.lru_cache(maxsize = 1)
 def _addcmul_lowering() -> tuple:
-    """(lowers ``addcmul`` with value 1 to one ``fma`` on CUDA, only while ``emulate_precision_casts``
-    is set). Read from the lowering itself: torch 2.11 gates the fma on that flag, 2.12+ does not."""
+    """(addcmul -> fma, only under emulate_precision_casts): torch 2.11 gates it, 2.12+ does not."""
     try:
         import torch
         from torch._inductor import lowering
@@ -121,8 +97,6 @@ def _addcmul_lowering() -> tuple:
 
 
 def inductor_addcmul_is_fma() -> bool:
-    """Whether this torch's inductor can lower ``addcmul`` to one ``fma``, which is what makes the real
-    form round exactly like ATen's complex multiply."""
     return _addcmul_lowering()[0]
 
 
@@ -135,10 +109,7 @@ _FUSION: dict = {}
 
 
 def classify_fusion(a: Any, b: Any, c: Any, d: Any, real: Any, imag: Any) -> Optional[tuple]:
-    """Which product each half of a complex multiply fused, from float32 numpy inputs in [1, 2) (so
-    every candidate is exact in float64 before its one rounding) and the multiply's float32 output.
-    ``("x", "x")`` is ``real = fma(a, c, -(b * d)), imag = fma(b, c, a * d)``; ``"s"`` fuses the other
-    product. None when a half matches neither."""
+    """Inputs in [1, 2) keep candidates exact in float64; "x" = real fma(a, c, -bd), imag fma(b, c, ad)."""
     import numpy as np
 
     f32, f64 = np.float32, np.float64
@@ -156,8 +127,6 @@ def classify_fusion(a: Any, b: Any, c: Any, d: Any, real: Any, imag: Any) -> Opt
 
 
 def probe_fusion(device: Any) -> Optional[tuple]:
-    """``classify_fusion`` for ATen's complex multiply on ``device``, called the way the RoPE calls it
-    (a (1, S, H, D/2) tensor against a broadcast (S, 1, D/2) table)."""
     import torch
 
     g = torch.Generator(device = "cpu").manual_seed(0)
@@ -179,11 +148,6 @@ def probe_fusion(device: Any) -> Optional[tuple]:
 
 
 def _real_rope(x: Any, freqs_cis: Any, fusion: tuple) -> Any:
-    """``apply_rotary_emb_qwen(x, freqs_cis, use_real=False)`` without complex tensors.
-
-    ``x``: (B, S, H, D); ``freqs_cis``: complex64 (S, D/2); pairs are adjacent (x[2k], x[2k+1]).
-    Per lane ``fma(x, cos, swapped * sin)`` ("x") or ``fma(swapped, sin, x * cos)`` ("s"), with
-    sin = (-d, d) and swapped = (b, a): even lanes give the real half, odd lanes the imaginary one."""
     import torch
 
     xf = x.float()
@@ -204,7 +168,7 @@ def _real_rope(x: Any, freqs_cis: Any, fusion: tuple) -> Any:
 
 
 def _inductor_emulates() -> bool:
-    """Read at trace time (dynamo guards on it): without the flag torch 2.11 splits ``addcmul``."""
+    # Read at trace time (dynamo guards on it): without the flag torch 2.11 splits ``addcmul``.
     from torch._inductor import config
     return bool(getattr(config, "emulate_precision_casts", False))
 
@@ -238,12 +202,8 @@ def _make_rope(stock: Any) -> Any:
 
 
 def install(logger: Any = None, device: Any = None) -> bool:
-    """Swap the module's ``apply_rotary_emb_qwen`` for the compile-time real form. Idempotent; False
-    (stock kept) under the kill switch, without Qwen-Image 2.1, on a drifted diffusers, where
-    inductor would not round like the complex kernel, or when ``device`` (default: the current CUDA
-    device) multiplies complex numbers in neither fused form. Run before the first compiled forward."""
+    """Idempotent; False keeps the stock RoPE. Run before the first compiled forward."""
     if real_rope_disabled() or not inductor_addcmul_is_fma():
-        # A wrapper left by an earlier load would otherwise outlive the kill switch.
         uninstall()
         return False
     _NEEDS_EMULATE[0] = _addcmul_lowering()[1]

@@ -1448,7 +1448,6 @@ def test_real_rope_installed_before_the_qwen_image_21_block_compile_only(monkeyp
     )
     assert order == ["rope", "compile"] and applied["compiled"] is True
 
-    # A failing install never costs the compile.
     order.clear()
     monkeypatch.setattr(
         rope, "install", lambda logger = None: (_ for _ in ()).throw(RuntimeError("probe"))

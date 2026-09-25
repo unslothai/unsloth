@@ -480,7 +480,6 @@ def _compile_repeated_blocks(
         # Read by auto_dynamic_active: the generalising recompile on a new text length must reach the bundle.
         transformer._unsloth_auto_dynamic = dit_kwargs["dynamic"] is None
         if type(transformer).__name__ == "QwenImage21Transformer2DModel":
-            # Before the first compiled forward traces the blocks; bit-identical to the complex RoPE.
             try:
                 from .diffusion_qwenimage21_rope import install as install_real_rope
                 install_real_rope(logger)

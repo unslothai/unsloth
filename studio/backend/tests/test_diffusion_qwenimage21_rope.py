@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for ``diffusion_qwenimage21_rope.py`` (Qwen-Image-2.1 RoPE in real arithmetic when compiled).
-
-The bit-identity tests compile the attention's QK-norm + RoPE with the stock complex form and with the
-real form and compare the outputs exactly; they need CUDA and a torch whose inductor lowers ``addcmul``
-to ``fma`` (2.12+, or 2.11 under ``emulate_precision_casts``). The install / guard tests run anywhere diffusers has Qwen-Image 2.1.
-"""
+"""Tests for ``diffusion_qwenimage21_rope.py``; bit-identity tests need CUDA + inductor fma lowering."""
 
 from __future__ import annotations
 
@@ -22,7 +17,6 @@ qmod = pytest.importorskip("diffusers.models.transformers.transformer_qwenimage2
 
 
 def _cuda_dtype():
-    """bf16 where the card has it natively (sm80+), else fp16, as the Studio loaders pick."""
     return torch.bfloat16 if torch.cuda.get_device_capability() >= (8, 0) else torch.float16
 
 
@@ -34,7 +28,6 @@ _needs_exact = pytest.mark.skipif(
 
 @pytest.fixture
 def emulating():
-    """What Studio's compiled tiers set; torch 2.11 lowers ``addcmul`` to ``fma`` only under it."""
     import torch._inductor.config as icfg
 
     prev = icfg.emulate_precision_casts
@@ -93,11 +86,8 @@ def _compiled(prep, x, freqs, dynamic):
 @pytest.mark.parametrize("dynamic", [False, True])
 @pytest.mark.parametrize("seq", [77, 1024])
 def test_compiled_real_rope_matches_the_complex_one(dynamic, seq, emulating):
-    """The rotation itself is exact on every card (the fusion-form test below). Fused with the RoPE, the
-    QK norm's reduction can be scheduled differently from the unfused one: bit-identical on B200, a few
-    elements one ulp apart at the rotation's input elsewhere, about as many as the stock compile moves
-    against eager. A rotation keeps each pair's length, so that ulp is read off the output pair."""
-    # Qwen-Image-2.1's own head layout: inductor's schedule for the norm depends on it.
+    """Fused QK-norm may move a few elements one ulp off B200; read off each pair's length."""
+    # Inductor's norm schedule depends on this head layout.
     attn = _attention("cuda", heads = 32, dim_head = 128)
     prep, x, freqs = _qk(attn, seq, "cuda")
     with torch.inference_mode():
@@ -165,13 +155,11 @@ def test_install_is_idempotent_reuses_one_wrapper_and_uninstall_restores(monkeyp
     rope.uninstall()
     assert qmod.apply_rotary_emb_qwen is stock
     assert rope.install()
-    # The same object: dynamo guards on the global, so a new one would recompile every block.
     assert qmod.apply_rotary_emb_qwen is wrapper
 
 
 def test_installed_diffusers_matches_the_fingerprints():
-    """Fails when the pinned diffusers changes the RoPE or its caller: re-check the real form
-    against the new stock one, then add the new digest."""
+    """On failure re-check the real form against the new stock one, then add the digest."""
     assert rope.why_unsupported(qmod) is None
 
 
@@ -209,7 +197,6 @@ def test_kill_switch_and_non_fma_inductor_keep_the_complex_form(monkeypatch):
     assert rope.install() is False
     assert qmod.apply_rotary_emb_qwen is stock
     monkeypatch.delenv(rope.REAL_ROPE_ENV)
-    # A card whose complex multiply is neither fused form.
     monkeypatch.setattr(rope, "probe_fusion", lambda device: None)
     assert rope.install() is False
     assert qmod.apply_rotary_emb_qwen is stock
@@ -269,7 +256,6 @@ def test_a_torch_that_needs_the_emulate_flag_keeps_the_complex_form_without_it(m
 
 
 def _fused(a, c, bd):
-    """float32 fma(a, c, bd) for float32 numpy inputs in [1, 2): exact in float64, one rounding."""
     import numpy as np
     return (a.astype(np.float64) * c.astype(np.float64) + bd.astype(np.float64)).astype(np.float32)
 
@@ -286,7 +272,6 @@ def test_classify_fusion_names_each_half(even, odd):
     real = _fused(a, c, -(b * d)) if even == "x" else _fused(-b, d, a * c)
     imag = _fused(b, c, a * d) if odd == "x" else _fused(a, d, b * c)
     assert rope.classify_fusion(a, b, c, d, real, imag) == (even, odd)
-    # Unfused (two roundings) is neither form.
     assert rope.classify_fusion(a, b, c, d, a * c - b * d, imag) is None
 
 
@@ -303,8 +288,7 @@ def test_this_card_multiplies_complex_numbers_in_a_known_fused_form():
 @_needs_exact
 @pytest.mark.parametrize("fusion", [("x", "x"), ("x", "s"), ("s", "x"), ("s", "s")])
 def test_each_fusion_form_compiles_to_that_fma(fusion, emulating):
-    """The compiled real form reproduces the fused form it was asked for, bit for bit, on inputs
-    where the forms disagree: the check that inductor did not re-fuse the products."""
+    """Inputs where the forms disagree: catches inductor re-fusing the products."""
     import numpy as np
 
     g = torch.Generator(device = "cpu").manual_seed(1)
