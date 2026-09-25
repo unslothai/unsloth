@@ -24,6 +24,7 @@ async function previewSource(
     try {
       return { url: await fetchLibraryStreamUrl(item), streamed: true };
     } catch {
+      // An older server without the route: the blob below still plays it.
     }
   }
   const tooLarge = () => new Error(translate("library.preview.tooLargeToPreview"));

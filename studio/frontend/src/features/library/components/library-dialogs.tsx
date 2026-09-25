@@ -79,6 +79,7 @@ function NameForm({
       await onSubmit(trimmed);
       onClose();
     } catch {
+      // The caller toasted; keep the dialog open so the name can be fixed.
     } finally {
       setBusy(false);
     }
