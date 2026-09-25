@@ -534,3 +534,23 @@ def test_native_int8_under_real_stream_group_offload_leaves_nothing_resident():
     torch.cuda.synchronize()
     assert out.device.type == "cuda"
     assert {b.device.type for b in model.buffers()} == {"cpu"}
+
+
+def test_qkv_fusion_skips_a_native_quantised_denoiser():
+    from core.inference import diffusion_speed
+
+    calls = []
+
+    class _Dit(torch.nn.Module):
+        def __init__(self, native):
+            super().__init__()
+            lin = torch.nn.Linear(64, 64).to(torch.bfloat16)
+            self.to_q = nq.native_linear_class()(lin, "int8") if native else lin
+
+        def fuse_qkv_projections(self):
+            calls.append(self)
+
+    native = types.SimpleNamespace(transformer = _Dit(native = True))
+    assert diffusion_speed._fuse_qkv(native, None) is False and not calls
+    dense = types.SimpleNamespace(transformer = _Dit(native = False))
+    assert diffusion_speed._fuse_qkv(dense, None) is True and len(calls) == 1
