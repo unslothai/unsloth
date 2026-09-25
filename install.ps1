@@ -2573,6 +2573,30 @@ function Install-UnslothStudio {
         return $false
     }
 
+    # Is the interpreter FILE itself something only an administrator can change.
+    #
+    # Test-StudioPathUnderAdminRoot vouches for the directories, not the file in them. Windows lets
+    # a file inside an administrator-only directory carry a DACL a standard user can write, and a
+    # symlink or other reparse point there can lead to a file the user controls. Either one lets a
+    # medium-integrity process replace what the elevated run launches. So a reparse point is
+    # refused outright rather than followed, and the file's own descriptor must pass the same SDDL
+    # rule the directories do. Every unknown declines.
+    function Test-StudioInterpreterFileIsAdminOnly {
+        param([string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+        try {
+            # Select-Object -Property, not a property read or -ExpandProperty: Constrained Language
+            # Mode refuses the former, and the latter errors on a LinkType that is empty, which is
+            # exactly the ordinary file this has to accept.
+            $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop |
+                Select-Object -Property Attributes, LinkType
+            if ($null -eq $item) { return $false }
+            if ("$($item.Attributes)" -match 'ReparsePoint') { return $false }
+            if (-not [string]::IsNullOrWhiteSpace("$($item.LinkType)")) { return $false }
+        } catch { return $false }
+        return (Test-StudioDirectoryIsAdminOnly -Path $Path)
+    }
+
     function Get-StudioEarlyPython {
         # $VenvDir is assigned far below the first caller (--tauri), so a miss taken before it existed
         # is probed again once it does. A hit, or a miss taken with it known, is final.
@@ -2617,8 +2641,11 @@ function Install-UnslothStudio {
             # The existing install's own venv interpreter is the exception: this elevated run
             # executes it anyway (platform checks, uv pip install --python, the torch probes), so
             # refusing it here protected nothing and left every elevated upgrade inexact.
+            # The file is checked as well as the directories above it: a user-writable DACL on the
+            # file, or a reparse point in its place, is the same replacement by another route.
             if ($requireAdminRoot -and ($venvCandidates -notcontains $candidate) -and
-                -not (Test-StudioPathUnderAdminRoot -Path $candidate)) {
+                ((-not (Test-StudioPathUnderAdminRoot -Path $candidate)) -or
+                 (-not (Test-StudioInterpreterFileIsAdminOnly -Path $candidate)))) {
                 $rejectedForWritability = $true
                 continue
             }

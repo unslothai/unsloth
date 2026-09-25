@@ -32,6 +32,7 @@ INSTALL_PS1 = ROOT / "install.ps1"
 CHECKED = (
     "New-StudioChildScriptDirectory",
     "Test-StudioChildScriptDirectoryElevated",
+    "Test-StudioInterpreterFileIsAdminOnly",
     "Invoke-StudioEarlyPythonScript",
     "Resolve-StudioFinalPathsInOneChild",
     "Get-StudioPythonFinalPath",

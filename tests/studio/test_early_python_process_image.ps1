@@ -26,7 +26,7 @@ foreach ($name in @(
     # Windows it never calls them, which is how a missing one once passed here and failed CI.
     "Get-StudioSystem32Tool", "Test-StudioPathUnderAdminRoot",
     "Test-StudioSddlRightsAreWrite", "Test-StudioSddlPrincipalIsAdminOnly",
-    "Test-StudioSddlWritableByNonAdmin", "Test-StudioDirectoryIsAdminOnly",
+    "Test-StudioSddlWritableByNonAdmin", "Test-StudioDirectoryIsAdminOnly", "Test-StudioInterpreterFileIsAdminOnly",
     "Get-StudioLexicalParent", "Write-StudioFinalPathDegraded"
 )) {
     $fn = $ast.FindAll({ param($n)

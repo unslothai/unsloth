@@ -116,6 +116,7 @@ LOCK_CHAIN = (
     "Test-StudioSddlPrincipalIsAdminOnly",
     "Test-StudioSddlWritableByNonAdmin",
     "Test-StudioDirectoryIsAdminOnly",
+    "Test-StudioInterpreterFileIsAdminOnly",
     "Get-StudioLexicalParent",
     "Invoke-StudioEarlyPython",
     "Get-StudioPythonFinalPath",

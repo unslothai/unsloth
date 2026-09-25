@@ -38,7 +38,7 @@ $wanted = @(
     "Test-StudioPathUnderAdminRoot",
     "Test-StudioSddlRightsAreWrite", "Test-StudioSddlPrincipalIsAdminOnly",
     "Test-StudioSddlWritableByNonAdmin", "Test-StudioDirectoryIsAdminOnly",
-    "Get-StudioLexicalParent",
+    "Get-StudioLexicalParent", "Test-StudioInterpreterFileIsAdminOnly",
     "Resolve-StudioLinkTarget", "Get-StudioSubstTarget", "Get-StudioLexicalPath",
     "Resolve-StudioFinalPathInfo", "Resolve-StudioFinalPathsInOneChild",
     # Called by Resolve-StudioFinalPathInfo on the rung below this one. Extracted rather than
@@ -686,6 +686,104 @@ try {
         if ($null -eq $savedOsElev) { Remove-Item Env:OS -ErrorAction SilentlyContinue } else { $env:OS = $savedOsElev }
         $script:StudioEarlyPythonProbed = $false
         $script:StudioEarlyPython = $null
+    }
+
+    # ---- the interpreter FILE, not only the directories above it ----
+    #
+    # Windows lets a file inside an administrator-only directory carry a DACL a standard user can
+    # write, and a symlink there can lead to a file the user controls. Either one lets a
+    # medium-integrity process replace what the elevated run launches, and the directory walk
+    # never looks at either. Real files on this host, a stubbed Get-Acl, and ProgramFiles pointed
+    # at a temporary root so the directory half passes and only the file half is under test.
+    $hostPy3 = (Get-Command python3 -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+    if ($IsWindows -or -not $hostPy3) {
+        Write-Host "  SKIP  interpreter-file checks need a non-Windows host with python3" -ForegroundColor Yellow
+    } else {
+        $savedPF2 = $env:ProgramFiles; $savedSR2 = $env:SystemRoot; $savedOS2 = $env:OS; $savedPath2 = $env:PATH
+        $pfRoot = Join-Path $tmp "pf"
+        $pfBin = Join-Path $pfRoot "bin"
+        New-Item -ItemType Directory -Force -Path $pfBin | Out-Null
+        $wrapper = Join-Path $pfBin "python3"
+        Set-Content -LiteralPath $wrapper -Value ("#!/bin/sh`nexec '" + $hostPy3 + "' `"`$@`"`n") -NoNewline
+        & chmod +x $wrapper
+        $userFileSddl = "O:BAG:SYD:PAI(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1301bf;;;BU)"
+        $script:AclTable = @{}
+        $script:AclThrows = $false
+        function Get-Acl {
+            param($LiteralPath, $Path, $ErrorAction)
+            if ($script:AclThrows) { throw "access denied" }
+            $key = "$LiteralPath".TrimEnd('\', '/')
+            $sddl = $script:AclDefault
+            if ($script:AclTable.ContainsKey($key)) { $sddl = $script:AclTable[$key] }
+            return [pscustomobject]@{ Sddl = $sddl }
+        }
+        $reprobe = {
+            $script:StudioEarlyPythonProbed = $false
+            $script:StudioEarlyPython = $null
+            $script:StudioEarlyPythonProbedWithoutVenv = $false
+            return (Get-StudioEarlyPython)
+        }
+        try {
+            $env:ProgramFiles = $pfRoot
+            $env:SystemRoot = Join-Path $tmp "win"
+            $env:OS = "Windows_NT"
+            $env:PATH = $pfBin + [System.IO.Path]::PathSeparator + $savedPath2
+            function Test-StudioChildScriptDirectoryElevated { return $true }
+
+            Check "the file helper accepts an administrator-only regular file" (
+                (Test-StudioInterpreterFileIsAdminOnly -Path $wrapper) -eq $true)
+            Check "control: the directory walk alone accepts this location" (
+                (Test-StudioPathUnderAdminRoot -Path $wrapper) -eq $true)
+            Check "control: an elevated run accepts an administrator-only file under an administrator-only root" (
+                (& $reprobe) -eq $wrapper)
+
+            $script:AclTable[$wrapper] = $userFileSddl
+            Check "the directory walk still accepts it, so it cannot see the file's ACL (bites)" (
+                (Test-StudioPathUnderAdminRoot -Path $wrapper) -eq $true)
+            Check "the file helper refuses a user-writable file under admin-only directories" (
+                (Test-StudioInterpreterFileIsAdminOnly -Path $wrapper) -eq $false)
+            Check "an elevated run declines a PATH interpreter whose own DACL a standard user can write" (
+                [string]::IsNullOrWhiteSpace((& $reprobe)))
+            $script:AclTable.Remove($wrapper)
+
+            # Owned by a standard user: WRITE_DAC is implicit, whatever the DACL says.
+            $script:AclTable[$wrapper] = "O:S-1-5-21-1-2-3-1001G:SYD:PAI(A;;FA;;;SY)(A;;FA;;;BA)"
+            Check "the file helper refuses a file owned by a standard user" (
+                (Test-StudioInterpreterFileIsAdminOnly -Path $wrapper) -eq $false)
+            $script:AclTable.Remove($wrapper)
+
+            $script:AclThrows = $true
+            Check "an unreadable file ACL declines" (
+                (Test-StudioInterpreterFileIsAdminOnly -Path $wrapper) -eq $false)
+            $script:AclThrows = $false
+            Check "the file helper refuses an empty path" (
+                (Test-StudioInterpreterFileIsAdminOnly -Path "") -eq $false)
+            Check "and a missing file" (
+                (Test-StudioInterpreterFileIsAdminOnly -Path (Join-Path $pfBin "absent")) -eq $false)
+
+            # A symlink in the protected directory, whose own descriptor reads as administrator-only
+            # (Get-Acl reports the target's), pointing at a file anyone could own.
+            Remove-Item -LiteralPath $wrapper -Force
+            New-Item -ItemType SymbolicLink -Path $wrapper -Target $hostPy3 | Out-Null
+            Check "the directory walk accepts the symlinked candidate (bites)" (
+                (Test-StudioPathUnderAdminRoot -Path $wrapper) -eq $true)
+            Check "the file helper refuses a symlinked interpreter" (
+                (Test-StudioInterpreterFileIsAdminOnly -Path $wrapper) -eq $false)
+            Check "an elevated run declines a symlinked PATH interpreter" (
+                [string]::IsNullOrWhiteSpace((& $reprobe)))
+            function Test-StudioChildScriptDirectoryElevated { return $false }
+            Check "control: an unelevated run is unaffected by the file check" (
+                -not [string]::IsNullOrWhiteSpace((& $reprobe)))
+        } finally {
+            Remove-Item Function:Test-StudioChildScriptDirectoryElevated -ErrorAction SilentlyContinue
+            Remove-Item Function:Get-Acl -ErrorAction SilentlyContinue
+            $env:PATH = $savedPath2
+            if ($null -eq $savedPF2) { Remove-Item Env:ProgramFiles -ErrorAction SilentlyContinue } else { $env:ProgramFiles = $savedPF2 }
+            if ($null -eq $savedSR2) { Remove-Item Env:SystemRoot -ErrorAction SilentlyContinue } else { $env:SystemRoot = $savedSR2 }
+            if ($null -eq $savedOS2) { Remove-Item Env:OS -ErrorAction SilentlyContinue } else { $env:OS = $savedOS2 }
+            $script:StudioEarlyPythonProbed = $false
+            $script:StudioEarlyPython = $null
+        }
     }
 
 } finally {
