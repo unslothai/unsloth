@@ -4005,9 +4005,6 @@ def apply_accepts_loss_kwargs_fix(model):
     return f"{value} ({reason})"
 
 
-_OWN_CE_LOSS = re.compile(r"\bCrossEntropyLoss\s*\(|\bcross_entropy\s*\(")
-
-
 def _loss_kwargs_chain(model):
     seen = set()
     m = model
@@ -4030,7 +4027,6 @@ def _clear_guessed_accepts_loss_kwargs(model):
 
 
 def _instance_accepts_loss_kwargs(model):
-    # First accepts_loss_kwargs the model itself stored on an instance along the wrapper chain, else None.
     seen = set()
     m = model
     for _ in range(8):
@@ -4172,7 +4168,6 @@ def _forward_ignores_num_items_in_batch(model):
         return None
     if "num_items_in_batch" in source or "loss_function" in source:
         return None
-    # A loss module built once in __init__ (self.loss_fct = CrossEntropyLoss()) and called from forward.
     used = [
         sub
         for name, sub in m.named_children()

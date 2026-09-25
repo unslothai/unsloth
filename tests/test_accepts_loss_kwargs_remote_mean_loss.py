@@ -37,7 +37,6 @@ _NAMES = {
     "_find_concrete_accepts_loss_kwargs",
     "_shadow_accepts_loss_kwargs",
     "_forward_ignores_num_items_in_batch",
-    "_OWN_CE_LOSS",
     "_instance_accepts_loss_kwargs",
     "_ce_calls_all_mean",
     "_CE_PARAMS",
