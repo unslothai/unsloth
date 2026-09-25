@@ -471,6 +471,36 @@ def test_install_routes_require_owner(isolated, monkeypatch):
     assert called == []
 
 
+def test_engine_routes_reap_a_crashed_engine_before_reporting(isolated, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from routes import inference as inference_routes
+    from routes.engines import router
+    from auth import policy
+    from auth.authentication import get_current_subject
+
+    lease = install.engine_lease("vllm")
+    lease.__enter__()
+
+    class Crashed:
+        _managed_engine = object()
+        reaped = 0
+
+        def reap_dead_managed_engine(self):
+            self.reaped += 1
+            lease.__exit__(None, None, None)
+
+    backend = Crashed()
+    monkeypatch.setattr(inference_routes, "_peek_inference_backend", lambda: backend)
+    app = FastAPI()
+    app.include_router(router, prefix = "/api/engines")
+    app.dependency_overrides[get_current_subject] = lambda: "owner"
+    app.dependency_overrides[policy.require_owner] = lambda: None
+    with TestClient(app) as client:
+        assert client.delete("/api/engines/vllm").status_code != 409
+    assert backend.reaped == 1
+
+
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
 def test_model_metadata_allows_native_vision_and_quantization(tmp_path, engine):
     from types import SimpleNamespace

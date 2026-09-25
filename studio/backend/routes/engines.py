@@ -15,16 +15,29 @@ Engine = Literal["vllm", "sglang"]
 router = APIRouter(dependencies = [Depends(get_current_subject)])
 
 
+def _reap_crashed_engine() -> None:
+    """A crashed engine keeps its lease until reaped, so its status reads in use and repair or
+    removal is refused."""
+    from routes.inference import _peek_inference_backend
+
+    backend = _peek_inference_backend()
+    if getattr(backend, "_managed_engine", None) is not None:
+        backend.reap_dead_managed_engine()
+
+
 @router.get("")
 async def list_engines():
-    return await asyncio.to_thread(
-        lambda: [engine_install.status(name) for name in engine_install.PROFILES]
-    )
+    def rows():
+        _reap_crashed_engine()
+        return [engine_install.status(name) for name in engine_install.PROFILES]
+
+    return await asyncio.to_thread(rows)
 
 
 @router.post("/{engine}/install", dependencies = [Depends(policy.require_owner)])
 async def install(engine: Engine):
     try:
+        await asyncio.to_thread(_reap_crashed_engine)
         return await asyncio.to_thread(engine_install.start_install, engine)
     except RuntimeError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
@@ -38,6 +51,7 @@ async def cancel(engine: Engine):
 @router.delete("/{engine}", dependencies = [Depends(policy.require_owner)])
 async def remove(engine: Engine):
     try:
+        await asyncio.to_thread(_reap_crashed_engine)
         return await asyncio.to_thread(engine_install.remove, engine)
     except (RuntimeError, OSError) as exc:
         raise HTTPException(
@@ -49,6 +63,7 @@ async def remove(engine: Engine):
 @router.post("/{engine}/rollback", dependencies = [Depends(policy.require_owner)])
 async def rollback(engine: Engine):
     try:
+        await asyncio.to_thread(_reap_crashed_engine)
         return await asyncio.to_thread(engine_install.rollback, engine)
     except RuntimeError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
