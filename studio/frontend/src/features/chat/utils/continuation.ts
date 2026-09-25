@@ -1030,16 +1030,28 @@ export function createAutoContinueLeaseKeeper({
   };
 }
 
-/** Whether THIS message is the one to continue automatically. `shouldAutoContinue` answers about
- *  the turn and keeps saying yes after a message has been claimed, since the budget is per
- *  turn while the claim is per message, so rendering off the turn's answer alone showed a
- *  spinner that never resolves over the manual Continue button. */
+// Keep eligibility in memory so a reload or new tab cannot auto-resume a saved cut.
+const cutByThisTab = new Set<string>();
+
+export function noteLengthCutByThisTab(
+  messageId: string | null | undefined,
+): void {
+  if (messageId) {
+    cutByThisTab.add(messageId);
+  }
+}
+
+/** Require a cut streamed by this tab and an unclaimed message before checking the turn budget.
+ *  The budget alone can leave claimed messages showing a spinner instead of Resume. */
 export function shouldAutoContinueMessage(
   messageId: string | null | undefined,
   reason: IncompleteReason | null | undefined,
   key: string | null | undefined,
   options: Parameters<typeof shouldAutoContinue>[2] = {},
 ): boolean {
+  if (!messageId || !cutByThisTab.has(messageId)) {
+    return false;
+  }
   if (wasAutoContinued(messageId)) {
     return false;
   }
@@ -1052,6 +1064,7 @@ export function shouldAutoContinueMessage(
 export function resetAutoContinue(key?: string): void {
   if (key === undefined) {
     spent.clear();
+    cutByThisTab.clear();
     tab.reset();
   } else {
     spent.delete(key);

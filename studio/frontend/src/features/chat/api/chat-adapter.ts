@@ -300,6 +300,7 @@ import {
   hasRenderableContent,
   incompleteLabel,
   type IncompleteReason,
+  noteLengthCutByThisTab,
   readIncompleteInfo,
   resolveIncompleteReason,
   readContinuationRequest,
@@ -8108,6 +8109,9 @@ export function createOpenAIStreamAdapter(
           // A run can stop cleanly on its first token and leave nothing behind.
           // Saved as complete that is a blank bubble with no way out.
           (hasRenderableContent(finalContent) ? null : "empty");
+        if (finalIncompleteReason === "length") {
+          noteLengthCutByThisTab(unstable_assistantMessageId);
+        }
         yield {
           content: finalContent,
           metadata: {
@@ -8281,6 +8285,20 @@ export function createOpenAIStreamAdapter(
             estimateTokenCount(partialText),
             toolCallParts.length,
           );
+          // Preserve an explicit Stop's "cancelled" reason over the error-derived fallback.
+          const partialIncompleteReason = resolveIncompleteReason(
+            incompleteReason ??
+              (err instanceof GenerationLengthError
+                ? ("length" as const)
+                : err instanceof ChatGenerationTerminalError &&
+                    err.generationStatus === "cancelled"
+                  ? ("cancelled" as const)
+                  : ("interrupted" as const)),
+            contextWindowExceeded,
+          );
+          if (partialIncompleteReason === "length") {
+            noteLengthCutByThisTab(unstable_assistantMessageId);
+          }
           yield {
             content: partialContent,
             metadata: {
@@ -8290,20 +8308,7 @@ export function createOpenAIStreamAdapter(
                 contextTruncation,
                 // Unfinished too, so it also offers Continue -- unless the provider already
                 // said why the model stopped.
-                incomplete: {
-                  reason: resolveIncompleteReason(
-                    // An explicit Stop latched incompleteReason = "cancelled" at the abort
-                    // handler; that outranks the error-derived guess below.
-                    incompleteReason ??
-                        (err instanceof GenerationLengthError
-                            ? ("length" as const)
-                            : err instanceof ChatGenerationTerminalError &&
-                                  err.generationStatus === "cancelled"
-                              ? ("cancelled" as const)
-                              : ("interrupted" as const)),
-                    contextWindowExceeded,
-                  ),
-                },
+                incomplete: { reason: partialIncompleteReason },
                 timing: partialTiming,
                 ...generationCustom(),
               },

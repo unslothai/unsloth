@@ -28,6 +28,7 @@ const {
   incompleteRemedy,
   isContinuableContent,
   isProviderReportedReason,
+  noteLengthCutByThisTab,
   isRestart,
   joinContinuation,
   modeAllowsContinuation,
@@ -733,6 +734,7 @@ test("a claim is reported and cleared by a full reset", async () => {
 
 test("a message already claimed stops reporting itself as continuing", async () => {
   resetAutoContinue();
+  noteLengthCutByThisTab("m1");
   // The turn that fires it: nothing has claimed the message yet.
   assert.equal(shouldAutoContinueMessage("m1", "length", "parent-1"), true);
   await claimAutoContinue("m1", PANE);
@@ -750,11 +752,37 @@ test("a claim on one message does not silence another", async () => {
   await claimAutoContinue("m1", PANE);
   // The next round of the same turn is a new message with budget left, and continues.
   recordAutoContinue("parent-1");
+  noteLengthCutByThisTab("m2");
   assert.equal(shouldAutoContinueMessage("m2", "length", "parent-1"), true);
+});
+
+test("a cut this tab did not stream keeps the manual button", () => {
+  resetAutoContinue();
+  // A stored cut is ineligible even with a fresh round budget.
+  assert.equal(shouldAutoContinueMessage("m1", "length", "parent-1"), false);
+  noteLengthCutByThisTab("m1");
+  assert.equal(shouldAutoContinueMessage("m1", "length", "parent-1"), true);
+  // Simulate a reload clearing this tab's eligibility.
+  resetAutoContinue();
+  assert.equal(shouldAutoContinueMessage("m1", "length", "parent-1"), false);
+});
+
+test("the adapter records a Max Tokens cut on both of its terminal yields", () => {
+  // The streaming loop cannot be imported here; check both terminal paths in source.
+  assert.match(
+    CHAT_ADAPTER,
+    /finalIncompleteReason === "length"\)\s*\{\s*noteLengthCutByThisTab\(unstable_assistantMessageId\)/,
+  );
+  assert.match(
+    CHAT_ADAPTER,
+    /partialIncompleteReason === "length"\)\s*\{\s*noteLengthCutByThisTab\(unstable_assistantMessageId\)/,
+  );
 });
 
 test("a claimed message still honours the gates the turn itself fails", () => {
   resetAutoContinue();
+  noteLengthCutByThisTab("m1");
+  noteLengthCutByThisTab("m2");
   // Nothing about the claim resurrects a cut that was never automatic in the first place.
   assert.equal(shouldAutoContinueMessage("m1", "cancelled", "parent-1"), false);
   assert.equal(
