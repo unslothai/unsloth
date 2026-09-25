@@ -1390,10 +1390,7 @@ _UNSHARDED_PIPELINE_WEIGHT_RE = re.compile(
 
 
 def _transformer_folder_complete(folder: Path) -> bool:
-    """Whether the checkpoint diffusers' default load picks here is complete; variant twins do not count.
-
-    That load reads a canonical ``.safetensors`` index if one exists (and fails on its missing shards
-    rather than falling back), else an unsharded file. It never reads a ``.bin`` index."""
+    """Complete checkpoint for diffusers' default load: safetensors index first, never a ``.bin`` index."""
     if not folder.is_dir():
         return False
     names = {f.name for f in folder.iterdir() if f.is_file()}
@@ -1536,8 +1533,7 @@ def _auto_quant_eager_reason(
     plan: Any,
     prequant_path: Optional[str] = None,
 ) -> Optional[str]:
-    """Why AUTO skips quantising an uncompilable family (eager quant is far slower than bf16), or None.
-    An operator's own loadable checkpoint is an explicit ask, so it is never overridden."""
+    """Why AUTO keeps bf16 for an uncompilable family, or None; an operator's own checkpoint wins."""
     if not _plan_proves_resident(plan) or family_compiles_regionally(fam):
         return None
     if prequant_path and local_prequant_path_ready(prequant_path):
