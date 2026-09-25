@@ -21,6 +21,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 from auth.authentication import (  # noqa: E402
+    authenticated_via_api_key,
     get_current_subject,
     request_admitted_without_credential,
 )
@@ -45,6 +46,7 @@ def _app(subject) -> TestClient:
     if subject is not None:
         app.dependency_overrides[get_current_subject] = subject
         app.dependency_overrides[request_admitted_without_credential] = lambda: False
+        app.dependency_overrides[authenticated_via_api_key] = lambda: False
     app.include_router(library_routes.router, prefix = "/api/library")
     return TestClient(app)
 
@@ -1850,6 +1852,17 @@ def test_reveal_opens_an_items_own_file_or_a_location_by_key(client, revealed):
     assert set(paths) == {"uploads", "images", "videos", "audio", "fineTunes", "exports"}
     assert _post(client, "locations/reveal", key = "images").status_code == 200
     assert revealed == [str(library.upload_path(_ref(note))), paths["images"]]
+
+
+def test_locations_hide_host_paths_from_an_api_key(client):
+    signed_in = client.get("/api/library/locations").json()["locations"]
+    assert all(os.path.isabs(entry["path"]) for entry in signed_in)
+    client.app.dependency_overrides[authenticated_via_api_key] = lambda: True
+    keyed = client.get("/api/library/locations").json()["locations"]
+    assert [entry["key"] for entry in keyed] == [entry["key"] for entry in signed_in]
+    for entry, shown in zip(keyed, signed_in):
+        assert entry["path"] != shown["path"]
+        assert shown["path"] not in json.dumps(entry)
 
 
 def test_reveal_is_refused_to_a_managed_account_and_where_no_file_manager_is(

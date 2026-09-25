@@ -20,6 +20,7 @@ from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
 from auth.authentication import (
+    authenticated_via_api_key,
     get_current_subject,
     request_admitted_without_credential,
     subject_for_header_or_query_token,
@@ -469,8 +470,16 @@ async def stream_item(
 
 
 @router.get("/locations")
-async def get_locations(current_subject: str = Depends(get_current_subject)) -> dict:
-    return {"locations": await run_in_threadpool(library.locations)}
+async def get_locations(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> dict:
+    from hub.utils.host_paths import redact_inventory_host_paths
+
+    # Settings > Library shows these to a signed-in user; an API key gets references, as the Hub
+    # inventory routes give it.
+    locations = await run_in_threadpool(library.locations)
+    return redact_inventory_host_paths({"locations": locations}, via_api_key = via_api_key)
 
 
 @router.post("/locations/reveal")
