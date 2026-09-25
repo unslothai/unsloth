@@ -1095,3 +1095,21 @@ def test_eager_w8a8_chunks_long_inputs_without_changing_the_result(monkeypatch):
     monkeypatch.setattr(nq, "_INT_MM_CHUNK_ELEMS", 64 * 40)
     assert torch.equal(layer(x), whole)
     assert len(seen) > 1 and sum(seen) == 300 and min(seen) >= 17
+
+
+def test_signature_sees_rotation_past_an_unrotated_first_layer():
+    cls = nq.native_linear_class()
+    model = torch.nn.Sequential(
+        cls(torch.nn.Linear(320, 256).to(torch.bfloat16), "int8", act_int8 = True, rot_group = 256),
+        cls(torch.nn.Linear(256, 64).to(torch.bfloat16), "int8", act_int8 = True, rot_group = 256),
+    )
+    assert model[0].rot_group == 0 and model[1].rot_group == 256
+    assert nq.native_quant_signature(model) == "int8-w8a8-rot256"
+
+
+def test_a_rotated_layer_passes_an_empty_input_through():
+    layer = nq.native_linear_class()(
+        torch.nn.Linear(256, 64).to(torch.bfloat16), "int8", act_int8 = True, rot_group = 256
+    )
+    out = layer(torch.zeros(2, 0, 256, dtype = torch.bfloat16))
+    assert out.shape == (2, 0, 64)

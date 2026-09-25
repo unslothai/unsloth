@@ -106,9 +106,9 @@ def native_linear_class():
 
         def _rotate(self, x: Any) -> Any:
             g = self.rot_group
-            return (x.reshape(-1, self.in_features // g, g) @ self.rot_h.to(x.dtype)).reshape(
-                x.shape
-            )
+            # Leading dims, not -1: a zero-row input has no inferable -1 on older torch.
+            grouped = x.reshape(*x.shape[:-1], self.in_features // g, g)
+            return (grouped @ self.rot_h.to(x.dtype)).reshape(x.shape)
 
         def dequantized_weight(self, dtype: Any) -> Any:
             w = self._stored_weight(torch.float32 if self.rot_group else dtype)
@@ -243,7 +243,15 @@ def native_quant_signature(module: Any) -> Optional[str]:
         return None
     if not getattr(layer, "act_int8", False):
         return f"{layer.scheme}-wo"
-    rot = int(getattr(layer, "rot_group", 0) or 0)
+    # Every layer: rotation skips widths the group does not divide, so the first layer alone can read unrotated.
+    try:
+        rot = max(
+            int(getattr(sub, "rot_group", 0) or 0)
+            for sub in module.modules()
+            if is_native_linear(sub)
+        )
+    except Exception:  # noqa: BLE001 -- a probe must never raise
+        rot = int(getattr(layer, "rot_group", 0) or 0)
     return f"{layer.scheme}-w8a8" + (f"-rot{rot}" if rot else "")
 
 
