@@ -1372,6 +1372,36 @@ def test_a_folder_chosen_before_mount_points_learns_its_mount_once_present(
         _images()
 
 
+def test_a_folder_choice_that_cannot_be_read_fails_rather_than_saving_to_the_default(
+    client, tmp_path, monkeypatch
+):
+    import storage.studio_db as studio_db
+    from utils.paths.relocations import forget_cache
+
+    new = tmp_path / "Pictures"
+    assert _move(client, "images", str(new)).status_code == 200
+    real = studio_db.get_app_setting
+
+    def failing(message):
+        def read(*_args, **_kwargs):
+            raise sqlite3.OperationalError(message)
+
+        return read
+
+    # A lock held too long: a save must not land in the default, out of sight once it clears.
+    monkeypatch.setattr(studio_db, "get_app_setting", failing("database is locked"))
+    forget_cache()
+    with pytest.raises(sqlite3.OperationalError):
+        _images()
+    # A database without the settings table never had a folder moved.
+    monkeypatch.setattr(studio_db, "get_app_setting", failing("no such table: app_settings"))
+    forget_cache()
+    assert _images() == _studio("images")
+    monkeypatch.setattr(studio_db, "get_app_setting", real)
+    forget_cache()
+    assert _images() == new.resolve()
+
+
 def test_folders_on_a_disk_without_file_ids_compare_by_spelling(tmp_path, monkeypatch):
     # FAT and some network shares report st_ino 0 for everything: equal ids must not make two
     # different folders "the same", which would refuse every move onto such a drive.

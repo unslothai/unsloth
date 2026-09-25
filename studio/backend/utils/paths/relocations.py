@@ -97,9 +97,13 @@ def _chosen_entry(key: str) -> Optional[dict]:
         return None
     try:
         return _load().get(key)
-    except (sqlite3.Error, OSError):
-        # No settings table yet (a fresh or test database): nothing was ever moved.
-        return None
+    except sqlite3.OperationalError as exc:
+        # No settings table (a database made without Studio's schema): nothing was ever moved.
+        # Any other failure, a lock held too long among them, is raised: falling back would save
+        # into the default folder, where the file vanishes once the chosen one is read again.
+        if "no such table" in str(exc):
+            return None
+        raise
 
 
 def chosen(key: str) -> Optional[Path]:
