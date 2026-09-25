@@ -10,6 +10,8 @@ import {
 } from "./helpers/module-stubs.ts";
 
 const ID = "__LOCALID_attachment";
+const SAVED_ID = "saved-target";
+const OUTGOING_ID = "__LOCALID_outgoing";
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 type Scope = { type: "thread"; threadId: string };
 
@@ -20,6 +22,8 @@ function harness(
     missing?: boolean;
     temporary?: boolean;
     persist?: Promise<void>;
+    itemId?: string;
+    storedIds?: string[];
   } = {},
 ) {
   let initialized = options.initialized ?? false;
@@ -32,6 +36,8 @@ function harness(
   const uploads: Scope[] = [];
   const errors: string[] = [];
   const adopted: string[] = [];
+  const itemId = options.itemId ?? ID;
+  const storedIds = new Set(options.storedIds ?? []);
   const state = {
     ragEnabled: true,
     ragSource: { type: "thread" },
@@ -49,8 +55,8 @@ function harness(
   );
   const item = {
     getState: () => ({
-      id: ID,
-      remoteId: initialized ? ID : undefined,
+      id: itemId,
+      remoteId: initialized ? itemId : undefined,
       status: initialized ? "regular" : "new",
     }),
     initialize: async () => {
@@ -58,7 +64,7 @@ function harness(
       await Promise.resolve();
       initialized = true;
       incognito = options.temporary ?? false;
-      return { remoteId: ID };
+      return { remoteId: itemId };
     },
   };
   const nativeState = {
@@ -125,10 +131,11 @@ function harness(
         ChatThreadDeletedError: class extends Error {},
         isThreadIncognito: () => incognito,
         getStoredChatThread: async () => undefined,
-        ensureStoredChatThread: async () => {
+        ensureStoredChatThread: async (threadId: string) => {
+          if (storedIds.has(threadId)) return { id: threadId };
           if (!initialized || options.missing) return undefined;
           await options.persist;
-          return { id: ID };
+          return threadId === itemId ? { id: itemId } : undefined;
         },
       },
       "@/features/native-intents": {
@@ -235,6 +242,20 @@ test("a saved chat with a local ID is reused without initialization", async () =
   assert.deepEqual(app.errors, []);
   assert.equal(app.initializeCalls, 0);
   assert.equal(app.uploads[0]?.threadId, ID);
+});
+
+test("navigation does not initialize the outgoing new item before a saved target switch lands", async () => {
+  const app = harness({
+    propId: SAVED_ID,
+    itemId: OUTGOING_ID,
+    storedIds: [SAVED_ID],
+  });
+  app.render();
+  app.pick();
+  await flush();
+  assert.deepEqual(app.errors, []);
+  assert.equal(app.initializeCalls, 0);
+  assert.deepEqual(app.uploads, [{ type: "thread", threadId: SAVED_ID }]);
 });
 
 test("a missing initialized chat is still rejected instead of recreated", async () => {
