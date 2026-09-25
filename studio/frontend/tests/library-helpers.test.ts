@@ -7,8 +7,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { readSrc } from "./helpers/kit.ts";
+
 import {
   embeddedBlobType,
+  itemVersion,
   libraryFileName,
   libraryFileType,
   streamsPreview,
@@ -59,6 +62,26 @@ table("a renamed item saves under a name every OS takes, with its file's extensi
   [["字".repeat(200), "a.txt"], `${"字".repeat(65)}.txt`],
   [["😀".repeat(100), "a.png"], `${"😀".repeat(49)}.png`],
 ]);
+
+test("an item's version changes with its size, as an attachment rewritten in place keeps its time", () => {
+  const item = { id: "attachment:m:a", updatedAt: 5, sizeBytes: 10 };
+  assert.notEqual(itemVersion(item), itemVersion({ ...item, sizeBytes: 11 }));
+  assert.notEqual(itemVersion(item), itemVersion({ ...item, updatedAt: 6 }));
+  assert.equal(itemVersion({ ...item, sizeBytes: null }), "attachment:m:a@5.");
+});
+
+test("a folder that is gone sends its view back to where it was, or to Folders", () => {
+  const page = readSrc("features/library/library-page.tsx");
+  const start = page.indexOf("const folderGone =");
+  const effect = page.slice(start, page.indexOf("}, [folderGone", start));
+  for (const line of [
+    'status === "ready" && folderId !== null && currentFolder === null',
+    "parentOfOpen && folderById.has(parentOfOpen) ? parentOfOpen : undefined",
+    'go({ folder: parent, show: "folders" }, true);',
+  ]) {
+    assert.ok(effect.includes(line), line);
+  }
+});
 
 test("names in one download are made unique, ignoring case", () => {
   assert.deepEqual(

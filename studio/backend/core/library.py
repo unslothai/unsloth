@@ -14,6 +14,8 @@ Sources, each with its own id prefix so an item id says where its bytes are:
 - ``model:<training|exported>:<path>``    a fine-tuned model under outputs/ or exports/ (no bytes:
                                           a model is a directory, opened in chat instead)
 
+The message and session ids are URL-encoded, since any string can be one and a colon would end it.
+
 Bytes are always served by the source's own route (``fileUrl``); the Library only lists, deletes
 and layers its overlay (name, favorite, folder) on top.
 """
@@ -547,7 +549,9 @@ def _sandbox_path(ref: str) -> str:
         resolve_sandbox_workdir,
     )
 
-    session_id, _, relative = ref.partition(":")
+    # The session is encoded, as any string can be a chat's id: the path is what follows its colon.
+    session, _, relative = ref.partition(":")
+    session_id = unquote(session)
     parts = relative.split("/")
     if not relative or any(part.startswith(".") or not _servable_segment(part) for part in parts):
         raise LookupError(ref)
@@ -646,7 +650,7 @@ def _sandbox_items() -> list[dict]:
                 continue
             items.append(
                 _item(
-                    f"sandbox:{session_id}:{relative}",
+                    f"sandbox:{quote(session_id, safe = '')}:{relative}",
                     name = os.path.basename(relative),
                     source = "generated",
                     content_type = _guess_type(relative),
@@ -1188,18 +1192,24 @@ def _image_thumbnail(source: Union[Path, BinaryIO]) -> bytes:
 
 
 def _decode(mime_type: str, source: BinaryIO) -> bytes:
+    """The thumbnail; the caller holds one of `_THUMBNAIL_DECODES`."""
     from core.inference import video_gallery
-    with _THUMBNAIL_DECODES:
-        if mime_type.startswith("video/") and mime_type in _THUMBNAIL_VIDEO_CONTAINERS:
-            return video_gallery.first_frame_webp(
-                source,
-                width = _THUMBNAIL_WIDTH,
-                container = _THUMBNAIL_VIDEO_CONTAINERS[mime_type],
-                max_pixels = _THUMBNAIL_MAX_PIXELS,
-            )
-        if mime_type.startswith("image/") and mime_type != "image/svg+xml":
-            return _image_thumbnail(source)
+
+    if mime_type.startswith("video/") and mime_type in _THUMBNAIL_VIDEO_CONTAINERS:
+        return video_gallery.first_frame_webp(
+            source,
+            width = _THUMBNAIL_WIDTH,
+            container = _THUMBNAIL_VIDEO_CONTAINERS[mime_type],
+            max_pixels = _THUMBNAIL_MAX_PIXELS,
+        )
+    if mime_type.startswith("image/") and mime_type != "image/svg+xml":
+        return _image_thumbnail(source)
     raise LookupError(mime_type)
+
+
+def _decoded(mime_type: str, source: BinaryIO) -> bytes:
+    with _THUMBNAIL_DECODES:
+        return _decode(mime_type, source)
 
 
 def thumbnail(item_id: str) -> bytes:
@@ -1209,15 +1219,18 @@ def thumbnail(item_id: str) -> bytes:
     LookupError when the item is gone or has no picture; RuntimeError when it cannot be decoded."""
     kind, _, ref = item_id.partition(":")
     if kind == "attachment":
-        mime_type, data = _attachment_media(ref)
-        version = (item_id, len(data), zlib.crc32(data))
-        return _THUMBNAILS.get(version, lambda: _decode(mime_type, io.BytesIO(data)))
+        # The whole attachment is read and decoded to find its picture, up to a 64 MiB clip, so
+        # that is held to the decodes' count too, not only the frame.
+        with _THUMBNAIL_DECODES:
+            mime_type, data = _attachment_media(ref)
+            version = (item_id, len(data), zlib.crc32(data))
+            return _THUMBNAILS.get(version, lambda: _decode(mime_type, io.BytesIO(data)))
     mime_type = item_type(item_id)
     if not mime_type.startswith(("image/", "video/")):
         raise LookupError(item_id)
     with open_item(item_id) as item:
         version = (item_id, item.size, item.modified_ns)
-        return _THUMBNAILS.get(version, lambda: _decode(mime_type, item.handle))
+        return _THUMBNAILS.get(version, lambda: _decoded(mime_type, item.handle))
 
 
 def item_exists(item_id: str, recorded: Optional[str] = None) -> bool:

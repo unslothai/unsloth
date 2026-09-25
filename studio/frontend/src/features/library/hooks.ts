@@ -10,7 +10,7 @@ import {
   fetchLibraryStreamUrl,
   fetchLibraryThumbnail,
 } from "./api";
-import { type EmbeddedBody, embeddedBlobType, streamsPreview } from "./file-name";
+import { type EmbeddedBody, embeddedBlobType, itemVersion, streamsPreview } from "./file-name";
 import { acquireObjectUrl } from "./object-url-cache";
 
 // Past this a preview is not buffered into memory as a blob: the file is a download away.
@@ -49,7 +49,7 @@ export function useLibraryPreviewUrl(
   item: LibraryItem,
   body: EmbeddedBody | null,
 ): { url: string | null; error: string | null; retry: () => boolean } {
-  const baseKey = `${item.id}@${item.updatedAt}:${body ?? ""}`;
+  const baseKey = `${itemVersion(item)}:${body ?? ""}`;
   // The preview whose link was minted again, so another file (or version) starts afresh.
   const [reminted, setReminted] = useState<string | null>(null);
   const key = `${baseKey}#${reminted === baseKey ? 1 : 0}`;
@@ -91,7 +91,7 @@ export function useLibraryThumbnail(
   item: LibraryItem,
   enabled: boolean,
 ): { url: string | null; failed: boolean } {
-  const key = `${item.id}@${item.updatedAt}`;
+  const key = itemVersion(item);
   const [state, setState] = useState<{ key: string; url: string | null } | null>(null);
   useEffect(() => {
     if (!enabled) return;

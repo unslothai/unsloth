@@ -5,7 +5,7 @@ import { authFetch, getAuthSessionEpoch, getAuthToken } from "@/features/auth";
 import { type TranslationKey, translate } from "@/i18n";
 import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
-import { libraryFileName, libraryFileType } from "./file-name";
+import { itemVersion, libraryFileName, libraryFileType } from "./file-name";
 import { type DecodedNote, type NoteEncoding, decodeNote } from "./note-text";
 
 export type LibrarySource = "uploaded" | "generated";
@@ -278,7 +278,7 @@ export async function fetchLibraryStreamUrl(item: LibraryItem): Promise<string> 
 
 /** A video item's first frame, drawn by the backend. The version keeps a stale frame out of caches. */
 export async function fetchLibraryThumbnail(item: LibraryItem): Promise<Blob> {
-  const params = new URLSearchParams({ id: item.id, v: String(item.updatedAt) });
+  const params = new URLSearchParams({ id: item.id, v: itemVersion(item) });
   const response = await ensureOk(await authFetch(`/api/library/items/thumbnail?${params}`));
   return response.blob();
 }
