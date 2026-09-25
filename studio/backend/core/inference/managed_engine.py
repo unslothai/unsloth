@@ -174,7 +174,7 @@ def validate_model(
             text = True,
             encoding = "utf-8",
             errors = "replace",
-            timeout = 5,
+            timeout = 60,
             check = True,
         )
         options["disable_cuda_graph"] = any(float(cap) < 8.9 for cap in result.stdout.splitlines())

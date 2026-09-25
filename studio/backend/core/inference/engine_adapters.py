@@ -248,7 +248,7 @@ def gpu_memory_fraction(gpu_ids: list[int]) -> float:
             text = True,
             encoding = "utf-8",
             errors = "replace",
-            timeout = 5,
+            timeout = 60,
             check = True,
         )
         rows = result.stdout.strip().splitlines()

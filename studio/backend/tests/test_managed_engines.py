@@ -1534,3 +1534,22 @@ def test_support_probe_waits_for_a_slow_driver_and_is_cached(monkeypatch):
     assert install.support_reason("vllm") is None
     assert install.support_reason("sglang") is None
     assert len(calls) == 1
+
+
+def test_memory_and_fp8_probes_wait_for_a_slow_driver(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from core.inference import engine_adapters, managed_engine
+
+    def slow_smi(argv, **kwargs):
+        if kwargs["timeout"] < 20:
+            raise managed_engine.subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        query = next(arg for arg in argv if arg.startswith("--query-gpu="))
+        return SimpleNamespace(stdout = "8.9\n" if "compute_cap" in query else "81920, 80000\n")
+
+    monkeypatch.setattr(managed_engine.subprocess, "run", slow_smi)
+    assert 0.05 < engine_adapters.gpu_memory_fraction([0]) <= 1
+    (tmp_path / "config.json").write_text('{"model_type":"qwen2"}')
+    options = managed_engine.validate_model(
+        SimpleNamespace(is_local = True, path = str(tmp_path)), engine = "vllm", precision = "fp8"
+    )
+    assert options["disable_cuda_graph"] is False
