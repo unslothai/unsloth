@@ -2,8 +2,6 @@
 """The large-head-dim flex routing: decoder-only scoping, opt-outs, config-driven detection,
 and why the mask is always present under Unsloth's compiled mask wrapper."""
 
-import os
-
 import pytest
 
 import unsloth  # noqa: F401  (must precede transformers)
@@ -320,18 +318,34 @@ def test_upstream_still_materialises_a_mask_when_padded():
 
 
 def _mask_wrapper_is_compiled():
-    # unsloth_zoo's patch_transformers_masks reads the same switch: with it set, the wrapper
-    # still installs (its keyword fixes apply) but wraps the uncompiled original.
-    return os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") != "1"
+    """Whether the installed create_causal_mask wrapper calls a compiled function.
+
+    Read off the wrapper rather than UNSLOTH_COMPILE_DISABLE: unsloth_zoo decides once, when it
+    patches at import, and a test module can flip the variable later in the same process. With
+    the switch set, zoo still installs the wrapper (its keyword fixes apply) around the
+    uncompiled original, which is what it stashes.
+    """
+    import inspect
+
+    from transformers import masking_utils
+
+    original = _uncompiled_create_causal_mask()
+    try:
+        inner = inspect.getclosurevars(masking_utils.create_causal_mask).nonlocals.get("f")
+    except TypeError:
+        inner = None
+    if inner is None:
+        pytest.skip("cannot see which function the mask wrapper calls")
+    return inner is not original
 
 
 def test_our_compiled_wrapper_is_what_defeats_the_skip():
     """Pins the cause, so this is a deliberate trade and not an accident nobody noticed."""
     from transformers import masking_utils
 
-    _uncompiled_create_causal_mask()  # skip when the pair does not stash it
+    # Skips when the pair does not stash the original or the wrapper cannot be read.
     if not _mask_wrapper_is_compiled():
-        pytest.skip("UNSLOTH_COMPILE_DISABLE=1: the mask wrapper is not compiled")
+        pytest.skip("the mask wrapper calls the uncompiled original in this run")
     assert _mask_for(masking_utils.create_causal_mask, None) is not None
 
 
@@ -344,7 +358,6 @@ def test_an_uncompiled_wrapper_keeps_the_upstream_skip():
     """
     from transformers import masking_utils
 
-    _uncompiled_create_causal_mask()
     if _mask_wrapper_is_compiled():
         pytest.skip("the mask wrapper is compiled in this run")
     assert _mask_for(masking_utils.create_causal_mask, None) is None
