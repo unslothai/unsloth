@@ -79,6 +79,7 @@ from ._utils import (
     _config_get,
     _is_flash_attention_requested,
     _apply_text_only_key_mapping,
+    _cast_text_only_prequantized_params,
     _select_moe_detection_targets,
     set_task_config_attr,
 )
@@ -930,12 +931,13 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     if do_bfloat16_mixed_precision:
         dtype = torch.bfloat16
 
+    # text_only configs have architectures=None.
+    architectures = getattr(self.config, "architectures", None) or [type(self).__name__]
     is_vlm = any(
-        x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
-        for x in self.config.architectures
+        x.endswith(("ForConditionalGeneration", "ForVisionText2Text")) for x in architectures
     )
     is_vlm = is_vlm or hasattr(self.config, "vision_config")
-    arch = self.config.architectures[0]
+    arch = architectures[0]
 
     # Removing token_type_ids is WRONG for Gemma 3, which uses bidirectional attention.
     if hasattr(self, "generate") and hasattr(self, "forward"):
@@ -1825,12 +1827,9 @@ class FastBaseModel:
             load_in_8bit = False
             load_in_16bit = False
 
-        # text_only loads the decoder alone, but the planner gets only model_name and rebuilds the whole VLM: it budgets a vision tower this load never creates and names model.language_model.layers.0 where the standalone decoder has model.layers.0.
-        _planner_skip_reason = (
-            "text_only loads a decoder the repo config does not describe"
-            if text_only_decoder
-            else None
-        )
+        # text_only builds the bare decoder; from model_name the planner would plan the whole VLM.
+        _planner_skip_reason = None
+        _planner_config = auto_config if text_only_decoder else None
         # Same failure from the other direction: num_labels (or an explicit auto_model) loads a task head whose `score` replaces the planned lm_head, and dispatch refuses a map with no score.weight.
         if _planner_skip_reason is None:
             _planner_skip_reason = planner_class_mismatch_reason(
@@ -1861,6 +1860,8 @@ class FastBaseModel:
             full_finetuning = full_finetuning,
             planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
             skip_reason = _planner_skip_reason,
+            planner_config = _planner_config,
+            planner_config_reason = "text_only loads a decoder the repo config does not describe",
             **planner_config_overrides(kwargs),
             token = token,
             trust_remote_code = trust_remote_code,
@@ -2092,6 +2093,9 @@ class FastBaseModel:
                     model, text_intent = bool(text_only) if text_intent is None else bool(text_intent)
                 )
                 _inherit_gradient_checkpointing_support(model)
+                if text_only_decoder:
+                    # Must run before offload / hooks capture the weights.
+                    _cast_text_only_prequantized_params(model, torch_dtype)
                 # transformers 5 leaves remote code's non-persistent buffers (RoPE inv_freq, decay slopes) uninitialised.
                 restore_remote_code_non_persistent_buffers(model)
                 # Must precede _attach_bnb_multidevice_hooks: it returns early while offload_embedding is True.
@@ -2123,6 +2127,7 @@ class FastBaseModel:
                     subfolder = kwargs.get("subfolder"),
                     cache_dir = kwargs.get("cache_dir"),
                     variant = kwargs.get("variant"),
+                    dtype = torch_dtype,
                 )
                 if hasattr(model, "generate"):
                     model.fast_generate = make_fast_generate_wrapper(model.generate)
@@ -2495,6 +2500,8 @@ class FastBaseModel:
             tokenizer,
             fix_tokenizer = fix_tokenizer,
             config = auto_config if auto_config is not None else getattr(model, "config", None),
+            cache_dir = kwargs.get("cache_dir"),
+            revision = _tokenizer_revision,
         )
         patch_saving_functions(tokenizer, vision = True)
 

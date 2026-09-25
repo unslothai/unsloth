@@ -2782,6 +2782,7 @@ class FastLlamaModel:
                     subfolder = kwargs.get("subfolder"),
                     cache_dir = kwargs.get("cache_dir"),
                     variant = kwargs.get("variant"),
+                    dtype = dtype,
                 )
             elif not fast_inference:
                 if user_config is not None:
@@ -2835,6 +2836,7 @@ class FastLlamaModel:
                     subfolder = kwargs.get("subfolder"),
                     cache_dir = kwargs.get("cache_dir"),
                     variant = kwargs.get("variant"),
+                    dtype = dtype,
                 )
                 model.fast_generate = make_fast_generate_wrapper(model.generate)
                 model.fast_generate_batches = None
