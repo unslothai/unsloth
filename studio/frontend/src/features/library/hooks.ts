@@ -16,19 +16,18 @@ import { acquireObjectUrl } from "./object-url-cache";
 // Past this a preview is not buffered into memory as a blob: the file is a download away.
 const MAX_BUFFERED_PREVIEW_BYTES = 256 * 1024 * 1024;
 
-type PreviewSource = { url: string; revoke: boolean; streamed: boolean };
-
 /**
  * Where the preview element loads the item from. Audio and video with a file of their own stream
- * from a short-lived signed link, so they play and seek without the whole file in memory first,
- * whatever their size. Everything else, and those too when no link can be minted (an older
- * server), is auth-fetched into a blob typed for the element it goes in (see embeddedBlobType); a
- * file too large for that refuses rather than pinning hundreds of MB.
+ * from a short-lived signed link, whatever their size. The rest, and those too where an older
+ * server mints no link, come as a typed blob (see embeddedBlobType), refused past a size cap.
  */
-async function previewSource(item: LibraryItem, body: EmbeddedBody): Promise<PreviewSource> {
+async function previewSource(
+  item: LibraryItem,
+  body: EmbeddedBody,
+): Promise<{ url: string; streamed: boolean }> {
   if (streamsPreview(item.id, body)) {
     try {
-      return { url: await fetchLibraryStreamUrl(item), revoke: false, streamed: true };
+      return { url: await fetchLibraryStreamUrl(item), streamed: true };
     } catch {
       // An older server without the route: the blob below still plays it.
     }
@@ -37,7 +36,7 @@ async function previewSource(item: LibraryItem, body: EmbeddedBody): Promise<Pre
     throw new Error(translate("library.preview.tooLargeToPreview"));
   }
   const blob = await fetchLibraryBlob(item, embeddedBlobType(body, item.contentType));
-  return { url: URL.createObjectURL(blob), revoke: true, streamed: false };
+  return { url: URL.createObjectURL(blob), streamed: false };
 }
 
 /**
@@ -51,10 +50,9 @@ export function useLibraryPreviewUrl(
   body: EmbeddedBody | null,
 ): { url: string | null; error: string | null; retry: () => boolean } {
   const baseKey = `${item.id}@${item.updatedAt}:${body ?? ""}`;
-  // Tagged with the preview it was for, so another file (or version) starts from none.
-  const [remint, setRemint] = useState<{ key: string; count: number } | null>(null);
-  const remints = remint?.key === baseKey ? remint.count : 0;
-  const key = `${baseKey}#${remints}`;
+  // The preview whose link was minted again, so another file (or version) starts afresh.
+  const [reminted, setReminted] = useState<string | null>(null);
+  const key = `${baseKey}#${reminted === baseKey ? 1 : 0}`;
   const [state, setState] = useState<{
     key: string;
     url: string | null;
@@ -71,7 +69,7 @@ export function useLibraryPreviewUrl(
     );
     return () => {
       cancelled = true;
-      void next.then(({ url, revoke }) => revoke && URL.revokeObjectURL(url), () => {});
+      void next.then(({ url, streamed }) => !streamed && URL.revokeObjectURL(url), () => {});
     };
     // `key` carries the item's identity and version; the object itself changes on every refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -79,8 +77,8 @@ export function useLibraryPreviewUrl(
   const current = body && state?.key === key ? state : null;
   const retry = () => {
     // A signed link expires, or dies with a backend restart: one fresh link per opening.
-    if (!current?.url || !current.streamed || remints >= 1) return false;
-    setRemint({ key: baseKey, count: remints + 1 });
+    if (!current?.url || !current.streamed || reminted === baseKey) return false;
+    setReminted(baseKey);
     return true;
   };
   return { url: current?.url ?? null, error: current?.error ?? null, retry };
