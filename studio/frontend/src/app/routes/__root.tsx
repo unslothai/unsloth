@@ -71,6 +71,7 @@ import {
   useState,
 } from "react";
 import { AppProvider } from "../provider";
+import { useDesktopShellReady } from "../desktop-shell-ready";
 import { useAppMenuActions } from "../use-app-menu-actions";
 
 declare module "@tanstack/react-router" {
@@ -512,6 +513,7 @@ function RootLayout() {
   const pathLeasesSupported = useNativePathLeasesSupported();
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
   const openingFolder = useOpeningFolder();
+  const desktopShellReady = useDesktopShellReady();
   // Menu items for web shortcuts are live exactly while a mounted handler would take them.
   const sidebarMounted = useShortcutAvailable("toggleSidebar", isTauri);
   const findMounted = useShortcutAvailable("findInPage", isTauri);
@@ -548,7 +550,7 @@ function RootLayout() {
     "zoom-in": zoomBy(1),
     "zoom-out": zoomBy(-1),
     "actual-size": () => useInterfaceScaleStore.getState().reset(),
-  });
+  }, desktopShellReady);
 
   // Workspaces. The shell is mounted on every route, so the chords live here.
   const goTo = (to: string) => () => void navigate({ to });

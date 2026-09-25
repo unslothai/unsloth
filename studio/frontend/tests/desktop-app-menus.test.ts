@@ -146,6 +146,16 @@ test("Open Folder still lands on Sources after a visit during the link", () => {
   assert.equal(m.hasProjectSourcesPending("c"), true);
 });
 
+test("every menu item stays disabled while the desktop app is not showing the app", () => {
+  const hook = readSrc("app/use-app-menu-actions.ts");
+  const provider = readSrc("app/provider.tsx");
+  // The root sits above TauriWrapper, so the wrapper publishes whether the app is mounted.
+  assert.match(provider, /setDesktopShellReady\(canMountApp\);\s*return \(\) => setDesktopShellReady\(false\);/);
+  assert.match(ROOT, /\}, desktopShellReady\);/);
+  assert.match(hook, /const enabled = ready\s*\?/);
+  assert.match(hook, /latest\.current = ready \? handlers : \{\};/);
+});
+
 test("Open Folder is disabled until the open in progress finishes", () => {
   const openFolder = readSrc("features/chat/utils/open-folder-as-project.ts");
   assert.match(openFolder, /if \(opening\) return null;\s*setOpening\(true\);/);
@@ -210,6 +220,21 @@ test("menu chords follow the user's bindings and never steal a web shortcut's ch
     menuAccelerators({ findInPage: { primary: "Mod+KeyO" } } as never)["open-folder"],
     null,
   );
+  // A chord a native item keeps is never doubled, and a usable second binding is shown instead.
+  assert.equal(
+    menuAccelerators({ toggleSidebar: { primary: "Mod+KeyW" } } as never)["toggle-sidebar"],
+    null,
+  );
+  assert.equal(
+    menuAccelerators({ findInPage: { primary: "Mod+KeyM", alternate: "Mod+KeyJ" } } as never)["find"],
+    "CmdOrCtrl+KeyJ",
+  );
+  // The list matches what the native menu actually holds: Tauri's default items plus our Quit.
+  assert.match(MAIN_RS, /MenuItemBuilder::with_id\(APP_QUIT_MENU_ID, "Quit Unsloth"\)\s*\.accelerator\("CmdOrCtrl\+Q"\)/);
+  const { MENU_CHORDS, NATIVE_MENU_CHORDS } = await import("../src/app/app-menu-chords.ts");
+  for (const { chord } of Object.values(MENU_CHORDS)) {
+    assert.ok(!NATIVE_MENU_CHORDS.has(chord), `${chord} is not a native chord`);
+  }
   // A chord without Cmd or Ctrl never reaches the menu, which would take it from text fields.
   assert.equal(
     menuAccelerators({ toggleSidebar: { primary: "Alt+KeyB" } } as never)["toggle-sidebar"],

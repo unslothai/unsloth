@@ -9,17 +9,19 @@ import { type AppMenuAction, menuAccelerators } from "./app-menu-chords";
 export type { AppMenuAction } from "./app-menu-chords";
 
 /** Run app menu actions, and enable in the menu only those with a handler.
- *  A null handler leaves its item disabled. */
+ *  A null handler leaves its item disabled, and so does every item while `ready` is false (the
+ *  desktop app's install, startup or recovery screen). */
 export function useAppMenuActions(
   handlers: Record<AppMenuAction, (() => void) | null>,
+  ready: boolean,
 ): void {
-  const latest = useRef(handlers);
+  const latest = useRef<Partial<typeof handlers>>(handlers);
   useEffect(() => {
-    latest.current = handlers;
+    latest.current = ready ? handlers : {};
   });
-  const enabled = (Object.keys(handlers) as AppMenuAction[])
-    .filter((action) => handlers[action])
-    .join(",");
+  const enabled = ready
+    ? (Object.keys(handlers) as AppMenuAction[]).filter((action) => handlers[action]).join(",")
+    : "";
   // Joined so the effect re-runs only when a chord really changes.
   const accelerators = useKeyboardShortcutsStore((s) =>
     JSON.stringify(menuAccelerators(s.overrides)),

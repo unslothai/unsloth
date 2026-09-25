@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  formatBindingValue,
   parseBinding,
   SHORTCUT_SLOTS,
   type ShortcutId,
@@ -43,11 +44,29 @@ export const MENU_CHORDS: Record<AppMenuAction, { shortcut?: ShortcutId; chord: 
   "actual-size": { chord: "Mod+Digit0" },
 };
 
-/** A binding as a native accelerator. Only Cmd or Ctrl chords: a bare key there would take
- *  typing away from text fields. */
+/** Chords the native macOS menu keeps (Quit, Close, Minimize, Hide, Hide Others, Edit, Enter
+ *  Full Screen). Two items on one key equivalent means one silently loses, so ours skip them. */
+export const NATIVE_MENU_CHORDS: ReadonlySet<string> = new Set([
+  "Mod+KeyQ",
+  "Mod+KeyW",
+  "Mod+KeyM",
+  "Mod+KeyH",
+  "Mod+Alt+KeyH",
+  "Mod+KeyZ",
+  "Mod+Shift+KeyZ",
+  "Mod+KeyX",
+  "Mod+KeyC",
+  "Mod+KeyV",
+  "Mod+KeyA",
+  "Mod+Ctrl+KeyF",
+]);
+
+/** A binding as a native accelerator. Only Cmd or Ctrl chords, since a bare key there would take
+ *  typing away from text fields, and none a native item already has. */
 function toAccelerator(value: string | null): string | null {
   const binding = parseBinding(value);
   if (!binding || !(binding.mod || binding.ctrl)) return null;
+  if (NATIVE_MENU_CHORDS.has(formatBindingValue(binding))) return null;
   return [
     binding.mod && "CmdOrCtrl",
     binding.ctrl && "Ctrl",
@@ -74,7 +93,8 @@ export function menuAccelerators(
       (value): value is string =>
         Boolean(value) && shortcutOwningBinding(overrides, value) === shortcut,
     );
-    out[action] = toAccelerator(owned.includes(chord) ? chord : (owned[0] ?? null));
+    const shown = owned.includes(chord) ? chord : owned.find((value) => toAccelerator(value));
+    out[action] = toAccelerator(shown ?? null);
   }
   return out;
 }
