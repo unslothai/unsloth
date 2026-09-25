@@ -200,7 +200,11 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
           const gallery = GALLERIES[kind];
           if (gallery) notifyGalleryChanged(gallery);
           if (kind === "attachment" && messageId && rest.length > 0) {
-            emitChatAttachmentDeleted({ messageId, attachmentId: rest.join(":") });
+            // The message id is encoded, since any string can be one.
+            emitChatAttachmentDeleted({
+              messageId: decodeURIComponent(messageId),
+              attachmentId: rest.join(":"),
+            });
           }
         },
       ),

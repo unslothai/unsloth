@@ -35,7 +35,7 @@ from collections import OrderedDict
 from pathlib import Path
 from types import ModuleType
 from typing import BinaryIO, Callable, NamedTuple, Optional, Union
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from core.inference.gallery_projects import UNSAFE_NAME_CHARS, _bad_name
 from loggers import get_logger
@@ -279,6 +279,18 @@ def _upload_items() -> list[dict]:
 # ── Chat attachments ─────────────────────────────────────────────
 
 
+def _attachment_id(message_id: str, attachment_id: str) -> str:
+    """The item id of a chat attachment. A message id can be any string, so it is encoded: the
+    attachment id is what follows its first colon."""
+    return f"attachment:{quote(message_id, safe = '')}:{attachment_id}"
+
+
+def _attachment_ref(ref: str) -> tuple[str, str]:
+    """The message and attachment ids an ``attachment:`` item id's ref names."""
+    message, _, attachment = ref.partition(":")
+    return unquote(message), attachment
+
+
 def _attachment_items() -> list[dict]:
     from storage.studio_db import list_chat_attachments
 
@@ -287,13 +299,13 @@ def _attachment_items() -> list[dict]:
         # The essence, as the attachment route reads it: a type is case-insensitive, and a
         # recorded clip's carries parameters (video/webm;codecs=vp9).
         content_type = str(attachment.get("contentType") or "").split(";", 1)[0].strip().lower()
-        has_bytes = attachment.get("type") == "image" or content_type.startswith(
+        has_bytes = attachment.get("type") in ("image", "audio") or content_type.startswith(
             ("image/", "audio/", "video/")
         )
         message_id, attachment_id = attachment["messageId"], attachment["id"]
         items.append(
             _item(
-                f"attachment:{message_id}:{attachment_id}",
+                _attachment_id(message_id, attachment_id),
                 name = attachment.get("name") or "Attachment",
                 source = "uploaded",
                 content_type = content_type or "application/octet-stream",
@@ -639,7 +651,9 @@ def _sandbox_items() -> list[dict]:
                     source = "generated",
                     content_type = _guess_type(relative),
                     size_bytes = info.st_size,
-                    created_at = _to_ms(int(info.st_mtime)),
+                    # To the millisecond: a card's thumbnail is cached by it, and a tool can write
+                    # the file again within a second.
+                    created_at = info.st_mtime_ns // 1_000_000,
                     file_url = f"/api/inference/sandbox/{quote(session_id, safe = '')}/{quote(relative)}",
                     thread_id = thread_id,
                     thread_title = title,
@@ -1109,7 +1123,7 @@ def _attachment_media(ref: str) -> tuple[str, bytes]:
     from routes.chat_history import _decode_attachment_base64
     from storage.studio_db import get_chat_attachment
 
-    message_id, _, attachment_id = ref.partition(":")
+    message_id, attachment_id = _attachment_ref(ref)
     attachment = get_chat_attachment(message_id, attachment_id) or {}
     try:
         for part in attachment.get("content") or []:
@@ -1214,7 +1228,7 @@ def item_exists(item_id: str, recorded: Optional[str] = None) -> bool:
     try:
         if kind == "attachment":
             from storage.studio_db import get_chat_attachment
-            message_id, _, attachment_id = ref.partition(":")
+            message_id, attachment_id = _attachment_ref(ref)
             return get_chat_attachment(message_id, attachment_id) is not None
         if kind in _GALLERIES:
             # The file being there is enough: reading its recipe decodes a whole PNG, and the
@@ -1283,7 +1297,7 @@ def delete_item(item_id: str) -> bool:
             deleted = _delete_upload(ref, path)
     elif kind == "attachment":
         from storage.studio_db import delete_chat_attachment
-        message_id, _, attachment_id = ref.partition(":")
+        message_id, attachment_id = _attachment_ref(ref)
         deleted = delete_chat_attachment(message_id, attachment_id)
     elif kind == "video":
         from core.inference import video_gallery
@@ -1308,6 +1322,10 @@ def delete_item(item_id: str) -> bool:
     else:
         raise ValueError("Unknown library item")
     invalidate_listing()
+    # A gallery keeps a file it could not unlink (open in another app on Windows) listed, so the
+    # delete can be tried again: its name, star and folder stay with it.
+    if not deleted and kind in _GALLERIES and item_exists(item_id):
+        raise DeleteIncomplete("Could not delete the file. Close any app using it and try again.")
     # Gone either way, so its name, star and folder go too, or they would sit in the overlay and
     # be counted among the favorites for good.
     library_db.delete_entry(item_id)
