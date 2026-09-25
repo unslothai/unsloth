@@ -651,7 +651,8 @@ def status() -> dict[str, Any]:
 def unload() -> bool:
     global _agent, _loaded, _device_name, _failure, _install_failure
     with _state_lock:
-        if _loader is not None and _loader.is_alive():
+        # _loading covers the gap before _ensure_loading starts the thread; unloading there would let the load land after.
+        if _loading is not None or (_loader is not None and _loader.is_alive()):
             raise Unavailable(409, "model_loading", "Wait for the load to finish before unloading")
     with _run_lock:
         was_loaded = _agent is not None

@@ -456,6 +456,27 @@ def test_settings_change_waits_for_a_running_load(client, monkeypatch):
     laya_runtime._loader.join(5)
 
 
+def test_turning_it_off_waits_for_a_claimed_load(client, monkeypatch):
+    probing, release = threading.Event(), threading.Event()
+
+    def probe(checkpoint):
+        probing.set()
+        release.wait(5)
+        return False
+
+    monkeypatch.setattr(laya_runtime, "_hub_download_active", probe)
+    claim = threading.Thread(
+        target = laya_runtime._ensure_loading, args = (catalog.default_checkpoint(),)
+    )
+    claim.start()
+    assert probing.wait(5)
+    assert client.put("/api/settings/systemone", json = {"enabled": False}).status_code == 409
+    release.set()
+    claim.join(5)
+    laya_runtime._loader.join(5)
+    assert client.get("/api/settings/systemone").json()["enabled"] is True
+
+
 def test_download_plan_lists_exact_subfolder_files(client, monkeypatch):
     import huggingface_hub
 
