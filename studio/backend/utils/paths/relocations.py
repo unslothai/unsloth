@@ -14,7 +14,7 @@ import os
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from utils.account_context import is_owner_context
 
@@ -27,12 +27,15 @@ _lock = threading.Lock()
 # Keyed by the owner's database, so a test or a relaunch on another root never reads a stale map.
 # Each choice is {"path", "mount"}: `mount` is the drive or share the folder was on when picked.
 # One saved before mount points were recorded is its bare path, and is marked `bare` until its
-# folder is there to ask (while it is not, the drive is what it would name).
+# folder is there to ask (while it is not, the drive is what it would name). A move under way also
+# keeps `moving_from`, the folder its files are leaving, until they have all left it.
 _cache: dict[str, dict[str, dict]] = {}
 # Resolving the database path walks the filesystem, and the galleries ask on every file lookup.
 # It only moves with the variables that place Studio's home (or a test swapping the function).
 _HOME_VARIABLES = ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME", "UNSLOTH_HOME")
 _db_keys: dict[tuple, str] = {}
+# Set by core.library: finishes the move of a kind whose `moving_from` a crash left behind.
+resume_move: Optional[Callable[[str], None]] = None
 
 
 def _db_key() -> str:
@@ -54,8 +57,14 @@ def _entry(value) -> Optional[dict]:
             return {"path": value, "mount": None, "bare": True}
         return {"path": value, "mount": mount_point(Path(value))}
     if isinstance(value, dict) and isinstance(value.get("path"), str) and value["path"]:
-        mount = value.get("mount")
-        return {"path": value["path"], "mount": mount if isinstance(mount, str) and mount else None}
+        mount, source = value.get("mount"), value.get("moving_from")
+        entry = {
+            "path": value["path"],
+            "mount": mount if isinstance(mount, str) and mount else None,
+        }
+        if isinstance(source, str) and source:
+            entry["moving_from"] = source
+        return entry
     return None
 
 
@@ -64,7 +73,7 @@ def _save(chosen: dict[str, dict]) -> None:
     stored = {
         kind: entry["path"]
         if entry.get("bare")
-        else {"path": entry["path"], "mount": entry["mount"]}
+        else {key: entry[key] for key in ("path", "mount", "moving_from") if key in entry}
         for kind, entry in chosen.items()
     }
     upsert_app_settings({_SETTING: stored}, read_back = False)
@@ -89,6 +98,13 @@ def _load() -> dict[str, dict]:
             pass
     with _lock:
         _cache[key] = chosen
+    # Loaded once per database, so a move cut short is finished before its folder is used.
+    interrupted = [kind for kind, entry in chosen.items() if entry.get("moving_from")]
+    if interrupted and resume_move is not None:
+        for kind in interrupted:
+            resume_move(kind)
+        with _lock:
+            return _cache.get(key, chosen)
     return chosen
 
 
@@ -164,8 +180,19 @@ def is_available(key: str) -> bool:
     return entry is None or not _unavailable(entry)
 
 
-def set_chosen(key: str, path: Optional[Path]) -> None:
-    """Record `path` for `key`; None goes back to the default. Owner context only."""
+def moving_from(key: str) -> Optional[Path]:
+    """The folder `key`'s files are still leaving, while a move is under way (or was cut short)."""
+    entry = _chosen_entry(key)
+    return Path(entry["moving_from"]) if entry and entry.get("moving_from") else None
+
+
+def set_chosen(
+    key: str,
+    path: Optional[Path],
+    moving_from: Optional[Path] = None,
+) -> None:
+    """Record `path` for `key`; None goes back to the default. `moving_from` marks a move under
+    way, to be finished on the next load if it never is. Owner context only."""
     if key not in MOVABLE:
         raise ValueError(f"{key} files cannot move")
     updated = dict(_load())
@@ -173,6 +200,8 @@ def set_chosen(key: str, path: Optional[Path]) -> None:
         updated.pop(key, None)
     else:
         updated[key] = {"path": str(path), "mount": mount_point(path)}
+        if moving_from is not None:
+            updated[key]["moving_from"] = str(moving_from)
     _save(updated)
     with _lock:
         _cache[_db_key()] = updated

@@ -952,9 +952,17 @@ def _save_during_move(monkeypatch, save):
     from utils.paths import relocations
 
     real = relocations.set_chosen
-    monkeypatch.setattr(
-        relocations, "set_chosen", lambda key, path: real(key, path) or path and save(Path(path))
-    )
+
+    def record(
+        key,
+        path,
+        moving_from = None,
+    ):
+        real(key, path, moving_from)
+        if moving_from is not None:
+            save(Path(path))
+
+    monkeypatch.setattr(relocations, "set_chosen", record)
 
 
 def _mounted(monkeypatch, mounts):
@@ -1370,6 +1378,41 @@ def test_a_folder_chosen_before_mount_points_learns_its_mount_once_present(
     forget_cache()
     with pytest.raises(LocationUnavailable):
         _images()
+
+
+class _Crash(BaseException):
+    """The process dying: nothing the move does on a failure runs."""
+
+
+@pytest.mark.parametrize("unplugged", [False, True])
+def test_a_move_cut_short_is_finished_on_the_next_start(client, tmp_path, monkeypatch, unplugged):
+    import shutil
+
+    from storage.studio_db import get_app_setting
+    from utils.paths.relocations import forget_cache
+
+    old, new = _images(), tmp_path / "Pictures"
+    _fill(old)
+    real = library._move_entry
+
+    def crash_after_one(entry, dest, log):
+        if log.moved:
+            raise _Crash
+        real(entry, dest, log)
+
+    monkeypatch.setattr(library, "_move_entry", crash_after_one)
+    with pytest.raises(_Crash):
+        library.move_location("images", str(new))
+    monkeypatch.setattr(library, "_move_entry", real)
+    assert len(_files(new)) == 1 and len(_files(old)) == 2
+    if unplugged:
+        shutil.rmtree(new)
+    forget_cache()
+    # The next start finishes it, or, with the new folder gone, goes back to what the old one has.
+    assert _images() == (old if unplugged else new.resolve())
+    assert len(_files(_images())) == (2 if unplugged else 3)
+    assert "moving_from" not in str(get_app_setting("library.locations", {}))
+    assert _location(client, "images")["custom"] is not unplugged
 
 
 def test_a_folder_choice_that_cannot_be_read_fails_rather_than_saving_to_the_default(

@@ -1365,7 +1365,8 @@ def locations() -> list[dict]:
 # Left behind by a move and ignored in an "empty" target: the OS writes them into any folder it shows.
 _OS_CLUTTER = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
 # Held for a whole move. A Library upload lands under it, in whichever folder the move leaves in use.
-_move_lock = threading.Lock()
+# Reentrant: the first read of the chosen folders, made under it, can finish a move cut short.
+_move_lock = threading.RLock()
 
 
 def _in_progress(name: str) -> bool:
@@ -1796,9 +1797,8 @@ def move_location(key: str, path: Optional[str]) -> Optional[str]:
         _refuse_overlap(target, key, final = True)
         previous = relocations.chosen(key)
         before = {entry.name for entry in target.iterdir()}
-        # A default already holding files gets a subfolder, which has to be recorded to be used.
-        is_default = _same_folder(target, _location_default(key))
-        relocations.set_chosen(key, None if is_default else target)
+        # Recorded with the folder the files leave, so a crash part way is finished on restart.
+        relocations.set_chosen(key, target, moving_from = current)
         log = _MoveLog()
         try:
             _move_entries(current, target, log)
@@ -1810,7 +1810,39 @@ def move_location(key: str, path: Optional[str]) -> Optional[str]:
             raise RuntimeError(f"Could not move the files: {exc.strerror or exc}") from exc
         # Library uploads land under the move lock, so only the galleries' saves are waited for.
         _settle(current, target, wait = key != "uploads")
+        _finish_move(key, target)
     return None
+
+
+def _finish_move(key: str, target: Path) -> None:
+    # A default already holding files gets a subfolder, which has to be recorded to be used.
+    relocations.set_chosen(key, None if _same_folder(target, _location_default(key)) else target)
+
+
+def _resume_move(key: str) -> None:
+    """Finish a move a crash cut short: what is still in the folder it left goes on into the chosen
+    one, merged as the move merges. While the chosen folder is not there, the old one is used
+    again. A failure is logged and tried again on the next start."""
+    with _move_lock:
+        source = relocations.moving_from(key)
+        if source is None:
+            return
+        target = relocations.chosen(key)
+        if not relocations.is_available(key):
+            logger.warning("library.move_resume_unavailable: %s", target)
+            default = _same_folder(source, _location_default(key))
+            relocations.set_chosen(key, None if default else source)
+            return
+        try:
+            if source.is_dir():
+                _move_entries(source, target, _MoveLog())
+        except OSError:
+            logger.warning("library.move_resume_failed: %s", source, exc_info = True)
+            return
+        _finish_move(key, target)
+
+
+relocations.resume_move = _resume_move
 
 
 def _delete_upload(upload_id: str, path: Path) -> bool:
