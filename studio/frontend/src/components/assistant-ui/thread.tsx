@@ -25,6 +25,7 @@ import { ComposerDraftPreview } from "@/components/assistant-ui/composer-draft-p
 import { PromptQueueList } from "@/components/assistant-ui/lazy-prompt-queue-list";
 import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
+import { MessageRelativeTime } from "@/components/assistant-ui/message-relative-time";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { attachThreadFastCopy } from "@/components/assistant-ui/thread-fast-copy";
 import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
@@ -8503,6 +8504,7 @@ const AssistantActionBar: FC = () => {
           </ActionBarMorePrimitive.Content>
         </ActionBarMorePrimitive.Root>
         <MessageTiming side="top" className="h-8 px-2" />
+        <MessageRelativeTime />
       </ActionBarPrimitive.Root>
       <MessageResponseDetailsSheet
         open={detailsOpen}

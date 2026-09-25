@@ -104,6 +104,7 @@ export const en = {
     error: "Error",
     export: "Export",
     help: "Help",
+    justNow: "just now",
     loading: "Loading...",
     new: "New",
     rename: "Rename",
