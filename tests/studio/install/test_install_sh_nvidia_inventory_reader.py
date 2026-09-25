@@ -60,7 +60,11 @@ class _Attr:
         return 0
 
 
-def _run(monkeypatch, libraries: dict[str, object], reader: str = "") -> tuple[int, str]:
+def _run(
+    monkeypatch,
+    libraries: dict[str, object],
+    reader: str = "",
+) -> tuple[int, str]:
     """Run the reader with ctypes.CDLL answering from `libraries`; (exit code, stdout).
     `reader` is the argument install.sh passes to run one reader under its own deadline."""
     import ctypes as real_ctypes
