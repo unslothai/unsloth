@@ -467,36 +467,11 @@ def _docx(path: str) -> list[Page]:
     return [_page("\n".join(lines), None)]
 
 
-# Browsers look for the charset declaration in the first 1024 bytes.
-_META_CHARSET = re.compile(rb"<meta[^>]+charset\s*=\s*[\"']?\s*([\w.:-]+)", re.IGNORECASE)
-# Labels the WHATWG Encoding Standard decodes as a superset (encoding.spec.whatwg.org, "Names and labels").
-_CHARSET_SUPERSETS = {
-    "ascii": "cp1252",
-    "iso8859-1": "cp1252",
-    "iso8859-9": "cp1254",
-    "tis-620": "cp874",
-    "iso8859-11": "cp874",
-    "gb2312": "gb18030",
-    "gbk": "gb18030",
-    "shift_jis": "cp932",
-    "euc_kr": "cp949",
-    "big5": "big5hkscs",
-}
-
-
 def _declared_charset(data: bytes) -> str | None:
-    """Only an ASCII-compatible encoding could have written the declaration, so others are ignored."""
-    match = _META_CHARSET.search(data[:1024])
-    if match is None:
-        return None
-    name = match.group(1).decode("ascii")
-    try:
-        if "<meta>".encode(name) != b"<meta>":
-            return None
-        name = codecs.lookup(name).name
-    except (LookupError, UnicodeError):
-        return None
-    return _CHARSET_SUPERSETS.get(name, name)
+    """The codec a browser would use for the charset this HTML page declares, if any."""
+    # Lazy: tools is heavy, and only HTML that is not UTF-8 gets here.
+    from ..inference.tools import _META_CHARSET_SCAN_BYTES, _sniff_meta_charset
+    return _sniff_meta_charset(data[:_META_CHARSET_SCAN_BYTES], "text/html")
 
 
 def _decode_text(data: bytes, *, html: bool = False) -> str:
@@ -515,11 +490,9 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
     except UnicodeDecodeError:
         pass
     declared = _declared_charset(data) if html else None
-    if declared:
-        try:
-            return data.decode(declared, errors = "replace")
-        except UnicodeError:
-            pass
+    # WHATWG reads UTF-16 labels as UTF-8, which these bytes already failed.
+    if declared and declared != "utf-8":
+        return data.decode(declared, errors = "replace")
     text = data.decode("utf-8-sig", errors = "replace")
     # Legacy bytes can form a stray valid UTF-8 sequence (cp1252 "à\xa0»"), so one is not enough.
     non_ascii = len(text) - len(text.encode("ascii", "ignore"))
