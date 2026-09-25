@@ -233,11 +233,12 @@ def apply_chat_template_to_dataset(
 
                                 if is_user_provided:
                                     # User-mapped: include even if empty.
-                                    convo.append({"role": role, "content": str(content) if content else ""})
+                                    convo.append({"role": role, "content": cell_text(content)})
                                 else:
                                     # Auto-detected: skip empty.
-                                    if content and str(content).strip():
-                                        convo.append({"role": role, "content": str(content)})
+                                    text = cell_text(content)
+                                    if text.strip():
+                                        convo.append({"role": role, "content": text})
 
                     conversations.append(convo)
 
