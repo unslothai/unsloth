@@ -398,23 +398,21 @@ test("a sidebar row's inset scales on both sides", () => {
 test("a scaled media rail leaves the preview its minimum", () => {
   // At 200% a shrink-0 rail passed the 50rem split it sits in, clipping the
   // preview. The header column shrinks the same way, so the dividers line up.
+  // The width is the draggable --media-rail-width, falling back to the old fixed one.
   for (const [file, width, split] of [
     ["features/images/images-page.tsx", "408px", "@[50rem]"],
     ["features/audio/audio-page.tsx", "408px", "@[50rem]"],
-    ["features/video/video-page.tsx", "400px", "md"],
+    ["features/video/video-page.tsx", "400px", "lg"],
   ] as const) {
     const source = readSrc(file);
+    const rail = `var(--media-rail-width,calc(${width}*var(--ui-space-scale,1)))`;
     assert.ok(
-      source.includes(
-        `${split}:w-[min(calc(${width}*var(--ui-space-scale,1)),calc(100%-13rem))]`,
-      ),
+      source.includes(`${split}:w-[min(${rail},calc(100%-13rem))]`),
       `${file} rail can outgrow its split`,
     );
-    if (split !== "md") {
+    if (split !== "lg") {
       assert.ok(
-        source.includes(
-          `grid-cols-[minmax(0,calc(${width}*var(--ui-space-scale,1)))_minmax(13rem,1fr)]`,
-        ),
+        source.includes(`grid-cols-[minmax(0,${rail})_minmax(13rem,1fr)]`),
         `${file} header column drifts from its rail`,
       );
     }
