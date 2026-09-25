@@ -3,10 +3,10 @@
 
 """Opt-in NVENC H.264 for the video mp4 export: ``UNSLOTH_STUDIO_VIDEO_ENCODER=nvenc``.
 
-libx264 (diffusers ``encode_video``) stays the default. NVENC output is a different, slightly larger file (1-26% more
-bytes at -0.26 to +0.30 dB PSNR against libx264's defaults with the settings below), so it is never picked
-automatically. It pays off where the CPU is the bottleneck: 3.9 s -> 0.66 s for 960x544x124 on a 2-vCPU T4 host,
-1.31 s -> 0.45 s on a 12-vCPU L4, 0.44 s -> 0.21 s on a 48-vCPU RTX PRO 6000.
+libx264 (diffusers ``encode_video``) stays the default. NVENC output is a different, larger file (20-29% more bytes at
++0.17 to +0.37 dB PSNR against libx264's defaults with the settings below, on a 960x544x124 H3 clip with audio), so it
+is never picked automatically. It pays off only where the CPU is the bottleneck: 3.79 s -> 1.02 s on a 2-vCPU T4 host,
+1.59 s -> 0.91 s on a 12-vCPU L4, while a 48-vCPU RTX PRO 6000 host is faster on libx264 (0.54 s vs 0.63 s).
 
 Anything that stops NVENC (no encoder engine: A100 / H100 / B200 class; driver older than the encoder API the PyAV
 wheel needs; a container without the video driver capability; PyAV built without it; the GeForce session limit; any
