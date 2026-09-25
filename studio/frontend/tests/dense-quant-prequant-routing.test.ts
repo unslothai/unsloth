@@ -30,7 +30,7 @@ import {
 const Z_TURBO = "unsloth/Z-Image-Turbo";
 const QWEN_IMAGE = "unsloth/Qwen-Image";
 const QWEN_2512 = "unsloth/Qwen-Image-2512";
-const QWEN_21 = "Qwen/Qwen-Image-2.1";
+const QWEN_21 = "unsloth/Qwen-Image-2.1";
 const H3 = "MiniMaxAI/MiniMax-H3";
 const notDownloaded = () => false;
 

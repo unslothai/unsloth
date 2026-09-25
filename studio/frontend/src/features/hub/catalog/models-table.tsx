@@ -594,16 +594,23 @@ export const ResultCard = memo(function ResultCard({
   row,
   deviceType,
   isDataset,
+  showFormatDot = true,
   onSelect,
 }: {
   row: DiscoverRow;
   deviceType: string | null;
   isDataset: boolean;
+  showFormatDot?: boolean;
   onSelect: (id: string) => void;
 }) {
   const { support, unsupported, partial, onDevice, sizeLabel, taskLabel } =
     useResultRowModel(row, deviceType, isDataset);
-  const format = isDataset ? null : row.result.isGguf ? "gguf" : "checkpoint";
+  const format =
+    isDataset || !showFormatDot
+      ? null
+      : row.result.isGguf
+        ? "gguf"
+        : "checkpoint";
   const tip = buildRowStatusTooltip({
     partialRepoId: partial ? row.result.id : undefined,
     unsupported,
@@ -717,17 +724,24 @@ export const ResultGridRow = memo(function ResultGridRow({
   row,
   deviceType,
   isDataset,
+  showFormatDot = true,
   onSelect,
 }: {
   row: DiscoverRow;
   deviceType: string | null;
   isDataset: boolean;
+  showFormatDot?: boolean;
   onSelect: (id: string) => void;
 }) {
   const { support, unsupported, partial, onDevice, sizeLabel, taskLabel } =
     useResultRowModel(row, deviceType, isDataset);
   const sizeDisplay = isDataset ? null : sizeLabel;
-  const format = isDataset ? null : row.result.isGguf ? "gguf" : "checkpoint";
+  const format =
+    isDataset || !showFormatDot
+      ? null
+      : row.result.isGguf
+        ? "gguf"
+        : "checkpoint";
   const tip = buildRowStatusTooltip({
     partialRepoId: partial ? row.result.id : undefined,
     unsupported,
@@ -854,12 +868,14 @@ export const ResultSplitRow = memo(function ResultSplitRow({
   deviceType,
   isDataset,
   selected,
+  showFormatDot = true,
   onSelect,
 }: {
   row: DiscoverRow;
   deviceType: string | null;
   isDataset: boolean;
   selected: boolean;
+  showFormatDot?: boolean;
   onSelect: (id: string) => void;
 }) {
   const { support, unsupported, partial, onDevice } = useResultRowModel(
@@ -867,7 +883,12 @@ export const ResultSplitRow = memo(function ResultSplitRow({
     deviceType,
     isDataset,
   );
-  const format = isDataset ? null : row.result.isGguf ? "gguf" : "checkpoint";
+  const format =
+    isDataset || !showFormatDot
+      ? null
+      : row.result.isGguf
+        ? "gguf"
+        : "checkpoint";
   const tip = buildRowStatusTooltip({
     partialRepoId: partial ? row.result.id : undefined,
     unsupported,
