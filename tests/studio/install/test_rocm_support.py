@@ -2520,8 +2520,13 @@ class TestGfx1102Rocm64Floor:
         self, venv_family, routed_family, reinstalls
     ):
         out = self._run_migrated_rocm_repair(
-            "2.11.0+rocm7.13.0", "7.13.0", "true", (6, 4), arch_routed = "true",
-            venv_family = venv_family, routed_family = routed_family,
+            "2.11.0+rocm7.13.0",
+            "7.13.0",
+            "true",
+            (6, 4),
+            arch_routed = "true",
+            venv_family = venv_family,
+            routed_family = routed_family,
         )
         assert "DONE" in out, out
         assert ("REINSTALL" in out) is reinstalls, out
