@@ -9,9 +9,11 @@ import base64
 import io
 import json as _json
 import mimetypes
+import random
 import re
 import threading
 import time
+import weakref
 import wave
 from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional, Union
 from urllib.parse import urlparse, urlsplit, urlunsplit
@@ -24,6 +26,7 @@ from core.inference.openai_responses_shared import (
     normalize_function_schema,
     responses_function_call,
     responses_function_output,
+    responses_usage_to_chat,
     response_event_type,
 )
 from core.inference.sse_control_frames import sanitize_provider_sse_line
@@ -135,12 +138,17 @@ def _append_provider_path(base_url: str, endpoint: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
+def _is_azure_openai_host(host: str) -> bool:
+    return host.endswith((".openai.azure.com", ".services.ai.azure.com"))
+
+
 def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
     """True iff ``base_url`` points at OpenAI cloud or Azure OpenAI Foundry. Anchored to the URL
     host so a path/subdomain like ``https://api.openai.com.attacker.com/v1`` cannot bypass it
     (CodeQL py/incomplete-url-substring-sanitization). Scopes cloud-only Responses-API extensions
     that 400 on non-cloud OAI-compat servers. Azure Foundry resources live at
-    ``<resource>.openai.azure.com``; the leading dot on `endswith` stops the apex from matching."""
+    ``<resource>.openai.azure.com`` and ``<resource>.services.ai.azure.com``; the leading
+    dots on `endswith` stop the apexes from matching."""
     if not base_url:
         return False
     try:
@@ -149,7 +157,7 @@ def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
         return False
     if not host:
         return False
-    return host == "api.openai.com" or host.endswith(".openai.azure.com")
+    return host == "api.openai.com" or _is_azure_openai_host(host)
 
 
 # Claude Opus 4.7 and every Claude 5 family removed temperature/top_p/top_k, as did Mythos Preview; the API 400s with
@@ -162,6 +170,20 @@ _ANTHROPIC_MODEL_VERSION = re.compile(
     re.IGNORECASE,
 )
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
+_OPENAI_FIXED_SAMPLING_MODEL = re.compile(
+    r"^(?:gpt-5(?:[.-]|$)|gpt-4\.5(?:[.-]|$)|o\d+(?:[.-]|$)|codex-mini(?:[.-]|$)|gpt-6-astra(?:[.-]|$))"
+)
+_OPENAI_NON_REASONING_CHAT_ALIAS = re.compile(r"-chat(?:-latest)?$")
+
+
+def _openai_fixed_sampling_model(model: str) -> bool:
+    normalized = model.strip().lower()
+    return bool(
+        _OPENAI_FIXED_SAMPLING_MODEL.match(normalized)
+        and not _OPENAI_NON_REASONING_CHAT_ALIAS.search(normalized)
+    )
+
+
 # Gemini 3.x, dotted minor optional: gemini-3-, gemini-3.1-, gemini-3.6- ...
 _GEMINI3_FAMILY = re.compile(r"^gemini-(?:[3-9]|\d{2,})(?:\.\d+)?-")
 _GEMINI3_PRO = re.compile(r"^gemini-(?:[3-9]|\d{2,})(?:\.\d+)?-pro")
@@ -220,6 +242,15 @@ def _openai_response_error_message(event: Any) -> str:
     response_id = response.get("id")
     suffix = f" (response {response_id})" if isinstance(response_id, str) else ""
     return f"OpenAI response failed without error details{suffix}."
+
+
+def _openai_response_finish_reason(response: Any, *, has_tool_calls: bool = False) -> str:
+    """Map a completed Responses object to the closest Chat Completions finish reason."""
+    if isinstance(response, dict) and response.get("status") == "incomplete":
+        details = response.get("incomplete_details")
+        reason = details.get("reason") if isinstance(details, dict) else None
+        return "content_filter" if reason == "content_filter" else "length"
+    return "tool_calls" if has_tool_calls else "stop"
 
 
 def _openai_image_replay_requires_reasoning(model: str) -> bool:
@@ -367,6 +398,47 @@ def _split_pending_citation_tail(text: str) -> tuple[str, str]:
     if _OPENAI_CITE_STOP in text[last_open:]:
         return text, ""
     return text[:last_open], text[last_open:]
+
+
+def _record_openai_url_citation(
+    url_citations: list[dict[str, Any]], payload: dict[str, Any]
+) -> None:
+    """Normalize and append one Responses ``url_citation`` annotation.
+
+    API revisions have used ``source_id``, ``id``, ``locator``, and
+    ``source_ids`` for the marker aliases. Citations sharing a URL retain one
+    display index while accumulating every alias that can reference it.
+    """
+    if payload.get("type") != "url_citation":
+        return
+    url = payload.get("url")
+    if not isinstance(url, str) or not url:
+        return
+    aliases: list[str] = []
+    source_id = payload.get("source_id") or payload.get("id") or payload.get("locator")
+    if isinstance(source_id, str) and source_id:
+        aliases.append(source_id)
+    source_ids = payload.get("source_ids")
+    if isinstance(source_ids, list):
+        aliases.extend(alias for alias in source_ids if isinstance(alias, str) and alias)
+
+    for citation in url_citations:
+        if citation["url"] != url:
+            continue
+        existing_aliases = citation.setdefault("source_ids", [])
+        for alias in aliases:
+            if alias not in existing_aliases:
+                existing_aliases.append(alias)
+        return
+
+    url_citations.append(
+        {
+            "url": url,
+            "title": payload.get("title") or url,
+            "snippet": payload.get("snippet") or payload.get("quote") or "",
+            "source_ids": aliases,
+        }
+    )
 
 
 def _extract_web_search_action(item: dict[str, Any]) -> dict[str, Any]:
@@ -851,81 +923,199 @@ class _PinnedPublicTransport(httpx.AsyncBaseTransport):
             await transport.aclose()
 
 
-_managed_http_client: Optional[httpx.AsyncClient] = None
+class _PinnedNonMetadataTransport(_PinnedPublicTransport):
+    """Managed-account egress once the owner has allowed private addresses.
+
+    The public pin, one rule looser: the dialled address may be private, never metadata. The
+    re-resolve stays, or a name that validated as public could answer 169.254.169.254 by connect
+    time, which is the one destination this switch may not open.
+    """
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        from core.inference.providers import (
+            _public_registry_hostname,
+            provider_address_excluding_metadata,
+        )
+
+        host = request.url.host
+        if _public_registry_hostname(host):
+            return await self._pool(("registry",)).handle_async_request(request)
+        try:
+            address = await asyncio.to_thread(provider_address_excluding_metadata, str(request.url))
+        except ValueError as exc:
+            raise httpx.ConnectError(str(exc), request = request) from exc
+        pinned = httpx.Request(
+            method = request.method,
+            url = request.url.copy_with(host = address),
+            headers = request.headers,
+            stream = request.stream,
+            extensions = {**request.extensions, "sni_hostname": host},
+        )
+        origin = (request.url.scheme, host, request.url.port)
+        return await self._pool(origin).handle_async_request(pinned)
+
+
+# (account_id, private allowed) -> client. Keyed by account because an AsyncClient persists cookies
+# across requests (python-httpx.org/advanced/clients): one shared client crosses a gateway session
+# from the account that collected it to the next account calling the same host.
+_managed_clients: dict[tuple[str, bool], httpx.AsyncClient] = {}
+_managed_clients_lock = threading.Lock()
+# Retired accounts. Bounded: it only outlives requests in flight when the account went away.
+_retired_accounts: set[str] = set()
+_RETIRED_ACCOUNTS_MAX = 1024
+# client -> the loop it was created on. Weak, so it never keeps a client alive by itself.
+_client_loops: "weakref.WeakKeyDictionary[httpx.AsyncClient, asyncio.AbstractEventLoop]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def retire_account_clients(account_id: str) -> int:
+    """Drop and close a retired account's provider clients, returning how many were held.
+
+    Without it the cache is bounded by accounts ever CREATED, and a deleted account's cookie jar
+    and idle sockets outlive it for the life of the process.
+    """
+    with _managed_clients_lock:
+        retired = [
+            _managed_clients.pop(key) for key in list(_managed_clients) if key[0] == account_id
+        ]
+        # Tombstoned: a request that authenticated before deactivation can reach `_client()` after
+        # this sweep, and would otherwise re-insert an entry nothing sweeps again.
+        _retired_accounts.add(account_id)
+        while len(_retired_accounts) > _RETIRED_ACCOUNTS_MAX:
+            _retired_accounts.pop()
+    for client in retired:
+        loop = _client_loops.get(client)
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is not None and (loop is None or loop is running):
+            running.create_task(client.aclose())
+        elif loop is not None and not loop.is_closed():
+            # Deletion is a sync route with no loop of its own, and dropping the reference does
+            # not close a pool.
+            asyncio.run_coroutine_threadsafe(client.aclose(), loop)
+    return len(retired)
+
+
+def restore_account_clients(account_id: str) -> None:
+    """Lift the retirement tombstone: a failed delete leaves the account reactivatable, and one
+    reactivated under a tombstone would never be cached again, so no pooling and no cookies."""
+    with _managed_clients_lock:
+        _retired_accounts.discard(account_id)
 
 
 def _client() -> httpx.AsyncClient:
-    """The shared client for the owner; a pinning client for a managed account."""
-    from utils.account_context import is_owner_context
+    """The shared client for the owner; a screening client of its own for each managed account."""
+    from utils.account_context import current_account_id, is_owner_context
+    from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
 
     if is_owner_context():
         return _http_client
-    global _managed_http_client
-    if _managed_http_client is None:
-        _managed_http_client = httpx.AsyncClient(
-            transport = _PinnedPublicTransport(), trust_env = False
-        )
-    return _managed_http_client
+    # Read per call, so a flip takes effect without a restart.
+    allowed = get_managed_private_provider_urls_allowed()
+    account_id = current_account_id()
+    key = (account_id, allowed)
+    with _managed_clients_lock:
+        client = _managed_clients.get(key)
+        if client is not None:
+            return client
+        transport = _PinnedNonMetadataTransport() if allowed else _PinnedPublicTransport()
+        client = httpx.AsyncClient(transport = transport, trust_env = False)
+        # Its pool holds streams bound to this loop, so closing from a different one is not
+        # equivalent.
+        try:
+            _client_loops[client] = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        # Served but not cached for a retired account: nothing sweeps an entry made after the sweep.
+        if account_id not in _retired_accounts:
+            _managed_clients[key] = client
+        return client
 
 
 # Cap per-image fetch well below Gemini's ~20 MB total request budget.
 _GEMINI_REMOTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 _GEMINI_REMOTE_IMAGE_TIMEOUT_S = 15.0
+# The socket timeout bounds one operation; a server dripping bytes needs a whole-fetch bound.
+_REMOTE_IMAGE_FETCH_DEADLINE_S = 30.0
 
 
-def _safe_fetch_image_for_gemini_sync(
+def safe_fetch_remote_image_sync(
     url: str,
     fallback_mime: str,
     max_bytes: int = _GEMINI_REMOTE_IMAGE_MAX_BYTES,
+    label: str = "Remote image fetch",
+    deadline: Optional[float] = None,
+    require_image_content_type: bool = True,
 ) -> Optional[tuple[str, str]]:
-    """Synchronous IP-pinned HTTPS image fetch with SSRF guards. Uses the same pinned-IP + SNI
-    pattern as `tools._fetch_page_text` so DNS rebinding between validation and the connection
-    cannot redirect us to a private/metadata address. Follows up to 4 hops, re-validating each
-    redirect target. Returns (mime, base64) or None. `max_bytes` is clamped to the per-image cap
-    and also lets the caller pass the remaining per-request budget, so an over-budget URL is
-    rejected via Content-Length instead of being fully downloaded then discarded."""
+    """Fetch an HTTPS image through a validated, pinned public IP.
+
+    Redirects are revalidated and the response is capped by ``max_bytes``. ``deadline`` is a
+    ``time.monotonic`` cutoff for the whole fetch. A caller that decodes the bytes itself can
+    pass ``require_image_content_type=False`` to accept any declared type as ``fallback_mime``.
+    All failures return ``None`` so callers do not expose details about the host network.
+    """
+    import http.client
     import urllib.error
     import urllib.request
-    from urllib.parse import urljoin, urlunparse
+    from urllib.parse import quote, urljoin, urlunparse
 
-    # Refuse upfront if the per-request budget is already spent.
     _byte_limit = min(max(0, int(max_bytes)), _GEMINI_REMOTE_IMAGE_MAX_BYTES)
     if _byte_limit <= 0:
         return None
 
     # Reuse tools.py's pinned-IP hardening: validate-once-then-pin.
     from .tools import (
+        _IRI_PATH_SAFE,
+        _IRI_QUERY_SAFE,
         _explicit_proxy_applies,
+        _fetch_budget_exceeded,
+        _fetch_hop_timeout,
         _NoRedirect,
         _pinned_netloc,
+        _read_capped_body,
+        _resolve_with_budget,
         _SNIHTTPSHandler,
-        _validate_and_resolve_host,
+        _USER_AGENTS,
     )
 
+    # Image hosts refuse a request with no User-Agent (Wikimedia answers 403), and until this
+    # fetch moved here llama-server sent its own. Picked once, as _fetch_url_raw does.
+    user_agent = random.choice(_USER_AGENTS)
+    if deadline is None:
+        deadline = time.monotonic() + _REMOTE_IMAGE_FETCH_DEADLINE_S
+
     def _safe_parse_https(raw_url: str) -> Optional[tuple[Any, str, int]]:
-        """Validate https + hostname + port. Returns (parsed, host, port) or None. Handles
-        malformed-port and malformed-bracketed-IPv6 URLs that would else raise ValueError
-        mid-build."""
+        """Return a parsed HTTPS URL, hostname and port, or ``None``."""
         try:
             parsed_url = urlparse(raw_url)
             host_value = parsed_url.hostname
             port_value = parsed_url.port or 443
         except (ValueError, UnicodeError) as _err:
             logger.info(
-                "Gemini image fetch: refusing malformed url err=%s",
+                f"{label}: refusing malformed url err=%s",
                 type(_err).__name__,
             )
             return None
         scheme_value = (parsed_url.scheme or "").lower()
         if scheme_value != "https":
             logger.info(
-                "Gemini image fetch: refusing non-https scheme=%s",
+                f"{label}: refusing non-https scheme=%s",
                 scheme_value,
             )
             return None
         if not host_value:
-            logger.info("Gemini image fetch: refusing url with no hostname")
+            logger.info(f"{label}: refusing url with no hostname")
             return None
+        if not host_value.isascii():
+            # http.client writes Host as ASCII, so an internationalized name travels as its A-label.
+            try:
+                host_value = host_value.encode("idna").decode("ascii")
+            except UnicodeError:
+                logger.info(f"{label}: refusing unencodable hostname")
+                return None
         return parsed_url, host_value, port_value
 
     parsed_info = _safe_parse_https(url)
@@ -933,42 +1123,59 @@ def _safe_fetch_image_for_gemini_sync(
         return None
     parsed, current_host, current_port = parsed_info
     current_url = url
-    ok, reason, pinned_ips = _validate_and_resolve_host(current_host, current_port)
+    ok, reason, pinned_ips = _resolve_with_budget(current_host, current_port, deadline, None)
     if not ok:
         logger.warning(
-            "Gemini image fetch: refusing host=%s reason=%s",
+            f"{label}: refusing host=%s reason=%s",
             current_host,
             reason,
         )
         return None
 
     for _hop in range(4):
+        budget_error = _fetch_budget_exceeded(deadline, None)
+        if budget_error is not None:
+            logger.info(f"{label}: {budget_error} host=%s", current_host)
+            return None
         # Pin to validated IP; SNI + cert still use the hostname via _SNIHTTPSHandler.
         cp_info = _safe_parse_https(current_url)
         if cp_info is None:
             return None
         cp, _cp_host, _cp_port = cp_info
+        # http.client refuses a non-ASCII or spaced selector; encode it as _fetch_url_raw does.
+        try:
+            cp = cp._replace(
+                path = quote(cp.path, safe = _IRI_PATH_SAFE),
+                params = quote(cp.params, safe = _IRI_PATH_SAFE),
+                query = quote(cp.query, safe = _IRI_QUERY_SAFE),
+            )
+        except UnicodeError:
+            logger.info(f"{label}: refusing unencodable url host=%s", current_host)
+            return None
         pinned_url = urlunparse(cp._replace(netloc = _pinned_netloc(pinned_ips[0], cp.port)))
 
         # Route on the hostname, as _fetch_url_raw does: no NO_PROXY entry matches the
         # pinned URL's IP. A proxied request reaches the origin through the proxy.
-        proxied = _explicit_proxy_applies("https", _pinned_netloc(current_host, cp.port))
+        authority = _pinned_netloc(current_host, cp.port)
+        proxied = _explicit_proxy_applies("https", authority)
         handlers = [_NoRedirect, _SNIHTTPSHandler(current_host, () if proxied else pinned_ips)]
         if not proxied:
             handlers.append(urllib.request.ProxyHandler({}))
         opener = urllib.request.build_opener(*handlers)
         req = urllib.request.Request(
             pinned_url,
-            headers = {"Host": current_host},
+            headers = {"Host": authority, "User-Agent": user_agent},
             method = "GET",
         )
 
         try:
-            resp = opener.open(req, timeout = _GEMINI_REMOTE_IMAGE_TIMEOUT_S)
+            resp = opener.open(
+                req, timeout = _fetch_hop_timeout(_GEMINI_REMOTE_IMAGE_TIMEOUT_S, deadline)
+            )
         except urllib.error.HTTPError as e:
             if e.code not in (301, 302, 303, 307, 308):
                 logger.info(
-                    "Gemini image fetch: status=%d host=%s",
+                    f"{label}: status=%d host=%s",
                     e.code,
                     current_host,
                 )
@@ -980,7 +1187,7 @@ def _safe_fetch_image_for_gemini_sync(
                 current_url = urljoin(current_url, location)
             except (ValueError, UnicodeError) as _err:
                 logger.info(
-                    "Gemini image fetch: refusing malformed redirect err=%s",
+                    f"{label}: refusing malformed redirect err=%s",
                     type(_err).__name__,
                 )
                 return None
@@ -988,18 +1195,20 @@ def _safe_fetch_image_for_gemini_sync(
             if rp_info is None:
                 return None
             _rp, current_host, current_port = rp_info
-            ok2, reason2, pinned_ips = _validate_and_resolve_host(current_host, current_port)
+            ok2, reason2, pinned_ips = _resolve_with_budget(
+                current_host, current_port, deadline, None
+            )
             if not ok2:
                 logger.warning(
-                    "Gemini image fetch: refusing redirect host=%s reason=%s",
+                    f"{label}: refusing redirect host=%s reason=%s",
                     current_host,
                     reason2,
                 )
                 return None
             continue
-        except (urllib.error.URLError, OSError) as _err:
+        except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as _err:
             logger.warning(
-                "Gemini image fetch failed host=%s err=%s",
+                f"{label} failed host=%s err=%s",
                 current_host,
                 type(_err).__name__,
             )
@@ -1008,13 +1217,15 @@ def _safe_fetch_image_for_gemini_sync(
         with resp:
             status = getattr(resp, "status", None) or resp.getcode()
             if status != 200:
-                logger.info("Gemini image fetch: status=%s host=%s", status, current_host)
+                logger.info(f"{label}: status=%s host=%s", status, current_host)
                 return None
             _hdr_mime = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
-            # Declared non-image MIME is refused; missing MIME uses the caller's.
+            # A declared non-image MIME is refused unless the caller decodes the bytes itself.
+            if _hdr_mime and not _hdr_mime.startswith("image/") and not require_image_content_type:
+                _hdr_mime = ""
             if _hdr_mime and not _hdr_mime.startswith("image/"):
                 logger.info(
-                    "Gemini image fetch: non-image content-type=%s host=%s",
+                    f"{label}: non-image content-type=%s host=%s",
                     _hdr_mime,
                     current_host,
                 )
@@ -1022,32 +1233,58 @@ def _safe_fetch_image_for_gemini_sync(
             _final_mime_pre = _hdr_mime if _hdr_mime else fallback_mime
             if not isinstance(_final_mime_pre, str) or not _final_mime_pre.startswith("image/"):
                 logger.info(
-                    "Gemini image fetch: missing content-type and no image fallback host=%s",
+                    f"{label}: missing content-type and no image fallback host=%s",
                     current_host,
                 )
                 return None
             _hdr_len = resp.headers.get("content-length")
             if _hdr_len and _hdr_len.isdigit() and int(_hdr_len) > _byte_limit:
                 logger.info(
-                    "Gemini image fetch: declared %s bytes exceeds cap=%s host=%s",
+                    f"{label}: declared %s bytes exceeds cap=%s host=%s",
                     _hdr_len,
                     _byte_limit,
                     current_host,
                 )
                 return None
             # Read cap+1 to detect oversize without buffering unbounded data.
-            raw = resp.read(_byte_limit + 1)
+            try:
+                body_error, raw = _read_capped_body(
+                    resp, _byte_limit + 1, _GEMINI_REMOTE_IMAGE_TIMEOUT_S, deadline, None
+                )
+            except (OSError, http.client.HTTPException, ValueError) as _err:
+                logger.warning(
+                    f"{label} failed host=%s err=%s",
+                    current_host,
+                    type(_err).__name__,
+                )
+                return None
+            if body_error is not None:
+                logger.info(f"{label}: {body_error} host=%s", current_host)
+                return None
             if len(raw) > _byte_limit:
                 logger.info(
-                    "Gemini image fetch: streamed bytes exceed cap=%s host=%s",
+                    f"{label}: streamed bytes exceed cap=%s host=%s",
                     _byte_limit,
                     current_host,
                 )
                 return None
             return _final_mime_pre, base64.b64encode(raw).decode("ascii")
 
-    logger.info("Gemini image fetch: too many redirects host=%s", current_host)
+    logger.info(f"{label}: too many redirects host=%s", current_host)
     return None
+
+
+_GEMINI_IMAGE_FETCH_LABEL = "Gemini image fetch"
+
+
+def _safe_fetch_image_for_gemini_sync(
+    url: str,
+    fallback_mime: str,
+    max_bytes: int = _GEMINI_REMOTE_IMAGE_MAX_BYTES,
+) -> Optional[tuple[str, str]]:
+    return safe_fetch_remote_image_sync(
+        url, fallback_mime, max_bytes, label = _GEMINI_IMAGE_FETCH_LABEL
+    )
 
 
 async def _safe_fetch_image_for_gemini(
@@ -1120,8 +1357,11 @@ class ExternalProviderClient:
         base_url: str,
         api_key: str,
         timeout: float = 120.0,
+        *,
+        api_type: str = "chat_completions",
     ):
         self.provider_type = provider_type
+        self.api_type = api_type if provider_type == "custom" else "chat_completions"
         # Single choke point for every outbound provider request (chat, models, responses, messages, containers): the
         # URL is caller-controlled, so it is validated here even when a route already checked it. Routes turn the
         # ValueError into a 400; reaching it here means a caller bypassed them.
@@ -1161,9 +1401,27 @@ class ExternalProviderClient:
                 auth_prefix = "Bearer "
 
         headers = {"Content-Type": "application/json"}
-        # Skip auth header when api_key is empty (optional for local providers); httpx rejects an empty `Bearer `
-        # value as "Illegal header value".
-        if self.api_key:
+        # Azure OpenAI accepts a resource key in `api-key` or an Entra access token as a Bearer token.
+        # A saved custom provider has only one credential field, so preserve raw JWT bearer credentials and let
+        # `Bearer <token>` explicitly select bearer auth for opaque Entra tokens. Never send both credentials.
+        azure_custom_responses = (
+            self.provider_type == "custom"
+            and self.api_type == "responses"
+            and _is_azure_openai_host((urlparse(self.base_url).hostname or "").lower())
+        )
+        if azure_custom_responses and self.api_key:
+            if self.api_key[:7].lower() == "bearer ":
+                bearer_token = self.api_key[7:].strip()
+            elif re.fullmatch(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", self.api_key):
+                bearer_token = self.api_key
+            else:
+                bearer_token = None
+            if bearer_token:
+                headers["Authorization"] = f"Bearer {bearer_token}"
+            elif bearer_token is None:
+                headers["api-key"] = self.api_key
+        # Skip auth when the key is empty (optional for local providers); httpx rejects an empty `Bearer `.
+        elif self.api_key:
             headers[auth_header] = f"{auth_prefix}{self.api_key}"
         # Merge provider-specific extra headers (anthropic-version, OpenRouter attribution).
         headers.update(provider_info.get("extra_headers", {}))
@@ -1186,7 +1444,7 @@ class ExternalProviderClient:
         self,
         messages: list[dict[str, Any]],
         model: str,
-        temperature: float = 0.7,
+        temperature: Optional[float] = 0.7,
         top_p: Optional[float] = 0.95,
         max_tokens: Optional[int] = None,
         presence_penalty: float = 0.0,
@@ -1207,6 +1465,7 @@ class ExternalProviderClient:
         continue_final_message: Optional[bool] = None,
         response_format: Optional[dict[str, Any]] = None,
         stream: bool = True,
+        preserve_thinking: Optional[bool] = None,
     ) -> AsyncGenerator[str, None]:
         """Yield OpenAI-format SSE lines from the external provider. OpenAI-compatible providers
         forward lines verbatim; for Anthropic the native Messages API SSE is translated.
@@ -1219,6 +1478,28 @@ class ExternalProviderClient:
         tool_choice_disabled = (
             isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
         )
+
+        # Managed OpenAI Responses hosts do not apply a local chat template; preserve literal delimiter text there.
+        # Custom gateways and local endpoints still need their template-control-token protection.
+        managed_custom_responses = (
+            self.provider_type == "custom"
+            and self.api_type == "responses"
+            and _is_openai_family_cloud(self.base_url)
+        )
+        if self.provider_type in _TEMPLATE_APPLYING_PROVIDERS and not managed_custom_responses:
+            from core.inference.chat_template_helpers import (
+                neutralize_control_markup_in_messages,
+                neutralize_tool_descriptions,
+                reconciled_tool_choice,
+            )
+            messages = neutralize_control_markup_in_messages(messages)
+            if tools:
+                safe_tools = neutralize_tool_descriptions(tools)
+                # reconcile a forced tool choice when sanitization removes its function from a mixed catalog.
+                tool_choice = reconciled_tool_choice(tool_choice, tools, safe_tools)
+                if not safe_tools:
+                    tool_choice = None
+                tools = safe_tools
 
         if not self._is_openai_compatible():
             # Gemini speaks its own native REST shape (contents/parts); `_stream_gemini` translates request/response
@@ -1265,7 +1546,7 @@ class ExternalProviderClient:
         # OpenAI moved flagship models (gpt-5.x) off /v1/chat/completions -- those endpoints return 404 "This is not a
         # chat model" for the new families. Route all OpenAI traffic through /v1/responses instead and translate the
         # Responses SSE back into Chat Completions chunks so the frontend stays endpoint-agnostic.
-        if self.provider_type == "openai":
+        if self.provider_type == "openai" or self.api_type == "responses":
             async for line in self._stream_openai_responses(
                 messages,
                 model,
@@ -1281,6 +1562,7 @@ class ExternalProviderClient:
                 tools,
                 tool_choice,
                 response_format,
+                stream = stream if self.provider_type == "custom" else True,
             ):
                 yield line
             return
@@ -1307,25 +1589,6 @@ class ExternalProviderClient:
             ):
                 yield line
             return
-
-        # A self-hosted server templates client text just like the in-process paths, so the same "</think>" or turn
-        # marker forges a turn (#7066). Hosted APIs are left alone: their prompt assembly is not ours to rewrite.
-        if self.provider_type in _TEMPLATE_APPLYING_PROVIDERS:
-            from core.inference.chat_template_helpers import (
-                neutralize_control_markup_in_messages,
-                neutralize_tool_descriptions,
-                reconciled_tool_choice,
-            )
-            messages = neutralize_control_markup_in_messages(messages)
-            if tools:
-                safe_tools = neutralize_tool_descriptions(tools)
-                # A mixed catalog keeps safe_tools non-empty while dropping the one tool the client forced, so an
-                # empty check is not enough: without the passthrough builder's per-name reconciliation the body names
-                # an unadvertised function.
-                tool_choice = reconciled_tool_choice(tool_choice, tools, safe_tools)
-                if not safe_tools:
-                    tool_choice = None
-                tools = safe_tools
 
         # Both are set because a server rejects continuing while a generation prompt is still asked for. Sent only to
         # the two documenting the pair: "custom" is any user-supplied base_url and a strict endpoint 400s on an
@@ -1371,6 +1634,9 @@ class ExternalProviderClient:
         provider_info = get_provider_info(self.provider_type) or {}
         for field in provider_info.get("body_omit", ()):
             body.pop(field, None)
+
+        if self.provider_type == "llama_cpp" and preserve_thinking is not None:
+            body["chat_template_kwargs"] = {"preserve_thinking": preserve_thinking}
 
         # Kimi thinking is a top-level body field. kimi-k2-thinking is always on (ignore the toggle); kimi-k2.6
         # defaults on, can be disabled. `keep: all` preserves every chunk for the UI panel.
@@ -4819,8 +5085,8 @@ class ExternalProviderClient:
         self,
         messages: list[dict[str, Any]],
         model: str,
-        temperature: float,
-        top_p: float,
+        temperature: Optional[float],
+        top_p: Optional[float],
         max_tokens: Optional[int],
         enable_thinking: Optional[bool],
         reasoning_effort: Optional[str],
@@ -4831,6 +5097,7 @@ class ExternalProviderClient:
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
         response_format: Optional[dict[str, Any]] = None,
+        stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """Call OpenAI's /v1/responses endpoint and translate its SSE stream back into OpenAI Chat
         Completions chunk format. The Responses API uses a different request shape (``input`` not
@@ -4840,8 +5107,23 @@ class ExternalProviderClient:
         import json as _json
 
         is_openai_cloud = _is_openai_family_cloud(self.base_url)
+        _responses_tool_choice_none = (
+            isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
+        )
+        _responses_tool_choice_forced_function = (
+            isinstance(tool_choice, dict)
+            and tool_choice.get("type") == "function"
+            and isinstance(tool_choice.get("function"), dict)
+            and bool(tool_choice["function"].get("name"))
+        )
+        _responses_hosted_builtins_allowed = (
+            not _responses_tool_choice_none and not _responses_tool_choice_forced_function
+        )
         image_generation_requested = bool(
-            enabled_tools and "image_generation" in enabled_tools and is_openai_cloud
+            _responses_hosted_builtins_allowed
+            and enabled_tools
+            and "image_generation" in enabled_tools
+            and is_openai_cloud
         )
 
         # Split system messages into a single `instructions` string and translate user/assistant messages into the
@@ -5083,12 +5365,13 @@ class ExternalProviderClient:
                     filtered_replay_items.append(item)
             openai_replay_items = filtered_replay_items
             if dropped_image_replay_without_reasoning:
-                yield _error_sse_line(
+                error_line = _error_sse_line(
                     400,
                     "OpenAI image edit reference is missing paired reasoning state. "
                     "Regenerate the image, then retry the edit.",
                     self.provider_type,
                 )
+                yield error_line if stream else error_line.removeprefix("data: ")
                 return
         image_generation_has_reference = bool(
             previous_response_id
@@ -5105,16 +5388,22 @@ class ExternalProviderClient:
                     break
             input_items[insert_at:insert_at] = openai_replay_items
 
-        # Reasoning families reject temperature/top_p, and the UI hides both sliders for the rest
-        # (provider-capabilities.ts), so the only values arriving here are ChatCompletionRequest's 0.6/0.95 defaults,
-        # which would override OpenAI's own with a number the user never chose.
-        del temperature, top_p  # accepted for API symmetry, not forwarded.
-
         body: dict[str, Any] = {
             "model": model,
             "input": input_items,
-            "stream": True,
+            "stream": stream,
         }
+        # Azure model ids are deployment names, which need not reveal a fixed-sampling model behind them.
+        # Omit both controls for Azure; on direct OpenAI cloud, use the model family. Gateways still receive them.
+        is_azure_openai = _is_azure_openai_host((urlparse(self.base_url).hostname or "").lower())
+        forward_custom_sampling = self.provider_type == "custom" and not (
+            is_azure_openai or (is_openai_cloud and _openai_fixed_sampling_model(model))
+        )
+        if forward_custom_sampling:
+            if temperature is not None:
+                body["temperature"] = temperature
+            if top_p is not None:
+                body["top_p"] = top_p
         if previous_response_id:
             body["previous_response_id"] = previous_response_id
         # `summary: "auto"` is what makes /v1/responses emit reasoning summary events; without it the reasoning panel
@@ -5214,6 +5503,8 @@ class ExternalProviderClient:
                     _entry["description"] = _fn["description"]
                 if isinstance(_fn.get("parameters"), dict):
                     _entry["parameters"] = normalize_function_schema(_fn["parameters"])
+                if _fn.get("strict") is not None:
+                    _entry["strict"] = bool(_fn["strict"])
                 responses_user_function_tools.append(_entry)
 
         # Translate tool_choice into the Responses shape.
@@ -5237,18 +5528,26 @@ class ExternalProviderClient:
             if isinstance(_name, str) and _name:
                 responses_tool_choice = {"type": "function", "name": _name}
 
-        _responses_tool_choice_none = _responses_tc_string == "none"
         # A pinned user function suppresses hosted builtins (privacy + billing), matching the Gemini / Anthropic /
         # OpenRouter gates.
-        _responses_tool_choice_forced_function = (
-            isinstance(tool_choice, dict)
-            and tool_choice.get("type") == "function"
-            and isinstance(tool_choice.get("function"), dict)
-            and bool(tool_choice["function"].get("name"))
+        _responses_image_generation_enabled = (
+            _responses_hosted_builtins_allowed and image_generation_enabled_openai
         )
-        _responses_hosted_builtins_allowed = (
-            not _responses_tool_choice_none and not _responses_tool_choice_forced_function
-        )
+        if _responses_image_generation_enabled and not stream:
+            yield _json.dumps(
+                {
+                    "error": {
+                        "message": (
+                            "image_generation is not supported for non-streaming Responses "
+                            "requests; set stream=true."
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "400",
+                        "provider": self.provider_type,
+                    }
+                }
+            )
+            return
 
         if (enabled_tools or responses_user_function_tools) and not _responses_tool_choice_none:
             tools_array: list[dict[str, Any]] = list(responses_user_function_tools)
@@ -5270,14 +5569,14 @@ class ExternalProviderClient:
                 else:
                     shell_env = {"type": "container_auto"}
                 tools_array.append({"type": "shell", "environment": shell_env})
-            if _responses_hosted_builtins_allowed and image_generation_enabled_openai:
+            if _responses_image_generation_enabled:
                 tools_array.append(_openai_image_generation_tool())
             if tools_array:
                 body["tools"] = tools_array
         if responses_tool_choice is not None:
             body["tool_choice"] = responses_tool_choice
 
-        url = f"{self.base_url}/responses"
+        url = _append_provider_path(self.base_url, "/responses")
         completion_id = f"chatcmpl-openai-{model.replace('/', '-')}"
 
         logger.info("Proxying OpenAI Responses API to %s (model=%s)", url, model)
@@ -5304,7 +5603,7 @@ class ExternalProviderClient:
                     else:
                         env_attempt = {"type": "container_auto"}
                     tools_array_attempt.append({"type": "shell", "environment": env_attempt})
-                if _responses_hosted_builtins_allowed and image_generation_enabled_openai:
+                if _responses_image_generation_enabled:
                     tools_array_attempt.append(_openai_image_generation_tool())
                 if tools_array_attempt:
                     attempt_body["tools"] = tools_array_attempt
@@ -5353,19 +5652,142 @@ class ExternalProviderClient:
                             and _is_openai_container_expired_error(error_text)
                         )
                         if expired_container_4xx and not retried:
-                            yield (
-                                f"data: "
-                                f"{_json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': None}], '_toolEvent': {'type': 'container_invalidated'}})}"
-                            )
+                            if stream:
+                                yield (
+                                    f"data: "
+                                    f"{_json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': None}], '_toolEvent': {'type': 'container_invalidated'}})}"
+                                )
                             retried = True
                             attempt_container_id = None
                             continue
-                        yield _error_sse_line(
+                        error_line = _error_sse_line(
                             response.status_code,
                             error_text,
                             self.provider_type,
                             response.headers.get("Retry-After"),
                         )
+                        yield error_line if stream else error_line.removeprefix("data: ")
+                        return
+
+                    if not stream:
+                        response_payload = _json.loads(await response.aread())
+                        status = response_payload.get("status")
+                        if status == "failed" or response_payload.get("error"):
+                            yield _json.dumps(
+                                {
+                                    "error": {
+                                        "message": _openai_response_error_message(response_payload),
+                                        "type": "server_error",
+                                        "provider": self.provider_type,
+                                    }
+                                }
+                            )
+                            return
+                        text_parts: list[str] = []
+                        reasoning_summary_parts: list[str] = []
+                        refusal_parts: list[str] = []
+                        tool_calls: list[dict[str, Any]] = []
+                        reasoning_replay_items: list[dict[str, Any]] = []
+                        url_citations: list[dict[str, Any]] = []
+                        for item in response_payload.get("output") or []:
+                            if not isinstance(item, dict):
+                                continue
+                            if item.get("type") == "reasoning":
+                                summary = item.get("summary")
+                                if isinstance(summary, list):
+                                    for part in summary:
+                                        if not isinstance(part, dict):
+                                            continue
+                                        if part.get("type") != "summary_text":
+                                            continue
+                                        summary_text = part.get("text")
+                                        if isinstance(summary_text, str) and summary_text:
+                                            reasoning_summary_parts.append(summary_text)
+                                reasoning_item = _sanitize_openai_reasoning_replay_item(item)
+                                if reasoning_item:
+                                    reasoning_replay_items.append(reasoning_item)
+                            elif item.get("type") == "message":
+                                content = item.get("content") or []
+                                if isinstance(content, str):
+                                    text_parts.append(content)
+                                    continue
+                                for part in content:
+                                    if not isinstance(part, dict):
+                                        continue
+                                    if part.get("type") in ("output_text", "text"):
+                                        text = part.get("text")
+                                        if isinstance(text, str):
+                                            text_parts.append(text)
+                                        for annotation in part.get("annotations") or []:
+                                            if isinstance(annotation, dict):
+                                                _record_openai_url_citation(
+                                                    url_citations,
+                                                    annotation,
+                                                )
+                                    elif part.get("type") == "refusal":
+                                        refusal = part.get("refusal")
+                                        if isinstance(refusal, str):
+                                            refusal_parts.append(refusal)
+                            elif item.get("type") == "function_call":
+                                name = item.get("name")
+                                if not isinstance(name, str) or not name:
+                                    continue
+                                arguments = item.get("arguments", "")
+                                if not isinstance(arguments, str):
+                                    arguments = _json.dumps(arguments)
+                                tool_calls.append(
+                                    {
+                                        "id": item.get("call_id") or item.get("id") or "call_0",
+                                        "type": "function",
+                                        "function": {"name": name, "arguments": arguments},
+                                    }
+                                )
+                        if not text_parts and isinstance(response_payload.get("output_text"), str):
+                            text_parts.append(response_payload["output_text"])
+
+                        visible_text = "".join(text_parts)
+                        if reasoning_summary_parts:
+                            visible_text = (
+                                f"<think>{''.join(reasoning_summary_parts)}</think>{visible_text}"
+                            )
+                        visible_text = _replace_openai_citation_markers(
+                            visible_text,
+                            url_citations,
+                        )
+
+                        message: dict[str, Any] = {
+                            "role": "assistant",
+                            "content": visible_text or None,
+                        }
+                        if refusal_parts:
+                            message["refusal"] = "".join(refusal_parts)
+                        if tool_calls:
+                            message["tool_calls"] = tool_calls
+                            if reasoning_replay_items:
+                                message["extra_content"] = {
+                                    "openai_responses_reasoning": reasoning_replay_items
+                                }
+
+                        completion: dict[str, Any] = {
+                            "id": response_payload.get("id") or completion_id,
+                            "object": "chat.completion",
+                            "created": int(response_payload.get("created_at") or time.time()),
+                            "model": response_payload.get("model") or model,
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "message": message,
+                                    "finish_reason": _openai_response_finish_reason(
+                                        response_payload,
+                                        has_tool_calls = bool(tool_calls),
+                                    ),
+                                }
+                            ],
+                        }
+                        usage = responses_usage_to_chat(response_payload.get("usage"))
+                        if usage is not None:
+                            completion["usage"] = usage
+                        yield _json.dumps(completion)
                         return
 
                     # Same manual __anext__ loop as stream_chat_completion -- see there for the GeneratorExit / aclose
@@ -5510,40 +5932,7 @@ class ExternalProviderClient:
                         return "\n--- next command ---\n".join(parts) if parts else "(no output)"
 
                     def _record_url_citation(payload: dict[str, Any]) -> None:
-                        """Append a url_citation, deduped by URL: collect every source_id alias onto
-                        the entry's ``source_ids`` so the rewriter can resolve any alias. The id
-                        lives under source_id/id/locator across API revisions."""
-                        if payload.get("type") != "url_citation":
-                            return
-                        url = payload.get("url", "")
-                        if not url:
-                            return
-                        source_id = (
-                            payload.get("source_id")
-                            or payload.get("id")
-                            or payload.get("locator")
-                            or ""
-                        )
-                        # Single pass: either backfill aliases onto an existing URL entry (and return) or fall through
-                        # to append a fresh one.
-                        for c in all_url_citations:
-                            if c["url"] != url:
-                                continue
-                            if source_id:
-                                aliases = c.setdefault("source_ids", [])
-                                if source_id not in aliases:
-                                    aliases.append(source_id)
-                            return
-                        title = payload.get("title") or url
-                        snippet = payload.get("snippet") or payload.get("quote") or ""
-                        all_url_citations.append(
-                            {
-                                "url": url,
-                                "title": title,
-                                "snippet": snippet,
-                                "source_ids": [source_id] if source_id else [],
-                            }
-                        )
+                        _record_openai_url_citation(all_url_citations, payload)
 
                     def _record_openai_reasoning_replay_item(
                         payload: Any,
@@ -5752,6 +6141,14 @@ class ExternalProviderClient:
                                             pending_citation_segments.append(head_rewritten)
                                         elif head_rewritten:
                                             yield _chunk_with_text(head_rewritten)
+
+                            elif event_type == "response.refusal.delta":
+                                refusal_delta = event.get("delta", "")
+                                if isinstance(refusal_delta, str) and refusal_delta:
+                                    if reasoning_open:
+                                        yield _chunk_with_text("</think>")
+                                        reasoning_open = False
+                                    yield _chunk_with_text(refusal_delta)
 
                             elif event_type == "response.output_text.annotation.added":
                                 ann = event.get("annotation")
@@ -6139,7 +6536,9 @@ class ExternalProviderClient:
                                     yield usage_line
 
                             elif event_type == "response.incomplete":
-                                incomplete_usage = (event.get("response") or {}).get("usage")
+                                incomplete_response = dict(event.get("response") or {})
+                                incomplete_response.setdefault("status", "incomplete")
+                                incomplete_usage = incomplete_response.get("usage")
                                 if isinstance(incomplete_usage, dict):
                                     last_usage = incomplete_usage
                                 # Same flush as response.completed -- truncated streams can leave a half-marker in the
@@ -6202,7 +6601,9 @@ class ExternalProviderClient:
                                         {
                                             "index": 0,
                                             "delta": {},
-                                            "finish_reason": "length",
+                                            "finish_reason": _openai_response_finish_reason(
+                                                incomplete_response
+                                            ),
                                         }
                                     ],
                                 }
@@ -6281,25 +6682,28 @@ class ExternalProviderClient:
 
         except httpx.ConnectError as exc:
             logger.error("Connection error to %s: %s", self.provider_type, exc)
-            yield _error_sse_line(
+            error_line = _error_sse_line(
                 502,
                 f"Failed to connect to {self.provider_type}: {exc}",
                 self.provider_type,
             )
+            yield error_line if stream else error_line.removeprefix("data: ")
         except httpx.ReadTimeout as exc:
             logger.error("Read timeout from %s: %s", self.provider_type, exc)
-            yield _error_sse_line(
+            error_line = _error_sse_line(
                 504,
                 f"Timeout waiting for {self.provider_type} response",
                 self.provider_type,
             )
+            yield error_line if stream else error_line.removeprefix("data: ")
         except httpx.HTTPError as exc:
             logger.error("HTTP error from %s: %s", self.provider_type, exc)
-            yield _error_sse_line(
+            error_line = _error_sse_line(
                 502,
                 f"Error communicating with {self.provider_type}: {exc}",
                 self.provider_type,
             )
+            yield error_line if stream else error_line.removeprefix("data: ")
 
     async def chat_completion(
         self,
@@ -6793,26 +7197,25 @@ def _build_usage_chunk(
             usage_block["speed"] = speed
     else:
         prompt_tokens = last_usage.get("input_tokens") or 0
-        cached = 0
         details = last_usage.get("input_tokens_details")
-        if isinstance(details, dict):
-            cached = details.get("cached_tokens") or 0
+        prompt_details = dict(details) if isinstance(details, dict) else {}
+        cached = prompt_details.get("cached_tokens") or 0
+        prompt_details.setdefault("cached_tokens", cached)
         if not (prompt_tokens or completion_tokens or cached):
             return None
         usage_block = {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens,
-            "prompt_tokens_details": {"cached_tokens": cached},
+            "prompt_tokens_details": prompt_details,
         }
         # Surface OpenAI Responses / Gemini reasoning-token detail. The caller pre-populates
         # last_usage["output_tokens_details"] with at least {"reasoning_tokens": ...}; mirror it into the OAI
         # `completion_tokens_details` shape so SDKs can render the hidden-thoughts slice.
         out_details = last_usage.get("output_tokens_details")
         if isinstance(out_details, dict) and out_details:
-            usage_block["completion_tokens_details"] = {
-                "reasoning_tokens": out_details.get("reasoning_tokens") or 0,
-            }
+            usage_block["completion_tokens_details"] = dict(out_details)
+            usage_block["completion_tokens_details"].setdefault("reasoning_tokens", 0)
             usage_block["output_tokens_details"] = out_details
 
     chunk = {

@@ -19,8 +19,10 @@ from types import SimpleNamespace
 from typing import Optional, List
 from functools import wraps
 
-import trl
+import importlib
 import inspect
+
+import trl
 from trl import SFTTrainer
 
 # Bypass the partially-initialised unsloth namespace during the _gpu_init load.
@@ -284,6 +286,228 @@ _HYBRID_CONFIG_MARKERS = (
 )
 
 
+def _delegating_module_wrappers():
+    """Wrappers whose forward is variadic over a real model, and the attribute holding it.
+
+    Safe to follow where `PreTrainedModel.base_model` is not, because the attribute
+    below IS the checkpoint rather than an inner decoder. Resolved tolerantly: FSDP
+    and dynamo have both moved between torch versions.
+    """
+    found = []
+    for module_path, name, attribute in (
+        ("torch.nn.parallel", "DataParallel", "module"),
+        ("torch.nn.parallel", "DistributedDataParallel", "module"),
+        ("torch.distributed.fsdp", "FullyShardedDataParallel", "module"),
+        ("torch._dynamo.eval_frame", "OptimizedModule", "_orig_mod"),
+    ):
+        try:
+            found.append((getattr(importlib.import_module(module_path), name), attribute))
+        except Exception:
+            continue
+    return tuple(found)
+
+
+_DELEGATING_MODULE_WRAPPERS = _delegating_module_wrappers()
+
+
+def _mixed_adapter_wrappers():
+    """PEFT's mixed-adapter wrapper, and the path to the checkpoint under it.
+
+    `PeftMixedModel` has no `get_base_model()`, so the unwrap below stops on its
+    variadic forward. The path is PEFT's own accessor (peft_model.py:1083) for any
+    config that is not prompt-learning, which mixed adapters cannot be.
+    """
+    try:
+        from peft import PeftMixedModel
+        return ((PeftMixedModel, ("base_model", "model")),)
+    except Exception:
+        return ()
+
+
+_MIXED_ADAPTER_WRAPPERS = _mixed_adapter_wrappers()
+
+
+def _attribute_path(obj, path):
+    for attribute in path:
+        obj = getattr(obj, attribute, None)
+        if obj is None:
+            return None
+    return obj
+
+
+def _forward_accepts_packing_kwargs(model) -> bool:
+    """Can this model's forward be handed the packing metadata at all?
+
+    Padding-free passes `packed_seq_lengths` down, and a forward naming neither it
+    nor **kwargs raises TypeError on the first step (microsoft/Phi-4-reasoning-vision-15B).
+    Unknown or uninspectable answers True: refusing on an unreadable signature would
+    disable padding-free for models that support it.
+    """
+    if model is None or isinstance(model, str):
+        return True
+    # Adapter wrappers only: they forward **kwargs through, so the wrapper always
+    # answers yes while the checkpoint underneath is the one that raises. Stop there,
+    # since the inner decoder may take **kwargs and answer for a model that does not.
+    target = model
+    for _ in range(4):
+        # Delegating wrappers (DataParallel, DDP, FSDP, torch.compile) first. Exact
+        # isinstance, so nothing else carrying the same attribute name is followed.
+        inner = next(
+            (
+                held
+                for wrapper, attribute in _DELEGATING_MODULE_WRAPPERS
+                if isinstance(target, wrapper)
+                for held in (getattr(target, attribute, None),)
+                if held is not None and held is not target
+            ),
+            None,
+        )
+        if inner is not None:
+            target = inner
+            continue
+        # `PeftMixedModel` next: no `get_base_model`, so the unwrap below would stop on
+        # a variadic forward that merely delegates.
+        mixed = next(
+            (
+                held
+                for wrapper, path in _MIXED_ADAPTER_WRAPPERS
+                if isinstance(target, wrapper)
+                for held in (_attribute_path(target, path),)
+                if held is not None and held is not target
+            ),
+            None,
+        )
+        if mixed is not None:
+            target = mixed
+            continue
+        # PEFT's own unwrap only: `PreTrainedModel.base_model` is a property returning
+        # the inner decoder, which usually does take **kwargs, so it answers for the
+        # wrong module.
+        unwrap = getattr(target, "get_base_model", None)
+        if not callable(unwrap):
+            break
+        try:
+            unwrapped = unwrap()
+        except Exception:
+            break
+        if unwrapped is None or unwrapped is target:
+            break
+        target = unwrapped
+
+    return _forward_signature_accepts_packing(getattr(target, "forward", None))
+
+
+def _forward_signature_accepts_packing(forward) -> bool:
+    """The signature question alone, so a class can be asked it as well as an instance.
+
+    Shared, not duplicated: a disagreement would turn padding-free on for one
+    spelling of a checkpoint and off for the other.
+    """
+    if forward is None:
+        return True
+    try:
+        parameters = inspect.signature(forward).parameters
+    except (TypeError, ValueError):
+        return True
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        return True
+    return "packed_seq_lengths" in parameters
+
+
+def _resolve_string_model_class(model_name, model_config, config_arg):
+    """The class TRL is about to build, resolved from the config and no weights.
+
+    A string `model=` has no forward to read, so without this the gate can only fail
+    open and then refuse after `__init__`. `from_pretrained` is never called, so this
+    costs at most the modeling module. Returns None when the class cannot be named,
+    leaving the post-init check as the backstop rather than guessing.
+    """
+    if not isinstance(model_name, str) or model_config is None:
+        return None
+
+    # In-tree first, which is also TRL's order: `create_model_from_path` does
+    # `getattr(transformers, config.architectures[0])` and never consults `auto_map`.
+    for architecture in getattr(model_config, "architectures", None) or ():
+        try:
+            import transformers
+            resolved = getattr(transformers, architecture, None)
+        except Exception:
+            resolved = None
+        if isinstance(resolved, type):
+            return resolved
+
+    # Then the auto mappings keyed by config class: lazy, and in-tree only.
+    try:
+        from transformers.models.auto import modeling_auto
+    except Exception:
+        modeling_auto = None
+    for mapping_name in (
+        "MODEL_FOR_CAUSAL_LM_MAPPING",
+        "MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING",
+        "MODEL_FOR_SEQ_TO_SEQ_CAUSAL_LM_MAPPING",
+        "MODEL_MAPPING",
+    ):
+        mapping = getattr(modeling_auto, mapping_name, None) if modeling_auto else None
+        if mapping is None:
+            continue
+        try:
+            resolved = mapping[type(model_config)]
+        except Exception:
+            continue
+        if isinstance(resolved, type):
+            return resolved
+
+    # Remote code LAST: resolving `auto_map` imports and executes a module from the
+    # repo, and a checkpoint can carry a native `architectures` alongside it, so trying
+    # it first would run code nothing else in the stack would have run.
+    #
+    # The grant is read by membership, as `_resolve_string_model_config` reads it, so an
+    # explicit `model_init_kwargs["trust_remote_code"] = None` keeps its falsy meaning.
+    # Disagreeing with that function would execute a module under a grant the config
+    # load itself did not accept.
+    init_kwargs = getattr(config_arg, "model_init_kwargs", None) or {}
+    if "trust_remote_code" in init_kwargs:
+        trust_remote_code = init_kwargs["trust_remote_code"]
+    else:
+        trust_remote_code = getattr(config_arg, "trust_remote_code", None)
+
+    auto_map = getattr(model_config, "auto_map", None) or {}
+    if not trust_remote_code or not isinstance(auto_map, dict):
+        return None
+    # The same auth keys the config fetch forwards, `use_auth_token` included:
+    # transformers honours it as a deprecated alias for `token` across the supported
+    # range (dynamic_module_utils.py:584 in 4.57.6), so dropping it would authenticate
+    # one fetch and not the other.
+    forward = {
+        key: init_kwargs[key]
+        for key in (
+            "revision",
+            "subfolder",
+            "token",
+            "use_auth_token",
+            "cache_dir",
+            "code_revision",
+        )
+        if key in init_kwargs
+    }
+    for auto_class in (
+        "AutoModelForImageTextToText",
+        "AutoModelForCausalLM",
+        "AutoModelForVision2Seq",
+        "AutoModelForSeq2SeqLM",
+        "AutoModel",
+    ):
+        reference = auto_map.get(auto_class)
+        if not isinstance(reference, str):
+            continue
+        try:
+            from transformers.dynamic_module_utils import get_class_from_dynamic_module
+            return get_class_from_dynamic_module(reference, model_name, **forward)
+        except Exception:
+            continue
+    return None
+
+
 def _is_hybrid_linear_attention_model(model) -> bool:
     """Detect models mixing linear-attention / state-space mixers (gated-delta,
     Mamba-style) with a causal conv1d, e.g. Qwen3.5 / Qwen3-Next. Packing and
@@ -455,9 +679,17 @@ def _create_unsloth_optimizer(
     optimizer_kwargs,
     embedding_lr = 5e-5,
     require_embedding_match = False,
+    weight_decay = 0.0,
+    decay_parameter_names = None,
 ):
     lr = optimizer_kwargs["lr"]
-    weight_decay = optimizer_kwargs.get("weight_decay", 0.0)
+    # transformers puts weight_decay in optimizer_kwargs only for schedule-free and stable_adamw,
+    # so reading it from there alone meant the 0.0 default always won (Trainer.create_optimizer).
+    weight_decay = optimizer_kwargs.get("weight_decay", weight_decay)
+    # Trainer.get_decay_parameter_names excludes biases and norms; the default here decays all.
+    if decay_parameter_names is None:
+        decay_parameter_names = [name for name, _ in model.named_parameters()]
+    decay_parameter_names = set(decay_parameter_names)
 
     param_groups = {
         "non_embeddings": {},
@@ -490,20 +722,177 @@ def _create_unsloth_optimizer(
             "without FSDP, or drop embedding_learning_rate."
         )
 
-    optimizer_grouped_parameters = [
-        {
-            "params": list(param_groups["non_embeddings"].values()),
-            "weight_decay": weight_decay,
-            "lr": lr,
-        },
-        {
-            "params": list(param_groups["embeddings"].values()),
-            "weight_decay": weight_decay,
-            "lr": embedding_lr,
-        },
-    ]
+    # Empty groups are dropped (a LoRA run trains no bias and no norm, so both no-decay ones are
+    # empty): AdafactorSchedule.get_lr reads group["params"][0] unguarded, and load_state_dict
+    # rejects a checkpoint whose group count differs, which would break resume.
+    optimizer_grouped_parameters = []
+    group_roles = []
+    for group, group_lr in (("non_embeddings", lr), ("embeddings", embedding_lr)):
+        for decays in (True, False):
+            params = [
+                param
+                for name, param in param_groups[group].items()
+                if (name in decay_parameter_names) is decays
+            ]
+            if not params:
+                continue
+            optimizer_grouped_parameters.append(
+                {
+                    "params": params,
+                    "weight_decay": weight_decay if decays else 0.0,
+                    "lr": group_lr,
+                }
+            )
+            group_roles.append(group)
     optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
+    _install_legacy_resume(
+        optimizer,
+        legacy_params = list(param_groups["non_embeddings"].values())
+        + list(param_groups["embeddings"].values()),
+        legacy_sizes = (len(param_groups["non_embeddings"]), len(param_groups["embeddings"])),
+        group_roles = group_roles,
+    )
     return optimizer
+
+
+_LEGACY_ROLE_ORDER = ("non_embeddings", "embeddings")
+
+
+def _migrate_legacy_optimizer_state(
+    state_dict, optimizer, legacy_params, legacy_sizes, group_roles
+):
+    """A pre-split checkpoint rewritten into this optimizer's layout, or None to refuse.
+
+    Exact, not inferred: torch keys saved state by a parameter's position in the flat
+    concatenation of its groups, and the old layout (non-embeddings then embeddings, each
+    in `named_parameters` order) is reproducible from the model. Anything else returns
+    None and lets torch raise, since pairing a parameter with another parameter's moments
+    would corrupt the run in silence where today it stops.
+    """
+    saved_groups = state_dict.get("param_groups") or []
+    if len(saved_groups) != len(_LEGACY_ROLE_ORDER):
+        return None
+    if tuple(len(g["params"]) for g in saved_groups) != tuple(legacy_sizes):
+        return None
+    saved_ids = [i for g in saved_groups for i in g["params"]]
+    if len(saved_ids) != len(legacy_params) or len(set(saved_ids)) != len(saved_ids):
+        return None
+
+    param_of_saved_id = dict(zip(saved_ids, legacy_params))
+    new_index_of_param = {
+        id(param): index
+        for index, param in enumerate(p for g in optimizer.param_groups for p in g["params"])
+    }
+    if len(new_index_of_param) != len(legacy_params):
+        return None
+    try:
+        remapped_state = {
+            new_index_of_param[id(param_of_saved_id[saved_id])]: value
+            for saved_id, value in state_dict["state"].items()
+        }
+    except KeyError:
+        return None
+
+    saved_of_role = dict(zip(_LEGACY_ROLE_ORDER, saved_groups))
+    cursor, migrated_groups = 0, []
+    for group, role in zip(optimizer.param_groups, group_roles):
+        size = len(group["params"])
+        # Saved group as the base so per-group optimizer state survives (schedule-free
+        # keeps k, weight_sum, lr_max there); only params and weight_decay are overridden.
+        migrated = {key: value for key, value in group.items() if key != "params"}
+        migrated.update(
+            {key: value for key, value in saved_of_role[role].items() if key != "params"}
+        )
+        migrated["weight_decay"] = group["weight_decay"]
+        migrated["params"] = list(range(cursor, cursor + size))
+        migrated_groups.append(migrated)
+        cursor += size
+    return {"state": remapped_state, "param_groups": migrated_groups}
+
+
+def _unsloth_base_optimizer(optimizer):
+    """The optimizer we built, through any wrapper, or None.
+
+    `accelerator.prepare` swaps in an `AcceleratedOptimizer`, which defines no
+    `__getattr__`, so asking it directly finds nothing and the hook silently no-ops.
+    """
+    seen = 0
+    while optimizer is not None and seen < 8:
+        if "_unsloth_group_roles" in optimizer.__dict__:
+            return optimizer
+        optimizer = getattr(optimizer, "optimizer", None)
+        seen += 1
+    return None
+
+
+def _install_legacy_scheduler_resume(scheduler, optimizer):
+    """The same remap for the scheduler, which keys `base_lrs` by group too.
+
+    Fixing only the optimizer moves the failure one line later: `load_state_dict` overwrites
+    `base_lrs` wholesale, and the next step raises from `zip(..., strict=True)`.
+    """
+    built = _unsloth_base_optimizer(optimizer)
+    if built is None:
+        return scheduler
+    roles = built._unsloth_group_roles
+    base = type(scheduler)
+    if getattr(base, "_unsloth_legacy_resume", False):
+        return scheduler
+
+    # On a per-instance subclass, NOT the instance: a scheduler's state_dict is its __dict__
+    # minus the optimizer, so an instance attribute puts this closure in every checkpoint and
+    # torch.save cannot pickle it, failing the first save even with no resume.
+    def load_state_dict(self, state_dict):
+        state_dict = dict(state_dict)
+        # Gated on the optimizer having just migrated: length alone cannot tell a legacy
+        # [ordinary, embedding] pair from two current non-embedding groups, and remapping
+        # the latter collapses distinct per-group min_lr floors onto the first.
+        if not getattr(built, "_unsloth_loaded_legacy", False):
+            return base.load_state_dict(self, state_dict)
+        for key in ("base_lrs", "_last_lr", "min_lrs"):
+            saved = state_dict.get(key)
+            if isinstance(saved, list) and len(saved) == len(_LEGACY_ROLE_ORDER):
+                by_role = dict(zip(_LEGACY_ROLE_ORDER, saved))
+                state_dict[key] = [by_role[role] for role in roles]
+        return base.load_state_dict(self, state_dict)
+
+    scheduler.__class__ = type(
+        base.__name__,
+        (base,),
+        {"load_state_dict": load_state_dict, "_unsloth_legacy_resume": True},
+    )
+    return scheduler
+
+
+def _install_legacy_resume(optimizer, legacy_params, legacy_sizes, group_roles):
+    """Let `load_state_dict` accept a checkpoint written before the decay split."""
+    optimizer._unsloth_group_roles = list(group_roles)
+    original = optimizer.load_state_dict
+
+    @wraps(original)
+    def load_state_dict(state_dict):
+        saved = state_dict.get("param_groups") or []
+        # Every recognisably legacy checkpoint, not only reshaped ones: torch takes group
+        # hyperparameters from the saved dict, so a LoRA resume, where the layouts coincide,
+        # would otherwise reload the 0.0 this change exists to correct.
+        migrated = _migrate_legacy_optimizer_state(
+            state_dict, optimizer, legacy_params, legacy_sizes, group_roles
+        )
+        # transformers loads the optimizer first, so this is what the scheduler hook reads.
+        optimizer._unsloth_loaded_legacy = migrated is not None
+        if migrated is not None:
+            if [len(group["params"]) for group in saved] != [
+                len(group["params"]) for group in optimizer.param_groups
+            ]:
+                print(
+                    f"Unsloth: remapping {len(saved)} optimizer parameter group(s) from a "
+                    f"checkpoint saved before weight decay was split out onto "
+                    f"{len(optimizer.param_groups)}."
+                )
+            state_dict = migrated
+        return original(state_dict)
+
+    optimizer.load_state_dict = load_state_dict
 
 
 _SUPER_CREATE_OPTIMIZER_TAKES_MODEL = None
@@ -549,8 +938,18 @@ class UnslothTrainer(SFTTrainer):
                 optimizer_kwargs,
                 embedding_learning_rate,
                 require_embedding_match = model is not None,
+                weight_decay = self.args.weight_decay,
+                decay_parameter_names = self.get_decay_parameter_names(target_model),
             )
         return self.optimizer
+
+    def create_scheduler(
+        self,
+        num_training_steps: int,
+        optimizer = None,
+    ):
+        scheduler = super().create_scheduler(num_training_steps, optimizer)
+        return _install_legacy_scheduler_resume(scheduler, optimizer or self.optimizer)
 
     def _create_q_galore_optimizer(
         self,
@@ -929,6 +1328,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             config_arg = kwargs.get("args")
 
         model = args[0] if len(args) >= 1 else kwargs.get("model")
+        model_config = None
         is_vlm = False
         is_unsupported_model = False
         is_hybrid = False
@@ -980,6 +1380,25 @@ def _patch_sft_trainer_auto_packing(trl_module):
         )
 
         # Disable padding-free for VLMs / custom collators / blocklisted models
+        forward_rejects_packing = not _forward_accepts_packing_kwargs(model)
+        _packing_gate_deferred = model is None or isinstance(model, str)
+        # Resolve the class a string names, so that case is an ordinary silent block like
+        # every other reason: after __init__ the only move left is to refuse, the collator
+        # and transformed datasets having been built from the flags by then.
+        _resolved_class = None
+        if _packing_gate_deferred and isinstance(model, str):
+            try:
+                _resolved_class = _resolve_string_model_class(model, model_config, config_arg)
+            except Exception:
+                _resolved_class = None
+            if _resolved_class is not None:
+                forward_rejects_packing = not _forward_signature_accepts_packing(
+                    getattr(_resolved_class, "forward", None)
+                )
+                # `_packing_gate_deferred` deliberately stays True: `auto_map` can name
+                # several classes, so a "yes" from the resolved one is not proof about the
+                # instance. A correct "no" has already turned both flags off, which is the
+                # condition the post-init check skips on, so leaving it armed is free.
         blocked = (
             (data_collator is not None)
             or is_processor
@@ -989,6 +1408,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             or is_encoder_decoder
             or (is_hybrid and not hybrid_varlen_active)
             or (os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1")
+            or forward_rejects_packing
         )
         requested_pack = bool(getattr(config_arg, "packing", False))
         if blocked:
@@ -1011,6 +1431,16 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = "hybrid linear-attention model"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
+            elif forward_rejects_packing:
+                # Name the real blocker, else this falls through to the
+                # UNSLOTH_RETURN_LOGITS branch and points at an unset flag. For a string
+                # `model=` that is the resolved class, not `str`.
+                blocker = (
+                    _resolved_class.__name__
+                    if _resolved_class is not None
+                    else type(model).__name__
+                )
+                reason = f"{blocker}.forward() does not accept packed_seq_lengths"
             elif data_collator is None:
                 # compute_metrics, preprocess_logits_for_metrics, for_inference() and the user can all set it, so
                 # name the flag and not a setter.
@@ -1058,6 +1488,27 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 original_init(self, *args, **kwargs)
             else:
                 raise
+
+        # Backstop for the deferred cases: a `model_init=`, or a string whose class could
+        # not be resolved. It refuses rather than undoing the flags, because TRL has built
+        # its collator from them and (under packing) transformed the datasets, so clearing
+        # them would leave batches flattened with nothing naming the sequence boundaries --
+        # attention and loss crossing examples silently, worse than the TypeError. Re-running
+        # `__init__` would rebuild them but materialize the checkpoint twice, an OOM in
+        # exactly the large-model case this is for.
+        if _packing_gate_deferred and not _forward_accepts_packing_kwargs(
+            getattr(self, "model", None)
+        ):
+            if packing_active or getattr(config_arg, "padding_free", False):
+                raise ValueError(
+                    f"Unsloth: {type(getattr(self, 'model', None)).__name__}.forward cannot "
+                    "take `packed_seq_lengths`, which packing and padding-free both pass, so "
+                    "training would fail on the first step. This could not be detected before "
+                    "the trainer was built because `model` was not given as a model and its "
+                    "class could not be resolved from its config. Either load it first and pass "
+                    "the model itself, and Unsloth will turn the two off for you, or set "
+                    "`packing = False` and `padding_free = False` on the config."
+                )
 
         trainer_args = getattr(self, "args", None)
         trainer_packing = bool(trainer_args and getattr(trainer_args, "packing", False))

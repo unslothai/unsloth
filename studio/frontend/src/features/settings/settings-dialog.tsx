@@ -15,6 +15,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { MicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import {
   BotIcon,
@@ -27,12 +28,12 @@ import {
   Globe02Icon,
   HelpCircleIcon,
   HomeWifiIcon,
-  Message01Icon,
   PaintBrush02Icon,
   Search01Icon,
   Settings02Icon,
-  UserIcon,
+  UserCircleIcon,
 } from "@hugeicons/core-free-icons";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
 import {
@@ -47,6 +48,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import {
   SETTINGS_SEARCH_KEYWORDS,
@@ -182,12 +184,11 @@ interface TabDef {
 }
 
 const TABS: TabDef[] = [
-  { id: "accounts", labelKey: "settings.tabs.accounts", icon: UserIcon },
   { id: "general", labelKey: "settings.tabs.general", icon: Settings02Icon },
   {
     id: "profile",
     labelKey: "settings.tabs.profile",
-    icon: UserIcon,
+    icon: UserCircleIcon,
   },
   {
     id: "appearance",
@@ -202,7 +203,7 @@ const TABS: TabDef[] = [
   {
     id: "chat",
     labelKey: "settings.tabs.chat",
-    icon: Message01Icon,
+    icon: MessageCircleIcon,
   },
   {
     id: "api-keys",
@@ -218,6 +219,12 @@ const TABS: TabDef[] = [
     id: "connections",
     labelKey: "settings.tabs.connections",
     icon: CloudIcon,
+  },
+  {
+    id: "accounts",
+    labelKey: "settings.tabs.accounts",
+    icon: UserCircleIcon,
+    badgeKey: "common.new",
   },
   {
     id: "agents",
@@ -257,9 +264,30 @@ const SETTINGS_SEARCH_INDEX = createSettingsSearchIndex({
       clientPlatform.includes("linux")),
 });
 
+/**
+ * Stack the tab rail over the pane when the dialog is narrower than it is at
+ * sm (608px, 640px less its 2rem margin) scaled by the UI. At 100% that is
+ * max-sm exactly; at 200% the 960px cap is always too narrow.
+ */
+function useStackedLayout(): boolean {
+  const width = 608 * useUiSpaceScale();
+  const query = `(width < ${width + 32}px)`;
+  const narrow = useSyncExternalStore(
+    (onChange) => {
+      const list = window.matchMedia(query);
+      list.addEventListener("change", onChange);
+      return () => list.removeEventListener("change", onChange);
+    },
+    () => window.matchMedia(query).matches,
+    () => false,
+  );
+  return width > 960 || narrow;
+}
+
 export function SettingsDialog() {
   const t = useT();
   const isOwner = useIsAccountOwner();
+  const stacked = useStackedLayout();
   const visibleTabs = useMemo(() => TABS.filter((tab) => settingsTabVisible(tab.id, isOwner)), [isOwner]);
   const open = useSettingsDialogStore((s) => s.open);
   const requestedTab = useSettingsDialogStore((s) => s.activeTab);
@@ -451,6 +479,8 @@ export function SettingsDialog() {
             // breakpoint: a plain h-dvh wins tailwind-merge and would hang the surface
             // (and its overflow-hidden bottom edge) below the window. 0px on web.
             "max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))] max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
+            // Larger surface on 4K / ultrawide.
+            "4xl:w-[min(1120px,calc(100vw-2rem))] 4xl:!max-w-[min(1120px,calc(100vw-2rem))] 4xl:h-[min(940px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))]",
           )}
         >
           <DialogTitle className="sr-only">
@@ -460,11 +490,20 @@ export function SettingsDialog() {
             {t("settings.dialog.description")}
           </DialogDescription>
           {/* Keep tab content from expanding the dialog grid. */}
-          <div className="flex h-full min-h-0 min-w-0 w-full max-sm:flex-col">
+          <div
+            data-stacked={stacked || undefined}
+            className="group/settings flex h-full min-h-0 min-w-0 w-full data-stacked:flex-col"
+          >
             {/* Match the app shell: tabs on the sidebar fill, content on the
                 page fill, so both track the active palette. */}
-            <aside className="font-heading flex w-[248px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-sidebar-border">
-              <div className="relative mx-1 mt-3 mb-2 shrink-0 max-sm:hidden">
+            <aside
+              className={cn(
+                "font-heading flex w-[min(calc(248px*var(--ui-space-scale,1)),50%)] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground p-2 dark:border-r-0 group-data-stacked/settings:w-full group-data-stacked/settings:border-r-0 group-data-stacked/settings:border-b group-data-stacked/settings:border-sidebar-border",
+                // Narrower rail on tablets, unless the scale has stacked it.
+                !stacked && "md:max-lg:w-[min(calc(208px*var(--ui-space-scale,1)),50%)]",
+              )}
+            >
+              <div className="relative mx-1 mt-3 mb-2 shrink-0 group-data-stacked/settings:hidden">
                 <HugeiconsIcon
                   icon={Search01Icon}
                   strokeWidth={2}
@@ -481,7 +520,7 @@ export function SettingsDialog() {
                   }}
                   placeholder={t("settings.dialog.searchPlaceholder")}
                   aria-label={t("settings.dialog.searchPlaceholder")}
-                  className="h-8 w-full rounded-full border border-border bg-background pr-8 pl-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-white/[0.12] dark:border-transparent dark:bg-white/[0.06]"
+                  className="h-8 w-full rounded-full border border-border bg-background pr-8 pl-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"
                 />
                 {query && (
                   <button
@@ -495,7 +534,7 @@ export function SettingsDialog() {
                 )}
               </div>
               {results ? (
-                <div className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-1 py-1 max-sm:hidden">
+                <div className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-1 py-1 group-data-stacked/settings:hidden">
                   {results.length === 0 ? (
                     <p className="px-3 py-2 text-sm text-muted-foreground">
                       {t("settings.dialog.searchNoResults")}
@@ -506,7 +545,7 @@ export function SettingsDialog() {
                         <button
                           type="button"
                           onClick={() => openResult(tab.id)}
-                          className="flex h-[30px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-13p5 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                          className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-13p5 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                         >
                           {tab.iconComponent ? (
                             <tab.iconComponent className="size-icon shrink-0" />
@@ -524,7 +563,7 @@ export function SettingsDialog() {
                             key={entry}
                             type="button"
                             onClick={() => openResult(tab.id, entry)}
-                            className="flex h-[30px] items-center rounded-full pl-10 pr-2.5 text-left text-ui-14 text-sidebar-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                            className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center rounded-full pl-10 pr-2.5 text-left text-ui-14 text-sidebar-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                           >
                             <span className="min-w-0 truncate">{entry}</span>
                           </button>
@@ -536,7 +575,7 @@ export function SettingsDialog() {
               ) : null}
               <p
                 className={cn(
-                  "shrink-0 pl-4 pt-3 pb-2.5 text-ui-13 font-medium text-muted-foreground max-sm:hidden",
+                  "shrink-0 pl-4 pt-3 pb-2.5 text-ui-13 font-medium text-muted-foreground group-data-stacked/settings:hidden",
                   results !== null && "hidden",
                 )}
               >
@@ -548,8 +587,8 @@ export function SettingsDialog() {
                   // leaves it taller than the sidebar, and the dialog clips its
                   // overflow, so scroll it rather than losing the last tabs.
                   "hover-scrollbar flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1 py-1",
-                  "max-sm:flex-none max-sm:flex-row max-sm:overflow-x-auto max-sm:py-0",
-                  results !== null && "max-sm:flex hidden",
+                  "group-data-stacked/settings:flex-none group-data-stacked/settings:flex-row group-data-stacked/settings:overflow-x-auto group-data-stacked/settings:py-0",
+                  results !== null && "group-data-stacked/settings:flex hidden",
                 )}
               >
                 {visibleTabs.map((tab) => {
@@ -565,16 +604,16 @@ export function SettingsDialog() {
                       type="button"
                       onClick={() => setActiveTab(tab.id)}
                       className={cn(
-                        "relative flex h-[32px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-14p5 leading-ui-19 tracking-nav font-medium transition-colors",
+                        "relative flex h-[calc(32px*var(--ui-space-scale,1))] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-14p5 leading-ui-19 tracking-nav font-medium transition-colors",
                         // Keep the row height when the list scrolls: a flex item
-                        // shrinks past h-[32px] down to its text otherwise.
+                        // shrinks past h-[calc(32px*var(--ui-space-scale,1))] down to its text otherwise.
                         "shrink-0",
                         "focus-visible:outline-none",
                         // The active pill already marks the current tab, so
                         // only unselected items get a keyboard focus ring.
                         active
                           ? "text-accent-foreground"
-                          : "text-[#383835] dark:text-[#c7c7c4] hover:bg-accent hover:text-accent-foreground focus-visible:ring-1 focus-visible:ring-ring",
+                          : "text-[#383835] dark:text-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-1 focus-visible:ring-ring",
                       )}
                     >
                       {active && (
@@ -620,7 +659,7 @@ export function SettingsDialog() {
               <button
                 type="button"
                 onClick={closeDialog}
-                className="absolute top-3 end-3 z-10 flex size-[30px] items-center justify-center rounded-[10px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="absolute top-3 end-3 z-10 flex size-[calc(30px*var(--ui-space-scale,1))] items-center justify-center rounded-[10px] text-[#383835] dark:text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 aria-label={t("settings.dialog.closeAriaLabel")}
               >
                 <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
