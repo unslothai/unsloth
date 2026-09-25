@@ -23278,10 +23278,7 @@ def _sse_line_finishes(line: str) -> bool:
 
 
 class _TurnFinish:
-    """Whether a stream's last provider turn carried a finish_reason.
-
-    The tool loop relays each intermediate turn's "tool_calls" finish, so only the final turn counts.
-    """
+    """Whether a stream's last provider turn carried a finish_reason (the tool loop relays intermediate ones)."""
 
     def __init__(self) -> None:
         self.turn = False

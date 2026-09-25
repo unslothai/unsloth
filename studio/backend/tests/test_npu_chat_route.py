@@ -1082,11 +1082,8 @@ def test_a_tool_loop_turn_dropped_after_a_tool_call_is_cut_short():
     answered = [_chunk({"content": "sunny"}), _chunk({}, "stop")]
     assert _finish_after([called, dropped]) is False
     assert _finish_after([called, answered]) is True
-    # The loop can stop on a call it will not run; that turn did finish.
     assert _finish_after([called]) is True
-    # A headerless caller's synthetic terminal counts.
     assert _finish_after([dropped], owed = _chunk({}, "stop").strip()) is True
-    # No tool loop: no turn boundary is reported, and any finish counts.
     from routes.inference import _TurnFinish
 
     plain = _TurnFinish()
