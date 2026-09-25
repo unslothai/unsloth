@@ -6766,7 +6766,6 @@ class VideoBackend:
                 )
                 if sample_rate:
                     encode_kwargs["audio_sample_rate"] = int(sample_rate)
-            # Opt-in NVENC (video_nvenc); libx264 whenever it is off, unavailable or fails mid-encode.
             gpu = nvenc_gpu(logger = logger)
             if gpu is None or not encode_nvenc(
                 video_frames,
