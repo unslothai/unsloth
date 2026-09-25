@@ -255,7 +255,13 @@ def test_the_recorded_base_must_be_the_canonical_id_not_just_the_same_tail(capsy
         assert rc != 2 or "is not" not in capsys.readouterr().out, accepted
 
 
-def _build_nvfp4(monkeypatch, tmp_path, fam = None, extra_argv = (), loaded = None):
+def _build_nvfp4(
+    monkeypatch,
+    tmp_path,
+    fam = None,
+    extra_argv = (),
+    loaded = None,
+):
     """Run the build on a tiny aligned + ragged dense model; returns (quantized names, metadata)."""
     torch = pytest.importorskip("torch")
     pytest.importorskip("torchao")
@@ -351,7 +357,10 @@ def test_the_second_expert_builds_from_its_own_subfolder_and_loads_as_transforme
     # A component the family declares no row for would land where nothing ever looks.
     with pytest.raises(ValueError, match = "transformer_2"):
         build.upload_destination(
-            detect_family("Tongyi-MAI/Z-Image-Turbo"), "nvfp4", rotated = False, component = "transformer_2"
+            detect_family("Tongyi-MAI/Z-Image-Turbo"),
+            "nvfp4",
+            rotated = False,
+            component = "transformer_2",
         )
 
 
