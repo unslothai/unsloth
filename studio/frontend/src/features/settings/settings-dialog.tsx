@@ -270,6 +270,7 @@ const SETTINGS_SEARCH_INDEX = createSettingsSearchIndex({
     (clientPlatform.startsWith("win") ||
       clientPlatform.includes("windows") ||
       clientPlatform.includes("linux")),
+  menuBarIcon: isTauri && clientPlatform.includes("mac"),
 });
 
 /**

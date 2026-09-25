@@ -57,6 +57,13 @@ const IN_APP_RELAUNCH_MARKER_FILE: &str = "in-app-relaunch-v1";
 
 const CLOSE_TO_TRAY_PREFERENCE_FILE: &str = "close-to-tray-v1";
 
+/// Whether the macOS menu bar icon is shown. Absent or unreadable means shown: hiding is opt-in,
+/// and a hidden start without the icon keeps its Dock icon instead (see `.setup`).
+const TRAY_ICON_VISIBLE_PREFERENCE_FILE: &str = "tray-icon-visible-v1";
+
+/// Stable id so `AppHandle::tray_by_id` can find the tray built in `setup_tray` from a command.
+const TRAY_ID: &str = "main";
+
 /// The user's answer to "Run Unsloth at login", kept beside the OS entry rather than derived
 /// from it. The Windows entry is one HKCU Run value that outside things delete without asking:
 /// the NSIS uninstaller drops it on any non-update run (installer.nsi), and an antivirus
@@ -204,6 +211,62 @@ fn write_close_to_tray_preference(config_dir: &Path, enabled: bool) -> Result<()
     })
 }
 
+fn tray_icon_visible_preference_path(config_dir: &Path) -> PathBuf {
+    config_dir.join(TRAY_ICON_VISIBLE_PREFERENCE_FILE)
+}
+
+fn read_tray_icon_visible_preference(config_dir: &Path) -> bool {
+    let path = tray_icon_visible_preference_path(config_dir);
+    match fs::read_to_string(&path) {
+        Ok(value) => match value.trim().parse::<bool>() {
+            Ok(visible) => visible,
+            Err(error) => {
+                warn!(
+                    "Ignoring invalid tray icon visibility preference {}: {error}",
+                    path.display()
+                );
+                true
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => {
+            warn!(
+                "Could not read tray icon visibility preference {}: {error}",
+                path.display()
+            );
+            true
+        }
+    }
+}
+
+fn write_tray_icon_visible_preference(config_dir: &Path, visible: bool) -> Result<(), String> {
+    fs::create_dir_all(config_dir).map_err(|error| {
+        format!(
+            "Failed to create app configuration directory {}: {error}",
+            config_dir.display()
+        )
+    })?;
+    let path = tray_icon_visible_preference_path(config_dir);
+    fs::write(&path, format!("{visible}\n")).map_err(|error| {
+        format!(
+            "Failed to save tray icon visibility preference {}: {error}",
+            path.display()
+        )
+    })
+}
+
+/// The stored visibility, defaulting to shown when the app configuration directory itself is
+/// unavailable: hiding is opt-in, and losing the setting must never strand the app trayless.
+fn stored_tray_icon_visible_preference(app: &tauri::AppHandle) -> bool {
+    app.path()
+        .app_config_dir()
+        .map(|dir| read_tray_icon_visible_preference(&dir))
+        .unwrap_or_else(|error| {
+            warn!("Could not determine app configuration directory: {error}");
+            true
+        })
+}
+
 fn launch_at_login_preference_path(config_dir: &Path) -> PathBuf {
     config_dir.join(LAUNCH_AT_LOGIN_PREFERENCE_FILE)
 }
@@ -307,6 +370,54 @@ fn set_close_to_tray(
         .map_err(|error| format!("Could not determine app configuration directory: {error}"))?;
     write_close_to_tray_preference(&config_dir, enabled)?;
     state.0.store(enabled, Ordering::SeqCst);
+    Ok(enabled)
+}
+
+#[tauri::command]
+fn get_tray_icon_visible(app: tauri::AppHandle) -> Option<bool> {
+    cfg!(target_os = "macos").then(|| stored_tray_icon_visible_preference(&app))
+}
+
+/// tray-icon removes the macOS status item when hidden and builds a new one when shown, so the
+/// appearance observer has to move to the new button or the artwork stops following light/dark.
+fn apply_tray_icon_visible(tray: &tauri::tray::TrayIcon, visible: bool) -> tauri::Result<()> {
+    tray.set_visible(visible)?;
+    #[cfg(target_os = "macos")]
+    if visible {
+        if let Err(error) = macos_tray::install_appearance_observer(tray) {
+            // The template icon remains visible and adaptive if native observation is unavailable.
+            warn!("Could not install the macOS tray appearance observer: {error}");
+        }
+    } else {
+        macos_tray::remove_appearance_observer();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_tray_icon_visible(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    if !cfg!(target_os = "macos") {
+        return Err("The menu bar icon is only configurable on macOS".to_string());
+    }
+    let tray = app
+        .tray_by_id(TRAY_ID)
+        .ok_or_else(|| "Menu bar icon is not available".to_string())?;
+    let previous = stored_tray_icon_visible_preference(&app);
+    apply_tray_icon_visible(&tray, enabled)
+        .map_err(|error| format!("Could not update the menu bar icon: {error}"))?;
+    let persisted = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("Could not determine app configuration directory: {error}"))
+        .and_then(|config_dir| write_tray_icon_visible_preference(&config_dir, enabled));
+    if let Err(error) = persisted {
+        // The icon already changed; a failed save must not leave it out of sync with the
+        // (unsaved) preference, which would make the toggle lie on the next launch.
+        if let Err(restore_error) = apply_tray_icon_visible(&tray, previous) {
+            warn!("Could not restore the previous menu bar icon visibility: {restore_error}");
+        }
+        return Err(error);
+    }
     Ok(enabled)
 }
 
@@ -1745,7 +1856,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(target_os = "macos"))]
     let tray_icon = app.default_window_icon().unwrap().clone();
 
-    let tray = TrayIconBuilder::new()
+    let tray = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
         .tooltip("Unsloth")
         .icon(tray_icon)
@@ -1771,9 +1882,11 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .build(app)?;
 
     #[cfg(target_os = "macos")]
-    if let Err(error) = macos_tray::install_appearance_observer(&tray) {
-        // The template icon remains visible and adaptive if native observation is unavailable.
-        warn!("Could not install the macOS tray appearance observer: {error}");
+    {
+        let visible = stored_tray_icon_visible_preference(app.handle());
+        if let Err(error) = apply_tray_icon_visible(&tray, visible) {
+            warn!("Could not apply the stored tray icon visibility: {error}");
+        }
     }
     #[cfg(not(target_os = "macos"))]
     drop(tray);
@@ -2205,6 +2318,8 @@ fn main() {
             set_close_to_tray,
             get_launch_at_login,
             set_launch_at_login,
+            get_tray_icon_visible,
+            set_tray_icon_visible,
             set_tray_server_status,
         ])
         .setup(|app| {
@@ -2213,7 +2328,8 @@ fn main() {
             #[cfg(not(target_os = "macos"))]
             let _ = launched_hidden;
             #[cfg(target_os = "macos")]
-            if launched_hidden {
+            // Without a menu bar icon the Dock icon is the only way back to a hidden start.
+            if launched_hidden && stored_tray_icon_visible_preference(app.handle()) {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
 
@@ -2547,6 +2663,27 @@ media-src 'self' https:"
         fs::write(close_to_tray_preference_path(dir.path()), b"maybe\n").unwrap();
 
         assert!(!read_close_to_tray_preference(dir.path()));
+    }
+
+    #[test]
+    fn tray_icon_visible_preference_defaults_on_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Shown by default: hiding is opt-in, and a never-configured install must not lose its
+        // only way back from a hidden start.
+        assert!(read_tray_icon_visible_preference(dir.path()));
+        write_tray_icon_visible_preference(dir.path(), false).unwrap();
+        assert!(!read_tray_icon_visible_preference(dir.path()));
+        write_tray_icon_visible_preference(dir.path(), true).unwrap();
+        assert!(read_tray_icon_visible_preference(dir.path()));
+    }
+
+    #[test]
+    fn invalid_tray_icon_visible_preference_falls_back_to_visible() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(tray_icon_visible_preference_path(dir.path()), b"maybe\n").unwrap();
+
+        assert!(read_tray_icon_visible_preference(dir.path()));
     }
 
     #[test]

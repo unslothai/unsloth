@@ -1031,6 +1031,11 @@ export const ko = {
         closeToTrayDescription:
           "기본 창을 닫아도 Unsloth와 서버가 백그라운드에서 계속 실행되도록 합니다.",
         closeToTraySaveError: "시스템 트레이로 닫기 설정을 업데이트하지 못했습니다.",
+
+        menuBarIcon: "메뉴 막대에 표시",
+        menuBarIconDescription:
+          "macOS 메뉴 막대에 Unsloth 아이콘을 표시합니다. 숨기면 로그인 시 시작된 경우를 포함해 Unsloth는 Dock에 남아 있습니다.",
+        menuBarIconSaveError: "메뉴 막대 아이콘 설정을 업데이트하지 못했습니다.",
         loadError: "로그인 시 실행 설정을 불러오지 못했습니다.",
         saveError: "로그인 시 실행 설정을 업데이트하지 못했습니다.",
       },

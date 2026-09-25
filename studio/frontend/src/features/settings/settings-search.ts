@@ -288,9 +288,11 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
 export function createSettingsSearchIndex({
   desktop,
   closeToTray,
+  menuBarIcon,
 }: {
   desktop: boolean;
   closeToTray: boolean;
+  menuBarIcon: boolean;
 }): Record<SettingsTab, TranslationKey[]> {
   if (!desktop) {
     return SETTINGS_SEARCH_INDEX;
@@ -303,6 +305,7 @@ export function createSettingsSearchIndex({
       "settings.general.startup.sectionTitle",
       "settings.general.startup.launchAtLogin",
       ...(closeToTray ? (["settings.general.startup.closeToTray"] as const) : []),
+      ...(menuBarIcon ? (["settings.general.startup.menuBarIcon"] as const) : []),
       // Desktop only, like the row itself: DesktopRepairControl renders nothing without a
       // Tauri repair controller, so indexing it on the web build would scroll to a row
       // that is not there. Worth indexing at all because the capability message for a host

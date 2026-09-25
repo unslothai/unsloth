@@ -1037,6 +1037,11 @@ export const hi = {
         closeToTrayDescription:
           "मुख्य विंडो बंद करने पर Unsloth और उसके सर्वर को बैकग्राउंड में चलते रहने दें।",
         closeToTraySaveError: "सिस्टम ट्रे में बंद करने की सेटिंग अपडेट नहीं हो सकी।",
+
+        menuBarIcon: "मेनू बार में दिखाएं",
+        menuBarIconDescription:
+          "macOS मेनू बार में Unsloth आइकन दिखाएं। छिपाने पर, Unsloth इसके बजाय Dock में बना रहता है, यहां तक कि लॉगिन पर शुरू होने पर भी।",
+        menuBarIconSaveError: "मेनू बार आइकन सेटिंग अपडेट नहीं हो सकी।",
         loadError: "लॉगिन पर चलाने की सेटिंग लोड नहीं हो सकी।",
         saveError: "लॉगिन पर चलाने की सेटिंग अपडेट नहीं हो सकी।",
       },

@@ -1052,6 +1052,12 @@ export const es = {
           "Mantén Unsloth y su servidor ejecutándose en segundo plano al cerrar la ventana principal.",
         closeToTraySaveError:
           "No se pudo actualizar el ajuste de cierre en la bandeja del sistema.",
+
+        menuBarIcon: "Mostrar en la barra de menús",
+        menuBarIconDescription:
+          "Muestra el icono de Unsloth en la barra de menús de macOS. Cuando está oculto, Unsloth permanece en el Dock, incluso al iniciarse con el inicio de sesión.",
+        menuBarIconSaveError:
+          "No se pudo actualizar el ajuste del icono de la barra de menús.",
         loadError: "No se pudo cargar el ajuste de inicio automático.",
         saveError: "No se pudo actualizar el ajuste de inicio automático.",
       },

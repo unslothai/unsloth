@@ -1027,6 +1027,12 @@ export const it = {
           "Mantieni Unsloth e il suo server in esecuzione in background quando chiudi la finestra principale.",
         closeToTraySaveError:
           "Impossibile aggiornare l'impostazione di chiusura nell'area di notifica.",
+
+        menuBarIcon: "Mostra nella barra dei menu",
+        menuBarIconDescription:
+          "Mostra l'icona di Unsloth nella barra dei menu di macOS. Se nascosta, Unsloth rimane nel Dock, anche quando si avvia all'accesso.",
+        menuBarIconSaveError:
+          "Impossibile aggiornare l'impostazione dell'icona nella barra dei menu.",
         loadError: "Impossibile caricare l'impostazione di avvio all'accesso.",
         saveError:
           "Impossibile aggiornare l'impostazione di avvio all'accesso.",

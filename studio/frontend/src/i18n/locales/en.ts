@@ -1040,6 +1040,11 @@ export const en = {
         closeToTrayDescription:
           "Keep Unsloth and its server running in the background when you close the main window.",
         closeToTraySaveError: "Failed to update the close to system tray setting.",
+
+        menuBarIcon: "Show in menu bar",
+        menuBarIconDescription:
+          "Show the Unsloth icon in the macOS menu bar. When hidden, Unsloth stays in the Dock instead, including when it starts at login.",
+        menuBarIconSaveError: "Failed to update the menu bar icon setting.",
         loadError: "Failed to load the launch at login setting.",
         saveError: "Failed to update the launch at login setting.",
       },

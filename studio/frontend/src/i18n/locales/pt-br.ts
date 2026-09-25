@@ -1043,6 +1043,12 @@ export const ptBR = {
           "Mantém o Unsloth e seu servidor em execução em segundo plano ao fechar a janela principal.",
         closeToTraySaveError:
           "Não foi possível atualizar a configuração de fechar para a bandeja do sistema.",
+
+        menuBarIcon: "Mostrar na barra de menus",
+        menuBarIconDescription:
+          "Mostra o ícone do Unsloth na barra de menus do macOS. Quando oculto, o Unsloth permanece no Dock, inclusive quando é iniciado no login.",
+        menuBarIconSaveError:
+          "Não foi possível atualizar a configuração do ícone da barra de menus.",
         loadError:
           "Não foi possível carregar a configuração de inicialização no login.",
         saveError:

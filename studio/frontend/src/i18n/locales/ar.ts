@@ -1034,6 +1034,11 @@ export const ar = {
         closeToTrayDescription:
           "إبقاء Unsloth وخادمه قيد التشغيل في الخلفية عند إغلاق النافذة الرئيسية.",
         closeToTraySaveError: "تعذّر تحديث إعداد الإغلاق إلى علبة النظام.",
+
+        menuBarIcon: "الإظهار في شريط القوائم",
+        menuBarIconDescription:
+          "إظهار أيقونة Unsloth في شريط القوائم في macOS. عند إخفائها، يبقى Unsloth في الـ Dock، حتى عند بدء التشغيل عند تسجيل الدخول.",
+        menuBarIconSaveError: "تعذّر تحديث إعداد أيقونة شريط القوائم.",
         loadError: "تعذر تحميل إعداد التشغيل عند تسجيل الدخول.",
         saveError: "تعذر تحديث إعداد التشغيل عند تسجيل الدخول.",
       },
