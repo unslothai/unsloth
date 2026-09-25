@@ -282,3 +282,19 @@ def test_cached_steps_do_not_sync_the_host():
                 )
             finally:
                 torch.cuda.set_sync_debug_mode("default")
+
+
+def test_digest_ignores_docstrings_comments_and_blank_lines_only():
+    import linecache
+
+    src = "def f(x):\n    '''doc'''\n    # note\n    y = x + 1  # why\n\n    return y\n"
+    other = "def f(x):\n    y = x + 1\n    return y\n"
+    changed = "def f(x):\n    y = x + 2\n    return y\n"
+    digests = []
+    for i, text in enumerate((src, other, changed)):
+        name = f"<q21-digest-{i}>"
+        linecache.cache[name] = (len(text), None, text.splitlines(True), name)
+        scope: dict = {}
+        exec(compile(text, name, "exec"), scope)
+        digests.append(q._digest(scope["f"]))
+    assert digests[0] == digests[1] != digests[2]

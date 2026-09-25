@@ -17,9 +17,9 @@ step). On the cached (decode) steps the stock forward projects the text and then
 projection is skipped, and only the rows the blocks read are written.
 
 Installed on the class only when the installed diffusers' functions are the ones this was written
-against (an AST fingerprint, so comments and formatting do not matter); any other version keeps the
-stock forward. Training (grad enabled) and a whole-model ``torch.compile`` trace take the stock
-forward. Kill switch: ``UNSLOTH_DIFFUSION_Q21_FAST_STEP=0``.
+against (a source fingerprint that ignores docstrings, comments and blank lines); any other version
+keeps the stock forward. Training (grad enabled) and a whole-model ``torch.compile`` trace take the
+stock forward. Kill switch: ``UNSLOTH_DIFFUSION_Q21_FAST_STEP=0``.
 """
 
 from __future__ import annotations
@@ -28,10 +28,12 @@ import ast
 import functools
 import hashlib
 import inspect
+import io
 import math
 import os
 import textwrap
 import threading
+import tokenize
 import weakref
 from typing import Any, Optional
 
@@ -40,13 +42,13 @@ FAST_STEP_ENV = "UNSLOTH_DIFFUSION_Q21_FAST_STEP"
 _MODULE = "diffusers.models.transformers.transformer_qwenimage21"
 _CLASS = "QwenImage21Transformer2DModel"
 
-# AST digests (docstrings stripped) of every stock function whose behaviour the fast forward relies
+# Source digests (``_digest``) of every stock function whose behaviour the fast forward relies
 # on, as shipped from the diffusers commit that added Qwen-Image 2.1 through current main.
 _FINGERPRINTS: dict[str, frozenset] = {
-    "forward": frozenset({"f0a2a2499000e3b0"}),
-    "build_token_metadata": frozenset({"e8d66e6363228196"}),
-    "rope_forward": frozenset({"8f24e164e1e9cd0b"}),
-    "prefix_segments": frozenset({"91584d4ec24348bf"}),
+    "forward": frozenset({"7c1fd48f75efbe41"}),
+    "build_token_metadata": frozenset({"51818c1674e0d406"}),
+    "rope_forward": frozenset({"f9e064940341e3ee"}),
+    "prefix_segments": frozenset({"27729cffc22b0aa5"}),
 }
 
 # Layouts kept per transformer: a render needs one per prompt layout (cond and uncond can differ).
@@ -62,11 +64,19 @@ def fast_step_disabled() -> bool:
 
 
 def _digest(fn: Any) -> Optional[str]:
-    """Hash of ``fn``'s AST with docstrings removed, or None when its source is unreadable."""
+    """Hash of ``fn``'s source without docstrings, comments or blank lines, or None when unreadable.
+    Source text, not ``ast.dump``, whose output changes between Python versions."""
     try:
-        tree = ast.parse(textwrap.dedent(inspect.getsource(inspect.unwrap(fn))))
-    except (OSError, TypeError, SyntaxError, ValueError):
+        src = textwrap.dedent(inspect.getsource(inspect.unwrap(fn)))
+        tree = ast.parse(src)
+        comments = [
+            tok.start for tok in tokenize.generate_tokens(io.StringIO(src).readline) if tok.type == tokenize.COMMENT
+        ]
+    except (OSError, TypeError, SyntaxError, ValueError, tokenize.TokenError):
         return None
+    lines = src.splitlines()
+    for row, col in comments:
+        lines[row - 1] = lines[row - 1][:col]
     for node in ast.walk(tree):
         body = getattr(node, "body", None)
         if (
@@ -76,8 +86,10 @@ def _digest(fn: Any) -> Optional[str]:
             and isinstance(getattr(body[0], "value", None), ast.Constant)
             and isinstance(body[0].value.value, str)
         ):
-            node.body = body[1:] or [ast.Pass()]
-    return hashlib.sha256(ast.dump(tree, annotate_fields = False).encode()).hexdigest()[:16]
+            for row in range(body[0].lineno, body[0].end_lineno + 1):
+                lines[row - 1] = ""
+    text = "\n".join(line.rstrip() for line in lines if line.strip())
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
 def stock_digests(module: Any) -> dict[str, Optional[str]]:
