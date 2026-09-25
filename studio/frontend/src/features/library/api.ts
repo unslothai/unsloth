@@ -7,6 +7,7 @@ import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { libraryFileName, libraryFileType } from "./file-name";
 import { type DecodedNote, type NoteEncoding, decodeNote } from "./note-text";
+import { streamUrlPath } from "./stream-source";
 
 export type LibrarySource = "uploaded" | "generated";
 
@@ -267,17 +268,14 @@ export async function fetchLibraryBlob(item: LibraryItem, type: string): Promise
 }
 
 /**
- * A short-lived signed link a <video> can stream a Video page clip from, with range requests,
- * instead of buffering the whole file. Minted by the Video gallery's own route (bearer-gated to
- * mint, HMAC to use), so no long-lived token ends up in a URL.
+ * A short-lived signed link an <audio> or <video> element streams the item from, with range
+ * requests, instead of buffering the whole file. Bearer-gated to mint, HMAC to use, and good for
+ * this one item only, so no long-lived token ends up in a URL.
  */
-export async function fetchLibraryVideoUrl(item: LibraryItem): Promise<string> {
-  const id = item.id.slice(item.id.indexOf(":") + 1);
-  const response = await ensureOk(
-    await authFetch(`/api/inference/video/gallery/${encodeURIComponent(id)}/signed-url`),
-  );
+export async function fetchLibraryStreamUrl(item: LibraryItem): Promise<string> {
+  const response = await ensureOk(await authFetch(streamUrlPath(item.id)));
   const { url } = (await response.json()) as { url?: string };
-  if (!url) throw new Error(translate("library.toast.noVideoLink"));
+  if (!url) throw new Error(translate("library.toast.noMediaLink"));
   // Absolute, since the element fetches it without authFetch, and under Tauri a relative path
   // resolves against the webview.
   return apiUrl(url);
