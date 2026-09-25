@@ -18,8 +18,8 @@ from types import SimpleNamespace
 from . import mxc_adapter, mxc_policy, mxc_runtime
 
 _lock = threading.Lock()
-_cache: dict[tuple[str, str, str, str], tuple[float, bool, str]] = {}
-_inflight: dict[tuple[str, str, str, str], threading.Event] = {}
+_cache: dict[tuple, tuple[float, bool, str]] = {}
+_inflight: dict[tuple, threading.Event] = {}
 POSITIVE_TTL = 300.0
 NEGATIVE_TTL = 30.0
 
@@ -240,6 +240,7 @@ def probe(
         mxc_runtime.PROFILE_ID,
         execution_kind,
         os.path.abspath(selected_executable),
+        mxc_policy.dacl_fallback_enabled(),
     )
     while True:
         with _lock:

@@ -17,11 +17,13 @@ import unicodedata
 import uuid
 
 from . import os_sandbox
+from . import mxc_runtime
 from .mxc_runtime import MXC_SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
 
 MAX_ENVIRONMENT_ENTRIES = 512
+DACL_FALLBACK_ENV = "UNSLOTH_MXC_ALLOW_DACL_FALLBACK"
 _WSL_TERMINAL_MARKERS = ("\\system32\\bash.exe", "\\windowsapps\\bash.exe")
 
 
@@ -45,6 +47,20 @@ def _studio_ui_policy() -> dict:
 
 class MxcPolicyError(RuntimeError):
     pass
+
+
+def dacl_fallback_enabled() -> bool:
+    """Host opt-in to MXC's AppContainer tier, which temporarily adds ACEs to the granted host paths."""
+    return os.environ.get(DACL_FALLBACK_ENV, "").strip() == "1"
+
+
+def _reject_grants_over_dacl_journal(grants: list[str]) -> None:
+    # A workload that can write the journal chooses which ACLs wxc-exec rewrites on recovery.
+    journal = os.path.normcase(os.path.realpath(mxc_runtime.dacl_state_path()))
+    for grant in grants:
+        root = os.path.normcase(grant).rstrip("\\/")
+        if journal == root or journal.startswith(root + os.sep):
+            raise MxcPolicyError(f"an MXC grant would expose the DACL restore journal: {grant}")
 
 
 def _object_identity(path: str, *, directory: bool) -> dict[str, int]:
@@ -276,6 +292,7 @@ def build_launch_request(plan, *, run_id: str | None = None) -> dict:
     selected_runtime = _selected_runtime(plan)
     readonly = _runtime_read_roots(selected_runtime)
     readonly += _model_read_roots(workdir, readonly)
+    _reject_grants_over_dacl_journal([workdir, *readonly])
     execution_argv = list(plan.argv)
     execution_argv[0] = selected_runtime
     run_id = run_id or uuid.uuid4().hex
@@ -315,7 +332,7 @@ def build_launch_request(plan, *, run_id: str | None = None) -> dict:
             "ui": ui_policy["processContainer"]["ui"],
         },
         "ui": ui_policy["ui"],
-        "fallback": {"allowDaclMutation": False},
+        "fallback": {"allowDaclMutation": dacl_fallback_enabled()},
     }
     request = {
         "runtimePath": os.path.realpath(selected_runtime),

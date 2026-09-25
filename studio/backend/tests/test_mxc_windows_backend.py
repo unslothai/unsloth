@@ -17,6 +17,14 @@ import pytest
 from core.inference import mxc_runtime, os_sandbox, tools
 
 
+@pytest.fixture(autouse = True)
+def _dacl_journal_outside_grants(monkeypatch, tmp_path):
+    # A venv at a checkout root puts tmp_path under the sys.prefix grant, which the journal guard refuses.
+    outside = Path(os.path.abspath(os.sep)) / "unsloth-test-dacl-journal-never-created"
+    monkeypatch.setattr(mxc_runtime, "dacl_state_path", lambda: outside)
+    monkeypatch.setattr(mxc_runtime, "dacl_state_dir", lambda: tmp_path)
+
+
 def _plan(tmp_path, mode = "auto"):
     return os_sandbox.ToolLaunchPlan(
         argv = (str(Path(__file__).resolve()), "arg"),

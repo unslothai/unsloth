@@ -32,7 +32,10 @@ class MxcLaunchCancelled(MxcAdapterError):
 
 def _control_environment() -> dict[str, str]:
     allowed = {"SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP", "PROGRAMDATA"}
-    return {key: value for key, value in os.environ.items() if key.upper() in allowed}
+    env = {key: value for key, value in os.environ.items() if key.upper() in allowed}
+    # Always set, even with the fallback off: recovery at every start must read the same journal.
+    env["MXC_DACL_STATE_DIR"] = str(mxc_runtime.dacl_state_dir())
+    return env
 
 
 def spawn(
@@ -56,8 +59,17 @@ def spawn(
         raise MxcAdapterError("the MXC configuration changed before dispatch", stage = "policy")
     if mxc_policy.compute_policy_hash(config) != request.get("policyHash"):
         raise MxcAdapterError("the MXC configuration hash is invalid", stage = "policy")
-    if config.get("fallback") != {"allowDaclMutation": False}:
-        raise MxcAdapterError("MXC DACL fallback is not disabled", stage = "policy")
+    fallback = config.get("fallback")
+    if (
+        not isinstance(fallback, dict)
+        or set(fallback) != {"allowDaclMutation"}
+        or type(fallback["allowDaclMutation"]) is not bool
+    ):
+        raise MxcAdapterError("the MXC DACL fallback policy is malformed", stage = "policy")
+    if fallback["allowDaclMutation"] and not mxc_policy.dacl_fallback_enabled():
+        raise MxcAdapterError(
+            "MXC DACL fallback is not enabled on this host", stage = "policy"
+        )
     if config.get("ui", {}).get("disable") is not False:
         raise MxcAdapterError("the Studio MXC UI policy is not enabled", stage = "policy")
 

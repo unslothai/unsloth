@@ -85,6 +85,17 @@ def _installed_package_root() -> Path:
     return _studio_root() / "mxc-runtime" / "windows-x86_64"
 
 
+def dacl_state_path() -> Path:
+    """WXC's DACL restore journal: one fixed place, so every start (probe included) reaps the same orphans."""
+    return _studio_root() / "mxc-runtime" / "dacl-restore"
+
+
+def dacl_state_dir() -> Path:
+    path = dacl_state_path()
+    path.mkdir(parents = True, exist_ok = True)
+    return path
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     try:

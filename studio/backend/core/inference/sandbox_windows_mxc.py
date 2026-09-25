@@ -29,6 +29,7 @@ def _capability_fingerprint(identity: str, execution_kind: str, selected_executa
                 execution_kind,
                 os.path.abspath(selected_executable),
                 mxc_runtime.PROFILE_ID,
+                mxc_policy.dacl_fallback_enabled(),
             )
         ).encode()
     ).hexdigest()
@@ -66,6 +67,27 @@ def capability_snapshot(
     except Exception:
         identity = "missing"
     fingerprint = _capability_fingerprint(identity, execution_kind, selected_executable)
+    dacl = mxc_policy.dacl_fallback_enabled()
+    limitations = (
+        "mxc_preview_not_a_security_boundary",
+        "wxc_exec_does_not_report_execution_tier",
+        "workload_start_not_structured_by_wxc_exec",
+        "network_posture_requested_not_attested",
+        "nested_path_identity_may_change_during_mxc_grant_resolution",
+    )
+    if dacl:
+        limitations += ("mxc_tier3_dacl_host_permission_changes",)
+        remediation = (
+            "Install the pinned Microsoft WXC runtime and prepare this host once as an "
+            "administrator; the null device step repeats after every reboot."
+        )
+    else:
+        remediation = (
+            "Install the pinned Microsoft WXC runtime and enable BaseContainer/PSEC. On Windows "
+            f"builds without it, set {mxc_policy.DACL_FALLBACK_ENV}=1 to use the AppContainer "
+            "tier: it adds temporary permission entries to the granted host folders, removed "
+            "on exit, and needs a one-time administrator host preparation plus one per reboot."
+        )
     return SandboxCapability(
         backend = "mxc-processcontainer",
         available = available,
@@ -73,19 +95,10 @@ def capability_snapshot(
         environment = "win32",
         protection_state = "preview" if available else "unavailable",
         profile_id = mxc_runtime.PROFILE_ID,
-        limitations = (
-            "mxc_preview_not_a_security_boundary",
-            "wxc_exec_does_not_report_execution_tier",
-            "workload_start_not_structured_by_wxc_exec",
-            "network_posture_requested_not_attested",
-            "nested_path_identity_may_change_during_mxc_grant_resolution",
-        ),
+        limitations = limitations,
         probe_generation = hashlib.sha256((fingerprint + str(available)).encode()).hexdigest(),
         environment_fingerprint = fingerprint,
-        remediation = (
-            "Install the pinned Microsoft WXC runtime and ensure BaseContainer/PSEC is enabled; "
-            "Unsloth does not enable the AppContainer DACL fallback in this Preview."
-        ),
+        remediation = remediation,
     )
 
 
