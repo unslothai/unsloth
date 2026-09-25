@@ -4,12 +4,14 @@
 import io
 import csv
 import json
+import structlog
 from typing import Optional, Literal
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from auth.authentication import get_current_subject
-from storage.usage_log import aggregate_usage, query_events
+from auth.storage import DEFAULT_ADMIN_USERNAME
+from storage.usage_log import aggregate_usage, query_events, enforce_retention
 from storage.studio_db import get_app_setting, upsert_app_settings
 from models.usage import (
     UsageSummaryRow,
@@ -18,6 +20,8 @@ from models.usage import (
 )
 
 router = APIRouter()
+
+logger = structlog.get_logger(__name__)
 
 
 @router.get("/summary", response_model = UsageSummaryResponse)
@@ -33,6 +37,7 @@ async def get_usage_summary(
         start_ts = start_ts,
         end_ts = end_ts,
         model = model,
+        session_id = current_subject,
     )
     return UsageSummaryResponse(
         granularity = granularity,
@@ -57,6 +62,7 @@ async def export_usage(
                 end_ts = end_ts,
                 limit = limit,
                 offset = offset,
+                session_id = current_subject,
             )
             if not events:
                 break
@@ -93,6 +99,7 @@ async def export_usage(
                 end_ts = end_ts,
                 limit = limit,
                 offset = offset,
+                session_id = current_subject,
             )
             if not events:
                 break
@@ -129,12 +136,15 @@ async def get_usage_settings(current_subject: str = Depends(get_current_subject)
 async def update_usage_settings(
     settings: UsageRetentionSetting, current_subject: str = Depends(get_current_subject)
 ):
+    if current_subject != DEFAULT_ADMIN_USERNAME:
+        raise HTTPException(
+            status_code = 403,
+            detail = "Only the admin user can change retention settings.",
+        )
     upsert_app_settings({"usage_retention_policy": settings.model_dump()})
     # Apply immediately
     try:
-        from storage.usage_log import enforce_retention
         enforce_retention()
     except Exception as exc:
-        import structlog
-        structlog.get_logger(__name__).warning("usage_retention.enforced_failed", error = str(exc))
+        logger.warning("usage_retention.enforce_failed", error = str(exc))
     return settings
