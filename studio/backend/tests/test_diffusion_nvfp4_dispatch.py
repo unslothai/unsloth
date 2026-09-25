@@ -429,6 +429,8 @@ def test_a_collected_layer_takes_its_cached_weights_and_their_vram_with_it():
         gc.collect()
         torch.cuda.empty_cache()
         before = torch.cuda.memory_allocated(device)
+        # An untuned shape's first call autotunes through the public mm_fp4 and never reaches the cache.
+        nl._TUNED_SHAPES.add((x.shape[0], in_features, out_features))
         layer(x)
         torch.cuda.synchronize(device)
 
