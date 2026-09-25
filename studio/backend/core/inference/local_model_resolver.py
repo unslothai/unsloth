@@ -986,6 +986,8 @@ _generation = 0
 # Confirmed misses keyed by account and name, valid for the recorded invalidation generation.
 _misses: dict[tuple[Optional[str], str], int] = {}
 _MAX_MISSES = 256
+# Request bodies may be hundreds of MB; longer names are not retained.
+_MAX_MISS_NAME = 4096
 
 
 def index_generation() -> int:
@@ -1163,7 +1165,8 @@ def resolve_local_gguf_for_switch(
         # Require a scan fresh at call start or completed since, with no intervening invalidation.
         # Failed rebuilds leave an older snapshot that cannot prove a miss.
         if (
-            ts > 0.0
+            len(requested) <= _MAX_MISS_NAME
+            and ts > 0.0
             and started - ts < _CACHE_TTL_S
             and generation == _generation
             and _resolve_from_index(requested, index) is None

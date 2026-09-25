@@ -9348,6 +9348,16 @@ def test_a_remembered_miss_expires_and_a_failed_scan_proves_nothing(monkeypatch)
     assert scans == [1, 1, 1, 1]
 
 
+def test_an_oversized_name_is_not_remembered(monkeypatch):
+    clock = _settable_resolver_clock(monkeypatch)
+    monkeypatch.setattr(resolver, "_scan", (clock.now - 60.0, {}))
+    _counted_scans(monkeypatch)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+    assert resolver.resolve_local_gguf_for_switch("x" * (resolver._MAX_MISS_NAME + 1)) is None
+    assert resolver.resolve_local_gguf_for_switch("x" * resolver._MAX_MISS_NAME) is None
+    assert [len(name) for _scope, name in resolver._misses] == [resolver._MAX_MISS_NAME]
+
+
 # The resident short circuit is the one path that answers without consulting the
 # index, so it must never say yes where the pre-existing resident check says no.
 # Anything it accepts, main would have accepted too: a miss only costs the scan.
