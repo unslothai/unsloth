@@ -365,6 +365,8 @@ UI_FONT_SIZE_MAX = 20
 UI_FONT_SIZE_DEFAULT = 15
 UI_FONT_SIZE_CSS_BASE = 16
 # --ui-font-scale as a number, read through a length since the property itself is a calc().
+# --ui-space-scale the same way: the card's max width is calc(448px * var(--ui-space-scale, 1)) since #11648.
+UI_SPACE_SCALE_JS = "(() => { const probe = document.createElement('div'); probe.style.cssText = 'position:absolute;visibility:hidden;width:calc(10000px * var(--ui-space-scale, 1))'; document.body.appendChild(probe); const px = parseFloat(getComputedStyle(probe).width); probe.remove(); return String(px / 10000); })()"
 UI_FONT_SCALE_JS = "(() => { const probe = document.createElement('div'); probe.style.cssText = 'position:absolute;visibility:hidden;width:calc(10000px * var(--ui-font-scale, 1))'; document.body.appendChild(probe); const px = parseFloat(getComputedStyle(probe).width); probe.remove(); return String(px / 10000); })()"
 APPEARANCE_STORE_VERSION = 5
 
@@ -686,8 +688,10 @@ def measure(page, label: str) -> dict:
             f"{name}={seen}",
         )
     if facts["cardLayoutWidth"] is not None:
-        # 448px is the card's max width and 2rem the viewport inset it keeps.
-        want = min(448, view["width"] - 32)
+        # 448px at the default size is the card's max width, scaled with the UI since #11648, and 2rem the
+        # viewport inset it keeps.
+        space = float(page.evaluate("() => " + UI_SPACE_SCALE_JS))
+        want = min(448 * space, view["width"] - 32)
         # Asked of the layout box, not the painted one. A scrollbar that takes its width out of the rail's content box
         # shrinks the card's layout width, which is the whole subject here; the card's enter animation (opacity 0,
         # y 12, scale .96 -- see components/*/update-banner.tsx) shrinks only the painted one, and measuring that
@@ -697,7 +701,7 @@ def measure(page, label: str) -> dict:
         check(
             f"{label}: the card keeps its full width whatever the scrollbar does",
             abs(facts["cardLayoutWidth"] - want) <= 1,
-            f"cardLayoutWidth={facts['cardLayoutWidth']} want={want} "
+            f"cardLayoutWidth={facts['cardLayoutWidth']} want={want} spaceScale={space} "
             f"cardPaintedWidth={facts['cardWidth']} "
             f"railGutter={facts['railGutterPx']} scrolls={facts['railScrolls']} "
             f"why={json.dumps(facts['widthWhy'], sort_keys = True)}",

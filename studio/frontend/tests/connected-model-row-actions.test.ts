@@ -7,7 +7,6 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-
 import { readSrc } from "./helpers/kit.ts";
 
 const pickers = readSrc(
@@ -48,11 +47,11 @@ test("a connected row draws its badges through ModelRow", () => {
   // drop there could not be honoured.
   assert.match(
     pickers,
-    /pinnedConnectedRows\.map\(\(model\) =>\s*renderConnectedModelRow\(model, true, true\)/,
+    /pinnedConnectedRows\.map\(\(model\) =>\s*renderPinnedDragRow\(\s*pinnedConnectedDrag,\s*model\.id,\s*renderConnectedModelRow\(model, true\)/,
   );
   assert.match(
     pickers,
-    /group\.models\.map\(\(model\) =>\s*renderConnectedModelRow\(model, false, !headed\)/,
+    /group\.models\.map\(\(model\) =>\s*renderConnectedModelRow\(model, !headed\)/,
   );
 });
 
@@ -65,7 +64,7 @@ test("capabilities are keyed by the provider's own model id", () => {
   );
   assert.match(
     pickers,
-    /connectedModelMarks\(\{\s*providerType: model\.providerType,\s*modelId: providerModelId,\s*baseUrl,/,
+    /connectedModelMarks\(\{\s*providerType: model\.providerType,\s*modelId: providerModelId,\s*baseUrl,\s*apiType: externalApiTypeById\.get\(model\.providerId\),/,
   );
   // A catalogue lands after first paint, so the marks have to be re-read when it does.
   assert.match(
@@ -92,7 +91,7 @@ test("modality comes from the resolvers the app already has", () => {
   assert.doesNotMatch(marks, /detectCapabilities/);
   assert.match(
     marks,
-    /imageGen: providerSupportsBuiltinImageGeneration\(\s*providerType,\s*modelId,\s*baseUrl,\s*\),/,
+    /imageGen: providerSupportsBuiltinImageGeneration\(\s*providerType,\s*modelId,\s*baseUrl,\s*apiType,\s*\),/,
   );
   // Audio is withheld even where a catalogue publishes it as an input modality: the attachment
   // adapter resolves the active model out of `models`, which carries loaded local models only, so
@@ -380,7 +379,7 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
   // one, and the pin effect's own guard sees no change in the stored string.
   assert.match(
     chatPage,
-    /reconcilePinnedReasoningEffort\(\{\s*checkpoint: inferenceParams\.checkpoint,\s*caps,\s*providerType: provider\?\.providerType,\s*\}\);\s*\}, \[activePinnedEffort,/,
+    /reconcilePinnedReasoningEffort\(\{\s*checkpoint: inferenceParams\.checkpoint,\s*caps,\s*providerType: provider\?\.providerType,\s*apiType: provider\?\.apiType,\s*\}\);\s*\}, \[activePinnedEffort,/,
   );
   assert.match(
     chatPage,
@@ -540,8 +539,8 @@ test("live effort edits use the shared runtime action", () => {
 test("a row with no heading over it still names its connection", () => {
   // Pinned rows and the name-sorted flat list have no provider heading, and two connections can
   // serve one model id, so the tooltip carries the connection name those rows have nowhere else.
-  assert.match(pickers, /renderConnectedModelRow\(model, true, true\)/);
-  assert.match(pickers, /renderConnectedModelRow\(model, false, !headed\)/);
+  assert.match(pickers, /renderConnectedModelRow\(model, true\)/);
+  assert.match(pickers, /renderConnectedModelRow\(model, !headed\)/);
   assert.match(pickers, /<span className="block text-ui-10 mt-1">\s*\{model\.providerName\}/);
   // No logo in the leading slot: down the pinned group it read as a second glyph column, and a
   // row is there to carry its name. So nothing goes in the slot at all now.
@@ -726,7 +725,7 @@ test("reasoning is read through the resolver the composer uses", () => {
   for (const source of [infoDialog, settingsDialog]) {
     assert.match(
       source,
-      /getExternalReasoningCapabilities\(providerType, modelId, \{\s*isReasoningProvider,\s*baseUrl,\s*\}\)/,
+      /getExternalReasoningCapabilities\(providerType, modelId, \{\s*isReasoningProvider,\s*baseUrl,\s*apiType,\s*\}\)/,
     );
     // "none" is the off switch, not a level on offer.
     assert.match(source, /\(level\) => level !== "none"/);
@@ -734,6 +733,10 @@ test("reasoning is read through the resolver the composer uses", () => {
   assert.doesNotMatch(settingsDialog, /entry\?\.reasoning \? entry\.efforts/);
   // And a self-hosted endpoint's only reasoning signal is the flag on its connection.
   assert.match(pickers, /provider\.isReasoningModel === true,/);
+  // Custom Responses connections must carry their transport into both row dialogs.
+  assert.match(pickers, /apiType: externalApiTypeById\.get\(model\.providerId\)/);
+  assert.match(pickers, /apiType=\{settingsModel\.apiType\}/);
+  assert.match(pickers, /apiType=\{infoModel\.apiType\}/);
 });
 
 test("a Codex connection resolves against OpenAI's catalogue", async () => {

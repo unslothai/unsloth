@@ -15,10 +15,17 @@ function readStored(): boolean | null {
   }
 }
 
+// Null where there is no matchMedia to ask (a test's partial window, or a host that lacks it).
+// This module reads it at import time, so a throw here fails every importer, not one call.
+function wideQuery(): MediaQueryList | null {
+  return typeof window.matchMedia === "function" ? window.matchMedia(WIDE_QUERY) : null;
+}
+
 function loadPinned(): boolean {
   if (typeof window === "undefined") return true;
-  // Default to unpinned below lg, also when storage is unavailable.
-  return readStored() ?? window.matchMedia(WIDE_QUERY).matches;
+  // Default to unpinned below lg, also when storage is unavailable. With no width to read,
+  // keep the desktop default, as when there is no window at all.
+  return readStored() ?? wideQuery()?.matches ?? true;
 }
 
 let pinnedValue = loadPinned();
@@ -45,18 +52,18 @@ function subscribe(cb: () => void) {
     }
   };
   // Re-derive the width default across lg unless the user has chosen.
-  const wide = window.matchMedia(WIDE_QUERY);
+  const wide = wideQuery();
   const onWidth = () => {
     if (chosen || held) return;
     pinnedValue = loadPinned();
     cb();
   };
   window.addEventListener("storage", onStorage);
-  wide.addEventListener("change", onWidth);
+  wide?.addEventListener("change", onWidth);
   return () => {
     listeners.delete(cb);
     window.removeEventListener("storage", onStorage);
-    wide.removeEventListener("change", onWidth);
+    wide?.removeEventListener("change", onWidth);
   };
 }
 

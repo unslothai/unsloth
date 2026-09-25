@@ -48,7 +48,7 @@ def check_settings(page):
     context.click()
     page.get_by_role("button", name = "Steer", exact = True).click()
     select.click()
-    option = page.get_by_role("option", name = re.compile(r"^(⌘|Ctrl\+)Enter$"))
+    option = page.get_by_role("option", name = re.compile(r"^(⌘|Ctrl) \+ Enter always$"))
     modified_label = option.inner_text()
     option.click()
     editor.fill("First line")

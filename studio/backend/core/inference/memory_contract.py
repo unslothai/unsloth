@@ -131,6 +131,7 @@ def build_memory_estimate(
         quant_file_bytes = quant,
         resident_files_bytes = resident,
         kv_bytes = int(getattr(breakdown, "kv_bytes", 0) or 0),
+        kv_checkpoint_bytes = int(getattr(breakdown, "kv_checkpoint_bytes", 0) or 0),
         compute_bytes = (
             int(getattr(breakdown, "compute_bytes", 0) or 0)
             if isinstance(compute_bytes, _Unset)
@@ -185,6 +186,7 @@ def project_estimate_memory_response(estimate: MemoryEstimate) -> dict:
         # The aggregate meaning. See the module docstring.
         "weights_bytes": estimate.resident_files_bytes,
         "kv_bytes": estimate.kv_bytes,
+        "kv_checkpoint_bytes": estimate.kv_checkpoint_bytes,
         "compute_bytes": estimate.compute_bytes,
         "drafter_runtime_bytes": estimate.drafter_runtime_bytes,
         "drafter_runtime_gpu_bytes": estimate.drafter_runtime_gpu_bytes,

@@ -46,7 +46,7 @@ from core.rag.config import (
     effective_gguf_repo_for_embedding_model,
 )
 from loggers import get_logger
-from utils.utils import safe_error_detail, log_and_http_error
+from utils.utils import safe_curated_detail, safe_error_detail, log_and_http_error
 from utils.personalization_settings import (
     MAX_AVATAR_DATA_URL_BYTES,
     PERSONALIZATION_VERSION,
@@ -75,6 +75,7 @@ from utils.helper_precache_settings import (
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
 )
+from utils import systemone_settings
 from utils.download_transport_settings import (
     get_download_transport_mode,
     set_download_transport_mode,
@@ -614,6 +615,42 @@ def clear_hugging_face_token(
     with current_credential_write(credential):
         credential_secrets.delete_hf_token()
     return HuggingFaceTokenResponse(token = None, has_token = False)
+
+
+class SystemOneModelOption(BaseModel):
+    name: str
+    description: str
+    download_bytes: int
+
+
+class SystemOneSettingsResponse(BaseModel):
+    enabled: bool
+    enabled_locked: bool
+    model: str
+    model_locked: bool
+    device: str
+    device_locked: bool
+    gpu_available: bool
+    models: list[SystemOneModelOption]
+    loaded_model: Optional[str] = None
+    loaded_device: Optional[str] = None
+    loading_model: Optional[str] = None
+    installing: bool = False
+    error: Optional[str] = None
+
+
+class SystemOneSettingsPayload(BaseModel):
+    enabled: Optional[bool] = None
+    model: Optional[str] = None
+    device: Optional[str] = None
+
+
+class SystemOneDownloadPlan(BaseModel):
+    repo: Optional[str] = None
+    files: list[str]
+    size_bytes: int
+    cached: bool
+    error: Optional[str] = None
 
 
 class HelperPrecachePayload(BaseModel):
@@ -1292,6 +1329,92 @@ def update_helper_precache(
             log = logger,
         ) from exc
     return _helper_precache_response(enabled)
+
+
+def _systemone_response() -> SystemOneSettingsResponse:
+    from core.systemone import catalog, laya_runtime
+
+    enabled = systemone_settings.get_enabled()
+    if enabled:
+        laya_runtime.install_in_background()
+    runtime = laya_runtime.status()
+    model = catalog.default_checkpoint().name
+    error = runtime["error"]
+    if runtime["error_model"] not in (None, model):
+        error = None
+    return SystemOneSettingsResponse(
+        enabled = enabled,
+        enabled_locked = systemone_settings.enabled_locked(),
+        model = model,
+        model_locked = systemone_settings.model_locked(),
+        device = systemone_settings.get_device(),
+        device_locked = systemone_settings.device_locked(),
+        gpu_available = systemone_settings.gpu_available(),
+        models = [
+            SystemOneModelOption(
+                name = c.name, description = c.description, download_bytes = c.download_bytes
+            )
+            for c in catalog.CHECKPOINTS.values()
+        ],
+        loaded_model = runtime["loaded_model"],
+        loaded_device = runtime["device"],
+        loading_model = runtime["loading_model"],
+        installing = runtime["installing"],
+        error = error,
+    )
+
+
+@_shared_settings_router.get("/systemone", response_model = SystemOneSettingsResponse)
+def get_systemone_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> SystemOneSettingsResponse:
+    return _systemone_response()
+
+
+@_owner_settings_router.put("/systemone", response_model = SystemOneSettingsResponse)
+def update_systemone_settings(
+    payload: SystemOneSettingsPayload, current_subject: str = Depends(get_current_subject)
+) -> SystemOneSettingsResponse:
+    from core.systemone import laya_runtime
+
+    try:
+        values = systemone_settings.validate(**payload.model_dump(exclude_none = True))
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc, fallback = "Invalid Decision API setting."),
+            event = "settings.update_systemone_failed",
+            log = logger,
+        ) from exc
+    if values:
+        # The resident model was built from the old settings; drop it so the next request uses the new ones.
+        try:
+            laya_runtime.unload()
+        except laya_runtime.Unavailable as exc:
+            raise HTTPException(status_code = 409, detail = exc.message) from None
+        systemone_settings.save(values)
+    return _systemone_response()
+
+
+@_owner_settings_router.get("/systemone/resolve", response_model = SystemOneDownloadPlan)
+def resolve_systemone_download(
+    current_subject: str = Depends(get_current_subject),
+) -> SystemOneDownloadPlan:
+    from core.systemone import catalog, laya_runtime
+    return SystemOneDownloadPlan(**laya_runtime.download_plan(catalog.default_checkpoint()))
+
+
+@_owner_settings_router.post("/systemone/unload", response_model = SystemOneSettingsResponse)
+def unload_systemone_model(
+    current_subject: str = Depends(get_current_subject),
+) -> SystemOneSettingsResponse:
+    from core.systemone import laya_runtime
+    try:
+        laya_runtime.unload()
+    except laya_runtime.Unavailable as exc:
+        raise HTTPException(status_code = 409, detail = exc.message) from None
+    return _systemone_response()
 
 
 @_shared_settings_router.get("/download-transport", response_model = DownloadTransportResponse)
@@ -3884,9 +4007,8 @@ class DebugLogSourcesResponse(BaseModel):
     file_logging_disabled: bool = False
     # Where the logs actually live, so a caller does not have to guess. The
     # desktop "Open logs folder" button otherwise falls back to a hard-coded
-    # ~/.unsloth/studio, which is wrong whenever UNSLOTH_STUDIO_HOME or
-    # STUDIO_HOME is set AND there is no readable log to take a path from.
-    # Additive and optional: an older client ignores it.
+    # ~/.unsloth/studio/logs, which is wrong whenever UNSLOTH_STUDIO_HOME or
+    # STUDIO_HOME is set. Additive and optional: an older client ignores it.
     log_root: Optional[str] = None
 
 
@@ -3923,14 +4045,18 @@ def get_debug_log_sources(
     from utils import debug_log_sources
 
     sources = debug_log_sources.list_sources()
-    # The first candidate root is the one the walk prefers, so it is the
-    # directory a user opening "the log folder" expects to land in.
+    # The first candidate root is the one the walk prefers. File logging may
+    # be disabled before logs/ is created, so reveal the existing home then.
     roots = debug_log_sources.candidate_roots()
+    log_root = None
+    if roots:
+        logs_dir = roots[0] / "logs"
+        log_root = str(logs_dir if logs_dir.is_dir() else roots[0])
     return DebugLogSourcesResponse(
         sources = [DebugLogSourceModel(**vars(source)) for source in sources],
         default_source_id = debug_log_sources.default_source_id(),
         file_logging_disabled = debug_log_sources.file_logging_disabled(),
-        log_root = str(roots[0]) if roots else None,
+        log_root = log_root,
     )
 
 
