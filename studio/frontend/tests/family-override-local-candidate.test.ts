@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 
 import {
   artifactKindSupportsFamilyOverride,
@@ -112,4 +113,21 @@ test("family options follow the backend registry and deduplicate names", () => {
     ["z-image", "Z-Image"],
     ["flux.1", "FLUX.1"],
   ]);
+});
+
+test("every backend media family has a display label", () => {
+  const root = new URL("../../backend/core/inference/", import.meta.url);
+  const names = ["diffusion_families.py", "video_families.py"].flatMap((f) =>
+    [
+      ...readFileSync(new URL(f, root), "utf8").matchAll(
+        /^\s+name = "([^"]+)"/gm,
+      ),
+    ].map((m) => m[1]),
+  );
+  assert.ok(names.includes("flux.1") && names.includes("ltx-2"));
+  const unlabeled = familyOverrideOptions(names)
+    .slice(1)
+    .filter(([value, label]) => value === label)
+    .map(([value]) => value);
+  assert.deepEqual(unlabeled, []);
 });
