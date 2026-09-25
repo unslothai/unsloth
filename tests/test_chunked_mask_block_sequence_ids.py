@@ -86,7 +86,13 @@ def test_static_cache_generate_matches_dynamic(unpatched):
 
     assert modeling_llama4.create_chunked_causal_mask is patched
 
-    static = _generate(model, "static")
+    try:
+        static = _generate(model, "static")
+    except AttributeError as e:
+        # 5.9 - 5.10: StaticSlidingWindowLayer lacks max_batch_size, past the mask this fix repairs.
+        if "max_batch_size" not in str(e):
+            raise
+        pytest.skip(f"static-cache Llama-4 generate broken upstream here: {e}")
     dynamic = _generate(model, None)
     assert static.shape == (1, 7)
     assert torch.equal(static, dynamic)
@@ -101,7 +107,6 @@ def test_block_sequence_ids_are_honoured_not_dropped(unpatched):
     fix_transformers_chunked_mask_block_sequence_ids()
     patched = masking_utils.create_chunked_causal_mask
     config = _tiny_llama4().config
-    config._attn_implementation = "sdpa"
     length = 12
     kwargs = {
         "config": config,
@@ -109,16 +114,29 @@ def test_block_sequence_ids_are_honoured_not_dropped(unpatched):
         "attention_mask": torch.ones(1, length, dtype = torch.long),
         "past_key_values": None,
         "position_ids": torch.arange(length)[None],
-        "allow_is_causal_skip": False,
     }
-    plain = patched(**kwargs)
-    assert torch.equal(plain, unpatched(**kwargs))
-    all_text = patched(**kwargs, block_sequence_ids = torch.full((1, length), -1))
+    # Older chunked masks lack allow_is_causal_skip; eager never skips, so it always materialises.
+    if "allow_is_causal_skip" in inspect.signature(unpatched).parameters:
+        config._attn_implementation = "sdpa"
+        kwargs["allow_is_causal_skip"] = False
+    else:
+        config._attn_implementation = "eager"
+
+    def allowed(**extra):
+        mask = patched(**kwargs, **extra)
+        return mask if mask.dtype == torch.bool else mask == 0
+
+    plain = allowed()
+    unpatched_mask = unpatched(**kwargs)
+    assert torch.equal(
+        plain, unpatched_mask if unpatched_mask.dtype == torch.bool else unpatched_mask == 0
+    )
+    all_text = allowed(block_sequence_ids = torch.full((1, length), -1))
     assert torch.equal(all_text, plain)
     # Media block spanning the chunk boundary at 8: 6..9 must see each other both ways.
     ids = torch.full((1, length), -1)
     ids[0, 6:10] = 0
-    blocked = patched(**kwargs, block_sequence_ids = ids)[0, 0]
+    blocked = allowed(block_sequence_ids = ids)[0, 0]
     assert not plain[0, 0, 6, 9] and not plain[0, 0, 9, 6]
     assert all(blocked[q, k] for q in range(6, 10) for k in range(6, 10))
     outside = torch.ones(length, length, dtype = torch.bool)
