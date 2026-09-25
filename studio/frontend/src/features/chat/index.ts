@@ -56,6 +56,7 @@ export {
   type Preset,
 } from "./chat-settings-sheet";
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
+export { openFolderAsProject, useOpeningFolder } from "./utils/open-folder-as-project";
 export {
   hydrateModelDisclaimerPreference,
   refreshModelDisclaimerPreference,
@@ -267,6 +268,7 @@ export { ApiProviderLogo } from "./api-provider-logo";
 export { useExternalProvidersStore } from "./stores/external-providers-store";
 export { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
 export { ChatSearchDialog } from "./components/chat-search-dialog";
+export { NewProjectDialog } from "./components/new-project-dialog";
 export { StopRunningChatsDialog } from "./components/stop-running-chats-dialog";
 export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
 export type { ProjectRecord } from "./types";

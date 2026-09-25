@@ -411,55 +411,39 @@ def render_pdf_pages(
 
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
-# Elements whose children are visible content; tracked deletions (w:del, w:moveFrom) are left out.
-_DOCX_WRAPPERS = {
-    _W + t
-    for t in (
-        "sdt",
-        "sdtContent",
-        "customXml",
-        "smartTag",
-        "hyperlink",
-        "ins",
-        "moveTo",
-        "fldSimple",
-        "dir",
-        "bdo",
-    )
-}
+_MC_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+# Runs not shown as body text; text boxes are read as blocks of their own.
+_DOCX_SKIP_RUNS_UNDER = frozenset(
+    (_W + "del", _W + "moveFrom", _W + "rt", _W + "txbxContent", _MC_FALLBACK)
+)
 
 
-def _docx_content(el) -> bool:
-    flag = el.find(_W + "sdtPr/" + _W + "showingPlcHdr") if el.tag == _W + "sdt" else None
-    return el.tag in _DOCX_WRAPPERS and (
-        flag is None or flag.get(_W + "val", "true") in ("0", "false", "off")
-    )
+def _docx_placeholder(element) -> bool:
+    # An unfilled content control holds Word's prompt ("Click or tap here to enter text."), not a value.
+    if element.tag != _W + "sdt":
+        return False
+    flag = element.find(_W + "sdtPr/" + _W + "showingPlcHdr")
+    return flag is not None and flag.get(_W + "val", "true") not in ("0", "false", "off")
 
 
-def _docx_blocks(el):
-    for child in el:
-        if child.tag in (_W + "p", _W + "tbl"):
-            yield child
-        elif _docx_content(child):
-            yield from _docx_blocks(child)
-
-
-def _docx_text(el) -> str:
-    return "".join(
-        child.text if child.tag == _W + "r" else _docx_text(child)
-        for child in el
-        if child.tag == _W + "r" or _docx_content(child)
-    )
+def _docx_inside(element, stop, tags) -> bool:
+    node = element.getparent()
+    while node is not stop:
+        if node.tag in tags or _docx_placeholder(node):
+            return True
+        node = node.getparent()
+    return False
 
 
 def _docx_unwrap_table_controls(body) -> None:
+    # python-docx skips w:tr / w:tc wrapped in content controls (cover pages, repeating sections).
     for wrapper in list(body.iter(_W + "sdt", _W + "customXml")):
         parent = wrapper.getparent()
         if parent is None or parent.tag not in (_W + "tbl", _W + "tr"):
             continue
         content = wrapper.find(_W + "sdtContent") if wrapper.tag == _W + "sdt" else wrapper
         keep = (_W + "tr", _W + "tc", _W + "sdt", _W + "customXml")
-        placeholder = not _docx_content(wrapper)
+        placeholder = _docx_placeholder(wrapper)
         idx = parent.index(wrapper)
         for i, child in enumerate(
             [c for c in (content if content is not None else ()) if c.tag in keep]
@@ -472,12 +456,40 @@ def _docx_unwrap_table_controls(body) -> None:
         parent.remove(wrapper)
 
 
+def _docx_blocks(element, parent):
+    """Paragraphs and tables in document order, including content controls and text boxes."""
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    for child in element:
+        if child.tag == _W + "p":
+            yield Paragraph(child, parent)
+            for box in child.iter(_W + "txbxContent"):
+                # Nested boxes are read with their outer box; fallback copies repeat the real one.
+                if not _docx_inside(box, child, _DOCX_SKIP_RUNS_UNDER):
+                    yield from _docx_blocks(box, parent)
+        elif child.tag == _W + "tbl":
+            yield Table(child, parent)
+        elif child.tag in (_W + "sdt", _W + "customXml") and not _docx_placeholder(child):
+            content = child.find(_W + "sdtContent")
+            yield from _docx_blocks(child if content is None else content, parent)
+
+
+def _docx_paragraph_text(paragraph) -> str:
+    """Paragraph.text skips runs wrapped in w:ins, w:sdt, w:fldSimple, w:smartTag."""
+    p = paragraph._p
+    return "".join(
+        run.text for run in p.iter(_W + "r") if not _docx_inside(run, p, _DOCX_SKIP_RUNS_UNDER)
+    )
+
+
 def _docx_table_rows(table) -> list[str]:
     """Each row as pipe-joined cell text (the locator splits anchors on pipes).
     Columns stay aligned to the layout grid (merged cells fill their spanned slots,
     skipped leading/trailing grid columns become empty fields). Cells are walked in
     document order so a nested table, and any text after it, flattens in place."""
     from docx.table import Table
+    from docx.text.paragraph import Paragraph
 
     rows: list[str] = []
     seen: set = set()
@@ -495,12 +507,12 @@ def _docx_table_rows(table) -> list[str]:
             # after it flatten below the row.
             field: list[str] = []
             after_table = False
-            for item in _docx_blocks(cell._tc):
-                if item.tag == _W + "tbl":
+            for item in _docx_blocks(cell._tc, cell):
+                if isinstance(item, Table):
                     after_table = True
-                    trailing.extend(_docx_table_rows(Table(item, cell)))
-                else:
-                    text = " ".join(_docx_text(item).split())
+                    trailing.extend(_docx_table_rows(item))
+                elif isinstance(item, Paragraph):
+                    text = " ".join(_docx_paragraph_text(item).split())
                     if text:
                         (trailing if after_table else field).append(text)
             cells.append(" ".join(field))  # empty cells kept so columns line up
@@ -514,18 +526,19 @@ def _docx_table_rows(table) -> list[str]:
 def _docx(path: str) -> list[Page]:
     import docx
     from docx.table import Table
+    from docx.text.paragraph import Paragraph
 
     document = docx.Document(path)
     lines: list[str] = []
     _docx_unwrap_table_controls(document.element.body)
     # Walk body content in document order: paragraphs alone drop tables entirely.
-    for block in _docx_blocks(document.element.body):
-        if block.tag == _W + "tbl":
-            lines.extend(_docx_table_rows(Table(block, document)))
-        else:
-            text = _docx_text(block)
+    for block in _docx_blocks(document.element.body, document):
+        if isinstance(block, Paragraph):
+            text = _docx_paragraph_text(block)
             if text.strip():
                 lines.append(text)
+        elif isinstance(block, Table):
+            lines.extend(_docx_table_rows(block))
     return [_page("\n".join(lines), None)]
 
 

@@ -735,6 +735,9 @@ def test_stats_and_describe_are_json_safe(stub_torch):
         "eager_calls": 1,
         "fallbacks": 0,
         "cap_skips": 0,
+        "refused_float": 0,
+        "refused_host_tensor": 0,
+        "refused_object": 0,
         "poisoned": False,
         "capture_error": None,
     }
@@ -823,3 +826,94 @@ def test_real_cuda_capture_replays_bit_identically():
         assert torch.equal(after, want)
     finally:
         cg.uninstall_all([handle])
+
+
+_RESOLVED_ON = {
+    "cuda_graph": {
+        "value": "on",
+        "requested": None,
+        "source": "auto",
+        "status": "applied",
+        "reason": "denoiser step captured per input shape, replayed bit-identically",
+    },
+    "speed_mode": {"value": "max"},
+}
+
+
+def test_live_status_is_unchanged_before_the_first_call(stub_torch):
+    handle = _armed()
+    resolved, optims = cg.live_status(_RESOLVED_ON, ("compiled", "cuda_graph"), (handle,))
+    assert resolved is _RESOLVED_ON
+    assert optims == ["compiled", "cuda_graph"]
+    assert cg.never_engaged((handle,)) is None
+    assert cg.never_engaged(()) is None
+
+
+def test_live_status_turns_off_when_every_call_was_refused(stub_torch):
+    class KVCache:
+        pass
+
+    handle = _armed()
+    for _ in range(3):
+        handle(_t(), timestep = KVCache(), return_dict = False)
+    assert handle.stats["refused_object"] == 3
+
+    resolved, optims = cg.live_status(_RESOLVED_ON, ("compiled", "cuda_graph"), (handle,))
+    assert resolved["cuda_graph"]["value"] == "off"
+    assert resolved["cuda_graph"]["reason"] == (
+        "armed, but all 3 denoiser call(s) so far ran eager (3 with a non-tensor argument)"
+    )
+    assert resolved["cuda_graph"]["status"] == "applied"
+    assert resolved["speed_mode"] is _RESOLVED_ON["speed_mode"]
+    assert optims == ["compiled"]
+    assert _RESOLVED_ON["cuda_graph"]["value"] == "on"
+    assert json.loads(json.dumps(resolved)) == resolved
+
+
+def test_live_status_names_float_refusals_and_a_poisoned_capture(stub_torch):
+    handle = _armed()
+    handle(_t(), timestep = 0.5, return_dict = False)
+    assert "1 with a float argument" in cg.never_engaged((handle,))
+
+    poisoned = _armed()
+    poisoned(_t(device_type = "cpu"), timestep = _t((1,)), return_dict = False)
+    assert cg.never_engaged((poisoned,)) == (
+        "capture failed (RuntimeError); every denoiser step runs eager"
+    )
+
+
+def test_live_status_turns_off_when_a_graph_that_replayed_is_poisoned(stub_torch):
+    handle = _armed()
+    handle(_t(), timestep = _t((1,)), return_dict = False)
+    handle(_t(), timestep = _t((1,)), return_dict = False)
+    assert handle.stats["replays"] == 2 and cg.never_engaged((handle,)) is None
+    # A later shape whose capture fails poisons the wrapper: it never replays again.
+    handle(_t(device_type = "cpu"), timestep = _t((1,)), return_dict = False)
+    assert handle.poisoned
+    resolved, optims = cg.live_status(_RESOLVED_ON, ("compiled", "cuda_graph"), (handle,))
+    assert resolved["cuda_graph"]["value"] == "off"
+    assert resolved["cuda_graph"]["reason"] == (
+        "capture failed (RuntimeError); every denoiser step runs eager"
+    )
+    assert optims == ["compiled"]
+    other = _armed()
+    other(_t(), timestep = _t((1,)), return_dict = False)
+    assert cg.never_engaged((handle, other)) is None
+
+
+def test_live_status_keeps_on_once_a_graph_replayed(stub_torch):
+    handle = _armed()
+    handle(_t(), timestep = _t((1,)), return_dict = False)
+    handle(_t(), timestep = _t((1,)), return_dict = False)
+    handle(_t(), timestep = 0.25, return_dict = False)
+    assert handle.stats["replays"] == 2
+    resolved, optims = cg.live_status(_RESOLVED_ON, ("cuda_graph",), (handle,))
+    assert resolved is _RESOLVED_ON
+    assert optims == ["cuda_graph"]
+
+
+def test_live_status_tolerates_a_record_without_the_control(stub_torch):
+    handle = _armed()
+    handle(_t(), timestep = 0.5, return_dict = False)
+    assert cg.live_status(None, ("cuda_graph",), (handle,)) == (None, [])
+    assert cg.live_status({}, (), (handle,)) == ({}, [])
