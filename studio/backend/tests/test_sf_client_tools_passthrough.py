@@ -806,6 +806,23 @@ def test_server_tool_streaming_invalid_event_is_error(monkeypatch):
     assert errors == ["An internal error occurred."]
 
 
+def test_server_tool_heartbeat_is_not_sent_as_a_stall_keepalive(monkeypatch):
+    import routes.inference as inf
+
+    class _SilentToolBackend(_ScriptedBackend):
+        def __init__(self):
+            super().__init__(_fixed())
+
+        def generate_chat_completion_with_tools(self, **_kwargs):
+            yield {"type": "heartbeat"}
+            yield {"type": "content", "text": "done"}
+
+    payload = _request(tools = [LOOKUP_TOOL], enable_tools = True, stream = True)
+    chunks = _collect_sse(_call(payload, monkeypatch, _SilentToolBackend()))
+    assert inf._OPENAI_TOOL_HEARTBEAT_SSE in chunks
+    assert inf._OPENAI_PASSTHROUGH_SSE_KEEPALIVE not in chunks
+
+
 def test_streaming_repeated_snapshot_no_duplicate_call(monkeypatch):
     # Repeated then shrunk cumulative snapshots must not double-heal.
     backend = _ScriptedBackend(_fixed(_CALL_XML, _CALL_XML, _CALL_XML[:5], _CALL_XML))
