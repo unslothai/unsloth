@@ -2643,7 +2643,6 @@ _wsl_amd_gpu_name() {
 }
 
 # ── Bounded command runner ──
-# 10s by default; `_run_bounded --secs N cmd ...` gives one probe its own deadline.
 _run_bounded() {
     _rb_secs=10
     if [ "${1:-}" = "--secs" ]; then _rb_secs=$2; shift 2; fi
@@ -2763,9 +2762,7 @@ PY
     printf '%s\n' "$_NVIDIA_LIBRARY_INVENTORY_VALUE"
 }
 
-# Driver CUDA "<major>.<minor>" when the inventory cannot answer, else exit 1: cuDriverGetVersion
-# (no cuInit), then the /proc kernel module version bound (studio/nvidia_probe.py _DRIVER_MAJOR_CUDA).
-# Picks a wheel family only: proves no GPU, reads no compute capability.
+# Driver CUDA version without cuInit (cuDriverGetVersion, else /proc as in nvidia_probe.py _DRIVER_MAJOR_CUDA); picks a family only.
 _nvidia_driver_cuda_version() {
     [ "${UNSLOTH_NVIDIA_LIBRARY_PROBE:-1}" != "0" ] || return 1
     if command -v python3 >/dev/null 2>&1; then _ndv_py=python3
@@ -5331,7 +5328,6 @@ get_torch_index_url() {
     else echo "$_base/cpu"; return; fi
     _cuda_tag=$(_cap_cuda_family_for_pre_turing "$_cuda_tag" "$_smi" "$_inventory_caps")
     if [ -n "$_cuda_from_driver" ]; then
-        # Capability unread: pre-Turing needs cu126, which has no Blackwell kernels.
         echo "[WARN] nvidia-smi and the NVIDIA driver libraries did not answer in time; the driver supports CUDA $_cuda_ver." >&2
         echo "[WARN] Selecting the $_cuda_tag PyTorch wheels from the driver version alone. If that is wrong for this GPU, re-run with" >&2
         echo "[WARN]   ${_pin_hint}cu126   (Maxwell to Hopper, sm_50-90)" >&2
@@ -7449,9 +7445,7 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
     fi
 fi
 
-# Check the installed CUDA torch has kernels for this GPU: a wrong family fails only at first launch.
-# Never cuInit (minutes on a congested driver): arch list from torch, capabilities from NVML, torch only
-# without NVML. Physical GPUs, like the family choice; a hidden GPU skips it.
+# A wrong CUDA family fails only at first kernel launch; never cuInit here (minutes on a congested driver).
 if [ "$SKIP_TORCH" = false ] && ! _cvd_hides_nvidia; then
     case "${_expected_torch_tag:-}" in
         cu[0-9]*)
