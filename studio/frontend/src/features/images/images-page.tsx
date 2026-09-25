@@ -1249,7 +1249,7 @@ export function ImagesPage({
 }) {
   const initialReadySent = useRef(false);
   const [rememberedModel, setRememberedModel] = useState(readImageModel);
-  const pendingRecalledGeneration = useRef<{ model: RememberedImageModel; load: number; workflow: WorkflowId } | null>(null);
+  const pendingRecalledGeneration = useRef<{ model: RememberedImageModel; load: number; workflow: WorkflowId; allowOversized?: boolean } | null>(null);
   const { isMobile, pinned } = useSidebar();
   const hostClass = useHostClass();
   const denseQuantSchemes = useDenseQuantSchemes();
@@ -4206,6 +4206,8 @@ export function ImagesPage({
       model: rememberedModel,
       load: loadSeq.current + 1,
       workflow,
+      // "Generate anyway" on an unloaded model: the retry's finally clears the one-shot before this runs.
+      allowOversized: oversizedOnce.current,
     };
     const started = await handleLoad(
       rememberedModel.repoId,
@@ -4255,7 +4257,11 @@ export function ImagesPage({
       );
       return;
     }
-    if (matchesRememberedModel(pending.model, status)) void handleGenerate();
+    if (!matchesRememberedModel(pending.model, status)) return;
+    oversizedOnce.current = pending.allowOversized === true;
+    void handleGenerate().finally(() => {
+      oversizedOnce.current = false;
+    });
   }, [active, busy, handleGenerate, status, workflow]);
 
   // Publish what the loaded model can do, so the sidebar submenu dims the rest. null while

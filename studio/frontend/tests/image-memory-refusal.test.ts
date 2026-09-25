@@ -75,3 +75,12 @@ test("Generate anyway clicked during the refused run's cleanup waits for busy to
     /shouldRunQueuedOversizedRetry\(\{ queued: oversizedRetryQueued, busy \}\)[\s\S]*?\}, \[oversizedRetryQueued, busy, handleGenerateWithRecall\]\);/,
   );
 });
+
+test("Generate anyway on an unloaded model keeps the override for the recalled generation", () => {
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(page, /load: loadSeq\.current \+ 1,[\s\S]*?allowOversized: oversizedOnce\.current,/);
+  assert.match(
+    page,
+    /oversizedOnce\.current = pending\.allowOversized === true;\s*void handleGenerate\(\)/,
+  );
+});
