@@ -2243,6 +2243,7 @@ def _openai_llama_admission_tokens(
     image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
     injected_tools = None,
     context_window: Optional[int] = None,
+    counted_prompt_tokens: Optional[int] = None,
     vision: bool = True,
     messages_override = None,
 ) -> Optional[int]:
@@ -2264,7 +2265,9 @@ def _openai_llama_admission_tokens(
     messages = (
         messages_override if messages_override is not None else getattr(payload, "messages", None)
     )
-    if isinstance(messages, list) and messages:
+    if counted_prompt_tokens is not None:
+        prompt_tokens = counted_prompt_tokens
+    elif isinstance(messages, list) and messages:
         try:
             estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
                 messages, vision = vision
@@ -2372,6 +2375,7 @@ def _openai_llama_admission_reserve(
     payload = None,
     tool_loop: bool = False,
     injected_tools = None,
+    counted_prompt_tokens: Optional[int] = None,
     messages_override = None,
     tokens = _TOKENS_UNSET,
 ) -> tuple[LlamaAdmissionReservation, LlamaAdmissionConfig]:
@@ -2379,7 +2383,16 @@ def _openai_llama_admission_reserve(
     capacity = _openai_llama_admission_capacity(request, llama_backend)
     key = str(getattr(llama_backend, "base_url", "llama-server"))
     budget = _openai_llama_admission_budget(llama_backend)
-    if tokens is _TOKENS_UNSET:
+    if counted_prompt_tokens is not None:
+        tokens = _openai_llama_admission_tokens(
+            payload,
+            counted_prompt_tokens = counted_prompt_tokens,
+            budget = budget,
+            capacity = capacity,
+            tool_loop = tool_loop,
+            context_window = _openai_llama_admission_context_window(llama_backend),
+        )
+    elif tokens is _TOKENS_UNSET:
         tokens = (
             _openai_llama_admission_estimate(
                 request = request,
@@ -2401,6 +2414,87 @@ def _openai_llama_admission_reserve(
         tokens = tokens,
     )
     return reservation, config
+
+
+def _count_gguf_admission_prompt(
+    llama_backend,
+    payload,
+    messages,
+    tools = None,
+    cancel_event = None,
+) -> int:
+    """Exact prompt count plus media allowance; the whole pool if counting fails
+    (the character estimate undercounts numeric text, #10671)."""
+    from core.inference.chat_template_helpers import trailing_assistant_text
+
+    budget = _openai_llama_admission_budget(llama_backend) or 0
+    try:
+        text_messages, images = _openai_llama_admission_messages_for_estimate(
+            messages, vision = bool(getattr(llama_backend, "is_vision", False))
+        )
+        count = llama_backend.count_chat_tokens(
+            text_messages,
+            tools = tools,
+            strict = True,
+            prefer_native = images == 0,
+            chat_template_kwargs = llama_backend._request_reasoning_kwargs(
+                payload.enable_thinking, payload.reasoning_effort, payload.preserve_thinking
+            ),
+            continue_final_message = _continue_final_message(payload)
+            and bool(trailing_assistant_text(messages)),
+            **({"should_abort": cancel_event.is_set} if cancel_event is not None else {}),
+        )
+        if type(count) is not int or count <= 0:
+            raise ValueError("Invalid prompt token count")
+        return count + _openai_llama_admission_media_tokens(
+            payload,
+            message_image_parts = images,
+            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+            message_video_clips = _conversation_video_clips(messages),
+        )
+    except Exception:
+        logger.debug("Prompt count unavailable; reserving the context pool", exc_info = True)
+        return budget
+
+
+async def _reserve_counted_gguf_chat(
+    *,
+    request,
+    llama_backend,
+    payload,
+    messages,
+    injected_tools = None,
+    tool_loop: bool = False,
+):
+    config = llama_admission_config_from_env()
+    if not (config.enabled and config.kv_budget):
+        return await _openai_llama_admission_reserve_async(
+            request = request,
+            llama_backend = llama_backend,
+            payload = payload,
+            tool_loop = tool_loop,
+            injected_tools = injected_tools,
+        )
+    identity = (
+        getattr(llama_backend, "base_url", None),
+        _openai_llama_admission_budget(llama_backend),
+    )
+    counted = await asyncio.to_thread(
+        _count_gguf_admission_prompt, llama_backend, payload, messages, injected_tools
+    )
+    if identity != (
+        getattr(llama_backend, "base_url", None),
+        _openai_llama_admission_budget(llama_backend),
+    ):
+        counted = _openai_llama_admission_budget(llama_backend)
+    return _openai_llama_admission_reserve(
+        request = request,
+        llama_backend = llama_backend,
+        payload = payload,
+        tool_loop = tool_loop,
+        injected_tools = injected_tools,
+        counted_prompt_tokens = counted,
+    )
 
 
 async def _openai_llama_admission_reserve_async(
@@ -2451,6 +2545,7 @@ def _openai_llama_admission_recost(
     output_tokens: Optional[int] = None,
     cancel_event = None,
     injected_tools = None,
+    count_prepared_prompt: bool = False,
     cache_is_empty: bool = False,
 ) -> None:
     """Charge a tool loop for what its conversation now is, not what it opened as.
@@ -2473,7 +2568,10 @@ def _openai_llama_admission_recost(
     The gate exists because an idle slot's KV stays resident, which an erased slot's does
     not, so yielding there hands back room that really is free.
     """
-    if reservation is None:
+    if reservation is None or (cancel_event is not None and cancel_event.is_set()):
+        return
+    config = llama_admission_config_from_env()
+    if not (config.enabled and config.kv_budget):
         return
     try:
         lease = reservation.lease_nowait()
@@ -2483,29 +2581,30 @@ def _openai_llama_admission_recost(
         if not budget:
             return
         capacity = _openai_llama_admission_capacity(request, llama_backend)
-        # Every term the OPENING reservation charges, charged again here. Counting fewer
-        # things than the reservation it replaces would SHRINK a correctly sized lease --
-        # and since the callback fires at the top of round zero, before any growth, it
-        # would hand back room llama-server is already using.
-        estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
-            conversation,
-            vision = bool(getattr(llama_backend, "is_vision", False)),
-        )
-        prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
-        # Re-sent every round, so it belongs in every re-costing, not just the opening one.
-        prompt_tokens += _openai_llama_admission_injected_tool_tokens(injected_tools)
-        # Anthropic keeps `system` and `tools` out of the message list entirely, so for
-        # that route this is most of the prompt.
-        prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
-        # mtmd embeddings, KV the message text cannot show: image parts compact to
-        # "[image]" for the text estimate, so their real cost comes from the compaction
-        # count. A screenshot tool adds more of them, so this grows with the rounds.
-        prompt_tokens += _openai_llama_admission_media_tokens(
-            payload,
-            message_image_parts = message_image_parts,
-            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
-            message_video_clips = _conversation_video_clips(conversation),
-        )
+        if count_prepared_prompt:
+            prompt_tokens = _count_gguf_admission_prompt(
+                llama_backend, payload, conversation, injected_tools, cancel_event = cancel_event
+            )
+            if cancel_event is not None and cancel_event.is_set():
+                return
+        else:
+            # Charge every term the opening reservation did: fewer would shrink the lease at round
+            # zero and hand back room llama-server is already using.
+            estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
+                conversation,
+                vision = bool(getattr(llama_backend, "is_vision", False)),
+            )
+            prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
+            prompt_tokens += _openai_llama_admission_injected_tool_tokens(injected_tools)
+            # Anthropic keeps `system` and `tools` outside the message list.
+            prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
+            # mtmd embeddings: image parts compact to "[image]" in the text estimate.
+            prompt_tokens += _openai_llama_admission_media_tokens(
+                payload,
+                message_image_parts = message_image_parts,
+                image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+                message_video_clips = _conversation_video_clips(conversation),
+            )
         # Reading "Max" literally here would put the run back on the whole cache at its
         # first round boundary.
         share = max(1, budget // max(1, capacity))
@@ -26456,6 +26555,7 @@ async def produce_openai_chat_completions(
                     # loop down to its share on its very first round.
                     output_tokens = effective_max_tokens,
                     injected_tools = tools_to_use,
+                    count_prepared_prompt = True,
                     # A round waiting for cache room must still answer Stop. Same event
                     # the loop polls each iteration, so a wait ends where a cancel would.
                     cancel_event = cancel_event,
@@ -26538,7 +26638,8 @@ async def produce_openai_chat_completions(
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
             try:
-                reservation, admission_config = await _openai_llama_admission_reserve_async(
+                reservation, admission_config = await _reserve_counted_gguf_chat(
+                    messages = gguf_messages,
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
@@ -27367,7 +27468,8 @@ async def produce_openai_chat_completions(
             _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
             _tracker.__enter__()
             try:
-                reservation, admission_config = await _openai_llama_admission_reserve_async(
+                reservation, admission_config = await _reserve_counted_gguf_chat(
+                    messages = gguf_messages,
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
@@ -27384,6 +27486,9 @@ async def produce_openai_chat_completions(
                 )
                 api_monitor.fail(monitor_id, str(exc))
                 raise _openai_admission_http_exception(exc, status_code = 429)
+            except BaseException:
+                _tracker.__exit__(None, None, None)
+                raise
 
             async def gguf_stream_chunks():
                 nonlocal _gguf_decode_finished
@@ -27711,7 +27816,8 @@ async def produce_openai_chat_completions(
             )
         else:
             try:
-                reservation, admission_config = await _openai_llama_admission_reserve_async(
+                reservation, admission_config = await _reserve_counted_gguf_chat(
+                    messages = gguf_messages,
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
