@@ -22,6 +22,7 @@ from core.inference.context_window import (
     compact_completed_tool_arguments,
     compact_executed_call_arguments,
     compact_refused_tool_arguments,
+    compaction_receipt_field,
     turn_is_servable,
 )
 
@@ -946,3 +947,64 @@ def test_a_tool_reply_with_no_call_behind_it_is_still_blamed_on_itself():
     ]
 
     assert _blamed_role_for_turn(messages) == "tool"
+
+
+@pytest.mark.parametrize(
+    "compact, reply",
+    [
+        (lambda m: compact_completed_tool_arguments(m)[0], "Edited flappy-bird.html"),
+        (lambda m: compact_completed_tool_arguments(m)[0], "Error: 'old_string' was not found"),
+        (lambda m: compact_executed_call_arguments(m, "c1"), "Edited flappy-bird.html"),
+        (lambda m: compact_refused_tool_arguments(m, "c1"), "Not enough context"),
+    ],
+)
+def test_every_receipt_is_recognised_if_the_model_sends_it_back(compact, reply):
+    """Keep detection in sync with generated receipts."""
+    messages = _thread("<!DOCTYPE html>" + "x" * 8000)
+    messages[-1]["content"] = reply
+
+    replayed = json.loads(_replayed_arguments(compact(messages)))
+
+    assert compaction_receipt_field(replayed) == "new_string"
+
+
+def test_the_unparseable_receipt_is_recognised_too():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "edit_file", "arguments": "{not json" + "x" * 8000},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "name": "edit_file", "content": "ok"},
+    ]
+
+    fitted, _ = compact_completed_tool_arguments(messages)
+
+    replayed = json.loads(fitted[0]["tool_calls"][0]["function"]["arguments"])
+    assert compaction_receipt_field(replayed) == "_unsloth_compacted"
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"path": "a.py", "edits": [{"old_string": "a", "new_string": "b"}]},
+        {"code": "print('<3 chars of arguments you sent, quoted>')"},
+        {"note": "12 chars of arguments you sent,\nacross lines"},
+        # Allow text after a closed receipt.
+        {
+            "new_string": "<410 chars of arguments you sent, elided to save room; the call already "
+            "ran. Not tool output> return value"
+        },
+        # A shared prefix alone is not a receipt.
+        {"new_string": "<12 chars of arguments you sent, see the notes>"},
+        {"count": 3, "flags": [True, None]},
+    ],
+)
+def test_ordinary_arguments_are_not_taken_for_a_receipt(arguments):
+    assert compaction_receipt_field(arguments) is None
