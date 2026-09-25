@@ -1390,10 +1390,12 @@ def _transformer_folder_complete(folder: Path) -> bool:
     """Every weight shard a ``transformer/`` index names is present, or, without an index, a weights file is."""
     if not folder.is_dir():
         return False
+    # variant=None loads only the default weights, so a .fp16 / .bf16 twin does not count.
     indexes = [
         f
         for f in folder.glob("*.index.json")
         if f.name.endswith((".safetensors.index.json", ".bin.index.json"))
+        and _pipeline_default_variant_file(f.name)
     ]
     if indexes:
         for index in indexes:
@@ -1404,7 +1406,9 @@ def _transformer_folder_complete(folder: Path) -> bool:
         return False
     # Without an index only an unsharded file is whole; a numbered shard is part of a set whose index is missing.
     return any_not_appledouble_metadata(
-        f for f in folder.glob("*.safetensors") if not _SHARD_NAME_RE.search(f.name)
+        f
+        for f in folder.glob("*.safetensors")
+        if not _SHARD_NAME_RE.search(f.name) and _pipeline_default_variant_file(f.name)
     )
 
 

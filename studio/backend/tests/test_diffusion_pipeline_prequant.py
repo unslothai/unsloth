@@ -1387,3 +1387,31 @@ def test_pre_cast_sizing_waits_for_a_resolved_encoder_artifact(monkeypatch, reso
         repo_id = Z_IMAGE_REPO, model_kind = "pipeline", text_encoder_quant = "fp8", _load_token = 1
     )
     assert heard["text_encoder_quant"] == ("fp8" if resolved else None)
+
+
+def test_a_dtype_variant_twin_is_not_a_cached_release(tmp_path):
+    """variant=None never loads a .fp16 twin, so it cannot stand in for the default weights."""
+    folder = tmp_path / "transformer"
+    shards = [f"diffusion_pytorch_model-0000{i}-of-00002.fp16.safetensors" for i in (1, 2)]
+    folder.mkdir()
+    (folder / "diffusion_pytorch_model.fp16.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"a": shards[0], "b": shards[1]}})
+    )
+    for shard in shards:
+        (folder / shard).write_bytes(b"x")
+    (folder / "diffusion_pytorch_model.fp16.safetensors").write_bytes(b"x")
+    assert not DiffusionBackend._released_transformer_cached(str(tmp_path))
+
+
+def test_an_offline_pick_checks_only_the_repo_the_load_reads(monkeypatch):
+    """The offline load reads the upstream when it holds weights, so a complete mirror does not drop the seed."""
+    backend = _settle_backend(monkeypatch)
+    _offload_when_bf16_sized(monkeypatch, "none")
+    _uncompilable(monkeypatch)
+    monkeypatch.setattr(dmod, "prefer_ungated_mirror", lambda base, *_a, **_k: base)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_released_transformer_cached",
+        staticmethod(lambda base: base == "unsloth/mirror"),
+    )
+    assert _settle(backend, local_files_only = True) == "fp8"
