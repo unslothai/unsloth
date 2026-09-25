@@ -8,8 +8,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from _en_catalog import en_string
+
 REPO = Path(__file__).resolve().parents[2]
 THREAD_TSX = REPO / "studio/frontend/src/components/assistant-ui/thread.tsx"
+MESSAGE_MENU_TIME_TSX = REPO / "studio/frontend/src/components/assistant-ui/message-menu-time.tsx"
 DETAILS_TSX = (
     REPO / "studio/frontend/src/components/assistant-ui/message-response-details-sheet.tsx"
 )
@@ -350,10 +353,17 @@ def _without_comments(tag: str) -> str:
 
 
 def test_assistant_more_menu_exposes_response_details_action():
+    """The More menu still opens the details sheet. Since #11928 the item that does it lives in
+    MessageMenuTime, beside the response's timestamp, so the action is followed through the prop
+    the thread hands it rather than looked for in thread.tsx itself."""
     src = THREAD_TSX.read_text(encoding = "utf-8")
     assert "MessageResponseDetailsSheet" in src
-    assert "See response details" in src
-    assert "setDetailsOpen(true)" in src
+    assert re.search(
+        r"<MessageMenuTime\s+onShowDetails=\{\(\)\s*=>\s*setDetailsOpen\(true\)\}", src
+    )
+    menu = MESSAGE_MENU_TIME_TSX.read_text(encoding = "utf-8")
+    assert "See response details" in menu
+    assert "onSelect={onShowDetails}" in menu
 
 
 def test_response_details_sheet_uses_unsloth_sheet_and_key_sections():
@@ -422,7 +432,8 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     assert "showResponseModel: false" in prefs_src
     assert "showResponseModel: saved?.showResponseModel ?? false" in prefs_src
     # The visible label lives in the locale file; the tab holds only the key that resolves to it.
-    assert 'showResponseModel: "Show response model"' in EN_LOCALE_TS.read_text(encoding = "utf-8")
+    # Read by key, not by wording: #11924 rewrote this label without changing where it lives.
+    assert en_string("settings.chat.showResponseModel", EN_LOCALE_TS)
     assert 't("settings.chat.showResponseModel")' in chat_tab_src
     assert "setShowResponseModel" in chat_tab_src
     details_src = DETAILS_TSX.read_text(encoding = "utf-8")
