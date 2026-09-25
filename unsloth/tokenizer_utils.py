@@ -214,11 +214,126 @@ def _fix_gemma4_base_bos_token(tokenizer, config = None):
     return tokenizer
 
 
+# v5 loads byte-level BPE repos declaring LlamaTokenizerFast with Metaspace, dropping spaces (transformers#45488, #48206).
+_BACKEND_ROUNDTRIP_PROBE = "Hello world, this is a test."
+_BACKEND_IDS_PROBE = "Hello world! def f(x): return x**2  # code\n你好 éè Αβγ 12345.678"
+
+
+def _backend_roundtrip(backend, text):
+    # One leading space still counts: ByteLevel(add_prefix_space = True) adds it by design.
+    try:
+        ids = backend.encode(text, add_special_tokens = False).ids
+        return backend.decode(ids, skip_special_tokens = False) in (text, " " + text), ids
+    except Exception:
+        return None, None
+
+
+def _resolve_tokenizer_json(
+    tokenizer,
+    cache_dir = None,
+    revision = None,
+):
+    name = getattr(tokenizer, "name_or_path", None)
+    if not isinstance(name, str) or not name:
+        return None
+    if os.path.isdir(name):
+        path = os.path.join(name, "tokenizer.json")
+        return path if os.path.isfile(path) else None
+    try:
+        from huggingface_hub import try_to_load_from_cache
+    except Exception:
+        return None
+    for _cache_dir in dict.fromkeys((cache_dir, None)):
+        try:
+            path = try_to_load_from_cache(
+                name, "tokenizer.json", cache_dir = _cache_dir, revision = revision
+            )
+        except Exception:
+            path = None
+        if isinstance(path, str) and os.path.isfile(path):
+            return path
+    return None
+
+
+def _repair_one_tokenizer_backend(
+    tokenizer,
+    cache_dir = None,
+    revision = None,
+):
+    backend = getattr(tokenizer, "_tokenizer", None)
+    if backend is None or not hasattr(backend, "pre_tokenizer"):
+        return False
+    ok, _ = _backend_roundtrip(backend, _BACKEND_ROUNDTRIP_PROBE)
+    if ok is not False:
+        return False
+    path = _resolve_tokenizer_json(tokenizer, cache_dir = cache_dir, revision = revision)
+    if path is None:
+        return False
+    try:
+        from tokenizers import Tokenizer
+        reference = Tokenizer.from_file(path)
+    except Exception:
+        return False
+    ref_ok, _ = _backend_roundtrip(reference, _BACKEND_ROUNDTRIP_PROBE)
+    if not ref_ok:
+        return False
+    try:
+        if backend.get_vocab(with_added_tokens = False) != reference.get_vocab(
+            with_added_tokens = False
+        ):
+            return False
+    except Exception:
+        return False
+    _, ref_ids = _backend_roundtrip(reference, _BACKEND_IDS_PROBE)
+    saved = (backend.model, backend.normalizer, backend.pre_tokenizer, backend.decoder)
+    try:
+        # Keep the loaded post_processor, padding, truncation and added tokens.
+        backend.model = reference.model
+        backend.normalizer = reference.normalizer
+        backend.pre_tokenizer = reference.pre_tokenizer
+        backend.decoder = reference.decoder
+        new_ok, _ = _backend_roundtrip(backend, _BACKEND_ROUNDTRIP_PROBE)
+        _, new_ids = _backend_roundtrip(backend, _BACKEND_IDS_PROBE)
+        if new_ok and new_ids == ref_ids:
+            return True
+    except Exception:
+        pass
+    try:
+        backend.model, backend.normalizer, backend.pre_tokenizer, backend.decoder = saved
+    except Exception:
+        pass
+    return False
+
+
+def _repair_tokenizer_backend_from_json(
+    tokenizer,
+    cache_dir = None,
+    revision = None,
+):
+    if tokenizer is None or os.environ.get("UNSLOTH_DISABLE_TOKENIZER_JSON_REPAIR", "0") == "1":
+        return tokenizer
+    for obj in _tokenizer_objects(tokenizer):
+        if _repair_one_tokenizer_backend(obj, cache_dir = cache_dir, revision = revision):
+            obj._unsloth_tokenizer_json_repaired = True
+            getattr(logger, "warning_once", logger.warning)(
+                f"Unsloth: {type(obj).__name__} for {getattr(obj, 'name_or_path', '')} did not "
+                "round-trip text (transformers v5 replaced the byte-level pre-tokenizer from "
+                "tokenizer.json), so it was rebuilt from tokenizer.json."
+            )
+    return tokenizer
+
+
 def _apply_post_load_tokenizer_fixes(
     tokenizer,
     fix_tokenizer = True,
     config = None,
+    cache_dir = None,
+    revision = None,
 ):
+    # Runs even with fix_tokenizer = False: a tokenizer dropping spaces is never wanted.
+    tokenizer = _repair_tokenizer_backend_from_json(
+        tokenizer, cache_dir = cache_dir, revision = revision
+    )
     if not fix_tokenizer:
         return tokenizer
     return _fix_gemma4_base_bos_token(tokenizer, config = config)
@@ -721,15 +836,26 @@ def _load_correct_tokenizer(
         cache_dir = cache_dir,
         revision = revision,
     )
+    # Repair both before comparing them, or a v5 byte-level mismatch detours into the legacy path.
+    _repair_kwargs = dict(cache_dir = cache_dir, revision = revision)
+    if slow_tokenizer is not None:
+        _repair_tokenizer_backend_from_json(slow_tokenizer, **_repair_kwargs)
+    _repair_tokenizer_backend_from_json(fast_tokenizer, **_repair_kwargs)
 
     if not fix_tokenizer or tokenizer_name.lower() in IGNORED_TOKENIZER_NAMES:
-        return _apply_post_load_tokenizer_fixes(fast_tokenizer, fix_tokenizer, config)
+        return _apply_post_load_tokenizer_fixes(
+            fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
+        )
     # Ignore Mistral ones - they're a bit weird to handle!
     elif "mistral" in tokenizer_name.lower():
-        return _apply_post_load_tokenizer_fixes(fast_tokenizer, fix_tokenizer, config)
+        return _apply_post_load_tokenizer_fixes(
+            fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
+        )
     # Ignore Phi-4 ones as well
     elif "phi-4" in tokenizer_name.lower():
-        return _apply_post_load_tokenizer_fixes(fast_tokenizer, fix_tokenizer, config)
+        return _apply_post_load_tokenizer_fixes(
+            fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
+        )
     elif slow_tokenizer is not None:
         if hasattr(fast_tokenizer, "add_bos_token") and hasattr(slow_tokenizer, "add_bos_token"):
             fast_tokenizer.add_bos_token = slow_tokenizer.add_bos_token
@@ -737,17 +863,22 @@ def _load_correct_tokenizer(
             fast_tokenizer.add_eos_token = slow_tokenizer.add_eos_token
 
         if assert_same_tokenization(slow_tokenizer, fast_tokenizer):
-            return _apply_post_load_tokenizer_fixes(fast_tokenizer, fix_tokenizer, config)
+            return _apply_post_load_tokenizer_fixes(
+                fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
+            )
         else:
             logger.warning(f"Unsloth: Will load {tokenizer_name} as a legacy tokenizer.")
             return _apply_post_load_tokenizer_fixes(
                 convert_to_fast_tokenizer(slow_tokenizer),
                 fix_tokenizer,
                 config,
+                **_repair_kwargs,
             )
         pass
     else:
-        return _apply_post_load_tokenizer_fixes(fast_tokenizer, fix_tokenizer, config)
+        return _apply_post_load_tokenizer_fixes(
+            fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
+        )
 
 
 def _fix_pad_token(tokenizer):
