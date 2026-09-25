@@ -106,7 +106,12 @@ import {
   sortGalleryItems,
   subscribeGalleryChanged,
 } from "@/lib/gallery-flags";
-import { readLastPrompt, saveLastPrompt } from "@/lib/last-prompt";
+import {
+  dismissExample,
+  isExampleDismissed,
+  readLastPrompt,
+  saveLastPrompt,
+} from "@/lib/last-prompt";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useImageWorkflowStore } from "./stores/image-workflow-store";
 import { WORKFLOW_EXAMPLE_PROMPTS, WORKFLOW_TABS, type WorkflowId } from "./workflows";
@@ -1247,14 +1252,17 @@ export function ImagesPage({
   const imageModels = useImageModels(hostClass, denseQuantSchemes);
   const { rootStyle: railRootStyle } = useMediaRailWidth("images");
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
-  // One prompt per workflow: each starts from its example, then the last one generated with.
+  // One prompt per workflow, starting from the last one generated with.
   const [prompts, setPrompts] = useState<Record<WorkflowId, string>>(() =>
     Object.fromEntries(
-      WORKFLOW_TABS.map(({ id }) => [
-        id,
-        readLastPrompt(`images:${id}`, WORKFLOW_EXAMPLE_PROMPTS[id]),
-      ]),
+      WORKFLOW_TABS.map(({ id }) => [id, readLastPrompt(`images:${id}`)]),
     ) as Record<WorkflowId, string>,
+  );
+  // Workflows whose example hint is gone: it shows as a placeholder until the first edit.
+  const [examplesDismissed, setExamplesDismissed] = useState<Record<WorkflowId, boolean>>(() =>
+    Object.fromEntries(
+      WORKFLOW_TABS.map(({ id }) => [id, isExampleDismissed(`images:${id}`)]),
+    ) as Record<WorkflowId, boolean>,
   );
   const setPromptFor = useCallback((id: WorkflowId, next: SetStateAction<string>) => {
     setPrompts((prev) => ({
@@ -4981,10 +4989,16 @@ export function ImagesPage({
               <Textarea
                 rows={4}
                 placeholder={
-                  workflow === "edit" ? "Describe the edit, e.g. make the sky sunset orange" : undefined
+                  examplesDismissed[workflow] ? undefined : WORKFLOW_EXAMPLE_PROMPTS[workflow]
                 }
                 value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
+                onChange={(e) => {
+                  if (!examplesDismissed[workflow]) {
+                    dismissExample(`images:${workflow}`);
+                    setExamplesDismissed((prev) => ({ ...prev, [workflow]: true }));
+                  }
+                  setPrompt(e.target.value);
+                }}
               />
             </Field>
             <NegativePromptField

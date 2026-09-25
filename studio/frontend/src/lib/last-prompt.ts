@@ -2,23 +2,42 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * The last prompt a media page generated with, kept across reloads. Storage failures fall back to
- * the page's example, so the box is never left without one.
+ * Prompt boxes on the media pages: the last prompt generated with, kept across reloads, and whether
+ * the box's example hint was dismissed. Storage failures read as nothing saved.
  */
-// An "unsloth" key, so another account signing in clears it (transitionBrowserAccount).
+// "unsloth" keys, so another account signing in clears them (transitionBrowserAccount).
 const PREFIX = "unsloth_last_prompt:";
+const DISMISSED_PREFIX = "unsloth_example_prompt_dismissed:";
 
-export function readLastPrompt(key: string, fallback: string): string {
+export function readLastPrompt(key: string): string {
   try {
-    return localStorage.getItem(PREFIX + key) ?? fallback;
+    return localStorage.getItem(PREFIX + key) ?? "";
   } catch {
-    return fallback;
+    return "";
   }
 }
 
 export function saveLastPrompt(key: string, prompt: string): void {
   try {
     localStorage.setItem(PREFIX + key, prompt);
+  } catch {
+    // storage unavailable
+  }
+}
+
+/** Whether the box's example placeholder is gone for good. */
+export function isExampleDismissed(key: string): boolean {
+  try {
+    return localStorage.getItem(DISMISSED_PREFIX + key) !== null;
+  } catch {
+    return false;
+  }
+}
+
+/** Called on the user's first edit, so the example hint does not come back. */
+export function dismissExample(key: string): void {
+  try {
+    localStorage.setItem(DISMISSED_PREFIX + key, "1");
   } catch {
     // storage unavailable
   }
