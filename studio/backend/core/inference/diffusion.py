@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 from core._torchao_stub import (
+    hide_xformers_built_for_another_torch,
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
 )
@@ -111,7 +112,9 @@ from .diffusion_memory import (
     raise_on_image_activation_shortfall,
     raise_on_unified_memory_shortfall,
     reclaimable_snapshot_device_memory,
+    reclaim_host_memory,
     reclaim_offload_host_memory,
+    release_pinned_host_memory,
     refine_memory_plan_for_components,
     settled_snapshot_device_memory,
     snapshot_device_memory,
@@ -124,11 +127,17 @@ from .diffusion_speed import (
     SPEED_MAX,
     SPEED_OFF,
     apply_speed_optims,
+    auto_dynamic_active,
+    compile_dynamic,
     compile_eligible,
     compiled_shapes_are_static,
+    fp16_compile_explicit_only,
+    fp16_unet_offloaded,
+    fresh_compile_count,
     normalize_speed_mode,
     resolve_speed_mode,
     restore_backend_flags,
+    settle_compile_fallback,
     snapshot_backend_flags,
 )
 from .diffusion_attention import (
@@ -181,6 +190,7 @@ from .diffusion_prequant import (
     hosted_fast_accum_conflict,
     load_prequantized_transformer,
     prequant_checkpoint_cached,
+    prequant_unreadable_reason,
     resolve_prequant_source,
     usable_prequant_source,
 )
@@ -225,6 +235,7 @@ logger = get_logger(__name__)
 # Every `import diffusers` below is lazy, so this runs first. On Windows ROCm both reach an absent distributed
 # backend: diffusers imports xformers on sight, its quantizers torchao.
 install_xformers_windows_rocm_stub()
+hide_xformers_built_for_another_torch()
 install_torchao_windows_rocm_stub()
 install_torchao_int_mm_patch()
 
@@ -1493,6 +1504,25 @@ def _clear_exception_frames(exc: BaseException) -> None:
         seen.add(id(error))
         traceback.clear_frames(error.__traceback__)
         errors.extend(cause for cause in (error.__cause__, error.__context__) if cause is not None)
+
+
+def _dense_fast_path_reason(
+    fam: Any,
+    scheme: Optional[str],
+    base: Optional[str],
+    kind: str,
+    path_override: Optional[str],
+    loras: Any = None,
+) -> str:
+    """Name an unreadable hosted checkpoint only when it was in play (not override/GGUF/LoRA bake)."""
+    note = (
+        prequant_unreadable_reason(fam, scheme, base_repo = base)
+        if kind == "pipeline" and not path_override and not _has_active_lora(loras)
+        else None
+    )
+    if note:
+        return f"engaged on the dense fast path; {note}, so the dense bf16 transformer was quantized instead"
+    return "engaged on the dense fast path"
 
 
 class DiffusionBackend:
@@ -3637,6 +3667,14 @@ class DiffusionBackend:
             if not missing:
                 return
 
+            # Staged but not counted: the worker links unchanged files from an older snapshot (hub.utils.snapshot_reuse).
+            reusable = self._reusable_from_older_snapshot(
+                repo,
+                [n for n in missing if where.get(n) is None],
+                revision,
+                declared_sizes,
+                hf_token,
+            )
             if checkpoint:
                 missing_checkpoints.add(repo)
             for entry in entries:
@@ -3645,7 +3683,9 @@ class DiffusionBackend:
                 newly_missing = [n for n in missing if n not in entry["files"]]
                 added = [n for n in scope if n not in entry["files"]]
                 entry["files"].extend(added)
-                entry["bytes"] += int(sum(declared_sizes.get(n, 0) for n in newly_missing))
+                entry["bytes"] += int(
+                    sum(declared_sizes.get(n, 0) for n in newly_missing if n not in reusable)
+                )
                 entry["gguf_filename"] = scoped_gguf[repo]
                 entry["checkpoint"] = repo in missing_checkpoints
                 return
@@ -3656,7 +3696,9 @@ class DiffusionBackend:
                     # are cheap no-op hf_hub_download calls; only the genuinely missing subset contributes to
                     # bytes/preflight below.
                     "files": list(scope),
-                    "bytes": int(sum(declared_sizes.get(name, 0) for name in missing)),
+                    "bytes": int(
+                        sum(declared_sizes.get(name, 0) for name in missing if name not in reusable)
+                    ),
                     "gguf_filename": scoped_gguf[repo],
                     "checkpoint": repo in missing_checkpoints,
                 }
@@ -3776,6 +3818,44 @@ class DiffusionBackend:
         if live:
             return set()
         return wanted if _hits(roots[1]) == wanted else set()
+
+    @staticmethod
+    def _reusable_from_older_snapshot(
+        repo_id: str,
+        names: list[str],
+        revision: Optional[str],
+        declared_sizes: dict[str, int],
+        hf_token: Optional[str],
+    ) -> set[str]:
+        """Missing files an older snapshot holds with the same content; never hashes on the request path."""
+        if not names:
+            return set()
+        try:
+            from hub.utils.snapshot_reuse import (
+                cached_ref_commit,
+                hub_remote_digests,
+                reusable_paths,
+            )
+
+            # Unpinned entries were probed against refs/main; the worker fetches the Hub head.
+            digest_revision = None if revision else "main"
+            revision = revision or cached_ref_commit("model", repo_id, hub_cache_dir())
+            if not revision:
+                return set()
+            return reusable_paths(
+                "model",
+                repo_id,
+                revision,
+                {name: int(declared_sizes.get(name) or 0) for name in names},
+                hub_cache = hub_cache_dir(),
+                # False is the managed-account anonymous sentinel; None would send the installation token.
+                remote_digests = hub_remote_digests(
+                    "model", repo_id, hf_token if hf_token is False else (hf_token or None)
+                ),
+                digest_revision = digest_revision,
+            )
+        except Exception:  # noqa: BLE001 -- counting the bytes is the conservative answer
+            return set()
 
     @staticmethod
     def _current_sha(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
@@ -5473,6 +5553,7 @@ class DiffusionBackend:
                         and effective_speed == SPEED_OFF
                         and transformer_quant_engaged is None
                         and compile_eligible(target, is_gguf = False, family = fam)
+                        and not fp16_compile_explicit_only(target)
                     )
                     # Speed optims run BEFORE placement, so snapshot the global backend flags first for unload restore.
                     # The dense transformer quant above builds quiet configs, so it mutated none of these flags.
@@ -5506,6 +5587,9 @@ class DiffusionBackend:
                         threshold = transformer_cache_threshold,
                         # GGUF transformers are quantized too, so the cache needs the higher threshold.
                         quant_active = cache_quant_active,
+                        # Prefix-KV families (Qwen-Image-2.1) cache only when asked: at 40 steps the default
+                        # threshold skips about half the steps, too lossy for an automatic default.
+                        length_changes_ok = not cache_auto,
                         logger = logger,
                     )
                     self._raise_if_load_cancelled(_load_token)
@@ -5526,6 +5610,8 @@ class DiffusionBackend:
                                 f"auto: {default_steps}-step default schedule is below "
                                 f"{FBCACHE_MIN_STEPS}; re-checked per generation"
                             )
+                    elif cache_request is not None and not cache_engaged:
+                        cache_reason = "requested, but this model does not support step caching; running uncached"
                     else:
                         cache_reason = "requested"
                     # The dense fast path sets gguf_filename, but its transformer is dense.
@@ -5540,12 +5626,19 @@ class DiffusionBackend:
                     else:
                         uninstall_patches()
                         uninstall_arch_patches()
+                    from .diffusion_qwenimage21 import install_for_pipe as install_q21_fast_step
+
+                    install_q21_fast_step(pipe, logger)
 
                     self._raise_if_load_cancelled(_load_token)
                     # Pre-warmed torch.compile cache: a per-fingerprint inductor dir plus a bundle loaded before the
                     # first compiled forward pays the 25-58s compile once.
-                    if effective_speed in (SPEED_DEFAULT, SPEED_MAX) and compile_eligible(
-                        target, is_gguf = gguf_transformer, family = fam
+                    if (
+                        effective_speed in (SPEED_DEFAULT, SPEED_MAX)
+                        and compile_eligible(target, is_gguf = gguf_transformer, family = fam)
+                        and not fp16_unet_offloaded(
+                            target, pipe, offload_active = plan.offload_policy != OFFLOAD_NONE
+                        )
                     ):
                         compile_ctx = compile_cache.begin(
                             family = fam.name,
@@ -5562,7 +5655,13 @@ class DiffusionBackend:
                                 "fullgraph": cache_engaged is None
                                 and not cache_may_toggle
                                 and plan.offload_policy == OFFLOAD_NONE,
-                                "dynamic": effective_speed != SPEED_MAX,
+                                # max compiles DiTs with automatic dynamic (None), as does the default tier for
+                                # torchao weights. Key on the value apply_speed_optims resolves, so a bundle from a
+                                # static or explicit-dynamic build is not reused for an automatic-dynamic one.
+                                "dynamic": compile_dynamic(
+                                    getattr(pipe, "transformer", None),
+                                    None if effective_speed == SPEED_MAX else True,
+                                ),
                                 "mode": "max-autotune-no-cudagraphs"
                                 if effective_speed == SPEED_MAX
                                 else "default",
@@ -5705,7 +5804,14 @@ class DiffusionBackend:
                                 if transformer_quant_artifact is not None
                                 else "re-planned resident for the quantised artifact"
                                 if quant_plan is not None
-                                else "engaged on the dense fast path",
+                                else _dense_fast_path_reason(
+                                    fam,
+                                    transformer_quant_engaged,
+                                    base,
+                                    kind,
+                                    transformer_prequant_path,
+                                    loras,
+                                ),
                                 # Honored when the quant engaged AND when the ask was "off" (a request NOT to
                                 # quantise, which the GGUF build satisfies)
                                 RESOLVED_APPLIED
@@ -6907,7 +7013,7 @@ class DiffusionBackend:
                     "fullgraph": state.transformer_cache is None
                     and not state.cache_auto
                     and state.offload_policy == OFFLOAD_NONE,
-                    "dynamic": True,
+                    "dynamic": compile_dynamic(getattr(state.pipe, "transformer", None), True),
                     "mode": "default",
                 },
                 logger = logger,
@@ -7415,76 +7521,96 @@ class DiffusionBackend:
                 images: list[Any] = []
                 per_image_seeds: list[int] = []
                 chunk_shapes: list[int] = []
-                pending = list(chunks)
-                while pending:
-                    chunk = pending.pop(0)
-                    chunk_kwargs = dict(kwargs)
-                    shared = uniform_prompt(chunk)
-                    generators = [
-                        torch.Generator(device = state.device).manual_seed(s) for _, s in chunk
-                    ]
-                    if len(jobs) == 1:
-                        chunk_kwargs["prompt"] = shared
-                        chunk_kwargs["generator"] = generators[0]
-                        chunk_kwargs["num_images_per_prompt"] = 1
-                    elif shared is not None:
-                        chunk_kwargs["prompt"] = shared
-                        chunk_kwargs["generator"] = generators
-                        chunk_kwargs["num_images_per_prompt"] = len(chunk)
-                    else:
-                        # Distinct prompts: one image per prompt in a single forward. The negative prompt must be
-                        # broadcast to match, else the pipeline asserts or fails in the txt/img concat.
-                        chunk_kwargs["prompt"] = [p for p, _ in chunk]
-                        chunk_kwargs["generator"] = generators
-                        chunk_kwargs["num_images_per_prompt"] = 1
-                        if isinstance(chunk_kwargs.get("negative_prompt"), str):
-                            chunk_kwargs["negative_prompt"] = [
-                                chunk_kwargs["negative_prompt"]
-                            ] * len(chunk)
-                    # A step cache keys residuals on the cond/uncond context, which a graph key
-                    # cannot see. Per chunk because an AUTO decision is re-taken per generation.
-                    if state.cuda_graphs:
-                        cuda_graph.set_bypass(state.cuda_graphs, bool(state.transformer_cache))
-                    # Start every forward from a clean step cache: diffusers only resets FBCache after a SUCCESSFUL
-                    # __call__, so a raised call leaves a residual the next forward trips over.
-                    if state.transformer_cache:
-                        self._reset_step_cache(state.pipe)
+                graphs_before = fresh_compile_count()
+                compile_cache.note_use(state.compile_cache_ctx)
+                try:
+                    pending = list(chunks)
+                    while pending:
+                        chunk = pending.pop(0)
+                        chunk_kwargs = dict(kwargs)
+                        shared = uniform_prompt(chunk)
+                        generators = [
+                            torch.Generator(device = state.device).manual_seed(s) for _, s in chunk
+                        ]
+                        if len(jobs) == 1:
+                            chunk_kwargs["prompt"] = shared
+                            chunk_kwargs["generator"] = generators[0]
+                            chunk_kwargs["num_images_per_prompt"] = 1
+                        elif shared is not None:
+                            chunk_kwargs["prompt"] = shared
+                            chunk_kwargs["generator"] = generators
+                            chunk_kwargs["num_images_per_prompt"] = len(chunk)
+                        else:
+                            # Distinct prompts: one image per prompt in a single forward. The negative prompt must be
+                            # broadcast to match, else the pipeline asserts or fails in the txt/img concat.
+                            chunk_kwargs["prompt"] = [p for p, _ in chunk]
+                            chunk_kwargs["generator"] = generators
+                            chunk_kwargs["num_images_per_prompt"] = 1
+                            if isinstance(chunk_kwargs.get("negative_prompt"), str):
+                                chunk_kwargs["negative_prompt"] = [
+                                    chunk_kwargs["negative_prompt"]
+                                ] * len(chunk)
+                        # A step cache keys residuals on the cond/uncond context, which a graph key
+                        # cannot see. Per chunk because an AUTO decision is re-taken per generation.
+                        if state.cuda_graphs:
+                            cuda_graph.set_bypass(state.cuda_graphs, bool(state.transformer_cache))
+                        # Start every forward from a clean step cache: diffusers only resets FBCache after a SUCCESSFUL
+                        # __call__, so a raised call leaves a residual the next forward trips over.
+                        if state.transformer_cache:
+                            self._reset_step_cache(state.pipe)
+                        try:
+                            # inference_mode is faster than no_grad and numerically identical here.
+                            with torch.inference_mode():
+                                out = pipe(**chunk_kwargs).images
+                        except Exception as exc:  # noqa: BLE001 - reraised unless a splittable OOM
+                            oom = is_oom_error(exc)
+                            if oom:
+                                # Drop the graphs on ANY OOM, before the split decision: they are shaped for the failed
+                                # attempt and empty_cache() cannot reclaim them (live statics and outputs, and a graph
+                                # pool is segregated from the ordinary allocator), so the halved retry below and the
+                                # user's next smaller request would both run a step's worth of VRAM short. The shape
+                                # that finally renders re-captures on its first step.
+                                cuda_graph.reset_all(state.cuda_graphs)
+                            if len(chunk) < 2 or not oom:
+                                raise
+                            # OOM backoff: halve the failed chunk and retry; per-image seeds keep every retry
+                            # reproducible.
+                            empty_cache = getattr(getattr(torch, "cuda", None), "empty_cache", None)
+                            if callable(empty_cache):
+                                empty_cache()
+                            first_half, second_half = split_chunk(chunk)
+                            pending[:0] = [first_half, second_half]
+                            gen.total_steps += steps  # one extra chunk to run
+                            logger.warning(
+                                "diffusion.generate: batch of %d hit OOM; retrying as %d + %d",
+                                len(chunk),
+                                len(first_half),
+                                len(second_half),
+                            )
+                            continue
+                        finally:
+                            # A guarded block that fell back to eager (compile failed at its first forward) no longer
+                            # runs compiled: report it on every exit, cancel and error included, so status, LoRA gating
+                            # and the compile-cache shape registry stop treating it as compiled.
+                            settle_compile_fallback(state, state.pipe, logger)
+                        if cancel.is_set():
+                            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                        images.extend(out)
+                        per_image_seeds.extend(s for _, s in chunk)
+                        chunk_shapes.append(len(chunk))
+                        steps_done[0] += steps
+                except BaseException:
+                    # A cancelled or failed render may already have generalised a graph that the next render reuses
+                    # without compiling, so the success path below would never see the count grow: dirty it now.
                     try:
-                        # inference_mode is faster than no_grad and numerically identical here.
-                        with torch.inference_mode():
-                            out = pipe(**chunk_kwargs).images
-                    except Exception as exc:  # noqa: BLE001 - reraised unless a splittable OOM
-                        oom = is_oom_error(exc)
-                        if oom:
-                            # Drop the graphs on ANY OOM, before the split decision: they are shaped for the failed
-                            # attempt and empty_cache() cannot reclaim them (live statics and outputs, and a graph
-                            # pool is segregated from the ordinary allocator), so the halved retry below and the
-                            # user's next smaller request would both run a step's worth of VRAM short. The shape
-                            # that finally renders re-captures on its first step.
-                            cuda_graph.reset_all(state.cuda_graphs)
-                        if len(chunk) < 2 or not oom:
-                            raise
-                        # OOM backoff: halve the failed chunk and retry; per-image seeds keep every retry
-                        # reproducible.
-                        empty_cache = getattr(getattr(torch, "cuda", None), "empty_cache", None)
-                        if callable(empty_cache):
-                            empty_cache()
-                        first_half, second_half = split_chunk(chunk)
-                        pending[:0] = [first_half, second_half]
-                        gen.total_steps += steps  # one extra chunk to run
-                        logger.warning(
-                            "diffusion.generate: batch of %d hit OOM; retrying as %d + %d",
-                            len(chunk),
-                            len(first_half),
-                            len(second_half),
-                        )
-                        continue
-                    if cancel.is_set():
-                        raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-                    images.extend(out)
-                    per_image_seeds.extend(s for _, s in chunk)
-                    chunk_shapes.append(len(chunk))
-                    steps_done[0] += steps
+                        if (
+                            auto_dynamic_active(state.pipe)
+                            and fresh_compile_count() > graphs_before
+                        ):
+                            compile_cache.mark_recompiled(state.compile_cache_ctx)
+                    except Exception:  # noqa: BLE001 - bookkeeping must not mask the render's own error
+                        pass
+                    raise
                 # Keep progress ACTIVE through the post-denoise work: the route persists the image after this returns,
                 # so a mount probe reading idle would refresh the gallery too early. Persist the warm compile bundle;
                 # a STATIC compile makes new artifacts per (w,h,batch), so register this shape. The write itself is
@@ -7505,6 +7631,10 @@ class DiffusionBackend:
                             (reg_width, reg_height, int(chunk_batch)),
                             static = static_shapes,
                         )
+                    if auto_dynamic_active(state.pipe) and fresh_compile_count() > graphs_before:
+                        # Automatic dynamic recompiles on the first new text length at an already-registered
+                        # (width, height, batch): persist those graphs too, or every fresh process pays them again.
+                        compile_cache.mark_recompiled(state.compile_cache_ctx)
                     compile_cache.save_async(state.compile_cache_ctx, logger = logger)
                 except Exception:  # noqa: BLE001 - cache persistence is best-effort
                     pass
@@ -7717,7 +7847,13 @@ class DiffusionBackend:
         self._cn_models.clear()
         self._state = None
         del state
-        clear_gpu_cache()
+        try:
+            clear_gpu_cache()
+        finally:
+            # finally: a sticky CUDA fault must not keep the pinned chunks locked.
+            release_pinned_host_memory()
+        # Must follow clear_gpu_cache() (runs gc) so the freed staging buffers can be returned.
+        reclaim_host_memory(logger = logger)
 
     def status(self) -> dict[str, Any]:
         state = self._state
@@ -7750,6 +7886,9 @@ class DiffusionBackend:
         from core.inference import diffusion_controlnet, diffusion_lora
         from hub.utils.gguf import extract_quant_token
 
+        resolved, speed_optims = cuda_graph.live_status(
+            state.resolved, state.speed_optims, getattr(state, "cuda_graphs", ())
+        )
         return {
             "loaded": True,
             "repo_id": state.repo_id,
@@ -7769,12 +7908,12 @@ class DiffusionBackend:
             "vae_tiling": state.vae_tiling,
             "memory_mode": state.memory_mode,
             "speed_mode": state.speed_mode,
-            "speed_optims": list(state.speed_optims),
+            "speed_optims": speed_optims,
             "text_encoder_quant": state.text_encoder_quant,
             "transformer_quant": state.transformer_quant,
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
-            "resolved": state.resolved,
+            "resolved": resolved,
             # Workflows the loaded family supports, so the UI can gate its tabs.
             "workflows": _family_workflows(state.family),
             "conditioning": conditioning_capabilities(
