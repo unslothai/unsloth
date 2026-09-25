@@ -24,6 +24,7 @@ from loggers import get_logger
 import shutil
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -3049,6 +3050,20 @@ def _resolve_repo_id_casing(hf_repo: str) -> str:
         return hf_repo
 
 
+def _cached_gguf_snapshots(repo_id: str):
+    """Retain the existing active-cache lookup; add remembered chat copies once."""
+    from utils.models.model_config import _iter_hf_cache_snapshots
+    from hub.utils.gguf_sources import gguf_cache_snapshots
+
+    seen = set()
+    for snapshots in (_iter_hf_cache_snapshots(repo_id), gguf_cache_snapshots(repo_id)):
+        for snapshot in snapshots:
+            key = str(snapshot.resolve())
+            if key not in seen:
+                seen.add(key)
+                yield snapshot
+
+
 def _cached_colocated_split_main(
     repo_id: str, main_filename: str, shards: Iterable[str], expected_sizes: dict[str, int]
 ) -> Optional[str]:
@@ -3064,8 +3079,7 @@ def _cached_colocated_split_main(
     if not main_parts or any(part in (".", "..") for part in main_parts):
         return None
     try:
-        from utils.models.model_config import _iter_hf_cache_snapshots
-        for snap in _iter_hf_cache_snapshots(repo_id):
+        for snap in _cached_gguf_snapshots(repo_id):
             main_path = snap.joinpath(*main_parts)
             if not main_path.is_file():
                 continue
@@ -3099,8 +3113,13 @@ def _cached_variant_candidates(
 ) -> Generator[tuple[str, str, list[str], Path], None, None]:
     """Yield complete cached variant copies in snapshot preference order."""
     try:
-        from utils.models.model_config import _iter_hf_cache_snapshots
-        for snap in _iter_hf_cache_snapshots(repo_id):
+        from hub.utils.gguf_sources import (
+            cached_gguf_manifest_complete,
+            cached_gguf_source_partial,
+        )
+
+        pending_downloads = []
+        for snap in _cached_gguf_snapshots(repo_id):
             cached_files = _gguf_snapshot_files(snap)
             matches = _gguf_files_for_variant(cached_files, hf_variant)
             if not matches:
@@ -3123,7 +3142,15 @@ def _cached_variant_candidates(
                 continue
             if require_mmproj and not _pick_mmproj(cached_files):
                 continue
-            yield str(main_path), main, shards, snap
+            candidate = (str(main_path), main, shards, snap)
+            if not cached_gguf_manifest_complete(
+                repo_id, hf_variant, snap
+            ) or cached_gguf_source_partial(repo_id, hf_variant, snap):
+                pending_downloads.append(candidate)
+                continue
+            yield candidate
+        # Keep existing reuse semantics when no completed duplicate is available.
+        yield from pending_downloads
     except Exception as e:
         logger.debug(f"Cache lookup for variant failed: {e}")
 
@@ -6996,6 +7023,12 @@ def _extra_args_have_tensor_split(
         if str(token).split("=", 1)[0] in ("--tensor-split", "-ts", "--tensor_split"):
             return True
     return bool(str((env or {}).get("LLAMA_ARG_TENSOR_SPLIT", "")).strip())
+
+
+@functools.lru_cache(maxsize = 1)
+def _count_ssl_context() -> ssl.SSLContext:
+    # httpx loads the CA bundle per Client (~15 ms); admission counts once per chat request.
+    return ssl.create_default_context()
 
 
 class LlamaCppBackend:
@@ -38847,6 +38880,7 @@ class LlamaCppBackend:
         chat_template_kwargs = None,
         continue_final_message: bool = False,
         should_abort = None,
+        prefer_native: bool = False,
     ) -> int:
         """Count prompt tokens for a chat request via llama-server.
 
@@ -38860,6 +38894,8 @@ class LlamaCppBackend:
         ``should_abort`` is polled between the two llama-server calls. Admission is the
         caller's job; this only stops a count that was admitted while idle from spending its
         second round trip once the answer stopped mattering. Raises when it fires.
+
+        ``prefer_native`` tries /v1/chat/completions/input_tokens first (one round trip).
         """
         if not self.is_loaded:
             if strict:
@@ -38908,7 +38944,12 @@ class LlamaCppBackend:
         tools = neutralize_tool_descriptions(tools, None, _profile)
 
         try:
-            with httpx.Client(timeout = 10, headers = self._auth_headers, trust_env = False) as client:
+            with httpx.Client(
+                timeout = 10,
+                headers = self._auth_headers,
+                trust_env = False,
+                verify = _count_ssl_context(),
+            ) as client:
 
                 def _tokenize(text: str) -> int:
                     r = client.post(
@@ -38955,6 +38996,22 @@ class LlamaCppBackend:
                     if continue_final_message:
                         template_body["continue_final_message"] = True
                         template_body["add_generation_prompt"] = False
+                    if prefer_native:
+                        if should_abort is not None and should_abort():
+                            raise CountAborted()
+                        try:
+                            native = client.post(
+                                f"{self.base_url}/v1/chat/completions/input_tokens",
+                                json = template_body,
+                            )
+                            if native.status_code == 200:
+                                count = native.json().get("input_tokens")
+                                if type(count) is int and count > 0:
+                                    return count
+                        except Exception:
+                            pass
+                        if should_abort is not None and should_abort():
+                            raise CountAborted()
                     resp = client.post(
                         f"{self.base_url}/apply-template",
                         json = template_body,

@@ -160,6 +160,11 @@ export interface ValidateModelResponse {
 }
 
 export interface GgufVariantDetail {
+  context_length?: number | null;
+  cache_path?: string | null;
+  /** Opaque stand-in for `cache_path` under host-path redaction; the only name an API-key
+   *  caller has for one specific copy, so a delete keeps it instead of the cleared path. */
+  cache_ref?: string | null;
   filename: string;
   /** Selection identity. Path-qualified when a repo holds several checkpoints at one quant. */
   quant: string;
@@ -739,6 +744,8 @@ export interface OpenAIChatChunk {
     // dropped_messages, so re-sending it after a turn that refit several times cannot advance the
     // boundary past the turns actually evicted.
     boundary_messages?: number;
+    // True when this fit started a new checkpoint, including within the current tool loop.
+    checkpoint_started?: boolean;
     // The text the boundary landed ON, so the count can be re-derived by position: a count is only
     // valid against the transcript it was counted on, and deleting an already evicted prompt
     // shortens that transcript.
