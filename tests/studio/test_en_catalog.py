@@ -38,6 +38,9 @@ export const en = {
       tick: `Run \\`unsloth\\` now`,
       templated: `Hello ${name}`,
       literalDollar: `Type \\${name} as written`,
+      hex: "Context\\x20window",
+      codePoint: "Smile \\u{1F600}",
+      continued: "one \\\ntwo",
     },
   },
 };
@@ -64,6 +67,9 @@ def sample(tmp_path):
         ("settings.chat.escaped", "It's here"),
         ("settings.chat.tick", "Run `unsloth` now"),
         ("settings.chat.literalDollar", "Type ${name} as written"),
+        ("settings.chat.hex", "Context window"),
+        ("settings.chat.codePoint", "Smile \U0001f600"),
+        ("settings.chat.continued", "one two"),
     ],
 )
 def test_a_key_resolves_by_its_full_path(sample, key, expected):

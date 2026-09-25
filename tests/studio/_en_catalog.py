@@ -71,6 +71,23 @@ def _decode(literal: str) -> str:
             interpolated = True
         if char == "\\" and index + 1 < len(body):
             nxt = body[index + 1]
+            if nxt == "\n":
+                # A line continuation contributes nothing to the value.
+                index += 2
+                continue
+            braced = re.match(r"u\{([0-9A-Fa-f]{1,6})\}", body[index + 1 :])
+            if braced:
+                out.append(chr(int(braced.group(1), 16)))
+                index += 1 + braced.end()
+                continue
+            if (
+                nxt == "x"
+                and len(body[index + 2 : index + 4]) == 2
+                and all(c in string.hexdigits for c in body[index + 2 : index + 4])
+            ):
+                out.append(chr(int(body[index + 2 : index + 4], 16)))
+                index += 4
+                continue
             if (
                 nxt == "u"
                 and len(body[index + 2 : index + 6]) == 4

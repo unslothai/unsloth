@@ -406,19 +406,45 @@ def _opens_details(value: str, source: str) -> bool:
     return body is not None and bool(re.search(r"\bsetDetailsOpen\(\s*true\s*\)", body))
 
 
-def _calls_show_details(menu: str) -> bool:
-    """Whether some `onSelect` hands over `onShowDetails` or calls it.
+DETAILS_LABEL = "See response details"
+
+
+def _calls_show_details(value: str | None) -> bool:
+    """Whether an `onSelect` value hands over `onShowDetails` or calls it.
 
     `onSelect={() => onShowDetails}` mentions the name without calling it, so a bare mention
     inside a larger expression does not count.
     """
-    for at in re.finditer(r"\bonSelect=\{", menu):
-        value = _prop_value(menu[at.start() :], "onSelect")
-        if value is None:
-            continue
-        if re.fullmatch(r"\s*onShowDetails\s*", value) or re.search(
-            r"\bonShowDetails\s*(?:\?\.)?\(", value
-        ):
+    if value is None:
+        return False
+    return bool(
+        re.fullmatch(r"\s*onShowDetails\s*", value)
+        or re.search(r"\bonShowDetails\s*(?:\?\.)?\(", value)
+    )
+
+
+def _names_details(tag: str) -> bool:
+    """Whether the tag's own accessible name is the details label, literal or by catalog key."""
+    if re.search(rf"""\baria-label=(?:"{DETAILS_LABEL}"|\{{\s*"{DETAILS_LABEL}"\s*\}})""", tag):
+        return True
+    key = re.search(r"""\baria-label=\{\s*t\(\s*["']([\w.]+)["']\s*\)\s*\}""", tag)
+    if key is None:
+        return False
+    try:
+        return en_string(key.group(1)) == DETAILS_LABEL
+    except (KeyError, ValueError):
+        return False
+
+
+def _details_item_opens_sheet(menu: str) -> bool:
+    """Whether one element both carries the details label and calls `onShowDetails`.
+
+    Checked on the same opening tag: the label also appears in the item's tooltip, so a label
+    anywhere plus a handler anywhere would stay green after either left the item itself.
+    """
+    for at in re.finditer(r"<[A-Za-z][\w.]*", menu):
+        tag = _opening_tag(menu[at.start() :], at.group(0))
+        if tag and _names_details(tag) and _calls_show_details(_prop_value(tag, "onSelect")):
             return True
     return False
 
@@ -438,8 +464,9 @@ def test_assistant_more_menu_exposes_response_details_action():
         value is not None and _opens_details(value, src) for value in callbacks
     ), f"no MessageMenuTime is handed a callback that opens the details sheet: {callbacks}"
     menu = _without_block_comments(MESSAGE_MENU_TIME_TSX.read_text(encoding = "utf-8"))
-    assert "See response details" in menu
-    assert _calls_show_details(menu), "the item no longer calls onShowDetails"
+    assert _details_item_opens_sheet(
+        menu
+    ), f"no element labelled {DETAILS_LABEL!r} calls onShowDetails from its own onSelect"
 
 
 @pytest.mark.parametrize(
@@ -473,18 +500,29 @@ def test_the_callback_reader_follows_a_named_callback_to_its_end(value, source, 
 
 
 @pytest.mark.parametrize(
-    "menu, calls",
+    "menu, opens",
     [
-        ("<Item onSelect={onShowDetails}>", True),
-        ("<Item onSelect={() => onShowDetails()}>", True),
-        ("<Item onSelect={() => { track(); onShowDetails?.(); }}>", True),
-        ("<Item onSelect={() => onShowDetails}>", False),
-        ("<Item onSelect={() => track(onShowDetails)}>", False),
-        ("<Item onClick={onShowDetails}>", False),
+        ('<Item onSelect={onShowDetails} aria-label="See response details">', True),
+        ('<Item aria-label="See response details" onSelect={() => onShowDetails()}>', True),
+        (
+            '<Item onSelect={() => { track(); onShowDetails?.(); }} aria-label="See response details">',
+            True,
+        ),
+        ('<Item onSelect={() => onShowDetails} aria-label="See response details">', False),
+        ('<Item onSelect={() => track(onShowDetails)} aria-label="See response details">', False),
+        ('<Item onClick={onShowDetails} aria-label="See response details">', False),
+        # Label and handler on different elements: the tooltip keeps the text, another item
+        # keeps the handler, and the details item itself has neither.
+        (
+            '<Other onSelect={onShowDetails}>x</Other><Item aria-label="Copy">'
+            "<Tip>See response details</Tip>",
+            False,
+        ),
+        ('<Item onSelect={onShowDetails} aria-label="Copy">', False),
     ],
 )
-def test_the_menu_item_must_call_on_show_details_not_just_name_it(menu, calls):
-    assert _calls_show_details(menu) is calls
+def test_the_details_item_must_carry_both_the_label_and_the_call(menu, opens):
+    assert _details_item_opens_sheet(menu) is opens
 
 
 def test_response_details_sheet_uses_unsloth_sheet_and_key_sections():
