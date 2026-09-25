@@ -204,9 +204,7 @@ class MemoryPlan:
     # Defaulted so every existing construction is unchanged; set only where that is what makes group offload fit at
     # all (see plan_diffusion_memory).
     stream_text_encoders: bool = False
-    # Under group offload, stream the TRANSFORMER block by block. False only on the tier that keeps the denoiser
-    # resident and streams just the text encoders (they run once, before step 0), which is what a card that holds the
-    # denoiser but not the denoiser plus the encoder wants: every step at resident speed, one encoder pass per call.
+    # False only on the tier keeping the transformer resident and streaming just the text encoders.
     stream_transformer: bool = True
 
     @property
@@ -814,11 +812,7 @@ def plan_diffusion_memory(
         if companion_dense_mib is not None and text_encoder_dense_mib is not None
         else None
     )
-    # A THIRD floor, for keeping the TRANSFORMER resident and streaming only the text encoders: everything but the
-    # encoders stays on the device. The encoders run once, before step 0, so this pays one host-to-device pass of the
-    # encoder per call and runs every denoise step at resident speed, where either group tier above streams the
-    # transformer again on EVERY step. It is the placement ComfyUI arrives at on the same card (encode, drop the
-    # encoder, keep the denoiser). Same both-terms-known rule as above.
+    # Floor for a resident transformer with streamed text encoders (they run once per call, not per step).
     resident_transformer_floor = (
         _sum_required(
             max(0, int(model_dense_mib) - int(text_encoder_dense_mib)),
@@ -896,7 +890,6 @@ def plan_diffusion_memory(
     elif mode == MEMORY_MODE_FAST:
         policy = OFFLOAD_NONE
         if budget is not None and required is not None and required > budget:
-            # Doesn't fit resident: a resident transformer with streamed encoders, else a streamed transformer.
             policy, stream_text_encoders, stream_transformer = _offload_tier()
             reasons.append("fast requested but weights do not fit resident; offloading")
             if not stream_transformer:
@@ -1105,7 +1098,6 @@ def apply_memory_plan(
         group_kwargs: dict[str, Any] = {
             "stream_text_encoders": bool(getattr(plan, "stream_text_encoders", False))
         }
-        # Only named when it departs from the default, so the long-standing streamed-transformer call is unchanged.
         if not bool(getattr(plan, "stream_transformer", True)):
             group_kwargs["stream_transformer"] = False
         if not _apply_group_offload(pipe, placement, logger, **group_kwargs):
@@ -1184,19 +1176,14 @@ def _pin_vision_embedding_device(module: Any) -> int:
     return patched
 
 
-# Host RAM left free after pinning streamed weights: the same floor the whole-module pin path uses. Env override
-# ``UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN``: ``0`` never pins the streamed-encoder tiers, ``1`` always does.
+# ``0`` never pins the streamed-encoder tiers, ``1`` always does.
 GROUP_OFFLOAD_PIN_ENV = "UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN"
 _PIN_RESERVE_MIN_MIB = 4096
 _PIN_RESERVE_FRACTION = 0.15
 
 
 def _module_host_mib(module: Any) -> int:
-    """Pinned host MiB ``module``'s parameters and buffers would take, each tensor counted once.
-
-    Priced per tensor at the next power of two: diffusers pins every tensor separately, and torch's
-    pinned host allocator rounds each allocation up to a power of two, so the exact byte count
-    under-states what pinning costs by up to 2x."""
+    """Pinned host MiB for ``module``; per tensor rounded to a power of two like torch's pinned allocator."""
     try:
         seen: set[int] = set()
         total = 0
@@ -1214,8 +1201,7 @@ def _module_host_mib(module: Any) -> int:
 
 
 def _pin_budget_mib() -> Optional[int]:
-    """Host RAM that may be pinned while leaving ``max(4 GiB, 15%)`` of it for everything else, or
-    None when host memory cannot be read."""
+    """Pinnable host MiB leaving ``max(4 GiB, 15%)`` free, or None if unreadable."""
     total, _available = _system_memory_mib()
     available = _available_system_memory_mib()
     if total is None or available is None:
@@ -1248,8 +1234,7 @@ def _remove_group_offload_hooks(module: Any) -> None:
 
 
 def _pinned_memory_capped() -> bool:
-    """Native Windows (WDDM) and WSL2 cap page-locked host memory near 1 GiB whatever RAM is free (NVIDIA's CUDA
-    on WSL guide lists it as a known limitation), so pinning a multi-GB streamed module there fails part way."""
+    """Windows (WDDM) and WSL2 cap pinned host memory near 1 GiB (NVIDIA CUDA on WSL known limitation)."""
     if sys.platform == "win32":
         return True
     try:
@@ -1264,7 +1249,7 @@ def _streamed_pin_plan(
     encoder_mib: int,
     logger: Any = None,
 ) -> tuple[bool, bool]:
-    """Whether to pin the streamed transformer(s) and the streamed encoders, in that priority."""
+    """(pin transformer, pin encoders), transformer first."""
     forced = str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower()
     if forced in ("0", "off", "false", "no"):
         return False, False
@@ -1308,14 +1293,11 @@ def _apply_group_offload(
     default: keeping them resident is faster when there is room. The planner turns it on only
     where it is the difference between group offload and whole-module offload.
 
-    ``stream_transformer=False`` (only ever with ``stream_text_encoders``) keeps every DiT resident
-    and streams the encoders alone: the tier for a card that holds the denoiser but not the
-    denoiser plus its encoder."""
+    ``stream_transformer=False`` (only with ``stream_text_encoders``) keeps every DiT resident."""
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
         return False
     if not stream_transformer and not stream_text_encoders:
-        # Nothing would stream: that is resident placement, which this function does not do.
         return False
     installed = 0
     try:
@@ -1363,18 +1345,11 @@ def _apply_group_offload(
                 gkwargs["non_blocking"] = True
             if "record_stream" in _params:
                 gkwargs["record_stream"] = True
-        # Pin decisions for the streamed-encoder tiers, applied below: (transformer pinned, encoders pinned).
         pin_streamed = (True, True)
         if stream_text_encoders and "low_cpu_mem_usage" in _params:
             # The streamed path PINS every offloaded parameter in host RAM when a copy stream is in use (diffusers
             # group_offloading `_init_cpu_param_dict`), which is a fine trade when group offload was already the plan.
-            # These tiers are reached on cards too small for the companions, and those hosts are not reliably RAM-rich:
-            # silently converting a device-memory shortfall into ten-plus GB of unswappable host RAM is how #8188's
-            # machine got into trouble. So pin only what host RAM covers with max(4 GiB, 15%) left over, transformer
-            # first (its copy is paid every STEP), then the encoders (paid once per call). What is not pinned uses
-            # low_cpu_mem_usage, which re-pins every tensor on every onload: on Qwen-Image-2.1 GGUF Q8_0 on a 16 GB
-            # card that took a 25-step image from 8.5 s pinned to 25.1 s, and the resident-transformer tier's encoder
-            # pass from 0.39 s to 2.37 s.
+            # Pin only what host RAM covers (unbounded pinning hurt #8188); unpinned re-pins on every onload.
             pin_streamed = _streamed_pin_plan(
                 sum(_module_host_mib(m) for m in streamed.values()),
                 sum(_module_host_mib(m) for m in streamed_encoders.values()),
@@ -1415,20 +1390,13 @@ def _apply_group_offload(
                 _pin_vision_embedding_device(module)
             except Exception as exc:  # noqa: BLE001 -- degrade this encoder, never fail the load
                 if not stream_transformer and installed == 0:
-                    # The resident-transformer tier exists only because the encoder does NOT fit beside the
-                    # transformer, so keeping it resident is the OOM this tier was chosen to avoid. With no hook
-                    # installed yet, whole-module offload is still reachable: hand the load to it. Leaf level hooks
-                    # each leaf as it goes, so a refusal part way (a pin the host will not grant) leaves hooks that
-                    # enable_model_cpu_offload rejects: drop them first.
+                    # Resident encoder here would OOM; fall back to model offload, which rejects partial hooks.
                     _remove_group_offload_hooks(module)
                     raise
                 if not stream_transformer and not transformer_demoted:
                     if _pipe_denoisers_hold_torchao(pipe):
                         raise
-                    # Hooks exist on an earlier encoder, so whole-module offload is gone. Stream the transformer
-                    # after all (the streamed-encoder group tier, with this encoder degraded to resident as there)
-                    # BEFORE placing the encoder, so the two are never resident together. Unpinned: this path was
-                    # never sized for pinning.
+                    # Model offload is gone once hooks exist: stream the transformer before this encoder goes resident.
                     for dit_name in ("transformer", "transformer_2", "unconditional_transformer"):
                         dit = getattr(pipe, dit_name, None)
                         if isinstance(dit, torch.nn.Module):

@@ -10355,8 +10355,6 @@ def test_plan_memory_hands_the_planner_the_text_encoder_split(monkeypatch, tmp_p
     assert plan.estimates["companion_dense_mib"] == 200
     assert plan.estimates["text_encoder_dense_mib"] == 150
     assert plan.estimates["group_floor_streamed_te_mib"] == 2198
-    # The transformer (300) fits beside the VAE once the encoders stream: 350 + 100 + 2048 = 2498 against the 2952
-    # budget. That beats streaming the transformer on every step, so it is the tier picked.
     assert plan.estimates["resident_transformer_floor_mib"] == 2498
     assert plan.offload_policy == OFFLOAD_GROUP
     assert plan.stream_text_encoders is True and plan.stream_transformer is False
@@ -11709,12 +11707,6 @@ def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypa
     assert "prequant artifact missing" in str(failures[0])
 
 
-# ── pricing a hosted pre-cast text encoder ────────────────────────────────────
-# Qwen-Image-2.1 takes its fp8 Qwen3-VL from unsloth/Qwen-Image-2.1-FP8, not from the base repo, so the base-repo scans
-# read the 8.7 GiB encoder as nothing: a GGUF Q8_0 load planned 8938 MiB for 17.9 GiB of weights, picked group offload
-# with the encoder resident on a 16 GB card, and ran out of memory at the first image.
-
-
 def test_plan_memory_prices_the_hosted_precast_text_encoder(monkeypatch, tmp_path):
     snapshot = _base_snapshot_with_sizes(
         tmp_path, monkeypatch, {"vae/diffusion_pytorch_model.safetensors": 50}
@@ -11749,7 +11741,6 @@ def test_plan_memory_prices_the_hosted_precast_text_encoder(monkeypatch, tmp_pat
         )
 
     before = _plan()
-    # No scheme handed over: the previous sizing, VAE only.
     assert before.estimates["companion_dense_mib"] == 50
     assert before.estimates["text_encoder_dense_mib"] is None
     after = _plan(text_encoder_quant = "fp8")
@@ -11760,8 +11751,6 @@ def test_plan_memory_prices_the_hosted_precast_text_encoder(monkeypatch, tmp_pat
 
 
 def test_plan_memory_prices_cached_dense_shards_over_a_cached_precast(monkeypatch, tmp_path):
-    # Swap, never add, but never below dense shards on disk either: a cached checkpoint can still fail to load (bad
-    # metadata, missing class, incompatible state dict) and assembly then opens those shards.
     snapshot = _base_snapshot_with_sizes(
         tmp_path,
         monkeypatch,
@@ -11794,8 +11783,6 @@ def test_plan_memory_prices_cached_dense_shards_over_a_cached_precast(monkeypatc
 
 
 def test_cached_dense_shards_keep_the_24g_denoiser_resident(monkeypatch, tmp_path):
-    # Qwen-Image-2.1 Q8_0 on a 24 GB card with the dense Qwen3-VL shards left in the cache as well as the fp8
-    # checkpoint: pricing the dense encoder must not cost the resident-denoiser tier, which only streams encoders.
     from core.inference import diffusion as dmod
     from core.inference.diffusion_memory import OFFLOAD_GROUP, DeviceMemory
 
@@ -11837,7 +11824,6 @@ def test_cached_dense_shards_keep_the_24g_denoiser_resident(monkeypatch, tmp_pat
 
 
 def _flux_like_plan(tmp_path, monkeypatch, precast):
-    # CLIP-L (235) stays dense; only the T5 folder is replaced by the pre-cast checkpoint.
     snapshot = _base_snapshot_with_sizes(
         tmp_path,
         monkeypatch,
@@ -11872,14 +11858,53 @@ def test_plan_memory_swaps_only_the_encoder_the_precast_checkpoint_replaces(monk
 
 
 def test_plan_memory_never_prices_an_uncached_precast_below_the_dense_shards(monkeypatch, tmp_path):
-    # Not cached yet: the load can still fall back to the dense T5 it scanned, so keep the larger figure.
     plan = _flux_like_plan(tmp_path, monkeypatch, (2600, ("text_encoder_2",), False))
     assert plan.estimates["text_encoder_dense_mib"] == 235 + 4000
 
 
+def test_a_table_priced_pipeline_does_not_add_the_precast_encoder_on_top(monkeypatch, tmp_path):
+    # A base-repo pipeline prices its encoders from the bf16 table, which already covers the dense encoder.
+    snapshot = _base_snapshot_with_sizes(
+        tmp_path,
+        monkeypatch,
+        {
+            "transformer/diffusion_pytorch_model.safetensors": 13500,
+            "vae/diffusion_pytorch_model.safetensors": 1288,
+        },
+    )
+    target = _small_card(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_precast_text_encoder_mib",
+        staticmethod(lambda *a, **k: (8959, ("text_encoder",), True)),
+    )
+    fam = types.SimpleNamespace(name = "qwen-image-2.1", base_repo = "bfl/base")
+
+    def _plan(quant):
+        return (
+            DiffusionBackend()
+            ._plan_memory(
+                target,
+                None,
+                "bfl/base",
+                fam,
+                None,
+                False,
+                kind = "pipeline",
+                repo_id = "bfl/base",
+                base_local_dir = str(snapshot),
+                text_encoder_quant = quant,
+            )
+            .estimates
+        )
+
+    dense, precast = _plan(None), _plan("fp8")
+    assert dense["text_encoder_dense_mib"] == 16689
+    for key in ("model_dense_mib", "companion_dense_mib", "text_encoder_dense_mib"):
+        assert precast[key] == dense[key]
+
+
 def test_plan_memory_leaves_a_callers_companion_override_alone(monkeypatch, tmp_path):
-    # A dense-quant candidate prices its own companions (already pre-cast scaled); the cache correction must not
-    # land on top of it.
     target = _small_card(monkeypatch)
     monkeypatch.setattr(
         DiffusionBackend, "_precast_text_encoder_mib", staticmethod(lambda *a, **k: 2600)
@@ -11937,7 +11962,6 @@ def test_precast_text_encoder_mib_reads_the_cached_checkpoint(monkeypatch, tmp_p
         ("text_encoder",),
         True,
     )
-    # Not a pre-cast pick: nothing to price.
     assert (
         DiffusionBackend._precast_text_encoder_mib(fam, "Qwen/Qwen-Image-2.1", target, None) is None
     )
@@ -11958,8 +11982,6 @@ def test_precast_text_encoder_mib_prices_an_uncached_checkpoint_from_the_family_
     got = DiffusionBackend._precast_text_encoder_mib(
         fam, "Qwen/Qwen-Image-2.1", _bf16_cuda_target(), "fp8"
     )
-    # The family table's 17.5 GB dense encoder at the pre-cast budget scale: an over-estimate of the 8.75 GiB file,
-    # flagged inexact so the planner never prices it below dense shards the load could still open.
     assert got == (
         int(17.5 * 1000**3 * TE_PREQUANT_BUDGET_SCALE) // (1024 * 1024),
         ("text_encoder",),
