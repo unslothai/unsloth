@@ -1,15 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Publishes the unsloth wheel + sdist to PyPI when a release lands on main.
+# Publishes the unsloth wheel to PyPI when a release lands on main. Wheel only,
+# like `build.sh publish` (#10202): the sdist is still built so the stamp and
+# content checks cover it, but it is never uploaded.
 #
 # A release is marked by the installer-pin bump (e.g. "Bump install.sh /
 # install.ps1 pin to unsloth>=2026.6.6"), where the `unsloth>=` floor reaches
 # __version__. We gate on that content rather than the commit title, which has
 # been worded several different ways over time. The `decide` job publishes only
-# when both installer pins (install.sh + install.ps1) equal __version__ and that
-# version is not already complete on PyPI, so it fires exactly once per release
-# and ignores unrelated edits and re-runs.
+# when both installer pins (install.sh + install.ps1) equal __version__
+# (unsloth/_version.py) and that version has no wheel on PyPI yet, so it fires
+# exactly once per release and ignores unrelated edits and re-runs.
 #
 # We do not trigger on v* tags: those are Studio release tags (v0.1.x-beta).
 # They are unrelated to the PyPI package version (taken from __version__), but
@@ -41,7 +43,7 @@ on:
     paths:
       - install.sh
       - install.ps1
-      - unsloth/models/_utils.py
+      - unsloth/_version.py
   # Manual retry path. Once the pins already match __version__, a build that
   # failed for a reason unrelated to the gate files can't be retriggered by a
   # gate-file push, and rerunning the old run reuses the broken commit. The
@@ -64,14 +66,15 @@ concurrency:
   # Accepted residual: two commits that both land the gate for the *same* $ver
   # (e.g. a pin bump then an installer hotfix keeping that version) can race the
   # immutable upload, and skip-existing makes the loser a no-op -- so the version
-  # is always published *complete*, but whichever run uploads first decides which
-  # tree's bytes win. A version-keyed group would serialize this, but $ver is
+  # is always published, but whichever run uploads first decides which tree's
+  # bytes win. A version-keyed group would serialize this, but $ver is
   # computed in `decide` and isn't available in this workflow-level context; a
   # job-level "defer to the newer tip" guard is unsound (a same-version tip that
   # touched no gate file never triggers its own run, so deferring would strand
   # the release). The harm needs two commits sharing one $ver but shipping
   # different packaged bytes -- itself a versioning mistake -- so we accept it.
-  group: pypi-publish-${{ github.sha }}
+  # The ref guard only matters to a dispatch off main, which decide no-ops.
+  group: pypi-publish-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
   cancel-in-progress: false
 
 jobs:
@@ -90,33 +93,40 @@ jobs:
     outputs:
       publish: ${{ steps.check.outputs.publish }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
       - id: check
         run: |
-          # `|| true`: steps run under `set -eo pipefail`, so a no-match grep
-          # would abort the step. We want a missing/odd pin to skip, not fail.
+          # Comment lines are dropped so an old pin quoted in a comment cannot
+          # count. `|| true`: steps run under `set -eo pipefail`, so a no-match
+          # grep would abort here; the checks below report it instead. The
+          # capture takes the full PEP 440 version (digits/dots + any
+          # a/b/rc/.post/.dev/+local suffix), and `unsloth>=` never matches
+          # `unsloth-zoo>=`. install.sh spells its pin as a `${var:-unsloth>=X}`
+          # default, install.ps1 as a quoted string.
+          pins() { grep -v '^[[:space:]]*#' "$1" | grep -oP 'unsloth>=\K[0-9][0-9A-Za-z.+!-]*' | sort -u || true; }
+          pin_sh=$(pins install.sh)
+          pin_ps=$(pins install.ps1)
+          ver=$(grep -m1 -oP '^__version__ = "\K[^"]+' unsloth/_version.py || true)
+          echo "install.sh: ${pin_sh:-<none>} / install.ps1: ${pin_ps:-<none>} / __version__: ${ver:-<none>}"
+          one() { [ "$(printf '%s\n' "$1" | grep -c .)" = "1" ]; }
+          # A missing or ambiguous input means a refactor moved what this gate
+          # reads. Fail loudly: skipping would leave every later release unpublished.
+          if ! { one "$pin_sh" && one "$pin_ps" && [ -n "$ver" ]; }; then
+            echo "::error::need exactly one unsloth>= pin in each of install.sh and install.ps1, and __version__ in unsloth/_version.py"
+            exit 1
+          fi
           # Require BOTH installers to be on the new floor, so we never publish
           # while install.ps1 (Windows) still pins the previous version.
-          # Capture the full PEP 440 version after the quoted `"unsloth>=` pin
-          # (digits/dots + any a/b/rc/.post/.dev/+local suffix) so a suffixed
-          # release like 2026.5.3.post1 compares equal to __version__. The leading
-          # quote matches only real pins, excluding `unsloth-zoo>=` and comments.
-          pin_sh=$(grep -oP '"unsloth>=\K[0-9][0-9A-Za-z.+!-]*' install.sh  | sort -u || true)
-          pin_ps=$(grep -oP '"unsloth>=\K[0-9][0-9A-Za-z.+!-]*' install.ps1 | sort -u || true)
-          ver=$(grep -m1 -oP '__version__ = "\K[^"]+' unsloth/models/_utils.py || true)
-          echo "install.sh: ${pin_sh:-<none>} / install.ps1: ${pin_ps:-<none>} / __version__: $ver"
-          one() { [ "$(printf '%s\n' "$1" | grep -c .)" = "1" ]; }
-          if ! { one "$pin_sh" && one "$pin_ps" && [ "$pin_sh" = "$ver" ] && [ "$pin_ps" = "$ver" ]; }; then
-            echo "install.sh / install.ps1 pins do not both match __version__ (or are ambiguous) -> skip"
+          if [ "$pin_sh" != "$ver" ] || [ "$pin_ps" != "$ver" ]; then
+            echo "install.sh / install.ps1 pins do not both match __version__ -> skip"
             echo "publish=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # Pins agree on $ver. Publish if the version is absent OR incomplete
-          # (missing wheel or sdist), so a rerun can finish a partial upload;
-          # the publish step uses skip-existing to not re-upload what's there.
+          # Pins agree on $ver. Publish unless PyPI already has its wheel (for
+          # example a maintainer ran `build.sh publish` first).
           decision=$(python3 - "$ver" <<'PY'
           import json, sys, urllib.error, urllib.request
           ver = sys.argv[1]
@@ -127,12 +137,12 @@ jobs:
               print("publish" if e.code == 404 else f"error:HTTP {e.code}"); sys.exit(0)
           except Exception as e:
               print(f"error:{e}"); sys.exit(0)
-          print("skip" if {"bdist_wheel", "sdist"} <= kinds else "publish")
+          print("skip" if "bdist_wheel" in kinds else "publish")
           PY
           )
           case "$decision" in
-            publish) echo "unsloth $ver absent/incomplete on PyPI -> publish"; echo "publish=true"  >> "$GITHUB_OUTPUT" ;;
-            skip)    echo "unsloth $ver already complete on PyPI -> skip";      echo "publish=false" >> "$GITHUB_OUTPUT" ;;
+            publish) echo "unsloth $ver has no wheel on PyPI -> publish"; echo "publish=true"  >> "$GITHUB_OUTPUT" ;;
+            skip)    echo "unsloth $ver wheel already on PyPI -> skip";   echo "publish=false" >> "$GITHUB_OUTPUT" ;;
             *)       echo "::error::PyPI check failed for $ver: ${decision#error:}"; exit 1 ;;
           esac
 
@@ -145,16 +155,16 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0  # need tags for `git describe` (Studio release version)
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
 
@@ -231,45 +241,13 @@ jobs:
           STUDIO: ${{ steps.studio.outputs.studio }}
         run: python scripts/stamp_studio_release.py --verify-dist dist --expected "$STUDIO"
 
-      - name: Wheel content sanity
-        # wheel-smoke runs this too, but in a parallel workflow that can't block
-        # this upload -- so we gate on it here before shipping to PyPI.
-        run: |
-          python - <<'PY'
-          import zipfile, glob, sys
-          w = glob.glob("dist/unsloth-*.whl")
-          if not w:
-              print("FAIL: no wheel produced"); sys.exit(2)
-          w = w[0]
-          print(f"wheel: {w}")
-          with zipfile.ZipFile(w) as z:
-              n = z.namelist()
-              checks = {
-                "lockfile shipped":      any(s.endswith("studio/frontend/package-lock.json") for s in n),
-                "frontend dist shipped": any(s.endswith("studio/frontend/dist/index.html")    for s in n),
-                "no node_modules":       not any("studio/frontend/node_modules/" in s for s in n),
-                "no bun.lock":           not any(s.endswith("studio/frontend/bun.lock")       for s in n),
-              }
-              js = [s for s in n
-                    if "studio/frontend/dist/assets/" in s
-                    and s.endswith(".js")
-                    and "/index-" in s]
-              if not js:
-                  print("FAIL: no main bundle index-*.js in wheel"); sys.exit(2)
-              data = z.read(js[0]).decode("utf-8", "replace")
-              hits = data.count("unstable_Provider:")
-              print(f"main bundle: {js[0]}")
-              print(f"unstable_Provider hits: {hits} (>=4 indicates 2026.5.1 regression)")
-              checks["bundle has no Studio unstable_Provider call site"] = (hits < 4)
+      - name: Wheel + sdist content sanity
+        # The same checks wheel-smoke.yml runs, but that is a parallel workflow
+        # that can't block this upload -- so we gate on them here too.
+        run: python scripts/check_wheel_contents.py dist
 
-              print()
-              for k, v in checks.items():
-                  print(f"  [{'PASS' if v else 'FAIL'}] {k}")
-              sys.exit(0 if all(checks.values()) else 1)
-          PY
-
-      - name: Upload dist artifact
-        # Upload the verified dist/ BEFORE the import smoke below. That smoke
+      - name: Upload wheel artifact
+        # Upload the verified wheel BEFORE the import smoke below. That smoke
         # installs third-party deps from PyPI, whose install/import hooks run
         # arbitrary code and could mutate dist/ before the OIDC-scoped publish
         # job uploads it. Uploading the already-verified bytes (stamp + wheel
@@ -278,7 +256,8 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: pypi-dist
-          path: dist/
+          # Wheel only (see the header); the sdist stays on the runner.
+          path: dist/*.whl
           if-no-files-found: error
 
       - name: Studio backend import smoke
@@ -314,6 +293,6 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
         with:
-          # Complete a partial upload on rerun (e.g. wheel landed, sdist didn't)
-          # instead of failing on the already-present file.
+          # A rerun, or a same-version race (see concurrency), finds the wheel
+          # already there; skip it instead of failing.
           skip-existing: true
