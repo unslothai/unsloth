@@ -112,6 +112,7 @@ from platform import system as platform_system
 
 platform_system = platform_system()
 import numpy as np
+import ast
 import contextlib
 import copy
 import re
@@ -3974,6 +3975,10 @@ def apply_accepts_loss_kwargs_fix(model):
 
     value, reason = _find_concrete_accepts_loss_kwargs(model)
     if value is None:
+        declared = _instance_accepts_loss_kwargs(model)
+        if declared is not None:
+            # Set in __init__ (or by an earlier call here); HF honours it, so leave it.
+            return f"{declared} (instance accepts_loss_kwargs)"
         causal_lm = _forward_ignores_num_items_in_batch(model)
         if causal_lm is not None:
             _shadow_accepts_loss_kwargs(model, False)
@@ -3986,6 +3991,47 @@ def apply_accepts_loss_kwargs_fix(model):
 
 
 _OWN_CE_LOSS = re.compile(r"\bCrossEntropyLoss\s*\(|\bcross_entropy\s*\(")
+
+
+def _instance_accepts_loss_kwargs(model):
+    # First accepts_loss_kwargs stored on an instance along the wrapper chain, else None.
+    seen = set()
+    m = model
+    for _ in range(8):
+        if m is None or id(m) in seen:
+            return None
+        seen.add(id(m))
+        value = getattr(m, "__dict__", {}).get("accepts_loss_kwargs", None)
+        if value is not None:
+            return value
+        nxt = getattr(m, "base_model", None)
+        if nxt is None or nxt is m:
+            nxt = getattr(m, "model", None)
+        m = nxt
+    return None
+
+
+def _ce_calls_all_mean(source):
+    # A sum / "none" reduction is the model's own objective, not a micro-batch mean; only the default mean counts.
+    try:
+        tree = ast.parse(textwrap.dedent(source))
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+        if name not in ("CrossEntropyLoss", "cross_entropy"):
+            continue
+        for kw in node.keywords:
+            if kw.arg is None:
+                return False
+            if kw.arg == "reduction" and not (
+                isinstance(kw.value, ast.Constant) and kw.value.value == "mean"
+            ):
+                return False
+    return True
 
 
 def _forward_ignores_num_items_in_batch(model):
@@ -4022,7 +4068,9 @@ def _forward_ignores_num_items_in_batch(model):
         return None
     if "num_items_in_batch" in source or "loss_function" in source:
         return None
-    return m if _OWN_CE_LOSS.search(source) is not None else None
+    if _OWN_CE_LOSS.search(source) is None or not _ce_calls_all_mean(source):
+        return None
+    return m
 
 
 def patch_tokenizer(model, tokenizer):

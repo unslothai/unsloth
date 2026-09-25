@@ -38,6 +38,8 @@ _NAMES = {
     "_shadow_accepts_loss_kwargs",
     "_forward_ignores_num_items_in_batch",
     "_OWN_CE_LOSS",
+    "_instance_accepts_loss_kwargs",
+    "_ce_calls_all_mean",
     "apply_accepts_loss_kwargs_fix",
 }
 
@@ -53,7 +55,7 @@ def _load():
             isinstance(t, ast.Name) and t.id in _NAMES for t in node.targets
         ):
             keep.append(node)
-    ns = {"re": re, "inspect": inspect, "os": os}
+    ns = {"ast": ast, "re": re, "inspect": inspect, "os": os, "textwrap": textwrap}
     exec(compile(ast.Module(body = keep, type_ignores = []), str(_UTILS), "exec"), ns)
     return ns
 
@@ -106,6 +108,41 @@ class HandRolledForCausalLM(nn.Module):
         logits = torch.zeros(1)
         loss = torch.nn.functional.cross_entropy(logits, labels, reduction="sum")
         return loss / num_items_in_batch
+
+
+class SumLossForCausalLM(nn.Module):
+    """Remote code whose objective is a summed loss: dividing by GA would change it."""
+    def __init__(self):
+        super().__init__()
+        self.model = Backbone()
+
+    def forward(self, input_ids=None, labels=None, **kwargs):
+        logits = torch.zeros(1)
+        loss_fct = CrossEntropyLoss(reduction="sum")
+        return loss_fct(logits.view(-1, 1), labels.view(-1))
+
+
+class ExplicitMeanForCausalLM(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.model = Backbone()
+
+    def forward(self, input_ids=None, labels=None, **kwargs):
+        logits = torch.zeros(1)
+        return torch.nn.functional.cross_entropy(logits, labels, reduction="mean")
+
+
+class InstanceDeclaredForCausalLM(nn.Module):
+    """Remote code that declares loss-kwargs support on the instance in __init__."""
+    def __init__(self):
+        super().__init__()
+        self.model = Backbone()
+        self.accepts_loss_kwargs = True
+
+    def forward(self, input_ids=None, labels=None, **kwargs):
+        logits = torch.zeros(1)
+        loss_fct = CrossEntropyLoss()
+        return loss_fct(logits.view(-1, 1), labels.view(-1))
 
 
 class NoKwargsForCausalLM(nn.Module):
@@ -198,7 +235,12 @@ def test_remote_mean_loss_under_a_peft_wrapper(tmp_path):
 def test_consumers_keep_the_hf_default(tmp_path):
     ns = _load()
     mods = _models(tmp_path)
-    for cls in (mods.NativeForCausalLM, mods.HandRolledForCausalLM, mods.NoKwargsForCausalLM):
+    for cls in (
+        mods.NativeForCausalLM,
+        mods.HandRolledForCausalLM,
+        mods.NoKwargsForCausalLM,
+        mods.SumLossForCausalLM,
+    ):
         model = cls()
         ns["apply_accepts_loss_kwargs_fix"](model)
         assert not hasattr(model, "accepts_loss_kwargs"), cls.__name__
@@ -228,3 +270,33 @@ def test_remote_mean_loss_under_a_real_peft_model(tmp_path):
     ns["apply_accepts_loss_kwargs_fix"](wrapped)
     assert getattr(wrapped.get_base_model(), "accepts_loss_kwargs", None) is False
     assert getattr(wrapped, "accepts_loss_kwargs", None) is False
+
+
+def test_explicit_mean_reduction_is_still_a_mean_loss(tmp_path):
+    ns = _load()
+    mods = _models(tmp_path)
+    model = mods.ExplicitMeanForCausalLM()
+    ns["apply_accepts_loss_kwargs_fix"](model)
+    assert getattr(model, "accepts_loss_kwargs", None) is False
+
+
+def test_instance_declaration_is_kept(tmp_path):
+    # HF Trainer honours an instance attribute set in __init__; the heuristic must not overwrite it.
+    ns = _load()
+    mods = _models(tmp_path)
+    model = mods.InstanceDeclaredForCausalLM()
+    ns["apply_accepts_loss_kwargs_fix"](model)
+    assert model.accepts_loss_kwargs is True
+    wrapped = _PeftLike(model)
+    ns["apply_accepts_loss_kwargs_fix"](wrapped)
+    assert model.accepts_loss_kwargs is True
+
+
+def test_repeated_calls_keep_the_first_answer(tmp_path):
+    # Load time and Trainer.__init__ both run the fix; the second call must agree with the first.
+    ns = _load()
+    mods = _models(tmp_path)
+    model = mods.NemotronHForCausalLM()
+    ns["apply_accepts_loss_kwargs_fix"](model)
+    ns["apply_accepts_loss_kwargs_fix"](_PeftLike(model))
+    assert model.accepts_loss_kwargs is False
