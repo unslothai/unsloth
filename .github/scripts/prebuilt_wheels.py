@@ -90,9 +90,9 @@ SPECS = {
             # unlisted future card JITs rather than failing.
             "FLASH_ATTN_CUDA_ARCHS": "80;90;100;120",
         },
-        # ~4.5 h for the four architectures at MAX_JOBS=1. GitHub kills a job at 6 h, so the
-        # build is wrapped in `timeout` below that, to fail as a build timeout with logs
-        # rather than as a job cancellation with none.
+        # Split the 6-8 hour compile across jobs to stay below GitHub's 6-hour limit.
+        "shards": 8,
+        # Leave time to upload partial caches after a build timeout.
         "build_timeout": "300m",
         "import_names": ["flash_attn", "flash_attn_2_cuda"],
     },
@@ -232,6 +232,7 @@ def build_matrix(
                         "max_jobs": spec["max_jobs"],
                         "nvcc_threads": spec["nvcc_threads"],
                         "build_timeout": spec["build_timeout"],
+                        "shards": spec.get("shards", 0),
                         "build_env": " ".join(
                             f"{key}={value}" for key, value in spec["env"].items()
                         ),
@@ -245,6 +246,19 @@ def build_matrix(
                     }
                 )
     return include
+
+
+def warm_matrix(include: list[dict]) -> list[dict]:
+    """One warm job per (cell, shard), for the cells whose package is sharded."""
+    return [
+        {
+            **cell,
+            "shard": shard,
+            "label": f"{cell['label']} / shard {shard + 1} of {cell['shards']}",
+        }
+        for cell in include
+        for shard in range(cell["shards"])
+    ]
 
 
 def parse_wheel_name(name: str) -> dict | None:
@@ -410,6 +424,7 @@ def _cmd_matrix(args: argparse.Namespace) -> int:
         pythons = os.environ.get("UW_PYTHON_VERSIONS", ""),
     )
     matrix = json.dumps({"include": include}, separators = (",", ":"))
+    warm = warm_matrix(include)
     print(matrix)
 
     # Writing the step output here rather than echoing it in YAML keeps the JSON -- which is
@@ -420,6 +435,9 @@ def _cmd_matrix(args: argparse.Namespace) -> int:
             with open(output, "a", encoding = "utf-8") as handle:
                 handle.write(f"matrix={matrix}\n")
                 handle.write(f"count={len(include)}\n")
+                warm_json = json.dumps({"include": warm}, separators = (",", ":"))
+                handle.write(f"warm_matrix={warm_json}\n")
+                handle.write(f"warm_count={len(warm)}\n")
         summary = os.environ.get("GITHUB_STEP_SUMMARY")
         if summary:
             listing = "\n".join(f"- `{cell['wheel_name']}`" for cell in include)
@@ -461,7 +479,8 @@ def main(argv: list[str] | None = None) -> int:
     matrix_parser.add_argument(
         "--github",
         action = "store_true",
-        help = "also append matrix/count to $GITHUB_OUTPUT and a listing to $GITHUB_STEP_SUMMARY",
+        help = "also append matrix/count and warm_matrix/warm_count to $GITHUB_OUTPUT and a "
+        "listing to $GITHUB_STEP_SUMMARY",
     )
     matrix_parser.set_defaults(func = _cmd_matrix)
 

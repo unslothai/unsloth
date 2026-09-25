@@ -201,6 +201,15 @@ def _warn(logger: Any, what: str, exc: Any) -> None:
         logger.warning("diffusion.cuda_graph: %s failed: %s", what, exc)
 
 
+def _outer_layer(module: Any) -> Any:
+    """The ``_unsloth_outer_forward`` layer in ``module``'s forward slot (its ``inner`` None = class forward)."""
+    try:
+        slot = module.__dict__.get("forward")
+    except Exception:  # noqa: BLE001 - no instance dict, nothing layered
+        return None
+    return slot if getattr(slot, "_unsloth_outer_forward", False) is True else None
+
+
 class _Entry:
     """One captured graph plus the static buffers it replays into."""
 
@@ -264,11 +273,20 @@ class GraphedForward:
         _LIVE_WRAPPERS.add(self)
 
     def install(self) -> "GraphedForward":
-        """Write ``forward`` into the instance ``__dict__``; ``__setattr__`` would inspect it."""
+        """Set ``forward`` via ``__dict__`` (``__setattr__`` would inspect it), under any outer step-skip layer."""
+        outer = _outer_layer(self.module)
+        if outer is not None:
+            outer.inner = self
+            return self
         self.module.__dict__["forward"] = self
         return self
 
     def uninstall(self) -> "GraphedForward":
+        outer = _outer_layer(self.module)
+        if outer is not None:
+            if outer.inner is self:
+                outer.inner = None
+            return self
         self.module.__dict__.pop("forward", None)
         return self
 
@@ -612,6 +630,9 @@ def uninstall_all(handles: Any, *, logger: Any = None) -> None:
     _drop_pool_if_unused()
 
 
+_REFUSALS = ("refused_float", "refused_host_tensor", "refused_object")
+
+
 def stats(handles: Any) -> dict:
     """JSON-safe aggregate over the handles, for the status payload."""
     out = {
@@ -621,13 +642,21 @@ def stats(handles: Any) -> dict:
         "eager_calls": 0,
         "fallbacks": 0,
         "cap_skips": 0,
+        **{field: 0 for field in _REFUSALS},
         "poisoned": False,
         "capture_error": None,
     }
     for handle in handles or ():
         try:
             out["graphs"] += len(handle.cache)
-            for field in ("captures", "replays", "eager_calls", "fallbacks", "cap_skips"):
+            for field in (
+                "captures",
+                "replays",
+                "eager_calls",
+                "fallbacks",
+                "cap_skips",
+                *_REFUSALS,
+            ):
                 out[field] += int(handle.stats.get(field, 0))
             if handle.poisoned:
                 out["poisoned"] = True
@@ -640,3 +669,42 @@ def stats(handles: Any) -> dict:
         except Exception:  # noqa: BLE001
             pass
     return out
+
+
+def never_engaged(handles: Any) -> Optional[str]:
+    """Why the armed graphs never replayed a step; None before the first call or once any engaged."""
+    if not handles:
+        return None
+    s = stats(handles)
+    if all(getattr(h, "poisoned", False) for h in handles):
+        error = s["capture_error"] or {}
+        return f"capture failed ({error.get('type') or 'error'}); every denoiser step runs eager"
+    if s["captures"] or s["replays"] or not s["eager_calls"]:
+        return None
+    parts = [
+        f"{s[field]} {label}"
+        for field, label in (
+            ("refused_object", "with a non-tensor argument"),
+            ("refused_float", "with a float argument"),
+            ("refused_host_tensor", "with a host tensor"),
+            ("cap_skips", "past the graph cap"),
+        )
+        if s[field]
+    ]
+    detail = ", ".join(parts) if parts else "bypassed"
+    return f"armed, but all {s['eager_calls']} denoiser call(s) so far ran eager ({detail})"
+
+
+def live_status(resolved: Any, speed_optims: Any, handles: Any) -> tuple:
+    """Copies, never mutates: the load-time record stays as recorded."""
+    why = never_engaged(handles)
+    optims = list(speed_optims or ())
+    if why is None:
+        return resolved, optims
+    optims = [o for o in optims if o != "cuda_graph"]
+    if isinstance(resolved, dict) and isinstance(resolved.get("cuda_graph"), dict):
+        resolved = {
+            **resolved,
+            "cuda_graph": {**resolved["cuda_graph"], "value": "off", "reason": why},
+        }
+    return resolved, optims
