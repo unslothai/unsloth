@@ -2205,3 +2205,27 @@ def test_an_unchanged_cache_is_not_walked_again(monkeypatch, tmp_path):
     monkeypatch.setattr(sandbox_linux, "_inspect_cache_component", counted)
     assert "hub" in sandbox_linux._model_cache_binds(session)
     assert walks == [], f"the unchanged cache was walked again: {walks}"
+
+
+def test_a_bwrap_planted_on_path_is_refused_before_it_runs(monkeypatch, tmp_path):
+    """bwrap runs on the host before any isolation exists, so a user-writable one must never be executed."""
+    planted = tmp_path / "bin"
+    planted.mkdir()
+    marker = tmp_path / "ran"
+    fake = planted / "bwrap"
+    fake.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding = "utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{planted}{os.pathsep}{os.environ.get('PATH', '')}")
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    plan = os_sandbox.ToolLaunchPlan(
+        argv = (sys.executable, "-c", "pass"),
+        workdir = str(workdir),
+        env = {"PATH": os.environ["PATH"]},
+        execution_kind = "python",
+        timeout_seconds = 5,
+    )
+
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "trusted system installation"):
+        sandbox_linux.prepare(plan)
+    assert not marker.exists(), "the planted bwrap was executed"
