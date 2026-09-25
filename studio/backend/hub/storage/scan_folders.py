@@ -58,14 +58,17 @@ def is_denied_system_path(path: str) -> bool:
     /run carve-out keeps Linux removable-media mounts browseable. Expects an
     already-resolved (realpath) path so symlinks cannot escape into a denied subtree.
     """
+    return _denied_prefix(path) is not None
+
+
+def _denied_prefix(path: str) -> str | None:
     check = _comparable_path(path)
     for prefix in _denied_path_prefixes():
-        prefix = _comparable_path(prefix)
-        if check == prefix or check.startswith(prefix + os.sep):
-            if prefix == "/run" and is_linux_run_media_path(check):
-                continue
-            return True
-    return False
+        if is_within_any(path, [prefix]) and not (
+            prefix == "/run" and is_linux_run_media_path(check)
+        ):
+            return prefix
+    return None
 
 
 # Longest first: \\?\UNC\server\share is the share \\server\share. After normcase, so lower case.
@@ -150,12 +153,9 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
         raise ValueError("Path is outside this account's workspace")
 
     is_win = platform.system() == "Windows"
-    check = _comparable_path(normalized)
-    for prefix in _denied_path_prefixes():
-        if check == _comparable_path(prefix) or check.startswith(_comparable_path(prefix) + os.sep):
-            if prefix == "/run" and is_linux_run_media_path(check):
-                continue
-            raise ValueError(f"Path under {prefix} is not allowed")
+    denied = _denied_prefix(normalized)
+    if denied is not None:
+        raise ValueError(f"Path under {denied} is not allowed")
 
     # Last, so a denied path is never opened. Mirrors studio_db.py.
     if not is_readable_dir(normalized):
