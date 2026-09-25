@@ -222,7 +222,6 @@ def test_torch_that_reads_the_allowlist_once_is_not_armed(monkeypatch):
 
 
 class MiniMaxH3Transformer3DModel(torch.nn.Module):
-
     def __init__(self):
         super().__init__()
         self.seen = None
