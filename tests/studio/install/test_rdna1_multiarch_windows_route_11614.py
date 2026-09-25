@@ -81,6 +81,11 @@ class TestPackageSpecs:
             == stack_mod._WINDOWS_ROCM_TORCH_PKG_SPECS["gfx1201"]
         )
         assert stack_mod._windows_rocm_torch_pkg_specs("gfx1034") == (
+            stack_mod._WINDOWS_ROCM_TORCH_PKG_SPECS.get(
+                "gfx1034", ("torch", "torchvision", "torchaudio")
+            )
+        )
+        assert stack_mod._windows_rocm_torch_pkg_specs("gfx9999") == (
             "torch",
             "torchvision",
             "torchaudio",
@@ -253,6 +258,54 @@ class TestTheWindowsRepairSiteRunsForRdna1:
             in args
         )
 
+    @pytest.mark.parametrize("pack_missing,installs", [(True, 1), (False, 0)])
+    def test_a_per_family_rocm_torch_without_the_device_pack_is_replaced(
+        self, pack_missing, installs, monkeypatch
+    ):
+        # Standalone `studio update` after the GPU became RDNA 1: a gfx103X ROCm build is
+        # importable but has no gfx1010 kernels, and the per-family check has no RDNA 1 key.
+        from unittest.mock import MagicMock, patch
+
+        _mark = stack_mod._TORCH_PROBE_MARKER
+        probe = MagicMock(returncode = 0, stdout = _mark + "2.10.0+rocm7.2|7.2.0|" + chr(10))
+        pip_try = MagicMock(return_value = True)
+        monkeypatch.setattr(stack_mod, "_TORCH_RUNTIME_PROBE", None)
+        monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
+        monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", raising = False)
+        with (
+            patch.object(stack_mod, "IS_WINDOWS", True),
+            patch.object(stack_mod, "IS_MACOS", False),
+            patch.object(stack_mod, "_TORCH_BACKEND", ""),
+            patch.object(stack_mod, "_explicit_rocm_torch_index_url", return_value = None),
+            patch.object(stack_mod, "_explicit_unknown_family_torch_index_url", return_value = None),
+            patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False),
+            patch.object(stack_mod, "_detect_windows_gfx_arch", return_value = "gfx1010"),
+            patch.object(stack_mod, "_installed_rocm_wheel_family", return_value = "gfx103x-all"),
+            patch.object(
+                stack_mod, "_multiarch_device_pack_installed", return_value = not pack_missing
+            ),
+            patch.object(stack_mod, "_install_bnb_windows_rocm", return_value = True),
+            patch.object(stack_mod, "pip_install_try", pip_try),
+            patch("subprocess.run", return_value = probe),
+        ):
+            stack_mod._ensure_rocm_torch()
+        assert pip_try.call_count == installs
+        if installs:
+            assert "torch[device-gfx1010]" in " ".join(str(a) for a in pip_try.call_args.args)
+
+    def test_the_device_pack_check_reads_the_distribution(self, monkeypatch):
+        from importlib import metadata
+
+        def absent(name):
+            raise metadata.PackageNotFoundError(name)
+
+        monkeypatch.setattr(metadata, "distribution", absent)
+        assert stack_mod._multiarch_device_pack_installed("GFX1010:xnack-") is False
+        seen = []
+        monkeypatch.setattr(metadata, "distribution", lambda name: seen.append(name) or object())
+        assert stack_mod._multiarch_device_pack_installed("GFX1010:xnack-") is True
+        assert seen == ["amd-torch-device-gfx1010"]
+
 
 class TestRdna1CountsAsCoveredEverywhereItIsRouted:
     """Two gates outside the route itself decided RDNA 1 was uncovered: the backend's
@@ -281,3 +334,11 @@ class TestRdna1CountsAsCoveredEverywhereItIsRouted:
         assert set(stack_mod._WINDOWS_MULTIARCH_GFX) <= listed, sorted(
             set(stack_mod._WINDOWS_MULTIARCH_GFX) - listed
         )
+
+
+@pytest.mark.parametrize("ps1", [_INSTALL_PS1, _SETUP_PS1], ids = lambda p: p.name)
+def test_the_gfx_override_drops_hipinfo_feature_suffixes(ps1):
+    # hipinfo prints gfx1010:xnack-; copied into UNSLOTH_ROCM_GFX_ARCH it must still route.
+    src = ps1.read_text(encoding = "utf-8")
+    reads = re.findall(r"=\s*\(?\$env:UNSLOTH_ROCM_GFX_ARCH\.Trim\(\)\.ToLower\(\)[^\n]*", src)
+    assert reads and all("-split ':'" in r for r in reads), reads
