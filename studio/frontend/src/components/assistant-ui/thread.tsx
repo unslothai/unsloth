@@ -5805,7 +5805,8 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
       : reasoningEffort;
   const effectiveReasoningVisualEnabled =
     effectiveReasoningEnabled && displayedEffort !== "none";
-  const disabled = !(modelLoaded && effectiveSupportsReasoning);
+  const disabled =
+    !modelLoaded || !(effectiveSupportsReasoning || supportsPreserveThinking);
   const formatEffortLabel = (level: typeof reasoningEffort): string => {
     if (level !== "xhigh")
       return level.charAt(0).toUpperCase() + level.slice(1);
@@ -5820,8 +5821,8 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
   };
   const effortLabel = formatEffortLabel(displayedEffort);
 
-  // Only rendered for models that can reason.
-  if (!effectiveSupportsReasoning) {
+  // A connection may support history preservation without a generation toggle.
+  if (!effectiveSupportsReasoning && !supportsPreserveThinking) {
     return null;
   }
 
@@ -5832,9 +5833,11 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     effectiveReasoningStyle === "enable_thinking_effort";
   // Dropdown when there are effort levels or preserve-thinking; else a toggle.
   const useDropdown = isEffort || supportsPreserveThinking;
-  const activeLook = isEffort
-    ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !disabled)
-    : reasoningLockedOn || (effectiveReasoningEnabled && !disabled);
+  const activeLook = !effectiveSupportsReasoning
+    ? preserveThinking && !disabled
+    : isEffort
+      ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !disabled)
+      : reasoningLockedOn || (effectiveReasoningEnabled && !disabled);
 
   if (useDropdown) {
     return (
@@ -5927,6 +5930,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
               ))}
           </>
         ) : (
+          effectiveSupportsReasoning &&
           effectiveSupportsReasoningOff &&
           !reasoningLockedOn && (
             <DropdownMenuItem
@@ -5960,8 +5964,8 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
               e.preventDefault();
               const next = !preserveThinking;
               setPreserveThinking(next);
-              // Preserve thinking requires thinking on.
-              if (next) {
+              // Only local models couple this setting to generation controls.
+              if (next && externalSelection === null) {
                 setReasoningEnabled(true);
                 applyQwenThinkingParams(true);
               }
@@ -7088,8 +7092,7 @@ const ComposerRightControls: FC<{
         <AuiIf condition={({ thread }) => thread.isRunning}>
           {/* Classed so the narrow-screen rules can treat this like the
               sibling send/stop buttons; it is the flex item, not the button. */}
-          <div className="aui-composer-run-controls ml-1.5 flex items-center">
-            {queueDisabled ? (
+          <div className="aui-composer-run-controls ml-1.5 flex items-center gap-1.5">
             <ComposerPrimitive.Cancel asChild={true}>
               <Button
                 type="button"
@@ -7097,26 +7100,27 @@ const ComposerRightControls: FC<{
                 size="icon"
                 className="aui-composer-cancel size-9 rounded-full"
                 aria-label="Stop generating"
+                // Cancel only ends the reply; handlePromptQueueRunState then
+                // dispatches the next queued prompt. stop() ends the run.
                 onClick={stop}
               >
                 <SquareIcon className="size-3 fill-current" />
               </Button>
             </ComposerPrimitive.Cancel>
-            ) : (
-            <TooltipIconButton
-              tooltip={followUpTooltip}
-              side="bottom"
-              type="button"
-              variant="default"
-              size="icon"
-              disabled={queueDisabled}
-              onClick={onQueueClick}
-              className="aui-composer-send size-9 rounded-full"
-              aria-label={followUpLabel}
-            >
-              <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[calc(21px*var(--ui-space-scale,1))] stroke-2" />
-            </TooltipIconButton>
-            )}
+            {!queueDisabled ? (
+              <TooltipIconButton
+                tooltip={followUpTooltip}
+                side="bottom"
+                type="button"
+                variant="default"
+                size="icon"
+                onClick={onQueueClick}
+                className="aui-composer-send size-9 rounded-full"
+                aria-label={followUpLabel}
+              >
+                <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[calc(21px*var(--ui-space-scale,1))] stroke-2" />
+              </TooltipIconButton>
+            ) : null}
           </div>
         </AuiIf>
       )}

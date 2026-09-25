@@ -45,6 +45,41 @@ def seed_image(account) -> dict[str, str]:
     return {"image_id": record["id"]}
 
 
+# The chat project a gallery item is copied into. Seeded in the item's account AND in the calling
+# account, so the caller always has a project by that id and the only thing that can refuse it is
+# the item lookup. With the project only beside the item, a route that found another account's item
+# would still 404 on the missing project, and the matrix could not tell that from isolation.
+MEDIA_PROJECT_ID = "media-project"
+
+
+def _calling_account(actor: str):
+    """The account the matrix sends this actor's request as, when it has one of its own."""
+    from auth import storage
+    from utils.account_context import OWNER
+
+    return {"owner": OWNER, "wrong": storage.get_account("bob")}.get(actor)
+
+
+def _seed_media_project(account) -> None:
+    from storage import studio_db
+    from utils.account_context import run_as
+    run_as(
+        account,
+        studio_db.upsert_chat_project,
+        {"id": MEDIA_PROJECT_ID, "name": SENTINEL, "createdAt": 1000, "updatedAt": 1000},
+    )
+
+
+@seeder("media-image-project")
+def seed_image_and_project(account, actor: str = "right") -> dict[str, str]:
+    params = seed_image(account)
+    _seed_media_project(account)
+    caller = _calling_account(actor)
+    if caller is not None:
+        _seed_media_project(caller)
+    return params
+
+
 def _wav_bytes() -> bytes:
     import io
     import wave
@@ -73,6 +108,16 @@ def seed_audio(account) -> dict[str, str]:
     }
     record = run_as(account, audio_gallery.save, _wav_bytes(), meta)
     return {"audio_id": record["id"]}
+
+
+@seeder("media-audio-project")
+def seed_audio_and_project(account, actor: str = "right") -> dict[str, str]:
+    params = seed_audio(account)
+    _seed_media_project(account)
+    caller = _calling_account(actor)
+    if caller is not None:
+        _seed_media_project(caller)
+    return params
 
 
 @seeder("media-transcript")
@@ -133,6 +178,16 @@ def seed_video(account) -> dict[str, str]:
     run_as(account, video_gallery.save, _mp4_bytes(), meta, VIDEO_ID)
     VIDEO_LINK_QUERY["token"] = run_as(account, _sign_video_id, VIDEO_ID)
     return {"video_id": VIDEO_ID}
+
+
+@seeder("media-video-project")
+def seed_video_and_project(account, actor: str = "right") -> dict[str, str]:
+    params = seed_video(account)
+    _seed_media_project(account)
+    caller = _calling_account(actor)
+    if caller is not None:
+        _seed_media_project(caller)
+    return params
 
 
 @seeder("media-search-image")
@@ -228,11 +283,24 @@ FACTORIES = {
         "media-image", {"archived": True}, fragment = SENTINEL
     ),
     "routes.inference:DELETE:/images/gallery/{image_id}": Factory("media-image"),
+    # An empty move (to the front) still has to find the item in the caller's own gallery.
+    "routes.inference:POST:/images/gallery/{image_id}/move": Factory(
+        "media-image", {"after_id": None}, fragment = SENTINEL
+    ),
+    "routes.inference:POST:/images/gallery/{image_id}/project": Factory(
+        "media-image-project", {"project_id": MEDIA_PROJECT_ID}, fragment = "sandbox"
+    ),
     "routes.inference:GET:/audio/gallery/{audio_id}/file": Factory("media-audio"),
     "routes.inference:PATCH:/audio/gallery/{audio_id}": Factory(
         "media-audio", {"archived": True}, fragment = SENTINEL
     ),
     "routes.inference:DELETE:/audio/gallery/{audio_id}": Factory("media-audio"),
+    "routes.inference:POST:/audio/gallery/{audio_id}/move": Factory(
+        "media-audio", {"after_id": None}, fragment = SENTINEL
+    ),
+    "routes.inference:POST:/audio/gallery/{audio_id}/project": Factory(
+        "media-audio-project", {"project_id": MEDIA_PROJECT_ID}, fragment = "sandbox"
+    ),
     "routes.inference:PATCH:/audio/transcripts/{transcript_id}": Factory(
         "media-transcript", {"archived": True}, fragment = SENTINEL
     ),
@@ -254,6 +322,12 @@ FACTORIES = {
         "media-video", {"archived": True}, fragment = SENTINEL
     ),
     "routes.video:DELETE:/video/gallery/{video_id}": Factory("media-video"),
+    "routes.video:POST:/video/gallery/{video_id}/move": Factory(
+        "media-video", {"after_id": None}, fragment = SENTINEL
+    ),
+    "routes.video:POST:/video/gallery/{video_id}/project": Factory(
+        "media-video-project", {"project_id": MEDIA_PROJECT_ID}, fragment = "sandbox"
+    ),
     "routes.video:GET:/videos/{video_id}": Factory("media-video", fragment = SENTINEL),
     "routes.video:GET:/videos/{video_id}/content": Factory("media-video"),
     "routes.video:DELETE:/videos/{video_id}": Factory("media-video", fragment = VIDEO_ID),

@@ -536,7 +536,7 @@ test("a failed switch rolls back on the backend that served the outgoing model",
   // back at the auto-size sentinel, losing the context it was actually serving.
   assert.match(
     RUNTIME,
-    /const previousIsMlx = residentIsServedByMlx\(\s*\n\s*previousIsGguf,\s*\n\s*platform\.deviceType,\s*\n\s*platform\.chatOnlyReason,\s*\n\s*stateBeforeUnload\.loadedIsMlx,\s*\n\s*\);/,
+    /const previousIsMlx = residentIsServedByMlx\(\s*\n\s*previousIsGguf,\s*\n\s*platform\.deviceType,\s*\n\s*platform\.chatOnlyReason,\s*\n\s*rollbackState\.loadedIsMlx,\s*\n\s*\);/,
   );
 });
 

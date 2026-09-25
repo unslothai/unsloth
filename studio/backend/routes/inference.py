@@ -1771,6 +1771,7 @@ _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
 # cancel() (#7617), so teardown abandons the task rather than hold the response, and
 # the process-wide slot, open forever.
 _TEARDOWN_TASK_STOP_TIMEOUT_S = 5.0
+_TEARDOWN_TASK_RECANCEL_S = 0.01
 # Idle window before a local tool-loop stream emits an SSE keepalive comment
 # (e.g. prompt prefill between tool iterations). A second layer atop the
 # tool_stream_exec heartbeats, keeping proxies (Cloudflare drops idle at ~100s).
@@ -3397,6 +3398,9 @@ from models.inference import (
     DiffusionInferenceInfoResponse,
     DiffusionLoadProgressResponse,
     GalleryFlagsPatch,
+    GalleryMoveRequest,
+    GalleryProjectRequest,
+    GalleryProjectResponse,
     GalleryImage,
     GalleryListResponse,
     ImageGenerationRequest,
@@ -3657,6 +3661,7 @@ from utils.utils import is_hf_authentication_error, safe_error_detail, log_and_h
 
 import io
 import base64
+import zlib
 
 from utils.current_date_prompt_settings import (
     contains_current_date_prompt_line,
@@ -5000,11 +5005,19 @@ async def _await_cancel_or_disconnect_then_close_client(
 async def _stop_local_disconnect_cancel_watcher(
     watcher, timeout_s: float = _TEARDOWN_TASK_STOP_TIMEOUT_S
 ) -> None:
-    # Bounded: this runs in the stream's finally, so awaiting the watcher outright would let a
-    # wedged poll loop hold the response open forever. asyncio.wait neither cancels nor re-raises,
-    # and an abandoned watcher owns no resources.
-    watcher.cancel()
-    done, _pending = await asyncio.wait({watcher}, timeout = timeout_s)
+    # Request.is_disconnected() can swallow cancel() (#7617). Retry so successful
+    # passthroughs don't wait out the teardown timeout before their first byte (#11809).
+    # Keep the wait bounded in case the watcher never exits.
+    deadline = time.monotonic() + timeout_s
+    done = set()
+    while not done:
+        watcher.cancel()
+        remaining_s = deadline - time.monotonic()
+        if remaining_s <= 0:
+            break
+        done, _pending = await asyncio.wait(
+            {watcher}, timeout = min(remaining_s, _TEARDOWN_TASK_RECANCEL_S)
+        )
     if not done:
         # _wait_preheader_cancel has no exception handler, so a raise after we stop
         # waiting would surface as "Task exception was never retrieved".
@@ -9712,7 +9725,7 @@ async def _maybe_auto_switch_model(
         local_gguf_companion_roots,
         local_gguf_companion_state,
         local_target_is_gguf,
-        resolve_local_gguf,
+        resolve_local_gguf_for_switch,
         resolve_trusted_cached_local_gguf,
         warm_index_soon,
     )
@@ -9831,10 +9844,8 @@ async def _maybe_auto_switch_model(
         repo_level_companion_resolution = False
         stashed_gguf_companion_roots: tuple[str, ...] = ()
         if auto_switch_on and not reload_only:
-            # Fresh hits and entries retained across an additions-only download are
-            # safe to use immediately. An expired/config-invalidated hit, a cold
-            # cache, and every miss must refresh before an unrelated resident model
-            # can answer or an entry from a removed scan root can trigger a switch.
+            # Use trusted hits immediately. The switch resolver refreshes stale hits
+            # and unconfirmed misses, keeping removed scan roots out of switches.
             resolved = resolve_trusted_cached_local_gguf(
                 requested_model,
                 include_companion_scope = True,
@@ -9843,7 +9854,7 @@ async def _maybe_auto_switch_model(
                 warm_index_soon()
             else:
                 resolved = await asyncio.to_thread(
-                    resolve_local_gguf,
+                    resolve_local_gguf_for_switch,
                     requested_model,
                     include_companion_scope = True,
                 )
@@ -22956,6 +22967,11 @@ def _build_external_messages(
 
     result = []
     for msg in messages:
+        reasoning = (
+            {"reasoning_content": msg.reasoning_content}
+            if provider_type == "llama_cpp" and msg.role == "assistant" and msg.reasoning_content
+            else {}
+        )
         # Drop role=tool messages whose matching server-builtin tool_call was
         # filtered above. An orphan tool_result with no matching tool_call is
         # rejected by OpenAI Responses and Anthropic.
@@ -22965,19 +22981,24 @@ def _build_external_messages(
             and msg.tool_call_id in dropped_server_builtin_tool_call_ids
         ):
             continue
-        if isinstance(msg.content, str):
+        if isinstance(msg.content, str) or (msg.content is None and reasoning):
             # Drop bare assistant messages with no content AND no tool_calls
             # (some providers reject empty assistant turns). Preserve assistant
             # turns whose only payload is tool_calls so multi-turn
             # function-call loops round-trip.
-            if msg.role == "assistant" and not msg.content.strip() and not msg.tool_calls:
+            if (
+                msg.role == "assistant"
+                and not (msg.content or "").strip()
+                and not msg.tool_calls
+                and not reasoning
+            ):
                 continue
-            out: dict[str, Any] = {"role": msg.role, "content": msg.content}
+            out: dict[str, Any] = {"role": msg.role, "content": msg.content or "", **reasoning}
             if msg.role == "assistant" and msg.tool_calls:
                 _tcs = _filter_tool_calls(msg.tool_calls)
                 if _tcs:
                     out["tool_calls"] = _tcs
-                elif not msg.content.strip():
+                elif not (msg.content or "").strip() and not reasoning:
                     # Every tool_call was a dropped synthetic provider card;
                     # the turn would be an empty
                     # `{"role":"assistant","content":""}` that some providers
@@ -23052,17 +23073,17 @@ def _build_external_messages(
                         # `compaction` block; every other provider would 400 on
                         # the unknown part, so gate by provider_type.
                         parts.append({"type": "compaction", "content": part.content})
-                entry: dict[str, Any] = {"role": msg.role, "content": parts}
+                entry: dict[str, Any] = {"role": msg.role, "content": parts, **reasoning}
                 if msg.role == "assistant" and msg.tool_calls:
                     _tcs = _filter_tool_calls(msg.tool_calls)
                     if _tcs:
                         entry["tool_calls"] = _tcs
-                    elif not parts:
+                    elif not parts and not reasoning:
                         # All tool_calls were synthetic and dropped, and no
                         # content parts survived. Skip rather than forward an
                         # empty assistant turn that downstream providers reject.
                         continue
-                elif msg.role == "assistant" and not parts:
+                elif msg.role == "assistant" and not parts and not reasoning:
                     continue
                 if msg.role == "tool":
                     if msg.tool_call_id:
@@ -23089,14 +23110,14 @@ def _build_external_messages(
                         preserved.append(_rp)
                     elif p.type == "compaction" and anthropic:
                         preserved.append({"type": "compaction", "content": p.content})
-                if msg.role == "assistant" and not preserved:
+                if msg.role == "assistant" and not preserved and not reasoning:
                     continue
                 if len(preserved) == 1 and preserved[0]["type"] == "text":
                     # Single text part collapses to a string for providers that
                     # don't accept content arrays.
-                    entry = {"role": msg.role, "content": preserved[0]["text"]}
+                    entry = {"role": msg.role, "content": preserved[0]["text"], **reasoning}
                 else:
-                    entry = {"role": msg.role, "content": preserved}
+                    entry = {"role": msg.role, "content": preserved, **reasoning}
                 if msg.role == "assistant" and msg.tool_calls:
                     _tcs = _filter_tool_calls(msg.tool_calls)
                     if _tcs:
@@ -23108,7 +23129,7 @@ def _build_external_messages(
                         _has_text = (
                             isinstance(_entry_content, str) and _entry_content.strip()
                         ) or (isinstance(_entry_content, list) and len(_entry_content) > 0)
-                        if not _has_text:
+                        if not _has_text and not reasoning:
                             continue
                 if msg.role == "tool":
                     if msg.tool_call_id:
@@ -24045,6 +24066,7 @@ async def _proxy_to_external_provider(
             repetition_penalty = _repetition_penalty_explicit,
             enable_thinking = payload.enable_thinking,
             reasoning_effort = payload.reasoning_effort,
+            preserve_thinking = payload.preserve_thinking,
             enable_prompt_caching = payload.enable_prompt_caching,
             openai_code_exec_container_id = payload.openai_code_exec_container_id,
             anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
@@ -32111,13 +32133,17 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
 
     - ``ResponsesInputMessage`` -- regular chat messages (text or multimodal).
     - ``ResponsesFunctionCallInputItem`` -- a prior assistant tool call
-      replayed on a follow-up turn. Becomes an assistant message carrying a
-      Chat Completions ``tool_calls`` entry keyed by ``call_id``.
+      replayed on a follow-up turn. Becomes a Chat Completions ``tool_calls``
+      entry keyed by ``call_id``.
     - ``ResponsesFunctionCallOutputInputItem`` -- a tool result the client is
       returning. Becomes a ``role="tool"`` message with ``tool_call_id`` set to
       the originating ``call_id`` so llama-server can reconcile call with result.
     - ``ResponsesCustomToolCallInputItem`` and its output counterpart -- the
       freeform call is wrapped in the local ``input`` function argument.
+    - ``reasoning`` items -- their text becomes ``reasoning_content``.
+
+    Each contiguous run of reasoning, assistant message and call items folds
+    into one assistant message, as the model produced it.
 
     System / developer content is collected from ``instructions`` *and* any
     ``role="system"`` / ``role="developer"`` entries in ``input``, then merged
@@ -32153,23 +32179,42 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
         if isinstance(item, ResponsesCustomToolCallInputItem) and item.name in custom_tool_names
     }
 
-    for item in payload.input:
-        if isinstance(item, ResponsesFunctionCallInputItem):
+    turn_reasoning: list[str] = []
+    turn_text: list[str] = []
+    turn_calls: list[dict] = []
+
+    def _flush_assistant_turn() -> None:
+        if turn_text or turn_calls:
             messages.append(
                 ChatMessage(
                     role = "assistant",
-                    content = None,
-                    tool_calls = [
-                        {
-                            "id": item.call_id,
-                            "type": "function",
-                            "function": {
-                                "name": item.name,
-                                "arguments": item.arguments,
-                            },
-                        }
-                    ],
+                    content = "\n\n".join(turn_text) or None,
+                    reasoning_content = "\n\n".join(turn_reasoning) or None,
+                    tool_calls = list(turn_calls) or None,
                 )
+            )
+        turn_reasoning.clear()
+        turn_text.clear()
+        turn_calls.clear()
+
+    for item in payload.input:
+        if not (
+            isinstance(item, (ResponsesFunctionCallInputItem, ResponsesCustomToolCallInputItem))
+            or getattr(item, "role", None) == "assistant"
+            or getattr(item, "type", None) == "reasoning"
+        ):
+            _flush_assistant_turn()
+
+        if isinstance(item, ResponsesFunctionCallInputItem):
+            turn_calls.append(
+                {
+                    "id": item.call_id,
+                    "type": "function",
+                    "function": {
+                        "name": item.name,
+                        "arguments": item.arguments,
+                    },
+                }
             )
             continue
 
@@ -32189,21 +32234,15 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
         if isinstance(item, ResponsesCustomToolCallInputItem):
             if item.call_id not in custom_tool_call_ids:
                 continue
-            messages.append(
-                ChatMessage(
-                    role = "assistant",
-                    content = None,
-                    tool_calls = [
-                        {
-                            "id": item.call_id,
-                            "type": "function",
-                            "function": {
-                                "name": item.name,
-                                "arguments": json.dumps({"input": item.input}, ensure_ascii = False),
-                            },
-                        }
-                    ],
-                )
+            turn_calls.append(
+                {
+                    "id": item.call_id,
+                    "type": "function",
+                    "function": {
+                        "name": item.name,
+                        "arguments": json.dumps({"input": item.input}, ensure_ascii = False),
+                    },
+                }
             )
             continue
 
@@ -32220,10 +32259,12 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
             continue
 
         if isinstance(item, ResponsesUnknownInputItem):
-            # Reasoning items and other unmodelled top-level Responses item
-            # types are silently dropped -- llama-server-backed GGUFs can't
-            # consume them; lenient validation lets them in so unrelated turns
-            # don't 422.
+            if item.type == "reasoning":
+                replayed = _coerce_responses_reasoning_text(
+                    getattr(item, "content", None)
+                ) or _coerce_responses_reasoning_text(getattr(item, "summary", None))
+                if replayed.strip():
+                    turn_reasoning.append(replayed)
             continue
 
         # ResponsesInputMessage. Before the role branches: each returns via `continue`, so a
@@ -32237,18 +32278,18 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
                 system_parts.append(hoisted)
             continue
 
-        if isinstance(item.content, str):
-            messages.append(ChatMessage(role = item.role, content = item.content))
-            continue
-
         # Assistant-replay turns come back as content = [output_text, ...].
         # Chat Completions' assistant role expects a plain string, not a
         # multimodal array, so flatten output_text (and any stray input_text /
         # unknown text) to a single string.
         if item.role == "assistant":
-            text = _responses_message_text(item.content)
-            if text:
-                messages.append(ChatMessage(role = "assistant", content = text))
+            message_text = _responses_message_text(item.content)
+            if message_text:
+                turn_text.append(message_text)
+            continue
+
+        if isinstance(item.content, str):
+            messages.append(ChatMessage(role = item.role, content = item.content))
             continue
 
         # User (and any other remaining roles). Attachments were refused above, so a part
@@ -32274,6 +32315,7 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
             else:
                 messages.append(ChatMessage(role = item.role, content = parts))
 
+    _flush_assistant_turn()
     return _with_system(messages)
 
 
@@ -33993,17 +34035,97 @@ def _pil_to_png_b64(img) -> str:
 
 
 def _image_bytes_to_png_b64(raw: bytes) -> str:
-    """Decode raw image bytes and re-encode to a base64-ascii PNG string.
-
-    llama-server's stb_image only handles a few formats (JPEG/PNG/BMP/...); re-
-    encoding to PNG keeps JPEG/WebP/... inputs loadable. Raises on undecodable
-    input; callers wrap the call in ``try`` -> HTTPException(400)."""
+    """Convert image bytes to base64 PNG for formats llama-server cannot decode."""
     from PIL import Image
 
     img = _scaled_from_16_bit(Image.open(io.BytesIO(raw))).convert("RGB")
     buf = io.BytesIO()
     img.save(buf, format = "PNG")
     return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def _stb_reads_jpeg(raw: bytes) -> bool:
+    """Accept 8-bit SOF0-SOF2 JPEG frames with one or three components."""
+    i = 2
+    while i + 4 <= len(raw):
+        if raw[i] != 0xFF:
+            return False
+        marker = raw[i + 1]
+        if marker == 0xFF:  # Fill byte before a marker.
+            i += 1
+            continue
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            if marker not in (0xC0, 0xC1, 0xC2) or i + 10 > len(raw):
+                return False
+            height = int.from_bytes(raw[i + 5 : i + 7], "big")
+            width = int.from_bytes(raw[i + 7 : i + 9], "big")
+            return raw[i + 4] == 8 and height > 0 and width > 0 and raw[i + 9] in (1, 3)
+        if marker in (0xD9, 0xDA):  # EOI or scan data before any frame header.
+            return False
+        i += 2 + int.from_bytes(raw[i + 2 : i + 4], "big")
+    return False
+
+
+def _stb_reads_png(raw: bytes) -> bool:
+    """Accept PNGs whose chunks end at IEND and whose IDAT zlib stream is complete.
+
+    Pillow decodes a PNG whose deflate stream or IEND is cut short once the rows are
+    complete; stb_image rejects those, and unknown critical chunks. Pillow also stops
+    at the last row, so inflation is capped near the IHDR size: a compressed tail past
+    it would otherwise cost unbounded CPU here and memory in stb_image.
+    """
+    i = len(_PNG_SIGNATURE)
+    inflater = zlib.decompressobj()
+    budget = 0
+    try:
+        while i + 12 <= len(raw):
+            kind = raw[i + 4 : i + 8]
+            end = i + 12 + int.from_bytes(raw[i : i + 4], "big")
+            if end > len(raw) or (kind == b"IHDR") != (i == len(_PNG_SIGNATURE)):
+                return False
+            if kind == b"IHDR":
+                if end - i != 25:
+                    return False
+                width = int.from_bytes(raw[i + 8 : i + 12], "big")
+                height = int.from_bytes(raw[i + 12 : i + 16], "big")
+                bits = raw[i + 16] * {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}.get(raw[i + 17], 4)
+                # Doubled for Adam7, whose pass rows each add a filter byte and padding.
+                budget = 2 * height * ((width * bits + 7) // 8 + 1) + 64
+            elif kind == b"IEND":
+                return inflater.eof
+            elif kind == b"IDAT":
+                data = raw[i + 8 : end - 4]
+                while data and not inflater.eof:
+                    budget -= len(inflater.decompress(data, 1 << 20))
+                    if budget < 0:
+                        return False
+                    data = inflater.unconsumed_tail
+            elif kind != b"PLTE" and not kind[0] & 0x20:
+                return False
+            i = end
+    except zlib.error:
+        pass
+    return False
+
+
+def _llama_image_data_url(raw: bytes) -> str:
+    """Preserve PNG and JPEG bytes stb_image reads; convert other images to PNG.
+
+    Avoid inflating photos while still rejecting corrupt images with Pillow:
+    stb_image silently accepts some truncated JPEGs. Callers map failures to HTTP 400.
+    """
+    from PIL import Image
+
+    with Image.open(io.BytesIO(raw)) as img:
+        img.load()
+    if raw.startswith(_PNG_SIGNATURE) and _stb_reads_png(raw):
+        return f"data:image/png;base64,{base64.b64encode(raw).decode('ascii')}"
+    if raw.startswith(b"\xff\xd8") and _stb_reads_jpeg(raw):
+        return f"data:image/jpeg;base64,{base64.b64encode(raw).decode('ascii')}"
+    return f"data:image/png;base64,{_image_bytes_to_png_b64(raw)}"
 
 
 # Match llama-server's per-image limit and add a per-request budget.
@@ -34087,7 +34209,7 @@ def _inline_remote_image_url(
     rejection = _remote_image_scheme_rejection(scheme)
     if rejection is not None:
         raise HTTPException(status_code = rejection[0], detail = rejection[1])
-    # llama-server never read the content type, and the bytes are decoded and re-encoded here.
+    # Detect the MIME type from the fetched bytes.
     fetched = safe_fetch_remote_image_sync(
         url,
         "image/png",
@@ -34145,15 +34267,11 @@ def _inline_request_remote_images(payload) -> None:
                 part.image_url.url = fetches.inline(part.image_url.url)
 
 
-def _normalize_openai_image_parts_to_png(openai_messages: list[dict], on_image = None) -> bool:
-    """Re-encode every base64-data-URL ``image_url`` part to PNG, in place.
+def _normalize_openai_image_parts_for_llama(openai_messages: list[dict], on_image = None) -> bool:
+    """Fetch and normalize image URLs for llama-server in place.
 
-    Remote URLs are fetched here so llama-server receives bytes rather than a URL. All images
-    are converted to PNG for llama-server's limited image decoder.
-
-    ``on_image`` runs once per image part before conversion, so a caller can
-    apply its own guard. Returns ``True`` when any image part was seen. Raises
-    HTTPException(400) when an image cannot be decoded or fetched.
+    Calls ``on_image`` before processing each image. Returns whether any image was
+    seen; raises HTTP 400 if fetching or decoding fails.
     """
     has_image = False
     fetches = _RemoteImageFetches()
@@ -34181,15 +34299,14 @@ def _normalize_openai_image_parts_to_png(openai_messages: list[dict], on_image =
             try:
                 _, b64data = url.split(",", 1)
                 raw = base64.b64decode(b64data)
-                png_b64 = _image_bytes_to_png_b64(raw)
+                data_url = _llama_image_data_url(raw)
             except Exception:
                 raise HTTPException(
                     status_code = 400,
                     detail = "Failed to process image.",
                 )
-            # Only the url is re-encoded; `detail` is the client's request, not
-            # part of the encoding, and replacing the object would drop it.
-            image_url["url"] = f"data:image/png;base64,{png_b64}"
+            # Preserve the client's `detail` setting.
+            image_url["url"] = data_url
 
     return has_image
 
@@ -34202,7 +34319,7 @@ def _normalize_anthropic_openai_images(openai_messages: list[dict], is_vision: b
                 detail = "Image provided but current GGUF model does not support vision.",
             )
 
-    return _normalize_openai_image_parts_to_png(openai_messages, on_image = _guard)
+    return _normalize_openai_image_parts_for_llama(openai_messages, on_image = _guard)
 
 
 def _validate_anthropic_client_tools(tools) -> None:
@@ -35266,8 +35383,7 @@ async def anthropic_messages(
 
     openai_messages = _sanitize_anthropic_openai_messages(openai_messages, llama_backend)
 
-    # Enforce vision guard + re-encode embedded images to PNG so the Anthropic
-    # endpoint matches /v1/chat/completions.
+    # Apply the same vision guard and image normalization as /v1/chat/completions.
     # Promoted parts count too: _anthropic_has_image was read off the original
     # blocks, so a replay-only request took the synchronous branch and re-decoded up
     # to eight promoted PNGs on the shared loop.
@@ -37785,31 +37901,14 @@ def _openai_messages_for_passthrough(
     normalize_images: bool = True,
     promote_mcp_images: bool = True,
 ) -> list[dict]:
-    """Build OpenAI-format message dicts for the /v1/chat/completions
-    passthrough path.
+    """Build /v1/chat/completions messages, preserving tool calls and results.
 
-    ``payload.messages`` are dumped through Pydantic (dropping unset optional
-    fields), so they're already standard OpenAI format -- including
-    ``role="tool"`` tool-result messages and assistant messages carrying
-    structured ``tool_calls``. Base64-data-URL images already in the list are
-    re-encoded to PNG exactly as ``_openai_messages_for_gguf_chat`` does, so
-    turning tools on does not change which formats llama-server can decode, and
-    a remote URL is fetched here rather than by llama-server, for the same
-    reason and by the same helper. The vision guard lives in the callers,
-    which reject a non-vision model before the body is built.
+    Uses the same image normalizer as GGUF chat; callers enforce vision support.
+    ``normalize_images=False`` preserves bytes for callers that decode and resize
+    images themselves, avoiding an intermediate RGB conversion.
 
-    ``normalize_images=False`` is for callers that decode these bytes themselves: re-encoding
-    converts to RGB, which the resize they apply would then resample.
-
-    When a client uses Unsloth's legacy ``image_base64`` top-level field, the
-    image is spliced into the last user message as an OpenAI ``image_url`` content part -- as PNG
-    while normalizing, since llama-server's stb_image is limited, byte-for-byte otherwise.
-
-    Only when it is a real second image, matching ``_openai_messages_for_gguf_chat`` and
-    what admission charges for. Studio echoes the current image into both spellings, so
-    splicing that unconditionally sent a tools or response_format request two copies
-    against a reservation for one: 4417 reserved against 8466 charged, which overcommits
-    the KV cache wherever the slot count lets that gap accumulate.
+    Adds legacy ``image_base64`` to the last user message only if it is distinct,
+    matching GGUF chat and admission accounting to avoid duplicate images.
     """
     messages = _strip_provider_synthetic_tool_history(
         _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
@@ -37820,7 +37919,7 @@ def _openai_messages_for_passthrough(
         messages = promote_mcp_history_images(messages, vision = vision)
 
     if normalize_images:
-        _normalize_openai_image_parts_to_png(messages)
+        _normalize_openai_image_parts_for_llama(messages)
 
     if not _legacy_image_is_distinct(payload):
         return messages
@@ -37828,13 +37927,12 @@ def _openai_messages_for_passthrough(
     if normalize_images:
         try:
             raw = base64.b64decode(payload.image_base64)
-            png_b64 = _image_bytes_to_png_b64(raw)
+            data_url = _llama_image_data_url(raw)
         except Exception:
             raise HTTPException(
                 status_code = 400,
                 detail = "Failed to process image.",
             )
-        data_url = f"data:image/png;base64,{png_b64}"
     else:
         # As it arrived; the media type is never read back.
         data_url = f"data:application/octet-stream;base64,{payload.image_base64}"
@@ -37918,8 +38016,7 @@ def _openai_messages_for_gguf_chat(
     # part already here and must not be spliced twice, but a legacy image the thread
     # does not hold is a real attachment. Admission charges on the same predicate.
     if _legacy_image_is_distinct(payload):
-        # Legacy bytes can be any format; the normalizer below sniffs and
-        # re-encodes to PNG, so the declared mime is rewritten anyway.
+        # The normalizer detects the MIME type from the bytes.
         image_part = {
             "type": "image_url",
             "image_url": {
@@ -40387,6 +40484,51 @@ async def get_search_image_thumbnail(
     )
 
 
+@studio_router.post("/images/gallery/{image_id}/move", response_model = GalleryImage)
+async def move_gallery_image(
+    image_id: str,
+    body: GalleryMoveRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Move one image to just after ``after_id``. Dropping among pins pins it, elsewhere unpins it."""
+    from core.inference import image_gallery
+
+    try:
+        record = await asyncio.to_thread(image_gallery.move, image_id, body.after_id)
+    except KeyError:
+        # The neighbour left the shelf; the client resyncs.
+        raise HTTPException(status_code = 409, detail = "The gallery changed; try the move again.")
+    except OSError as exc:
+        logger.warning("image_gallery.move_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Could not save the new order.")
+    if record is None:
+        raise HTTPException(status_code = 404, detail = "Image not found.")
+    return GalleryImage(**record)
+
+
+@studio_router.post("/images/gallery/{image_id}/project", response_model = GalleryProjectResponse)
+async def add_gallery_image_to_project(
+    image_id: str,
+    body: GalleryProjectRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Copy one image into a chat project's folder."""
+    from core.inference import image_gallery
+    from core.inference.gallery_projects import ProjectNotFound, copy_into_project
+
+    path = await asyncio.to_thread(image_gallery.owned_image_path, image_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Image not found.")
+    try:
+        result = await asyncio.to_thread(copy_into_project, path, body.project_id, "images")
+    except ProjectNotFound:
+        raise HTTPException(status_code = 404, detail = "Project not found.")
+    except OSError as exc:
+        logger.warning("image_gallery.add_to_project_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Could not copy the image into the project.")
+    return GalleryProjectResponse(**result)
+
+
 @studio_router.patch("/images/gallery/{image_id}", response_model = GalleryImage)
 async def update_gallery_image_flags(
     image_id: str,
@@ -40444,6 +40586,7 @@ async def list_gallery_audio(
     offset: int = 0,
     before_mtime: Optional[float] = None,
     before_id: Optional[str] = None,
+    before_pin: Optional[float] = None,
     archived: bool = False,
     current_subject: str = Depends(get_current_subject),
 ):
@@ -40455,9 +40598,12 @@ async def list_gallery_audio(
     offset = max(0, offset)
     if (before_mtime is None) != (before_id is None):
         raise HTTPException(status_code = 400, detail = "Incomplete audio gallery cursor.")
-    before = (
-        (before_mtime, before_id) if before_mtime is not None and before_id is not None else None
-    )
+    before = None
+    if before_mtime is not None and before_id is not None:
+        # A cursor without before_pin (older clients, or an unpinned clip) takes the clip's own rank.
+        if before_pin is None:
+            before_pin = await asyncio.to_thread(audio_gallery.pin_rank, before_id)
+        before = (before_pin, before_mtime, before_id)
 
     # validate inside the pager so offset, limit and has_more count over the accepted domain
     def _valid_gallery_audio(record: dict) -> bool:
@@ -40483,8 +40629,9 @@ async def list_gallery_audio(
     return AudioGalleryListResponse(
         audio = audio,
         has_more = has_more,
-        next_before_mtime = next_cursor[0] if next_cursor else None,
-        next_before_id = next_cursor[1] if next_cursor else None,
+        next_before_mtime = next_cursor[1] if next_cursor else None,
+        next_before_id = next_cursor[2] if next_cursor else None,
+        next_before_pin = next_cursor[0] if next_cursor and next_cursor[0] > float("-inf") else None,
     )
 
 
@@ -40517,13 +40664,60 @@ async def update_gallery_audio_flags(
     from core.inference import audio_gallery
 
     try:
-        record = await asyncio.to_thread(audio_gallery.set_flags, audio_id, archived = patch.archived)
+        record = await asyncio.to_thread(
+            audio_gallery.set_flags, audio_id, pinned = patch.pinned, archived = patch.archived
+        )
     except OSError as exc:
         logger.warning("audio_gallery.set_flags_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Could not save the change to this clip.")
     if record is None:
         raise HTTPException(status_code = 404, detail = "Audio not found.")
     return AudioGalleryItem(**record)
+
+
+@studio_router.post("/audio/gallery/{audio_id}/move", response_model = AudioGalleryItem)
+async def move_gallery_audio(
+    audio_id: str,
+    body: GalleryMoveRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Move one clip to just after ``after_id``. Dropping among pins pins it, elsewhere unpins it."""
+    from core.inference import audio_gallery
+
+    try:
+        record = await asyncio.to_thread(audio_gallery.move, audio_id, body.after_id)
+    except KeyError:
+        # The neighbour left history; the client resyncs.
+        raise HTTPException(status_code = 409, detail = "The gallery changed; try the move again.")
+    except OSError as exc:
+        logger.warning("audio_gallery.move_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Could not save the new order.")
+    if record is None:
+        raise HTTPException(status_code = 404, detail = "Audio not found.")
+    return AudioGalleryItem(**record)
+
+
+@studio_router.post("/audio/gallery/{audio_id}/project", response_model = GalleryProjectResponse)
+async def add_gallery_audio_to_project(
+    audio_id: str,
+    body: GalleryProjectRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Copy one clip into a chat project's folder."""
+    from core.inference import audio_gallery
+    from core.inference.gallery_projects import ProjectNotFound, copy_into_project
+
+    path = await asyncio.to_thread(audio_gallery.owned_audio_path, audio_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Audio not found.")
+    try:
+        result = await asyncio.to_thread(copy_into_project, path, body.project_id, "audio")
+    except ProjectNotFound:
+        raise HTTPException(status_code = 404, detail = "Project not found.")
+    except OSError as exc:
+        logger.warning("audio_gallery.add_to_project_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Could not copy the clip into the project.")
+    return GalleryProjectResponse(**result)
 
 
 @studio_router.delete("/audio/gallery/{audio_id}")
