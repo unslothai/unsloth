@@ -908,8 +908,9 @@ test("every drop cue is drawn inside its row", () => {
     // A pixel up: the last row's extra hit pixel is clipped by the list.
     "${DROP_CUE_BASE} before:bottom-px",
     "before:inset-x-1 before:inset-y-0 ",
-    // A ring is drawn outside its box unless inset, and the first row's box ends at the clip.
-    "before:ring-1 before:ring-inset",
+    // Borders, which snap to whole device pixels, so every cue keeps one thickness.
+    "before:h-0 before:border-t-[1.5px] before:border-primary",
+    "before:border-[1.5px] before:border-primary",
   ]) {
     assert.ok(APP_SIDEBAR.includes(cue), `no cue is drawn at ${cue}`);
   }
