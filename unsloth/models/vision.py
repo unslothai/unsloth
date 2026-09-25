@@ -1179,7 +1179,11 @@ def _construct_vlm_processor_fallback(
     return None, _fb_err
 
 
-def _mxfp4_lora_keeps_experts_packed(quant_method, full_finetuning = False):
+def _mxfp4_lora_keeps_experts_packed(
+    quant_method,
+    full_finetuning = False,
+    device_map = None,
+):
     """Whether a LoRA load of an MXFP4 checkpoint should take unsloth_zoo's packed-experts path.
 
     That path (Mxfp4Config(dequantize = True) with unsloth_zoo's keep_mxfp4_experts_packed) keeps
@@ -1188,8 +1192,16 @@ def _mxfp4_lora_keeps_experts_packed(quant_method, full_finetuning = False):
     Unsloth's copy raises "Backwards pass using MXFP4 is still under construction", and the
     transformers one returns an output detached from the graph, so LoRA below every MoE layer
     silently gets the gradient of the residual stream only. Off when unsloth_zoo has no packed
-    path, for full finetuning, and with UNSLOTH_MXFP4_KEEP_PACKED=0."""
+    path, for full finetuning, with UNSLOTH_MXFP4_KEEP_PACKED=0, and for a device map that
+    offloads to CPU or disk: unsloth_zoo cannot keep offloaded experts packed and would
+    dequantize every expert to 16 bit at load instead."""
     if full_finetuning or str(quant_method).lower() != "mxfp4":
+        return False
+    # unsloth_zoo only learns about offload once transformers resolves the map, after this
+    # config is built, so an explicit map that offloads is checked here.
+    if isinstance(device_map, dict) and any(
+        str(value) in ("cpu", "disk") for value in device_map.values()
+    ):
         return False
     try:
         from unsloth_zoo.temporary_patches.mxfp4 import keep_mxfp4_experts_packed
@@ -1721,7 +1733,9 @@ class FastBaseModel:
                     # stay MXFP4 and, unlike the native kernels, it has a backward pass.
                     if (
                         load_in_16bit
-                        or _mxfp4_lora_keeps_experts_packed(quant_method, full_finetuning)
+                        or _mxfp4_lora_keeps_experts_packed(
+                            quant_method, full_finetuning, device_map
+                        )
                     ) and "dequantize" in inspect.signature(quantizer).parameters:
                         quantizer_kwargs["dequantize"] = True
                     try:

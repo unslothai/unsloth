@@ -52,12 +52,21 @@ def _dequantize_branch():
 
 
 class _Mxfp4Config:
-    def __init__(self, modules_to_not_convert = None, dequantize = False, **kwargs):
+    def __init__(
+        self,
+        modules_to_not_convert = None,
+        dequantize = False,
+        **kwargs,
+    ):
         pass
 
 
 class _OtherConfig:
-    def __init__(self, bits = 4, **kwargs):
+    def __init__(
+        self,
+        bits = 4,
+        **kwargs,
+    ):
         pass
 
 
@@ -77,12 +86,19 @@ def zoo(monkeypatch):
     return state
 
 
-def _run_branch(load_in_16bit, quant_method, full_finetuning, quantizer = _Mxfp4Config):
+def _run_branch(
+    load_in_16bit,
+    quant_method,
+    full_finetuning,
+    quantizer = _Mxfp4Config,
+    device_map = "sequential",
+):
     ns = {
         "inspect": inspect,
         "load_in_16bit": load_in_16bit,
         "quant_method": quant_method,
         "full_finetuning": full_finetuning,
+        "device_map": device_map,
         "quantizer": quantizer,
         "quantizer_kwargs": {},
         "_mxfp4_lora_keeps_experts_packed": _helper(),
@@ -135,6 +151,22 @@ def test_load_in_16bit_still_dequantizes(zoo):
     zoo["keep"] = False
     assert _run_branch(True, "mxfp4", False) is True
     assert _run_branch(True, "fp8", False) is True
+
+
+def test_offloading_device_map_keeps_native_load(zoo):
+    # unsloth_zoo cannot keep CPU / disk offloaded experts packed, so dequantize = True there
+    # would turn the MXFP4 experts into a full 16 bit copy at load.
+    offload = {"model.embed_tokens": 0, "model.layers.0": 0, "model.layers.1": "cpu", "lm_head": 0}
+    assert _helper()("mxfp4", False, offload) is False
+    assert _helper()("mxfp4", False, {**offload, "model.layers.1": "disk"}) is False
+    assert _run_branch(False, "mxfp4", False, device_map = offload) is False
+    # Maps that stay on accelerators, and string maps, still take the packed path.
+    assert _helper()("mxfp4", False, {"": 0}) is True
+    assert _helper()("mxfp4", False, {"model.layers.0": 0, "model.layers.1": 1}) is True
+    for device_map in ("sequential", "auto", None):
+        assert _run_branch(False, "mxfp4", False, device_map = device_map) is True
+    # load_in_16bit asked for the dequantize itself, offload or not.
+    assert _run_branch(True, "mxfp4", False, device_map = offload) is True
 
 
 def test_quantizer_without_dequantize_argument_untouched(zoo):
