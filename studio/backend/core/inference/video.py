@@ -1214,6 +1214,10 @@ def _video_auto_denoiser_scheme(
     try:
         if getattr(fam, "modular_workflow", None):
             return None
+        # Registry before the smoke probe: a scheme with no hosted row can never seed, so it must not spawn probes.
+        hosted = video_family_prequant_schemes(fam)
+        if not hosted or (not auto and normalize_transformer_quant(requested) not in hosted):
+            return None
         from .video_denoiser_prequant import denoiser_prequant_sources
 
         scheme = select_transformer_quant_scheme(
