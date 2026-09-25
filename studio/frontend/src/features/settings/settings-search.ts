@@ -128,6 +128,24 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.projectsSection",
     "settings.chat.groups.menu.title",
   ],
+  library: [
+    "settings.library.storageSection",
+    "settings.library.locationsSection",
+    "settings.library.cardSize",
+    "settings.library.imageLayout",
+    "settings.library.showCardDates",
+    "settings.library.startTab",
+    "settings.library.sort",
+    "settings.library.suggestedLimit",
+    "settings.library.tabsSection",
+    "settings.library.contentSection",
+    "settings.library.showChatAttachments",
+    "settings.library.showChatToolFiles",
+    "settings.library.showGeneratedMedia",
+    "settings.library.categoryFineTunes",
+    "settings.library.confirmDelete",
+    "settings.library.reset",
+  ],
   // Chat data management moved to the Data tab; keep these rows findable there.
   data: [
     "settings.data.fineTuneExport",
@@ -141,6 +159,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.data.archivedVideos",
     "settings.data.archivedAudio",
     "settings.data.uploadedFiles",
+    "settings.library.dataStorage",
     "settings.chat.exportHistory",
     "settings.chat.exportConversations",
     "settings.chat.importChats",
@@ -150,6 +169,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.apiKeys.title",
     "settings.apiKeys.description",
     "settings.apiKeys.accessTokens",
+    "settings.apiKeys.decisionApi.title",
   ],
   // The two cards label themselves in English in every locale, so keys naming them
   // would never match their own anchor. The header carries both entries instead.

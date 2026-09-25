@@ -16,6 +16,7 @@ export const SETTINGS_TABS = [
   "chat",
   "voice",
   "connections",
+  "library",
   "data",
   "api-keys",
   "remote-lan",
@@ -32,6 +33,7 @@ export type SettingsScrollTarget =
   | "appearance-sidebar-nav"
   | "chat-composer"
   | "chat-canvas-network"
+  | "library-storage"
   | "resources-caches";
 
 /** Which archive the Data tab should open straight into. */
@@ -119,6 +121,7 @@ const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
   "about-updates": "about",
   "appearance-sidebar-nav": "appearance",
   "chat-canvas-network": "chat",
+  "library-storage": "library",
   "resources-caches": "resources",
 };
 
