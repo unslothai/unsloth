@@ -2707,3 +2707,33 @@ def test_generate_schema_bounds_for_unified_editing(client):
     assert _post_generate(client, prompt = "p", width = 2768).status_code == 422
     bad_mode = _post_generate(client, prompt = "p", localized_edit = {"mode": "lasso", "image": "QUJD"})
     assert bad_mode.status_code == 422
+
+
+def test_the_precision_gate_judges_an_explicit_scheme_on_the_pipeline_base(monkeypatch):
+    """A per-base NVFP4 gate record (Qwen-Image-2512) lifts the family deny only for that base, so the
+    route gate must ask about the base the load keys on, or it 409s a load the loader accepts."""
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend, "_resolve_device_target", lambda self, fam: _cuda_target()
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        diffusion_module, "_pipeline_quant_uncompilable_reason", lambda *a, **k: None
+    )
+    seen = []
+
+    def _select(target, requested, **kwargs):
+        seen.append(kwargs.get("base_repo"))
+        return requested
+
+    monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", _select)
+    backend.assert_precision_available(
+        types.SimpleNamespace(name = "qwen-image"),
+        model_kind = "pipeline",
+        transformer_quant = "nvfp4",
+        repo_id = "Qwen/Qwen-Image-2512",
+    )
+    assert seen == ["Qwen/Qwen-Image-2512"]
