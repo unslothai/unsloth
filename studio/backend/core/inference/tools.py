@@ -9571,20 +9571,7 @@ def _requested_execution_mode(tool_execution_mode: str, disable_sandbox: bool) -
     return tool_execution_mode
 
 
-def _with_session_packages(env: dict, workdir: str) -> dict:
-    """Reuse existing session packages without letting their binaries shadow PATH."""
-    packages = os.path.join(workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
-    if not os.path.isdir(packages):
-        return env
-    updated = dict(env)
-    # Block a planted usercustomize.py; in safe mode the trusted sitecustomize shim stays first on PYTHONPATH.
-    updated["PYTHONNOUSERSITE"] = "1"
-    for key, value in (
-        ("PYTHONPATH", packages),
-        ("PATH", os.path.join(packages, "bin")),
-    ):
-        updated[key] = os.pathsep.join(part for part in (updated.get(key, ""), value) if part)
-    return updated
+_with_session_packages = os_sandbox.with_session_packages
 
 
 def _software_safeguards_launch(plan, fault: str):

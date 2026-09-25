@@ -30,6 +30,25 @@ PROFILE_VERSION = "unsloth-sandbox-v1"
 # tools.py re-adds this only to an UNISOLATED launch, and only if it already exists.
 SESSION_PACKAGES_RELPATH = ".unsloth-packages"
 
+
+def with_session_packages(env: dict, workdir: str) -> dict:
+    """Reuse existing session packages without letting their binaries shadow PATH."""
+    packages = os.path.join(workdir, SESSION_PACKAGES_RELPATH)
+    if not os.path.isdir(packages):
+        return env
+    updated = dict(env)
+    # Block a planted usercustomize.py; in safe mode the trusted sitecustomize shim stays first on PYTHONPATH.
+    updated["PYTHONNOUSERSITE"] = "1"
+    # pip --target puts console scripts in Scripts on Windows and bin elsewhere.
+    scripts = "Scripts" if os.name == "nt" else "bin"
+    for key, value in (
+        ("PYTHONPATH", packages),
+        ("PATH", os.path.join(packages, scripts)),
+    ):
+        updated[key] = os.pathsep.join(part for part in (updated.get(key, ""), value) if part)
+    return updated
+
+
 _SOFTWARE_SAFEGUARDS = (
     "process_guard",
     "command_and_code_analysis",

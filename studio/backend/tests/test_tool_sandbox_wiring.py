@@ -682,6 +682,17 @@ def test_the_shipped_sitecustomize_is_found_before_the_session_packages(tmp_path
     )
 
 
+@pytest.mark.parametrize(("os_name", "scripts"), [("nt", "Scripts"), ("posix", "bin")])
+def test_session_package_commands_stay_on_path(monkeypatch, tmp_path, os_name, scripts):
+    """pip --target writes console scripts to Scripts on Windows, so bin alone lost them there."""
+    workdir = tmp_path / "session"
+    packages = workdir / os_sandbox.SESSION_PACKAGES_RELPATH
+    packages.mkdir(parents = True)
+    monkeypatch.setattr(os_sandbox.os, "name", os_name)
+    env = os_sandbox.with_session_packages({"PATH": "/usr/bin"}, str(workdir))
+    assert env["PATH"].split(os.pathsep) == ["/usr/bin", str(packages / scripts)]
+
+
 def test_a_seatbelt_launch_failure_also_drops_the_cached_verdict(monkeypatch):
     """A rejected Seatbelt profile is reported as `sandbox-exec:`, not `bwrap:`."""
     reset = []
