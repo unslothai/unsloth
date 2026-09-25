@@ -7084,6 +7084,7 @@ class LlamaCppBackend:
         self._pin_gpu_indices: Optional[list[int]] = None
         self._pin_baseline_shared_usage: Optional[dict[str, int]] = None
         self._pin_kv_hint = True
+        self._pin_kv_layout: Optional[tuple] = None
         self._model_identifier: Optional[str] = None
         self._gguf_path: Optional[str] = None
         # Snapshot of the exact file(s) handed to the resident process. A local
@@ -14525,6 +14526,7 @@ class LlamaCppBackend:
         self._pin_gpu_indices = None
         # q8_0 advice only helps a cache that is still f16.
         self._pin_kv_hint = (cache_type_kv or "f16").strip().lower() in ("f16", "fp16", "")
+        self._pin_kv_layout = None
         if os.name != "nt":
             return
         if not floor_bytes or floor_bytes <= 0 or not gpu_indices:
@@ -14647,6 +14649,21 @@ class LlamaCppBackend:
             or not _kv_offload_from_args(tokens, source_env)
         )
 
+    @staticmethod
+    def _kv_layout_of(argv: Optional[Sequence[str]]) -> tuple:
+        """(slot count, unified-KV tokens) as the argv sets them, for comparing spawns."""
+        tokens = [str(t) for t in argv or ()]
+        try:
+            slots = _last_flag_value(tokens, _PARALLEL_FLAGS)
+        except ValueError:
+            slots = None
+        unified = [
+            t
+            for t in tokens
+            if _flag_name(t) in {"-kvu", "--kv-unified", "-no-kvu", "--no-kv-unified"}
+        ]
+        return (slots, tuple(unified[-1:]))
+
     def _sample_residency_baseline(
         self,
         argv: Optional[Sequence[str]] = None,
@@ -14657,6 +14674,17 @@ class LlamaCppBackend:
         if self._pin_resident_floor_bytes is None or not pinned:
             return
         if not self._argv_claims_full_offload(argv, env):
+            self._pin_resident_floor_bytes = None
+            self._pin_gpu_indices = None
+            self._pin_baseline_free_mib = None
+            self._pin_baseline_shared_usage = None
+            return
+        # The floor was priced for the first spawn's slots and KV layout; a retry that
+        # changes them (e.g. --parallel 1 after a unified-KV rejection) would be misjudged.
+        layout = self._kv_layout_of(argv)
+        if self._pin_kv_layout is None:
+            self._pin_kv_layout = layout
+        elif layout != self._pin_kv_layout:
             self._pin_resident_floor_bytes = None
             self._pin_gpu_indices = None
             self._pin_baseline_free_mib = None
@@ -25618,7 +25646,13 @@ class LlamaCppBackend:
                             # use_fit = the pin failed; warn (Windows spills silently).
                             # Only when some context fits: else max_available_ctx is the
                             # Auto fallback anchor, and "lower it to N" would not fit either.
-                            if use_fit and _ctx_cap_fits and not _cuda_ctx_notice:
+                            # -nkvo keeps the cache on the host, so the priced overflow is not real.
+                            if (
+                                use_fit
+                                and _ctx_cap_fits
+                                and not _cuda_ctx_notice
+                                and _kv_offload_from_args(extra_args)
+                            ):
                                 _q8_fits = False
                                 if (cache_type_kv or "f16").strip().lower() in (
                                     "f16",

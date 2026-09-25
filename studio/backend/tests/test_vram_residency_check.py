@@ -52,6 +52,7 @@ class _Backend:
     _shared_usage_growth_bytes = LlamaCppBackend.__dict__["_shared_usage_growth_bytes"]
     _sample_residency_baseline = LlamaCppBackend.__dict__["_sample_residency_baseline"]
     _verify_vram_residency = LlamaCppBackend.__dict__["_verify_vram_residency"]
+    _kv_layout_of = LlamaCppBackend.__dict__["_kv_layout_of"]
 
     def _shared_gpu_memory_bytes(self):
         self._shared_reads += 1
@@ -561,3 +562,24 @@ def test_fallback_risk_follows_an_in_place_binary_update(monkeypatch):
     assert LlamaCppBackend._sysmem_fallback_risk("/llama-server") is False
     build[0] = "cuda"
     assert LlamaCppBackend._sysmem_fallback_risk("/llama-server") is True
+
+
+def test_a_retry_that_changes_the_slot_layout_disarms(on_windows):
+    """The floor priced 4 unified slots; a --parallel 1 respawn holds a different KV."""
+    backend = _Backend([(0, 16384.0 - 3000.0, 16384)])
+    backend._arm_residency_check(QWEN3_VL_8B_FLOOR, [0])
+    backend._sample_residency_baseline(PIN_ARGV + ["--parallel", "4", "--kv-unified"], {})
+    assert backend._pin_resident_floor_bytes is not None
+    backend._sample_residency_baseline(PIN_ARGV + ["--parallel", "1"], {})
+    assert backend._pin_resident_floor_bytes is None
+    assert backend._verify_vram_residency() is None
+
+
+def test_a_retry_with_the_same_layout_stays_armed(on_windows):
+    backend = _Backend([(0, 16384.0 - 11469.0, 16384)])
+    backend._arm_residency_check(QWEN3_VL_8B_FLOOR, [0])
+    argv = PIN_ARGV + ["--parallel", "4", "--kv-unified"]
+    backend._sample_residency_baseline(argv, {})
+    backend._sampled = False  # the respawn reads a fresh pre-spawn baseline
+    backend._sample_residency_baseline(argv, {})
+    assert backend._verify_vram_residency() is not None

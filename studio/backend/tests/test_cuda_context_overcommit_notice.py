@@ -187,7 +187,7 @@ class TestOvercommitNotice:
             assert word not in msg.lower()
 
 
-def _launch_explicit_ctx(tmp_path, monkeypatch, model_gb, n_ctx):
+def _launch_explicit_ctx(tmp_path, monkeypatch, model_gb, n_ctx, **load_kwargs):
     from test_llama_cpp_placement import _backend as _placement_backend, _launch
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
@@ -196,7 +196,7 @@ def _launch_explicit_ctx(tmp_path, monkeypatch, model_gb, n_ctx):
     backend._can_estimate_kv = lambda: True
     backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx) * 64 * 1024
     backend._estimate_compute_buffer_bytes = lambda **k: 1
-    cmd = _launch(backend, gguf, n_ctx = n_ctx)["cmd"]
+    cmd = _launch(backend, gguf, n_ctx = n_ctx, **load_kwargs)["cmd"]
     assert cmd[cmd.index("--fit") + 1] == "on"
     return backend.last_load_warning or ""
 
@@ -242,3 +242,11 @@ def test_the_q8_hint_prices_q8_compute_scratch(tmp_path, monkeypatch, q8_scratch
     warning = backend.last_load_warning or ""
     assert "does not fit in this GPU's memory" in warning
     assert ("q8_0" in warning) is offered
+
+
+def test_no_notice_when_the_kv_cache_stays_on_the_host(tmp_path, monkeypatch):
+    """-nkvo keeps the cache off the GPU, so the priced KV overflow does not happen."""
+    warning = _launch_explicit_ctx(
+        tmp_path, monkeypatch, model_gb = 18, n_ctx = 131072, extra_args = ["-nkvo"]
+    )
+    assert "does not fit in this GPU's memory" not in warning
