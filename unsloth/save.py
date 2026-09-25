@@ -6883,137 +6883,204 @@ def unsloth_save_pretrained_torchao(
         gc.collect()
 
 
+# quantization_type -> `optimum-cli export openvino` options. None and "fp16" still name a weight format: with none, optimum-intel int8-compresses every model over 1B parameters.
+_OPENVINO_QUANTIZATION_PRESETS = {
+    "fp16": {"weight_format": "fp16"},
+    "int8": {"weight_format": "int8", "sym": True},
+    "int4": {"weight_format": "int4", "sym": True, "group_size": 128},
+}
+_OPENVINO_QUANTIZATION_ALIASES = {
+    "none": "fp16",
+    "fp16": "fp16",
+    "f16": "fp16",
+    "int8": "int8",
+    "8bit": "int8",
+    "8": "int8",
+    "int4": "int4",
+    "4bit": "int4",
+    "4": "int4",
+}
+
+
+def _openvino_cli_parser():
+    """optimum-intel's own `export openvino` argument parser, or ImportError when OpenVINO export is not installed. Only argparse definitions are imported; torch and openvino stay out of this process."""
+    import argparse
+    import importlib.util
+
+    try:
+        from optimum.commands.export.openvino import parse_args_openvino
+    except ImportError:
+        parse_args_openvino = None
+    if parse_args_openvino is None or importlib.util.find_spec("openvino") is None:
+        raise ImportError(
+            "Unsloth: Exporting to OpenVINO requires `optimum-intel` and `openvino`.\n"
+            "Please install them via: pip install 'optimum[openvino]'"
+        )
+    parser = argparse.ArgumentParser(prog = "optimum-cli export openvino")
+    parse_args_openvino(parser)
+    return parser
+
+
+def _openvino_export_args(quantization_type, export_kwargs):
+    """The `optimum-cli export openvino` options for this export: the quantization_type preset, overridden by any option passed as a keyword (group_size = 64 -> --group-size 64, True -> bare flag, False or None -> omitted). Checked with optimum-intel's parser so a bad option fails before the merge."""
+    import contextlib
+    import io
+
+    key = "none" if quantization_type is None else str(quantization_type).strip().lower()
+    if key not in _OPENVINO_QUANTIZATION_ALIASES:
+        raise ValueError(
+            f"Unsloth: Unknown OpenVINO quantization_type '{quantization_type}'. "
+            "Expected 'int4', 'int8', 'fp16', or None."
+        )
+    if "output" in export_kwargs:
+        raise ValueError(
+            "Unsloth: `output` is set by save_pretrained_openvino itself and cannot be passed "
+            "as an OpenVINO export option."
+        )
+    options = dict(_OPENVINO_QUANTIZATION_PRESETS[_OPENVINO_QUANTIZATION_ALIASES[key]])
+    options.update(export_kwargs)
+    args = []
+    for name, value in options.items():
+        if value is None or value is False:
+            continue
+        flag = "--" + name.replace("_", "-")
+        args += [flag] if value is True else [flag, str(value)]
+
+    parser = _openvino_cli_parser()
+    errors = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(errors):
+            parser.parse_args(["output", "--model", "model", *args])
+    except SystemExit:
+        message = errors.getvalue().strip().splitlines()
+        raise ValueError(
+            "Unsloth: Invalid OpenVINO export option: "
+            + (message[-1] if message else " ".join(args))
+        )
+    return args
+
+
 def _unsloth_save_openvino(
     model,
     save_directory: Union[str, os.PathLike],
     tokenizer = None,
     quantization_type: Optional[str] = None,
-    quantization_config = None,
     push_to_hub: bool = False,
     token: Optional[Union[str, bool]] = None,
     is_main_process: bool = True,
-    **kwargs,
+    private: Optional[bool] = None,
+    commit_message: Optional[str] = "Export model to OpenVINO IR with Unsloth",
+    commit_description: Optional[str] = None,
+    create_pr: bool = False,
+    revision: Optional[str] = None,
+    **export_kwargs,
 ):
-    """Internal helper to merge and export model to OpenVINO IR format via optimum-intel."""
+    """Merge to 16bit in a staging directory, then convert it with `optimum-cli export openvino` in a separate process. Exporting in this process cannot work: optimum-intel traces the reloaded checkpoint through transformers classes whose forwards Unsloth has already patched (Llama's reads `self.max_seq_length`, which only Unsloth-loaded instances carry), so every trace fails. The CLI also converts the tokenizer to openvino_tokenizer.xml, which openvino_genai pipelines need."""
     import tempfile
-    import shutil
-    import gc
+
+    if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
+        tokenizer = patch_saving_functions(tokenizer)
+    token = _clean_save_token(token)
+    if token is None or token is True:
+        token = get_token()
 
     if not is_main_process:
         return None
 
-    try:
-        from optimum.intel.openvino import OVModelForCausalLM
-    except ImportError:
-        raise ImportError(
-            "Unsloth: Exporting to OpenVINO requires `optimum-intel` and `openvino`.\n"
-            "Please install them via: pip install 'optimum[openvino]'"
+    # Everything that can reject the request runs before the merge, which writes a full 16bit checkpoint. Remote code is trusted only when the model or tokenizer was already loaded through it.
+    export_kwargs = dict(export_kwargs)
+    if _loaded_via_remote_code(model) or _loaded_via_remote_code(tokenizer):
+        export_kwargs.setdefault("trust_remote_code", True)
+    export_kwargs.setdefault("library", "transformers")
+    # optimum-cli cannot infer the task from a local directory. Same VLM test as the torchao and compressed exports: a bare *ForConditionalGeneration also matches text seq2seq.
+    config = getattr(model, "config", None)
+    archs = getattr(config, "architectures", None) or []
+    is_vlm = hasattr(config, "vision_config") or any(
+        x.endswith("ForVisionText2Text") for x in archs
+    )
+    export_kwargs.setdefault(
+        "task", "image-text-to-text" if is_vlm else "text-generation-with-past"
+    )
+    cli_args = _openvino_export_args(quantization_type, export_kwargs)
+    if tokenizer is None:
+        logger.warning_once(
+            "Unsloth: No tokenizer was passed, so the OpenVINO export has none and "
+            "openvino_genai cannot load it. Pass `tokenizer = tokenizer`."
         )
-
-    if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
-        tokenizer = patch_saving_functions(tokenizer)
-
-    if token is None and push_to_hub:
-        token = get_token()
-
-    work_tmp = tempfile.mkdtemp(prefix = "unsloth-openvino-")
-    staging_dir = os.path.join(work_tmp, "staging")
 
     if push_to_hub:
         repo_id = os.fspath(save_directory)
-        final_dir = os.path.join(work_tmp, "openvino_model")
+        work_tmp = tempfile.mkdtemp(prefix = "unsloth-openvino-")
+        final_dir = os.path.join(work_tmp, "openvino")
     else:
         repo_id = None
-        final_dir = os.fspath(save_directory)
+        final_dir = os.path.abspath(os.fspath(save_directory))
+        # Stage beside the destination, not in TMPDIR: /tmp is often a RAM-backed tmpfs, and the staging merge holds 2 bytes per parameter.
+        os.makedirs(os.path.dirname(final_dir), exist_ok = True)
+        work_tmp = tempfile.mkdtemp(prefix = ".unsloth-openvino-", dir = os.path.dirname(final_dir))
+    staging = os.path.join(work_tmp, "merged_16bit")
 
     try:
-        # Step 1: Save merged 16-bit model to temporary staging directory
-        if not isinstance(model, PeftModelForCausalLM) and not isinstance(model, PeftModel):
-            model.save_pretrained(staging_dir)
-            if tokenizer is not None:
-                tokenizer.save_pretrained(staging_dir)
-        else:
-            unsloth_generic_save(
-                model = model,
-                tokenizer = tokenizer,
-                save_directory = staging_dir,
-                save_method = "merged_16bit",
-                push_to_hub = False,
-                token = token,
-            )
-
-        for _ in range(3):
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            if hasattr(torch, "xpu") and torch.xpu.is_available():
-                torch.xpu.empty_cache()
-
-        # Step 2: Configure quantization if specified
-        ov_quant_config = quantization_config
-        if ov_quant_config is None and quantization_type is not None:
-            from optimum.intel.openvino import OVWeightQuantizationConfig
-            qtype = str(quantization_type).lower()
-            if qtype in ("int4", "4bit", "4"):
-                ov_quant_config = OVWeightQuantizationConfig(bits = 4, sym = True, group_size = 128)
-            elif qtype in ("int8", "8bit", "8"):
-                ov_quant_config = OVWeightQuantizationConfig(bits = 8, sym = True)
-            elif qtype in ("none", "fp16", "f16"):
-                ov_quant_config = None
-            else:
-                raise ValueError(
-                    f"Unsloth: Unknown OpenVINO quantization_type '{quantization_type}'. "
-                    "Expected 'int4', 'int8', 'fp16', or None."
-                )
-
-        # Step 3: Export to OpenVINO IR format
-        os.makedirs(final_dir, exist_ok = True)
-        is_vlm = _is_vlm(model)
-        if is_vlm:
-            try:
-                from optimum.intel.openvino import OVModelForVisualCausalLM
-                ov_cls = OVModelForVisualCausalLM
-            except ImportError:
-                ov_cls = OVModelForCausalLM
-        else:
-            ov_cls = OVModelForCausalLM
-
-        ov_model = ov_cls.from_pretrained(
-            staging_dir,
-            export = True,
-            compile = False,
-            quantization_config = ov_quant_config,
-            **kwargs,
-        )
-        ov_model.save_pretrained(final_dir)
-
-        if tokenizer is not None:
-            tokenizer.save_pretrained(final_dir)
-
-        # Step 4: Push to Hub if requested
-        if push_to_hub and repo_id:
-            from huggingface_hub import HfApi
-
+        # Validate Hub access before the merge; create_repo is idempotent.
+        api = None
+        if push_to_hub:
             api = HfApi(token = token)
-            api.create_repo(repo_id = repo_id, exist_ok = True)
+            api.create_repo(repo_id = repo_id, repo_type = "model", private = private, exist_ok = True)
+
+        print("Unsloth: Merging to 16bit before OpenVINO export...")
+        unsloth_generic_save(
+            model = model,
+            tokenizer = tokenizer,
+            save_directory = staging,
+            save_method = "merged_16bit",
+            push_to_hub = False,
+            token = token,
+            is_main_process = is_main_process,
+        )
+
+        # Run the CLI module under this interpreter; it never imports Unsloth, so the trace sees stock transformers. It only reads the local staging checkpoint, so it gets no Hub credential.
+        cmd = [
+            sys.executable,
+            "-m",
+            "optimum.commands.optimum_cli",
+            "export",
+            "openvino",
+            "--model",
+            staging,
+            *cli_args,
+            final_dir,
+        ]
+        env = os.environ.copy()
+        _apply_token_to_child_env(env, False, explicit = True)
+        print("Unsloth: Exporting to OpenVINO IR in a separate process...")
+        try:
+            subprocess.check_call(cmd, env = env)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"Unsloth: OpenVINO export failed (optimum-cli exit {e.returncode}). "
+                "See the output above for details."
+            )
+        exported = os.listdir(final_dir) if os.path.isdir(final_dir) else []
+        if not any(f.startswith("openvino_") and f.endswith("model.xml") for f in exported):
+            raise RuntimeError(f"Unsloth: OpenVINO export wrote no model to '{final_dir}'.")
+
+        if push_to_hub:
+            print(f"Unsloth: Uploading OpenVINO model to '{repo_id}' ...")
             api.upload_folder(
                 folder_path = final_dir,
                 repo_id = repo_id,
-                commit_message = "Export model to OpenVINO IR with Unsloth",
+                repo_type = "model",
+                commit_message = commit_message,
+                commit_description = commit_description,
+                create_pr = create_pr,
+                revision = revision,
             )
+            print(f"Unsloth: Saved OpenVINO model to https://huggingface.co/{repo_id}")
             return repo_id
-
-        return final_dir
-
+        print(f"Unsloth: Saved OpenVINO model to '{final_dir}'.")
+        return os.fspath(save_directory)
     finally:
-        # Cleanup: always remove the staging directory; when pushing to Hub
-        # the entire work_tmp (staging + openvino_model) is temporary.
-        cleanup_path = work_tmp if push_to_hub else staging_dir
-        if cleanup_path and os.path.exists(cleanup_path):
-            try:
-                shutil.rmtree(cleanup_path)
-            except Exception:
-                pass
+        shutil.rmtree(work_tmp, ignore_errors = True)
         for _ in range(3):
             gc.collect()
 
@@ -7023,34 +7090,31 @@ def unsloth_save_pretrained_openvino(
     save_directory: Union[str, os.PathLike],
     tokenizer = None,
     quantization_type: Optional[str] = None,
-    quantization_config = None,
     push_to_hub: bool = False,
     token: Optional[Union[str, bool]] = None,
     is_main_process: bool = True,
+    private: Optional[bool] = None,
     **kwargs,
 ):
-    """Save the model in OpenVINO Intermediate Representation (IR) format (.xml and .bin).
-    Merges LoRA weights into the base model and converts to OpenVINO IR using optimum-intel.
+    """Save the model in OpenVINO IR format for OpenVINO Runtime, optimum-intel and openvino_genai on Intel CPUs, GPUs and NPUs. LoRA adapters are merged into a 16bit copy first, which `optimum-cli export openvino` converts in a separate process. Needs `pip install 'optimum[openvino]'`.
 
     Parameters:
-    - save_directory: Local directory to save the OpenVINO model, or Hugging Face Hub repo_id (if push_to_hub=True).
-    - tokenizer: Tokenizer to save alongside the model.
-    - quantization_type: Optional weight quantization type: "int8", "int4", or None (full/fp16 precision).
-    - quantization_config: Custom OVWeightQuantizationConfig instance.
-    - push_to_hub: If True, uploads the exported OpenVINO model to Hugging Face Hub.
-    - token: Hugging Face authentication token.
-    - is_main_process: Guard for multi-GPU / DDP environments.
-    - **kwargs: Additional kwargs passed to OVModelForCausalLM.from_pretrained.
+    - save_directory: Local output directory, or a Hugging Face Hub repo id when push_to_hub=True.
+    - tokenizer: Tokenizer or processor to export alongside the model; openvino_genai needs it.
+    - quantization_type: "int4" (symmetric, group size 128), "int8" (symmetric), or None / "fp16" for unquantized 16bit weights (a bfloat16 merge stays bfloat16).
+    - push_to_hub, token, private: Upload the export to the Hub instead of keeping it locally. commit_message, commit_description, create_pr and revision are also accepted.
+    - is_main_process: Only the main process exports under multi-GPU / DDP.
+    - **kwargs: Other `optimum-cli export openvino` options, with underscores for dashes, e.g. group_size = 64, ratio = 0.8, sym = False, awq = True, dataset = "wikitext2". They override the quantization_type preset.
     """
     return _unsloth_save_openvino(
         model = self,
         save_directory = save_directory,
         tokenizer = tokenizer,
         quantization_type = quantization_type,
-        quantization_config = quantization_config,
         push_to_hub = push_to_hub,
         token = token,
         is_main_process = is_main_process,
+        private = private,
         **kwargs,
     )
 
@@ -7060,21 +7124,21 @@ def unsloth_push_to_hub_openvino(
     repo_id: str,
     tokenizer = None,
     quantization_type: Optional[str] = None,
-    quantization_config = None,
     token: Optional[Union[str, bool]] = None,
     is_main_process: bool = True,
+    private: Optional[bool] = None,
     **kwargs,
 ):
-    """Export the model to OpenVINO IR format and push it directly to the Hugging Face Hub."""
-    return unsloth_save_pretrained_openvino(
-        self,
+    """Export the model to OpenVINO IR format and push it to the Hugging Face Hub. Takes the same options as save_pretrained_openvino."""
+    return _unsloth_save_openvino(
+        model = self,
         save_directory = repo_id,
         tokenizer = tokenizer,
         quantization_type = quantization_type,
-        quantization_config = quantization_config,
         push_to_hub = True,
         token = token,
         is_main_process = is_main_process,
+        private = private,
         **kwargs,
     )
 
