@@ -15,7 +15,7 @@ logger = structlog.get_logger(__name__)
 
 def record_event(entry: ApiMonitorEntry) -> None:
     """Record a terminal ApiMonitorEntry as a usage event."""
-    source = "api" if entry.provider_type else "local"
+    source = "api" if entry.provider_type not in (None, "") else "local"
     conn = get_connection()
     try:
         conn.execute(
@@ -50,6 +50,7 @@ def _build_where_clause(
     end_ts: Optional[int] = None,
     model: Optional[str] = None,
     source: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> tuple[str, list]:
     conditions = []
     params = []
@@ -66,6 +67,9 @@ def _build_where_clause(
     if source is not None:
         conditions.append("source = ?")
         params.append(source)
+    if session_id is not None:
+        conditions.append("session_id = ?")
+        params.append(session_id)
 
     where = " AND ".join(conditions) if conditions else "1=1"
     return f"WHERE {where}", params
@@ -77,9 +81,10 @@ def count_events(
     end_ts: Optional[int] = None,
     model: Optional[str] = None,
     source: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> int:
     """Count total usage events matching the filters."""
-    where, params = _build_where_clause(start_ts, end_ts, model, source)
+    where, params = _build_where_clause(start_ts, end_ts, model, source, session_id)
     conn = get_connection()
     try:
         row = conn.execute(f"SELECT COUNT(*) as c FROM usage_events {where}", params).fetchone()
@@ -94,11 +99,12 @@ def query_events(
     end_ts: Optional[int] = None,
     model: Optional[str] = None,
     source: Optional[str] = None,
+    session_id: Optional[str] = None,
     limit: Optional[int] = None,
     offset: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Query raw usage events."""
-    where, params = _build_where_clause(start_ts, end_ts, model, source)
+    where, params = _build_where_clause(start_ts, end_ts, model, source, session_id)
 
     query = f"SELECT * FROM usage_events {where} ORDER BY ts DESC"
     if limit is not None:
@@ -122,13 +128,16 @@ def aggregate_usage(
     start_ts: Optional[int] = None,
     end_ts: Optional[int] = None,
     model: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Aggregate usage by period, model, and source."""
     if granularity not in ("day", "week", "month", "year"):
         raise ValueError(f"Invalid granularity: {granularity}")
 
-    where, params = _build_where_clause(start_ts, end_ts, model, None)
+    where, params = _build_where_clause(start_ts, end_ts, model, None, session_id)
 
+    # SAFETY: granularity is validated above against a fixed whitelist;
+    # time_expr values are hardcoded SQL fragments, not user input.
     time_expr = {
         "day": "strftime('%Y-%m-%d', ts / 1000, 'unixepoch')",
         "week": "strftime('%Y-%W', ts / 1000, 'unixepoch')",
@@ -163,9 +172,10 @@ def sum_tokens_in_window(
     since_ts: int,
     model: Optional[str] = None,
     source: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> int:
     """Get the sum of total_tokens since a specific timestamp."""
-    where, params = _build_where_clause(since_ts, None, model, source)
+    where, params = _build_where_clause(since_ts, None, model, source, session_id)
     conn = get_connection()
     try:
         row = conn.execute(
