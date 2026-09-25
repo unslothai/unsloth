@@ -412,8 +412,7 @@ def render_pdf_pages(
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 _MC_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
-# Runs under these are not text the document shows: tracked deletions, text moved away, the ruby
-# guide over its base text, a text box (read as blocks of its own), and Word's fallback copy of it.
+# Runs not shown as body text; text boxes are read as blocks of their own.
 _DOCX_SKIP_RUNS_UNDER = frozenset(
     (_W + "del", _W + "moveFrom", _W + "rt", _W + "txbxContent", _MC_FALLBACK)
 )
@@ -429,9 +428,7 @@ def _docx_inside(element, stop, tags) -> bool:
 
 
 def _docx_blocks(element, parent):
-    """Paragraphs and tables under a body or cell element, in document order. Unlike
-    iter_inner_content(), looks inside block content controls, and follows each paragraph with
-    the blocks of its text boxes."""
+    """Paragraphs and tables in document order, including content controls and text boxes."""
     from docx.table import Table
     from docx.text.paragraph import Paragraph
 
@@ -439,8 +436,7 @@ def _docx_blocks(element, parent):
         if child.tag == _W + "p":
             yield Paragraph(child, parent)
             for box in child.iter(_W + "txbxContent"):
-                # A nested box is read with the box around it, a fallback copy repeats the
-                # real one, and a box in a tracked deletion or moved-away text goes like its runs.
+                # Nested boxes are read with their outer box; fallback copies repeat the real one.
                 if not _docx_inside(box, child, _DOCX_SKIP_RUNS_UNDER):
                     yield from _docx_blocks(box, parent)
         elif child.tag == _W + "tbl":
@@ -451,8 +447,7 @@ def _docx_blocks(element, parent):
 
 
 def _docx_paragraph_text(paragraph) -> str:
-    """Paragraph.text reads only the runs directly under the paragraph; tracked insertions,
-    content controls, simple fields and smart tags wrap theirs, so read every run beneath it."""
+    """Paragraph.text skips runs wrapped in w:ins, w:sdt, w:fldSimple, w:smartTag."""
     p = paragraph._p
     return "".join(
         run.text for run in p.iter(_W + "r") if not _docx_inside(run, p, _DOCX_SKIP_RUNS_UNDER)

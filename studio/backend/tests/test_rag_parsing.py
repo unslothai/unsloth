@@ -342,7 +342,6 @@ _DOCX_XMLNS = (
 
 
 def _docx_from_xml(tmp_path, *fragments):
-    # Body XML python-docx cannot author: tracked changes, content controls, text boxes.
     document, docx, parsers = _shared_setup_1()
     from docx.oxml import parse_xml
 
@@ -359,8 +358,6 @@ def _r(text):
 
 
 def test_docx_reads_tracked_insertions_not_deletions(tmp_path):
-    # Paragraph.text skips runs wrapped in w:ins, so accepted-looking text vanished; a
-    # deleted run must stay out even when it carries a tab.
     text = _docx_from_xml(
         tmp_path,
         "<w:p>"
