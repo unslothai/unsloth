@@ -8,9 +8,14 @@ export const it = {
     plainTextDescription: "Mantieni codice, Markdown e link come testo letterale. Disattiva per mostrare un’anteprima formattata.",
     showContext: "Mostra l’utilizzo della finestra di contesto",
     sendShortcut: "Scorciatoia di invio",
-    sendDescription: "Scegli se Invio invia un messaggio o inserisce una nuova riga.",
+    sendMultiline: "{mod} + Enter per i messaggi su più righe",
+    sendAlways: "{mod} + Enter sempre",
+    sendEnterDescription: "Enter invia. Shift + Enter aggiunge una nuova riga.",
+    sendMultilineDescription: "Enter invia un messaggio di una riga. Quando ha più di una riga, Enter aggiunge una nuova riga e {mod} + Enter invia.",
+    sendAlwaysDescription: "{mod} + Enter invia. Enter aggiunge una nuova riga.",
     followUp: "Messaggi successivi",
     followUpDescription: "Scegli cosa accade quando invii durante una risposta. Premi {shortcut} per fare il contrario per un messaggio.",
+    followUpMultilineShortcut: "{shortcut} ({multiline} in un messaggio su più righe)",
     queue: "In coda",
     steer: "Riorienta",
     steerDescription: "Riorienta interrompe la risposta corrente e invia subito dopo il tuo messaggio successivo.",
@@ -71,6 +76,8 @@ export const it = {
     error: "Errore",
     export: "Esporta",
     help: "Aiuto",
+    todayAt: "Oggi, {time}",
+    yesterdayAt: "Ieri, {time}",
     loading: "Caricamento...",
     new: "Nuovo",
     rename: "Rinomina",
@@ -131,6 +138,8 @@ export const it = {
       noChatsYet: "Ancora nessuna chat",
       // Shown under an empty project folder in the sidebar.
       noChats: "Nessuna chat",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "Tutti i progetti fissati",
       showMore: "Mostra altro",
       showLess: "Mostra meno",
       settings: "Impostazioni",
@@ -186,13 +195,6 @@ export const it = {
       sortPinnedChats: "Ordina le chat fissate",
       moveUp: "Sposta su",
       moveDown: "Sposta giù",
-    },
-    drag: {
-      reorder: "Riordina",
-      pin: "Fissa",
-      unpin: "Sblocca",
-      moveTo: "Sposta in {name}",
-      moveToRecents: "Sposta in Recenti",
     },
     dialog: {
       deleteChat: {
@@ -537,7 +539,16 @@ export const it = {
       sourceHint: "I runner dei modelli scrivono i propri log, quindi un caricamento o una generazione non riusciti sono spesso spiegati lì anziché nel log del server.",
       path: "Posizione",
       pathCopy: "Copia il percorso",
-      refreshSection: "Aggiornamento",
+      currentSession: "Attuale",
+      statusLive: "In diretta",
+      statusPaused: "In pausa",
+      statusStale: "Obsoleto",
+      filterPlaceholder: "Filtra righe",
+      lineCount: "{count} righe",
+      filteredLineCount: "{shown} di {total} righe",
+      wrapLines: "Righe a capo",
+      jumpToLatest: "Vai alla fine",
+      noMatches: "Nessuna riga corrisponde al filtro.",
       mode: "Modalità",
       modeLive: "In tempo reale",
       modeInterval: "Ogni 3 secondi",
@@ -571,6 +582,29 @@ export const it = {
       description:
         "Microfono, dettatura, riconoscimento vocale e lettura ad alta voce",
       dictation: {
+        audioUploadTitle: "Detta con una registrazione",
+        audioUploadDescription:
+          "Il browser richiede una connessione sicura (HTTPS) per registrare direttamente in Studio. Con questa connessione HTTP, usa invece il registratore del telefono o scegli una registrazione salvata. Il server Studio trascriverà l'audio e aggiungerà il testo al messaggio.",
+        audioUploadChooseFile: "Scegli registrazione",
+        audioUploadRecord: "Registra audio",
+        audioUploadIphoneHint:
+          "Su iPhone, salva una registrazione da Memo Vocali o da un'altra app di registrazione, quindi sceglila qui.",
+        audioUploadServerModelNote:
+          "Questa registrazione usa il modello locale mostrato sopra sul server Studio, anche se la dettatura normale usa un motore diverso.",
+        audioUploadAutomatic: "Automatico",
+        audioUploadModelReady: "Pronto su questo server Studio",
+        audioUploadRetryTitle: "Impossibile trascrivere {file}",
+        audioUploadRetry: "Riprova la trascrizione",
+        audioUploadChooseModel:
+          "Scegli un modello locale di riconoscimento vocale nelle impostazioni Voce.",
+        audioUploadEmpty: "La registrazione selezionata è vuota.",
+        audioUploadTooLarge: "Scegli una registrazione più piccola di {size}.",
+        audioUploadVideoUnsupported:
+          "Scegli una registrazione audio, non un video.",
+        audioUploadNoSpeech: "Il modello non ha rilevato alcuna voce nella registrazione.",
+        audioUploadFailed: "Non è stato possibile trascrivere la registrazione.",
+        audioUploadCancel: "Annulla trascrizione",
+        audioUploadTranscribing: "Trascrizione audio in corso…",
         sectionTitle: "Dettatura",
         engineLabel: "Motore di dettatura",
         engineBrowser: "Browser",
@@ -1125,7 +1159,7 @@ export const it = {
       custom: {
         chatWidth: {
           label: "Larghezza chat",
-          description: "Imposta la larghezza dei messaggi e del campo di testo. La larghezza piena usa lo spazio tra le barre laterali.",
+          description: "Larghezza dei messaggi e del campo di testo.",
           standard: "Standard",
           wide: "Ampia",
           full: "Larghezza piena",
@@ -1200,7 +1234,6 @@ export const it = {
         },
         contrast: {
           label: "Contrasto",
-          description: "Intensità dei bordi e del testo secondario.",
         },
         reduceMotion: {
           label: "Riduci le animazioni",
@@ -1230,7 +1263,7 @@ export const it = {
       sidebarNav: {
         title: "Navigazione della barra laterale",
         description:
-          "Fissa e riordina le schede della barra laterale. Le schede non fissate vengono raccolte nel menu «Altro»; se ne resta una sola non fissata viene nascosta invece di creare un menu con una voce sola. «Nuova chat» resta sempre al suo posto.",
+          "Fissa e riordina le schede della barra laterale. Quelle non fissate vanno nel menu «Altro».",
         dragToReorder: "Trascina per riordinare",
         pinToSidebar: "Fissa {name} nella barra laterale",
         moreHolds: "Altro ({count})",
@@ -1238,7 +1271,7 @@ export const it = {
       sidebarMenu: {
         title: "Menu della barra laterale",
         description:
-          "Mostra, nascondi e riordina le voci del menu del profilo nella barra laterale. Impostazioni, Aiuto, Esci e Arresta restano fisse.",
+          "Scegli e riordina le scorciatoie del menu del profilo.",
         darkModeToggle: "Interruttore del tema scuro",
         dragToReorder: "Trascina per riordinare",
       },
@@ -1393,6 +1426,61 @@ export const it = {
         copied: "Percorso copiato",
         openError: "Impossibile aprire la cartella",
         copyError: "Impossibile copiare il percorso",
+        caches: {
+          label: "File di cache",
+          description:
+            "{size} nelle cache, di cui {reclaimable} eliminabili subito.",
+          hint: "Download di pacchetti, kernel compilati e cache di trasferimento che Unsloth ricrea quando servono. I modelli scaricati, i progetti, le chat, le impostazioni e il tuo token Hugging Face non vengono mai eliminati qui.",
+          keywords:
+            "cache svuotare pulire eliminare liberare spazio disco temporaneo compilato cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "Misurazione delle dimensioni delle cache...",
+          measureFailed: "Impossibile misurare le cache",
+          empty: "Nessun file di cache trovato.",
+          detailsAction: "Dettagli",
+          recheckAction: "Ricontrolla",
+          hideDetailsAction: "Nascondi dettagli",
+          clearAction: "Svuota le cache",
+          clearOneAction: "Svuota",
+          clearingAction: "Svuotamento in corso...",
+          confirmTitle: "Svuotare i file nella cache?",
+          confirmDescription: "Libera circa {size}.",
+          confirmOneTitle: "Svuotare {name}?",
+          safety:
+            "Unsloth ricrea una cache la volta successiva in cui serve. I modelli scaricati, i progetti, le chat, le impostazioni e il tuo token Hugging Face non vengono toccati.",
+          hubCost:
+            "Questa è la cache dei modelli. Svuotandola, quei modelli verranno scaricati di nuovo al prossimo utilizzo.",
+          datasetsCost:
+            "Svuotandola, quei set di dati verranno scaricati di nuovo al prossimo utilizzo.",
+          blocked: "Non svuotata: {reason}",
+          cleared: "Liberati {size}",
+          partial: "Alcuni file di cache non sono stati rimossi",
+          clearFailed: "Impossibile svuotare le cache",
+          names: {
+            uv: "Cache dei pacchetti uv",
+            pip: "Cache dei download pip",
+            npm: "Cache dei pacchetti npm",
+            bun: "Cache dei pacchetti Bun",
+            torchInductor: "Cache di compilazione Torch Inductor",
+            torchExtensions: "Build delle estensioni Torch",
+            triton: "Cache dei kernel Triton",
+            cuda: "Cache dei kernel CUDA",
+            numba: "Cache di compilazione Numba",
+            matplotlib: "Cache dei font Matplotlib",
+            vllm: "Cache di vLLM",
+            unslothCompiled: "Moduli compilati di Unsloth",
+            hfXet: "Cache di trasferimento Hugging Face",
+            hfAssets: "Cache delle risorse Hugging Face",
+            hfDatasets: "Cache dei set di dati Hugging Face",
+            hfHub: "Cache dei modelli Hugging Face",
+          },
+        },
+        lowDisk: {
+          title: "Lo spazio su disco sta per esaurirsi",
+          criticalTitle: "Lo spazio su disco è quasi esaurito",
+          description:
+            "{free} liberi su {total}. Svuotare le cache può liberare spazio.",
+          action: "Controlla le cache",
+        },
       },
       environment: {
         title: "Ambiente",
@@ -1576,6 +1664,10 @@ export const it = {
       showResponseModel: "Mostra il modello della risposta",
       showResponseModelDescription:
         "Mostra i metadati del modello nelle risposte dell'assistente.",
+      inlineReadAloud: "Lettura ad alta voce nelle risposte",
+      inlineReadAloudDescription: "Mostra Lettura ad alta voce su ogni risposta, invece che nel menu Altro.",
+      inlineEditResponse: "Modifica risposta nelle risposte",
+      inlineEditResponseDescription: "Mostra Modifica risposta su ogni risposta, invece che nel menu Altro.",
       modelDisclaimer: "Mostra l'avviso sul modello",
       modelDisclaimerDescription:
         "Mostra «Gli LLM possono commettere errori» sotto il campo della chat.",
@@ -1925,6 +2017,7 @@ export const it = {
       expires: "Scadenza: {value}",
       actionsFor: "Azioni per {name}",
       copyPrefix: "Copia il prefisso",
+      copyFailed: "Impossibile copiare",
       revokeToken: "Revoca il token",
       revokeTitle: "Revocare il token di accesso «{name}»?",
       revokeDescription:

@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app_layout;
+mod app_menu;
 mod commands;
 #[cfg(target_os = "linux")]
 mod debian_update;
@@ -1610,10 +1611,13 @@ fn setup_quit_menu(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .accelerator("CmdOrCtrl+Q")
         .build(app)?;
     app_menu.append(&quit)?;
+    app_menu::setup_app_menus(app, &menu)?;
     app.set_menu(menu)?;
     app.on_menu_event(|app, event| {
         if event.id() == APP_QUIT_MENU_ID {
             request_quit(app);
+        } else {
+            app_menu::handle_menu_event(app, event.id().as_ref());
         }
     });
     Ok(())
@@ -2126,6 +2130,7 @@ fn main() {
         .manage(new_close_to_tray_state())
         .manage(native_file_dialogs::ChatImportRegistry::default())
         .invoke_handler(tauri::generate_handler![
+            app_menu::set_app_menu_actions,
             set_training_active,
             set_renderer_activity,
             app_layout::has_initialized_app_window_layout,

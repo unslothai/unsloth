@@ -11,9 +11,14 @@ export const ru = {
     plainTextDescription: "Показывать код, Markdown и ссылки как обычный текст. Отключите для предпросмотра форматирования.",
     showContext: "Показывать использование контекстного окна",
     sendShortcut: "Клавиши отправки",
-    sendDescription: "Выберите, отправляет ли Enter сообщение или добавляет новую строку.",
+    sendMultiline: "{mod} + Enter для многострочных сообщений",
+    sendAlways: "Всегда {mod} + Enter",
+    sendEnterDescription: "Enter отправляет. Shift + Enter добавляет новую строку.",
+    sendMultilineDescription: "Enter отправляет однострочное сообщение. Когда в нём больше одной строки, Enter добавляет новую строку, а {mod} + Enter отправляет.",
+    sendAlwaysDescription: "{mod} + Enter отправляет. Enter добавляет новую строку.",
     followUp: "Последующие сообщения",
     followUpDescription: "Выберите действие при отправке во время ответа. Нажмите {shortcut}, чтобы выполнить противоположное действие для одного сообщения.",
+    followUpMultilineShortcut: "{shortcut} ({multiline} в многострочном сообщении)",
     queue: "В очередь",
     steer: "Перенаправить",
     steerDescription: "Перенаправление останавливает текущий ответ и отправляет ваше сообщение следующим.",
@@ -106,6 +111,8 @@ export const ru = {
     error: "Ошибка",
     export: "Экспорт",
     help: "Справка",
+    todayAt: "Сегодня, {time}",
+    yesterdayAt: "Вчера, {time}",
     loading: "Загрузка…",
     new: "Новое",
     rename: "Переименовать",
@@ -166,6 +173,8 @@ export const ru = {
       noChatsYet: "Пока нет чатов",
       // Shown under an empty project folder in the sidebar.
       noChats: "Нет чатов",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "Все проекты закреплены",
       showMore: "Показать больше",
       showLess: "Показать меньше",
       settings: "Настройки",
@@ -221,13 +230,6 @@ export const ru = {
       sortPinnedChats: "Сортировать закреплённые чаты",
       moveUp: "Переместить вверх",
       moveDown: "Переместить вниз",
-    },
-    drag: {
-      reorder: "Переставить",
-      pin: "Закрепить",
-      unpin: "Открепить",
-      moveTo: "Переместить в {name}",
-      moveToRecents: "Переместить в Недавние",
     },
     dialog: {
       deleteChat: {
@@ -571,7 +573,16 @@ export const ru = {
       sourceHint: "Средства запуска моделей ведут собственные журналы, поэтому причина неудачной загрузки или генерации чаще всего указана именно в них, а не в журнале сервера.",
       path: "Расположение",
       pathCopy: "Копировать путь",
-      refreshSection: "Обновление",
+      currentSession: "Текущий",
+      statusLive: "В реальном времени",
+      statusPaused: "Пауза",
+      statusStale: "Устарел",
+      filterPlaceholder: "Фильтр строк",
+      lineCount: "Строк: {count}",
+      filteredLineCount: "{shown} из {total} строк",
+      wrapLines: "Перенос строк",
+      jumpToLatest: "К последним",
+      noMatches: "Ни одна строка не соответствует фильтру.",
       mode: "Режим",
       modeLive: "В реальном времени",
       modeInterval: "Каждые 3 секунды",
@@ -604,6 +615,28 @@ export const ru = {
       title: "Голос",
       description: "Микрофон, диктовка, распознавание речи и чтение вслух",
       dictation: {
+        audioUploadTitle: "Диктовка с помощью записи",
+        audioUploadDescription:
+          "Для записи непосредственно в Studio браузеру требуется безопасное подключение (HTTPS). При этом HTTP-подключении используйте диктофон на телефоне или выберите сохранённую запись. Сервер Studio расшифрует аудио и добавит текст в ваше сообщение.",
+        audioUploadChooseFile: "Выбрать запись",
+        audioUploadRecord: "Записать аудио",
+        audioUploadIphoneHint:
+          "На iPhone сохраните запись из приложения «Диктофон» (Voice Memos) или другого приложения для записи, а затем выберите её здесь.",
+        audioUploadServerModelNote:
+          "Для этой записи используется указанная выше локальная модель на сервере Studio, даже если обычная диктовка использует другой движок.",
+        audioUploadAutomatic: "Автоматически",
+        audioUploadModelReady: "Готово на этом сервере Studio",
+        audioUploadRetryTitle: "Не удалось расшифровать {file}",
+        audioUploadRetry: "Повторить расшифровку",
+        audioUploadChooseModel:
+          "Выберите локальную модель распознавания речи в настройках голоса.",
+        audioUploadEmpty: "Выбранная запись пуста.",
+        audioUploadTooLarge: "Выберите запись размером менее {size}.",
+        audioUploadVideoUnsupported: "Выберите аудиозапись, а не видео.",
+        audioUploadNoSpeech: "Модель не обнаружила речь в этой записи.",
+        audioUploadFailed: "Не удалось расшифровать запись.",
+        audioUploadCancel: "Отменить расшифровку",
+        audioUploadTranscribing: "Расшифровка аудио…",
         sectionTitle: "Диктовка",
         engineLabel: "Движок диктовки",
         engineBrowser: "Браузер",
@@ -1141,7 +1174,7 @@ export const ru = {
       custom: {
         chatWidth: {
           label: "Ширина чата",
-          description: "Задайте ширину сообщений и поля ввода. Полная ширина использует пространство между боковыми панелями.",
+          description: "Ширина сообщений и поля ввода.",
           standard: "Стандартная",
           wide: "Широкая",
           full: "Полная ширина",
@@ -1214,7 +1247,6 @@ export const ru = {
         },
         contrast: {
           label: "Контраст",
-          description: "Выраженность границ и второстепенного текста.",
         },
         reduceMotion: {
           label: "Уменьшить анимацию",
@@ -1244,7 +1276,7 @@ export const ru = {
       sidebarNav: {
         title: "Навигация боковой панели",
         description:
-          "Закрепляйте вкладки боковой панели и меняйте их порядок. Незакреплённые вкладки собираются в меню «Ещё»; если незакреплённая вкладка всего одна, она просто скрывается, а не превращается в меню из одного пункта. «Новый чат» остаётся на месте.",
+          "Закрепляйте вкладки боковой панели и меняйте порядок. Незакреплённые уходят в меню «Ещё».",
         dragToReorder: "Перетащите, чтобы изменить порядок",
         pinToSidebar: "Закрепить на боковой панели: {name}",
         moreHolds: "Ещё ({count})",
@@ -1252,7 +1284,7 @@ export const ru = {
       sidebarMenu: {
         title: "Меню боковой панели",
         description:
-          "Показывайте, скрывайте и меняйте порядок пунктов в меню профиля на боковой панели. «Настройки», «Справка», «Выйти» и «Выключить» остаются на месте.",
+          "Выберите ярлыки меню профиля и их порядок.",
         darkModeToggle: "Переключатель тёмной темы",
         dragToReorder: "Перетащите, чтобы изменить порядок",
       },
@@ -1394,6 +1426,61 @@ export const ru = {
         copied: "Путь скопирован",
         openError: "Не удалось открыть папку",
         copyError: "Не удалось скопировать путь",
+        caches: {
+          label: "Файлы кеша",
+          description:
+            "{size} в кешах, из них {reclaimable} можно очистить сейчас.",
+          hint: "Загрузки пакетов, скомпилированные ядра и кеши передачи, которые Unsloth создаёт заново, когда они нужны. Загруженные модели, проекты, чаты, настройки и ваш токен Hugging Face здесь никогда не очищаются.",
+          keywords:
+            "кеш кэш кеши очистить удалить почистить освободить место диск временные скомпилированные cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "Измерение размера кешей...",
+          measureFailed: "Не удалось измерить кеши",
+          empty: "Файлы кеша не найдены.",
+          detailsAction: "Подробности",
+          recheckAction: "Проверить снова",
+          hideDetailsAction: "Скрыть подробности",
+          clearAction: "Очистить кеши",
+          clearOneAction: "Очистить",
+          clearingAction: "Очистка...",
+          confirmTitle: "Очистить кешированные файлы?",
+          confirmDescription: "Это освободит примерно {size}.",
+          confirmOneTitle: "Очистить {name}?",
+          safety:
+            "Unsloth создаст кеш заново, когда он снова понадобится. Загруженные модели, проекты, чаты, настройки и ваш токен Hugging Face не затрагиваются.",
+          hubCost:
+            "Это кеш моделей. После очистки эти модели будут загружены заново при следующем использовании.",
+          datasetsCost:
+            "После очистки эти наборы данных будут загружены заново при следующем использовании.",
+          blocked: "Не очищено: {reason}",
+          cleared: "Очищено {size}",
+          partial: "Некоторые файлы кеша не удалось удалить",
+          clearFailed: "Не удалось очистить кеши",
+          names: {
+            uv: "Кеш пакетов uv",
+            pip: "Кеш загрузок pip",
+            npm: "Кеш пакетов npm",
+            bun: "Кеш пакетов Bun",
+            torchInductor: "Кеш компиляции Torch Inductor",
+            torchExtensions: "Сборки расширений Torch",
+            triton: "Кеш ядер Triton",
+            cuda: "Кеш ядер CUDA",
+            numba: "Кеш компиляции Numba",
+            matplotlib: "Кеш шрифтов Matplotlib",
+            vllm: "Кеш vLLM",
+            unslothCompiled: "Скомпилированные модули Unsloth",
+            hfXet: "Кеш передачи Hugging Face",
+            hfAssets: "Кеш ресурсов Hugging Face",
+            hfDatasets: "Кеш наборов данных Hugging Face",
+            hfHub: "Кеш моделей Hugging Face",
+          },
+        },
+        lowDisk: {
+          title: "Заканчивается место на диске",
+          criticalTitle: "Критически мало места на диске",
+          description:
+            "Свободно {free} из {total}. Очистка кешей может освободить место.",
+          action: "Посмотреть кеши",
+        },
         futureDownloads: "Только новые загрузки",
         environmentManaged: "Управляется переменной окружения {variable}.",
         locationFree: "{free} свободно",
@@ -1586,6 +1673,10 @@ export const ru = {
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:
         "Показывать метаданные модели в ответах ассистента.",
+      inlineReadAloud: "Чтение вслух в ответах",
+      inlineReadAloudDescription: "Показывать «Чтение вслух» у каждого ответа, а не в меню «Ещё».",
+      inlineEditResponse: "Изменение ответа в ответах",
+      inlineEditResponseDescription: "Показывать «Изменить ответ» у каждого ответа, а не в меню «Ещё».",
       modelDisclaimer: "Показывать предупреждение о модели",
       modelDisclaimerDescription:
         "Показывать сообщение «LLM могут ошибаться» под полем ввода.",
@@ -1928,6 +2019,7 @@ export const ru = {
       expires: "Срок действия: {value}",
       actionsFor: "Действия для {name}",
       copyPrefix: "Копировать префикс",
+      copyFailed: "Не удалось скопировать",
       revokeToken: "Отозвать токен",
       revokeTitle: 'Отозвать токен доступа «{name}»?',
       revokeDescription:

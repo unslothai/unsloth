@@ -11,9 +11,14 @@ export const ko = {
     plainTextDescription: "코드, Markdown, 링크를 원문 그대로 표시합니다. 끄면 서식 미리보기를 표시합니다.",
     showContext: "컨텍스트 창 사용량 표시",
     sendShortcut: "전송 단축키",
-    sendDescription: "Enter 키로 메시지를 보내거나 줄을 바꿀지 선택합니다.",
+    sendMultiline: "여러 줄 메시지는 {mod} + Enter",
+    sendAlways: "항상 {mod} + Enter",
+    sendEnterDescription: "Enter로 전송하고 Shift + Enter로 줄을 바꿉니다.",
+    sendMultilineDescription: "한 줄 메시지는 Enter로 전송합니다. 두 줄 이상이 되면 Enter로 줄을 바꾸고 {mod} + Enter로 전송합니다.",
+    sendAlwaysDescription: "{mod} + Enter로 전송하고 Enter로 줄을 바꿉니다.",
     followUp: "후속 메시지 동작",
     followUpDescription: "응답 중에 전송할 때의 동작을 선택합니다. {shortcut}을 누르면 해당 메시지만 반대로 처리합니다.",
+    followUpMultilineShortcut: "{shortcut} (여러 줄 메시지에서는 {multiline})",
     queue: "대기열",
     steer: "방향 변경",
     steerDescription: "현재 응답을 중지하고 후속 메시지를 다음에 전송합니다.",
@@ -104,6 +109,8 @@ export const ko = {
     error: "오류",
     export: "내보내기",
     help: "도움말",
+    todayAt: "오늘 {time}",
+    yesterdayAt: "어제 {time}",
     loading: "로딩 중...",
     new: "새로 만들기",
     rename: "이름 변경",
@@ -164,6 +171,8 @@ export const ko = {
       noChatsYet: "아직 채팅이 없습니다",
       // Shown under an empty project folder in the sidebar.
       noChats: "채팅 없음",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "모든 프로젝트가 고정됨",
       showMore: "더 보기",
       showLess: "간략히 보기",
       settings: "설정",
@@ -219,13 +228,6 @@ export const ko = {
       sortPinnedChats: "고정된 채팅 정렬",
       moveUp: "위로 이동",
       moveDown: "아래로 이동",
-    },
-    drag: {
-      reorder: "순서 변경",
-      pin: "고정",
-      unpin: "고정 해제",
-      moveTo: "{name}(으)로 이동",
-      moveToRecents: "최근으로 이동",
     },
     dialog: {
       deleteChat: {
@@ -569,7 +571,16 @@ export const ko = {
       sourceHint: "모델 러너는 각자 자체 로그를 기록하므로, 로드나 생성이 실패한 이유는 서버 로그가 아니라 그쪽에 남아 있는 경우가 많습니다.",
       path: "위치",
       pathCopy: "경로 복사",
-      refreshSection: "새로 고침",
+      currentSession: "현재",
+      statusLive: "실시간",
+      statusPaused: "일시 중지",
+      statusStale: "오래됨",
+      filterPlaceholder: "줄 필터",
+      lineCount: "{count}줄",
+      filteredLineCount: "{total}줄 중 {shown}줄",
+      wrapLines: "줄 바꿈",
+      jumpToLatest: "최신으로 이동",
+      noMatches: "필터와 일치하는 줄이 없습니다.",
       mode: "모드",
       modeLive: "실시간",
       modeInterval: "3초마다",
@@ -602,6 +613,29 @@ export const ko = {
       title: "음성",
       description: "마이크, 받아쓰기, 음성 인식 및 소리 내어 읽기",
       dictation: {
+        audioUploadTitle: "녹음으로 받아쓰기",
+        audioUploadDescription:
+          "Studio에서 직접 녹음하려면 브라우저에 보안 연결(HTTPS)이 필요합니다. 이 HTTP 연결에서는 휴대폰 녹음기를 사용하거나 저장된 녹음을 선택하세요. Studio 서버가 오디오를 텍스트로 변환하여 메시지에 추가합니다.",
+        audioUploadChooseFile: "녹음 선택",
+        audioUploadRecord: "오디오 녹음",
+        audioUploadIphoneHint:
+          "iPhone에서는 Voice Memos 또는 다른 녹음 앱에서 녹음을 저장한 다음 여기에서 선택하세요.",
+        audioUploadServerModelNote:
+          "일반 받아쓰기가 다른 엔진을 사용하더라도 이 녹음에는 Studio 서버에서 위에 표시된 로컬 모델이 사용됩니다.",
+        audioUploadAutomatic: "자동",
+        audioUploadModelReady: "이 Studio 서버에서 준비됨",
+        audioUploadRetryTitle: "{file}을(를) 전사하지 못했습니다",
+        audioUploadRetry: "전사 다시 시도",
+        audioUploadChooseModel:
+          "음성 설정에서 로컬 음성 인식 모델을 선택하세요.",
+        audioUploadEmpty: "선택한 녹음이 비어 있습니다.",
+        audioUploadTooLarge: "{size}보다 작은 녹음을 선택하세요.",
+        audioUploadVideoUnsupported:
+          "동영상이 아닌 오디오 녹음을 선택하세요.",
+        audioUploadNoSpeech: "모델이 해당 녹음에서 음성을 감지하지 못했습니다.",
+        audioUploadFailed: "녹음을 전사하지 못했습니다.",
+        audioUploadCancel: "전사 취소",
+        audioUploadTranscribing: "오디오 전사 중…",
         sectionTitle: "받아쓰기",
         engineLabel: "받아쓰기 엔진",
         engineBrowser: "브라우저",
@@ -1131,7 +1165,7 @@ export const ko = {
       custom: {
         chatWidth: {
           label: "채팅 너비",
-          description: "메시지와 입력창의 너비를 설정합니다. 전체 너비는 사이드바 사이의 공간을 사용합니다.",
+          description: "메시지와 입력창의 너비입니다.",
           standard: "표준",
           wide: "넓게",
           full: "전체 너비",
@@ -1204,7 +1238,6 @@ export const ko = {
         },
         contrast: {
           label: "대비",
-          description: "테두리와 보조 텍스트의 강도입니다.",
         },
         reduceMotion: {
           label: "동작 줄이기",
@@ -1234,7 +1267,7 @@ export const ko = {
       sidebarNav: {
         title: "사이드바 탐색",
         description:
-          "사이드바 탭을 고정하고 순서를 바꿉니다. 고정하지 않은 탭은 ‘더 보기’ 메뉴에 모입니다. 고정하지 않은 탭이 하나뿐이면 항목이 하나뿐인 메뉴를 만들지 않고 그 탭을 숨깁니다. 새 채팅은 항상 고정됩니다.",
+          "사이드바 탭을 고정하고 순서를 바꿉니다. 고정하지 않은 탭은 ‘더 보기’ 메뉴로 들어갑니다.",
         dragToReorder: "끌어서 순서 변경",
         pinToSidebar: "{name}을(를) 사이드바에 고정",
         moreHolds: "더 보기({count})",
@@ -1242,7 +1275,7 @@ export const ko = {
       sidebarMenu: {
         title: "사이드바 메뉴",
         description:
-          "사이드바 프로필 메뉴의 항목을 표시하거나 숨기고 순서를 바꿉니다. 설정, 도움말, 로그아웃, 종료는 고정됩니다.",
+          "프로필 메뉴의 바로가기를 고르고 순서를 바꿉니다.",
         darkModeToggle: "다크 모드 전환",
         dragToReorder: "끌어서 순서 변경",
       },
@@ -1382,6 +1415,61 @@ export const ko = {
         copied: "경로가 복사되었습니다",
         openError: "폴더를 열지 못했습니다",
         copyError: "경로를 복사하지 못했습니다",
+        caches: {
+          label: "캐시 파일",
+          description:
+            "캐시에 {size}이(가) 있으며 그중 {reclaimable}을(를) 지금 정리할 수 있습니다.",
+          hint: "패키지 다운로드, 컴파일된 커널, 전송 캐시로 Unsloth가 필요할 때 다시 만듭니다. 다운로드한 모델, 프로젝트, 채팅, 설정, Hugging Face 토큰은 여기서 절대 삭제되지 않습니다.",
+          keywords:
+            "캐시 정리 삭제 비우기 청소 여유 공간 디스크 임시 컴파일 cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "캐시 크기를 측정하는 중...",
+          measureFailed: "캐시를 측정하지 못했습니다",
+          empty: "캐시 파일이 없습니다.",
+          detailsAction: "자세히",
+          recheckAction: "다시 확인",
+          hideDetailsAction: "자세히 숨기기",
+          clearAction: "캐시 정리",
+          clearOneAction: "정리",
+          clearingAction: "정리하는 중...",
+          confirmTitle: "캐시 파일을 정리할까요?",
+          confirmDescription: "약 {size}의 공간이 확보됩니다.",
+          confirmOneTitle: "{name}을(를) 정리할까요?",
+          safety:
+            "Unsloth는 다음에 필요할 때 캐시를 다시 만듭니다. 다운로드한 모델, 프로젝트, 채팅, 설정, Hugging Face 토큰은 그대로 유지됩니다.",
+          hubCost:
+            "모델 캐시입니다. 정리하면 다음에 사용할 때 해당 모델을 다시 다운로드합니다.",
+          datasetsCost:
+            "정리하면 다음에 사용할 때 해당 데이터셋을 다시 다운로드합니다.",
+          blocked: "정리되지 않음: {reason}",
+          cleared: "{size} 정리함",
+          partial: "일부 캐시 파일을 삭제하지 못했습니다",
+          clearFailed: "캐시를 정리하지 못했습니다",
+          names: {
+            uv: "uv 패키지 캐시",
+            pip: "pip 다운로드 캐시",
+            npm: "npm 패키지 캐시",
+            bun: "Bun 패키지 캐시",
+            torchInductor: "Torch Inductor 컴파일 캐시",
+            torchExtensions: "Torch 확장 빌드",
+            triton: "Triton 커널 캐시",
+            cuda: "CUDA 커널 캐시",
+            numba: "Numba 컴파일 캐시",
+            matplotlib: "Matplotlib 폰트 캐시",
+            vllm: "vLLM 캐시",
+            unslothCompiled: "Unsloth 컴파일된 모듈",
+            hfXet: "Hugging Face 전송 캐시",
+            hfAssets: "Hugging Face 에셋 캐시",
+            hfDatasets: "Hugging Face 데이터셋 캐시",
+            hfHub: "Hugging Face 모델 캐시",
+          },
+        },
+        lowDisk: {
+          title: "디스크 공간이 부족합니다",
+          criticalTitle: "디스크 공간이 매우 부족합니다",
+          description:
+            "{total} 중 {free} 남음. 캐시를 정리하면 공간을 확보할 수 있습니다.",
+          action: "캐시 확인",
+        },
         futureDownloads: "새 다운로드만",
         environmentManaged: "{variable} 환경 변수로 관리됩니다.",
         locationFree: "{free} 남음",
@@ -1568,6 +1656,10 @@ export const ko = {
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
         "어시스턴트 응답에 모델 메타데이터를 표시합니다.",
+      inlineReadAloud: "응답에 소리 내어 읽기 표시",
+      inlineReadAloudDescription: "소리 내어 읽기를 더보기 메뉴 대신 모든 응답에 표시합니다.",
+      inlineEditResponse: "응답에 응답 편집 표시",
+      inlineEditResponseDescription: "응답 편집을 더보기 메뉴 대신 모든 응답에 표시합니다.",
       modelDisclaimer: "모델 고지 표시",
       modelDisclaimerDescription:
         '채팅 상자 아래에 "LLMs can make mistakes" 문구를 표시합니다.',
@@ -1908,6 +2000,7 @@ export const ko = {
       expires: "만료: {value}",
       actionsFor: "{name} 작업",
       copyPrefix: "접두사 복사",
+      copyFailed: "복사할 수 없습니다",
       revokeToken: "토큰 폐기",
       revokeTitle: '액세스 토큰 "{name}"을 폐기하시겠습니까?',
       revokeDescription:

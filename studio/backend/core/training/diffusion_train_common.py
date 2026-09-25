@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from core._torchao_stub import (
+    hide_xformers_built_for_another_torch,
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
     is_stubbed,
@@ -39,6 +40,7 @@ from utils.paths.path_utils import drop_appledouble_metadata
 # The trainers run in a spawned child that imports diffusers itself, so the inference-side install does not carry
 # over. Both import this module first.
 install_xformers_windows_rocm_stub()
+hide_xformers_built_for_another_torch()
 install_torchao_windows_rocm_stub()
 # Same child: the DiT trainer's int8 base-weight quantisation goes through torchao.
 install_torchao_int_mm_patch()
@@ -613,10 +615,10 @@ def effective_mixed_precision(cfg: Any) -> str:
 
     requested = str(getattr(cfg, "mixed_precision", "") or "")
     if str(getattr(cfg, "resolved_family", "") or "").strip().lower() in _FLOW_TRAIN_FAMILIES:
-        # No flow-matching trainer reads mixed_precision (weight_dtype is bf16 on CUDA, fp32 otherwise), so recording
-        # the REQUEST failed a later bf16 resume as a precision mismatch between identical runs. Keyed on
-        # _FLOW_TRAIN_FAMILIES so the answer follows the weight dtype.
-        return "bf16" if torch.cuda.is_available() else "no"
+        # No flow trainer reads mixed_precision (weight_dtype is bf16 on an accelerator, fp32 otherwise), so recording
+        # the REQUEST failed a later bf16 resume as a mismatch between identical runs. Resolve the device the way the
+        # loops do, or an XPU run trains in bf16 and records "no".
+        return "bf16" if resolve_train_device() in ("cuda", "xpu") else "no"
     if not torch.cuda.is_available():
         return "no"
     if requested == "bf16" and not native_bf16_supported():
@@ -644,6 +646,62 @@ def native_bf16_supported() -> bool:
         return False
 
 
+def resolve_train_device() -> str:
+    """The device a flow-matching trainer runs on: CUDA first (so a box with both is unaffected),
+    then Intel XPU, else CPU.
+
+    Probes are guarded individually like ``dit_accelerator_missing_reason``: an uninitialised driver
+    whose ``is_available()`` raises must fall through, not kill the run. Shared so the two trainers
+    and the precision the run RECORDS cannot disagree."""
+    import torch  # noqa: PLC0415 -- keep the import list light for the training subprocess
+
+    def _probe(module) -> bool:
+        try:
+            fn = getattr(module, "is_available", None)
+            return bool(fn()) if callable(fn) else False
+        except Exception:  # noqa: BLE001 -- probe failure -> this accelerator is not usable
+            return False
+
+    if _probe(getattr(torch, "cuda", None)):
+        return "cuda"
+    if _probe(getattr(torch, "xpu", None)):
+        return "xpu"
+    return "cpu"
+
+
+def xpu_native_bf16_probe() -> Optional[bool]:
+    """Native-bf16 on the live XPU, or None when the capability cannot be determined. Never raises.
+
+    ``is_bf16_supported()`` defaults to ``including_emulation=True`` and short-circuits before
+    reading ``has_bfloat16_conversions``, so the bare call answers True for EVERY available XPU:
+    the same emulation trap ``native_bf16_supported`` avoids on the CUDA side. Ask explicitly.
+
+    Tri-state because ``get_device_properties()`` raises when no device is really there: collapsing
+    that to False made the pre-eviction preflight refuse nf4 on any host whose XPU cannot be
+    interrogated, a probe failing CLOSED."""
+    import torch  # noqa: PLC0415
+
+    fn = getattr(getattr(torch, "xpu", None), "is_bf16_supported", None)
+    if not callable(fn):
+        return None
+    try:
+        return bool(fn(including_emulation = False))
+    except TypeError:
+        # A torch predating the including_emulation parameter: its answer is the only one there is.
+        try:
+            return bool(fn())
+        except Exception:  # noqa: BLE001 -- unprobeable
+            return None
+    except Exception:  # noqa: BLE001 -- unprobeable
+        return None
+
+
+def native_bf16_supported_xpu() -> bool:
+    """``xpu_native_bf16_probe`` collapsed for the trainer child, which runs ON the device: there an
+    unprobeable capability is a refusal, matching ``native_bf16_supported`` on the CUDA side."""
+    return xpu_native_bf16_probe() is True
+
+
 def bf16_unsupported_reason(resolved_family: str) -> Optional[str]:
     """Return a user-facing error string if ``resolved_family`` needs bf16 compute the live GPU
     cannot provide, else None. The DiT trainer requires Ampere or newer and otherwise raises deep
@@ -660,6 +718,16 @@ def bf16_unsupported_reason(resolved_family: str) -> Optional[str]:
             return (
                 "This trainer requires a bfloat16-capable GPU (Ampere or newer); this CUDA "
                 "device does not support bf16. Train the DiT families on a newer GPU."
+            )
+        # dit_accelerator_missing_reason accepts any available XPU, so without this the route
+        # admitted an emulation-only XPU, evicted the resident models, and only then hit the
+        # trainer's own guard: the eviction ordering this function exists to protect. Only a
+        # DEFINITE no rejects here; an unprobeable XPU is left to the child, since a preflight that
+        # fails closed would refuse hosts that train fine.
+        if resolve_train_device() == "xpu" and xpu_native_bf16_probe() is False:
+            return (
+                "This trainer requires a bfloat16-capable GPU; this XPU device does not "
+                "support bf16 natively. Train the DiT families on a newer GPU."
             )
     except Exception:  # noqa: BLE001 -- torch probe failure must not block a start
         return None
@@ -700,6 +768,27 @@ def dit_accelerator_missing_reason(resolved_family: str) -> Optional[str]:
         "Training the DiT families needs a GPU: even the 4-bit (nf4) base load requires "
         "CUDA, XPU or MPS, and this host has none. Train SDXL here, or use a GPU machine."
     )
+
+
+def bitsandbytes_optimizer_supported() -> bool:
+    """Whether a bitsandbytes optimizer can complete an update on the SELECTED backend.
+
+    False only when training actually runs on Intel XPU: bitsandbytes registers
+    optimizer_update_8bit_blockwise (and optimizer_update_32bit) to Triton in every branch of
+    backends/xpu/ops.py, and Intel's Triton backend asserts on a SYCL toolchain we do not ship.
+    Construction still succeeds, so the trainers' try/except around the constructor never sees
+    it -- the run dies at the first optimizer.step(). Mirrors core/training/training.py.
+
+    Keyed on get_device(), NOT torch.xpu.is_available(): a hybrid host with an Intel iGPU beside
+    an NVIDIA card reports both and detection prefers CUDA. Answering the presence question there
+    would drop 8-bit on a CUDA run, and worse, change optimizer_key() so restore_resume_state
+    refuses every existing AdamW8bit checkpoint with a ResumeError.
+    """
+    try:
+        from utils.hardware import DeviceType, get_device
+        return get_device() != DeviceType.XPU
+    except Exception:  # noqa: BLE001 -- a probe failure must not block a start
+        return True
 
 
 def training_precision_preflight_error(resolved_family: str, base_precision: str) -> Optional[str]:

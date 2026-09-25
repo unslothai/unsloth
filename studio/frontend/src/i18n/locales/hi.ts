@@ -11,9 +11,14 @@ export const hi = {
     plainTextDescription: "कोड, Markdown और लिंक को मूल टेक्स्ट के रूप में रखें। फ़ॉर्मैट किया हुआ पूर्वावलोकन दिखाने के लिए इसे बंद करें।",
     showContext: "कॉन्टेक्स्ट विंडो का उपयोग दिखाएँ",
     sendShortcut: "भेजने का शॉर्टकट",
-    sendDescription: "चुनें कि Enter से संदेश भेजना है या नई पंक्ति जोड़नी है।",
+    sendMultiline: "कई पंक्तियों वाले संदेशों के लिए {mod} + Enter",
+    sendAlways: "हमेशा {mod} + Enter",
+    sendEnterDescription: "Enter भेजता है। Shift + Enter नई पंक्ति जोड़ता है।",
+    sendMultilineDescription: "Enter एक पंक्ति वाला संदेश भेजता है। संदेश में एक से ज़्यादा पंक्तियाँ होने पर Enter नई पंक्ति जोड़ता है और {mod} + Enter भेजता है।",
+    sendAlwaysDescription: "{mod} + Enter भेजता है। Enter नई पंक्ति जोड़ता है।",
     followUp: "अगले संदेश का व्यवहार",
     followUpDescription: "उत्तर के दौरान संदेश भेजने पर क्या होगा, चुनें। एक संदेश के लिए विपरीत विकल्प इस्तेमाल करने हेतु {shortcut} दबाएँ।",
+    followUpMultilineShortcut: "{shortcut} (कई पंक्तियों वाले संदेश में {multiline})",
     queue: "कतार में जोड़ें",
     steer: "दिशा बदलें",
     steerDescription: "दिशा बदलने से वर्तमान उत्तर रुक जाता है और आपका अगला संदेश पहले भेजा जाता है।",
@@ -107,6 +112,8 @@ export const hi = {
     error: "त्रुटि",
     export: "एक्सपोर्ट करें",
     help: "सहायता",
+    todayAt: "आज, {time}",
+    yesterdayAt: "कल, {time}",
     loading: "लोड हो रहा है...",
     new: "नया",
     rename: "नाम बदलें",
@@ -167,6 +174,8 @@ export const hi = {
       noChatsYet: "अभी तक कोई चैट नहीं",
       // Shown under an empty project folder in the sidebar.
       noChats: "कोई चैट नहीं",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "सभी प्रोजेक्ट पिन किए गए",
       showMore: "और दिखाएं",
       showLess: "कम दिखाएं",
       settings: "सेटिंग्स",
@@ -222,13 +231,6 @@ export const hi = {
       sortPinnedChats: "पिन की गई चैट क्रमबद्ध करें",
       moveUp: "ऊपर ले जाएँ",
       moveDown: "नीचे ले जाएँ",
-    },
-    drag: {
-      reorder: "क्रम बदलें",
-      pin: "पिन करें",
-      unpin: "अनपिन करें",
-      moveTo: "{name} में ले जाएँ",
-      moveToRecents: "हाल के में ले जाएँ",
     },
     dialog: {
       deleteChat: {
@@ -572,7 +574,16 @@ export const hi = {
       sourceHint: "मॉडल रनर अपने अलग लॉग लिखते हैं, इसलिए लोड या जनरेशन विफल होने का कारण अक्सर सर्वर लॉग के बजाय वहीं मिलता है।",
       path: "स्थान",
       pathCopy: "पथ कॉपी करें",
-      refreshSection: "रिफ़्रेश",
+      currentSession: "वर्तमान",
+      statusLive: "लाइव",
+      statusPaused: "रुका हुआ",
+      statusStale: "पुराना",
+      filterPlaceholder: "पंक्तियाँ फ़िल्टर करें",
+      lineCount: "{count} पंक्तियाँ",
+      filteredLineCount: "{total} में से {shown} पंक्तियाँ",
+      wrapLines: "पंक्तियाँ रैप करें",
+      jumpToLatest: "नवीनतम पर जाएँ",
+      noMatches: "फ़िल्टर से कोई पंक्ति मेल नहीं खाती।",
       mode: "मोड",
       modeLive: "लाइव",
       modeInterval: "हर 3 सेकंड",
@@ -605,6 +616,29 @@ export const hi = {
       title: "आवाज़",
       description: "माइक्रोफ़ोन, डिक्टेशन, स्पीच-टू-टेक्स्ट और ज़ोर से पढ़ना",
       dictation: {
+        audioUploadTitle: "रिकॉर्डिंग से डिक्टेशन करें",
+        audioUploadDescription:
+          "आपके ब्राउज़र को Studio में सीधे रिकॉर्ड करने के लिए सुरक्षित कनेक्शन (HTTPS) चाहिए। इस HTTP कनेक्शन पर, इसके बजाय अपने फ़ोन का रिकॉर्डर इस्तेमाल करें या सेव की गई रिकॉर्डिंग चुनें। आपका Studio सर्वर ऑडियो को टेक्स्ट में बदलेगा और उसे आपके संदेश में जोड़ देगा।",
+        audioUploadChooseFile: "रिकॉर्डिंग चुनें",
+        audioUploadRecord: "ऑडियो रिकॉर्ड करें",
+        audioUploadIphoneHint:
+          "iPhone पर, Voice Memos या किसी अन्य रिकॉर्डर ऐप से रिकॉर्डिंग सेव करें, फिर उसे यहाँ चुनें।",
+        audioUploadServerModelNote:
+          "यह रिकॉर्डिंग Studio सर्वर पर ऊपर दिखाए गए स्थानीय मॉडल का उपयोग करती है, भले ही सामान्य डिक्टेशन किसी दूसरे इंजन का उपयोग करता हो।",
+        audioUploadAutomatic: "स्वचालित",
+        audioUploadModelReady: "इस Studio सर्वर पर तैयार",
+        audioUploadRetryTitle: "{file} को टेक्स्ट में नहीं बदला जा सका",
+        audioUploadRetry: "ट्रांसक्रिप्शन फिर से आज़माएँ",
+        audioUploadChooseModel:
+          "आवाज़ की सेटिंग में कोई स्थानीय स्पीच-रिकग्निशन मॉडल चुनें।",
+        audioUploadEmpty: "चुनी गई रिकॉर्डिंग खाली है।",
+        audioUploadTooLarge: "{size} से छोटी रिकॉर्डिंग चुनें।",
+        audioUploadVideoUnsupported:
+          "वीडियो के बजाय कोई ऑडियो रिकॉर्डिंग चुनें।",
+        audioUploadNoSpeech: "मॉडल को उस रिकॉर्डिंग में कोई आवाज़ सुनाई नहीं दी।",
+        audioUploadFailed: "रिकॉर्डिंग को टेक्स्ट में नहीं बदला जा सका।",
+        audioUploadCancel: "ट्रांसक्रिप्शन रद्द करें",
+        audioUploadTranscribing: "ऑडियो को टेक्स्ट में बदला जा रहा है…",
         sectionTitle: "डिक्टेशन",
         engineLabel: "डिक्टेशन इंजन",
         engineBrowser: "ब्राउज़र",
@@ -1138,7 +1172,7 @@ export const hi = {
       custom: {
         chatWidth: {
           label: "चैट की चौड़ाई",
-          description: "संदेशों और इनपुट बॉक्स की चौड़ाई तय करें। पूरी चौड़ाई साइडबार के बीच की जगह का उपयोग करती है।",
+          description: "संदेशों और इनपुट बॉक्स की चौड़ाई।",
           standard: "मानक",
           wide: "चौड़ा",
           full: "पूरी चौड़ाई",
@@ -1211,7 +1245,6 @@ export const hi = {
         },
         contrast: {
           label: "कंट्रास्ट",
-          description: "बॉर्डर और सेकंडरी टेक्स्ट की तीव्रता।",
         },
         reduceMotion: {
           label: "एनिमेशन कम करें",
@@ -1241,7 +1274,7 @@ export const hi = {
       sidebarNav: {
         title: "साइडबार नेविगेशन",
         description:
-          "साइडबार के टैब पिन करें और उनका क्रम बदलें। जो टैब पिन नहीं हैं वे “अधिक” मेन्यू में इकट्ठा हो जाते हैं; यदि सिर्फ़ एक ही टैब पिन नहीं है तो एक आइटम वाला मेन्यू बनाने के बजाय उसे छिपा दिया जाता है। नई चैट अपनी जगह पर तय रहती है।",
+          "साइडबार के टैब पिन करें और क्रम बदलें। बिना पिन वाले टैब “अधिक” मेन्यू में चले जाते हैं।",
         dragToReorder: "क्रम बदलने के लिए खींचें",
         pinToSidebar: "{name} को साइडबार में पिन करें",
         moreHolds: "अधिक ({count})",
@@ -1249,7 +1282,7 @@ export const hi = {
       sidebarMenu: {
         title: "साइडबार मेन्यू",
         description:
-          "साइडबार के प्रोफ़ाइल मेन्यू में आइटम दिखाएं, छिपाएं और क्रम बदलें। सेटिंग्स, सहायता, लॉग आउट और शटडाउन अपनी जगह पर तय रहते हैं।",
+          "प्रोफ़ाइल मेन्यू के शॉर्टकट चुनें और उनका क्रम बदलें।",
         darkModeToggle: "डार्क मोड टॉगल",
         dragToReorder: "क्रम बदलने के लिए खींचें",
       },
@@ -1389,6 +1422,61 @@ export const hi = {
         copied: "पथ कॉपी किया गया",
         openError: "फ़ोल्डर नहीं खोला जा सका",
         copyError: "पथ कॉपी नहीं किया जा सका",
+        caches: {
+          label: "कैश फ़ाइलें",
+          description:
+            "कैश में {size}, जिनमें से {reclaimable} अभी साफ़ किया जा सकता है।",
+          hint: "पैकेज डाउनलोड, कंपाइल किए गए कर्नेल और ट्रांसफ़र कैश जिन्हें Unsloth ज़रूरत पड़ने पर दोबारा बना लेता है। डाउनलोड किए गए मॉडल, प्रोजेक्ट, चैट, सेटिंग्स और आपका Hugging Face टोकन यहाँ कभी साफ़ नहीं किए जाते।",
+          keywords:
+            "कैश साफ़ करना हटाना खाली जगह डिस्क अस्थायी कंपाइल cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "कैश का आकार मापा जा रहा है...",
+          measureFailed: "कैश मापे नहीं जा सके",
+          empty: "कोई कैश फ़ाइल नहीं मिली।",
+          detailsAction: "विवरण",
+          recheckAction: "फिर से जाँचें",
+          hideDetailsAction: "विवरण छिपाएँ",
+          clearAction: "कैश साफ़ करें",
+          clearOneAction: "साफ़ करें",
+          clearingAction: "साफ़ किया जा रहा है...",
+          confirmTitle: "कैश की गई फ़ाइलें साफ़ करें?",
+          confirmDescription: "इससे लगभग {size} खाली होगा।",
+          confirmOneTitle: "{name} साफ़ करें?",
+          safety:
+            "अगली बार ज़रूरत पड़ने पर Unsloth कैश दोबारा बना लेता है। डाउनलोड किए गए मॉडल, प्रोजेक्ट, चैट, सेटिंग्स और आपके Hugging Face टोकन को छुआ नहीं जाता।",
+          hubCost:
+            "यह मॉडल कैश है। इसे साफ़ करने पर अगली बार उपयोग करते समय वे मॉडल फिर से डाउनलोड होंगे।",
+          datasetsCost:
+            "इसे साफ़ करने पर अगली बार उपयोग करते समय वे डेटासेट फिर से डाउनलोड होंगे।",
+          blocked: "साफ़ नहीं किया गया: {reason}",
+          cleared: "{size} साफ़ किया गया",
+          partial: "कुछ कैश फ़ाइलें हटाई नहीं जा सकीं",
+          clearFailed: "कैश साफ़ नहीं किए जा सके",
+          names: {
+            uv: "uv पैकेज कैश",
+            pip: "pip डाउनलोड कैश",
+            npm: "npm पैकेज कैश",
+            bun: "Bun पैकेज कैश",
+            torchInductor: "Torch Inductor कंपाइल कैश",
+            torchExtensions: "Torch एक्सटेंशन बिल्ड",
+            triton: "Triton कर्नेल कैश",
+            cuda: "CUDA कर्नेल कैश",
+            numba: "Numba कंपाइल कैश",
+            matplotlib: "Matplotlib फ़ॉन्ट कैश",
+            vllm: "vLLM कैश",
+            unslothCompiled: "Unsloth कंपाइल किए गए मॉड्यूल",
+            hfXet: "Hugging Face ट्रांसफ़र कैश",
+            hfAssets: "Hugging Face एसेट कैश",
+            hfDatasets: "Hugging Face डेटासेट कैश",
+            hfHub: "Hugging Face मॉडल कैश",
+          },
+        },
+        lowDisk: {
+          title: "डिस्क स्पेस कम हो रहा है",
+          criticalTitle: "डिस्क स्पेस बेहद कम है",
+          description:
+            "{total} में से {free} खाली। कैश साफ़ करने से जगह खाली हो सकती है।",
+          action: "कैश देखें",
+        },
         futureDownloads: "केवल नए डाउनलोड",
         environmentManaged: "{variable} एनवायरनमेंट वेरिएबल द्वारा प्रबंधित।",
         locationFree: "{free} खाली",
@@ -1579,6 +1667,10 @@ export const hi = {
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
         "असिस्टेंट के जवाबों में मॉडल का मेटाडेटा दिखाएँ।",
+      inlineReadAloud: "जवाबों पर ज़ोर से पढ़ें",
+      inlineReadAloudDescription: "ज़ोर से पढ़ें को More मेन्यू के बजाय हर जवाब पर दिखाएँ।",
+      inlineEditResponse: "जवाबों पर जवाब संपादित करें",
+      inlineEditResponseDescription: "जवाब संपादित करें को More मेन्यू के बजाय हर जवाब पर दिखाएँ।",
       modelDisclaimer: "मॉडल अस्वीकरण दिखाएं",
       modelDisclaimerDescription:
         'चैट बॉक्स के नीचे "LLMs can make mistakes" दिखाएं।',
@@ -1921,6 +2013,7 @@ export const hi = {
       expires: "समाप्त होता है {value}",
       actionsFor: "{name} के लिए कार्रवाइयां",
       copyPrefix: "प्रीफ़िक्स कॉपी करें",
+      copyFailed: "कॉपी नहीं हो सका",
       revokeToken: "टोकन रद्द करें",
       revokeTitle: "क्या “{name}” एक्सेस टोकन रद्द करें?",
       revokeDescription:

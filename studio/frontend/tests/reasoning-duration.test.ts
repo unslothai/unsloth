@@ -126,6 +126,7 @@ test("keeps structured reasoning active only when it is the final content", () =
     {
       text: "<think>First</think>",
       structuredReasoningContinues: true,
+      hasStructuredReasoning: true,
     },
   );
   assert.deepEqual(
@@ -136,6 +137,7 @@ test("keeps structured reasoning active only when it is the final content", () =
     {
       text: "<think>Last thought</think>Answer",
       structuredReasoningContinues: false,
+      hasStructuredReasoning: true,
     },
   );
   assert.deepEqual(
@@ -146,6 +148,7 @@ test("keeps structured reasoning active only when it is the final content", () =
     {
       text: "Preface<think>First thought</think>",
       structuredReasoningContinues: true,
+      hasStructuredReasoning: true,
     },
   );
 });

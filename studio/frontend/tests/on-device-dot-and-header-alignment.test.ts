@@ -6,8 +6,14 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { atDefaultUiScale } from "./helpers/kit.ts";
+
 function read(path: string): string {
-  return readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf-8");
+  // Lengths here are compared to each other in px, so read them at the default
+  // UI font size; --ui-space-scale moves every one of them by the same factor.
+  return atDefaultUiScale(
+    readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf-8"),
+  );
 }
 
 const PICKERS = read(
@@ -519,7 +525,7 @@ test("a GGUF row takes the GGUF verdict, not the torch refusal", () => {
   );
   assert.equal(producers.length, 2, "curated rows only");
   for (const line of producers) {
-    assert.match(line, /curatedFits \? null : "exceeds"/);
+    assert.match(line, /curatedFit\.fits \? null : "exceeds"/);
   }
 });
 

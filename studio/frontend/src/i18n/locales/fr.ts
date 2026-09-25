@@ -11,9 +11,14 @@ export const fr = {
     plainTextDescription: "Conserver le code, le Markdown et les liens en texte brut. Désactivez pour afficher un aperçu mis en forme.",
     showContext: "Afficher l’utilisation de la fenêtre de contexte",
     sendShortcut: "Raccourci d’envoi",
-    sendDescription: "Choisissez si Entrée envoie un message ou insère une nouvelle ligne.",
+    sendMultiline: "{mod} + Enter pour les messages sur plusieurs lignes",
+    sendAlways: "{mod} + Enter toujours",
+    sendEnterDescription: "Enter envoie. Shift + Enter ajoute une nouvelle ligne.",
+    sendMultilineDescription: "Enter envoie un message d’une seule ligne. Dès qu’il compte plusieurs lignes, Enter ajoute une nouvelle ligne et {mod} + Enter envoie.",
+    sendAlwaysDescription: "{mod} + Enter envoie. Enter ajoute une nouvelle ligne.",
     followUp: "Messages de suivi",
     followUpDescription: "Choisissez l’action lors d’un envoi pendant une réponse. Appuyez sur {shortcut} pour inverser ce choix pour un message.",
+    followUpMultilineShortcut: "{shortcut} ({multiline} pour un message sur plusieurs lignes)",
     queue: "File d’attente",
     steer: "Réorienter",
     steerDescription: "Réorienter arrête la réponse en cours et envoie votre message de suivi en priorité.",
@@ -107,6 +112,8 @@ export const fr = {
     error: "Erreur",
     export: "Exporter",
     help: "Aide",
+    todayAt: "Aujourd’hui, {time}",
+    yesterdayAt: "Hier, {time}",
     loading: "Chargement...",
     new: "Nouveau",
     rename: "Renommer",
@@ -167,6 +174,8 @@ export const fr = {
       noChatsYet: "Aucune discussion pour le moment",
       // Shown under an empty project folder in the sidebar.
       noChats: "Aucune discussion",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "Tous les projets sont epingles",
       showMore: "Afficher plus",
       showLess: "Afficher moins",
       settings: "Paramètres",
@@ -222,13 +231,6 @@ export const fr = {
       sortPinnedChats: "Trier les discussions épinglées",
       moveUp: "Monter",
       moveDown: "Descendre",
-    },
-    drag: {
-      reorder: "Réordonner",
-      pin: "Épingler",
-      unpin: "Désépingler",
-      moveTo: "Déplacer vers {name}",
-      moveToRecents: "Déplacer vers Récents",
     },
     dialog: {
       deleteChat: {
@@ -573,7 +575,16 @@ export const fr = {
       sourceHint: "Les exécuteurs de modèles écrivent leurs propres journaux : un chargement ou une génération en échec y est donc souvent expliqué plutôt que dans le journal du serveur.",
       path: "Emplacement",
       pathCopy: "Copier le chemin",
-      refreshSection: "Actualisation",
+      currentSession: "Actuel",
+      statusLive: "En direct",
+      statusPaused: "En pause",
+      statusStale: "Obsolète",
+      filterPlaceholder: "Filtrer les lignes",
+      lineCount: "{count} lignes",
+      filteredLineCount: "{shown} sur {total} lignes",
+      wrapLines: "Retour à la ligne",
+      jumpToLatest: "Aller à la fin",
+      noMatches: "Aucune ligne ne correspond au filtre.",
       mode: "Mode",
       modeLive: "En direct",
       modeInterval: "Toutes les 3 secondes",
@@ -606,6 +617,29 @@ export const fr = {
       title: "Voix",
       description: "Microphone, dictée, reconnaissance vocale et lecture à voix haute",
       dictation: {
+        audioUploadTitle: "Dicter avec un enregistrement",
+        audioUploadDescription:
+          "Votre navigateur nécessite une connexion sécurisée (HTTPS) pour enregistrer directement dans Studio. Avec cette connexion HTTP, utilisez plutôt l'enregistreur de votre téléphone ou choisissez un enregistrement sauvegardé. Votre serveur Studio transcrira l'audio et ajoutera le texte à votre message.",
+        audioUploadChooseFile: "Choisir un enregistrement",
+        audioUploadRecord: "Enregistrer l'audio",
+        audioUploadIphoneHint:
+          "Sur iPhone, sauvegardez un enregistrement depuis Dictaphone ou une autre application d'enregistrement, puis choisissez-le ici.",
+        audioUploadServerModelNote:
+          "Cet enregistrement utilise le modèle local indiqué ci-dessus sur le serveur Studio, même si la dictée habituelle utilise un autre moteur.",
+        audioUploadAutomatic: "Automatique",
+        audioUploadModelReady: "Prêt sur ce serveur Studio",
+        audioUploadRetryTitle: "Impossible de transcrire {file}",
+        audioUploadRetry: "Réessayer la transcription",
+        audioUploadChooseModel:
+          "Choisissez un modèle local de reconnaissance vocale dans les paramètres Voix.",
+        audioUploadEmpty: "L'enregistrement sélectionné est vide.",
+        audioUploadTooLarge: "Choisissez un enregistrement de moins de {size}.",
+        audioUploadVideoUnsupported:
+          "Choisissez un enregistrement audio, pas une vidéo.",
+        audioUploadNoSpeech: "Le modèle n'a détecté aucune parole dans cet enregistrement.",
+        audioUploadFailed: "Impossible de transcrire l'enregistrement.",
+        audioUploadCancel: "Annuler la transcription",
+        audioUploadTranscribing: "Transcription audio en cours…",
         sectionTitle: "Dictée",
         engineLabel: "Moteur de dictée",
         engineBrowser: "Navigateur",
@@ -1160,7 +1194,7 @@ export const fr = {
       custom: {
         chatWidth: {
           label: "Largeur du chat",
-          description: "Réglez la largeur des messages et de la zone de saisie. La pleine largeur utilise l’espace entre les barres latérales.",
+          description: "Largeur des messages et de la zone de saisie.",
           standard: "Standard",
           wide: "Large",
           full: "Pleine largeur",
@@ -1233,7 +1267,6 @@ export const fr = {
         },
         contrast: {
           label: "Contraste",
-          description: "Intensité des bordures et du texte secondaire.",
         },
         reduceMotion: {
           label: "Réduire les animations",
@@ -1263,7 +1296,7 @@ export const fr = {
       sidebarNav: {
         title: "Navigation de la barre latérale",
         description:
-          "Épinglez et réorganisez les onglets de la barre latérale. Les onglets non épinglés sont regroupés dans le menu « Plus » ; s'il ne reste qu'un seul onglet non épinglé, il est masqué au lieu de créer un menu à une seule entrée. « Nouvelle discussion » reste fixe.",
+          "Épinglez et réorganisez les onglets de la barre latérale. Les onglets non épinglés vont dans le menu « Plus ».",
         dragToReorder: "Faites glisser pour réorganiser",
         pinToSidebar: "Épingler {name} dans la barre latérale",
         moreHolds: "Plus ({count})",
@@ -1271,7 +1304,7 @@ export const fr = {
       sidebarMenu: {
         title: "Menu de la barre latérale",
         description:
-          "Affichez, masquez et réorganisez les éléments du menu de profil de la barre latérale. Paramètres, Aide, Se déconnecter et Arrêter restent fixes.",
+          "Choisissez et réorganisez les raccourcis du menu de profil.",
         darkModeToggle: "Bascule du mode sombre",
         dragToReorder: "Faites glisser pour réorganiser",
       },
@@ -1414,6 +1447,61 @@ export const fr = {
         copied: "Chemin copié",
         openError: "Impossible d'ouvrir le dossier",
         copyError: "Impossible de copier le chemin",
+        caches: {
+          label: "Fichiers de cache",
+          description:
+            "{size} dans les caches, dont {reclaimable} peuvent être vidés maintenant.",
+          hint: "Téléchargements de paquets, noyaux compilés et caches de transfert que Unsloth reconstruit quand il en a besoin. Les modèles téléchargés, les projets, les conversations, les paramètres et votre jeton Hugging Face ne sont jamais vidés ici.",
+          keywords:
+            "cache caches vider nettoyer purger supprimer libérer espace disque temporaire compilé cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "Mesure de la taille des caches...",
+          measureFailed: "Impossible de mesurer les caches",
+          empty: "Aucun fichier de cache trouvé.",
+          detailsAction: "Détails",
+          recheckAction: "Revérifier",
+          hideDetailsAction: "Masquer les détails",
+          clearAction: "Vider les caches",
+          clearOneAction: "Vider",
+          clearingAction: "Vidage en cours...",
+          confirmTitle: "Vider les fichiers en cache ?",
+          confirmDescription: "Cela libère environ {size}.",
+          confirmOneTitle: "Vider {name} ?",
+          safety:
+            "Unsloth reconstruit un cache la prochaine fois qu'il en a besoin. Les modèles téléchargés, les projets, les conversations, les paramètres et votre jeton Hugging Face ne sont pas touchés.",
+          hubCost:
+            "Il s'agit du cache des modèles. Le vider entraîne un nouveau téléchargement de ces modèles lors de leur prochaine utilisation.",
+          datasetsCost:
+            "Vider ceci entraîne un nouveau téléchargement de ces jeux de données lors de leur prochaine utilisation.",
+          blocked: "Non vidé : {reason}",
+          cleared: "{size} libérés",
+          partial: "Certains fichiers de cache n'ont pas pu être supprimés",
+          clearFailed: "Impossible de vider les caches",
+          names: {
+            uv: "Cache des paquets uv",
+            pip: "Cache des téléchargements pip",
+            npm: "Cache des paquets npm",
+            bun: "Cache des paquets Bun",
+            torchInductor: "Cache de compilation Torch Inductor",
+            torchExtensions: "Compilations d'extensions Torch",
+            triton: "Cache des noyaux Triton",
+            cuda: "Cache des noyaux CUDA",
+            numba: "Cache de compilation Numba",
+            matplotlib: "Cache des polices Matplotlib",
+            vllm: "Cache vLLM",
+            unslothCompiled: "Modules compilés Unsloth",
+            hfXet: "Cache de transfert Hugging Face",
+            hfAssets: "Cache des ressources Hugging Face",
+            hfDatasets: "Cache des jeux de données Hugging Face",
+            hfHub: "Cache des modèles Hugging Face",
+          },
+        },
+        lowDisk: {
+          title: "L'espace disque est presque épuisé",
+          criticalTitle: "L'espace disque est critique",
+          description:
+            "{free} libres sur {total}. Vider les caches peut libérer de l'espace.",
+          action: "Voir les caches",
+        },
         futureDownloads: "Nouveaux téléchargements uniquement",
         environmentManaged: "Géré par la variable d'environnement {variable}.",
         locationFree: "Espace libre : {free}",
@@ -1608,6 +1696,10 @@ export const fr = {
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
         "Afficher les métadonnées du modèle dans les réponses de l’assistant.",
+      inlineReadAloud: "Lecture à voix haute sur les réponses",
+      inlineReadAloudDescription: "Afficher Lecture à voix haute sur chaque réponse, plutôt que dans le menu Plus.",
+      inlineEditResponse: "Modifier la réponse sur les réponses",
+      inlineEditResponseDescription: "Afficher Modifier la réponse sur chaque réponse, plutôt que dans le menu Plus.",
       modelDisclaimer: "Afficher l'avertissement du modèle",
       modelDisclaimerDescription:
         'Afficher "Les LLM peuvent faire des erreurs" sous la zone de discussion.',
@@ -1960,6 +2052,7 @@ export const fr = {
       expires: "Expire {value}",
       actionsFor: "Actions pour {name}",
       copyPrefix: "Copier le préfixe",
+      copyFailed: "Impossible de copier",
       revokeToken: "Révoquer le jeton",
       revokeTitle: "Révoquer le jeton d’accès « {name} » ?",
       revokeDescription:

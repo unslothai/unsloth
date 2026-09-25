@@ -11,9 +11,14 @@ export const ptBR = {
     plainTextDescription: "Manter código, Markdown e links como texto literal. Desative para mostrar uma prévia formatada.",
     showContext: "Mostrar uso da janela de contexto",
     sendShortcut: "Atalho de envio",
-    sendDescription: "Escolha se Enter envia uma mensagem ou insere uma nova linha.",
+    sendMultiline: "{mod} + Enter para mensagens de várias linhas",
+    sendAlways: "{mod} + Enter sempre",
+    sendEnterDescription: "Enter envia. Shift + Enter adiciona uma nova linha.",
+    sendMultilineDescription: "Enter envia uma mensagem de uma linha. Quando ela tem mais de uma linha, Enter adiciona uma nova linha e {mod} + Enter envia.",
+    sendAlwaysDescription: "{mod} + Enter envia. Enter adiciona uma nova linha.",
     followUp: "Mensagens de acompanhamento",
     followUpDescription: "Escolha o que acontece ao enviar durante uma resposta. Pressione {shortcut} para fazer o contrário em uma mensagem.",
+    followUpMultilineShortcut: "{shortcut} ({multiline} em uma mensagem de várias linhas)",
     queue: "Enfileirar",
     steer: "Redirecionar",
     steerDescription: "Redirecionar interrompe a resposta atual e envia sua mensagem de acompanhamento em seguida.",
@@ -106,6 +111,8 @@ export const ptBR = {
     error: "Erro",
     export: "Exportar",
     help: "Ajuda",
+    todayAt: "Hoje, {time}",
+    yesterdayAt: "Ontem, {time}",
     loading: "Carregando...",
     new: "Novo",
     rename: "Renomear",
@@ -166,6 +173,8 @@ export const ptBR = {
       noChatsYet: "Nenhum chat ainda",
       // Shown under an empty project folder in the sidebar.
       noChats: "Nenhum chat",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "Todos os projetos fixados",
       showMore: "Mostrar mais",
       showLess: "Mostrar menos",
       settings: "Configurações",
@@ -221,13 +230,6 @@ export const ptBR = {
       sortPinnedChats: "Ordenar conversas fixadas",
       moveUp: "Mover para cima",
       moveDown: "Mover para baixo",
-    },
-    drag: {
-      reorder: "Reordenar",
-      pin: "Fixar",
-      unpin: "Desafixar",
-      moveTo: "Mover para {name}",
-      moveToRecents: "Mover para Recentes",
     },
     dialog: {
       deleteChat: {
@@ -571,7 +573,16 @@ export const ptBR = {
       sourceHint: "Os executores de modelos gravam os próprios logs, então uma falha ao carregar ou ao gerar costuma ser explicada ali, e não no log do servidor.",
       path: "Local",
       pathCopy: "Copiar caminho",
-      refreshSection: "Atualização",
+      currentSession: "Atual",
+      statusLive: "Ao vivo",
+      statusPaused: "Pausado",
+      statusStale: "Desatualizado",
+      filterPlaceholder: "Filtrar linhas",
+      lineCount: "{count} linhas",
+      filteredLineCount: "{shown} de {total} linhas",
+      wrapLines: "Quebrar linhas",
+      jumpToLatest: "Ir para o fim",
+      noMatches: "Nenhuma linha corresponde ao filtro.",
       mode: "Modo",
       modeLive: "Ao vivo",
       modeInterval: "A cada 3 segundos",
@@ -604,6 +615,29 @@ export const ptBR = {
       title: "Voz",
       description: "Microfone, ditado, conversão de fala em texto e leitura em voz alta",
       dictation: {
+        audioUploadTitle: "Ditar com uma gravação",
+        audioUploadDescription:
+          "Seu navegador exige uma conexão segura (HTTPS) para gravar diretamente no Studio. Nesta conexão HTTP, use o gravador do celular ou escolha uma gravação salva. Seu servidor do Studio transcreverá o áudio e adicionará o texto à sua mensagem.",
+        audioUploadChooseFile: "Escolher gravação",
+        audioUploadRecord: "Gravar áudio",
+        audioUploadIphoneHint:
+          "No iPhone, salve uma gravação do Gravador ou de outro aplicativo de gravação e escolha-a aqui.",
+        audioUploadServerModelNote:
+          "Esta gravação usa o modelo local mostrado acima no servidor do Studio, mesmo que o ditado normal use outro mecanismo.",
+        audioUploadAutomatic: "Automático",
+        audioUploadModelReady: "Pronto neste servidor do Studio",
+        audioUploadRetryTitle: "Não foi possível transcrever {file}",
+        audioUploadRetry: "Tentar transcrever novamente",
+        audioUploadChooseModel:
+          "Escolha um modelo local de reconhecimento de fala nas configurações de Voz.",
+        audioUploadEmpty: "A gravação selecionada está vazia.",
+        audioUploadTooLarge: "Escolha uma gravação menor que {size}.",
+        audioUploadVideoUnsupported:
+          "Escolha uma gravação de áudio, não um vídeo.",
+        audioUploadNoSpeech: "O modelo não detectou fala nessa gravação.",
+        audioUploadFailed: "Não foi possível transcrever a gravação.",
+        audioUploadCancel: "Cancelar transcrição",
+        audioUploadTranscribing: "Transcrevendo áudio…",
         sectionTitle: "Ditado",
         engineLabel: "Mecanismo de ditado",
         engineBrowser: "Navegador",
@@ -1148,7 +1182,7 @@ export const ptBR = {
       custom: {
         chatWidth: {
           label: "Largura do chat",
-          description: "Defina a largura das mensagens e do campo de texto. A largura total usa o espaço entre as barras laterais.",
+          description: "Largura das mensagens e do campo de texto.",
           standard: "Padrão",
           wide: "Ampla",
           full: "Largura total",
@@ -1219,7 +1253,6 @@ export const ptBR = {
         },
         contrast: {
           label: "Contraste",
-          description: "Intensidade das bordas e do texto secundário.",
         },
         reduceMotion: {
           label: "Reduzir movimento",
@@ -1249,7 +1282,7 @@ export const ptBR = {
       sidebarNav: {
         title: "Navegação da barra lateral",
         description:
-          "Fixe e reordene as abas da barra lateral. As abas não fixadas ficam no menu Mais; se só houver uma aba não fixada, ela é ocultada em vez de virar um menu de um item só. Novo chat permanece fixo.",
+          "Fixe e reordene as abas da barra lateral. As não fixadas vão para o menu Mais.",
         dragToReorder: "Arraste para reordenar",
         pinToSidebar: "Fixar {name} na barra lateral",
         moreHolds: "Mais ({count})",
@@ -1257,7 +1290,7 @@ export const ptBR = {
       sidebarMenu: {
         title: "Menu da barra lateral",
         description:
-          "Mostre, oculte e reordene os itens do menu de perfil da barra lateral. Configurações, Ajuda, Sair e Desligar permanecem fixos.",
+          "Escolha e reordene os atalhos do menu de perfil.",
         darkModeToggle: "Alternador de modo escuro",
         dragToReorder: "Arraste para reordenar",
       },
@@ -1398,6 +1431,61 @@ export const ptBR = {
         copied: "Caminho copiado",
         openError: "Não foi possível abrir a pasta",
         copyError: "Não foi possível copiar o caminho",
+        caches: {
+          label: "Arquivos de cache",
+          description:
+            "{size} em caches, dos quais {reclaimable} podem ser limpos agora.",
+          hint: "Downloads de pacotes, kernels compilados e caches de transferência que o Unsloth recria quando precisa deles. Modelos baixados, projetos, conversas, configurações e o seu token do Hugging Face nunca são limpos aqui.",
+          keywords:
+            "cache caches limpar apagar esvaziar liberar espaço disco temporário compilado cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "Medindo o tamanho dos caches...",
+          measureFailed: "Não foi possível medir os caches",
+          empty: "Nenhum arquivo de cache encontrado.",
+          detailsAction: "Detalhes",
+          recheckAction: "Verificar novamente",
+          hideDetailsAction: "Ocultar detalhes",
+          clearAction: "Limpar caches",
+          clearOneAction: "Limpar",
+          clearingAction: "Limpando...",
+          confirmTitle: "Limpar os arquivos em cache?",
+          confirmDescription: "Isso libera cerca de {size}.",
+          confirmOneTitle: "Limpar {name}?",
+          safety:
+            "O Unsloth recria um cache na próxima vez que precisar dele. Modelos baixados, projetos, conversas, configurações e o seu token do Hugging Face não são afetados.",
+          hubCost:
+            "Este é o cache de modelos. Ao limpá-lo, esses modelos serão baixados novamente na próxima vez que você usá-los.",
+          datasetsCost:
+            "Ao limpar isso, esses conjuntos de dados serão baixados novamente na próxima vez que você usá-los.",
+          blocked: "Não foi limpo: {reason}",
+          cleared: "{size} liberados",
+          partial: "Não foi possível remover alguns arquivos de cache",
+          clearFailed: "Não foi possível limpar os caches",
+          names: {
+            uv: "Cache de pacotes do uv",
+            pip: "Cache de downloads do pip",
+            npm: "Cache de pacotes do npm",
+            bun: "Cache de pacotes do Bun",
+            torchInductor: "Cache de compilação do Torch Inductor",
+            torchExtensions: "Builds de extensões do Torch",
+            triton: "Cache de kernels do Triton",
+            cuda: "Cache de kernels do CUDA",
+            numba: "Cache de compilação do Numba",
+            matplotlib: "Cache de fontes do Matplotlib",
+            vllm: "Cache do vLLM",
+            unslothCompiled: "Módulos compilados do Unsloth",
+            hfXet: "Cache de transferência do Hugging Face",
+            hfAssets: "Cache de recursos do Hugging Face",
+            hfDatasets: "Cache de conjuntos de dados do Hugging Face",
+            hfHub: "Cache de modelos do Hugging Face",
+          },
+        },
+        lowDisk: {
+          title: "O espaço em disco está acabando",
+          criticalTitle: "O espaço em disco está criticamente baixo",
+          description:
+            "{free} livres de {total}. Limpar os caches pode liberar espaço.",
+          action: "Ver caches",
+        },
         futureDownloads: "Apenas novos downloads",
         environmentManaged: "Gerenciado pela variável de ambiente {variable}.",
         locationFree: "{free} livres",
@@ -1589,6 +1677,10 @@ export const ptBR = {
       showResponseModel: "Mostrar o modelo da resposta",
       showResponseModelDescription:
         "Mostra os metadados do modelo nas respostas do assistente.",
+      inlineReadAloud: "Leitura em voz alta nas respostas",
+      inlineReadAloudDescription: "Mostrar Leitura em voz alta em cada resposta, em vez de no menu Mais.",
+      inlineEditResponse: "Editar resposta nas respostas",
+      inlineEditResponseDescription: "Mostrar Editar resposta em cada resposta, em vez de no menu Mais.",
       modelDisclaimer: "Mostrar aviso do modelo",
       modelDisclaimerDescription:
         'Mostra "LLMs podem cometer erros" abaixo da caixa de chat.',
@@ -1931,6 +2023,7 @@ export const ptBR = {
       expires: "Expira {value}",
       actionsFor: "Ações para {name}",
       copyPrefix: "Copiar prefixo",
+      copyFailed: "Não foi possível copiar",
       revokeToken: "Revogar token",
       revokeTitle: 'Revogar token de acesso "{name}"?',
       revokeDescription:

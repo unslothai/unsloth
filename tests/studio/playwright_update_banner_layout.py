@@ -364,6 +364,10 @@ FONT_SCALE_VIEWPORTS = [(921, 534), (390, 500), (320, 480)]
 UI_FONT_SIZE_MAX = 20
 UI_FONT_SIZE_DEFAULT = 15
 UI_FONT_SIZE_CSS_BASE = 16
+# --ui-font-scale as a number, read through a length since the property itself is a calc().
+# --ui-space-scale the same way: the card's max width is calc(448px * var(--ui-space-scale, 1)) since #11648.
+UI_SPACE_SCALE_JS = "(() => { const probe = document.createElement('div'); probe.style.cssText = 'position:absolute;visibility:hidden;width:calc(10000px * var(--ui-space-scale, 1))'; document.body.appendChild(probe); const px = parseFloat(getComputedStyle(probe).width); probe.remove(); return String(px / 10000); })()"
+UI_FONT_SCALE_JS = "(() => { const probe = document.createElement('div'); probe.style.cssText = 'position:absolute;visibility:hidden;width:calc(10000px * var(--ui-font-scale, 1))'; document.body.appendChild(probe); const px = parseFloat(getComputedStyle(probe).width); probe.remove(); return String(px / 10000); })()"
 APPEARANCE_STORE_VERSION = 5
 
 failures: list[str] = []
@@ -523,6 +527,11 @@ MEASURE = """
     toggle: clip(toggle, surface),
     snooze: clip(snooze, surface),
     copy: clip(copy, surface),
+    // The same three unclipped, so a control the card has cut DOWN is as visible
+    // here as one it cut away. Half a button is not the button the card promises.
+    toggleWhole: rect(toggle),
+    snoozeWhole: rect(snooze),
+    copyWhole: rect(copy),
     footer: rect(footer),
     llamaText: llama ? (llama.innerText || '') : '',
     // pointer-events-none costs the rail its scrollbar, so it may only be
@@ -679,8 +688,10 @@ def measure(page, label: str) -> dict:
             f"{name}={seen}",
         )
     if facts["cardLayoutWidth"] is not None:
-        # 448px is the card's max width and 2rem the viewport inset it keeps.
-        want = min(448, view["width"] - 32)
+        # 448px at the default size is the card's max width, scaled with the UI since #11648, and 2rem the
+        # viewport inset it keeps.
+        space = float(page.evaluate("() => " + UI_SPACE_SCALE_JS))
+        want = min(448 * space, view["width"] - 32)
         # Asked of the layout box, not the painted one. A scrollbar that takes its width out of the rail's content box
         # shrinks the card's layout width, which is the whole subject here; the card's enter animation (opacity 0,
         # y 12, scale .96 -- see components/*/update-banner.tsx) shrinks only the painted one, and measuring that
@@ -690,7 +701,7 @@ def measure(page, label: str) -> dict:
         check(
             f"{label}: the card keeps its full width whatever the scrollbar does",
             abs(facts["cardLayoutWidth"] - want) <= 1,
-            f"cardLayoutWidth={facts['cardLayoutWidth']} want={want} "
+            f"cardLayoutWidth={facts['cardLayoutWidth']} want={want} spaceScale={space} "
             f"cardPaintedWidth={facts['cardWidth']} "
             f"railGutter={facts['railGutterPx']} scrolls={facts['railScrolls']} "
             f"why={json.dumps(facts['widthWhy'], sort_keys = True)}",
@@ -747,6 +758,21 @@ def measure(page, label: str) -> dict:
             f"{label}: the card does not clip its own {name} away",
             box is not None and box["height"] > 1.0 and box["width"] > 1.0,
             f"{name}={box}",
+        )
+    # Clipped to nothing is the loud version. A control the card has cut DOWN is the same
+    # defect one viewport earlier: at the 20px setting the card's floor was a constant that
+    # stopped covering its own content, so the action row overflowed and the last button was
+    # sliced before it disappeared. Asking only that something is left lets the slicing
+    # through, and the slicing is what says the floor is wrong.
+    for name in ("toggle", "snooze", "copy"):
+        box, whole = facts[name], facts[f"{name}Whole"]
+        check(
+            f"{label}: the card shows all of its own {name}",
+            box is not None
+            and whole is not None
+            and box["height"] >= whole["height"] - 1.0
+            and box["width"] >= whole["width"] - 1.0,
+            f"{name}={box} whole={whole}",
         )
     return facts
 
@@ -1261,14 +1287,14 @@ def main() -> int:
                     context.route(pattern, stub(payload))
                 page = context.new_page()
                 boot(page, "/")
-                scale = page.evaluate(
-                    "() => getComputedStyle(document.documentElement)"
-                    ".getPropertyValue('--ui-font-scale').trim()"
-                )
+                # Resolved through a length: since #11648 --ui-font-scale is a calc() of the size and interface
+                # scales, which reads back as that expression, so comparing the raw string to the default always
+                # said "scaled" and this check could not fail.
+                scale = float(page.evaluate("() => " + UI_FONT_SCALE_JS))
                 check(
                     f"{width}x{height} at {UI_FONT_SIZE_MAX}px: the type is actually scaled",
-                    scale not in ("", str(UI_FONT_SIZE_DEFAULT / UI_FONT_SIZE_CSS_BASE)),
-                    f"--ui-font-scale={scale!r}, so the rest of this pass proves nothing",
+                    abs(scale - UI_FONT_SIZE_DEFAULT / UI_FONT_SIZE_CSS_BASE) > 1e-3,
+                    f"--ui-font-scale resolved to {scale!r}, the default, so the rest of this pass proves nothing",
                 )
                 measure(page, f"{width}x{height} at {UI_FONT_SIZE_MAX}px")
                 page.screenshot(path = str(ART / f"{width}x{height}-font{UI_FONT_SIZE_MAX}.png"))

@@ -11,9 +11,14 @@ export const de = {
     plainTextDescription: "Code, Markdown und Links als wörtlichen Text anzeigen. Ausschalten, um eine formatierte Vorschau zu sehen.",
     showContext: "Auslastung des Kontextfensters anzeigen",
     sendShortcut: "Tastenkürzel zum Senden",
-    sendDescription: "Wähle, ob Enter eine Nachricht sendet oder eine neue Zeile einfügt.",
+    sendMultiline: "{mod} + Enter bei mehrzeiligen Nachrichten",
+    sendAlways: "{mod} + Enter immer",
+    sendEnterDescription: "Enter sendet. Shift + Enter fügt eine neue Zeile ein.",
+    sendMultilineDescription: "Enter sendet eine einzeilige Nachricht. Sobald sie mehrere Zeilen hat, fügt Enter eine neue Zeile ein und {mod} + Enter sendet.",
+    sendAlwaysDescription: "{mod} + Enter sendet. Enter fügt eine neue Zeile ein.",
     followUp: "Folgenachrichten",
     followUpDescription: "Wähle, was beim Senden während einer Antwort passiert. Drücke {shortcut}, um für eine Nachricht das Gegenteil zu tun.",
+    followUpMultilineShortcut: "{shortcut} ({multiline} bei mehrzeiligen Nachrichten)",
     queue: "Einreihen",
     steer: "Umlenken",
     steerDescription: "Umlenken stoppt die aktuelle Antwort und sendet deine Folgenachricht als Nächstes.",
@@ -107,6 +112,8 @@ export const de = {
     error: "Fehler",
     export: "Exportieren",
     help: "Hilfe",
+    todayAt: "Heute, {time}",
+    yesterdayAt: "Gestern, {time}",
     loading: "Wird geladen…",
     new: "Neu",
     rename: "Umbenennen",
@@ -167,6 +174,8 @@ export const de = {
       noChatsYet: "Noch keine Chats",
       // Shown under an empty project folder in the sidebar.
       noChats: "Keine Chats",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "Alle Projekte angepinnt",
       showMore: "Mehr anzeigen",
       showLess: "Weniger anzeigen",
       settings: "Einstellungen",
@@ -222,13 +231,6 @@ export const de = {
       sortPinnedChats: "Angeheftete Chats sortieren",
       moveUp: "Nach oben",
       moveDown: "Nach unten",
-    },
-    drag: {
-      reorder: "Umordnen",
-      pin: "Anheften",
-      unpin: "Lösen",
-      moveTo: "Verschieben nach {name}",
-      moveToRecents: "Zu Zuletzt verschieben",
     },
     dialog: {
       deleteChat: {
@@ -573,7 +575,16 @@ export const de = {
       sourceHint: "Die Modell-Runner schreiben eigene Protokolle. Ein fehlgeschlagener Ladevorgang oder eine fehlgeschlagene Generierung wird deshalb oft dort erklärt und nicht im Server-Protokoll.",
       path: "Speicherort",
       pathCopy: "Pfad kopieren",
-      refreshSection: "Aktualisierung",
+      currentSession: "Aktuell",
+      statusLive: "Live",
+      statusPaused: "Pausiert",
+      statusStale: "Veraltet",
+      filterPlaceholder: "Zeilen filtern",
+      lineCount: "{count} Zeilen",
+      filteredLineCount: "{shown} von {total} Zeilen",
+      wrapLines: "Zeilen umbrechen",
+      jumpToLatest: "Zum Ende springen",
+      noMatches: "Keine Zeilen passen zum Filter.",
       mode: "Modus",
       modeLive: "Live",
       modeInterval: "Alle 3 Sekunden",
@@ -606,6 +617,29 @@ export const de = {
       title: "Sprachfunktionen",
       description: "Mikrofon, Diktat, Spracherkennung und Vorlesen",
       dictation: {
+        audioUploadTitle: "Mit einer Aufnahme diktieren",
+        audioUploadDescription:
+          "Ihr Browser benötigt eine sichere Verbindung (HTTPS), um direkt in Studio aufzunehmen. Verwenden Sie bei dieser HTTP-Verbindung stattdessen den Rekorder Ihres Smartphones oder wählen Sie eine gespeicherte Aufnahme aus. Ihr Studio-Server transkribiert das Audio und fügt den Text Ihrer Nachricht hinzu.",
+        audioUploadChooseFile: "Aufnahme auswählen",
+        audioUploadRecord: "Audio aufnehmen",
+        audioUploadIphoneHint:
+          "Speichern Sie auf dem iPhone eine Aufnahme aus Sprachmemos oder einer anderen Rekorder-App und wählen Sie sie dann hier aus.",
+        audioUploadServerModelNote:
+          "Diese Aufnahme verwendet das oben angezeigte lokale Modell auf dem Studio-Server, auch wenn das normale Diktat eine andere Engine verwendet.",
+        audioUploadAutomatic: "Automatisch",
+        audioUploadModelReady: "Auf diesem Studio-Server bereit",
+        audioUploadRetryTitle: "{file} konnte nicht transkribiert werden",
+        audioUploadRetry: "Transkription wiederholen",
+        audioUploadChooseModel:
+          "Wählen Sie in den Spracheinstellungen ein lokales Spracherkennungsmodell aus.",
+        audioUploadEmpty: "Die ausgewählte Aufnahme ist leer.",
+        audioUploadTooLarge: "Wählen Sie eine Aufnahme, die kleiner als {size} ist.",
+        audioUploadVideoUnsupported:
+          "Wählen Sie eine Audioaufnahme und kein Video aus.",
+        audioUploadNoSpeech: "Das Modell hat in dieser Aufnahme keine Sprache erkannt.",
+        audioUploadFailed: "Die Aufnahme konnte nicht transkribiert werden.",
+        audioUploadCancel: "Transkription abbrechen",
+        audioUploadTranscribing: "Audio wird transkribiert…",
         sectionTitle: "Diktat",
         engineLabel: "Diktat-Engine",
         engineBrowser: "Browser",
@@ -1161,7 +1195,7 @@ export const de = {
       custom: {
         chatWidth: {
           label: "Chatbreite",
-          description: "Breite von Nachrichten und Eingabefeld festlegen. Volle Breite nutzt den Platz zwischen den Seitenleisten.",
+          description: "Breite von Nachrichten und Eingabefeld.",
           standard: "Standard",
           wide: "Breit",
           full: "Volle Breite",
@@ -1234,7 +1268,6 @@ export const de = {
         },
         contrast: {
           label: "Kontrast",
-          description: "Intensität von Rahmen und sekundärem Text.",
         },
         reduceMotion: {
           label: "Bewegung reduzieren",
@@ -1264,7 +1297,7 @@ export const de = {
       sidebarNav: {
         title: "Seitenleisten-Navigation",
         description:
-          "Tabs der Seitenleiste anheften und neu anordnen. Nicht angeheftete Tabs sammeln sich im Menü „Mehr“; ein einzelner nicht angehefteter Tab wird ausgeblendet, statt ein Menü mit nur einem Eintrag zu erhalten. „Neuer Chat“ bleibt fest.",
+          "Tabs der Seitenleiste anheften und neu anordnen. Nicht angeheftete Tabs landen im Menü „Mehr“.",
         dragToReorder: "Zum Neuanordnen ziehen",
         pinToSidebar: "{name} an die Seitenleiste anheften",
         moreHolds: "Mehr ({count})",
@@ -1272,7 +1305,7 @@ export const de = {
       sidebarMenu: {
         title: "Seitenleistenmenü",
         description:
-          "Elemente im Profilmenü der Seitenleiste anzeigen, ausblenden und neu anordnen. Einstellungen, Hilfe, Abmelden und Herunterfahren bleiben an ihrem Platz.",
+          "Verknüpfungen im Profilmenü auswählen und neu anordnen.",
         darkModeToggle: "Umschalter für den dunklen Modus",
         dragToReorder: "Zum Neuanordnen ziehen",
       },
@@ -1427,6 +1460,61 @@ export const de = {
         copied: "Pfad kopiert",
         openError: "Der Ordner konnte nicht geöffnet werden",
         copyError: "Der Pfad konnte nicht kopiert werden",
+        caches: {
+          label: "Cache-Dateien",
+          description:
+            "{size} in Caches, davon können {reclaimable} jetzt geleert werden.",
+          hint: "Paket-Downloads, kompilierte Kernel und Übertragungs-Caches, die Unsloth bei Bedarf neu aufbaut. Heruntergeladene Modelle, Projekte, Chats, Einstellungen und Ihr Hugging Face-Token werden hier nie geleert.",
+          keywords:
+            "Cache Caches leeren löschen bereinigen aufräumen Speicherplatz freigeben Festplatte temporär kompiliert cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "Cache-Größen werden ermittelt...",
+          measureFailed: "Die Caches konnten nicht gemessen werden",
+          empty: "Keine Cache-Dateien gefunden.",
+          detailsAction: "Details",
+          recheckAction: "Erneut prüfen",
+          hideDetailsAction: "Details ausblenden",
+          clearAction: "Caches leeren",
+          clearOneAction: "Leeren",
+          clearingAction: "Wird geleert...",
+          confirmTitle: "Zwischengespeicherte Dateien leeren?",
+          confirmDescription: "Das gibt etwa {size} frei.",
+          confirmOneTitle: "{name} leeren?",
+          safety:
+            "Unsloth baut einen Cache beim nächsten Bedarf neu auf. Heruntergeladene Modelle, Projekte, Chats, Einstellungen und Ihr Hugging Face-Token bleiben unberührt.",
+          hubCost:
+            "Das ist der Modell-Cache. Wenn Sie ihn leeren, werden diese Modelle beim nächsten Verwenden erneut heruntergeladen.",
+          datasetsCost:
+            "Wenn Sie das leeren, werden diese Datensätze beim nächsten Verwenden erneut heruntergeladen.",
+          blocked: "Nicht geleert: {reason}",
+          cleared: "{size} geleert",
+          partial: "Einige Cache-Dateien konnten nicht entfernt werden",
+          clearFailed: "Die Caches konnten nicht geleert werden",
+          names: {
+            uv: "uv-Paket-Cache",
+            pip: "pip-Download-Cache",
+            npm: "npm-Paket-Cache",
+            bun: "Bun-Paket-Cache",
+            torchInductor: "Torch Inductor-Kompilierungs-Cache",
+            torchExtensions: "Torch-Erweiterungs-Builds",
+            triton: "Triton-Kernel-Cache",
+            cuda: "CUDA-Kernel-Cache",
+            numba: "Numba-Kompilierungs-Cache",
+            matplotlib: "Matplotlib-Schriften-Cache",
+            vllm: "vLLM-Cache",
+            unslothCompiled: "Kompilierte Unsloth-Module",
+            hfXet: "Hugging Face-Übertragungs-Cache",
+            hfAssets: "Hugging Face-Asset-Cache",
+            hfDatasets: "Hugging Face-Datensatz-Cache",
+            hfHub: "Hugging Face-Modell-Cache",
+          },
+        },
+        lowDisk: {
+          title: "Der Speicherplatz wird knapp",
+          criticalTitle: "Der Speicherplatz ist kritisch knapp",
+          description:
+            "{free} frei von {total}. Das Leeren der Caches kann Speicherplatz freigeben.",
+          action: "Caches ansehen",
+        },
       },
       environment: {
         title: "Umgebung",
@@ -1611,6 +1699,10 @@ export const de = {
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:
         "Modellmetadaten in Antworten des Assistenten anzeigen.",
+      inlineReadAloud: "Vorlesen bei Antworten",
+      inlineReadAloudDescription: "Vorlesen bei jeder Antwort anzeigen statt im Menü „Mehr“.",
+      inlineEditResponse: "Antwort bearbeiten bei Antworten",
+      inlineEditResponseDescription: "Antwort bearbeiten bei jeder Antwort anzeigen statt im Menü „Mehr“.",
       modelDisclaimer: "Modell-Hinweis anzeigen",
       modelDisclaimerDescription:
         "Zeigt „LLMs können Fehler machen“ unter dem Chatfeld an.",
@@ -1959,6 +2051,7 @@ export const de = {
       expires: "Läuft {value} ab",
       actionsFor: "Aktionen für {name}",
       copyPrefix: "Präfix kopieren",
+      copyFailed: "Kopieren fehlgeschlagen",
       revokeToken: "Token widerrufen",
       revokeTitle: "Zugriffstoken „{name}“ widerrufen?",
       revokeDescription:

@@ -90,9 +90,12 @@ const buildSamplingFields = new Function(
 function bodyFor(
   providerType: string,
   params = PARAMS,
+  apiType?: "chat_completions" | "responses",
+  modelId?: string,
+  baseUrl?: string,
 ): Record<string, number> {
   return buildSamplingFields(
-    getProviderCapabilities(providerType),
+    getProviderCapabilities(providerType, apiType, modelId, baseUrl),
     params,
     { providerType },
     minPSamplingPayload,
@@ -144,6 +147,16 @@ test("custom stays on the OpenAI-compatible baseline", () => {
   assert.equal(body.temperature, PARAMS.temperature);
 });
 
+test("custom Responses sends gateway sampling but omits it for managed fixed models", () => {
+  const gateway = bodyFor("custom", PARAMS, "responses", "gpt-5.5", "https://gateway.example/v1");
+  assert.equal(gateway.temperature, PARAMS.temperature);
+  assert.equal(gateway.top_p, PARAMS.topP);
+  const managed = bodyFor("custom", PARAMS, "responses", "gpt-5.5", "https://api.openai.com/v1");
+  assert.ok(!("temperature" in managed));
+  assert.ok(!("top_p" in managed));
+  assert.match(source, /getProviderCapabilities\(\s*externalProvider\?\.providerType,\s*externalProvider\?\.apiType,\s*externalSelection\?\.modelId,\s*externalProvider\?\.baseUrl/);
+});
+
 test("ollama is sent none of the three its /v1 layer drops", () => {
   const body = bodyFor("ollama");
   assert.ok(!("min_p" in body));
@@ -192,4 +205,17 @@ test("the panel and the request read the same capability flags", () => {
       text.includes("externalCapabilities?.repetitionPenalty"),
     ),
   );
+});
+
+// The proxy drops the usage chunk for a caller that did not opt in, which hid the usage bar.
+test("the external body opts into the stream usage chunk", () => {
+  const optIn = externalBodyLiteral().properties.find(
+    (property) =>
+      ts.isPropertyAssignment(property) &&
+      property.name.getText() === "stream_options",
+  );
+  assert.ok(optIn && ts.isPropertyAssignment(optIn), "stream_options missing");
+  assert.deepEqual(new Function(`return (${optIn.initializer.getText()});`)(), {
+    include_usage: true,
+  });
 });

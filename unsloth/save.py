@@ -278,6 +278,31 @@ def _filter_push_to_hub_kwargs(push_fn, kwargs):
     return kept
 
 
+def _honours_safe_serialization(save_fn):
+    """Does this `save_pretrained` still take `safe_serialization`?
+
+    transformers 5 removed the parameter and always writes safetensors, so an explicit `False`
+    is absorbed by `**kwargs` and the export is silently not the pickle that was asked for.
+    Probed from the signature, not a version, like `_filter_push_to_hub_kwargs`.
+
+    Answers True whenever it cannot tell, because a wrong warning is worse than none: an
+    unreadable signature, and a `(*args, **kwargs)` passthrough, which is the shape of
+    `patch_saving_functions`' own wrapper and says nothing about what it forwards to.
+    """
+    import inspect
+
+    try:
+        parameters = inspect.signature(save_fn).parameters
+    except (TypeError, ValueError):
+        return True
+    if "safe_serialization" in parameters:
+        return True
+    return not any(
+        p.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        for p in parameters.values()
+    )
+
+
 def _is_adapter_save_method(save_method):
     """Is `save_method` the adapter-only save, i.e. "do not merge anything"?
 
@@ -711,15 +736,36 @@ def _preserve_tokenizer_eos_token(
         )
 
 
-def _config_mtp_holders(config, key):
-    """Every config declaring the MTP layer count: `text_config` on Qwen3.5 multimodal, top level on text-only."""
-    holders = []
-    for candidate in (config, getattr(config, "text_config", None)):
-        if candidate is None:
-            continue
-        if key in getattr(candidate, "__dict__", {}):
-            holders.append(candidate)
-    return holders
+def _preserve_repaired_tokenizer_class(
+    tokenizer,
+    save_directory,
+    filename_prefix = None,
+):
+    """A tokenizer rebuilt from tokenizer.json still saves as LlamaTokenizer, which transformers v5 reloads with Metaspace and loses every space. Save it as PreTrainedTokenizerFast, which v4 and v5 load from tokenizer.json as-is. Never fails the save."""
+    if tokenizer is None or save_directory is None:
+        return
+    source_tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+    if not getattr(source_tokenizer, "_unsloth_tokenizer_json_repaired", False):
+        return
+    tokenizer_config_name = (
+        f"{filename_prefix}-tokenizer_config.json" if filename_prefix else "tokenizer_config.json"
+    )
+    tokenizer_config = os.path.join(str(save_directory), tokenizer_config_name)
+    if not os.path.isfile(tokenizer_config):
+        return
+    try:
+        with open(tokenizer_config, "r", encoding = "utf-8") as file:
+            config = json.load(file)
+        if config.get("tokenizer_class") == "PreTrainedTokenizerFast":
+            return
+        config["tokenizer_class"] = "PreTrainedTokenizerFast"
+        with open(tokenizer_config, "w", encoding = "utf-8") as file:
+            json.dump(config, file, indent = 2, ensure_ascii = False)
+            file.write("\n")
+    except Exception as error:
+        logger.warning_once(
+            f"Unsloth: Could not set tokenizer_class in {tokenizer_config}: {error}"
+        )
 
 
 def _strip_absent_mtp_declaration(config_dict, tensor_names):
@@ -761,57 +807,6 @@ def _strip_absent_mtp_declaration(config_dict, tensor_names):
             f"Unsloth: Could not reconcile the multi-token prediction config: {error}"
         )
         return False
-
-
-@contextmanager
-def _mtp_config_matching_tensors(model, tensor_names):
-    """Drop `mtp_num_hidden_layers` for the duration of a save when the tensors carry no `mtp.*` weights, then put it back. Never raises: a metadata repair must not fail a save."""
-    # Recorded before anything is removed, so a partial failure still restores.
-    restore = []
-    try:
-        if tensor_names is not None:
-            try:
-                from unsloth_zoo.saving_utils import MTP_CONFIG_KEY, mtp_head_is_present
-            except ImportError:
-                MTP_CONFIG_KEY = None
-            if MTP_CONFIG_KEY is None:
-                tensor_names = None
-        if tensor_names is not None:
-            config = getattr(model, "config", None)
-            holders = _config_mtp_holders(config, MTP_CONFIG_KEY)
-            # Materialised once: the rule runs per holder, and this may be a generator.
-            tensor_names = list(tensor_names)
-            # Against the LIVE config, so the extra-`layers.N` spelling is seen.
-            if holders and not any(
-                mtp_head_is_present(tensor_names, config, holder) for holder in holders
-            ):
-                for holder in holders:
-                    restore.append((holder, MTP_CONFIG_KEY, getattr(holder, MTP_CONFIG_KEY)))
-                    delattr(holder, MTP_CONFIG_KEY)
-                if restore:
-                    logger.warning_once(
-                        f"Unsloth: This checkpoint declares `{MTP_CONFIG_KEY}` but "
-                        f"the weights being exported carry no `mtp.*` tensors, so "
-                        f"the declaration is omitted from the exported config. "
-                        f"transformers does not load the multi-token prediction "
-                        f"head, so a merge or re-save cannot preserve it. The "
-                        f"export is otherwise complete and serves normally "
-                        f"without speculative decoding."
-                    )
-    except Exception as error:
-        logger.warning_once(
-            f"Unsloth: Could not reconcile the multi-token prediction config "
-            f"before saving: {error}"
-        )
-    try:
-        yield
-    finally:
-        # No import here: an exception from a finally block would mask the save's own.
-        for holder, key, value in restore:
-            try:
-                setattr(holder, key, value)
-            except Exception:
-                pass
 
 
 def _is_qwen3_5_vlm(model):
@@ -1409,6 +1404,11 @@ def unsloth_save_model(
 
         tokenizer.save_pretrained(**tokenizer_save_settings)
         _preserve_tokenizer_eos_token(
+            tokenizer,
+            tokenizer_save_settings["save_directory"],
+            filename_prefix = tokenizer_save_settings.get("filename_prefix"),
+        )
+        _preserve_repaired_tokenizer_class(
             tokenizer,
             tokenizer_save_settings["save_directory"],
             filename_prefix = tokenizer_save_settings.get("filename_prefix"),
@@ -3285,27 +3285,32 @@ def _imatrix_is_enabled(imatrix_file):
     return imatrix_file is not None and imatrix_file is not False
 
 
-def _gguf_writes_16bit_checkpoint(model):
-    """Whether a GGUF export writes a full 16-bit checkpoint before converting. A PEFT model is merged into one. A non-PEFT model reuses an existing checkpoint when `_name_or_path` names a directory, and otherwise falls back to `save_pretrained`, which writes the same two bytes per parameter; sizing that fallback at zero is what lets an export pass the preflight and then fill the disk. A module-level helper rather than a local, because the caller snapshots `locals()` into the kwargs of `unsloth_generic_save`."""
+def _gguf_reuses_loaded_checkpoint(model, state_dict = None):
+    """Whether a non-PEFT GGUF export converts the folder the model was loaded from. Only when the weights to export are that folder's: full finetuning trains them in place, and a `state_dict` replaces them."""
     if isinstance(model, (PeftModel, PeftModelForCausalLM)):
-        return True
+        return False
+    if state_dict is not None or getattr(model, "_unsloth_full_finetuning", False):
+        return False
     name_or_path = getattr(getattr(model, "config", None), "_name_or_path", None)
     try:
-        return not (name_or_path and os.path.isdir(str(name_or_path)))
+        return bool(name_or_path and os.path.isdir(str(name_or_path)))
     except Exception:
-        return True
+        return False
 
 
-def _fallback_checkpoint_extra_bytes(model):
-    """Bytes the non-PEFT fallback checkpoint costs ON TOP of the 16-bit estimate. `estimate_gguf_export_bytes` budgets two bytes per logical parameter, which is what a LoRA merge writes, but the fallback calls `self.save_pretrained` with no cast, so a model loaded with `dtype = torch.float32` writes four. Measured from the parameters' real storage so a mixed-dtype model is not priced off its largest tensor, and clamped at zero: this can only ask for more room, never less."""
+def _gguf_writes_16bit_checkpoint(model, state_dict = None):
+    """Whether a GGUF export writes a full 16-bit checkpoint before converting: a PEFT merge, or the `save_pretrained` fallback of a non-PEFT model that cannot reuse its loaded checkpoint. Sizing that fallback at zero is what lets an export pass the preflight and then fill the disk. A module-level helper rather than a local, because the caller snapshots `locals()` into the kwargs of `unsloth_generic_save`."""
+    return not _gguf_reuses_loaded_checkpoint(model, state_dict)
+
+
+def _fallback_checkpoint_extra_bytes(model, state_dict = None):
+    """Bytes the non-PEFT fallback checkpoint costs ON TOP of the 16-bit estimate. `estimate_gguf_export_bytes` budgets two bytes per logical parameter, which is what a LoRA merge writes, but the fallback calls `self.save_pretrained` with no cast, so a model loaded with `dtype = torch.float32` writes four. Measured from the supplied `state_dict`, else the parameters' real storage, so a mixed-dtype model is not priced off its largest tensor, and clamped at zero: this can only ask for more room, never less."""
     if isinstance(model, (PeftModel, PeftModelForCausalLM)):
         return 0
-    if not _gguf_writes_16bit_checkpoint(model):
+    if not _gguf_writes_16bit_checkpoint(model, state_dict):
         return 0
     try:
-        actual = 0
-        for parameter in model.parameters():
-            actual += parameter.numel() * parameter.element_size()
+        actual = _full_model_checkpoint_bytes(model, state_dict)
         return max(0, actual - model_16bit_bytes(model))
     except Exception:
         return 0
@@ -3369,16 +3374,14 @@ def _gguf_conversion_directory(model_directory):
     return cwd if _directory_is_writable(cwd) else model_directory
 
 
-def _gguf_model_input_directory(model, save_directory):
-    """The folder the converter reads, which is not always `save_directory`. A non-PEFT model whose `_name_or_path` names a directory is converted from that checkpoint, which `unsloth_save_pretrained_gguf` assigns to `save_directory` before calling `save_to_gguf`; the same condition `_gguf_writes_16bit_checkpoint` uses. It matters only in the unwritable-CWD fallback, where the intermediate GGUF lands beside the reused checkpoint rather than the requested output, and the two can be on different filesystems."""
-    if isinstance(model, (PeftModel, PeftModelForCausalLM)):
-        return save_directory
-    name_or_path = getattr(getattr(model, "config", None), "_name_or_path", None)
-    try:
-        if name_or_path and os.path.isdir(str(name_or_path)):
-            return str(name_or_path)
-    except Exception:
-        pass
+def _gguf_model_input_directory(
+    model,
+    save_directory,
+    state_dict = None,
+):
+    """The folder the converter reads, which is not always `save_directory`: a reused loaded checkpoint, which `unsloth_save_pretrained_gguf` assigns to `save_directory` before calling `save_to_gguf`. It matters only in the unwritable-CWD fallback, where the intermediate GGUF lands beside the reused checkpoint rather than the requested output, and the two can be on different filesystems."""
+    if _gguf_reuses_loaded_checkpoint(model, state_dict):
+        return str(model.config._name_or_path)
     return save_directory
 
 
@@ -3443,6 +3446,7 @@ def _preflight_gguf_disk(
     has_imatrix = False,
     needs_merge = True,
     merge_is_disposable = False,
+    state_dict = None,
 ):
     """Refuse a GGUF export that cannot fit, before it writes a single byte. Returns `(directory, prewarm_ok)`. `directory` differs from the input only when a Kaggle kernel's tiny working directory was swapped for the large /tmp overlay, and then it says so once. `prewarm_ok` is False when the export fits only without pre-warming the Hugging Face cache with the base model. A GGUF export peaks at more than "the model, twice": it caches the full-precision base, writes the 16-bit HF merge, then an intermediate GGUF at the source dtype, then each requested quant, with every earlier artefact still on disk. Gemma4 (26B A4B) Vision, Gemma4 (31B) Vision and Qwen3 32B each trained, ran inference and completed `merged_16bit` before dying partway through a GGUF shard, because the check in front of them had sized the job at two copies. Dropping the pre-warm is tried before refusing, because the merge downloads what it needs either way. `merge_is_disposable` says the merge is this export's own throwaway, so `_free_merge_if_disk_is_tight` may delete it once the intermediate GGUF exists and the peak becomes the larger of two phases rather than their sum; defaults off, which is what every caller got before. Never blocks on a guess: an unmeasurable model or disk returns the directory untouched. UNSLOTH_DISK_PREFLIGHT=0 disables."""
     if os.environ.get("UNSLOTH_DISK_PREFLIGHT", "1").strip().lower() in (
@@ -3494,7 +3498,7 @@ def _preflight_gguf_disk(
         )
         # The estimate prices the checkpoint at 2 bytes per parameter, but the non-PEFT fallback writes the model's own dtype, so an fp32 model needs the difference. Zero for a 16-bit model.
         if need > 0 and needs_merge:
-            extra = _fallback_checkpoint_extra_bytes(model)
+            extra = _fallback_checkpoint_extra_bytes(model, state_dict)
             need += extra
             need_with_cache += extra
         # The same estimate without the checkpoint: the `_gguf` sibling's intermediate plus every quant. Used only when that sibling sits on a smaller filesystem. Its own try, so an estimator that cannot answer leaves the main guard standing.
@@ -3584,7 +3588,7 @@ def _preflight_gguf_disk(
     )
     # Resolved before the split is priced, because where the conversion lands decides which filesystem it is charged to.
     conversion_directory = _gguf_conversion_directory(
-        _gguf_model_input_directory(model, save_directory)
+        _gguf_model_input_directory(model, save_directory, state_dict)
     )
 
     # Cleared when the cache shares a filesystem with room for the export but not a cached base too: dropping the optional half beats failing. The message travels with the flag, since more than one filesystem can set it and each has to name the one it measured.
@@ -3930,9 +3934,10 @@ def unsloth_save_pretrained_gguf(
             # Resolved rather than left at the default, which says "f16" while the export asks the config.
             model_dtype = _gguf_source_dtype(self),
             has_imatrix = _imatrix_is_enabled(imatrix_file),
-            needs_merge = _gguf_writes_16bit_checkpoint(self),
+            needs_merge = _gguf_writes_16bit_checkpoint(self, state_dict),
             # The same flag save_to_gguf reclaims on. Where a non-PEFT model reuses its own checkpoint the flag is cleared below on the same condition, so the two cannot disagree.
             merge_is_disposable = merge_is_disposable,
+            state_dict = state_dict,
         )
 
     arguments = dict(locals())
@@ -4008,9 +4013,9 @@ def unsloth_save_pretrained_gguf(
                 f"{_offloaded_parameter_hint(self)}"
             ) from e
     else:
-        # Non-PEFT model: the checkpoint already exists, so point save_to_gguf at the original path instead of re-saving into a temp subdir.
+        # Non-PEFT model: convert the loaded checkpoint in place when it still holds the weights to export.
         original_path = getattr(self.config, "_name_or_path", None)
-        if original_path and os.path.isdir(original_path):
+        if _gguf_reuses_loaded_checkpoint(self, state_dict):
             print(
                 f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
             )
@@ -4025,7 +4030,7 @@ def unsloth_save_pretrained_gguf(
             os.makedirs(save_directory, exist_ok = True)
             # `gguf_directory` can point anywhere, and freeing bytes on one filesystem does nothing for a quantize pass writing to another: without this the merge could be deleted for a destination it cannot help, data gone and the export still out of space.
             try:
-                self.save_pretrained(save_directory)
+                self.save_pretrained(save_directory, state_dict = state_dict)
                 if tokenizer is not None:
                     tokenizer.save_pretrained(save_directory)
             except Exception as e:
@@ -5411,7 +5416,10 @@ def _push_merged_to_hub_revision(save_kwargs):
             dict.fromkeys([*(card.data.tags or []), *(save_kwargs["tags"] or []), "unsloth"])
         )
         card.save(card_path)
-        return api.create_commit(
+        # The staged save prints the temp folder it wrote, which is not where the user asked the
+        # model to go and is deleted a moment later. Name the destination instead.
+        print(f"Unsloth: Uploading the merged model to '{repo_id}' ...")
+        commit = api.create_commit(
             repo_id = repo_id,
             repo_type = "model",
             operations = [
@@ -5431,6 +5439,23 @@ def _push_merged_to_hub_revision(save_kwargs):
             ),
             commit_description = save_kwargs["commit_description"],
         )
+        # Where the files ACTUALLY landed: a branch or a pull request is not the repository
+        # page, which for a fresh PR upload holds no model files at all.
+        destination = getattr(commit, "pr_url", None)
+        if destination is None:
+            destination = f"https://huggingface.co/{repo_id}"
+            # A pull request is checked first: with `create_pr` the files are in the PR, not on
+            # `revision`, which is only the branch it was opened against.
+            if save_kwargs["create_pr"]:
+                destination += "/discussions"
+            elif revision is not None:
+                destination += (
+                    f"/discussions/{revision.rsplit('/', 1)[-1]}"
+                    if revision.startswith("refs/pr/")
+                    else f"/tree/{revision}"
+                )
+        print(f"Saved model to {destination}")
+        return commit
 
 
 @_normalize_tied_weights_keys_for_save
@@ -5472,7 +5497,7 @@ def unsloth_generic_save(
     # this function's own keywords.
     safe_serialization = _normalize_safe_serialization(safe_serialization)
 
-    if push_to_hub and (create_pr or revision is not None):
+    if push_to_hub and (create_pr or revision is not None or not isinstance(model, PeftModel)):
         return _push_merged_to_hub_revision(dict(locals()))
 
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
@@ -5495,6 +5520,17 @@ def unsloth_generic_save(
             max_shard_size = max_shard_size,
             variant = variant,
         )
+        # Asked for a pickle and this transformers cannot give one: say so, rather than upload a
+        # format the caller explicitly declined. The same report `_filter_push_to_hub_kwargs`
+        # makes for the adapter path, which never reaches this branch. Against the ORIGINAL
+        # method, since `patch_saving_functions` wraps it in a `(*args, **kwargs)` passthrough
+        # that would hide a transformers which does honour the request.
+        _real_save = getattr(model, "original_model_save_pretrained", model.save_pretrained)
+        if safe_serialization is False and not _honours_safe_serialization(_real_save):
+            logger.warning_once(
+                "Unsloth: this transformers always writes safetensors, so "
+                "`safe_serialization = False` was not applied and the export is not a pickle."
+            )
         is_qwen3_5_vlm = _is_qwen3_5_vlm(model)
         if ("16bit" in save_method or is_qwen3_5_vlm) and state_dict is None:
             state_dict = model.state_dict()
@@ -5509,64 +5545,31 @@ def unsloth_generic_save(
         if state_dict is not None:
             _save_kwargs["state_dict"] = state_dict
 
-        if push_to_hub:
-            # A push has no local folder to repair afterwards, unlike a save, so the config
-            # has to match the tensors BEFORE they leave. Inside this branch, because that is
-            # the only consumer: a local save reconciles the written folder below, and reading
-            # the resident state dict for it was a second full collection on top of
-            # save_pretrained's own -- which on an offloaded or sharded model materialises
-            # every weight, and on a distributed one is a collective the other ranks are not
-            # making.
-            if state_dict is not None:
-                _mtp_tensor_names = list(state_dict.keys())
-            else:
-                # push_to_hub serialises the resident state dict, so None disarms the guard.
-                try:
-                    _mtp_tensor_names = list(model.state_dict().keys())
-                except Exception:
-                    # Cannot report its tensors: leave the config exactly as the caller had it.
-                    _mtp_tensor_names = None
-            print(f"Unsloth: Pushing full fine-tuned model to '{save_directory}' ...")
-            with _mtp_config_matching_tensors(model, _mtp_tensor_names):
-                model.push_to_hub(
-                    repo_id = save_directory,
-                    token = token,
-                    private = private,
-                    commit_message = commit_message,
-                    create_pr = create_pr,
-                    revision = revision,
-                    commit_description = commit_description,
-                    tags = tags,
-                    **_save_kwargs,
-                )
-            if tokenizer is not None:
-                _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
-                old_padding_side = _tokenizer.padding_side
-                _tokenizer.padding_side = "left"
-                tokenizer.push_to_hub(
-                    save_directory,
-                    token = token,
-                    private = private,
-                    commit_message = commit_message,
-                    create_pr = create_pr,
-                    revision = revision,
-                )
-                _tokenizer.padding_side = old_padding_side
-        else:
-            print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
-            model.save_pretrained(save_directory, **_save_kwargs)
-            # Guarded: an older zoo must not raise once the weights are already on disk.
-            try:
-                from unsloth_zoo.saving_utils import reconcile_mtp_config
-                reconcile_mtp_config(save_directory)
-            except ImportError:
-                pass
-            if tokenizer is not None:
-                _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
-                old_padding_side = _tokenizer.padding_side
-                _tokenizer.padding_side = "left"
-                tokenizer.save_pretrained(save_directory)
-                _tokenizer.padding_side = old_padding_side
+        # BEFORE the write: transformers 5 pops each tensor out of a supplied state dict as it
+        # writes the shard holding it ("remove it from state_dict to avoid keeping the ref",
+        # modeling_utils.py), so reading the keys afterwards reports an export with no tensors
+        # at all and would strip an `mtp_num_hidden_layers` the weights really do carry.
+        _written_tensor_names = list(state_dict.keys()) if state_dict is not None else None
+
+        print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
+        model.save_pretrained(save_directory, **_save_kwargs)
+        # Guarded: an older zoo must not raise once the weights are already on disk.
+        try:
+            from unsloth_zoo.saving_utils import reconcile_mtp_config
+
+            # The names we just wrote, when we know them: `_checkpoint_tensor_names` declines to
+            # unpickle an unindexed `pytorch_model.bin`, so a `safe_serialization = False` export
+            # would otherwise read back "unknown" and keep an `mtp_num_hidden_layers` the weights
+            # do not carry. Free here -- this state dict is already materialised.
+            reconcile_mtp_config(save_directory, tensor_names = _written_tensor_names)
+        except ImportError:
+            pass
+        if tokenizer is not None:
+            _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+            old_padding_side = _tokenizer.padding_side
+            _tokenizer.padding_side = "left"
+            tokenizer.save_pretrained(save_directory)
+            _tokenizer.padding_side = old_padding_side
 
         print(f"Unsloth: Model saved successfully to '{save_directory}'")
     elif _is_adapter_save_method(save_method):
@@ -6952,6 +6955,11 @@ def patch_saving_functions(model, vision = False):
             token = kwargs.get("token", None),
         )
         _preserve_tokenizer_eos_token(
+            self,
+            save_directory,
+            filename_prefix = filename_prefix,
+        )
+        _preserve_repaired_tokenizer_class(
             self,
             save_directory,
             filename_prefix = filename_prefix,

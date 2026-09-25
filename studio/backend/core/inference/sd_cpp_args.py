@@ -31,6 +31,10 @@ _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "flux.2-klein": ("--llm",),
     "flux.2-dev": ("--llm",),
     "qwen-image": ("--qwen2vl",),
+    # 2.1 conditions on Qwen3-VL, which sd-cli takes through --llm. --qwen2vl is an alias of --llm
+    # that also turns on Qwen2-VL's vision path, so it is the wrong door even though both names
+    # reach the same field.
+    "qwen-image-2.1": ("--llm",),
     "flux.1": ("--clip_l", "--t5xxl"),
 }
 
@@ -328,6 +332,7 @@ def build_sd_cpp_command(
         ("--clip_g", files.clip_g),
         ("--t5xxl", files.t5xxl),
         ("--llm", files.llm),
+        ("--llm_vision", files.llm_vision),
         ("--qwen2vl", files.qwen2vl),
     ):
         if value:
@@ -551,6 +556,7 @@ def build_sd_cpp_server_command(
         ("--clip_g", files.clip_g),
         ("--t5xxl", files.t5xxl),
         ("--llm", files.llm),
+        ("--llm_vision", files.llm_vision),
         ("--qwen2vl", files.qwen2vl),
     ):
         if value:
@@ -598,6 +604,7 @@ def build_img_gen_request(
     distilled_guidance: Optional[float] = None,
     output_format: str = "png",
     lora: Optional[list[dict]] = None,
+    ref_images: Optional[list[str]] = None,
 ) -> dict:
     """Build the ``POST /sdcpp/v1/img_gen`` JSON body for one text-to-image request.
 
@@ -640,6 +647,9 @@ def build_img_gen_request(
     # ``<lora:>`` tags are unsupported server-side), so LoRAs are staged here.
     if lora:
         req["lora"] = lora
+    # Base64 PNGs in model order; no init_image/strength/mask: this is reference conditioning, not img2img.
+    if ref_images:
+        req["ref_images"] = list(ref_images)
     return req
 
 

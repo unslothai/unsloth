@@ -26,6 +26,7 @@ import {
   pinKey,
   usePinnedModelsStore,
 } from "@/features/model-picker";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { cn, formatCompact } from "@/lib/utils";
 import {
   Download01Icon,
@@ -41,6 +42,7 @@ import {
   memo,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -51,6 +53,7 @@ import type {
   DiscoverRow,
   LocalInventoryRow,
 } from "../types";
+import { DOWNLOADING_DOT_CLASS } from "./dot-tag";
 import { OwnerAvatar } from "./owner-avatar";
 import { AccessGlyphs } from "./shared";
 
@@ -301,11 +304,13 @@ function CatalogRow({
   );
 }
 
+export { DOWNLOADING_DOT_CLASS };
+
 function StatusDot({
   tone,
   label,
 }: {
-  tone: "warning" | "danger" | "success";
+  tone: "warning" | "danger" | "success" | "downloading";
   label: string;
 }) {
   const toneClass =
@@ -313,13 +318,23 @@ function StatusDot({
       ? "bg-status-warning"
       : tone === "danger"
         ? "bg-status-danger"
-        : "bg-status-success";
+        : tone === "downloading"
+          ? DOWNLOADING_DOT_CLASS
+          : "bg-status-success";
   return (
     <span
       role="img"
       aria-label={label}
-      className={cn("inline-block size-[5px] shrink-0 rounded-full", toneClass)}
+      className={cn("inline-block size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full", toneClass)}
     />
+  );
+}
+
+function PartialStatusDot({ downloading }: { downloading: boolean }) {
+  return downloading ? (
+    <StatusDot tone="downloading" label="Downloading" />
+  ) : (
+    <StatusDot tone="warning" label="Partial download" />
   );
 }
 
@@ -349,6 +364,7 @@ export function buildRowStatusTooltip({
   isAdapter,
   isAvailableOnDevice,
   partialRepoId,
+  downloading = false,
   unsupported,
   unsupportedReason,
   resourceLabel = "model",
@@ -357,6 +373,7 @@ export function buildRowStatusTooltip({
   isAdapter?: boolean;
   isAvailableOnDevice?: boolean;
   partialRepoId?: string;
+  downloading?: boolean;
   unsupported?: boolean;
   unsupportedReason?: string | null;
   resourceLabel?: "model" | "dataset";
@@ -378,7 +395,14 @@ export function buildRowStatusTooltip({
     );
   }
 
-  if (partialRepoId) {
+  if (partialRepoId && downloading) {
+    lines.push(
+      <TooltipLegendRow key="downloading" toneClass={DOWNLOADING_DOT_CLASS}>
+        Downloading <span className="font-medium">{partialRepoId}</span>.
+        Progress is in the downloads panel.
+      </TooltipLegendRow>,
+    );
+  } else if (partialRepoId) {
     lines.push(
       <TooltipLegendRow key="partial" toneClass="bg-status-warning">
         Partial download of <span className="font-medium">{partialRepoId}</span>
@@ -448,11 +472,13 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
     row.isAvailableOnDevice && row.isPartialOnDevice
       ? row.result.id
       : undefined;
+  const downloading = Boolean(partialRepoId && row.isDownloadingOnDevice);
   const tooltip = buildRowStatusTooltip({
     isGguf: row.result.isGguf,
     isAdapter: false,
     isAvailableOnDevice: row.isAvailableOnDevice,
     partialRepoId,
+    downloading,
     unsupported,
     unsupportedReason: support?.reason ?? null,
     resourceLabel: isDataset ? "dataset" : "model",
@@ -471,8 +497,8 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
           className="size-8 rounded-[11px]"
           remote={false}
         />
-        <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
-          <div className="flex h-[18px] min-w-0 items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-1 flex-col gap-[calc(3px*var(--ui-space-scale,1))]">
+          <div className="flex h-[calc(18px*var(--ui-space-scale,1))] min-w-0 items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2 pr-2">
               <p className="truncate text-ui-12 font-medium leading-ui-18 tracking-[-0.005em] text-foreground">
                 {row.repo}
@@ -486,14 +512,14 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
                 <span
                   role="img"
                   aria-label="GGUF"
-                  className="inline-block size-[5px] shrink-0 rounded-full bg-format-gguf"
+                  className="inline-block size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-format-gguf"
                 />
               )}
               {unsupported && (
                 <StatusDot tone="danger" label="May not be supported yet" />
               )}
               {row.isAvailableOnDevice && row.isPartialOnDevice && (
-                <StatusDot tone="warning" label="Partial download" />
+                <PartialStatusDot downloading={downloading} />
               )}
               {row.isAvailableOnDevice && !row.isPartialOnDevice && (
                 <StatusDot tone="success" label="On device" />
@@ -510,7 +536,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
               />
             </div>
           </div>
-          <div className="flex h-[16px] min-w-0 items-center justify-between gap-2 text-ui-11p5 leading-ui-16 text-muted-foreground/85">
+          <div className="flex h-[calc(16px*var(--ui-space-scale,1))] min-w-0 items-center justify-between gap-2 text-ui-11p5 leading-ui-16 text-muted-foreground/85">
             <span className="flex min-w-0 items-center gap-1">
               <span className="truncate">{row.owner}</span>
               {row.owner.toLowerCase() === "unsloth" && (
@@ -537,6 +563,7 @@ export const InventoryRow = memo(function InventoryRow({
   dimmed,
   deviceType,
   compact = false,
+  showFormatDot = true,
   onSelect,
   onChange,
 }: {
@@ -547,6 +574,7 @@ export const InventoryRow = memo(function InventoryRow({
   deviceType: string | null;
   /** Narrow split master pane: drop the capability column so the name fits. */
   compact?: boolean;
+  showFormatDot?: boolean;
   onSelect: (id: string) => void;
   onChange?: () => void;
 }) {
@@ -596,11 +624,13 @@ export const InventoryRow = memo(function InventoryRow({
       ? row.repoId
       : (row.repoId ?? row.loadId)
     : undefined;
+  const downloading = Boolean(partialRepoId && row.downloading);
   const tooltip = buildRowStatusTooltip({
-    isGguf: row.isGguf,
-    isAdapter: row.modelFormat === "adapter",
+    isGguf: showFormatDot && row.isGguf,
+    isAdapter: showFormatDot && row.modelFormat === "adapter",
     isAvailableOnDevice: !partialRepoId,
     partialRepoId,
+    downloading,
     unsupported,
     resourceLabel: isDataset ? "dataset" : "model",
   });
@@ -638,22 +668,22 @@ export const InventoryRow = memo(function InventoryRow({
 
   const statusMarkers = (
     <>
-      {row.isGguf && (
+      {showFormatDot && row.isGguf && (
         <span
           role="img"
           aria-label="GGUF"
-          className="inline-block size-[5px] shrink-0 rounded-full bg-format-gguf"
+          className="inline-block size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-format-gguf"
         />
       )}
-      {row.modelFormat === "adapter" && (
+      {showFormatDot && row.modelFormat === "adapter" && (
         <span
           role="img"
           aria-label="Adapter"
-          className="inline-block size-[5px] shrink-0 rounded-full bg-format-adapter"
+          className="inline-block size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-format-adapter"
         />
       )}
       {partialRepoId ? (
-        <StatusDot tone="warning" label="Partial download" />
+        <PartialStatusDot downloading={downloading} />
       ) : (
         <StatusDot tone="success" label="On device" />
       )}
@@ -668,7 +698,7 @@ export const InventoryRow = memo(function InventoryRow({
   const compactMarkers =
     partialRepoId || unsupported ? (
       <span className="flex shrink-0 items-center gap-1">
-        {partialRepoId && <StatusDot tone="warning" label="Partial download" />}
+        {partialRepoId && <PartialStatusDot downloading={downloading} />}
         {unsupported && (
           <StatusDot tone="danger" label="May not be supported yet" />
         )}
@@ -863,7 +893,7 @@ export const InventoryRow = memo(function InventoryRow({
 
         {metaChips}
 
-        <div className="flex w-[96px] shrink-0 items-center justify-end text-right">
+        <div className="flex w-[calc(96px*var(--ui-space-scale,1))] shrink-0 items-center justify-end text-right">
           {row.kind === "cache" ? (
             <CachedSizeChip
               repoId={row.repoId}
@@ -892,6 +922,8 @@ export const InventoryRow = memo(function InventoryRow({
 });
 
 export const CATALOG_ROW_HEIGHT_PX = 57;
+/** Gutter between lanes, shared with the hand-laid grids beside these rows. */
+export const CATALOG_COLUMN_GAP_PX = 12;
 
 export function VirtualRows<T>({
   items,
@@ -902,7 +934,7 @@ export function VirtualRows<T>({
   columns = 1,
   rowHeight = CATALOG_ROW_HEIGHT_PX,
   cellHeight = rowHeight,
-  columnGap = 12,
+  columnGap = CATALOG_COLUMN_GAP_PX,
 }: {
   items: readonly T[];
   scrollElement: HTMLDivElement | null;
@@ -916,11 +948,17 @@ export function VirtualRows<T>({
 }) {
   const lanes = Math.max(1, columns);
   const rowCount = Math.ceil(items.length / lanes);
+  // The rows inside these slots scale with the UI font size, so the slots do
+  // too, or tall rows run into the next absolutely positioned one.
+  const scale = useUiSpaceScale();
+  const slotHeight = Math.round(rowHeight * scale);
+  const slotCellHeight = Math.round(cellHeight * scale);
+  const laneGap = Math.round(columnGap * scale);
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: rowCount,
     getScrollElement: () => scrollElement,
-    estimateSize: () => rowHeight,
+    estimateSize: () => slotHeight,
     overscan: 10,
     scrollMargin,
     getItemKey: (rowIndex) => {
@@ -928,6 +966,11 @@ export function VirtualRows<T>({
       return item ? getKey(item, rowIndex * lanes) : `row-${rowIndex}`;
     },
   });
+
+  // Sizes are cached from estimateSize, so a new scale has to invalidate them.
+  useEffect(() => {
+    virtualizer.measure();
+  }, [virtualizer, slotHeight]);
 
   return (
     <ul
@@ -952,7 +995,7 @@ export function VirtualRows<T>({
               transform: `translateY(${virtualRow.start - scrollMargin}px)`,
               // Fixed height matching estimateSize (no measureElement ref): dynamic per-row
               // measurement churns virtualizer state and causes visible jumps as new rows arrive.
-              height: `${rowHeight}px`,
+              height: `${slotHeight}px`,
               contain: "layout",
             }}
           >
@@ -960,8 +1003,8 @@ export function VirtualRows<T>({
               style={{
                 display: "grid",
                 gridTemplateColumns: `repeat(${lanes}, minmax(0, 1fr))`,
-                columnGap: `${columnGap}px`,
-                height: `${cellHeight}px`,
+                columnGap: `${laneGap}px`,
+                height: `${slotCellHeight}px`,
               }}
             >
               {Array.from({ length: lanes }, (_, lane) => {

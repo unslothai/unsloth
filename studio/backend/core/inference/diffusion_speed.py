@@ -382,13 +382,21 @@ def _denoiser_unet(pipe: Any) -> Any:
 def compiled_shapes_are_static(pipe: Any, speed_mode: Optional[str]) -> bool:
     """Whether this load's compiled artifacts are per-(width, height, batch).
 
-    ``max`` compiles regional blocks dynamic=False and U-Net whole-module is always static;
+    ``max`` compiles regional DiT blocks with automatic dynamic (static until a dimension changes, then one
+    generalised graph; tracked by graph count, not shape) and U-Net whole-module is always static;
     ``default`` DiT compiles dynamic=True (one artifact across shapes). The compile-cache layer
     keys on this to re-save its bundle when a session hits an uncovered shape."""
     mode = normalize_speed_mode(speed_mode)
     if mode == SPEED_MAX:
-        return True
-    return mode == SPEED_DEFAULT and _denoiser_unet(pipe) is not None
+        # An auto-dynamic DiT generalises a dimension once and then reuses that graph for unseen values, so a new
+        # (width, height, batch) is not a new artifact; the Dynamo graph-count delta marks the renders that compiled.
+        return _denoiser_unet(pipe) is not None or not auto_dynamic_active(pipe)
+    if mode != SPEED_DEFAULT:
+        return False
+    # A torchao-quantised DiT compiles with automatic dynamic: its first shapes get their own artifacts.
+    return _denoiser_unet(pipe) is not None or any(
+        getattr(t, "_unsloth_auto_dynamic", False) for t in _denoiser_dits(pipe)
+    )
 
 
 def _denoiser_dits(pipe: Any) -> list:
@@ -419,12 +427,14 @@ def _compile_repeated_blocks(
     if not dits and unet is None:
         return False
     # default: dynamic=True, fast cold start, no recompile on resolution change. max: max-autotune-no-cudagraphs +
-    # dynamic=False, a few % more for a longer compile and a recompile per resolution. Inductor's own cudagraph modes
-    # fail on the regional block -- "accessing tensor output of CUDAGraphs that has been overwritten" -- so the tier
-    # stays on -no-cudagraphs and the capture is taken one level up, at the denoiser module.
+    # automatic dynamic (None): the first shape compiles static and autotuned, and a dimension that then changes is
+    # generalised once. dynamic=False recompiled on every new prompt length for DiTs whose blocks see the text tokens
+    # (Qwen-Image-2.1: 4-6s on about half of new prompts). Inductor's own cudagraph modes fail on the regional block --
+    # "accessing tensor output of CUDAGraphs that has been overwritten" -- so the tier stays on -no-cudagraphs and the
+    # capture is taken one level up, at the denoiser module.
     kwargs: dict[str, Any] = {
         "fullgraph": not (cache_active or offload_active),
-        "dynamic": not max_autotune,
+        "dynamic": None if max_autotune else True,
     }
     if max_autotune:
         kwargs["mode"] = "max-autotune-no-cudagraphs"
@@ -465,12 +475,19 @@ def _compile_repeated_blocks(
     # Compile every denoiser DiT (dual-DiT families run both); a per-DiT failure degrades only that one to eager.
     engaged = False
     for transformer in dits:
+        dit_kwargs = dict(kwargs)
+        dit_kwargs["dynamic"] = compile_dynamic(transformer, kwargs["dynamic"])
+        # Read by auto_dynamic_active: the generalising recompile on a new text length must reach the bundle.
+        transformer._unsloth_auto_dynamic = dit_kwargs["dynamic"] is None
         try:
-            transformer.compile_repeated_blocks(**kwargs)
+            transformer.compile_repeated_blocks(**dit_kwargs)
             engaged = True
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "compile_repeated_blocks", exc)
             continue
+        # compile_repeated_blocks is lazy: inductor only runs on the first forward, inside generate(), where a lowering
+        # bug would fail the render. Guard every compiled block so such a failure drops this DiT to eager instead.
+        guard_compiled_blocks(transformer, logger)
         # A step cache engaged BEFORE this compile already wrapped each block forward in a disabled hook, so the compute
         # branch would run eager and forfeit the regional compile. Re-point the hooks' inner forward at compiled
         # wrappers (no-op without them).
@@ -480,6 +497,225 @@ def _compile_repeated_blocks(
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "cache-hook inner compile", exc)
     return engaged
+
+
+def compile_dynamic(transformer: Any, dynamic: Optional[bool]) -> Optional[bool]:
+    """The ``dynamic`` a DiT is actually compiled with, so compile-cache fingerprints key on the same value.
+
+    dynamic=True makes even the constant segment starts symbolic, and on Qwen-Image-2.1 the attention output cat
+    (text + target, length s87 - s89) then fuses into torchao's per-row activation-quant reduction, which inductor
+    cannot split (CantSplit, every render failed). Automatic dynamic (None) compiles the first shapes static and only
+    generalises what actually varies: stable after ~3 recompiles, same numerics."""
+    if dynamic and transformer is not None and _carries_torchao_weights(transformer):
+        return None
+    return dynamic
+
+
+def _carries_torchao_weights(module: Any) -> bool:
+    """Whether any parameter of ``module`` is a torchao tensor subclass (the int8 / fp8 dense fast path).
+
+    Checks ``.data`` too: some torchao builds keep ``Linear.weight`` a plain ``nn.Parameter`` wrapping the subclass,
+    the same two representations ``transformer_is_quantised`` covers. Only torchao's own types count, so a GGUF or
+    bitsandbytes parameter subclass keeps its existing compile policy."""
+
+    def _torchao(t: Any) -> bool:
+        return t is not None and type(t).__module__.startswith("torchao")
+
+    try:
+        return any(_torchao(p) or _torchao(getattr(p, "data", None)) for p in module.parameters())
+    except Exception:  # noqa: BLE001 - not a torch module (tests/fakes)
+        return False
+
+
+def is_compile_failure(exc: BaseException) -> bool:
+    """True for an error torch.compile raises while BUILDING a graph (dynamo tracing, inductor lowering / codegen), as
+    opposed to one raised by kernels that already built. Only the former is safe to answer with an eager retry: nothing
+    ran yet. An OOM is never one, even when inductor wraps it (autotune ran out), so the OOM backoff still sees it."""
+    try:
+        import torch
+    except Exception:  # noqa: BLE001 - no torch, nothing compiled
+        return False
+    from .diffusion_batched import is_oom_error
+
+    # The batch backoff's own classifier walks the whole cause chain, so an OOM anywhere in it goes to the backoff
+    # (which recognises the same outer exception) instead of the eager retry.
+    if is_oom_error(exc):
+        return False
+    kinds: list = []
+    dynamo_exc = getattr(getattr(torch, "_dynamo", None), "exc", None)
+    for name in (
+        "BackendCompilerFailed",
+        "Unsupported",
+        "TorchRuntimeError",
+        "InternalTorchDynamoError",
+    ):
+        kind = getattr(dynamo_exc, name, None) if dynamo_exc is not None else None
+        if isinstance(kind, type):
+            kinds.append(kind)
+    try:
+        from torch._inductor.exc import (
+            InductorError,
+        )  # torch 2.7+; older torch wraps it in BackendCompilerFailed
+        kinds.append(InductorError)
+    except Exception:  # noqa: BLE001
+        pass
+    return bool(kinds) and isinstance(exc, tuple(kinds))
+
+
+class _CompileGuard:
+    """Per-DiT record of a compile that failed at runtime. The first failure flips every guarded block of that DiT to
+    eager (one shared decision: a half-compiled stack would retry the same broken lowering per block)."""
+
+    def __init__(self, logger: Any) -> None:
+        self.logger = logger
+        self.error: Optional[str] = None
+        self.restores: list = []
+
+    def fail(self, exc: BaseException, owner: Any) -> None:
+        if self.error is None:
+            self.error = f"{type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}"[
+                :300
+            ]
+            for restore in self.restores:
+                try:
+                    restore()
+                except Exception:  # noqa: BLE001 - per-block best-effort; the guard still routes to eager
+                    pass
+            if self.logger is not None:
+                self.logger.warning(
+                    "diffusion.speed: torch.compile failed on %s at the first forward (%s); this load runs eager",
+                    type(owner).__name__,
+                    self.error,
+                )
+
+    def wrap(self, compiled: Any, eager: Any, owner: Any) -> Any:
+        guard = self
+
+        def guarded(*args: Any, **kwargs: Any) -> Any:
+            if guard.error is None:
+                try:
+                    return compiled(*args, **kwargs)
+                except Exception as exc:  # noqa: BLE001 - reraised unless a compile-time failure
+                    if not is_compile_failure(exc):
+                        raise
+                    guard.fail(exc, owner)
+                    # The handled exception pins inductor's frames (and the traced fake tensors) through the retry.
+                    exc.__traceback__ = None
+            return eager(*args, **kwargs)
+
+        guarded._unsloth_compile_guard = guard
+        return guarded
+
+
+def guard_compiled_blocks(transformer: Any, logger: Any = None) -> int:
+    """Wrap each ``Module.compile``d submodule's ``_compiled_call_impl`` so a compile-time failure on the first forward
+    (e.g. inductor ``CantSplit`` on a torchao-quantised Qwen-Image-2.1 block) falls back to that module's eager
+    ``_call_impl`` for this and every later call. Idempotent. Returns the number of modules guarded."""
+    guard = getattr(transformer, "_unsloth_compile_guard", None)
+    if guard is None:
+        guard = _CompileGuard(logger)
+        try:
+            transformer._unsloth_compile_guard = guard
+        except Exception:  # noqa: BLE001 - not a settable module (tests/fakes)
+            return 0
+    count = 0
+    try:
+        modules = list(transformer.modules())
+    except Exception:  # noqa: BLE001 - not a torch module
+        return 0
+    for module in modules:
+        compiled = getattr(module, "_compiled_call_impl", None)
+        if compiled is None or getattr(compiled, "_unsloth_compile_guard", None) is not None:
+            continue
+        eager = getattr(module, "_call_impl", None)
+        if eager is None:
+            continue
+
+        def restore(m: Any = module) -> None:
+            m._compiled_call_impl = None
+
+        guard.restores.append(restore)
+        module._compiled_call_impl = guard.wrap(compiled, eager, transformer)
+        count += 1
+    return count
+
+
+def _guarded_dits(pipe: Any) -> list:
+    """Every DiT a compile guard can sit on: the standard denoisers plus a modular workflow's named partition
+    (MiniMax-H3's ``transformer_ref`` compiles through a view, so the bare pipe's ``_denoiser_dits`` misses it)."""
+    dits = _denoiser_dits(pipe)
+    extra = getattr(pipe, "transformer_ref", None)
+    if extra is not None and extra not in dits:
+        dits.append(extra)
+    return dits
+
+
+def compiled_dits_active(pipe: Any) -> bool:
+    """True while at least one guarded DiT still runs its compiled blocks (dual-DiT pipelines fall back per DiT)."""
+    for transformer in _guarded_dits(pipe):
+        guard = getattr(transformer, "_unsloth_compile_guard", None)
+        if guard is not None and not guard.error:
+            return True
+    return False
+
+
+def settle_compile_fallback(
+    state: Any,
+    pipe: Any,
+    logger: Any = None,
+) -> Optional[str]:
+    """After a render, fold a runtime compile fallback into ``state.speed_optims`` (image and video backends share it).
+
+    Adds ``compile_fallback_eager`` once, and drops ``compiled`` only when NO guarded DiT still runs compiled, so a
+    dual-DiT load whose second expert still compiles keeps the LoRA gate and the compile-cache shape registry. Returns
+    the recorded failure, or None when nothing fell back."""
+    fallback = compile_fallback_error(pipe)
+    if not fallback:
+        return None
+    optims = tuple(getattr(state, "speed_optims", None) or ())
+    updated = list(optims)
+    if "compile_fallback_eager" not in updated:
+        updated.append("compile_fallback_eager")
+        if logger is not None:
+            logger.warning("diffusion.speed: regional compile fell back to eager: %s", fallback)
+    if "compiled" in updated and not compiled_dits_active(pipe):
+        updated.remove("compiled")
+    if tuple(updated) != optims:
+        # The load states are frozen dataclasses; the status must still reflect what actually runs.
+        object.__setattr__(state, "speed_optims", tuple(updated))
+    return fallback
+
+
+def auto_dynamic_active(pipe: Any) -> bool:
+    """Whether any denoiser DiT compiled with automatic dynamic (the max tier, or torchao weights on the default)."""
+    return any(getattr(t, "_unsloth_auto_dynamic", False) for t in _guarded_dits(pipe))
+
+
+def dynamo_graph_count() -> int:
+    """Graphs dynamo has compiled in this process (0 when unavailable); a delta across a render means it compiled."""
+    try:
+        from torch._dynamo.utils import counters
+        return int(counters["stats"]["unique_graphs"])
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def fresh_compile_count() -> int:
+    """FX graph cache misses. Not ``dynamo_graph_count``: it also grows on cache-served retraces, rewriting bundles."""
+    try:
+        from torch._dynamo.utils import counters
+        return int(counters["inductor"]["fxgraph_cache_miss"])
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def compile_fallback_error(pipe: Any) -> Optional[str]:
+    """The compile failure a guarded DiT fell back from, or None while every compiled DiT still runs compiled."""
+    for transformer in _guarded_dits(pipe):
+        guard = getattr(transformer, "_unsloth_compile_guard", None)
+        if guard is not None and guard.error:
+            return guard.error
+    return None
 
 
 def _compile_vae_decode(pipe: Any, logger: Any) -> bool:
@@ -501,6 +737,12 @@ def _compile_vae_decode(pipe: Any, logger: Any) -> bool:
 def _enable_cudnn_benchmark(logger: Any) -> bool:
     try:
         import torch
+
+        from core._torchao_stub import _module_is_rocm
+
+        # On ROCm this is MIOpen's exhaustive search: a first VAE decode tuned for 10 to 23 minutes and crashed a gfx1030.
+        if _module_is_rocm(torch):
+            return False
         torch.backends.cudnn.benchmark = True
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only

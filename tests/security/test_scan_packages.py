@@ -1740,7 +1740,41 @@ def test_marker_holds_by_default():
     # package may install on another, so these deps must still be scanned.
     assert sp._marker_holds_by_default("sys_platform == 'win32'") is True
     assert sp._marker_holds_by_default("python_version == '3.13'") is True
-    assert sp._marker_holds_by_default("sys_platform == 'win32' and extra == 'gpu'") is True
+    # ...but AND-ed with an extra they still need the extra: no target installs these by default.
+    assert sp._marker_holds_by_default("sys_platform == 'win32' and extra == 'gpu'") is False
+    assert sp._marker_holds_by_default('extra == "dev" and python_version >= "3.9"') is False
+    assert (
+        sp._marker_holds_by_default(
+            'extra == "dev" and (python_version >= "3.8" and python_version < "3.9")'
+        )
+        is False
+    )
+    # An OR with a platform branch, or a default-true extra comparison, is reachable somewhere.
+    assert sp._marker_holds_by_default("extra == 'dev' or sys_platform == 'win32'") is True
+    assert (
+        sp._marker_holds_by_default(
+            "(extra == 'dev' and python_version >= '3.9') or sys_platform == 'win32'"
+        )
+        is True
+    )
+    assert sp._marker_holds_by_default("extra != 'dev' and sys_platform == 'win32'") is True
+
+
+def test_requires_dist_recovery_does_not_pull_a_dev_extra():
+    """loguru 0.7.3 gates its whole dev toolchain on `extra == "dev" and python_version ...`.
+    When its tree failed to co-resolve, the recovery path scanned pytest, tox, sphinx, mypy and
+    pre-commit as if a default install pulled them, and their findings failed the extras shard."""
+    meta = _meta(
+        [],
+        requires = [
+            'colorama>=0.3.4; sys_platform == "win32"',
+            'pre-commit==4.0.1; extra == "dev" and python_version >= "3.9"',
+            'tox==4.23.2; extra == "dev" and python_version >= "3.8"',
+            'pytest==8.3.2; extra == "dev" and python_version >= "3.8"',
+            'sphinx==8.1.3; extra == "dev" and python_version >= "3.11"',
+        ],
+    )
+    assert sp._requires_dist_names(meta) == ["colorama>=0.3.4"]
 
 
 def test_requires_dist_for_fails_closed_on_missing_pin_metadata(monkeypatch):

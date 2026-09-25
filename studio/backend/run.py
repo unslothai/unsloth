@@ -112,13 +112,15 @@ except ValueError as exc:
 
 # Windows ROCm ships no distributed backend, so torchao and the CUDA-only xformers both die on import,
 # taking diffusers/transformers with them. A stub only seeds a name nothing has imported yet, so both must
-# precede the first import below.
+# precede the first import below. An xformers built for a newer torch fails the same import anywhere.
 from core._torchao_stub import (
+    hide_xformers_built_for_another_torch,
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
 )
 
 install_xformers_windows_rocm_stub()
+hide_xformers_built_for_another_torch()
 install_torchao_windows_rocm_stub()
 
 # Anaconda/conda-forge Python: seed platform._sys_version_cache before imports that trigger attrs ->
@@ -2310,6 +2312,27 @@ def _drops_its_marker_on_failure(start):
     return started
 
 
+def _repair_pinned_diffusers(silent: bool) -> None:
+    """Repair before importing the app; exit if packages may still be half replaced at timeout."""
+    echo = (lambda _line: None) if silent else (lambda line: print(line, flush = True))
+    try:
+        from utils.diffusers_repair import (
+            InstallInterrupted,
+            PeerInstallInProgress,
+            repair_diffusers_before_imports,
+        )
+    except Exception as exc:  # noqa: BLE001 -- a self-heal must never block startup
+        echo(f"  - diffusers self-heal skipped: {exc}")
+        return
+    try:
+        repair_diffusers_before_imports(echo)
+    except (PeerInstallInProgress, InstallInterrupted) as exc:
+        print(f"Error: {exc}", file = sys.stderr, flush = True)
+        sys.exit(1)
+    except Exception as exc:  # noqa: BLE001 -- a self-heal must never block startup
+        echo(f"  - diffusers self-heal skipped: {exc}")
+
+
 @_drops_its_marker_on_failure
 def run_server(
     host: str = "127.0.0.1",
@@ -2451,6 +2474,10 @@ def run_server(
             "Loading Unsloth Studio, please wait... (this can take a few minutes)",
             flush = True,
         )
+
+    _repair_pinned_diffusers(silent)
+
+    if not silent:
         print("  - loading PyTorch, Unsloth and Transformers...", flush = True)
 
     import_started = time.perf_counter()
