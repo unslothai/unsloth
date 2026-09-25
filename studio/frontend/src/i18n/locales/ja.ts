@@ -943,6 +943,11 @@ export const ja = {
         closeToTrayDescription:
           "メインウィンドウを閉じても、Unsloth とサーバーをバックグラウンドで実行し続けます。",
         closeToTraySaveError: "システムトレイに格納する設定を更新できませんでした。",
+
+        menuBarIcon: "メニューバーに表示",
+        menuBarIconDescription:
+          "macOS のメニューバーに Unsloth のアイコンを表示します。非表示にすると、ログイン時に起動した場合を含め、Unsloth は Dock に残ります。",
+        menuBarIconSaveError: "メニューバーアイコンの設定を更新できませんでした。",
         loadError: "ログイン時起動の設定を読み込めませんでした。",
         saveError: "ログイン時起動の設定を更新できませんでした。",
       },

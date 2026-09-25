@@ -976,6 +976,12 @@ export const de = {
           "Unsloth und seinen Server im Hintergrund weiterlaufen lassen, wenn Sie das Hauptfenster schließen.",
         closeToTraySaveError:
           "Die Einstellung zum Schließen in den Infobereich konnte nicht aktualisiert werden.",
+
+        menuBarIcon: "In der Menüleiste anzeigen",
+        menuBarIconDescription:
+          "Zeigt das Unsloth-Symbol in der macOS-Menüleiste an. Wenn es ausgeblendet ist, bleibt Unsloth stattdessen im Dock – auch wenn es bei der Anmeldung startet.",
+        menuBarIconSaveError:
+          "Die Einstellung für das Menüleistensymbol konnte nicht aktualisiert werden.",
         loadError: "Die Autostart-Einstellung konnte nicht geladen werden.",
         saveError:
           "Die Autostart-Einstellung konnte nicht aktualisiert werden.",

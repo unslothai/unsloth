@@ -14,14 +14,14 @@ const UPDATE_ENTRY = "settings.about.updates";
 const INTERFACE_SCALE_ENTRY = "settings.appearance.custom.interfaceScale.label";
 
 test("desktop update searches route to General", () => {
-  const index = createSettingsSearchIndex({ desktop: true, closeToTray: true });
+  const index = createSettingsSearchIndex({ desktop: true, closeToTray: true, menuBarIcon: false });
 
   assert.ok(index.general.includes(UPDATE_ENTRY));
   assert.ok(!index.about.includes(UPDATE_ENTRY));
 });
 
 test("browser update searches keep routing to About", () => {
-  const index = createSettingsSearchIndex({ desktop: false, closeToTray: false });
+  const index = createSettingsSearchIndex({ desktop: false, closeToTray: false, menuBarIcon: false });
 
   assert.ok(!index.general.includes(UPDATE_ENTRY));
   assert.ok(index.about.includes(UPDATE_ENTRY));
@@ -30,8 +30,8 @@ test("browser update searches keep routing to About", () => {
 test("interface scale is searchable on every build", () => {
   // The browser build scales through the UI tokens, so the row renders there
   // too and search has to find it.
-  const desktop = createSettingsSearchIndex({ desktop: true, closeToTray: true });
-  const browser = createSettingsSearchIndex({ desktop: false, closeToTray: false });
+  const desktop = createSettingsSearchIndex({ desktop: true, closeToTray: true, menuBarIcon: false });
+  const browser = createSettingsSearchIndex({ desktop: false, closeToTray: false, menuBarIcon: false });
 
   assert.ok(desktop.appearance.includes(INTERFACE_SCALE_ENTRY));
   assert.ok(browser.appearance.includes(INTERFACE_SCALE_ENTRY));
@@ -44,7 +44,7 @@ test("interface scale is searchable on every build", () => {
 // The words a user types for this feature are not substrings of any of its
 // labels, so without keywords the rows it is named after were unfindable.
 test("model memory rows are reachable by the terms the feature is about", () => {
-  const index = createSettingsSearchIndex({ desktop: false, closeToTray: false });
+  const index = createSettingsSearchIndex({ desktop: false, closeToTray: false, menuBarIcon: false });
   const rows = [
     "settings.resources.modelMemory.title",
     "settings.resources.modelMemory.keepResident",
@@ -76,14 +76,14 @@ const CLOSE_TO_TRAY_ENTRY = "settings.general.startup.closeToTray";
 const CURRENT_DATE_ENTRY = "settings.chat.currentDate.label";
 
 test("the current date prompt setting is searchable under Chat", () => {
-  const index = createSettingsSearchIndex({ desktop: false, closeToTray: false });
+  const index = createSettingsSearchIndex({ desktop: false, closeToTray: false, menuBarIcon: false });
 
   assert.ok(index.chat.includes(CURRENT_DATE_ENTRY));
 });
 
 test("desktop startup entries are absent from browser search", () => {
-  const desktop = createSettingsSearchIndex({ desktop: true, closeToTray: true });
-  const browser = createSettingsSearchIndex({ desktop: false, closeToTray: false });
+  const desktop = createSettingsSearchIndex({ desktop: true, closeToTray: true, menuBarIcon: false });
+  const browser = createSettingsSearchIndex({ desktop: false, closeToTray: false, menuBarIcon: false });
 
   for (const entry of DESKTOP_STARTUP_ENTRIES) {
     assert.ok(desktop.general.includes(entry));
@@ -96,19 +96,31 @@ test("the repair row is searchable on the desktop, where it exists", () => {
   // "Repair installation in Settings", so searching Settings for it has to find it. Only
   // on the desktop: DesktopRepairControl renders nothing in a browser, and an index entry
   // there would scroll to a row that is not on the page.
-  const desktop = createSettingsSearchIndex({ desktop: true, closeToTray: true });
-  const browser = createSettingsSearchIndex({ desktop: false, closeToTray: false });
+  const desktop = createSettingsSearchIndex({ desktop: true, closeToTray: true, menuBarIcon: false });
+  const browser = createSettingsSearchIndex({ desktop: false, closeToTray: false, menuBarIcon: false });
 
   assert.ok(desktop.general.includes("settings.general.repairInstall.label"));
   assert.ok(!browser.general.includes("settings.general.repairInstall.label"));
 });
 
 test("close to tray is searchable only on supported desktops", () => {
-  const supported = createSettingsSearchIndex({ desktop: true, closeToTray: true });
-  const mac = createSettingsSearchIndex({ desktop: true, closeToTray: false });
-  const browser = createSettingsSearchIndex({ desktop: false, closeToTray: false });
+  const supported = createSettingsSearchIndex({ desktop: true, closeToTray: true, menuBarIcon: false });
+  const mac = createSettingsSearchIndex({ desktop: true, closeToTray: false, menuBarIcon: false });
+  const browser = createSettingsSearchIndex({ desktop: false, closeToTray: false, menuBarIcon: false });
 
   assert.ok(supported.general.includes(CLOSE_TO_TRAY_ENTRY));
   assert.ok(!mac.general.includes(CLOSE_TO_TRAY_ENTRY));
   assert.ok(!browser.general.includes(CLOSE_TO_TRAY_ENTRY));
+});
+
+const MENU_BAR_ICON_ENTRY = "settings.general.startup.menuBarIcon";
+
+test("menu bar icon is searchable only when the platform supports it", () => {
+  const mac = createSettingsSearchIndex({ desktop: true, closeToTray: false, menuBarIcon: true });
+  const windows = createSettingsSearchIndex({ desktop: true, closeToTray: true, menuBarIcon: false });
+  const browser = createSettingsSearchIndex({ desktop: false, closeToTray: false, menuBarIcon: false });
+
+  assert.ok(mac.general.includes(MENU_BAR_ICON_ENTRY));
+  assert.ok(!windows.general.includes(MENU_BAR_ICON_ENTRY));
+  assert.ok(!browser.general.includes(MENU_BAR_ICON_ENTRY));
 });

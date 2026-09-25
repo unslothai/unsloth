@@ -934,6 +934,11 @@ export const zhCN = {
         closeToTrayDescription:
           "关闭主窗口时，让 Unsloth 及其服务器继续在后台运行。",
         closeToTraySaveError: "无法更新关闭到系统托盘设置。",
+
+        menuBarIcon: "在菜单栏中显示",
+        menuBarIconDescription:
+          "在 macOS 菜单栏中显示 Unsloth 图标。隐藏后，Unsloth 会保留在程序坞（Dock）中，包括在登录时启动的情况。",
+        menuBarIconSaveError: "无法更新菜单栏图标设置。",
         loadError: "无法加载登录时启动设置。",
         saveError: "无法更新登录时启动设置。",
       },

@@ -974,6 +974,12 @@ export const fr = {
           "Laisser Unsloth et son serveur fonctionner en arrière-plan lorsque vous fermez la fenêtre principale.",
         closeToTraySaveError:
           "Impossible de mettre à jour le réglage de fermeture dans la zone de notification.",
+
+        menuBarIcon: "Afficher dans la barre de menus",
+        menuBarIconDescription:
+          "Afficher l'icône Unsloth dans la barre de menus de macOS. Une fois masquée, Unsloth reste dans le Dock, y compris lors d'un démarrage à la connexion.",
+        menuBarIconSaveError:
+          "Impossible de mettre à jour le réglage de l'icône dans la barre de menus.",
         loadError:
           "Impossible de charger le réglage de lancement à la connexion.",
         saveError:
