@@ -273,3 +273,30 @@ def test_writes_bad_ids_and_upstream_failures(hub):
     assert hub.get("/api/models/a/b..c").status_code == 400
     assert hub.get("/Qwen/Tiny/resolve/main/sub/%2E%2E/config.json").status_code == 400
     assert hub.get("/api/models/boom/repo/auth-check").status_code == 502
+
+
+def test_cache_gate_asks_hugging_face_while_modelscope_serves(monkeypatch):
+    import huggingface_hub.utils as hf_utils
+    from hub.modelscope.router import internal_endpoint
+    from hub.utils import hf_tokens
+    from utils import hub_settings
+
+    asked = []
+
+    class Session:
+        def get(self, url, **_k):
+            asked.append(url)
+            return hf_http_response(401, url)
+
+    def hf_http_response(status, url):
+        return httpx.Response(status, request = httpx.Request("GET", url))
+
+    monkeypatch.setattr(hf_utils, "get_session", lambda: Session())
+    monkeypatch.setattr(hub_settings, "hugging_face_endpoint", lambda: "https://hf.example")
+    monkeypatch.setenv("HF_ENDPOINT", internal_endpoint())
+    monkeypatch.setenv(hub_settings.SOURCE_ENV, hub_settings.MODELSCOPE)
+    refused = hf_tokens.cached_read_refused(
+        "hf_junk", repo_id = "victim/secret-model", is_cached = lambda: True
+    )
+    assert refused is True
+    assert asked and all(url.startswith("https://hf.example/api/") for url in asked)

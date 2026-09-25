@@ -898,6 +898,16 @@ def _probe_endpoint() -> str:
     is where the backend already normalises it; falls back since this module sits beneath.
     """
     try:
+        from utils.hub_settings import MODELSCOPE, active_source, hugging_face_endpoint
+    except Exception:
+        active_source = None
+    # The cache holds Hugging Face snapshots: ModelScope's same-named repo cannot vouch for them.
+    if active_source is not None and active_source() == MODELSCOPE:
+        try:
+            return hugging_face_endpoint()
+        except Exception:
+            return "https://huggingface.co"
+    try:
         from utils.utils import hf_endpoint_url
         return hf_endpoint_url().rstrip("/")
     except Exception:
