@@ -71,7 +71,6 @@ export interface VideoStatus {
   transformer_cache?: string | null;
   // Dense DiT precision actually engaged ("int8" | "fp8" | ...) or null for bf16.
   transformer_quant?: string | null;
-  // NVFP4 kernel path ("flashinfer" | "torchao"), null for every other scheme.
   transformer_quant_backend?: string | null;
   transformer_quant_backend_reason?: string | null;
   // Text-encoder quant actually engaged ("fp8" | "fp8_dynamic" | "int8" | "nvfp4") or null for dense bf16.

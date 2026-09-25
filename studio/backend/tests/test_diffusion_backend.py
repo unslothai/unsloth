@@ -5040,10 +5040,7 @@ def test_dense_quant_prequant_proceeds_but_forbids_dense_fallback(
 @pytest.mark.parametrize(
     "unreachable,expected_mib,expected_fallback",
     [
-        # The prefetch found the hosted checkpoint refused: size the dense bf16 build it falls back to, and keep that
-        # fallback open (the plan staged the shards for exactly this).
         (("fp8",), 28_561, True),
-        # Positive control: a reachable checkpoint keeps the prequant-sized budget and forbids the dense fallback.
         ((), 22_930, False),
     ],
 )
@@ -5072,7 +5069,6 @@ def test_dense_quant_replan_sizes_an_unreachable_prequant_as_dense(
             return types.SimpleNamespace(
                 transient_transformer_mib = 28_561, companions_mib = 1, prequant = False, scheme = "fp8"
             )
-        # The family table names a hosted checkpoint whether or not this user can read it.
         return types.SimpleNamespace(
             transient_transformer_mib = 22_930, companions_mib = 1, prequant = True, scheme = "fp8"
         )
@@ -5091,7 +5087,6 @@ def test_dense_quant_replan_sizes_an_unreachable_prequant_as_dense(
             self, *a, transformer_resident_override_mib = transformer_resident_override_mib, **k
         )
         if transformer_resident_override_mib is None:
-            # GGUF plan offloads, so the candidate replan decides the fast path.
             return dataclasses.replace(real, offload_policy = "model")
         sized.append(transformer_resident_override_mib)
         return dataclasses.replace(real, offload_policy = "none")
@@ -5113,9 +5108,6 @@ def test_dense_quant_replan_sizes_an_unreachable_prequant_as_dense(
 def test_dense_quant_unreachable_prequant_does_not_skip_the_dense_decline(
     fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
-    # GGUF plan resident, dense bf16 does not fit. A reachable prequant still proceeds with the dense fallback forbidden
-    # (test above); one this user cannot fetch is no prequant, so the explicit scheme declines with the dense reason
-    # instead of downloading a checkpoint that answers 401.
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()
@@ -11358,7 +11350,6 @@ def test_generation_in_flight_never_builds_a_backend(fake_runtime, monkeypatch):
 
 
 def test_the_download_plan_resolves_the_same_nvfp4_rung_the_load_does(monkeypatch):
-    # A planner that drops the base or the checkpoint probe answers a different scheme than the load.
     from types import SimpleNamespace
 
     import core.inference.diffusion as dmod

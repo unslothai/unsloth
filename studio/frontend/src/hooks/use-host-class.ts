@@ -25,13 +25,11 @@ export function useHostClass(): HostClass {
   );
 }
 
-/** Whether the backend accepts NVFP4 for image/video generation (its UNSLOTH_NVFP4_DIFFUSION switch). */
 export function useNvfp4Diffusion(): boolean {
   return useGpuInfo().nvfp4Diffusion;
 }
 
-/** Whether `/api/system` has answered yet, i.e. whether a false `useNvfp4Diffusion()` is the
- *  backend's word rather than the not-yet-loaded default. */
+/** Whether `/api/system` answered, so a false `useNvfp4Diffusion()` is not just the unloaded default. */
 export function useNvfp4DiffusionKnown(): boolean {
   return useGpuInfo().budgetKnown;
 }

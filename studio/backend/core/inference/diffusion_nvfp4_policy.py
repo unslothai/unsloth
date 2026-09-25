@@ -90,9 +90,7 @@ def _per_block(suffix: str, stem: str, blocks: tuple) -> tuple:
     )
 
 
-# Points on the storage/quality frontier whose paired LPIPS(vgg) gap to the model's own fp8 stays
-# under 0.05 at the upper 95% bound on held-out pairs. They replace zimg_f8mod_toq34_v1 and
-# flux_mod_single_v1, so an artifact built at either is refused on load.
+# Paired LPIPS(vgg) gap to fp8 < 0.05 at the upper 95% bound; artifacts at replaced policies are refused.
 ZIMG_RG76 = NVFP4Policy(
     policy_id = "zimg_rg76_v1",
     version = 1,
@@ -107,12 +105,9 @@ ZIMG_RG76 = NVFP4Policy(
         ),
     ),
     admit = (Admit(suffix = "adaLN_modulation.0", shape = (256, 15360), expect = 32),),
-    # The two ``t_embedder.mlp`` layers cannot be swapped at all and stay dense.
     expected_counts = {PRECISION_NVFP4: 76, PRECISION_FP8: 195, PRECISION_BF16: 5},
 )
 
-# One frontier point back from R600, whose paired gap to fp8 measured +0.044 [0.034, 0.053] on 48
-# held-out pairs. R600_lr32 sits between the two but needs a low-rank add path the NVFP4 linear lacks.
 FLUX_R420 = NVFP4Policy(
     policy_id = "flux_r420_v1",
     version = 1,
@@ -153,8 +148,6 @@ FLUX_R420 = NVFP4Policy(
     expected_counts = {PRECISION_NVFP4: 187, PRECISION_FP8: 312, PRECISION_BF16: 3},
 )
 
-# One frontier point back from R040, whose paired gap to fp8 measured +0.039 [0.022, 0.057] on 48
-# held-out pairs: the upper bound missed 0.05 there.
 QWEN21_R020 = NVFP4Policy(
     policy_id = "qwen21_r020_v1",
     version = 1,
@@ -323,7 +316,6 @@ def policy_metadata(
             "nvfp4_fqns": sorted(
                 fqn for fqn, precision in assignment.items() if precision == PRECISION_NVFP4
             ),
-            # The flashinfer backend falls back to torchao without baked scales.
             "activation_scales_baked": bool(activation_scales_baked),
             "gptq": bool(gptq),
         }

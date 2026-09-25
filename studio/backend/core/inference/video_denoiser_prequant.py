@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seed a conventional video pipeline with hosted pre-quantized denoisers, all-or-nothing.
-
-The MoE second expert has no filename fallback (it would load expert 1). Torch-free at import."""
+"""Seed a conventional video pipeline with hosted pre-quantized denoisers, all-or-nothing."""
 
 from __future__ import annotations
 
@@ -30,7 +28,6 @@ def denoiser_prequant_sources(
         from .diffusion_nvfp4_flag import nvfp4_blocked
 
         if nvfp4_blocked(wanted):
-            # The NVFP4 switch is off: never seed from, or ask the Hub about, a hosted *-NVFP4 denoiser.
             return None
         from .diffusion_prequant import resolve_prequant_source
         from .video_families import video_family_prequant_task_specific
@@ -105,7 +102,6 @@ def denoiser_prequant_pipe_kwargs(
                 hf_token = hf_token,
                 scheme = scheme,
                 min_features = DEFAULT_MIN_LINEAR_FEATURES,
-                # Stamp which expert this is: once loaded the two are indistinguishable.
                 config_subfolder = component,
                 component = component,
                 cache_dir = cache_dir,
@@ -113,7 +109,6 @@ def denoiser_prequant_pipe_kwargs(
                 logger = logger,
             )
             if module is None:
-                # ALL or none; drop what loaded so host memory is freed before the dense build.
                 seeded.clear()
                 gc.collect()
                 if logger is not None:
@@ -126,7 +121,6 @@ def denoiser_prequant_pipe_kwargs(
                     )
                 return {}
             seeded[component] = module
-            # Never let two experts coexist in host memory.
             gc.collect()
         if logger is not None:
             logger.info(

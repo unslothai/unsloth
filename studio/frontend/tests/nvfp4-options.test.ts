@@ -30,7 +30,6 @@ test("the input list is never mutated", () => {
 });
 
 test("a held NVFP4 pick falls back to auto once the backend reports the switch off", () => {
-  // The select no longer lists nvfp4, so keeping it would render blank and 400 the next load.
   assert.equal(nvfp4SelectionFallback("nvfp4", true, false), "auto");
   assert.equal(nvfp4SelectionFallback("NVFP4", true, false), "auto");
 });
@@ -39,7 +38,6 @@ test("other picks, an enabled switch, and a not-yet-known switch keep the select
   assert.equal(nvfp4SelectionFallback("fp8", true, false), "fp8");
   assert.equal(nvfp4SelectionFallback("none", true, false), "none");
   assert.equal(nvfp4SelectionFallback("nvfp4", true, true), "nvfp4");
-  // Before /api/system answers the switch reads false by default; that must not wipe a real pick.
   assert.equal(nvfp4SelectionFallback("nvfp4", false, false), "nvfp4");
 });
 

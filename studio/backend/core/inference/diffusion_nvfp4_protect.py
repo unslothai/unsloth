@@ -179,7 +179,6 @@ def protect_generation(
         yield ctl
         return
     if not sum(c.capable_layers() for c in ctls):
-        # Only NVFP4FlashInferLinear reads the controller: a torchao load must not read as protected.
         if logger is not None:
             logger.warning(
                 "[nvfp4] protect schedule %r requested but no protect-capable NVFP4 layer is "

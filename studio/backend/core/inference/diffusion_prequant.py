@@ -47,13 +47,11 @@ PREQUANT_FORMAT = "unsloth_prequant_transformer_state_dict_v1"
 # hand-edited tag nor a builder that forgot one half can produce something that loads.
 PREQUANT_FORMAT_ROTATED = "unsloth_prequant_transformer_state_dict_v2"
 
-# v1 plus a PER-LAYER POLICY (nvfp4 + fp8). Own tag, or an older build reads it as whole-model
-# nvfp4. Biconditional: v3 MUST declare a policy, v1/v2 must NOT.
+# Own tag, else an older build reads it as whole-model nvfp4. v3 MUST declare a policy, v1/v2 must NOT.
 PREQUANT_FORMAT_POLICY = "unsloth_prequant_transformer_state_dict_v3"
 
 PREQUANT_FORMATS = (PREQUANT_FORMAT, PREQUANT_FORMAT_ROTATED, PREQUANT_FORMAT_POLICY)
 
-# A MoE video family's second expert lives in "transformer_2".
 DEFAULT_PREQUANT_COMPONENT = "transformer"
 
 
@@ -178,7 +176,6 @@ _SCHEME_REQUIRED_GLOBALS: dict = {
             "torchao.quantization.quantize_.common.kernel_preference.KernelPreference",
         }
     ),
-    # Includes fp8's names: a v3 policy checkpoint holds Float8Tensor weights too.
     "nvfp4": frozenset(
         {
             "torchao.prototype.mx_formats.nvfp4_tensor.NVFP4Tensor",
@@ -503,8 +500,6 @@ def resolve_prequant_source(
     on the primary AND on the fallback and the load would silently fall back to dense.
     """
     if nvfp4_blocked(scheme):
-        # The NVFP4 switch is off: no NVFP4 checkpoint is resolved, hosted or local, so nothing is planned,
-        # sized or fetched for it and the load quantises (or stays) dense as it would without one.
         return None
     override = (path_override or "").strip()
     if override:
@@ -610,11 +605,7 @@ def local_prequant_scheme(path: str) -> Optional[str]:
 
 
 def hosted_nvfp4_repo_ids() -> frozenset:
-    """Every repo id an image or video family registers for the NVFP4 scheme, lowercased.
-
-    Read off the family tables rather than a list of its own, so a hosted NVFP4 repo added to a
-    family is recognised here with no second edit. Any row naming ``nvfp4`` whose last element is a
-    repo id counts, which covers ``(scheme, repo)`` and ``(base, scheme, repo)`` rows alike."""
+    """Lowercased repo ids any image/video family registers for nvfp4, read off the family tables."""
     from dataclasses import fields, is_dataclass
 
     from .diffusion_nvfp4_flag import is_nvfp4
@@ -642,8 +633,7 @@ def hosted_nvfp4_repo_ids() -> frozenset:
     return frozenset(repos)
 
 
-# Probed at the ROOT of a directory only, where every hosted prequant repo keeps its artifacts. A
-# diffusers pipeline keeps its weights one level down, so its root has nothing to probe.
+# Root only: a diffusers pipeline keeps its weights in component folders.
 _PREQUANT_PROBE_SUFFIXES = (".safetensors", ".pt", ".pth")
 _PREQUANT_PROBE_LIMIT = 16
 
@@ -690,7 +680,6 @@ def _artifacts_declare_nvfp4(folder: str) -> bool:
     except OSError:
         return False
     if "model_index.json" in names:
-        # A diffusers pipeline loads from its component folders, never a root artifact.
         return False
     probed = 0
     for name in names:
@@ -708,14 +697,7 @@ def _artifacts_declare_nvfp4(folder: str) -> bool:
 
 
 def declares_nvfp4_checkpoint(model_path: Optional[str]) -> bool:
-    """Whether ``model_path`` (a Hub repo id, a local directory or a local file) is an NVFP4
-    pre-quant checkpoint.
-
-    Metadata first: a local file or directory, or the cached snapshot of a Hub repo, answers from
-    the ``scheme`` its pre-quant artifacts record (a safetensors header, or the same allowlisted
-    meta-map ``local_prequant_scheme`` uses). A Hub repo that is not cached falls back to what can
-    be known without the network: a repo a family registers for NVFP4, or the ``-NVFP4`` name.
-    Never raises."""
+    """Whether ``model_path`` is an NVFP4 prequant checkpoint: recorded metadata first, else registry or name. Never raises."""
     import os
 
     raw = str(model_path or "").strip()
@@ -1230,7 +1212,6 @@ def load_prequantized_transformer(
         except Exception:  # noqa: BLE001 - eval() is best-effort
             pass
         if scheme == "nvfp4":
-            # Here so video loads tune M = 1 too. Own try: a tuning failure must not lose the load.
             try:
                 from .diffusion_nvfp4_linear import nvfp4_prewarm
                 nvfp4_prewarm(transformer, (1,), logger = logger)
@@ -1644,7 +1625,6 @@ def _validate_checkpoint(
     from .diffusion_nvfp4_policy import declares_policy
     from .diffusion_transformer_quant import FP8_GRANULARITY, TQ_FP8
 
-    # A policy checkpoint is declared nvfp4 but is mostly fp8, so both fp8 invariants govern it too.
     holds_fp8 = scheme == TQ_FP8 or declares_policy(meta)
     if holds_fp8 and meta.get("fp8_granularity") != FP8_GRANULARITY:
         _warn(

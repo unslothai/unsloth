@@ -88,7 +88,6 @@ def test_flux1_krea_dev_generation_defaults():
 
 
 def test_flux_dev_and_krea_do_not_inherit_the_schnell_nvfp4_checkpoint():
-    # The NVFP4 artifact is baked from schnell weights; dev/Krea fp8 and int8 rows stay.
     from core.inference.diffusion_families import family_prequant_repo
 
     fam = detect_family("black-forest-labs/FLUX.1-schnell")

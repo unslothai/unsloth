@@ -1782,7 +1782,6 @@ class DiffusionBackend:
                 memory_mode = memory_mode,
                 cpu_offload = cpu_offload,
                 speed_mode = speed_mode,
-                # The base the load keys per-base gate records on (a pipeline IS its repo), as download_plan does.
                 base_repo = repo_id if model_kind == "pipeline" else base_repo,
             )
 
@@ -1809,9 +1808,7 @@ class DiffusionBackend:
                 and pinned == TQ_NVFP4
                 and family_denies_scheme(family_name, pinned)
             ):
-                # A GGUF pick without an explicit base takes it from its card tag, resolved over the network at load.
-                # This gate stays network-free, so judge the scheme on a base whose gate record lifts the family deny,
-                # as the loader will if the pick is that base; the loader still refuses any other base.
+                # GGUF pick without a base: judge network-free on a gate-lifted base; the loader refuses any other.
                 base_repo = nvfp4_gated_base(family_name)
             if not dense_quant_supported_kind(model_kind):
                 reason = dense_quant_unsupported_kind_reason(model_kind)
@@ -2116,16 +2113,12 @@ class DiffusionBackend:
             force_dense = _has_active_lora(kwargs.get("loras")),
             logger = None,
         )
-        # A prequant loads a small checkpoint, so widening defeats the savings and can disk-full. Only if this user can
-        # really fetch it: the family table names it whether or not the repo is readable.
         if candidate is None:
             return False
         if candidate.prequant:
             scheme = getattr(candidate, "scheme", None)
             if self._hosted_prequant_reachable(fam, scheme, kwargs):
                 return False
-            # Carried into load_pipeline (begin_load hands it these kwargs), so the load sizes and fit-checks this
-            # scheme as the dense bf16 build it will fall back to, not as a checkpoint that will never arrive.
             kwargs["_prequant_unreachable"] = tuple(
                 dict.fromkeys((*kwargs.get("_prequant_unreachable", ()), scheme))
             )
@@ -2162,7 +2155,6 @@ class DiffusionBackend:
             if prequant_checkpoint_cached(source, cache_dir = hub_cache_dir()):
                 return True
             if kwargs.get("local_files_only"):
-                # The loader may not fetch it, so an uncached checkpoint is unreachable whatever the Hub says.
                 return False
             return (
                 self._prequant_source_hub_entry(source, kwargs.get("hf_token"), scheme = scheme)
@@ -3308,7 +3300,6 @@ class DiffusionBackend:
         from .diffusion_nvfp4_flag import nvfp4_blocked, nvfp4_repo_blocked
 
         if nvfp4_blocked(scheme) or nvfp4_repo_blocked(source.location):
-            # The NVFP4 switch is off: no Hub request to a *-NVFP4 repo, and the plan keeps the dense shards.
             return None
         from huggingface_hub import HfApi
         from huggingface_hub.errors import RepositoryNotFoundError
@@ -3316,9 +3307,7 @@ class DiffusionBackend:
         try:
             info = HfApi(token = hf_token or None).model_info(source.location, files_metadata = True)
         except RepositoryNotFoundError as exc:
-            # 401 / 403 / 404 on the repo itself (private, gated, not yet published): the pick has no hosted
-            # checkpoint, exactly as when the family names none, and the dense shards stay in the plan. Not a
-            # partial listing, so it must not mark the plan failed. GatedRepoError subclasses this.
+            # 401/403/404 on the repo = no hosted checkpoint, not a partial listing (GatedRepoError subclasses this).
             logger.info(
                 "diffusion.prequant_repo_unavailable: %s (%s)", source.location, type(exc).__name__
             )
@@ -4375,8 +4364,6 @@ class DiffusionBackend:
         # The scheme the plan settled, or PIPELINE_SEED_DECLINED; None for a direct call, which the pull never scoped.
         _pipeline_prequant_planned: Optional[str] = None,
         _pipeline_prequant_skipped: tuple[str, ...] = (),
-        # Schemes whose hosted prequant the prefetch found this user cannot fetch (401 / 403 / 404). Sized and
-        # fit-checked as the dense bf16 build the loader falls back to. Empty for a direct call, which never probed.
         _prequant_unreachable: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         with self._load_cancel_lock:
@@ -4650,7 +4637,6 @@ class DiffusionBackend:
                     )
                     is None
                 ):
-                    # An explicit scheme is never swapped for another.
                     transformer_quant_decline = explain_unusable_scheme(
                         getattr(fam, "name", None),
                         transformer_quant_pinned,
@@ -4794,8 +4780,6 @@ class DiffusionBackend:
                             and candidate.prequant
                             and getattr(candidate, "scheme", None) in _prequant_unreachable
                         ):
-                            # The family table names a checkpoint this user cannot fetch, so the load falls back to
-                            # the dense build: size THAT, as the download plan did when it staged the dense shards.
                             candidate = resolve_dense_quant_candidate(
                                 fam = fam,
                                 target = target,
@@ -7808,7 +7792,6 @@ class DiffusionBackend:
                         # __call__, so a raised call leaves a residual the next forward trips over.
                         if state.transformer_cache:
                             self._reset_step_cache(state.pipe)
-                        # Per CHUNK: a split batch restarts at step 0.
                         protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
                         try:
                             # inference_mode is faster than no_grad and numerically identical here.
