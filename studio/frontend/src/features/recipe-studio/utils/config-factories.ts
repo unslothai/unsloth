@@ -406,7 +406,10 @@ export function makeSeedConfig(
     hf_split: "",
     hf_path: "",
     hf_token: "",
-    hf_endpoint: "https://huggingface.co",
+    // Empty, not getHfEndpoint(): a seed created before /api/health reports the
+    // mirror would pin the official host into the recipe, and the field is not
+    // user-editable. buildSeedConfig resolves a blank one at build time.
+    hf_endpoint: "",
     local_file_name: "",
     ...(seedSourceType === "unstructured"
       ? { unstructured_upload_uid: makeUnstructuredUploadUid() }

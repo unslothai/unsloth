@@ -1,0 +1,634 @@
+# The Windows on ARM wheelhouse: build, SIGN and publish the two win_arm64 wheels the
+# native ARM64 installer cannot get anywhere else.
+#
+#   pyarrow    -- mandatory. `datasets` imports it, and PyPI has published no win_arm64 wheel
+#                 in any release (apache/arrow#48539 adds the CI support and is still open).
+#                 Its sdist needs Arrow C++, vcpkg and the MSVC ARM64 toolchain, which is
+#                 ~45 min on this runner and flatly out of reach on a user's machine.
+#   sqlite-vec -- optional (RAG). PyPI ships one py3-none-win_amd64 wheel: pure Python plus a
+#                 single x64 vec0.dll. The port is that DLL rebuilt for ARM64.
+#
+# Signed, because these are the only binaries in the stack we produce ourselves. Everything
+# else on that install comes from PyPI or from NVIDIA. An unsigned .pyd we host and tell the
+# installer to fetch is the weakest link in the chain, and Authenticode is what Windows,
+# SmartScreen and a WDAC policy actually check. The procedure is release-desktop.yml's,
+# unchanged: the digest-pinned trusted-signing-cli, sign-with-trusted-signing.ps1, and the
+# release-signing environment gating the Azure secrets.
+#
+# A .whl cannot be Authenticode signed (a zip has no subject interface package), so what is
+# signed is every PE inside it; sign_wheel_binaries.py repacks and regenerates RECORD.
+#
+# Dispatch only. This holds signing credentials and writes a release, so it must never be
+# reachable from a pull request, and `publish: false` is the default: a run then builds,
+# signs and verifies, and leaves the wheels as artifacts to inspect.
+name: Windows on ARM wheelhouse
+
+on:
+  workflow_dispatch:
+    inputs:
+      arrow_tag:
+        description: "apache/arrow tag to build pyarrow from"
+        default: "apache-arrow-25.0.1"
+      sqlite_vec_tag:
+        description: "asg017/sqlite-vec tag"
+        default: "v0.1.9"
+      release_tag:
+        description: "release tag to publish under"
+        default: "Windows-ARM64"
+      publish:
+        description: "upload to the release (otherwise artifacts only)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: woa-wheelhouse-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Windows ARM64 support in Arrow's wheel build is CI-only and still unmerged, so it is
+  # overlaid onto the release tag. Both halves move together or not at all.
+  ARROW_WOA_REPO: MugundanMCW/arrow
+  ARROW_WOA_REF: Pyarrow_WoA
+
+jobs:
+  build-pyarrow:
+    name: pyarrow win_arm64 / cp${{ matrix.python }}
+    runs-on: windows-11-arm
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13', '3.14']
+    env:
+      CMAKE_BUILD_TYPE: release
+      ARCH: ARM64
+    steps:
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: apache/arrow
+          ref: ${{ inputs.arrow_tag }}
+          path: arrow
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ env.ARROW_WOA_REPO }}
+          ref: ${{ env.ARROW_WOA_REF }}
+          path: arrow-woa
+          sparse-checkout: |
+            ci/scripts
+            ci/vcpkg
+          sparse-checkout-cone-mode: false
+
+      # Every edit below asserts on the text it replaces, so an upstream rename fails this
+      # step rather than silently producing an x64 wheel with an arm64 filename.
+      - name: Overlay the ARM64 build support onto the release tag
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Copy-Item arrow-woa/ci/scripts/python_wheel_windows_build.bat arrow/ci/scripts/ -Force
+          Copy-Item arrow-woa/ci/scripts/python_wheel_windows_test.bat arrow/ci/scripts/ -Force
+
+          $json = 'arrow/ci/vcpkg/vcpkg.json'
+          $t = Get-Content $json -Raw
+          $edits = @(
+            @('"supports": "x64 | (arm64 & !windows)"', '"supports": "x64 | arm64"'),
+            @("    `"xsimd`",", "    {`n      `"name`": `"xsimd`",`n      `"platform`": `"!(arm64 & windows)`"`n    },")
+          )
+          foreach ($e in $edits) {
+            if (-not $t.Contains($e[0])) { throw "vcpkg.json no longer contains: $($e[0])" }
+            $t = $t.Replace($e[0], $e[1])
+          }
+          Set-Content $json -Value $t -Encoding ascii -NoNewline
+          python -c "import json; json.load(open('$json'))"
+
+          # The upstream script hardcodes VS 2022 Enterprise and its generator. This image
+          # moves to VS 2026, so both come from the installed toolset instead.
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath
+          if (-not $vs) { throw 'no Visual Studio with the ARM64 C++ tools' }
+          $major = [int]((& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationVersion) -split '\.')[0]
+          $generator = switch ($major) { 17 { 'Visual Studio 17 2022' } 18 { 'Visual Studio 18 2026' } default { throw "unknown Visual Studio major $major" } }
+          $bat = 'arrow/ci/scripts/python_wheel_windows_build.bat'
+          $b = Get-Content $bat -Raw
+          $edits = @(
+            @('set VCVARS_BAT=C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsarm64.bat', "set VCVARS_BAT=$vs\VC\Auxiliary\Build\vcvarsarm64.bat"),
+            @('set CMAKE_GENERATOR=Visual Studio 17 2022', "set CMAKE_GENERATOR=$generator")
+          )
+          foreach ($e in $edits) {
+            if (-not $b.Contains($e[0])) { throw "build.bat no longer contains: $($e[0])" }
+            $b = $b.Replace($e[0], $e[1])
+          }
+          Set-Content $bat -Value $b -Encoding ascii
+          if (-not (Test-Path "$vs\VC\Auxiliary\Build\vcvarsarm64.bat")) { throw "no vcvarsarm64.bat under $vs" }
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: arm64
+
+      - name: Python build dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -c "import sys, sysconfig; print(sys.version, sysconfig.get_platform())"
+          python -m pip install --upgrade pip
+          python -m pip install -r arrow/python/requirements-wheel-build.txt
+          "PYTHON_CMD=$env:pythonLocation\python.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Version from the C++ tree
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $cm = Get-Content arrow/cpp/CMakeLists.txt -Raw
+          if ($cm -notmatch 'set\(ARROW_VERSION "([0-9.]+)(-SNAPSHOT)?"\)') { throw 'no ARROW_VERSION' }
+          $v = $Matches[1]; if ($Matches[2]) { $v = "$v.dev${{ github.run_number }}" }
+          Write-Host "pyarrow version: $v"
+          "SETUPTOOLS_SCM_PRETEND_VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # Trimmed to what `datasets` reaches: this removes gRPC and the cloud SDKs from the
+      # vcpkg build entirely, which is most of the wall clock and most of the attack surface.
+      - name: Trim the build to what datasets needs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bat = 'arrow/ci/scripts/python_wheel_windows_build.bat'
+          $t = Get-Content $bat -Raw
+          foreach ($flag in 'ARROW_AZURE','ARROW_FLIGHT','ARROW_GCS','ARROW_HDFS','ARROW_ORC','ARROW_S3','ARROW_SUBSTRAIT','ARROW_TENSORFLOW','ARROW_WITH_OPENTELEMETRY') {
+            $before = $t
+            $t = $t -replace "set $flag=ON", "set $flag=OFF"
+            if ($t -eq $before) { throw "did not find 'set $flag=ON'" }
+          }
+          Set-Content $bat -Value $t -Encoding ascii
+          Select-String -Path $bat -Pattern '^set ARROW_' | ForEach-Object { $_.Line }
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: C:\vcpkg\installed
+          key: vcpkg-arm64-static-md-trimmed-${{ inputs.arrow_tag }}-${{ hashFiles('arrow/ci/vcpkg/vcpkg.json') }}
+          restore-keys: |
+            vcpkg-arm64-static-md-trimmed-${{ inputs.arrow_tag }}-
+            vcpkg-arm64-static-md-trimmed-
+
+      # Retried: the ports fetch source tarballs from archive.apache.org and friends, and one
+      # timed-out download fails the whole step. Packages already built survive an attempt.
+      - name: vcpkg dependencies (base + json + parquet)
+        shell: cmd
+        run: |
+          cd arrow\ci\vcpkg
+          set attempt=0
+          :again
+          set /a attempt+=1
+          C:\vcpkg\vcpkg.exe install ^
+            --triplet arm64-windows-static-md ^
+            --x-install-root=C:\vcpkg\installed ^
+            --x-manifest-root=. ^
+            --x-feature=json ^
+            --x-feature=parquet && exit /B 0
+          if %attempt% GEQ 3 exit /B 1
+          echo vcpkg install failed, attempt %attempt% of 3; retrying in 60s
+          timeout /t 60 /nobreak >nul
+          goto again
+
+      - name: Build Arrow C++ and the pyarrow wheel
+        shell: cmd
+        run: |
+          call "arrow\ci\scripts\python_wheel_windows_build.bat"
+
+      # A win_arm64 filename says nothing about what was linked in, so every native image is
+      # opened and its COFF machine checked before anything downstream trusts the wheel.
+      - name: Verify the wheel is really ARM64
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $whl = Get-ChildItem arrow/python/repaired_wheels/*.whl | Select-Object -First 1
+          Write-Host "wheel: $($whl.Name) ($([math]::Round($whl.Length/1MB)) MB)"
+          if ($whl.Name -notmatch '-win_arm64\.whl$') { throw "not a win_arm64 wheel: $($whl.Name)" }
+          python -c @"
+          import struct, sys, zipfile
+          z = zipfile.ZipFile(sys.argv[1]); bad = []; n = 0
+          for name in z.namelist():
+              if not name.lower().endswith(('.pyd', '.dll')): continue
+              d = z.read(name); off = struct.unpack_from('<I', d, 0x3C)[0]
+              machine = struct.unpack_from('<H', d, off + 4)[0]; n += 1
+              if machine != 0xAA64: bad.append((name, hex(machine)))
+          print(n, 'native images, all ARM64' if not bad else bad)
+          sys.exit(1 if bad or n == 0 else 0)
+          "@ $whl.FullName
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Smoke test in a fresh venv
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $whl = Get-ChildItem arrow/python/repaired_wheels/*.whl | Select-Object -First 1
+          python -m venv smoke
+          smoke\Scripts\python.exe -m pip install --quiet $whl.FullName numpy
+          smoke\Scripts\python.exe -c @"
+          import pyarrow as pa, pyarrow.parquet as pq, pyarrow.dataset as ds, pyarrow.compute as pc, pyarrow.csv, pyarrow.json, sysconfig
+          print('pyarrow', pa.__version__, sysconfig.get_platform())
+          t = pa.table({'a': [1, 2, 3], 'b': ['x', 'y', 'z']})
+          pq.write_table(t, 'smoke.parquet')
+          back = pq.read_table('smoke.parquet')
+          assert back.equals(t), back
+          print('sum a =', pc.sum(back['a']).as_py())
+          print('dataset rows =', ds.dataset('smoke.parquet').count_rows())
+          print('compression:', [c for c in ('snappy','zstd','lz4','brotli','gzip','bz2') if pa.Codec.is_available(c)])
+          "@
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      # The reason the wheel exists at all, so it is a gate and not a nice-to-have.
+      - name: Does datasets work on it
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          smoke\Scripts\python.exe -m pip install --quiet datasets
+          smoke\Scripts\python.exe -c @"
+          from datasets import Dataset
+          d = Dataset.from_dict({'text': ['hello', 'world'], 'n': [1, 2]})
+          d = d.map(lambda r: {'len': len(r['text'])})
+          d.to_parquet('ds.parquet')
+          print('datasets round-trip ok:', Dataset.from_parquet('ds.parquet').to_dict())
+          "@
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: unsigned-pyarrow-cp${{ matrix.python }}
+          path: arrow/python/repaired_wheels/*.whl
+          if-no-files-found: error
+
+  build-sqlite-vec:
+    name: sqlite-vec win_arm64
+    runs-on: windows-11-arm
+    timeout-minutes: 30
+    steps:
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: asg017/sqlite-vec
+          ref: ${{ inputs.sqlite_vec_tag }}
+          path: sv
+          fetch-depth: 0
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          path: tools
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.13'
+          architecture: arm64
+
+      # scripts/vendor.sh without the unzip dependency. The amalgamation URL is read from
+      # that script rather than hardcoded here, so the tag decides which sqlite is vendored.
+      - name: Vendor the sqlite amalgamation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vendor = Get-Content sv/scripts/vendor.sh -Raw
+          if ($vendor -notmatch '(https://www\.sqlite\.org/\d{4}/sqlite-amalgamation-\d+\.zip)') {
+            throw "could not read the amalgamation URL out of scripts/vendor.sh"
+          }
+          $url = $Matches[1]
+          Write-Host "amalgamation: $url"
+          Invoke-WebRequest -Uri $url -OutFile amalgamation.zip -UseBasicParsing -MaximumRetryCount 3 -RetryIntervalSec 5
+          Expand-Archive amalgamation.zip -DestinationPath amalgamation
+          New-Item -ItemType Directory -Force -Path sv/vendor | Out-Null
+          Get-ChildItem amalgamation/*/* | Move-Item -Destination sv/vendor
+          Get-ChildItem sv/vendor
+
+      - name: Generate sqlite-vec.h from its template
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Set-Location sv
+          $version = (Get-Content VERSION -Raw).Trim()
+          $parts = $version.Split('.')
+          $source = (git log -n 1 --pretty=format:%H -- VERSION)
+          $date = (git log -n 1 --pretty=format:%cI -- VERSION)
+          $h = Get-Content sqlite-vec.h.tmpl -Raw
+          $h = $h.Replace('${VERSION}', $version).Replace('${DATE}', $date).Replace('${SOURCE}', $source)
+          $h = $h.Replace('${VERSION_MAJOR}', $parts[0]).Replace('${VERSION_MINOR}', $parts[1]).Replace('${VERSION_PATCH}', ($parts[2] -split '-')[0])
+          if ($h -match '\$\{') { throw "unreplaced placeholder in sqlite-vec.h" }
+          Set-Content sqlite-vec.h -Value $h -Encoding ascii
+          "SQLITE_VEC_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Locate the ARM64 MSVC environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath
+          if (-not $vs) { $vs = & $vswhere -latest -products * -property installationPath }
+          $bat = Join-Path $vs 'VC\Auxiliary\Build\vcvarsarm64.bat'
+          if (-not (Test-Path $bat)) { throw "no vcvarsarm64.bat under $vs" }
+          Write-Host "vcvars: $bat"
+          "VCVARS_BAT=$bat" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # The upstream release workflow's own cl line, run natively for arm64.
+      - name: Compile vec0.dll for ARM64
+        shell: cmd
+        run: |
+          call "%VCVARS_BAT%" || exit /B 1
+          cd sv
+          mkdir dist
+          cl.exe /nologo /W4 /O2 /LD /Ivendor sqlite-vec.c /Fe:dist\vec0.dll || exit /B 1
+          dir dist
+
+      # The PyPI wheel is pure Python plus that one DLL, generated by sqlite-dist, so the
+      # port is a DLL swap, a tag rewrite and a regenerated RECORD -- not a rebuild.
+      - name: Repack the PyPI wheel with the ARM64 DLL
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m pip download --quiet --no-deps --only-binary=:all: --platform win_amd64 --python-version 3.13 -d amd64 "sqlite-vec==$env:SQLITE_VEC_VERSION"
+          $src = Get-ChildItem amd64/*.whl | Select-Object -First 1
+          python tools/.github/scripts/repack_sqlite_vec.py $src.FullName sv/dist/vec0.dll wheel
+          Get-ChildItem wheel
+
+      - name: Load it through sqlite3 and run a vec0 query
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $whl = Get-ChildItem wheel/*.whl | Select-Object -First 1
+          python -m venv smoke
+          smoke\Scripts\python.exe -m pip install --quiet $whl.FullName
+          smoke\Scripts\python.exe -c @"
+          import sqlite3, sqlite_vec, sysconfig
+          print('platform', sysconfig.get_platform(), 'sqlite', sqlite3.sqlite_version)
+          db = sqlite3.connect(':memory:')
+          db.enable_load_extension(True)
+          sqlite_vec.load(db)
+          db.enable_load_extension(False)
+          print('vec_version', db.execute('select vec_version()').fetchone()[0])
+          db.execute('create virtual table v using vec0(embedding float[4])')
+          for rid, vec in [(1, [1, 0, 0, 0]), (2, [0, 1, 0, 0]), (3, [0.9, 0.1, 0, 0])]:
+              db.execute('insert into v(rowid, embedding) values (?, ?)', (rid, sqlite_vec.serialize_float32(vec)))
+          got = db.execute('select rowid, distance from v where embedding match ? order by distance limit 2', (sqlite_vec.serialize_float32([1, 0, 0, 0]),)).fetchall()
+          print('knn', got)
+          assert [r[0] for r in got] == [1, 3], got
+          "@
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: unsigned-sqlite-vec
+          path: wheel/*.whl
+          if-no-files-found: error
+
+  sign:
+    name: Sign the native binaries
+    needs: [build-pyarrow, build-sqlite-vec]
+    # x64, deliberately. The wheels are ARM64 but Authenticode does not care what the host
+    # is, and trusted-signing-cli is an x64 binary whose digest is pinned for windows-latest
+    # in release-desktop.yml. Signing here runs the same verified bytes rather than the same
+    # bytes under emulation.
+    runs-on: windows-latest
+    timeout-minutes: 45
+    # The Azure Trusted Signing secrets are read by this job and no other. Naming the
+    # environment is what makes them gateable; add required reviewers in repo settings to
+    # close the gap, exactly as release-desktop.yml documents.
+    environment: release-signing
+    steps:
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: unsigned-*
+          merge-multiple: true
+          path: unsigned
+
+      - name: List what was built
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $wheels = Get-ChildItem unsigned/*.whl
+          $wheels | ForEach-Object { "{0,-52} {1,8:N0} KB" -f $_.Name, ($_.Length / 1KB) }
+          # Four pyarrow (cp311-cp314) and one sqlite-vec. A short matrix leg would otherwise
+          # publish a wheelhouse missing an interpreter, which reads as "no wheel" downstream.
+          if ($wheels.Count -ne 5) { throw "expected 5 wheels, got $($wheels.Count)" }
+
+      # Same pin as release-desktop.yml. The URL is reproducibility, the digest is the gate:
+      # a release asset can be replaced after upload, and a replaced one must fail the run
+      # rather than sign with an unknown binary. Bump both together.
+      - name: Install trusted-signing-cli
+        shell: pwsh
+        env:
+          TRUSTED_SIGNING_CLI_URL: "https://github.com/Levminer/artifact-signing-cli/releases/download/0.10.0/trusted-signing-cli.exe"
+          TRUSTED_SIGNING_CLI_SHA256: "8c9d750ca582891a7433925dcf302d5d3761fbed757b46c4bf5b417562dccb0e"
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dir = Join-Path $env:RUNNER_TEMP "trusted-signing-cli"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $dest = Join-Path $dir "trusted-signing-cli.exe"
+          Invoke-WebRequest -Uri $env:TRUSTED_SIGNING_CLI_URL -OutFile $dest -MaximumRetryCount 3 -RetryIntervalSec 5
+          $actual = (Get-FileHash -Path $dest -Algorithm SHA256).Hash.ToLower()
+          $expected = $env:TRUSTED_SIGNING_CLI_SHA256.ToLower()
+          if ($actual -ne $expected) {
+            Remove-Item -Force $dest
+            Write-Output "::error::trusted-signing-cli digest mismatch, refusing to sign with an unverified binary. Expected $expected, got $actual."
+            exit 1
+          }
+          Write-Output "verified trusted-signing-cli sha256=$actual"
+          $dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Verify trusted-signing-cli
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $cli = Get-Command trusted-signing-cli -ErrorAction SilentlyContinue
+          if (-not $cli) {
+            Write-Output "::error::trusted-signing-cli is not on PATH. Check the install step above."
+            exit 1
+          }
+          # The helper invokes it by bare name, so whatever PATH resolves is what signs. Only
+          # the digest-verified copy may do that.
+          $verified = [IO.Path]::GetFullPath((Join-Path (Join-Path $env:RUNNER_TEMP "trusted-signing-cli") "trusted-signing-cli.exe"))
+          if ([IO.Path]::GetFullPath($cli.Source) -ne $verified) {
+            Write-Output "::error::trusted-signing-cli resolved to $($cli.Source), not the verified $verified."
+            exit 1
+          }
+          try { & $cli.Source --version }
+          catch {
+            $detail = ($_.Exception.Message -replace '\s+', ' ').Trim()
+            Write-Output "::error::trusted-signing-cli could not be started. Underlying error: $detail"
+            exit 1
+          }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error::trusted-signing-cli is on PATH but exited $LASTEXITCODE."
+            exit 1
+          }
+
+      - name: Sign every native binary inside the wheels
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+          AZURE_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_CERTIFICATE_PROFILE_NAME }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          python .github/scripts/sign_wheel_binaries.py (Get-ChildItem unsigned/*.whl | ForEach-Object { $_.FullName }) `
+            --out signed `
+            --signer "pwsh -NoProfile -File studio/src-tauri/windows/sign-with-trusted-signing.ps1 -Path"
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error::signing failed"; exit 1 }
+
+      # Independent of the signing tool's own report: unpack what will actually be published
+      # and ask Windows whether each signature validates on this machine.
+      - name: Verify the published wheels validate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bad = 0; $ok = 0; $ms = 0
+          foreach ($whl in Get-ChildItem signed/*.whl) {
+            $dir = Join-Path $env:RUNNER_TEMP ("verify-" + $whl.BaseName)
+            Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+            Expand-Archive -Path $whl.FullName -DestinationPath $dir
+            foreach ($pe in Get-ChildItem $dir -Recurse -Include *.pyd, *.dll) {
+              $sig = Get-AuthenticodeSignature $pe.FullName
+              if ($sig.Status -ne 'Valid') {
+                Write-Output "::error::$($whl.Name) :: $($pe.Name) is $($sig.Status)"
+                $bad++
+                continue
+              }
+              if ($sig.SignerCertificate.Subject -match 'Unsloth') { $ok++ } else { $ms++ }
+            }
+          }
+          Write-Output "signed by us: $ok, upstream-signed (Microsoft redistributables): $ms, invalid: $bad"
+          if ($bad -gt 0) { exit 1 }
+          if ($ok -eq 0) { Write-Output "::error::nothing carries our signature"; exit 1 }
+
+      # RECORD is rewritten by the signing step, so this proves the wheel is still installable
+      # and that its own manifest agrees with its contents.
+      - name: Install each wheel and check its RECORD
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -c @"
+          import base64, hashlib, pathlib, sys, zipfile
+          bad = 0
+          for whl in sorted(pathlib.Path('signed').glob('*.whl')):
+              z = zipfile.ZipFile(whl)
+              record = next(n for n in z.namelist() if n.endswith('.dist-info/RECORD'))
+              rows = {}
+              for line in z.read(record).decode().splitlines():
+                  if not line.strip():
+                      continue
+                  name, digest, _, = (line.split(',') + ['', ''])[:3]
+                  rows[name] = digest
+              for name in z.namelist():
+                  if name == record:
+                      continue
+                  want = rows.get(name)
+                  if not want:
+                      print('MISSING from RECORD:', whl.name, name); bad += 1; continue
+                  got = 'sha256=' + base64.urlsafe_b64encode(hashlib.sha256(z.read(name)).digest()).rstrip(b'=').decode()
+                  if got != want:
+                      print('DIGEST MISMATCH:', whl.name, name); bad += 1
+              print(whl.name, 'RECORD ok,', len(rows), 'entries')
+          sys.exit(1 if bad else 0)
+          "@
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Build index.txt and SHA256SUMS
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $wheels = Get-ChildItem signed/*.whl | Sort-Object Name
+          # Flat find-links listing: install.ps1 reads this, then fetches each name beside it.
+          ($wheels | ForEach-Object { $_.Name }) -join "`n" | Set-Content signed/index.txt -Encoding ascii
+          ($wheels | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name }) -join "`n" |
+            Set-Content signed/SHA256SUMS -Encoding ascii
+          Get-Content signed/index.txt
+          Get-Content signed/SHA256SUMS
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: woa-wheelhouse-signed
+          path: |
+            signed/*.whl
+            signed/index.txt
+            signed/SHA256SUMS
+          if-no-files-found: error
+
+  publish:
+    name: Publish the wheelhouse
+    needs: sign
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: woa-wheelhouse-signed
+          path: wheelhouse
+
+      # A release, not a branch: GitHub reports a per-asset `digest` through the release API,
+      # which is the same verification the installer already applies to the llama.cpp bundles.
+      - name: Create or update the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Windows on ARM wheelhouse" \
+              --notes "Signed win_arm64 wheels for the native Windows on ARM installer: pyarrow (cp311-cp314) and sqlite-vec. Neither publishes a win_arm64 wheel on PyPI. The native binaries inside each wheel are Authenticode signed through Azure Trusted Signing; SHA256SUMS lists the digest of every wheel as published."
+          fi
+          # --clobber: this tag is a rolling wheelhouse, and a rebuilt wheel for the same
+          # interpreter is meant to replace its predecessor rather than fail the upload.
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            wheelhouse/*.whl wheelhouse/index.txt wheelhouse/SHA256SUMS
+
+      - name: Report the wheelhouse URL
+        shell: bash
+        env:
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
+          {
+            echo "### Windows on ARM wheelhouse published"
+            echo
+            echo 'Point the installer at it with:'
+            echo
+            echo '```powershell'
+            echo "\$env:UNSLOTH_WOA_WHEELHOUSE = \"$url\""
+            echo '```'
+            echo
+            echo '| wheel | sha256 |'
+            echo '| --- | --- |'
+            while read -r digest name; do echo "| $name | \`$digest\` |"; done < wheelhouse/SHA256SUMS
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -20,6 +20,8 @@ export interface VideoResolvedControl {
   // "applied" (honored, or nothing was asked) | "fell_back" | "unsupported". Absent on older backends.
   status?: "applied" | "fell_back" | "unsupported";
   reason: string;
+  // "prequant:<repo>/<file>" when a hosted checkpoint was seeded; absent on a runtime quantise.
+  artifact?: string | null;
 }
 
 // Per-family generation defaults + shape constraints, from status.defaults when loaded.
@@ -218,11 +220,12 @@ export interface GalleryVideo {
   text_encoder_quant?: string | null;
   memory_mode?: string | null;
   offload_policy?: string | null;
-  // Creation time (ISO 8601 timestamp).
   created_at: string;
   // Library state, not recipe: stored beside the clip, absent on sidecars written before this existed.
   pinned?: boolean;
   archived?: boolean;
+  /** The server's unpinned sort key: the drag key, else the file mtime. */
+  order_at?: number | null;
 }
 
 // Acknowledgement that the job started; the saved record arrives via getVideoGenerateProgress at phase "completed".
@@ -333,6 +336,31 @@ export async function getVideoGallery(
 }
 
 /** Pin/unpin or archive/restore one clip; omitted flags are left alone. Returns the new record. */
+/** Move one video to just after `afterId` (null = front). The server also decides the pin. */
+export async function moveGalleryVideo(id: string, afterId: string | null): Promise<GalleryVideo> {
+  return parseJson(
+    await authFetch(`/api/inference/video/gallery/${id}/move`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ after_id: afterId }),
+    }),
+  );
+}
+
+/** Copy one video into a chat project's folder. */
+export async function addGalleryVideoToProject(
+  id: string,
+  projectId: string,
+): Promise<{ path: string; already: boolean }> {
+  return parseJson(
+    await authFetch(`/api/inference/video/gallery/${id}/project`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project_id: projectId }),
+    }),
+  );
+}
+
 export async function setGalleryVideoFlags(
   id: string,
   flags: { pinned?: boolean; archived?: boolean },
@@ -370,6 +398,21 @@ export async function fetchGalleryVideoSignedUrl(id: string): Promise<string> {
   // Absolute because consumers bypass authFetch, and a relative path under Tauri resolves
   // against the webview origin. No-op in the browser (empty apiBase).
   return apiUrl(body.url);
+}
+
+/** A still WebP poster for a gallery clip. The endpoint is bearer-gated, so keep
+ * the bytes in a revocable object URL instead of assigning its path to an img. */
+export async function fetchGalleryVideoThumbnail(
+  id: string,
+): Promise<{ url: string; bytes: number }> {
+  const res = await authFetch(
+    `/v1/videos/${encodeURIComponent(id)}/content?variant=thumbnail`,
+  );
+  if (!res.ok) throw new Error(await readFastApiError(res));
+  const blob = await res.blob();
+  // An empty 200 would cache a card that can never render, and the cache hit ends every retry.
+  if (blob.size === 0) throw new Error("The thumbnail response was empty.");
+  return { url: URL.createObjectURL(blob), bytes: blob.size };
 }
 
 /** Server-side transcode for the Download menu (WebM / GIF). The backend 501s with a readable

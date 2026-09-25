@@ -5,17 +5,24 @@
 // the device. No React/DOM deps so they are easy to test.
 
 import { classifyGgufFit } from "../../../../lib/gguf-fit.ts";
-import { classifyMediaGgufFit } from "./model-catalog.ts";
+import { classifyMediaGgufFit, type curatedArtifactFit } from "./model-catalog.ts";
 
 const GGUF_SUFFIX_RE = /-GGUF(?:$|-)/i;
-const MLX_RE = /-MLX(?:$|-)/i;
+// Mirrors the backend's _looks_like_mlx_repo: owner prefix, or a bounded mlx token in the leaf.
+const MLX_RE = /(?:^|[-_.])mlx(?:$|[-_.])/i;
+const MLX_OWNER_PREFIX = "mlx-community/";
+// Callers pass LocalModelInfo.id, a filesystem path, so a Windows one must split too.
+const PATH_SEP_RE = /[\\/]/;
 
 export function isGgufId(id: string, hintedIsGguf?: boolean): boolean {
   return Boolean(hintedIsGguf) || GGUF_SUFFIX_RE.test(id);
 }
 
 export function isMlxId(id: string): boolean {
-  return MLX_RE.test(id);
+  const trimmed = id.trim();
+  if (trimmed.toLowerCase().startsWith(MLX_OWNER_PREFIX)) return true;
+  const leaf = trimmed.split(PATH_SEP_RE).filter(Boolean).at(-1) ?? trimmed;
+  return MLX_RE.test(leaf);
 }
 
 // "mobile" build token (e.g. "gemma-4-E4B-it-qat-mobile-GGUF"); bounded so it never matches inside a longer word.
@@ -320,8 +327,8 @@ export function searchableRecommendedIds(
 }
 
 /** Order Recommended: curated seeds first in catalog order, then the rest of the listing, each
- *  id once. A seed hands off only to a row that survived `keep`, so a painted curated row
- *  does not vanish when the listing reports it with rejected metadata. The taking-over row
+ *  id once. With `familyOf`, families follow the listing's sort instead. A seed hands off only
+ *  to a row that survived `keep`, so a painted curated row does not vanish when the listing reports it with rejected metadata. The taking-over row
  *  inherits the seed's curated size, or a prequantized artifact would flip to the params
  *  guess, which assumes a quant still to come. */
 export function orderRecommendedRows<
@@ -332,8 +339,14 @@ export function orderRecommendedRows<
   keep: (row: T) => boolean;
   deviceFiltered: boolean;
   fits: (row: T) => boolean;
+  /** Catalog family of a repo id; when set, first-party rows lead and families follow the
+   *  listing's sort. `results` must be one sorted listing of unsloth/* repos, since a family ranks
+   *  by its index there. */
+  familyOf?: (id: string) => string | undefined;
+  /** Family keys (as returned by `familyOf`) that lead the list in this order, whatever the sort. */
+  pinnedFamilies?: readonly string[];
 }): T[] {
-  const { seeds, results, keep, deviceFiltered, fits } = opts;
+  const { seeds, results, keep, deviceFiltered, fits, familyOf, pinnedFamilies = [] } = opts;
   const seedById = new Map(seeds.map((s) => [s.id, s]));
   const rows = results.filter(keep).map((row) => {
     const curatedSizeBytes = seedById.get(row.id)?.curatedSizeBytes;
@@ -351,5 +364,87 @@ export function orderRecommendedRows<
   const rest = (deviceFiltered ? rows.filter(fits) : rows).filter(
     (r) => !curatedIds.has(r.id),
   );
-  return [...curated, ...rest];
+  const ordered = [...curated, ...rest];
+  if (!familyOf) return ordered;
+  // First-party rows lead. A family ranks at its best listed artifact and keeps its rows together;
+  // unlisted families go last, except first-party ones the unsloth listing can never return
+  // (unslothai/*), which keep their curated place on top.
+  const keyOf = (r: T) => familyOf(r.id) ?? r.id.toLowerCase();
+  const firstParty = (id: string) => /^unsloth(ai)?\//i.test(id);
+  const listable = new Set(
+    ordered.filter((r) => /^unsloth\//i.test(r.id)).map(keyOf),
+  );
+  const rank = new Map<string, number>();
+  results.forEach((r, i) => {
+    const key = keyOf(r);
+    if (!rank.has(key)) rank.set(key, i);
+  });
+  const firstSeen = new Map<string, number>();
+  ordered.forEach((r, i) => {
+    const key = keyOf(r);
+    if (!firstSeen.has(key)) firstSeen.set(key, i);
+  });
+  const pinIndex = new Map(pinnedFamilies.map((key, i) => [key, i]));
+  const sortKey = (r: T, i: number) => {
+    const key = keyOf(r);
+    // A pinned family leads as a whole, ahead of first-party rows that trend higher.
+    const pin = pinIndex.get(key);
+    if (pin != null) {
+      return [pin, 0, 0, firstSeen.get(key) ?? i, i];
+    }
+    const ours = firstParty(r.id);
+    const unranked = ours && !listable.has(key) ? -1 : Infinity;
+    return [
+      Number.POSITIVE_INFINITY,
+      ours ? 0 : 1,
+      rank.get(key) ?? unranked,
+      firstSeen.get(key) ?? i,
+      i,
+    ];
+  };
+  return ordered
+    .map((row, i) => ({ row, key: sortKey(row, i) }))
+    .sort((a, b) => {
+      for (let k = 0; k < a.key.length; k++) {
+        if (a.key[k] !== b.key[k]) return a.key[k] < b.key[k] ? -1 : 1;
+      }
+      return 0;
+    })
+    .map(({ row }) => row);
+}
+
+/** The allowance a curated row was judged against, the memory it is 70% of, and the unrounded size. */
+export type CuratedBudget = {
+  allowanceGb: number;
+  deviceGb: number;
+  device: "GPU" | "RAM";
+  sizeGb: number;
+};
+
+export function curatedBudget(
+  fit: NonNullable<ReturnType<typeof curatedArtifactFit>>,
+): CuratedBudget | undefined {
+  const { allowanceGb, deviceGb, device, sizeGb } = fit;
+  return allowanceGb != null && deviceGb != null && device && sizeGb != null
+    ? { allowanceGb, deviceGb, device, sizeGb }
+    : undefined;
+}
+
+/** Over-budget text for a curated row. When the whole-GB badge figure does not read above the
+ *  one-decimal budget (24 against 24.1), the size is rounded up and the budget down to a tenth, so
+ *  the shown size is always strictly above the shown budget. The epsilon keeps 16.7999... at 16.8. */
+export function curatedBudgetText(est: number, gpuGb: number, budget: CuratedBudget): string {
+  const shownBudget = Number(budget.allowanceGb.toFixed(1));
+  const wholeReadsOver = est > shownBudget;
+  const needGb = wholeReadsOver
+    ? `${est}`
+    : (Math.ceil(budget.sizeGb * 10 - 1e-9) / 10).toFixed(1);
+  const budgetGb = wholeReadsOver
+    ? shownBudget.toFixed(1)
+    : (Math.floor(budget.allowanceGb * 10 + 1e-9) / 10).toFixed(1);
+  const of =
+    budget.device === "RAM"
+      ? `${Number(budget.deviceGb.toFixed(2))}GB available RAM`
+      : `a ${gpuGb}GB GPU`;
+  return `Needs ~${needGb}GB for weights (budget: ~${budgetGb}GB, 70% of ${of})`;
 }

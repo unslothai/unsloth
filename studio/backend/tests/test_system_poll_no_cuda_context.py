@@ -28,6 +28,72 @@ import textwrap
 import types
 from pathlib import Path
 
+
+def _shared_setup_1(monkeypatch):
+    monkeypatch.setattr(
+        hw,
+        "_get_parent_visible_gpu_spec",
+        lambda: {"raw": None, "numeric_ids": [0, 1], "supports_explicit_gpu_ids": True},
+    )
+
+
+def _shared_setup_2(monkeypatch):
+    mod = _apu_mod(gtt_total = _APU_GTT_TOTAL, carve_out = _APU_GTT_TOTAL)
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0])
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+
+
+def _shared_setup_3(monkeypatch):
+    gib = 1 << 30
+    torch_stub, _props = _summary_torch(
+        properties_total = 8 * gib,
+        driver_free = 98 * gib,
+        driver_total = 100 * gib,
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", lambda _props: True)
+    return _props, gib
+
+
+def _shared_setup_4(monkeypatch):
+    monkeypatch.setattr(
+        hw,
+        "_get_parent_visible_gpu_spec",
+        lambda: {"raw": None, "numeric_ids": [0], "supports_explicit_gpu_ids": True},
+    )
+
+
+def _shared_setup_5(monkeypatch):
+    for name in (
+        "GPU_DEVICE_ORDINAL",
+        "ROCR_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "CUDA_VISIBLE_DEVICES",
+    ):
+        monkeypatch.delenv(name, raising = False)
+
+
+def _shared_setup_6(mod, monkeypatch):
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw, "_hip_runtime_version", lambda: (6, 4))
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    inventory = hw._torch_get_device_inventory([0])[0]
+    return inventory
+
+
+def _shared_setup_7(monkeypatch):
+    from utils.hardware import amd
+
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Darwin")
+    return amd
+
+
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
@@ -195,11 +261,7 @@ def test_gpu_summary_prefers_context_free_driver_memory(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", torch_stub)
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "IS_ROCM", False)
-    monkeypatch.setattr(
-        hw,
-        "_get_parent_visible_gpu_spec",
-        lambda: {"raw": None, "numeric_ids": [0], "supports_explicit_gpu_ids": True},
-    )
+    _shared_setup_4(monkeypatch)
     monkeypatch.setattr(
         hw,
         "_smi_query",
@@ -215,16 +277,7 @@ def test_gpu_summary_prefers_context_free_driver_memory(monkeypatch):
 
 
 def test_gpu_summary_pairs_rocm_apu_free_with_driver_total(monkeypatch):
-    gib = 1 << 30
-    torch_stub, _props = _summary_torch(
-        properties_total = 8 * gib,
-        driver_free = 98 * gib,
-        driver_total = 100 * gib,
-    )
-    monkeypatch.setitem(sys.modules, "torch", torch_stub)
-    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
-    monkeypatch.setattr(hw, "IS_ROCM", True)
-    monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", lambda _props: True)
+    _props, gib = _shared_setup_3(monkeypatch)
     monkeypatch.setattr(
         hw,
         "_smi_query",
@@ -242,16 +295,7 @@ def test_gpu_summary_apu_prefers_wddm_counters_over_process_local_hip(monkeypatc
     # hipMemGetInfo is process-local on Windows WDDM, so an APU takes its GTT
     # *total* from HIP but its *used* from the counters. Driver says 98 free of
     # 100; the counters say 40 GiB is in use across all processes -> 60 free.
-    gib = 1 << 30
-    torch_stub, _props = _summary_torch(
-        properties_total = 8 * gib,
-        driver_free = 98 * gib,
-        driver_total = 100 * gib,
-    )
-    monkeypatch.setitem(sys.modules, "torch", torch_stub)
-    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
-    monkeypatch.setattr(hw, "IS_ROCM", True)
-    monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", lambda _props: True)
+    _props, gib = _shared_setup_3(monkeypatch)
     monkeypatch.setattr(hw, "_rocm_props_are_positively_unified", lambda _props: True)
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(
@@ -275,18 +319,8 @@ def test_context_free_rocm_smi_translates_hip_ordinals(monkeypatch):
     # The visibility vars are read from the real environment on the way through,
     # so a runner that exports one (a CI job pinning a GPU beside this test) can
     # change the outcome. Its siblings already isolate; this one did not.
-    for name in (
-        "GPU_DEVICE_ORDINAL",
-        "ROCR_VISIBLE_DEVICES",
-        "HIP_VISIBLE_DEVICES",
-        "CUDA_VISIBLE_DEVICES",
-    ):
-        monkeypatch.delenv(name, raising = False)
-    monkeypatch.setattr(
-        hw,
-        "_get_parent_visible_gpu_spec",
-        lambda: {"raw": None, "numeric_ids": [0, 1], "supports_explicit_gpu_ids": True},
-    )
+    _shared_setup_5(monkeypatch)
+    _shared_setup_1(monkeypatch)
     monkeypatch.setattr(amd, "get_hip_id_by_gpu_index", lambda: {0: 1, 1: 0})
     monkeypatch.setattr(hw, "_torch_get_physical_gpu_count", lambda: 2)
 
@@ -314,15 +348,8 @@ def test_context_free_rocm_smi_translates_hip_ordinals(monkeypatch):
 
 
 def test_context_free_rocm_smi_declines_without_an_id_mapping(monkeypatch):
-    from utils.hardware import amd
-
-    monkeypatch.setattr(hw, "IS_ROCM", True)
-    monkeypatch.setattr(hw.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(
-        hw,
-        "_get_parent_visible_gpu_spec",
-        lambda: {"raw": None, "numeric_ids": [0, 1], "supports_explicit_gpu_ids": True},
-    )
+    amd = _shared_setup_7(monkeypatch)
+    _shared_setup_1(monkeypatch)
     monkeypatch.setattr(amd, "get_hip_id_by_gpu_index", lambda: None)
     monkeypatch.setattr(amd, "get_physical_gpu_count", lambda: 2)
     monkeypatch.setattr(
@@ -363,19 +390,12 @@ def test_context_free_rocm_smi_declines_stacked_visibility_masks(monkeypatch):
 
 
 def test_context_free_rocm_smi_declines_gpu_device_ordinal(monkeypatch):
-    from utils.hardware import amd
-
-    monkeypatch.setattr(hw, "IS_ROCM", True)
-    monkeypatch.setattr(hw.platform, "system", lambda: "Darwin")
+    amd = _shared_setup_7(monkeypatch)
     monkeypatch.setenv("GPU_DEVICE_ORDINAL", "1")
     monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
     monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
-    monkeypatch.setattr(
-        hw,
-        "_get_parent_visible_gpu_spec",
-        lambda: {"raw": None, "numeric_ids": [0, 1], "supports_explicit_gpu_ids": True},
-    )
+    _shared_setup_1(monkeypatch)
     monkeypatch.setattr(
         amd,
         "get_hip_id_by_gpu_index",
@@ -391,22 +411,9 @@ def test_context_free_rocm_smi_declines_gpu_device_ordinal(monkeypatch):
 
 
 def test_context_free_rocm_smi_declines_inventory_count_mismatch(monkeypatch):
-    from utils.hardware import amd
-
-    monkeypatch.setattr(hw, "IS_ROCM", True)
-    monkeypatch.setattr(hw.platform, "system", lambda: "Darwin")
-    for name in (
-        "GPU_DEVICE_ORDINAL",
-        "ROCR_VISIBLE_DEVICES",
-        "HIP_VISIBLE_DEVICES",
-        "CUDA_VISIBLE_DEVICES",
-    ):
-        monkeypatch.delenv(name, raising = False)
-    monkeypatch.setattr(
-        hw,
-        "_get_parent_visible_gpu_spec",
-        lambda: {"raw": None, "numeric_ids": [0, 1], "supports_explicit_gpu_ids": True},
-    )
+    amd = _shared_setup_7(monkeypatch)
+    _shared_setup_5(monkeypatch)
+    _shared_setup_1(monkeypatch)
     monkeypatch.setattr(amd, "get_hip_id_by_gpu_index", lambda: {0: 0, 1: 1})
     monkeypatch.setattr(hw, "_torch_get_physical_gpu_count", lambda: 1)
     monkeypatch.setattr(
@@ -662,11 +669,7 @@ def test_context_free_rocm_windows_declines_gpu_device_ordinal(monkeypatch):
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setenv("GPU_DEVICE_ORDINAL", "1")
-    monkeypatch.setattr(
-        hw,
-        "_get_parent_visible_gpu_spec",
-        lambda: {"raw": None, "numeric_ids": [0, 1], "supports_explicit_gpu_ids": True},
-    )
+    _shared_setup_1(monkeypatch)
     monkeypatch.setattr(
         hw,
         "_rocm_windows_per_device_vram",
@@ -681,11 +684,7 @@ def test_context_free_rocm_windows_declines_gpu_device_ordinal(monkeypatch):
 def test_context_free_nvidia_smi_declines_whole_gpu_metrics_for_mig(monkeypatch):
     gib = 1 << 30
     monkeypatch.setattr(hw, "IS_ROCM", False)
-    monkeypatch.setattr(
-        hw,
-        "_get_parent_visible_gpu_spec",
-        lambda: {"raw": None, "numeric_ids": [0], "supports_explicit_gpu_ids": True},
-    )
+    _shared_setup_4(monkeypatch)
     monkeypatch.setattr(
         hw,
         "_smi_query",
@@ -725,11 +724,7 @@ def test_context_free_never_spawns_amd_smi_on_windows_without_a_hip_sdk(monkeypa
     monkeypatch.setattr(amd, "_amd_smi_disabled", False)
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(
-        hw,
-        "_get_parent_visible_gpu_spec",
-        lambda: {"raw": None, "numeric_ids": [0, 1], "supports_explicit_gpu_ids": True},
-    )
+    _shared_setup_1(monkeypatch)
     # Windows reads per-adapter counters, so declining amd-smi still answers.
     # One instance per visible device, so the identity check upstream holds.
     monkeypatch.setattr(
@@ -765,18 +760,8 @@ def test_context_free_rocm_smi_declines_whole_gpu_metrics_for_a_partition(monkey
 
     gib = 1 << 30
     monkeypatch.setattr(hw, "IS_ROCM", True)
-    for name in (
-        "GPU_DEVICE_ORDINAL",
-        "ROCR_VISIBLE_DEVICES",
-        "HIP_VISIBLE_DEVICES",
-        "CUDA_VISIBLE_DEVICES",
-    ):
-        monkeypatch.delenv(name, raising = False)
-    monkeypatch.setattr(
-        hw,
-        "_get_parent_visible_gpu_spec",
-        lambda: {"raw": None, "numeric_ids": [0], "supports_explicit_gpu_ids": True},
-    )
+    _shared_setup_5(monkeypatch)
+    _shared_setup_4(monkeypatch)
     monkeypatch.setattr(amd, "get_hip_id_by_gpu_index", lambda: {0: 0})
     monkeypatch.setattr(hw, "_torch_get_physical_gpu_count", lambda: 1)
     monkeypatch.setattr(
@@ -998,10 +983,7 @@ def test_rocm_discrete_inventory_stays_context_free(monkeypatch):
     # Only APUs pay for mem_get_info. An MI300X must keep the free path.
     mod = _rocm_mod(_FakeRocmProps())
     mod.mem_get_info = lambda o: pytest.fail("mem_get_info would create a primary context")
-    monkeypatch.setattr(hw, "IS_ROCM", True)
-    monkeypatch.setattr(hw, "_hip_runtime_version", lambda: (6, 4))
-    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
-    inventory = hw._torch_get_device_inventory([0])[0]
+    inventory = _shared_setup_6(mod, monkeypatch)
     assert inventory["total_gb"] == 178.35
     assert inventory["shared_memory"] is False
 
@@ -1060,12 +1042,7 @@ def test_rocm_apu_equal_driver_total_scope_is_platform_specific(
 
 
 def test_windows_rocm_apu_reports_only_the_host_backed_pool_overlap(monkeypatch):
-    mod = _apu_mod(gtt_total = _APU_GTT_TOTAL, carve_out = _APU_GTT_TOTAL)
-    monkeypatch.setattr(hw, "IS_ROCM", True)
-    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
-    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0])
-    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         hw,
         "_windows_amd_adapter_records_by_luid",
@@ -1085,12 +1062,7 @@ def test_windows_rocm_apu_reports_only_the_host_backed_pool_overlap(monkeypatch)
 
 
 def test_windows_rocm_apu_uses_arch_when_registry_name_differs(monkeypatch):
-    mod = _apu_mod(gtt_total = _APU_GTT_TOTAL, carve_out = _APU_GTT_TOTAL)
-    monkeypatch.setattr(hw, "IS_ROCM", True)
-    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
-    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0])
-    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         hw,
         "_windows_amd_adapter_records_by_luid",
@@ -1114,12 +1086,7 @@ def test_windows_rocm_apu_uses_arch_when_registry_name_differs(monkeypatch):
 
 
 def test_windows_rocm_apu_declines_an_ambiguous_arch_fallback(monkeypatch):
-    mod = _apu_mod(gtt_total = _APU_GTT_TOTAL, carve_out = _APU_GTT_TOTAL)
-    monkeypatch.setattr(hw, "IS_ROCM", True)
-    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
-    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0])
-    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         hw,
         "_windows_amd_adapter_records_by_luid",
@@ -1143,12 +1110,7 @@ def test_windows_rocm_apu_declines_an_ambiguous_arch_fallback(monkeypatch):
 
 
 def test_windows_rocm_apu_accepts_equal_duplicate_carve_outs(monkeypatch):
-    mod = _apu_mod(gtt_total = _APU_GTT_TOTAL, carve_out = _APU_GTT_TOTAL)
-    monkeypatch.setattr(hw, "IS_ROCM", True)
-    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
-    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0])
-    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         hw,
         "_windows_amd_adapter_records_by_luid",
@@ -1172,12 +1134,7 @@ def test_windows_rocm_apu_accepts_equal_duplicate_carve_outs(monkeypatch):
 
 
 def test_windows_rocm_apu_declines_a_conflicting_arch_candidate(monkeypatch):
-    mod = _apu_mod(gtt_total = _APU_GTT_TOTAL, carve_out = _APU_GTT_TOTAL)
-    monkeypatch.setattr(hw, "IS_ROCM", True)
-    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
-    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0])
-    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         hw,
         "_windows_amd_adapter_records_by_luid",
@@ -1284,8 +1241,14 @@ def test_linux_rocm_apu_uses_sysfs_to_confirm_equal_total_scope(
 
     assert result["devices"][0]["memory_total_gb"] == torch_total / (1024**3)
     assert result["devices"][0]["shared_memory"] is expected_shared
+    # When sysfs answered and torch does not exceed it, the host-backed part is a
+    # measured ZERO rather than unknown. It used to be omitted, and the tile renders
+    # an omitted figure as "all of it is host memory", which printed a 64 GiB
+    # carve-out as `0.00 GiB VRAM + 64.00 GiB shared` on a real gfx1151
+    # (unsloth#7449 defect 1). `shared_memory` still turns on only for a positive
+    # host-backed part, so nothing collapses that did not collapse before.
     assert result["devices"][0]["shared_memory_host_backed_gb"] == (
-        round((torch_total - sysfs_total) / (1024**3), 2) if expected_shared else None
+        round((torch_total - sysfs_total) / (1024**3), 2) if expected_shared else 0.0
     )
 
 
@@ -1399,10 +1362,7 @@ def test_rocm_unclassified_apu_keeps_the_driver_total_on_an_older_runtime(monkey
 
 def test_rocm_unclassified_apu_keeps_the_driver_total_with_a_legacy_flag(monkeypatch):
     mod = _rocm_mod(_FakeUnclassifiedApuProps())
-    monkeypatch.setattr(hw, "IS_ROCM", True)
-    monkeypatch.setattr(hw, "_hip_runtime_version", lambda: (6, 4))
-    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
-    inventory = hw._torch_get_device_inventory([0])[0]
+    inventory = _shared_setup_6(mod, monkeypatch)
     assert inventory["total_gb"] == 100.0
     assert inventory["shared_memory"] is True
 
@@ -1411,10 +1371,7 @@ def test_rocm_unclassified_apu_keeps_the_driver_total_without_the_flag(monkeypat
     # A wheel that omits the field reads as 0 through getattr, exactly like a runtime
     # that never set it, so the arch set is again the only signal left.
     mod = _rocm_mod(_FakeUnclassifiedApuProps(integrated = None))
-    monkeypatch.setattr(hw, "IS_ROCM", True)
-    monkeypatch.setattr(hw, "_hip_runtime_version", lambda: (6, 4))
-    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
-    inventory = hw._torch_get_device_inventory([0])[0]
+    inventory = _shared_setup_6(mod, monkeypatch)
     assert inventory["total_gb"] == 100.0
     assert inventory["shared_memory"] is True
 
@@ -1429,10 +1386,7 @@ def test_rocm_props_that_cannot_be_classified_keep_the_driver_total(monkeypatch)
             raise RuntimeError("properties unreadable")
 
     mod = _rocm_mod(_HostileProps())
-    monkeypatch.setattr(hw, "IS_ROCM", True)
-    monkeypatch.setattr(hw, "_hip_runtime_version", lambda: (6, 4))
-    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
-    inventory = hw._torch_get_device_inventory([0])[0]
+    inventory = _shared_setup_6(mod, monkeypatch)
     assert inventory["total_gb"] == 100.0
     assert inventory["shared_memory"] is False
 
@@ -1652,11 +1606,7 @@ def test_nvidia_torch_fallback_keeps_using_occupancy(monkeypatch):
     monkeypatch.setattr(hw, "IS_ROCM", False)
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "_smi_query", lambda *a, **k: None)
-    monkeypatch.setattr(
-        hw,
-        "_get_parent_visible_gpu_spec",
-        lambda: {"raw": None, "numeric_ids": [0], "supports_explicit_gpu_ids": True},
-    )
+    _shared_setup_4(monkeypatch)
     monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0])
     monkeypatch.setattr(
         hw,
@@ -1786,16 +1736,7 @@ def test_gpu_summary_apu_counters_need_positively_identified_uma(monkeypatch):
     # That justifies the driver total, not adding Shared Usage: shared bytes are
     # not part of a discrete card's props.total_memory, so a discrete GPU misread
     # as uncertain would have its free understated.
-    gib = 1 << 30
-    torch_stub, _props = _summary_torch(
-        properties_total = 8 * gib,
-        driver_free = 98 * gib,
-        driver_total = 100 * gib,
-    )
-    monkeypatch.setitem(sys.modules, "torch", torch_stub)
-    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
-    monkeypatch.setattr(hw, "IS_ROCM", True)
-    monkeypatch.setattr(hw, "_rocm_props_total_is_carve_out", lambda _props: True)
+    _props, gib = _shared_setup_3(monkeypatch)
     monkeypatch.setattr(hw, "_rocm_props_are_positively_unified", lambda _props: False)
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(
@@ -1808,3 +1749,121 @@ def test_gpu_summary_apu_counters_need_positively_identified_uma(monkeypatch):
 
     # Driver total kept, free still hipMemGetInfo's.
     assert summary == {"gpu_name": "Test GPU", "vram_total_gb": 100.0, "vram_free_gb": 98.0}
+
+
+# The measured gfx1151, end to end through the payload Settings > System reads.
+# Numbers are verbatim from the AMD CI Strix Halo runner against main:
+#   torch total_memory      68719476736  (64.00 GiB)
+#   sysfs mem_info_vram_total 68719476736  (64.00 GiB, a real BIOS carve-out)
+#   sysfs mem_info_gtt_total  33521315840  (31.22 GiB, host-backed, ON TOP)
+# and an 8 GiB torch allocation landed in vram_used, not in gtt_used, so the
+# driver's own accounting calls that 64 GiB dedicated.
+_MEASURED_STRIX_HALO_TOTAL_BYTES = 68719476736
+
+
+def test_the_measured_strix_halo_is_not_reported_as_having_no_vram(monkeypatch):
+    """unsloth#7449 defect 1, the Linux arm.
+
+    Settings > System renders an ABSENT `shared_memory_host_backed_gb` as "the whole
+    budget is host memory", so omitting the figure printed `0.00 GiB VRAM +
+    64.00 GiB shared` on a machine with a 64 GiB carve-out. The figure here is zero,
+    and zero has to be said out loud.
+    """
+    total = _MEASURED_STRIX_HALO_TOTAL_BYTES
+    mod = _apu_mod(gtt_total = total, carve_out = total)
+    for var in (
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "CUDA_VISIBLE_DEVICES",
+        "GPU_DEVICE_ORDINAL",
+    ):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0])
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: {0: "0000:03:00.0"})
+    monkeypatch.setattr(
+        hw,
+        "_rocm_linux_sysfs_vram_by_pci_gb",
+        lambda: {"0000:03:00.0": (9.06, total / (1024**3))},
+    )
+
+    device = hw.get_backend_visible_gpu_info()["devices"][0]
+
+    assert device["memory_total_gb"] == 64.0
+    assert (
+        device["shared_memory_host_backed_gb"] == 0.0
+    ), "a readable sysfs total that torch does not exceed is a measured zero, not an unknown"
+    # Still a unified-memory part for every rule that cares; only the SPLIT is known.
+    assert device["unified_memory"] is True
+    # NOT flipped on: `shared_memory` also means "these rows are one pool", and a
+    # zero host-backed part is no reason to start collapsing devices.
+    assert device["shared_memory"] is False
+
+
+def test_an_unreadable_sysfs_total_still_leaves_the_split_unknown(monkeypatch):
+    """The other direction: WSL and anything else with no DRM sysfs must keep
+    answering None, because there a zero would be an assertion nobody measured."""
+    # _rocm_linux_sysfs_vram_by_index returns {} off Linux before reading anything, so
+    # without this the assertion below is answered by the platform gate rather than by
+    # the logic under test: red on macOS and Windows where it expects a figure, and
+    # green for the wrong reason where it expects {}.
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    devices = [{"index": 0, "total_gb": 100.0, "_rocm_known_unified": True}]
+    monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: {0: "0000:03:00.0"})
+    monkeypatch.setattr(
+        hw, "_rocm_linux_sysfs_vram_by_pci_gb", lambda: {"0000:03:00.0": (0.0, 0.0)}
+    )
+    assert hw._rocm_linux_shared_pool_host_gb_by_index(devices) == {}
+
+
+def test_a_real_gtt_backed_excess_is_still_reported_as_host_backed(monkeypatch):
+    """The case #9314 and #11366 exist for must not regress: a torch total well
+    above the sysfs heap is a genuine host-backed window and keeps its figure."""
+    # _rocm_linux_sysfs_vram_by_index returns {} off Linux before reading anything, so
+    # without this the assertion below is answered by the platform gate rather than by
+    # the logic under test: red on macOS and Windows where it expects a figure, and
+    # green for the wrong reason where it expects {}.
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    devices = [{"index": 0, "total_gb": 100.0, "_rocm_known_unified": True}]
+    monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: {0: "0000:03:00.0"})
+    monkeypatch.setattr(
+        hw, "_rocm_linux_sysfs_vram_by_pci_gb", lambda: {"0000:03:00.0": (1.0, 8.0)}
+    )
+    assert hw._rocm_linux_shared_pool_host_gb_by_index(devices) == {0: 92.0}
+
+
+def test_a_discrete_rocm_card_is_never_given_a_host_backed_figure(monkeypatch):
+    """Gated on `_rocm_known_unified`, so a dGPU keeps its discrete rendering."""
+    # _rocm_linux_sysfs_vram_by_index returns {} off Linux before reading anything, so
+    # without this the assertion below is answered by the platform gate rather than by
+    # the logic under test: red on macOS and Windows where it expects a figure, and
+    # green for the wrong reason where it expects {}.
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    devices = [{"index": 0, "total_gb": 24.0}]
+    monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: {0: "0000:03:00.0"})
+    monkeypatch.setattr(
+        hw, "_rocm_linux_sysfs_vram_by_pci_gb", lambda: {"0000:03:00.0": (1.0, 24.0)}
+    )
+    assert hw._rocm_linux_shared_pool_host_gb_by_index(devices) == {}
+
+
+def test_a_partitioned_device_keeps_its_split_unknown(monkeypatch):
+    """sysfs reporting the whole card while torch reports one partition is a SCOPE
+    change, not a measurement of zero host-backed memory.
+
+    Publishing 0.0 there would call the whole partition dedicated and overstate
+    independent capacity, in the direction that admits a load.
+    `_rocm_system_wide_vram_by_index` already treats a mismatch over the same 10% as a
+    different scope in either direction.
+    """
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    devices = [{"index": 0, "total_gb": 24.0, "_rocm_known_unified": True}]
+    monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: {0: "0000:03:00.0"})
+    # sysfs reports the whole 192 GiB card, torch reports a 24 GiB partition.
+    monkeypatch.setattr(
+        hw, "_rocm_linux_sysfs_vram_by_pci_gb", lambda: {"0000:03:00.0": (1.0, 192.0)}
+    )
+    assert hw._rocm_linux_shared_pool_host_gb_by_index(devices) == {}

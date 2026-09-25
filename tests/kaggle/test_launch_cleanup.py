@@ -29,11 +29,30 @@ from pathlib import Path
 
 import pytest
 
+
+def _shared_setup_1(proc, tmp_path):
+    try:
+        _await_ready(proc)
+        proc.send_signal(signal.SIGTERM)
+        _wait_for_death(proc, tmp_path)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_DIR = REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci"
 sys.path.insert(0, str(CI_DIR))
 
 import launch  # noqa: E402
+
+# One worker for this file. The tests below start a real launcher and signal it, then give it
+# _DEATH_BUDGET_SEC to die; under `-n 4` with xdist's default scheduling four of them land on four
+# workers of a four-core runner, and the budget stops measuring "did the handler run" and starts
+# measuring "was the child ever scheduled". That is how CI produced a 120s timeout whose own
+# faulthandler stack showed the child still parked on the stall line, having never reached its
+# handler. Needs `--dist loadgroup`, which the jobs running this file pass.
+pytestmark = pytest.mark.xdist_group(name = "kaggle_launch_signals")
 
 
 class _StubKaggleApi:
@@ -117,6 +136,18 @@ _DEATH_BUDGET_SEC = 120
 # signal leaves the process asleep and then resuming, so a shorter stall lets it wake, run finish(), delete through the
 # ordinary path and exit inside the wait, passing every deletion test.
 _STALL_SEC = 900
+
+# The stall itself, in half-second slices rather than one time.sleep(_STALL_SEC). CPython runs a Python signal handler
+# only after the sleeping syscall returns, and a signal that lands between the interpreter's last check and the
+# clock_nanosleep call does not interrupt it: the handler then waits out the whole sleep. Measured with a bare script
+# that installs a SIGTERM handler, prints READY and sleeps, signalled the moment READY is read: 3 of 1500 one-long-sleep
+# children were still asleep 5s later with SIGTERM caught and nothing pending or blocked, and 0 of 1500 slicing ones.
+# This file signals exactly at READY, so it hit that window about once in 300 and reported a 120s hang. Slices still
+# add up to _STALL_SEC, so a launcher that swallows its signal still outlasts the budget.
+_STALL_SLICE_SEC = 0.5
+_STALL = (
+    f"for _slice in range({int(_STALL_SEC / _STALL_SLICE_SEC)}): time.sleep({_STALL_SLICE_SEC})"
+)
 
 
 def _await_ready(proc: subprocess.Popen) -> None:
@@ -227,6 +258,7 @@ def _push_ok(slug: str):
         kernel_timeout_sec,
         accelerator = "NvidiaTeslaT4",
         attempted = None,
+        **kwargs,
     ):
         attempted = [] if attempted is None else attempted
         attempted.append(slug)
@@ -481,7 +513,7 @@ def _waiting_launcher(outdir: Path) -> str:
             "        launch._api = lambda *a, **k: _Api()",
             "        launch.sweep_orphans = lambda *a, **k: []",
             "        def _push(notebook, user, kernel_timeout_sec,",
-            "                  accelerator='NvidiaTeslaT4', attempted=None):",
+            "                  accelerator='NvidiaTeslaT4', attempted=None, **kwargs):",
             "            attempted = [] if attempted is None else attempted",
             "            attempted.append('me/k-1')",
             "            launch._inflight_add('me/k-1')",
@@ -489,7 +521,7 @@ def _waiting_launcher(outdir: Path) -> str:
             "        launch.push = _push",
             "        def _wait(*a, **kw):",
             "            print('READY', flush=True)",
-            "            time.sleep(%d)" % _STALL_SEC,
+            "            " + _STALL,
             "        launch.wait = _wait",
             "        sys.argv = ['launch.py', '--notebook', 'a.ipynb', '--user', 'me',",
             f"                    '--outdir', {str(outdir)!r}]",
@@ -512,7 +544,7 @@ def _flooding_launcher(outdir: Path) -> str:
     return (
         _waiting_launcher(outdir)
         .replace(
-            "            time.sleep(%d)" % _STALL_SEC,
+            "            " + _STALL,
             "\n".join(
                 [
                     "            while True:",
@@ -568,13 +600,7 @@ def test_the_exit_status_still_says_it_was_killed(tmp_path):
     """A handler that swallows the signal and exits 0 makes a cancelled job
     look like a completed one."""
     proc = _runner(tmp_path, _waiting_launcher(tmp_path / "out"))
-    try:
-        _await_ready(proc)
-        proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc, tmp_path)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
+    _shared_setup_1(proc, tmp_path)
     assert proc.returncode == -signal.SIGTERM, (
         f"expected death by SIGTERM, got returncode {proc.returncode}. "
         f"Launcher said: {_tail(proc)}"
@@ -610,13 +636,7 @@ def test_the_exit_status_survives_a_release_that_fails(tmp_path):
             ),
         ),
     )
-    try:
-        _await_ready(proc)
-        proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc, tmp_path)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
+    _shared_setup_1(proc, tmp_path)
     assert proc.returncode == -signal.SIGTERM, (
         f"a release() that raised turned SIGTERM into returncode {proc.returncode}; "
         f"a cancelled job would read as a completed one. Launcher said: {_tail(proc)}"
@@ -637,6 +657,26 @@ def test_the_stall_outlasts_the_death_budget():
         f"normally inside the {_DEATH_BUDGET_SEC}s wait, so the signal tests would "
         f"pass without any signal handling at all"
     )
+
+
+def test_the_stall_is_sliced_so_a_signal_at_ready_is_not_deferred():
+    """Every stub stalls through `_STALL`, whose slices bound how long CPython can defer a handler.
+
+    A single long sleep turned a signal landing just before the syscall into a wait for the whole stall,
+    which is how this file reported "still alive 120s after its signal" with the handler never having run.
+    """
+    ns = {"time": __import__("types").SimpleNamespace(sleep = lambda s: slept.append(s))}
+    slept: list[float] = []
+    exec(_STALL, ns)
+    assert max(slept) <= 1.0, f"a {max(slept)}s slice can hold a pending handler that long"
+    assert sum(slept) == pytest.approx(
+        _STALL_SEC
+    ), "the slices must still add up to the whole stall"
+    source = Path(__file__).read_text(encoding = "utf-8")
+    long_sleeps = source.count("time.sleep(%d)" + chr(34) + " % _STALL_SEC") + source.count(
+        "time.sleep({" + "_STALL_SEC})"
+    )
+    assert long_sleeps == 0, "a stub went back to one long sleep; stall through _STALL instead"
 
 
 def test_the_handler_survives_its_own_logging_failing(tmp_path):
@@ -668,13 +708,7 @@ def test_the_handler_survives_its_own_logging_failing(tmp_path):
             ),
         ),
     )
-    try:
-        _await_ready(proc)
-        proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc, tmp_path)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
+    _shared_setup_1(proc, tmp_path)
     assert proc.returncode == -signal.SIGTERM, (
         f"a log call that raised inside the handler turned SIGTERM into returncode "
         f"{proc.returncode}. Launcher said: {_tail(proc)}"
@@ -772,7 +806,7 @@ def test_a_reentrant_log_inside_the_delete_retries_does_not_abandon_them(tmp_pat
         launch._inflight_add("me/k-1")
         launch._install_release_handlers(release)
         print("READY", flush=True)
-        time.sleep({_STALL_SEC})
+        {_STALL}
     """),
         encoding = "utf-8",
     )
@@ -784,13 +818,7 @@ def test_a_reentrant_log_inside_the_delete_retries_does_not_abandon_them(tmp_pat
         stderr = subprocess.STDOUT,
         text = True,
     )
-    try:
-        _await_ready(proc)
-        proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc, tmp_path)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
+    _shared_setup_1(proc, tmp_path)
 
     attempts = _deletions(tmp_path)
     assert len(attempts) >= 3, (
@@ -943,7 +971,7 @@ def test_kill_9_leaves_it_for_the_sweep(tmp_path):
         f"""
         launch._inflight_add("me/k-9")
         print("READY", flush=True)
-        time.sleep({_STALL_SEC})
+        {_STALL}
     """,
     )
     try:
@@ -1063,7 +1091,7 @@ def test_a_kernel_pushed_before_the_signal_is_still_deleted(tmp_path):
             "        launch.sweep_orphans = lambda *a, **k: []",
             "        calls = []",
             "        def _push(notebook, user, kernel_timeout_sec,",
-            "                  accelerator='NvidiaTeslaT4', attempted=None):",
+            "                  accelerator='NvidiaTeslaT4', attempted=None, **kwargs):",
             "            calls.append(notebook)",
             "            attempted = [] if attempted is None else attempted",
             "            slug = 'me/k-%d' % len(calls)",
@@ -1071,7 +1099,7 @@ def test_a_kernel_pushed_before_the_signal_is_still_deleted(tmp_path):
             "            if len(calls) == 1:",
             "                return {'ok': True, 'slug': slug, 'attempts': attempted}",
             "            print('READY', flush=True)",
-            "            time.sleep(%d)" % _STALL_SEC,
+            "            " + _STALL,
             "        launch.push = _push",
             "        sys.argv = ['launch.py', '--notebook', 'a.ipynb', '--notebook', 'b.ipynb',",
             f"                    '--user', 'me', '--outdir', {str(tmp_path / 'out')!r}]",
@@ -1079,13 +1107,7 @@ def test_a_kernel_pushed_before_the_signal_is_still_deleted(tmp_path):
         ]
     )
     proc = _runner(tmp_path, body)
-    try:
-        _await_ready(proc)
-        proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc, tmp_path)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
+    _shared_setup_1(proc, tmp_path)
     deleted = _deletions(tmp_path)
     assert any(
         "me/k-1" in c for c in deleted

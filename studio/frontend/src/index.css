@@ -180,26 +180,26 @@
 
 	/* Slightly warm off white; every page (and the chat surface) shares it. */
 	--background: #fefefd;
-	--foreground: oklch(0.2686 0 0);
-	--card: oklch(1 0 0);
-	--card-foreground: oklch(0.1281 0.0179 169.2764);
-	--popover: oklch(1 0 0);
-	--popover-foreground: oklch(0.1281 0.0179 169.2764);
+	--foreground-base: oklch(0.2686 0 0);
+	--card-base: oklch(1 0 0);
+	--card-foreground-base: oklch(0.1281 0.0179 169.2764);
+	--popover-base: oklch(1 0 0);
+	--popover-foreground-base: oklch(0.1281 0.0179 169.2764);
 	--primary: #17b88b;
 	--primary-foreground: oklch(1 0 0);
-	--secondary: oklch(0.9596 0.0275 167.8295);
-	--secondary-foreground: oklch(0.2868 0.0649 159.9823);
-	--muted: oklch(0.9702 0 0);
+	--secondary-base: oklch(0.9596 0.0275 167.8295);
+	--secondary-foreground-base: oklch(0.2868 0.0649 159.9823);
+	--muted-base: oklch(0.9702 0 0);
 	--muted-foreground: oklch(0.5486 0 0);
 	/* Hover/active washes are neutral grey (matches the sidebar), not the
 	   brand green; green stays on primary controls only. */
-	--accent: #ececec;
-	--accent-foreground: #262626;
+	--accent-base: #ececec;
+	--accent-foreground-base: #262626;
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	/* Bypass permissions accent: bright, saturated yellow (not dark gold). */
 	--bypass: #c99d00;
-	--border: oklch(0.9208 0.0101 164.8536);
-	--input: oklch(0.9208 0.0101 164.8536);
+	--border-base: oklch(0.9208 0.0101 164.8536);
+	--input-base: oklch(0.9208 0.0101 164.8536);
 	--ring: #262626;
 	/* Focus and selection indicators: the element's own border, darker.
 	   Derived from the live border/foreground tokens so every palette and
@@ -215,13 +215,15 @@
 	--radius: 1.1rem;
 	/* White sidebar against the warm off-white page; the tone difference is
 	   the separator now that the right-edge divider is gone. */
-	--sidebar: #ffffff;
-	--sidebar-foreground: oklch(0.1281 0.0179 169.2764);
+	--sidebar-base: #ffffff;
+	--sidebar-foreground-base: oklch(0.1281 0.0179 169.2764);
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
-	--sidebar-accent: #ececec;
-	--sidebar-accent-foreground: #262626;
-	--sidebar-border: #f2f2f2;
+	--sidebar-accent-base: #ececec;
+	--sidebar-accent-foreground-base: #262626;
+	/* Selected tab on the line variant, a step above the page. */
+	--tabs-line-indicator-base: #ececec;
+	--sidebar-border-base: #f2f2f2;
 	--sidebar-ring: #262626;
 	--destructive-foreground: oklch(1 0 0);
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
@@ -235,7 +237,11 @@
 	--shadow-offset-x: 0px;
 	--shadow-offset-y: 0px;
 	--letter-spacing: 0em;
-	--spacing: 0.25rem;
+	/* Tailwind's spacing step, scaled so every padding, margin, gap, size,
+	   width and height utility follows the UI font size. Overlays that could
+	   then outgrow a phone screen carry their own viewport cap. See
+	   --ui-space-scale below. */
+	--spacing: calc(0.25rem * var(--ui-space-scale, 1));
 	/*--shadow-2xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
 	/*--shadow-xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
 	/*--shadow-sm:*/
@@ -257,12 +263,12 @@
 	--tracking-normal: 0em;
 
 	/* Hex (not OKLCH) so the rendered surface matches the design mockup pixel-for-pixel. */
-	--nav-fg: #383835;
-	--nav-fg-muted: #858279;
-	--nav-surface-hover: #f0f0f0;
-	--nav-icon-idle: #8f8f8f;
+	--nav-fg-base: #383835;
+	--nav-fg-muted-base: #858279;
+	--nav-surface-hover-base: #f0f0f0;
+	--nav-icon-idle-base: #8f8f8f;
 	--nav-beta-border: #e0ded6;
-	--panel-surface-hover: #ebebeb;
+	--panel-surface-hover-base: #ebebeb;
 	/* Right-side chat-parameters panel: matches the chat content
 	   surface in both themes — distinction from the left sidebar
 	   (#f9faf9) is handled by the left border alone. Tracks
@@ -270,8 +276,8 @@
 	   through automatically. */
 	--panel-surface: var(--background);
 	--panel-surface-fg: var(--foreground);
-	--panel-input-surface: #f5f5f5;
-	--panel-input-surface-hover: #efefef;
+	--panel-input-surface-base: #f5f5f5;
+	--panel-input-surface-hover-base: #efefef;
 	/* Muted gray with a one-step warmer-blue last channel (#779 vs flat #777)
 	   so the tone has a faint hue rather than pure neutral — keeps text and
 	   sliders quiet but not lifeless. */
@@ -281,7 +287,7 @@
 	   from muted text. Light mode: lighter than the muted-text gray for
 	   a softer feel. Dark mode (further down) keeps parity with the
 	   muted-text token. */
-	--panel-slider-fg: #9a9a9c;
+	--panel-slider-fg-base: #9a9a9c;
 	/* Chat-message action icons (assistant action bar, branch picker
 	   chevrons + numbers, message-timing token counter, code-block
 	   copy/download, user action bar, delete button). One token drives
@@ -289,9 +295,9 @@
 	   Mid-dark gray on the light surface — visible enough to read as
 	   active controls, not so dark that they compete with message
 	   text. */
-	--chat-icon-fg: #555555;
+	--chat-icon-fg-base: #555555;
 	--chat-icon-fg-hover: var(--foreground);
-	--chat-icon-bg-hover: #ededec;
+	--chat-icon-bg-hover-base: #ededec;
 
 	/* Control accent: switches, "New" badges, notification-style chips.
 	   Follows the brand accent by default; palettes that keep their primary
@@ -305,93 +311,126 @@
 	   the signal never changes with the theme. */
 	--verified: #17b88b;
 
-	/* The authored typography tokens use a 16px CSS base; the product default
-	   is 15px. An explicit user preference overrides this inline. */
-	--ui-font-scale: 0.9375;
+	/* Typography tokens use a 16px base; the default is 15px. UI font size sets
+	   --ui-font-size-scale. In the browser, interface scale multiplies it via
+	   --ui-interface-scale; the desktop app zooms its webview instead. */
+	--ui-font-scale: calc(var(--ui-font-size-scale, 0.9375) * var(--ui-interface-scale, 1));
+
+	/* Every padding, gap and margin multiplies by this, so spacing stays the
+	   same fraction of the text at any UI font size (12px -> 0.8, 20px ->
+	   1.333). Normalised at the 15px default, so the shipped look is
+	   unchanged. Values pinned outside the UI (traffic lights, title bar,
+	   hairlines) skip it. */
+	--ui-space-scale: calc(var(--ui-font-scale, 1) / 0.9375);
+
+	/* Named widths (max-w-md, max-w-xs) scale with their content. @container
+	   thresholds are inlined at build time, so breakpoints do not move. */
+	--container-3xs: calc(16rem * var(--ui-space-scale, 1));
+	--container-2xs: calc(18rem * var(--ui-space-scale, 1));
+	--container-xs: calc(20rem * var(--ui-space-scale, 1));
+	--container-sm: calc(24rem * var(--ui-space-scale, 1));
+	--container-md: calc(28rem * var(--ui-space-scale, 1));
+	--container-lg: calc(32rem * var(--ui-space-scale, 1));
+	--container-xl: calc(36rem * var(--ui-space-scale, 1));
+	--container-2xl: calc(42rem * var(--ui-space-scale, 1));
+	--container-3xl: calc(48rem * var(--ui-space-scale, 1));
+	--container-4xl: calc(56rem * var(--ui-space-scale, 1));
+	--container-5xl: calc(64rem * var(--ui-space-scale, 1));
+	--container-6xl: calc(72rem * var(--ui-space-scale, 1));
+	--container-7xl: calc(80rem * var(--ui-space-scale, 1));
+
+	/* Chat chrome that holds text. Declared here because the web shell sets no
+	   chrome vars; the desktop shells override these in app/provider.tsx.
+	   Window geometry stays pinned there: it is the OS window's, not ours. */
+	--studio-chat-header-height: calc(48px * var(--ui-space-scale, 1));
+	--studio-chat-control-height: calc(33px * var(--ui-space-scale, 1));
+	--studio-chat-header-padding-top: calc(11px * var(--ui-space-scale, 1));
+	--studio-media-header-left-inset: calc(1.5rem * var(--ui-space-scale, 1));
 
 	/* Standard interactive-icon size for nav, menus, action bars, and
 	   in-message code-block actions. Sized one step above body text so
 	   icons read as minimally larger than adjacent labels (~14px text).
 	   Follows the UI font size preference; 15px at the app default.
 	   Theme-independent — declared once in :root. */
-	/* Standard icon size follows the UI font size itself: matches it below
-	   the 16px CSS scale base, grows at half the change above it (setting 20 ->
-	   18px), so icons read slightly smaller than enlarged text. */
-	--ui-icon-size: min(calc(1rem * var(--ui-font-scale, 1)), calc(0.5rem + 0.5rem * var(--ui-font-scale, 1)));
+	/* Scales at the same rate as text and padding (12 -> 12px, 20 -> 20px). */
+	--ui-icon-size: calc(1rem * var(--ui-font-scale, 1));
 	--icon-size: var(--ui-icon-size);
 	/* Mirrors the size-3.5 rule applied inside popovers (see the icon block
 	   below), so widths that reserve room for those icons track them. */
-	--ui-icon-size-sm: min(calc(0.875rem * var(--ui-font-scale, 1)), calc(0.4375rem + 0.4375rem * var(--ui-font-scale, 1)));
-	/* Model picker header controls. Padding and gaps come from the pinned
-	   --spacing, the icons and label both scale, so reserve each separately.
-	   The trigger is 2.25rem of padding and gaps, two icons, then the label,
-	   plus --picker-control-pad. Height matches the h-9 it replaces at the
-	   16px default. */
-	--picker-control-h: calc(1.125rem + 1.125rem * var(--ui-font-scale, 1));
-	/* Padding added to Search Hub and the two dropdowns, 0.375rem a side. Pinned
-	   like the rest: it pads, and it stops the "Trending" label clipping. */
-	--picker-control-pad: 0.75rem;
+	--ui-icon-size-sm: calc(0.875rem * var(--ui-font-scale, 1));
+	/* Model picker header controls. Padding and gaps follow --ui-space-scale,
+	   icons and label follow --ui-font-scale, so reserve each separately. The
+	   trigger is 2.25rem of padding and gaps, two icons, then the label, plus
+	   --picker-control-pad. Height matches the h-9 it replaces at 16px. */
+	--picker-control-h: calc(1.125rem * var(--ui-space-scale, 1) + 1.125rem * var(--ui-font-scale, 1));
+	/* Padding added to Search Hub and the two dropdowns, 0.375rem a side. It
+	   also stops the "Trending" label clipping, so it tracks the scale. */
+	--picker-control-pad: calc(0.75rem * var(--ui-space-scale, 1));
 	/* Same per section pill (Recommended / On Device / Connected), 0.25rem a
 	   side, i.e. px-3 to px-4 on the tabs. */
-	--picker-tab-pad: 0.5rem;
-	--picker-control-w: calc(2.25rem + var(--picker-control-pad) + 2 * var(--ui-icon-size-sm) + 2.875rem * var(--ui-font-scale, 1));
+	--picker-tab-pad: calc(0.5rem * var(--ui-space-scale, 1));
+	--picker-control-w: calc(2.25rem * var(--ui-space-scale, 1) + var(--picker-control-pad) + 2 * var(--ui-icon-size-sm) + 2.875rem * var(--ui-font-scale, 1));
 	/* Panel: pl-4, two gaps and pr-2, the pills' padding, their two icons and
 	   label, then the two dropdowns. The control row fills this exactly, which
 	   keeps the last dropdown flush with Search Hub above it. Widening a
 	   control takes the difference from the search field, not the panel. */
-	--picker-panel-w: calc(6.25rem + 2 * var(--picker-tab-pad) + 2 * var(--ui-icon-size-sm) + 9.875rem * var(--ui-font-scale, 1) + 2 * var(--picker-control-w));
+	--picker-panel-w: calc(6.25rem * var(--ui-space-scale, 1) + 2 * var(--picker-tab-pad) + 2 * var(--ui-icon-size-sm) + 9.875rem * var(--ui-font-scale, 1) + 2 * var(--picker-control-w));
 	/* Provider row adds one more control and the Connected pill; split like the rest. */
-	--picker-panel-w-external: calc(var(--picker-panel-w) + var(--picker-tab-pad) + 4rem + 2.75rem * var(--ui-font-scale, 1));
-	/* Inset of a centered .size-icon glyph within a 2rem (size-8) action
-	   button — i.e. (32px − icon-size) / 2. Use as a negative margin on a
-	   chat-message action bar so the leftmost icon's visual edge aligns
-	   with the message text edge. Auto-tracks --icon-size. */
-	--icon-btn-inset: calc((2rem - var(--icon-size)) / 2);
+	--picker-panel-w-external: calc(var(--picker-panel-w) + var(--picker-tab-pad) + 4rem * var(--ui-space-scale, 1) + 2.75rem * var(--ui-font-scale, 1));
+	/* Inset of a centered .size-icon glyph in a size-8 action button, i.e.
+	   (button - icon-size) / 2. Use as a negative margin on a chat-message
+	   action bar so the leftmost icon lines up with the message text edge.
+	   The button is 8 spacing steps, the glyph tracks --icon-size. */
+	--icon-btn-inset: calc((2rem * var(--ui-space-scale, 1) - var(--icon-size)) / 2);
 }
 
 .dark {
-	/* Dark surfaces shared by ALL palettes: #181818 page, elevated #1f1f1f
-	   sidebar, #212121 cards. Palette dark blocks override only accent
-	   tokens so dark mode stays consistent across themes. */
+	/* Dark surfaces shared by ALL palettes: #181818 page, elevated #272727
+	   sidebar/cards, #3a3a3a hover, #dfdfdf ink. Palette dark blocks override
+	   only accent tokens so dark mode stays consistent across themes. */
 	--background: #181818;
-	--foreground: #ececec;
-	--card: #212121;
-	--card-foreground: #ececec;
-	--popover: #212121;
-	--popover-foreground: #ececec;
+	--foreground-base: #dfdfdf;
+	--card-base: #272727;
+	--card-foreground-base: #dfdfdf;
+	--popover-base: #272727;
+	--popover-foreground-base: #dfdfdf;
 	--primary: #17b88b;
 	--primary-foreground: oklch(1 0 0);
-	--secondary: #242424;
-	--secondary-foreground: #ececec;
-	--muted: #242424;
-	--muted-foreground: #9b9b9b;
-	/* One step lighter than --popover so menu item hover reads clearly. */
-	--accent: #2e2e2e;
-	--accent-foreground: #ececec;
+	--secondary-base: #303030;
+	--secondary-foreground-base: #dfdfdf;
+	--muted-base: #303030;
+	/* Secondary text: settings descriptions, empty states, captions.
+	   Under the ink, still ~7:1 on the dialog surface. */
+	--muted-foreground: #b0b0b0;
+	/* Shared hover tone: one step over --popover. */
+	--accent-base: #3a3a3a;
+	--accent-foreground-base: #dfdfdf;
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
 	--bypass: #ffd60a;
 	/* --border / --input one step lighter than --muted so outlines and form
 	   borders stay visible on muted surfaces (right config panel, export
-	   tiles, quant chips) and keep subtle contrast on card. */
-	--border: #303030;
-	--input: #303030;
-	--ring: #ececec;
+	   tiles, quant chips) and keep subtle contrast on card. Matches the
+	   hover tone, so outlines and hovered fills share a step. */
+	--border-base: #3a3a3a;
+	--input-base: #3a3a3a;
+	--ring: #dfdfdf;
 	--chart-1: oklch(0.7511 0.1407 166.2284);
 	--chart-2: oklch(0.75 0.14 136.5572);
 	--chart-3: oklch(0.7554 0.1285 197.339);
 	--chart-4: oklch(0.7503 0.1199 346.7805);
 	--chart-5: oklch(0.799 0.1196 84.6633);
-	/* Elevated a step lighter than --background; the tone difference is
-	   the separator. */
-	--sidebar: #1f1f1f;
-	--sidebar-foreground: #ececec;
+	/* A step over --background; the tone difference is the separator.
+	   Matches --card, so every elevated surface reads as one plane. */
+	--sidebar-base: #272727;
+	--sidebar-foreground-base: #dfdfdf;
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
-	--sidebar-accent: #2a2a2a;
-	--sidebar-accent-foreground: #ececec;
-	--sidebar-border: #2a2a2a;
-	--sidebar-ring: #ececec;
+	--sidebar-accent-base: #3a3a3a;
+	--sidebar-accent-foreground-base: #dfdfdf;
+	--tabs-line-indicator-base: #3a3a3a;
+	--sidebar-border-base: #3a3a3a;
+	--sidebar-ring: #dfdfdf;
 	--destructive-foreground: oklch(1 0 0);
 	/* Match light's radius so every rounded-* element is the same in both themes. */
 	--radius: 1.1rem;
@@ -405,7 +444,8 @@
 	--shadow-offset-x: 0px;
 	--shadow-offset-y: 0px;
 	--letter-spacing: 0em;
-	--spacing: 0.25rem;
+	/* Same scaled step as light; see the :root definition. */
+	--spacing: calc(0.25rem * var(--ui-space-scale, 1));
 	--shadow-2xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);
 	--shadow-xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);
 	--shadow-sm: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 1px 2px 0px hsl(0 0% 0% / 0);
@@ -415,12 +455,13 @@
 	--shadow-xl: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 8px 10px 0px hsl(0 0% 0% / 0);
 	--shadow-2xl: 0px 0px 0px 0px hsl(0 0% 0% / 0);
 
-	--nav-fg: #c9c9c9;
-	--nav-fg-muted: #969696;
-	--nav-surface-hover: #2a2a2a;
-	--nav-icon-idle: #5c5c5c;
-	--nav-beta-border: #333333;
-	--panel-surface-hover: #333333;
+	--nav-fg-base: #dfdfdf;
+	--nav-fg-muted-base: #b0b0b0;
+	--nav-surface-hover-base: #3a3a3a;
+	/* Lifted with the surfaces: the sidebar is #272727, not #1f1f1f. */
+	--nav-icon-idle-base: #767676;
+	--nav-beta-border: #3a3a3a;
+	--panel-surface-hover-base: #3a3a3a;
 	/* Right-side chat-parameters panel: matches the chat content
 	   surface in both themes — distinction from the left sidebar
 	   is handled by the left border alone. Tracks `--background` so
@@ -429,21 +470,18 @@
 	--panel-surface: var(--background);
 	--panel-surface-fg: var(--foreground);
 	/* Translucent white so the same fill reads correctly on the #181818
-	   page AND on #212121 cards/dialogs. */
-	--panel-input-surface: rgba(255, 255, 255, 0.07);
-	--panel-input-surface-hover: rgba(255, 255, 255, 0.11);
-	/* Soft neutral gray for muted text and sliders. Pure-ish #ababab
-	   reads as quiet on the dark panel without going colored. */
-	--panel-surface-fg-muted: #ababab;
-	/* Dark-mode slider tone matches muted text — user wants the dark
-	   theme slider unchanged from the previous behavior. */
-	--panel-slider-fg: #ababab;
-	/* Chat-message action icons. A touch lighter than the previous
-	   #b8b8b8 so the icons read clearly without going near pure white;
-	   hover restores full --foreground for affordance. */
-	--chat-icon-fg: #d8d8d8;
+	   page AND on #272727 cards/dialogs. */
+	--panel-input-surface-base: rgba(255, 255, 255, 0.07);
+	--panel-input-surface-hover-base: rgba(255, 255, 255, 0.11);
+	/* Muted panel text and sliders: one step under the ink, uncolored. */
+	--panel-surface-fg-muted: #b0b0b0;
+	/* Dark-mode slider tone matches muted text. */
+	--panel-slider-fg-base: #b0b0b0;
+	/* Chat action icons: under the ink so they read as controls, not text.
+	   Hover restores full --foreground. */
+	--chat-icon-fg-base: #c4c4c4;
 	--chat-icon-fg-hover: var(--foreground);
-	--chat-icon-bg-hover: #2a2a2a;
+	--chat-icon-bg-hover-base: #3a3a3a;
 }
 
 /* ---------------------------------------------------------------------------
@@ -468,26 +506,28 @@
    surfaces in dark, neutral gray hovers, and blue (#339cff) as the accent. */
 :root[data-palette="classic"]:not(.dark) {
 	--background: #ffffff;
-	--foreground: #1a1c1f;
-	--card: #ffffff;
-	--card-foreground: #1a1c1f;
-	--popover: #ffffff;
-	--popover-foreground: #1a1c1f;
+	--foreground-base: #1a1c1f;
+	--card-base: #ffffff;
+	--card-foreground-base: #1a1c1f;
+	--popover-base: #ffffff;
+	--popover-foreground-base: #1a1c1f;
 	/* Neutral black primary; blue is reserved for small controls via
 	   --control-accent (toggles, badges, focus rings). */
 	--primary: #0d0d0d;
 	--primary-foreground: #ffffff;
 	--control-accent: #339cff;
 	--control-accent-foreground: #ffffff;
-	--secondary: #f5f5f5;
-	--secondary-foreground: #1a1c1f;
-	--muted: #f7f7f7;
-	--muted-foreground: #8f8f8f;
-	--accent: #ececec;
-	--accent-foreground: #1a1c1f;
+	--secondary-base: #f5f5f5;
+	--secondary-foreground-base: #1a1c1f;
+	--muted-base: #f7f7f7;
+	/* 4.88:1 on white. #8f8f8f was 3.23:1, under AA for normal text and the
+	   only light palette below it; standard is 4.84:1 and minimal 5.02:1. */
+	--muted-foreground: #717171;
+	--accent-base: #ececec;
+	--accent-foreground-base: #1a1c1f;
 	--bypass: #9a7b1e;
-	--border: #e6e6e6;
-	--input: #e6e6e6;
+	--border-base: #e6e6e6;
+	--input-base: #e6e6e6;
 	--ring: #1a1c1f;
 	--chart-1: #339cff;
 	--chart-2: #8fa3b8;
@@ -496,27 +536,28 @@
 	--chart-5: #5b7189;
 	/* Same as the standard palette; the sidebar surface does not change
 	   with the palette. */
-	--sidebar: #ffffff;
-	--sidebar-foreground: #1a1c1f;
+	--sidebar-base: #ffffff;
+	--sidebar-foreground-base: #1a1c1f;
 	--sidebar-primary: #0d0d0d;
 	--sidebar-primary-foreground: #ffffff;
-	--sidebar-accent: #ececec;
-	--sidebar-accent-foreground: #1a1c1f;
-	--sidebar-border: #f2f2f2;
+	--sidebar-accent-base: #ececec;
+	--sidebar-accent-foreground-base: #1a1c1f;
+	--sidebar-border-base: #f2f2f2;
 	--sidebar-ring: #1a1c1f;
 
-	--nav-fg: #2d2f31;
-	--nav-fg-muted: #8f8f8f;
-	--nav-surface-hover: #ececec;
-	--nav-icon-idle: #8f8f8f;
+	--nav-fg-base: #2d2f31;
+	--nav-fg-muted-base: #8f8f8f;
+	--nav-surface-hover-base: #ececec;
+	--nav-icon-idle-base: #8f8f8f;
 	--nav-beta-border: #e0e0e0;
-	--panel-surface-hover: #ececec;
-	--panel-input-surface: #f4f4f4;
-	--panel-input-surface-hover: #ededed;
-	--panel-surface-fg-muted: #7a7c7e;
-	--panel-slider-fg: #9b9d9f;
-	--chat-icon-fg: #5d5f61;
-	--chat-icon-bg-hover: #ececec;
+	--panel-surface-hover-base: #ececec;
+	--panel-input-surface-base: #f4f4f4;
+	--panel-input-surface-hover-base: #ededed;
+	/* Same lift on the contrast-slider base: #7a7c7e was 4.19:1. Now 4.90:1. */
+	--panel-surface-fg-muted: #6f7174;
+	--panel-slider-fg-base: #9b9d9f;
+	--chat-icon-fg-base: #5d5f61;
+	--chat-icon-bg-hover-base: #ececec;
 }
 
 /* Dark surfaces come from the shared base .dark block; Classic only swaps
@@ -542,22 +583,22 @@
 /* -------------------------------- Minimal -------------------------------- */
 :root[data-palette="minimal"]:not(.dark) {
 	--background: #ffffff;
-	--foreground: #171717;
-	--card: #ffffff;
-	--card-foreground: #171717;
-	--popover: #ffffff;
-	--popover-foreground: #171717;
+	--foreground-base: #171717;
+	--card-base: #ffffff;
+	--card-foreground-base: #171717;
+	--popover-base: #ffffff;
+	--popover-foreground-base: #171717;
 	--primary: #171717;
 	--primary-foreground: #ffffff;
-	--secondary: #f5f5f5;
-	--secondary-foreground: #262626;
-	--muted: #f5f5f5;
+	--secondary-base: #f5f5f5;
+	--secondary-foreground-base: #262626;
+	--muted-base: #f5f5f5;
 	--muted-foreground: #6f6f6f;
-	--accent: #ebebeb;
-	--accent-foreground: #171717;
+	--accent-base: #ebebeb;
+	--accent-foreground-base: #171717;
 	--bypass: #6f6f6f;
-	--border: #e2e2e2;
-	--input: #e2e2e2;
+	--border-base: #e2e2e2;
+	--input-base: #e2e2e2;
 	--ring: #171717;
 	--chart-1: #171717;
 	--chart-2: #4d4d4d;
@@ -565,27 +606,27 @@
 	--chart-4: #a6a6a6;
 	--chart-5: #d1d1d1;
 	/* White sidebar on white content; the border alone is the separator. */
-	--sidebar: #ffffff;
-	--sidebar-foreground: #171717;
+	--sidebar-base: #ffffff;
+	--sidebar-foreground-base: #171717;
 	--sidebar-primary: #171717;
 	--sidebar-primary-foreground: #ffffff;
-	--sidebar-accent: #ebebeb;
-	--sidebar-accent-foreground: #171717;
-	--sidebar-border: #e8e8e8;
+	--sidebar-accent-base: #ebebeb;
+	--sidebar-accent-foreground-base: #171717;
+	--sidebar-border-base: #e8e8e8;
 	--sidebar-ring: #171717;
 
-	--nav-fg: #333333;
-	--nav-fg-muted: #8a8a8a;
-	--nav-surface-hover: #efefef;
-	--nav-icon-idle: #8f8f8f;
+	--nav-fg-base: #333333;
+	--nav-fg-muted-base: #8a8a8a;
+	--nav-surface-hover-base: #efefef;
+	--nav-icon-idle-base: #8f8f8f;
 	--nav-beta-border: #dddddd;
-	--panel-surface-hover: #ececec;
-	--panel-input-surface: #f4f4f4;
-	--panel-input-surface-hover: #ededed;
+	--panel-surface-hover-base: #ececec;
+	--panel-input-surface-base: #f4f4f4;
+	--panel-input-surface-hover-base: #ededed;
 	--panel-surface-fg-muted: #757575;
-	--panel-slider-fg: #9b9b9b;
-	--chat-icon-fg: #555555;
-	--chat-icon-bg-hover: #ececec;
+	--panel-slider-fg-base: #9b9b9b;
+	--chat-icon-fg-base: #555555;
+	--chat-icon-bg-hover-base: #ececec;
 }
 
 /* Dark surfaces come from the shared base .dark block; Minimal only swaps
@@ -614,19 +655,191 @@
    Custom colors/fonts are applied as inline CSS variables on <html> (inline
    wins over every :root/.dark/palette block), so they need no rules here. */
 
-/* Contrast slider: remap border and muted-text tokens by mixing their base
-   values toward the foreground (higher contrast) or background (lower).
-   --input mirrors --border in every palette, so it serves as the untouched
-   base for --border; --panel-surface-fg-muted is the closest stable base for
-   --muted-foreground. --contrast-mix / --contrast-target are set inline. */
+/* Contrast slider (Settings > Appearance).
+
+   Palettes author surfaces, lines and text as --*-base; the app reads the
+   tokens derived below. At the default this block is the identity. */
+:root {
+	/* Boxes and buttons: the fill that lifts a surface off the page. */
+	--card: var(--card-base);
+	/* On the curve with --card, which it matches. Left off it, the sidebar held
+	   its authored tone while the rows on it washed past it, so a lowered
+	   contrast put the active row DARKER than the sidebar behind it. */
+	--sidebar: var(--sidebar-base);
+	--popover: var(--popover-base);
+	--secondary: var(--secondary-base);
+	--muted: var(--muted-base);
+	--accent: var(--accent-base);
+	--nav-surface-hover: var(--nav-surface-hover-base);
+	--panel-surface-hover: var(--panel-surface-hover-base);
+	--panel-input-surface: var(--panel-input-surface-base);
+	--panel-input-surface-hover: var(--panel-input-surface-hover-base);
+	--sidebar-accent: var(--sidebar-accent-base);
+	--chat-icon-bg-hover: var(--chat-icon-bg-hover-base);
+	--tabs-line-indicator: var(--tabs-line-indicator-base);
+	/* Lines: borders, dividers, control outlines. */
+	--border: var(--border-base);
+	--input: var(--input-base);
+	--sidebar-border: var(--sidebar-border-base);
+	/* Slider fill and thumb, the one panel control that takes neither. */
+	--panel-slider-fg: var(--panel-slider-fg-base);
+	/* Ink: body copy, headings, menu and sidebar labels. */
+	--foreground: var(--foreground-base);
+	--card-foreground: var(--card-foreground-base);
+	--popover-foreground: var(--popover-foreground-base);
+	--secondary-foreground: var(--secondary-foreground-base);
+	--accent-foreground: var(--accent-foreground-base);
+	--sidebar-foreground: var(--sidebar-foreground-base);
+	--sidebar-accent-foreground: var(--sidebar-accent-foreground-base);
+	--nav-fg: var(--nav-fg-base);
+	/* Quiet ink: idle nav labels and icons, chat action icons. */
+	--nav-fg-muted: var(--nav-fg-muted-base);
+	--nav-icon-idle: var(--nav-icon-idle-base);
+	--chat-icon-fg: var(--chat-icon-fg-base);
+}
+
+/* Off the default, each token mixes toward --contrast-target (foreground
+   above 50, background below). Curves live in applyCustomizationToDocument.
+   Ink mixes toward pure black or white instead when raising, so text gets
+   crisper rather than the surfaces going grey. Palette surfaces and fills
+   take --contrast-panel-target when set, so a custom foreground of the other
+   polarity cannot wash them into themselves. Lines are drawn on the page too,
+   so they take the page target here and the panel one on palette surfaces. */
 html[data-contrast-adjust] {
-	--border: color-mix(in oklab, var(--input), var(--contrast-target) var(--contrast-mix));
-	--sidebar-border: color-mix(in oklab, var(--input), var(--contrast-target) var(--contrast-mix));
+	--card: color-mix(in oklab, var(--card-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-surface-mix));
+	/* Same curve as its rows, so the step between them survives the slider. */
+	--sidebar: color-mix(in oklab, var(--sidebar-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-surface-mix));
+	--popover: color-mix(in oklab, var(--popover-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-surface-mix));
+	/* Chips and secondary buttons: between the planes and the lit rows. */
+	--secondary: color-mix(in oklab, var(--secondary-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-fill-mix, var(--contrast-surface-mix)));
+	--muted: color-mix(in oklab, var(--muted-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-fill-mix, var(--contrast-surface-mix)));
+	/* Hover and selection fills: shorter than the surfaces when lowering, so a
+	   lit row never sinks below its background; longest when raising, so the
+	   step to the lit row grows with the slider. */
+	--accent: color-mix(in oklab, var(--accent-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-state-mix, var(--contrast-surface-mix)));
+	--nav-surface-hover: color-mix(in oklab, var(--nav-surface-hover-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-state-mix, var(--contrast-surface-mix)));
+	--panel-surface-hover: color-mix(in oklab, var(--panel-surface-hover-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-state-mix, var(--contrast-surface-mix)));
+	--panel-input-surface: color-mix(in oklab, var(--panel-input-surface-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-surface-mix));
+	/* Same curve as its resting twin, or the hover inverts at high contrast. */
+	--panel-input-surface-hover: color-mix(in oklab, var(--panel-input-surface-hover-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-surface-mix));
+	/* Sidebar and model picker rows, and the chat control hovers. Those sit
+	   on the page, so they take the page target like the chat icons. */
+	--sidebar-accent: color-mix(in oklab, var(--sidebar-accent-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-state-mix, var(--contrast-surface-mix)));
+	--chat-icon-bg-hover: color-mix(in oklab, var(--chat-icon-bg-hover-base), var(--contrast-target) var(--contrast-state-mix, var(--contrast-surface-mix)));
+	--tabs-line-indicator: color-mix(in oklab, var(--tabs-line-indicator-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-surface-mix));
+	--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));
+	/* Control outlines and switch tracks stop short of the hairlines: an
+	   affordance still has to be findable at the bottom of the range. */
+	--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));
+	--sidebar-border: color-mix(in oklab, var(--sidebar-border-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-line-mix));
+	/* Ink. The 0% fallback is the identity for older reload snapshots. Palette
+	   surfaces keep their colours under a custom page, so their ink takes its
+	   own target. */
+	--foreground: color-mix(in oklab, var(--foreground-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));
+	--card-foreground: color-mix(in oklab, var(--card-foreground-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));
+	--popover-foreground: color-mix(in oklab, var(--popover-foreground-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));
+	--secondary-foreground: color-mix(in oklab, var(--secondary-foreground-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));
+	--accent-foreground: color-mix(in oklab, var(--accent-foreground-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));
+	--sidebar-foreground: color-mix(in oklab, var(--sidebar-foreground-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));
+	--sidebar-accent-foreground: color-mix(in oklab, var(--sidebar-accent-foreground-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));
+	--nav-fg: color-mix(in oklab, var(--nav-fg-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));
+	/* Secondary text keeps a gentler curve, it has to stay readable at both
+	   ends. --panel-surface-fg-muted is its stable base. */
 	--muted-foreground: color-mix(
 		in oklab,
 		var(--panel-surface-fg-muted),
-		var(--contrast-target) var(--contrast-mix)
+		var(--contrast-target) var(--contrast-text-mix)
 	);
+	/* Quiet ink, on the --muted-foreground curve. Nav ink sits on palette
+	   surfaces, so it takes their target; chat icons sit on the page. */
+	--nav-fg-muted: color-mix(in oklab, var(--nav-fg-muted-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-text-mix));
+	--nav-icon-idle: color-mix(in oklab, var(--nav-icon-idle-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-text-mix));
+	--chat-icon-fg: color-mix(in oklab, var(--chat-icon-fg-base), var(--contrast-target) var(--contrast-text-mix));
+	/* Slider fill and thumb read as marks on the panel, so they take the
+	   text curve rather than the surface one. */
+	--panel-slider-fg: color-mix(
+		in oklab,
+		var(--panel-slider-fg-base),
+		var(--contrast-target) var(--contrast-text-mix)
+	);
+}
+
+/* Body text, muted text and lines on palette surfaces head for their pole,
+   and back to the page target on a page-coloured pane inside one. Menus
+   paint their surface in CSS, so they are listed by class, as is the Hub's
+   download button. Without a custom foreground both targets match the root,
+   so every rule here equals the root value. */
+html[data-contrast-adjust] :is(.bg-card, .bg-popover, .bg-sidebar, .hub-download-fab, .hub-download-panel, .menu-soft-surface-up, .menu-soft-surface) {
+	--foreground: color-mix(in oklab, var(--foreground-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));
+	--muted-foreground: color-mix(
+		in oklab,
+		var(--panel-surface-fg-muted),
+		var(--contrast-panel-target, var(--contrast-target)) var(--contrast-text-mix)
+	);
+	--border: color-mix(in oklab, var(--border-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-line-mix));
+	--input: color-mix(in oklab, var(--input-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-control-mix));
+}
+html[data-contrast-adjust] :is(.bg-card, .bg-popover, .bg-sidebar, .hub-download-fab, .hub-download-panel, .menu-soft-surface-up, .menu-soft-surface) .bg-background:not(.dark [class*="dark:bg-"]:not([class*="dark:bg-background"])) {
+	--foreground: color-mix(in oklab, var(--foreground-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));
+	--muted-foreground: color-mix(
+		in oklab,
+		var(--panel-surface-fg-muted),
+		var(--contrast-target) var(--contrast-text-mix)
+	);
+	--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));
+	--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));
+}
+/* Surfaces the stylesheet paints as cards in dark only. Their page panes
+   (the Settings content pane) return to the page. A bg-background that
+   repaints itself in dark (dark:bg-*) is not the page there, in either rule. */
+html[data-contrast-adjust].dark :is(.dialog-soft-surface, .settings-surface, .chat-composer-surface, .unsloth-composer-surface, .unsloth-plus-menu, [data-sonner-toast]) .bg-background:not([class*="dark:bg-"]:not([class*="dark:bg-background"])) {
+	--foreground: color-mix(in oklab, var(--foreground-base), var(--contrast-ink-target, transparent) var(--contrast-ink-mix, 0%));
+	--muted-foreground: color-mix(
+		in oklab,
+		var(--panel-surface-fg-muted),
+		var(--contrast-target) var(--contrast-text-mix)
+	);
+	--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));
+	--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));
+}
+/* Card spellings from half opacity up are cards too: their ink is palette
+   ink, so it has to head the palette's way. Dark-only ones only in dark.
+   After the resets, so a page pane that is a card in dark takes this. */
+html[data-contrast-adjust] :is(.bg-card\/50, .bg-card\/55, .bg-card\/60, .bg-card\/65, .bg-card\/70, .bg-card\/85, .bg-card\/90, .bg-card\/95, .bg-card\/96),
+html[data-contrast-adjust].dark :is(.dark\:bg-card, .dark\:bg-card\/85, .dark\:bg-card\/90, .dialog-soft-surface, .settings-surface, .chat-composer-surface, .unsloth-composer-surface, .unsloth-plus-menu, [data-sonner-toast]) {
+	--foreground: color-mix(in oklab, var(--foreground-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));
+	--muted-foreground: color-mix(
+		in oklab,
+		var(--panel-surface-fg-muted),
+		var(--contrast-panel-target, var(--contrast-target)) var(--contrast-text-mix)
+	);
+	--border: color-mix(in oklab, var(--border-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-line-mix));
+	--input: color-mix(in oklab, var(--input-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-control-mix));
+}
+/* Hub result rows are cards in light only; dark paints them as a wash over
+   the page, which the page target already suits. */
+html[data-contrast-adjust]:not(.dark) .hub-page .hub-result-row {
+	--foreground: color-mix(in oklab, var(--foreground-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));
+	--muted-foreground: color-mix(
+		in oklab,
+		var(--panel-surface-fg-muted),
+		var(--contrast-panel-target, var(--contrast-target)) var(--contrast-text-mix)
+	);
+	--border: color-mix(in oklab, var(--border-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-line-mix));
+	--input: color-mix(in oklab, var(--input-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-control-mix));
+}
+/* The dark Hub repaints [class*="bg-background"] and [class*="bg-card"] as
+   popovers from @layer base, so any background utility still wins. Only an
+   element with none in play (hover:bg-background at rest) is a popover. */
+html[data-contrast-adjust].dark .hub-page :is([class*="bg-background"], [class*="bg-card"]):not([class^="bg-"], [class*=" bg-"], [class*="dark:bg-"], :hover) {
+	--foreground: color-mix(in oklab, var(--foreground-base), var(--contrast-panel-ink-target, var(--contrast-ink-target, transparent)) var(--contrast-ink-mix, 0%));
+	--muted-foreground: color-mix(
+		in oklab,
+		var(--panel-surface-fg-muted),
+		var(--contrast-panel-target, var(--contrast-target)) var(--contrast-text-mix)
+	);
+	--border: color-mix(in oklab, var(--border-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-line-mix));
+	--input: color-mix(in oklab, var(--input-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-control-mix));
 }
 
 /* Code font size: only overrides when the user sets an explicit size, so the
@@ -763,6 +976,9 @@ html[data-chat-font] .aui-root {
 }
 
 @theme inline {
+	/* Named so they sort after lg/xl. 3xl = 1920px, 4xl = 2560px. */
+	--breakpoint-3xl: 120rem;
+	--breakpoint-4xl: 160rem;
 	/* UI typography scale (Settings > Appearance). Every token multiplies
 	   its CSS base size by --ui-font-scale, so text follows the preference
 	   while rem-based layout stays put. The CSS base is 16px; the app default
@@ -827,6 +1043,7 @@ html[data-chat-font] .aui-root {
 	--color-sidebar-border: var(--sidebar-border);
 	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
 	--color-sidebar-accent: var(--sidebar-accent);
+	--color-tabs-line-indicator: var(--tabs-line-indicator);
 	--color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
 	--color-sidebar-primary: var(--sidebar-primary);
 	--color-sidebar-foreground: var(--sidebar-foreground);
@@ -1181,10 +1398,28 @@ html[data-chat-font] .aui-root {
 	.sidebar-row-action.is-disclosure-open {
 		@apply opacity-100 pointer-events-auto;
 	}
-	/* Secondary row action (the pinned-chat unpin button) sits just left of
-	   the primary "…" options button. */
+	/* The pin sits just left of the "…" options button, and the 14px trough
+	   between their ~16px icons is the two paddings that face each other: the
+	   pin's pr-1.5 and the options button's pl-2. Drop those, and the pin's
+	   right edge lands exactly on the options button's left edge (30px = its
+	   pr-1.5 plus a size-6 glyph). Closing the gap by moving the pin instead
+	   would slide it under that pl-2, and the options button, later in the DOM,
+	   would take the clicks over the pin's own glyph. What is left of the pin's
+	   own padding-right is the whole gap: the glyph boxes meet at 30px, so 2px
+	   here is 2px between them and 10px between the drawn icons. */
 	.sidebar-row-action.is-unpin-action {
-		right: 1.875rem;
+		right: calc(1.875rem * var(--ui-space-scale, 1));
+		padding-right: calc(0.125rem * var(--ui-space-scale, 1));
+		/* The base pl-2 faces the options button, which is what opens the gap between the two
+		   icons. On the pin there is nothing to its left but the title, so that padding is
+		   dead space: invisible, but inside the button, and sidebar-touch-reveal makes the
+		   button clickable on a coarse pointer. It put 8px of the title under the pin on
+		   project rows, where a tap pinned the chat instead of opening it. Nothing moves
+		   visually; the glyph is positioned from the right. */
+		padding-left: 0;
+	}
+	.sidebar-row-action.is-unpin-action + .sidebar-row-action {
+		padding-left: 0;
 	}
 
 	/* Branch picker chevron buttons sit beside action bar icon buttons
@@ -1198,7 +1433,7 @@ html[data-chat-font] .aui-root {
 	.sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
 		@apply text-nav-fg;
 		/* A step darker than the row hover so the circle reads on top of it. */
-		background-color: color-mix(in srgb, var(--foreground) 11%, transparent);
+		background-color: color-mix(in srgb, var(--foreground) calc(11% * var(--contrast-wash-gain, 1)), transparent);
 	}
 	.dark .sidebar-row-action:hover .sidebar-row-action-glyph,
 	.dark .sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
@@ -1209,29 +1444,29 @@ html[data-chat-font] .aui-root {
 	   + pr-1.5 inside a pill the list inset by px-1.5 = 12px). The desktop
 	   titlebar insets by 5px, so those headers override this in app-sidebar.tsx. */
 	.sidebar-sticky-label {
-		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[16px] pr-3 text-ui-14! leading-ui-17 font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
+		@apply rounded-none bg-sidebar pt-0 pb-[calc(8px*var(--ui-space-scale,1))] pl-[calc(16px*var(--ui-space-scale,1))] pr-3 text-ui-14! leading-ui-17 font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
 		/* Muted section-header gray, matching Gemini's "Notebooks"/"Recents".
 		   Lightened from #5f6368 so the label reads as a header, clearly
-		   lighter than the near-black nav items. */
-		color: #80868b;
+		   lighter than the near-black nav items. Follows the contrast slider. */
+		color: color-mix(in oklab, #80868b, var(--contrast-panel-target, var(--contrast-target, transparent)) var(--contrast-text-mix, 0%));
 		letter-spacing: 0;
 	}
 	/* These compound selectors must beat the base label's pr-3 declaration.
 	   Tailwind emits utility classes before this components block, so putting
-	   pr-[11px]/pr-[13px] on the element would lose the cascade. */
+	   pr-[calc(11px*var(--ui-space-scale,1))]/pr-[calc(13px*var(--ui-space-scale,1))] on the element would lose the cascade. */
 	.sidebar-sticky-label.sidebar-sticky-label-desktop {
-		padding-right: 11px;
+		padding-right: calc(11px * var(--ui-space-scale, 1));
 	}
 	.sidebar-sticky-label.sidebar-sticky-label-desktop-recents {
-		padding-right: 13px;
+		padding-right: calc(13px * var(--ui-space-scale, 1));
 	}
 	.sidebar-sticky-label-following {
-		@apply pt-[21px];
+		@apply pt-[calc(21px*var(--ui-space-scale,1))];
 	}
 	.dark .sidebar-sticky-label {
 		/* Muted gray, clearly dimmer than the near-white nav items (#ececee) so
 		   "Train"/"Recents" read as section headers — like Gemini's dark mode. */
-		color: #9aa0a6;
+		color: color-mix(in oklab, #9aa0a6, var(--contrast-panel-target, var(--contrast-target, transparent)) var(--contrast-text-mix, 0%));
 		letter-spacing: 0;
 	}
 	/* Panel input fields. Light mode matches the settings fields: white
@@ -1289,10 +1524,10 @@ html[data-chat-font] .aui-root {
 	   themes; the black/white base flips automatically per theme. */
 	.panel-slider [data-slot="slider-track"] {
 		height: 0.25rem !important;
-		background-color: rgb(0 0 0 / 0.025) !important;
+		background-color: rgb(0 0 0 / calc(0.025 * var(--contrast-wash-gain, 1))) !important;
 	}
 	.dark .panel-slider [data-slot="slider-track"] {
-		background-color: rgb(255 255 255 / 0.025) !important;
+		background-color: rgb(255 255 255 / calc(0.025 * var(--contrast-wash-gain, 1))) !important;
 	}
 	/* Sliders in the right-side parameters panel.
 	 *
@@ -1327,8 +1562,8 @@ html[data-chat-font] .aui-root {
 		background-color: var(--panel-slider-fg) !important;
 	}
 	.panel-slider [data-slot="slider-thumb"] {
-		width: 0.875rem !important;
-		height: 0.875rem !important;
+		width: calc(0.875rem * var(--ui-space-scale, 1)) !important;
+		height: calc(0.875rem * var(--ui-space-scale, 1)) !important;
 		background-color: var(--panel-slider-fg) !important;
 		border-color: var(--panel-slider-fg) !important;
 		transform: none !important;
@@ -1353,8 +1588,16 @@ html[data-chat-font] .aui-root {
 	   default. Light mode only, since dark mode draws these controls borderless.
 	   Overrides the token, so every derived shade stays in step. */
 	html:not(.dark) .diffusion-surface {
-		--border: #e9e9e9;
-		--input: #e9e9e9;
+		--border-base: #e9e9e9;
+		--input-base: #e9e9e9;
+		--border: var(--border-base);
+		--input: var(--input-base);
+	}
+	/* A scoped base has to redo the derivation: the :root one is already
+	   substituted, so otherwise the slider stops at these panels. */
+	html[data-contrast-adjust]:not(.dark) .diffusion-surface {
+		--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));
+		--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));
 	}
 
 	/* Settings columns on Images and Video: content dissolves at whichever edge it runs
@@ -1437,21 +1680,32 @@ html[data-chat-font] .aui-root {
 		);
 	}
 
-	/* Images and Video: a field's "i" only appears with the row it belongs to. Matched on the
-	   InfoHint itself so every field style is covered, including the shared chat slider.
-	   Two levels up is the field container; higher ancestors deliberately do not match. */
-	.diffusion-surface [data-slot="info-hint"] {
-		opacity: 0;
-		pointer-events: none;
-		transition: opacity 150ms;
-	}
-	.diffusion-surface *:hover > [data-slot="info-hint"],
-	.diffusion-surface *:hover > * > [data-slot="info-hint"],
-	.diffusion-surface *:focus-within > [data-slot="info-hint"],
-	.diffusion-surface *:focus-within > * > [data-slot="info-hint"],
-	.diffusion-surface [data-slot="info-hint"]:focus-visible {
-		opacity: 1;
-		pointer-events: auto;
+	/* Images, Video and Run settings: a field's "i" only appears with the row it belongs to.
+	   Matched on the InfoHint itself so every field style is covered, including the shared
+	   chat slider. Two levels up is the field container; higher ancestors deliberately do
+	   not match. Opacity, not display, so revealing one never reflows its row. */
+	/* Hover-capable pointers only. A tap is not hover and does not raise :focus-visible, so
+	   on a touch screen this would hide a control that has no other way to be reached. */
+	@media (hover: hover) {
+		:is(.diffusion-surface, .hint-on-hover) [data-slot="info-hint"] {
+			opacity: 0;
+			pointer-events: none;
+			transition: opacity 150ms;
+		}
+		/* :has(:focus-visible), not :focus-within: a select hands focus back to its trigger
+		   on close, which left the "i" up until something else was clicked. */
+		:is(.diffusion-surface, .hint-on-hover)
+			:is(*:hover, *:has(:focus-visible))
+			> [data-slot="info-hint"],
+		:is(.diffusion-surface, .hint-on-hover)
+			:is(*:hover, *:has(:focus-visible))
+			> *
+			> [data-slot="info-hint"],
+		:is(.diffusion-surface, .hint-on-hover)
+			[data-slot="info-hint"]:focus-visible {
+			opacity: 1;
+			pointer-events: auto;
+		}
 	}
 
 	/* Inline numeric input — used for slider values and Context Length.
@@ -1461,11 +1715,40 @@ html[data-chat-font] .aui-root {
 	   an inline width that hugs the value. Hover/focus: very light bg
 	   fade-in, just enough to read as interactive without competing
 	   with the slider row's quiet aesthetic. */
+	/* Wider right gutter: the value is right-aligned on the panel's own edge. */
+	/* 32px like every other inline control on the panel. */
 	.panel-number-input {
-		@apply h-7 min-w-8 shrink-0 rounded-full border-0 bg-transparent px-2 text-right text-ui-13! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-black/[0.04] focus:bg-black/[0.05] focus-visible:ring-0! focus-visible:outline-none md:text-ui-13!;
+		@apply h-8 min-w-8 shrink-0 rounded-full border-0 bg-transparent pl-2 pr-3 text-right text-ui-13! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] focus:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] focus-visible:ring-0! focus-visible:outline-none md:text-ui-13!;
 	}
 	.dark .panel-number-input {
-		@apply hover:bg-white/[0.04] focus:bg-white/[0.06];
+		@apply hover:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))] focus:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))];
+	}
+
+	/* Select trigger on the panel: the surface and padding the model rows
+	   use. Height and width stay with the caller, since an inline select
+	   is 32px and a full-width one 36px. */
+	/* Inline field on the panel: the filled box a row's value is typed
+	   into. These share one width, so a left-aligned value puts them all
+	   on a single edge. Width and height stay with the caller. */
+	.panel-field {
+		@apply rounded-full border-transparent bg-[var(--panel-input-surface)] px-3.5 py-0 text-left text-ui-13 font-medium text-nav-fg outline-none hover:bg-[var(--panel-input-surface-hover)] focus-visible:ring-0;
+	}
+
+	/* Important like .panel-input-group: these all override a base
+	   SelectTrigger class of the same weight. 14px each side optically:
+	   the chevron's stroke fills 14 of its 24 viewBox units, so its box
+	   carries ~3px of slack and pr-[calc(11px*var(--ui-space-scale,1))] pays that back. */
+	.panel-select-trigger {
+		@apply rounded-full! border-transparent! bg-[var(--panel-input-surface)]! py-0! pl-3.5! pr-[calc(11px*var(--ui-space-scale,1))]! text-ui-13! font-medium! text-nav-fg shadow-none! hover:bg-[var(--panel-input-surface-hover)]! focus-visible:ring-0!;
+	}
+
+	/* These controls suppress the ring, so keyboard focus would otherwise
+	   land with nothing drawn. Same soft 1px halo as .composer-pill-btn. */
+	.panel-field:focus-visible,
+	.panel-select-trigger:focus-visible,
+	.panel-number-input:focus-visible {
+		outline: none;
+		box-shadow: 0 0 0 1px var(--ring-soft) !important;
 	}
 
 	/* Switch — unsloth-green track when active, slider-gray thumb in
@@ -1486,6 +1769,11 @@ html[data-chat-font] .aui-root {
 
 	.tooltip-compact {
 		@apply rounded-[11px] border-transparent bg-black px-2.5 py-1.5 text-ui-11 font-medium leading-snug text-white shadow-md;
+	}
+
+	/* Queue hints must not block menu actions. */
+	[data-radix-popper-content-wrapper]:has(> .prompt-queue-option-tooltip) {
+		pointer-events: none;
 	}
 
 	/* Dialog popups: borderless; chatbox shadow in light, flat card
@@ -1517,9 +1805,9 @@ html[data-chat-font] .aui-root {
 
 	.app-user-menu [data-slot="dropdown-menu-item"],
 	.app-user-menu [data-slot="dropdown-menu-sub-trigger"] {
-		height: 36px;
-		padding: 0 0.75rem !important;
-		gap: 9.5px !important;
+		height: calc(36px * var(--ui-space-scale, 1));
+		padding: 0 calc(0.75rem * var(--ui-space-scale, 1)) !important;
+		gap: calc(9.5px * var(--ui-space-scale, 1)) !important;
 		border-radius: 12px;
 		font-weight: 500;
 		font-size: calc(0.9375rem * var(--ui-font-scale, 1));
@@ -1549,7 +1837,7 @@ html[data-chat-font] .aui-root {
 		/* --nav-surface-hover is tuned for the page bg; on the lighter menu
 		   surface it is invisible, so use the menu hover token instead. */
 		background-color: var(--accent);
-		color: #fff;
+		color: var(--foreground);
 	}
 	.app-user-menu [data-slot="dropdown-menu-item"]:focus *,
 	.app-user-menu [data-slot="dropdown-menu-sub-trigger"]:focus *,
@@ -1559,7 +1847,7 @@ html[data-chat-font] .aui-root {
 	.dark .app-user-menu [data-slot="dropdown-menu-item"]:focus *,
 	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"]:focus *,
 	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"][data-state="open"] * {
-		color: #fff !important;
+		color: var(--foreground) !important;
 	}
 
 	.menu-flat-destructive {
@@ -1597,10 +1885,10 @@ html[data-chat-font] .aui-root {
 		box-shadow: none;
 	}
 
-	/* Lift the dialog off the page bg; halfway to --card keeps the inner
-	   bg-muted / bg-background fills readable. */
+	/* Lift the dialog off the page bg. On --card, so it matches the sidebar,
+	   the chatbox and every menu. */
 	.dark .settings-surface {
-		background-color: color-mix(in srgb, var(--background) 50%, var(--card));
+		background-color: var(--card);
 	}
 
 	/* App-wide: every clickable control shows the hand cursor. Disabled ones
@@ -1677,7 +1965,12 @@ html[data-chat-font] .aui-root {
 	.dark .menu-soft-surface,
 	.dark .menu-soft-surface-up {
 		--menu-soft-edge: rgba(255, 255, 255, 0.07);
-		--menu-soft-shadow: rgba(0, 0, 0, 0.28);
+		/* The page colour, so the falloff disappears into the page instead of
+		   ringing it. var(--background), not a fixed #181818, so it follows a
+		   custom background too. Where a menu overlaps a lighter surface this
+		   still parts the two, and --menu-soft-edge carries the boundary
+		   elsewhere. Kept in step with the update banners. */
+		--menu-soft-shadow: var(--background);
 		--menu-soft-offset-y: 8px;
 		--menu-soft-blur: 28px;
 		--menu-soft-spread: -6px;
@@ -1708,6 +2001,24 @@ html[data-chat-font] .aui-root {
 		box-shadow: none;
 	}
 
+	/* Model discovery secondary text: section labels, chips, placeholders and
+	   trigger icons. Small or uppercase, and much of it sits on control fills
+	   rather than the panel, where the app-wide #b0b0b0 drops to 5.2:1. Lift
+	   the token once per surface so the picker and the Hub read alike, with
+	   --foreground still a step above. Re-derives --muted-foreground from the
+	   lifted base on the same curve the contrast slider uses, so the setting
+	   still reaches this text; at the default the mix is the identity. */
+	.dark .unsloth-model-selector-menu,
+	.dark .hub-menu-instant,
+	.dark .hub-page {
+		--panel-surface-fg-muted: #c9c9c9;
+		--muted-foreground: color-mix(
+			in oklab,
+			var(--panel-surface-fg-muted),
+			var(--contrast-target, transparent) var(--contrast-text-mix, 0%)
+		);
+	}
+
 	/* List menus: one radius in both themes, slightly tighter than --radius-lg
 	   and matching the sidebar buttons. !important beats per-menu rounded-*. */
 	[data-slot="dropdown-menu-content"],
@@ -1732,16 +2043,19 @@ html[data-chat-font] .aui-root {
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
 	}
 	/* Dark: keep the chat-box dropdown shadow so menus don't merge into a
-	   same-color surface (e.g. a menu overlapping the composer). */
+	   same-color surface (e.g. a menu overlapping the composer). The page
+	   colour rather than black, so over the page there is nothing to see and
+	   over the composer it is only the step between the two surfaces. Black
+	   ringed every menu several levels below the page. */
 	.dark [data-slot="dropdown-menu-content"],
 	.dark [data-slot="dropdown-menu-sub-content"],
 	.dark [data-slot="select-content"],
 	.dark [data-slot="combobox-content"],
 	.dark [data-slot="popover-content"] {
-		box-shadow: 0 4px 14px var(--background) !important;
+		box-shadow: 0 8px 28px -6px var(--background) !important;
 	}
 
-	/* Model selector: shadow in the page-bg color so it lifts off the
+	/* Model selector: tighter than the menus above so it lifts off the
 	   composer it overlaps (chatbox geometry). Account menu stays flat. */
 	.dark .unsloth-model-selector-menu {
 		box-shadow: 0 2px 8px -2px var(--background) !important;
@@ -1761,7 +2075,7 @@ html[data-chat-font] .aui-root {
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 	.dark .app-user-menu.menu-soft-surface-up {
-		box-shadow: 0 8px 28px -6px rgba(0, 0, 0, 0.28);
+		box-shadow: 0 8px 28px -6px var(--background);
 	}
 
 	.chat-composer-surface {
@@ -1781,7 +2095,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.composer-pill-btn {
-		@apply flex cursor-pointer items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.1] disabled:cursor-not-allowed disabled:opacity-40;
+		@apply flex cursor-pointer items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground/70 dark:text-foreground transition-colors hover:bg-primary/10 dark:hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
 	}
 
 	/* Caret pills (RAG, MCP): the chevron carries its own whitespace, so the
@@ -1814,7 +2128,7 @@ html[data-chat-font] .aui-root {
 
 		/* Too small for the circle, so show a bare x. */
 		& .composer-pill-x {
-			@apply size-[min(calc(15px*var(--ui-font-scale,1)),calc(7.5px+7.5px*var(--ui-font-scale,1)))] bg-transparent p-0 dark:bg-transparent;
+			@apply size-[calc(15px*var(--ui-font-scale,1))] bg-transparent p-0 dark:bg-transparent;
 		}
 
 		/* Hidden name comes back as a hover tooltip, like .tooltip-compact. */
@@ -1849,7 +2163,8 @@ html[data-chat-font] .aui-root {
 		color: color-mix(in oklab, var(--foreground) 60%, transparent);
 	}
 	.dark .composer-pill-btn.composer-pill-permissions:not([data-variant="danger"]) {
-		color: color-mix(in oklab, var(--foreground) 72%, transparent);
+		/* Full ink, like the rest of the composer's controls. */
+		color: var(--foreground);
 	}
 	/* Bypass permissions badge: bright yellow text, no resting fill; the
 	   rounded hover pill picks up the yellow accent like other toggles. */
@@ -1874,7 +2189,7 @@ html[data-chat-font] .aui-root {
 	/* On hover the icon swaps for an X inside a soft circle (ChatGPT-style),
 	   filling the icon slot so every pill's X is identical and centered. */
 	.composer-pill-x {
-		@apply pointer-events-none absolute inset-0 m-auto size-[var(--ui-icon-size)] rounded-full bg-primary/15 p-[3px] opacity-0 transition-opacity dark:bg-white/[0.14];
+		@apply pointer-events-none absolute inset-0 m-auto size-[var(--ui-icon-size)] rounded-full bg-primary/15 p-[calc(3px*var(--ui-space-scale,1))] opacity-0 transition-opacity dark:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))];
 	}
 
 	/* Hovering an active pill swaps the icon for an X (click to turn off). */
@@ -1917,11 +2232,9 @@ html[data-chat-font] .aui-root {
 		font-family: var(--font-sans);
 	}
 
-	/* Pill composer; own classes so compare-mode keeps its stacked layout. py
-	   12px matches the send circle's gap to the right edge, so it sits evenly
-	   inside the 32px corner. */
+	/* 28px corner: the send circle sits at an even 10px inset inside it. */
 	.unsloth-composer-surface {
-		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-3 py-3 outline-none transition-shadow;
+		@apply relative flex w-full flex-col rounded-[28px] bg-background dark:bg-card p-2.5 outline-none transition-shadow;
 		container-type: inline-size;
 		font-family: var(--font-sans);
 		background-clip: padding-box;
@@ -1962,10 +2275,11 @@ html[data-chat-font] .aui-root {
 	}
 
 	.unsloth-composer-left {
-		@apply flex min-w-0 flex-wrap items-center gap-0.5;
+		@apply relative top-px flex min-w-0 flex-wrap items-center gap-0.5;
 		order: 1;
-		/* Pull the plus button closer to the composer edge. */
-		margin-left: -0.25rem;
+		/* Pull the plus button closer to the composer edge. Logical, so RTL
+		   pulls it outward instead of into the action group. */
+		margin-inline-start: calc(-0.25rem * var(--ui-space-scale, 1));
 	}
 
 	.unsloth-composer-line .unsloth-composer-input {
@@ -1974,9 +2288,9 @@ html[data-chat-font] .aui-root {
 
 	.unsloth-composer-line .aui-composer-action-wrapper {
 		order: 3;
-		margin-left: auto;
-		/* 12px surface + 4px line padding minus this = 12px edge gap. */
-		margin-right: -0.25rem;
+		margin-inline-start: auto;
+		/* Cancel the line padding to preserve the surface's 10px edge gap. */
+		margin-inline-end: calc(-0.25rem * var(--ui-space-scale, 1));
 	}
 
 	.unsloth-composer-line[data-expanded="true"] .unsloth-composer-input {
@@ -1984,15 +2298,13 @@ html[data-chat-font] .aui-root {
 		flex-basis: 100%;
 		width: 100%;
 		/* Sits close to the left edge, near the plus. */
-		padding-left: 0.375rem;
-		padding-top: 0.5rem;
-		padding-bottom: 0.5rem;
+		padding-left: calc(0.375rem * var(--ui-space-scale, 1) + 1px);
+		padding-top: calc(0.5rem * var(--ui-space-scale, 1));
+		padding-bottom: calc(0.5rem * var(--ui-space-scale, 1));
 	}
 
-	/* Two-row gap between text and controls. On the line, not the input, so
-	   the placeholder max-height clamp never crops it like padding would. */
 	.unsloth-composer-line[data-expanded="true"] {
-		row-gap: 0.75rem;
+		row-gap: calc(0.375rem * var(--ui-space-scale, 1));
 	}
 
 	.unsloth-composer-line[data-expanded="true"] .unsloth-composer-left {
@@ -2003,12 +2315,51 @@ html[data-chat-font] .aui-root {
 	   autosize textarea's inline !important height, so a cleared message leaves
 	   no stale tall box or stray scrollbar. */
 	.unsloth-composer-input:placeholder-shown {
-		max-height: 40px !important;
+		max-height: calc(40px * var(--ui-space-scale, 1)) !important;
 		overflow-y: hidden !important;
 	}
 
 	.unsloth-composer-input {
-		@apply min-h-[40px] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent pl-0.5 pr-2 py-2 text-ui-15 font-[450] leading-6 outline-none placeholder:text-muted-foreground focus-visible:ring-0;
+		@apply min-h-[calc(40px*var(--ui-space-scale,1))] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent pl-0.5 pr-2 py-2 text-ui-15 font-[450] leading-6 outline-none placeholder:text-muted-foreground focus-visible:ring-0;
+	}
+
+	/* Animate the frame so the textarea stays mounted and keeps selection/undo. */
+	.unsloth-composer-editor {
+		position: relative;
+		order: 1;
+		flex-basis: 100%;
+		width: 100%;
+		height: var(
+			--composer-editor-height,
+			calc(40px * var(--ui-space-scale, 1))
+		);
+		transition: height 280ms cubic-bezier(0.22, 1, 0.36, 1);
+	}
+
+	.unsloth-composer-editor .unsloth-composer-input {
+		display: block;
+		min-height: 100%;
+		max-height: 100% !important;
+		/* Reserved before typing, or the toggle appearing would reflow the text. */
+		padding-right: calc(2.25rem * var(--ui-space-scale, 1));
+	}
+
+	/* max(): at 480px tall the clamp is 192px, under the twelve-row compact
+	   height, so expanding would clip. svh, since dvh tracks Safari's bar. */
+	.aui-composer-root[data-writing-expanded="true"] .unsloth-composer-editor {
+		height: max(
+			var(--composer-editor-height, calc(40px * var(--ui-space-scale, 1))),
+			clamp(8rem, calc(80svh - 12rem), 42rem)
+		);
+	}
+
+	/* The welcome composer starts mid-page; move it up so the toolbar stays in view. */
+	.aui-thread-welcome-center {
+		transition: padding-top 280ms cubic-bezier(0.22, 1, 0.36, 1);
+	}
+
+	.aui-thread-welcome-center:has([data-writing-expanded="true"]) {
+		padding-top: calc(1rem * var(--ui-space-scale, 1));
 	}
 
 	.unsloth-composer-plus {
@@ -2032,6 +2383,153 @@ html[data-chat-font] .aui-root {
 
 	.unsloth-composer-plus[data-state="open"] svg {
 		transform: rotate(45deg);
+	}
+
+	/* Size container for the composer. Sits outside the surface so the tight
+	   rules below can trim the surface's own padding. */
+	.unsloth-composer-shell {
+		container-type: inline-size;
+		container-name: composer-shell;
+	}
+
+	/* Mobile and very shrunk windows: the dictate/send cluster was dropping to
+	   a second line. Take the width back from the gutters, not the controls. */
+	@container composer-shell (max-width: 30rem) {
+		.unsloth-composer-line {
+			padding-left: 0;
+			padding-right: 0;
+			/* One gap for every control, so the row spaces evenly. */
+			--composer-tight-gap: calc(0.125rem * var(--ui-space-scale, 1));
+		}
+
+		.unsloth-composer-left,
+		.unsloth-composer-line .aui-composer-action-wrapper {
+			gap: var(--composer-tight-gap);
+		}
+
+		/* Plus and send hug their edges by the same amount. */
+		.unsloth-composer-left {
+			margin-inline-start: calc(-0.125rem * var(--ui-space-scale, 1));
+		}
+
+		.unsloth-composer-line .aui-composer-action-wrapper {
+			margin-inline-end: calc(-0.125rem * var(--ui-space-scale, 1));
+		}
+
+		/* Send's own inset stacks on the gap above; drop it. The running state
+		   puts that inset on a wrapper div instead of the button. */
+		.unsloth-composer-line .aui-composer-action-wrapper > button.aui-composer-send,
+		.unsloth-composer-line .aui-composer-action-wrapper > button.aui-composer-cancel,
+		.unsloth-composer-line .aui-composer-run-controls {
+			margin-left: 0;
+		}
+
+		/* Keeps the text starting just right of the plus glyph below it. */
+		.unsloth-composer-line[data-expanded="true"] .unsloth-composer-input {
+			padding-left: calc(0.5rem * var(--ui-space-scale, 1) + 1px);
+		}
+
+		/* Recording swaps the input for the dictation bar, whose timer and
+		   actions are shrink-0. They set its floor, and the fieldset is
+		   min-width 0, so past that floor it overflows the surface instead of
+		   shrinking. Trim the same paddings the rest of the row gives up. */
+		.unsloth-dictation-wave {
+			padding-left: calc(0.5rem * var(--ui-space-scale, 1));
+			padding-right: calc(0.25rem * var(--ui-space-scale, 1));
+		}
+
+		.unsloth-dictation-timer {
+			margin-inline-end: calc(0.5rem * var(--ui-space-scale, 1));
+		}
+
+		/* Past its floor the bar has to stop taking width it cannot use. Left
+		   at min-width 0 it keeps shrinking and its shrink-0 children spill
+		   out of the surface, taking send with them; with a floor the pill
+		   row yields first and wraps, which is recoverable. */
+		.unsloth-composer-line[data-dictating="true"] .unsloth-dictation-bar {
+			min-width: min-content;
+		}
+	}
+
+	/* ~375px and under. Each control is a circle around a much smaller glyph,
+	   so the built-in air, not the gap, sets the spacing. Shrink the circles
+	   by 4px; overlapping them instead would make adjacent hit areas share
+	   pixels, and the later button would win the taps in between. */
+	@container composer-shell (max-width: 22rem) {
+		.unsloth-composer-line {
+			--composer-tight-gap: 0rem;
+		}
+
+
+		.unsloth-composer-surface {
+			border-radius: 1.5rem;
+		}
+
+		/* 32px to 28px for every control, and 36px to 28px for plus and send,
+		   which were the row's only oversized ends. Each selector has to
+		   outrank the compact pill rules, hence the longer shapes. */
+		/* Scoped to the right-control cluster. The dictation bar also renders
+		   an .aui-composer-send inside this line, and its stop button carries
+		   neither of our classes, so a looser selector shrinks one of that
+		   pair and not the other. */
+		.unsloth-composer-left > .unsloth-composer-plus,
+		.unsloth-composer-line .aui-composer-action-wrapper > button,
+		.unsloth-composer-line .aui-composer-run-controls > button {
+			width: calc(1.75rem * var(--ui-space-scale, 1));
+			height: calc(1.75rem * var(--ui-space-scale, 1));
+			/* The thinking pill reserves a text line; that would win over height. */
+			min-height: calc(1.75rem * var(--ui-space-scale, 1));
+		}
+
+		/* Tool pills only once the fit hook has collapsed their labels. Applied
+		   unconditionally, a 28px box makes a labelled pill measure as if it
+		   fit, and the hook keeps labels that then overflow it. */
+		.unsloth-composer-left[data-pill-compact="true"] > button.composer-pill-btn,
+		.unsloth-composer-left[data-pill-compact="first"]
+			> button.composer-pill-btn.composer-pill-permissions {
+			width: calc(1.75rem * var(--ui-space-scale, 1));
+			height: calc(1.75rem * var(--ui-space-scale, 1));
+			min-height: calc(1.75rem * var(--ui-space-scale, 1));
+		}
+
+		/* Send commits, so keep it clear of the toggle strip. Needs the same
+		   `> button` shape as the pull above to outrank it. */
+		.unsloth-composer-line
+			.aui-composer-action-wrapper
+			> button.aui-composer-send,
+		.unsloth-composer-line
+			.aui-composer-action-wrapper
+			> button.aui-composer-cancel,
+		.unsloth-composer-line
+			.aui-composer-action-wrapper
+			> .aui-composer-run-controls {
+			margin-left: calc(0.25rem * var(--ui-space-scale, 1));
+		}
+
+		/* Same 28px as the row above, and both of the bar's buttons together:
+		   stop carries none of our classes, so they have to be sized as a
+		   pair or the recording controls come out mismatched. */
+		.unsloth-dictation-actions {
+			gap: calc(0.375rem * var(--ui-space-scale, 1));
+		}
+
+		.unsloth-dictation-actions > button {
+			width: calc(1.75rem * var(--ui-space-scale, 1));
+			height: calc(1.75rem * var(--ui-space-scale, 1));
+			min-height: calc(1.75rem * var(--ui-space-scale, 1));
+		}
+
+		/* The wave is flex-1 and min-width 0, so all it still contributes at
+		   this size is its own padding. Drop it and the bar's min-content is
+		   exactly the timer plus the two buttons. */
+		.unsloth-dictation-wave {
+			padding-left: 0;
+			padding-right: 0;
+		}
+
+		.unsloth-dictation-timer {
+			margin-inline-end: calc(0.25rem * var(--ui-space-scale, 1));
+		}
 	}
 
 	/* Keyboard focus shows a subtle brand ring, not the browser's blue outline;
@@ -2084,13 +2582,71 @@ html[data-chat-font] .aui-root {
 		font-weight: 500;
 	}
 
+	/* Narrow panes shrink the greeting along with the composer under it, or a
+	   30px title wraps over two lines above a tightened box. Sized off the
+	   text tokens so the UI font scale still applies.
+
+	   The gutters here are on the pane's width, not the window's: an artifact
+	   split can leave a 42% thread pane inside a wide window, and a viewport
+	   breakpoint would keep the full 20px there. */
+	@container (max-width: 31.5rem) {
+		.unsloth-composer-dock-inner {
+			padding-left: calc(0.75rem * var(--ui-space-scale, 1));
+			padding-right: calc(0.75rem * var(--ui-space-scale, 1));
+		}
+
+		/* The welcome screen is inside the viewport's own 20px gutter, so pull
+		   back to the dock's 12px rather than adding to it; otherwise the empty
+		   state is 40px narrower than the thread it turns into. */
+		.aui-thread-welcome-message {
+			padding-left: 0;
+			padding-right: 0;
+			margin-left: calc(-0.5rem * var(--ui-space-scale, 1));
+			margin-right: calc(-0.5rem * var(--ui-space-scale, 1));
+			/* w-full would pin the width and the margins would only shift the
+			   box left. An explicit width widens it into the gutter instead;
+			   auto would shrink-wrap, since the parent centres its children. */
+			width: calc(100% + 1rem * var(--ui-space-scale, 1));
+		}
+
+		.unsloth-welcome-title {
+			font-size: var(--text-2xl);
+		}
+
+		.unsloth-welcome-sloth {
+			width: calc(2.125rem * var(--ui-space-scale, 1));
+			height: calc(2.125rem * var(--ui-space-scale, 1));
+		}
+
+		.unsloth-welcome-greeting {
+			gap: calc(0.625rem * var(--ui-space-scale, 1));
+		}
+	}
+
+	/* ~300px and under: one step further, so the greeting holds a single line
+	   beside the mascot instead of wrapping over the composer. */
+	@container (max-width: 18.75rem) {
+		.unsloth-welcome-title {
+			font-size: var(--text-xl);
+		}
+
+		.unsloth-welcome-sloth {
+			width: calc(1.75rem * var(--ui-space-scale, 1));
+			height: calc(1.75rem * var(--ui-space-scale, 1));
+		}
+
+		.unsloth-welcome-greeting {
+			gap: calc(0.5rem * var(--ui-space-scale, 1));
+		}
+	}
+
 	/* Right-side Thinking pill (toggle or dropdown). pl-2 matches the left
 	   pills so the hover X is not pushed in too far. */
 	.unsloth-thinking-pill {
-		@apply inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.1] disabled:cursor-not-allowed disabled:opacity-40;
+		@apply inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground dark:text-foreground transition-colors hover:bg-primary/10 dark:hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
 		/* Reserve a text line so the icon-only (inactive) pill matches the
 		   text pills' height instead of collapsing to the icon. */
-		min-height: calc(1lh + 0.75rem);
+		min-height: calc(1lh + 0.75rem * var(--ui-space-scale, 1));
 	}
 
 	.unsloth-thinking-pill[data-active="true"] {
@@ -2108,7 +2664,7 @@ html[data-chat-font] .aui-root {
 	@container (max-width: 36rem) {
 		.unsloth-thinking-pill {
 			@apply size-8 justify-center gap-0 px-0;
-			min-height: 2rem;
+			min-height: calc(2rem * var(--ui-space-scale, 1));
 		}
 
 		.unsloth-thinking-label,
@@ -2128,8 +2684,8 @@ html[data-chat-font] .aui-root {
 
 	/* Smaller tick for selected Thinking options. */
 	.unsloth-tick {
-		width: min(calc(0.8rem * var(--ui-font-scale, 1)), calc(0.4rem + 0.4rem * var(--ui-font-scale, 1))) !important;
-		height: min(calc(0.8rem * var(--ui-font-scale, 1)), calc(0.4rem + 0.4rem * var(--ui-font-scale, 1))) !important;
+		width: calc(0.8rem * var(--ui-font-scale, 1)) !important;
+		height: calc(0.8rem * var(--ui-font-scale, 1)) !important;
 	}
 
 	/* Soft elevation; [data-slot] outranks the component ring-1, dropping the border. */
@@ -2138,12 +2694,12 @@ html[data-chat-font] .aui-root {
 		   item radius (12px) + side gutter (9px), so the curves run parallel.
 		   !important beats the global 14px dropdown radius. */
 		border-radius: 21px !important;
-		padding-top: 0.5rem;
-		padding-bottom: 0.5rem;
+		padding-top: calc(0.5rem * var(--ui-space-scale, 1));
+		padding-bottom: calc(0.5rem * var(--ui-space-scale, 1));
 		/* Side gutter ~matches the 0.5rem top/bottom padding so the hover box
 		   sits evenly inset on all four sides. */
-		padding-left: 9px;
-		padding-right: 9px;
+		padding-left: calc(9px * var(--ui-space-scale, 1));
+		padding-right: calc(9px * var(--ui-space-scale, 1));
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 
@@ -2165,7 +2721,9 @@ html[data-chat-font] .aui-root {
 	/* Compact items; also applied to portaled sub-content. */
 	.unsloth-plus-menu :is(
 			[data-slot="dropdown-menu-item"],
-			[data-slot="dropdown-menu-sub-trigger"]
+			[data-slot="dropdown-menu-sub-trigger"],
+			[data-slot="context-menu-item"],
+			[data-slot="context-menu-sub-trigger"]
 		) {
 		@apply gap-3 pl-3 pr-3 py-2 text-ui-14;
 		cursor: pointer;
@@ -2174,30 +2732,67 @@ html[data-chat-font] .aui-root {
 		border-radius: 12px;
 	}
 
-	.unsloth-plus-menu [data-slot="dropdown-menu-label"] {
+	.unsloth-plus-menu :is(
+			[data-slot="dropdown-menu-label"],
+			[data-slot="context-menu-label"]
+		) {
 		@apply pl-3 pr-3 py-1.5 text-ui-12;
 	}
 
+	/* A sidebar row's menu, one step down from the composer menus this shares a look with.
+	   It carries the most rows of any menu in the app and was running tall. */
+	.unsloth-plus-menu.sidebar-row-menu[data-slot] {
+		/* Concentric as above: item radius (10px) + side gutter (8px). */
+		border-radius: 18px !important;
+		padding-top: calc(0.375rem * var(--ui-space-scale, 1));
+		padding-bottom: calc(0.375rem * var(--ui-space-scale, 1));
+		padding-left: calc(8px * var(--ui-space-scale, 1));
+		padding-right: calc(8px * var(--ui-space-scale, 1));
+		/* Retunes every .size-icon inside, sub-menus included. */
+		--icon-size: var(--ui-icon-size-sm);
+	}
+
+	.unsloth-plus-menu.sidebar-row-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"],
+			[data-slot="context-menu-item"],
+			[data-slot="context-menu-sub-trigger"]
+		) {
+		@apply gap-2.5 pl-2.5 pr-2.5 py-1.5 text-ui-13;
+		border-radius: 10px;
+	}
+
+	.unsloth-plus-menu.sidebar-row-menu :is(
+			[data-slot="dropdown-menu-label"],
+			[data-slot="context-menu-label"]
+		) {
+		@apply pl-2.5 pr-2.5 py-1 text-ui-11;
+	}
+
 	/* Active (green) items keep their primary text and icon color on hover. */
-	.unsloth-plus-menu [data-slot="dropdown-menu-item"].text-primary:is(:hover, :focus, :focus-visible, [data-highlighted]),
-	.unsloth-plus-menu [data-slot="dropdown-menu-item"].text-primary:is(:hover, :focus, :focus-visible, [data-highlighted]) svg {
+	.unsloth-plus-menu :is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"]).text-primary:is(:hover, :focus, :focus-visible, [data-highlighted]),
+	.unsloth-plus-menu :is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"]).text-primary:is(:hover, :focus, :focus-visible, [data-highlighted]) svg {
 		color: var(--primary) !important;
 	}
 
 	/* Light hover: neutral grey, not the green accent. */
 	.unsloth-plus-menu :is(
 			[data-slot="dropdown-menu-item"],
-			[data-slot="dropdown-menu-sub-trigger"]
+			[data-slot="dropdown-menu-sub-trigger"],
+			[data-slot="context-menu-item"],
+			[data-slot="context-menu-sub-trigger"]
 		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]) {
-		background-color: rgba(0, 0, 0, 0.06) !important;
+		background-color: rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1))) !important;
 	}
 
 	/* Dark hover: the accent nearly matches the surface, so use a clear overlay. */
 	.dark .unsloth-plus-menu :is(
 			[data-slot="dropdown-menu-item"],
-			[data-slot="dropdown-menu-sub-trigger"]
+			[data-slot="dropdown-menu-sub-trigger"],
+			[data-slot="context-menu-item"],
+			[data-slot="context-menu-sub-trigger"]
 		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]) {
-		background-color: rgba(255, 255, 255, 0.1) !important;
+		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1))) !important;
 	}
 
 	/* Hover tints only the background; the item and every descendant (text, icons,
@@ -2205,30 +2800,49 @@ html[data-chat-font] .aui-root {
 	   foreground. The active green rule above still wins via higher specificity. */
 	.unsloth-plus-menu :is(
 			[data-slot="dropdown-menu-item"],
-			[data-slot="dropdown-menu-sub-trigger"]
+			[data-slot="dropdown-menu-sub-trigger"],
+			[data-slot="context-menu-item"],
+			[data-slot="context-menu-sub-trigger"]
 		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]),
 	.unsloth-plus-menu :is(
 			[data-slot="dropdown-menu-item"],
-			[data-slot="dropdown-menu-sub-trigger"]
+			[data-slot="dropdown-menu-sub-trigger"],
+			[data-slot="context-menu-item"],
+			[data-slot="context-menu-sub-trigger"]
 		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]) * {
 		color: inherit !important;
 	}
 
 	.unsloth-plus-menu :is(
 			[data-slot="dropdown-menu-item"],
-			[data-slot="dropdown-menu-sub-trigger"]
+			[data-slot="dropdown-menu-sub-trigger"],
+			[data-slot="context-menu-item"],
+			[data-slot="context-menu-sub-trigger"]
 		)
 		svg:not(.unsloth-tick) {
 		width: var(--ui-icon-size) !important;
 		height: var(--ui-icon-size) !important;
 	}
 
+	/* The rule above pins svg size with !important, straight off --ui-icon-size, so a glyph
+	   never sees the --icon-size the row menu retunes. Same rule, one class deeper. */
+	.unsloth-plus-menu.sidebar-row-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"],
+			[data-slot="context-menu-item"],
+			[data-slot="context-menu-sub-trigger"]
+		)
+		svg:not(.unsloth-tick) {
+		width: var(--icon-size) !important;
+		height: var(--icon-size) !important;
+	}
+
 	/* Destructive items keep red text and a red-tinted hover, not the grey one. */
-	.unsloth-plus-menu [data-slot="dropdown-menu-item"][data-variant="destructive"],
-	.unsloth-plus-menu [data-slot="dropdown-menu-item"][data-variant="destructive"] * {
+	.unsloth-plus-menu :is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"])[data-variant="destructive"],
+	.unsloth-plus-menu :is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"])[data-variant="destructive"] * {
 		color: var(--destructive) !important;
 	}
-	.unsloth-plus-menu [data-slot="dropdown-menu-item"][data-variant="destructive"]:is(:hover, :focus, :focus-visible, [data-highlighted]) {
+	.unsloth-plus-menu :is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"])[data-variant="destructive"]:is(:hover, :focus, :focus-visible, [data-highlighted]) {
 		background-color: color-mix(in oklab, var(--destructive) 10%, transparent) !important;
 	}
 
@@ -2326,7 +2940,7 @@ html[data-chat-font] .aui-root {
 	.artifact-panel-shell::after {
 		top: 50%;
 		left: -2px;
-		height: 28px;
+		height: calc(28px * var(--ui-space-scale, 1));
 		width: 4px;
 		border-radius: 999px;
 		background: transparent;
@@ -2409,15 +3023,15 @@ html[data-chat-font] .aui-root {
 	[data-streamdown="unordered-list"] {
 		list-style-type: disc;
 		list-style-position: outside;
-		padding-left: 1.25rem;
-		margin-block: 0.5rem;
+		padding-left: calc(1.25rem * var(--ui-space-scale, 1));
+		margin-block: calc(0.5rem * var(--ui-space-scale, 1));
 	}
 
 	[data-streamdown="ordered-list"] {
 		list-style-type: decimal;
 		list-style-position: outside;
-		padding-left: 1.25rem;
-		margin-block: 0.5rem;
+		padding-left: calc(1.25rem * var(--ui-space-scale, 1));
+		margin-block: calc(0.5rem * var(--ui-space-scale, 1));
 	}
 
 	[data-streamdown="list-item"] {
@@ -2425,6 +3039,50 @@ html[data-chat-font] .aui-root {
 	}
 
 	/* Flatten code blocks: single border, language label, then code directly */
+	/* Reasoning fence fragments form one continuous surface. Interior fragments have
+	   no padding, border, or rounding at their seams. */
+	.aui-reasoning-code-fragment {
+		padding-inline: calc(1rem * var(--ui-space-scale, 1));
+		background: var(--color-background);
+		border-inline: 1px solid var(--color-border);
+		font-size: calc(0.8125rem * var(--ui-font-scale, 1));
+		line-height: 1.55;
+	}
+	.aui-reasoning-code-first {
+		margin-top: calc(1rem * var(--ui-space-scale, 1));
+		border-top: 1px solid var(--color-border);
+		padding-top: calc(0.75rem * var(--ui-space-scale, 1));
+		border-radius: 1.5rem 1.5rem 0 0;
+	}
+	.aui-reasoning-code-last {
+		border-bottom: 1px solid var(--color-border);
+		padding-bottom: calc(0.75rem * var(--ui-space-scale, 1));
+		border-bottom-left-radius: 1.5rem;
+		border-bottom-right-radius: 1.5rem;
+	}
+	.aui-reasoning-code-fragment pre,
+	.aui-reasoning-code-fragment code {
+		font-family: var(--custom-code-font, "Fira Code", ui-monospace, monospace);
+	}
+	.dark .aui-reasoning-code-fragment {
+		background: var(--color-code-block);
+	}
+	.aui-reasoning-code-fragment code > span::before {
+		display: none !important;
+	}
+	.aui-reasoning-prose-fragment > div > :first-child {
+		margin-top: 0;
+	}
+	li[data-reasoning-list-continuation] {
+		list-style-type: none;
+	}
+	.aui-reasoning-prose-fragment[data-table-continuation] thead {
+		display: none;
+	}
+	[data-reasoning-fragment][data-index="0"] > .aui-reasoning-prose-fragment {
+		padding-top: 0;
+	}
+
 	[data-streamdown="code-block-body"] {
 		border: none !important;
 		border-radius: 0 !important;
@@ -2434,12 +3092,12 @@ html[data-chat-font] .aui-root {
 
 	.aui-thread-root [data-streamdown="code-block-body"] {
 		/* Keep overlay scrollbars below one-line code. */
-		padding-bottom: 0.625rem !important;
+		padding-bottom: calc(0.625rem * var(--ui-space-scale, 1)) !important;
 	}
 
 	[data-streamdown="code-block"] {
-		gap: 0.25rem;
-		padding: 0.75rem 1rem;
+		gap: calc(0.25rem * var(--ui-space-scale, 1));
+		padding: calc(0.75rem * var(--ui-space-scale, 1)) calc(1rem * var(--ui-space-scale, 1));
 		border-radius: 1.5rem;
 		/* Wide lines must scroll inside the thread column, not widen past the composer (flex min-width:auto). */
 		max-width: 100%;
@@ -2505,6 +3163,19 @@ html[data-chat-font] .aui-root {
 		margin-bottom: 0 !important;
 	}
 
+	/* One vertical rhythm for everything stacked inside an assistant reply: text, thinking
+	   headers, tool-call groups and single tool rows all sit 1rem apart, the same gap
+	   streamdown puts between two paragraphs. The parts themselves own no outer margin or
+	   padding, so a header next to a paragraph reads the same as a paragraph next to a
+	   paragraph. `:where()` keeps this at zero specificity so a part that does set its own
+	   `mt-*` still wins. The first real child follows a zero-height badge anchor and gets none. */
+	:where(.aui-assistant-message-content > * + *) {
+		margin-top: calc(1rem * var(--ui-space-scale, 1));
+	}
+	:where(.aui-assistant-message-content > .h-0 + *) {
+		margin-top: 0;
+	}
+
 	/* The streamdown code-block wrapper carries `my-4` (16px top + 16px
 	   bottom margin). The bottom margin is what stretches the gap
 	   between the code-block box and the action-bar below it on a
@@ -2537,9 +3208,9 @@ html[data-chat-font] .aui-root {
 	/* Align fenced code blocks with the main chat column even when nested in lists. */
 	.aui-thread-root [data-streamdown="list-item"] > [data-streamdown="code-block"],
 	.aui-thread-root [data-streamdown="list-item"] [data-streamdown="code-block"] {
-		margin-left: -1.25rem;
-		width: calc(100% + 1.25rem);
-		max-width: calc(100% + 1.25rem);
+		margin-left: calc(-1.25rem * var(--ui-space-scale, 1));
+		width: calc(100% + 1.25rem * var(--ui-space-scale, 1));
+		max-width: calc(100% + 1.25rem * var(--ui-space-scale, 1));
 	}
 
 	.dark .aui-thread-root [data-streamdown="code-block"] {
@@ -2735,14 +3406,14 @@ html[data-chat-font] .aui-root {
 /* No border line; same drop shadow as the composer (.unsloth-composer-surface).
    !important because Sonner injects its base rules at runtime. */
 [data-sonner-toast][data-styled='true'] {
-	padding: 12px 18px !important;
+	padding: calc(12px * var(--ui-space-scale, 1)) calc(18px * var(--ui-space-scale, 1)) !important;
 	align-items: start !important;
-	gap: 10px !important;
+	gap: calc(10px * var(--ui-space-scale, 1)) !important;
 	box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
 }
 
 [data-sonner-toast][data-styled='true'] [data-icon] {
-	margin: 2px 0 0 !important;
+	margin: calc(2px * var(--ui-space-scale, 1)) 0 0 !important;
 }
 
 [data-sonner-toast][data-styled='true'] [data-content] {
@@ -2753,8 +3424,8 @@ html[data-chat-font] .aui-root {
 	display: grid !important;
 	grid-template-columns: minmax(0, 1fr);
 	align-items: start !important;
-	column-gap: 10px !important;
-	row-gap: 10px !important;
+	column-gap: calc(10px * var(--ui-space-scale, 1)) !important;
+	row-gap: calc(10px * var(--ui-space-scale, 1)) !important;
 }
 
 [data-sonner-toast][data-styled='true']:has([data-button]):has([data-icon]) {
@@ -2785,7 +3456,7 @@ html[data-chat-font] .aui-root {
 }
 
 [data-sonner-toast][data-styled='true']:has([data-close-button]) {
-	padding-right: 48px !important;
+	padding-right: calc(48px * var(--ui-space-scale, 1)) !important;
 }
 
 /* Toast buttons are pills, matching the dialog actions they stand in for. */
@@ -2797,9 +3468,9 @@ html[data-chat-font] .aui-root {
 [data-sonner-toast][data-styled='true'].chat-model-load-toast {
 	display: flex !important;
 	align-items: center !important;
-	gap: 12px !important;
-	padding-top: 14px !important;
-	padding-bottom: 14px !important;
+	gap: calc(12px * var(--ui-space-scale, 1)) !important;
+	padding-top: calc(14px * var(--ui-space-scale, 1)) !important;
+	padding-bottom: calc(14px * var(--ui-space-scale, 1)) !important;
 }
 
 [data-sonner-toast][data-styled='true'].chat-model-load-toast [data-content] {
@@ -2814,14 +3485,14 @@ html[data-chat-font] .aui-root {
 
 /* Progress bar is the last row; give it room below. */
 [data-sonner-toast][data-styled='true'].chat-model-load-toast:has([role='progressbar']) {
-	padding-bottom: 18px !important;
+	padding-bottom: calc(18px * var(--ui-space-scale, 1)) !important;
 }
 
 /* Dark toasts share the chatbox surface color (.chat-composer-surface
    uses var(--card) in dark); the composer shadow lifts them off the page. */
 .dark [data-sonner-toast][data-styled='true'] {
 	background-color: var(--card) !important;
-	box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
+	box-shadow: 0 2px 8px -2px var(--background) !important;
 }
 
 /* Selectable toast text; non-selectable toast buttons. */
@@ -2851,6 +3522,15 @@ html[data-chat-font] .aui-root {
 	-webkit-user-select: none;
 	user-select: none;
 	cursor: pointer;
+}
+
+/* A sidebar row is being carried. The gesture is a pointer drag, not a native one, so the
+   selection it would otherwise sweep up and the cursor off the row are ours to hold. */
+body.sidebar-row-dragging,
+body.sidebar-row-dragging * {
+	-webkit-user-select: none;
+	user-select: none;
+	cursor: grabbing !important;
 }
 
 /* Flat scrollbar chrome */
@@ -2905,6 +3585,18 @@ html[data-chat-font] .aui-root {
 
 .dark *::-webkit-scrollbar-thumb {
 	background: oklch(0.67 0 0 / 0.5);
+}
+
+/* Avoid iOS Safari focus zoom. Important in the base layer, because an important
+   declaration in an earlier layer beats important utilities such as text-ui-13!. */
+@layer base {
+	@media (hover: none) and (pointer: coarse) {
+		input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="button"], [type="submit"], [type="reset"], [type="image"]),
+		textarea,
+		select {
+			font-size: max(16px, 1rem * var(--ui-font-scale, 1)) !important;
+		}
+	}
 }
 
 /* Composer textarea: keep the scroll thumb faint until the user hovers or
@@ -3011,8 +3703,10 @@ html[data-chat-font] .aui-root {
 .aui-thread-viewport {
 	scrollbar-color: oklch(0.5 0 0 / 0.54) var(--sidebar);
 	/* Reserve scrollbar space always so absolute-positioned overlays (topbar)
-	   can stop flush with the gutter edge without covering the scrollbar. */
-	scrollbar-gutter: stable;
+	   can stop flush with the gutter edge without covering the scrollbar.
+	   both-edges: a one-sided gutter pushes the centred column off-centre by
+	   half the scrollbar, and away from the dock, which sits outside here. */
+	scrollbar-gutter: stable both-edges;
 }
 
 /* An unregistered custom property always inherits, so writing
@@ -3106,7 +3800,7 @@ html[data-chat-font] .aui-root {
 
 /* Keep Sonner close button inside the toast and pin to theme tokens (--gray2 hover ignores data-sonner-theme). */
 [data-sonner-toast][data-styled="true"] [data-close-button] {
-	top: 8px !important;
+	top: calc(8px * var(--ui-space-scale, 1)) !important;
 	transform: none !important;
 	background: var(--popover) !important;
 	color: var(--popover-foreground) !important;
@@ -3137,9 +3831,9 @@ html[data-chat-font] .aui-root {
 	position: relative;
 	display: grid;
 	grid-template-columns: repeat(8, minmax(0, 1fr));
-	gap: 14px;
+	gap: calc(14px * var(--ui-space-scale, 1));
 	width: min(66%, 18rem);
-	padding: 1.5rem;
+	padding: calc(1.5rem * var(--ui-space-scale, 1));
 	border-radius: 1.5rem;
 }
 
@@ -3275,13 +3969,10 @@ html[data-chat-font] .aui-root {
 	width: 8px;
 }
 
-/* Icons that sit beside scaled labels follow the UI font size itself:
-   glyphs at or above a 16px base render at --ui-icon-size (12 -> 12px,
-   16 -> 16px, 20 -> 18px), so icons track the text below the default and
-   read slightly smaller than it above. Sub-16px glyphs keep their
-   proportions through the same curve as a factor. Menu, select and closed select trigger surfaces, popovers, toasts,
-   the chat thread and both composers. Only glyphs scale; hit targets,
-   paddings and surface geometry stay fixed. Identity at the default. */
+/* Icons in menus, selects, popovers, toasts, the thread and both composers
+   scale at the same rate as the text. Glyphs 16px and up render at
+   --ui-icon-size. Arbitrary sizes match in both their plain and scaled
+   spelling. Identity at the default. */
 :is(
 	[data-slot='dropdown-menu-content'],
 	[data-slot='dropdown-menu-sub-content'],
@@ -3300,46 +3991,39 @@ html[data-chat-font] .aui-root {
 	.aui-action-bar-more-content,
 	.aui-root
 ) {
-	& svg.size-2\.5 { width: min(calc(0.625rem * var(--ui-font-scale, 1)), calc(0.3125rem + 0.3125rem * var(--ui-font-scale, 1))); height: min(calc(0.625rem * var(--ui-font-scale, 1)), calc(0.3125rem + 0.3125rem * var(--ui-font-scale, 1))); }
-	& svg.size-3 { width: min(calc(0.75rem * var(--ui-font-scale, 1)), calc(0.375rem + 0.375rem * var(--ui-font-scale, 1))); height: min(calc(0.75rem * var(--ui-font-scale, 1)), calc(0.375rem + 0.375rem * var(--ui-font-scale, 1))); }
-	& svg.size-3\.5 { width: min(calc(0.875rem * var(--ui-font-scale, 1)), calc(0.4375rem + 0.4375rem * var(--ui-font-scale, 1))); height: min(calc(0.875rem * var(--ui-font-scale, 1)), calc(0.4375rem + 0.4375rem * var(--ui-font-scale, 1))); }
+	& svg.size-2\.5 { width: calc(0.625rem * var(--ui-font-scale, 1)); height: calc(0.625rem * var(--ui-font-scale, 1)); }
+	& svg.size-3 { width: calc(0.75rem * var(--ui-font-scale, 1)); height: calc(0.75rem * var(--ui-font-scale, 1)); }
+	& svg.size-3\.5 { width: calc(0.875rem * var(--ui-font-scale, 1)); height: calc(0.875rem * var(--ui-font-scale, 1)); }
 	& svg.size-4 { width: var(--ui-icon-size); height: var(--ui-icon-size); }
 	& svg.size-4\.5 { width: var(--ui-icon-size); height: var(--ui-icon-size); }
 	& svg.size-5 { width: var(--ui-icon-size); height: var(--ui-icon-size); }
-	& svg.size-6 { width: min(calc(1.5rem * var(--ui-font-scale, 1)), calc(0.75rem + 0.75rem * var(--ui-font-scale, 1))); height: min(calc(1.5rem * var(--ui-font-scale, 1)), calc(0.75rem + 0.75rem * var(--ui-font-scale, 1))); }
-	& svg.size-\[5px\] { width: min(calc(5px * var(--ui-font-scale, 1)), calc(2.5px + 2.5px * var(--ui-font-scale, 1))); height: min(calc(5px * var(--ui-font-scale, 1)), calc(2.5px + 2.5px * var(--ui-font-scale, 1))); }
-	& svg.size-\[6px\] { width: min(calc(6px * var(--ui-font-scale, 1)), calc(3px + 3px * var(--ui-font-scale, 1))); height: min(calc(6px * var(--ui-font-scale, 1)), calc(3px + 3px * var(--ui-font-scale, 1))); }
-	& svg.size-\[10px\] { width: min(calc(10px * var(--ui-font-scale, 1)), calc(5px + 5px * var(--ui-font-scale, 1))); height: min(calc(10px * var(--ui-font-scale, 1)), calc(5px + 5px * var(--ui-font-scale, 1))); }
-	& svg.size-\[11px\] { width: min(calc(11px * var(--ui-font-scale, 1)), calc(5.5px + 5.5px * var(--ui-font-scale, 1))); height: min(calc(11px * var(--ui-font-scale, 1)), calc(5.5px + 5.5px * var(--ui-font-scale, 1))); }
-	& svg.size-\[12px\] { width: min(calc(12px * var(--ui-font-scale, 1)), calc(6px + 6px * var(--ui-font-scale, 1))); height: min(calc(12px * var(--ui-font-scale, 1)), calc(6px + 6px * var(--ui-font-scale, 1))); }
-	& svg.size-\[13px\] { width: min(calc(13px * var(--ui-font-scale, 1)), calc(6.5px + 6.5px * var(--ui-font-scale, 1))); height: min(calc(13px * var(--ui-font-scale, 1)), calc(6.5px + 6.5px * var(--ui-font-scale, 1))); }
-	& svg.size-\[14px\] { width: min(calc(14px * var(--ui-font-scale, 1)), calc(7px + 7px * var(--ui-font-scale, 1))); height: min(calc(14px * var(--ui-font-scale, 1)), calc(7px + 7px * var(--ui-font-scale, 1))); }
-	& svg.size-\[15px\] { width: min(calc(15px * var(--ui-font-scale, 1)), calc(7.5px + 7.5px * var(--ui-font-scale, 1))); height: min(calc(15px * var(--ui-font-scale, 1)), calc(7.5px + 7.5px * var(--ui-font-scale, 1))); }
-	& svg.size-\[15\.5px\] { width: min(calc(15.5px * var(--ui-font-scale, 1)), calc(7.75px + 7.75px * var(--ui-font-scale, 1))); height: min(calc(15.5px * var(--ui-font-scale, 1)), calc(7.75px + 7.75px * var(--ui-font-scale, 1))); }
-	& svg.size-\[16px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
-	& svg.size-\[17px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
-	& svg.size-\[18px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
-	& svg.size-\[18\.5px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
-	& svg.size-\[20px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
-	& svg.size-\[21px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
-	& svg.size-\[22px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
-	/* Mic and send arrow sit above the shared glyph size: both fill their
-	   viewBox, so they read smaller than the stroked icons beside them. Keep
-	   after the size-[NN] rules they override. */
+	& svg.size-6 { width: calc(1.5rem * var(--ui-font-scale, 1)); height: calc(1.5rem * var(--ui-font-scale, 1)); }
+	& svg:is(.size-\[5px\], [class~='size-[calc(5px*var(--ui-space-scale,1))]']) { width: calc(5px * var(--ui-font-scale, 1)); height: calc(5px * var(--ui-font-scale, 1)); }
+	& svg:is(.size-\[6px\], [class~='size-[calc(6px*var(--ui-space-scale,1))]']) { width: calc(6px * var(--ui-font-scale, 1)); height: calc(6px * var(--ui-font-scale, 1)); }
+	& svg:is(.size-\[10px\], [class~='size-[calc(10px*var(--ui-space-scale,1))]']) { width: calc(10px * var(--ui-font-scale, 1)); height: calc(10px * var(--ui-font-scale, 1)); }
+	& svg:is(.size-\[11px\], [class~='size-[calc(11px*var(--ui-space-scale,1))]']) { width: calc(11px * var(--ui-font-scale, 1)); height: calc(11px * var(--ui-font-scale, 1)); }
+	& svg:is(.size-\[12px\], [class~='size-[calc(12px*var(--ui-space-scale,1))]']) { width: calc(12px * var(--ui-font-scale, 1)); height: calc(12px * var(--ui-font-scale, 1)); }
+	& svg:is(.size-\[13px\], [class~='size-[calc(13px*var(--ui-space-scale,1))]']) { width: calc(13px * var(--ui-font-scale, 1)); height: calc(13px * var(--ui-font-scale, 1)); }
+	& svg:is(.size-\[14px\], [class~='size-[calc(14px*var(--ui-space-scale,1))]']) { width: calc(14px * var(--ui-font-scale, 1)); height: calc(14px * var(--ui-font-scale, 1)); }
+	& svg:is(.size-\[15px\], [class~='size-[calc(15px*var(--ui-space-scale,1))]']) { width: calc(15px * var(--ui-font-scale, 1)); height: calc(15px * var(--ui-font-scale, 1)); }
+	& svg:is(.size-\[15\.5px\], [class~='size-[calc(15.5px*var(--ui-space-scale,1))]']) { width: calc(15.5px * var(--ui-font-scale, 1)); height: calc(15.5px * var(--ui-font-scale, 1)); }
+	& svg:is(.size-\[16px\], [class~='size-[calc(16px*var(--ui-space-scale,1))]']) { width: var(--ui-icon-size); height: var(--ui-icon-size); }
+	& svg:is(.size-\[17px\], [class~='size-[calc(17px*var(--ui-space-scale,1))]']) { width: var(--ui-icon-size); height: var(--ui-icon-size); }
+	& svg:is(.size-\[18px\], [class~='size-[calc(18px*var(--ui-space-scale,1))]']) { width: var(--ui-icon-size); height: var(--ui-icon-size); }
+	& svg:is(.size-\[18\.5px\], [class~='size-[calc(18.5px*var(--ui-space-scale,1))]']) { width: var(--ui-icon-size); height: var(--ui-icon-size); }
+	& svg:is(.size-\[20px\], [class~='size-[calc(20px*var(--ui-space-scale,1))]']) { width: var(--ui-icon-size); height: var(--ui-icon-size); }
+	& svg:is(.size-\[21px\], [class~='size-[calc(21px*var(--ui-space-scale,1))]']) { width: var(--ui-icon-size); height: var(--ui-icon-size); }
+	& svg:is(.size-\[22px\], [class~='size-[calc(22px*var(--ui-space-scale,1))]']) { width: var(--ui-icon-size); height: var(--ui-icon-size); }
+	/* Mic and send sit above the shared glyph size. Must follow size-[NN]. */
 	& svg.unsloth-dictate-icon {
 		width: calc(var(--ui-icon-size) * 1.2);
 		height: calc(var(--ui-icon-size) * 1.2);
+		transform: translateY(2px);
 	}
+	/* Flex centers both symmetric glyphs; pixel offsets vary by display scale. */
 	& svg.unsloth-send-icon {
-		width: calc(var(--ui-icon-size) * 1.15);
-		height: calc(var(--ui-icon-size) * 1.15);
-		/* The stroked arrow rasterizes half a Retina pixel to the right. */
-		transform: translateX(-0.25px);
-	}
-	/* The filled stop glyph lands one Retina pixel right of the circular
-	   action's center even though its SVG box is flex-centered. */
-	& svg.aui-composer-cancel-icon {
-		transform: translateX(-0.5px);
+		width: calc(var(--ui-icon-size) * 1.3);
+		height: calc(var(--ui-icon-size) * 1.3);
 	}
 	/* Composer plus keeps its pre-#7400 22px base (1.375x the token is the same
 	   curve a 22px glyph would follow), so only its scaling changed. */
@@ -3347,11 +4031,20 @@ html[data-chat-font] .aui-root {
 		width: calc(var(--ui-icon-size) * 1.375);
 		height: calc(var(--ui-icon-size) * 1.375);
 	}
-	& svg.size-\[36px\] { width: min(calc(36px * var(--ui-font-scale, 1)), calc(18px + 18px * var(--ui-font-scale, 1))); height: min(calc(36px * var(--ui-font-scale, 1)), calc(18px + 18px * var(--ui-font-scale, 1))); }
-	& svg.w-3 { width: min(calc(0.75rem * var(--ui-font-scale, 1)), calc(0.375rem + 0.375rem * var(--ui-font-scale, 1))); }
-	& svg.h-3 { height: min(calc(0.75rem * var(--ui-font-scale, 1)), calc(0.375rem + 0.375rem * var(--ui-font-scale, 1))); }
-	& svg.w-3\.5 { width: min(calc(0.875rem * var(--ui-font-scale, 1)), calc(0.4375rem + 0.4375rem * var(--ui-font-scale, 1))); }
-	& svg.h-3\.5 { height: min(calc(0.875rem * var(--ui-font-scale, 1)), calc(0.4375rem + 0.4375rem * var(--ui-font-scale, 1))); }
+	/* ~375px and under the plus sits in a 32px circle, which 1.375x fills.
+	   Step down to the dictate glyph's 1.2x. Must live here: this block is
+	   unlayered, so a copy in @layer utilities would lose to it. */
+	@container composer-shell (max-width: 22rem) {
+		& .unsloth-composer-plus svg {
+			width: calc(var(--ui-icon-size) * 1.2);
+			height: calc(var(--ui-icon-size) * 1.2);
+		}
+	}
+	& svg:is(.size-\[36px\], [class~='size-[calc(36px*var(--ui-space-scale,1))]']) { width: calc(36px * var(--ui-font-scale, 1)); height: calc(36px * var(--ui-font-scale, 1)); }
+	& svg.w-3 { width: calc(0.75rem * var(--ui-font-scale, 1)); }
+	& svg.h-3 { height: calc(0.75rem * var(--ui-font-scale, 1)); }
+	& svg.w-3\.5 { width: calc(0.875rem * var(--ui-font-scale, 1)); }
+	& svg.h-3\.5 { height: calc(0.875rem * var(--ui-font-scale, 1)); }
 	& svg.w-4 { width: var(--ui-icon-size); }
 	& svg.h-4 { height: var(--ui-icon-size); }
 	& svg.w-5 { width: var(--ui-icon-size); }
@@ -3516,6 +4209,22 @@ html[data-chat-font] .aui-root {
 }
 
 .dark .find-bar-surface {
-	background-color: #2c2c2c;
+	/* #2c2c2c, on the same curve as --card: the bar has to stay above the
+	   cards it floats over at every contrast, not just the default. */
+	background-color: color-mix(in oklab, #2c2c2c, var(--contrast-panel-target, var(--contrast-target, transparent)) var(--contrast-surface-mix, 0%));
 	box-shadow: 0 4px 20px 6px var(--background);
+}
+
+@layer components {
+	/* Align the arrow with page content while retaining its hit area. */
+	.settings-back-button {
+		margin-inline-start: calc(-0.75rem * var(--ui-space-scale, 1));
+	}
+}
+
+/* Keep tooltips on screen on phones. Unlayered to beat call site max-w. */
+@media (max-width: 639px) {
+	[data-slot="tooltip-content"] {
+		max-width: calc(100vw - 1rem);
+	}
 }

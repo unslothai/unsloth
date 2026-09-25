@@ -197,6 +197,58 @@ async def test_background_producer_persists_chunks_and_completes(durable_run, mo
     ] == chunks
 
 
+@pytest.mark.asyncio
+async def test_a_prefill_reporting_only_progress_renews_the_lease(durable_run, monkeypatch):
+    """A 250K prefill outruns the 1200s lease before its first token, and the
+    write is what renews it, so dropping content-less progress chunks would reap a
+    healthy prefill. Sampled mid-run: afterwards every chunk has landed."""
+    released = asyncio.Event()
+    sampled: dict = {}
+
+    def _progress(processed):
+        # What llama-server sends under return_progress: a content-less delta.
+        return {
+            "choices": [{"delta": {"role": "assistant", "content": None}, "finish_reason": None}],
+            "prompt_progress": {
+                "total": 250000,
+                "cache": 0,
+                "processed": processed,
+                "time_ms": processed,
+            },
+        }
+
+    async def body():
+        for processed in (1024, 8192, 65536):
+            yield f"data: {json.dumps(_progress(processed))}\n\n"
+        # Polled, not slept: the idle flush is on a 0.1s timer
+        # (_EVENT_BATCH_SECONDS) and a sleep sized against it flakes under load.
+        _deadline = time.monotonic() + 10.0
+        while time.monotonic() < _deadline:
+            sampled["events"] = [
+                e["payload"] for e in runs_db.list_events("run-1") if e["type"] == "chunk"
+            ]
+            if len(sampled["events"]) >= 3:
+                break
+            await asyncio.sleep(0.01)
+        sampled["progress"] = runs_db.get_progress("run-1")
+        released.set()
+        yield f"data: {json.dumps({'choices': [{'delta': {'content': 'Hi'}, 'finish_reason': 'stop'}]})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    async def fake(_payload, _request, _subject, *, cancel_on_disconnect):
+        return SimpleNamespace(status_code = 200, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    await supervisor._produce("run-1")
+    assert released.is_set()
+    assert len(sampled["events"]) == 3, sampled["events"]
+    assert all("prompt_progress" in e for e in sampled["events"])
+    # The lease counts writes, so it renewed three times before the first token.
+    assert sampled["progress"][1] == 3, sampled["progress"]
+    assert runs_db.get_run("run-1", "alice")["status"] == "completed"
+
+
 async def _subscriber_sequences(after = 0):
     response = await run_routes.chat_generation_events(
         "run-1",
@@ -527,7 +579,7 @@ async def test_graceful_supervisor_shutdown_is_interrupted(durable_run, monkeypa
     await supervisor.stop()
     run = runs_db.get_run("run-1", "alice")
     assert (run["status"], run["finishReason"]) == ("failed", "interrupted")
-    assert run["error"] == "Studio shut down during generation"
+    assert run["error"] == "Unsloth shut down during generation"
 
 
 def test_thread_delete_captures_durable_run_before_cascade(durable_run):
@@ -601,3 +653,34 @@ async def test_shutdown_returns_even_when_a_producer_will_not_unwind(durable_run
     finally:
         release.set()
         await asyncio.sleep(0)
+
+
+# ── The durable marker is production state, so a test must read it off the producer ──
+# Every approval test constructs `cancel.durable = True` by hand, which means the line in
+# _ensure_reservation that actually sets it was pinned by nothing: deleting it left the whole
+# backend suite green while silently returning every parked approval to the 3600s auto-deny.
+# Same for durable_run_id, which is how the gate asks whether anyone is still watching.
+
+
+def test_the_producers_cancel_event_carries_the_durable_marker_and_its_run_id():
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    try:
+        assert supervisor._ensure_reservation("run-durable", thread_id = "thread-1") is True
+        cancel_event = supervisor._cancel_events["run-durable"]
+        assert getattr(cancel_event, "durable", False) is True, (
+            "state.tool_approvals.wait_tool_decision reads this to park an approval instead of "
+            "auto-denying it, so without it a tool turn that outlives its tab still loses the call"
+        )
+        assert getattr(cancel_event, "durable_run_id", None) == "run-durable", (
+            "the gate resolves attendance by run id (state/run_subscribers.py); without it an "
+            "attended approval cannot be told from an abandoned one and expires at the park ceiling"
+        )
+    finally:
+        supervisor.cancel("run-durable")
+        registration = supervisor._active_registrations.pop("run-durable", None)
+        if registration is not None:
+            registration.__exit__(None, None, None)
+        supervisor._cancel_events.pop("run-durable", None)
+        activity = supervisor._activities.pop("run-durable", None)
+        if activity is not None:
+            activity.finish()

@@ -2,11 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import test from "node:test";
 
-import { installLocalStorageFake } from "./helpers/kit.ts";
+import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 
 installLocalStorageFake();
 register("./store-settings-resolver.mjs", import.meta.url);
@@ -56,12 +55,8 @@ test("the Qwen3.8 Think toggle puts 1.5 in the live chat settings", () => {
 });
 
 test("every status merge is wired to the active Qwen thinking table", () => {
-  const source = readFileSync(
-    new URL(
-      "../src/features/chat/lib/apply-inference-status-to-store.ts",
-      import.meta.url,
-    ),
-    "utf8",
+  const source = readSrc(
+    "features/chat/lib/apply-inference-status-to-store.ts",
   );
   assert.match(
     source,

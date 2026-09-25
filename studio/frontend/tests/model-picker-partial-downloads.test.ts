@@ -10,6 +10,24 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+
+import type {
+  CachedInventoryRow,
+  DiscoverRow,
+  LocalInventoryRow,
+  SelectedModelView,
+} from "../src/features/hub/types.ts";
+import { downloadActionLabel } from "../src/features/hub/catalog/use-download-card-state.ts";
+import { modelDownloadState } from "../src/features/hub/catalog/model-download-state.ts";
+import { registerStoreStubResolver } from "./helpers/kit.ts";
+
+registerStoreStubResolver();
+
+const { useSelectedModelView } = await import(
+  "../src/features/hub/hooks/use-selected-model-view.ts"
+);
 
 function read(path: string): string {
   return readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf-8");
@@ -56,7 +74,7 @@ test("a partial is marked the way the Hub marks one", () => {
   const start = PICKERS.indexOf("function PartialBadge(");
   assert.ok(start > 0, "the picker has a partial mark");
   const badge = PICKERS.slice(start, PICKERS.indexOf("\n}", start));
-  assert.match(badge, /size-\[5px\] rounded-full bg-status-warning/);
+  assert.match(badge, /size-\[calc\(5px\*var\(--ui-space-scale,1\)\)\] rounded-full bg-status-warning/);
   assert.match(badge, /aria-label="Partial download"/);
   assert.ok(
     MODELS_TABLE.includes('aria-label="Partial download"') &&
@@ -152,19 +170,201 @@ test("complete and partial are alternatives, never both dots on one row", () => 
   );
 });
 
-test("selecting a partial opens its download instead of claiming the weights", () => {
+test("selecting a picker partial opens its download instead of claiming the weights", () => {
   // isDownloaded is what the load path reads. Hard-coding true on these rows sent a torn snapshot
   // straight to a load that fails on the missing shards -- the reason they were hidden at all.
   assert.ok(
     PICKERS.includes("isDownloaded: !isPartial,"),
     "the pick reports what is actually on disk",
   );
-  // Hub reaches the same answer from the same field.
-  assert.ok(
-    read("../src/features/hub/hub-page.tsx").includes(
-      "isDownloaded: !row.partial",
-    ),
-  );
+});
+
+test("Hub selections preserve download completeness and continuation state", () => {
+  const capabilities = {
+    canTrain: false,
+    canChat: false,
+    canDelete: true,
+    canDownload: true,
+    requiresVariant: false,
+    supportsLora: false,
+    supportsVision: false,
+  };
+  const cached: CachedInventoryRow = {
+    kind: "cache",
+    id: "cache:safetensors:Org%2FModel",
+    loadId: "Org/Model",
+    repoId: "Org/Model",
+    owner: "Org",
+    repo: "Model",
+    isGguf: false,
+    modelFormat: "safetensors",
+    capabilities,
+    bytes: 128,
+    partial: true,
+    partialTransport: "http",
+    partialResumable: true,
+  };
+  const localHfCache: LocalInventoryRow = {
+    kind: "local",
+    id: "hf_cache:safetensors:Org%2FModel",
+    loadId: "Org/Model",
+    repoId: "Org/Model",
+    owner: "Org",
+    title: "Model",
+    source: "hf_cache",
+    sourceLabel: "Hugging Face cache",
+    path: "/cache/models--Org--Model",
+    isGguf: false,
+    modelFormat: "safetensors",
+    capabilities,
+    updatedAt: 1,
+    partial: true,
+    partialTransport: "xet",
+    partialResumable: false,
+  };
+  const discover: DiscoverRow = {
+    id: "Org/Model",
+    owner: "Org",
+    repo: "Model",
+    result: {
+      id: "Org/Model",
+      downloads: 0,
+      likes: 0,
+      isGguf: false,
+    },
+    isAvailableOnDevice: false,
+    isPartialOnDevice: true,
+    summary: "Model",
+    capabilities: [],
+  };
+  const base = {
+    selectedDiscoverRow: null,
+    selectedCachedRow: null,
+    selectedLocalRow: null,
+    selectedHfResult: null,
+    isDatasetMode: false,
+  } satisfies Parameters<typeof useSelectedModelView>[0];
+
+  const cases: Array<{
+    name: string;
+    input: Parameters<typeof useSelectedModelView>[0];
+    kind: SelectedModelView["kind"];
+    downloaded: boolean;
+    partial: boolean;
+    transport: string | null;
+    resumable: boolean;
+    action: "Download" | "Resume" | "Continue";
+  }> = [
+    {
+      name: "direct cache row",
+      input: { ...base, selectedCachedRow: cached },
+      kind: "cache",
+      downloaded: false,
+      partial: true,
+      transport: "http",
+      resumable: true,
+      action: "Resume",
+    },
+    {
+      name: "discovery row backed by a cache row",
+      input: { ...base, selectedDiscoverRow: discover, selectedCachedRow: cached },
+      kind: "discover",
+      downloaded: false,
+      partial: true,
+      transport: "http",
+      resumable: true,
+      action: "Resume",
+    },
+    {
+      name: "discovery row backed by a local HF-cache row",
+      input: {
+        ...base,
+        selectedDiscoverRow: discover,
+        selectedLocalRow: localHfCache,
+      },
+      kind: "discover",
+      downloaded: false,
+      partial: true,
+      transport: "xet",
+      resumable: false,
+      action: "Continue",
+    },
+    {
+      name: "direct local HF-cache row",
+      input: { ...base, selectedLocalRow: localHfCache },
+      kind: "cache",
+      downloaded: false,
+      partial: true,
+      transport: "xet",
+      resumable: false,
+      action: "Continue",
+    },
+    {
+      name: "discovery partial awaiting its inventory row",
+      input: { ...base, selectedDiscoverRow: discover },
+      kind: "discover",
+      downloaded: false,
+      partial: true,
+      transport: null,
+      resumable: false,
+      action: "Continue",
+    },
+    {
+      name: "complete cache row",
+      input: {
+        ...base,
+        selectedCachedRow: {
+          ...cached,
+          partial: false,
+          partialTransport: null,
+          partialResumable: false,
+        },
+      },
+      kind: "cache",
+      downloaded: true,
+      partial: false,
+      transport: null,
+      resumable: false,
+      action: "Download",
+    },
+  ];
+
+  for (const entry of cases) {
+    const result = { current: null as SelectedModelView | null };
+    function Harness() {
+      result.current = useSelectedModelView(entry.input);
+      return null;
+    }
+    renderToStaticMarkup(createElement(Harness));
+    assert.ok(result.current, entry.name);
+    assert.equal(result.current.kind, entry.kind, entry.name);
+    assert.equal(result.current.isDownloaded, entry.downloaded, entry.name);
+    assert.equal(result.current.isPartial, entry.partial, entry.name);
+    assert.equal(result.current.partialTransport, entry.transport, entry.name);
+    assert.equal(result.current.partialResumable, entry.resumable, entry.name);
+    const downloadState = modelDownloadState(result.current);
+    assert.deepEqual(
+      downloadState,
+      {
+        isDownloaded: entry.downloaded,
+        isPartial: entry.partial,
+        partialTransport: entry.transport,
+        partialResumable: entry.resumable,
+      },
+      entry.name,
+    );
+    assert.equal(
+      downloadActionLabel(
+        downloadState.isPartial,
+        downloadState.partialResumable,
+      ),
+      entry.action,
+      entry.name,
+    );
+  }
+
+  const inspector = read("../src/features/hub/catalog/model-inspector.tsx");
+  assert.equal(inspector.split("{...downloadState}").length - 1, 2);
 });
 
 test("listing a partial never makes it auto-loadable", () => {
@@ -230,8 +430,13 @@ test("a partial pick carries no load identity", () => {
   // snapshot told that page the weights were there and skipped the download.
   assert.equal(
     PICKERS.split("loadId: isPartial ? undefined : c.load_id,").length - 1,
-    3,
-    "every cached-row pick drops it when the snapshot is torn",
+    2,
+    "both multi-quant cached-row picks drop it when the snapshot is torn",
+  );
+  assert.equal(
+    PICKERS.split("loadId: isDownloaded ? c.load_id : undefined,").length - 1,
+    1,
+    "the sole-quant pick carries it only when that quant is complete",
   );
   // The GGUF variant select set this rule first; the two must not diverge.
   assert.ok(
@@ -263,7 +468,7 @@ test("configure carries the same rule, because Run replays its metadata", () => 
   );
   assert.match(
     selector,
-    /onRun=\{\(config, isDiffusion\) =>\n\s*onSelect\(visibleConfigTarget\.id, \{\n\s*\.\.\.visibleConfigTarget\.meta,/,
+    /onRun=\{\(config, isDiffusion\) =>\s*onSelect\(\s*visibleConfigTarget\.configId \?\? visibleConfigTarget\.id,\s*\{\s*\.\.\.visibleConfigTarget\.meta,/,
   );
 });
 
@@ -312,9 +517,20 @@ test("a partial never reaches the complete-download lookup", () => {
     /\[\.\.\.cachedGguf, \.\.\.cachedModels\]\n\s*\.filter\(\(c\) => !c\.partial\)/,
     "both cached lists are filtered before the ids land in the set",
   );
-  // The search pick still reads that set, which is what makes the guard above load bearing.
-  assert.ok(
-    PICKERS.includes("isDownloaded: downloadedSet.has(id.toLowerCase()),"),
+  // The search pick still reads that set (through cachedIdFor), which is what makes the guard
+  // above load bearing.
+  assert.ok(PICKERS.includes("isDownloaded: cached !== null,"));
+  const lookup = PICKERS.slice(PICKERS.indexOf("const cachedIdFor = useCallback("));
+  assert.match(
+    lookup.slice(0, lookup.indexOf("[aliasesOf, downloadedSet]")),
+    /aliasesOf\(id\)\.find\(\(alias\) => downloadedSet\.has\(alias\.toLowerCase\(\)\)\)/,
+    "every alias is checked against the complete-download set",
+  );
+  const aliases = PICKERS.slice(PICKERS.indexOf("const aliasesOf = useCallback("));
+  assert.match(
+    aliases.slice(0, aliases.indexOf("[catalog]")),
+    /\[id, artifact\.repoId, artifact\.upstreamRepoId\]/,
+    "a row, its mirror and the vendor repo are all aliases",
   );
 });
 
@@ -323,9 +539,15 @@ test("Hub rows can still tell a partial apart from an absent model", () => {
   // never fetched, so the mark comes from its own set rather than from the on-disk one.
   assert.ok(PICKERS.includes("const partialSet = useMemo("));
   assert.equal(
-    PICKERS.split("partial={partialSet.has(id.toLowerCase())}").length - 1,
+    PICKERS.split("partial={isPartialRow(id)}").length - 1,
     3,
     "Recommended, its filtered twin, and the typed search list alike",
+  );
+  // The mark yields to a complete alias, which is what the click then loads.
+  const partialRow = PICKERS.slice(PICKERS.indexOf("const isPartialRow = useCallback("));
+  assert.match(
+    partialRow.slice(0, partialRow.indexOf("[cachedIdFor, partialSet]")),
+    /cachedIdFor\(id\) === null && partialSet\.has\(id\.toLowerCase\(\)\)/,
   );
   // The typed list is the one that was missed: it renders from searchRowIds, not from the
   // curated ids, so a partial reached by typing its name showed nothing at all.
@@ -333,7 +555,7 @@ test("Hub rows can still tell a partial apart from an absent model", () => {
   assert.ok(
     search
       .slice(0, search.indexOf("</ModelRow>") + 1 || 4000)
-      .includes("partial={partialSet.has(id.toLowerCase())}"),
+      .includes("partial={isPartialRow(id)}"),
     "the live search row marks one too",
   );
   // A partial must never take the green on-disk dot; ModelRow already yields one to the other.

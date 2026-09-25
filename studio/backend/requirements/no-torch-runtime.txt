@@ -46,9 +46,15 @@ safetensors>=0.4.3
 datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0
 accelerate>=0.34.1
 peft>=0.18.0,!=0.11.0
-huggingface_hub>=1.23.0,<2.0; python_version >= "3.10"
+huggingface_hub>=1.31.0,<2.0; python_version >= "3.10"
 huggingface_hub==0.36.2; python_version < "3.10"
-hf_transfer==0.1.9
+# --no-deps here, so the hub never pulls it transitively, and without it huggingface_hub refuses any
+# single blob over 50GB (file_download.py, MAX_HTTP_DOWNLOAD_SIZE). Arch gate is huggingface-hub's
+# own Requires-Dist plus ARM64, which does have a win_arm64 wheel; an off-list machine would build
+# the maturin sdist, the same reason hf_transfer below is marked. 1.5.2 is what the hub 1.32 asks.
+hf-xet>=1.5.2,<2.0; python_version >= "3.10" and (platform_machine == "x86_64" or platform_machine == "amd64" or platform_machine == "AMD64" or platform_machine == "arm64" or platform_machine == "aarch64" or platform_machine == "ARM64")
+# No win_arm64 wheel and this file installs --no-deps, so pip would need cargo plus MSVC.
+hf_transfer==0.1.9; sys_platform != "win32" or platform_machine != "ARM64"
 # diffusers: see diffusers-pin.txt, installed by its own step (this file is
 # installed --no-deps, and the pin has to apply on the torch path too).
 
@@ -75,8 +81,11 @@ anyio>=3.0,<4.14.0               # 4.14 asyncio cancel-scope RuntimeError on Py3
 sniffio==1.3.1
 h11==0.16.0
 
-# Transformers 5.5 supports tokenizers 0.22.x through 0.23.0.
-tokenizers<=0.23.0
+# Transformers 5.5 supports tokenizers 0.22.x through 0.23.0. Spelled as the full
+# window, matching extras-no-deps.txt and constraints.txt, so one canonical pair
+# exists repo-wide (#5359 added the cap here; the torch path lacked it until the
+# same break reached Apple Silicon).
+tokenizers>=0.22.0,<=0.23.0
 transformers==5.5.0; python_version >= "3.10"
 transformers==4.57.6; python_version < "3.10"
 trl>=0.18.2,!=0.19.0,<=0.24.0
@@ -93,8 +102,12 @@ pillow==11.3.0; python_version < "3.10"
 
 # RAG store + document parsing, mirroring studio.txt. Pinned here because
 # this file installs --no-deps; without them Unsloth runs with RAG disabled.
-sqlite-vec==0.1.9
-pymupdf==1.27.2.3
+# sqlite-vec publishes win_amd64 only and no sdist; the RAG store treats a missing sqlite_vec as
+# "RAG unavailable". Same marker as studio.txt: this file is installed directly on an update.
+sqlite-vec==0.1.9; sys_platform != "win32" or platform_machine != "ARM64"
+# pymupdf publishes a win_arm64 wheel from 1.28 only.
+pymupdf==1.27.2.3; sys_platform != "win32" or platform_machine != "ARM64"
+pymupdf>=1.28.2; sys_platform == "win32" and platform_machine == "ARM64"
 # 0.3.x keeps pymupdf-layout (which pulls onnxruntime) an optional extra; the
 # lockstep 1.27.x line makes it a hard dep we do not need for to_markdown().
 pymupdf4llm==0.3.4

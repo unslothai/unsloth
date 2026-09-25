@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import unittest
+import types
 from contextlib import nullcontext
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -35,10 +36,47 @@ from utils.hardware import (
 import utils.hardware.hardware as _hw_module
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_BITSANDBYTES_OPTIMIZER = "adamw_8bit"
+PAGED_BITSANDBYTES_OPTIMIZER = "paged-adamw-8bit"
+ADAMW_BITSANDBYTES_OPTIMIZER = "adamw_bnb_8bit"
+PAGED_32BIT_BITSANDBYTES_OPTIMIZER = "paged_adamw_32bit"
+XPU_SAFE_OPTIMIZER = "adamw_torch"
 
 
 async def _inline_to_thread(func, /, *args, **kwargs):
     return func(*args, **kwargs)
+
+
+def _load_model(
+    inference_route,
+    request,
+    *,
+    slots = 1,
+):
+    """Call the load route with a request scope carrying ``slots`` llama-server slots."""
+    scope = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = slots)))
+    return inference_route._load_model_impl(request, scope, current_subject = "test-user")
+
+
+def _gguf_model_config(**overrides):
+    """The GGUF model row the load route reads, with per-test overrides."""
+    return SimpleNamespace(
+        **{
+            "is_gguf": True,
+            "is_lora": False,
+            "gguf_hf_repo": None,
+            "gguf_file": "/tmp/test.gguf",
+            "gguf_mmproj_file": None,
+            "gguf_variant": None,
+            "identifier": "unsloth/test.gguf",
+            "display_name": "unsloth/test.gguf",
+            "is_vision": False,
+            "is_audio": False,
+            "audio_type": None,
+            "has_audio_input": False,
+            **overrides,
+        }
+    )
 
 
 def _fake_unsloth_attention_modules(resolver):
@@ -192,9 +230,28 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
             },
         ]
 
+        # Two discrete cards. Stubbed rather than left to the host's own torch: the
+        # integrated-memory reconciliation reads props.total_memory for every CUDA row,
+        # so on a unified-memory machine (an RTX Spark N1X) a real 45.39 GiB pool was
+        # joined onto this fake 24 GiB row and the assertion below read the runner's
+        # hardware instead of the fixture.
+        _discrete = types.SimpleNamespace(
+            name = "NVIDIA RTX 4090",
+            total_memory = 24 * (1 << 30),
+            is_integrated = 0,
+            gcnArchName = "",
+        )
+
         with (
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
             patch.object(_hw_module, "IS_ROCM", False),
+            patch(
+                "utils.hardware.hardware._torch_get_device_module",
+                return_value = (
+                    types.SimpleNamespace(get_device_properties = lambda ordinal: _discrete),
+                    "cuda",
+                ),
+            ),
             patch(
                 "utils.hardware.hardware._get_parent_visible_gpu_spec",
                 return_value = {"raw": "5,3", "numeric_ids": [5, 3]},
@@ -927,6 +984,58 @@ class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(config["resolved_gpu_ids"], [0, 1])
         self.assertEqual(config["gpu_selection"]["selection_mode"], "auto")
 
+    def test_training_backend_swaps_bitsandbytes_optimizers_on_xpu(self):
+        class DummyProcess:
+            pid = 12345
+
+            def start(self):
+                return None
+
+        class DummyThread:
+            def start(self):
+                return None
+
+        dummy_queue = object()
+
+        for optimizer in (
+            DEFAULT_BITSANDBYTES_OPTIMIZER,
+            PAGED_BITSANDBYTES_OPTIMIZER,
+            ADAMW_BITSANDBYTES_OPTIMIZER,
+            PAGED_32BIT_BITSANDBYTES_OPTIMIZER,
+        ):
+            with self.subTest(optimizer = optimizer):
+                backend = TrainingBackend()
+                with (
+                    patch("core.training.training.get_device", return_value = DeviceType.XPU),
+                    patch(
+                        "core.training.training.prepare_gpu_selection",
+                        return_value = ([0], {"selection_mode": "auto"}),
+                    ) as mock_prepare_gpu_selection,
+                    patch(
+                        "core.training.training._CTX.Queue",
+                        side_effect = [dummy_queue, dummy_queue],
+                    ),
+                    patch(
+                        "core.training.training._CTX.Process", return_value = DummyProcess()
+                    ) as mock_process,
+                    patch("core.training.training.threading.Thread", return_value = DummyThread()),
+                ):
+                    backend.start_training(
+                        job_id = "test-job-xpu-optimizer",
+                        model_name = "unsloth/test",
+                        training_type = "LoRA/QLoRA",
+                        optim = optimizer,
+                        gpu_ids = None,
+                    )
+
+                config = mock_process.call_args.kwargs["kwargs"]["config"]
+                self.assertEqual(config["device_backend"], DeviceType.XPU.value)
+                self.assertEqual(config["optim"], XPU_SAFE_OPTIMIZER)
+                self.assertEqual(
+                    mock_prepare_gpu_selection.call_args.kwargs["optimizer"],
+                    XPU_SAFE_OPTIMIZER,
+                )
+
     def test_training_backend_preserves_uuid_parent_visibility_in_auto_mode(self):
         backend = TrainingBackend()
 
@@ -1060,20 +1169,7 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [0, 1])
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
-            gguf_hf_repo = None,
-            gguf_file = "/tmp/test.gguf",
-            gguf_mmproj_file = None,
-            gguf_variant = None,
-            identifier = "unsloth/test.gguf",
-            display_name = "unsloth/test.gguf",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
-        )
+        model_config = _gguf_model_config()
 
         def _fake_resolve(ids, is_vulkan = False):
             raise ValueError("SENTINEL requested GPUs are outside the parent-visible set")
@@ -1095,17 +1191,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
 
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("SENTINEL", exc_info.exception.detail)
@@ -1117,20 +1203,7 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [99])
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
-            gguf_hf_repo = None,
-            gguf_file = "/tmp/test.gguf",
-            gguf_mmproj_file = None,
-            gguf_variant = None,
-            identifier = "unsloth/test.gguf",
-            display_name = "unsloth/test.gguf",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
-        )
+        model_config = _gguf_model_config()
 
         with (
             patch.object(
@@ -1164,17 +1237,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
 
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("Vulkan GPU ordinal(s) [99]", exc_info.exception.detail)
@@ -1261,20 +1324,7 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [0, 1])
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
-            gguf_hf_repo = None,
-            gguf_file = "/tmp/test.gguf",
-            gguf_mmproj_file = None,
-            gguf_variant = None,
-            identifier = "unsloth/test.gguf",
-            display_name = "unsloth/test.gguf",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
-        )
+        model_config = _gguf_model_config()
 
         with (
             patch.object(
@@ -1300,17 +1350,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
 
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("gpu_ids", exc_info.exception.detail.lower())
@@ -1324,20 +1364,7 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [0, 1])
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
-            gguf_hf_repo = None,
-            gguf_file = "/tmp/test.gguf",
-            gguf_mmproj_file = None,
-            gguf_variant = None,
-            identifier = "unsloth/test.gguf",
-            display_name = "unsloth/test.gguf",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
-        )
+        model_config = _gguf_model_config()
         fake_backend = SimpleNamespace(
             is_loaded = False,
             model_identifier = None,
@@ -1358,15 +1385,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(hardware_pkg, "get_device", return_value = hardware_pkg.DeviceType.CUDA),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1)),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("cpu-only build", exc_info.exception.detail.lower())
 
@@ -1379,19 +1398,10 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/diffusion.gguf", gpu_ids = [0, 1])
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
-            gguf_hf_repo = None,
+        model_config = _gguf_model_config(
             gguf_file = "/tmp/diffusion.gguf",
-            gguf_mmproj_file = None,
-            gguf_variant = None,
             identifier = "unsloth/diffusion.gguf",
             display_name = "unsloth/diffusion.gguf",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
         )
         fake_backend = SimpleNamespace(
             is_loaded = False,
@@ -1418,15 +1428,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(hardware_pkg, "get_device", return_value = hardware_pkg.DeviceType.CUDA),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1)),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("no defined mapping", exc_info.exception.detail)
 
@@ -1440,21 +1442,7 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [0, 1])
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
-            gguf_hf_repo = None,
-            gguf_file = "/tmp/test.gguf",
-            gguf_mmproj_file = None,
-            gguf_mtp_file = None,
-            gguf_variant = None,
-            identifier = "unsloth/test.gguf",
-            display_name = "unsloth/test.gguf",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
-        )
+        model_config = _gguf_model_config(gguf_mtp_file = None)
         acquired = []
         # Make [0, 1] invalid on any host (a duplicate id is rejected everywhere): the point is the ORDER, validation before the handoff.
         request.gpu_ids = [0, 0]
@@ -1471,17 +1459,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(arb, "acquire_for", lambda owner, register = None: acquired.append(owner)),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertEqual(acquired, [])  # no CHAT handoff before the doomed load errored
 
@@ -1496,19 +1474,12 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/Qwen3-4B-GGUF", gguf_variant = "Q4_K_M")
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
+        model_config = _gguf_model_config(
             gguf_hf_repo = "unsloth/Qwen3-4B-GGUF",
             gguf_file = None,
-            gguf_mmproj_file = None,
             gguf_variant = "Q4_K_M",
             identifier = "unsloth/Qwen3-4B-GGUF",
             display_name = "Qwen3-4B",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
         )
         acquired = []
         with (
@@ -1525,17 +1496,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(arb, "acquire_for", lambda *a, **k: acquired.append(a[0])),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
         self.assertEqual(exc_info.exception.status_code, 409)
         self.assertIn("download", exc_info.exception.detail.lower())
         self.assertEqual(acquired, [])  # nothing evicted for a load that cannot start
@@ -1551,19 +1512,12 @@ class TestRouteErrors(unittest.TestCase):
             "routes/inference.py",
         )
         request = LoadRequest(model_path = "unsloth/Qwen3-4B-GGUF", gguf_variant = "Q4_K_M")
-        model_config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
+        model_config = _gguf_model_config(
             gguf_hf_repo = "unsloth/Qwen3-4B-GGUF",
             gguf_file = None,
-            gguf_mmproj_file = None,
             gguf_variant = "Q4_K_M",
             identifier = "unsloth/Qwen3-4B-GGUF",
             display_name = "Qwen3-4B",
-            is_vision = False,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
         )
         marked = []
 
@@ -1588,17 +1542,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(arb, "acquire_for", _acquire),
         ):
             with self.assertRaises(HTTPException):
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
         self.assertEqual(marked, [True])
         # The marker is scoped to the request: it must not outlive the failed load.
         self.assertFalse(llama_cpp.chat_load_active())
@@ -1646,6 +1590,92 @@ class TestRouteErrors(unittest.TestCase):
 
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("gpu_ids [99]", exc_info.exception.detail)
+
+    def test_training_route_uses_xpu_safe_optimizer_for_vram_coordination(self):
+        training_route = _load_route_module(
+            "training_route_module_for_xpu_optimizer_test",
+            "routes/training.py",
+        )
+        request = TrainingStartRequest(
+            model_name = "unsloth/test",
+            training_type = "LoRA/QLoRA",
+            format_type = "alpaca",
+            optim = DEFAULT_BITSANDBYTES_OPTIMIZER,
+            gpu_ids = None,
+        )
+        seen = {}
+
+        class DummyBackend:
+            current_job_id = None
+
+            def is_training_active(self):
+                return False
+
+            def start_training(self, **kwargs):
+                seen["backend_optimizer"] = kwargs["optim"]
+                kwargs["before_spawn"]()
+                return True
+
+        def _capture_training_vram_optimizer(**kwargs):
+            seen["vram_optimizer"] = kwargs["optimizer"]
+            return True, {"usable_gb": 24.0, "required_gb": 12.0}
+
+        def _run_can_keep(can_keep):
+            can_keep()
+            return []
+
+        with (
+            patch.object(training_route, "get_training_backend", return_value = DummyBackend()),
+            patch.object(training_route, "_diffusion_training_active", return_value = False),
+            patch.object(training_route, "_diffusion_gpu_admission", return_value = nullcontext()),
+            patch.object(
+                training_route,
+                "_reject_untrainable_model_request",
+                return_value = SimpleNamespace(
+                    model_name = "unsloth/test",
+                    model_local_path = None,
+                    cached_model_pin = None,
+                ),
+            ),
+            patch.object(training_route, "load_model_defaults", return_value = {"training": {}}),
+            patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(_hw_module, "DEVICE", DeviceType.XPU),
+            patch("utils.hardware.ensure_hardware_detected", return_value = DeviceType.XPU),
+            patch(
+                "routes.training_vram.can_keep_chat_during_training",
+                side_effect = _capture_training_vram_optimizer,
+            ),
+            patch(
+                "routes.training_vram.coordinate_models_for_training",
+                side_effect = _run_can_keep,
+            ),
+            patch(
+                "core.export.get_export_backend",
+                return_value = SimpleNamespace(
+                    current_checkpoint = None,
+                    is_export_active = lambda: False,
+                ),
+            ),
+            patch(
+                "core.inference.diffusion_engine_router.get_active_diffusion_engine",
+                return_value = SimpleNamespace(is_loaded = False, unload = lambda: None),
+            ),
+            patch("core.inference.gpu_arbiter.release", lambda *_args, **_kwargs: None),
+            patch(
+                "core.inference.video.get_video_backend",
+                return_value = SimpleNamespace(
+                    status = lambda: {"loaded": False},
+                    unload = lambda: None,
+                ),
+            ),
+        ):
+            response = asyncio.run(
+                training_route.start_training(request, current_subject = "test-user")
+            )
+
+        self.assertEqual(response.status, "queued")
+        self.assertEqual(seen["backend_optimizer"], XPU_SAFE_OPTIMIZER)
+        self.assertEqual(seen["vram_optimizer"], XPU_SAFE_OPTIMIZER)
 
     def test_training_route_returns_400_for_uuid_parent_visibility_gpu_ids(self):
         training_route = _load_route_module(
@@ -1747,17 +1777,7 @@ class TestRouteErrors(unittest.TestCase):
             ),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
 
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("gpu_ids [99]", exc_info.exception.detail)
@@ -1818,17 +1838,7 @@ class TestRouteErrors(unittest.TestCase):
             ),
         ):
             with self.assertRaises(HTTPException) as exc_info:
-                asyncio.run(
-                    inference_route._load_model_impl(
-                        request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
-                        current_subject = "test-user",
-                    )
-                )
+                asyncio.run(_load_model(inference_route, request))
 
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("UUID/MIG", exc_info.exception.detail)
@@ -1902,6 +1912,31 @@ class TestMinGpuVram(unittest.TestCase):
         )
         breakdown = estimate_training_vram(arch, config)
         self.assertEqual(breakdown.total, breakdown.min_gpu_vram(1))
+
+
+class TestAttentionEstimateModelClass(unittest.TestCase):
+    def _resolved_model_class(self, raw_config):
+        from utils.hardware import hardware as hardware_module
+
+        captured = {}
+
+        def _stub_resolver(model_class, cfg):
+            captured["model_class"] = model_class
+            return "sdpa"
+
+        with patch("utils.transformers_version._load_config_json", return_value = raw_config):
+            config = hardware_module._load_config_for_gpu_estimate("unsloth/test")
+        with patch.dict(sys.modules, _fake_unsloth_attention_modules(_stub_resolver)):
+            hardware_module._determine_attention_impl_for_gpu_estimate(config)
+        return captured["model_class"]
+
+    def test_raw_config_resolves_model_class_from_model_type(self):
+        from transformers import LlamaForCausalLM
+        model_class = self._resolved_model_class({"model_type": "llama", "hidden_size": 4096})
+        self.assertIs(model_class, LlamaForCausalLM)
+
+    def test_unknown_model_type_resolves_no_model_class(self):
+        self.assertIsNone(self._resolved_model_class({"model_type": "not_a_real_model"}))
 
 
 class TestPerGpuFitGuardAllCounts(unittest.TestCase):
@@ -2460,3 +2495,131 @@ class TestTheFallbackNameIsOneUnslothResolves(unittest.TestCase):
             answer = get_device_map([0, 1])
         self.assertIn(answer, planned)
         self.assertEqual(planned[answer], "balanced")
+
+
+class TestXpuBitsandbytesOptimizerGate(unittest.TestCase):
+    """The diffusion trainers pick their optimizer themselves, outside the request model the
+    route normalizes, so they need the same XPU policy applied before construction."""
+
+    def _probe(self):
+        from core.training.diffusion_train_common import bitsandbytes_optimizer_supported
+        return bitsandbytes_optimizer_supported
+
+    def test_xpu_host_refuses_bitsandbytes_optimizers(self):
+        with patch("utils.hardware.get_device", return_value = DeviceType.XPU):
+            self.assertFalse(self._probe()())
+
+    def test_selected_backends_other_than_xpu_keep_bitsandbytes(self):
+        for device in (DeviceType.CUDA, DeviceType.CPU, DeviceType.MLX):
+            with self.subTest(device = device):
+                with patch("utils.hardware.get_device", return_value = device):
+                    self.assertTrue(self._probe()())
+
+    def test_a_hybrid_host_that_selected_cuda_keeps_bitsandbytes(self):
+        """An Intel iGPU beside an NVIDIA card reports torch.xpu.is_available() True while
+        detection selects CUDA. Keying on presence would drop 8-bit on a CUDA run and make
+        restore_resume_state refuse every existing AdamW8bit checkpoint."""
+        import torch
+        with (
+            patch.object(torch, "xpu", SimpleNamespace(is_available = lambda: True)),
+            patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
+        ):
+            self.assertTrue(self._probe()())
+
+    def test_a_raising_probe_fails_open(self):
+        def _boom():
+            raise RuntimeError("driver exploded")
+
+        with patch("utils.hardware.get_device", side_effect = _boom):
+            self.assertTrue(self._probe()())
+
+    def test_diffusion_factories_skip_bnb_on_xpu_and_keep_it_elsewhere(self):
+        import torch
+
+        import core.training.diffusion_dit_trainer as dit_mod
+        import core.training.diffusion_lora_trainer as lora_mod
+
+        class _Bnb8bitMarker(torch.optim.AdamW):
+            """Stands in for bnb.optim.AdamW8bit: constructs fine, dies at the first step
+            exactly as the Intel Triton SYCL assertion does."""
+
+            def step(self, *args, **kwargs):
+                raise AssertionError("sycl headers not found")
+
+        fake_bnb = ModuleType("bitsandbytes")
+        fake_optim = ModuleType("bitsandbytes.optim")
+        fake_optim.AdamW8bit = _Bnb8bitMarker
+        fake_bnb.optim = fake_optim
+
+        cases = (
+            ("sdxl_lora", lora_mod, "_make_lora_optimizer"),
+            ("dit", dit_mod, "_make_optimizer"),
+        )
+        for label, module, factory_name in cases:
+            factory = getattr(module, factory_name)
+            for on_xpu in (True, False):
+                with self.subTest(trainer = label, xpu = on_xpu):
+                    param = torch.nn.Parameter(torch.zeros(2, 2))
+                    param.grad = torch.ones(2, 2)
+                    with (
+                        patch.dict(
+                            sys.modules,
+                            {"bitsandbytes": fake_bnb, "bitsandbytes.optim": fake_optim},
+                        ),
+                        patch.object(
+                            module,
+                            "bitsandbytes_optimizer_supported",
+                            lambda supported = not on_xpu: supported,
+                        ),
+                    ):
+                        optimizer = factory([param], 1e-4)
+
+                    if on_xpu:
+                        # Must not be the bnb optimizer, and must survive an actual step.
+                        self.assertNotIsInstance(optimizer, _Bnb8bitMarker)
+                        optimizer.step()
+                    else:
+                        # Unchanged off XPU: still the 8-bit optimizer, not a blanket disable.
+                        self.assertIsInstance(optimizer, _Bnb8bitMarker)
+
+
+class TestCliDefaultOptimizerFollowsTheDevicePolicy(unittest.TestCase):
+    """`unsloth train` exposes no --optim, so without this the CLI falls through to
+    trainer.py's own `adamw_8bit` literal and reproduces issue #10021 off the Studio path."""
+
+    def _resolve(self, device: DeviceType) -> str:
+        from core.training.training import (
+            DEFAULT_TRAINING_OPTIMIZER,
+            normalize_training_optimizer_for_device,
+        )
+        return normalize_training_optimizer_for_device(
+            DEFAULT_TRAINING_OPTIMIZER,
+            device_backend = device.value,
+        )
+
+    def test_xpu_cli_default_is_the_safe_optimizer(self):
+        self.assertEqual(self._resolve(DeviceType.XPU), XPU_SAFE_OPTIMIZER)
+
+    def test_other_backends_keep_the_historical_cli_default(self):
+        from core.training.training import DEFAULT_TRAINING_OPTIMIZER
+        for device in (DeviceType.CUDA, DeviceType.CPU):
+            with self.subTest(device = device):
+                self.assertEqual(self._resolve(device), DEFAULT_TRAINING_OPTIMIZER)
+
+    def test_the_cli_sets_optim_from_the_host_policy(self):
+        """The wiring, not just the helper: train.py must stamp `optim` into training_kwargs."""
+        source = (_BACKEND_ROOT.parent.parent / "unsloth_cli" / "commands" / "train.py").read_text(
+            encoding = "utf-8"
+        )
+        self.assertIn("_optimizer_for_host", source)
+        self.assertIn(
+            'training_kwargs["optim"] = _optimizer_for_host(training_kwargs.get("optim"))', source
+        )
+
+    def test_an_undetectable_host_keeps_the_historical_default(self):
+        """The CLI helper must fail open: a device lookup that raises cannot stop a run."""
+        cli = _BACKEND_ROOT.parent.parent / "unsloth_cli" / "commands" / "train.py"
+        source = cli.read_text(encoding = "utf-8")
+        self.assertIn("except Exception:", source)
+        # The fallback returns the requested/default optimizer rather than propagating.
+        self.assertIn("return optimizer", source)

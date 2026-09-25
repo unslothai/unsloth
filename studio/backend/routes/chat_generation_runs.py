@@ -5,11 +5,14 @@
 
 from __future__ import annotations
 
+import os
+
 import asyncio
 import json
 import re
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -17,6 +20,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from auth.authentication import get_current_subject
+from auth import policy
+from state import active_generations, run_subscribers
+from utils.account_context import current_account, current_account_id, run_as
 from core.inference.llama_keepwarm import inference_lifecycle_gate
 from models.inference import ChatCompletionRequest
 from storage import chat_generation_runs_db as db
@@ -148,6 +154,16 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             status_code = 422,
             detail = safe_validation_errors(exc.errors()),
         ) from exc
+    # Without this an unservable part is queued at 202 and fails where the caller cannot see it.
+    from routes.inference import (
+        _messages_have_embedded_image,
+        _messages_have_input_audio,
+        _reject_unsupported_content_parts,
+        _request_has_video,
+    )
+
+    _reject_unsupported_content_parts(request)
+
     # Message content/reasoning are user-authored data, not routing configuration. Scan every
     # other persisted field, including extra message-envelope fields, with the credential policy.
     durable_config = {
@@ -172,20 +188,39 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             detail = "Durable chat runs are available only for local inference",
         )
     # A media turn has no replayable transcript and its payload persists verbatim, so a base64 blob would live in
-    # request_json for the life of the thread.
-    if any(raw.get(field) not in (None, "") for field in _MEDIA_FIELDS):
+    # request_json for the life of the thread. _MEDIA_FIELDS is field-shaped, so a video_url part
+    # needs _request_has_video, and an inline image part needs _messages_have_embedded_image:
+    # turn-scoping means a TEXT-only follow-up no longer sets top-level image_base64, yet the
+    # thread's earlier screenshot still rides along inside messages[].content, so the field-shaped
+    # check alone admits it and re-persists the blob on every follow-up.
+    if (
+        any(raw.get(field) not in (None, "") for field in _MEDIA_FIELDS)
+        or _messages_have_input_audio(request.messages)
+        or _messages_have_embedded_image(request.messages)
+        or _request_has_video(request)
+    ):
         raise HTTPException(
             status_code = 400,
             detail = "Media chat runs use the legacy streaming path",
         )
-    # Recovery currently rebuilds text and reasoning deltas, not server-side tool
-    # events. Keep any request whose effective policy can enter the local tool loop
-    # on the legacy subscriber-owned stream until those events are replayable.
+    # What UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 hands back to the legacy stream beyond the raw `tools` key: the
+    # launcher's effective tool policy, and any checkpoint recall that can switch tools on mid-thread.
     from routes.inference import _checkpoint_recall_may_enable_tools, _effective_enable_tools
 
     request = request.model_copy(update = {"thread_id": payload.threadId})
 
-    if (
+    # Shipped ON (default ON so a restart alone activates it - env scoping proved unreliable across launchers):
+    # tool-enabled turns are durable because replay now re-tags persisted frames exactly as the live stream yields
+    # them; set UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 to restore the original refusal.
+    _durable_tools = os.environ.get("UNSLOTH_STUDIO_DURABLE_TOOL_TURNS", "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    # NOTE: the guard wraps the WHOLE or-chain. `A and B or C or D` parses as `(A and B) or C or D`, so a bare
+    # prefix only guarded raw["tools"]; the Studio UI sends `enable_tools: true` (term 2), which still raised with
+    # the flag ON - the flip was inert for exactly the turns it was added to unblock.
+    if not _durable_tools and (
         raw.get("tools")
         or request.enable_tools is True
         or bool(request.mcp_enabled)
@@ -215,6 +250,31 @@ def _require_run(run_id: str) -> dict[str, Any]:
     return run
 
 
+def cancel_account_run(request: Request, run_id: str, *, supervisor_name: str) -> None:
+    """Signal only the caller's registration: another account may legitimately reuse a bare
+    cancel ID, so it is never stashed."""
+    if policy.installation_has_managed_accounts():
+        active_generations.cancel_run(run_id, account_id = current_account_id())
+        if supervisor_name == "chat_generation_supervisor":
+            return
+    supervisor = getattr(request.app.state, supervisor_name, None)
+    if supervisor is not None:
+        supervisor.cancel(run_id)
+    elif supervisor_name == "chat_generation_supervisor":
+        from routes.inference import _cancel_by_cancel_id_or_stash
+        active_generations.cancel_run(run_id)
+        _cancel_by_cancel_id_or_stash(run_id)
+
+
+def _require_available_supervisor_run_id(run_id: str) -> None:
+    """A legacy supervisor keys tasks by bare ID, and start() no-ops on a held id, so a foreign
+    active slot must be refused or an admitted owner run would never be scheduled."""
+    if policy.installation_has_managed_accounts():
+        for entry in active_generations.snapshot():
+            if entry["run_id"] == run_id:
+                policy.require_account_scope(entry.get("account_id"))
+
+
 def _event_cursor(after: int | None, last_event_id: str | None) -> int:
     if after is not None and after > _SQLITE_MAX_INTEGER:
         raise HTTPException(status_code = 400, detail = "Event cursor is too large")
@@ -242,6 +302,7 @@ async def create_chat_generation_run(
     # Serialize the off-loop commit with model lifecycle work, so a run is registered either before the gate opens or
     # after an unload/swap, never mid-swap.
     async with inference_lifecycle_gate():
+        _require_available_supervisor_run_id(payload.runId)
         try:
             run, created = await asyncio.to_thread(
                 db.create_run,
@@ -292,9 +353,11 @@ def cancel_chat_generation_run(
     run = db.request_cancel(run_id)
     if run is None:
         raise HTTPException(status_code = 404, detail = "Chat generation run not found")
-    supervisor = getattr(request.app.state, "chat_generation_supervisor", None)
-    if supervisor is not None and run["status"] in {"cancelling", "cancelled"}:
-        supervisor.cancel(run_id)
+    if run["status"] in {"cancelling", "cancelled"} and (
+        getattr(request.app.state, "chat_generation_supervisor", None) is not None
+        or policy.installation_has_managed_accounts()
+    ):
+        cancel_account_run(request, run_id, supervisor_name = "chat_generation_supervisor")
     return run
 
 
@@ -308,6 +371,15 @@ async def chat_generation_events(
 ):
     _require_run(run_id)
     cursor = _event_cursor(after, last_event_id)
+    wait_for_events = db.wait_for_events
+    if policy.installation_has_managed_accounts():
+        # run_in_executor does not copy ContextVars, unlike asyncio.to_thread.
+        wait_for_events = partial(run_as, current_account(), db.wait_for_events)
+
+    # One token per stream, so a closing tab clears only its OWN stamp. Two tabs on a run, or a
+    # reconnect overlapping the stream it replaces, otherwise delete each other's heartbeat.
+    follower = run_subscribers.new_follower_token()
+    follower_account = current_account_id() or ""
 
     async def stream():
         nonlocal cursor
@@ -320,9 +392,13 @@ async def chat_generation_events(
         if opening["status"] in db.TERMINAL_STATUSES and cursor >= int(opening["lastEventSeq"]):
             return
         while True:
+            # A parked tool approval reads this before applying its ceiling, so the ceiling bounds
+            # an ABANDONED decision rather than a user still reading the card. Stamped before the
+            # wait so a follower attaching mid-park counts immediately. See state/run_subscribers.py.
+            run_subscribers.mark_subscriber_seen(run_id, follower, follower_account)
             events = await loop.run_in_executor(
                 _EVENT_WAIT_EXECUTOR,
-                db.wait_for_events,
+                wait_for_events,
                 run_id,
                 cursor,
                 15,
@@ -349,15 +425,26 @@ async def chat_generation_events(
             if await request.is_disconnected():
                 return
             if not events:
-                # Carries the run's progress stamp, which the lease renewals move.
-                # A bare keep-alive proves only that the CONNECTION is healthy, so a follower rearming its no-progress
-                # deadline on one could never settle a wedged run while the socket stayed up, the one case that fallback
-                # exists for.
-                # Comment framing, so _SSEDecoder still drops it and no client parsing it as an event is affected.
+                # Carries the run's progress stamp, which the lease renewals move. A bare keep-alive proves only that the
+                # CONNECTION is healthy, so a follower rearming its no-progress deadline on one could never settle a wedged
+                # run while the socket stayed up, the one case that fallback exists for. Comment framing, so _SSEDecoder
+                # still drops it and no client parsing it as an event is affected.
                 yield f": keep-alive {int(snapshot['updatedAt'])}\n\n"
 
+    async def stream_while_attended():
+        """``stream`` plus the bookend that says this follower has gone.
+
+        The stamp ages out on its own, so this only makes a cleanly closed tab stop counting as
+        attended now rather than ~45s from now.
+        """
+        try:
+            async for frame in stream():
+                yield frame
+        finally:
+            run_subscribers.subscriber_departed(run_id, follower, follower_account)
+
     return StreamingResponse(
-        stream(),
+        stream_while_attended(),
         media_type = "text/event-stream",
         headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

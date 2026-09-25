@@ -17,19 +17,17 @@
 //     silently stale.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const read = (path: string) =>
-  readFileSync(new URL(path, import.meta.url), "utf8");
+import { readText } from "./helpers/kit.ts";
 
-const UNMEASURED = read("../src/components/ui/unmeasured-collapsible.tsx");
-const REASONING = read("../src/components/assistant-ui/reasoning.tsx");
-const FLAGS = read("../src/components/assistant-ui/thread-feature-flags.ts");
-const SHARED_COLLAPSIBLE = read("../src/components/ui/collapsible.tsx");
-const APP_SIDEBAR = read("../src/components/app-sidebar.tsx");
-const TOOL_GROUP = read("../src/components/assistant-ui/tool-group.tsx");
-const TOOL_FALLBACK = read("../src/components/assistant-ui/tool-fallback.tsx");
+const UNMEASURED = readText("../src/components/ui/unmeasured-collapsible.tsx");
+const REASONING = readText("../src/components/assistant-ui/reasoning.tsx");
+const FLAGS = readText("../src/components/assistant-ui/thread-feature-flags.ts");
+const SHARED_COLLAPSIBLE = readText("../src/components/ui/collapsible.tsx");
+const APP_SIDEBAR = readText("../src/components/app-sidebar.tsx");
+const TOOL_GROUP = readText("../src/components/assistant-ui/tool-group.tsx");
+const TOOL_FALLBACK = readText("../src/components/assistant-ui/tool-fallback.tsx");
 
 // Comments in these files discuss measurement at length, so an assertion on the raw text would
 // pass or fail on prose. Only code lines are considered.
@@ -143,25 +141,12 @@ test("the flag is on", () => {
 
 test("the reasoning pane picks its primitive from the flag on all three slots", () => {
   const code = codeOf(REASONING);
-  // Three primitive slots, plus the streaming-height release and the scroll lock, which both
-  // have to outlast the transition rather than the nominal duration.
-  assert.equal(code.match(/GRID_COLLAPSE_REASONING_ENABLED/g)?.length, 6);
+  // Three primitive slots, the import, and the scroll lock that outlasts the transition.
+  assert.equal(code.match(/GRID_COLLAPSE_REASONING_ENABLED/g)?.length, 5);
   assert.ok(code.includes("<UnmeasuredCollapsible {...rootProps}>"));
   assert.ok(code.includes("<Collapsible {...rootProps}>"));
   assert.ok(code.includes("UnmeasuredCollapsibleTrigger"));
   assert.ok(code.includes("<UnmeasuredCollapsibleContent"));
-});
-
-test("the streaming height cap outlives the grid collapse, but only on the grid path", () => {
-  const code = codeOf(REASONING);
-  // `1fr` resolves against live content every frame, so releasing `max-h-64` before the row has
-  // finished shrinking grows it mid-collapse -- the jump the retention timer exists to prevent.
-  // The height keyframes animate a height captured at toggle time, so the default path is immune
-  // and must keep its exact ANIMATION_DURATION.
-  assert.ok(
-    code.includes("ANIMATION_DURATION + CLOSE_FALLBACK_MARGIN_MS"),
-  );
-  assert.ok(code.includes("const closeDelay = GRID_COLLAPSE_REASONING_ENABLED"));
 });
 
 test("the scroll lock outlasts the grid collapse, and the shared hook's other callers do not move", () => {
@@ -206,7 +191,7 @@ test("the height keyframes stay in use everywhere else, because the sidebar list
 });
 
 test("reduced motion is reached by the transition, not bypassed by it", () => {
-  const indexCss = read("../src/index.css");
+  const indexCss = readText("../src/index.css");
   // Two blankets, the OS media query and the in-app override class. Both force
   // transition-duration as well as animation-duration, which is what makes a transition-based
   // collapse honour reduced motion without any new rule.

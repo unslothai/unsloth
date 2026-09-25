@@ -70,7 +70,6 @@ class SpillOrder(Enum):
     split), which would favour FRONT/BACK over LARGEST. Hence configurable.
     """
 
-    # best-fit-decreasing: overshoot is real bandwidth, a 209 MiB block for a 50 MiB deficit wastes 159 MiB per token
     # Best-fit-decreasing: fewest blocks AND least overshoot. Overshoot is real bandwidth -- a 209 MiB block for a 50
     # MiB deficit wastes 159 MiB per token.
     LARGEST_FIRST = "largest_first"
@@ -80,16 +79,14 @@ class SpillOrder(Enum):
 
 @dataclass(frozen = True)
 class PlanOptions:
-    # Compute buffer + CUDA context + scratch, charged on every device. 1 GiB was too thin and failed CONSISTENTLY: the
-    # planner fills to ``budget - overhead_bytes_per_device``, leaving exactly this much free whatever the budget is, so
-    # the dense 27B at depth 32768 died identically at 6, 7, 8 and 10 GiB with
-    # ggml_backend_cuda_buffer_type_alloc_buffer: allocating 594.16 MiB on device 0: cudaMalloc failed: out of memory
+    # Compute buffer + CUDA context + scratch, charged on every device. 1 GiB was too thin and failed CONSISTENTLY:
+    # the planner fills to ``budget - overhead_bytes_per_device``, leaving exactly this much free whatever the budget
+    # is, so the dense 27B at depth 32768 died identically at 6, 7, 8 and 10 GiB allocating 594.16 MiB on device 0.
     # The child needs the PREFILL compute buffer (594 MiB measured) plus its own CUDA primary context, which took the
     # rest of the old 1 GiB. Not benchmark fragmentation: 16, 64 and 1024 MiB hog blocks all reproduced the identical
-    # 594.16 MiB failure. 1.5 GiB covers the measured 1.07 GiB with margin -- a measured floor, not a fitted curve,
-    # since the steady-state compute buffer is flat in context (493 to 509 MiB from depth 4096 to 32768) but the prefill
-    # graph's reservation is not. Erring high costs some spill (linear at 5.544 ms/GiB), erring low costs the whole
-    # load.
+    # failure. 1.5 GiB covers the measured 1.07 GiB with margin -- a measured floor, not a fitted curve, since the
+    # steady-state compute buffer is flat in context (493 to 509 MiB from depth 4096 to 32768) but the prefill graph's
+    # reservation is not. Erring high costs some spill (linear at 5.544 ms/GiB), erring low costs the whole load.
     overhead_bytes_per_device: int = (3 * GIB) // 2
     # GPU-resident bytes NOT in the layout (a vision projector, an MTP draft reserve), charged once against the pooled
     # budget: the layout only knows the target GGUF's tensor table. Subtracting from the budget also reaches
@@ -108,21 +105,19 @@ class PlanOptions:
     min_ctx: int = 4096
     spill_order: SpillOrder = SpillOrder.LARGEST_FIRST
     allow_lm_head_spill: bool = True
-    # spilled generation runs on the CPU backend (ggml only moves an op to the GPU at batch >= 32 and decode is batch 1)
-    # What the host brings to bear on spilled weights. Spilled generation runs on the CPU backend -- ggml only moves an
-    # op to the GPU at batch >= 32 (ggml-cuda.cu, op_offload_min_batch_size) and decode is batch 1 -- so the penalty
-    # scales with core count: 2.42 / 5.83 / 11.82 / 14.94 t/s at 4 / 16 / 64 / 192 threads.
+    # What the host brings to bear on spilled weights. Spilled generation runs on the CPU backend -- ggml only moves
+    # an op to the GPU at batch >= 32 (ggml-cuda.cu, op_offload_min_batch_size) and decode is batch 1 -- so the
+    # penalty scales with core count: 2.42 / 5.83 / 11.82 / 14.94 t/s at 4 / 16 / 64 / 192 threads.
     host: HostProfile = field(default_factory = HostProfile)
     # q8_0 measured 35% slower generation, and without GGML_CUDA_FA_ALL_QUANTS only four MATCHED K/V combinations are
     # compiled (a mismatched pair falls to CPU and stalls). Off by default; matched pairs only when enabled.
     allow_kv_quant: bool = False
     kv_quant_type: str = "q8_0"
-    # with -nkvo llama.cpp puts the WHOLE cache on the host (offload is one scalar and the buffer type falls back to CPU
-    # for every layer)
-    # The caller passed -nkvo (or a false LLAMA_ARG_KV_OFFLOAD), so llama.cpp puts the WHOLE cache on the host: offload
-    # is one scalar and the buffer type falls back to the CPU one for every layer (llama-kv-cache.cpp:210-219), same
-    # branch in the recurrent and DSV4 caches. The cache and the recurrent state move out of the VRAM footprint and into
-    # the host one; charging them to VRAM anyway would spill FFN blocks for a deficit the child never has.
+    # The caller passed -nkvo (or a false LLAMA_ARG_KV_OFFLOAD), so llama.cpp puts the WHOLE cache on the host:
+    # offload is one scalar and the buffer type falls back to the CPU one for every layer
+    # (llama-kv-cache.cpp:210-219), same branch in the recurrent and DSV4 caches. The cache and the recurrent state
+    # move out of the VRAM footprint and into the host one; charging them to VRAM anyway would spill FFN blocks for a
+    # deficit the child never has.
     kv_on_host: bool = False
 
 
@@ -140,8 +135,6 @@ class Plan:
     cache_type_v: Optional[str] = None
     spilled_blocks: tuple[int, ...] = field(default_factory = tuple)
     spilled_lm_head: bool = False
-    # no rung fits; mmap has to stay, since it is the only thing that makes an over-commit pageable rather than
-    # OOM-killed
     # No rung fits. mmap has to stay, because it is the only thing that makes an over-commit pageable rather than
     # OOM-killed.
     insufficient: bool = False
@@ -533,10 +526,9 @@ def _per_device_usage(
 ) -> tuple[Optional[str], list[int], list[list[int]]]:
     if len(vram_bytes_per_device) <= 1:
         return None, [], []
-    # recurrent hybrid, n_attention_layers short of n_layers
-    # These three shapes -- recurrent hybrid, n_attention_layers short of n_layers, sliding window -- are only a problem
-    # when the cache has to be spread evenly for want of anything better. A vector removes that guess; without one they
-    # still abstain.
+    # These three shapes -- recurrent hybrid, n_attention_layers short of n_layers, sliding window -- are only a
+    # problem when the cache has to be spread evenly for want of anything better. A vector removes that guess; without
+    # one they still abstain.
     uneven_cache = (
         layout.recurrent_bytes > 0 or layout.n_attention_layers != layout.n_layers or layout.has_swa
     )
@@ -898,10 +890,10 @@ def _finish(
     patterns: list[str] = []
     indices = sorted(b.index for b in chosen)
     if indices:
-        # One global pattern when every spillable block is going -- shorter, and the form the benchmarks used. NOT when
-        # the GGUF carries blocks the layout dropped: the unbounded \d+ would also match the trailing nextn/MTP blocks,
-        # whose ffn_*_exps load the moment a draft is engaged. That moves bytes neither host_bytes nor the deficit
-        # counted (so the mmap decision is made on an undercount) and drags the draft FFN onto the CPU backend.
+        # One global pattern when every spillable block is going -- shorter, and the form the benchmarks used. NOT
+        # when the GGUF carries blocks the layout dropped: the unbounded \d+ would also match the trailing nextn/MTP
+        # blocks, whose ffn_*_exps load the moment a draft is engaged, moving bytes neither host_bytes nor the deficit
+        # counted (so the mmap decision is made on an undercount) and dragging the draft FFN onto the CPU backend.
         spillable = [b.index for b in layout.blocks if b.spillable_bytes > 0]
         all_of_them = set(indices) == set(spillable) and not layout.has_excluded_blocks
         patterns.append(spill_pattern_for(layout, None if all_of_them else indices))
@@ -914,7 +906,6 @@ def _finish(
     # token_embd is host-resident on every launch, so it is host RAM this plan must pay for even when nothing is spilled
     host_bytes = layout.token_embd_bytes + spilled_bytes
     if opts.kv_on_host:
-        # -nkvo moved the cache and recurrent state out of VRAM
         # -nkvo moved the cache and the recurrent state out of VRAM, not out of existence: they are host RAM now, and
         # the mmap decision below has to see them or it answers against a footprint short by the whole cache.
         host_bytes += (
@@ -946,8 +937,8 @@ def _finish(
         n_ctx = n_ctx,
         ot_patterns = tuple(patterns),
         load_mode_none = load_mode_none,
-        # matched pairs only: an unmatched K/V combination is not compiled without GGML_CUDA_FA_ALL_QUANTS and silently
-        # falls back to CPU
+        # Matched pairs only: an unmatched K/V combination is not compiled without GGML_CUDA_FA_ALL_QUANTS and
+        # silently falls back to CPU.
         cache_type_k = cache_type,
         cache_type_v = cache_type,
         spilled_blocks = tuple(indices),

@@ -3,7 +3,8 @@
 
 import { ChevronDown, CircleAlert, Hand, ShieldCheck } from "lucide-react";
 import type { ComponentType } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useFullAccessAllowed } from "@/features/auth/account-session";
 
 import {
   AlertDialog,
@@ -84,17 +85,30 @@ export function permissionModeOption(mode: PermissionMode) {
 
 /** The option rows shared by every permission dropdown or submenu. Non-full levels apply
  *  directly; picking Full access must go through the caller's danger confirmation. */
+function useAccountPermissionMode() {
+  const fullAccessAllowed = useFullAccessAllowed();
+  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
+  const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
+  useEffect(() => {
+    if (!fullAccessAllowed && permissionMode === "full") setPermissionMode("auto");
+  }, [fullAccessAllowed, permissionMode, setPermissionMode]);
+  return {
+    permissionMode: !fullAccessAllowed && permissionMode === "full" ? "auto" : permissionMode,
+    fullAccessAllowed,
+  };
+}
+
 export function PermissionModeMenuItems({
   onRequestFullAccess,
 }: {
   onRequestFullAccess: () => void;
 }) {
-  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
+  const { permissionMode, fullAccessAllowed } = useAccountPermissionMode();
   const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
 
   return (
     <>
-      {PERMISSION_MODE_OPTIONS.map((option) => (
+      {PERMISSION_MODE_OPTIONS.filter((option) => fullAccessAllowed || option.value !== "full").map((option) => (
         <DropdownMenuItem
           key={option.value}
           onSelect={() => {
@@ -145,6 +159,8 @@ export function FullAccessConfirmDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
+  const { fullAccessAllowed } = useAccountPermissionMode();
+  if (!fullAccessAllowed) return null;
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
@@ -184,7 +200,7 @@ export function PermissionModeDropdown({
   align?: "start" | "end";
   triggerClassName?: string;
 } = {}) {
-  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
+  const { permissionMode, fullAccessAllowed } = useAccountPermissionMode();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const active = permissionModeOption(permissionMode);
   const ActiveIcon = active.icon;
@@ -215,7 +231,7 @@ export function PermissionModeDropdown({
         <DropdownMenuContent
           side={side}
           align={align}
-          className="w-[300px]"
+          className="w-[calc(300px*var(--ui-space-scale,1))]"
           avoidCollisions={true}
         >
           <DropdownMenuLabel>
@@ -247,7 +263,7 @@ export function PermissionModeComposerPill({
 }: {
   side?: "top" | "bottom";
 } = {}) {
-  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
+  const { permissionMode, fullAccessAllowed } = useAccountPermissionMode();
   const setBypassConfirmOpen = useChatRuntimeStore(
     (s) => s.setBypassConfirmOpen,
   );
@@ -268,13 +284,13 @@ export function PermissionModeComposerPill({
           title={`${active.label}: ${active.description}`}
         >
           <span className="composer-pill-glyph">
-            <ActiveIcon className="size-[15px]" strokeWidth={2} />
+            <ActiveIcon className="size-[calc(15px*var(--ui-space-scale,1))]" strokeWidth={2} />
           </span>
           <span>{active.label}</span>
           <HugeiconsIcon
             icon={ChevronDownStandardIcon}
             strokeWidth={1.5}
-            className="composer-pill-caret size-[15px]"
+            className="composer-pill-caret size-[calc(15px*var(--ui-space-scale,1))]"
           />
         </button>
       </DropdownMenuTrigger>
@@ -283,7 +299,7 @@ export function PermissionModeComposerPill({
         align="start"
         sideOffset={0}
         avoidCollisions={true}
-        className="unsloth-plus-menu w-[300px]"
+        className="unsloth-plus-menu w-[calc(300px*var(--ui-space-scale,1))]"
       >
         <DropdownMenuLabel>
           How should tool calls be approved?

@@ -13,6 +13,46 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+import importlib
+import types
+from unittest.mock import MagicMock
+
+
+# This file reaches core/inference/inference.py, which imports unsloth at module scope, from
+# inside a helper, so test_backend_tests_stub_heavy_imports.py's source scan never saw it. The
+# import only ever worked when another file on the same xdist worker had already stubbed
+# unsloth; sharding changed who shares a worker, so the stub is explicit here now.
+_STUBBED: list[str] = []
+
+
+def _stub_if_missing(name, attrs):
+    """Stub a dep the backend pytest matrix does not install, as test_trainer_stdout_quiet.py does.
+
+    That matrix stops at studio.txt plus torch and transformers; repo-cpu-tests is the job that
+    installs unsloth_zoo. Unstubbed, this module fails COLLECTION and takes the job down. A real
+    install is left alone, and __spec__ = None keeps the namespace-shadow guard a no-op here.
+    """
+    if name in sys.modules:
+        return
+    try:
+        importlib.import_module(name)
+        return
+    except Exception:  # noqa: BLE001 - unusable here either way, so stub it
+        pass
+    _STUBBED.append(name)
+    mod = types.ModuleType(name)
+    mod.__spec__ = None
+    for attr in attrs:
+        setattr(mod, attr, MagicMock())
+    sys.modules[name] = mod
+    parent, _, child = name.rpartition(".")
+    if parent and parent in sys.modules:
+        setattr(sys.modules[parent], child, mod)
+
+
+_stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
+_stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
+
 from core.inference.native_audio import (
     HIGGS_TTS2_CODEC_REPO,
     HIGGS_TTS3_CODEC_REPO,
@@ -28,6 +68,16 @@ from core.inference.native_audio import (
     native_audio_type_from_local_path,
 )
 
+# Bind the dependency while the stubs stand, then drop them, as test_trainer_stdout_quiet.py
+# does. Left in place they outlive this module, and a later file's _stub_if_missing returns
+# before recording ownership, so nobody can clean them up. Concretely, _shared_policy branches
+# on `"unsloth" in sys.modules` and returns None off the stub instead of reaching its disk
+# fallback. A real install stubs nothing, so this is a no-op there.
+import core.inference.inference  # noqa: F401,E402 - imported to bind it under the stubs
+
+for _name in reversed(_STUBBED):
+    sys.modules.pop(_name, None)
+
 
 def _backend(audio_type: str, **entry):
     backend = NativeAudioBackend.__new__(NativeAudioBackend)
@@ -41,6 +91,15 @@ def _backend(audio_type: str, **entry):
         }
     }
     return backend
+
+
+def test_anonymous_worker_token_cannot_fall_back_to_the_host_login():
+    from core.inference.inference import _hf_token_for_loader
+    from core.inference.worker import _config_hf_token
+
+    assert _config_hf_token({"hf_token": "", "anonymous_hf_access": True}) is False
+    assert _hf_token_for_loader(False) is False
+    assert NativeAudioBackend._token_kwargs(False) == {"token": False}
 
 
 @pytest.mark.parametrize(
@@ -620,8 +679,9 @@ def test_minimax_loader_resolves_components_from_the_selected_checkpoint(monkeyp
 
     pipeline = Pipeline()
 
-    def from_pretrained(source, **_kwargs):
+    def from_pretrained(source, **kwargs):
         seen["source"] = source
+        seen["from_pretrained"] = kwargs
         return pipeline
 
     monkeypatch.setitem(
@@ -635,6 +695,7 @@ def test_minimax_loader_resolves_components_from_the_selected_checkpoint(monkeyp
 
     entry = {}
     backend._load_minimax_music3(entry, "/models/minimax-custom", None)
+    assert seen["from_pretrained"]["trust_remote_code"] is False
     assert seen["components"]["pretrained_model_name_or_path"] == "/models/minimax-custom"
     assert seen["device"] == "cuda"
     assert entry["pipeline"] is pipeline

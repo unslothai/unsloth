@@ -76,6 +76,10 @@ export interface LoadModelRequest {
   /** Parallel decode slots for llama-server (--parallel), 1..64. Omit/null = the launch default. The
    *  VRAM fitter may launch fewer to stay on GPU. */
   n_parallel?: number | null;
+  /** llama.cpp thinking token budget: -1 unrestricted, 0 end immediately, >0 token cap. */
+  reasoning_budget?: number;
+  /** Message emitted when the reasoning budget is exhausted. */
+  reasoning_budget_message?: string;
   /** prompt batch size (--batch-size), 1..65536; omit/null = llama.cpp default 2048, gguf only */
   n_batch?: number | null;
   /** prompt micro-batch size (--ubatch-size), 1..65536; omit/null = llama.cpp default 512, capped at the batch size */
@@ -124,6 +128,8 @@ export interface ValidateModelResponse {
   valid: boolean;
   message: string;
   identifier?: string | null;
+  /** Decided from the files, so an Ollama tag answers for whichever spelling loaded it. */
+  resident?: boolean;
   display_name?: string | null;
   is_gguf?: boolean;
   is_diffusion?: boolean;
@@ -148,8 +154,9 @@ export interface ValidateModelResponse {
   chat_template?: string | null;
   /** Architecture only shipped by a newer transformers; UI pauses on the upgrade dialog. */
   requires_transformers_upgrade?: boolean;
-  /** Set only when requires_transformers_upgrade. */
   transformers_upgrade?: TransformersUpgradeInfo | null;
+  /** Replacement repository for an MLX BNB model or adapter base. */
+  mlx_loads_base_model?: string | null;
 }
 
 export interface GgufVariantDetail {
@@ -160,7 +167,9 @@ export interface GgufVariantDetail {
   display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
-  shard_count?: number;
+  /** The only missing artifact when the main GGUF is already cached. */
+  pending_drafter_filename?: string | null;
+  pending_drafter_size_bytes?: number;
   downloaded?: boolean;
   update_available?: boolean;
   /** An interrupted download: some shards are missing, so it cannot load yet. */
@@ -176,6 +185,8 @@ export interface GgufVariantsResponse {
   variants: GgufVariantDetail[];
   has_vision: boolean;
   default_variant: string | null;
+  /** True only when Hub metadata resolved every required companion. */
+  dependencies_resolved?: boolean;
   /** Native max context from GGUF metadata; present once a variant is downloaded. */
   context_length?: number | null;
 }
@@ -208,6 +219,11 @@ export interface LoadModelResponse {
   is_lora: boolean;
   is_gguf?: boolean;
   is_local_model?: boolean;
+  /** Advisory, absent on nearly every load: the integrated GPU has less memory
+   *  dedicated to it than the weights need. Unknown-shaped on purpose so an older or
+   *  proxied backend cannot render "undefined GB"; narrowed by parseCarveoutAdvice. */
+  carveout_advice?: unknown;
+  memory_warning?: string | null;
   is_diffusion?: boolean;
   /** GPU-layer count the diffusion runner was ASKED for, when it differs from what it applied: a shim
    *  without --ngl runs Auto, so gpu_layers reports -1 while this carries the request. */
@@ -275,6 +291,13 @@ export interface LoadModelResponse {
   requested_gpu_ids?: number[] | null;
   /** Slots the load was invoked with (else the --parallel default). Null for non-GGUF loads. */
   requested_parallel_slots?: number | null;
+  reasoning_budget?: number;
+  reasoning_budget_message?: string;
+  /** What the load ASKED for, before LLAMA_ARG_THINK_BUDGET*: the value a client can resend. */
+  // biome-ignore lint/style/useNamingConvention: API schema
+  requested_reasoning_budget?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  requested_reasoning_budget_message?: string;
   /** Slots llama-server actually runs, after any fit-time reduction. Null for non-GGUF loads. */
   parallel_slots?: number | null;
   /** batch size (--batch-size) the load was invoked with; null = default */
@@ -314,6 +337,7 @@ export interface InferenceStatusResponse {
    *  without --ngl runs Auto, so gpu_layers reports -1 while this carries the request. */
   diffusion_requested_ngl?: number | null;
   gguf_variant?: string | null;
+  memory_warning?: string | null;
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
@@ -379,6 +403,13 @@ export interface InferenceStatusResponse {
   requested_gpu_ids?: number[] | null;
   /** Slots the active load was invoked with (else the --parallel default). Null when no GGUF model is loaded. */
   requested_parallel_slots?: number | null;
+  reasoning_budget?: number;
+  reasoning_budget_message?: string;
+  /** What the load ASKED for, before LLAMA_ARG_THINK_BUDGET*: the value a client can resend. */
+  // biome-ignore lint/style/useNamingConvention: API schema
+  requested_reasoning_budget?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  requested_reasoning_budget_message?: string;
   /** Slots llama-server actually runs, after any fit-time reduction. Null when no GGUF model is loaded. */
   parallel_slots?: number | null;
   /** batch size (--batch-size) the active load was invoked with; null = default */
@@ -635,6 +666,7 @@ export interface OpenAIChatCompletionsRequest {
   external_model?: string;
   encrypted_api_key?: string;
   provider_base_url?: string | null;
+  provider_api_type?: "chat_completions" | "responses";
   /** Boolean toggle for OpenAI/Anthropic ephemeral cache_control. For Gemini the backend also accepts
    *  a cached-content resource name, forwarded as `generationConfig.cachedContent`. */
   enable_prompt_caching?: boolean | string | null;
@@ -650,8 +682,8 @@ export interface OpenAIChatCompletionsRequest {
   /** Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; dropped silently elsewhere. */
   fast_mode?: boolean | null;
   /** Opt into the OpenAI-standard trailing usage chunk on streams. The backend only emits it when
-   *  `include_usage` is set; the local chat UI sends it so the context-usage bar and tok/s
-   *  readout populate. */
+   *  `include_usage` is set; the chat UI sends it for local and connected-provider models so the
+   *  context-usage bar and tok/s readout populate. */
   stream_options?: { include_usage?: boolean } | null;
 }
 

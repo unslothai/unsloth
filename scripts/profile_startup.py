@@ -60,11 +60,7 @@ def _free_port() -> int:
 
 
 def profile_imports(python: str, top: int = 15) -> dict:
-    """Cumulative and self import cost for the backend's module graph.
-
-    Run in a subprocess with -X importtime: the numbers are only meaningful for a
-    cold interpreter, and importing in-process would measure a warm sys.modules.
-    """
+    """Cumulative and self import cost for the backend's module graph. Run in a subprocess with -X importtime: the numbers are only meaningful for a cold interpreter, and importing in-process would measure a warm sys.modules."""
     proc = subprocess.run(
         [python, "-X", "importtime", "-c", "import sys; sys.path.insert(0, '.'); import main"],
         cwd = BACKEND,
@@ -88,8 +84,7 @@ def profile_imports(python: str, top: int = 15) -> dict:
         }
 
     by_cum = sorted(rows, key = lambda r: -r[1])
-    # Total comes from the `main` row, not by_cum[0]: -X importtime also prints the interpreter's
-    # own startup graph (`site`), which can outrank a trivial main.
+    # Total comes from the `main` row, not by_cum[0]: -X importtime also prints the interpreter's own startup graph (`site`), which can outrank a trivial main.
     main_row = next((r for r in reversed(rows) if r[2] == "main"), None)
     if main_row is None:
         return {
@@ -115,14 +110,7 @@ def profile_imports(python: str, top: int = 15) -> dict:
 
 
 def _terminate_tree(proc: subprocess.Popen) -> None:
-    """Stop the server AND its children, which on Windows are a separate process.
-
-    CI profiles `Scripts/unsloth.exe`, a distlib launcher stub that CreateProcess's
-    the venv python and waits, so terminate() reaps the stub only: the real backend
-    keeps the inherited stdout handle, the reader thread never sees EOF, and
-    --repeats strands one server per iteration on the shared UNSLOTH_STUDIO_HOME.
-    taskkill /T walks the tree, as unsloth_cli/commands/start.py already does.
-    """
+    """Stop the server AND its children, which on Windows are a separate process. CI profiles `Scripts/unsloth.exe`, a distlib launcher stub that CreateProcess's the venv python and waits, so terminate() reaps the stub only: the real backend keeps the inherited stdout handle, the reader thread never sees EOF, and --repeats strands one server per iteration on the shared UNSLOTH_STUDIO_HOME. taskkill /T walks the tree, as unsloth_cli/commands/start.py already does."""
     if proc.poll() is not None:
         return
     if os.name == "nt":
@@ -161,8 +149,7 @@ def profile_launch(
     )
 
     def _drain() -> None:
-        # Runs alongside the health polling: the first read timestamps the spawn phase, and an undrained pipe
-        # blocks the backend before it binds.
+        # Runs alongside the health polling: the first read timestamps the spawn phase, and an undrained pipe blocks the backend before it binds.
         for line in proc.stdout:
             if not first_byte:
                 first_byte.append(time.perf_counter() - t0)
@@ -218,11 +205,7 @@ def profile_launch(
 
 
 def python_version_of(python: str) -> str:
-    """Version of the interpreter that runs the imports, not the one running us.
-
-    --python points at the installed Unsloth venv while this script runs under the
-    runner's system python, so platform.python_version() would label it wrong.
-    """
+    """Version of the interpreter that runs the imports, not the one running us: --python points at the installed Unsloth venv while this script runs under the runner's system python, so platform.python_version() would label it wrong."""
     if python == sys.executable:
         return platform.python_version()
     try:
@@ -285,8 +268,7 @@ def main(argv: list[str]) -> int:
     # Same reason: --import-only never launches anything.
     if a.import_only and a.max_healthz_seconds is not None:
         ap.error("--max-healthz-seconds cannot be combined with --import-only")
-    # nan and inf parse fine as floats but `med > budget` is then always False, so the gate would report success without
-    # ever bounding anything.
+    # nan and inf parse fine as floats but `med > budget` is then always False, so the gate would report success without ever bounding anything.
     if a.max_healthz_seconds is not None and not math.isfinite(a.max_healthz_seconds):
         ap.error("--max-healthz-seconds must be a finite number")
 

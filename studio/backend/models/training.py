@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Pydantic schemas for Training API
-"""
+"""Pydantic schemas for Training API"""
 
+import math
 import re
 from pathlib import Path, PureWindowsPath
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -98,12 +97,30 @@ def _parse_lr(v: Any) -> float:
     return lr
 
 
+def _resolve_inventory_handles(values):
+    """Resume replays a referenced history payload, so the entries come back as handles."""
+    if not isinstance(values, (list, tuple)):
+        return values
+    return [_resolve_inventory_handle(item) if isinstance(item, str) else item for item in values]
+
+
+def _resolve_inventory_handle(value: str) -> str:
+    """Lazy: `models.inference` is large and the CLI imports this module without needing it."""
+    try:
+        from models.inference import resolve_inventory_handle
+    except Exception:  # noqa: BLE001 -- a resolver that cannot import must not fail a run
+        return value
+    return resolve_inventory_handle(value)
+
+
 class TrainingStartRequest(BaseModel):
     """Request schema for starting training"""
 
     model_name: str = Field(
         ..., description = "Model identifier (e.g., 'unsloth/llama-3-8b-bnb-4bit')"
     )
+    # The same identity the picker was shown; see `resolve_inventory_handle`.
+    _resolve_the_handle = field_validator("model_name")(_resolve_inventory_handle)
     project_name: Optional[str] = Field(
         None,
         max_length = 80,
@@ -171,6 +188,10 @@ class TrainingStartRequest(BaseModel):
     local_eval_datasets: List[str] = Field(
         default_factory = list, description = "List of local eval dataset paths"
     )
+    # The history detail references these, and Resume replays that payload.
+    _resolve_the_dataset_handles = field_validator("local_datasets", "local_eval_datasets")(
+        _resolve_inventory_handles
+    )
     format_type: str = Field(..., description = "Dataset format type")
     subset: Optional[str] = None
     train_split: Optional[str] = Field("train", description = "Training split name")
@@ -205,6 +226,24 @@ class TrainingStartRequest(BaseModel):
     @classmethod
     def _normalize_project_name(cls, value: Optional[str]) -> Optional[str]:
         return normalize_project_name(value)
+
+    @field_validator("eval_steps", mode = "before")
+    @classmethod
+    def _normalize_eval_steps(cls, value: Any) -> Any:
+        # float is not strict, so `"eval_steps": true` would arrive as 1.0, a cadence of every step.
+        if isinstance(value, bool):
+            raise ValueError("eval_steps must be a number, not a boolean")
+        # `1e309` is a plain JSON number that coerces to inf, which every gate reads as disabled.
+        # Store it as that, so config_json never gets an `Infinity` literal Starlette then 500s on.
+        try:
+            if not math.isfinite(float(value)):
+                return 0.0
+        except OverflowError:
+            # float() refuses a JSON int too large to represent: same unusable cadence as inf.
+            return 0.0
+        except (TypeError, ValueError):
+            pass
+        return value
 
     # pydantic runs all mode="after" validators in definition order and _check_steps_or_epochs is lower
     # in this class, so keep these checks order-independent.
@@ -261,7 +300,9 @@ class TrainingStartRequest(BaseModel):
     def _check_cache_local_path(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
-        v = v.strip()
+        # Resolved FIRST, so the checks below run on the path rather than on its handle: the
+        # snapshot pins come back referenced, and Resume replays this payload verbatim.
+        v = _resolve_inventory_handle(v.strip())
         if not v:
             return None
         if len(v) > 4096:
@@ -553,6 +594,10 @@ class TrainingStartRequest(BaseModel):
     resume_from_checkpoint: Optional[str] = Field(
         None, description = "Saved training output directory to resume from"
     )
+    # The history detail hands out a handle for the resumable directory; Resume sends it back.
+    _resolve_the_resume_handle = field_validator("resume_from_checkpoint")(
+        _resolve_inventory_handle
+    )
 
     gpu_ids: Optional[List[int]] = Field(
         None,
@@ -704,6 +749,9 @@ class TrainingProgress(BaseModel):
         None, description = "Time elapsed since training started"
     )
     eta_seconds: Optional[float] = Field(None, description = "Estimated time remaining")
+    session_start_step: Optional[int] = Field(
+        None, description = "Step this session started from (non-zero on a resumed run)"
+    )
     grad_norm: Optional[float] = Field(
         None, description = "L2 norm of gradients, computed before gradient clipping"
     )
@@ -801,8 +849,12 @@ class DiffusionTrainingStartRequest(BaseModel):
     model_config = ConfigDict(protected_namespaces = ())
 
     base_model: str = Field(..., description = "HF repo id or local path to a trainable base")
+    # Unresolved, family detection and `_assert_trusted_base_model` read `ref:...` as a Hub id.
+    _resolve_the_base_handle = field_validator("base_model")(_resolve_inventory_handle)
     data_dir: str = Field(..., description = "Folder of training images (+ captions)")
     output_dir: str = Field(..., description = "Directory to write the LoRA .safetensors into")
+    # Resume replays the stored config, whose `output_dir` answers as a handle.
+    _resolve_the_output_handle = field_validator("output_dir")(_resolve_inventory_handle)
     model_family: Optional[str] = Field(
         None,
         description = "Explicit trainer family (sdxl / flux.1 / ...); omitted = detect from base_model",
@@ -923,7 +975,6 @@ class DiffusionTrainingStartRequest(BaseModel):
             "(auto for qwen-image, 1.0 otherwise)."
         ),
     )
-    # ── resume ────────────────────────────────────────────────────────────────
     save_steps: int = Field(
         0,
         ge = 0,
@@ -946,6 +997,10 @@ class DiffusionTrainingStartRequest(BaseModel):
             "configuration and precision. train_steps is then the TARGET TOTAL, so resuming a "
             "checkpoint at step 11 with train_steps=500 trains steps 12..500."
         ),
+    )
+    # Diffusion Resume replays `checkpoint_path` or the output dir; both answer as references.
+    _resolve_the_resume_handle = field_validator("resume_from_checkpoint")(
+        _resolve_inventory_handle
     )
     resumed_from_job_id: Optional[str] = Field(
         None,
@@ -1084,11 +1139,8 @@ class DiffusionDatasetSummary(BaseModel):
     name: str
     path: str
     image_count: int
-    # Defaults to 0 so an older backend's payload, and every image-only caller, stays valid.
-    # Clips, for the families that train from video. Defaults to 0 so an older backend's payload (and every
-    # image-only caller) stays valid.
-    # Clips, for the families that train from video. Defaults to 0 so an older backend's payload (and every
-    # image-only caller) stays valid.
+    # Clips, for the families that train from video. Defaults to 0 so an older backend's payload, and every
+    # image-only caller, stays valid.
     clip_count: int = 0
     caption_count: int
 
@@ -1107,15 +1159,14 @@ class DiffusionTrainableFamily(BaseModel):
     qlora_vram_gb: Optional[int] = None
     gated: bool = False
     note: str = ""
-    # base_precision modes this machine supports for the family (empty = no selector, e.g. SDXL), the
-    # recommended pick, and whether regional torch.compile applies. Defaults keep older backends'
-    # payloads valid.
+    # base_precision modes this machine supports for the family (empty = no selector, e.g. SDXL), the recommended
+    # pick, and whether regional torch.compile applies. Defaults keep older backends' payloads valid.
     precision_modes: List[str] = Field(default_factory = list)
     recommended_precision: str = "nf4"
     supports_compile: bool = False
-    # Whether this family's loop writes checkpoint bundles. False makes the panel drop the "Checkpoint
-    # every" control: save_steps is refused, not ignored, for a checkpointless family, so offering the
-    # control means offering a value that rejects Start; defaults True so an older backend's payload keeps it.
+    # Whether this family's loop writes checkpoint bundles. False makes the panel drop the "Checkpoint every"
+    # control: save_steps is refused, not ignored, for a checkpointless family, so offering the control means
+    # offering a value that rejects Start; defaults True so an older backend's payload keeps it.
     supports_checkpoints: bool = True
     # 1 for a family whose forward covers one packed sequence: a value above the cap is refused rather
     # than clamped, and declaring it here is what stops Pydantic dropping it from the response.
