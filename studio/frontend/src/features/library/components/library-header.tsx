@@ -133,7 +133,8 @@ function TabStrip({
       onPointerCancel={onPointerEnd}
       onLostPointerCapture={onPointerEnd}
       onClickCapture={onClickCapture}
-      className="-mx-2 -mb-3 -mt-1 overflow-x-auto px-2 pb-3 pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      // Important: index.css's unlayered `* { scrollbar-width: thin }` outranks any utility.
+      className="-mx-2 -mb-3 -mt-1 overflow-x-auto px-2 pb-3 pt-1 [scrollbar-width:none]! [&::-webkit-scrollbar]:hidden!"
       style={{ marginRight: reserve || undefined, maskImage: mask, WebkitMaskImage: mask }}
     >
       <nav ref={listRef} className="flex w-max gap-1" aria-label={t("library.tabs.ariaLabel")}>
