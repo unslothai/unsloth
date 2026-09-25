@@ -1200,3 +1200,73 @@ def test_an_uncompilable_family_keeps_bf16_when_the_resident_table_fits(fake_run
     assert spy.quantised == []
     assert int(90.0 * 1000.0**3 / (1024.0 * 1024.0)) in overrides
     assert status["resolved"]["transformer_quant"]["value"] == "off"
+
+
+def _write_index(folder, shards):
+    folder.mkdir(parents = True, exist_ok = True)
+    (folder / "diffusion_pytorch_model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {f"w{i}": shard for i, shard in enumerate(shards)}})
+    )
+
+
+def test_a_partial_sharded_transformer_is_not_a_cached_release(tmp_path):
+    shards = [f"diffusion_pytorch_model-0000{i}-of-00002.safetensors" for i in (1, 2)]
+    _write_index(tmp_path / "transformer", shards)
+    (tmp_path / "transformer" / shards[0]).write_bytes(b"x")
+    assert not DiffusionBackend._released_transformer_cached(str(tmp_path))
+    (tmp_path / "transformer" / shards[1]).write_bytes(b"x")
+    assert DiffusionBackend._released_transformer_cached(str(tmp_path))
+
+
+def test_shards_scattered_across_revisions_are_not_a_cached_release(monkeypatch, tmp_path):
+    """The load reads one snapshot, so two revisions holding one shard each do not add up to a release."""
+    repo_dir = tmp_path / "models--org--repo"
+    shards = [f"diffusion_pytorch_model-0000{i}-of-00002.safetensors" for i in (1, 2)]
+    for rev, shard in (("aaa", shards[0]), ("bbb", shards[1])):
+        folder = repo_dir / "snapshots" / rev / "transformer"
+        _write_index(folder, shards)
+        (folder / shard).write_bytes(b"x")
+    (repo_dir / "refs").mkdir()
+    (repo_dir / "refs" / "main").write_text("aaa")
+    monkeypatch.setattr(
+        DiffusionBackend, "_hub_cache_repo_dirs", staticmethod(lambda _repo: [repo_dir])
+    )
+    assert not DiffusionBackend._released_transformer_cached("org/repo")
+    (repo_dir / "snapshots" / "aaa" / "transformer" / shards[1]).write_bytes(b"x")
+    assert DiffusionBackend._released_transformer_cached("org/repo")
+
+
+def test_hidreams_pre_cast_fourth_encoder_is_priced_in_the_bf16_plan(monkeypatch):
+    import core.inference.diffusion_te_prequant as teq
+    from core.inference.diffusion_hidream import HIDREAM_LLAMA_BF16_BYTES
+
+    fam = detect_family_for_pick("HiDream-ai/HiDream-I1-Full", None, None)
+    assert fam is not None and fam.name == "hidream-i1"
+    monkeypatch.setattr(teq, "te_prequant_budget_scale", lambda *_a, **_k: 1.0)
+    monkeypatch.setattr(
+        teq,
+        "te_prequant_sources_for_base",
+        lambda _fam, _base, *, te_quant_mode, target, components = (), **_k: {
+            "text_encoder_4": object()
+        }
+        if te_quant_mode == "fp8" and tuple(components) == ("text_encoder_4",)
+        else {},
+    )
+    seen: list = []
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", lambda _s, *_a, **k: seen.append(k) or k)
+    backend = DiffusionBackend()
+    kwargs = {"kind": "pipeline", "repo_id": "HiDream-ai/HiDream-I1-Full"}
+    backend._bf16_table_plan(_target(), fam, "HiDream-ai/HiDream-I1-Full", None, False, **kwargs)
+    backend._bf16_table_plan(
+        _target(),
+        fam,
+        "HiDream-ai/HiDream-I1-Full",
+        None,
+        False,
+        text_encoder_quant = "fp8",
+        **kwargs,
+    )
+    dense, pre_cast = seen[0]["text_encoder_override_mib"], seen[1]["text_encoder_override_mib"]
+    saved = HIDREAM_LLAMA_BF16_BYTES * (1.0 - teq.TE_PREQUANT_BUDGET_SCALE) / (1024 * 1024)
+    assert abs((dense - pre_cast) - saved) <= 2
+    assert seen[1]["companion_override_mib"] < seen[0]["companion_override_mib"]

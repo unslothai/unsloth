@@ -1383,6 +1383,25 @@ def _local_base_transformer_present(base_repo: Optional[str]) -> bool:
         return False
 
 
+def _transformer_folder_complete(folder: Path) -> bool:
+    """Every weight shard a ``transformer/`` index names is present, or, without an index, a weights file is."""
+    if not folder.is_dir():
+        return False
+    indexes = [
+        f
+        for f in folder.glob("*.index.json")
+        if f.name.endswith((".safetensors.index.json", ".bin.index.json"))
+    ]
+    if indexes:
+        for index in indexes:
+            with open(index, encoding = "utf-8") as fh:
+                shards = set((json.load(fh).get("weight_map") or {}).values())
+            if shards and all((folder / shard).is_file() for shard in shards):
+                return True
+        return False
+    return any_not_appledouble_metadata(folder.glob("*.safetensors"))
+
+
 def _dense_candidate_is_prequant(
     fam: Optional[DiffusionFamily],
     target: Any,
@@ -6252,15 +6271,38 @@ class DiffusionBackend:
         table = family_bf16_components_gb(fam, base)
         if table is None:
             return None
+        text_encoder_gb = table[1]
         try:
-            from .diffusion_te_prequant import te_prequant_budget_scale
+            from .diffusion_te_prequant import (
+                TE_PREQUANT_BUDGET_SCALE,
+                te_prequant_budget_scale,
+                te_prequant_sources_for_base,
+            )
+
             te_scale = te_prequant_budget_scale(
                 fam, te_quant_mode = text_encoder_quant, target = target, base = base
             )
+            text_encoder_gb = table[1] * te_scale
+            # HiDream's Llama text_encoder_4 comes pre-cast from its own repo, outside the components the scale probes.
+            if (
+                te_scale == 1.0
+                and getattr(fam, "name", None) == HIDREAM_FAMILY_NAME
+                and te_prequant_sources_for_base(
+                    fam,
+                    HIDREAM_LLAMA_REPO,
+                    te_quant_mode = text_encoder_quant,
+                    target = target,
+                    components = ("text_encoder_4",),
+                    standalone_component_bases = {"text_encoder_4": HIDREAM_LLAMA_REPO},
+                ).get("text_encoder_4")
+                is not None
+            ):
+                llama_gb = min(HIDREAM_LLAMA_BF16_BYTES / 1000.0**3, table[1])
+                text_encoder_gb = table[1] - llama_gb * (1.0 - TE_PREQUANT_BUDGET_SCALE)
         except Exception:  # noqa: BLE001 -- sizing aid only; budget the dense encoder
-            te_scale = 1.0
+            text_encoder_gb = table[1]
         mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
-        text_encoder_mib = int(table[1] * te_scale * mib_per_gb)
+        text_encoder_mib = int(text_encoder_gb * mib_per_gb)
         return self._plan_memory(
             target,
             None,
@@ -6324,23 +6366,26 @@ class DiffusionBackend:
 
     @staticmethod
     def _released_transformer_cached(base: Optional[str]) -> bool:
-        """Whether any cached snapshot of ``base`` (or the local directory) holds ``transformer/`` weights."""
+        """Whether one snapshot of ``base`` (or the local directory) holds a complete ``transformer/``: every
+        shard its index names, or its single weights file. One tree, not a union, since the load reads one."""
         if not base:
             return False
         try:
-            return (
-                DiffusionBackend._union_over_cached_revs(
-                    base,
-                    lambda d: {
-                        rel: size
-                        for rel, size in DiffusionBackend._local_dir_weight_sizes(
-                            d, exclude_transformer = False
-                        ).items()
-                        if rel.startswith("transformer/")
-                    },
-                )
-                > 0
-            )
+            local = Path(base).expanduser()
+            candidates: list[Path] = [local] if local.is_dir() else []
+            if not candidates:
+                for repo_dir in DiffusionBackend._hub_cache_repo_dirs(base):
+                    live = DiffusionBackend._live_snapshot_dir(repo_dir)
+                    if live is not None:
+                        candidates.append(live)
+                        continue
+                    try:
+                        candidates.extend(
+                            rev for rev in (repo_dir / "snapshots").iterdir() if rev.is_dir()
+                        )
+                    except OSError:
+                        continue
+            return any(_transformer_folder_complete(c / "transformer") for c in candidates)
         except Exception:  # noqa: BLE001 -- unreadable cache: treat the shards as missing
             return False
 
