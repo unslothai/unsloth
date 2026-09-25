@@ -14661,6 +14661,9 @@ class LlamaCppBackend:
             self._pin_baseline_free_mib = None
             self._pin_baseline_shared_usage = None
             return
+        # A retry's killed child frees VRAM asynchronously; a baseline taken before that
+        # would book the release as memory the new child failed to take.
+        self._wait_for_vram_settle(since_kill = getattr(self, "_last_kill_monotonic", 0.0))
         # Overlap the counter read with nvidia-smi: cost is max, not sum.
         _shared_box: dict[str, Optional[dict[str, int]]] = {}
 
@@ -14732,9 +14735,11 @@ class LlamaCppBackend:
         except Exception as e:
             logger.debug(f"Shared GPU memory read failed: {e}")
             spilled = None
-        direct_hit = (
-            spilled is not None and spilled >= _SHARED_USAGE_DELTA_MIN_BYTES and shortfall > 0
-        )
+        # WDDM spills only once dedicated VRAM is exhausted, so shared growth counts only
+        # when a pinned card is nearly full. Not ``shortfall > 0``: the measured delta also
+        # holds the CUDA context and compute buffers, which would mask a small spill.
+        card_full = any(now[i] < _WINDOWS_SYSMEM_FALLBACK_RESERVE_MIB for i in baseline)
+        direct_hit = spilled is not None and spilled >= _SHARED_USAGE_DELTA_MIN_BYTES and card_full
         inferred_hit = (
             resident < floor * _RESIDENCY_SHORTFALL_RATIO
             and shortfall >= _RESIDENCY_SHORTFALL_MIN_BYTES
@@ -24675,6 +24680,7 @@ class LlamaCppBackend:
                         ctx: int,
                         n_gpus: int = 1,
                         slots: int = 0,
+                        cache_type: Optional[str] = None,
                     ) -> int:
                         # Context-linear compute-buffer growth (flash-attn KQ mask +
                         # attention scratch); the flat _compute_buffer_pipeline folded
@@ -24694,17 +24700,25 @@ class LlamaCppBackend:
                         return max(1, n_gpus) * self._compute_buffer_ctx_bytes(
                             ctx,
                             _ubatch_for_slots(slots) if slots else _effective_ubatch,
-                            _scratch_cache_type_kv,
+                            cache_type or _scratch_cache_type_kv,
                             layer_split = n_gpus > 1 and not _pipeline_parallel_off,
                             flash_attn = planned_flash_attn,
                             n_parallel = slots or n_parallel,
                         )
 
-                    def _cc_split_extra(ctx: int, slots: int = 0) -> int:
+                    def _cc_split_extra(
+                        ctx: int,
+                        slots: int = 0,
+                        cache_type: Optional[str] = None,
+                    ) -> int:
                         # Per-device step from the single-device rate to the split one,
                         # for the paths that must select GPUs before they know the
                         # count. 0 when llama.cpp declines pipeline parallelism.
-                        return max(0, _cc_bytes(ctx, 2, slots) // 2 - _cc_bytes(ctx, 1, slots))
+                        return max(
+                            0,
+                            _cc_bytes(ctx, 2, slots, cache_type) // 2
+                            - _cc_bytes(ctx, 1, slots, cache_type),
+                        )
 
                     # Layer-split compute buffer (one lump; tensor mode reserves it
                     # per device in _plan_tensor_parallel). Context-independent, so
@@ -25624,15 +25638,18 @@ class LlamaCppBackend:
                                             model_size_fit
                                             + _q8_kv
                                             + _mtp_bytes(effective_ctx)
-                                            + _cc_bytes(effective_ctx),
+                                            + _cc_bytes(effective_ctx, cache_type = "q8_0"),
                                             gpus,
                                             usable_fraction = _pin_fraction,
                                             total_by_idx = total_by_idx,
                                             per_device_overhead_bytes = (
-                                                _pipeline_overhead_bytes + _cc_bytes(effective_ctx)
+                                                _pipeline_overhead_bytes
+                                                + _cc_bytes(effective_ctx, cache_type = "q8_0")
                                             ),
                                             min_gpus = _layer_min_gpus,
-                                            split_extra_bytes = _cc_split_extra(effective_ctx),
+                                            split_extra_bytes = _cc_split_extra(
+                                                effective_ctx, cache_type = "q8_0"
+                                            ),
                                         )
                                         _q8_fits = not _q8_use_fit
                                 _cuda_ctx_notice = self._cuda_context_overcommit_notice(

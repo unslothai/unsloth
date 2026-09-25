@@ -74,6 +74,13 @@ class _Backend:
     def _sysmem_fallback_risk(binary = None):
         return True  # CUDA build
 
+    def _wait_for_vram_settle(
+        self,
+        since_kill = 0.0,
+        **_kw,
+    ):
+        self._settle_calls = getattr(self, "_settle_calls", []) + [since_kill]
+
     @staticmethod
     def _integrated_cuda_gpu_ids():
         return set()  # discrete card
@@ -160,9 +167,10 @@ def _shared(
 
 def test_the_74_mib_case_the_inferred_floor_could_never_see(on_windows):
     """The measurement that motivated the whole check."""
-    used_mib = (QWEN3_VL_8B_FLOOR / MIB) - 74  # 74 MiB short of the floor
+    used_mib = (QWEN3_VL_8B_FLOOR / MIB) + 600  # context + compute buffers mask the gap
     backend = _Backend(
-        [(0, 16384.0 - used_mib, 16384)],
+        [(0, 300.0, 16384)],
+        baseline_rows = ((0, used_mib + 300.0, 16384),),
         baseline_shared = _shared(120),
         shared = _shared(120 + 74, nvidia_dedicated_mib = 12000),  # the spill, as Windows reports it
     )
@@ -184,7 +192,8 @@ def test_shared_growth_below_the_counter_threshold_is_tolerated(on_windows):
     """Under 32 MiB is desktop compositing jitter over the load window, not a spill."""
     used_mib = (QWEN3_VL_8B_FLOOR / MIB) - 20
     backend = _Backend(
-        [(0, 16384.0 - used_mib, 16384)],
+        [(0, 300.0, 16384)],
+        baseline_rows = ((0, used_mib + 300.0, 16384),),
         baseline_shared = _shared(120),
         shared = _shared(140, nvidia_dedicated_mib = 12000),  # +20 MiB
     )
@@ -404,7 +413,8 @@ def test_an_igpu_growing_shared_memory_is_not_the_nvidia_spill(on_windows):
 def test_a_spill_beside_igpu_churn_is_still_reported(on_windows):
     used_mib = (QWEN3_VL_8B_FLOOR / MIB) - 300
     backend = _Backend(
-        [(0, 16384.0 - used_mib, 16384)],
+        [(0, 300.0, 16384)],
+        baseline_rows = ((0, used_mib + 300.0, 16384),),
         baseline_shared = _shared(120, igpu_mib = 64),
         shared = _shared(420, igpu_mib = 564, nvidia_dedicated_mib = 12000),
     )
@@ -483,3 +493,23 @@ def test_the_check_runs_before_the_load_returns(tmp_path, monkeypatch):
     backend._verify_vram_residency = lambda: backend._record_load_warning("SPILL")
     _launch(backend, gguf, n_ctx = 2048)
     assert "SPILL" in (backend.last_load_warning or "")
+
+
+def test_shared_growth_with_room_left_on_the_card_is_not_a_spill(on_windows):
+    """WDDM spills only once dedicated VRAM is exhausted; 4 GiB free means someone else."""
+    used_mib = QWEN3_VL_8B_FLOOR / MIB - 300
+    backend = _Backend(
+        [(0, 4096.0, 20480)],
+        baseline_rows = ((0, used_mib + 4096.0, 20480),),
+        baseline_shared = _shared(120),
+        shared = _shared(620, nvidia_dedicated_mib = 12000),
+    )
+    _arm(backend)
+    assert backend._verify_vram_residency() is None
+
+
+def test_a_retry_baseline_waits_for_the_killed_child_to_release(on_windows):
+    backend = _Backend([(0, 16384.0 - 3000.0, 16384)])
+    backend._last_kill_monotonic = 1234.5
+    _arm(backend)
+    assert backend._settle_calls == [1234.5]

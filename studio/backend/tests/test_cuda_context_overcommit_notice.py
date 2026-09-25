@@ -240,3 +240,27 @@ def test_windows_wording_follows_the_cuda_build(tmp_path, monkeypatch):
     (tmp_path / "cuda").mkdir()
     warning = _launch_explicit_ctx(tmp_path / "cuda", monkeypatch, model_gb = 18, n_ctx = 131072)
     assert "NVIDIA Control Panel" in warning
+
+
+@pytest.mark.parametrize("q8_scratch_gib, offered", [(0, True), (8, False)])
+def test_the_q8_hint_prices_q8_compute_scratch(tmp_path, monkeypatch, q8_scratch_gib, offered):
+    """q8_0 adds dequant scratch; the hint must hold with it, not with the f16 figure."""
+    from test_llama_cpp_placement import _backend as _placement_backend, _launch
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    backend, gguf = _placement_backend(tmp_path, vulkan = False, memory = [(0, 24_576, 24_576)])
+    backend._get_gguf_size_bytes = lambda _path: 14 * GIB
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = (
+        lambda ctx, cache = None, *a, **k: int(ctx)
+        * (32 if str(cache).startswith("q8") else 64)
+        * 1024
+    )
+    backend._estimate_compute_buffer_bytes = lambda **k: 1
+    backend._compute_buffer_ctx_bytes = lambda ctx, ub, cache_type = None, **k: (
+        q8_scratch_gib * GIB if str(cache_type).startswith("q8") else 0
+    )
+    _launch(backend, gguf, n_ctx = 196608)
+    warning = backend.last_load_warning or ""
+    assert "does not fit in this GPU's memory" in warning
+    assert ("q8_0" in warning) is offered
