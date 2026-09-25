@@ -5221,8 +5221,6 @@ def test_declined_dense_without_loras_still_falls_back_to_gguf(
 def test_an_uncompilable_gguf_baking_loras_keeps_the_dense_build(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # Auto keeps an uncompilable family's weights as they are only without adapters: a packed GGUF cannot carry them,
-    # so a bake still takes the dense build and fails loudly when that is declined.
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()

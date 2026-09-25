@@ -948,13 +948,10 @@ def test_the_rebuilt_fp8_artifacts_are_listed_for_both_schemes(family, repo):
         assert family_prequant_repo(fam, scheme) == repo
 
 
-# A family whose denoiser class declares no `_repeated_blocks` (Lumina-2, HiDream-I1) cannot be regionally compiled,
-# so an AUTO quant would run eager torchao. Auto keeps the released weights unless they would offload.
 _MEASURED = {"safe_device_budget_mib": 170_000, "resident_required_mib": 60_000}
 
 
 def _uncompilable(monkeypatch, *, measured = True):
-    """A family that cannot compile, on a card whose plans carry a measured budget unless told otherwise."""
     monkeypatch.setattr(dmod, "family_compiles_regionally", lambda _fam: False)
     monkeypatch.setattr(dmod, "family_bf16_components_gb", lambda *_a, **_k: (90.0, 10.0, 0.2))
     inner = DiffusionBackend._plan_memory
@@ -968,7 +965,6 @@ def _uncompilable(monkeypatch, *, measured = True):
 
 
 def _offload_when_bf16_sized(monkeypatch, bf16_policy):
-    """Price the table-sized bf16 plan at ``bf16_policy``; every other plan fits."""
     monkeypatch.setattr(
         DiffusionBackend,
         "_plan_memory",
@@ -988,7 +984,6 @@ def test_an_uncompilable_family_keeps_the_released_weights_that_fit(monkeypatch)
 
 
 def test_an_uncompilable_family_still_seeds_when_the_budget_is_unmeasured(monkeypatch):
-    """A resident plan taken without a budget proves no fit, so the smaller artifact is still seeded."""
     backend = _settle_backend(monkeypatch)
     _offload_when_bf16_sized(monkeypatch, "none")
     _uncompilable(monkeypatch, measured = False)
@@ -1081,7 +1076,6 @@ def test_an_uncompilable_family_quantises_auto_when_the_budget_is_unmeasured(
 
 
 def test_a_resident_plan_whose_requirement_exceeds_the_budget_proves_no_fit():
-    """Unified memory plans 'none' even when the weights do not fit, so the two numbers decide."""
     fits = types.SimpleNamespace(
         offload_policy = "none",
         estimates = {"safe_device_budget_mib": 60_000, "resident_required_mib": 60_000},
@@ -1110,7 +1104,6 @@ def test_an_uncompilable_family_seeds_when_bf16_overflows_a_unified_pool(monkeyp
 
 
 def test_an_uncompilable_family_prices_a_pre_cast_text_encoder(monkeypatch):
-    """The pull skips the dense encoder shards for a hosted pre-cast one, so the bf16 plan budgets that size."""
     import core.inference.diffusion_te_prequant as teq
 
     backend = _settle_backend(monkeypatch)
@@ -1119,7 +1112,6 @@ def test_an_uncompilable_family_prices_a_pre_cast_text_encoder(monkeypatch):
         "te_prequant_budget_scale",
         lambda _fam, *, te_quant_mode, target, base: 0.5 if te_quant_mode == "fp8" else 1.0,
     )
-    # Released weights resident only when the encoder share is priced pre-cast (5.2 GB companions, not 10.2 GB).
     monkeypatch.setattr(
         DiffusionBackend,
         "_plan_memory",
@@ -1176,7 +1168,6 @@ def test_the_seed_planner_hears_the_encoder_choice_and_offline_flag(monkeypatch)
 
 
 def test_an_uncompilable_family_keeps_bf16_when_the_resident_table_fits(fake_runtime, monkeypatch):
-    """Cached fp32 shards price the plan at twice the bf16 load, so the decision re-prices from the table."""
     backend, spy = _load_backend(monkeypatch)
     _uncompilable(monkeypatch)
     real_plan = DiffusionBackend._plan_memory
@@ -1219,7 +1210,6 @@ def test_a_partial_sharded_transformer_is_not_a_cached_release(tmp_path):
 
 
 def test_shards_scattered_across_revisions_are_not_a_cached_release(monkeypatch, tmp_path):
-    """The load reads one snapshot, so two revisions holding one shard each do not add up to a release."""
     repo_dir = tmp_path / "models--org--repo"
     shards = [f"diffusion_pytorch_model-0000{i}-of-00002.safetensors" for i in (1, 2)]
     for rev, shard in (("aaa", shards[0]), ("bbb", shards[1])):
@@ -1283,7 +1273,6 @@ def test_a_lone_numbered_shard_without_its_index_is_not_a_cached_release(tmp_pat
 
 
 def test_an_offline_pick_budgets_the_encoder_dense(monkeypatch):
-    """Offline, an uncached pre-cast encoder falls back to the dense one, so the bf16 plan prices it dense."""
     import core.inference.diffusion_te_prequant as teq
 
     backend = _settle_backend(monkeypatch)
@@ -1324,7 +1313,6 @@ def test_an_offline_pick_finds_released_shards_under_the_mirror(monkeypatch):
 
 
 def test_a_hidream_pipeline_is_repriced_with_its_standalone_encoder(monkeypatch):
-    """HiDream's Llama text_encoder_4 is outside the repo, so the as-built plan never counts it."""
     fam = detect_family_for_pick("HiDream-ai/HiDream-I1-Dev", None, None)
     assert fam is not None and fam.name == "hidream-i1"
     as_built = types.SimpleNamespace(offload_policy = "none", estimates = {}, device_memory = None)
@@ -1354,7 +1342,6 @@ def test_a_hidream_pipeline_is_repriced_with_its_standalone_encoder(monkeypatch)
 
 
 def test_the_offline_shard_check_reads_the_root_the_loader_reads(monkeypatch, tmp_path):
-    """The live root's manifest pins the offline load there, so a complete copy under the other root is no help."""
     live, other = tmp_path / "live" / "models--org--repo", tmp_path / "other" / "models--org--repo"
     for repo_dir, with_transformer in ((live, False), (other, True)):
         snapshot = repo_dir / "snapshots" / "rev"
@@ -1390,7 +1377,6 @@ def test_pre_cast_sizing_waits_for_a_resolved_encoder_artifact(monkeypatch, reso
 
 
 def test_a_dtype_variant_twin_is_not_a_cached_release(tmp_path):
-    """variant=None never loads a .fp16 twin, so it cannot stand in for the default weights."""
     folder = tmp_path / "transformer"
     shards = [f"diffusion_pytorch_model-0000{i}-of-00002.fp16.safetensors" for i in (1, 2)]
     folder.mkdir()
@@ -1404,7 +1390,6 @@ def test_a_dtype_variant_twin_is_not_a_cached_release(tmp_path):
 
 
 def test_an_offline_pick_checks_only_the_repo_the_load_reads(monkeypatch):
-    """The offline load reads the upstream when it holds weights, so a complete mirror does not drop the seed."""
     backend = _settle_backend(monkeypatch)
     _offload_when_bf16_sized(monkeypatch, "none")
     _uncompilable(monkeypatch)

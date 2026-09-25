@@ -1389,8 +1389,7 @@ _UNSHARDED_PIPELINE_WEIGHT_RE = re.compile(
 
 
 def _transformer_folder_complete(folder: Path) -> bool:
-    """The weights ``from_pretrained(variant=None)`` reads are all present: every shard the canonical index
-    names, or, without one, the canonical unsharded file. Variant twins and other checkpoints do not count."""
+    """Every shard the canonical index names (else the unsharded file) exists; variant twins do not count."""
     if not folder.is_dir():
         return False
     indexes = [
@@ -1512,8 +1511,7 @@ def _pipeline_quant_uncompilable_reason(
 
 
 def _plan_proves_resident(plan: Any) -> bool:
-    """A resident plan whose measured requirement fits its measured budget. The planner also stays resident when it
-    cannot read the card, which proves no fit."""
+    """Resident AND fits; the planner also stays resident when it cannot read the card."""
     estimates = getattr(plan, "estimates", None) or {}
     budget = estimates.get("safe_device_budget_mib")
     required = estimates.get("resident_required_mib")
@@ -1527,10 +1525,7 @@ def _plan_proves_resident(plan: Any) -> bool:
 
 
 def _auto_quant_eager_reason(fam: Any, plan: Any) -> Optional[str]:
-    """Why an AUTO precision keeps the checkpoint's own weights for a family whose denoiser cannot be
-    regionally compiled, or None. The quantised transformer would run eager, several times slower than
-    bf16 (Lumina-2 on B200: 22.6 vs 3.1 s per 50-step 1024px image), so auto quantises such a family
-    only when the unquantised plan does not provably fit resident."""
+    """Why AUTO skips quantising an uncompilable family (eager quant is far slower than bf16), or None."""
     if not _plan_proves_resident(plan) or family_compiles_regionally(fam):
         return None
     return (
@@ -2616,7 +2611,6 @@ class DiffusionBackend:
                 gpu_ordinal = kwargs.get("gpu_ordinal"),
                 repo_id = kwargs["repo_id"],
                 fast_accum = kwargs.get("transformer_quant_fast_accum"),
-                # Pre-cast sizing only once the hosted artifact resolved; otherwise the pull keeps the dense encoder.
                 text_encoder_quant = te_quant_planned if te_prequant_files else None,
                 local_files_only = local_files_only,
             )
@@ -3028,7 +3022,6 @@ class DiffusionBackend:
                 ):
                     return None
                 if auto and not family_compiles_regionally(fam):
-                    # The loader keeps the released weights when they fit resident, so they are what the pull needs.
                     bf16_memory = snapshot_device_memory(target)
                     bf16_plan = self._bf16_table_plan(
                         target,
@@ -3039,12 +3032,10 @@ class DiffusionBackend:
                         kind = kind,
                         repo_id = repo_id,
                         fetch_base = fetch_base,
-                        # Offline, a pre-cast encoder that is not cached loads dense, so budget it dense.
                         text_encoder_quant = None if local_files_only else text_encoder_quant,
                         device_memory_override = replace(bf16_memory, free_mib = bf16_memory.total_mib),
                     )
-                    # Offline, a snapshot an earlier seeded load left without the released shards cannot assemble
-                    # bf16, so a cached seed is still the only way to load it. The shards may sit under the mirror.
+                    # Offline without the released shards, bf16 cannot assemble: a cached seed is the only way.
                     if (
                         bf16_plan is not None
                         and _auto_quant_eager_reason(fam, bf16_plan) is not None
@@ -4295,7 +4286,6 @@ class DiffusionBackend:
         # The scheme the plan settled, or PIPELINE_SEED_DECLINED; None for a direct call, which the pull never scoped.
         _pipeline_prequant_planned: Optional[str] = None,
         _pipeline_prequant_skipped: tuple[str, ...] = (),
-        # Whether the plan resolved a hosted pre-cast text encoder for this pull; True for a direct call.
         _te_prequant_resolved: bool = True,
     ) -> dict[str, Any]:
         with self._load_cancel_lock:
@@ -4513,7 +4503,6 @@ class DiffusionBackend:
                 # visible, and into the refusal so it is actionable.
                 transformer_quant_decline: Optional[str] = None
                 transformer_quant_decline_status = RESOLVED_FELL_BACK
-                # The seed decision asked the same question before the pull, so a seeded pick never reaches it.
                 # A GGUF is excluded while it bakes LoRAs: only the dense build can carry them.
                 if (
                     transformer_quant == TQ_AUTO
@@ -4535,7 +4524,6 @@ class DiffusionBackend:
                                 repo_id = repo_id,
                                 fetch_base = fetch_base,
                                 base_local_dir = _base_local_dir,
-                                # An unresolved or offline pre-cast encoder may load dense, so budget it dense.
                                 text_encoder_quant = text_encoder_quant
                                 if _te_prequant_resolved and not local_files_only
                                 else None,
@@ -6291,8 +6279,7 @@ class DiffusionBackend:
         text_encoder_quant: Optional[str] = None,
         device_memory_override: Optional[DeviceMemory] = None,
     ) -> Any:
-        """The plan for the released weights priced from the family's bf16-resident table, with the text encoder
-        at its pre-cast size when this pick takes one, or None when the table does not know this family."""
+        """Plan priced from the family's bf16-resident table, or None for an unknown family."""
         table = family_bf16_components_gb(fam, base)
         if table is None:
             return None
@@ -6360,10 +6347,7 @@ class DiffusionBackend:
         base_local_dir: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
     ) -> Any:
-        """``plan`` re-priced from the bf16-resident table when ``_resident_sized_plan`` lowers it (a recognised
-        pipeline base whose cached shards are wider than bf16, e.g. Lumina-2's fp32), else ``plan``. HiDream is
-        always re-priced: its Llama text_encoder_4 loads from another repo, so no cached plan counts it, and every
-        variant shares the table's size. Same device reading, so only the weight term moves."""
+        """``plan`` re-priced when the table lowers it (cached shards wider than bf16); HiDream always, as no cached plan counts its text_encoder_4."""
         if kind != "pipeline":
             return plan
         if (
@@ -6394,10 +6378,7 @@ class DiffusionBackend:
 
     @staticmethod
     def _released_transformer_cached(base: Optional[str]) -> bool:
-        """Whether the snapshot the loader will read holds a complete ``transformer/``: every shard its index
-        names, or its single weights file. A local directory is that snapshot; for a Hub id it is the ``refs/main``
-        snapshot of the first root (live, then import-time) with a ``model_index.json``, the order
-        ``_assert_base_repo_accessible`` resolves an offline base in."""
+        """Complete ``transformer/`` in the snapshot the loader reads; roots in ``_assert_base_repo_accessible`` order."""
         if not base:
             return False
         try:

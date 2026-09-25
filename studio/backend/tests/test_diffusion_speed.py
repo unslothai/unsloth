@@ -1425,8 +1425,6 @@ def test_auto_dynamic_active_follows_the_torchao_marker():
 
 
 def test_family_compiles_regionally_reads_the_repeated_blocks_declaration(monkeypatch):
-    """Only an importable transformer class with an EMPTY ``_repeated_blocks`` reads False; anything
-    unanswerable keeps today's behaviour."""
     from core.inference.diffusion_speed import family_compiles_regionally
 
     diffusers = types.ModuleType("diffusers")
@@ -1448,7 +1446,6 @@ def test_family_compiles_regionally_reads_the_repeated_blocks_declaration(monkey
 
 
 def test_family_compiles_regionally_closes_the_dynamo_import_window_first(monkeypatch):
-    """The seed decision probes the class before load_pipeline's own guard, so the probe must take it."""
     import utils.torch_warmup as warmup
 
     from core.inference.diffusion_speed import family_compiles_regionally

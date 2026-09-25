@@ -220,17 +220,13 @@ def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
 
 
 def family_compiles_regionally(family: Any) -> bool:
-    """False only when the family's diffusers transformer class carries an EMPTY ``_repeated_blocks``, so
-    ``compile_repeated_blocks`` raises and the denoiser runs eager (Lumina-2, HiDream-I1). A class that is
-    missing, unimportable or predates the attribute reads True, keeping today's behaviour; a diffusers that
-    fills the list in widens this."""
+    """False only for an EMPTY ``_repeated_blocks`` (``compile_repeated_blocks`` raises); unknown reads True."""
     if getattr(family, "denoiser_attr", "transformer") != "transformer":
         return True
     name = getattr(family, "transformer_class", None)
     if not isinstance(name, str) or not name:
         return True
-    # The pre-download seed decision asks this before load_pipeline's own guard, and `import diffusers` imports
-    # torch._dynamo, so close the race with the background torch warm first.
+    # Called before load_pipeline's guard; `import diffusers` imports torch._dynamo, so wait for the torch warm.
     try:
         from loggers import get_logger
         from utils.torch_warmup import close_dynamo_import_window
