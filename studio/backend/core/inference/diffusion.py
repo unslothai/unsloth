@@ -98,10 +98,12 @@ from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
 from .diffusion_memory import (
     MEMORY_MODE_BALANCED,
     MEMORY_MODE_LOW_VRAM,
+    ACTIVATION_TILE,
     DeviceMemory,
     OFFLOAD_NONE,
     OFFLOAD_STREAMING,
     apply_memory_plan,
+    engage_vae_tiling,
     estimate_gguf_resident_mib,
     estimate_image_runtime_mib,
     estimate_safetensors_dense_mib,
@@ -119,6 +121,9 @@ from .diffusion_memory import (
     settled_snapshot_device_memory,
     snapshot_device_memory,
     unified_memory_shortfall_message,
+    vae_tile_side,
+    vae_can_slice,
+    vae_is_sliced,
 )
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .diffusion_speed import (
@@ -144,6 +149,7 @@ from .diffusion_speed import (
 from .diffusion_attention import (
     apply_attention_backend,
     normalize_attention_backend,
+    sdpa_math_only,
     select_attention_backend,
     _ensure_attention_backend_installed,
 )
@@ -1493,6 +1499,17 @@ def _dense_candidate_is_prequant(
             is not None
         )
     except Exception:  # noqa: BLE001 - a probe that cannot answer keeps the decline
+        return False
+
+
+def _quadratic_attention(target: Any, engaged_backend: Optional[str] = None) -> bool:
+    """Whether attention can only run on SDPA math (quadratic memory); False when unknown.
+    Any engaged non-native backend is a fused kernel, so the SDPA probe only speaks for native."""
+    if engaged_backend is not None and str(engaged_backend) != "native":
+        return False
+    try:
+        return bool(sdpa_math_only(target))
+    except Exception:  # noqa: BLE001 - a broken probe must never block a generation
         return False
 
 
@@ -7647,6 +7664,7 @@ class DiffusionBackend:
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
         # load_identity() of the caller's status() read; refuse rather than run a different load (#9448)
         expected_load: Optional[LoadIdentity] = None,
+        allow_oversized: bool = False,
     ) -> dict[str, Any]:
         import torch
         from PIL import Image
@@ -7667,6 +7685,7 @@ class DiffusionBackend:
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not
                 # read idle.
                 self._gen = _GenState(total_steps = steps)
+            restore_vae: Optional[Callable[[], None]] = None
             try:
                 self._state_device_target(state)
                 # The local `state` ref keeps the pipe alive even if unload() nulls _state. Resolve the per-image
@@ -7986,15 +8005,14 @@ class DiffusionBackend:
                         workflow, init_pil, width, height, fam
                     )
                     guard_batch = _activation_guard_batch(chunks)
-                    raise_on_image_activation_shortfall(
+                    guard_target = self._state_device_target(state)
+                    guard_kwargs = dict(
                         # NOT the settled snapshot the load uses: that one calls empty_cache(), which is right once
                         # per load but wrong on a per-generation path, since it releases every cached block and the
                         # next forward re-cudaMallocs all of its activations. This variant credits the same
                         # reclaimable bytes back arithmetically instead, so a warm allocator does not read as a full
                         # card.
-                        device_memory = reclaimable_snapshot_device_memory(
-                            self._state_device_target(state)
-                        ),
+                        device_memory = reclaimable_snapshot_device_memory(guard_target),
                         width = guard_width,
                         height = guard_height,
                         batch_size = guard_batch,
@@ -8014,8 +8032,31 @@ class DiffusionBackend:
                             if ref_resolution is not None
                             else 0
                         ),
+                        vae_tile_side = vae_tile_side(getattr(pipe, "vae", None)),
+                        vae_sliced = vae_can_slice(getattr(pipe, "vae", None)),
+                        quadratic_attention = _quadratic_attention(
+                            guard_target, getattr(state, "attention_backend", None)
+                        ),
+                        allow_oversized = allow_oversized,
                         logger = logger,
                     )
+                    verdict = raise_on_image_activation_shortfall(**guard_kwargs)
+                    if verdict.action == ACTIVATION_TILE:
+                        restore_vae, vae_tiled = engage_vae_tiling(pipe, logger = logger)
+                        if not vae_tiled and not verdict.overridden:
+                            # Passed only because it would be tiled; tiling failed, so refuse on the untiled figure.
+                            raise_on_image_activation_shortfall(
+                                **{**guard_kwargs, "vae_tile_side": None}
+                            )
+                        elif (
+                            guard_batch > 1
+                            and guard_kwargs["vae_sliced"]
+                            and not verdict.overridden
+                            and not vae_is_sliced(getattr(pipe, "vae", None))
+                        ):
+                            raise_on_image_activation_shortfall(
+                                **{**guard_kwargs, "vae_sliced": False}
+                            )
                 except ValueError:
                     raise  # the refusal itself: the route turns this into a 400 with the reason
                 except Exception as exc:  # noqa: BLE001 - fail OPEN on a broken probe
@@ -8238,6 +8279,8 @@ class DiffusionBackend:
                     "localized_edit": localized_edit.mode if localized_edit is not None else None,
                 }
             finally:
+                if restore_vae is not None:
+                    restore_vae()
                 with self._generation_cancel_lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None

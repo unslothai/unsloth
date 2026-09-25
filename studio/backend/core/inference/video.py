@@ -817,8 +817,10 @@ def _ensure_mp4_encoder_available() -> None:
         import av  # noqa: F401
     except Exception as exc:  # noqa: BLE001 -- any import failure means no encoder
         raise ValueError(
-            "Video generation needs the 'av' package (PyAV) to encode MP4s. "
-            "Install it with: pip install av"
+            "Video generation needs the 'av' package (PyAV) to encode MP4s, and this install "
+            "is missing it. Update Unsloth to restore it (in the desktop app: Settings, Check for "
+            "updates; from a terminal: unsloth studio update). On a plain pip install: "
+            "pip install av"
         ) from exc
 
 
