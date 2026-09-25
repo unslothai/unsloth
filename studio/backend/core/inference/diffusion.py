@@ -224,6 +224,9 @@ from .diffusion_transformer_quant import (
     denoiser_modules,
     explain_unusable_scheme,
     mark_source_precision,
+    native_quant_host,
+    native_quant_scheme,
+    NATIVE_QUANT_SCHEMES,
     normalize_transformer_quant,
     quantize_transformer,
     select_transformer_quant_scheme,
@@ -1876,6 +1879,13 @@ class DiffusionBackend:
                     f"{getattr(fam, 'denoiser_attr', 'unet')}, not a transformer, and the dense torchao schemes "
                     "do not cover it"
                 )
+            elif (
+                model_kind == "pipeline"
+                and pinned in NATIVE_QUANT_SCHEMES
+                and native_quant_host(target)
+            ):
+                if native_quant_scheme(target, pinned, family = getattr(fam, "name", None)) is None:
+                    reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
             elif _memory_request_forces_offload(memory_mode, cpu_offload):
                 # Not a measurement: balanced and low_vram name their policy outright, and the legacy flag forces
                 # model offload. Offload hooks move modules with Module.to(), which torchao tensors do not survive, so
@@ -4327,6 +4337,81 @@ class DiffusionBackend:
         )
 
     @staticmethod
+    def _precast_text_encoder_mib(
+        fam: Any,
+        base: str,
+        target: Any,
+        text_encoder_quant: Optional[str],
+        staged_dir: Optional[str] = None,
+    ) -> Optional[tuple[int, tuple[str, ...], bool]]:
+        """``(MiB, components, exact)`` for the hosted pre-cast text encoder(s) this pick loads, or None.
+
+        Uncached checkpoints are priced from the family table (``exact=False``). Never raises."""
+        try:
+            from .diffusion_te_prequant import (
+                TE_PREQUANT_BUDGET_SCALE,
+                TE_PREQUANT_COMPONENTS,
+                te_candidate_filenames,
+                te_prequant_sources_for_base,
+            )
+
+            extra: dict[str, Any] = {}
+            if getattr(fam, "name", None) == HIDREAM_FAMILY_NAME:
+                # TE4 comes from its own repo (hidream_te4_kwargs), as in the download planner.
+                extra["components"] = (*TE_PREQUANT_COMPONENTS, "text_encoder_4")
+                extra["standalone_component_bases"] = {"text_encoder_4": HIDREAM_LLAMA_REPO}
+            sources = te_prequant_sources_for_base(
+                fam, base, te_quant_mode = text_encoder_quant, target = target, **extra
+            )
+            if not sources:
+                return None
+            total = 0
+            uncached = 0
+            table_priced = 0
+            for component, source in sources.items():
+                size = 0
+                kind = getattr(source, "kind", None)
+                if kind == "path":
+                    try:
+                        size = Path(str(source.location)).expanduser().stat().st_size
+                    except OSError:
+                        size = 0
+                elif kind == "repo":
+                    names = te_candidate_filenames(source)
+
+                    def _sizes(d: Path, names = names) -> dict[str, int]:
+                        for name in names:
+                            f = d / name
+                            if f.is_file():
+                                try:
+                                    return {"precast": f.stat().st_size}
+                                except OSError:
+                                    return {}
+                        return {}
+
+                    size = DiffusionBackend._union_over_cached_revs(str(source.location), _sizes)
+                if size > 0:
+                    total += int(size)
+                    continue
+                uncached += 1
+                if component == "text_encoder_4":
+                    # Outside the table's encoder term: priced from its own dense size.
+                    total += int(HIDREAM_LLAMA_BF16_BYTES * TE_PREQUANT_BUDGET_SCALE)
+                else:
+                    table_priced += 1
+            if table_priced:
+                table = family_bf16_components_gb(fam, base)
+                if table is None:
+                    return None
+                share = table_priced / max(1, len(sources))
+                total += int(table[1] * (1000.0**3) * TE_PREQUANT_BUDGET_SCALE * share)
+            if total <= 0:
+                return None
+            return max(1, total // (1024 * 1024)), tuple(sources), uncached == 0
+        except Exception:  # noqa: BLE001 -- sizing aid only; the scanned terms stand
+            return None
+
+    @staticmethod
     def _safetensors_param_count(path: Path) -> int:
         """Total tensor elements in a safetensors file, read from its JSON header without touching
         the tensor data. 0 on any read/parse failure."""
@@ -4530,6 +4615,7 @@ class DiffusionBackend:
                     # companions.
                     base_local_dir = _base_local_dir,
                     fetch_base = fetch_base,
+                    text_encoder_quant = text_encoder_quant,
                 )
                 pipeline_seed_scheme: Optional[str] = None
                 bf16_pipeline_plan = plan
@@ -4558,6 +4644,7 @@ class DiffusionBackend:
                             ),
                             companion_override_mib = seed_estimate.companions_mib,
                             text_encoder_override_mib = seed_estimate.text_encoders_mib,
+                            text_encoder_quant = text_encoder_quant,
                         )
                         if seed_estimate is not None
                         else None
@@ -4656,19 +4743,30 @@ class DiffusionBackend:
                     transformer_quant_decline = eager_reason
                     # Place the released weights by the plan that proved they fit, not by fp32 shard bytes.
                     plan = eager_plan
+                native_scheme = (
+                    native_quant_scheme(
+                        target, transformer_quant_pinned, family = getattr(fam, "name", None)
+                    )
+                    if kind == "pipeline"
+                    else None
+                )
                 if transformer_quant_pinned is not None and not dense_quant_supported_kind(kind):
                     transformer_quant_decline = dense_quant_unsupported_kind_reason(kind)
                     transformer_quant_decline_status = RESOLVED_UNSUPPORTED
-                elif transformer_quant_pinned is not None and not dense_transformer_supported(
-                    target
+                elif (
+                    transformer_quant_pinned is not None
+                    and native_scheme is None
+                    and not dense_transformer_supported(target)
                 ):
                     # Ask the helper rather than repeating its fallback: on ROCm and on the Windows
                     # torchao stub it knows a truer reason, and an AMD owner reading "needs a CUDA
                     # GPU" while holding a working GPU learns nothing about why it declined.
                     transformer_quant_decline = dense_transformer_unsupported_reason(target)
                     transformer_quant_decline_status = RESOLVED_UNSUPPORTED
-                elif transformer_quant_pinned is not None and (
-                    select_transformer_quant_scheme(
+                elif (
+                    transformer_quant_pinned is not None
+                    and native_scheme is None
+                    and select_transformer_quant_scheme(
                         target, transformer_quant_pinned, family = getattr(fam, "name", None)
                     )
                     is None
@@ -4821,6 +4919,7 @@ class DiffusionBackend:
                                 text_encoder_override_mib = getattr(
                                     candidate, "text_encoders_mib", None
                                 ),
+                                text_encoder_quant = text_encoder_quant,
                             )
 
                         if candidate is None:
@@ -4964,6 +5063,7 @@ class DiffusionBackend:
                                 # No companion_override here, so this one reads the cache: point it at the snapshot
                                 # the load will read, not the live root alone.
                                 base_local_dir = _base_local_dir,
+                                text_encoder_quant = text_encoder_quant,
                             )
                             # On unified memory the policy cannot express a misfit (the planner returns 'none' for ANY
                             # size there, because offload shuffles bytes within one pool) so the check above never
@@ -5405,6 +5505,7 @@ class DiffusionBackend:
                                         repo_id = repo_id,
                                         base_local_dir = _base_local_dir,
                                         fetch_base = fetch_base,
+                                        text_encoder_quant = text_encoder_quant,
                                     )
                                     bf16_pipeline_plan = plan
                                 self._raise_if_load_cancelled(_load_token)
@@ -5538,7 +5639,7 @@ class DiffusionBackend:
                         and kind == "pipeline"
                         and transformer_quant_engaged is None
                         and normalize_transformer_quant(transformer_quant) is not None
-                        and dense_transformer_supported(target)
+                        and (dense_transformer_supported(target) or native_scheme is not None)
                     ):
                         # from_pretrained widens a raw fp8/int8 checkpoint to bf16, erasing the one thing the blocker
                         # below reads, so recover it from the shard header (Ideogram's loader stamps its own).
@@ -5548,9 +5649,10 @@ class DiffusionBackend:
                         if source_precision is not None:
                             for _attr, denoiser in denoiser_modules(pipe):
                                 mark_source_precision(denoiser, source_precision)
-                        pipeline_quant_blocker = pipeline_quant_uncompilable or dense_quant_blocker(
-                            pipe
-                        )
+                        # Weight-only runs bf16 arithmetic, so it has no compile to require.
+                        pipeline_quant_blocker = (
+                            None if native_scheme is not None else pipeline_quant_uncompilable
+                        ) or dense_quant_blocker(pipe)
                         if pipeline_quant_blocker is not None:
                             logger.info(
                                 "diffusion.transformer_quant: skipped (%s)", pipeline_quant_blocker
@@ -5561,7 +5663,7 @@ class DiffusionBackend:
                             # Re-plan against the quantised steady size. The build peak remains bf16.
                             bf16_plan = plan
                             if plan.offload_policy != OFFLOAD_NONE:
-                                preview_scheme = select_transformer_quant_scheme(
+                                preview_scheme = native_scheme or select_transformer_quant_scheme(
                                     target, transformer_quant, family = getattr(fam, "name", None)
                                 )
                                 # This in-memory rewrite needs no cache-space or hosted-checkpoint checks.
@@ -5587,6 +5689,7 @@ class DiffusionBackend:
                                         ),
                                         companion_override_mib = estimate.companions_mib,
                                         text_encoder_override_mib = estimate.text_encoders_mib,
+                                        text_encoder_quant = text_encoder_quant,
                                     )
                                     if replanned.offload_policy == OFFLOAD_NONE:
                                         logger.info(
@@ -5597,7 +5700,7 @@ class DiffusionBackend:
                                             plan.offload_policy,
                                         )
                                         plan = replanned
-                            if plan.offload_policy != OFFLOAD_NONE:
+                            if plan.offload_policy != OFFLOAD_NONE and native_scheme is None:
                                 logger.info(
                                     "diffusion.transformer_quant: skipped (the memory plan picked '%s' "
                                     "offload, which moves the transformer via Module.to())",
@@ -5706,8 +5809,12 @@ class DiffusionBackend:
                     # Effective speed: GGUF defaults to `default` (~2.2x, below the quant noise floor); dense stays
                     # bit-identical `off`.
                     effective_speed = resolve_speed_mode(speed_mode, is_gguf = kind == "gguf")
-                    # A torchao-quantized dense transformer must be compiled (eager is ~30x slower, losing to GGUF)
-                    if transformer_quant_engaged is not None and effective_speed == SPEED_OFF:
+                    # A torchao-quantized dense transformer must be compiled (eager is ~30x slower, losing to GGUF).
+                    if (
+                        transformer_quant_engaged is not None
+                        and native_scheme is None
+                        and effective_speed == SPEED_OFF
+                    ):
                         logger.info(
                             "diffusion.transformer_quant: forcing speed_mode=default "
                             "(quantized transformer must be compiled; eager is ~30x slower)"
@@ -5858,7 +5965,11 @@ class DiffusionBackend:
                         logger = logger,
                     )
                     self._raise_if_load_cancelled(_load_token)
-                    if transformer_quant_engaged is not None and not speed_applied.get("compiled"):
+                    if (
+                        transformer_quant_engaged is not None
+                        and native_scheme is None
+                        and not speed_applied.get("compiled")
+                    ):
                         # Compile could not engage: the quantized transformer runs eager, far slower than the GGUF it
                         # replaced
                         logger.warning(
@@ -5962,6 +6073,7 @@ class DiffusionBackend:
                                 "deferred" if speed_deferred else effective_speed,
                                 "quantized transformer requires compile"
                                 if transformer_quant_engaged is not None
+                                and native_scheme is None
                                 and normalize_speed_mode(speed_mode) in (None, SPEED_OFF)
                                 else "auto: exact eager for the first two images; "
                                 "the compile profile engages on the 3rd"
@@ -5987,6 +6099,9 @@ class DiffusionBackend:
                                     )
                                 )
                                 if transformer_quant_engaged is None
+                                else f"weight-only: {transformer_quant_engaged} weights, bf16 compute "
+                                "(torchao-free, a memory saving rather than a speed-up)"
+                                if native_scheme is not None
                                 else f"seeded from the hosted checkpoint "
                                 f"{transformer_quant_artifact.split(':', 1)[1]}"
                                 if transformer_quant_artifact is not None
@@ -6747,6 +6862,7 @@ class DiffusionBackend:
         base_local_dir: Optional[str] = None,
         fetch_base: Optional[str] = None,
         device_memory_override: Optional[DeviceMemory] = None,
+        text_encoder_quant: Optional[str] = None,
     ):
         """Build the memory plan for this load: snapshot free device memory and estimate the model's
         resident footprint, then let the planner pick an offload policy + VAE memory savers. Kept on
@@ -6776,6 +6892,9 @@ class DiffusionBackend:
 
         ``device_memory_override`` replaces the live reading for a plan taken BEFORE the download,
         where free memory still describes the OLD model; capacity bounds any later free reading.
+
+        ``text_encoder_quant`` (resolved scheme) re-prices cache-scanned encoder terms at a hosted
+        pre-cast checkpoint's size, which base-repo scans never see.
         """
         # Settled (max-over-reads) on cuda: a transient foreign allocation would make an empty card look full
         device_memory = (
@@ -6783,6 +6902,7 @@ class DiffusionBackend:
             if device_memory_override is not None
             else settled_snapshot_device_memory(target)
         )
+        companions_from_cache = False
         if kind == "pipeline" and transformer_resident_override_mib is not None:
             # Re-planning an assembled pipeline against its dense-quant candidate. The family estimate already
             # splits transformer from companions; the cache scan below would price the bf16 transformer this
@@ -6841,11 +6961,14 @@ class DiffusionBackend:
             companion_mib = int(companion // (1024 * 1024)) if companion else None
             text_encoder = self._text_encoder_cache_bytes(fetch_base or base, base_local_dir)
             text_encoder_mib = int(text_encoder // (1024 * 1024)) if text_encoder else None
+            companions_from_cache = True
             if is_narrow_base and table is not None:
                 # model_dense_mib was raised to the bf16 table above; the companions upcast with it, so take their
                 # share from the same table rather than leaving a narrow on-disk figure beside a bf16 total.
                 companion_mib = int(sum(table[1:]) * (1000.0**3) / (1024.0 * 1024.0))
                 text_encoder_mib = int(table[1] * (1000.0**3) / (1024.0 * 1024.0))
+                # Already the dense bf16 encoders, an upper bound on any pre-cast one: swapping would add it on top.
+                companions_from_cache = False
             if companion_mib is not None and model_dense_mib is not None:
                 # The two terms come from different merges over the cache roots, so a repo only one of them can see
                 # must not report companions larger than the model.
@@ -6887,9 +7010,36 @@ class DiffusionBackend:
                 # as nothing cached, i.e. no split.
                 text_encoder = self._text_encoder_cache_bytes(fetch_base or base, base_local_dir)
                 text_encoder_mib = int(text_encoder // (1024 * 1024)) if text_encoder else None
+                companions_from_cache = True
             model_dense_mib = None
             if transformer_resident is not None:
                 model_dense_mib = transformer_resident + (companion_mib or 0)
+        if companions_from_cache and text_encoder_quant is not None:
+            precast = self._precast_text_encoder_mib(
+                fam, base, target, text_encoder_quant, base_local_dir
+            )
+            if precast:
+                precast_mib, precast_components, _exact = precast
+                covered = frozenset(precast_components)
+                scanned_te = int(
+                    self._union_over_cached_revs(
+                        fetch_base or base,
+                        lambda d: {
+                            rel: size
+                            for rel, size in self._local_dir_text_encoder_sizes(d).items()
+                            if rel.split("/", 1)[0] in covered
+                        },
+                        base_local_dir,
+                    )
+                ) // (1024 * 1024)
+                # Never below scanned dense shards: a bad checkpoint falls back to opening them.
+                precast_mib = max(int(precast_mib), scanned_te)
+                text_encoder_mib = max(0, int(text_encoder_mib or 0) - scanned_te) + int(
+                    precast_mib
+                )
+                companion_mib = max(0, int(companion_mib or 0) - scanned_te) + int(precast_mib)
+                if model_dense_mib is not None:
+                    model_dense_mib = max(0, int(model_dense_mib) - scanned_te) + int(precast_mib)
         # Feed the variant hint so estimate_image_runtime_mib sees distilled markers (distilled needs ~15% less
         # headroom).
         variant_hint = _image_variant_hint(

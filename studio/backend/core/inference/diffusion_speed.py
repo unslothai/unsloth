@@ -949,6 +949,15 @@ def _enable_fp16_accumulation(
 
 
 def _fuse_qkv(pipe: Any, logger: Any) -> bool:
+    from .diffusion_native_quant import is_native_quantised
+
+    # Fusing reads each projection's .weight, which a native layer dequantises: a dense to_qkv beside the int8 buffers.
+    if any(is_native_quantised(dit) for dit in _denoiser_dits(pipe)):
+        if logger is not None:
+            logger.info(
+                "diffusion.speed: fuse_qkv skipped (native quantised projections stay unfused)"
+            )
+        return False
     # Prefer the pipe-level fuse (covers every component); else fuse each denoiser DiT so a dual-DiT family fuses BOTH
     # experts.
     fn = getattr(pipe, "fuse_qkv_projections", None)
