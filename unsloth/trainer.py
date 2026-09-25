@@ -111,31 +111,6 @@ def _should_pack(config) -> bool:
     return not getattr(config, "_unsloth_disable_auto_packing", False)
 
 
-def _forward_accepts_packed_seq_lengths(model) -> bool:
-    """Fixed-signature remote-code forwards (Phi-4-reasoning-vision) reject it; unknown = True."""
-    if model is None or isinstance(model, str):
-        return True
-    unwrapped = model
-    # PEFT forwards every keyword to the model it wraps, so ask that model.
-    get_base_model = getattr(model, "get_base_model", None)
-    if callable(get_base_model) and hasattr(model, "peft_config"):
-        try:
-            unwrapped = get_base_model()
-        except Exception:
-            unwrapped = model
-    # Read the bound forward: torch.compile sets `forward` on the instance.
-    forward = getattr(unwrapped, "forward", None) or getattr(type(unwrapped), "forward", None)
-    if forward is None:
-        return True
-    try:
-        parameters = inspect.signature(forward).parameters
-    except (TypeError, ValueError):
-        return True
-    if "packed_seq_lengths" in parameters:
-        return True
-    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
-
-
 def _should_auto_padding_free(config) -> bool:
     if config is None or _AUTO_PADDING_FREE_ENV_DISABLED or getattr(config, "packing", False):
         return False
@@ -1404,8 +1379,6 @@ def _patch_sft_trainer_auto_packing(trl_module):
             )
         )
 
-        forward_takes_packed_seq_lengths = _forward_accepts_packed_seq_lengths(model)
-
         # Disable padding-free for VLMs / custom collators / blocklisted models
         forward_rejects_packing = not _forward_accepts_packing_kwargs(model)
         _packing_gate_deferred = model is None or isinstance(model, str)
@@ -1434,7 +1407,6 @@ def _patch_sft_trainer_auto_packing(trl_module):
             or is_unsupported_model
             or is_encoder_decoder
             or (is_hybrid and not hybrid_varlen_active)
-            or not forward_takes_packed_seq_lengths
             or (os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1")
             or forward_rejects_packing
         )
@@ -1459,7 +1431,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = "hybrid linear-attention model"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
-            elif forward_rejects_packing or not forward_takes_packed_seq_lengths:
+            elif forward_rejects_packing:
                 # Name the real blocker, else this falls through to the
                 # UNSLOTH_RETURN_LOGITS branch and points at an unset flag. For a string
                 # `model=` that is the resolved class, not `str`.
