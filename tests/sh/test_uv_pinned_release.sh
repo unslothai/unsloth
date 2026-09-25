@@ -1113,7 +1113,6 @@ else
     bad "a destination holding regex metacharacters is written once, not once per run ($_n)"
 fi
 
-# UNSLOTH_UV_WHEEL_MIRROR: the pinned uv as its PyPI wheel, from that mirror only, under the wheel's digest.
 mkdir -p "$WORK/whl/uv-0.12.1.data/scripts" && cp "$WORK/src/uv-fake-triple/uv" "$WORK/src/uv-fake-triple/uvx" "$WORK/whl/uv-0.12.1.data/scripts/"
 (cd "$WORK/whl" && python3 -m zipfile -c "$WORK/uv-fake.whl" uv-0.12.1.data)
 WHEEL_SHA=$( (sha256sum "$WORK/uv-fake.whl" 2>/dev/null || shasum -a 256 "$WORK/uv-fake.whl") | awk '{print $1}')

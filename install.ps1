@@ -4282,15 +4282,13 @@ exit 1
         return "$reason Nothing was installed."
     }
 
-    # Swaps a default package host below 1 MiB/s on an artifact it serves, or whose index does not answer, for its mirror (CERNET,
-    # or npmmirror for npm and Node) when that is faster and its own index answers, as _mirror_fallback in install.sh does. UNSLOTH_MIRROR_FALLBACK=0 turns it off.
+    # Mirror fallback, as _mirror_fallback in install.sh; UNSLOTH_MIRROR_FALLBACK=0 disables.
     function Test-MirrorConfigured {
         param([ValidateSet('uv', 'pip')][string]$Tool)
         if ($Tool -eq 'uv') {
             if ("$env:UV_DEFAULT_INDEX$env:UV_INDEX_URL$env:UV_INDEX$env:UV_EXTRA_INDEX_URL") { return $true }
             $pattern = '^\s*(\[\[(tool\.uv\.)?index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)\s*=)'
             $files = @($env:UV_CONFIG_FILE, "$env:APPDATA\uv\uv.toml", "$env:ProgramData\uv\uv.toml")
-            # uv also reads uv.toml, or a pyproject.toml with a [tool.uv] table, from the current directory or the nearest parent.
             $dir = (Get-Location -PSProvider FileSystem).ProviderPath
             while ($dir) {
                 $pyproject = Join-Path $dir 'pyproject.toml'
@@ -4324,13 +4322,11 @@ exit 1
             $state.Requests[$url].KeepAlive = $false
             $state.Requests[$url].AddRange(0, $LastByte)
             $state.Heads[$url] = $state.Requests[$url].GetResponseAsync()
-            # Settles on whichever finishes first, so an answer after the deadline stays late however long before it is waited on.
             $state.InTime[$url] = [System.Threading.Tasks.Task]::WhenAny([System.Threading.Tasks.Task[]]@($state.Heads[$url], $deadline))
         }
         return $state
     }
 
-    # Maps each URL to @(<http code, 0 when nothing answered in time>, <bytes/s>), giving up $Seconds after the start with the speed so far, as curl does.
     function Wait-MirrorProbe {
         param($Probe)
         $results = @{}
@@ -4342,7 +4338,6 @@ exit 1
                     if (-not [object]::ReferenceEquals($Probe.InTime[$url].Result, $Probe.Heads[$url])) {
                         $results[$url] = @(0, [long]0)
                     } elseif ($Probe.Heads[$url].Status -ne 'RanToCompletion') {
-                        # A 4xx/5xx faults the task with the response attached; no response means nothing answered.
                         $failure = $Probe.Heads[$url].Exception.InnerException -as [System.Net.WebException]
                         $results[$url] = @($(if ($failure -and $failure.Response) { [int]$failure.Response.StatusCode } else { 0 }), [long]0)
                     } elseif (-not $Probe.Bodies.ContainsKey($url)) {
@@ -4372,7 +4367,6 @@ exit 1
     }
 
     function Invoke-MirrorFallback {
-        # -SpareOnly skips the probe and only arms the one-shot mirror retry for every host.
         param([switch]$SpareOnly)
         if ("$env:UNSLOTH_MIRROR_FALLBACK".Trim() -match '^(0|false|no|off)$' -or $env:_UNSLOTH_MIRROR_PROBED) { return }
         if (-not $SpareOnly) { $env:_UNSLOTH_MIRROR_PROBED = '1' }
@@ -4382,7 +4376,6 @@ exit 1
         $minBps = 1MB
         $useUv = -not (Test-MirrorConfigured -Tool uv)
         $usePip = -not (Test-MirrorConfigured -Tool pip)
-        # Artifacts the installs download. Each mirror tree can sit on its own host (CERNET redirects each to a different university mirror), so each tree is timed.
         $uvWheel = 'packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl'
         $torchWheel = 'whl/cpu/torch-2.9.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl'
         $nodeTarball = 'v24.18.0/node-v24.18.0-linux-x64.tar.gz'
@@ -4393,7 +4386,6 @@ exit 1
             'npm' = 'https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz'; 'npmmirror' = "$npmMirror/typescript/-/typescript-5.9.3.tgz"
             'astral' = 'https://releases.astral.sh/github/uv/releases/download/0.12.1/uv-x86_64-unknown-linux-gnu.tar.gz'
         }
-        # Host -> default probe, mirror probe, mirror value, and for PyPI and torch the default's and mirror's index uv and pip resolve on.
         $hosts = [ordered]@{}
         if ($useUv -or $usePip) { $hosts['pypi'] = @('pypi', 'cernet-pypi', $pypiMirror, 'https://pypi.org/simple/uv/', "$pypiMirror/uv/") }
         if (-not "$env:UNSLOTH_PYTORCH_MIRROR$env:UNSLOTH_TORCH_INDEX_URL") {
@@ -4405,7 +4397,6 @@ exit 1
             $hosts['uvbin'] = @('astral', 'cernet-pypi', "$cernet/pypi/web", $null, $null)
         }
         if ($hosts.Count -eq 0) { return }
-        # VAR=URL pairs pointing a host at its mirror, the URL a retry names first. unsynced is the PyPI mirror with pypi.org behind it, for what the mirror has not synced yet.
         $varsOf = {
             param($name)
             $to = if ($hosts.Contains($name)) { $hosts[$name][2] }
@@ -4428,7 +4419,6 @@ exit 1
                 'uvbin' { "UNSLOTH_UV_WHEEL_MIRROR=$to" }
             }
         }
-        # Each host left on its default keeps its mirror as a spare, for one retry of a step whose download from it fails (Pop-MirrorSpare).
         $env:_UNSLOTH_MIRROR_SPARE = @($hosts.Keys | ForEach-Object { (@($_) + @(& $varsOf $_)) -join '|' }) -join ' '
         if ($SpareOnly) { return }
         $answered = @{}
@@ -4442,7 +4432,6 @@ exit 1
             $defaults = @($hosts.Values | ForEach-Object { $_[0] } | Select-Object -Unique)
             $indexes = Start-MirrorProbe -Urls @($hosts.Values | ForEach-Object { $_[3] } | Where-Object { $_ }) -Seconds 4 -LastByte 1023
             $timed = @{}
-            # Defaults are timed one at a time, 1.5 s each, beside 1 KiB index checks; one below 1 MiB/s is re-timed in the race.
             foreach ($name in $defaults) { $timed[$name] = (Wait-MirrorProbe (Start-MirrorProbe -Urls $artifact[$name] -Seconds 1.5 -LastByte 1048575))[$artifact[$name]] }
             $answered = Wait-MirrorProbe $indexes
             # A redirect that led nowhere counts as no answer; a default that answers an HTTP error is kept: that is a moved probe artifact, not a blocked host.
@@ -4488,7 +4477,6 @@ exit 1
         foreach ($pair in $Pairs) { Set-Item "Env:$($pair.Split('=', 2)[0])" $pair.Split('=', 2)[1] }
     }
 
-    # Takes host $Name's VAR=URL pairs out of _UNSLOTH_MIRROR_SPARE, so each host gets one mirror retry; nothing when it has no spare.
     function Pop-MirrorSpare {
         param([string]$Name)
         $entry = @(-split $env:_UNSLOTH_MIRROR_SPARE | Where-Object { $_ -like "$Name|*" })
@@ -4499,7 +4487,6 @@ exit 1
         return $pairs
     }
 
-    # Points host $Name at its spare mirror for the rest of the install, whether or not the step then succeeds: for downloads with no expected failures.
     function Use-MirrorSpare {
         param([string]$Name)
         $pairs = @(Pop-MirrorSpare $Name)
@@ -4507,7 +4494,7 @@ exit 1
         return $pairs.Count -gt 0
     }
 
-    # The host whose transport the output shows failing: a network error, and the host's default named, or, when the output names no URL at all (a download that stalled or dropped), $Ran, the host that ran the command. A resolution that found no such version or package is unsynced; any other failure names none.
+    # Host whose transport failed per the output ($Ran when no URL is named), unsynced for not-found resolutions, else none.
     function Get-MirrorFailedHost {
         param([string]$Output, [string]$Ran)
         if ($Output -notmatch 'error sending request|timed out|network timeout|idle timeout|connection (reset|refused|closed|aborted)|network aborted|broken pipe|dns error|failed to lookup address|name resolution|nodename nor servname|network is unreachable|error decoding response body|end of file before message length|unexpected eof|tls handshake|sslerror|certificate verify failed|server error|service unavailable|bad gateway|gateway time-?out|too many requests|max retries exceeded|remotedisconnected|incompleteread|econnreset|etimedout|eidletimeout|eai_again|enotfound|econnrefused|socket hang up') {
@@ -4539,7 +4526,6 @@ exit 1
             [string]$Label = "install command",
             [switch]$NoMirror
         )
-        # Once torch has moved to its mirror, the default torch URLs the command reads are shadowed here with the mirror's.
         if ($script:InstallTorchMirror) {
             foreach ($v in $Command.Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and $n.VariablePath.IsUnqualified }, $true)) {
                 $value = $ExecutionContext.SessionState.PSVariable.GetValue($v.VariablePath.UserPath)
@@ -4606,7 +4592,6 @@ exit 1
         return (Invoke-InstallMirrorRetry -Code $exitCode -Command $Command -Label $Label -Output $collected.ToString())
     }
 
-    # Reruns a command whose default host's transport failed once through that host's spare mirror, kept for the rest of the install only when the rerun succeeds.
     function Invoke-InstallMirrorRetry {
         param([int]$Code, [ScriptBlock]$Command, [string]$Label, [string]$Output)
         $words = @(foreach ($n in $Command.Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.VariableExpressionAst] }, $true)) {
@@ -4614,7 +4599,6 @@ exit 1
         }) | ForEach-Object { "$_" }
         $torchArg = [bool](@($words) -like 'https://download.pytorch.org/whl*')
         $pinned = [bool](@($words) -match '^--(index-url|default-index)$')
-        # The host that ran the command, for output that names none; unknown when it picks its own source or is not a package download.
         $ran = if ($torchArg) { 'torch' } elseif ($pinned -or @($words) -match '^(--find-links|--no-index|--torch-backend.*|venv)$|://') { '' } else { 'pypi' }
         $failed = Get-MirrorFailedHost -Output $Output -Ran $ran
         # A pinned command drops the index vars, so only a torch URL can move to a mirror.
@@ -7189,7 +7173,6 @@ exit 0
             # body is a successful download by every measure Invoke-WebRequest has, and checking
             # afterwards spends the only attempt on it.
             $downloaded = $false
-            # No source answered: only then can the uv mirror help.
             $script:UvReleaseUnfetched = $true
             foreach ($base in $uvBase) {
                 substep "downloading uv $UvPinnedVersion ($arch) from $base..." "Yellow"

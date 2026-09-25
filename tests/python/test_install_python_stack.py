@@ -3292,8 +3292,6 @@ class TestMirrorRetry:
         assert os.environ.get("UNSLOTH_PYTORCH_MIRROR") == mirror
         assert ips._PYTORCH_WHL_BASE == (mirror or TORCH_WHL)
 
-    # A version not found with nothing spared behind the mirror, then torch failing under an
-    # install with no torch index to move, and a pinned index.
     @pytest.mark.parametrize(
         "failure, pin",
         (

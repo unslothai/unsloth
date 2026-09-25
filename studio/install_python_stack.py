@@ -9390,7 +9390,6 @@ def pip_install_try(
 
 
 _PYTORCH_DEFAULT_WHL = "https://download.pytorch.org/whl"
-# The uv and pip half of the installers' _mirror_failed_host (npm never runs here).
 _MIRROR_TRANSPORT_ERROR = re.compile(
     r"error sending request|timed out|network timeout|connection (reset|refused|closed|aborted)|"
     r"broken pipe|dns error|failed to lookup address|name resolution|nodename nor servname|"
@@ -9405,7 +9404,6 @@ _MIRROR_HOST_NAMES = (
     ("pypi", re.compile(r"pypi\.org|pythonhosted\.org")),
 )
 _MIRROR_NAMES = {"torch": "download.pytorch.org", "pypi": "PyPI", "unsynced": "The PyPI mirror"}
-# A resolve that found no such version or package: on the PyPI mirror, one it has not synced yet.
 _MIRROR_UNSYNCED = re.compile(
     r"only \S+ (.* )?(is|are) available|no versions? of|not found in the package registry|"
     r"could not find a version that satisfies|no matching distribution found",
@@ -9434,7 +9432,6 @@ def _mirror_retry(args: "tuple[str, ...]", output: bytes, rerun) -> "bool | None
         )
         host = next((name for name, pattern in _MIRROR_HOST_NAMES if pattern.search(text)), None)
         if host is None and not re.search(r"https?://", text):
-            # A download that stalled or dropped names no URL: the host is the one the command ran on.
             host = "torch" if torch else "pypi"
         # A pinned command drops the index vars, so only a torch URL can move to a mirror.
         if host is None or (host == "torch" and not torch) or (host == "pypi" and pinned):

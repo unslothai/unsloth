@@ -1067,7 +1067,6 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
         try:
             index = fetch_json(node_dist_index_url())
         except Exception as exc:  # noqa: BLE001
-            # Node dist index unreachable: keep a working isolated Node instead of aborting.
             if not force and existing_install_usable(install_dir, host):
                 log(f"Node dist index unreachable ({exc}); keeping existing isolated Node")
                 return EXIT_SUCCESS

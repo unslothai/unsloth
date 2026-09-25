@@ -212,17 +212,14 @@ _uv_download_markers() {
     '
 }
 
-# Runs an install command; when its output shows a default host's transport failing, reruns it once through that host's mirror.
 run_install_cmd() {
     _run_install_cmd_once "$@" || _mirror_retry_install "$?" "$@"
 }
 
-# Reruns the install command "$@" that failed with code $1 once through the mirror of the host its output shows failing. Later steps keep that mirror only when the rerun works.
 _mirror_retry_install() {
     _mri_rc=$1
     _mri_label=$2
     shift 2
-    # The host that ran the command, for output that names none; unknown when it pins its own source.
     case " $* " in
         *" https://download.pytorch.org/whl"*) _mri_ran=torch ;;
         *" --index-url "*|*" --default-index "*|*" --find-links "*|*" --no-index "*|*"://"*|*" --torch-backend"*) _mri_ran="" ;;
@@ -253,7 +250,7 @@ _mirror_retry_install() {
     fi
 }
 
-# Copies stdin to file $1 for the mirror retry to read; a minimal image without tee only loses that retry.
+# No tee (minimal images) only loses the mirror retry.
 _ric_tee() {
     if command -v tee >/dev/null 2>&1; then tee "$1"; else cat; fi
 }
@@ -264,7 +261,6 @@ _run_install_cmd_once() {
     rm -f "${_ric_log:-}"
     _ric_log=""
     if [ -n "${_ric_torch_mirror:-}" ]; then
-        # Once torch has moved to its mirror, every later torch step goes there too.
         _ric_n=$#
         for _ric_arg in "$@"; do
             case "$_ric_arg" in
@@ -278,7 +274,6 @@ _run_install_cmd_once() {
     case " $* " in
         *" --default-index "*) set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL -u UV_TORCH_BACKEND -u UV_FIND_LINKS -u UV_CONFIG_FILE UV_NO_CONFIG=1 "$@" ;;
     esac
-    # The raw output stays in _ric_log after a failure, for _mirror_retry_install to read.
     _log=$(mktemp)
     if _is_verbose; then
         # Stream through the redactor; the rc file carries the exit code (no pipefail in sh).
@@ -351,7 +346,7 @@ run_install_cmd_retry() {
         _run_install_cmd_once "$@" && return 0
         _ricr_rc=$?
         if [ "$_ricr_attempt" -ge "$_ricr_max" ]; then
-            # The mirror only after the default had every attempt, so a transient failure recovers there.
+            # Mirror only after every default attempt, so transient failures recover on the default.
             _mirror_retry_install "$_ricr_rc" "$@" && return 0
             return $?
         fi
@@ -3203,7 +3198,7 @@ case "$OS" in
 esac
 
 # ── BEGIN mirror fallback (kept identical in install.sh and studio/setup.sh) ──
-# Each default package host is timed alone on a 1 MiB slice of an artifact it serves. One below 1 MiB/s, or whose index does not answer, is raced against its mirror (CERNET, or npmmirror for npm, Node and uv's Python builds; each mirror URL timed once whatever it backs) and swapped for it when the default is still below 1 MiB/s there, the mirror is faster, and its own index answers. Hosts that the user has already redirected are left alone, the choice reaches every child through the env vars uv, pip, npm and the Unsloth helpers already read, and UNSLOTH_MIRROR_FALLBACK=0 turns it off.
+# Swaps a default host below 1 MiB/s or unreachable for its mirror when faster; user-set sources untouched; UNSLOTH_MIRROR_FALLBACK=0 disables.
 _MIRROR_CERNET="https://tuna.mirrors.cernet.edu.cn"
 _MIRROR_PYPI="$_MIRROR_CERNET/pypi/web/simple"
 _MIRROR_NPM="https://registry.npmmirror.com"
@@ -3211,7 +3206,6 @@ _MIRROR_NPM="https://registry.npmmirror.com"
 _MIRROR_PYTHON="$_MIRROR_NPM/-/binary/python-build-standalone"
 _MIRROR_MIN_BPS=1048576
 
-# Prints "<http code> <bytes/s>" for bytes 0-$3 of $1 within $2 seconds (000: no answer); curl reports the speed so far on a timeout too.
 _mirror_probe() {
     _mp_out=$(curl -sL -o /dev/null -r "0-$3" -w '%{http_code} %{speed_download}' --connect-timeout "$2" --max-time "$2" "$1" 2>/dev/null) || true
     _mp_bps=${_mp_out#* }
@@ -3222,7 +3216,7 @@ _mirror_probe() {
     echo "$_mp_code $_mp_bps"
 }
 
-# Probe URLs: artifacts the installs download, which only need to stay published, served byte for byte by the mirror (every download.pytorch.org index links its wheels to download-r2). Each mirror tree can sit on its own host (CERNET redirects each to a different university mirror), so each tree is timed. uv and pip resolve on the *-index URLs, which only need to answer.
+# Probe artifacts must stay published and byte-identical on the mirror; each mirror tree is timed (CERNET redirects per tree).
 _mirror_url() {
     case "$1" in
         pypi) echo "https://files.pythonhosted.org/packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" ;;
@@ -3249,7 +3243,6 @@ _mirror_source() {
     case "$1" in npm|python) echo npmmirror ;; node) echo npmmirror-node ;; pypi|uvbin) echo cernet-pypi ;; *) echo "cernet-$1" ;; esac
 }
 
-# Starts a 1 KiB answer check, in the background, of the index each named host (pypi, torch) or its CERNET mirror (cernet-<host>) resolves on.
 _mirror_index_probe() {
     for _mip_name in "$@"; do
         case "$_mip_name" in
@@ -3273,7 +3266,6 @@ _mirror_index_ok() {
     case "$_mio_code" in 2??) return 0 ;; *) return 1 ;; esac
 }
 
-# Echoes the project config uv discovers: uv.toml, or a pyproject.toml with a [tool.uv] table, in the current directory or the nearest parent.
 _mirror_uv_project_config() {
     _mup_dir=$PWD
     while [ -n "$_mup_dir" ]; do
@@ -3284,7 +3276,6 @@ _mirror_uv_project_config() {
     done
 }
 
-# True when the user already chose a source for uv's index ($1 = uv), uv's Python downloads ($1 = python) or pip's index ($1 = pip), by env var or config file.
 _mirror_configured() {
     case "$1" in
         uv)
@@ -3310,7 +3301,6 @@ _mirror_configured() {
     return 1
 }
 
-# Probes the names after $2 in parallel, each within $2 seconds, one "<code> <bytes/s>" file per name in $1.
 _mirror_probe_all() {
     _mpa_dir="$1"
     _mpa_secs="$2"
@@ -3325,7 +3315,6 @@ _mirror_probe_all() {
     done
 }
 
-# Prints the VAR=URL pairs that point host $1 at its mirror, the URL a retry names first. unsynced is the PyPI mirror with pypi.org behind it, for what the mirror has not synced yet.
 _mirror_vars() {
     case "$1" in
         pypi)
@@ -3355,7 +3344,6 @@ _mirror_name() {
     esac
 }
 
-# Points host $1 at its mirror; $2 is how its default did (slow or blocked), $3 the default's and $4 the mirror's bytes/s.
 _mirror_use() {
     _mu_to=""
     for _mu_pair in $(_mirror_vars "$1"); do
@@ -3368,7 +3356,6 @@ _mirror_use() {
     [ "$1 $2" != "pypi slow" ] || _mf_unsynced=true
 }
 
-# Takes host $1's mirror from _UNSLOTH_MIRROR_SPARE ("host|VAR=URL|..." entries for the hosts the probe left on their defaults) into _MT_PAIRS, so each host gets one mirror retry. Fails when there is none.
 _mirror_take() {
     _MT_PAIRS=""
     _mt_spare=""
@@ -3385,13 +3372,12 @@ _mirror_take() {
     step "mirror" "$(_mirror_name "$1") failed; retrying through ${_mt_to#*=}" "$C_WARN"
 }
 
-# Points host $1 at its mirror for the rest of the install.
 _mirror_switch() {
     _mirror_take "$1" || return 1
     for _ms_pair in $_MT_PAIRS; do export "$_ms_pair"; done
 }
 
-# Prints the host whose transport the install output in file $1 shows failing: a network error, and the host's default named, or, when the output names no URL at all (a download that stalled or dropped), host $2 that ran the command. A resolution that found no such version or package prints unsynced; any other failure prints nothing.
+# Prints the host whose transport failed in output $1 ($2 when no URL is named), unsynced for not-found resolutions, else nothing.
 _mirror_failed_host() {
     if ! grep -Eqi 'error sending request|timed out|network timeout|idle timeout|connection (reset|refused|closed|aborted)|network aborted|broken pipe|dns error|failed to lookup address|name resolution|nodename nor servname|network is unreachable|error decoding response body|end of file before message length|unexpected eof|tls handshake|sslerror|certificate verify failed|server error|service unavailable|bad gateway|gateway time-?out|too many requests|max retries exceeded|remotedisconnected|incompleteread|econnreset|etimedout|eidletimeout|eai_again|enotfound|econnrefused|socket hang up' "$1" 2>/dev/null; then
         grep -Eqi 'only [^ ]+ (.* )?(is|are) available|no versions? of|not found in the package registry|could not find a version that satisfies|no matching distribution found' "$1" 2>/dev/null || return 1
@@ -3407,7 +3393,6 @@ _mirror_failed_host() {
     fi
 }
 
-# Probes the default hosts and switches slow or blocked ones to their mirrors; `_mirror_fallback spare` skips the probe and only arms the one-shot mirror retry for every host.
 _mirror_fallback() {
     case "${UNSLOTH_MIRROR_FALLBACK:-}" in
         0|false|False|FALSE|no|off) return 0 ;;
@@ -3433,10 +3418,8 @@ _mirror_fallback() {
     [ -n "$_mf_hosts" ] || return 0
     if [ "${1:-}" = spare ]; then _mirror_spare_export; return 0; fi
     _mf_dir=$(mktemp -d 2>/dev/null) || return 0
-    # Index hosts only need to answer, and 1 KiB each barely touches the link while the defaults are timed one at a time.
     _mf_pids=""
     _mirror_index_probe $_mf_hosts
-    # 1.5 s is enough to tell whether a default makes 1 MiB/s; a slower one is re-timed in the race.
     for _mf_name in $(for _mf_host in $_mf_hosts; do _mirror_default "$_mf_host"; done | sort -u); do
         _mirror_probe "$(_mirror_url "$_mf_name")" 1.5 1048575 > "$_mf_dir/$_mf_name"
     done
@@ -3477,7 +3460,6 @@ _mirror_fallback() {
     _mirror_spare_export
 }
 
-# Exports one mirror retry per host in $_mf_hosts that is still on its default, plus the unsynced rerun when PyPI was switched from slow.
 _mirror_spare_export() {
     _mf_spare=""
     for _mf_host in $_mf_hosts; do
@@ -3663,7 +3645,6 @@ _uv_pinned_asset() {
     return 0
 }
 
-# The same pinned uv as a PyPI wheel, for UNSLOTH_UV_WHEEL_MIRROR: "<path under a PyPI file root> <sha256>" for archive $1, both from https://pypi.org/pypi/uv/<ver>/json.
 _uv_pinned_wheel() {
     case "$1" in
         uv-x86_64-unknown-linux-gnu.tar.gz)
@@ -3811,7 +3792,6 @@ _uv_install_pinned() {
     elif [ -n "${UV_INSTALLER_GITHUB_BASE_URL:-}" ]; then
         _uip_bases="${UV_INSTALLER_GITHUB_BASE_URL%/}/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
     elif [ -n "${UNSLOTH_UV_WHEEL_MIRROR:-}" ]; then
-        # Set by the mirror fallback when releases.astral.sh is blocked or slow. No wheel pin leaves the list empty, so the caller's fallback runs.
         _uip_bases=""
         if _uip_wheel=$(_uv_pinned_wheel "$_uip_asset"); then
             _uip_path=${_uip_wheel% *}
@@ -3823,7 +3803,6 @@ _uv_install_pinned() {
         _uip_bases="https://releases.astral.sh/github/uv/releases/download/$UV_PINNED_VERSION
 https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
     fi
-    # No source answered: the only failure the mirror can fix.
     _UIP_UNFETCHED=true
     for _uip_base in $_uip_bases; do
         # 2>/dev/null: curl -sS prints its own errors and these attempts are speculative, so an unreachable mirror stays off the console when the install still succeeds.

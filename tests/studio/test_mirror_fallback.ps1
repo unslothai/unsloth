@@ -69,7 +69,6 @@ $env:APPDATA = Join-Path $home_ 'AppData'; $env:USERPROFILE = $home_; $env:Progr
 function step($l, $v, $c) { $script:lines += "STEP $v" }
 function substep($m) { $script:lines += "SUBSTEP $m" }
 $M = 'https://tuna.mirrors.cernet.edu.cn'
-# Every probe answers from $script:mock by class: fast, slow (<1 MiB/s), blocked or "<code> <bytes/s>"; "a|b" is a, then b.
 function Get-ProbeClass([string]$u) {
     switch -Wildcard ($u) {
         "$M/pypi/web/simple/*" { return 'cernetpypiindex' } "$M/pytorch/whl/cpu/torch/" { return 'cernettorchindex' } "$M/pytorch/*" { return 'cernettorch' }
@@ -163,7 +162,6 @@ try {
     Run @{ pypi = 'blocked' } @{ UNSLOTH_MIRROR_FALLBACK = 'Off' }; Check "UNSLOTH_MIRROR_FALLBACK=Off probes nothing" ($script:probed.Count -eq 0)
     Run @{ pypi = 'blocked' } @{ _UNSLOTH_MIRROR_PROBED = '1' }; Check "a parent installer's probe is not repeated" ($script:probed.Count -eq 0)
     Run @{ astral = 'blocked' }; Check "blocked uv releases: the pinned wheel comes from the PyPI mirror" ($env:UNSLOTH_UV_WHEEL_MIRROR -eq "$M/pypi/web"); foreach ($src in 'UV_INSTALLER_GITHUB_BASE_URL', 'UNSLOTH_UV_WHEEL_MIRROR') { Run @{ astral = 'blocked' } @{ $src = 'https://corp.example/uv' }; Check "a user $src skips the uv probe" (-not ($script:probed -like '*releases.astral.sh*')) }
-    # Real failure shapes: uv's and pip's transport errors, npm's, a stall naming nothing, and resolution errors.
     $uvDown = "error: Failed to fetch: ``https://pypi.org/simple/numpy/```n  Caused by: error sending request for url (https://pypi.org/simple/numpy/)"
     $torchDown = "error: Failed to fetch: ``https://download.pytorch.org/whl/cu128/torch/```n  Caused by: operation timed out"
     $npmDown = "npm error network request to https://registry.npmjs.org/react failed, reason: read ECONNRESET"
@@ -174,10 +172,8 @@ try {
     foreach ($case in @($uvDown, '', 'pypi'), @($torchDown, 'pypi', 'torch'), @($npmDown, '', 'npm'), @($pipDown, '', 'pypi'), @('npm error code ERESOLVE', 'npm', $null), @($stall, 'pypi', 'pypi'), @($stall, '', $null), @($noVersion, 'pypi', 'unsynced'), @($lag, '', 'unsynced'), @('ERROR: No matching distribution found for unsloth>=2026.9.10', '', 'unsynced'), @("$stall (see https://example.com/)", 'pypi', $null)) {
         Check "failed host: $($case[1]) ran, output '$($case[0].Split("`n")[-1])' -> $($case[2])" ((Get-MirrorFailedHost -Output $case[0] -Ran $case[1]) -eq $case[2])
     }
-    # Invoke-InstallCommand over a fake uv that fails with $script:fail until it is pointed at a CERNET index.
     function Write-TauriLog {}; function Clear-TauriInstallError {}; function Write-UvDownloadMarker {}; function Write-StudioLine {}
     $script:UnslothVerbose = $false; $script:InstallTorchMirror = $null
-    # Failures go to stderr, as a native command's would.
     function uv { $script:calls += , "$args"; if ("$env:UV_DEFAULT_INDEX $args" -match 'cernet') { $global:LASTEXITCODE = 0 } else { Write-Error $script:fail; $global:LASTEXITCODE = 1 } }
     function Retry($fail, [scriptblock]$cmd, [switch]$Once) {
         Run @{ torch = 'blocked' }; $env:UNSLOTH_INSTALL_RETRIES = '2'; $env:UNSLOTH_INSTALL_RETRY_DELAY = '0'
@@ -222,7 +218,6 @@ try {
         if ($npmOk -eq 'npmmirror') { Check "npm transport (verbose $verbose): reinstalled through npmmirror, kept for later npm installs" ($ok -and $spent -and "$NpmRegistryArgs" -eq '--registry https://registry.npmmirror.com' -and $env:UNSLOTH_NPM_REGISTRY -eq 'https://registry.npmmirror.com') }
         else { Check "npm transport (verbose $verbose): a failed npmmirror rerun is not kept" (-not $ok -and $spent -and $NpmRegistryArgs.Count -eq 0 -and -not $env:UNSLOTH_NPM_REGISTRY) }
     } }
-    # Both uv installers against a fake wheel: the mirror is the only source and the wheel digest gates the install.
     function Get-HostMachineArch { 'x86_64' }; function Get-UvHostArch { 'x86_64' }; function Get-UvExecutableVerdict { 'ok' }; function Get-SetupUvExecutableVerdict { 'ok' }
     function Invoke-WebRequest([switch]$UseBasicParsing, $OutFile, $Uri) { $script:fetched += $Uri; Copy-Item "$home_/uv.zip" $OutFile }
     foreach ($exe in 'uv.exe', 'uvx.exe') { New-Item -Force -Path "$home_/whl/uv-0.12.1.data/scripts/$exe" -Value $exe | Out-Null }

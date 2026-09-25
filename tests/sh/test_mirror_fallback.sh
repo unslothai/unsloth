@@ -30,7 +30,6 @@ for _f in "$INSTALL_SH" "$SETUP_SH"; do
     assert_eq "${_f##*/} defines the mirror fallback outside every heredoc" "" "$(_heredoc_block_lines "$_f")"
 done
 
-# The stub answers a 1 MiB range probe from MOCK_<HOST>: fast, slow (<1 MiB/s), blocked or "<code> <bytes/s>"; "a|b" is a, then b.
 mkdir -p "$_WORK/bin"
 cat > "$_WORK/bin/curl" <<'EOF'
 #!/bin/sh
@@ -61,7 +60,6 @@ chmod +x "$_WORK/bin/curl"
 
 _VARS="UV_DEFAULT_INDEX UV_INDEX UV_INDEX_STRATEGY PIP_INDEX_URL PIP_EXTRA_INDEX_URL UNSLOTH_PYTORCH_MIRROR UNSLOTH_NODE_MIRROR UNSLOTH_NPM_REGISTRY UV_PYTHON_INSTALL_MIRROR UNSLOTH_UV_WHEEL_MIRROR"
 
-# _run <shell> [VAR=value ...]: prints "VAR=value" for every exported var in $_VARS, then the step lines.
 _run() {
     _shell="$1"; shift
     rm -f "$_WORK/curl.log".*
@@ -196,7 +194,6 @@ for SH in dash bash; do
     assert_eq "[$SH] a failed step switches its host once" "STEP PyPI failed; retrying through $M/pypi/web/simple|AGAIN no|UV_DEFAULT_INDEX=$M/pypi/web/simple" "$(echo "$out" | grep -E '^(STEP PyPI failed|AGAIN|UV_DEFAULT_INDEX)' | paste -sd'|' -)"
 done
 
-# Real uv / pip / npm failure output (trimmed): only a transport failure naming a probed default is the mirror's to retry.
 _fail_uv_timeout='error: Failed to fetch: `https://pypi.org/simple/six/`
   Caused by: error sending request for url (https://pypi.org/simple/six/)
   Caused by: operation timed out'
@@ -213,7 +210,6 @@ _failed_host() { printf '%s\n' "$1" > "$_WORK/fail.log"; sh -c ". '$_WORK/block.
 assert_eq "failed host: the default each transport failure names; unsynced for a version or package not found; none for another host" "pypi torch pypi npm python unsynced unsynced unsynced none" "$(for _o in "$_fail_uv_timeout" "$_fail_uv_503" "$_fail_pip_timeout" "$_fail_npm" "$_fail_python" "$_fail_nover" "$_fail_uv_lag" "$_fail_pip_lag" "$_fail_git"; do _failed_host "$_o"; done | paste -sd' ' -)"
 assert_eq "failed host: a stalled download names no URL, so the host that ran it; none when another URL is named" "torch none none" "$({ _failed_host "$_fail_uv_stall" torch; _failed_host "$_fail_uv_stall"; _failed_host "$_fail_git" pypi; } | paste -sd' ' -)"
 
-# run_install_cmd(_retry) around the real _run_install_cmd_once; the stub uv logs each run and fails as FAIL says, without a mirror index.
 { cat "$_WORK/block.sh"; for _f in run_install_cmd _mirror_retry_install _ric_tee _run_install_cmd_once run_install_cmd_retry; do sed -n "/^$_f() {/,/^}/p" "$INSTALL_SH"; done; } > "$_WORK/retry.sh"
 mkdir -p "$_WORK/uvbin"
 cat > "$_WORK/uvbin/uv" <<'EOF'
