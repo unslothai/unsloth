@@ -57,6 +57,7 @@ from backend.utils.wheel_utils import (
     install_wheel,
     probe_torch_wheel_env,
     url_exists,
+    xformers_torch_requirement_unmet,
 )
 from backend.utils.uv_path_safety import uv_safe_path as _uv_safe_path
 
@@ -249,9 +250,10 @@ def _torch_below_211(installed_ver: str) -> bool:
 
 
 # AMD per-arch leaves needing the torch 2.11 floor (the _grouped_mm <2.11 bug).
-# Mirrors *FloorMap in install.ps1 / setup.ps1; other arches ship <2.11 and stay bare.
+# Mirrors *FloorMap in install.ps1 / setup.ps1 (unslothai/unsloth#11814).
+# gfx908 / gfx90a stay bare on purpose: no Windows wheels; Linux floors them via the rocm7.2 index.
 _ROCM_GFX_TORCH211_LEAVES: frozenset[str] = frozenset(
-    {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152"}
+    {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152", "gfx103x-all", "gfx110x-all"}
 )
 
 # rocmX.Y indexes KNOWN to ship torch 2.11; never floor an unknown newer rocm.
@@ -285,6 +287,17 @@ _WINDOWS_ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
     "gfx1151": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
     "gfx1150": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
     "gfx1152": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1030": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1031": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1032": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1033": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1034": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1035": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1036": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1100": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1101": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1102": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1103": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
 }
 # RDNA 1 has no repo.amd.com/rocm/whl family; AMD's multi-arch index picks the card by the
 # torch[device-gfxNNNN] extra. Pinned to the newest tag inside the Windows <2.12.0 window.
@@ -4032,7 +4045,7 @@ def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
         # Decisive the other way too, on leaves with no floor. The heuristic below reads any
         # 2.11 build as a mismatch, since that is what a build from some OTHER index looks
         # like -- but these leaves serve 2.11 as well, and the family says this one came from
-        # the pinned index. Without it a correctly pinned gfx110X host force-reinstalls under
+        # the pinned index. Without it a correctly pinned gfx90a host force-reinstalls under
         # the legacy torch<2.11 cap on every update.
         if _family is not None and _inst_is_perarch:
             return False
@@ -7237,6 +7250,25 @@ def _evict_xformers_built_for_another_torch() -> bool:
     return True
 
 
+def _evict_xformers_requiring_another_torch() -> bool:
+    """Remove an xFormers whose torch requirement is unmet, even if torch is unchanged (--overrides, #11545)."""
+    mismatch = xformers_torch_requirement_unmet()
+    if mismatch is None:
+        return False
+    xformers_version, requirement, torch_version = mismatch
+    if not _uninstall_distribution("xformers"):
+        _safe_print(
+            f"   [WARN] xformers {xformers_version} requires torch{requirement}, not "
+            f"{torch_version}, and could not be removed; diffusers cannot import it."
+        )
+        return False
+    _note(
+        f"xformers {xformers_version} requires torch{requirement}, not {torch_version} "
+        "-- removed; attention uses torch SDPA"
+    )
+    return True
+
+
 WINDOWS_ARM64_PUBLIC_INDEX_WHEELS: "dict[str, dict[str, str]]" = {
     "llvmlite": {"cp314": "0.49.0"},
     "numba": {"cp314": "0.67.0"},
@@ -9564,6 +9596,51 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
 # -- Main install sequence ---------------------------------------------
 
 
+# Apple's Command Line Tools shim, which pops a GUI install dialog when run without a toolchain.
+_CLT_GIT_SHIM = "/usr/bin/git"
+
+
+def _apple_silicon_hardware() -> bool:
+    """Whether the MACHINE is Apple Silicon, even when this Python runs under Rosetta.
+
+    install.sh's _MAC_ROSETTA: an x86_64 shell on an arm64 Mac reports x86_64, while
+    hw.optional.arm64 stays 1. Intel Macs keep probing /usr/bin/git by running it, as install.sh
+    does, because a CI Intel image ships a working one there.
+    """
+    if not IS_MACOS:
+        return False
+    if platform.machine() == "arm64":
+        return True
+    try:
+        answer = subprocess.run(
+            ["sysctl", "-in", "hw.optional.arm64"],
+            capture_output = True,
+            text = True,
+            timeout = 10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return answer.strip() == "1"
+
+
+def _is_unarmed_clt_git_shim(exe: str) -> bool:
+    """`exe` is Apple Silicon's /usr/bin/git shim and `xcode-select -p` names no toolchain."""
+    if exe != _CLT_GIT_SHIM or not _apple_silicon_hardware():
+        return False
+    try:
+        return (
+            subprocess.run(
+                ["xcode-select", "-p"],
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+                timeout = 30,
+            ).returncode
+            != 0
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+
+
 def _has_working_git() -> bool:
     """Match install.sh's _has_working_git: on PATH *and* actually runnable.
 
@@ -9573,6 +9650,12 @@ def _has_working_git() -> bool:
     """
     exe = shutil.which("git")
     if exe is None:
+        return False
+    # Without the Command Line Tools, Apple Silicon's /usr/bin/git is Apple's shim, and running it
+    # raises the "install the command line developer tools" dialog: the probe would fire the very
+    # prompt it exists to avoid. Answer from the path, as install.sh does. Only that exact shim with
+    # no toolchain selected; a Homebrew or Xcode.app git is real and is still run.
+    if _is_unarmed_clt_git_shim(exe):
         return False
     try:
         return (
@@ -10648,10 +10731,34 @@ def _diffusers_main_supersedes_release() -> bool:
     return _diffusers_main_requested() and _diffusers_main_resident()
 
 
+_ARCHIVE_SHA256_RE = re.compile(r"#\s*archive-sha256:\s*([0-9a-fA-F]{64})")
+
+
+def _archive_sha256_in_requirements(req: Path) -> "str | None":
+    """The ``# archive-sha256:`` digest *req* pins for its zip, or None unless exactly one."""
+    try:
+        text = req.read_text(encoding = "utf-8-sig")
+    except (OSError, ValueError):
+        return None
+    found = [
+        m.group(1).lower()
+        for m in (_ARCHIVE_SHA256_RE.fullmatch(line.strip()) for line in text.splitlines())
+        if m
+    ]
+    return found[0] if len(found) == 1 else None
+
+
 def _diffusers_main_archive(req: Path) -> "str | None":
-    """The zip route 11c takes on a host with no working git, or None when it has none."""
+    """The hash-pinned zip route 11c takes with no working git, or None when it has none.
+
+    pip and uv record the URL without the ``#sha256=`` fragment, so residency still matches it.
+    """
     wanted = _direct_reference_in_requirements(req)
-    return _github_archive_url(*wanted) if wanted is not None else None
+    archive = _github_archive_url(*wanted) if wanted is not None else None
+    digest = _archive_sha256_in_requirements(req)
+    if archive is None or digest is None:
+        return None
+    return f"{archive}#sha256={digest}"
 
 
 def _diffusers_main_needs_dependency_pass() -> bool:
@@ -11756,6 +11863,7 @@ def install_python_stack() -> int:
                 f"{_torch_after_repair} during the repair -- re-selecting torchao"
             )
             _install_torchao_for_torch(_torch_after_repair)
+        _evict_xformers_requiring_another_torch()
 
     # 13w. Windows torch flavor invariant, separate from step 13's Linux-shaped repair set
     # but in the same position: last, after the with-deps steps re-resolved torch.

@@ -686,11 +686,11 @@ class TestNoUnregisteredArchTable:
 
 
 class TestTorch211PinAllowlistParity:
-    """gfx120X-all / gfx1151 / gfx1150 / gfx1152 (and rocm7.2) ship the null
+    """gfx120X-all / gfx1151 / gfx1150 / gfx1152 / gfx103X-all / gfx110X-all (and rocm7.2) ship the null
     _grouped_mm kernel below torch 2.11, so all three installers must raise the
     same floor. A leaf missing from one copy reintroduces the crash there."""
 
-    _EXPECTED = {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152"}
+    _EXPECTED = {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152", "gfx103x-all", "gfx110x-all"}
 
     def test_install_sh_pins_the_same_leaves(self):
         source = _INSTALL_SH.read_text(encoding = "utf-8")

@@ -197,13 +197,16 @@ def test_the_reroute_is_not_gated_on_the_rocm_version_floor():
     assert f"{_AMD}/gfx110X-all/" in calls, calls
 
 
-def test_the_companion_pins_are_bounded_but_not_floored_at_211():
-    """Bound companion versions without excluding older per-arch mirror builds."""
+def test_the_companion_pins_carry_the_211_floor_on_a_grouped_mm_leaf():
+    """gfx110X-all joined the torch 2.11 allowlist with unslothai/unsloth#11814 (its 2.10 build
+    access-violates in _grouped_mm), so the reroute installs the floored trio; every companion
+    stays bounded above, so none can drift to a different torch major."""
     calls = _run_install(gfx_devices = ("gfx1103",))
-    for spec in stack_mod._ROCM_ARCH_INDEX_TORCH_PKG_SPEC:
+    for spec in stack_mod._ROCM_TORCH_PKG_SPECS["rocm7.2"]:
         assert spec in calls, (spec, calls)
-    assert "torch>=2.11.0" not in calls, calls
-    # Every companion is bounded above, so none can drift to a different torch major.
+    assert "torch>=2.11.0" in calls, calls
+    assert all("<" in spec for spec in stack_mod._ROCM_TORCH_PKG_SPECS["rocm7.2"])
+    # The bounded-but-unfloored spec is still what a leaf outside the allowlist would get.
     assert all("<" in spec for spec in stack_mod._ROCM_ARCH_INDEX_TORCH_PKG_SPEC)
 
 
