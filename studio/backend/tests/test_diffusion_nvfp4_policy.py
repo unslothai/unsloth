@@ -13,11 +13,14 @@ torch = pytest.importorskip("torch")
 nn = torch.nn
 
 from core.inference.diffusion_nvfp4_policy import (  # noqa: E402
-    FLUX_MOD_SINGLE,
+    FLUX_R420,
     NVFP4_POLICY_KEY,
+    NVFP4_POLICIES,
     NVFP4_POLICY_KIND,
+    QWEN21_R020,
+    QWEN2512_M120_ATTN8,
     QWEN_P02,
-    ZIMAGE_F8MOD_TOQ34,
+    ZIMG_RG76,
     Admit,
     NVFP4Policy,
     PolicyMismatch,
@@ -145,6 +148,29 @@ def _qwen_rows() -> list:
     return rows
 
 
+def _qwen21_rows() -> list:
+    """Qwen-Image-2.1's 232 linears: 32 single-stream blocks and one global modulation."""
+    rows = [
+        ("img_in", 64, 4096),
+        ("txt_in.in_layer", 4096, 4096),
+        ("txt_in.out_layer", 4096, 4096),
+        ("modulation.1", 4096, 16384),
+        ("norm_out.linear", 4096, 4096),
+        ("proj_out", 4096, 64),
+        ("time_text_embed.timestep_embedder.linear_1", 256, 4096),
+        ("time_text_embed.timestep_embedder.linear_2", 4096, 4096),
+    ]
+    for index in range(32):
+        prefix = f"transformer_blocks.{index}"
+        for leaf in ("to_q", "to_k", "to_v"):
+            rows.append((f"{prefix}.attn.{leaf}", 4096, 4096))
+        rows.append((f"{prefix}.attn.to_out.0", 4096, 4096))
+        rows.append((f"{prefix}.img_mlp.proj", 4096, 12288))
+        rows.append((f"{prefix}.img_mlp.gate_layer", 4096, 12288))
+        rows.append((f"{prefix}.img_mlp.out", 12288, 4096))
+    return rows
+
+
 class _Tree:
     def __init__(self, rows) -> None:
         self.linears = {
@@ -169,20 +195,35 @@ def _qwen() -> _Tree:
     return _Tree(_qwen_rows())
 
 
+def _qwen21() -> _Tree:
+    return _Tree(_qwen21_rows())
+
+
 def test_the_synthetic_trees_reproduce_the_census_they_came_from():
     from core.inference.diffusion_transformer_quant import make_filter_fn
     admitted = make_filter_fn(512, ("lora_",), require_bf16 = True, require_divisible = 16)
-    for tree, total, admits in ((_zimage(), 276, 239), (_flux(), 502, 499), (_qwen(), 846, 843)):
+    for tree, total, admits in (
+        (_zimage(), 276, 239),
+        (_flux(), 502, 499),
+        (_qwen(), 846, 843),
+        (_qwen21(), 232, 229),
+    ):
         assert len(tree.linears) == total
         assert sum(1 for fqn, m in tree.linears.items() if admitted(m, fqn)) == admits
 
 
 def test_a_policy_resolves_for_the_bases_it_was_solved_on_and_no_others():
-    assert resolve_policy("z-image", "Tongyi-MAI/Z-Image-Turbo") is ZIMAGE_F8MOD_TOQ34
-    assert resolve_policy("flux.1", "black-forest-labs/FLUX.1-schnell") is FLUX_MOD_SINGLE
+    assert resolve_policy("z-image", "Tongyi-MAI/Z-Image-Turbo") is ZIMG_RG76
+    assert resolve_policy("flux.1", "black-forest-labs/FLUX.1-schnell") is FLUX_R420
     assert resolve_policy("qwen-image", "Qwen/Qwen-Image") is QWEN_P02
-    assert resolve_policy("z-image", "unsloth/Z-Image-Turbo") is ZIMAGE_F8MOD_TOQ34
-    assert resolve_policy("flux.1", "  UNSLOTH/FLUX.1-schnell ") is FLUX_MOD_SINGLE
+    assert resolve_policy("qwen-image", "Qwen/Qwen-Image-2512") is QWEN2512_M120_ATTN8
+    assert resolve_policy("qwen-image", "unsloth/Qwen-Image-2512") is QWEN2512_M120_ATTN8
+    assert resolve_policy("qwen-image-2.1", "Qwen/Qwen-Image-2.1") is QWEN21_R020
+    assert resolve_policy("qwen-image-2.1", "unsloth/Qwen-Image-2.1") is QWEN21_R020
+    assert resolve_policy("qwen-image", "Qwen/Qwen-Image-2.1") is None
+    assert resolve_policy("qwen-image-2.1", "Qwen/Qwen-Image-2512") is None
+    assert resolve_policy("z-image", "unsloth/Z-Image-Turbo") is ZIMG_RG76
+    assert resolve_policy("flux.1", "  UNSLOTH/FLUX.1-schnell ") is FLUX_R420
     assert resolve_policy("flux.1", "black-forest-labs/FLUX.1-dev") is None
     assert resolve_policy("qwen-image", "Qwen/Qwen-Image-Edit-2511") is None
     assert resolve_policy("z-image", None) is None
@@ -196,8 +237,10 @@ def test_a_policy_resolves_for_the_bases_it_was_solved_on_and_no_others():
 @pytest.mark.parametrize(
     ("policy", "tree_fn", "expected"),
     [
-        (ZIMAGE_F8MOD_TOQ34, _zimage, {NVFP4: 34, FP8: 237, BF16: 5}),
-        (FLUX_MOD_SINGLE, _flux, {NVFP4: 38, FP8: 461, BF16: 3}),
+        (ZIMG_RG76, _zimage, {NVFP4: 76, FP8: 195, BF16: 5}),
+        (FLUX_R420, _flux, {NVFP4: 187, FP8: 312, BF16: 3}),
+        (QWEN21_R020, _qwen21, {NVFP4: 48, FP8: 181, BF16: 3}),
+        (QWEN2512_M120_ATTN8, _qwen, {NVFP4: 600, FP8: 243, BF16: 3}),
         (QWEN_P02, _qwen, {NVFP4: 120, FP8: 723, BF16: 3}),
     ],
 )
@@ -209,14 +252,33 @@ def test_each_policy_assigns_the_layer_counts_it_was_gated_at(policy, tree_fn, e
     assert dict(policy.expected_counts) == expected
 
 
-def test_zimage_takes_the_to_q_projections_and_admits_the_modulation_the_floor_rejects():
+def test_the_superseded_picks_are_gone_rather_than_left_resolvable():
+    # A hosted artifact built at one of these declares it; the loader must refuse, not load it.
+    assert policy_by_id("zimg_f8mod_toq34_v1") is None
+    assert policy_by_id("flux_mod_single_v1") is None
+    bases = {}
+    for policy in NVFP4_POLICIES:
+        for base in policy.base_repos:
+            assert (policy.family, base) not in bases, (policy.policy_id, bases.get((policy.family, base)))
+            bases[(policy.family, base)] = policy.policy_id
+
+
+def test_zimage_takes_both_query_and_key_the_early_ffn_gate_and_admits_the_modulation():
     tree = _zimage()
-    assignment = assign_precisions(tree, ZIMAGE_F8MOD_TOQ34)
+    assignment = assign_precisions(tree, ZIMG_RG76)
     nvfp4 = sorted(fqn for fqn, precision in assignment.items() if precision == NVFP4)
-    assert len(nvfp4) == 34
-    assert all(fqn.endswith(".attention.to_q") for fqn in nvfp4)
-    assert "context_refiner.0.attention.to_q" in nvfp4
-    assert "noise_refiner.1.attention.to_q" in nvfp4
+    assert len(nvfp4) == 76
+    assert sum(1 for fqn in nvfp4 if fqn.endswith(".attention.to_q")) == 34
+    assert sum(1 for fqn in nvfp4 if fqn.endswith(".attention.to_k")) == 34
+    assert "context_refiner.0.attention.to_k" in nvfp4
+    w1 = sorted(fqn for fqn in nvfp4 if fqn.endswith(".feed_forward.w1"))
+    assert w1 == [f"layers.{i}.feed_forward.w1" for i in range(6)] + [
+        "noise_refiner.0.feed_forward.w1",
+        "noise_refiner.1.feed_forward.w1",
+    ]
+    assert assignment["layers.6.feed_forward.w1"] == FP8
+    assert assignment["context_refiner.0.feed_forward.w1"] == FP8
+    assert assignment["layers.0.attention.to_v"] == FP8
     admits = [fqn for fqn in assignment if fqn.endswith(".adaLN_modulation.0")]
     assert len(admits) == 32
     assert {assignment[fqn] for fqn in admits} == {FP8}
@@ -237,10 +299,10 @@ def test_a_renamed_layer_raises_rather_than_shipping_a_different_model():
         (fqn.replace("attention.to_q", "attention.q_proj"), i, o) for fqn, i, o in _zimage_rows()
     ]
     with pytest.raises(PolicyMismatch, match = "attention.to_q"):
-        assign_precisions(_Tree(rows), ZIMAGE_F8MOD_TOQ34)
+        assign_precisions(_Tree(rows), ZIMG_RG76)
     extra = _zimage_rows() + [("layers.30.attention.to_q", 3840, 3840)]
     with pytest.raises(PolicyMismatch, match = "expects 34 layers, found 35"):
-        assign_precisions(_Tree(extra), ZIMAGE_F8MOD_TOQ34)
+        assign_precisions(_Tree(extra), ZIMG_RG76)
 
 
 def test_an_admitted_layer_of_another_width_is_refused_not_quantised():
@@ -248,10 +310,10 @@ def test_an_admitted_layer_of_another_width_is_refused_not_quantised():
         (fqn, i, 7680 if fqn.endswith(".adaLN_modulation.0") else o) for fqn, i, o in _zimage_rows()
     ]
     with pytest.raises(PolicyMismatch, match = r"\(256, 15360\)"):
-        assign_precisions(_Tree(rows), ZIMAGE_F8MOD_TOQ34)
+        assign_precisions(_Tree(rows), ZIMG_RG76)
     fewer = [row for row in _zimage_rows() if not row[0].startswith("noise_refiner.0.adaLN")]
     with pytest.raises(PolicyMismatch, match = "expecting 32 layers, found 31"):
-        assign_precisions(_Tree(fewer), ZIMAGE_F8MOD_TOQ34)
+        assign_precisions(_Tree(fewer), ZIMG_RG76)
 
 
 def test_a_layer_that_changed_width_moves_the_totals_and_raises():
@@ -296,15 +358,51 @@ def test_a_table_that_spells_out_a_zero_total_still_applies():
     assert assign_precisions(_flux(), spelled)
 
 
-def test_the_flux_rule_takes_the_single_blocks_modulation_and_no_other_linear():
-    assignment = assign_precisions(_flux(), FLUX_MOD_SINGLE)
-    nvfp4 = sorted(fqn for fqn, precision in assignment.items() if precision == NVFP4)
-    assert len(nvfp4) == 38
-    assert nvfp4[0] == "single_transformer_blocks.0.norm.linear"
-    assert assignment["transformer_blocks.0.norm1.linear"] == FP8
-    assert assignment["transformer_blocks.0.norm1_context.linear"] == FP8
+def test_a_per_block_rule_takes_exactly_the_blocks_it_lists():
+    flux = assign_precisions(_flux(), FLUX_R420)
+    single = [i for i in range(38) if flux[f"single_transformer_blocks.{i}.norm.linear"] == NVFP4]
+    assert single == list(range(11, 38))
+    assert flux["single_transformer_blocks.14.attn.to_k"] == FP8
+    assert flux["single_transformer_blocks.15.attn.to_k"] == NVFP4
+    assert flux["single_transformer_blocks.20.attn.to_v"] == FP8
+    assert flux["single_transformer_blocks.21.attn.to_v"] == NVFP4
+    assert flux["transformer_blocks.5.norm1.linear"] == NVFP4
+    assert flux["transformer_blocks.3.norm1.linear"] == FP8
+    assert flux["transformer_blocks.17.ff_context.net.2"] == FP8
+    assert flux["norm_out.linear"] == NVFP4
+    assert all(flux[f"transformer_blocks.{i}.attn.to_out.0"] == FP8 for i in range(19))
+    qwen21 = assign_precisions(_qwen21(), QWEN21_R020)
+    assert qwen21["transformer_blocks.5.attn.to_k"] == NVFP4
+    assert qwen21["transformer_blocks.3.attn.to_k"] == FP8
+    assert qwen21["transformer_blocks.29.attn.to_q"] == NVFP4
+    assert qwen21["transformer_blocks.28.attn.to_q"] == FP8
+    assert all(qwen21[f"transformer_blocks.{i}.img_mlp.out"] == FP8 for i in range(32))
+    assert not any(
+        qwen21[f"transformer_blocks.{i}.{leaf}"] == NVFP4
+        for i in (30, 31)
+        for leaf in ("attn.to_q", "attn.to_k", "img_mlp.proj", "img_mlp.gate_layer", "img_mlp.out")
+    )
+    assert qwen21["modulation.1"] == FP8 and qwen21["txt_in.in_layer"] == FP8
+
+
+def test_the_2512_policy_takes_modulation_and_all_eight_attention_projections():
+    assignment = assign_precisions(_qwen(), QWEN2512_M120_ATTN8)
+    nvfp4 = {fqn for fqn, precision in assignment.items() if precision == NVFP4}
+    leaves = {fqn.split(".", 2)[2] for fqn in nvfp4}
+    assert leaves == {
+        "img_mod.1",
+        "txt_mod.1",
+        "attn.to_q",
+        "attn.to_k",
+        "attn.to_v",
+        "attn.to_out.0",
+        "attn.add_q_proj",
+        "attn.add_k_proj",
+        "attn.add_v_proj",
+        "attn.to_add_out",
+    }
+    assert assignment["transformer_blocks.0.img_mlp.net.0.proj"] == FP8
     assert assignment["norm_out.linear"] == FP8
-    assert not any(fqn.startswith("transformer_blocks.") for fqn in nvfp4)
 
 
 def test_a_suffix_never_matches_a_longer_leaf_name():
@@ -326,15 +424,16 @@ def test_a_suffix_never_matches_a_longer_leaf_name():
 
 
 def test_the_timestep_embedder_mlp_stays_dense_under_every_image_policy():
-    assignment = assign_precisions(_zimage(), ZIMAGE_F8MOD_TOQ34)
+    assignment = assign_precisions(_zimage(), ZIMG_RG76)
     assert assignment["t_embedder.mlp.0"] == BF16
     assert assignment["t_embedder.mlp.2"] == BF16
-    flux = assign_precisions(_flux(), FLUX_MOD_SINGLE)
+    flux = assign_precisions(_flux(), FLUX_R420)
     assert flux["time_text_embed.timestep_embedder.linear_1"] == BF16
-    qwen = assign_precisions(_qwen(), QWEN_P02)
-    assert qwen["time_text_embed.timestep_embedder.linear_1"] == BF16
     assert flux["x_embedder"] == BF16 and flux["proj_out"] == BF16
-    assert qwen["img_in"] == BF16 and qwen["proj_out"] == BF16
+    for policy, tree in ((QWEN_P02, _qwen()), (QWEN2512_M120_ATTN8, _qwen()), (QWEN21_R020, _qwen21())):
+        qwen = assign_precisions(tree, policy)
+        assert qwen["time_text_embed.timestep_embedder.linear_1"] == BF16, policy.policy_id
+        assert qwen["img_in"] == BF16 and qwen["proj_out"] == BF16, policy.policy_id
 
 
 class _FakeQuantized:
@@ -382,16 +481,16 @@ def test_the_two_passes_are_disjoint_and_nvfp4_runs_first(monkeypatch):
 
     calls = _stub_quantize(monkeypatch)
     tree = _flux()
-    assignment = quantize_with_policy(tree, FLUX_MOD_SINGLE)
+    assignment = quantize_with_policy(tree, FLUX_R420)
     assert [call["config"] for call in calls] == ["cfg:nvfp4", "cfg:fp8"]
     nvfp4, fp8 = set(calls[0]["selected"]), set(calls[1]["selected"])
-    assert len(nvfp4) == 38 and len(fp8) == 461
+    assert len(nvfp4) == 187 and len(fp8) == 312
     assert not (nvfp4 & fp8)
     assert nvfp4 == {fqn for fqn, p in assignment.items() if p == NVFP4}
     assert fp8 == {fqn for fqn, p in assignment.items() if p == FP8}
     fp8_filter = calls[1]["filter_fn"]
-    already = tree.linears["single_transformer_blocks.0.norm.linear"]
-    assert not fp8_filter(already, "single_transformer_blocks.0.norm.linear")
+    already = tree.linears["single_transformer_blocks.11.norm.linear"]
+    assert not fp8_filter(already, "single_transformer_blocks.11.norm.linear")
     victim = "single_transformer_blocks.0.attn.to_q"
     tree.linears[victim]._parameters["weight"] = _FakeQuantized("NVFP4Tensor")
     assert not fp8_filter(tree.linears[victim], victim)
@@ -408,23 +507,23 @@ def test_a_pass_that_produced_the_wrong_tensor_class_fails_the_build(monkeypatch
     import core.inference.diffusion_transformer_quant  # noqa: F401 - the stub patches the module
     _stub_quantize(monkeypatch, produced = {"cfg:nvfp4": "Float8Tensor", "cfg:fp8": "Float8Tensor"})
     with pytest.raises(PolicyMismatch, match = "wanted NVFP4Tensor"):
-        quantize_with_policy(_zimage(), ZIMAGE_F8MOD_TOQ34)
+        quantize_with_policy(_zimage(), ZIMG_RG76)
 
 
 def test_the_metadata_block_records_the_set_that_was_built():
-    assignment = assign_precisions(_zimage(), ZIMAGE_F8MOD_TOQ34)
-    fragment = policy_metadata(ZIMAGE_F8MOD_TOQ34, assignment)
+    assignment = assign_precisions(_zimage(), ZIMG_RG76)
+    fragment = policy_metadata(ZIMG_RG76, assignment)
     block = fragment[NVFP4_POLICY_KEY]
     assert block["kind"] == NVFP4_POLICY_KIND
-    assert block["policy_id"] == "zimg_f8mod_toq34_v1" and block["policy_version"] == 1
-    assert block["counts"] == {BF16: 5, FP8: 237, NVFP4: 34}
-    assert len(block["nvfp4_fqns"]) == 34
+    assert block["policy_id"] == "zimg_rg76_v1" and block["policy_version"] == 1
+    assert block["counts"] == {BF16: 5, FP8: 195, NVFP4: 76}
+    assert len(block["nvfp4_fqns"]) == 76
     assert block["nvfp4_fqns"] == sorted(block["nvfp4_fqns"])
     assert block["activation_scales_baked"] is False and block["gptq"] is False
     assert declares_policy({"scheme": "nvfp4", **fragment})
     assert policy_metadata_error({"scheme": "nvfp4", **fragment}) is None
     assert (
-        policy_metadata(ZIMAGE_F8MOD_TOQ34, assign_precisions(_zimage(), ZIMAGE_F8MOD_TOQ34))
+        policy_metadata(ZIMG_RG76, assign_precisions(_zimage(), ZIMG_RG76))
         == fragment
     )
 
@@ -441,7 +540,7 @@ def test_an_unreadable_policy_block_reads_as_declared_so_it_can_be_refused():
     ("block", "expected"),
     [
         ({}, "unsupported nvfp4 policy"),
-        ("zimg_f8mod_toq34_v1", "not a dict"),
+        ("zimg_rg76_v1", "not a dict"),
         ({"kind": "unsloth_nvfp4_layer_policy_v2"}, "unsupported nvfp4 policy"),
         ({"kind": NVFP4_POLICY_KIND}, "no policy_id"),
         ({"kind": NVFP4_POLICY_KIND, "policy_id": "p"}, "policy_version"),

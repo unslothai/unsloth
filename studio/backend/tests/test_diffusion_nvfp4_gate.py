@@ -31,7 +31,7 @@ def _record(**overrides):
     record = {
         "family": "z-image",
         "base_repo": ZIMAGE_BASE,
-        "policy_id": "zimg_f8mod_toq34_v1",
+        "policy_id": "zimg_rg76_v1",
         "policy_version": 1,
         "checkpoint_sha256": "a" * 64,
         "repo_id": "unsloth/Z-Image-Turbo-NVFP4",
@@ -176,13 +176,30 @@ def test_a_recorded_failure_does_not_mask_a_later_checkpoint_that_passed(tmp_pat
 
 def test_a_policy_version_bump_invalidates_the_verdict(tmp_path, monkeypatch):
     path = _gate_file(tmp_path, _record())
-    bumped = dataclasses.replace(policy_mod.ZIMAGE_F8MOD_TOQ34, version = 2)
+    bumped = dataclasses.replace(policy_mod.ZIMG_RG76, version = 2)
     monkeypatch.setattr(
         policy_mod,
         "NVFP4_POLICIES",
         (bumped,) + tuple(p for p in policy_mod.NVFP4_POLICIES if p.policy_id != bumped.policy_id),
     )
     assert nvfp4_gate_passed("z-image", ZIMAGE_BASE, path = path) is False
+
+
+def test_a_record_at_a_superseded_policy_no_longer_gates_its_base(tmp_path):
+    # The artifact it measured declares a policy this build no longer resolves, so the loader
+    # refuses it; the record must not keep nvfp4 in the auto ladder on its behalf.
+    path = _gate_file(tmp_path, _record(policy_id = "zimg_f8mod_toq34_v1"))
+    assert nvfp4_gate_record("z-image", ZIMAGE_BASE, path = path) is not None
+    assert nvfp4_gate_passed("z-image", ZIMAGE_BASE, path = path) is False
+    flux = _record(
+        family = "flux.1",
+        base_repo = "black-forest-labs/FLUX.1-schnell",
+        policy_id = "flux_mod_single_v1",
+    )
+    path = _gate_file(tmp_path, flux)
+    assert nvfp4_gate_passed("flux.1", "black-forest-labs/FLUX.1-schnell", path = path) is False
+    path = _gate_file(tmp_path, dict(flux, policy_id = "flux_r420_v1"))
+    assert nvfp4_gate_passed("flux.1", "black-forest-labs/FLUX.1-schnell", path = path) is True
 
 
 def test_a_record_for_another_base_or_family_is_not_inherited(tmp_path):
@@ -195,7 +212,7 @@ def test_a_record_for_another_base_or_family_is_not_inherited(tmp_path):
 def test_a_record_pinned_to_another_policy_id_is_not_returned(tmp_path):
     path = _gate_file(tmp_path, _record())
     assert nvfp4_gate_record("z-image", ZIMAGE_BASE, "qwen_p02_v1", path = path) is None
-    assert nvfp4_gate_record("z-image", ZIMAGE_BASE, "zimg_f8mod_toq34_v1", path = path) is not None
+    assert nvfp4_gate_record("z-image", ZIMAGE_BASE, "zimg_rg76_v1", path = path) is not None
 
 
 def test_an_unreadable_or_absent_file_is_no_evidence_not_an_error(tmp_path):

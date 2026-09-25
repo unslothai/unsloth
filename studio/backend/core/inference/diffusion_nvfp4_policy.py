@@ -68,34 +68,6 @@ class NVFP4Policy:
     expected_counts: Mapping = field(default_factory = dict)
 
 
-ZIMAGE_F8MOD_TOQ34 = NVFP4Policy(
-    policy_id = "zimg_f8mod_toq34_v1",
-    version = 1,
-    family = "z-image",
-    base_repos = ("tongyi-mai/z-image-turbo",),
-    rules = (Rule(suffix = "attention.to_q", precision = PRECISION_NVFP4, expect = 34),),
-    admit = (Admit(suffix = "adaLN_modulation.0", shape = (256, 15360), expect = 32),),
-    # The two ``t_embedder.mlp`` layers cannot be swapped at all and stay dense.
-    expected_counts = {PRECISION_NVFP4: 34, PRECISION_FP8: 237, PRECISION_BF16: 5},
-)
-
-FLUX_MOD_SINGLE = NVFP4Policy(
-    policy_id = "flux_mod_single_v1",
-    version = 1,
-    family = "flux.1",
-    # schnell only: dev and Krea-dev are separate weights and need their own gate runs.
-    base_repos = ("black-forest-labs/flux.1-schnell",),
-    rules = (
-        Rule(
-            suffix = "norm.linear",
-            precision = PRECISION_NVFP4,
-            expect = 38,
-            prefix = "single_transformer_blocks.",
-        ),
-    ),
-    expected_counts = {PRECISION_NVFP4: 38, PRECISION_FP8: 461, PRECISION_BF16: 3},
-)
-
 QWEN_P02 = NVFP4Policy(
     policy_id = "qwen_p02_v1",
     version = 1,
@@ -108,7 +80,120 @@ QWEN_P02 = NVFP4Policy(
     expected_counts = {PRECISION_NVFP4: 120, PRECISION_FP8: 723, PRECISION_BF16: 3},
 )
 
-NVFP4_POLICIES: tuple = (ZIMAGE_F8MOD_TOQ34, FLUX_MOD_SINGLE, QWEN_P02)
+
+def _per_block(suffix: str, stem: str, blocks: tuple) -> tuple:
+    """One exact rule per listed block: the storage/quality solve ranks layers per block, not per class."""
+    return tuple(
+        Rule(suffix = suffix, precision = PRECISION_NVFP4, expect = 1, prefix = f"{stem}.{block}.")
+        for block in blocks
+    )
+
+
+# Points on the storage/quality frontier whose paired LPIPS(vgg) gap to the model's own fp8 stays
+# under 0.05 at the upper 95% bound on held-out pairs. They replace zimg_f8mod_toq34_v1 and
+# flux_mod_single_v1, so an artifact built at either is refused on load.
+ZIMG_RG76 = NVFP4Policy(
+    policy_id = "zimg_rg76_v1",
+    version = 1,
+    family = "z-image",
+    base_repos = ("tongyi-mai/z-image-turbo",),
+    rules = (
+        Rule(suffix = "attention.to_q", precision = PRECISION_NVFP4, expect = 34),
+        Rule(suffix = "attention.to_k", precision = PRECISION_NVFP4, expect = 34),
+        *_per_block("feed_forward.w1", "layers", (0, 1, 2, 3, 4, 5)),
+        Rule(suffix = "feed_forward.w1", precision = PRECISION_NVFP4, expect = 2, prefix = "noise_refiner."),
+    ),
+    admit = (Admit(suffix = "adaLN_modulation.0", shape = (256, 15360), expect = 32),),
+    # The two ``t_embedder.mlp`` layers cannot be swapped at all and stay dense.
+    expected_counts = {PRECISION_NVFP4: 76, PRECISION_FP8: 195, PRECISION_BF16: 5},
+)
+
+# One frontier point back from R600, whose paired gap to fp8 measured +0.044 [0.034, 0.053] on 48
+# held-out pairs. R600_lr32 sits between the two but needs a low-rank add path the NVFP4 linear lacks.
+FLUX_R420 = NVFP4Policy(
+    policy_id = "flux_r420_v1",
+    version = 1,
+    family = "flux.1",
+    # schnell only: dev and Krea-dev are separate weights and need their own gate runs.
+    base_repos = ("black-forest-labs/flux.1-schnell",),
+    rules = (
+        Rule(suffix = "norm_out.linear", precision = PRECISION_NVFP4, expect = 1),
+        *_per_block("attn.to_k", "single_transformer_blocks", tuple(range(15, 38))),
+        *_per_block("attn.to_q", "single_transformer_blocks", tuple(range(15, 38))),
+        *_per_block(
+            "attn.to_v", "single_transformer_blocks", (19, 21, 24, 26) + tuple(range(28, 38))
+        ),
+        *_per_block("norm.linear", "single_transformer_blocks", tuple(range(11, 38))),
+        *_per_block("proj_mlp", "single_transformer_blocks", tuple(range(16, 38))),
+        *_per_block("proj_out", "single_transformer_blocks", tuple(range(18, 38))),
+        *_per_block("attn.add_k_proj", "transformer_blocks", (3, 4, 6, 15)),
+        *_per_block("attn.add_q_proj", "transformer_blocks", (0, 4, 7, 9)),
+        *_per_block("attn.to_add_out", "transformer_blocks", (2,)),
+        *_per_block("attn.to_k", "transformer_blocks", (0, 4, 9)),
+        *_per_block("attn.to_q", "transformer_blocks", (0, 1, 5, 6)),
+        *_per_block("attn.to_v", "transformer_blocks", (6,)),
+        *_per_block("ff.net.0.proj", "transformer_blocks", (0, 1, 3, 4, 5)),
+        *_per_block("ff.net.2", "transformer_blocks", (0,) + tuple(range(2, 8))),
+        *_per_block("ff_context.net.0.proj", "transformer_blocks", (12, 13, 14)),
+        *_per_block(
+            "ff_context.net.2",
+            "transformer_blocks",
+            (0, 1, 2, 5, 6, 7, 10, 11, 12, 13, 14, 16, 18),
+        ),
+        *_per_block("norm1.linear", "transformer_blocks", (5,)),
+        *_per_block(
+            "norm1_context.linear",
+            "transformer_blocks",
+            (3, 4, 7, 8, 9, 12, 13, 14, 15, 16, 18),
+        ),
+    ),
+    expected_counts = {PRECISION_NVFP4: 187, PRECISION_FP8: 312, PRECISION_BF16: 3},
+)
+
+# One frontier point back from R040, whose paired gap to fp8 measured +0.039 [0.022, 0.057] on 48
+# held-out pairs: the upper bound missed 0.05 there.
+QWEN21_R020 = NVFP4Policy(
+    policy_id = "qwen21_r020_v1",
+    version = 1,
+    family = "qwen-image-2.1",
+    base_repos = ("qwen/qwen-image-2.1",),
+    rules = (
+        Rule(suffix = "norm_out.linear", precision = PRECISION_NVFP4, expect = 1),
+        *_per_block("attn.to_k", "transformer_blocks", (5, 7, 13) + tuple(range(15, 28))),
+        *_per_block("attn.to_q", "transformer_blocks", (1, 4, 18) + tuple(range(20, 28)) + (29,)),
+        *_per_block(
+            "img_mlp.gate_layer", "transformer_blocks", (8, 13, 17, 18, 19) + tuple(range(21, 29))
+        ),
+        *_per_block("img_mlp.proj", "transformer_blocks", (0, 1, 12, 13, 17, 18)),
+    ),
+    expected_counts = {PRECISION_NVFP4: 48, PRECISION_FP8: 181, PRECISION_BF16: 3},
+)
+
+# 2512 is its own weights under the qwen-image family: qwen_p02_v1 stays the Qwen/Qwen-Image policy.
+QWEN2512_M120_ATTN8 = NVFP4Policy(
+    policy_id = "qwen2512_m120_attn8_v1",
+    version = 1,
+    family = "qwen-image",
+    base_repos = ("qwen/qwen-image-2512",),
+    rules = tuple(
+        Rule(suffix = suffix, precision = PRECISION_NVFP4, expect = 60)
+        for suffix in (
+            "attn.to_k",
+            "img_mod.1",
+            "txt_mod.1",
+            "attn.to_add_out",
+            "attn.add_q_proj",
+            "attn.to_v",
+            "attn.add_k_proj",
+            "attn.to_q",
+            "attn.to_out.0",
+            "attn.add_v_proj",
+        )
+    ),
+    expected_counts = {PRECISION_NVFP4: 600, PRECISION_FP8: 243, PRECISION_BF16: 3},
+)
+
+NVFP4_POLICIES: tuple = (ZIMG_RG76, FLUX_R420, QWEN21_R020, QWEN2512_M120_ATTN8, QWEN_P02)
 
 
 def policy_by_id(policy_id: Any) -> Optional[NVFP4Policy]:
