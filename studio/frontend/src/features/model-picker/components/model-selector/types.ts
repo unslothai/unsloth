@@ -99,8 +99,8 @@ export interface ModelPickTarget {
   displayName: string;
   ggufVariant?: string | null;
   isGguf: boolean;
-  /** Whether an OpenAI-compatible request can actually load this model. Not the same as isGguf:
-   *  local_model_resolver skips Ollama's scanner. Defaults to isGguf when unknown. */
+  /** Whether an OpenAI-compatible request may load this model; see apiAutoSwitchMayLoad.
+   *  Defaults to isGguf when unknown. */
   apiLoadable?: boolean;
   /** Identity the saved settings are keyed by, when that is not what loads: a repo cached outside
    *  the active HF cache loads by snapshot path while its settings key on the repo id. Probes

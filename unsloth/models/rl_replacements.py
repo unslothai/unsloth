@@ -1931,7 +1931,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
             unwrapped_model = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
 
-            lm_head = self.model.get_output_embeddings().weight
+            lm_head = unwrapped_model.get_output_embeddings().weight
 
             # Size on the dtype the forward actually runs in: with autocast off that is the model's own dtype.
             forward_dtype = (
