@@ -2200,13 +2200,13 @@ def _policy_meta(
 ):
     from core.inference.diffusion_nvfp4_policy import (
         NVFP4_POLICY_KEY,
-        ZIMAGE_F8MOD_TOQ34,
+        ZIMG_RG76,
         policy_metadata,
     )
 
-    policy = policy or ZIMAGE_F8MOD_TOQ34
-    assignment = {f"layers.{i}.attention.to_q": "nvfp4" for i in range(34)}
-    assignment.update({f"layers.{i}.feed_forward.w1": "fp8" for i in range(237)})
+    policy = policy or ZIMG_RG76
+    assignment = {f"layers.{i}.attention.to_q": "nvfp4" for i in range(76)}
+    assignment.update({f"layers.{i}.feed_forward.w1": "fp8" for i in range(195)})
     assignment.update({f"t_embedder.mlp.{i}": "bf16" for i in range(5)})
     block = dict(policy_metadata(policy, assignment)[NVFP4_POLICY_KEY])
     block.update(overrides)

@@ -1661,7 +1661,13 @@ def test_the_candidate_head_stays_the_selector_winner_with_a_prefer_row(
 def test_the_shipped_prefer_table_keeps_the_ladder_as_it_was(monkeypatch):
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
-    assert set(tq._FAMILY_AUTO_PREFER) == {"z-image", "flux.1", "qwen-image", "wan2.2-t2v-a14b"}
+    assert set(tq._FAMILY_AUTO_PREFER) == {
+        "z-image",
+        "flux.1",
+        "qwen-image",
+        "qwen-image-2.1",
+        "wan2.2-t2v-a14b",
+    }
     ungated = {name for name, row in tq._FAMILY_AUTO_PREFER.items() if not row.gated}
     assert ungated == {"wan2.2-t2v-a14b"}
     for name in ungated:
@@ -2098,7 +2104,7 @@ def test_quantize_transformer_applies_the_policy_when_one_resolves(monkeypatch):
     """An explicit nvfp4 on a gated base quantises the policy's layers, never the whole model."""
     order: list = []
     _nvfp4_runtime(monkeypatch, order)
-    policy = types.SimpleNamespace(policy_id = "zimg_f8mod_toq34_v1", version = 1)
+    policy = types.SimpleNamespace(policy_id = "zimg_rg76_v1", version = 1)
     applied: list = []
     resolved: list = []
     _policy_stub(monkeypatch, policy = policy, applied = applied, resolved = resolved)
@@ -2120,7 +2126,7 @@ def test_quantize_transformer_applies_the_policy_when_one_resolves(monkeypatch):
     assert applied[0][2] == 512
     assert order == ["pad", "guard"]
     assert transformer._unsloth_runtime_quant == TQ_NVFP4
-    assert transformer._unsloth_nvfp4_policy == "zimg_f8mod_toq34_v1"
+    assert transformer._unsloth_nvfp4_policy == "zimg_rg76_v1"
 
 
 def test_quantize_transformer_quantises_the_whole_model_without_a_policy(monkeypatch):
@@ -2150,7 +2156,7 @@ def test_quantize_transformer_only_asks_about_a_policy_for_nvfp4(monkeypatch):
     resolved: list = []
     _policy_stub(
         monkeypatch,
-        policy = types.SimpleNamespace(policy_id = "zimg_f8mod_toq34_v1", version = 1),
+        policy = types.SimpleNamespace(policy_id = "zimg_rg76_v1", version = 1),
         applied = [],
         resolved = resolved,
     )
@@ -2177,7 +2183,7 @@ def test_a_policy_mismatch_fails_the_whole_quantise(monkeypatch):
         np,
         "resolve_policy",
         lambda family, base_repo = None: types.SimpleNamespace(
-            policy_id = "zimg_f8mod_toq34_v1", version = 1
+            policy_id = "zimg_rg76_v1", version = 1
         ),
     )
 
@@ -2251,7 +2257,7 @@ def test_a_gated_row_is_inert_without_a_record_and_leads_with_one(monkeypatch, t
     _stub_nvfp4_backend(monkeypatch, "flashinfer")
     _gate(monkeypatch, tmp_path)
     assert _zimage_candidates(monkeypatch) == (TQ_INT8, TQ_FP8, TQ_MXFP8)
-    _gate(monkeypatch, tmp_path, _gate_row("z-image", _ZIMAGE_BASE, "zimg_f8mod_toq34_v1"))
+    _gate(monkeypatch, tmp_path, _gate_row("z-image", _ZIMAGE_BASE, "zimg_rg76_v1"))
     assert _zimage_candidates(monkeypatch) == (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8)
     assert (
         select_transformer_quant_scheme(
@@ -2283,11 +2289,11 @@ def test_the_gated_head_stands_on_any_backend_a_passing_record_names(monkeypatch
     _gate(
         monkeypatch,
         tmp_path,
-        _gate_row("z-image", _ZIMAGE_BASE, "zimg_f8mod_toq34_v1"),
+        _gate_row("z-image", _ZIMAGE_BASE, "zimg_rg76_v1"),
         _gate_row(
             "z-image",
             _ZIMAGE_BASE,
-            "zimg_f8mod_toq34_v1",
+            "zimg_rg76_v1",
             checkpoint_sha256 = "c" * 64,
             gptq = True,
             backend = "torchao",
@@ -2304,10 +2310,10 @@ def test_the_gated_head_stands_on_any_backend_a_passing_record_names(monkeypatch
     "row",
     [
         None,
-        _gate_row("z-image", _ZIMAGE_BASE, "zimg_f8mod_toq34_v1", all_pass = False),
-        _gate_row("z-image", _ZIMAGE_BASE, "zimg_f8mod_toq34_v1", policy_version = 2),
-        _gate_row("z-image", "some-org/Z-Image-Fork", "zimg_f8mod_toq34_v1"),
-        _gate_row("flux.1", "black-forest-labs/FLUX.1-schnell", "flux_mod_single_v1"),
+        _gate_row("z-image", _ZIMAGE_BASE, "zimg_rg76_v1", all_pass = False),
+        _gate_row("z-image", _ZIMAGE_BASE, "zimg_rg76_v1", policy_version = 2),
+        _gate_row("z-image", "some-org/Z-Image-Fork", "zimg_rg76_v1"),
+        _gate_row("flux.1", "black-forest-labs/FLUX.1-schnell", "flux_r420_v1"),
     ],
     ids = ["absent", "failed", "version-bump", "another-base", "another-family"],
 )
@@ -2321,7 +2327,7 @@ def test_nvfp4_stays_out_of_auto_unless_the_record_matches_exactly(monkeypatch, 
 def test_auto_will_not_offer_nvfp4_without_a_checkpoint_to_run(monkeypatch, tmp_path):
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
-    _gate(monkeypatch, tmp_path, _gate_row("z-image", _ZIMAGE_BASE, "zimg_f8mod_toq34_v1"))
+    _gate(monkeypatch, tmp_path, _gate_row("z-image", _ZIMAGE_BASE, "zimg_rg76_v1"))
     assert _zimage_candidates(monkeypatch, has_prequant = False) == (TQ_INT8, TQ_FP8, TQ_MXFP8)
     assert tq.auto_scheme_candidates(_target(), "z-image", base_repo = _ZIMAGE_BASE) == (
         TQ_INT8,
@@ -2387,7 +2393,7 @@ def test_the_refusal_message_names_the_missing_gate_record(monkeypatch, tmp_path
 def test_training_is_denied_nvfp4_for_every_family_gated_or_not(monkeypatch, tmp_path):
     from core.inference.diffusion_families import supported_family_names
 
-    _gate(monkeypatch, tmp_path, _gate_row("z-image", _ZIMAGE_BASE, "zimg_f8mod_toq34_v1"))
+    _gate(monkeypatch, tmp_path, _gate_row("z-image", _ZIMAGE_BASE, "zimg_rg76_v1"))
     assert tq._family_denied("z-image", TQ_NVFP4, _ZIMAGE_BASE) is False
     for family in (*supported_family_names(), "wan2.2-ti2v-5b", "minimax-h3", None, ""):
         assert tq._family_train_denied(family, TQ_NVFP4) is True, family
@@ -2414,7 +2420,7 @@ def test_the_candidate_head_stays_the_selector_winner_under_the_gate(
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, allowed)
     _stub_nvfp4_backend(monkeypatch, "flashinfer")
-    rows = [_gate_row("z-image", _ZIMAGE_BASE, "zimg_f8mod_toq34_v1")] if gated else []
+    rows = [_gate_row("z-image", _ZIMAGE_BASE, "zimg_rg76_v1")] if gated else []
     _gate(monkeypatch, tmp_path, *rows)
     kwargs = {"base_repo": _ZIMAGE_BASE, "has_prequant": lambda scheme: has_prequant}
     candidates = tq.auto_scheme_candidates(_target(), "z-image", **kwargs)
@@ -2452,7 +2458,7 @@ def test_a_gated_row_stands_only_on_the_backend_its_record_was_measured_on(
     _gate(
         monkeypatch,
         tmp_path,
-        _gate_row("z-image", _ZIMAGE_BASE, "zimg_f8mod_toq34_v1", backend = recorded),
+        _gate_row("z-image", _ZIMAGE_BASE, "zimg_rg76_v1", backend = recorded),
     )
     candidates = _zimage_candidates(monkeypatch)
     assert (TQ_NVFP4 in candidates) is offered
