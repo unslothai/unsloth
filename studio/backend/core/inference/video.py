@@ -169,6 +169,7 @@ from .video_minimax_h3_te import (
     h3_te_quant_scheme,
     h3_te_resident_gb,
 )
+from .video_nvenc import encode_nvenc, nvenc_gpu
 from utils.hardware import clear_gpu_cache
 
 # Shared with the image backend so both pin every loader call to the same live cache root
@@ -6808,7 +6809,16 @@ class VideoBackend:
                 )
                 if sample_rate:
                     encode_kwargs["audio_sample_rate"] = int(sample_rate)
-            encode_video(video_frames, fps, tmp.name, **encode_kwargs)
+            gpu = nvenc_gpu(logger = logger)
+            if gpu is None or not encode_nvenc(
+                video_frames,
+                fps,
+                tmp.name,
+                gpu,
+                encode_kwargs.get("audio"),
+                encode_kwargs.get("audio_sample_rate"),
+            ):
+                encode_video(video_frames, fps, tmp.name, **encode_kwargs)
             return Path(tmp.name).read_bytes()
         finally:
             try:
