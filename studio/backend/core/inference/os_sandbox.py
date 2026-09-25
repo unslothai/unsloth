@@ -704,6 +704,9 @@ def linux_unavailable_remediation() -> str:
     missing = [name for name in _LINUX_REQUIRED_BINARIES if shutil.which(name) is None]
     if missing:
         command = bwrap_install_command()
+        # Installing bwrap alone leaves it blocked on Ubuntu 23.10+; keep it one copy-paste.
+        if command and "apt-get" in command and _linux_userns_blocked_by_apparmor():
+            command = f"{command} && {_BWRAP_APPARMOR_FIX}"
         how = (
             f"run `{command}`"
             if command

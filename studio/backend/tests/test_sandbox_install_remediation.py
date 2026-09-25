@@ -33,10 +33,21 @@ def _which_only(monkeypatch, present):
 )
 def test_missing_bwrap_names_the_command_for_this_package_manager(monkeypatch, managers, command):
     _which_only(monkeypatch, managers)
+    monkeypatch.setattr(os_sandbox, "_linux_userns_blocked_by_apparmor", lambda: False)
     remediation = os_sandbox.linux_unavailable_remediation()
     assert f"`{command}`" in remediation
     # Setup never installed bwrap for an ordinary user, so the text must not send them there.
     assert "re-run Studio setup" not in remediation
+
+
+def test_missing_bwrap_on_ubuntu_with_userns_restriction_is_still_one_command(monkeypatch):
+    # Measured on 24.04: installing bubblewrap alone leaves it "setting up uid map: Permission denied".
+    _which_only(monkeypatch, {"apt-get"})
+    monkeypatch.setattr(os_sandbox, "_linux_userns_blocked_by_apparmor", lambda: True)
+    remediation = os_sandbox.linux_unavailable_remediation()
+    assert (
+        f"`sudo apt-get install -y bubblewrap && {os_sandbox._BWRAP_APPARMOR_FIX}`" in remediation
+    )
 
 
 def test_missing_bwrap_on_an_unknown_package_manager(monkeypatch):

@@ -3145,12 +3145,19 @@ _bwrap_install_command() {
 
 # Wanted, never required: bubblewrap runs Python and Terminal tool calls in an OS sandbox, and without it they run with software safeguards. Optional like the build tools, so it never asks for sudo: installed when the installer already runs as root, otherwise the one command is printed.
 _check_linux_tool_sandbox() {
+    _bw_restrict=""
+    # read, not cat: a builtin, so a minimal image without coreutils still gets the right advice.
+    read -r _bw_restrict <"${_BW_USERNS_SYSCTL:-/proc/sys/kernel/apparmor_restrict_unprivileged_userns}" 2>/dev/null || true
     if ! command -v bwrap >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
         ( _SMART_APT_OPTIONAL=true; _smart_apt_install bubblewrap ) || true
     fi
     if ! command -v bwrap >/dev/null 2>&1; then
         step "sandbox" "bubblewrap not installed: tool calls run with software safeguards" "$C_WARN"
         _bw_cmd="$(_bwrap_install_command)"
+        # One copy-paste on Ubuntu 23.10+: installing bwrap alone still leaves it blocked there.
+        case "$_bw_restrict:$_bw_cmd" in
+            1:*apt-get*) _bw_cmd="$_bw_cmd && $_BWRAP_APPARMOR_FIX" ;;
+        esac
         if [ -n "$_bw_cmd" ]; then
             substep "To run them in an OS sandbox: $_bw_cmd"
         else
@@ -3162,9 +3169,6 @@ _check_linux_tool_sandbox() {
         step "sandbox" "bubblewrap works: tool calls run in an OS sandbox"
         return 0
     fi
-    _bw_restrict=""
-    # read, not cat: a builtin, so a minimal image without coreutils still gets the right advice.
-    read -r _bw_restrict <"${_BW_USERNS_SYSCTL:-/proc/sys/kernel/apparmor_restrict_unprivileged_userns}" 2>/dev/null || true
     if [ "$_bw_restrict" = 1 ]; then
         step "sandbox" "AppArmor blocks bubblewrap: tool calls run with software safeguards" "$C_WARN"
         # Ubuntu ships this profile disabled in apparmor-profiles; it lets /usr/bin/bwrap create the namespace and strips its children's capabilities.

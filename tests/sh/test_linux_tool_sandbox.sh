@@ -77,6 +77,14 @@ assert_contains "warns about software safeguards"   "$_out" "bubblewrap not inst
 assert_contains "names the apt command"             "$_out" "sudo apt-get install -y bubblewrap"
 assert_contains "never fails the install"           "$_out" "RC=0"
 
+echo "=== apt host with the Ubuntu 23.10+ userns restriction: still one command ==="
+rm -f "$_BIN"/*
+_mk apt-get 'exit 0'
+echo 1 > "$_SYSCTL"
+_out="$(_run 0)"
+assert_contains "installs bwrap and loads its profile" "$_out" "install -y bubblewrap && sudo apt-get install -y apparmor-profiles"
+: > "$_SYSCTL"
+
 echo "=== dnf host: no apt call, the dnf command is printed ==="
 rm -f "$_BIN"/*
 _mk dnf 'exit 0'
