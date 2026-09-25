@@ -119,11 +119,9 @@ pub(crate) fn should_restore_initial_window_state(
     should_restore_saved_layout(config_dir, state_file_name)
 }
 
-/// Set when the plugin restored the saved layout at window creation.
 pub(crate) struct NativeLayoutRestored(pub(crate) AtomicBool);
 
-/// Read once by the first app layout: an already-restored window has no pending
-/// native events, so it must not wait for any before it is shown.
+/// Read once: a natively restored window has no pending events to wait for before show.
 #[tauri::command]
 pub fn take_native_layout_restored(state: tauri::State<'_, NativeLayoutRestored>) -> bool {
     state.0.swap(false, Ordering::SeqCst)
@@ -173,8 +171,7 @@ pub fn reset_app_window_layout_initialized(
     crate::native_intents::ensure_main_window(&window)?;
     reset_initialized(&app_config_dir(&app)?)?;
     native_restored.0.store(false, Ordering::SeqCst);
-    // The initial native restore may still be maximized when repair starts.
-    // Compact it before the frontend can reveal setup or a fallback window.
+    // Native restore may have maximized it; compact before setup can be revealed.
     window.unmaximize().map_err(|error| error.to_string())?;
     window
         .set_resizable(true)
