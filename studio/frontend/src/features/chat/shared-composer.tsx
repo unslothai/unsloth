@@ -1485,6 +1485,24 @@ export function SharedComposer({
         // active model's shared snapshot, which resolveFitMaxSeqLength would treat as a pin. A GGUF pane
         // with no explicit context loads at native (0 -> n_ctx_train), not the session maxSeqLength.
         const effectiveCustomContextLength = ownConfig.customContextLength;
+        // This pane's remembered vLLM / SGLang settings, sent as the single-model load sends them.
+        const paneEngine = targetIsGguf ? "auto" : (ownConfig.engine ?? "auto");
+        const paneEngineFields = {
+          engine: paneEngine,
+          engine_precision: ownConfig.enginePrecision ?? "auto",
+          engine_parallelism: ownConfig.engineParallelism ?? "tensor",
+          load_in_4bit: paneEngine === "auto",
+          ...(paneEngine !== "auto" && ownConfig.selectedGpuIds !== undefined
+            ? {
+                gpu_ids:
+                  reconcilePersistedGpuIds(
+                    ownConfig.selectedGpuIds,
+                    ownConfig.selectedGpuIndexKind,
+                    false,
+                  ) ?? undefined,
+              }
+            : {}),
+        };
         let loadTrustRemoteCode = trustRemoteCode;
         let approvedRemoteCodeFingerprint: string | null = null;
         // Size validation exactly as the load below, so the training-guard preflight checks the footprint
@@ -1502,7 +1520,7 @@ export function SharedComposer({
           model_path: sel.id,
           hf_token: currentStore.hfToken || null,
           max_seq_length: compareMaxSeqLength,
-          load_in_4bit: true,
+          ...paneEngineFields,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
@@ -1594,7 +1612,7 @@ export function SharedComposer({
           model_path: sel.id,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
           max_seq_length: compareMaxSeqLength,
-          load_in_4bit: true,
+          ...paneEngineFields,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
@@ -1750,6 +1768,9 @@ export function SharedComposer({
               : (ownConfig.llamaExtraArgs ?? null),
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
+          loadedEngine: resp.engine ?? "auto",
+          loadedEnginePrecision: resp.engine_precision ?? "auto",
+          loadedEngineParallelism: resp.engine_parallelism ?? "tensor",
           loadedDisableVision: resp.disable_vision ?? false,
           // Adopted from the echo like the knob above: this pane loaded its own model, so the editable
           // value must follow it or Advanced Settings shows the other pane's Vision state.
