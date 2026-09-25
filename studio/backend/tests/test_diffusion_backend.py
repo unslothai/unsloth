@@ -1197,6 +1197,36 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
     backend.unload()
 
 
+def test_deferred_speed_stays_off_when_only_an_explicit_tier_may_compile(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion as dmod
+
+    seen = []
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
+    monkeypatch.setattr(
+        dmod, "fp16_compile_explicit_only", lambda target: seen.append(target) or True
+    )
+    engaged = []
+    monkeypatch.setattr(
+        DiffusionBackend, "_engage_deferred_speed", lambda self, state: engaged.append(1)
+    )
+    monkeypatch.setattr(dmod.compile_cache, "begin", lambda **k: None)
+
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    status = _load_into(
+        backend, tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image"
+    )
+    assert seen
+    assert status["resolved"]["speed_mode"]["value"] == "off"
+    for p in ("one", "two", "three"):
+        backend.generate(prompt = p)
+    assert engaged == []
+    assert backend.status()["speed_mode"] == "off"
+    backend.unload()
+
+
 def test_deferred_speed_skips_when_lora_requested(fake_runtime, tmp_path, monkeypatch):
     # A compiled transformer rejects LoRA, so the deferral must skip while a LoRA is requested.
     from core.inference import diffusion as dmod
@@ -7129,6 +7159,189 @@ def test_pipeline_load_uses_predownloaded_dir(fake_runtime, tmp_path):
     backend.unload()
 
 
+def test_unload_mid_render_releases_the_pipeline(fake_runtime, monkeypatch):
+    # Regression: the cancelled render's traceback pinned the pipe past unload's cache clear, leaking VRAM.
+    import threading
+    import weakref
+
+    backend = DiffusionBackend()
+    # Skip the real hardware probe (nvidia-smi can take >10 s on a busy host) so step 0 arrives promptly.
+    monkeypatch.setattr(
+        backend, "_pick_device_and_dtype", lambda: ("cpu", sys.modules["torch"].float32)
+    )
+    at_step0 = threading.Event()
+    resume = threading.Event()
+
+    class _SteppingPipe:
+        def __init__(self) -> None:
+            self._interrupt = False
+
+        def __call__(
+            self,
+            *,
+            callback_on_step_end = None,
+            num_inference_steps = 8,
+            **kwargs,
+        ):
+            for i in range(num_inference_steps):
+                if self._interrupt:
+                    break
+                if callback_on_step_end is not None:
+                    callback_on_step_end(self, i, 0.0, {})
+                if i == 0:
+                    at_step0.set()
+                    resume.wait(5)
+            return types.SimpleNamespace(images = [_FakeImage()])
+
+    pipe = _SteppingPipe()
+    pipe_ref = weakref.ref(pipe)
+    backend._state = _LoadState(
+        pipe = pipe,
+        family = detect_family("unsloth/Z-Image-GGUF"),
+        repo_id = "r",
+        base_repo = "b",
+        device = "cpu",
+        dtype = "float32",
+        cpu_offload = False,
+    )
+    del pipe
+    cleared_with_pipe_gone = []
+    monkeypatch.setattr(
+        "core.inference.diffusion.clear_gpu_cache",
+        lambda: cleared_with_pipe_gone.append(pipe_ref() is None),
+    )
+
+    out: dict = {}
+
+    def _run():
+        try:
+            out["res"] = backend.generate(prompt = "p", steps = 8)
+        except Exception as exc:  # noqa: BLE001
+            out["exc"] = exc
+
+    t = threading.Thread(target = _run)
+    t.start()
+    assert at_step0.wait(5)
+    u = threading.Thread(target = backend.unload)
+    u.start()
+    assert backend._active_generate_cancel.wait(5)
+    resume.set()
+    t.join(5)
+    u.join(5)
+    assert "cancelled" in str(out["exc"]).lower()
+    assert pipe_ref() is None, "the cancelled render's traceback still pins the pipeline"
+    assert True in cleared_with_pipe_gone
+
+
+@pytest.mark.parametrize("transition_ends_first", [False, True])
+def test_replacing_load_mid_render_releases_the_pipeline(
+    fake_runtime, monkeypatch, transition_ends_first
+):
+    # Render starts after begin_load's token bump; teardown clears while the pipe is pinned, render must re-clear.
+    import threading
+    import weakref
+
+    from core.inference import diffusion as diffusion_mod
+
+    backend = DiffusionBackend()
+    # Skip the real hardware probe (nvidia-smi can take >10 s on a busy host) so step 0 arrives promptly.
+    monkeypatch.setattr(
+        backend, "_pick_device_and_dtype", lambda: ("cpu", sys.modules["torch"].float32)
+    )
+    at_step0 = threading.Event()
+    resume = threading.Event()
+    teardown_cleared = threading.Event()
+    render_done = threading.Event()
+
+    class _SteppingPipe:
+        def __init__(self) -> None:
+            self._interrupt = False
+
+        def __call__(
+            self,
+            *,
+            callback_on_step_end = None,
+            num_inference_steps = 8,
+            **kwargs,
+        ):
+            for i in range(num_inference_steps):
+                if self._interrupt:
+                    break
+                if callback_on_step_end is not None:
+                    callback_on_step_end(self, i, 0.0, {})
+                if i == 0:
+                    at_step0.set()
+                    resume.wait(5)
+            return types.SimpleNamespace(images = [_FakeImage()])
+
+    pipe = _SteppingPipe()
+    pipe_ref = weakref.ref(pipe)
+    backend._state = _LoadState(
+        pipe = pipe,
+        family = detect_family("unsloth/Z-Image-GGUF"),
+        repo_id = "r",
+        base_repo = "b",
+        device = "cpu",
+        dtype = "float32",
+        cpu_offload = False,
+    )
+    del pipe
+    cleared_with_pipe_gone = []
+
+    def _clear():
+        cleared_with_pipe_gone.append(pipe_ref() is None)
+        teardown_cleared.set()
+
+    monkeypatch.setattr("core.inference.diffusion.clear_gpu_cache", _clear)
+    real_clear_frames = diffusion_mod._clear_exception_frames
+
+    transition_done = threading.Event()
+
+    def _late_clear_frames(exc):
+        (transition_done if transition_ends_first else teardown_cleared).wait(5)
+        real_clear_frames(exc)
+
+    monkeypatch.setattr(diffusion_mod, "_clear_exception_frames", _late_clear_frames)
+    backend._load_token += 1
+    out: dict = {}
+
+    def _run():
+        try:
+            out["res"] = backend.generate(prompt = "p", steps = 8)
+        except Exception as exc:  # noqa: BLE001
+            out["exc"] = exc
+        render_done.set()
+
+    def _replacing_load():
+        with backend._lock:
+            with backend._generation_cancel_lock:
+                backend._active_generate_cancel.set()
+            backend._reserve_teardown_locked()
+        with backend._model_transition_slot():
+            with backend._lock:
+                try:
+                    backend._unload_locked()
+                finally:
+                    backend._release_teardown_locked()
+            if not transition_ends_first:
+                render_done.wait(5)
+        transition_done.set()
+
+    t = threading.Thread(target = _run)
+    t.start()
+    assert at_step0.wait(5)
+    ld = threading.Thread(target = _replacing_load)
+    ld.start()
+    assert backend._active_generate_cancel.wait(5)
+    resume.set()
+    t.join(5)
+    ld.join(5)
+    assert "cancelled" in str(out["exc"]).lower()
+    assert pipe_ref() is None
+    assert cleared_with_pipe_gone[0] is False, "the forced order did not happen"
+    assert True in cleared_with_pipe_gone
+
+
 def test_unload_waits_for_in_flight_denoise_before_teardown():
     # Regression: unload() must wait for a running denoise to exit before _unload_locked() tears down process-wide state it depends on.
     import threading
@@ -7668,6 +7881,130 @@ def test_download_plan_omits_a_cached_gguf_but_keeps_missing_companions(monkeypa
     # Cache state changes the pending download, never the selector's declared footprint.
     assert plan["required_bytes"] == 7 * GB + plan["total_bytes"]
     assert plan["checkpoint_bytes"] == 7 * GB
+
+
+def test_download_plan_stages_but_does_not_count_a_file_an_older_snapshot_holds(monkeypatch):
+    """README-only commit on a no-symlink cache: the GGUF is still staged but counts no bytes."""
+    _fake_flux_hub(monkeypatch)
+    _no_cache(monkeypatch)
+    asked = []
+
+    def reusable(repo_id, names, revision, declared_sizes, hf_token):
+        asked.append((repo_id, tuple(names)))
+        return {"flux1-dev-Q4_K_M.gguf"} if repo_id == "unsloth/FLUX.1-dev-GGUF" else set()
+
+    monkeypatch.setattr(DiffusionBackend, "_reusable_from_older_snapshot", staticmethod(reusable))
+
+    plan = _flux_download_plan()
+
+    checkpoint, base = plan["entries"]
+    assert checkpoint["repo_id"] == "unsloth/FLUX.1-dev-GGUF"
+    assert checkpoint["files"] == ["flux1-dev-Q4_K_M.gguf"]
+    assert checkpoint["bytes"] == 0
+    assert checkpoint["checkpoint"] is True
+    assert base["bytes"] > 0
+    assert plan["total_bytes"] == base["bytes"]
+    assert plan["checkpoint_bytes"] == 7 * GB
+    assert ("unsloth/FLUX.1-dev-GGUF", ("flux1-dev-Q4_K_M.gguf",)) in asked
+
+
+def test_reusable_from_older_snapshot_reads_the_live_cache_without_hashing(monkeypatch, tmp_path):
+    from hub.utils import snapshot_reuse
+
+    old, new = "1" * 40, "2" * 40
+    same, changed = b"s" * 4096, b"c" * 4096
+    snap = tmp_path / "models--unsloth--Qwen-Image-2.1-FP8" / "snapshots" / old
+    (snap / "vae").mkdir(parents = True)
+    (snap / "text_encoder.safetensors").write_bytes(same)
+    (snap / "vae" / "vae.safetensors").write_bytes(changed)
+    digests = {
+        old: {"text_encoder.safetensors": "a" * 64, "vae/vae.safetensors": "b" * 64},
+        new: {"text_encoder.safetensors": "a" * 64, "vae/vae.safetensors": "c" * 64},
+    }
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        snapshot_reuse,
+        "hub_remote_digests",
+        lambda repo_type, repo_id, token: lambda commit, paths: {
+            p: digests[commit][p] for p in paths
+        },
+    )
+    monkeypatch.setattr(snapshot_reuse, "file_digest", lambda *a, **k: pytest.fail("plan hashed"))
+
+    found = DiffusionBackend._reusable_from_older_snapshot(
+        "unsloth/Qwen-Image-2.1-FP8",
+        ["text_encoder.safetensors", "vae/vae.safetensors"],
+        new,
+        {"text_encoder.safetensors": len(same), "vae/vae.safetensors": len(changed)},
+        None,
+    )
+
+    assert found == {"text_encoder.safetensors"}
+    assert not (snap.parent / new).exists()
+    assert (
+        DiffusionBackend._reusable_from_older_snapshot(
+            "unsloth/Qwen-Image-2.1-FP8", ["text_encoder.safetensors"], None, {}, None
+        )
+        == set()
+    )
+
+
+def test_reusable_from_older_snapshot_targets_the_main_ref_when_unpinned(monkeypatch, tmp_path):
+    from hub.utils import snapshot_reuse
+
+    old, new = "1" * 40, "2" * 40
+    encoder = b"s" * 4096
+    repo = tmp_path / "models--unsloth--Qwen-Image-2.1-FP8"
+    (repo / "snapshots" / old).mkdir(parents = True)
+    (repo / "snapshots" / new / "vae").mkdir(parents = True)
+    (repo / "snapshots" / old / "te.safetensors").write_bytes(encoder)
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text(new)
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path))
+    head = {"main": "a" * 64}
+    asked = []
+
+    def digests(repo_type, repo_id, token):
+        def lookup(commit, paths):
+            asked.append(commit)
+            return {p: head.get(commit, "a" * 64) for p in paths}
+
+        return lookup
+
+    monkeypatch.setattr(snapshot_reuse, "hub_remote_digests", digests)
+
+    def reusable():
+        return DiffusionBackend._reusable_from_older_snapshot(
+            "unsloth/Qwen-Image-2.1-FP8",
+            ["te.safetensors"],
+            None,
+            {"te.safetensors": len(encoder)},
+            None,
+        )
+
+    assert reusable() == {"te.safetensors"}
+    assert asked[0] == "main"  # the worker fetches the Hub head, not the cached ref
+    head["main"] = "b" * 64
+    assert reusable() == set()
+
+
+def test_reusable_from_older_snapshot_keeps_the_anonymous_token_sentinel(monkeypatch, tmp_path):
+    from hub.utils import snapshot_reuse
+
+    tokens = []
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        snapshot_reuse,
+        "hub_remote_digests",
+        lambda repo_type, repo_id, token: tokens.append(token) or (lambda commit, paths: {}),
+    )
+
+    for token in (False, "", None, "hf_x"):
+        DiffusionBackend._reusable_from_older_snapshot(
+            "unsloth/Qwen-Image-2.1-FP8", ["te.safetensors"], "2" * 40, {"te.safetensors": 1}, token
+        )
+
+    assert tokens == [False, None, None, "hf_x"]
 
 
 def test_download_plan_is_empty_when_every_required_file_is_cached(monkeypatch):
@@ -8538,6 +8875,30 @@ def test_a_raising_unload_still_drains_the_teardown_fence(fake_runtime, tmp_path
     monkeypatch.setattr(diffusion_module, "clear_gpu_cache", real_clear)
     _load_into(backend, tmp_path)
     assert backend.generate(prompt = "after", steps = 2)["images"]
+
+
+def test_unload_returns_freed_host_pages_after_the_gpu_cache(fake_runtime, tmp_path, monkeypatch):
+    # The trim must run after clear_gpu_cache() (which runs gc) and with the state gone.
+    from core.inference import diffusion as diffusion_module
+
+    backend = _loaded_backend(tmp_path)
+    order = []
+    real_clear = diffusion_module.clear_gpu_cache
+
+    def _clear(*args, **kwargs):
+        order.append("clear")
+        return real_clear(*args, **kwargs)
+
+    def _trim(logger = None):
+        order.append(("trim", backend._state is None))
+        return True
+
+    monkeypatch.setattr(diffusion_module, "clear_gpu_cache", _clear)
+    monkeypatch.setattr(diffusion_module, "reclaim_host_memory", _trim)
+    assert backend.unload()["loaded"] is False
+    assert order == ["clear", ("trim", True)]
+    backend.unload()
+    assert order == ["clear", ("trim", True)]
 
 
 class _RecordingGate(threading.Event):
@@ -11802,6 +12163,45 @@ def test_image_auto_below_max_names_an_uncacheable_model(fake_runtime, tmp_path,
         backend.status()["resolved"]["transformer_cache"]["reason"]
         == "auto: model does not support step caching"
     )
+
+
+def test_unload_drains_pinned_host_memory_after_the_pipeline_is_gone(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion as diffusion_module
+
+    backend = _loaded_backend(tmp_path)
+    calls: list = []
+    monkeypatch.setattr(
+        diffusion_module, "clear_gpu_cache", lambda: calls.append(("clear", backend._state))
+    )
+    monkeypatch.setattr(
+        diffusion_module,
+        "release_pinned_host_memory",
+        lambda: calls.append(("host", backend._state)),
+    )
+    backend.unload()
+    assert calls == [("clear", None), ("host", None)]
+
+
+def test_unload_drains_pinned_host_memory_even_when_gpu_cleanup_raises(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion as diffusion_module
+
+    backend = _loaded_backend(tmp_path)
+    drained: list = []
+
+    def _sticky():
+        raise RuntimeError("CUDA error: an illegal memory access was encountered")
+
+    monkeypatch.setattr(diffusion_module, "clear_gpu_cache", _sticky)
+    monkeypatch.setattr(
+        diffusion_module, "release_pinned_host_memory", lambda: drained.append(True)
+    )
+    with pytest.raises(RuntimeError, match = "illegal memory access"):
+        backend.unload()
+    assert drained == [True]
 
 
 def test_status_reports_cuda_graph_off_once_every_armed_step_ran_eager():

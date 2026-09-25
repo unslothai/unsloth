@@ -1277,6 +1277,10 @@ class _InferenceRuntimeFields(BaseModel):
         ),
     )
     is_mlx: bool = Field(False, description = "Whether the active model is served by the MLX backend")
+    is_npu: bool = Field(
+        False,
+        description = "Whether the active model runs on the AMD Ryzen AI NPU (FastFlowLM through Lemonade)",
+    )
     mlx_kv_bits: Optional[int] = Field(
         None, description = "MLX KV quantization bit width actually applied, if any"
     )

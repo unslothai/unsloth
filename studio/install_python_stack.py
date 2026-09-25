@@ -57,6 +57,7 @@ from backend.utils.wheel_utils import (
     install_wheel,
     probe_torch_wheel_env,
     url_exists,
+    xformers_torch_requirement_unmet,
 )
 from backend.utils.uv_path_safety import uv_safe_path as _uv_safe_path
 
@@ -7208,6 +7209,25 @@ def _evict_xformers_built_for_another_torch() -> bool:
     return True
 
 
+def _evict_xformers_requiring_another_torch() -> bool:
+    """Remove an xFormers whose torch requirement is unmet, even if torch is unchanged (--overrides, #11545)."""
+    mismatch = xformers_torch_requirement_unmet()
+    if mismatch is None:
+        return False
+    xformers_version, requirement, torch_version = mismatch
+    if not _uninstall_distribution("xformers"):
+        _safe_print(
+            f"   [WARN] xformers {xformers_version} requires torch{requirement}, not "
+            f"{torch_version}, and could not be removed; diffusers cannot import it."
+        )
+        return False
+    _note(
+        f"xformers {xformers_version} requires torch{requirement}, not {torch_version} "
+        "-- removed; attention uses torch SDPA"
+    )
+    return True
+
+
 WINDOWS_ARM64_PUBLIC_INDEX_WHEELS: "dict[str, dict[str, str]]" = {
     "llvmlite": {"cp314": "0.49.0"},
     "numba": {"cp314": "0.67.0"},
@@ -11802,6 +11822,7 @@ def install_python_stack() -> int:
                 f"{_torch_after_repair} during the repair -- re-selecting torchao"
             )
             _install_torchao_for_torch(_torch_after_repair)
+        _evict_xformers_requiring_another_torch()
 
     # 13w. Windows torch flavor invariant, separate from step 13's Linux-shaped repair set
     # but in the same position: last, after the with-deps steps re-resolved torch.

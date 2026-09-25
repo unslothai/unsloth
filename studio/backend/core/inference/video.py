@@ -82,7 +82,9 @@ from .diffusion_memory import (
     normalize_memory_mode,
     plan_diffusion_memory,
     raise_on_unified_memory_shortfall,
+    reclaim_host_memory,
     reclaim_offload_host_memory,
+    release_pinned_host_memory,
     settled_snapshot_device_memory,
 )
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
@@ -145,6 +147,7 @@ from .video_families import (
     video_family_prequant_repo,
     video_family_prequant_schemes,
 )
+from .video_frames import uint8_video_frames
 from .video_minimax_h3 import (
     H3_ANCHOR_FIRST,
     H3_ANCHOR_LAST,
@@ -169,6 +172,7 @@ from .video_minimax_h3_te import (
     h3_te_quant_scheme,
     h3_te_resident_gb,
 )
+from .video_nvenc import encode_nvenc, nvenc_gpu
 from utils.hardware import clear_gpu_cache
 
 # Shared with the image backend so both pin every loader call to the same live cache root
@@ -4492,11 +4496,10 @@ class VideoBackend:
         attention_engaged = None
         # HunyuanVideo-1.5 only, and once for the whole pipe (the installer fans out over every denoiser DiT itself).
         # Before apply_attention_backend below, so the requested kernel pins onto the new processors. Held off on
-        # SPEED_OFF (which must stay bit-identical) and on SPEED_MAX (its blocks compile static until a dimension
-        # changes, and the trimmed text length varies per prompt, so the first prompts would each recompile).
+        # SPEED_OFF, which must stay bit-identical.
         attention_trim_engaged = (
             install_hunyuan_attention_trim(pipe, fam, logger = logger)
-            if effective_speed not in (SPEED_OFF, SPEED_MAX)
+            if effective_speed != SPEED_OFF
             else False
         )
         # Sets a flag the pipelines read when they first build their frequency tables, so it need only happen before
@@ -5142,6 +5145,7 @@ class VideoBackend:
         # Resolved BEFORE the placement below, not after it: the dense pin is a speed optimisation by its own reasoning,
         # so "off" has to be known in time to decline it.
         effective_speed = resolve_speed_mode(speed_mode, is_gguf = False, dense_default = SPEED_DEFAULT)
+        h3_vae_speed = effective_speed
         if effective_speed == SPEED_MAX:
             # SPEED_MAX compiles static until a dimension changes. H3's packed sequence length carries the caption's
             # token rows, so a static graph recompiles on new prompts: measured 0.957-1.000 s/step static against
@@ -5314,6 +5318,18 @@ class VideoBackend:
             speed_optims = tuple(k for k, v in applied.items() if v)
         except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
             logger.warning("video.h3_speed_optims failed, continuing unoptimised: %s", exc)
+        # nothing here compiles, so it follows the REQUESTED tier, not the denoiser's eager downgrade above
+        try:
+            from .video_minimax_h3_vae import apply_h3_vae_speedups
+            vae_levers = apply_h3_vae_speedups(
+                getattr(pipe, "vae", None),
+                speed_mode = h3_vae_speed,
+                workflow = workflow,
+                logger = logger,
+            )
+            speed_optims = speed_optims + tuple(f"h3_vae_{name}" for name in vae_levers)
+        except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
+            logger.warning("video.h3_vae_fast failed, keeping the stock VAE: %s", exc)
 
         resolved = build_resolved_record(
             {
@@ -6289,6 +6305,8 @@ class VideoBackend:
                         # Family-agnostic: no video family has a callback between its denoise loop and its decode, so
                         # every one of them gets its decode phase from the decoder itself.
                         stack.enter_context(_decode_phase(pipe, _on_decode))
+                        # The decoded clip becomes uint8 on the GPU, bit-identical to the np / pil export (video_frames).
+                        stack.enter_context(uint8_video_frames(pipe))
                         stack.enter_context(_completed_step_poller(_pump))
                         yield
 
@@ -6334,6 +6352,9 @@ class VideoBackend:
                     # must not keep reporting it compiled (a forced-compile quantised load runs ~30x slower eager),
                     # whether this render finished, was cancelled or failed.
                     settle_compile_fallback(state, pipe, logger)
+                    if fam.modular_workflow:
+                        from .video_minimax_h3_vae import settle_h3_vae_fallback
+                        settle_h3_vae_fallback(state, pipe)
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
 
@@ -6813,7 +6834,16 @@ class VideoBackend:
                 )
                 if sample_rate:
                     encode_kwargs["audio_sample_rate"] = int(sample_rate)
-            encode_video(video_frames, fps, tmp.name, **encode_kwargs)
+            gpu = nvenc_gpu(logger = logger)
+            if gpu is None or not encode_nvenc(
+                video_frames,
+                fps,
+                tmp.name,
+                gpu,
+                encode_kwargs.get("audio"),
+                encode_kwargs.get("audio_sample_rate"),
+            ):
+                encode_video(video_frames, fps, tmp.name, **encode_kwargs)
             return Path(tmp.name).read_bytes()
         finally:
             try:
@@ -6901,7 +6931,12 @@ class VideoBackend:
                 getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or ()
             )
             del state
-            clear_gpu_cache()
+            try:
+                clear_gpu_cache()
+            finally:
+                # finally: a sticky CUDA fault must not keep the pinned chunks locked.
+                release_pinned_host_memory()
+            reclaim_host_memory(logger = logger)
 
     def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
         with self._lock:
@@ -6970,6 +7005,13 @@ class VideoBackend:
             }
         from hub.utils.gguf import extract_quant_token
 
+        from . import diffusion_cuda_graph
+
+        resolved, speed_optims = diffusion_cuda_graph.live_status(
+            state.resolved,
+            state.speed_optims,
+            getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or (),
+        )
         fam = state.family
         default_steps, default_guidance = default_video_generation_params(
             state.gguf_filename,
@@ -6996,7 +7038,7 @@ class VideoBackend:
             "vae_tiling": state.vae_tiling,
             "memory_mode": state.memory_mode,
             "speed_mode": state.speed_mode,
-            "speed_optims": list(state.speed_optims),
+            "speed_optims": speed_optims,
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
             "transformer_quant": state.transformer_quant,
@@ -7026,7 +7068,7 @@ class VideoBackend:
                 "supports_audio_flow_shift": fam.default_audio_flow_shift is not None
                 and state.engine != "sd_cpp",
             },
-            "resolved": state.resolved,
+            "resolved": resolved,
         }
 
 

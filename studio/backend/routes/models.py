@@ -4844,12 +4844,8 @@ def _repo_gguf_size_bytes(repo_info) -> int:
             # Snapshot-relative: only the directory tells an MTP/ drafter from a primary quant.
             name = _cached_repo_file_name(f)
             if _is_main_gguf_filename(name):
-                blob_path = getattr(f, "blob_path", None)
-                size = f.size_on_disk or 0
-                if blob_path:
-                    unique_blobs[str(blob_path)] = size
-                else:
-                    unique_blobs[f"{rev_id}:{name}"] = size
+                from hub.services.models.cache_inventory import _blob_key
+                unique_blobs[_blob_key(f, f"{rev_id}:{name}")] = f.size_on_disk or 0
     return sum(unique_blobs.values())
 
 
@@ -5243,9 +5239,9 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                         and _snapshot_can_serve_a_load(selected)
                     ):
                         continue
-                total_size = sum(
-                    (f.size_on_disk or 0) for rev in repo_info.revisions for f in rev.files
-                )
+                from hub.services.models.cache_inventory import repo_unique_size_bytes
+
+                total_size = repo_unique_size_bytes(repo_info)
                 if total_size == 0:
                     continue
                 weight_files = [

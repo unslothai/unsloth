@@ -9,6 +9,7 @@ stack loads."""
 import builtins
 import contextlib
 import dataclasses
+import functools
 import sys
 import threading
 import time
@@ -4557,6 +4558,45 @@ def test_h3_modular_generation_ticks_and_cancels_through_the_scheduler(fake_runt
     assert pipe.scheduler.step.__func__ is _FakeH3Scheduler.step
 
 
+def test_the_pipeline_call_runs_with_uint8_frames_on_every_family(
+    fake_runtime, tmp_path, monkeypatch
+):
+    active: list = []
+
+    @contextlib.contextmanager
+    def _frames(pipe):
+        active.append(pipe)
+        try:
+            yield
+        finally:
+            active.remove(pipe)
+
+    monkeypatch.setattr("core.inference.video.uint8_video_frames", _frames)
+    seen_inside: list = []
+    for backend, pipe in (
+        (_load_ltx23_from_dir(tmp_path), None),
+        (VideoBackend(), "h3"),
+    ):
+        if pipe == "h3":
+            pipe = _load_h3_modular(backend)
+        else:
+            pipe = backend._state.pipe
+        original_call = type(pipe).__call__
+
+        def _call(
+            self,
+            *a,
+            _orig = original_call,
+            **k,
+        ):
+            seen_inside.append(list(active) == [self])
+            return _orig(self, *a, **k)
+
+        monkeypatch.setattr(type(pipe), "__call__", functools.wraps(original_call)(_call))
+        backend.generate(prompt = "a fox", steps = 2)
+    assert seen_inside == [True, True] and active == []
+
+
 def test_h3_native_transcode_is_torch_free_and_keeps_audio(monkeypatch, tmp_path):
     import io
     import math
@@ -5009,6 +5049,22 @@ def test_a_raising_teardown_still_drains_the_fence(fake_runtime, tmp_path, monke
     monkeypatch.setattr(video_mod, "clear_gpu_cache", lambda: None)
     _load_gguf(backend, tmp_path)
     assert backend.generate(prompt = "after", steps = 2)["mp4_bytes"] == b"MP4"
+
+
+def test_teardown_returns_freed_host_pages_after_the_gpu_cache(fake_runtime, tmp_path, monkeypatch):
+    from core.inference import video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    order = []
+    monkeypatch.setattr(video_mod, "clear_gpu_cache", lambda: order.append("clear"))
+    monkeypatch.setattr(
+        video_mod,
+        "reclaim_host_memory",
+        lambda logger = None: order.append(("trim", backend._state is None)) or True,
+    )
+    assert backend.unload()["loaded"] is False
+    assert order == ["clear", ("trim", True)]
 
 
 # ── the H3 native path and the audio VAE ─────────────────────────────────────
@@ -5547,18 +5603,27 @@ def test_attention_trim_installed_and_reported(fake_runtime, monkeypatch):
     assert "hunyuan_attn_trim" in status["speed_optims"]
 
 
-def test_attention_trim_skipped_for_static_shape_and_off_tiers(fake_runtime, monkeypatch):
-    # speed=off must stay bit-identical, and speed=max compiles the blocks with dynamic=False,
-    # where the prompt-dependent trimmed text length would make every prompt a fresh graph.
-    for mode in ("off", "max"):
-        calls = _trim_spy(monkeypatch)
-        backend = VideoBackend()
-        status = backend.load_pipeline(
-            "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = mode
-        )
-        assert status["loaded"] is True, mode
-        assert calls == [], mode
-        assert "hunyuan_attn_trim" not in status["speed_optims"], mode
+def test_attention_trim_skipped_on_the_off_tier(fake_runtime, monkeypatch):
+    calls = _trim_spy(monkeypatch)
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "off"
+    )
+    assert status["loaded"] is True
+    assert calls == []
+    assert "hunyuan_attn_trim" not in status["speed_optims"]
+
+
+@pytest.mark.parametrize("mode", ["eager", "default", "max"])
+def test_attention_trim_installed_on_every_speed_tier(fake_runtime, monkeypatch, mode):
+    calls = _trim_spy(monkeypatch)
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = mode
+    )
+    assert status["loaded"] is True
+    assert len(calls) == 1
+    assert "hunyuan_attn_trim" in status["speed_optims"]
 
 
 def test_every_video_fetch_resolves_both_cache_roots():
@@ -9810,6 +9875,70 @@ def test_video_auto_below_max_names_an_uncacheable_dit(fake_runtime, monkeypatch
     assert status["resolved"]["transformer_cache"]["reason"] == (
         "auto: model does not support step caching"
     )
+    backend.unload()
+
+
+def test_teardown_drains_pinned_host_memory_after_the_pipeline_is_gone(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    calls: list = []
+    monkeypatch.setattr(
+        video_mod, "clear_gpu_cache", lambda: calls.append(("clear", backend._state))
+    )
+    monkeypatch.setattr(
+        video_mod, "release_pinned_host_memory", lambda: calls.append(("host", backend._state))
+    )
+    backend.unload()
+    assert calls == [("clear", None), ("host", None)]
+
+
+def test_teardown_drains_pinned_host_memory_even_when_gpu_cleanup_raises(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    drained: list = []
+
+    def _sticky():
+        raise RuntimeError("CUDA error: an illegal memory access was encountered")
+
+    monkeypatch.setattr(video_mod, "clear_gpu_cache", _sticky)
+    monkeypatch.setattr(video_mod, "release_pinned_host_memory", lambda: drained.append(True))
+    with pytest.raises(RuntimeError, match = "illegal memory access"):
+        backend.unload()
+    assert drained == [True]
+
+
+def test_video_status_reports_cuda_graph_off_once_every_armed_step_ran_eager(fake_runtime):
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    handle = types.SimpleNamespace(
+        cache = {},
+        stats = {"eager_calls": 0, "refused_object": 0},
+        poisoned = False,
+        capture_error = None,
+    )
+    backend._state.pipe._unsloth_cuda_graphs = [handle]
+    resolved = {**(backend._state.resolved or {}), "cuda_graph": {"value": "on", "reason": "r"}}
+    backend._state = replace(
+        backend._state,
+        speed_optims = ("compiled", "cuda_graph"),
+        resolved = resolved,
+    )
+    assert backend.status()["resolved"]["cuda_graph"]["value"] == "on"
+
+    handle.stats.update(eager_calls = 30, refused_object = 30)
+    st = backend.status()
+    assert st["resolved"]["cuda_graph"]["value"] == "off"
+    assert "all 30 denoiser call(s) so far ran eager" in st["resolved"]["cuda_graph"]["reason"]
+    assert st["speed_optims"] == ["compiled"]
+    assert resolved["cuda_graph"]["value"] == "on"
     backend.unload()
 
 
