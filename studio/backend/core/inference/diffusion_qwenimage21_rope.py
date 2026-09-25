@@ -17,9 +17,10 @@ fusion per lane via ``addcmul``, which inductor lowers to a single ``fma`` (torc
 under ``emulate_precision_casts``, which Studio's compiled tiers set). Written over the full head dim
 (``swap_pairs(x)`` against interleaved cos / sin tables) the rotation fuses with the norm into one
 kernel and matches the complex multiply bit for bit. Inductor may schedule the fused norm's reduction
-differently from the unfused one: identical on B200 and RTX PRO 6000, a few 1-ulp elements on A100
-and L4, as many as the stock compile already has against eager. A card whose multiply matches
-neither form, torch <= 2.10 (no ``fma`` lowering), ROCm and eager calls keep the complex form.
+differently from the unfused one: identical on B200; on other cards some compiles move a few elements
+by one ulp at the rotation's input, about as many as the stock compile moves against eager. A card
+whose multiply matches neither form, torch <= 2.10 (no ``fma`` lowering), ROCm and eager calls keep
+the complex form.
 
 Installed on the diffusers module global only when the installed ``apply_rotary_emb_qwen`` and its
 caller are the functions this was written against (source fingerprint). Kill switch:

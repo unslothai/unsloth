@@ -87,8 +87,9 @@ def _compiled(prep, x, freqs, dynamic):
 @pytest.mark.parametrize("seq", [77, 1024])
 def test_compiled_real_rope_matches_the_complex_one(dynamic, seq, emulating):
     """The rotation itself is exact on every card (the fusion-form test below). Fused with the RoPE, the
-    QK norm's reduction can be scheduled differently from the unfused one: bit-identical on B200 and
-    RTX PRO 6000, a few 1-ulp elements on A100 / L4, as many as the stock compile has against eager."""
+    QK norm's reduction can be scheduled differently from the unfused one: bit-identical on B200, a few
+    elements one ulp apart at the rotation's input elsewhere, about as many as the stock compile moves
+    against eager. A rotation keeps each pair's length, so that ulp is read off the output pair."""
     # Qwen-Image-2.1's own head layout: inductor's schedule for the norm depends on it.
     attn = _attention("cuda", heads = 32, dim_head = 128)
     prep, x, freqs = _qk(attn, seq, "cuda")
@@ -101,8 +102,9 @@ def test_compiled_real_rope_matches_the_complex_one(dynamic, seq, emulating):
         moved = (r != s).sum().item()
         assert moved <= 2 * (s != e).sum().item() + 16
         if moved:
-            ulp = torch.finfo(s.dtype).eps * s.float().abs().clamp_min(torch.finfo(s.dtype).tiny)
-            assert bool(((r.float() - s.float()).abs() <= ulp).all())
+            pair = s.float().unflatten(-1, (-1, 2)).norm(dim = -1, keepdim = True).expand(*s.shape[:-1], -1, 2)
+            bound = 3 * torch.finfo(s.dtype).eps * pair.flatten(-2)
+            assert bool(((r.float() - s.float()).abs() <= bound).all())
 
 
 @_needs_exact
