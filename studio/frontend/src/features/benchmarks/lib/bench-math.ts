@@ -543,17 +543,47 @@ function stripOffloadArgs(args: readonly string[] | null | undefined): string[] 
   return out;
 }
 
+// Draft-depth flags a spec sweep owns through spec_draft_n_max. An inherited copy in chat's
+// pass-through args would last-wins-override the depth each row asks for: the backend keeps
+// explicit extras and appends them after its managed --draft-max / --spec-draft-n-max, so every
+// depth row would run at the inherited value. Legacy and post-rename spellings, both take a value.
+const SPEC_DEPTH_FLAGS = [
+  "--draft-max",
+  "--draft-min",
+  "--spec-draft-n-max",
+  "--spec-draft-n-min",
+];
+
+/** Drop inherited draft-depth flags: a spec sweep's rows set the depth themselves. */
+function stripSpecDepthArgs(args: readonly string[] | null | undefined): string[] {
+  const out: string[] = [];
+  const list = args ?? [];
+  for (let i = 0; i < list.length; i++) {
+    const eq = list[i].indexOf("=");
+    const name = eq >= 0 ? list[i].slice(0, eq) : list[i];
+    if (SPEC_DEPTH_FLAGS.includes(name)) {
+      if (eq < 0) i++; // its value is a separate token
+      continue;
+    }
+    out.push(list[i]);
+  }
+  return out;
+}
+
 export function variantLoad<T extends LoadPayload>(
   base: T,
   variant: Variant,
 ): T {
   const { llama_extra_args: extra, ...rest } = variant.load;
   // A row that owns GPU placement (the offload sweep) must not inherit chat's -ngl / --n-cpu-moe,
-  // which /load would promote over the row's requested layer count.
-  const baseArgs =
-    variant.load.gpu_memory_mode !== undefined
-      ? stripOffloadArgs(base.llama_extra_args)
-      : (base.llama_extra_args ?? []);
+  // which /load would promote over the row's requested layer count. A row that owns speculative
+  // decoding must not inherit chat's --draft-max / --spec-draft-n-max, which would override the
+  // depth the row asked for.
+  let baseArgs = base.llama_extra_args ?? [];
+  if (variant.load.gpu_memory_mode !== undefined)
+    baseArgs = stripOffloadArgs(baseArgs);
+  if (variant.load.speculative_type !== undefined)
+    baseArgs = stripSpecDepthArgs(baseArgs);
   return {
     ...base,
     ...rest,

@@ -214,6 +214,9 @@ async function streamOnce(
   let buffer = "";
   let ttftMs: number | null = null;
   let clientTokens = 0;
+  // The exact server-side count from the terminal include_usage chunk; a delta counter
+  // undercounts because one SSE chunk can carry more than one token.
+  let usageTokens: number | null = null;
   let timings: Record<string, unknown> = {};
   for (;;) {
     const { done, value } = await reader.read();
@@ -240,6 +243,9 @@ async function streamOnce(
       if (err) throw new Error(err.message ?? "Stream error");
       if (chunk.timings && typeof chunk.timings === "object")
         timings = chunk.timings as Record<string, unknown>;
+      const usage = chunk.usage as { completion_tokens?: unknown } | undefined;
+      if (usage && typeof usage.completion_tokens === "number")
+        usageTokens = usage.completion_tokens;
       const choices = Array.isArray(chunk.choices)
         ? (chunk.choices as Record<string, unknown>[])
         : [];
@@ -257,7 +263,12 @@ async function streamOnce(
       }
     }
   }
-  return { ttftMs, wallMs: performance.now() - started, clientTokens, timings };
+  return {
+    ttftMs,
+    wallMs: performance.now() - started,
+    clientTokens: usageTokens ?? clientTokens,
+    timings,
+  };
 }
 
 function num(v: unknown): number | null {

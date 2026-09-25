@@ -329,7 +329,14 @@ export function RunResults({
     () => depthSeries(rows, run.config.variants),
     [rows, run],
   );
-  const hl = highlights(rows);
+  // Only a row that ran every rep can win the Fastest card or set the speed-up; one that
+  // errored or was cancelled after a measured rep keeps its samples in the chart but is not
+  // ranked. Matches history-grid and tune-section.
+  const done = new Set(
+    run.outcomes.filter((o) => o.state === "done").map((o) => o.label),
+  );
+  const ranked = rows.filter((r) => done.has(r.label));
+  const hl = highlights(ranked);
   const ramping = rampingRows(rows);
   const skipped = run.outcomes.filter(
     (o) => (o.state === "skipped" || o.state === "error") && o.reason,
@@ -653,7 +660,7 @@ export function RunResults({
                 series={series}
                 depth={depth}
                 title={title}
-                subtitle={headline(rows)}
+                subtitle={headline(ranked)}
                 footer={footer}
                 pending={chartKind === "bars" ? pending : []}
                 svgRef={folded ? spareRef : exportRef}
@@ -692,7 +699,7 @@ export function RunResults({
               series={series}
               depth={depth}
               title={title}
-              subtitle={headline(rows)}
+              subtitle={headline(ranked)}
               footer={footer}
               svgRef={exportRef}
             />
