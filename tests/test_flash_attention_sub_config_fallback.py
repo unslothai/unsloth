@@ -20,7 +20,6 @@ def _flash_available(monkeypatch):
 
 def _lfm2_vl():
     from transformers.models.lfm2_vl.modeling_lfm2_vl import Lfm2VlForConditionalGeneration
-
     return Lfm2VlForConditionalGeneration, transformers.Lfm2VlConfig()
 
 
@@ -62,7 +61,9 @@ def test_scoped_mapping_constructs_the_model(monkeypatch):
         except ImportError as e:  # flash_attn missing or no CUDA device: nothing left to construct
             pytest.skip(f"flash attention unavailable here: {e}")
     with torch.device("meta"), pytest.raises(ValueError, match = "Flash Attention 2"):
-        model_class._from_config(transformers.Lfm2VlConfig(), attn_implementation = "flash_attention_2")
+        model_class._from_config(
+            transformers.Lfm2VlConfig(), attn_implementation = "flash_attention_2"
+        )
 
 
 def test_all_flash_capable_sub_models_keep_the_plain_string(monkeypatch):
