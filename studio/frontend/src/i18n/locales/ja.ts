@@ -1616,6 +1616,10 @@ export const ja = {
       showResponseModel: "応答モデルを表示",
       showResponseModelDescription:
         "アシスタントの応答にモデルのメタデータを表示します。",
+      inlineReadAloud: "応答に読み上げを表示",
+      inlineReadAloudDescription: "読み上げを「その他」メニューではなく、各応答に表示します。",
+      inlineEditResponse: "応答に応答の編集を表示",
+      inlineEditResponseDescription: "応答の編集を「その他」メニューではなく、各応答に表示します。",
       modelDisclaimer: "モデルの免責事項を表示",
       modelDisclaimerDescription: 'チャットボックスの下に "LLMs can make mistakes" と表示します。',
       projectAttachments: "プロジェクト全体でファイルを共有",

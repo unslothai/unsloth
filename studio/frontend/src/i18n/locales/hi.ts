@@ -1637,6 +1637,10 @@ export const hi = {
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
         "असिस्टेंट के जवाबों में मॉडल का मेटाडेटा दिखाएँ।",
+      inlineReadAloud: "जवाबों पर ज़ोर से पढ़ें",
+      inlineReadAloudDescription: "ज़ोर से पढ़ें को More मेन्यू के बजाय हर जवाब पर दिखाएँ।",
+      inlineEditResponse: "जवाबों पर जवाब संपादित करें",
+      inlineEditResponseDescription: "जवाब संपादित करें को More मेन्यू के बजाय हर जवाब पर दिखाएँ।",
       modelDisclaimer: "मॉडल अस्वीकरण दिखाएं",
       modelDisclaimerDescription:
         'चैट बॉक्स के नीचे "LLMs can make mistakes" दिखाएं।',

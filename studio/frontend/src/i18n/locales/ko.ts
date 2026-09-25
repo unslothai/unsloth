@@ -1626,6 +1626,10 @@ export const ko = {
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
         "어시스턴트 응답에 모델 메타데이터를 표시합니다.",
+      inlineReadAloud: "응답에 소리 내어 읽기 표시",
+      inlineReadAloudDescription: "소리 내어 읽기를 더보기 메뉴 대신 모든 응답에 표시합니다.",
+      inlineEditResponse: "응답에 응답 편집 표시",
+      inlineEditResponseDescription: "응답 편집을 더보기 메뉴 대신 모든 응답에 표시합니다.",
       modelDisclaimer: "모델 고지 표시",
       modelDisclaimerDescription:
         '채팅 상자 아래에 "LLMs can make mistakes" 문구를 표시합니다.',
