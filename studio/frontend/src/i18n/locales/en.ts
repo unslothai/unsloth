@@ -1625,6 +1625,12 @@ export const en = {
       showResponseModel: "Response model",
       showResponseModelDescription:
         "Show model details in assistant responses.",
+      inlineReadAloud: "Read aloud on responses",
+      inlineReadAloudDescription:
+        "Keep Read aloud on every response, instead of in the More menu.",
+      inlineEditResponse: "Edit response on responses",
+      inlineEditResponseDescription:
+        "Keep Edit response on every response, instead of in the More menu.",
       modelDisclaimer: "Model disclaimer",
       modelDisclaimerDescription:
         'Show "LLMs can make mistakes" under the chat box.',

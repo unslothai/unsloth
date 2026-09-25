@@ -10,8 +10,8 @@ import {
   ImageCropIcon,
   Image03Icon,
   InformationCircleIcon,
-  VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
+import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
@@ -4228,7 +4228,7 @@ function VideoGenerator({
                 />
                 {selected.has_audio && (
                   <div className="absolute left-4 top-4 flex items-center gap-1 rounded-lg bg-background/80 px-2 py-1 text-ui-11 font-medium shadow-lg ring-1 ring-border backdrop-blur">
-                    <HugeiconsIcon icon={VolumeHighIcon} className="size-3.5" />
+                    <HugeiconsIcon icon={Volume02Icon} className="size-3.5" />
                     Audio
                   </div>
                 )}

@@ -327,8 +327,10 @@ import {
   PencilRulerIcon,
   Scroll01Icon,
   Telescope02Icon,
+  VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Volume02Icon } from "@/lib/volume-icons";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
@@ -347,8 +349,6 @@ import {
   RefreshCwIcon,
   SquareIcon,
   TerminalIcon,
-  Volume2Icon,
-  VolumeXIcon,
   XIcon,
 } from "lucide-react";
 import {
@@ -7870,22 +7870,25 @@ const AssistantMessage: FC = () => {
         )}
         {isEditing ? (
           <div className="flex flex-col gap-2 w-full">
-            <textarea
-              ref={textareaRef}
-              defaultValue={extractTaggedText(messageContent)}
-              className="w-full p-3 rounded-xl bg-muted border border-border text-foreground focus:ring-1 focus:ring-ring outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70dvh]"
-              autoFocus
-              onInput={adjustHeight}
-              onKeyDown={(e) => {
-                e.stopPropagation();
-                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                  handleSave();
-                }
-                if (e.key === 'Escape') {
-                  setEditingId(null); // UX: Close editor on Escape
-                }
-              }}
-            />
+            {/* Borderless textarea, so auto-grow fits with no scrollbar; the wrapper keeps corners round. */}
+            <div className="overflow-hidden rounded-xl border-[0.5px] border-border bg-muted focus-within:border-ring">
+              <textarea
+                ref={textareaRef}
+                defaultValue={extractTaggedText(messageContent)}
+                className="block w-full p-3 bg-transparent text-foreground outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70dvh]"
+                autoFocus
+                onInput={adjustHeight}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                    handleSave();
+                  }
+                  if (e.key === 'Escape') {
+                    setEditingId(null); // UX: Close editor on Escape
+                  }
+                }}
+              />
+            </div>
             <div className="flex justify-end gap-2">
               <Button size="sm" variant="ghost" onClick={() => setEditingId(null)} className="h-8 text-xs">Cancel</Button>
               <Button size="sm" onClick={handleSave} className="h-8 text-xs">Save</Button>
@@ -8310,6 +8313,28 @@ const EditAssistantMessageButton: FC = () => {
   );
 };
 
+// The More menu's Edit response, shown when the button is not pinned to the bar.
+const EditAssistantMessageMenuItem: FC = () => {
+  const messageId = useAuiState(({ message }) => message.id);
+  const researchRunId = useResearchMessageRunId();
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const researchActive = useThreadResearchActive();
+  const setEditingId = useChatRuntimeStore((s) => s.setEditingMessageId);
+
+  if (researchRunId) return null;
+
+  return (
+    <ActionBarMorePrimitive.Item
+      disabled={isRunning || researchActive}
+      onSelect={() => setEditingId(messageId)}
+      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+    >
+      <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+      Edit response
+    </ActionBarMorePrimitive.Item>
+  );
+};
+
 async function exportMessageMarkdown(content: string): Promise<void> {
   try {
     await downloadFile(
@@ -8336,6 +8361,9 @@ const AssistantActionBar: FC = () => {
   const activeProjectId = useChatRuntimeStore((s) => s.activeProjectId);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
+  // Off by default: Read aloud and Edit response live in the More menu.
+  const inlineReadAloud = useChatPreferencesStore((s) => s.showInlineReadAloud);
+  const inlineEdit = useChatPreferencesStore((s) => s.showInlineEditResponse);
   // hideWhenRunning is thread-level, so a new run would hide this bar and its
   // only Stop reading control while read-aloud keeps playing; keep it shown.
   const speaking = useAuiState(({ message }) => message.speech != null);
@@ -8362,7 +8390,7 @@ const AssistantActionBar: FC = () => {
         className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
       >
         <CopyButton />
-        <EditAssistantMessageButton />
+        {inlineEdit && <EditAssistantMessageButton />}
         {!researchRunId && !researchActive && (
           <ActionBarPrimitive.Reload asChild={true}>
             <TooltipIconButton tooltip="Refresh">
@@ -8372,11 +8400,11 @@ const AssistantActionBar: FC = () => {
         )}
         <ForkCountBadge />
         <DeleteMessageButton />
-        {ttsEnabled && (
+        {inlineReadAloud && ttsEnabled && (
           <MessagePrimitive.If speaking={false}>
             <ActionBarPrimitive.Speak asChild={true}>
               <TooltipIconButton tooltip="Read aloud" aria-label="Read aloud">
-                <Volume2Icon strokeWidth={1.75} className="size-icon" />
+                <HugeiconsIcon icon={Volume02Icon} strokeWidth={1.75} className="size-icon" />
               </TooltipIconButton>
             </ActionBarPrimitive.Speak>
           </MessagePrimitive.If>
@@ -8390,7 +8418,7 @@ const AssistantActionBar: FC = () => {
               aria-label="Stop reading"
               className="text-destructive"
             >
-              <VolumeXIcon strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={VolumeMute02Icon} strokeWidth={1.75} className="size-icon" />
             </TooltipIconButton>
           </ActionBarPrimitive.StopSpeaking>
         </MessagePrimitive.If>
@@ -8411,10 +8439,25 @@ const AssistantActionBar: FC = () => {
             side="bottom"
             align="start"
             onCloseAutoFocus={(e) => e.preventDefault()}
-            className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-[21px] bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
+            className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-[21px] bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_8px_28px_-6px_var(--background)]"
           >
             {/* Prevent an outside dismissal from triggering Delete. */}
             <MenuDismissGuard triggerRef={moreMenuTriggerRef} />
+            {!inlineReadAloud && ttsEnabled && (
+              <MessagePrimitive.If speaking={false}>
+                <ActionBarPrimitive.Speak asChild={true}>
+                  <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50">
+                    <HugeiconsIcon
+                      icon={Volume02Icon}
+                      strokeWidth={1.75}
+                      className="size-icon"
+                    />
+                    Read aloud
+                  </ActionBarMorePrimitive.Item>
+                </ActionBarPrimitive.Speak>
+              </MessagePrimitive.If>
+            )}
+            {!inlineEdit && <EditAssistantMessageMenuItem />}
             <ActionBarMorePrimitive.Item
               disabled={forkDisabled}
               onSelect={() => void forkMessage()}
