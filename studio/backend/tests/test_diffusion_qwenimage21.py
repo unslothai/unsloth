@@ -46,7 +46,14 @@ def _model():
     return m
 
 
-def _inputs(batch = 1, text = 9, cond = None, target = (4, 6), pad = 0, seed = 7):
+def _inputs(
+    batch = 1,
+    text = 9,
+    cond = None,
+    target = (4, 6),
+    pad = 0,
+    seed = 7,
+):
     """Pipeline-shaped inputs: ``cond`` puts a condition image's slots in the middle of the text."""
     g = torch.Generator().manual_seed(seed)
     th, tw = target
@@ -81,7 +88,12 @@ def _inputs(batch = 1, text = 9, cond = None, target = (4, 6), pad = 0, seed = 7
     }
 
 
-def _render(m, inp, steps = 4, cache = True):
+def _render(
+    m,
+    inp,
+    steps = 4,
+    cache = True,
+):
     """The QwenImage21Pipeline denoise loop's transformer calls; returns every step's output."""
     outs = []
     kv = qmod.QwenImage21KVCache(len(m.transformer_blocks)) if cache else None
@@ -244,7 +256,9 @@ def test_a_drifted_function_keeps_the_stock_forward(monkeypatch):
     assert "prefix_segments differs" in q.why_unsupported(fake)
     real_import = importlib.import_module
     monkeypatch.setattr(
-        importlib, "import_module", lambda name, *a: fake if name == q._MODULE else real_import(name, *a)
+        importlib,
+        "import_module",
+        lambda name, *a: fake if name == q._MODULE else real_import(name, *a),
     )
     cls = qmod.QwenImage21Transformer2DModel
     stock = vars(cls)["forward"]
@@ -255,13 +269,17 @@ def test_a_drifted_function_keeps_the_stock_forward(monkeypatch):
 def test_kill_switch_blocks_install(monkeypatch):
     monkeypatch.setenv(q.FAST_STEP_ENV, "off")
     assert q.install() is False
-    assert not getattr(vars(qmod.QwenImage21Transformer2DModel)["forward"], "__unsloth_q21_fast_step__", False)
+    assert not getattr(
+        vars(qmod.QwenImage21Transformer2DModel)["forward"], "__unsloth_q21_fast_step__", False
+    )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA for the sync check")
 def test_cached_steps_do_not_sync_the_host():
     m = _model().to("cuda")
-    inp = {k: (v.to("cuda") if torch.is_tensor(v) else v) for k, v in _inputs(batch = 2, pad = 2).items()}
+    inp = {
+        k: (v.to("cuda") if torch.is_tensor(v) else v) for k, v in _inputs(batch = 2, pad = 2).items()
+    }
     assert q.install()
     kv = qmod.QwenImage21KVCache(len(m.transformer_blocks))
     with torch.inference_mode():
@@ -306,7 +324,11 @@ def test_install_for_pipe_only_touches_qwen_image_21_and_never_raises(monkeypatc
     assert q.install_for_pipe(types.SimpleNamespace(transformer = object())) is False
     assert q.install_for_pipe(types.SimpleNamespace()) is False
     assert calls == []
-    pipe = types.SimpleNamespace(transformer = qmod.QwenImage21Transformer2DModel.__new__(qmod.QwenImage21Transformer2DModel))
+    pipe = types.SimpleNamespace(
+        transformer = qmod.QwenImage21Transformer2DModel.__new__(qmod.QwenImage21Transformer2DModel)
+    )
     assert q.install_for_pipe(pipe) is True and calls == [1]
-    monkeypatch.setattr(q, "install", lambda logger = None: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        q, "install", lambda logger = None: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
     assert q.install_for_pipe(pipe) is False

@@ -631,7 +631,14 @@ def stats(handles: Any) -> dict:
     for handle in handles or ():
         try:
             out["graphs"] += len(handle.cache)
-            for field in ("captures", "replays", "eager_calls", "fallbacks", "cap_skips", *_REFUSALS):
+            for field in (
+                "captures",
+                "replays",
+                "eager_calls",
+                "fallbacks",
+                "cap_skips",
+                *_REFUSALS,
+            ):
                 out[field] += int(handle.stats.get(field, 0))
             if handle.poisoned:
                 out["poisoned"] = True
@@ -683,5 +690,8 @@ def live_status(resolved: Any, speed_optims: Any, handles: Any) -> tuple:
         return resolved, optims
     optims = [o for o in optims if o != "cuda_graph"]
     if isinstance(resolved, dict) and isinstance(resolved.get("cuda_graph"), dict):
-        resolved = {**resolved, "cuda_graph": {**resolved["cuda_graph"], "value": "off", "reason": why}}
+        resolved = {
+            **resolved,
+            "cuda_graph": {**resolved["cuda_graph"], "value": "off", "reason": why},
+        }
     return resolved, optims

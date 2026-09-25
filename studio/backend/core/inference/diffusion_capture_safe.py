@@ -233,7 +233,10 @@ def resolve(cls: type) -> tuple[Optional[Callable], Optional[str]]:
     Never raises. Cheap for an unknown class: a name lookup, no torch import."""
     owner = _defining_class(cls)
     if owner is not None and owner.__name__ in _UNCAPTURABLE and owner.__name__ not in _REWRITES:
-        return None, f"{owner.__name__} forward is not capture-safe ({_UNCAPTURABLE[owner.__name__]})"
+        return (
+            None,
+            f"{owner.__name__} forward is not capture-safe ({_UNCAPTURABLE[owner.__name__]})",
+        )
     if owner is None or owner.__name__ not in _REWRITES:
         return None, None
     why, rewrite = _REWRITES[owner.__name__]

@@ -70,7 +70,9 @@ def _digest(fn: Any) -> Optional[str]:
         src = textwrap.dedent(inspect.getsource(inspect.unwrap(fn)))
         tree = ast.parse(src)
         comments = [
-            tok.start for tok in tokenize.generate_tokens(io.StringIO(src).readline) if tok.type == tokenize.COMMENT
+            tok.start
+            for tok in tokenize.generate_tokens(io.StringIO(src).readline)
+            if tok.type == tokenize.COMMENT
         ]
     except (OSError, TypeError, SyntaxError, ValueError, tokenize.TokenError):
         return None
@@ -96,11 +98,15 @@ def stock_digests(module: Any) -> dict[str, Optional[str]]:
     cls = getattr(module, _CLASS, None)
     rope = getattr(module, "QwenImage21Rope", None)
     return {
-        "forward": _digest(vars(cls)["forward"]) if cls is not None and "forward" in vars(cls) else None,
+        "forward": _digest(vars(cls)["forward"])
+        if cls is not None and "forward" in vars(cls)
+        else None,
         "build_token_metadata": _digest(getattr(cls, "build_token_metadata", None))
         if cls is not None
         else None,
-        "rope_forward": _digest(vars(rope)["forward"]) if rope is not None and "forward" in vars(rope) else None,
+        "rope_forward": _digest(vars(rope)["forward"])
+        if rope is not None and "forward" in vars(rope)
+        else None,
         "prefix_segments": _digest(getattr(module, "_qwenimage21_prefix_segments", None)),
     }
 
@@ -229,7 +235,9 @@ def _cached_step(
     prefix_len = lay.prefix_len
     hidden_states = model.img_in(hidden_states)
     # The buffer keeps the stock (batch, total, dim) layout so the blocks see the same strides.
-    full = torch.empty((batch_size, lay.total, hidden_states.shape[2]), dtype = text_dtype, device = device)
+    full = torch.empty(
+        (batch_size, lay.total, hidden_states.shape[2]), dtype = text_dtype, device = device
+    )
     full[:, prefix_len:] = hidden_states[:, hidden_states.shape[1] - (lay.total - prefix_len) :]
 
     timestep = timestep.to(hidden_states.dtype)
@@ -321,7 +329,9 @@ def _make_forward(mod: Any, stock: Any) -> Any:
                 f"kv_cache_mode must be 'extract' or 'cached' when kv_cache is provided, got {kv_cache_mode!r}."
             )
         if kv_cache is None and kv_cache_mode is not None:
-            raise ValueError(f"kv_cache_mode is {kv_cache_mode!r} but no kv_cache was passed to hold the prefix.")
+            raise ValueError(
+                f"kv_cache_mode is {kv_cache_mode!r} but no kv_cache was passed to hold the prefix."
+            )
 
         device = hidden_states.device
         lay = _layout_for(self, mod, img_mask, img_shapes, device)
@@ -345,11 +355,15 @@ def _make_forward(mod: Any, stock: Any) -> Any:
         joint_hidden_states = torch.cat(
             [
                 encoder_hidden_states,
-                encoder_hidden_states.new_zeros(batch_size, target_tokens // 4, encoder_hidden_states.shape[2]),
+                encoder_hidden_states.new_zeros(
+                    batch_size, target_tokens // 4, encoder_hidden_states.shape[2]
+                ),
             ],
             dim = 1,
         )
-        joint_hidden_states = joint_hidden_states.repeat_interleave(lay.repeats, dim = 1, output_size = lay.total)
+        joint_hidden_states = joint_hidden_states.repeat_interleave(
+            lay.repeats, dim = 1, output_size = lay.total
+        )
         joint_hidden_states[:, lay.image_positions] = hidden_states
 
         rotary_emb = lay.rotary_emb
@@ -382,10 +396,14 @@ def _make_forward(mod: Any, stock: Any) -> Any:
             processors = [block.attn.processor for block in self.transformer_blocks]
             needs_block_mask = any(isinstance(processor, flex_cls) for processor in processors)
             attention_mask = (
-                build_block_mask(lay.image_ids, joint_key_valid, batch_size, device) if needs_block_mask else None
+                build_block_mask(lay.image_ids, joint_key_valid, batch_size, device)
+                if needs_block_mask
+                else None
             )
             block_segments = (
-                None if all(isinstance(processor, flex_cls) for processor in processors) else _segments(lay, mod)
+                None
+                if all(isinstance(processor, flex_cls) for processor in processors)
+                else _segments(lay, mod)
             )
             cache_write_slice = slice(0, prefix_len) if kv_cache_mode == "extract" else None
             block_key_valid = joint_key_valid
@@ -426,7 +444,6 @@ def install(logger: Any = None) -> bool:
         return False
     try:
         import importlib
-
         mod = importlib.import_module(_MODULE)
     except Exception:  # noqa: BLE001 - diffusers without Qwen-Image 2.1
         return False
