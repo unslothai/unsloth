@@ -555,13 +555,16 @@ def estimate_image_runtime_mib(
     height: Optional[int],
     batch_size: int = 1,
     family: Optional[str] = None,
+    condition_pixels: int = 0,
 ) -> int:
     """Per-call activation / latent headroom for an image gen, scaled by pixel area and batch.
-    Distilled / turbo models (few steps, no CFG) need less."""
+    Distilled / turbo models (few steps, no CFG) need less. ``condition_pixels`` (already weighted)
+    join the target's token sequence once per batch image, so they count like target pixels."""
     w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
     h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
     batch = max(1, int(batch_size or 1))
-    pixel_scale = (w * h * batch) / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT)
+    cond = max(0, int(condition_pixels or 0))
+    pixel_scale = ((w * h + cond) * batch) / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT)
     fam = (family or "").lower()
     multiplier = 1.0
     if "edit" in fam:
@@ -1117,6 +1120,39 @@ def _enable_vae_saver(pipe: Any, pipe_method: str, vae_method: str, logger: Any)
     return False
 
 
+def _pin_vision_embedding_device(module: Any) -> int:
+    """Keep a leaf-offloaded Qwen3-VL vision tower's position embeddings on the compute device.
+
+    ``Qwen3VLVisionModel.fast_pos_embed_interpolate`` reads ``self.pos_embed.weight.device`` while
+    group offload still holds that weight on the CPU, so every image-conditioned Qwen-Image-2.1 call
+    on a streamed encoder raised a device mismatch. The result follows ``grid_thw``'s device."""
+    import types
+
+    walk = getattr(module, "modules", None)
+    if not callable(walk):
+        return 0
+    patched = 0
+    for sub in walk():
+        original = getattr(sub, "fast_pos_embed_interpolate", None)
+        if not callable(original) or getattr(original, "_unsloth_device_pinned", False):
+            continue
+
+        def _on_grid_device(
+            self: Any,
+            grid_thw: Any,
+            *,
+            _original: Any = original,
+        ) -> Any:
+            out = _original(grid_thw)
+            device = getattr(grid_thw, "device", None)
+            return out.to(device) if device is not None and out.device != device else out
+
+        _on_grid_device._unsloth_device_pinned = True  # type: ignore[attr-defined]
+        sub.fast_pos_embed_interpolate = types.MethodType(_on_grid_device, sub)
+        patched += 1
+    return patched
+
+
 def _apply_group_offload(
     pipe: Any,
     device: str,
@@ -1215,6 +1251,7 @@ def _apply_group_offload(
             try:
                 apply_group_offloading(module, **ekwargs)
                 installed += 1
+                _pin_vision_embedding_device(module)
             except Exception as exc:  # noqa: BLE001 -- degrade this encoder, never fail the load
                 if logger is not None:
                     logger.warning(
@@ -1278,6 +1315,7 @@ def image_activation_shortfall_message(
     family: Optional[str] = None,
     base_overhead_mib: int = DEFAULT_BASE_OVERHEAD_MIB,
     source_driven: bool = False,
+    condition_pixels: int = 0,
 ) -> Optional[str]:
     """A user-facing refusal when this generation's ACTIVATIONS plus the flat base overhead cannot fit
     the free device budget, else None.
@@ -1332,6 +1370,7 @@ def image_activation_shortfall_message(
             height = height,
             batch_size = batch_size,
             family = family,
+            condition_pixels = condition_pixels,
         )
         # What the LOAD budgeted: the same estimator at the default resolution, i.e. the exact call _plan_memory makes.
         # Same function and same family hint, so the comparison is between two points on one curve rather than between
@@ -1356,13 +1395,14 @@ def image_activation_shortfall_message(
     h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
     batch = max(1, int(batch_size or 1))
     batch_note = f" at a batch of {batch}" if batch > 1 else ""
+    cond_note = " with its input images" if condition_pixels else ""
     # Two decimals, not one: the refusal is often decided by tens of MiB (the 1088x1920 report needed 13,872 MiB against
     # a 13,822 MiB budget), and one decimal prints both as "13.5 GB". The overhead is part of the comparison above, so
     # it has to be part of the number reported. Quoting the activations alone printed a refusal that contradicted
     # itself: 13.55 GB needed against 13.92 GB usable, refused.
     total = int(needed) + max(0, int(base_overhead_mib))
     return (
-        f"Generating at {w}x{h}{batch_note} needs about {total / 1024:.2f} GB of working memory "
+        f"Generating at {w}x{h}{batch_note}{cond_note} needs about {total / 1024:.2f} GB of working memory "
         f"(including about {max(0, int(base_overhead_mib)) / 1024:.2f} GB of fixed overhead), "
         f"but only about {int(budget) / 1024:.2f} GB is usable on this device (of the "
         f"{int(free) / 1024:.2f} GB currently free, after reserving room for fragmentation and "
@@ -1371,7 +1411,8 @@ def image_activation_shortfall_message(
         # Only when the batch is what was budgeted. A refusal measured on ONE image cannot be answered by asking for
         # fewer, and pointing there sends the caller at the one change that provably will not help.
         f"{'Upload a smaller source image (this workflow takes its output size from the image, not the Resolution setting)' if source_driven else 'Generate at a smaller resolution'}"
-        f"{' or a smaller batch size' if batch > 1 else ''}, "
+        f"{' or a smaller batch size' if batch > 1 else ''}"
+        f"{', use fewer input images or a lower reference detail' if condition_pixels else ''}, "
         "free device memory by closing other applications, or set "
         f"{OVERSIZED_GENERATE_ENV}=1 to attempt it anyway."
     )
@@ -1386,6 +1427,7 @@ def raise_on_image_activation_shortfall(
     family: Optional[str] = None,
     base_overhead_mib: int = DEFAULT_BASE_OVERHEAD_MIB,
     source_driven: bool = False,
+    condition_pixels: int = 0,
     logger: Any = None,
 ) -> None:
     """Refuse a generation whose activations cannot fit the free device budget. No-op whenever
@@ -1403,6 +1445,7 @@ def raise_on_image_activation_shortfall(
         family = family,
         base_overhead_mib = base_overhead_mib,
         source_driven = source_driven,
+        condition_pixels = condition_pixels,
     )
     if message is None:
         return
@@ -1465,6 +1508,8 @@ def _apply_streaming_offload(pipe: Any, device: str, logger: Any) -> None:
                 kwargs["low_cpu_mem_usage"] = True
             apply_group_offloading(module, **kwargs)
             installed += 1
+            if offload_type == "leaf_level":
+                _pin_vision_embedding_device(module)
     except Exception as exc:
         if logger is not None:
             logger.warning(

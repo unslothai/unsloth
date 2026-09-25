@@ -794,7 +794,7 @@ test("a rollback restores the previous model with its arguments", () => {
   // without the arguments it had been running.
   assert.match(
     runtime,
-    /stateBeforeUnload\.loadedLlamaExtraArgs != null \? \{ llama_extra_args: stateBeforeUnload\.loadedLlamaExtraArgs \}/,
+    /rollbackState\.loadedLlamaExtraArgs != null \? \{ llama_extra_args: rollbackState\.loadedLlamaExtraArgs \}/,
   );
   // And the snapshot is kept on every successful load, not only an explicit one,
   // taken from the server's own echo first: a reload that omits the field but sets
