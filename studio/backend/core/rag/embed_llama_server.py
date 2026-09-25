@@ -76,11 +76,11 @@ def _skip_gguf_value(f, vtype: int) -> None:
         f.seek(_GGUF_SCALAR_WIDTHS[vtype], 1)
 
 
-def _gguf_arch_uint(path: str, field: str) -> int | None:
+def _gguf_arch_uint(path: str, field: str) -> tuple[str | None, int | None]:
     try:
         with open(path, "rb") as f:
             if f.read(4) != b"GGUF":
-                return None
+                return None, None
             f.read(4)
             _, kv_count = struct.unpack("<QQ", f.read(16))
             arch = None
@@ -95,22 +95,31 @@ def _gguf_arch_uint(path: str, field: str) -> int | None:
                 else:
                     _skip_gguf_value(f, vtype)
                 if arch is not None and f"{arch}.{field}" in values:
-                    return values[f"{arch}.{field}"]
+                    return arch, values[f"{arch}.{field}"]
     except (OSError, struct.error, UnicodeDecodeError, KeyError, ValueError):
-        return None
-    return None
+        return None, None
+    return arch, None
 
 
 def _gguf_context_length(path: str) -> int | None:
-    return _gguf_arch_uint(path, "context_length") or None
+    return _gguf_arch_uint(path, "context_length")[1] or None
 
 
 _GGUF_POOLING = {1: "mean", 2: "cls", 3: "last"}
+_GGUF_POOLING_DEFAULT = {"nomic-bert": "mean", "nomic-bert-moe": "mean"}
 
 
 @lru_cache(maxsize = 32)
 def _gguf_pooling_at(path: str, mtime_ns: int, size: int) -> str:
-    return _GGUF_POOLING.get(_gguf_arch_uint(path, "pooling_type"), "cls")
+    arch, value = _gguf_arch_uint(path, "pooling_type")
+    if value in _GGUF_POOLING:
+        return _GGUF_POOLING[value]
+    if value is None:
+        # Older dedicated Nomic embedders commonly omit the SentenceTransformers pooling
+        # metadata. Their model family is mean-pooled; unknown architectures keep the legacy CLS
+        # fallback rather than guessing across encoder, decoder and reranker families.
+        return _GGUF_POOLING_DEFAULT.get((arch or "").lower(), "cls")
+    return "cls"
 
 
 def _gguf_pooling(path: str) -> str:

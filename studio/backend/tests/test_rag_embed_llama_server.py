@@ -1717,6 +1717,23 @@ def test_build_cmd_serves_the_pooling_the_gguf_declares(tmp_path, pooling, expec
     assert cmd[cmd.index("--pooling") + 1] == expected
 
 
+@pytest.mark.parametrize("arch", ["nomic-bert", "nomic-bert-moe"])
+def test_build_cmd_uses_mean_for_older_nomic_ggufs_without_pooling_metadata(tmp_path, arch):
+    """Dedicated Nomic embedding architectures predate reliable pooling metadata, but
+    their model family is mean-pooled. An explicit unsupported value still falls back safely."""
+    path = tmp_path / "nomic.gguf"
+    _write_gguf(path, arch)
+    backend = LlamaServerBackend()
+    cmd = backend._build_cmd("/bin/llama-server", str(path), 1, use_gpu = False)
+    assert cmd[cmd.index("--pooling") + 1] == "mean"
+    assert backend._adopt_model_path(str(path), "org/nomic-GGUF") == str(path)
+    assert backend._model_pooling == "mean"
+
+    _write_gguf(path, arch, 0)
+    cmd = backend._build_cmd("/bin/llama-server", str(path), 1, use_gpu = False)
+    assert cmd[cmd.index("--pooling") + 1] == "cls"
+
+
 @pytest.mark.parametrize("pooling, suffix", [(3, ":last"), (1, ":mean"), (2, "")])
 def test_llama_identity_changes_only_for_a_non_cls_gguf(monkeypatch, tmp_path, pooling, suffix):
     """Vectors indexed under the forced CLS must read as stale once a mean or last
