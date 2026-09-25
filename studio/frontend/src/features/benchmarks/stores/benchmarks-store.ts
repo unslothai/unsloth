@@ -90,7 +90,10 @@ interface BenchmarksState {
 let controller: AbortController | null = null;
 
 /** Saves collapse to one in flight plus one pending, so a fast sweep never queues a save per token. */
-function makeSaver(): (run: BenchRun) => Promise<void> {
+function makeSaver(): {
+  save: (run: BenchRun) => void;
+  drain: () => Promise<void>;
+} {
   let inFlight: Promise<void> | null = null;
   let pending: BenchRun | null = null;
   const flush = async (): Promise<void> => {
@@ -104,11 +107,11 @@ function makeSaver(): (run: BenchRun) => Promise<void> {
       }
     }
   };
-  return (run) => {
+  const save = (run: BenchRun): void => {
     pending = run;
     if (!inFlight) inFlight = flush().finally(() => (inFlight = null));
-    return inFlight;
   };
+  return { save, drain: () => inFlight ?? Promise.resolve() };
 }
 
 export const useBenchmarksStore = create<BenchmarksState>()(
@@ -242,14 +245,17 @@ export const useBenchmarksStore = create<BenchmarksState>()(
             if (!s.live) return s;
             const run = fn(s.live.run);
             // Saved as it goes, so a crash mid-sweep keeps the rows that finished.
-            if (run.id !== "pending" && run.results.length) void save(run);
+            if (run.id !== "pending" && run.results.length) save.save(run);
             return { live: { run, progress: progress ?? s.live.progress } };
           });
         try {
           const run = await runBenchmark(
             effective,
             {
-              onStart: (run) => patchLive(() => run),
+              // Copy results: the runner keeps pushing into its own array and also emits
+              // onResult, so sharing the reference would count the first sample twice.
+              onStart: (run) =>
+                patchLive(() => ({ ...run, results: [...run.results] })),
               onOutcome: (o) =>
                 patchLive((r) => ({
                   ...r,
@@ -266,6 +272,9 @@ export const useBenchmarksStore = create<BenchmarksState>()(
           if (run.results.length) {
             let saved = run;
             try {
+              // Let any queued checkpoint save land first: every PUT replaces all rows, so
+              // a late partial snapshot must not overwrite the finished run.
+              await save.drain();
               saved = await saveBenchRun(run);
             } catch (err) {
               set({

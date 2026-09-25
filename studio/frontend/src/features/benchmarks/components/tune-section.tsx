@@ -14,6 +14,7 @@ import {
   familyOf,
   fmtRate,
   modelShort,
+  ranToEnd,
   tuneVerdict,
 } from "../lib/bench-math";
 import { useBenchmarksStore } from "../stores/benchmarks-store";
@@ -42,7 +43,9 @@ export function TuneVerdictCard({
     (v) => v.label === verdict.pick.label,
   );
   const color = colors[variant ? familyOf(variant.load) : "other"];
-  const finished = run.finishedAt !== null;
+  // A cancelled run still gets a finishedAt in the runner's finally block, so gate the
+  // verdict and Apply on every row having reached an end, matching the history grid.
+  const finished = run.finishedAt !== null && ranToEnd(run);
   const busy = applying === run.id;
   const args = variant?.load.llama_extra_args ?? [];
 
