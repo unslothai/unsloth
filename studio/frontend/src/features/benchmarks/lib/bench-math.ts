@@ -572,6 +572,28 @@ function stripSpecDepthArgs(args: readonly string[] | null | undefined): string[
   return out;
 }
 
+// Slot count the parallel sweep owns through n_parallel. An inherited copy in chat's
+// pass-through args would last-wins-override the count each row asks for: the backend keeps
+// explicit extras and appends them after its managed --parallel, so every slot row would run
+// the inherited value and servedMismatch (which reads the managed count) can't catch it.
+const PARALLEL_FLAGS = ["-np", "--parallel"];
+
+/** Drop inherited parallel-slot flags: the parallel sweep's rows set the count themselves. */
+function stripParallelArgs(args: readonly string[] | null | undefined): string[] {
+  const out: string[] = [];
+  const list = args ?? [];
+  for (let i = 0; i < list.length; i++) {
+    const eq = list[i].indexOf("=");
+    const name = eq >= 0 ? list[i].slice(0, eq) : list[i];
+    if (PARALLEL_FLAGS.includes(name)) {
+      if (eq < 0) i++; // its value is a separate token
+      continue;
+    }
+    out.push(list[i]);
+  }
+  return out;
+}
+
 export function variantLoad<T extends LoadPayload>(
   base: T,
   variant: Variant,
@@ -586,6 +608,8 @@ export function variantLoad<T extends LoadPayload>(
     baseArgs = stripOffloadArgs(baseArgs);
   if (variant.load.speculative_type !== undefined)
     baseArgs = stripSpecDepthArgs(baseArgs);
+  if (variant.load.n_parallel !== undefined)
+    baseArgs = stripParallelArgs(baseArgs);
   return {
     ...base,
     ...rest,
