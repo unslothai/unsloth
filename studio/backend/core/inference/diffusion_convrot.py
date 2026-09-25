@@ -90,15 +90,8 @@ def is_power_of_four(size: Any) -> bool:
     return (n.bit_length() - 1) % 2 == 0
 
 
-# The rotation itself. ``H = kron(H4, ..., H4) / sqrt(size)`` with
-#     H4 = [[ 1, 1, 1,-1],
-#           [ 1, 1,-1, 1],
-#           [ 1,-1, 1, 1],
-#           [-1, 1, 1, 1]]
-# H4[a, b] is -1 exactly when a ^ b == 3, so the kron power's (i, j) sign is the parity of the number of base-4 digits
-# of ``i ^ j`` equal to 3. The matrix is assembled from that closed form rather than by repeated ``kron``; every entry
-# is +-2**-k for size == 4**k, so it is exact in any float dtype and bit-identical to the kron construction the hosted
-# checkpoints were rotated with.
+# H = kron(H4, ...) / sqrt(size), H4[a, b] = -1 iff a ^ b == 3: sign(i, j) = parity of base-4 digits of i ^ j equal to 3.
+# Must stay bit-identical to the kron construction the hosted checkpoints were rotated with.
 _HADAMARD_CACHE: dict = {}
 
 
@@ -108,10 +101,9 @@ def _convrot_sign_bits(size: int) -> Any:
 
     idx = torch.arange(size, dtype = torch.int64)
     both = idx[:, None] ^ idx[None, :]
-    # a base-4 digit is 3 when both of its bits are set: keep the low bit of each such pair
     threes = both & (both >> 1) & 0x5555555555555555
     parity = torch.zeros_like(threes)
-    # i ^ j < 4**k has k base-4 digits; a fixed Python count keeps this traceable under fullgraph
+    # fixed Python loop count keeps this traceable under fullgraph
     for _ in range((size.bit_length() - 1) // 2):
         parity ^= threes & 1
         threes = threes >> 2
@@ -123,10 +115,7 @@ def build_convrot_hadamard(
     device: Any = "cpu",
     dtype: Any = None,
 ) -> Any:
-    """The normalized regular Hadamard matrix ConvRot rotates by. Cached per (size, device, dtype).
-
-    Equal to ``kron(H4, H4, ...) / sqrt(size)``, symmetric and orthogonal, which is what the
-    offline/online pair relies on: the weight side can use ``H.T`` interchangeably with ``H``."""
+    """Normalized ConvRot Hadamard, cached per (size, device, dtype). Symmetric, so ``H.T == H``."""
     import torch
 
     if dtype is None:
@@ -137,7 +126,6 @@ def build_convrot_hadamard(
         return cached
     if not is_power_of_four(size):
         raise ValueError(f"ConvRot group size must be a power of 4, got {size}")
-    # sqrt(4**k) == 2**k, so the normalizer is a power of two and exact in every float type
     scale = 2.0 ** -((size.bit_length() - 1) // 2)
     negative = _convrot_sign_bits(size).to(device)
     h = torch.full((size, size), scale, dtype = dtype, device = device)

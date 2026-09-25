@@ -110,8 +110,7 @@ _DEVICES = ("cpu",) + (("cuda",) if torch.cuda.is_available() else ())
 
 
 def _reference_hadamard(size, dtype):
-    # Straight from the definition the hosted checkpoints were rotated with:
-    # kron(H4, H4, ...) / sqrt(size). Built in float64, where every step is exact.
+    # the kron definition the hosted checkpoints were rotated with; exact in float64
     h4 = torch.tensor(_H4, dtype = torch.float64)
     h = h4
     while h.shape[0] < size:
@@ -127,8 +126,6 @@ def _bits(t):
 @pytest.mark.parametrize("dtype", _DTYPES)
 @pytest.mark.parametrize("size", _SIZES)
 def test_hadamard_is_bit_identical_to_the_kron_definition(size, dtype, device):
-    # Hosted ConvRot checkpoints were rotated offline with exactly this matrix, so any drift, even
-    # one ulp, is a silent quality regression on every one of them.
     h = build_convrot_hadamard(size, device = device, dtype = dtype)
     ref = _reference_hadamard(size, dtype).to(device)
     assert h.dtype == dtype and h.device.type == torch.device(device).type
@@ -169,9 +166,7 @@ def test_hadamard_rejects_a_non_power_of_four():
 
 
 def test_denoiser_and_conditioner_share_one_hadamard():
-    # The hosted conditioner (PR 8283) and the denoiser have to agree on the same ConvRot
-    # definition down to the normalizer. Sharing the function is how that is guaranteed rather
-    # than periodically re-checked; this pins the sharing so a future copy-paste fails here.
+    # conditioner (PR 8283) and denoiser must share one Hadamard; fails on a future copy-paste
     from core.inference import video_minimax_h3_te as te
 
     from core.inference import diffusion_convrot as cr
@@ -497,8 +492,7 @@ def test_every_rotated_projection_shares_one_class():
 
 
 def test_rotated_forward_traces_fullgraph_on_a_cold_cache(monkeypatch):
-    """The denoiser compiles its blocks with fullgraph=True; a rotated projection whose first
-    forward builds the Hadamard must not hit a data-dependent branch there."""
+    """Denoiser blocks compile with fullgraph=True; a cold Hadamard build must not graph-break."""
     import torch
     from torch import nn
 
