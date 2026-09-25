@@ -162,6 +162,8 @@ def _delete_impact_blocking(
             cache_path,
             {Path(repo.repo_path).parent.resolve() for repo in all_copies},
         )
+        if root is None:
+            raise HTTPException(status_code = 400, detail = "Invalid cache_path")
         repos = [repo for repo in all_copies if Path(repo.repo_path).parent.resolve() == root]
         surviving = [repo for repo in all_copies if repo not in repos]
 

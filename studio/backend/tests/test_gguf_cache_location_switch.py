@@ -912,3 +912,27 @@ def test_the_delete_preview_follows_the_copy_the_row_carries(cache_locations, ca
     assert scoped.status_code == 200, scoped.text
     assert scoped.json()["cache_path"] == str(remembered)
     assert scoped.json()["reclaimed_bytes"] == 256
+
+
+@pytest.mark.parametrize("invalid_kind", ["unremembered", "expired_reference"])
+def test_delete_preview_rejects_an_invalid_explicit_cache_copy(
+    cache_locations, cache_client, tmp_path, invalid_kind
+):
+    """A stale picker target cannot promise a harmless delete that confirmation rejects."""
+    from fastapi import HTTPException
+
+    repo_id, expected = cache_locations
+    cache_path = (
+        str(tmp_path / "unremembered" / "models--Org--Model-GGUF")
+        if invalid_kind == "unremembered"
+        else "ref:" + "0" * 32
+    )
+    payload = {"repo_id": repo_id, "variant": "Q6_K", "cache_path": cache_path}
+    preview = cache_client.post("/api/hub/delete-impact", json = payload)
+    assert preview.status_code == 400, preview.text
+    assert preview.json()["detail"] == "Invalid cache_path"
+    with pytest.raises(HTTPException) as rejected:
+        deletion._delete_cached_model_blocking(repo_id, "Q6_K", None, cache_path)
+    assert rejected.value.status_code == 400
+    assert rejected.value.detail == "Invalid cache_path"
+    assert all(path.exists() for _, path in expected.values())
