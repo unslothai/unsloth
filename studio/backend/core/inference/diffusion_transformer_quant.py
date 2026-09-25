@@ -26,11 +26,13 @@ import os as _os
 import re as _re
 import sys as _sys
 import threading as _threading
+from dataclasses import dataclass
 from typing import Any, Optional
 
 # stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
 from core._torchao_stub import is_stubbed, torch_is_rocm
 from .diffusion_native_quant import int8_act_disabled, int8_act_requested, is_native_linear
+from .diffusion_nvfp4_flag import nvfp4_blocked, nvfp4_disabled_message, without_nvfp4
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 
 # Also runs in the spawned smoke-probe child, which imports this module and nothing else of the backend.
@@ -197,6 +199,45 @@ def apply_small_m_padding(
     return wrapped
 
 
+# nvfp4 raises on an empty activation; HunyuanVideo-1.5's attention trim hits it every t2v render.
+_HUNYUAN15_NVFP4_ZERO_ROW_TOKENS = ("image_embedder", "context_embedder_2")
+_NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS: dict[str, tuple[str, ...]] = {
+    "hunyuanvideo-1.5": _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS,
+    "hunyuanvideo-1.5-720p": _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS,
+}
+
+
+def zero_row_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
+    """Tokens needing the empty-activation guard; nvfp4 only (fp8 / mxfp8 reduce per row)."""
+    if scheme != TQ_NVFP4:
+        return ()
+    return _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS.get(str(family or "").strip().lower(), ())
+
+
+def apply_zero_row_guard(
+    transformer: Any,
+    scheme: str,
+    family: Optional[str] = None,
+    *,
+    logger: Any = None,
+) -> tuple[str, ...]:
+    """Wrap this family's zero-row-reachable quantized Linears after quantize; not best-effort."""
+    tokens = zero_row_tokens_for_scheme(scheme, family)
+    if not tokens:
+        return ()
+    from .diffusion_quant_pad import matching_linear_fqns, wrap_zero_row_linears
+
+    wrapped = wrap_zero_row_linears(transformer, matching_linear_fqns(transformer, tokens))
+    if wrapped and logger is not None:
+        logger.info(
+            "diffusion.transformer_quant: zero-row guarded %d %s linears on %s",
+            len(wrapped),
+            scheme,
+            family,
+        )
+    return wrapped
+
+
 def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
     """Name tokens to exclude from quantisation for ``scheme`` (optionally family-specific). int8
     (M>16) skips the M=1 modulation / conditioning-embedder projections
@@ -210,6 +251,14 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
             str(family or "").strip().lower(), ()
         )
     return ()
+
+
+_SCHEME_DIVISIBLE: dict[str, int] = {TQ_FP8: 16, TQ_NVFP4: 16, TQ_MXFP8: 32}
+
+
+def divisible_for_scheme(scheme: str) -> int:
+    """The in/out feature alignment ``scheme``'s GEMM requires, 0 when it has none."""
+    return _SCHEME_DIVISIBLE.get(scheme, 0)
 
 
 # Per-arch preference for ``auto``, best first. int8 leads every tier: it runs full-rate on consumer and
@@ -237,6 +286,18 @@ _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
     "qwen-image": frozenset({TQ_MXFP8, TQ_NVFP4}),
     "qwen-image-edit": frozenset({TQ_MXFP8, TQ_NVFP4}),  # same DiT
 }
+
+
+@dataclass(frozen = True)
+class _AutoPrefer:
+    """Family head of the ``auto`` order; off below ``floor`` and on consumer GPUs by default."""
+
+    floor: tuple[int, int]
+    schemes: tuple[str, ...]
+    consumer_ok: bool = False
+
+
+_FAMILY_AUTO_PREFER: dict[str, _AutoPrefer] = {}
 
 
 # Schemes denied for TRAINING on top of the inference table. Training holds a stricter bar because the evidence above
@@ -279,6 +340,8 @@ def explain_unusable_scheme(family: Optional[str], scheme: str) -> str:
     has to separate them: a family the scheme is measured to break, a torchao that cannot run at
     all in this install, and a GPU without the kernels. Only the last is a hardware limit, and
     only the last is what the message used to say."""
+    if nvfp4_blocked(scheme):
+        return nvfp4_disabled_message()
     if family_denies_scheme(family, scheme):
         return (
             f"'{scheme}' is ruled out for family '{family}' by the measured accuracy gate (it "
@@ -428,6 +491,8 @@ def normalize_transformer_quant(value: Optional[str]) -> Optional[str]:
         raise ValueError(
             f"Unsupported transformer_quant '{value}'. Use one of: {', '.join(TQ_MODES)}."
         )
+    if nvfp4_blocked(normalized):
+        raise ValueError(nvfp4_disabled_message("transformer_quant"))
     return normalized
 
 
@@ -759,14 +824,11 @@ def select_transformer_quant_scheme(
     cap = _capability()
     if cap is None:
         return None
-    for floor, schemes in _AUTO_LADDER:
-        if cap >= floor:
-            for scheme in schemes:
-                if _family_denied(family, scheme):
-                    continue
-                if _scheme_supported(scheme, device):
-                    return scheme
-            return None
+    for scheme in _auto_scheme_order(family, device, cap):
+        if _family_denied(family, scheme):
+            continue
+        if _scheme_supported(scheme, device):
+            return scheme
     return None
 
 
@@ -803,7 +865,7 @@ def dense_quant_host_capable(target: Any) -> bool:
     card = _smoke_cache_device_key(str(getattr(target, "device", "cuda")))
     for floor, schemes in _AUTO_LADDER:
         if cap >= floor:
-            return any(_SMOKE_CACHE.get((scheme, card), True) for scheme in schemes)
+            return any(_SMOKE_CACHE.get((scheme, card), True) for scheme in without_nvfp4(schemes))
     return False
 
 
@@ -820,14 +882,33 @@ def auto_scheme_candidates(target: Any, family: Optional[str] = None) -> tuple[s
     cap = _capability()
     if cap is None:
         return ()
+    return tuple(
+        scheme
+        for scheme in _auto_scheme_order(family, device, cap)
+        if not _family_denied(family, scheme) and _scheme_supported(scheme, device)
+    )
+
+
+def _auto_scheme_order(family: Optional[str], device: Any, cap: tuple[int, int]) -> tuple[str, ...]:
+    """``auto``'s scheme order for this family and GPU, best first; empty below every tier."""
+    tier: tuple[str, ...] = ()
     for floor, schemes in _AUTO_LADDER:
         if cap >= floor:
-            return tuple(
-                scheme
-                for scheme in schemes
-                if not _family_denied(family, scheme) and _scheme_supported(scheme, device)
-            )
-    return ()
+            tier = schemes
+            break
+    if not tier:
+        return ()
+    prefer = _FAMILY_AUTO_PREFER.get(str(family or "").strip().lower())
+    head: tuple[str, ...] = ()
+    if prefer is not None and cap >= prefer.floor:
+        if prefer.consumer_ok or not _is_consumer_gpu(device):
+            head = prefer.schemes
+    order: list[str] = []
+    # Filtered here so the NVFP4 switch reaches every reader of the order.
+    for scheme in without_nvfp4(head + tier):
+        if scheme not in order:
+            order.append(scheme)
+    return tuple(order)
 
 
 def auto_scheme_candidates_cached(target: Any, family: Optional[str] = None) -> tuple[str, ...]:
@@ -842,15 +923,13 @@ def auto_scheme_candidates_cached(target: Any, family: Optional[str] = None) -> 
     cap = _capability()
     if cap is None:
         return ()
-    card = _smoke_cache_device_key(str(getattr(target, "device", "cuda")))
-    for floor, schemes in _AUTO_LADDER:
-        if cap >= floor:
-            return tuple(
-                scheme
-                for scheme in schemes
-                if not _family_denied(family, scheme) and _SMOKE_CACHE.get((scheme, card), True)
-            )
-    return ()
+    device = str(getattr(target, "device", "cuda"))
+    card = _smoke_cache_device_key(device)
+    return tuple(
+        scheme
+        for scheme in _auto_scheme_order(family, device, cap)
+        if not _family_denied(family, scheme) and _SMOKE_CACHE.get((scheme, card), True)
+    )
 
 
 def _capability() -> Optional[tuple[int, int]]:
@@ -869,6 +948,8 @@ def _scheme_supported(
     unproven_ok: bool = False,
 ) -> bool:
     """CUDA + (for fp8) the fp8 dtype + a cached quantise+matmul smoke test for ``scheme``."""
+    if nvfp4_blocked(scheme):
+        return False
     try:
         import torch
         if not torch.cuda.is_available():
@@ -966,7 +1047,14 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
             # and binds the child to this process's lifetime, so a wedged probe cannot outlive the backend.
             proc = ctx.Process(
                 target = run_without_native_path_secret,
-                args = (__name__, "_child_probe_entry", {}, device, TQ_SCHEMES, queue),
+                args = (
+                    __name__,
+                    "_child_probe_entry",
+                    {},
+                    device,
+                    without_nvfp4(TQ_SCHEMES),
+                    queue,
+                ),
                 daemon = True,
             )
             proc.start()
@@ -1463,9 +1551,7 @@ def quantize_transformer(
         # non-bf16 ones. "lora_" keeps a baked adapter's side path high precision. Runtime only: NOT part of
         # exclude_tokens_for_scheme, whose list is baked into prequant metadata.
         exclude = exclude_tokens_for_scheme(scheme, family) + ("lora_",)
-        # GEMM tiling floors per scheme: scaled_mm needs 16-aligned dims, MX block scaling 32. int8's _int_mm has no
-        # such floor and keeps the historical filter.
-        divisible = {TQ_FP8: 16, TQ_NVFP4: 16, TQ_MXFP8: 32}.get(scheme, 0)
+        divisible = divisible_for_scheme(scheme)
         quantize_(
             transformer,
             _make_quant_config(scheme, fast_accum = fast_accum),
@@ -1480,6 +1566,7 @@ def quantize_transformer(
         # here means the transformer is quantized but not safely compilable, so it falls into the except below and the
         # caller loads GGUF.
         apply_small_m_padding(transformer, scheme, family, logger = logger)
+        apply_zero_row_guard(transformer, scheme, family, logger = logger)
         try:
             transformer._unsloth_runtime_quant = scheme
         except Exception:  # noqa: BLE001 - marker is best-effort

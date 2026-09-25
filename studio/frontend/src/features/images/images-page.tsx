@@ -78,7 +78,13 @@ import {
   curatedArtifactTakesDenseQuant,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
-import { useDenseQuantSchemes, useHostClass } from "@/hooks/use-host-class";
+import {
+  useDenseQuantSchemes,
+  useHostClass,
+  useNvfp4Diffusion,
+  useNvfp4DiffusionKnown,
+} from "@/hooks/use-host-class";
+import { nvfp4SelectionFallback, withNvfp4Option } from "@/lib/nvfp4-options";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -1275,6 +1281,8 @@ export function ImagesPage({
   const { isMobile, pinned } = useSidebar();
   const hostClass = useHostClass();
   const denseQuantSchemes = useDenseQuantSchemes();
+  const nvfp4Diffusion = useNvfp4Diffusion();
+  const nvfp4DiffusionKnown = useNvfp4DiffusionKnown();
   const imageModels = useImageModels(hostClass, denseQuantSchemes);
   const { rootStyle: railRootStyle } = useMediaRailWidth("images");
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
@@ -1435,6 +1443,10 @@ export function ImagesPage({
   const [attentionBackend, setAttentionBackend] = useState<"auto" | "native" | "cudnn" | "flash3" | "sage">(
     "auto",
   );
+  useEffect(() => {
+    setTransformerQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
+    setTextEncoderQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
+  }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant, textEncoderQuant]);
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
   // "auto", or the physical index to pin this load to; offered only on a multi-card CUDA/ROCm
   // host. Persisted, unlike the selects around it: status carries the device a pipeline is on
@@ -4409,12 +4421,15 @@ export function ImagesPage({
             // The explicit low-precision schemes need the dense tensor-core path, which a Mac or
             // CPU-only host cannot run, so the picker does not list what the loader would refuse.
             ...(hostOffersDensePrecision(hostClass)
-              ? ([
-                  ["fp8", "FP8"],
-                  ["int8", "INT8"],
-                  ["nvfp4", "NVFP4 (Blackwell)"],
-                  ["mxfp8", "MXFP8 (Blackwell)"],
-                ] as [string, string][])
+              ? withNvfp4Option(
+                  [
+                    ["fp8", "FP8"],
+                    ["int8", "INT8"],
+                    ["nvfp4", "NVFP4 (Blackwell)"],
+                    ["mxfp8", "MXFP8 (Blackwell)"],
+                  ] as [string, string][],
+                  nvfp4Diffusion,
+                )
               : []),
           ]}
         />
@@ -4434,16 +4449,18 @@ export function ImagesPage({
         badge={<ResolvedBadge status={status} controlKey="text_encoder_quant" />}
         value={textEncoderQuant}
         onValueChange={(v) => setTextEncoderQuant(v as typeof textEncoderQuant)}
-        options={[
-          ["auto", "Default"],
-          // The opt-out. Reachable only since a family default can pick a scheme on its own: with
-          // "Default" meaning bf16 everywhere, omitting the field WAS the dense request.
-          ["none", "Dense (bf16)"],
-          ["fp8", "FP8 (storage)"],
-          ["fp8_dynamic", "FP8 (compute)"],
-          ["int8", "INT8"],
-          ["nvfp4", "NVFP4 (Blackwell)"],
-        ]}
+        options={withNvfp4Option(
+          [
+            ["auto", "Default"],
+            // Opt-out: now that a family default can pick a scheme, omitting the field is no longer the dense request.
+            ["none", "Dense (bf16)"],
+            ["fp8", "FP8 (storage)"],
+            ["fp8_dynamic", "FP8 (compute)"],
+            ["int8", "INT8"],
+            ["nvfp4", "NVFP4 (Blackwell)"],
+          ] as [string, string][],
+          nvfp4Diffusion,
+        )}
       />
       <AdvancedSelect
         label="Attention"

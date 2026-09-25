@@ -34,6 +34,8 @@ from dataclasses import dataclass
 from collections.abc import Sequence
 from typing import Any, Optional
 
+from .diffusion_nvfp4_flag import nvfp4_blocked
+
 # torch.save dict layout tag; bump on an on-disk change so old/foreign artifacts are rejected
 PREQUANT_FORMAT = "unsloth_prequant_transformer_state_dict_v1"
 
@@ -46,6 +48,8 @@ PREQUANT_FORMAT = "unsloth_prequant_transformer_state_dict_v1"
 PREQUANT_FORMAT_ROTATED = "unsloth_prequant_transformer_state_dict_v2"
 
 PREQUANT_FORMATS = (PREQUANT_FORMAT, PREQUANT_FORMAT_ROTATED)
+
+DEFAULT_PREQUANT_COMPONENT = "transformer"
 
 
 def prequant_format_for(metadata: Any) -> str:
@@ -432,23 +436,31 @@ def prequant_repo_filename(
     repo_id: str,
     scheme: str,
     suffix: str = ".pt",
+    *,
+    component: Optional[str] = None,
 ) -> str:
-    """The model-name checkpoint filename for ``scheme`` in ``repo_id``: the hosted repos are named
-    <Model>-FP8 (or -INT8 / -quantized) and carry <Model>-<SCHEME>.pt files, e.g.
-    unsloth/Z-Image-Turbo-FP8 -> Z-Image-Turbo-INT8.pt / Z-Image-Turbo-FP8.pt.
+    """Filename for ``scheme`` in ``repo_id``; a non-default ``component`` inserts -<component>-.
 
     ``suffix`` picks the container. It defaults to ``.pt`` so every existing caller keeps naming the
     artifact it already names; ``derived_prequant_filenames`` is what puts the safetensors spelling
     of the same name ahead of it."""
     model = repo_id.rsplit("/", 1)[-1]
-    for drop in ("-fp8", "-int8", "-quantized"):
+    for drop in ("-fp8", "-int8", "-nvfp4", "-mxfp8", "-quantized"):
         if model.lower().endswith(drop):
             model = model[: -len(drop)]
             break
+    part = (component or "").strip()
+    if part and part != DEFAULT_PREQUANT_COMPONENT:
+        return f"{model}-{part}-{scheme.upper()}{suffix}"
     return f"{model}-{scheme.upper()}{suffix}"
 
 
-def derived_prequant_filenames(repo_id: str, scheme: str) -> tuple[str, ...]:
+def derived_prequant_filenames(
+    repo_id: str,
+    scheme: str,
+    *,
+    component: Optional[str] = None,
+) -> tuple[str, ...]:
     """The names to try for ``(repo_id, scheme)``, best first, safetensors AHEAD of the pickle.
 
     Preferring safetensors is a policy decision rather than a detail: it needs no constructor
@@ -458,11 +470,14 @@ def derived_prequant_filenames(repo_id: str, scheme: str) -> tuple[str, ...]:
     picked up with no code change, and a repo that never does keeps resolving exactly what it
     resolves today, because the ``.pt`` names stay in the chain behind it.
     """
-    return (
-        prequant_repo_filename(repo_id, scheme, ".safetensors"),
-        prequant_repo_filename(repo_id, scheme, ".pt"),
-        prequant_filename(scheme),
+    names = (
+        prequant_repo_filename(repo_id, scheme, ".safetensors", component = component),
+        prequant_repo_filename(repo_id, scheme, ".pt", component = component),
     )
+    part = (component or "").strip()
+    if part and part != DEFAULT_PREQUANT_COMPONENT:
+        return names
+    return names + (prequant_filename(scheme),)
 
 
 def resolve_prequant_source(
@@ -488,6 +503,8 @@ def resolve_prequant_source(
     checkpoints at the root, so there is no directory to prepend; a repo that nested them would 404
     on the primary AND on the fallback and the load would silently fall back to dense.
     """
+    if nvfp4_blocked(scheme):
+        return None
     override = (path_override or "").strip()
     if override:
         return PrequantSource(kind = "path", location = override, filename = None)
@@ -589,6 +606,294 @@ def local_prequant_scheme(path: str) -> Optional[str]:
         scheme = None
     _LOCAL_PREQUANT_SCHEME[key] = scheme
     return scheme
+
+
+def hosted_nvfp4_repo_ids() -> frozenset:
+    """Lowercased repo ids any image/video family registers for nvfp4, read off the family tables."""
+    from dataclasses import fields, is_dataclass
+
+    from .diffusion_nvfp4_flag import is_nvfp4
+
+    families: list = []
+    for module in ("diffusion_families", "video_families"):
+        try:
+            mod = __import__(f"{__package__}.{module}", fromlist = ["_FAMILIES"])
+            families.extend(getattr(mod, "_FAMILIES", ()) or ())
+        except Exception:  # noqa: BLE001 - a table that fails to import names no repo
+            continue
+    repos = set()
+    for fam in families:
+        if not is_dataclass(fam):
+            continue
+        for field in fields(fam):
+            value = getattr(fam, field.name, None)
+            if not isinstance(value, tuple):
+                continue
+            for row in value:
+                if not isinstance(row, tuple) or not row or not isinstance(row[-1], str):
+                    continue
+                if "/" in row[-1] and any(isinstance(x, str) and is_nvfp4(x) for x in row[:-1]):
+                    repos.add(row[-1].strip().lower())
+    return frozenset(repos)
+
+
+# Root only: a diffusers pipeline keeps its weights in component folders.
+_PREQUANT_PROBE_SUFFIXES = (".safetensors", ".pt", ".pth")
+_PREQUANT_PROBE_LIMIT = 16
+
+
+def _cached_snapshot_dirs(repo_id: str) -> list:
+    """The local snapshot folders of Hub repo ``repo_id``, newest first. No network."""
+    import os
+
+    parts = repo_id.strip().strip("/").split("/")
+    if len(parts) != 2 or not all(parts):
+        return []
+    roots = []
+    try:
+        from utils.hf_cache_settings import active_hf_hub_cache
+        roots.append(active_hf_hub_cache())
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from huggingface_hub import constants
+        roots.append(constants.HF_HUB_CACHE)
+    except Exception:  # noqa: BLE001
+        pass
+    found = []
+    for root in dict.fromkeys(r for r in roots if r):
+        snapshots = os.path.join(root, "models--" + "--".join(parts), "snapshots")
+        try:
+            entries = [os.path.join(snapshots, name) for name in os.listdir(snapshots)]
+        except OSError:
+            continue
+        entries = [e for e in entries if os.path.isdir(e)]
+        entries.sort(key = lambda e: os.path.getmtime(e), reverse = True)
+        found.extend(entries)
+    return found
+
+
+def _artifacts_declare_nvfp4(folder: str) -> bool:
+    """Whether a pre-quant artifact at the root of ``folder`` records ``scheme = nvfp4``."""
+    import os
+
+    from .diffusion_nvfp4_flag import is_nvfp4
+
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return False
+    if "model_index.json" in names:
+        return False
+    probed = 0
+    for name in names:
+        if not name.lower().endswith(_PREQUANT_PROBE_SUFFIXES):
+            continue
+        path = os.path.join(folder, name)
+        if not os.path.isfile(path):
+            continue
+        if is_nvfp4(local_prequant_scheme(path)):
+            return True
+        probed += 1
+        if probed >= _PREQUANT_PROBE_LIMIT:
+            break
+    return False
+
+
+def declares_nvfp4_checkpoint(model_path: Optional[str]) -> bool:
+    """Whether ``model_path`` is an NVFP4 prequant checkpoint: recorded metadata first, else registry or name. Never raises."""
+    import os
+
+    raw = str(model_path or "").strip()
+    if not raw:
+        return False
+    try:
+        local = os.path.expanduser(raw)
+        if os.path.isfile(local):
+            if not local.lower().endswith(_PREQUANT_PROBE_SUFFIXES):
+                return False
+            from .diffusion_nvfp4_flag import is_nvfp4
+            return is_nvfp4(local_prequant_scheme(local))
+        if os.path.isdir(local):
+            if _artifacts_declare_nvfp4(local):
+                return True
+        else:
+            key = raw.strip("/").lower()
+            if key in hosted_nvfp4_repo_ids():
+                return True
+            if any(_artifacts_declare_nvfp4(snap) for snap in _cached_snapshot_dirs(raw)):
+                return True
+    except Exception:  # noqa: BLE001 - a probe that fails is "not known to be NVFP4"
+        pass
+    return raw.rstrip("/\\").lower().endswith("-nvfp4")
+
+
+# Bump on any payload-order or hash change, so two recipes are never compared under one name.
+FINGERPRINT_ALGO = "md5-packed-v1"
+
+# Payload attrs per torchao class NAME, hash order; unlisted reads "not covered", never "equal".
+_FINGERPRINT_PAYLOAD: dict = {
+    "NVFP4Tensor": ("qdata", "scale", "per_tensor_scale"),
+    "Float8Tensor": ("qdata", "scale"),
+    "Int8Tensor": (
+        "qdata",
+        "scale",
+        "zero_point",
+        "act_quant_scale",
+        "act_quant_zero_point",
+        "act_pre_scale",
+    ),
+    "MXTensor": ("qdata", "scale"),
+    "LinearActivationQuantizedTensor": ("original_weight_tensor",),
+    "AffineQuantizedTensor": ("tensor_impl",),
+    "PlainAQTTensorImpl": ("int_data", "scale", "zero_point"),
+}
+
+
+def _packed_bytes(tensor: Any, torch: Any) -> bytes:
+    """Raw bytes of ``tensor``; a uint8 view reinterprets, so fp8 / fp4 / bf16 hash exactly."""
+    t = tensor.detach().contiguous()
+    if t.dim() == 0:
+        t = t.reshape(1)
+    if t.dtype is not torch.uint8:
+        t = t.view(torch.uint8)
+    return t.cpu().numpy().tobytes()
+
+
+def _hash_packed_payload(tensor: Any, digest: Any, torch: Any) -> bool:
+    """Hash slot names + bytes into ``digest``; False if uncovered or no slot present."""
+    names = _FINGERPRINT_PAYLOAD.get(type(tensor).__name__)
+    if names is None:
+        return False
+    hashed = False
+    for name in names:
+        value = getattr(tensor, name, None)
+        if value is None:
+            continue
+        digest.update(name.encode("utf-8"))
+        if type(value).__name__ in _FINGERPRINT_PAYLOAD:
+            if not _hash_packed_payload(value, digest, torch):
+                return False
+            hashed = True
+            continue
+        digest.update(_packed_bytes(value, torch))
+        hashed = True
+    return hashed
+
+
+def packed_weight_fingerprint(state_dict: Any, *, select: Any = None) -> dict:
+    """md5 of every ``.weight``'s packed bytes by fqn; not the pickle, so re-saves match."""
+    import hashlib
+
+    import torch
+
+    modules: dict = {}
+    skipped: list = []
+    items = state_dict.items() if hasattr(state_dict, "items") else ()
+    for key, tensor in items:
+        if key != "weight" and not str(key).endswith(".weight"):
+            continue
+        if select is not None and not select(str(key)):
+            continue
+        digest = hashlib.md5()
+        try:
+            covered = _hash_packed_payload(tensor, digest, torch)
+        except Exception:  # noqa: BLE001 -- an unreadable payload is uncovered, never a raise
+            covered = False
+        if covered:
+            modules[key] = digest.hexdigest()
+        else:
+            skipped.append(key)
+    return {
+        "algo": FINGERPRINT_ALGO,
+        "count": len(modules),
+        "modules": modules,
+        "skipped": skipped,
+    }
+
+
+FINGERPRINT_MODE_ENV = "UNSLOTH_PREQUANT_FINGERPRINT"
+FINGERPRINT_MODES = ("full", "sample", "off")
+FINGERPRINT_SAMPLE_RATE = 8
+
+
+def _fingerprint_mode() -> str:
+    """``full`` (default) / ``sample`` / ``off``. An unrecognised value reads as the default."""
+    import os
+
+    mode = (os.environ.get(FINGERPRINT_MODE_ENV) or "").strip().lower()
+    return mode if mode in FINGERPRINT_MODES else "full"
+
+
+def _fingerprint_sampled(fqn: str) -> bool:
+    """Stable 1-in-8 by md5 of the fqn; ``hash()`` is randomised per process by PYTHONHASHSEED."""
+    import hashlib
+    return hashlib.md5(fqn.encode("utf-8")).digest()[0] % FINGERPRINT_SAMPLE_RATE == 0
+
+
+def _verify_packed_fingerprint(
+    state_dict: Any,
+    metadata: Any,
+    *,
+    logger: Any = None,
+) -> bool:
+    """Refuse on a fingerprint mismatch; no block, or one this build cannot compute, passes."""
+    block = (metadata or {}).get("fingerprint")
+    expected = (block or {}).get("modules") if isinstance(block, dict) else None
+    if not expected:
+        return True
+    mode = _fingerprint_mode()
+    if mode == "off":
+        if logger is not None:
+            logger.debug(
+                "diffusion.prequant: fingerprint check disabled (%s=off)", FINGERPRINT_MODE_ENV
+            )
+        return True
+    try:
+        actual = (
+            packed_weight_fingerprint(
+                state_dict,
+                select = _fingerprint_sampled if mode == "sample" else None,
+            ).get("modules")
+            or {}
+        )
+    except Exception as exc:  # noqa: BLE001 -- an uncomputable fingerprint checks nothing
+        _warn(logger, "fingerprint", exc)
+        return True
+    if not actual:
+        _warn(
+            logger,
+            "fingerprint",
+            RuntimeError(
+                f"this build recognised none of the {len(expected)} quantized weights the "
+                "checkpoint fingerprinted (a torchao payload rename?); loading it unverified"
+            ),
+        )
+        return True
+    checked = [k for k in expected if mode != "sample" or _fingerprint_sampled(k)]
+    differing = sorted(k for k in checked if actual.get(k) != expected[k])
+    counted = mode != "sample" and len(actual) != len(expected)
+    if not differing and not counted:
+        if logger is not None:
+            logger.info(
+                "diffusion.prequant: fingerprint verified (%d of %d quantized weights, %s)",
+                len(checked),
+                len(expected),
+                mode,
+            )
+        return True
+    if logger is not None:
+        logger.error(
+            "diffusion.prequant: fingerprint MISMATCH (%d of %d checked weights differ, %d "
+            "weights present vs %d recorded): %s. The checkpoint does not hold the bytes it was "
+            "built with; falling back to the dense path",
+            len(differing),
+            len(checked),
+            len(actual),
+            len(expected),
+            ", ".join(differing[:5]) or "counts only",
+        )
+    return False
 
 
 def usable_prequant_source(
@@ -782,6 +1087,7 @@ def load_prequantized_transformer(
     cache_dir: Optional[str] = None,
     prepare_model: Optional[Any] = None,
     config_subfolder: str = "transformer",
+    component: Optional[str] = None,
     local_files_only: bool = False,
     logger: Any = None,
 ) -> Optional[Any]:
@@ -791,24 +1097,8 @@ def load_prequantized_transformer(
     lands under huggingface_hub's import-time constant, so a mid-session cache change re-downloads
     into a root Unsloth no longer reads.
 
-    ``config_subfolder`` is where the DENOISER CONFIG lives inside ``base``, defaulting to the
-    universal ``transformer``. A family hosting several denoiser partitions in one repo overrides it
-    with the one this checkpoint belongs to (MiniMax-H3's ``transformer_ref``): the scoped download
-    stages only that partition, so reading the config from the other one would send an otherwise
-    fully staged load back to the Hub.
-
-    ``prepare_model`` (optional) is called as ``prepare_model(transformer, metadata)`` on the
-    freshly built skeleton, AFTER ``from_config`` and BEFORE ``load_state_dict``. That window is the
-    only one where a family can reshape the module to match how the checkpoint was baked (a swapped
-    submodule, a patched attention class): earlier there is no module, and later ``strict=True`` has
-    already rejected the mismatch. It gets the checkpoint's own metadata so it can key on what was
-    baked rather than on today's defaults. A raising callback falls out to the outer handler below,
-    i.e. a warning and a dense fallback, never a failed load.
-
-    A checkpoint that declares an ACTIVATION ROTATION (``diffusion_convrot``) has the matching
-    online half installed here, on exactly the fqns it records. That is unconditional and central
-    rather than a family opt-in, because the one failure mode worth designing against is the silent
-    one: rotated weights met by unrotated activations render wrong pixels and raise nothing.
+    ``component`` is checked (experts share every other key); ``prepare_model`` may reshape before
+    ``load_state_dict``; a recorded ``diffusion_convrot`` always gets its online half installed.
 
     Returns the placed transformer, or None on any problem (missing / mismatched / unreadable
     checkpoint, unsupported meta-init, or a rotation this build cannot apply exactly) so the caller
@@ -843,10 +1133,19 @@ def load_prequantized_transformer(
         # hand back the same dict, so every check below applies to them equally.
         ckpt = _load_prequant_checkpoint(path, map_location = "cpu")
         if not _validate_checkpoint(
-            ckpt, scheme, base, logger, min_features = min_features, fast_accum = fast_accum
+            ckpt,
+            scheme,
+            base,
+            logger,
+            min_features = min_features,
+            fast_accum = fast_accum,
+            component = component,
         ):
             return None
         state_dict = ckpt["state_dict"]
+        # The only check reading what the artifact HOLDS: corruption after build passes the rest.
+        if not _verify_packed_fingerprint(state_dict, ckpt.get("metadata") or {}, logger = logger):
+            return None
         _pin_kernel_preference(state_dict, logger)
 
         # Read from the root that actually supplied the checkpoint: after a mid-session cache change the pinned root
@@ -892,14 +1191,19 @@ def load_prequantized_transformer(
 
         apply_activation_rotation(transformer, metadata, logger = logger)
 
+        # assign=True shares the checkpoint tensors; a live ref keeps the CPU copy past to(device).
+        del state_dict
+        del ckpt
+
         transformer = transformer.to(device)
         # Same small-M row padding the runtime quantise path applies, and for the same reason: a checkpoint built
         # under the current exclusion set QUANTISES the family's small-M linears, so without the wrappers they would
         # raise inside _int_mm the moment the compiled scope reaches them. After load_state_dict, since wrapping
         # reparents the Linears; after .to() so the granularity probe reads the device tensors the GEMM will see.
-        from .diffusion_transformer_quant import apply_small_m_padding
+        from .diffusion_transformer_quant import apply_small_m_padding, apply_zero_row_guard
 
         apply_small_m_padding(transformer, scheme, metadata.get("family"), logger = logger)
+        apply_zero_row_guard(transformer, scheme, metadata.get("family"), logger = logger)
         # from_config starts in TRAIN mode while the dense/GGUF paths use from_pretrained (eval()'d). Match it so
         # train/eval-sensitive layers cannot make prequant inference diverge.
         try:
@@ -1206,14 +1510,9 @@ def _validate_checkpoint(
     logger: Any,
     min_features: Optional[int] = None,
     fast_accum: Optional[bool] = None,
+    component: Optional[str] = None,
 ) -> bool:
-    """Reject a checkpoint that is the wrong format / scheme / base model / filter. ``min_features``
-    (when given) is the runtime Linear-feature threshold: a different ``--min-features``
-    quantises a different set of Linears, so assign=True would silently install a mismatched
-    model while status still reports the scheme. Reject it. ``fast_accum`` (fp8 only): when the
-    caller forces it and the checkpoint baked a different value, the loaded kernels would ignore
-    the request, so reject and let the dense path honor it. A checkpoint predating a metadata
-    field (absent) is accepted for back-compat."""
+    """Reject a wrong format / scheme / base / filter / denoiser; absent fields predate them."""
     if not isinstance(ckpt, dict) or ckpt.get("format") not in PREQUANT_FORMATS:
         _warn(logger, scheme, ValueError("unrecognised pre-quant checkpoint format"))
         return False
@@ -1307,6 +1606,42 @@ def _validate_checkpoint(
                 ),
             )
             return False
+    ckpt_divisible = meta.get("require_divisible")
+    if ckpt_divisible is not None:
+        from .diffusion_transformer_quant import divisible_for_scheme
+        expected_divisible = divisible_for_scheme(scheme)
+        if int(ckpt_divisible) != expected_divisible:
+            _warn(
+                logger,
+                scheme,
+                ValueError(
+                    f"checkpoint require_divisible {ckpt_divisible!r} != {expected_divisible!r}"
+                ),
+            )
+            return False
+    elif logger is not None:
+        logger.debug(
+            "diffusion.prequant: checkpoint records no require_divisible (built before the "
+            "field); accepting it for %s",
+            scheme,
+        )
+    if component:
+        ckpt_component = meta.get("component")
+        if ckpt_component is not None and str(ckpt_component) != str(component):
+            _warn(
+                logger,
+                scheme,
+                ValueError(
+                    f"checkpoint component {ckpt_component!r} != {component!r}; this is another "
+                    "denoiser of the same family and would load clean and render wrong"
+                ),
+            )
+            return False
+        if ckpt_component is None and logger is not None:
+            logger.debug(
+                "diffusion.prequant: checkpoint records no component; accepting it for %r",
+                component,
+            )
     # fp8 fast-accum is baked into the saved kernels; only enforce when the caller forces it.
     if fast_accum is not None:
         ckpt_fa = meta.get("fast_accum")

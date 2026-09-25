@@ -2318,6 +2318,15 @@ def _dense_quant_supported() -> bool:
     return bool(_dense_quant_capability)
 
 
+def _nvfp4_diffusion_enabled() -> bool:
+    """Whether image and video generation may offer NVFP4 (``UNSLOTH_NVFP4_DIFFUSION``)."""
+    try:
+        from core.inference.diffusion_nvfp4_flag import nvfp4_diffusion_enabled
+        return nvfp4_diffusion_enabled()
+    except Exception:  # noqa: BLE001 -- a capability read must never fail a status request
+        return False
+
+
 def _dense_quant_schemes() -> list[str]:
     """The scheme ladder for ``/api/system``, a pure read of already-resolved state: the polled route
     must never import torch, and the entry beside it refreshed both in one pass."""
@@ -2424,6 +2433,8 @@ def get_system_info(
         # pure read of that same pass.
         "dense_quant_supported": _dense_quant_supported(),
         "dense_quant_schemes": _dense_quant_schemes(),
+        # Torch-free env read, safe on this polled route.
+        "nvfp4_diffusion": _nvfp4_diffusion_enabled(),
     }
 
 
