@@ -703,21 +703,54 @@ def _importable_entries(
     return tuple(found)
 
 
+# Measured on Ubuntu 24.04: apparmor-profiles ships this profile disabled, under extra-profiles.
+_BWRAP_APPARMOR_FIX = (
+    "sudo apt-get install -y apparmor-profiles && sudo install -m 644 "
+    "/usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/ && "
+    "sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict"
+)
+
+# First match wins: an apt host with dnf also on PATH is still apt-managed.
+_BWRAP_INSTALL_COMMANDS = (
+    ("apt-get", "sudo apt-get install -y bubblewrap"),
+    ("dnf", "sudo dnf install -y bubblewrap"),
+    ("pacman", "sudo pacman -S --needed bubblewrap"),
+    ("zypper", "sudo zypper install -y bubblewrap"),
+    ("apk", "sudo apk add bubblewrap"),
+)
+
+
+def bwrap_install_command() -> str | None:
+    """The one command that installs bubblewrap here, or None on an unknown package manager."""
+    for manager, command in _BWRAP_INSTALL_COMMANDS:
+        if shutil.which(manager):
+            return command
+    return None
+
+
 def linux_unavailable_remediation() -> str:
     missing = [name for name in _LINUX_REQUIRED_BINARIES if shutil.which(name) is None]
     if missing:
+        command = bwrap_install_command()
+        # Installing bwrap alone leaves it blocked on Ubuntu 23.10+; keep it one copy-paste.
+        if command and "apt-get" in command and _linux_userns_blocked_by_apparmor():
+            command = f"{command} && {_BWRAP_APPARMOR_FIX}"
+        how = (
+            f"run `{command}`"
+            if command
+            else "install bubblewrap with your distribution's package manager"
+        )
         return (
-            f"Install the missing Linux prerequisites ({', '.join(missing)}) with your "
-            f"distribution's package manager, or re-run Studio setup. {_FALLBACK_NOTE}"
+            f"bubblewrap (bwrap) is not installed. To isolate tool calls, {how}; Studio picks "
+            f"it up within a minute, no restart needed. {_FALLBACK_NOTE}"
         )
     if _linux_userns_blocked_by_apparmor():
         return (
             "This host denies unprivileged user namespaces "
             "(kernel.apparmor_restrict_unprivileged_userns=1, the default on Ubuntu 23.10 and "
-            "newer), so bubblewrap cannot build a sandbox even though it is installed. Grant "
-            "bwrap the userns permission with an AppArmor profile "
-            "(/etc/apparmor.d/bwrap-userns-restrict from the apparmor-profiles package), or "
-            f"re-run Studio setup, which offers to install it. {_FALLBACK_NOTE}"
+            "newer), so bubblewrap cannot build a sandbox even though it is installed. Load "
+            f"Ubuntu's own bwrap profile, which covers only /usr/bin/bwrap: `{_BWRAP_APPARMOR_FIX}`. "
+            f"{_FALLBACK_NOTE}"
         )
     return f"This host cannot start an OS sandbox. {_FALLBACK_NOTE}"
 
