@@ -81,6 +81,7 @@ from ._utils import (
     _apply_text_only_key_mapping,
     _get_remote_composite_text_only,
     _merge_key_mapping,
+    _rebase_user_quantization_config,
     _select_moe_detection_targets,
     set_task_config_attr,
 )
@@ -1325,6 +1326,7 @@ class FastBaseModel:
                     auto_config, _text_key_mapping = remote_text_only[:2]
                     auto_model = AutoModelForCausalLM
                     _merge_key_mapping(kwargs, _text_key_mapping)
+                    _rebase_user_quantization_config(kwargs, _text_key_mapping)
                     text_only_decoder = True
         elif text_only and auto_model in [
             AutoModelForVision2Seq,

@@ -1498,6 +1498,19 @@ def _strip_skip_module_prefix(qc, prefix):
     return qc
 
 
+def _rebase_user_quantization_config(kwargs, key_mapping):
+    # A caller's quantization_config overrides the text config's, so its composite skip names
+    # (language_model.lm_head) get the same rebase as the weight keys, on a copy of the caller's object.
+    # The plan's mapping is {"^" + re.escape(prefix): ""}.
+    qc = kwargs.get("quantization_config", None)
+    if qc is None:
+        return
+    for pattern, replacement in key_mapping.items():
+        if pattern.startswith("^") and not replacement:
+            qc = _strip_skip_module_prefix(qc, re.sub(r"\\(.)", r"\1", pattern[1:]))
+    kwargs["quantization_config"] = qc
+
+
 def _merge_key_mapping(kwargs, mapping):
     # Add mapping to from_pretrained kwargs, under any user mapping.
     user_mapping = kwargs.get("key_mapping", None)

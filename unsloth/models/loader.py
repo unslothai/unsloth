@@ -112,6 +112,7 @@ from ._utils import (
     _apply_text_only_key_mapping,
     _get_remote_composite_text_only,
     _merge_key_mapping,
+    _rebase_user_quantization_config,
     _adapter_fits_text_model,
     set_task_config_attr,
     maybe_prefetch_hf_snapshot,
@@ -1951,6 +1952,7 @@ class FastModel(FastBaseModel):
                         "Use FastVisionModel with text_only = False for multimodal inputs."
                     )
                     _merge_key_mapping(kwargs, _text_key_mapping)
+                    _rebase_user_quantization_config(kwargs, _text_key_mapping)
                     model_config = text_config
                     is_vlm = False
                     text_only_decoder = True

@@ -38,6 +38,7 @@ _HELPERS = (
     "_strip_skip_module_prefix",
     "_get_remote_composite_text_only",
     "_merge_key_mapping",
+    "_rebase_user_quantization_config",
     "_adapter_fits_text_model",
 )
 
@@ -664,6 +665,56 @@ def test_skip_modules_rebased_once_for_nested_prefixes(tmp_path, prefix, alias):
     modules = dict(model.named_modules())
     assert all(name in modules for name in skip[:2])
     assert parent.quantization_config["llm_int8_skip_modules"][0] == prefix + "lm_head"
+
+
+@needs_tf5
+@pytest.mark.parametrize("prefix", ["language_model.", "model.language_model."])
+@pytest.mark.parametrize("as_dict", [True, False])
+def test_caller_quantization_config_skip_modules_are_rebased(tmp_path, prefix, as_dict):
+    # transformers prefers the caller's quantization_config over the config's own, so its composite
+    # skip names must be rebased too, or the standalone decoder quantizes modules the caller excluded.
+    ns = _ns()
+    repo, _ = _write_repo(tmp_path, prefix = prefix, name = "user_qc")
+    parent = _load_parent_config(repo)
+    _, mapping, _ = ns["_get_remote_composite_text_only"](parent, str(repo), trust_remote_code = True)
+    names = [prefix + "lm_head", prefix + "model.layers.0.mlp", "vision_model", "lm_head"]
+    if as_dict:
+        user_qc = {"load_in_4bit": True, "llm_int8_skip_modules": list(names)}
+    else:
+        user_qc = transformers.BitsAndBytesConfig(
+            load_in_4bit = True, llm_int8_skip_modules = list(names)
+        )
+    kw = {"quantization_config": user_qc}
+    ns["_merge_key_mapping"](kw, mapping)
+    ns["_rebase_user_quantization_config"](kw, mapping)
+    out = kw["quantization_config"]
+    skip = out["llm_int8_skip_modules"] if as_dict else out.llm_int8_skip_modules
+    assert skip == ["lm_head", "model.layers.0.mlp", "vision_model"]
+    assert type(out) is type(user_qc) and out is not user_qc
+    if not as_dict:
+        assert out.load_in_4bit and out.quant_method == user_qc.quant_method
+    # The caller's object is never mutated.
+    orig = user_qc["llm_int8_skip_modules"] if as_dict else user_qc.llm_int8_skip_modules
+    assert orig == names
+    # No caller config, or one without skip names: untouched.
+    kw = {}
+    ns["_rebase_user_quantization_config"](kw, mapping)
+    assert "quantization_config" not in kw
+    plain = transformers.BitsAndBytesConfig(load_in_4bit = True)
+    kw = {"quantization_config": plain}
+    ns["_rebase_user_quantization_config"](kw, mapping)
+    assert kw["quantization_config"] is plain
+
+
+def test_loader_and_vision_rebase_the_caller_quantization_config():
+    # Both text-only paths rebase the caller's config right where they install the plan's key_mapping.
+    for path in (LOADER_PATH, VISION_PATH):
+        src = path.read_text(encoding = "utf-8")
+        assert re.search(
+            r"_merge_key_mapping\(kwargs, _text_key_mapping\)\n\s+"
+            r"_rebase_user_quantization_config\(kwargs, _text_key_mapping\)\n",
+            src,
+        ), path.name
 
 
 # ---------------------------------------------------------------- .bin checkpoints
