@@ -1377,6 +1377,24 @@ def _delegate_text_forward(model, name, core):
     return model
 
 
+def _scope_modules_to_save_to_core(model, modules_to_save):
+    """PEFT suffix-matches modules_to_save over the whole model: on a kept wrapper an unqualified
+    "lm_head" also hits the talker's code_predictor.lm_head, a ModuleList PEFT refuses."""
+    name = getattr(model, "_unsloth_text_core", None)
+    core = getattr(model, name, None) if isinstance(name, str) else None
+    if core is None or not modules_to_save:
+        return modules_to_save
+    scoped = []
+    for entry in modules_to_save:
+        paths = [
+            f"{name}.{child}"
+            for child, _ in core.named_modules()
+            if child and (child == entry or child.endswith("." + entry))
+        ]
+        scoped.extend(paths or [entry])
+    return scoped
+
+
 def _text_core_decoder_prefix(model):
     name = getattr(model, "_unsloth_text_core", None)
     core = getattr(model, name, None) if isinstance(name, str) else None
@@ -2725,6 +2743,7 @@ class FastBaseModel:
                 f"`modules_to_save`, so they are trained as full weight matrices.\n"
                 f"This uses more VRAM than LoRA. Please list them in `modules_to_save` directly."
             )
+        modules_to_save = _scope_modules_to_save_to_core(model, modules_to_save)
         _raise_if_fast_inference_modules_to_save(model, modules_to_save)
 
         if target_modules is None or target_modules == "all-linear":
@@ -2746,7 +2765,13 @@ class FastBaseModel:
                 or not finetune_mlp_modules
             )
             # A kept wrapper (Qwen3-Omni) also holds a talker the forward never reaches: scope leaves to the text core.
-            if type(target_modules) in (list, tuple) and (_scoping or finetune_audio_layers or _core_prefix):
+            _leaf_list = type(target_modules) in (list, tuple) and all(
+                "." not in str(name) for name in target_modules
+            )
+            # Qualified paths already name their module; get_peft_regex treats every entry as a leaf.
+            if type(target_modules) in (list, tuple) and (
+                _scoping or finetune_audio_layers or (_core_prefix and _leaf_list)
+            ):
                 if _scoping:
                     print(
                         "Unsloth: Explicit target_modules are constrained by the "

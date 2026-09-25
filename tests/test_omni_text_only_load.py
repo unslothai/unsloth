@@ -551,3 +551,28 @@ def test_a_kept_wrapper_resizes_its_vocabulary_through_the_thinker():
     model.resize_token_embeddings(old + 8)
     assert model.thinker.get_input_embeddings().weight.shape[0] == old + 8
     assert model.thinker.lm_head.weight.shape[0] == old + 8
+
+
+def _kept_wrapper_peft(monkeypatch, **peft_kwargs):
+    from unsloth.models import vision
+
+    monkeypatch.setattr(vision.FastBaseModel, "post_patch_model", staticmethod(lambda model, *a, **k: model))
+    model = vision._text_trainable_core(_tiny_omni(), text_intent = False)
+    model.max_seq_length = 64
+    return vision.FastBaseModel.get_peft_model(model, r = 2, **peft_kwargs)
+
+
+def test_a_qualified_target_on_a_kept_wrapper_reaches_peft_unchanged(monkeypatch):
+    """get_peft_regex treats entries as leaves, so a full path raised "No layers to finetune"."""
+    target = "thinker.model.layers.0.self_attn.q_proj"
+    peft_model = _kept_wrapper_peft(monkeypatch, target_modules = [target])
+    trained = {n for n, p in peft_model.named_parameters() if p.requires_grad}
+    assert trained and all(target in n for n in trained)
+
+
+def test_saved_modules_on_a_kept_wrapper_skip_the_talker(monkeypatch):
+    """An unqualified "lm_head" also suffix-matched talker.code_predictor.lm_head, a ModuleList PEFT refuses."""
+    peft_model = _kept_wrapper_peft(monkeypatch, target_modules = ["q_proj"], modules_to_save = ["lm_head"])
+    trained = [n for n, p in peft_model.named_parameters() if p.requires_grad]
+    assert any("thinker.lm_head" in n for n in trained)
+    assert not any(".talker." in n for n in trained)
