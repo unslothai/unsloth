@@ -8555,12 +8555,13 @@ exit 0
             if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
             return $true
         }
-        # ONLY when WMI could not answer at all. A scan that succeeded and reported no healthy
-        # NVIDIA adapter is evidence of absence, not a reason to go looking somewhere weaker: these
-        # class keys outlive removed hardware and carry no ConfigManagerErrorCode, so a stale entry
-        # would read as a verified healthy GPU and promote $HasNvidiaSmi for a card that is gone.
-        if ($Scan.Ok) { return $false }
-        return ($null -ne (Get-NvidiaRegistryAdapter))
+        # WMI is the only source of a CURRENT answer, so a scan that did not come back is no answer,
+        # not a reason to go looking somewhere weaker. The display class keys outlive removed hardware
+        # (a detached eGPU, a swapped card) and carry no ConfigManagerErrorCode, so a stale NVIDIA
+        # entry cannot be told apart from a working card. Promoting from one would set $HasNvidiaSmi on
+        # a machine with no NVIDIA GPU, hand it CUDA wheels and switch off its AMD and Intel detection.
+        # A host whose WMI cannot answer keeps exactly the detection it had before this check existed.
+        return $false
     }
 
     # Is a healthy AMD or Intel display adapter also present. Same rules, different vendor IDs.
@@ -8655,7 +8656,13 @@ exit 0
         param([string]$DriverVersion)
         if ([string]::IsNullOrWhiteSpace($DriverVersion)) { return $null }
         # The Windows display-driver form, four dotted fields.
-        $m = [regex]::Match($DriverVersion, '^\s*\d+\.\d+\.(\d+)\.(\d+)\s*$')
+        # NVIDIA's own scheme only: a third field of 1x (13, 14, 15 for the 3xx, 4xx, 5xx releases)
+        # and a four-digit fourth field, so the last five digits ARE the release (32.0.15.6094 is
+        # 560.94). An NVIDIA adapter running Microsoft's Basic Display driver reports that driver's
+        # version instead, 10.0.19041.3636 or 10.0.22621.1, and reading those as releases 136 or 262
+        # called the host pre-R450 and replaced a working CUDA venv with CPU wheels. Not NVIDIA's
+        # shape is not an NVIDIA release: unknown, which the routing already handles.
+        $m = [regex]::Match($DriverVersion, '^\s*\d+\.\d+\.(1\d)\.(\d{4})\s*$')
         if ($m.Success) {
             $digits = ($m.Groups[1].Value + $m.Groups[2].Value)
             if ($digits.Length -ge 5) {

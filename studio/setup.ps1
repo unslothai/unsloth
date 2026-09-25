@@ -952,7 +952,7 @@ function Get-GpuPrebuiltToKeepOverSourceBuild {
     if ("$($env:UNSLOTH_LLAMA_TAG)".Trim() -notin @("", "latest")) { return "" }
     $backend = Get-PrebuiltMarkerBackend -Marker (Join-Path $InstallDir "UNSLOTH_PREBUILT_INFO.json")
     if (-not $backend) { return "" }
-    $nvidia = $HasNvidiaSmi
+    $nvidia = $HasNvidiaDriverEvidence
     $amd = $HasROCm -or [bool]$script:ROCmGfxArch
     $present = switch ($backend) {
         "cuda"   { $nvidia }
@@ -3331,12 +3331,13 @@ function Test-NvidiaAdapterPresent {
         if ([int]$adapter.ConfigManagerErrorCode -ne 0) { continue }
         return $true
     }
-    # ONLY when WMI could not answer at all. A scan that succeeded and reported no healthy
-    # NVIDIA adapter is evidence of absence, not a reason to go looking somewhere weaker: these
-    # class keys outlive removed hardware and carry no ConfigManagerErrorCode, so a stale entry
-    # would read as a verified healthy GPU and promote $HasNvidiaSmi for a card that is gone.
-    if ($Scan.Ok) { return $false }
-    return ($null -ne (Get-NvidiaRegistryAdapter))
+    # WMI is the only source of a CURRENT answer, so a scan that did not come back is no answer,
+    # not a reason to go looking somewhere weaker. The display class keys outlive removed hardware
+    # (a detached eGPU, a swapped card) and carry no ConfigManagerErrorCode, so a stale NVIDIA
+    # entry cannot be told apart from a working card. Promoting from one would set $HasNvidiaSmi on
+    # a machine with no NVIDIA GPU, hand it CUDA wheels and switch off its AMD and Intel detection.
+    # A host whose WMI cannot answer keeps exactly the detection it had before this check existed.
+    return $false
 }
 
 # Is a healthy AMD or Intel display adapter also present. Same rules, different vendor IDs.
@@ -3431,7 +3432,13 @@ function Get-NvidiaDriverRelease {
     param([string]$DriverVersion)
     if ([string]::IsNullOrWhiteSpace($DriverVersion)) { return $null }
     # The Windows display-driver form, four dotted fields.
-    $m = [regex]::Match($DriverVersion, '^\s*\d+\.\d+\.(\d+)\.(\d+)\s*$')
+    # NVIDIA's own scheme only: a third field of 1x (13, 14, 15 for the 3xx, 4xx, 5xx releases)
+    # and a four-digit fourth field, so the last five digits ARE the release (32.0.15.6094 is
+    # 560.94). An NVIDIA adapter running Microsoft's Basic Display driver reports that driver's
+    # version instead, 10.0.19041.3636 or 10.0.22621.1, and reading those as releases 136 or 262
+    # called the host pre-R450 and replaced a working CUDA venv with CPU wheels. Not NVIDIA's
+    # shape is not an NVIDIA release: unknown, which the routing already handles.
+    $m = [regex]::Match($DriverVersion, '^\s*\d+\.\d+\.(1\d)\.(\d{4})\s*$')
     if ($m.Success) {
         $digits = ($m.Groups[1].Value + $m.Groups[2].Value)
         if ($digits.Length -ge 5) {
@@ -3556,6 +3563,13 @@ if (-not $HasNvidiaSmi) {
         Write-StudioLine "   NVIDIA GPU found on the PCI bus; nvidia-smi and the driver library are both unavailable" -ForegroundColor Gray
     }
 }
+# The promotion above widens TORCH selection only. Everything that needs a working CUDA driver
+# stack rather than a card on the bus -- the llama.cpp prebuilt kinds, keeping a CUDA prebuilt,
+# the CUDA source build and its toolkit requirement -- reads this instead. install_llama_prebuilt.py
+# never sees the PCI bus, so a bus-only host still gets a CPU bundle there; judging it by the
+# promoted flag called that bundle wrong on every update and redownloaded it, and a source-build
+# fallback demanded a CUDA toolkit on a host that had built CPU llama.cpp fine.
+$HasNvidiaDriverEvidence = $HasNvidiaSmi -and -not $script:NvidiaPresenceOnly
 # nvidia-smi was already resolved above and never asked which card it found, so the banner
 # said "NVIDIA GPU detected" on every NVIDIA host alike. compute_cap is the counterpart of the
 # gfx arch shown for AMD, the driver version the counterpart of the HIP SDK line, and one
@@ -9283,7 +9297,7 @@ if ($LocalLlamaCppLinked) {
                             if ($_m) { $_m } else { Get-WoaTorchIndexMarker }
                         }
                     }
-                $_nvidiaEvidence = $HasNvidiaSmi -or ((Test-WinArm64Venv) -and $_woaEvidenceIndex -and
+                $_nvidiaEvidence = $HasNvidiaDriverEvidence -or ((Test-WinArm64Venv) -and $_woaEvidenceIndex -and
                     (Test-WoaPersistableIndex $_woaEvidenceIndex))
                 # No ROCm bundle exists for Windows ARM64 (upstream's is hip-radeon-x64), so the selector falls through to the ARM64 CPU bundle; without that kind here the gate refetches it every update.
                 $_rocmKinds = if (Test-WinArm64Venv) {
@@ -9623,10 +9637,10 @@ if ($llamaBinState -eq "Present") {
             if (-not (Test-AccessDeniedError $_)) { throw }
             Exit-PathAccessDenied -Path $LlamaCppDir -Label "llama.cpp install" -OwnershipUnverified:$RuntimeRootIsCustom
         }
-        if ($HasNvidiaSmi -and -not $cachedCuda) {
+        if ($HasNvidiaDriverEvidence -and -not $cachedCuda) {
             Write-StudioLine "   Existing llama-server is CPU-only but GPU is available -- rebuilding" -ForegroundColor Yellow
             $NeedRebuild = $true
-        } elseif (-not $HasNvidiaSmi -and $cachedCuda) {
+        } elseif (-not $HasNvidiaDriverEvidence -and $cachedCuda) {
             Write-StudioLine "   Existing llama-server was built with CUDA but no GPU detected -- rebuilding" -ForegroundColor Yellow
             $NeedRebuild = $true
         }
@@ -9698,7 +9712,7 @@ if ($LocalLlamaCppLinked) {
     $script:LlamaCppDegraded = $true
 } elseif (-not $HasCmakeForBuild) {
     Write-StudioLine ""
-    if (-not $HasNvidiaSmi) {
+    if (-not $HasNvidiaDriverEvidence) {
         substep "CMake is required to build llama-server for GGUF chat mode." "Yellow"
         substep "Continuing setup without llama.cpp build." "Yellow"
         substep "Install CMake from https://cmake.org/download/ and re-run setup." "Yellow"
@@ -9748,10 +9762,10 @@ if ($LocalLlamaCppLinked) {
     }
 
     # After the final VS generator, so the CUDA .targets land in the toolset cmake uses.
-    if ($HasNvidiaSmi) { Resolve-CudaToolkit -RequireOrExit }
+    if ($HasNvidiaDriverEvidence) { Resolve-CudaToolkit -RequireOrExit }
 
     Write-StudioLine ""
-    if ($HasNvidiaSmi) {
+    if ($HasNvidiaDriverEvidence) {
         substep "building llama.cpp with CUDA support..."
     } elseif ($HasROCm -or $script:ROCmGfxArch) {
         # A HIP source build needs the full HIP SDK; the per-gfx ROCm prebuilt already failed here.
@@ -9778,7 +9792,7 @@ if ($LocalLlamaCppLinked) {
     $FailedStep = ""
 
     # Refresh-Environment may have repopulated conflicting CUDA_PATH_V* from the registry.
-    if ($HasNvidiaSmi -and $CudaToolkitRoot) {
+    if ($HasNvidiaDriverEvidence -and $CudaToolkitRoot) {
         $cudaPathVars2 = @([Environment]::GetEnvironmentVariables('Process').Keys | Where-Object { $_ -match '^CUDA_PATH_V' })
         foreach ($v2 in $cudaPathVars2) {
             [Environment]::SetEnvironmentVariable($v2, $null, 'Process')
@@ -10049,7 +10063,7 @@ if ($LocalLlamaCppLinked) {
         }
         $CmakeArgs += '-DCMAKE_EXE_LINKER_FLAGS=/NODEFAULTLIB:LIBCMT'
         # CUDA flags -- only if GPU available, otherwise explicitly disable
-        if ($HasNvidiaSmi -and $NvccPath) {
+        if ($HasNvidiaDriverEvidence -and $NvccPath) {
             # UNSLOTH_LLAMA_CUDA_ARCHS ("120" or "89;86") forces the build arch, as setup.sh does.
             $CudaArchOverride = if ($env:UNSLOTH_LLAMA_CUDA_ARCHS) { ($env:UNSLOTH_LLAMA_CUDA_ARCHS -replace '\s', '') } else { '' }
             if ((-not $CudaArch) -and (-not $CudaArchOverride)) {

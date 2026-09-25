@@ -206,6 +206,7 @@ Set-Content -LiteralPath (Join-Path $install "UNSLOTH_PREBUILT_INFO.json") -Valu
 function python { $global:LASTEXITCODE = $script:FakePythonRc }
 $script:FakePythonRc = 0
 $HasNvidiaSmi = $true
+$HasNvidiaDriverEvidence = $true
 $HasROCm = $false
 $script:ROCmGfxArch = $null
 $script:IsIntelXpu = $false
@@ -232,7 +233,14 @@ $script:FakePythonRc = 1
 Check "an install that no longer runs is not kept" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "")
 $script:FakePythonRc = 0
 $HasNvidiaSmi = $false
+$HasNvidiaDriverEvidence = $false
 Check "a CUDA prebuilt with the GPU gone is not kept" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "")
+# A card on the bus with no driver stack behind it (the presence-only promotion) is not a CUDA
+# host for llama.cpp: install_llama_prebuilt.py never sees the bus, so it would not pick CUDA either.
+$HasNvidiaSmi = $true
+$HasNvidiaDriverEvidence = $false
+Check "a CUDA prebuilt on a presence-only NVIDIA host is not kept" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "")
+$HasNvidiaSmi = $false
 Set-Content -LiteralPath (Join-Path $install "UNSLOTH_PREBUILT_INFO.json") -Value '{"backend": "vulkan"}'
 $HasROCm = $true
 Check "a Vulkan prebuilt is kept for any GPU vendor" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "vulkan")
@@ -245,6 +253,7 @@ Set-Content -LiteralPath (Join-Path $install "UNSLOTH_PREBUILT_INFO.json") -Valu
 Check "a CPU prebuilt has nothing to keep" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "")
 # Markers from before the backend field, read as setup.sh reads them.
 $HasNvidiaSmi = $true
+$HasNvidiaDriverEvidence = $true
 Set-Content -LiteralPath (Join-Path $install "UNSLOTH_PREBUILT_INFO.json") -Value '{"llama_backend": "cuda"}'
 Check "a legacy marker naming the request is kept" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "cuda")
 Set-Content -LiteralPath (Join-Path $install "UNSLOTH_PREBUILT_INFO.json") -Value '{"asset": "app-b8508-mix-windows-x64-cuda13-newer.zip"}'

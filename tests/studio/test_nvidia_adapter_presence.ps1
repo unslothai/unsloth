@@ -252,7 +252,17 @@ foreach ($case in @(
     # Three digits at least. The caller now acts on a low release by choosing CPU wheels, so a
     # malformed string must read as unknown rather than as an ancient driver.
     @{ V = "99.1";         R = $null; N = "a two-digit release" },
-    @{ V = "100.1";        R = 100;  N = "the lowest release shape NVIDIA actually ships" }
+    @{ V = "100.1";        R = 100;  N = "the lowest release shape NVIDIA actually ships" },
+    # Microsoft's Basic Display driver on an NVIDIA adapter reports ITS version, not NVIDIA's. Read
+    # as NVIDIA's scheme these were releases 136, 262 and 190, all "pre-R450", which chose CPU
+    # wheels and force-replaced a working cu* venv. They are not NVIDIA releases at all.
+    @{ V = "10.0.19041.3636"; R = $null; N = "a Microsoft Basic Display driver version" },
+    @{ V = "10.0.22621.1";    R = $null; N = "a Windows 11 Basic Display driver version" },
+    @{ V = "10.0.19041.1";    R = $null; N = "a Windows 10 Basic Display driver version" },
+    # NVIDIA's own scheme across its eras: third field 1x, fourth four digits.
+    @{ V = "31.0.15.3623";    R = 536; N = "a WDDM 3.1 NVIDIA version" },
+    @{ V = "26.21.14.4250";   R = 442; N = "a WDDM 2.6 NVIDIA version" },
+    @{ V = "21.21.13.7892";   R = 378; N = "a WDDM 2.1 NVIDIA version" }
 )) {
     $got = Get-NvidiaDriverRelease -DriverVersion $case.V
     Check "$($case.N) reads as release $($case.R)" ($got -eq $case.R)
@@ -564,12 +574,15 @@ function Get-ItemProperty {
     return $null
 }
 
-# A WMI scan that FAILED is the one case the fallback is for.
+# A WMI scan that FAILED is no answer, and the class keys cannot stand in for one. This used to
+# fall back to them, and a stale ven_10de entry (a removed eGPU, a swapped card) on an Intel UHD
+# laptop whose WMI timed out promoted $HasNvidiaSmi: CUDA wheels for a GPU that is gone and Intel
+# detection switched off. Presence now needs a current, healthy WMI record.
 $script:FakeAdapters = @()
 $script:FakeScanOk = $false
 $script:RegistryConsulted = $false
-Check "a WMI scan that could not answer falls back to the registry" ((Test-NvidiaAdapterPresent) -eq $true)
-Check "and the registry really was the source" ($script:RegistryConsulted -eq $true)
+Check "a WMI scan that could not answer is not presence, even with an NVIDIA class key" ((Test-NvidiaAdapterPresent) -eq $false)
+Check "and the registry was never consulted for presence" ($script:RegistryConsulted -eq $false)
 
 # A WMI scan that ANSWERED is evidence, even when the answer is "no NVIDIA here".
 foreach ($case in @(
@@ -602,10 +615,10 @@ $script:FakeAdapters = @()
 $script:FakeScanOk = $false
 Check "a failed scan with no NVIDIA in the registry is still absent" ((Test-NvidiaAdapterPresent) -eq $false)
 
-# Both files must carry the gate, or setup.ps1 keeps the defect install.ps1 just lost.
+# Both files must drop the fallback, or setup.ps1 keeps the defect install.ps1 just lost.
 foreach ($file in @($installPs1, $setupPs1)) {
-    Check "$(Split-Path -Leaf $file) gates the registry fallback on a failed scan" (
-        (Get-FunctionText $file "Test-NvidiaAdapterPresent") -match 'if \(\$Scan\.Ok\) \{ return \$false \}')
+    Check "$(Split-Path -Leaf $file) never reads presence from the class keys" (
+        (Get-FunctionText $file "Test-NvidiaAdapterPresent") -notmatch 'Get-NvidiaRegistryAdapter|Control\\Class')
 }
 
 # ------------------------------------------ the fallback's own entry names a driver version too
@@ -630,7 +643,7 @@ function Get-ItemProperty {
 }
 $script:FakeAdapters = @()
 $script:FakeScanOk = $false
-Check "the failed-scan fallback still reports the GPU" ((Test-NvidiaAdapterPresent) -eq $true)
+Check "a failed scan is still not presence, whatever the class key names" ((Test-NvidiaAdapterPresent) -eq $false)
 $regRelease = Get-NvidiaAdapterDriverRelease
 Check "and the registry entry's driver release is read, not discarded" ($regRelease -eq 536)
 $regFloor = @(Get-NvidiaAdapterCudaFloor)
@@ -668,7 +681,7 @@ $script:FakeAdapters = @()
 $script:FakeScanOk = $false
 Check "a later entry that names a version wins over an earlier one that does not" (
     (Get-NvidiaAdapterDriverRelease) -eq 536)
-Check "and presence is unaffected by which entry answered" ((Test-NvidiaAdapterPresent) -eq $true)
+Check "and presence is still not read from the class keys" ((Test-NvidiaAdapterPresent) -eq $false)
 
 # Two entries that disagree read as unknown, not as whichever came first. These keys outlive the
 # hardware and enumeration order says nothing about which adapter is live, so a stale newer entry
@@ -686,7 +699,7 @@ function Get-ItemProperty {
 }
 Check "two entries naming different releases read as unknown" ($null -eq (Get-NvidiaAdapterDriverRelease))
 Check "and yield no floor either" ($null -eq (Get-NvidiaAdapterCudaFloor))
-Check "while the GPU is still reported present" ((Test-NvidiaAdapterPresent) -eq $true)
+Check "and disagreeing entries are not presence either" ((Test-NvidiaAdapterPresent) -eq $false)
 
 # Two spellings of ONE release are agreement, not conflict: these entries can spell the same
 # driver differently, and comparing the strings rather than the releases would throw the floor
@@ -711,7 +724,7 @@ function Get-ItemProperty {
     }
     return $null
 }
-Check "with no version anywhere the GPU is still found" ((Test-NvidiaAdapterPresent) -eq $true)
+Check "with no version anywhere there is still no presence" ((Test-NvidiaAdapterPresent) -eq $false)
 Check "and the release stays unknown" ($null -eq (Get-NvidiaAdapterDriverRelease))
 
 # Back to one subkey for the rows below.
@@ -902,6 +915,52 @@ try {
     Check "an explicit family override still wins over the bus floor" (
         (("" + (Get-TorchIndexUrl)) -replace '^.*/', '') -eq "cu118")
 } finally { Remove-Item Env:UNSLOTH_TORCH_INDEX_FAMILY -ErrorAction SilentlyContinue }
+
+# ------------------------------------------------ the promotion widens torch selection only
+#
+# A presence-only promotion sets $HasNvidiaSmi, but install_llama_prebuilt.py never sees the PCI
+# bus and still picks a CPU bundle for that host. Every llama.cpp and CUDA-toolkit site therefore
+# reads $HasNvidiaDriverEvidence (real nvidia-smi or driver library). Reading the promoted flag
+# there called a working CPU bundle wrong on every update (delete and redownload), forced a
+# source rebuild, and made the source build demand a CUDA toolkit or exit.
+$setupAstErrors = $null
+$setupAst = [System.Management.Automation.Language.Parser]::ParseFile($setupPs1, [ref]$null, [ref]$setupAstErrors)
+Check "setup.ps1 parses" (-not $setupAstErrors)
+$llamaStart = $setupAst.Extent.Text.IndexOf('$_arm64CudaOptOut = ')
+$keepFn = $setupAst.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq "Get-GpuPrebuiltToKeepOverSourceBuild" }, $true)[0]
+$nvReads = @($setupAst.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.VariableExpressionAst] -and $n.VariablePath.UserPath -eq "HasNvidiaSmi" }, $true))
+$llamaReads = @($nvReads | Where-Object {
+    $_.Extent.StartOffset -gt $llamaStart -or
+    ($_.Extent.StartOffset -ge $keepFn.Extent.StartOffset -and $_.Extent.EndOffset -le $keepFn.Extent.EndOffset) })
+Check "the llama.cpp section exists where this test looks for it" ($llamaStart -gt 0)
+Check "no llama.cpp or CUDA-toolkit site reads the promoted `$HasNvidiaSmi" ($llamaReads.Count -eq 0)
+foreach ($needle in @(
+    '$_nvidiaEvidence = $HasNvidiaDriverEvidence -or',
+    'if ($HasNvidiaDriverEvidence) { Resolve-CudaToolkit -RequireOrExit }',
+    'if ($HasNvidiaDriverEvidence -and -not $cachedCuda) {',
+    'if ($HasNvidiaDriverEvidence -and $NvccPath) {',
+    '$nvidia = $HasNvidiaDriverEvidence')) {
+    Check "setup.ps1 carries: $needle" ($setupAst.Extent.Text.Contains($needle))
+}
+# The definition itself, evaluated: presence-only is not driver evidence, real evidence is.
+$defAst = $setupAst.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+    "$($n.Left)" -eq '$HasNvidiaDriverEvidence' }, $true)
+Check "setup.ps1 defines `$HasNvidiaDriverEvidence exactly once" (@($defAst).Count -eq 1)
+$defText = "$(@($defAst)[0].Extent.Text)"
+Check "and defines it after the presence promotion" (
+    @($defAst)[0].Extent.StartOffset -gt $setupAst.Extent.Text.IndexOf('$script:NvidiaPresenceOnly = $true'))
+foreach ($case in @(
+    @{ Smi = $true;  Only = $true;  Want = $false; N = "a presence-only promotion" },
+    @{ Smi = $true;  Only = $false; Want = $true;  N = "nvidia-smi or the driver library" },
+    @{ Smi = $false; Only = $false; Want = $false; N = "no NVIDIA at all" })) {
+    $got = & { param($smi, $only) $HasNvidiaSmi = $smi; $script:NvidiaPresenceOnly = $only
+        . ([scriptblock]::Create($defText)); $HasNvidiaDriverEvidence } $case.Smi $case.Only
+    Check "$($case.N) reads as driver evidence = $($case.Want)" ($got -eq $case.Want)
+}
+$script:NvidiaPresenceOnly = $false
 
 if ($failures -gt 0) {
     Write-Host "$failures check(s) failed" -ForegroundColor Red
