@@ -123,7 +123,6 @@ def test_mlx_fusion_that_cannot_be_entered_keeps_native(
 def test_mlx_dead_gpu_queue_is_not_reported_as_a_working_fallback(
     monkeypatch, mlx_inference_patches, feature, message
 ):
-    """A dead queue leaves no native path, so swallowing it promises one that cannot run."""
     from core.inference import mlx_inference
 
     @contextmanager
@@ -145,7 +144,6 @@ def test_mlx_dead_gpu_queue_is_not_reported_as_a_working_fallback(
 def test_mlx_packing_that_runs_out_of_memory_still_keeps_native(
     monkeypatch, mlx_inference_patches, feature
 ):
-    """Packing allocates memory native inference never needs."""
     from core.inference import mlx_inference
 
     @contextmanager
@@ -161,7 +159,6 @@ def test_mlx_packing_that_runs_out_of_memory_still_keeps_native(
 
 
 def test_mlx_dead_gpu_queue_at_load_fails_the_load(monkeypatch, mlx_moe):
-    """A failed load is reaped, which is the only way back to a usable Metal queue."""
     from core.inference import mlx_inference
 
     backend = _install_fake_text_stack(monkeypatch, {"p": [1, 2], "generated": [7, 8]}, [])
@@ -204,7 +201,6 @@ def test_mlx_fusion_failure_at_load_still_loads_the_model(monkeypatch, mlx_moe):
 
 
 def test_mlx_fusion_that_refuses_everywhere_still_generates(monkeypatch, mlx_moe):
-    """A model that failed to pack at load tries again per request."""
     from core.inference import mlx_inference
 
     backend = _install_fake_text_stack(monkeypatch, {"p": [1, 2], "generated": [7, 8]}, [])
@@ -232,14 +228,12 @@ def test_mlx_fusion_that_refuses_everywhere_still_generates(monkeypatch, mlx_moe
     stream = backend.generate_chat_response(messages = [{"role": "user", "content": "p"}])
     assert next(stream) == "7"
     stream.close()
-    # Once at load, four more for the request; order is not contractual.
     assert Counter(refused) == Counter(
         moe_gate_up = 2, decode_conv_silu = 1, residual_norm = 1, moe_router = 1
     )
 
 
 def _all_fusions_refuse(monkeypatch, patches):
-    """Every fusion raises on entry, as a model that cannot be packed makes them."""
     from core.inference import mlx_inference
 
     refused = []
@@ -260,8 +254,7 @@ def _all_fusions_refuse(monkeypatch, patches):
 
 
 def test_mlx_vlm_generation_survives_every_fusion_refusing(monkeypatch, mlx_inference_patches):
-    """The VLM path holds its fusions in its own ExitStack, so the text path proves nothing
-    for it."""
+    """The VLM path holds its fusions in its own ExitStack."""
     from core.inference import mlx_inference
     from core.inference.mlx_inference import MLXInferenceBackend
 
@@ -305,7 +298,6 @@ def test_mlx_vlm_generation_survives_every_fusion_refusing(monkeypatch, mlx_infe
 def test_mlx_audio_input_generation_survives_every_fusion_refusing(
     monkeypatch, mlx_inference_patches
 ):
-    """So does the audio-input path."""
     from core.inference import mlx_inference
     from core.inference.mlx_inference import MLXInferenceBackend
 

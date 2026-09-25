@@ -296,8 +296,6 @@ class _LiveDispatcher:
 
 
 def test_a_foreign_fault_reaches_its_mailbox_before_the_worker_is_retired(monkeypatch):
-    """A direct read can take a compare request's response. Retiring clears the registry, so
-    observing before handing it over would leave that request never told what killed it."""
     o = _bare_orchestrator()
     torn_down = []
 
@@ -338,7 +336,6 @@ def test_a_foreign_fault_reaches_its_mailbox_before_the_worker_is_retired(monkey
 def test_a_direct_request_reading_past_a_live_dispatcher_still_retires(
     already_waiting, fault, monkeypatch
 ):
-    """A compare run can leave the dispatcher alive under a direct request."""
     o = _bare_orchestrator()
     torn_down = _watch_teardown(o, monkeypatch)
     o._dispatcher_thread = _LiveDispatcher()
@@ -387,9 +384,6 @@ def test_a_dispatched_stream_retires_on_the_fault_the_dispatcher_routed(monkeypa
 def test_a_routed_fault_retires_the_worker_without_waiting_on_a_consumer(
     leaves_a_mailbox, monkeypatch
 ):
-    """A stream that ends mid-flight either leaves no mailbox or leaves one it never reads
-    again. Either way routing is the last sight of the fault: missed there, nothing reaps the
-    worker and every later request fails."""
     o = _bare_orchestrator()
     if leaves_a_mailbox:
         o._mailboxes = {"gone": orch_mod._WorkerMailbox(o._proc)}
@@ -418,12 +412,10 @@ def test_a_routed_fault_retires_the_worker_without_waiting_on_a_consumer(
 
     assert torn_down, "no consumer will read it, so routing is the last chance"
     assert o.active_model_name is None
-    # Retiring stops the dispatcher, so observing inline would join this very thread.
     assert observers and dispatcher not in observers
 
 
 def test_a_cancelled_generation_still_retires_the_worker_it_poisoned(monkeypatch):
-    """Both cancel drains discard what they read, the fault included."""
     direct = _bare_orchestrator()
     monkeypatch.setattr(direct, "_ensure_subprocess_alive", lambda: True)
     direct_torn_down = _watch_teardown(direct, monkeypatch)
@@ -472,7 +464,6 @@ def test_a_worker_that_outlives_the_kill_keeps_the_model_it_is_still_holding(mon
 
 
 class _SwappedDuringRead(queue.Queue):
-    """Reloads while the reader is parked in get()."""
 
     def __init__(self, orchestrator, replacement, resp):
         super().__init__()
@@ -499,7 +490,6 @@ def test_a_fault_read_across_a_replacement_leaves_the_replacement_alone(monkeypa
 
 
 def test_the_direct_read_takes_the_handle_before_the_queue(monkeypatch):
-    """Queue first would pair the replacement with its predecessor's queue."""
     o = _bare_orchestrator()
     torn_down = _watch_teardown(o, monkeypatch)
     replacement = object()
@@ -520,7 +510,6 @@ def test_the_direct_read_takes_the_handle_before_the_queue(monkeypatch):
 
 
 def test_a_fault_in_a_mailbox_that_outlived_its_worker_leaves_the_replacement_alone(monkeypatch):
-    """A mailbox outlives its worker; a reload must not shift the blame."""
     o = _bare_orchestrator()
     torn_down = _watch_teardown(o, monkeypatch)
     mailbox = _mailbox_for(o._proc, {"type": "gen_error", "error": _GPU_TIMEOUT})
@@ -544,7 +533,6 @@ def test_a_fault_from_a_replaced_worker_leaves_the_replacement_alone(monkeypatch
         o._proc = replacement
         o._subprocess_shutdown_lock.release()
 
-    # the reload holds the lock the observer needs
     o._subprocess_shutdown_lock.acquire()
     threading.Timer(0.05, reload).start()
 

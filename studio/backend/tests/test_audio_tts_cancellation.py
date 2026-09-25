@@ -272,7 +272,6 @@ def _watch_teardown(orchestrator, monkeypatch):
 
 @pytest.mark.parametrize("rtype", ["audio_error", "error"])
 def test_a_dead_gpu_queue_during_audio_generation_retires_the_worker(rtype, monkeypatch):
-    """TTS reads the worker itself, and either error reply can carry the fault."""
     orchestrator = _bare_orchestrator()
     monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: True)
     sent = []
@@ -289,7 +288,6 @@ def test_a_dead_gpu_queue_during_audio_generation_retires_the_worker(rtype, monk
 
 
 def test_a_cancelled_audio_request_still_retires_the_poisoned_worker(monkeypatch):
-    """The cancelled request reports cancellation, never the fault."""
     orchestrator = _bare_orchestrator()
     monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: True)
     sent = []

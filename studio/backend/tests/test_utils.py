@@ -712,7 +712,6 @@ class TestFormatErrorMessage:
 
 
 class TestSafeErrorDetailNamesAMetalFailure:
-    """A watchdog kill used to reach the client as a network problem."""
 
     @pytest.mark.parametrize(
         "message",

@@ -176,8 +176,6 @@ def _redact_worker_output(text: str) -> str:
 
 
 class _WorkerMailbox(queue.Queue):
-    """Carries the worker it was opened for, which it outlives."""
-
     def __init__(self, worker):
         super().__init__()
         self.worker = worker
@@ -992,13 +990,10 @@ class InferenceOrchestrator:
         return self._proc is not None and self._proc.is_alive()
 
     def _observe_response(self, resp, worker):
-        """Retire ``worker`` if its Metal queue is dead, and pass the response on. Nothing else
-        reaps the process, and a cancelled request would discard the fault before any error
-        handler saw it."""
+        """Retire ``worker`` if its Metal queue is dead; nothing else reaps it."""
         detail = resp.get("error") or ""
         if worker is None or not is_metal_queue_dead(detail):
             return resp
-        # the lock a load publishes under; ``worker`` may be stale by the time it is taken
         with self._subprocess_shutdown_lock:
             if self._proc is not worker:
                 return resp
@@ -1009,9 +1004,7 @@ class InferenceOrchestrator:
         return resp
 
     def _observe_off_thread(self, resp, worker) -> None:
-        """Observe without waiting on a consumer: a stream that ends before its last read leaves
-        the fault in a mailbox nobody empties, and nothing else reaps the worker. Off the
-        dispatcher thread because retiring joins it."""
+        """Off the dispatcher thread because retiring joins it."""
         if worker is None or not is_metal_queue_dead(resp.get("error") or ""):
             return
         threading.Thread(
@@ -1088,8 +1081,6 @@ class InferenceOrchestrator:
         mailbox: _WorkerMailbox,
         timeout: Optional[float] = None,
     ):
-        """Take one routed response. The dispatcher fills mailboxes off the worker's queue, so a
-        mailbox read may be the first sight of one."""
         resp = mailbox.get_nowait() if timeout is None else mailbox.get(timeout = timeout)
         return self._observe_response(resp, mailbox.worker)
 
@@ -1098,10 +1089,8 @@ class InferenceOrchestrator:
         timeout: float = 1.0,
         observe: bool = True,
     ) -> Optional[dict]:
-        """Read a response from the subprocess (non-blocking with timeout). ``observe = False``
-        leaves retiring to the caller, for a reader that must first deliver what it took."""
-        # Handle before queue: reversed, a reload between the two would blame the replacement
-        # for its predecessor's fault.
+        """``observe = False`` leaves retiring to the caller."""
+        # Handle before queue, else a reload between them blames the replacement.
         worker = self._proc
         resp_queue = self._resp_queue
         if resp_queue is None:
@@ -1233,8 +1222,7 @@ class InferenceOrchestrator:
                         else:
                             self._mark_worker_started(owner)
                     other.put(resp)
-                # Only once it has been handed over: retiring clears the registry, so observing
-                # first would leave the request this fault belongs to waiting out its read timeout.
+                # Observe only after hand-over: retiring clears the registry.
                 self._observe_response(resp, worker)
                 # Outside the mailbox check on purpose: a released request's late frames go to nobody.
                 return None
@@ -1512,8 +1500,7 @@ class InferenceOrchestrator:
                         rid,
                         rtype,
                     )
-                # Every response, delivered or not: a mailbox its stream has abandoned is emptied
-                # by nobody, so a fault left in one would never retire the worker that raised it.
+                # Every response: an abandoned mailbox is never read.
                 self._observe_off_thread(resp, worker)
             except Exception:
                 logger.exception("Inference dispatcher: failed to route a response; continuing")

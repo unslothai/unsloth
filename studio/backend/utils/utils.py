@@ -738,8 +738,8 @@ _METAL_QUEUE_DEAD_MARKERS = ("gpu timeout", "submissionsignored")
 
 
 def is_metal_queue_dead(error: Union[Exception, str]) -> bool:
-    """The watchdog kill and the refusal after it -- not mlx's ``Command buffer execution
-    failed:`` wrapper, which also carries a recoverable ``Insufficient Memory``."""
+    """Watchdog kill or the refusal after it; not mlx's ``Command buffer execution failed:``
+    wrapper, which also carries a recoverable ``Insufficient Memory``."""
     text = str(error).lower()
     return any(marker in text for marker in _METAL_QUEUE_DEAD_MARKERS)
 
@@ -758,7 +758,6 @@ def safe_error_detail(error: Exception, fallback: str = "An internal error occur
     # Before the connection test, which "GPU Timeout Error" would match.
     if is_metal_queue_dead(error):
         return "The GPU stopped responding. Reload the model to recover."
-    # mlx says neither "out of memory" nor "cuda error".
     if (
         "out of memory" in text
         or "cuda error" in text

@@ -602,9 +602,7 @@ def _mlx_inference_patch(name):
 def _mlx_optional_fusion(name, model):
     """Hold an optional Zoo fusion scope, or yield the model unfused. Guard ENTRY only:
     an open scope must unwind through the ExitStack as an unguarded `with` would, or an
-    interrupted generation stops restoring the module tree.
-
-    A dead Metal queue is not guarded: no unfused path survives it."""
+    interrupted generation stops restoring the module tree. A dead Metal queue is not guarded."""
     patch = _mlx_inference_patch(name)
     with ExitStack() as scope:
         active = model
