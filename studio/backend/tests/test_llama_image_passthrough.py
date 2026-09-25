@@ -21,6 +21,7 @@ from routes.inference import (
     _normalize_openai_image_parts_for_llama,
     _openai_messages_for_passthrough,
     _stb_reads_jpeg,
+    _stb_reads_png,
 )
 
 
@@ -115,6 +116,26 @@ def test_jpeg_frames_stb_rejects_are_not_passed_through():
     assert not _stb_reads_jpeg(_patched_frame(raw, precision = 12))
     assert not _stb_reads_jpeg(_encode(_photo("CMYK"), "JPEG"))
     assert not _stb_reads_jpeg(raw[:20])  # Ends before any frame header.
+
+
+# The 64x64 PNG from the GGUF vision smoke test: its deflate stream is cut short and it has no
+# IEND. Pillow decodes it; stb_image rejects it.
+_UNTERMINATED_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAYklEQVR4nO3PMQ0AIADAMEAI/k"
+    "UhBhEcDcmqYJtn7/GzpQNeNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA"
+    "1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaBdCJ0BmMJ25zMAAAAASUVORK5CYII="
+)
+
+
+def test_png_chunks_stb_rejects_are_reencoded():
+    raw = _encode(_photo(), "PNG")
+    assert _stb_reads_png(raw)
+    assert not _stb_reads_png(raw[: raw.rindex(b"IEND") - 4])  # No IEND.
+    assert not _stb_reads_png(_UNTERMINATED_PNG)
+    head, out = _split(_llama_image_data_url(_UNTERMINATED_PNG))
+    assert head == "data:image/png;base64"
+    assert _stb_reads_png(out)
+    assert Image.open(BytesIO(out)).size == (64, 64)
 
 
 @pytest.mark.parametrize(

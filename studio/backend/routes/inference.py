@@ -3660,6 +3660,7 @@ from utils.utils import is_hf_authentication_error, safe_error_detail, log_and_h
 
 import io
 import base64
+import zlib
 
 from utils.current_date_prompt_settings import (
     contains_current_date_prompt_line,
@@ -33368,8 +33369,37 @@ def _stb_reads_jpeg(raw: bytes) -> bool:
     return False
 
 
+def _stb_reads_png(raw: bytes) -> bool:
+    """Accept PNGs whose chunks end at IEND and whose IDAT zlib stream is complete.
+
+    Pillow decodes a PNG whose deflate stream or IEND is cut short once the rows are
+    complete; stb_image rejects those, and unknown critical chunks.
+    """
+    i = len(_PNG_SIGNATURE)
+    inflater = zlib.decompressobj()
+    try:
+        while i + 12 <= len(raw):
+            kind = raw[i + 4 : i + 8]
+            end = i + 12 + int.from_bytes(raw[i : i + 4], "big")
+            if end > len(raw) or (kind == b"IHDR") != (i == len(_PNG_SIGNATURE)):
+                return False
+            if kind == b"IEND":
+                return inflater.eof
+            if kind == b"IDAT":
+                data = raw[i + 8 : end - 4]
+                while data and not inflater.eof:
+                    inflater.decompress(data, 1 << 20)
+                    data = inflater.unconsumed_tail
+            elif kind not in (b"IHDR", b"PLTE") and not kind[0] & 0x20:
+                return False
+            i = end
+    except zlib.error:
+        pass
+    return False
+
+
 def _llama_image_data_url(raw: bytes) -> str:
-    """Preserve PNG and compatible JPEG bytes; convert other formats to PNG.
+    """Preserve PNG and JPEG bytes stb_image reads; convert other images to PNG.
 
     Avoid inflating photos while still rejecting corrupt images with Pillow:
     stb_image silently accepts some truncated JPEGs. Callers map failures to HTTP 400.
@@ -33378,7 +33408,7 @@ def _llama_image_data_url(raw: bytes) -> str:
 
     with Image.open(io.BytesIO(raw)) as img:
         img.load()
-    if raw.startswith(_PNG_SIGNATURE):
+    if raw.startswith(_PNG_SIGNATURE) and _stb_reads_png(raw):
         return f"data:image/png;base64,{base64.b64encode(raw).decode('ascii')}"
     if raw.startswith(b"\xff\xd8") and _stb_reads_jpeg(raw):
         return f"data:image/jpeg;base64,{base64.b64encode(raw).decode('ascii')}"
