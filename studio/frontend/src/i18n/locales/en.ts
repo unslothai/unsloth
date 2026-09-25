@@ -6,7 +6,7 @@ export const en = {
     title: "Composer",
     plainText: "Plain text composer",
     plainTextDescription: "Keep code, Markdown, and links as literal text. Turn off to show a formatted preview.",
-    showContext: "Show context window usage",
+    showContext: "Context window usage",
     sendShortcut: "Send shortcut",
     sendDescription: "Choose when Enter sends a prompt or inserts a new line.",
     followUp: "Follow-up behavior",
@@ -1265,7 +1265,7 @@ export const en = {
         summary: "Live requests, errors, and token usage",
         status: "{active} active · {recent} recent · {model}",
         noModelLoaded: "no model loaded",
-        autoOpen: "Show the floating monitor automatically",
+        autoOpen: "Floating monitor opens automatically",
         autoOpenDescription: "Opens a small panel when API traffic arrives.",
         cpu: "CPU",
         ram: "RAM",
@@ -1591,7 +1591,7 @@ export const en = {
       pastedTextShortDescription:
         "Pastes of {count} characters or more become .txt attachments.",
       pastedTextOffDescription: "Pasted text always stays in the message box.",
-      projectsSection: "Show projects section",
+      projectsSection: "Projects section",
       projectsSectionDescription:
         "Group project chats under Projects. When off, show them in Recents.",
       title: "Chat",
@@ -1601,10 +1601,10 @@ export const en = {
         expandQuantizations: "Expand quantizations",
         expandQuantizationsDescription:
           "Show GGUF quantizations in On Device without opening each model.",
-        showAllQuantizations: "Show all quantizations",
+        showAllQuantizations: "All quantizations",
         showAllQuantizationsDescription:
           "Include quantizations that are not downloaded in On Device.",
-        showMemoryBar: "Show VRAM usage bar",
+        showMemoryBar: "VRAM usage bar",
         showMemoryBarDescription:
           "Show estimated VRAM for model weights, context, and speculative decoding.",
       },
@@ -1622,7 +1622,7 @@ export const en = {
       pastedTextThreshold: "Condense long pastes",
       pastedTextThresholdDescription: "Press {shortcut} to paste directly into the message box.",
       pastedTextThresholdOff: "Off",
-      showResponseModel: "Show response model",
+      showResponseModel: "Response model",
       showResponseModelDescription:
         "Show model details in assistant responses.",
       inlineReadAloud: "Read aloud on responses",
@@ -1631,7 +1631,7 @@ export const en = {
       inlineEditResponse: "Edit response on responses",
       inlineEditResponseDescription:
         "Keep Edit response on every response, instead of in the More menu.",
-      modelDisclaimer: "Show model disclaimer",
+      modelDisclaimer: "Model disclaimer",
       modelDisclaimerDescription:
         'Show "LLMs can make mistakes" under the chat box.',
       projectAttachments: "Share files across a project",
@@ -1676,7 +1676,7 @@ export const en = {
       },
       webSearch: {
         title: "Web search",
-        images: "Show images from web search",
+        images: "Images from web search",
         imagesDescription:
           "Include images in search results.",
       },
