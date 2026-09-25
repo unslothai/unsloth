@@ -373,7 +373,10 @@ def _definition_body(name: str, source: str) -> str | None:
     (`() => { track(); setDetailsOpen(true); }`) and missed the call.
     """
     at = re.search(
-        rf"(?:\b(?:const|let|var)\s+{re.escape(name)}\s*=|\bfunction\s+{re.escape(name)}\s*\()",
+        # An optional type annotation may itself hold `=>` (`: () => void =`), so it is skipped up
+        # to the first `=` that does not open an arrow.
+        rf"(?:\b(?:const|let|var)\s+{re.escape(name)}\s*(?::(?:[^=;]|=>)*?)?=(?!>)"
+        rf"|\bfunction\s+{re.escape(name)}\s*\()",
         source,
     )
     if at is None:
@@ -491,6 +494,21 @@ def test_assistant_more_menu_exposes_response_details_action():
             False,
         ),
         ("showDetails", "function showDetails() {\n  track();\n}\nsetDetailsOpen(true);", False),
+        (
+            "showDetails",
+            "const showDetails: () => void = () => setDetailsOpen(true);",
+            True,
+        ),
+        (
+            "showDetails",
+            "const showDetails: Handler<void> = () => {\n  track();\n  setDetailsOpen(true);\n};",
+            True,
+        ),
+        (
+            "showDetails",
+            "const showDetails: () => void = () => setDetailsOpen(false);",
+            False,
+        ),
         ("showDetails", "const showDetails = () => setDetailsOpen(false);", False),
         ("missing", "const showDetails = () => setDetailsOpen(true);", False),
     ],
