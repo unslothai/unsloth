@@ -4359,11 +4359,7 @@ function VideoGenerator({
                 <TooltipTrigger asChild={true}>
                 <button
                   type="button"
-                  onClick={() => {
-                    setSelectedId(video.id);
-                    // Show the prompt this clip was made with.
-                    setPrompt(video.prompt);
-                  }}
+                  onClick={() => setSelectedId(video.id)}
                   className="relative flex size-full flex-col justify-end overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {thumbnailById[video.id] ? (

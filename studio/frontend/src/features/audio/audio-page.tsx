@@ -3269,11 +3269,7 @@ export function AudioPage({
                         )}
                         <button
                           type="button"
-                          onClick={() => {
-                            selectClip(clip.id);
-                            // Show the text this clip was made with.
-                            setPrompt(clip.prompt);
-                          }}
+                          onClick={() => selectClip(clip.id)}
                           aria-current={
                             clip.id === selectedId ? "true" : undefined
                           }
