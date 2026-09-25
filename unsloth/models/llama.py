@@ -1011,9 +1011,12 @@ def LlamaModel_fast_forward(
     elif (
         self.training
         and attention_mask.ndim == 2
-        and not torch.any(attention_mask[:, 1:] > attention_mask[:, :-1])
+        and not (
+            getattr(self, "_has_no_labels", False) is True
+            and torch.any(attention_mask[:, 1:] > attention_mask[:, :-1])
+        )
     ):
-        # Only right padding is invisible under causal attention; left pads (Online DPO) need the mask.
+        # Left pads (Online DPO scoring) need the mask; checked only without labels since it syncs the host.
         attention_mask = None
         padding_mask = None
     else:
