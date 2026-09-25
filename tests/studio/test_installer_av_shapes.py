@@ -704,8 +704,9 @@ def test_the_installer_never_runs_the_c_sharp_compiler(name: str) -> None:
     hits = re.findall(r"(?m)^[ \t]*Add-Type\b(?![^\r\n]*-AssemblyName).*", text)
     assert not hits, (
         f"{name} compiles C# again ({len(hits)} Add-Type call(s), first: {hits[0].strip()!r}). "
-        "Declare native methods with New-StudioEmittedNativeType instead, or with an inline "
-        "DefinePInvokeMethod block where the script is generated and cannot call it; "
+        "Make the native call out of process instead (the early Python interpreter's ctypes, "
+        "as the NVIDIA probe and path resolver do, or an in-box System32 tool), or with an "
+        "inline DefinePInvokeMethod block where the script is generated; "
         "-MemberDefinition runs csc.exe just as -TypeDefinition does."
     )
     # Conditional, because "emits its native imports" only means anything for a file that HAS

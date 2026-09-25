@@ -1263,12 +1263,10 @@ function Get-NvidiaProbePythonExe {
     foreach ($leaf in @("Scripts\python.exe", "bin/python3", "bin/python")) {
         $candidate = Join-Path $VenvDir $leaf
         if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
-        # Elevated runs only take an interpreter a standard user cannot replace. This probe
-        # launches whatever it returns, so on an elevated run a venv interpreter under a per-user
-        # Studio root is a way to have arbitrary code run as administrator. Declining costs the
-        # CUDA version and the compute capabilities, which the caller already treats as unknown.
-        if ($env:OS -eq "Windows_NT" -and (Test-StudioChildScriptDirectoryElevated) -and
-            -not (Test-StudioPathUnderAdminRoot -Path $candidate)) { continue }
+        # No elevation gate on the venv interpreter: this run already executes it directly
+        # (every pip install and torch probe below), elevated or not, so declining it here
+        # protected nothing and only cost an elevated run without a working nvidia-smi its
+        # CUDA inventory.
         return $candidate
     }
     return ""
@@ -1644,9 +1642,6 @@ function New-StudioChildScriptDirectory {
 # ── BEGIN SHARED WITH install.ps1 (Get-NvidiaLibraryInventory) ──
 # nvml.dll sits in System32 with current drivers and under NVSMI with older ones; a bare
 # name reaches only the former, so name the file, as studio/nvidia_probe.py does.
-# A directory for a program this installer is about to hand a child interpreter.
-#
-#
 function Get-NvidiaNvmlLibraryPath {
     $dirs = @()
     if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "System32") }
@@ -1826,13 +1821,13 @@ main()
         # each native argument verbatim, so a script under "C:\Users\First Last\AppData\Local\
         # Temp" or a hint under "C:\Program Files\NVIDIA Corporation\NVSMI" would split on its
         # spaces and the child would run something else. The script arrives on stdin and the two
-        # library hints in the environment; the only arguments left are -I -S and a bare dash.
+        # library hints in the environment; the only arguments left are -I -S -B and a bare dash.
         $savedNvml = $env:UNSLOTH_NVML_HINT
         $savedCuda = $env:UNSLOTH_CUDA_HINT
         $env:UNSLOTH_NVML_HINT = $nvmlHint
         $env:UNSLOTH_CUDA_HINT = $cudaHint
         try {
-            $proc = Start-Process -FilePath $exe -ArgumentList @("-I", "-S", "-") -NoNewWindow -PassThru `
+            $proc = Start-Process -FilePath $exe -ArgumentList @("-I", "-S", "-B", "-") -NoNewWindow -PassThru `
                 -RedirectStandardInput $scriptFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
         } finally {
             if ($null -eq $savedNvml) { Remove-Item Env:UNSLOTH_NVML_HINT -ErrorAction SilentlyContinue }

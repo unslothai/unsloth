@@ -2181,10 +2181,22 @@ function Install-UnslothStudio {
     # can be reached, Get-StudioLexicalPath carries the run and the identity is inexact.
     # Reset with the rest: under `irm | iex` this is the caller's own.
     $script:StudioFinalPathWarned = $false
+    # $true once this run knows there is no earlier install at the target, set where $VenvDir
+    # is first computed and before anything is created there. The warning below is about two
+    # spellings of an EXISTING install escaping one another's lock; a first install has nothing
+    # there to protect, and on the old native resolver a Python-less host printed nothing, so a
+    # first install stays quiet. The locking is unchanged either way: an inexact answer still
+    # makes Test-StudioPathEqual return $null and the caller take both runtime locks. Unknown
+    # (a caller before the root is computed, or a test driving the helper alone) still warns.
+    $script:StudioInstallIsFresh = $null
     function Write-StudioFinalPathDegraded {
         param([string]$Reason)
         if ($script:StudioFinalPathWarned) { return }
         $script:StudioFinalPathWarned = $true
+        if ($script:StudioInstallIsFresh -eq $true) {
+            Write-Verbose "Unsloth: path identity is inexact ($Reason); first install, taking every runtime lock."
+            return
+        }
         # This used to promise "installation is unaffected", which it cannot know:
         # the same security software that blocks a type can be acting on the rest of
         # the run. Only the narrower claim is true, that the installer can continue.
@@ -2658,8 +2670,9 @@ function Install-UnslothStudio {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $Exe
             # -S as well as -I: -I still imports site, so a sitecustomize could print or hang.
+            # -B: these probes can run before the install lock, so they must write no .pyc.
             # ArgumentList is .NET Core only; Windows PowerShell 5.1 lacks it.
-            $argv = @("-I", "-S", "-c", $Script) + $ScriptArgs
+            $argv = @("-I", "-S", "-B", "-c", $Script) + $ScriptArgs
             if ($null -ne $psi.PSObject.Properties["ArgumentList"]) {
                 foreach ($a in $argv) { $null = $psi.ArgumentList.Add($a) }
             } else {
@@ -2718,7 +2731,8 @@ function Install-UnslothStudio {
     #
     # New-Item with -ErrorAction Stop, not -Force: it must FAIL on a directory that already exists,
     # or a pre-created one carrying an attacker's ACL would be adopted instead of refused.
-     # An in-box tool, named by its full path, or "" when it is not there.
+
+    # An in-box tool, named by its full path, or "" when it is not there.
     #
     # `& icacls.exe` is PowerShell command resolution: a function, alias or executable of that
     # name from the user's session or PATH wins, and on an elevated run it would then execute
@@ -3361,6 +3375,13 @@ function Install-UnslothStudio {
         $StudioRedirectMode = 'default'
     }
     $VenvDir = Join-Path $StudioHome "unsloth_studio"
+    # Read before anything below creates them; see Write-StudioFinalPathDegraded. Every root
+    # the process scan protects counts, so a legacy-layout install is not taken for a fresh one.
+    $script:StudioInstallIsFresh = -not (
+        (Test-Path -LiteralPath $VenvDir) -or
+        (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe")) -or
+        (Test-Path -LiteralPath (Join-Path $StudioHome ".venv")) -or
+        ($env:USERPROFILE -and (Test-Path -LiteralPath (Join-Path $env:USERPROFILE "unsloth_studio"))))
 
     # Records which cache this install used, so an update reuses it rather than guessing:
     # Set-StudioUvCacheForLaunch repoints the backend at the Studio cache even in shared
@@ -5842,7 +5863,11 @@ exit 0
         # exactly; otherwise they may be aliases of one. $null is the caller's
         # "identity unresolved" signal and makes it take both runtime locks.
         if (-not $leftInfo.Exact -or -not $rightInfo.Exact) {
-            Write-StudioLine "[WARN] Could not resolve Unsloth path identity; using the runtime lock." -ForegroundColor Yellow
+            # Quiet on a first install for the reason given at Write-StudioFinalPathDegraded;
+            # the $null, and so both locks, is the same either way.
+            if ($script:StudioInstallIsFresh -ne $true) {
+                Write-StudioLine "[WARN] Could not resolve Unsloth path identity; using the runtime lock." -ForegroundColor Yellow
+            }
             return $null
         }
         return $false
@@ -8562,16 +8587,14 @@ exit 0
         # has created a managed interpreter and then a venv, so asking the cache would decline
         # on exactly the fresh install where nvidia-smi is also most likely to be missing. The
         # host would take CPU wheels while holding a working NVIDIA card.
-        foreach ($candidate in @($VenvPython, $ManagedPythonPath)) {
-            if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
-            if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
-            # Elevated runs only take an interpreter a standard user cannot replace. This probe
-            # launches whatever it returns, so on an elevated run a venv interpreter under a per-user
-            # Studio root is a way to have arbitrary code run as administrator. Declining costs the
-            # CUDA version and the compute capabilities, which the caller already treats as unknown.
-            if ($env:OS -eq "Windows_NT" -and (Test-StudioChildScriptDirectoryElevated) -and
-                -not (Test-StudioPathUnderAdminRoot -Path $candidate)) { continue }
-            return $candidate
+        #
+        # No elevation gate on the venv interpreter: this run already executes it directly
+        # (platform checks, uv pip install --python, the torch probes), elevated or not, so
+        # declining it here protected nothing and only cost an elevated run without a working
+        # nvidia-smi its CUDA inventory. The early ladder below keeps its own admin-root rule.
+        if (-not [string]::IsNullOrWhiteSpace($VenvPython) -and
+            (Test-Path -LiteralPath $VenvPython -PathType Leaf)) {
+            return $VenvPython
         }
         try { return "$(Get-StudioEarlyPython)" } catch { return "" }
     }
@@ -8579,9 +8602,6 @@ exit 0
     # ── BEGIN SHARED WITH studio/setup.ps1 (Get-NvidiaLibraryInventory) ──
     # nvml.dll sits in System32 with current drivers and under NVSMI with older ones; a bare
     # name reaches only the former, so name the file, as studio/nvidia_probe.py does.
-    # A directory for a program this installer is about to hand a child interpreter.
-    #
- 
     function Get-NvidiaNvmlLibraryPath {
         $dirs = @()
         if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "System32") }
@@ -8761,13 +8781,13 @@ main()
             # each native argument verbatim, so a script under "C:\Users\First Last\AppData\Local\
             # Temp" or a hint under "C:\Program Files\NVIDIA Corporation\NVSMI" would split on its
             # spaces and the child would run something else. The script arrives on stdin and the two
-            # library hints in the environment; the only arguments left are -I -S and a bare dash.
+            # library hints in the environment; the only arguments left are -I -S -B and a bare dash.
             $savedNvml = $env:UNSLOTH_NVML_HINT
             $savedCuda = $env:UNSLOTH_CUDA_HINT
             $env:UNSLOTH_NVML_HINT = $nvmlHint
             $env:UNSLOTH_CUDA_HINT = $cudaHint
             try {
-                $proc = Start-Process -FilePath $exe -ArgumentList @("-I", "-S", "-") -NoNewWindow -PassThru `
+                $proc = Start-Process -FilePath $exe -ArgumentList @("-I", "-S", "-B", "-") -NoNewWindow -PassThru `
                     -RedirectStandardInput $scriptFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
             } finally {
                 if ($null -eq $savedNvml) { Remove-Item Env:UNSLOTH_NVML_HINT -ErrorAction SilentlyContinue }

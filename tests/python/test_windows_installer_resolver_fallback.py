@@ -237,6 +237,92 @@ Exit-StudioInstallMutex -Mutex $mutex
     assert "using System" not in result.stdout
 
 
+def _fresh_install_statement() -> str:
+    # The real statement, not a retyped copy: it is what decides whether a run is a first install.
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    return _extract(r"    \$script:StudioInstallIsFresh = -not \(.*?\)\)\n", source)
+
+
+def test_the_first_install_verdict_is_taken_before_anything_is_created() -> None:
+    """Read where $VenvDir is first computed, before the install lock and before any path is
+    resolved: read any later and this run's own venv would make every install look like an
+    update, and the warning would come back on exactly the run it was silenced for."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    verdict = source.index(_fresh_install_statement())
+    assert source.index('    $VenvDir = Join-Path $StudioHome "unsloth_studio"') < verdict
+    assert verdict < source.index("$studioInstallLock = Enter-StudioInstallLock -Path $StudioHome")
+    # Initialised with the rest of the resolver state, so a second `irm | iex` in one session
+    # does not inherit the first run's verdict.
+    assert "    $script:StudioInstallIsFresh = $null\n" in source
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    "existing, warns",
+    [
+        pytest.param(None, False, id = "first_install_is_quiet"),
+        pytest.param("unsloth_studio", True, id = "existing_venv_warns"),
+        pytest.param("bin/unsloth.exe", True, id = "existing_launcher_warns"),
+        pytest.param(".venv", True, id = "legacy_venv_warns"),
+    ],
+)
+def test_a_python_less_first_install_prints_no_degraded_warning(
+    tmp_path: Path, existing: str | None, warns: bool
+):
+    """main resolved paths in process, so a normal first install on a host with no Python
+    printed nothing. The interpreter rung has nothing to run there, and the five-line yellow
+    block it printed instead was the first thing a new user (Desktop's first run included)
+    saw. It stays for an existing install, where two spellings of it escaping one another's
+    lock is the thing the operator is being told about. The lock is the same in every row."""
+    studio_home = tmp_path / "studio"
+    studio_home.mkdir()
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    if existing is not None:
+        target = studio_home / existing
+        if existing.endswith(".exe"):
+            target.parent.mkdir(parents = True)
+            target.write_text("")
+        else:
+            target.mkdir(parents = True)
+    result = _run_powershell(
+        _script(
+            f"""
+{NO_NATIVE}
+$env:USERPROFILE = '{profile}'
+$script:StudioInstallIsFresh = $null
+$StudioHome = '{studio_home}'
+$VenvDir = Join-Path $StudioHome "unsloth_studio"
+{_fresh_install_statement()}
+Write-Output "FRESH:$script:StudioInstallIsFresh"
+$info = Resolve-StudioFinalPathInfo -Path '{studio_home}'
+Write-Output "EXACT:$($info.Exact)"
+$other = Join-Path '{tmp_path}' 'elsewhere'
+Write-Output "EQUAL:$([string](Test-StudioPathEqual -Left '{studio_home}' -Right $other) -eq '')"
+$mutex = Enter-StudioInstallMutex -Path '{studio_home}'
+Write-Output "LOCK:$($null -ne $mutex)"
+Exit-StudioInstallMutex -Mutex $mutex
+""",
+            sabotage = False,
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "FRESH:") == [f"FRESH:{not warns}"]
+    # Inexact either way, and so the caller still takes both runtime locks either way.
+    assert _lines(result, "EXACT:") == ["EXACT:False"]
+    assert _lines(result, "EQUAL:") == ["EQUAL:True"], result.stdout
+    assert _lines(result, "LOCK:") == ["LOCK:True"]
+    degraded = [l for l in result.stdout.splitlines() if "Could not resolve a path exactly" in l]
+    identity = [l for l in result.stdout.splitlines() if "Could not resolve Unsloth path identity" in l]
+    if warns:
+        assert len(degraded) == 1, result.stdout
+        assert len(identity) == 1, result.stdout
+    else:
+        assert not degraded, result.stdout
+        assert not identity, result.stdout
+        assert "[WARN]" not in result.stdout, result.stdout
+
+
 @requires_pwsh
 def test_a_dead_compiler_is_not_something_the_installer_can_notice(tmp_path: Path):
     """The other half, and the reason the file is named for a fallback it no longer needs.

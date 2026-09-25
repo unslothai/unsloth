@@ -192,7 +192,7 @@ Check "the probe is switchable off" ($pyBlock -match 'UNSLOTH_NVIDIA_PYTHON_PROB
 Check "the temp files are always cleaned up" ($pyBlock -match 'finally \{[\s\S]*Remove-Item -LiteralPath \$stale')
 # Windows PowerShell 5.1 appends each native argument verbatim, so anything with a space in it
 # splits and the child silently runs something else. Nothing with a space may reach argv.
-Check "only space-free arguments reach the command line" ($pyCode -match 'ArgumentList @\("-I", "-S", "-"\)')
+Check "only space-free arguments reach the command line" ($pyCode -match 'ArgumentList @\("-I", "-S", "-B", "-"\)')
 Check "the script arrives on stdin, not as a path argument" ($pyCode -match '-RedirectStandardInput \$scriptFile')
 Check "the library hints travel in the environment" `
     (($pyCode -match '\$env:UNSLOTH_NVML_HINT = \$nvmlHint') -and ($pyCode -match '\$env:UNSLOTH_CUDA_HINT = \$cudaHint'))
@@ -216,34 +216,47 @@ function Get-StudioEarlyPython { $script:EarlyCalled = $true; return "/early/pyt
 
 $hookDir = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-hook-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $hookDir | Out-Null
+$savedOs = $env:OS
 try {
     $fakeVenv = Join-Path $hookDir "venv-python"
-    $fakeManaged = Join-Path $hookDir "managed-python"
     [System.IO.File]::WriteAllText($fakeVenv, "")
-    [System.IO.File]::WriteAllText($fakeManaged, "")
 
-    $VenvPython = $fakeVenv; $ManagedPythonPath = $fakeManaged
+    $VenvPython = $fakeVenv
     $script:EarlyCalled = $false
     Check "the venv interpreter wins when it exists" ((Get-NvidiaProbePythonExe) -eq $fakeVenv)
     Check "and the memoising ladder is not consulted at all" ($script:EarlyCalled -eq $false)
 
-    # Before the venv is built but after the managed interpreter is installed.
+    # Neither present: the ladder is the fallback, which is the pre-existing behaviour.
     $VenvPython = Join-Path $hookDir "not-created-yet"
     $script:EarlyCalled = $false
-    Check "the managed interpreter is next" ((Get-NvidiaProbePythonExe) -eq $fakeManaged)
-    Check "and it too skips the ladder" ($script:EarlyCalled -eq $false)
-
-    # Neither present: the ladder is the fallback, which is the pre-existing behaviour.
-    $VenvPython = Join-Path $hookDir "nope-1"; $ManagedPythonPath = Join-Path $hookDir "nope-2"
-    $script:EarlyCalled = $false
-    Check "with neither on disk the ladder still answers" ((Get-NvidiaProbePythonExe) -eq "/early/python3")
+    Check "with no venv on disk the ladder still answers" ((Get-NvidiaProbePythonExe) -eq "/early/python3")
     Check "and the ladder really was the source" ($script:EarlyCalled -eq $true)
 
     # A path recorded but never created must not be handed out: Test-Path is the discriminator,
     # not whether the variable happens to be set.
-    $VenvPython = $null; $ManagedPythonPath = $null
-    Check "unset variables fall through rather than returning empty" (
+    $VenvPython = $null
+    Check "an unset variable falls through rather than returning empty" (
         (Get-NvidiaProbePythonExe) -eq "/early/python3")
+
+    # $ManagedPythonPath is only ever a New-StudioShortcuts parameter, never set in the scope that
+    # reads the inventory; under `irm | iex` a caller's own variable of that name would leak in.
+    $ManagedPythonPath = $fakeVenv
+    Check "a stray `$ManagedPythonPath is not a candidate" ((Get-NvidiaProbePythonExe) -eq "/early/python3")
+    Remove-Variable -Name ManagedPythonPath -ErrorAction SilentlyContinue
+
+    # Elevated, or whoami blocked (read as elevated), with the venv under a per-user root. main
+    # read the driver library in process with no elevation condition, and this same elevated run
+    # already executes $VenvPython directly for its platform checks and every uv pip install, so
+    # declining it here protected nothing and left a host with a hung or missing nvidia-smi on CPU
+    # torch. The venv has to be used.
+    $env:OS = "Windows_NT"
+    function Test-StudioChildScriptDirectoryElevated { return $true }
+    function Test-StudioPathUnderAdminRoot { param([string]$Path) return $false }
+    $VenvPython = $fakeVenv
+    $script:EarlyCalled = $false
+    Check "an elevated run still probes with the venv interpreter it already executes" (
+        (Get-NvidiaProbePythonExe) -eq $fakeVenv)
+    Check "and does not fall to the admin-root-only ladder for it" ($script:EarlyCalled -eq $false)
 
     $saved = $env:UNSLOTH_EARLY_PYTHON_PROBE
     try {
@@ -254,20 +267,30 @@ try {
         if ($null -eq $saved) { Remove-Item Env:UNSLOTH_EARLY_PYTHON_PROBE -ErrorAction SilentlyContinue }
         else { $env:UNSLOTH_EARLY_PYTHON_PROBE = $saved }
     }
+
+    # setup.ps1's own copy, same elevated condition: it finds the venv under $VenvDir.
+    $setupHook = @(Get-HelperSources $setupPs1 @("Get-NvidiaProbePythonExe"))[0]
+    Invoke-Expression $setupHook
+    $VenvDir = Join-Path $hookDir "venv"
+    $setupVenvPy = Join-Path $VenvDir "Scripts\python.exe"
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $setupVenvPy) | Out-Null
+    [System.IO.File]::WriteAllText($setupVenvPy, "")
+    Check "setup.ps1: an elevated run still probes with the venv interpreter" (
+        (Get-NvidiaProbePythonExe) -eq $setupVenvPy)
 } finally {
+    Remove-Item Function:Test-StudioChildScriptDirectoryElevated -ErrorAction SilentlyContinue
+    Remove-Item Function:Test-StudioPathUnderAdminRoot -ErrorAction SilentlyContinue
+    if ($null -eq $savedOs) { Remove-Item Env:OS -ErrorAction SilentlyContinue } else { $env:OS = $savedOs }
     Remove-Item -LiteralPath $hookDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# The ordering that makes the above reachable at all: both variables are assigned before the
-# first Get-NvidiaLibraryInventory call, or the hook would read $null however it is written.
+# The ordering that makes the above reachable at all: the venv interpreter is assigned before
+# the first Get-NvidiaLibraryInventory call, or the hook would read $null however it is written.
 $installText = [System.IO.File]::ReadAllText($installPs1)
 $venvAt = $installText.IndexOf('$VenvPython = Join-Path $VenvDir')
-$managedAt = $installText.IndexOf('$ManagedPythonPath = (Resolve-Path')
 $firstInventoryAt = $installText.IndexOf('if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory))')
 Check "the venv interpreter is named before the inventory is first read" (
     $venvAt -gt 0 -and $firstInventoryAt -gt $venvAt)
-Check "the managed interpreter is named before it too" (
-    $managedAt -gt 0 -and $firstInventoryAt -gt $managedAt)
 
 Write-Host ""
 Write-Host "=== the timeout is whole seconds, rounded up, without [math]::Ceiling ==="
@@ -385,12 +408,13 @@ foreach ($file in @($installPs1, $setupPs1)) {
     $toolFn = @(Get-HelperSources $file @("Get-StudioSystem32Tool"))[0]
     Check "$leaf builds that path under System32" (
         $toolFn -match 'System32' -and $toolFn -match 'Test-Path -LiteralPath \$candidate')
-    # And the NVIDIA probe will not launch a user-writable interpreter while elevated: it runs
-    # whatever it is given, and a venv under a per-user Studio root is exactly that.
+    # The NVIDIA probe's venv interpreter is NOT elevation-gated: the run already executes it
+    # directly, so a gate here only cost elevated hosts their CUDA inventory. The behaviour is
+    # driven above; this pins that the gate did not come back in either file.
     $probePick = @(Get-HelperSources $file @("Get-NvidiaProbePythonExe"))[0]
-    Check "$leaf refuses a user-writable probe interpreter on an elevated run" (
-        $probePick -match 'Test-StudioChildScriptDirectoryElevated' -and
-        $probePick -match 'Test-StudioPathUnderAdminRoot -Path \$candidate')
+    Check "$leaf does not elevation-gate the venv interpreter it already runs" (
+        $probePick -notmatch 'Test-StudioChildScriptDirectoryElevated' -and
+        $probePick -notmatch 'Test-StudioPathUnderAdminRoot')
     Check "$leaf only answers no for a label it actually read" (
         $elevCode -match 'S-1-16-\\d\+.*return \$false')
     Check "$leaf comment stripper kept the code (bites)" ($elevCode -match 'return')
