@@ -301,7 +301,7 @@ def visible_text(
     if open_idx != -1:
         text = text[:open_idx]
     if final:
-        # The stream has ended, so a trailing "<" or "<th" can no longer become <think>.
+        # Ended stream: a trailing "<" or "<th" can no longer become <think>.
         return text
     max_prefix = min(len(text), len(_THINK_OPEN) - 1)
     for size in range(max_prefix, 0, -1):
@@ -324,7 +324,7 @@ def stream_to_stdout(stream, show_thinking: bool) -> str:
         if delta:
             sys.stdout.write(delta)
             sys.stdout.flush()
-        shown = rendered
+            shown = rendered
     tail = visible_text(raw, show_thinking, final = True)[len(shown) :]
     if tail:
         sys.stdout.write(tail)

@@ -126,8 +126,6 @@ def test_visible_text_holds_partial_think_prefix():
 
 
 def test_finished_stream_keeps_a_trailing_think_prefix(capsys):
-    # The prefix holdback is only for text that may still grow. Once the stream has ended, a
-    # reply that happens to end in "<" (or "<th") is just text and must be printed and kept.
     from unsloth_cli._inference import stream_to_stdout
 
     def stream():
@@ -142,6 +140,11 @@ def test_finished_stream_keeps_a_trailing_think_prefix(capsys):
     raw = stream_to_stdout(stream(), show_thinking = False)
     assert raw == "Use the less-than operator <"
     assert capsys.readouterr().out == "Use the less-than operator <\n"
+
+    # "<th" is printed once "<th<" rules it out, then "<think>" shrinks the render: no reprint.
+    shrinking = iter(["x <th", "x <th<", "x <th<think>r", {"done": True}])
+    stream_to_stdout(shrinking, show_thinking = False)
+    assert capsys.readouterr().out == "x <th\n"
 
 
 def _option(command_fn, name):
