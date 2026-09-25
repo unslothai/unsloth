@@ -1092,6 +1092,14 @@ test("a sort picked while a move is in flight is not overwritten", () => {
 
 // A folder last in Pinned runs its block to the bottom of the section, so every pixel below its
 // title is inside it and a chat aimed past the folder was filed into it. There was no "after".
+test("the Pinned tail strip adds no space under the section", () => {
+  // The next section rides up over it while Pinned is open.
+  assert.match(
+    APP_SIDEBAR,
+    /<SidebarGroup className="[^"]*data-\[state=open\]:-mb-\[calc\(8px\*var\(--ui-space-scale,1\)\)\]"/,
+  );
+});
+
 test("a chat can be dropped after a folder that ends the Pinned list", () => {
   const workScope = projectOrderScope("work");
   const ctx = context({
@@ -1173,7 +1181,7 @@ test("a chat can be dropped after a folder that ends the Pinned list", () => {
   assert.ok(pinnedMenu.length > 0, "the Pinned section moved");
   assert.match(
     pinnedMenu,
-    /<SidebarMenuItem\n\s*aria-hidden\n\s*className=\{cn\(\n\s*"relative h-\[calc\(8px\*var\(--ui-space-scale,1\)\)\]",\n\s*dropCueClass\(SIDEBAR_TAIL_SCOPE, "pinned"\),/,
+    /<SidebarMenuItem\n\s*aria-hidden\n\s*className=\{cn\(\n\s*\/\/[^\n]*\n\s*"relative z-\[1\] h-\[calc\(8px\*var\(--ui-space-scale,1\)\)\]",\n\s*dropCueClass\(SIDEBAR_TAIL_SCOPE, "pinned"\),/,
   );
   assert.ok(
     !/draggingRow && /.test(pinnedMenu),

@@ -4413,7 +4413,9 @@ export function AppSidebar() {
         {/* Pinned: folders and chats in one list, in the order they were dropped into. */}
         {!isStudioRoute && !showTrainingRecents && pinnedRows.length > 0 && (
           <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
-            <SidebarGroup className="group/sb-section group-data-[collapsible=icon]:hidden px-0 py-0">
+            {/* While open, the next section rides up over the tail strip below, so the strip adds
+                no space. */}
+            <SidebarGroup className="group/sb-section group-data-[collapsible=icon]:hidden px-0 py-0 data-[state=open]:-mb-[calc(8px*var(--ui-space-scale,1))]">
               {/* The header takes drops too: above the first row, or into a closed section. */}
               <SidebarGroupLabel
                 className={cn(
@@ -4481,7 +4483,8 @@ export function AppSidebar() {
                     <SidebarMenuItem
                       aria-hidden
                       className={cn(
-                        "relative h-[calc(8px*var(--ui-space-scale,1))]",
+                        // z-[1]: above the next section's header, which overlaps it.
+                        "relative z-[1] h-[calc(8px*var(--ui-space-scale,1))]",
                         dropCueClass(SIDEBAR_TAIL_SCOPE, "pinned"),
                       )}
                       {...dnd.dropZoneProps({
