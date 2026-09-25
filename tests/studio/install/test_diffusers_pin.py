@@ -218,9 +218,46 @@ def test_the_main_build_falls_back_to_the_zip_when_there_is_no_git(monkeypatch):
     spec = [arg for arg in args if arg.startswith("diffusers @ ")]
     assert len(spec) == 1, args
     revision = _requirements(MAIN_FILE)[0].rpartition("@")[2].strip().lower()
+    digest = module._archive_sha256_in_requirements(MAIN_FILE)
+    assert digest is not None and re.fullmatch(r"[0-9a-f]{64}", digest), digest
+    # The commit in the URL does not check the bytes served for it; the fragment is what pip and
+    # uv verify before building, so the zip is never installed unverified.
     assert spec[0] == (
-        "diffusers @ https://github.com/huggingface/diffusers/archive/" f"{revision}.zip"
+        "diffusers @ https://github.com/huggingface/diffusers/archive/"
+        f"{revision}.zip#sha256={digest}"
     ), spec
+
+
+def test_the_zip_route_is_skipped_without_exactly_one_pinned_digest(tmp_path, monkeypatch):
+    """No digest, or two that disagree, is no zip route: the host keeps the release instead of
+    installing an archive nothing checked."""
+    module = _probe_module("install_python_stack_probe2e")
+    spec = _requirements(MAIN_FILE)[0]
+    digest = module._archive_sha256_in_requirements(MAIN_FILE)
+    pin = tmp_path / "diffusers-main.txt"
+
+    pin.write_text(f"{spec}\n", encoding = "utf-8")
+    assert module._diffusers_main_archive(pin) is None
+    pin.write_text(
+        f"# archive-sha256: {digest}\n# archive-sha256: {'0' * 64}\n{spec}\n", encoding = "utf-8"
+    )
+    assert module._diffusers_main_archive(pin) is None
+    pin.write_text(f"# archive-sha256: {digest[:63]}\n{spec}\n", encoding = "utf-8")
+    assert module._diffusers_main_archive(pin) is None
+    pin.write_text(f"# archive-sha256: {digest.upper()}\n{spec}\n", encoding = "utf-8")
+    assert module._diffusers_main_archive(pin).endswith(f".zip#sha256={digest}")
+
+    # And the step then keeps the release, as for a pin the zip route cannot serve.
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    monkeypatch.setattr(module, "REQ_ROOT", tmp_path)
+    monkeypatch.setattr(module, "_has_working_git", lambda: False)
+    monkeypatch.setattr(module, "_progress", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_note", lambda *a, **k: None)
+    monkeypatch.setattr(
+        module, "pip_install_try", lambda *a, **k: pytest.fail("an unverified archive install")
+    )
+    pin.write_text(f"{spec}\n", encoding = "utf-8")
+    module._diffusers_main_step()
 
 
 def test_the_main_build_keeps_the_release_when_there_is_no_git_and_no_zip(monkeypatch):
