@@ -1057,11 +1057,11 @@ def open_item(item_id: str) -> ItemFile:
         path, folder, prompt = _gallery_file(kind, ref)
         if path is None:
             raise LookupError(item_id)
-        # Named after its prompt, as the gallery pages name a file they hand on, rather than the
-        # bare id it is stored under; the id when there is no prompt. The project copy carries
-        # the id too, so two items with one prompt are two files.
+        # Downloads are named after the prompt, the id when there is none. A project copy keeps
+        # the stored name, as the Images, Video and Audio pages copy it, so either place sees the
+        # other's copy as already there.
         name = safe_file_name(_prompt_name(prompt, ref, path.suffix.lstrip(".")), ref)
-        return ItemFile(_open_owned(path, item_id), name, folder, _project_name(name, item_id))
+        return ItemFile(_open_owned(path, item_id), name, folder, path.name)
     if kind == "sandbox":
         handle, path = _open_sandbox_file(ref)
         name = os.path.basename(path)

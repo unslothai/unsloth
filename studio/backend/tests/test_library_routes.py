@@ -1461,7 +1461,10 @@ def test_generated_media_download_under_their_prompt(client, signed_in, project)
     ).headers["content-disposition"]
     assert 'filename="Hello there.wav"' in disposition
 
-    # Add to project names the copy after the prompt too, the id keeping two alike apart.
+    # A project copy keeps the stored name, as the Images page's own Add to project does, so
+    # adding from either place finds the other's copy; two alike stay two files.
+    from core.inference import gallery_projects, image_gallery
+
     first, second = _gallery_image("Same prompt"), _gallery_image("Same prompt")
     for image in (first, second):
         response = client.post(
@@ -1469,8 +1472,10 @@ def test_generated_media_download_under_their_prompt(client, signed_in, project)
         )
         assert response.json() == {"already": False}
     names = sorted(path.name for path in (project / "images").iterdir())
-    assert len(names) == 2
-    assert all(name.startswith("Same prompt-") and name.endswith(".png") for name in names)
+    assert names == sorted(f"{image}.png" for image in (first, second))
+    # What the Images page's own route does with the same image.
+    path = image_gallery.owned_image_path(first)
+    assert gallery_projects.copy_into_project(path, "p1", "images")["already"] is True
 
 
 def test_a_sandbox_file_past_the_listing_cap_is_not_reachable_by_id(client, signed_in, monkeypatch):
