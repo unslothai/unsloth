@@ -6966,6 +6966,13 @@ class VideoBackend:
             }
         from hub.utils.gguf import extract_quant_token
 
+        from . import diffusion_cuda_graph
+
+        resolved, speed_optims = diffusion_cuda_graph.live_status(
+            state.resolved,
+            state.speed_optims,
+            getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or (),
+        )
         fam = state.family
         default_steps, default_guidance = default_video_generation_params(
             state.gguf_filename,
@@ -6992,7 +6999,7 @@ class VideoBackend:
             "vae_tiling": state.vae_tiling,
             "memory_mode": state.memory_mode,
             "speed_mode": state.speed_mode,
-            "speed_optims": list(state.speed_optims),
+            "speed_optims": speed_optims,
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
             "transformer_quant": state.transformer_quant,
@@ -7022,7 +7029,7 @@ class VideoBackend:
                 "supports_audio_flow_shift": fam.default_audio_flow_shift is not None
                 and state.engine != "sd_cpp",
             },
-            "resolved": state.resolved,
+            "resolved": resolved,
         }
 
 
