@@ -358,8 +358,8 @@ def test_assistant_more_menu_exposes_response_details_action():
     prop thread.tsx hands it.
 
     Deliberately literal about today's wiring: thread.tsx passes an inline callback that opens
-    the sheet, and the menu item carries both the label and `onSelect={onShowDetails}` on one
-    tag. A refactor that respells either line updates this test with it, which is cheaper and
+    the sheet and renders the sheet with `open={detailsOpen}`, and the menu item carries both
+    the label and `onSelect={onShowDetails}` on one tag and is not disabled. A refactor that respells either line updates this test with it, which is cheaper and
     more honest than a hand-written JavaScript reader that tries to accept every equivalent
     spelling. Comments are removed first, so commented-out wiring does not count.
     """
@@ -374,6 +374,9 @@ def test_assistant_more_menu_exposes_response_details_action():
         )
     ), f"thread.tsx no longer hands MessageMenuTime a callback that opens the details sheet: {caller}"
     assert not _spread_overrides(caller, "onShowDetails"), caller
+    sheet = _opening_tag(src, "<MessageResponseDetailsSheet")
+    assert sheet and re.search(r"(?<![\w-])open=\{\s*detailsOpen\s*\}", sheet), sheet
+    assert not _spread_overrides(sheet, "open"), sheet
     menu = _without_block_comments(MESSAGE_MENU_TIME_TSX.read_text(encoding = "utf-8"))
     item = _opening_tag(menu, "<ActionBarMorePrimitive.Item")
     assert item, "message-menu-time.tsx no longer renders a More-menu item"
@@ -382,6 +385,9 @@ def test_assistant_more_menu_exposes_response_details_action():
     # A later `{...props}` could replace either prop.
     assert not _spread_overrides(item, "aria-label"), item
     assert not _spread_overrides(item, "onSelect"), item
+    # A statically disabled item cannot be selected at all.
+    disabled = re.search(r"(?<![\w-])disabled(?:=\{\s*([^{}]*?)\s*\})?(?=[\s/>])", item)
+    assert disabled is None or disabled.group(1) == "false", item
 
 
 def test_response_details_sheet_uses_unsloth_sheet_and_key_sections():

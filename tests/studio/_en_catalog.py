@@ -140,8 +140,8 @@ def _flatten(source: str) -> dict[str, str]:
                 dotted = ".".join(p for p in [*path, pending] if p is not None)
                 value = _decode(match.group("string"))
                 # `"Context " + "window"` is an expression, not one literal; reading only the
-                # first piece would hand back a prefix of the label.
-                if re.match(r"\s*\+", source[match.end() :]):
+                # first piece would hand back a prefix of the label. Comments may sit between.
+                if re.match(r"(?:\s|//[^\n]*|/\*.*?\*/)*\+", source[match.end() :], re.S):
                     value = _Expression(value)
                 strings[dotted] = value
             pending = None
@@ -179,6 +179,9 @@ def aria_label_selector(label: str) -> str:
     would otherwise end the string early or read as an escape, and the selector would be invalid or
     match something else.
     """
+    if "\0" in label:
+        # CSS reads an escaped U+0000 as U+FFFD, so no selector can match a NUL in the label.
+        raise ValueError(f"a CSS selector cannot match a label containing NUL: {label!r}")
     quoted = "".join(
         "\\" + char
         if char in '\\"'

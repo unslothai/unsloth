@@ -42,6 +42,7 @@ export const en = {
       codePoint: "Smile \\u{1F600}",
       continued: "one \\\ntwo",
       joined: "Context " + "window usage",
+      noted: "Context " /* note */ + "window usage",
     },
   },
 };
@@ -104,8 +105,14 @@ def test_a_label_is_quoted_as_a_css_string(label, selector):
 
 
 def test_a_concatenated_value_is_refused_not_truncated(sample):
-    with pytest.raises(ValueError, match = "expression"):
-        en_string("settings.chat.joined", sample)
+    for key in ("settings.chat.joined", "settings.chat.noted"):
+        with pytest.raises(ValueError, match = "expression"):
+            en_string(key, sample)
+
+
+def test_a_label_with_nul_is_refused_by_the_selector():
+    with pytest.raises(ValueError, match = "NUL"):
+        aria_label_selector("a\0b")
 
 
 def test_a_comment_is_not_read_as_a_key(sample):
