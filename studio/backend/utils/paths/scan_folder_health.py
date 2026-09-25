@@ -29,6 +29,8 @@ _PROBE_DEPTH = 2
 _PROBE_OPEN_LIMIT = 64
 # A huggingface_hub cache keeps the weights only in <root>/models--org--name/snapshots/<commit>/, so refusing that directory leaves the folder looking healthy and empty at once.
 _HF_SNAPSHOTS_DIR = "snapshots"
+# A registered HF_HOME keeps that cache one level down, in hub/.
+_HF_HOME_HUB_DIR = "hub"
 
 
 def _probe_dir(path: str, *, depth: int, budget: list[int]) -> tuple[str, Optional[str]]:
@@ -60,6 +62,8 @@ def _probe_dir(path: str, *, depth: int, budget: list[int]) -> tuple[str, Option
         if child_depth <= 0 and name == _HF_SNAPSHOTS_DIR:
             # Spend one more level here rather than raising the depth everywhere: a diffusers pipeline's component directories would otherwise burn the budget.
             child_depth = 1
+        elif depth == _PROBE_DEPTH and name == _HF_HOME_HUB_DIR:
+            child_depth = depth
         status, cause = _probe_dir(subdir, depth = child_depth, budget = budget)
         if status == STATUS_MISSING:
             # It was in the listing a moment ago and is gone now (a model being deleted, or a download renaming its temp directory), which says nothing about the folder the user registered.

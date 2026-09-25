@@ -807,6 +807,27 @@ def test_a_denied_hf_snapshot_commit_directory_is_not_ok(tmp_path: Path):
 
 
 @requires_posix_permissions
+def test_a_denied_hf_snapshot_under_a_registered_hf_home_is_not_ok(tmp_path: Path):
+    """A registered HF_HOME keeps its cache one level down, in hub/."""
+    repo = tmp_path / "hub" / "models--org--model"
+    (repo / "blobs").mkdir(parents = True)
+    (repo / "blobs" / "deadbeef").write_bytes(b"stub")
+    commit = repo / "snapshots" / ("a" * 40)
+    commit.mkdir(parents = True)
+    (commit / "config.json").write_text("{}", encoding = "utf-8")
+    commit.chmod(0o000)
+    try:
+        status, cause = probe_folder(str(tmp_path), children = True)
+        assert status == STATUS_PERMISSION_DENIED
+        assert cause == str(commit)
+
+        note_scan_folder_scanned(str(tmp_path), found = False)
+        assert scan_folder_status(str(tmp_path)) == STATUS_PERMISSION_DENIED
+    finally:
+        commit.chmod(stat.S_IRWXU)
+
+
+@requires_posix_permissions
 def test_the_snapshot_level_costs_nothing_on_a_plain_folder(tmp_path: Path, monkeypatch):
     """Only a directory named ``snapshots`` buys the extra level.
 
