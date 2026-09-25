@@ -2569,15 +2569,12 @@ def copy_thread_documents(source_thread_id: str, thread_id: str) -> tuple[dict[s
     map and whether the source held anything a fork does not get, which is an upload still being
     ingested or one that failed.
 
-    The files are copied before the first insert so the whole set is written under one short
-    transaction. Doing each copy between inserts held rag.db's write lock across the copies, and a
-    chat of large PDFs then blocked every other upload and delete for as long as they took.
+    Files are copied before the transaction so rag.db's write lock is never held across file I/O.
     """
     from .ingestion import _copy_upload, _remove_upload
 
     scope = store.thread_scope(thread_id)
     copied: list = []
-    document_ids: dict[str, str] = {}
     conn = rag_db.get_connection()
     try:
         rows = conn.execute(
@@ -2588,18 +2585,13 @@ def copy_thread_documents(source_thread_id: str, thread_id: str) -> tuple[dict[s
         for document in documents:
             copied.append(_copy_upload(document["stored_path"]))
         conn.execute("BEGIN IMMEDIATE")
+        sources = []
         for document, stored_path in zip(documents, copied):
             source = store.get_document(conn, document["id"])
             if source is None or source["status"] != "completed":
                 raise RuntimeError("Source document changed while its file was being copied")
-            document_ids[document["id"]] = store.copy_document(
-                conn,
-                source,
-                scope,
-                thread_id = thread_id,
-                stored_path = stored_path,
-                commit = False,
-            )
+            sources.append((source, stored_path))
+        document_ids = store.copy_documents(conn, sources, scope, thread_id = thread_id)
         conn.commit()
     except Exception:
         conn.rollback()

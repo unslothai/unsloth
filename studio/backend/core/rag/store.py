@@ -514,65 +514,67 @@ def delete_document(
         conn.commit()
 
 
-def copy_document(
+def copy_documents(
     conn: sqlite3.Connection,
-    source: dict,
+    documents: list[tuple[dict, str | None]],
     scope: str,
     *,
-    thread_id: str | None = None,
-    stored_path: str | None = None,
-    commit: bool = True,
-) -> str:
-    document_id = create_document(
-        conn,
-        scope = scope,
-        filename = source["filename"],
-        sha256 = source["sha256"],
-        thread_id = thread_id,
-        status = source["status"],
-        stored_path = stored_path,
-        embedding_model = source["embedding_model"],
-        created_at = source["created_at"],
-        commit = False,
-    )
-    conn.execute(
-        "UPDATE documents SET num_chunks=? WHERE id=?", (source["num_chunks"], document_id)
-    )
-    chunk_ids = {
-        r["id"]: f"{document_id}:{r['chunk_index']}"
+    thread_id: str,
+) -> dict[str, str]:
+    """Copy completed documents, paired with their file copies, into ``scope`` without
+    committing. Returns the source-to-copy document id map."""
+    document_ids: dict[str, str] = {}
+    chunk_ids: dict[str, str] = {}
+    for source, stored_path in documents:
+        document_id = create_document(
+            conn,
+            scope = scope,
+            filename = source["filename"],
+            sha256 = source["sha256"],
+            thread_id = thread_id,
+            status = source["status"],
+            stored_path = stored_path,
+            embedding_model = source["embedding_model"],
+            created_at = source["created_at"],
+            commit = False,
+        )
+        document_ids[source["id"]] = document_id
+        conn.execute(
+            "UPDATE documents SET num_chunks=? WHERE id=?", (source["num_chunks"], document_id)
+        )
         for r in conn.execute(
             "SELECT id, chunk_index FROM chunks WHERE document_id=?", (source["id"],)
-        ).fetchall()
-    }
-    conn.execute(
-        "INSERT INTO chunks("
-        "id, document_id, scope, chunk_index, text, page_number, "
-        "source_page_index, token_count, kind, pdf_regions_json) "
-        "SELECT ? || ':' || chunk_index, ?, ?, chunk_index, text, page_number, "
-        "source_page_index, token_count, kind, pdf_regions_json "
-        "FROM chunks WHERE document_id=?",
-        (document_id, document_id, scope, source["id"]),
-    )
-    conn.execute(
-        "INSERT INTO chunks_fts(text, chunk_id, scope) "
-        "SELECT text, id, scope FROM chunks WHERE document_id=?",
-        (document_id,),
-    )
-    if rag_db.vec_table_exists(conn):
-        vectors = conn.execute(
-            "SELECT chunk_id, embedding FROM chunks_vec WHERE scope=?", (source["scope"],)
-        ).fetchall()
-        conn.executemany(
-            "INSERT INTO chunks_vec(scope, chunk_id, embedding) VALUES(?,?,?)",
-            [
-                (scope, chunk_ids[r["chunk_id"]], r["embedding"])
-                for r in vectors
-                if r["chunk_id"] in chunk_ids
-            ],
+        ).fetchall():
+            chunk_ids[r["id"]] = f"{document_id}:{r['chunk_index']}"
+        conn.execute(
+            "INSERT INTO chunks("
+            "id, document_id, scope, chunk_index, text, page_number, "
+            "source_page_index, token_count, kind, pdf_regions_json) "
+            "SELECT ? || ':' || chunk_index, ?, ?, chunk_index, text, page_number, "
+            "source_page_index, token_count, kind, pdf_regions_json "
+            "FROM chunks WHERE document_id=?",
+            (document_id, document_id, scope, source["id"]),
         )
-    if commit:
-        conn.commit()
-    return document_id
+        conn.execute(
+            "INSERT INTO chunks_fts(text, chunk_id, scope) "
+            "SELECT text, id, scope FROM chunks WHERE document_id=?",
+            (document_id,),
+        )
+    if chunk_ids and rag_db.vec_table_exists(conn):
+        # vec0 scans the whole partition for any chunk filter, so read each source scope once.
+        for source_scope in {source["scope"] for source, _ in documents}:
+            conn.executemany(
+                "INSERT INTO chunks_vec(scope, chunk_id, embedding) VALUES(?,?,?)",
+                [
+                    (scope, chunk_ids[r["chunk_id"]], r["embedding"])
+                    for r in conn.execute(
+                        "SELECT chunk_id, embedding FROM chunks_vec WHERE scope=?",
+                        (source_scope,),
+                    ).fetchall()
+                    if r["chunk_id"] in chunk_ids
+                ],
+            )
+    return document_ids
 
 
 def linked_folder_rows_exist(conn: sqlite3.Connection) -> bool:

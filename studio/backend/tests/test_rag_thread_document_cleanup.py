@@ -228,6 +228,33 @@ def test_forking_a_thread_copies_its_uploaded_documents(client):
         assert copied.read() == text
 
 
+def _vectors(document_id):
+    conn = rag_db.get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT chunk_id, embedding FROM chunks_vec WHERE chunk_id LIKE ?",
+            (f"{document_id}:%",),
+        ).fetchall()
+        return {row["chunk_id"].rsplit(":", 1)[1]: bytes(row["embedding"]) for row in rows}
+    finally:
+        conn.close()
+
+
+def test_a_fork_copies_each_documents_own_vectors(client):
+    _create_thread(client, "source")
+    _add_message(client, "source", "m1")
+    sources = [
+        _upload(client, "source", "short.txt", "kilo lima mike " * 50),
+        _upload(client, "source", "long.txt", " ".join(f"november{i}" for i in range(3000))),
+    ]
+    _fork(client, "source", "m1", "fork")
+
+    copies = {d["filename"]: d["id"] for d in _thread_documents(client, "fork")}
+    assert len(_vectors(sources[1])) > 1
+    for source, filename in zip(sources, ("short.txt", "long.txt")):
+        assert _vectors(copies[filename]) == _vectors(source)
+
+
 def test_a_forks_documents_are_independent_of_the_source_thread(client):
     _create_thread(client, "source")
     _add_message(client, "source", "m1")
@@ -258,7 +285,7 @@ def test_a_fork_survives_documents_that_cannot_be_copied(client, monkeypatch):
         conn.execute("INSERT INTO chunks_fts(text, chunk_id, scope) VALUES('x', 'x', 'x')")
         raise RuntimeError("disk full")
 
-    monkeypatch.setattr(conversation_archive.store, "copy_document", broken, raising = False)
+    monkeypatch.setattr(conversation_archive.store, "copy_documents", broken)
     before = set(os.listdir(os.path.dirname(_stored_path(source))))
 
     warning = _fork(client, "source", "m1", "fork")["containerSnapshotWarning"]
