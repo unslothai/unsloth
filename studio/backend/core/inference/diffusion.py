@@ -1737,6 +1737,8 @@ class DiffusionBackend:
         cpu_offload: bool = False,
         speed_mode: Optional[str] = None,
         gpu_ordinal: Optional[int] = None,
+        repo_id: Optional[str] = None,
+        base_repo: Optional[str] = None,
     ) -> None:
         """Raise ``RuntimeError`` (the route's 409) when an EXPLICIT precision cannot run here.
 
@@ -1778,6 +1780,8 @@ class DiffusionBackend:
                 memory_mode = memory_mode,
                 cpu_offload = cpu_offload,
                 speed_mode = speed_mode,
+                # The base the load keys per-base gate records on (a pipeline IS its repo), as download_plan does.
+                base_repo = repo_id if model_kind == "pipeline" else base_repo,
             )
 
     def _assert_precision_for_target(
@@ -1791,6 +1795,7 @@ class DiffusionBackend:
         memory_mode: Optional[str],
         cpu_offload: bool,
         speed_mode: Optional[str] = None,
+        base_repo: Optional[str] = None,
     ) -> None:
         """The body of ``assert_precision_available``, run with the selected card current."""
         if pinned is not None and pinned != TQ_AUTO:
@@ -1830,6 +1835,7 @@ class DiffusionBackend:
                     target,
                     pinned,
                     family = getattr(fam, "name", None),
+                    base_repo = base_repo,
                     # This gate runs BEFORE the arbiter evicts the resident model, so a smoke probe that runs out of
                     # VRAM here has not shown the scheme unusable, only that the GPU is still full. Refusing on that
                     # would reject a load the eviction was about to make room for.
@@ -2549,6 +2555,8 @@ class DiffusionBackend:
             # an explicit scheme here says so before the download.
             speed_mode = speed_mode,
             gpu_ordinal = gpu_ordinal,
+            repo_id = repo_id,
+            base_repo = base_repo,
         )
 
         with self._lock, self._load_cancel_lock:
@@ -5577,7 +5585,10 @@ class DiffusionBackend:
                             bf16_plan = plan
                             if plan.offload_policy != OFFLOAD_NONE:
                                 preview_scheme = select_transformer_quant_scheme(
-                                    target, transformer_quant, family = getattr(fam, "name", None)
+                                    target,
+                                    transformer_quant,
+                                    family = getattr(fam, "name", None),
+                                    base_repo = base,
                                 )
                                 # This in-memory rewrite needs no cache-space or hosted-checkpoint checks.
                                 estimate = (
