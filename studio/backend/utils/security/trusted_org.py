@@ -56,7 +56,6 @@ def is_trusted_org_repo(
         return False
     from utils.hub_settings import MODELSCOPE, active_source
 
-    # The trusted orgs are Hugging Face accounts; a ModelScope namespace of the same name is not.
     if active_source() == MODELSCOPE:
         return False
 

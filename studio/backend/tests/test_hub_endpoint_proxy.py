@@ -54,7 +54,6 @@ def proxy(monkeypatch):
             prefix, lambda: state["upstream"], anonymous_pages = pages
         )
         app.include_router(router, prefix = prefix)
-    # One event loop, so requests share the relay's client as they do in the server.
     with TestClient(app, follow_redirects = False) as client:
         yield client, seen, state
 
@@ -77,7 +76,6 @@ def test_a_session_is_relayed_with_only_the_hub_token(proxy):
     assert "authorization" not in seen[1].headers and "cookie" not in seen[1].headers
 
     state["upstream"] = "https://down.test"
-    # A page still holding the old endpoint's relay must not be answered by the new one.
     assert client.get(f"{DATASETS}/splits").status_code == 409
     down = client.get(
         f"{endpoint_proxy.relay_path(endpoint_proxy.DATASETS_SERVER_PREFIX, 'https://down.test', '')}/splits"

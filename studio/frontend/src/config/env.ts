@@ -187,7 +187,6 @@ export async function fetchDeviceType(options?: {
       // Before the authoritative-platform guard below: unauthenticated and
       // idempotent, and a mirror whose first authoritative reply already landed
       // would otherwise never route its Hub calls.
-      // A relay path names its endpoint, so caches keyed on the Hub URL follow a change.
       const hubProxy = typeof data.hub_proxy === "string" ? data.hub_proxy : null;
       const datasetsProxy =
         typeof data.datasets_server_proxy === "string" ? data.datasets_server_proxy : null;

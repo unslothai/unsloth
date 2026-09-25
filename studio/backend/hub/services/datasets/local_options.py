@@ -786,7 +786,6 @@ def hub_dataset_options(
         )
         status = hf_error_status(exc)
         if status is None:
-            # A legacy dataset script is a RuntimeError; training refuses it the same way.
             status = 404 if isinstance(exc, FileNotFoundError) else 400
         raise HTTPException(status_code = status, detail = detail) from exc
 

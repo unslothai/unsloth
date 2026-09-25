@@ -38,9 +38,7 @@ MODELSCOPE = "modelscope"
 SOURCES = (HUGGINGFACE, MODELSCOPE)
 
 _ENV_VARS = ("HF_ENDPOINT", "HF_DATASETS_SERVER")
-# Workers inherit the applied source with the endpoint it selected.
 SOURCE_ENV = "UNSLOTH_STUDIO_HUB_SOURCE"
-# What the operator exported before any saved value was applied over it.
 _operator_env: dict[str, str | None] | None = None
 _apply_lock = threading.Lock()
 
@@ -154,7 +152,6 @@ def _effective_env(settings: HubSettings) -> tuple[dict[str, str | None], str]:
         try:
             from hub.modelscope.router import internal_endpoint
 
-            # ModelScope has no datasets server; previews keep the Hugging Face one.
             env = {
                 "HF_ENDPOINT": internal_endpoint(),
                 "HF_DATASETS_SERVER": operator["HF_DATASETS_SERVER"],
@@ -190,7 +187,6 @@ def apply_hub_settings() -> None:
         _refresh_imported_hub_libraries()
         utils_module = sys.modules.get("utils.utils")
         if utils_module is not None:
-            # The memoised verdict was about the previous endpoint.
             utils_module.reset_hf_reachability_cache()
 
 

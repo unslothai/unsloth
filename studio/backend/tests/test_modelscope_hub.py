@@ -248,7 +248,6 @@ def test_every_error_reader_names_a_repo_missing_on_modelscope(hub, monkeypatch)
 
     sentence = not_on_modelscope("o/tiny.en-GGUF")
     answer = hub.get("/api/models/o/tiny.en-GGUF")
-    # Rebuilt on huggingface_hub's httpx: a test process can hold two, and it only converts its own.
     response = hf_http.httpx.Response(
         answer.status_code,
         headers = answer.headers,

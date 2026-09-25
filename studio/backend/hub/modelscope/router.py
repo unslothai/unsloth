@@ -123,7 +123,6 @@ def build_router(*, browser: bool) -> APIRouter:
             response = JSONResponse(found)
             if more:
                 pairs = [(k, v) for k, v in query.multi_items() if k != "p"] + [("p", str(current))]
-                # Absolute: the browser's Hub client resolves it without a base.
                 response.headers["Link"] = (
                     f'<{request.url.replace(query = urlencode(pairs))}>; rel="next"'
                 )
@@ -133,7 +132,6 @@ def build_router(*, browser: bool) -> APIRouter:
 
     async def info(kind: str, repo: str, revision: str, request: Request) -> Response:
         expand = set(request.query_params.getlist("expand"))
-        # huggingface_hub wants the commit and files; the browser's expanded read does not.
         full = not expand or bool(expand & {"sha", "siblings"})
 
         async def run() -> Response:
@@ -229,7 +227,6 @@ def build_router(*, browser: bool) -> APIRouter:
             if "authorization" in request.headers:
                 # A stale session: the page refreshes it on a 401, but cannot read a cross-origin redirect.
                 return _error(401, None, "Sign in again to browse ModelScope.")
-            # Anonymous loads (README images) must not cost upstream lookups.
             return RedirectResponse(ms.branch_url(kind, repo, revision, path), status_code = 302)
 
         async def run() -> Response:
@@ -248,7 +245,6 @@ def build_router(*, browser: bool) -> APIRouter:
             upstream = ms.file_url(kind, repo, sha, path)
             if request.method == "GET" and session and meta["size"] <= _RELAY_LIMIT:
                 return await _relay(upstream, headers)
-            # huggingface_hub downloads from a HEAD's Location, so the bytes match the commit.
             return RedirectResponse(upstream, status_code = 302, headers = headers)
 
         return await _answer(run)
@@ -323,7 +319,6 @@ def internal_endpoint() -> str:
         server = uvicorn.Server(
             uvicorn.Config(app, log_level = "warning", access_log = False, lifespan = "off")
         )
-        # Off the main thread, serve() installs no signal handlers.
         threading.Thread(
             target = lambda: asyncio.run(server.serve(sockets = [sock])),
             name = "modelscope-hub",

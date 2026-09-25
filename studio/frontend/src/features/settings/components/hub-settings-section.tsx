@@ -59,7 +59,6 @@ export function HubSettingsSection() {
     try {
       const saved = await updateHubSettings(next);
       setSettings(saved);
-      // A toggle saves the committed endpoint and leaves an unsaved draft alone.
       if (next.hfEndpoint === draftEndpoint) {
         setDraftEndpoint(saved.hfEndpoint);
       }
@@ -89,7 +88,6 @@ export function HubSettingsSection() {
     }
   };
 
-  // Hidden while ModelScope serves; a ModelScope that failed to start falls back to the endpoint.
   const showEndpointRows = settings?.activeSource !== "modelscope";
   const errorNote = error ? (
     <span className="max-w-[calc(300px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
@@ -101,7 +99,6 @@ export function HubSettingsSection() {
     settings &&
     void save({
       hfEndpoint: draftEndpoint,
-      // Nothing to follow once the endpoint is cleared.
       datasetsServerFollowsEndpoint:
         settings.datasetsServerFollowsEndpoint && draftEndpoint.trim() !== "",
     });

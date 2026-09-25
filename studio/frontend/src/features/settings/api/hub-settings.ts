@@ -8,11 +8,9 @@ import { readFastApiError } from "@/lib/format-fastapi-error";
 import type { HubSource } from "@/lib/hf-endpoint";
 
 export type HubSettings = {
-  /** Empty means the official Hugging Face Hub. */
   hfEndpoint: string;
   datasetsServerFollowsEndpoint: boolean;
   source: HubSource;
-  /** Differs from `source` only when the ModelScope adapter could not start. */
   activeSource: HubSource;
 };
 
@@ -44,7 +42,6 @@ export async function loadHubSettings(): Promise<HubSettings> {
 }
 
 async function followSavedEndpoints(): Promise<void> {
-  // The browser's Hub calls follow the endpoints /api/health reports.
   await fetchDeviceType({ force: true }).catch(() => undefined);
   // Backoffs were recorded against the old endpoints; the relay and ModelScope share one origin.
   markRemoteNetworkOnline();
@@ -52,7 +49,6 @@ async function followSavedEndpoints(): Promise<void> {
 
 export class InvalidHubEndpointError extends Error {}
 
-/** Owner only. The catalog follows as soon as this resolves. */
 export async function updateHubSource(source: HubSource): Promise<HubSettings> {
   const res = await authFetch("/api/settings/hub/source", {
     method: "PUT",

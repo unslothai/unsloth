@@ -1,13 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * `fetch` for Hub and datasets-server calls. The backend's ModelScope adapter and its
- * relays to a custom endpoint take the Unsloth session; a relay passes the Hugging Face
- * token on in `X-HF-Authorization`, and the adapter never sees it. Reads the session from
- * storage, as config/env.ts does: importing features/auth would pull in more than the
- * bare-node tests can load.
- */
+/** Hub fetch: the adapter and relays take the Unsloth session; a relay forwards the HF token in `X-HF-Authorization`. */
 
 import {
   isModelScopeHubUrl,
@@ -50,7 +44,6 @@ function withHubAuth(
   return { ...init, headers };
 }
 
-// The session token lives an hour and is otherwise refreshed only by authFetch.
 export async function fetchHub(
   input: Parameters<typeof fetch>[0],
   init: RequestInit = {},
@@ -72,6 +65,5 @@ export async function fetchHub(
   return response;
 }
 
-/** `fetch` for Hub SDK calls that take no timeout. */
 export const hubFetch: typeof fetch = (input, init) =>
   fetchHub(input, init ?? {});

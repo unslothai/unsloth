@@ -277,7 +277,6 @@ test("a relay that cannot reach its endpoint counts as the endpoint unreachable"
         active_source: "modelscope",
       }),
     );
-    // "Use ModelScope" answers from the same backend origin the relay failed on.
     await updateHubSource("modelscope");
     assert.equal(isRemoteNetworkOffline("http://127.0.0.1:8888"), false);
     upstream = true;

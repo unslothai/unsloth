@@ -655,11 +655,9 @@ class HubSourcePayload(BaseModel):
 
 
 class HubSettingsResponse(BaseModel):
-    # Empty means the official Hugging Face Hub.
     hf_endpoint: str
     datasets_server_follows_endpoint: bool
     source: Literal["huggingface", "modelscope"]
-    # Differs from source only when the ModelScope adapter could not start.
     active_source: Literal["huggingface", "modelscope"]
 
 

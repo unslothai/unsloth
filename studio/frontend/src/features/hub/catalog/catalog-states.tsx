@@ -65,7 +65,6 @@ function describeFailure(
       };
 }
 
-// Offered where Hugging Face cannot be reached; only the owner can change the source.
 function UseModelScopeButton() {
   const t = useT();
   const isOwner = useIsAccountOwner();
@@ -165,7 +164,6 @@ export function NetworkErrorState({
   );
 }
 
-/** {@link NetworkErrorState} sized for a picker list, reading the hub's own availability. */
 export function HubFailureHint({
   message,
   onRetry,
@@ -196,7 +194,6 @@ export function HubFailureHint({
           variant="ghost"
           size="sm"
           onClick={() => {
-            // A retry must probe now, not wait out the backoff.
             clearRemoteBackoff();
             onRetry();
           }}

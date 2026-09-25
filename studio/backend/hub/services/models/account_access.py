@@ -547,8 +547,6 @@ def _public_verdict(repo_id: str, repo_type: str) -> bool | None:
 
 
 def _source_speaks_for_the_cache() -> bool:
-    # ModelScope's org/name says nothing about a same-named Hugging Face snapshot the shared
-    # cache may already hold.
     from utils.hub_settings import MODELSCOPE, active_source
     return active_source() != MODELSCOPE
 

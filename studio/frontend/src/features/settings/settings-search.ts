@@ -306,7 +306,6 @@ const HUGGING_FACE_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
   "settings.general.hub.datasetsServer",
 ]);
 
-/** The tab's entries whose rows are on the page: the endpoint rows are hidden while ModelScope serves. */
 export function renderedSearchEntries(
   index: Record<SettingsTab, TranslationKey[]>,
   tab: SettingsTab,

@@ -50,7 +50,6 @@ def store(monkeypatch):
     monkeypatch.setenv("HF_DATASETS_SERVER", OPERATOR_DS)
     monkeypatch.delenv(hub_settings.SOURCE_ENV, raising = False)
     yield values
-    # Point the imported libraries back at the restored environment for later test files.
     monkeypatch.undo()
     hub_settings._refresh_imported_hub_libraries()
 
@@ -82,7 +81,6 @@ def test_saved_endpoint_reaches_env_and_imported_libraries(store):
     assert "127.0.0.1" in constants.HF_URL_HOSTS
     assert before not in HfFileSystem._cache.values()
 
-    # Saved empty means the official Hub, over the operator's mirror.
     hub_settings.set_hub_settings("", True)
     assert "HF_ENDPOINT" not in os.environ
     assert os.environ["HF_DATASETS_SERVER"] == OPERATOR_DS
@@ -183,7 +181,6 @@ def test_access_verdicts_do_not_cross_endpoints(store, tmp_path, monkeypatch):
 
     asked = []
 
-    # The owner moves to another endpoint while each probe is in flight.
     def yes_then_switch(*_, endpoint):
         asked.append(endpoint)
         hub_settings.set_hub_settings("https://b.example.com", False)
@@ -194,19 +191,16 @@ def test_access_verdicts_do_not_cross_endpoints(store, tmp_path, monkeypatch):
     assert account_access.repo_is_public("org/repo") is True
     hub_settings.set_hub_settings("https://a.example.com", False)
     assert hf_tokens._explicit_token_reaches_repo("org/repo", None, "model") is True
-    # Each probe asked the endpoint its verdict is filed under.
     assert asked == ["https://a.example.com"] * 2
 
     monkeypatch.setattr(account_access, "_hub_public_answer", lambda *_, **__: None)
     monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *_, **__: None)
     assert account_access.repo_is_public("org/repo") is False
     assert hf_tokens._explicit_token_reaches_repo("org/repo", None, "model") is None
-    # The persisted proof is the endpoint's own, too.
     hub_settings.set_hub_settings("https://a.example.com", False)
     monkeypatch.setattr(account_access, "_public_repos", {})
     assert account_access.repo_is_public("org/repo") is True
 
-    # Proofs recorded before they named an endpoint belong to the operator's.
     proofs = tmp_path / "proofs.json"
     proofs.write_text(json.dumps({"model:org/old": time.time()}))
     assert account_access.repo_is_public("org/old") is False
@@ -282,7 +276,6 @@ def test_hub_decisions_are_remembered_per_endpoint(store, monkeypatch):
         "https://b.example.com",
     ]
 
-    # A lookup still in flight when the owner switches files its answer under the Hub it asked.
     hub_settings.set_hub_settings("https://a.example.com", False)
 
     def no_gguf_then_switch(*_a, **_k):
@@ -310,9 +303,7 @@ def test_modelscope_points_hub_clients_at_the_adapter_and_back(store, monkeypatc
     assert (settings.source, hub_settings.active_source()) == ("modelscope", "modelscope")
     assert os.environ["HF_ENDPOINT"] == constants.ENDPOINT == "http://127.0.0.1:1234"
     assert hub_settings.hugging_face_endpoint() == MIRROR
-    # Workers spawned from here on gate on the source too.
     assert os.environ[hub_settings.SOURCE_ENV] == "modelscope"
-    # The loopback listener is this process's; the browser uses its own mount.
     assert browser_hf_endpoint() == "https://huggingface.co"
 
     hub_settings.set_hub_source("huggingface")

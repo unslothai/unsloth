@@ -251,7 +251,6 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT or _MASTER_ROOT is not None:
     mark_managed_llama_cpp_path(_MANAGED_LLAMA_CPP_PATH)
 
 # huggingface_hub reads HF_ENDPOINT itself, at import, unnormalised and unvalidated.
-# Apply the saved endpoint and normalise it first, before anything imports the library.
 from utils.hub_settings import apply_hub_settings as _apply_hub_settings
 
 _apply_hub_settings()
@@ -1651,7 +1650,6 @@ app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
 app.include_router(picker_templates_router, prefix = "/api/picker", tags = ["picker"])
 app.include_router(hub_token_router, prefix = "/api/hub", tags = ["hub"])
-# A Hub API emulation for the page's Hub client, not part of this server's own API.
 app.include_router(
     _build_modelscope_router(browser = True),
     prefix = _MODELSCOPE_BROWSER_PREFIX,
@@ -1944,7 +1942,6 @@ async def health_check(request: Request):
         # and the frontend needs it before a token exists.
         **_reportable_hf_endpoints(request),
         "hub_source": _active_hub_source(),
-        # A custom endpoint is browsed through the backend: the page's CSP predates the setting.
         "hub_proxy": _hub_endpoint_proxy.relay_path(
             _hub_endpoint_proxy.HUB_PREFIX,
             browser_hf_endpoint(),

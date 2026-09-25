@@ -21,13 +21,11 @@ PAGE_SIZE = 50
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _DEFAULT_REVISIONS = {"", "main", "master", "HEAD", "refs/heads/main", "refs/heads/master"}
-# ModelScope's own dataset metadata format, which ``datasets`` fails to parse.
 _HIDDEN_DATASET_FILES = {"dataset_infos.json"}
 _TREE_PAGE = 500
 _TREE_MAX_PAGES = 200
 
-# Hugging Face ids that ModelScope hosts under another organisation, answered under the
-# Hugging Face id. Only organisation copies whose files all match (LFS sha256, else size).
+# HF ids ModelScope hosts under another org; only copies whose files all match (LFS sha256, else size).
 _ALIASES = {
     "model": {
         "unslothai/Qwen3-ASR-0.6B-GGUF": "ggml-org/Qwen3-ASR-0.6B-GGUF",
@@ -62,8 +60,7 @@ def upstream_id(kind: str, repo: str) -> str:
     return _ALIAS_INDEX[kind].get(repo.casefold(), repo)
 
 
-# Hugging Face pins that ModelScope's history lacks, by kind, casefolded repo and commit, mapped
-# to a ModelScope commit whose loaded files match. Unlisted pins miss: a pin guards remote code.
+# HF pins missing from ModelScope history -> matching ModelScope commit; unlisted pins miss (a pin guards remote code).
 _PINNED_COMMITS = {
     (
         "model",
@@ -119,7 +116,6 @@ class _TTLCache:
 
 
 _cache = _TTLCache()
-# A client and a limiter per event loop: the loopback listener runs its own.
 _clients: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, tuple[httpx.AsyncClient, asyncio.Semaphore]]" = weakref.WeakKeyDictionary()
 _clients_lock = threading.Lock()
 transport: Optional[httpx.AsyncBaseTransport] = None
@@ -210,7 +206,6 @@ async def _refs(kind: str, repo: str) -> dict[str, str]:
     response = await _get(
         f"{prefix}/{upstream_id(kind, repo)}.git/info/refs",
         params = {"service": "git-upload-pack"},
-        # Anything that does not present as git is answered 421.
         headers = {"User-Agent": "git/2.45.0"},
     )
     if response.status_code in (401, 403, 404):
@@ -380,7 +375,6 @@ def hub_entry(kind: str, item: dict) -> dict:
         "downloads": downloads,
         "downloadsAllTime": downloads,
         "likes": int(item.get("likes") or 0),
-        # The browser's Hub client rejects an entry without it.
         "lastModified": item.get("last_modified") or item.get("created_at") or _EPOCH,
         "createdAt": item.get("created_at") or _EPOCH,
         "tags": list(dict.fromkeys(libraries + tags + tasks)),

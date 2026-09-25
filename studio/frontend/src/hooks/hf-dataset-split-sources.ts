@@ -26,9 +26,7 @@ export type DatasetSplitLoadResult = {
 
 export type DatasetSplitFetchers = {
   local: (args: LoadHfDatasetSplitsArgs) => Promise<HfSplitEntry[]>;
-  /** The datasets-server: fast, but only for repos it has processed. */
   remote: (args: LoadHfDatasetSplitsArgs) => Promise<HfSplitEntry[]>;
-  /** The backend, resolving the repo's files through the Hub endpoint as training does. */
   hub: (args: LoadHfDatasetSplitsArgs) => Promise<HfSplitEntry[]>;
 };
 

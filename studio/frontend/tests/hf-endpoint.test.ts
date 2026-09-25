@@ -180,7 +180,6 @@ test("the ModelScope adapter gets the Unsloth session, never the Hugging Face to
     await fetchWithTimeout("https://cdn.example.com/a.png", hfToken);
     setHfEndpoints("https://huggingface.co", undefined, "huggingface");
     await fetchWithTimeout("https://huggingface.co/api/models", hfToken);
-    // Queued for the adapter before the switch, sent after it.
     await fetchWithTimeout(`${adapter}/api/models/a/b`, hfToken);
     session = null;
     await fetchWithTimeout(`${adapter}/api/models/a/c`, hfToken);
@@ -210,7 +209,6 @@ test("a relay to a custom endpoint gets the session, and the Hugging Face token 
   globalThis.fetch = (async (input: string, init?: RequestInit) => {
     const headers = new Headers(init?.headers);
     sent.push([headers.get("authorization"), headers.get("x-hf-authorization")]);
-    // The endpoint refusing the Hugging Face token is not a stale session; the relay's own 401 is.
     const gated = input.includes("gated");
     const stale = input.includes("stale") && headers.get("authorization") === "Bearer session";
     return new Response("[]", { status: gated || stale ? 401 : 200, headers: gated ? { "X-Hub-Upstream": "1" } : {} });

@@ -16,7 +16,6 @@ import { createStore } from "zustand/vanilla";
 export const DEFAULT_HF_ENDPOINT = "https://huggingface.co";
 export const DEFAULT_DATASETS_SERVER = "https://datasets-server.huggingface.co";
 
-/** Where the Hub calls go. With ModelScope the endpoint is the backend's Hub-compatible adapter. */
 export type HubSource = "huggingface" | "modelscope";
 
 const store = createStore<{
@@ -25,7 +24,6 @@ const store = createStore<{
   source: HubSource;
   /** Kept after a switch back: requests already queued for the adapter still go there. */
   modelScopeBase: string | null;
-  /** The backend's relays to a custom endpoint, kept for the same reason. */
   proxyBases: readonly string[];
 }>(() => ({
   endpoint: DEFAULT_HF_ENDPOINT,
@@ -73,7 +71,6 @@ export function setHfEndpoints(
   store.setState((prev) => {
     const nextSource =
       source === "huggingface" || source === "modelscope" ? source : prev.source;
-    // The endpoint names which hub it is: never keep one hub's with the other's name.
     const applied = next.endpoint ? nextSource : prev.source;
     const relays = [
       proxied.endpoint ? next.endpoint : null,
@@ -108,20 +105,17 @@ export function getHubSource(): HubSource {
   return store.getState().source;
 }
 
-/** Whether `url` is served by the backend's ModelScope adapter, whatever the source is now. */
 export function isModelScopeHubUrl(url: string): boolean {
   const base = store.getState().modelScopeBase;
   return base !== null && url.startsWith(`${base}/`);
 }
 
-/** Whether `url` goes through the backend's relay to a custom endpoint or datasets server. */
 export function isProxiedHubUrl(url: string): boolean {
   return store.getState().proxyBases.some((base) => url.startsWith(`${base}/`));
 }
 
 let sessionRefresh: (() => Promise<boolean>) | null = null;
 
-/** Registered at startup with features/auth, which this module cannot import. */
 export function setHubSessionRefresh(refresh: () => Promise<boolean>): void {
   sessionRefresh = refresh;
 }
@@ -134,7 +128,6 @@ export function useHubSource(): HubSource {
   return useStore(store, (s) => s.source);
 }
 
-/** The hub's name as the UI shows it. */
 export function useHubName(): string {
   return useHubSource() === "modelscope" ? "ModelScope" : "Hugging Face";
 }

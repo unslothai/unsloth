@@ -15799,7 +15799,6 @@ async def _run_gguf_load_attempt(
 ) -> bool:
     def load() -> bool:
         loaded = llama_backend.load_model(intent = intent, load_cancel_event = load_cancel_event)
-        # Read on the loading thread: the backend keeps it per thread.
         failure = getattr(llama_backend, "codec_failure", lambda: None)()
         if isinstance(failure, str) and codec_failures is not None:
             codec_failures.append(failure)
