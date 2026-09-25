@@ -79,6 +79,7 @@ from ._utils import (
     _config_get,
     _is_flash_attention_requested,
     _apply_text_only_key_mapping,
+    _cast_text_only_prequantized_params,
     _select_moe_detection_targets,
     set_task_config_attr,
 )
@@ -1755,6 +1756,9 @@ class FastBaseModel:
                     trust_remote_code = trust_remote_code,
                     **kwargs,
                 )
+                if text_only_decoder:
+                    # Must run before offload / hooks capture the weights.
+                    _cast_text_only_prequantized_params(model, torch_dtype)
                 # transformers 5 leaves remote code's non-persistent buffers (RoPE inv_freq, decay slopes) uninitialised.
                 restore_remote_code_non_persistent_buffers(model)
                 # Must precede _attach_bnb_multidevice_hooks: it returns early while offload_embedding is True.
