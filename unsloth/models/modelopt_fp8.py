@@ -220,22 +220,39 @@ def _hf_quant_config_path(
     name,
     revision = None,
     token = None,
+    hub_kwargs = None,
 ) -> Optional[str]:
     if not name:
         return None
+    hub = dict(hub_kwargs or {})
+    subfolder = hub.get("subfolder") or ""
+    filename = "hf_quant_config.json"
     if os.path.isdir(name):
-        path = os.path.join(name, "hf_quant_config.json")
+        path = os.path.join(name, subfolder, filename)
         return path if os.path.isfile(path) else None
     try:
         from huggingface_hub import hf_hub_download, try_to_load_from_cache
 
-        cached = try_to_load_from_cache(name, "hf_quant_config.json", revision = revision)
+        cached = try_to_load_from_cache(
+            name,
+            f"{subfolder}/{filename}" if subfolder else filename,
+            cache_dir = hub.get("cache_dir"),
+            revision = revision,
+        )
         if isinstance(cached, str):
             return cached
         if cached is not None:
             # Cached as absent for this revision.
             return None
-        return hf_hub_download(name, "hf_quant_config.json", revision = revision, token = token)
+        return hf_hub_download(
+            name,
+            filename,
+            subfolder = subfolder or None,
+            revision = revision,
+            token = token,
+            cache_dir = hub.get("cache_dir"),
+            local_files_only = bool(hub.get("local_files_only", False)),
+        )
     except Exception:
         return None
 
@@ -259,6 +276,7 @@ def attach_hf_quant_config(
     token = None,
     model_name = None,
     revision = None,
+    hub_kwargs = None,
 ) -> bool:
     """Older ModelOpt exports (nvidia/Llama-3.1-8B-Instruct-FP8) keep their quantization only in
     hf_quant_config.json; config.json has none, so they loaded as unquantized fp8 bytes. Attach the
@@ -267,7 +285,7 @@ def attach_hf_quant_config(
         return False
     name = model_name or getattr(config, "_name_or_path", None)
     rev = revision if model_name else getattr(config, "_commit_hash", None)
-    path = _hf_quant_config_path(name, rev, token)
+    path = _hf_quant_config_path(name, rev, token, hub_kwargs)
     quant = _modelopt_block_from_hf_quant_config(path) if path else None
     if quant is None:
         return False

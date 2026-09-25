@@ -2607,6 +2607,11 @@ class FastLlamaModel:
             token = token,
             model_name = model_name,
             revision = revision,
+            hub_kwargs = {
+                "cache_dir": kwargs.get("cache_dir"),
+                "subfolder": kwargs.get("subfolder"),
+                "local_files_only": kwargs.get("local_files_only", False),
+            },
         )
         # The ModelOpt rewrite lives on model_config, so weights must load against it.
         from .modelopt_fp8 import (

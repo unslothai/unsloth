@@ -1494,6 +1494,11 @@ class FastBaseModel:
             token = token,
             model_name = model_name,
             revision = _revision,
+            hub_kwargs = {
+                "cache_dir": kwargs.get("cache_dir"),
+                "subfolder": kwargs.get("subfolder"),
+                "local_files_only": local_files_only,
+            },
         )
         from .modelopt_fp8 import (
             keep_fp8_scale_names_on_save,

@@ -1083,3 +1083,28 @@ def test_merged_save_is_armed_on_the_vllm_path(tmp_path, monkeypatch):
     )
     assert config.quantization_config["quant_method"] == "modelopt"
     assert zoo_saving.check_model_quantization_status(str(tmp_path)) == (True, "fp8")
+
+
+@needs_per_tensor_fp8
+def test_hf_quant_config_lookup_follows_the_load_location(tmp_path, monkeypatch):
+    import huggingface_hub
+    from transformers import LlamaConfig
+    from unsloth.models.modelopt_fp8 import attach_hf_quant_config
+
+    _hf_quant_config_checkpoint(tmp_path / "repo" / "sub")
+    config = LlamaConfig(hidden_size = 64, num_hidden_layers = 1, num_attention_heads = 4)
+    assert attach_hf_quant_config(
+        config, model_name = str(tmp_path / "repo"), hub_kwargs = {"subfolder": "sub"}
+    )
+
+    seen = {}
+
+    def fake_download(repo, filename, **kwargs):
+        seen.update(kwargs)
+        raise huggingface_hub.errors.LocalEntryNotFoundError("offline")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    config = LlamaConfig(hidden_size = 64, num_hidden_layers = 1, num_attention_heads = 4)
+    hub = {"local_files_only": True, "cache_dir": str(tmp_path / "cache")}
+    assert not attach_hf_quant_config(config, model_name = "org/not-cached", hub_kwargs = hub)
+    assert seen["local_files_only"] is True and seen["cache_dir"] == hub["cache_dir"]
