@@ -12,6 +12,7 @@ import {
 import { CompactionNotice } from "@/components/assistant-ui/compaction-notice";
 import {
   compactionBoundary,
+  shouldShowCompactionNotice,
   type ContextTruncation,
 } from "@/features/chat/utils/context-truncation";
 import { downloadImagePart } from "@/components/assistant-ui/image";
@@ -7841,8 +7842,8 @@ const AssistantMessage: FC = () => {
   // Once a thread outgrows the window every request runs the fit, so "this turn
   // compacted" is true of every later reply and would put a notice on all of them. What
   // matters is when MORE of the conversation fell out of view: the eviction boundary
-  // rising above the last turn that reported one. Between moves the model sees the same
-  // history, so there is nothing new to say.
+  // rising above the last turn that reported one, or a checkpoint starting inside a tool
+  // loop (which evicts without moving the boundary). Sticky replays stay quiet.
   const showsNotice = useAuiState(({ thread }) => {
     let previousDropped = 0;
     for (const message of thread.messages) {
@@ -7853,9 +7854,9 @@ const AssistantMessage: FC = () => {
           | undefined
       )?.custom?.contextTruncation as ContextTruncation | undefined;
       const dropped = compactionBoundary(value);
-      if (dropped > previousDropped) {
+      if (shouldShowCompactionNotice(value, previousDropped)) {
         if (message.id === messageId) return true;
-        previousDropped = dropped;
+        previousDropped = Math.max(previousDropped, dropped);
       } else if (message.id === messageId) {
         return false;
       }
