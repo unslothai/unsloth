@@ -13,7 +13,10 @@ _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-from auth.authentication import get_current_subject  # noqa: E402
+from auth.authentication import (  # noqa: E402
+    get_current_subject,
+    request_admitted_without_credential,
+)
 from core import library  # noqa: E402
 from routes import library as library_routes  # noqa: E402
 
@@ -27,6 +30,7 @@ def client(monkeypatch):
     library._thumbnail_cache.clear()
     app = FastAPI()
     app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.dependency_overrides[request_admitted_without_credential] = lambda: False
     app.include_router(library_routes.router, prefix = "/api/library")
     return TestClient(app)
 
@@ -1507,3 +1511,301 @@ def test_a_sandbox_file_past_the_listing_cap_is_not_reachable_by_id(client, sign
     response = client.post("/api/library/items/delete", json = {"id": "sandbox:t-lib:c.txt"})
     assert response.status_code == 404
     assert os.path.exists(os.path.join(directory, "c.txt"))
+
+
+# ── Streamed previews ────────────────────────────────────────────
+
+_CLIP = bytes(range(100))
+
+
+def _stream_url(client, item_id):
+    response = client.get("/api/library/items/stream-url", params = {"id": item_id})
+    assert response.status_code == 200, response.text
+    url = response.json()["url"]
+    assert url.startswith("/api/library/items/stream?")
+    return url
+
+
+def _unauthenticated():
+    # The real dependencies: the stream route must not need the bearer the mint does.
+    app = FastAPI()
+    app.include_router(library_routes.router, prefix = "/api/library")
+    return TestClient(app)
+
+
+def test_audio_and_video_stream_from_a_signed_link_with_ranges(client):
+    [clip, song] = _upload(
+        client, ("clip.mp4", _CLIP, "video/mp4"), ("song.mp3", b"ID3" + b"x" * 7, "audio/mpeg")
+    )
+    url = _stream_url(client, clip)
+    stream = _unauthenticated()
+    whole = stream.get(url)
+    assert whole.status_code == 200
+    assert whole.content == _CLIP
+    assert whole.headers["content-type"] == "video/mp4"
+    assert whole.headers["x-content-type-options"] == "nosniff"
+    assert whole.headers["cache-control"] == "private"
+    assert whole.headers["accept-ranges"] == "bytes"
+    assert whole.headers["content-length"] == "100"
+    for header, status, body, content_range in (
+        ("bytes=10-19", 206, _CLIP[10:20], "bytes 10-19/100"),
+        ("bytes=95-", 206, _CLIP[95:], "bytes 95-99/100"),
+        ("bytes=90-500", 206, _CLIP[90:], "bytes 90-99/100"),
+        ("bytes=-5", 206, _CLIP[-5:], "bytes 95-99/100"),
+        ("bytes=-500", 206, _CLIP, "bytes 0-99/100"),
+    ):
+        response = stream.get(url, headers = {"Range": header})
+        assert response.status_code == status, header
+        assert response.content == body, header
+        assert response.headers["content-range"] == content_range, header
+        assert response.headers["content-length"] == str(len(body)), header
+    # Several ranges, or a malformed one, may be ignored: the whole file.
+    for header in ("bytes=0-1,5-6", "bytes=5-1", "items=0-1", "bytes=a-b"):
+        response = stream.get(url, headers = {"Range": header})
+        assert (response.status_code, response.content) == (200, _CLIP), header
+    for header in ("bytes=100-", "bytes=-0"):
+        response = stream.get(url, headers = {"Range": header})
+        assert response.status_code == 416, header
+        assert response.headers["content-range"] == "bytes */100"
+    head = stream.head(url, headers = {"Range": "bytes=0-9"})
+    assert head.status_code == 206 and head.content == b""
+    assert head.headers["content-length"] == "10"
+    audio = stream.get(_stream_url(client, song))
+    assert (audio.status_code, audio.headers["content-type"]) == (200, "audio/mpeg")
+
+
+def _gallery_video():
+    from core.inference import video_gallery
+    meta = {
+        key: 1
+        for key in (
+            "width",
+            "height",
+            "num_frames",
+            "fps",
+            "duration_s",
+            "steps",
+            "guidance",
+            "seed",
+        )
+    }
+    return video_gallery.save(
+        b"\0\0\0\x18ftypmp42", {**meta, "prompt": "A calm sea", "created_at": 1_700_000_000}
+    )
+
+
+def test_generated_media_streams_under_its_gallery_type(client):
+    from core.inference import audio_gallery
+
+    video = _gallery_video()
+    audio = audio_gallery.save(
+        b"RIFF0000WAVE",
+        {
+            "prompt": "Hello",
+            "model": "sample-tts",
+            "audio_type": "snac",
+            "sample_rate": 24000,
+            "duration_s": 1.0,
+            "created_at": 1_700_000_000,
+        },
+    )
+    stream = _unauthenticated()
+    response = stream.get(_stream_url(client, f"video:{video['id']}"))
+    assert (response.status_code, response.headers["content-type"]) == (200, "video/mp4")
+    assert response.content == b"\0\0\0\x18ftypmp42"
+    response = stream.get(_stream_url(client, f"audio:{audio['id']}"))
+    assert (response.status_code, response.headers["content-type"]) == (200, "audio/wav")
+
+
+def test_only_audio_and_video_items_get_a_stream_link(client):
+    [note, image, unknown] = _upload(
+        client,
+        ("note.md", b"# hi", "text/markdown"),
+        ("pic.png", b"\x89PNG", "image/png"),
+        # A declared type the extension map does not know is stored, but never streamed.
+        ("clip.xyz", b"x", "video/x-custom"),
+    )
+    for item_id in (note, image, unknown, "attachment:m:a", "model:training:/x", "elsewhere:x"):
+        response = client.get("/api/library/items/stream-url", params = {"id": item_id})
+        assert response.status_code == 400, item_id
+    missing = client.get("/api/library/items/stream-url", params = {"id": "upload:" + "0" * 32})
+    assert missing.status_code == 404
+    gone = client.get("/api/library/items/stream-url", params = {"id": "video:nope"})
+    assert gone.status_code == 404
+    # A link can never be made for one, so the stream refuses it even with a valid signature.
+    token = library_routes._sign_stream_id(note)
+    response = _unauthenticated().get(
+        "/api/library/items/stream", params = {"id": note, "token": token}
+    )
+    assert response.status_code == 404
+    assert b"# hi" not in response.content
+
+
+def test_a_stream_link_is_minted_only_for_a_signed_in_caller(client):
+    [clip] = _upload(client, ("clip.mp4", _CLIP, "video/mp4"))
+    response = _unauthenticated().get("/api/library/items/stream-url", params = {"id": clip})
+    assert response.status_code in (401, 403)
+    client.app.dependency_overrides[request_admitted_without_credential] = lambda: True
+    response = client.get("/api/library/items/stream-url", params = {"id": clip})
+    assert response.status_code == 403
+
+
+def test_a_tampered_expired_or_foreign_stream_link_is_refused(client, monkeypatch):
+    [clip, other] = _upload(
+        client, ("clip.mp4", _CLIP, "video/mp4"), ("other.mp4", b"other", "video/mp4")
+    )
+    token = library_routes._sign_stream_id(clip)
+    stream = _unauthenticated()
+    get = lambda item_id, value: stream.get(  # noqa: E731
+        "/api/library/items/stream", params = {"id": item_id, "token": value}
+    )
+    assert get(clip, token).status_code == 200
+    target, expires, signature = token.split(".")
+    for bad in (
+        f"{target}.{expires}.{'0' * len(signature)}",
+        f"{target}.{int(expires) + 60}.{signature}",
+        f"{library_routes._sign_stream_id(other).split('.')[0]}.{expires}.{signature}",
+        "nonsense",
+        "",
+    ):
+        assert get(clip, bad).status_code in (401, 422), bad
+    # Names one item: another's id with it reads nothing.
+    response = get(other, token)
+    assert response.status_code == 401 and b"other" not in response.content
+    monkeypatch.setattr(library_routes, "_STREAM_LINK_TTL", -1)
+    assert get(clip, library_routes._sign_stream_id(clip)).status_code == 401
+
+
+def test_media_links_of_one_kind_never_open_the_other(client):
+    import routes.video as video_routes
+
+    record = _gallery_video()
+    item_id = f"video:{record['id']}"
+    app = FastAPI()
+    app.include_router(library_routes.router, prefix = "/api/library")
+    app.include_router(video_routes.router, prefix = "/api/inference")
+    both = TestClient(app)
+    video_token = video_routes._sign_video_id(record["id"])
+    response = both.get("/api/library/items/stream", params = {"id": item_id, "token": video_token})
+    assert response.status_code == 401
+    library_token = library_routes._sign_stream_id(record["id"])
+    response = both.get(
+        f"/api/inference/video/gallery/{record['id']}/file-signed",
+        params = {"token": library_token},
+    )
+    assert response.status_code == 401
+    # Each on its own route still plays.
+    assert (
+        both.get(
+            f"/api/inference/video/gallery/{record['id']}/file-signed",
+            params = {"token": video_token},
+        ).status_code
+        == 200
+    )
+
+
+def test_a_sandbox_clip_swapped_for_a_link_after_the_check_is_not_streamed(
+    client, monkeypatch, tmp_path
+):
+    import os
+
+    secret = tmp_path / "secret.mp3"
+    secret.write_bytes(b"secret")
+    _directory, path = _sandbox_chat(monkeypatch, name = "song.mp3", body = b"mine")
+    item_id = "sandbox:t-lib:song.mp3"
+    url = _stream_url(client, item_id)
+    stream = _unauthenticated()
+    assert stream.get(url).content == b"mine"
+    real = library._sandbox_path
+    swapped = []
+
+    def swap_after_check(ref):
+        checked = real(ref)
+        if not swapped:
+            os.unlink(path)
+            os.symlink(secret, path)
+            swapped.append(ref)
+        return checked
+
+    monkeypatch.setattr(library, "_sandbox_path", swap_after_check)
+    response = stream.get(url)
+    assert response.status_code == 404
+    assert b"secret" not in response.content
+    # A sandbox file is streamed only under an audio or video name.
+    _sandbox_chat(monkeypatch, name = "notes.txt", body = b"text")
+    response = client.get("/api/library/items/stream-url", params = {"id": "sandbox:t-lib:notes.txt"})
+    assert response.status_code == 400
+
+
+@pytest.fixture
+def two_accounts(monkeypatch, tmp_path):
+    from auth import policy, storage as auth_storage
+    from utils.account_context import AccountContext
+
+    alice = AccountContext("a" * 32, "alice")
+    bob = AccountContext("b" * 32, "bob")
+    monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
+    monkeypatch.setattr(auth_storage, "DB_PATH", tmp_path / "auth.db")
+    monkeypatch.setattr(auth_storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
+    monkeypatch.setattr(auth_storage, "_bootstrap_password", None)
+    policy.invalidate_account_cache()
+    connection = auth_storage.get_connection()
+    with connection:
+        for account in (alice, bob):
+            connection.execute(
+                "INSERT INTO auth_user (username, password_salt, password_hash, jwt_secret,"
+                " account_id, role, is_active) VALUES (?, 'salt', 'hash', 'secret', ?, 'user', 1)",
+                (account.username, account.account_id),
+            )
+    connection.close()
+    yield alice, bob
+    policy.invalidate_account_cache()
+
+
+def _account_client(account):
+    from utils.account_context import bind_account, reset_account
+
+    app = FastAPI()
+
+    async def subject():
+        token = bind_account(account)
+        try:
+            yield account.username
+        finally:
+            reset_account(token)
+
+    app.dependency_overrides[get_current_subject] = subject
+    app.dependency_overrides[request_admitted_without_credential] = lambda: False
+    app.include_router(library_routes.router, prefix = "/api/library")
+    return TestClient(app)
+
+
+def test_a_stream_link_reads_only_its_own_accounts_item(client, two_accounts):
+    from utils.account_context import OWNER, run_as
+
+    alice, bob = two_accounts
+    mine = run_as(alice, library.save_upload, "clip.mp4", "video/mp4", iter([b"alice"]))
+    theirs = run_as(bob, library.save_upload, "clip.mp4", "video/mp4", iter([b"bob"]))
+    mine_id, theirs_id = f"upload:{mine['id']}", f"upload:{theirs['id']}"
+    with _account_client(alice) as as_alice, _account_client(bob) as as_bob:
+        url = _stream_url(as_alice, mine_id)
+        # Bob cannot mint a link to Alice's item, however he spells it.
+        assert (
+            as_bob.get("/api/library/items/stream-url", params = {"id": mine_id}).status_code == 404
+        )
+    stream = _unauthenticated()
+    # The link is the credential: it plays Alice's file for whoever holds it, in her account.
+    response = stream.get(url)
+    assert (response.status_code, response.content) == (200, b"alice")
+    token = run_as(alice, library_routes._sign_stream_id, theirs_id)
+    response = stream.get("/api/library/items/stream", params = {"id": theirs_id, "token": token})
+    assert response.status_code == 404 and b"bob" not in response.content
+    alice_token = run_as(alice, library_routes._sign_stream_id, mine_id)
+    response = stream.get(
+        "/api/library/items/stream", params = {"id": theirs_id, "token": alice_token}
+    )
+    assert response.status_code == 401
+    # An owner's link resolves in the owner's own Library, where Alice's upload is not.
+    owner_token = run_as(OWNER, library_routes._sign_stream_id, mine_id)
+    response = stream.get("/api/library/items/stream", params = {"id": mine_id, "token": owner_token})
+    assert response.status_code == 404
