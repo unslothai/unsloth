@@ -207,8 +207,7 @@ def all_hf_cache_scans():
 
 
 def _blob_key(file_obj, fallback: str) -> str:
-    """One key per stored copy: without symlinks every snapshot path is its own blob_path, and
-    snapshot reuse hard links unchanged files across revisions, so key existing files by inode."""
+    """Key existing files by inode: no-symlink snapshot paths are their own blob_path, and reuse hard links them."""
     blob_path = getattr(file_obj, "blob_path", None)
     if not blob_path:
         return fallback

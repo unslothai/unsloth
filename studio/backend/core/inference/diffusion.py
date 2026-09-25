@@ -3811,8 +3811,7 @@ class DiffusionBackend:
                 reusable_paths,
             )
 
-            # Unpinned entries (pre-cast text encoder, DiT prequant) were probed against the local main ref,
-            # but the worker downloads the Hub head, so compare against the head's digests.
+            # Unpinned entries were probed against refs/main; the worker fetches the Hub head.
             digest_revision = None if revision else "main"
             revision = revision or cached_ref_commit("model", repo_id, hub_cache_dir())
             if not revision:

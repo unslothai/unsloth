@@ -338,8 +338,7 @@ def _drop_superseded_partial(repo_dir: Path, digest: str, protected: frozenset[s
     try:
         from filelock import FileLock, Timeout
         lock_path.parent.mkdir(parents = True, exist_ok = True)
-        # Held, not probed: huggingface_hub writes <digest>.incomplete only inside this lock, so
-        # while we hold it no partial is live, and a peer arriving now waits instead of losing it.
+        # Held, not probed: huggingface_hub writes partials only under this lock.
         with FileLock(str(lock_path), timeout = 0):
             partial.unlink(missing_ok = True)
     except Timeout:
@@ -377,8 +376,7 @@ def reuse_unchanged_snapshot_files(
             digest = getattr(item, "sha256", None)
             if not expected_path_is_safe(path) or size <= 0 or digest_kind(digest) is None:
                 continue
-            # A peer is fetching this blob: a pointer placed now makes huggingface_hub keep its
-            # finished blob in blobs/ as a second copy (it links only when the pointer is absent).
+            # huggingface_hub links a finished blob only when the pointer is absent: none under a peer.
             if digest in protected_blob_hashes:
                 continue
             if _needs_reuse(repo_dir, target_root / path, digest):
@@ -397,7 +395,7 @@ def reuse_unchanged_snapshot_files(
 
         for path, src in matches.items():
             size, digest = pending[path]
-            # Rechecked here, not only at launch: a peer may have started on this blob while we hashed.
+            # A peer may have started after launch.
             if blob_download_lock_held(repo_dir, digest):
                 continue
             how = _place(src, target_root / path, size)

@@ -374,7 +374,6 @@ def test_superseded_partial_is_removed_unless_protected(tmp_path):
         [ExpectedFile("model.safetensors", len(data), digest)],
         protected_blob_hashes = frozenset({digest}),
     )
-    # A peer is downloading it: no pointer, or its finished blob would stay behind as a copy.
     assert protected.reused == ()
     assert not (repo_dir / "snapshots" / NEW / "model.safetensors").exists()
     assert partial.exists()
@@ -713,7 +712,6 @@ def test_a_blob_a_live_peer_is_downloading_gets_no_pointer(tmp_path):
     expected = [ExpectedFile("model.safetensors", len(data), digest)]
 
     with FileLock(str(lock)):
-        # A peer that started after launch is not in protected_blob_hashes; its lock still counts.
         held = _reuse(tmp_path, expected)
     assert held.reused == ()
     assert not (repo_dir / "snapshots" / NEW / "model.safetensors").exists()
@@ -734,7 +732,6 @@ def test_hard_linked_revisions_are_counted_once_in_cache_usage(tmp_path):
     (new / "README.md").write_bytes(b"v2")
 
     (repo,) = scan_cache_dir(tmp_path / "hub").repos
-    # Without symlinks each snapshot path is its own blob_path; the inode is what is stored once.
     assert (
         len(
             {
@@ -747,7 +744,6 @@ def test_hard_linked_revisions_are_counted_once_in_cache_usage(tmp_path):
         == 2
     )
     assert _repo_gguf_size_bytes(repo) == len(gguf)
-    # The model and dataset listings total every file: the README differs, the weights do not.
     assert repo_unique_size_bytes(repo) == len(gguf) + len(b"v1") + len(b"v2")
 
     (new / "model-Q4_K_M.gguf").unlink()

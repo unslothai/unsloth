@@ -7737,7 +7737,6 @@ def test_reusable_from_older_snapshot_reads_the_live_cache_without_hashing(monke
 
 
 def test_reusable_from_older_snapshot_targets_the_main_ref_when_unpinned(monkeypatch, tmp_path):
-    # The pre-cast text encoder is planned with no revision; its cache probe reads refs/main.
     from hub.utils import snapshot_reuse
 
     old, new = "1" * 40, "2" * 40
@@ -7772,7 +7771,6 @@ def test_reusable_from_older_snapshot_targets_the_main_ref_when_unpinned(monkeyp
 
     assert reusable() == {"te.safetensors"}
     assert asked[0] == "main"  # the worker fetches the Hub head, not the cached ref
-    # The Hub head moved past refs/main and changed the encoder: keep counting it.
     head["main"] = "b" * 64
     assert reusable() == set()
 
@@ -7793,7 +7791,6 @@ def test_reusable_from_older_snapshot_keeps_the_anonymous_token_sentinel(monkeyp
             "unsloth/Qwen-Image-2.1-FP8", ["te.safetensors"], "2" * 40, {"te.safetensors": 1}, token
         )
 
-    # A managed account without its own token must stay anonymous (False), never fall back to None.
     assert tokens == [False, None, None, "hf_x"]
 
 
