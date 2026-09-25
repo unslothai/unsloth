@@ -5,7 +5,7 @@
 
 The bit-identity tests compile the attention's QK-norm + RoPE with the stock complex form and with the
 real form and compare the outputs exactly; they need CUDA and a torch whose inductor lowers ``addcmul``
-to ``fma`` (2.11+). The install / guard tests run anywhere diffusers has Qwen-Image 2.1.
+to ``fma`` (2.12+, or 2.11 under ``emulate_precision_casts``). The install / guard tests run anywhere diffusers has Qwen-Image 2.1.
 """
 
 from __future__ import annotations
@@ -29,6 +29,17 @@ _needs_exact = pytest.mark.skipif(
     not (torch.cuda.is_available() and rope.inductor_addcmul_is_fma()),
     reason = "needs CUDA and inductor's fma addcmul lowering (torch 2.11+)",
 )
+
+
+@pytest.fixture
+def emulating():
+    """What Studio's compiled tiers set; torch 2.11 lowers ``addcmul`` to ``fma`` only under it."""
+    import torch._inductor.config as icfg
+
+    prev = icfg.emulate_precision_casts
+    icfg.emulate_precision_casts = True
+    yield
+    icfg.emulate_precision_casts = prev
 
 
 @pytest.fixture(autouse = True)
@@ -74,27 +85,20 @@ def _compiled(prep, x, freqs, dynamic):
 @_needs_exact
 @pytest.mark.parametrize("dynamic", [False, True])
 @pytest.mark.parametrize("seq", [77, 1024])
-def test_compiled_real_rope_is_bit_identical_to_the_complex_one(dynamic, seq):
-    import torch._inductor.config as icfg
-
-    prev = icfg.emulate_precision_casts
-    icfg.emulate_precision_casts = True  # what Studio's compiled tiers set
-    try:
-        # Qwen-Image-2.1's own head layout: inductor's schedule for the norm in front of the RoPE depends
-        # on it, and on a toy layout it can round the STOCK norm differently from eager in a few elements.
-        attn = _attention("cuda", heads = 32, dim_head = 128)
-        prep, x, freqs = _qk(attn, seq, "cuda")
-        stock = _compiled(prep, x, freqs, dynamic)
-        assert rope.install()
-        real = _compiled(prep, x, freqs, dynamic)
-    finally:
-        icfg.emulate_precision_casts = prev
+def test_compiled_real_rope_is_bit_identical_to_the_complex_one(dynamic, seq, emulating):
+    # Qwen-Image-2.1's own head layout: inductor's schedule for the norm in front of the RoPE depends
+    # on it, and on a toy layout it can round the STOCK norm differently from eager in a few elements.
+    attn = _attention("cuda", heads = 32, dim_head = 128)
+    prep, x, freqs = _qk(attn, seq, "cuda")
+    stock = _compiled(prep, x, freqs, dynamic)
+    assert rope.install()
+    real = _compiled(prep, x, freqs, dynamic)
     assert torch.equal(stock[0], real[0])
     assert torch.equal(stock[1], real[1])
 
 
 @_needs_exact
-def test_the_real_form_runs_inside_the_compiled_block(monkeypatch):
+def test_the_real_form_runs_inside_the_compiled_block(monkeypatch, emulating):
     calls = []
     real = rope._real_rope
     monkeypatch.setattr(rope, "_real_rope", lambda x, f, fusion: calls.append(x.shape) or real(x, f, fusion))
@@ -179,7 +183,7 @@ def test_kill_switch_and_non_fma_inductor_keep_the_complex_form(monkeypatch):
 
 
 def test_addcmul_probe_reads_the_lowering():
-    rope.inductor_addcmul_is_fma.cache_clear()
+    rope._addcmul_lowering.cache_clear()
     try:
         from torch._inductor import lowering
 
@@ -190,6 +194,33 @@ def test_addcmul_probe_reads_the_lowering():
     except Exception:  # noqa: BLE001 - torch without that lowering
         want = False
     assert rope.inductor_addcmul_is_fma() is want
+    if want:
+        assert rope._addcmul_lowering()[1] is ("emulate_precision_casts" in src)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+def test_a_torch_that_needs_the_emulate_flag_keeps_the_complex_form_without_it(monkeypatch):
+    import torch._inductor.config as icfg
+
+    _fake_fusion(monkeypatch)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: torch.device("cuda").index or 0)
+    assert rope.install()
+    monkeypatch.setattr(rope, "_NEEDS_EMULATE", [True])
+    monkeypatch.setattr(icfg, "emulate_precision_casts", False)
+    calls = []
+    real = rope._real_rope
+    monkeypatch.setattr(rope, "_real_rope", lambda x, f, fusion: calls.append(1) or real(x, f, fusion))
+    attn = _attention("cuda")
+    prep, x, freqs = _qk(attn, 16, "cuda")
+    torch._dynamo.reset()
+    with torch.inference_mode():
+        torch.compile(prep, backend = "eager")(x, freqs)
+    assert calls == []
+    monkeypatch.setattr(icfg, "emulate_precision_casts", True)
+    torch._dynamo.reset()
+    with torch.inference_mode():
+        torch.compile(prep, backend = "eager")(x, freqs)
+    assert len(calls) == 2
 
 
 def _fused(a, c, bd):
@@ -220,7 +251,7 @@ def test_this_card_multiplies_complex_numbers_in_a_known_fused_form():
 
 @_needs_exact
 @pytest.mark.parametrize("fusion", [("x", "x"), ("x", "s"), ("s", "x"), ("s", "s")])
-def test_each_fusion_form_compiles_to_that_fma(fusion):
+def test_each_fusion_form_compiles_to_that_fma(fusion, emulating):
     """The compiled real form reproduces the fused form it was asked for, bit for bit, on inputs
     where the forms disagree: the check that inductor did not re-fuse the products."""
     import numpy as np

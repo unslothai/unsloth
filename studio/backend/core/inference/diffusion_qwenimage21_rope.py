@@ -13,7 +13,8 @@ and which product it fuses depends on how nvcc compiled it for the card: on B200
 ``real = fma(a, c, -(b * d)), imag = fma(b, c, a * d)``, on A100 ``imag = fma(a, d, b * c)``. So
 ``install`` asks the card: it multiplies a probe on the device and classifies each half against the
 two fused forms (exact in float64 on inputs in [1, 2)), and the compiled form then uses the same
-fusion per lane via ``addcmul``, which torch 2.11+ inductor lowers to a single ``fma``. Written over
+fusion per lane via ``addcmul``, which inductor lowers to a single ``fma`` (torch 2.12+, and 2.11
+under ``emulate_precision_casts``, which Studio's compiled tiers set). Written over
 the full head dim (``swap_pairs(x)`` against interleaved cos / sin tables) the rotation fuses with
 the norm into one kernel and matches the complex multiply bit for bit. A card whose multiply matches
 neither form, torch <= 2.10 (no ``fma`` lowering), ROCm and eager calls keep the complex form.
@@ -84,18 +85,29 @@ def why_unsupported(module: Any) -> Optional[str]:
 
 
 @functools.lru_cache(maxsize = 1)
-def inductor_addcmul_is_fma() -> bool:
-    """Whether this torch's inductor lowers ``addcmul`` (value 1) to one ``fma`` on CUDA, which is what
-    makes the real form round exactly like ATen's complex multiply. Read from the lowering itself."""
+def _addcmul_lowering() -> tuple:
+    """(lowers ``addcmul`` with value 1 to one ``fma`` on CUDA, only while ``emulate_precision_casts``
+    is set). Read from the lowering itself: torch 2.11 gates the fma on that flag, 2.12+ does not."""
     try:
         import torch
         from torch._inductor import lowering
 
         if getattr(torch.version, "hip", None):
-            return False
-        return "ops.fma(t1_val, t2_val, self_val)" in inspect.getsource(lowering.addcmul)
+            return False, False
+        src = inspect.getsource(lowering.addcmul)
+        return "ops.fma(t1_val, t2_val, self_val)" in src, "not config.emulate_precision_casts" in src
     except Exception:  # noqa: BLE001 - no inductor, or its source is unreadable
-        return False
+        return False, False
+
+
+def inductor_addcmul_is_fma() -> bool:
+    """Whether this torch's inductor can lower ``addcmul`` to one ``fma``, which is what makes the real
+    form round exactly like ATen's complex multiply."""
+    return _addcmul_lowering()[0]
+
+
+# Set by ``install``: read inside the traced wrapper, where the lru_cache above would break the graph.
+_NEEDS_EMULATE = [True]
 
 
 # device index -> (even lanes, odd lanes), each "x" (fma on x * cos) or "s" (fma on swapped * sin).
@@ -167,6 +179,13 @@ def _real_rope(x: Any, freqs_cis: Any, fusion: tuple) -> Any:
     return out.type_as(x)
 
 
+def _inductor_emulates() -> bool:
+    """Read at trace time (dynamo guards on it): without the flag torch 2.11 splits ``addcmul``."""
+    from torch._inductor import config
+
+    return bool(getattr(config, "emulate_precision_casts", False))
+
+
 def _make_rope(stock: Any) -> Any:
     import torch
 
@@ -179,7 +198,7 @@ def _make_rope(stock: Any) -> Any:
             and x.shape[-1] % 2 == 0
         ):
             fusion = _FUSION.get(x.device.index)
-            if fusion is not None:
+            if fusion is not None and (not _NEEDS_EMULATE[0] or _inductor_emulates()):
                 return _real_rope(x, freqs_cis, fusion)
         return stock(x, freqs_cis, use_real, use_real_unbind_dim)
 
@@ -195,6 +214,7 @@ def install(logger: Any = None, device: Any = None) -> bool:
     device) multiplies complex numbers in neither fused form. Run before the first compiled forward."""
     if real_rope_disabled() or not inductor_addcmul_is_fma():
         return False
+    _NEEDS_EMULATE[0] = _addcmul_lowering()[1]
     try:
         import torch
 
