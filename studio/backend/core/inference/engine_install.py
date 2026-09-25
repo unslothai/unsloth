@@ -203,47 +203,83 @@ if problems:
 
 _gpu_rows: dict = {}
 _gpu_rows_lock = threading.Lock()
+_gpu_probe_lock = threading.Lock()
+_PENDING = object()
 
 
-def _driver_rows(gpu_id: int | None) -> list[list[str]] | None:
-    """nvidia-smi rows, cached per process: status polls every few seconds and a loaded
-    multi-GPU host can take over 20s to answer. A failure is retried after 5 minutes."""
+def _cached_rows(gpu_id):
     with _gpu_rows_lock:
         cached = _gpu_rows.get(gpu_id)
-        if cached is not None and (cached[1] is not None or time.monotonic() < cached[0]):
-            return cached[1]
-        rows = None
-        try:
-            result = subprocess.run(
-                [
-                    "nvidia-smi",
-                    "--query-gpu=driver_version,compute_cap",
-                    "--format=csv,noheader",
-                    *(["--id", str(gpu_id)] if gpu_id is not None else []),
-                ],
-                capture_output = True,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = 60,
-            )
-            if result.returncode == 0:
-                rows = [line.split(",") for line in result.stdout.strip().splitlines()]
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+    if cached is not None and (cached[1] is not None or time.monotonic() < cached[0]):
+        return cached[1]
+    return _PENDING
+
+
+def _probe_rows(gpu_id):
+    rows = None
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=driver_version,compute_cap",
+                "--format=csv,noheader",
+                *(["--id", str(gpu_id)] if gpu_id is not None else []),
+            ],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 60,
+        )
+        if result.returncode == 0:
+            rows = [line.split(",") for line in result.stdout.strip().splitlines()]
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    with _gpu_rows_lock:
         _gpu_rows[gpu_id] = (time.monotonic() + 300, rows)
+    return rows
+
+
+def _driver_rows(gpu_id: int | None, *, wait: bool = True):
+    """nvidia-smi rows, cached per process; a failure is retried after 5 minutes. A loaded
+    multi-GPU host can take over 20s to answer, so ``wait=False`` (status polls) never runs the
+    probe in the caller: it starts one in the background and returns ``_PENDING``."""
+    rows = _cached_rows(gpu_id)
+    if rows is not _PENDING:
         return rows
+    if not wait:
+        if _gpu_probe_lock.acquire(blocking = False):
+
+            def probe():
+                try:
+                    _probe_rows(gpu_id)
+                finally:
+                    _gpu_probe_lock.release()
+
+            threading.Thread(target = probe, daemon = True).start()
+        return _PENDING
+    with _gpu_probe_lock:
+        rows = _cached_rows(gpu_id)
+        return _probe_rows(gpu_id) if rows is _PENDING else rows
 
 
-def support_reason(engine: str = "vllm", gpu_id: int | None = None) -> str | None:
+def support_reason(
+    engine: str = "vllm",
+    gpu_id: int | None = None,
+    *,
+    wait: bool = True,
+) -> str | None:
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         return "Managed engines currently require Linux x86_64."
     if tuple(int(x) for x in (platform.libc_ver()[1] or "0.0").split(".")[:2]) < (2, 34):
         return "Managed engines require glibc 2.34 or newer."
+    rows = _driver_rows(gpu_id, wait = wait)
+    if rows is _PENDING:
+        return "Checking for a supported NVIDIA GPU."
     try:
         if any(
             int(row[0].strip().split(".")[0]) >= profile(engine)["driver"] and float(row[1]) >= 8.0
-            for row in _driver_rows(gpu_id) or ()
+            for row in rows or ()
             if len(row) == 2
         ):
             return None
@@ -354,7 +390,7 @@ def status(engine: str) -> dict:
         "can_rollback": bool(
             info and isinstance(info.get("previous"), dict) and not stale(info["previous"])
         ),
-        "unsupported_reason": support_reason(engine),
+        "unsupported_reason": support_reason(engine, wait = False),
         "download_bytes": None,
         "additional_disk_bytes": None,
         "job": job,

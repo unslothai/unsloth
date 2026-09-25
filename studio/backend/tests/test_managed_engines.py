@@ -26,7 +26,7 @@ def visible_gpus(monkeypatch):
 @pytest.fixture
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(install, "engine_root", lambda: tmp_path)
-    monkeypatch.setattr(install, "support_reason", lambda engine = "vllm": None)
+    monkeypatch.setattr(install, "support_reason", lambda engine = "vllm", **_: None)
     monkeypatch.setattr(install, "_jobs", {})
     monkeypatch.setattr(install, "_cancels", {})
     monkeypatch.setattr(install, "_studio_packages", lambda: {})
@@ -1634,4 +1634,30 @@ def test_failed_support_probe_is_not_rerun_on_every_poll(monkeypatch):
     monkeypatch.setattr(install.subprocess, "run", hung_smi)
     for engine in ("vllm", "sglang", "vllm"):
         assert install.support_reason(engine) is not None
+    assert len(calls) == 1
+
+
+def test_status_never_waits_for_a_slow_support_probe(monkeypatch):
+    import time
+    from types import SimpleNamespace
+
+    release = threading.Event()
+    calls = []
+
+    def slow_smi(argv, **kwargs):
+        calls.append(argv)
+        release.wait(10)
+        return SimpleNamespace(returncode = 0, stdout = "590.48.01, 10.0\n")
+
+    monkeypatch.setattr(install, "_gpu_rows", {})
+    monkeypatch.setattr(install.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(install.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(install.platform, "libc_ver", lambda: ("glibc", "2.39"))
+    monkeypatch.setattr(install.subprocess, "run", slow_smi)
+    started = time.monotonic()
+    for _ in range(5):
+        assert install.support_reason("vllm", wait = False).startswith("Checking")
+    assert time.monotonic() - started < 2
+    release.set()
+    assert install.support_reason("vllm") is None
     assert len(calls) == 1
