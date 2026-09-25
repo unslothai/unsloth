@@ -24,6 +24,7 @@ from loggers import get_logger
 import shutil
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -6970,6 +6971,12 @@ def _extra_args_have_tensor_split(
         if str(token).split("=", 1)[0] in ("--tensor-split", "-ts", "--tensor_split"):
             return True
     return bool(str((env or {}).get("LLAMA_ARG_TENSOR_SPLIT", "")).strip())
+
+
+@functools.lru_cache(maxsize = 1)
+def _count_ssl_context() -> ssl.SSLContext:
+    # httpx loads the CA bundle per Client (~15 ms); admission counts once per chat request.
+    return ssl.create_default_context()
 
 
 class LlamaCppBackend:
@@ -38839,7 +38846,12 @@ class LlamaCppBackend:
         tools = neutralize_tool_descriptions(tools, None, _profile)
 
         try:
-            with httpx.Client(timeout = 10, headers = self._auth_headers, trust_env = False) as client:
+            with httpx.Client(
+                timeout = 10,
+                headers = self._auth_headers,
+                trust_env = False,
+                verify = _count_ssl_context(),
+            ) as client:
 
                 def _tokenize(text: str) -> int:
                     r = client.post(

@@ -2456,20 +2456,18 @@ async def _reserve_counted_gguf_chat(
             tool_loop = tool_loop,
             injected_tools = injected_tools,
         )
-    counted = None
-    if config.enabled and config.kv_budget:
-        identity = (
-            getattr(llama_backend, "base_url", None),
-            _openai_llama_admission_budget(llama_backend),
-        )
-        counted = await asyncio.to_thread(
-            _count_gguf_admission_prompt, llama_backend, payload, messages, injected_tools
-        )
-        if identity != (
-            getattr(llama_backend, "base_url", None),
-            _openai_llama_admission_budget(llama_backend),
-        ):
-            counted = _openai_llama_admission_budget(llama_backend)
+    identity = (
+        getattr(llama_backend, "base_url", None),
+        _openai_llama_admission_budget(llama_backend),
+    )
+    counted = await asyncio.to_thread(
+        _count_gguf_admission_prompt, llama_backend, payload, messages, injected_tools
+    )
+    if identity != (
+        getattr(llama_backend, "base_url", None),
+        _openai_llama_admission_budget(llama_backend),
+    ):
+        counted = _openai_llama_admission_budget(llama_backend)
     return _openai_llama_admission_reserve(
         request = request,
         llama_backend = llama_backend,
@@ -2561,35 +2559,36 @@ def _openai_llama_admission_recost(
         if not budget:
             return
         capacity = _openai_llama_admission_capacity(request, llama_backend)
-        # Every term the OPENING reservation charges, charged again here. Counting fewer
-        # things than the reservation it replaces would SHRINK a correctly sized lease --
-        # and since the callback fires at the top of round zero, before any growth, it
-        # would hand back room llama-server is already using.
-        estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
-            conversation,
-            vision = bool(getattr(llama_backend, "is_vision", False)),
-        )
-        prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
-        # Re-sent every round, so it belongs in every re-costing, not just the opening one.
-        prompt_tokens += _openai_llama_admission_injected_tool_tokens(injected_tools)
-        # Anthropic keeps `system` and `tools` out of the message list entirely, so for
-        # that route this is most of the prompt.
-        prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
-        # mtmd embeddings, KV the message text cannot show: image parts compact to
-        # "[image]" for the text estimate, so their real cost comes from the compaction
-        # count. A screenshot tool adds more of them, so this grows with the rounds.
-        prompt_tokens += _openai_llama_admission_media_tokens(
-            payload,
-            message_image_parts = message_image_parts,
-            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
-            message_video_clips = _conversation_video_clips(conversation),
-        )
         if count_prepared_prompt:
             prompt_tokens = _count_gguf_admission_prompt(
                 llama_backend, payload, conversation, injected_tools, cancel_event = cancel_event
             )
             if cancel_event is not None and cancel_event.is_set():
                 return
+        else:
+            # Every term the OPENING reservation charges, charged again here. Counting fewer
+            # things than the reservation it replaces would SHRINK a correctly sized lease --
+            # and since the callback fires at the top of round zero, before any growth, it
+            # would hand back room llama-server is already using.
+            estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
+                conversation,
+                vision = bool(getattr(llama_backend, "is_vision", False)),
+            )
+            prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
+            # Re-sent every round, so it belongs in every re-costing, not just the opening one.
+            prompt_tokens += _openai_llama_admission_injected_tool_tokens(injected_tools)
+            # Anthropic keeps `system` and `tools` out of the message list entirely, so for
+            # that route this is most of the prompt.
+            prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
+            # mtmd embeddings, KV the message text cannot show: image parts compact to
+            # "[image]" for the text estimate, so their real cost comes from the compaction
+            # count. A screenshot tool adds more of them, so this grows with the rounds.
+            prompt_tokens += _openai_llama_admission_media_tokens(
+                payload,
+                message_image_parts = message_image_parts,
+                image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+                message_video_clips = _conversation_video_clips(conversation),
+            )
         # Reading "Max" literally here would put the run back on the whole cache at its
         # first round boundary.
         share = max(1, budget // max(1, capacity))
