@@ -20,7 +20,7 @@ SDPA; they do not isolate padding removal from the attention backend change.
 ## Execution and compatibility
 
 The optimization gathers the **original embedding output**, preserving token
-types and positional embeddings, then uses bidirectional FlashAttention through
+types and positional embeddings, then uses bidirectional FlashAttention or xFormers through
 Unsloth's existing attention dispatcher. It restores the rectangular output
 before the original mean pooling. It does not replace LayerNorm, change weights,
 introduce a custom loss, or implement a separate backend detector.
@@ -28,11 +28,15 @@ introduce a custom loss, or implement a separate backend detector.
 Supported pipelines are an exact Transformers BERT or RoBERTa encoder with
 absolute positions, immediately followed by mean-only SentenceTransformer
 Pooling and optional Dense/Normalize modules. Transformers 5's attention
-interface, FlashAttention, CUDA and FP16/BF16 execution are required. CUDA
+interface, CUDA and a working FlashAttention or xFormers packed backend are required.
+xFormers uses a noncausal `BlockDiagonalMask` through the same dispatcher used for
+LLM packing; causal LLM masks must not be used for these encoders. FlashAttention
+retains priority when available. FP16/BF16 execution is required, with BF16 limited
+to hardware and operators that support it. CUDA
 autocast may retain FP32 normalization/residual activations; those remain FP32.
 LoRA and gradient checkpointing keep their existing implementations.
 
-Evaluation, pure FP32 without autocast, Transformers 4, absent FlashAttention,
+Evaluation, pure FP32 without autocast, Transformers 4, no supported packed backend,
 other architectures, custom token-processing modules, requested hidden states
 or attention weights, routed keyword mask overrides, feed-forward chunking, unsupported masks and head
 dimensions above 256 remain padded. Upstream automatic compilation is unchanged;
@@ -40,6 +44,12 @@ compiled whole models and compiled inner encoders use the padded path, including
 across graph breaks. Unsloth restores its own original forwards and SDPA backend
 before applying its compilation helper, avoiding wrapper overhead on that path.
 This does not replace native unpadding in other architectures.
+
+An xFormers installation without bidirectional block masks also stays padded.
+The xFormers path conservatively requires head dimensions divisible by eight.
+The historical RTX 5090 FlashAttention measurements above do not measure xFormers
+performance or calibrate its automatic cutoff. Verify actual packed xFormers calls
+and its selected forward/backward operators when benchmarking without FlashAttention.
 
 Attended token embeddings and sentence embeddings are the numerical contract.
 Padded encoder positions are zero during packed training. Dropout draws differ
@@ -190,3 +200,53 @@ python -m pytest -o addopts= -q \
 Clearing repository `addopts` is intentional: its normal marker selection excludes
 some real-GPU/slow tests. Real FlashAttention cases are skipped explicitly when
 the backend is unavailable; simulated dispatch tests are not GPU performance proof.
+
+
+## xFormers without FlashAttention: Colab T4
+
+The xFormers extension was measured against the earlier PR head `83b568338`,
+which required FlashAttention for encoder unpadding. It uses the existing shared
+xFormers dispatcher. On a Colab Tesla T4, PyTorch 2.11.0+cu128, xFormers 0.0.35,
+Transformers 5.5.0 and SentenceTransformers 6.1.0, real packed forward/backward
+used CUTLASS with noncausal block masks. `flash_attn` was absent. The original PR
+stayed padded; both arms used the same underlying CUTLASS attention family.
+
+Matched MiniLM training used FP32 weights, FP16 autocast and GradScaler(128),
+AdamW at 2e-5, 16 sentence pairs, zero dropout, and no compilation/checkpointing.
+Each row has six balanced paired repeats, fresh model copies, six warmup steps,
+and three synchronized windows of eight complete training steps per arm.
+Timings reuse a fixed real-text batch; they are not complete-epoch throughput.
+
+| Workload | Original PR step ms | Packed xFormers ms | Median paired throughput change | Peak allocated MiB, before/after | Peak reserved MiB, before/after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Short, low padding | 41.13 | 48.84 | -15.8% | 447.7 / 447.7 | 500 / 498 |
+| Short, fixed padding to 128 | 44.97 | 49.40 | -8.0% | 690.5 / 447.8 | 738 / 514 |
+| Long, low padding | 50.38 | 51.80 | -2.8% | 746.0 / 730.6 | 778 / 768 |
+| Long, high padding, full training | 93.94 | 53.10 | +77.0% | 1207.7 / 638.1 | 1252 / 688 |
+| Long, high padding, LoRA | 92.50 | 63.92 | +45.5% | 926.1 / 458.9 | 962 / 516 |
+
+Short inputs are STS-B pairs with 12-16 tokens; fixed padding is a controlled
+stress case. Long inputs are SciFact title/abstract pairs. The high-padding
+batch has 3,141 useful tokens in 8,960 slots across both sentence branches.
+Conservative 96.875% paired-median throughput intervals are +18.7% to +84.9%
+(full) and +11.6% to +51.4% (LoRA). Both clear a 5% throughput gate. Other rows
+do not qualify for speed; use automatic mode or disable packing for short inputs.
+These measurements use forced packing and do not calibrate a universal cutoff.
+
+Real MiniLM embedding relative-L2 error was 0.063%; parameter/input gradient
+errors were approximately 0.26%. First AdamW update errors were 5.46% (full)
+and 5.41% (LoRA), accepted with a 6% update bound; they are not exact parity.
+The original stricter 5% update gate failed. Short training checks do not establish
+long-run quality equivalence. Tiny BERT/RoBERTa tests additionally cover FP16,
+FP32 autocast, LoRA, dropout checkpoint replay, fallback and stock save/load.
+T4 native BF16 and real FlashAttention cases are skipped. No speed claim is made
+for other GPUs, other architectures, compilation or multi-GPU training.
+
+A subsequent matched automatic-versus-forced experiment on the same long/high
+fixture left the short title branch padded. Six paired repeats did not establish
+an additional full-training speed gain: +2.75%, interval -21.89% to +35.52%.
+LoRA improved a further 7.59%, interval +6.88% to +34.73%, with median step time
+52.82 to 49.01 ms. This increased peak allocated memory by 32.2 MiB and reserved
+memory by 24 MiB versus forced packing. Full training used an additional
+42.8 MiB allocated and 40 MiB reserved. These are separate comparisons;
+do not multiply their ratios into the original-PR comparison above.

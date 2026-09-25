@@ -3,7 +3,7 @@
 
 The simulated Flash function executes independent SDPA segments on CUDA. It proves
 model integration and gradients, not the numerical behavior or speed of FlashAttention.
-The real backend parameter is separately skipped when FlashAttention is unavailable.
+Real FlashAttention and xFormers parameters are skipped when unavailable.
 """
 
 import copy
@@ -117,13 +117,26 @@ def _copy_features(features):
     }
 
 
-@pytest.fixture(params = ["simulated", "real"])
+@pytest.fixture(params = ["simulated", "real", "xformers"])
 def kernel(request, monkeypatch):
     from unsloth.utils import attention_dispatch as ad
 
     if not has_real_accelerator() or not torch.cuda.is_available():
         pytest.skip("packed path requires CUDA")
     calls = []
+    if request.param == "xformers":
+        if not ad.HAS_XFORMERS or ad._XFormersBidirectionalMask is None:
+            pytest.skip("real bidirectional xFormers is not installed")
+        original = ad.xformers_attention
+
+        def counted(query, key, value, **kwargs):
+            assert type(kwargs["attn_bias"]) is ad._XFormersBidirectionalMask
+            calls.append(query.shape[1])
+            return original(query, key, value, **kwargs)
+
+        monkeypatch.setattr(ad, "xformers_attention", counted)
+        monkeypatch.setattr(ad, "select_attention_backend", lambda **kwargs: ad.XFORMERS)
+        return calls
     if request.param == "real":
         if not ad.HAS_FLASH_ATTENTION:
             pytest.skip("real FlashAttention is not installed")
@@ -160,6 +173,78 @@ def kernel(request, monkeypatch):
         monkeypatch.setattr(ad, "flash_attn_varlen_func", simulated)
     monkeypatch.setattr(ad, "select_attention_backend", lambda **kwargs: ad.FLASH_VARLEN)
     return calls
+
+
+def test_xformers_attention_preserves_dropout_and_scale(monkeypatch):
+    from unsloth.models._sentence_transformer_unpadding import _sentence_attention, _SEQUENCES
+    from unsloth.utils import attention_dispatch as ad
+
+    monkeypatch.setattr(ad, "select_attention_backend", lambda **kwargs: ad.XFORMERS)
+    monkeypatch.setattr(ad, "_XFormersBidirectionalMask", object)
+    sequences = (torch.tensor([2, 3]), torch.tensor([0, 2, 5]), 3)
+
+    def capture(*, config, context, Q, K, V):
+        assert config.backend == ad.XFORMERS
+        assert config.xformers_kwargs == {"p": 0.25, "scale": 0.125}
+        assert context.seq_info is sequences
+        assert context.is_causal is False
+        return Q.transpose(1, 2)
+
+    monkeypatch.setattr(ad, "run_attention", capture)
+    query = torch.randn(1, 2, 5, 8)
+    _sentence_attention(
+        torch.nn.Identity(),
+        query,
+        query,
+        query,
+        None,
+        **{_SEQUENCES: sequences, "dropout": 0.25, "scaling": 0.125},
+    )
+
+
+def test_packed_sentences_do_not_share_attention(tiny_model, kernel):
+    model = _enable(tiny_model.cuda().half().train())
+    features = _features(model, "cuda")
+    original = model(_copy_features(features))["sentence_embedding"]
+    features["input_ids"][1:, :3] = 40
+    modified = model(_copy_features(features))["sentence_embedding"]
+    torch.testing.assert_close(original[0], modified[0], rtol = 0, atol = 0)
+    assert not torch.equal(original[1:], modified[1:])
+    assert kernel == [22] * 4
+
+
+def test_xformers_unaligned_heads_keep_padded_execution(tmp_path, monkeypatch):
+    from unsloth.models._sentence_transformer_unpadding import enable_sentence_transformer_unpadding
+    from unsloth.utils import attention_dispatch as ad
+
+    monkeypatch.setattr(ad, "select_attention_backend", lambda **kwargs: ad.XFORMERS)
+    monkeypatch.setattr(ad, "_XFormersBidirectionalMask", object)
+    model = _build_tiny_model("bert", tmp_path, hidden_size = 20)
+    original_forward = model.forward
+    assert not enable_sentence_transformer_unpadding(model)
+    assert model.forward == original_forward
+    assert model[0].auto_model.config._attn_implementation == "sdpa"
+
+
+@pytest.mark.parametrize("reentrant", [False, True])
+def test_checkpoint_replay_preserves_packed_dropout(tiny_model, kernel, reentrant):
+    reference = _enable(tiny_model.cuda().half().train())
+    for module in reference.modules():
+        if isinstance(module, torch.nn.Dropout):
+            module.p = 0.1
+    candidate = copy.deepcopy(reference)
+    candidate[0].auto_model.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs = {"use_reentrant": reentrant}
+    )
+    outputs = []
+    for model in (reference, candidate):
+        torch.manual_seed(4460)
+        output = model(_features(model, "cuda"))["sentence_embedding"]
+        output.float().square().mean().backward()
+        outputs.append(output)
+    torch.testing.assert_close(outputs[0], outputs[1])
+    _assert_gradients(reference, candidate)
+    assert len(kernel) == 6
 
 
 def _enable(model):
@@ -454,6 +539,10 @@ def _check_training_step(
     record_property,
     autocast_dtype = None,
 ):
+    if (autocast_dtype or dtype) == torch.bfloat16 and not torch.cuda.is_bf16_supported(
+        including_emulation = False
+    ):
+        pytest.skip("this GPU does not support BF16")
     reference = tiny_model.cuda().to(dtype = dtype).train()
     candidate = _enable(copy.deepcopy(reference))
     bf16 = (autocast_dtype or dtype) == torch.bfloat16
@@ -516,6 +605,10 @@ def test_autocast_state_is_rechecked_and_fp32_fallback_keeps_all_tokens(tiny_mod
     features = _features(reference, "cuda")
     keep = features["attention_mask"].bool()
     for autocast_dtype in (None, torch.float16, None, torch.bfloat16, None):
+        if autocast_dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported(
+            including_emulation = False
+        ):
+            continue
         kernel.clear()
         context = (
             torch.autocast("cuda", dtype = autocast_dtype)
@@ -809,7 +902,7 @@ def test_cpu_fallback_keeps_all_token_values(tiny_model, monkeypatch, forward_fi
 
 
 @pytest.mark.parametrize(
-    "unsupported", ["no_flash", "eager", "decoder", "chunking", "custom_pipeline"]
+    "unsupported", ["no_varlen", "no_block_mask", "eager", "decoder", "chunking", "custom_pipeline"]
 )
 def test_installation_keeps_unsupported_models_unchanged(tiny_model, monkeypatch, unsupported):
     from unsloth.models._sentence_transformer_unpadding import enable_sentence_transformer_unpadding
@@ -817,8 +910,11 @@ def test_installation_keeps_unsupported_models_unchanged(tiny_model, monkeypatch
 
     monkeypatch.setattr(ad, "select_attention_backend", lambda **kwargs: ad.FLASH_VARLEN)
     config = tiny_model[0].auto_model.config
-    if unsupported == "no_flash":
+    if unsupported == "no_varlen":
         monkeypatch.setattr(ad, "select_attention_backend", lambda **kwargs: ad.SDPA)
+    elif unsupported == "no_block_mask":
+        monkeypatch.setattr(ad, "select_attention_backend", lambda **kwargs: ad.XFORMERS)
+        monkeypatch.setattr(ad, "_XFormersBidirectionalMask", None)
     elif unsupported == "eager":
         config._attn_implementation = "eager"
     elif unsupported == "decoder":

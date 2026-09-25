@@ -19,6 +19,20 @@ _SEQUENCES = "_unsloth_sentence_sequences"
 _MIN_UNPADDING_TOKENS = 8192
 
 
+def _unpadding_backend():
+    from ..utils import attention_dispatch
+
+    backend = attention_dispatch.select_attention_backend(use_varlen = True)
+    if backend == attention_dispatch.FLASH_VARLEN:
+        return backend
+    if (
+        backend == attention_dispatch.XFORMERS
+        and attention_dispatch._XFormersBidirectionalMask is not None
+    ):
+        return backend
+    return None
+
+
 def _sentence_attention(module, query, key, value, attention_mask, **kwargs):
     from transformers.integrations.sdpa_attention import sdpa_attention_forward
     from ..utils.attention_dispatch import AttentionConfig, AttentionContext, run_attention
@@ -29,13 +43,17 @@ def _sentence_attention(module, query, key, value, attention_mask, **kwargs):
 
     heads, tokens, head_dim = query.shape[1:]
     config = AttentionConfig(
-        backend = "flash_varlen",
+        backend = _unpadding_backend(),
         n_kv_heads = key.shape[1],
         n_groups = heads // key.shape[1],
         flash_varlen_kwargs = {
             "causal": False,
             "dropout_p": kwargs.get("dropout", 0.0),
             "softmax_scale": kwargs.get("scaling"),
+        },
+        xformers_kwargs = {
+            "p": kwargs.get("dropout", 0.0),
+            "scale": kwargs.get("scaling"),
         },
         sdpa_kwargs = {
             "is_causal": False,
@@ -90,8 +108,6 @@ def _encoder_forward(
     *args,
     **kwargs,
 ):
-    from ..utils import attention_dispatch
-
     original_forward = encoder._unsloth_original_forward
     mask = kwargs.pop(_MASK, None)
     if args:
@@ -112,8 +128,7 @@ def _encoder_forward(
         or hidden_states.shape[:2] != mask.shape
         or hidden_states.device != mask.device
         or mask.numel() < encoder._unsloth_min_tokens
-        or attention_dispatch.select_attention_backend(use_varlen = True)
-        != attention_dispatch.FLASH_VARLEN
+        or _unpadding_backend() is None
         or kwargs.get("encoder_hidden_states") is not None
         or kwargs.get("past_key_values") is not None
         or kwargs.get("use_cache", False)
@@ -228,12 +243,12 @@ def enable_sentence_transformer_unpadding(
 
     Unsupported versions, architectures, attention backends and module layouts retain
     their ordinary forward. The supported path requires Transformers 5's attention
-    kwargs and FlashAttention; SDPA/xFormers-only installations keep padded execution.
+    kwargs and FlashAttention or xFormers with bidirectional block masks.
+    SDPA-only installations keep padded execution.
     Automatic mode avoids packing small, launch-bound batches. Explicitly enabled
     packing can still save activation memory there at the expense of step time.
     """
     import transformers
-    from ..utils import attention_dispatch
 
     if getattr(model, "_unsloth_unpadding_installed", False):
         return True
@@ -241,10 +256,8 @@ def enable_sentence_transformer_unpadding(
         raise ValueError("padding_threshold must be in [0, 1)")
     if int(transformers.__version__.split(".")[0]) < 5 or not _mean_pooling_pipeline(model):
         return False
-    if (
-        attention_dispatch.select_attention_backend(use_varlen = True)
-        != attention_dispatch.FLASH_VARLEN
-    ):
+    backend = _unpadding_backend()
+    if backend is None:
         return False
 
     transformer = model[0]
@@ -261,6 +274,7 @@ def enable_sentence_transformer_unpadding(
         config.is_decoder
         or config.add_cross_attention
         or config.hidden_size // config.num_attention_heads > 256
+        or (backend == "xformers" and (config.hidden_size // config.num_attention_heads) % 8 != 0)
         or getattr(config, "position_embedding_type", "absolute") != "absolute"
         or getattr(config, "chunk_size_feed_forward", 0)
         or config._attn_implementation != "sdpa"
