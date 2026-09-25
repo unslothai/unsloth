@@ -343,7 +343,8 @@ def _wrap_cpu_offload_hook(
         return out
 
     def _pre_forward(mod: Any, *args: Any, **kwargs: Any) -> Any:
-        onload = not version
+        # `host` gate: an all-subclass module (GGUF, torchao) never fills `version`, so would rescan every forward.
+        onload = not version and bool(host)
         if onload:
             for name, p in mod.named_parameters():
                 kept = host.get(name)
