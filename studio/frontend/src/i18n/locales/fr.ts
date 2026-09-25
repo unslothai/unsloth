@@ -5,6 +5,67 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const fr = {
+  composerSettings: {
+    title: "Saisie des messages",
+    plainText: "Saisie en texte brut",
+    plainTextDescription: "Conserver le code, le Markdown et les liens en texte brut. Désactivez pour afficher un aperçu mis en forme.",
+    showContext: "Afficher l’utilisation de la fenêtre de contexte",
+    sendShortcut: "Raccourci d’envoi",
+    sendDescription: "Choisissez si Entrée envoie un message ou insère une nouvelle ligne.",
+    followUp: "Messages de suivi",
+    followUpDescription: "Choisissez l’action lors d’un envoi pendant une réponse. Appuyez sur {shortcut} pour inverser ce choix pour un message.",
+    queue: "File d’attente",
+    steer: "Réorienter",
+    steerDescription: "Réorienter arrête la réponse en cours et envoie votre message de suivi en priorité.",
+    settings: "Paramètres de saisie",
+    preview: "Aperçu mis en forme",
+  },
+  promptQueue: {
+    loading: "Chargement des messages en file d’attente",
+    listLabel: "Messages en file d’attente",
+    regionLabel: "File d’attente des messages, {current} sur {total}",
+    itemLabel: "Message en file d’attente {position} sur {total} : {prompt}",
+    reorderInstructions: "Faites glisser la poignée pour réorganiser. Lorsque la poignée a le focus, utilisez Haut ou Bas pour déplacer d’une position, ou Début ou Fin pour aller au début ou à la fin.",
+    dragTooltip: "Faire glisser pour réorganiser",
+    reorderLabel: "Réorganiser le message en file d’attente {position} sur {total}",
+    paused: "En pause",
+    steer: "Réorienter",
+    steerTooltip: "Interrompre la réponse et envoyer ce message en priorité",
+    steerLabel: "Réorienter avec le message en file d’attente {position}",
+    removeTooltip: "Retirer de la file d’attente",
+    removeLabel: "Retirer le message en file d’attente {position}",
+    moreTooltip: "Plus d’options",
+    moreLabel: "Plus d’options pour le message en file d’attente {position}",
+    editItem: "Modifier le message",
+    copyItem: "Copier le message",
+    editLabel: "Modifier le message en file d’attente {position}",
+    cancel: "Annuler",
+    save: "Enregistrer",
+    turnOffQueueing: "Désactiver la file d’attente",
+    turnOnQueueing: "Activer la file d’attente",
+    resume: "Reprendre la file d’attente",
+    queueButton: "Mettre le message en file d’attente",
+    steerButton: "Réorienter la réponse",
+    sendTooltip: "Envoyer le message ({shortcut})",
+    sendLabel: "Envoyer le message",
+    followUpTooltip: "{action} ({send}) · {opposite} pour l’inverse",
+    announceUpdated: "Message en file d’attente mis à jour.",
+    announceEditFailed: "Ce message ne peut plus être modifié car la file d’attente a changé.",
+    announceRemoved: "Message retiré de la file d’attente.",
+    announceSteered: "Ce message réorientera la réponse en priorité.",
+    announceSteerFailed: "Ce message n’a pas pu réorienter la réponse. Vérifiez la file d’attente et réessayez.",
+    announceCopied: "Message copié.",
+    announceCopyFailed: "Impossible de copier ce message. Réessayez.",
+    announceQueueingOn: "Les nouveaux messages de suivi seront mis en file d’attente après la réponse en cours.",
+    announceQueueingOff: "Les nouveaux messages de suivi réorienteront la réponse en cours.",
+    announceMoved: "Message déplacé à la position {position} sur {total}.",
+    announceMoveFailed: "La file d’attente a changé avant que ce message puisse être déplacé. Réessayez.",
+    announceDragReset: "La file d’attente a changé. Faites glisser à nouveau pour réorganiser les messages restants.",
+    editingHint: "Modification du message",
+    queueingOffHint: "Les nouveaux messages interrompent et passent ensuite.",
+    queueingOnHint: "Les nouveaux messages attendent leur tour.",
+    queueingHintShared: "La file d’attente est conservée.",
+  },
   picker: {
     onDevice: "Sur l'appareil",
     huggingFace: "Hugging Face",
@@ -104,6 +165,10 @@ export const fr = {
       export: "Exporter",
       recents: "Discussions récentes",
       noChatsYet: "Aucune discussion pour le moment",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "Aucune discussion",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "Tous les projets sont epingles",
       showMore: "Afficher plus",
       showLess: "Afficher moins",
       settings: "Paramètres",
@@ -134,6 +199,7 @@ export const fr = {
       unpinChats: "Détacher les discussions",
       archiveChats: "Archiver les discussions",
       markUnread: "Marquer comme non lu",
+      markRead: "Marquer comme lu",
       deleteChats: "Supprimer les discussions",
       deleteTitle: "Supprimer les discussions",
       deleteDescription: "Supprimer {count} discussions ? Cette action est irréversible.",
@@ -152,11 +218,12 @@ export const fr = {
       priority: "Priorité",
       lastUpdated: "Dernière mise à jour",
       manualOrder: "Ordre manuel",
-      moveUp: "Monter",
-      moveDown: "Descendre",
+      switchedToManual: "Tri manuel : faites glisser les lignes pour les réorganiser",
       organizeChats: "Organiser les discussions",
       organizeProjects: "Organiser les projets",
       sortPinnedChats: "Trier les discussions épinglées",
+      moveUp: "Monter",
+      moveDown: "Descendre",
     },
     dialog: {
       deleteChat: {
@@ -186,6 +253,44 @@ export const fr = {
     },
   },
   settings: {
+    accounts: {
+      title: "Comptes",
+      description: "Créez des comptes Unsloth privés. Les nouveaux utilisateurs se connectent avec un code de configuration à usage unique et choisissent un mot de passe.",
+      username: "Nom d'utilisateur",
+      create: "Créer un compte",
+      createDescription: "Partagez un code de configuration pour que la personne choisisse son propre mot de passe.",
+      actionsFor: "Gérer {username}",
+      actions: "Actions",
+      search: "Rechercher des comptes",
+      noResults: "Aucun compte correspondant",
+      created: "Créé le",
+      status: "Statut",
+      loginHint: "Connectez-vous en tant que {username} avec ce code comme mot de passe, puis choisissez un nouveau mot de passe.",
+      privateAccount: "Compte privé",
+      empty: "Aucun autre compte pour l'instant",
+      setupCode: "Code de configuration",
+      setupFor: "Code de configuration pour {username}",
+      shownOnce: "Copiez ce code maintenant et transmettez-le au titulaire du compte. Il n'est affiché qu'ici et ne peut être utilisé qu'une seule fois dans les 60 minutes.",
+      expires: "Expire {expiry}",
+      copy: "Copier le code de configuration",
+      copied: "Copié",
+      copyFailed: "Impossible de copier. Sélectionnez et copiez le code de configuration ci-dessus.",
+      dismiss: "Terminé",
+      owner: "Propriétaire de l'installation",
+      active: "Activé",
+      inactive: "Désactivé",
+      regenerate: "Régénérer le code de configuration",
+      resetTitle: "Réinitialiser le mot de passe de {username} ?",
+      resetDescription: "Régénérer le code de configuration remplace le mot de passe de {username}, ferme ses sessions et révoque ses clés API. Donnez-lui le nouveau code pour qu'il choisisse à nouveau un mot de passe.",
+      deactivate: "Désactiver",
+      reactivate: "Activer",
+      delete: "Supprimer le compte",
+      deleteTitle: "Supprimer {username} ?",
+      deleteDescription: "Cette action révoque les sessions de {username} et annule ses travaux en cours. Ses conversations, réglages, identifiants, envois, jeux de données, entraînements, sorties, exports, galeries, bacs à sable, projets et fichiers temporaires sont retirés. Les répertoires sont renommés à part, jamais supprimés. Recréer ce nom d'utilisateur démarre un nouveau compte sans aucune de ces données.",
+      cancel: "Annuler",
+      retry: "Actualiser les comptes",
+      failed: "La requête de compte a échoué.",
+    },
     title: "Paramètres",
     dialog: {
       title: "Paramètres",
@@ -197,6 +302,7 @@ export const fr = {
       panelReload: "Recharger",
     },
     tabs: {
+      accounts: "Comptes",
       general: "Général",
       profile: "Profil",
       appearance: "Apparence",
@@ -214,9 +320,10 @@ export const fr = {
     },
     keyboardShortcuts: {
       title: "Raccourcis clavier",
-      description:
-        "Modifiez un raccourci, ou effacez-le pour libérer la combinaison pour le navigateur ou le système.",
       searchPlaceholder: "Rechercher des raccourcis…",
+      keystrokePlaceholder: "Appuyez sur un raccourci pour rechercher",
+      searchByKeystrokes: "Rechercher par frappe",
+      searchByName: "Rechercher par nom",
       noResults: "Aucun raccourci ne correspond à cette recherche.",
       unassigned: "Non attribué",
       recording: "Appuyez sur les touches…",
@@ -413,6 +520,14 @@ export const fr = {
           label: "Envoyer le message",
           description: "Envoyer le contenu de la zone de saisie",
         },
+        queueMessage: {
+          label: "Mettre le message en file",
+          description: "Envoyer le brouillon à la fin de la file",
+        },
+        steerMessage: {
+          label: "Réorienter la réponse",
+          description: "Arrêter la réponse en cours et envoyer le brouillon ensuite",
+        },
         cycleReasoningEffort: {
           label: "Faire défiler l’effort de raisonnement",
           description: "Parcourir les niveaux d’effort de raisonnement",
@@ -453,7 +568,16 @@ export const fr = {
       sourceHint: "Les exécuteurs de modèles écrivent leurs propres journaux : un chargement ou une génération en échec y est donc souvent expliqué plutôt que dans le journal du serveur.",
       path: "Emplacement",
       pathCopy: "Copier le chemin",
-      refreshSection: "Actualisation",
+      currentSession: "Actuel",
+      statusLive: "En direct",
+      statusPaused: "En pause",
+      statusStale: "Obsolète",
+      filterPlaceholder: "Filtrer les lignes",
+      lineCount: "{count} lignes",
+      filteredLineCount: "{shown} sur {total} lignes",
+      wrapLines: "Retour à la ligne",
+      jumpToLatest: "Aller à la fin",
+      noMatches: "Aucune ligne ne correspond au filtre.",
       mode: "Mode",
       modeLive: "En direct",
       modeInterval: "Toutes les 3 secondes",
@@ -469,6 +593,17 @@ export const fr = {
       droppedNotice: "Certaines lignes ont été ignorées : le journal a été écrit plus vite qu'il ne pouvait être lu.",
       morePending: "D'autres lignes sont encore en cours de lecture ; elles arriveront au prochain rafraichissement.",
       staleSession: "La journalisation dans un fichier est desactivee : il s'agit d'une session anterieure, qui ne sera pas mise a jour.",
+      downloadAllLogs: "Télécharger tous les journaux (.zip)",
+      downloadingAllLogs: "Préparation de l'archive...",
+      exportMaskedNote: "Les identifiants sont masqués dans les fichiers exportés. Les journaux très volumineux ne conservent que leurs lignes les plus récentes, et certains peuvent être omis entièrement ; voir EXPORT_WARNINGS.txt dans l'archive.",
+      downloadedTo: "Enregistré dans {path}",
+      downloadedToBrowser: "Téléchargement lancé.",
+      showInFolder: "Afficher dans le dossier",
+      openLogsFolder: "Ouvrir le dossier des journaux",
+      openLogsFolderFailed: "Le dossier des journaux n'a pas pu être ouvert.",
+      exportFailed: "Les journaux n'ont pas pu être téléchargés.",
+      exportTooOld: "Le backend Unsloth en cours d'exécution est trop ancien pour exporter les journaux. Mettez-le à jour et redémarrez-le.",
+      exportForbidden: "Le téléchargement de tous les journaux nécessite une session Unsloth connectée. Une clé d'API ne suffit pas.",
       keywords: "debogage deboguer journal journaux log logs erreur erreurs plantage trace diagnostic depannage debug",
     },
     voice: {
@@ -774,6 +909,18 @@ export const fr = {
         revoked: "Tous les liens d'aperçu ont été révoqués",
         revokeError: "Impossible de révoquer les liens d'aperçu",
       },
+      managedProviderUrls: {
+        sectionTitle: "Comptes gérés",
+        enableLabel: "Connexions locales et réseau",
+        enableDescription:
+          "Autorise les comptes gérés à pointer leurs connexions vers des adresses locales ou réseau, comme un serveur Ollama ou llama.cpp sur cet ordinateur ou sur votre réseau local. Désactivé par défaut, car cela permet à ces comptes d'atteindre les services exécutés sur votre ordinateur et sur votre réseau.",
+        lockedByEnvironment:
+          "Défini par UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 sur ce serveur, qui refuse les adresses privées pour tous les comptes.",
+        loadError:
+          "Impossible de charger les paramètres de connexion des comptes gérés.",
+        saveError:
+          "Impossible d'enregistrer les paramètres de connexion des comptes gérés.",
+      },
       notifications: {
         sectionTitle: "Notifications",
         showLlamaUpdates: "Notifications de mise à jour de llama.cpp",
@@ -782,6 +929,9 @@ export const fr = {
         showLoadedModels: "Indicateur des modèles chargés",
         showLoadedModelsDescription:
           "Affiche une petite carte en bas à droite listant tous les modèles actuellement en mémoire (chat, voix, image, vidéo), avec un bouton pour éjecter chacun d'eux.",
+        showWhisperUpdates: "Notifications de mise à jour de whisper.cpp",
+        showWhisperUpdatesDescription:
+          "Notifier lorsqu'une nouvelle version de whisper.cpp est disponible pour les modèles de transcription vocale. Désactivez si vous ne transcrivez jamais d'audio.",
       },
       startup: {
         sectionTitle: "Démarrage",
@@ -1012,6 +1162,13 @@ export const fr = {
         minimal: "Minimale",
       },
       custom: {
+        chatWidth: {
+          label: "Largeur du chat",
+          description: "Largeur des messages et de la zone de saisie.",
+          standard: "Standard",
+          wide: "Large",
+          full: "Pleine largeur",
+        },
         reset: "Réinitialiser",
         resetAll: "Réinitialiser la personnalisation",
         preferencesTitle: "Préférences",
@@ -1062,6 +1219,10 @@ export const fr = {
             "Stockage local insuffisant pour cette police. Retirez d'abord une police importée.",
           errorFailed: "Impossible de charger ce fichier de police.",
         },
+        interfaceScale: {
+          label: "Échelle de l'interface",
+          description: "Redimensionnez tous les éléments de l'interface.",
+        },
         uiFontSize: {
           label: "Taille de police de l'interface",
           description: "Ajustez la taille de base utilisée pour l'interface Unsloth.",
@@ -1076,7 +1237,6 @@ export const fr = {
         },
         contrast: {
           label: "Contraste",
-          description: "Intensité des bordures et du texte secondaire.",
         },
         reduceMotion: {
           label: "Réduire les animations",
@@ -1106,7 +1266,7 @@ export const fr = {
       sidebarNav: {
         title: "Navigation de la barre latérale",
         description:
-          "Épinglez et réorganisez les onglets de la barre latérale. Les onglets non épinglés sont regroupés dans le menu « Plus » ; s'il ne reste qu'un seul onglet non épinglé, il est masqué au lieu de créer un menu à une seule entrée. « Nouvelle discussion » reste fixe.",
+          "Épinglez et réorganisez les onglets de la barre latérale. Les onglets non épinglés vont dans le menu « Plus ».",
         dragToReorder: "Faites glisser pour réorganiser",
         pinToSidebar: "Épingler {name} dans la barre latérale",
         moreHolds: "Plus ({count})",
@@ -1114,7 +1274,7 @@ export const fr = {
       sidebarMenu: {
         title: "Menu de la barre latérale",
         description:
-          "Affichez, masquez et réorganisez les éléments du menu de profil de la barre latérale. Paramètres, Aide, Se déconnecter et Arrêter restent fixes.",
+          "Choisissez et réorganisez les raccourcis du menu de profil.",
         darkModeToggle: "Bascule du mode sombre",
         dragToReorder: "Faites glisser pour réorganiser",
       },
@@ -1148,7 +1308,11 @@ export const fr = {
       },
       gpu: {
         title: "Périphériques GPU",
-        ggufInference: "Inférence GGUF",
+        memory: "Mémoire GPU",
+        sharedWithSystemRam: "Partagée avec la RAM système",
+        estimatedAvailable: "Disponibilité estimée : {value}",
+        sharedEstimatedAvailable: "RAM système partagée : disponibilité estimée de {value}",
+        ggufInference: "Mémoire pour les modèles GGUF",
         unavailable: "indisponible",
         detecting: "Recherche de GPU...",
         unreadable: "Impossible de lire le matériel de ce serveur.",
@@ -1214,6 +1378,8 @@ export const fr = {
           sourceBuild: "Ce llama.cpp a été compilé depuis les sources, son backend ne peut pas être changé ici.",
           customPath: "Un dossier llama.cpp personnalisé est sélectionné. Son build détermine le backend de calcul.",
           unresolved: "Impossible de vérifier les backends disponibles. Vérifiez votre connexion et réessayez.",
+          updateChecksDisabled:
+            "Les vérifications de mise à jour sont désactivées (UNSLOTH_DISABLE_UPDATE_CHECK=1), les backends disponibles ne sont donc pas recherchés.",
         },
         // Non affiché : termes supplémentaires pour la recherche dans les réglages.
         llamaBackendKeywords:
@@ -1225,8 +1391,8 @@ export const fr = {
         keepResidentDescription: "Reste en VRAM entre les messages.",
         keepResidentHint: "Ne rend pas les poids à la RAM système tant que le modèle reste chargé. Désactive le déchargement automatique en veille et, lorsque les poids résident réellement en RAM hôte (mémoire unifiée ou déchargement GPU partiel), passe aussi --mlock afin que le système ne les décharge pas pour les retransférer au prochain message.",
         noRamReserve: "Ne pas réserver de RAM système pour le modèle",
-        noRamReserveDescription: "Ne garde aucune copie complète en RAM.",
-        noRamReserveHint: "Transfère les poids vers la VRAM au lieu d'en garder une copie complète en RAM. Conserve le chargement mappé en mémoire de llama.cpp et supprime --no-mmap et --mlock.",
+        noRamReserveDescription: "Réduit la RAM occupée par les poids du modèle.",
+        noRamReserveHint: "Ignore le chargement mappé en mémoire sur les versions Windows compatibles lorsque le modèle est entièrement déchargé sur le GPU, afin que ses pages ne restent pas résidentes. Sinon, conserve le chargement mappé en mémoire. Les tampons CPU nécessaires peuvent toujours occuper de la RAM. Supprime --no-mmap et --mlock.",
         mlockVetoed: "--mlock reste désactivé : épingler le modèle réserverait de la RAM pour l'intégralité de celui-ci. Le déchargement automatique en veille reste désactivé.",
         memlockCapped: "Ce système limite la mémoire verrouillée à {limit}. Un modèle plus grand ne sera pas entièrement épinglé ; augmentez la limite avec ulimit -l.",
         reloadRequired: "Rechargez le modèle pour appliquer les nouvelles options de mémoire.",
@@ -1251,6 +1417,61 @@ export const fr = {
         copied: "Chemin copié",
         openError: "Impossible d'ouvrir le dossier",
         copyError: "Impossible de copier le chemin",
+        caches: {
+          label: "Fichiers de cache",
+          description:
+            "{size} dans les caches, dont {reclaimable} peuvent être vidés maintenant.",
+          hint: "Téléchargements de paquets, noyaux compilés et caches de transfert que Unsloth reconstruit quand il en a besoin. Les modèles téléchargés, les projets, les conversations, les paramètres et votre jeton Hugging Face ne sont jamais vidés ici.",
+          keywords:
+            "cache caches vider nettoyer purger supprimer libérer espace disque temporaire compilé cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "Mesure de la taille des caches...",
+          measureFailed: "Impossible de mesurer les caches",
+          empty: "Aucun fichier de cache trouvé.",
+          detailsAction: "Détails",
+          recheckAction: "Revérifier",
+          hideDetailsAction: "Masquer les détails",
+          clearAction: "Vider les caches",
+          clearOneAction: "Vider",
+          clearingAction: "Vidage en cours...",
+          confirmTitle: "Vider les fichiers en cache ?",
+          confirmDescription: "Cela libère environ {size}.",
+          confirmOneTitle: "Vider {name} ?",
+          safety:
+            "Unsloth reconstruit un cache la prochaine fois qu'il en a besoin. Les modèles téléchargés, les projets, les conversations, les paramètres et votre jeton Hugging Face ne sont pas touchés.",
+          hubCost:
+            "Il s'agit du cache des modèles. Le vider entraîne un nouveau téléchargement de ces modèles lors de leur prochaine utilisation.",
+          datasetsCost:
+            "Vider ceci entraîne un nouveau téléchargement de ces jeux de données lors de leur prochaine utilisation.",
+          blocked: "Non vidé : {reason}",
+          cleared: "{size} libérés",
+          partial: "Certains fichiers de cache n'ont pas pu être supprimés",
+          clearFailed: "Impossible de vider les caches",
+          names: {
+            uv: "Cache des paquets uv",
+            pip: "Cache des téléchargements pip",
+            npm: "Cache des paquets npm",
+            bun: "Cache des paquets Bun",
+            torchInductor: "Cache de compilation Torch Inductor",
+            torchExtensions: "Compilations d'extensions Torch",
+            triton: "Cache des noyaux Triton",
+            cuda: "Cache des noyaux CUDA",
+            numba: "Cache de compilation Numba",
+            matplotlib: "Cache des polices Matplotlib",
+            vllm: "Cache vLLM",
+            unslothCompiled: "Modules compilés Unsloth",
+            hfXet: "Cache de transfert Hugging Face",
+            hfAssets: "Cache des ressources Hugging Face",
+            hfDatasets: "Cache des jeux de données Hugging Face",
+            hfHub: "Cache des modèles Hugging Face",
+          },
+        },
+        lowDisk: {
+          title: "L'espace disque est presque épuisé",
+          criticalTitle: "L'espace disque est critique",
+          description:
+            "{free} libres sur {total}. Vider les caches peut libérer de l'espace.",
+          action: "Voir les caches",
+        },
         futureDownloads: "Nouveaux téléchargements uniquement",
         environmentManaged: "Géré par la variable d'environnement {variable}.",
         locationFree: "Espace libre : {free}",
@@ -1286,6 +1507,7 @@ export const fr = {
       copy: "Copier",
       copied: "Copié",
       commandBuilder: "Générateur de commande",
+      commandShell: "Shell pour toutes les commandes",
       agent: "Agent de codage",
       model: "Modèle",
       searchModels: "Rechercher des modèles GGUF...",
@@ -1303,9 +1525,8 @@ export const fr = {
       docs: "Documentation",
       agentDocs: "Ouvrir la documentation de configuration de {agent}",
       copyGeneratedCommand: "Copier la commande générée",
-      // English is the baseline until these are translated. The three-part
-      // sentence below is assembled in a fixed order around an inline link, so
-      // it needs restructuring before it can be translated well.
+      // English is the baseline until translated: the three-part sentence is assembled around an
+      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -1375,9 +1596,9 @@ export const fr = {
           "Ignore les demandes d'autorisation. À n'utiliser que dans des environnements de confiance.",
       },
       remote: {
-        title: "Se connecter à un Unsloth Studio distant",
+        title: "Se connecter à un Unsloth distant",
         description:
-          "Faites pointer unsloth start vers un Unsloth Studio exécuté ailleurs en définissant ces variables avant le lancement (ou passez --api-key directement) :",
+          "Faites pointer unsloth start vers un Unsloth exécuté ailleurs en définissant ces variables avant le lancement (ou passez --api-key directement) :",
       },
       passthrough: {
         title: "Transmettre des arguments à l'agent",
@@ -1391,6 +1612,25 @@ export const fr = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "Conversations" },
+        files: { title: "Fichiers et collage" },
+        display: { title: "Affichage" },
+        composer: { title: "Zone de message" },
+        menu: { title: "Menu du chat" },
+        advanced: { title: "Avancé" },
+        contextTitle: "Contexte",
+      },
+      projectAttachmentsHint:
+        "Modifiez ce réglage pour chaque chat dans son menu de pièces jointes.",
+      rememberParamsPerModelHint:
+        "Lorsque cette option est désactivée, tous les modèles utilisent les mêmes réglages.",
+      autoCompactHint:
+        "Uniquement les chats GGUF locaux. Les échanges évincés sont indexés pour que le modèle puisse les retrouver, et une réinitialisation cite mot pour mot les instructions permanentes qui tiennent, en gardant les plus anciennes et les plus récentes plutôt que celles du milieu. L’archivage nécessite un chat enregistré et l’index vectoriel ; sans eux, les anciens échanges sont supprimés. Utilise la longueur de contexte définie, pas la VRAM disponible.",
+      pastedTextShortDescription:
+        "Le texte collé de {count} caractères ou plus devient une pièce jointe .txt. Le texte plus court reste dans le champ de message.",
+      pastedTextOffDescription:
+        "Tout le texte collé reste dans le champ de message, quelle que soit sa longueur.",
       projectsSection: "Afficher la section Projets",
       projectsSectionDescription:
         "Regroupe les discussions de projet sous un titre Projets. Désactivez cette option pour les lister dans Récents.",
@@ -1414,12 +1654,14 @@ export const fr = {
           "Épinglez des éléments dans le menu latéral + du chat. Les autres seront placés dans « Plus ».",
         chatWithFiles: "Discuter avec des fichiers (RAG)",
         mcp: "MCP",
+        skills: "Compétences",
         savedPrompts: "Invites enregistrées",
         compareChat: "Comparer le chat",
         exportChat: "Exporter le chat",
       },
       pastedTextThreshold: "Condenser les collages longs",
-      pastedTextThresholdDescription: "Le texte collé plus long que cette valeur devient une pièce jointe .txt au lieu de remplir le champ de message. Appuyez sur {shortcut} pour coller quand même dans le champ de message.",
+      pastedTextThresholdDescription:
+        "Appuyez sur {shortcut} pour coller directement dans le champ de message.",
       pastedTextThresholdOff: "Désactivé",
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
@@ -1429,32 +1671,26 @@ export const fr = {
         'Afficher "Les LLM peuvent faire des erreurs" sous la zone de discussion.',
       projectAttachments: "Partager les fichiers dans tout le projet",
       projectAttachmentsDescription:
-        "Valeur par defaut pour les fichiers joints dans une discussion appartenant a un projet : les indexer pour tout le projet afin que chaque discussion puisse les utiliser. Chaque discussion peut le modifier depuis le menu des pieces jointes.",
+        "Rend les nouvelles pièces jointes accessibles à toutes les discussions du projet.",
       rememberParamsPerModel: "Mémoriser les réglages par modèle",
       rememberParamsPerModelDescription:
-        "Changer de modèle restaure la température, le prompt et les autres réglages utilisés en dernier avec ce modèle. Désactivé, un seul jeu de réglages s'applique à tous les modèles.",
+        "Restaure le dernier prompt, la température et les autres réglages utilisés pour chaque modèle.",
       autoCompact: "Compacter automatiquement les longues discussions",
       autoCompactDescription:
-        "Lorsqu’une discussion GGUF locale atteint la longueur de contexte définie, supprimez les anciens tours au lieu de renvoyer une erreur. Ce réglage ne dépend pas de la VRAM libre.",
-      compactionStyle: "Lorsque le contexte est plein",
-      compactionStyleDescription:
-        "La valeur par défaut du serveur conserve UNSLOTH_CONTEXT_POLICY. Réinitialiser la discussion garde le dernier tour et les instructions permanentes. Une fenêtre glissante supprime les tours les plus anciens et peut conserver davantage d’historique récent.",
-      compactionStyleInherit: "Utiliser la valeur du serveur",
-      compactionStyleCheckpoint: "Réinitialiser la discussion",
-      compactionStyleRollingDefault:
-        "Supprimer les anciens tours (~25 % d’espace supplémentaire)",
-      compactionStyleRolling10:
-        "Supprimer les anciens tours (~10 % d’espace supplémentaire)",
-      compactionStyleRolling5:
-        "Supprimer les anciens tours (~5 % d’espace supplémentaire)",
-      compactionStyleRollingNone:
-        "Supprimer les anciens tours (sans réduction supplémentaire)",
+        "Les anciens échanges vont dans une archive consultable quand un chat sature son contexte.",
       autoCompactKeywords:
-        "compaction automatique contexte fenêtre tronquer glissante point de contrôle marge compaction rolling checkpoint headroom",
+        "compaction automatique contexte fenêtre tronquer glissante point de contrôle marge archive récupération recherche rolling checkpoint headroom retrieval rag",
+      visibility: {
+        collapsed: "Replié",
+        auto: "Déplier pendant l’exécution",
+        expanded: "Toujours déplié",
+      },
+      visibilityKeywords:
+        "replier replié déplier déplié ouvert fermé réflexion raisonnement appels d'outils activité des outils regrouper streaming",
       thinking: {
-        collapseByDefault: "Replier la réflexion par défaut",
-        collapseByDefaultDescription:
-          "Garde la réflexion repliée pendant que le modèle réfléchit, au lieu de l’ouvrir automatiquement. Dépliez un bloc pour le lire.",
+        visibility: "Réflexion",
+        visibilityDescription:
+          "Comment la réflexion s’ouvre. Vous pouvez toujours déplier ou replier un bloc vous-même.",
       },
       currentDate: {
         label: "Indiquer la date du jour au modèle",
@@ -1464,15 +1700,20 @@ export const fr = {
         saveError: "Impossible de mettre à jour les paramètres de date actuelle",
       },
       tools: {
-        collapseByDefault: "Replier l’activité des outils par défaut",
-        collapseByDefaultDescription:
-          "Garde les entrées et sorties des outils repliées pendant leur exécution. Dépliez une ligne d’outil pour l’examiner.",
+        visibility: "Appels d’outils",
+        visibilityDescription:
+          "Comment l’activité des outils s’ouvre. Vous pouvez toujours déplier ou replier un appel vous-même.",
+        foldIntoThinking: "Regrouper les appels d’outils dans la Réflexion",
+        foldIntoThinkingDescription:
+          "Affiche les appels d’outils d’un tour dans son bloc de Réflexion plutôt que sur leurs propres lignes.",
+        foldIntoThinkingBlocked:
+          "Indisponible tant que les appels d’outils sont sur « Toujours déplié », qui les garde sur leurs propres lignes.",
       },
       webSearch: {
         title: "Recherche web",
         images: "Afficher les images de la recherche web",
         imagesDescription:
-          "Permet à la recherche web de renvoyer des images et en récupère une pour chaque élément listé dans une réponse. Unsloth télécharge et redimensionne les vignettes : le navigateur ne contacte jamais les hébergeurs d'images.",
+          "Inclut des images dans les résultats de recherche.",
       },
       artifacts: {
         title: "Canvas",
@@ -1507,7 +1748,7 @@ export const fr = {
       exportPerChatSuffix: "(par discussion)",
       importChats: "Importer des discussions",
       importChatsDescription:
-        "Importez un export Open WebUI, JSONL, NDJSON ou CSV dans Récents.",
+        "Importez des fichiers JSON, JSONL, NDJSON ou CSV dans Récents.",
       importChatsAction: "Importer",
       importNoConversations: "Aucune conversation trouvée dans le fichier.",
       importedOneChat: "1 conversation importée dans Récents.",
@@ -1555,6 +1796,80 @@ export const fr = {
       failedToClearChats: "Échec de l'effacement des discussions",
     },
     data: {
+      library: {
+        defaultSort: "Par défaut",
+        updated: "Modification",
+        created: "Création",
+        oldest: "Les plus anciens d’abord",
+        alphabetical: "Ordre alphabétique",
+        allChats: "Toutes les discussions",
+        singleChats: "Discussions simples",
+        compareChats: "Discussions comparatives",
+        allProjects: "Tous les projets",
+        noProject: "Sans projet",
+        unavailableProject: "Projet indisponible",
+        filterSort: "Filtrer et trier",
+        sort: "Trier",
+        type: "Type",
+        sortBy: "Trier par",
+        filterProject: "Filtrer par projet",
+        searchProjects: "Rechercher des projets",
+        noProjects: "Aucun projet trouvé.",
+        untitled: "Sans titre",
+        oneChat: "1 discussion",
+        chatCount: "{count} discussions",
+        searchChats: "Rechercher des discussions ou des projets",
+        searchArchivedChats: "Rechercher des discussions archivées ou des projets",
+        searchImages: "Rechercher des images archivées",
+        searchVideos: "Rechercher des vidéos archivées",
+        searchAudio: "Rechercher des fichiers audio archivés",
+        unarchive: "Désarchiver",
+        unarchiveAll: "Tout désarchiver",
+        unarchiveResults: "Désarchiver les résultats",
+        deleteResults: "Supprimer les résultats",
+        noChats: "Aucune discussion ne correspond à votre recherche.",
+        noArchivedChats: "Aucune discussion archivée.",
+        noArchivedMatches: "Aucune discussion archivée ne correspond à votre recherche.",
+        noMedia: "Aucun élément archivé.",
+        noMediaMatches: "Aucun élément archivé ne correspond à votre recherche.",
+        itemCount: "Éléments : {count}",
+        incompleteSearch: "La recherche est incomplète. Réessayez de charger les éléments restants.",
+        searchingRemaining: "Recherche des éléments restants ({count} chargés)...",
+        noLoadedMatches: "Aucune correspondance parmi les éléments déjà chargés.",
+        deleteItem: "Supprimer : {title}",
+        unarchiveItem: "Désarchiver : {title}",
+        deleteItemsTitle: "Supprimer les éléments archivés ({count})",
+        unarchiveItemsTitle: "Désarchiver les éléments ({count})",
+        deleteFilesWarning: "Ces fichiers seront supprimés définitivement. Cette action est irréversible.",
+        restoreWarning: "Ces éléments seront replacés dans la galerie.",
+        working: "Traitement en cours...",
+        loadFailed: "Impossible de charger les éléments archivés",
+        loadMoreFailed: "Impossible de charger davantage d’éléments archivés",
+        restoreFailed: "Impossible de désarchiver les éléments sélectionnés",
+        deleteFailed: "Impossible de supprimer les éléments sélectionnés",
+        projectsFailed: "Impossible de charger les projets archivés",
+        pageStalled: "La page des archives n’a pas avancé. Réessayez.",
+        pageChanged: "Les archives ont changé pendant le chargement. Réessayez.",
+        selectAll: "Sélectionner toutes les discussions visibles",
+        selectItem: "Sélectionner « {title} »",
+        selectedChats: "Discussions sélectionnées : {count}",
+        move: "Déplacer",
+        pin: "Épingler",
+        unpin: "Désépingler",
+        archive: "Archiver",
+        deletedChats: "Discussions supprimées : {count}",
+        restoredChats: "Discussions désarchivées : {count}",
+        pinnedChats: "Discussions épinglées : {count}",
+        unpinnedChats: "Discussions désépinglées : {count}",
+        movedChatsToProject: "Discussions déplacées vers {project} : {count}",
+        movedChatsToRecents: "Discussions déplacées vers Récentes : {count}",
+        moveFailed: "Impossible de déplacer les discussions",
+        deleteChatsTitle: "Supprimer les discussions ({count})",
+        deleteChatsWarning: "Supprimer les discussions sélectionnées ({count}) ? Cette action est irréversible.",
+        deleteArchivedTitle: "Supprimer {count} discussions archivées",
+        deleteArchivedWarning: "Supprimer les discussions archivées sélectionnées ({count}) ? Cette action est irréversible.",
+        deleting: "Suppression...",
+      },
       title: "Données",
       backToData: "Retour aux données",
       exportFailed: "Impossible d’exporter les chats",
@@ -1599,6 +1914,29 @@ export const fr = {
       alwaysDeleteFiles: "Toujours supprimer les fichiers",
       alwaysDeleteFilesDescription:
         "La suppression d'une discussion retire aussi son dossier bac à sable du disque. Les fichiers écrits dans un projet restent dans l'espace de travail de ce projet.",
+      chatsSection: "Discussions et archives",
+      transferSection: "Importation et exportation",
+      deletionSection: "Suppression",
+      archives: "Archives",
+      archiveChatsLabel: "Discussions",
+      archiveVideosLabel: "Vidéos",
+      exportFormatsSummary:
+        "Exportez les discussions de Récents et des projets dans le format de votre choix.",
+      trainingSummary:
+        "Transformez vos discussions en jeu de données pour le réglage fin.",
+      confirmDeletionSummary: "Demander confirmation avant de supprimer une discussion.",
+      sandboxFiles: "Fichiers du bac à sable",
+      sandboxFilesDescription:
+        "Action par défaut lors de la suppression d’une discussion.",
+      keepSandboxFiles: "Conserver les fichiers du bac à sable",
+      deleteSandboxFiles: "Supprimer les fichiers du bac à sable",
+      projectFilesKept:
+        "Les bacs à sable sont des dossiers créés pour chaque discussion. Les fichiers enregistrés dans les espaces de travail des projets sont conservés.",
+      deleteAllAction: "Tout supprimer",
+      deleteChatsOnly: "Supprimer uniquement les discussions…",
+      deleteChatsAndSandboxes: "Supprimer les discussions et les bacs à sable…",
+      deleteSandboxFilesDescription:
+        "Supprime aussi le dossier du bac à sable de chaque discussion et son contenu. Les fichiers des espaces de travail des projets sont conservés.",
       filesSection: "Fichiers",
       uploadedFiles: "Fichiers importés",
       uploadedFilesDescription:
@@ -1680,6 +2018,7 @@ export const fr = {
       expires: "Expire {value}",
       actionsFor: "Actions pour {name}",
       copyPrefix: "Copier le préfixe",
+      copyFailed: "Impossible de copier",
       revokeToken: "Révoquer le jeton",
       revokeTitle: "Révoquer le jeton d’accès « {name} » ?",
       revokeDescription:
@@ -1758,9 +2097,9 @@ export const fr = {
         desktopAvailable:
           "La version {version} de l’application de bureau est disponible",
         desktopAvailableDescription:
-          "Mettez à jour maintenant pour la préparer en arrière-plan. Vous continuez à travailler et redémarrez lorsqu’elle est prête.",
+          "Effectuez la mise à jour maintenant. L’application de bureau redémarrera une fois l’opération terminée.",
         desktopExternalServer:
-          "Exécutez `unsloth studio update` dans le terminal depuis lequel vous avez lancé le serveur.",
+          "L’application est connectée à un serveur Studio déjà en cours d’exécution et ne peut pas le mettre à jour. Arrêtez ce serveur, puis quittez et rouvrez l’application de bureau pour effectuer la mise à jour.",
         desktopManualInstall:
           "Ouvrez la page des versions pour installer le dernier paquet Linux.",
         desktopCheckFailed: "Impossible de rechercher les mises à jour",
@@ -1769,20 +2108,11 @@ export const fr = {
         desktopCurrent: "L’application de bureau est à jour",
         desktopCurrentDescription:
           "Unsloth continuera à rechercher automatiquement les mises à jour.",
-        desktopPreparingDescription:
-          "La mise à jour est préparée en arrière-plan. Vous pouvez continuer à travailler.",
-        desktopReadyToRestartDescription:
-          "Tout est prêt. Redémarrez pour terminer l’installation de la mise à jour.",
-        desktopReadyToInstallDescription:
-          "La mise à jour de l’application a été téléchargée. Terminez la mise à jour du backend pour l’installer.",
         checkForUpdates: "Rechercher les mises à jour",
         checkAgain: "Rechercher à nouveau",
         retryCheck: "Réessayer",
         checking: "Vérification...",
-        preparing: "Préparation...",
         updateNow: "Mettre à jour maintenant",
-        restartToUpdate: "Redémarrer pour mettre à jour",
-        finishUpdate: "Terminer la mise à jour",
         openReleasePage: "Ouvrir la page des versions",
         unknownInstall:
           "Impossible de détecter le mode d'installation d'Unsloth. Pour les installations via installateur ou PyPI, utilisez les commandes ci-dessus.",
@@ -1952,6 +2282,7 @@ export const fr = {
       sourceHfCache: "Cache HF",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "Dossier personnalisé",
       sourceLocalModel: "Modèle local",
       vramOomBadge: "OOM",
@@ -2527,5 +2858,23 @@ export const fr = {
     kvRate: "KV réservé, ~{rate}/token",
     oomLikely: "Avec les réglages actuels, un dépassement de mémoire est probable",
     tooLarge: "Plus volumineux que la VRAM, sera déchargé sur le CPU. Une quantification plus petite est plus rapide",
+  },
+  skills: {
+    title: "Compétences",
+    description: "Les compétences sont détectées dans vos dossiers d'agents standard. Activez-les ici, puis tapez @ dans le chat pour en mentionner une.",
+    precedence: "~/.agents/skills est prioritaire par rapport à ~/.claude/skills.",
+    refresh: "Actualiser",
+    empty: "Aucune compétence trouvée. Ajoutez un dossier SKILL.md dans ~/.agents/skills ou ~/.claude/skills, puis actualisez.",
+    sourceAgents: "Agents",
+    sourceClaude: "Claude",
+    sourceBundled: "Intégrée",
+    shadowed: "Masquée",
+    invalid: "Non valide",
+    compatibility: "Compatibilité : {value}",
+    shadowedBy: "Une autre compétence ({source}) portant ce nom est prioritaire.",
+    enable: "Activer {name}",
+    disable: "Désactiver {name}",
+    updateError: "Impossible de mettre à jour la compétence",
+    mentions: "Compétences",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

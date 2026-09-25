@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useIsMobile } from "@/hooks/use-mobile";
+import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 import { isTauri } from "@/lib/api-base";
@@ -117,6 +117,8 @@ export function DesktopTitlebarNavigation({
   const stopTitlebarDrag = (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
   };
+  // Window chrome: the band around these is a fixed 34px, so they keep their
+  // size while the slot holding them scales.
   const buttonClass =
     "inline-flex size-[30px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
@@ -149,6 +151,8 @@ export function DesktopTitlebarNavigation({
           />
         </button>
       ) : (
+        // Holds the slot the navbar's own trigger sits in, so it is the
+        // button's fixed size, not a scaled one.
         <div aria-hidden="true" className="size-[30px] shrink-0" />
       )}
       <button
@@ -200,22 +204,27 @@ export function WindowTitlebar({
   const [maximized, setMaximized] = useState(false);
   const { pinned, togglePinned } = useSidebarPin();
   // Outside SidebarProvider, so read the same media query the provider does.
-  const isMobile = useIsMobile();
+  const isMobile = useIsMobileShell();
 
   const maximizeRefreshSequence = useRef(0);
   const maximizeRefreshTimer = useRef<number | null>(null);
   // The titlebar sits outside the sidebar wrapper, so it cannot inherit
   // --sidebar-width. Read the resized width from the same store instead.
-  const { width } = useSidebarWidth();
+  const { width, scale: widthScale } = useSidebarWidth();
   const sidebarWidth = showSidebarSurface
     ? pinned
       ? // The live value only exists mid-drag; otherwise the committed width.
-        `var(--studio-sidebar-live-width, ${width}px)`
+        `var(--studio-sidebar-live-width, ${width * widthScale}px)`
       : "var(--studio-sidebar-collapsed-width,3rem)"
     : "0px";
 
+  // The buttons in this slot are fixed but their padding and gaps scale, so
+  // the slot grows with them and never shrinks under the three 30px buttons.
+  // The drag region starts where it ends.
   const titlebarNavigationWidth =
-    showSidebarSurface && !pinned ? "7rem" : sidebarWidth;
+    showSidebarSurface && !pinned
+      ? "max(7rem, calc(7rem * var(--ui-space-scale, 1)))"
+      : sidebarWidth;
   const contentBorderLeft = pinned ? `calc(${sidebarWidth} + 12px)` : "0px";
 
   const refreshMaximized = useCallback(async () => {
@@ -351,10 +360,9 @@ export function WindowTitlebar({
       {showSidebarSurface && (
         <div
           data-slot="window-titlebar-decoration"
-          // Marks a consumer of --studio-sidebar-live-width. Only this and the
-          // header below read it, so PANEL_RESIZE_SCOPED_VARS_ENABLED writes
-          // the live width here instead of on the document element, where it
-          // would restyle the whole document once per drag frame.
+          // Marks a consumer of --studio-sidebar-live-width. Only this and the header below read
+          // it, so PANEL_RESIZE_SCOPED_VARS_ENABLED writes the live width here instead of on the
+          // document element, where it would restyle the whole document once per drag frame.
           data-titlebar-live-width-scope=""
           aria-hidden="true"
           className="pointer-events-none absolute inset-x-0 top-[var(--studio-custom-titlebar-height)] z-[45] h-3"

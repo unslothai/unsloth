@@ -1096,7 +1096,8 @@ def test_the_load_guard_sees_the_alias_the_delete_accepts():
 def test_every_branch_derives_the_default_from_the_root_rows():
     """Remote, cached, partial-local and merged caches all answer /gguf-variants and must define a
     bare repo id the way _match_variant(None, ...) and local_model_resolver do -- the ROOT
-    checkpoint -- or the automatic default depends on which branch served the request."""
+    checkpoint -- or the automatic default depends on which branch served the request. Cached
+    rows derive it once more after download-state reconciliation can demote the original default."""
     import inspect
     import types
 
@@ -1111,7 +1112,7 @@ def test_every_branch_derives_the_default_from_the_root_rows():
     assert service._default_variant_candidates(rows[:1]) == ["distilled/model-Q6_K.gguf"]
     # No branch may call pick_best_gguf on the raw filenames any more.
     source = inspect.getsource(service)
-    assert source.count("pick_best_gguf(_default_variant_candidates(") == 4
+    assert source.count("pick_best_gguf(_default_variant_candidates(") == 5
     assert "pick_best_gguf(filenames)" not in source
 
 

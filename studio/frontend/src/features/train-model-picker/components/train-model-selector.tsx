@@ -105,6 +105,8 @@ function localModelSourceLabelKey(source: LocalSource): TranslationKey {
       return "studio.modelPicker.sourceLmStudio";
     case "ollama":
       return "studio.modelPicker.sourceOllama";
+    case "hermes":
+      return "studio.modelPicker.sourceHermes";
     case "custom":
       return "studio.modelPicker.sourceCustomFolder";
     default:
@@ -776,7 +778,7 @@ export function TrainModelSelector({
           }`}
           className={cn(
             PICKER_TRIGGER_CLASS,
-            "w-full min-w-[180px] justify-between",
+            "w-full min-w-[calc(180px*var(--ui-space-scale,1))] justify-between",
           )}
         >
           <span className="flex min-w-0 items-center gap-1.5">

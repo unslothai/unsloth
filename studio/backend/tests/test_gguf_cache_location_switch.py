@@ -63,6 +63,7 @@ def cache_client():
     app.include_router(models.router, prefix = "/api/models")
     app.dependency_overrides[inventory.get_current_subject] = lambda: "test"
     app.dependency_overrides[inventory.get_request_hf_token] = lambda: None
+    app.dependency_overrides[inventory.authenticated_via_api_key] = lambda: False
     with TestClient(app) as client:
         yield client
 
@@ -501,6 +502,10 @@ def test_pin_listing_needs_explicit_token_when_ambient_is_denied(
     )
     variant = GgufVariantInfo(filename = path.name, quant = quant, size_bytes = 256)
     monkeypatch.setattr(gguf_variants, "list_gguf_variants", lambda *a, **k: ([variant], False, []))
+    # Offline stand-in for the Hub access probe: the explicit token may read, anonymous may not.
+    monkeypatch.setattr(
+        gguf_variants, "hub_cached_read_refused", lambda hf_token, **k: hf_token is False
+    )
     response = asyncio.run(
         gguf_variants.get_gguf_variants_response(
             repo_id,

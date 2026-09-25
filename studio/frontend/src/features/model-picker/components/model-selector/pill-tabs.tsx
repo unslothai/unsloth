@@ -21,6 +21,7 @@ export function PillTabs({
   compact = false,
   fit = false,
   disabled = false,
+  dataTour,
 }: {
   tabs: PillTab[];
   value: string;
@@ -28,6 +29,8 @@ export function PillTabs({
   ariaLabel: string;
   className?: string;
   compact?: boolean;
+  /** Guided-tour anchor, read as `[data-tour="..."]`. */
+  dataTour?: string;
   /** Block every tab, for a choice that cannot be applied right now. */
   disabled?: boolean;
   /** Size each tab to its label instead of equal widths. The active tab carries
@@ -43,6 +46,7 @@ export function PillTabs({
     <div
       role="tablist"
       aria-label={ariaLabel}
+      data-tour={dataTour}
       className={cn(
         "hub-menu-trigger hub-tab-toggle relative inline-flex items-center rounded-full",
         compact ? "h-7" : "h-(--picker-control-h)",
@@ -95,10 +99,11 @@ export function PillTabs({
             value === tab.value
               ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",
-            // The active tab carries the pill; pin its hover bg so an already-selected tab shows no hover change.
-            fit &&
-              value === tab.value &&
-              "hub-tab-toggle-pill hover:!bg-[var(--background)] dark:hover:!bg-[color-mix(in_srgb,var(--foreground)_10%,transparent)]",
+            // The active tab carries the pill; its hover lives on the pill
+            // rules in hub.css. The pin that used to sit here was written
+            // without a mode variant, so in dark it painted the page colour
+            // over the pill and pointing at the selected tab blacked it out.
+            fit && value === tab.value && "hub-tab-toggle-pill",
           )}
         >
           {tab.icon}

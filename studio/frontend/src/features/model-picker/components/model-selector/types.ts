@@ -8,6 +8,8 @@ export interface ModelOption {
   id: string;
   name: string;
   description?: string;
+  /** Shown after `description` and never truncated, e.g. the quant "BF16". */
+  descriptionSuffix?: string;
   icon?: ReactNode;
   isGguf?: boolean;
   /** Fixed quant used by a specialized on-device runtime. Generic Hub GGUF rows discover their
@@ -50,11 +52,20 @@ export interface ModelSelectorChangeMeta {
   ggufFilename?: string;
   isDownloaded?: boolean;
   expectedBytes?: number;
+  /** Presentation for a companion-only managed download. The manager still
+   *  owns one atomic GGUF job, but names the bytes actually crossing the wire. */
+  downloadPresentation?: {
+    label: string;
+    filename: string;
+    expectedBytes: number;
+  };
   /** Native GGUF context, threaded so a staged pick can seed the slider. */
   contextLength?: number | null;
   /** Direct local .gguf file picked without a variant (custom folder / LM Unsloth). Marks it as a
    *  GGUF source for the deferred-load staging flow. */
   isGguf?: boolean;
+  /** Known model vision capability. Undefined means unknown, not text-only. */
+  isVision?: boolean;
   /** Staged metadata confirmed the separate DiffusionGemma runner. */
   isDiffusion?: boolean;
   config?: PerModelConfig;

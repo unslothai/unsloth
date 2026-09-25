@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { usePlatformStore } from "@/config/env";
 import { Button } from "@/components/ui/button";
-import { useSidebar } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { useHfTokenStore } from "@/features/hub";
@@ -26,9 +26,7 @@ import {
 import { useNavigate } from "@tanstack/react-router";
 import {
   type ReactElement,
-  useCallback,
   useEffect,
-  useMemo,
   useRef,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -38,7 +36,11 @@ import { useTrainingCacheReconciliation } from "./hooks/use-training-cache-recon
 import { LiveTrainingView } from "./live-training-view";
 import { DatasetPreviewDialog } from "./sections/dataset-preview-dialog";
 import { TrainSubNav } from "./studio-navigation";
-import { studioTourSteps, studioTrainingTourSteps } from "./tour";
+import {
+  studioHistoryTourSteps,
+  studioTourSteps,
+  studioTrainingTourSteps,
+} from "./tour";
 import {
   type TrainSubTab,
   getStudioSubtitle,
@@ -50,6 +52,7 @@ import { useParamMode } from "./wizard/training-param-mode";
 import { TrainingWizard } from "./wizard/training-wizard";
 
 export function StudioPage(): ReactElement {
+  const signalReady = useAppShellReadySignal();
   const t = useT();
   const [paramMode, setParamMode] = useParamMode();
   useTrainingRuntimeLifecycle();
@@ -110,20 +113,15 @@ export function StudioPage(): ReactElement {
     showTrainingView,
   } = useStudioNavigation();
 
-  const { setPinned } = useSidebar();
-  const pinSidebar = useCallback(() => setPinned(true), [setPinned]);
-
   const tourEnabled = hasHydratedRuntime && !isHydratingRuntime;
   const isConfigTour = activeTab === "configure";
-  const baseTourSteps =
-    activeTab === "current-run" ? studioTrainingTourSteps : studioTourSteps;
-  const tourSteps = useMemo(
-    () =>
-      baseTourSteps.map((step) =>
-        step.target === "navbar" ? { ...step, onEnter: pinSidebar } : step,
-      ),
-    [baseTourSteps, pinSidebar],
-  );
+  // Each tab unmounts the others, so each gets the steps whose anchors are actually on screen.
+  const tourSteps =
+    activeTab === "current-run"
+      ? studioTrainingTourSteps
+      : activeTab === "history"
+        ? studioHistoryTourSteps
+        : studioTourSteps;
   const tour = useGuidedTourController({
     id: "studio",
     steps: tourSteps,
@@ -172,8 +170,8 @@ export function StudioPage(): ReactElement {
       return;
     }
     reloadReadySent.current = true;
-    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
-  }, [capabilitiesUnknown, hasHydratedRuntime, isHydratingRuntime]);
+    signalReady();
+  }, [capabilitiesUnknown, hasHydratedRuntime, isHydratingRuntime, signalReady]);
   // Two waits share this panel. Hardware detection is a cold `import torch` that can run for
   // minutes and says so, the way the Video page does; a hydrating runtime is quick and keeps
   // the runtime wording, which on a machine still being measured just reads as a hang.
@@ -189,7 +187,7 @@ export function StudioPage(): ReactElement {
         onValueChange={(value) => handleTabChange(value as TrainSubTab)}
         className="contents"
       >
-        <div className="mx-auto flex w-full max-w-[1180px] flex-col gap-7 px-5 pb-20 pt-8 sm:px-9 sm:pt-10">
+        <div className="mx-auto flex w-full max-w-[calc(1180px*var(--ui-space-scale,1))] 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-7 px-5 pb-20 pt-8 max-sm:px-4 sm:px-9 sm:pt-10">
           <header className="font-heading flex flex-col gap-5">
             <div className="flex flex-col gap-0.5">
               <h1 className="page-title-halo text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
@@ -266,7 +264,11 @@ export function StudioPage(): ReactElement {
                 <TabsContent value="current-run" className="mt-0">
                   <LiveTrainingView />
                 </TabsContent>
-                <TabsContent value="history" className="mt-0">
+                <TabsContent
+                  value="history"
+                  className="mt-0"
+                  data-tour="studio-history"
+                >
                   {selectedHistoryRunId ? (
                     <HistoricalTrainingView
                       runId={selectedHistoryRunId}
