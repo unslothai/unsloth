@@ -20,6 +20,11 @@ from core.inference import diffusion_qwenimage21_rope as rope
 torch = pytest.importorskip("torch")
 qmod = pytest.importorskip("diffusers.models.transformers.transformer_qwenimage21")
 
+
+def _cuda_dtype():
+    """bf16 where the card has it natively (sm80+), else fp16, as the Studio loaders pick."""
+    return torch.bfloat16 if torch.cuda.get_device_capability() >= (8, 0) else torch.float16
+
 _needs_exact = pytest.mark.skipif(
     not (torch.cuda.is_available() and rope.inductor_addcmul_is_fma()),
     reason = "needs CUDA and inductor's fma addcmul lowering (torch 2.11+)",
@@ -38,7 +43,7 @@ def _stock_after(monkeypatch):
 def _attention(device, heads = 4, dim_head = 32):
     torch.manual_seed(0)
     attn = qmod.QwenImage21Attention(dim = heads * dim_head, heads = heads, dim_head = dim_head)
-    attn = attn.to(device, torch.bfloat16).eval()
+    attn = attn.to(device, _cuda_dtype() if device == "cuda" else torch.bfloat16).eval()
     with torch.no_grad():
         for p in attn.parameters():
             p.normal_(0, 0.05)
@@ -49,7 +54,7 @@ def _attention(device, heads = 4, dim_head = 32):
 
 def _qk(attn, seq, device):
     g = torch.Generator(device = "cpu").manual_seed(3)
-    x = torch.randn(2, seq, attn.inner_dim, generator = g).to(device, torch.bfloat16)
+    x = torch.randn(2, seq, attn.inner_dim, generator = g).to(device, attn.to_q.weight.dtype)
     ang = torch.randn(seq, attn.inner_dim // attn.heads // 2, generator = g).to(device) * 40
     freqs = torch.polar(torch.ones_like(ang), ang)
 
