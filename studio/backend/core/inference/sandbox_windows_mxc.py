@@ -94,6 +94,7 @@ def prepare(plan, capability):
         request = mxc_policy.build_launch_request(plan)
     except Exception as exc:
         raise SandboxBuildError(f"Windows MXC policy construction failed: {exc}") from exc
+    launch_limitations = tuple(request.get("launchLimitations", ()))
     record = _record(
         plan,
         capability,
@@ -102,7 +103,7 @@ def prepare(plan, capability):
         backend = "mxc-processcontainer",
         profile_id = capability.profile_id,
         safeguards = _OS_ISOLATION_SAFEGUARDS + ("ui_isolation",),
-        limitations = capability.limitations,
+        limitations = capability.limitations + launch_limitations,
     )
     record = replace(
         record,
@@ -123,6 +124,7 @@ def prepare(plan, capability):
         backend = "mxc-processcontainer",
         timeout_seconds = plan.timeout_seconds,
         execution_record = record,
+        launch_limitations = launch_limitations,
     )
 
     def launch(_prepared, kwargs):

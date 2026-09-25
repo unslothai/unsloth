@@ -160,7 +160,12 @@ class _WindowsHandleGuard:
     def close(self) -> None:
         if self.handle:
             import ctypes
-            ctypes.windll.kernel32.CloseHandle(self.handle)
+            from ctypes import wintypes
+
+            close_handle = ctypes.windll.kernel32.CloseHandle
+            close_handle.argtypes = [wintypes.HANDLE]
+            close_handle.restype = wintypes.BOOL
+            close_handle(self.handle)
             self.handle = 0
 
 

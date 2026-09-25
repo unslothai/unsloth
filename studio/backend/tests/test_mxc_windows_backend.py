@@ -369,6 +369,121 @@ def test_workdir_hard_link_to_outside_object_is_refused(monkeypatch, tmp_path):
         mxc_policy.build_launch_request(plan)
 
 
+def _policy_plan(workdir, mode = "auto"):
+    # A plain file: a venv's python is a symlink on POSIX, which the policy refuses.
+    runtime = Path(workdir).parent / "runtime" / "python.exe"
+    runtime.parent.mkdir(exist_ok = True)
+    runtime.touch()
+    return os_sandbox.ToolLaunchPlan(
+        argv = (str(runtime), "-c", "print('ok')"),
+        workdir = str(workdir),
+        env = {},
+        requested_mode = mode,
+        execution_kind = "python",
+    )
+
+
+def test_workdir_hard_links_within_it_are_allowed(monkeypatch, tmp_path):
+    # uv and pip hard-link from their caches; refusing every nlink > 1 bricked the chat.
+    from core.inference import mxc_policy
+
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    (workdir / "a.txt").write_text("same", encoding = "utf-8")
+    try:
+        os.link(workdir / "a.txt", workdir / "b.txt")
+    except OSError as exc:
+        pytest.skip(f"hard-link creation unavailable: {exc}")
+    monkeypatch.setattr(mxc_policy.sys, "platform", "win32")
+    request = mxc_policy.build_launch_request(_policy_plan(workdir))
+    assert request["launchLimitations"] == ()
+
+
+@pytest.mark.parametrize("mode", ["auto", "required"])
+def test_oversized_workdir_degrades_auto_and_refuses_required(monkeypatch, tmp_path, mode):
+    from core.inference import mxc_policy
+
+    for index in range(8):
+        (tmp_path / f"f{index}.txt").write_text("x", encoding = "utf-8")
+    monkeypatch.setattr(mxc_policy.sys, "platform", "win32")
+    monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 3)
+    if mode == "required":
+        with pytest.raises(mxc_policy.MxcPolicyError, match = "too large"):
+            mxc_policy.build_launch_request(_policy_plan(tmp_path, mode))
+        return
+    request = mxc_policy.build_launch_request(_policy_plan(tmp_path, mode))
+    assert request["launchLimitations"] == (os_sandbox.WORKDIR_SCAN_INCOMPLETE,)
+    mxc_policy.verify_launch_identities(request)
+
+
+def test_incomplete_workdir_scan_is_named_on_the_execution_record(monkeypatch, tmp_path):
+    from core.inference import sandbox_windows_mxc
+
+    plan = _plan(tmp_path, "auto")
+    capability = os_sandbox.SandboxCapability(
+        backend = "mxc-processcontainer",
+        available = True,
+        reason = "qualified",
+        environment = "win32",
+        profile_id = mxc_runtime.PROFILE_ID,
+        limitations = ("mxc_preview_not_a_security_boundary",),
+    )
+    monkeypatch.setattr(
+        sandbox_windows_mxc.mxc_policy,
+        "build_launch_request",
+        lambda _plan: {
+            "policyHash": "sha256:controlled",
+            "launchLimitations": (os_sandbox.WORKDIR_SCAN_INCOMPLETE,),
+        },
+    )
+    prepared = sandbox_windows_mxc.prepare(plan, capability)
+    assert prepared.launch_limitations == (os_sandbox.WORKDIR_SCAN_INCOMPLETE,)
+    assert os_sandbox.WORKDIR_SCAN_INCOMPLETE in prepared.execution_record.limitations
+
+
+def test_registered_model_folders_are_granted_read_only(monkeypatch, tmp_path):
+    from core.inference import mxc_policy
+
+    workdir = tmp_path / "workdir"
+    models = tmp_path / "models"
+    inside = workdir / "local-models"
+    for path in (workdir, models, inside):
+        path.mkdir()
+    missing = tmp_path / "gone"
+    monkeypatch.setattr(mxc_policy.sys, "platform", "win32")
+    monkeypatch.setattr(
+        os_sandbox, "model_library_roots", lambda: (str(models), str(missing), str(inside))
+    )
+    # Only the runtime's own dir: here sys.prefix may contain tmp_path and swallow the grant.
+    monkeypatch.setattr(
+        mxc_policy, "_runtime_read_roots", lambda executable: [os.path.dirname(executable)]
+    )
+    request = mxc_policy.build_launch_request(_policy_plan(workdir))
+    filesystem = request["config"]["filesystem"]
+    assert str(models) in filesystem["readonlyPaths"]
+    assert str(missing) not in filesystem["readonlyPaths"]
+    assert str(inside) not in filesystem["readonlyPaths"]
+    assert filesystem["readwritePaths"] == [str(workdir)]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "requires Windows 8.3 short names")
+def test_short_name_workdir_is_not_mistaken_for_a_reparse_point(monkeypatch, tmp_path):
+    import ctypes
+    from core.inference import mxc_policy
+
+    workdir = tmp_path / "long directory name for 8dot3"
+    workdir.mkdir()
+    buffer = ctypes.create_unicode_buffer(1024)
+    if not ctypes.windll.kernel32.GetShortPathNameW(str(workdir), buffer, 1024):
+        pytest.skip("GetShortPathNameW failed")
+    short = buffer.value
+    if os.path.normcase(short) == os.path.normcase(str(workdir)):
+        pytest.skip("8.3 name generation is disabled on this volume")
+    monkeypatch.setattr(mxc_policy.sys, "platform", "win32")
+    canonical = mxc_policy._safe_canonical_path(short, directory = True)
+    assert os.path.normcase(canonical) == os.path.normcase(os.path.realpath(workdir))
+
+
 @pytest.mark.parametrize(
     "path",
     [

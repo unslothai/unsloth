@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import shutil
@@ -15,10 +16,12 @@ import sys
 import unicodedata
 import uuid
 
+from . import os_sandbox
 from .mxc_runtime import MXC_SCHEMA_VERSION
 
+logger = logging.getLogger(__name__)
+
 MAX_ENVIRONMENT_ENTRIES = 512
-MAX_PATH_SCAN_ENTRIES = 50_000
 _WSL_TERMINAL_MARKERS = ("\\system32\\bash.exe", "\\windowsapps\\bash.exe")
 
 
@@ -93,7 +96,29 @@ def _object_identity(path: str, *, directory: bool) -> dict[str, int]:
             "fileId": (int(information.nFileIndexHigh) << 32) | int(information.nFileIndexLow),
         }
     finally:
-        ctypes.windll.kernel32.CloseHandle(handle)
+        close_handle = ctypes.windll.kernel32.CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+        close_handle(handle)
+
+
+def _long_path(path: str) -> str:
+    """Expand 8.3 components (RUNNER~1); realpath already returns the long form."""
+    if os.name != "nt":
+        return path
+    import ctypes
+    from ctypes import wintypes
+
+    get_long_path = ctypes.windll.kernel32.GetLongPathNameW
+    get_long_path.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+    get_long_path.restype = wintypes.DWORD
+    size = get_long_path(path, None, 0)
+    if not size:
+        return path
+    buffer = ctypes.create_unicode_buffer(size)
+    if not get_long_path(path, buffer, size):
+        return path
+    return buffer.value
 
 
 def _is_reparse(path: str) -> bool:
@@ -119,7 +144,7 @@ def _safe_canonical_path(path: str, *, directory: bool) -> str:
     if not directory and not os.path.isfile(absolute):
         raise MxcPolicyError(f"required MXC runtime is unavailable: {absolute}")
     canonical = os.path.realpath(absolute)
-    if os.path.normcase(canonical) != os.path.normcase(absolute):
+    if os.path.normcase(canonical) != os.path.normcase(_long_path(absolute)):
         raise MxcPolicyError(f"MXC policy paths may not traverse a reparse point: {absolute}")
     current = Path(absolute)
     for candidate in (current, *current.parents):
@@ -128,30 +153,18 @@ def _safe_canonical_path(path: str, *, directory: bool) -> str:
     return canonical
 
 
-def _reject_workdir_reparse_entries(workdir: str) -> None:
-    seen = 0
-    for root, directories, files in os.walk(workdir, followlinks = False):
-        for name in (*directories, *files):
-            seen += 1
-            if seen > MAX_PATH_SCAN_ENTRIES:
-                raise MxcPolicyError("the MXC workdir is too large to validate reparse boundaries")
-            candidate = os.path.join(root, name)
-            if _is_reparse(candidate):
-                raise MxcPolicyError(f"the MXC workdir contains a reparse point: {candidate}")
-            try:
-                links = os.stat(candidate, follow_symlinks = False).st_nlink
-            except OSError as exc:
-                raise MxcPolicyError(
-                    f"the MXC workdir changed during validation: {candidate}"
-                ) from exc
-            if os.path.isfile(candidate) and links > 1:
-                raise MxcPolicyError(f"the MXC workdir contains a hard-linked file: {candidate}")
-
-
-def _absolute_existing_directory(path: str) -> str:
-    value = _safe_canonical_path(path, directory = True)
-    _reject_workdir_reparse_entries(value)
-    return value
+def _scan_workdir(workdir: str, *, required: bool) -> tuple[str, ...]:
+    """Reparse points and outside hard links refuse; an overrun budget degrades `auto` only."""
+    try:
+        limitations = os_sandbox.scan_workdir_for_host_channels(workdir)
+    except os_sandbox.WorkdirUnsafeError as exc:
+        raise MxcPolicyError(str(exc)) from exc
+    if required and os_sandbox.WORKDIR_SCAN_INCOMPLETE in limitations:
+        raise MxcPolicyError(
+            "the session workdir is too large to check for host channels, and `required` "
+            "cannot promise a boundary it did not verify. Start a new chat, or use `auto`."
+        )
+    return limitations
 
 
 def _runtime_read_roots(executable: str) -> list[str]:
@@ -175,6 +188,24 @@ def _runtime_read_roots(executable: str) -> list[str]:
             raise MxcPolicyError(f"volume-root MXC grant is forbidden: {canonical}")
         if os.path.normcase(canonical) not in {os.path.normcase(value) for value in result}:
             result.append(canonical)
+    return result
+
+
+def _model_read_roots(workdir: str, granted: list[str]) -> list[str]:
+    """Registered model folders, read-only as on Linux and macOS; one that cannot be granted is skipped."""
+    covered = [os.path.normcase(value) for value in (workdir, *granted)]
+    result: list[str] = []
+    for root in os_sandbox.model_library_roots():
+        try:
+            canonical = _safe_canonical_path(root, directory = True)
+        except MxcPolicyError as exc:
+            logger.info("Not granting a model folder to the MXC profile: %s", exc)
+            continue
+        folded = os.path.normcase(canonical)
+        if any(folded == value or folded.startswith(value.rstrip("\\/") + os.sep) for value in covered):
+            continue
+        covered.append(folded)
+        result.append(canonical)
     return result
 
 
@@ -223,7 +254,8 @@ def verify_launch_identities(request: dict) -> None:
         raise MxcPolicyError("the selected workload executable changed before WXC dispatch")
     if _object_identity(request["cwd"], directory = True) != request["workdirIdentity"]:
         raise MxcPolicyError("the MXC workdir changed before WXC dispatch")
-    _absolute_existing_directory(request["cwd"])
+    _safe_canonical_path(request["cwd"], directory = True)
+    _scan_workdir(request["cwd"], required = request["requireCompleteScan"])
 
 
 def build_launch_request(plan, *, run_id: str | None = None) -> dict:
@@ -238,9 +270,12 @@ def build_launch_request(plan, *, run_id: str | None = None) -> dict:
     if any(not isinstance(k, str) or not k or "=" in k for k in plan.env):
         raise MxcPolicyError("the sanitized environment contains an invalid variable name")
 
-    workdir = _absolute_existing_directory(plan.workdir)
+    required = getattr(plan, "requested_mode", None) == "required"
+    workdir = _safe_canonical_path(plan.workdir, directory = True)
+    limitations = _scan_workdir(workdir, required = required)
     selected_runtime = _selected_runtime(plan)
     readonly = _runtime_read_roots(selected_runtime)
+    readonly += _model_read_roots(workdir, readonly)
     execution_argv = list(plan.argv)
     execution_argv[0] = selected_runtime
     run_id = run_id or uuid.uuid4().hex
@@ -290,5 +325,7 @@ def build_launch_request(plan, *, run_id: str | None = None) -> dict:
         "config": config,
         "configBytes": canonical_config_bytes(config),
         "policyHash": compute_policy_hash(config),
+        "requireCompleteScan": required,
+        "launchLimitations": limitations,
     }
     return request

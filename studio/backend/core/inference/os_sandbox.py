@@ -262,6 +262,9 @@ def _host_channel_hazard(
                 info = os.lstat(path)
             except OSError:
                 return f"changed during its safety scan: {path}"
+            # Windows only: MXC grants the workdir by path, so a junction or symlink inside it widens the grant.
+            if getattr(info, "st_file_attributes", 0) & 0x400:
+                return f"contains a reparse point: {path}"
             if stat.S_ISLNK(info.st_mode):
                 continue
             if stat.S_ISDIR(info.st_mode):
