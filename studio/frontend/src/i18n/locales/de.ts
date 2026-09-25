@@ -617,6 +617,29 @@ export const de = {
       title: "Sprachfunktionen",
       description: "Mikrofon, Diktat, Spracherkennung und Vorlesen",
       dictation: {
+        audioUploadTitle: "Mit einer Aufnahme diktieren",
+        audioUploadDescription:
+          "Ihr Browser benötigt eine sichere Verbindung (HTTPS), um direkt in Studio aufzunehmen. Verwenden Sie bei dieser HTTP-Verbindung stattdessen den Rekorder Ihres Smartphones oder wählen Sie eine gespeicherte Aufnahme aus. Ihr Studio-Server transkribiert das Audio und fügt den Text Ihrer Nachricht hinzu.",
+        audioUploadChooseFile: "Aufnahme auswählen",
+        audioUploadRecord: "Audio aufnehmen",
+        audioUploadIphoneHint:
+          "Speichern Sie auf dem iPhone eine Aufnahme aus Sprachmemos oder einer anderen Rekorder-App und wählen Sie sie dann hier aus.",
+        audioUploadServerModelNote:
+          "Diese Aufnahme verwendet das oben angezeigte lokale Modell auf dem Studio-Server, auch wenn das normale Diktat eine andere Engine verwendet.",
+        audioUploadAutomatic: "Automatisch",
+        audioUploadModelReady: "Auf diesem Studio-Server bereit",
+        audioUploadRetryTitle: "{file} konnte nicht transkribiert werden",
+        audioUploadRetry: "Transkription wiederholen",
+        audioUploadChooseModel:
+          "Wählen Sie in den Spracheinstellungen ein lokales Spracherkennungsmodell aus.",
+        audioUploadEmpty: "Die ausgewählte Aufnahme ist leer.",
+        audioUploadTooLarge: "Wählen Sie eine Aufnahme, die kleiner als {size} ist.",
+        audioUploadVideoUnsupported:
+          "Wählen Sie eine Audioaufnahme und kein Video aus.",
+        audioUploadNoSpeech: "Das Modell hat in dieser Aufnahme keine Sprache erkannt.",
+        audioUploadFailed: "Die Aufnahme konnte nicht transkribiert werden.",
+        audioUploadCancel: "Transkription abbrechen",
+        audioUploadTranscribing: "Audio wird transkribiert…",
         sectionTitle: "Diktat",
         engineLabel: "Diktat-Engine",
         engineBrowser: "Browser",
@@ -1676,6 +1699,10 @@ export const de = {
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:
         "Modellmetadaten in Antworten des Assistenten anzeigen.",
+      inlineReadAloud: "Vorlesen bei Antworten",
+      inlineReadAloudDescription: "Vorlesen bei jeder Antwort anzeigen statt im Menü „Mehr“.",
+      inlineEditResponse: "Antwort bearbeiten bei Antworten",
+      inlineEditResponseDescription: "Antwort bearbeiten bei jeder Antwort anzeigen statt im Menü „Mehr“.",
       modelDisclaimer: "Modell-Hinweis anzeigen",
       modelDisclaimerDescription:
         "Zeigt „LLMs können Fehler machen“ unter dem Chatfeld an.",

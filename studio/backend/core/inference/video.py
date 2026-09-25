@@ -143,6 +143,7 @@ from .video_families import (
     video_family_prequant_repo,
     video_family_prequant_schemes,
 )
+from .video_frames import uint8_video_frames
 from .video_minimax_h3 import (
     H3_ANCHOR_FIRST,
     H3_ANCHOR_LAST,
@@ -6280,6 +6281,8 @@ class VideoBackend:
                         # Family-agnostic: no video family has a callback between its denoise loop and its decode, so
                         # every one of them gets its decode phase from the decoder itself.
                         stack.enter_context(_decode_phase(pipe, _on_decode))
+                        # The decoded clip becomes uint8 on the GPU, bit-identical to the np / pil export (video_frames).
+                        stack.enter_context(uint8_video_frames(pipe))
                         stack.enter_context(_completed_step_poller(_pump))
                         yield
 

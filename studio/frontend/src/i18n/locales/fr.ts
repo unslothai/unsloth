@@ -617,6 +617,29 @@ export const fr = {
       title: "Voix",
       description: "Microphone, dictée, reconnaissance vocale et lecture à voix haute",
       dictation: {
+        audioUploadTitle: "Dicter avec un enregistrement",
+        audioUploadDescription:
+          "Votre navigateur nécessite une connexion sécurisée (HTTPS) pour enregistrer directement dans Studio. Avec cette connexion HTTP, utilisez plutôt l'enregistreur de votre téléphone ou choisissez un enregistrement sauvegardé. Votre serveur Studio transcrira l'audio et ajoutera le texte à votre message.",
+        audioUploadChooseFile: "Choisir un enregistrement",
+        audioUploadRecord: "Enregistrer l'audio",
+        audioUploadIphoneHint:
+          "Sur iPhone, sauvegardez un enregistrement depuis Dictaphone ou une autre application d'enregistrement, puis choisissez-le ici.",
+        audioUploadServerModelNote:
+          "Cet enregistrement utilise le modèle local indiqué ci-dessus sur le serveur Studio, même si la dictée habituelle utilise un autre moteur.",
+        audioUploadAutomatic: "Automatique",
+        audioUploadModelReady: "Prêt sur ce serveur Studio",
+        audioUploadRetryTitle: "Impossible de transcrire {file}",
+        audioUploadRetry: "Réessayer la transcription",
+        audioUploadChooseModel:
+          "Choisissez un modèle local de reconnaissance vocale dans les paramètres Voix.",
+        audioUploadEmpty: "L'enregistrement sélectionné est vide.",
+        audioUploadTooLarge: "Choisissez un enregistrement de moins de {size}.",
+        audioUploadVideoUnsupported:
+          "Choisissez un enregistrement audio, pas une vidéo.",
+        audioUploadNoSpeech: "Le modèle n'a détecté aucune parole dans cet enregistrement.",
+        audioUploadFailed: "Impossible de transcrire l'enregistrement.",
+        audioUploadCancel: "Annuler la transcription",
+        audioUploadTranscribing: "Transcription audio en cours…",
         sectionTitle: "Dictée",
         engineLabel: "Moteur de dictée",
         engineBrowser: "Navigateur",
@@ -1673,6 +1696,10 @@ export const fr = {
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
         "Afficher les métadonnées du modèle dans les réponses de l’assistant.",
+      inlineReadAloud: "Lecture à voix haute sur les réponses",
+      inlineReadAloudDescription: "Afficher Lecture à voix haute sur chaque réponse, plutôt que dans le menu Plus.",
+      inlineEditResponse: "Modifier la réponse sur les réponses",
+      inlineEditResponseDescription: "Afficher Modifier la réponse sur chaque réponse, plutôt que dans le menu Plus.",
       modelDisclaimer: "Afficher l'avertissement du modèle",
       modelDisclaimerDescription:
         'Afficher "Les LLM peuvent faire des erreurs" sous la zone de discussion.',

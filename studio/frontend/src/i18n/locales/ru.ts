@@ -615,6 +615,28 @@ export const ru = {
       title: "Голос",
       description: "Микрофон, диктовка, распознавание речи и чтение вслух",
       dictation: {
+        audioUploadTitle: "Диктовка с помощью записи",
+        audioUploadDescription:
+          "Для записи непосредственно в Studio браузеру требуется безопасное подключение (HTTPS). При этом HTTP-подключении используйте диктофон на телефоне или выберите сохранённую запись. Сервер Studio расшифрует аудио и добавит текст в ваше сообщение.",
+        audioUploadChooseFile: "Выбрать запись",
+        audioUploadRecord: "Записать аудио",
+        audioUploadIphoneHint:
+          "На iPhone сохраните запись из приложения «Диктофон» (Voice Memos) или другого приложения для записи, а затем выберите её здесь.",
+        audioUploadServerModelNote:
+          "Для этой записи используется указанная выше локальная модель на сервере Studio, даже если обычная диктовка использует другой движок.",
+        audioUploadAutomatic: "Автоматически",
+        audioUploadModelReady: "Готово на этом сервере Studio",
+        audioUploadRetryTitle: "Не удалось расшифровать {file}",
+        audioUploadRetry: "Повторить расшифровку",
+        audioUploadChooseModel:
+          "Выберите локальную модель распознавания речи в настройках голоса.",
+        audioUploadEmpty: "Выбранная запись пуста.",
+        audioUploadTooLarge: "Выберите запись размером менее {size}.",
+        audioUploadVideoUnsupported: "Выберите аудиозапись, а не видео.",
+        audioUploadNoSpeech: "Модель не обнаружила речь в этой записи.",
+        audioUploadFailed: "Не удалось расшифровать запись.",
+        audioUploadCancel: "Отменить расшифровку",
+        audioUploadTranscribing: "Расшифровка аудио…",
         sectionTitle: "Диктовка",
         engineLabel: "Движок диктовки",
         engineBrowser: "Браузер",
@@ -1651,6 +1673,10 @@ export const ru = {
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:
         "Показывать метаданные модели в ответах ассистента.",
+      inlineReadAloud: "Чтение вслух в ответах",
+      inlineReadAloudDescription: "Показывать «Чтение вслух» у каждого ответа, а не в меню «Ещё».",
+      inlineEditResponse: "Изменение ответа в ответах",
+      inlineEditResponseDescription: "Показывать «Изменить ответ» у каждого ответа, а не в меню «Ещё».",
       modelDisclaimer: "Показывать предупреждение о модели",
       modelDisclaimerDescription:
         "Показывать сообщение «LLM могут ошибаться» под полем ввода.",

@@ -611,6 +611,28 @@ export const zhCN = {
       title: "语音",
       description: "麦克风、语音输入、语音转文字和朗读",
       dictation: {
+        audioUploadTitle: "使用录音进行语音输入",
+        audioUploadDescription:
+          "浏览器需要安全连接 (HTTPS) 才能直接在 Studio 中录音。在当前 HTTP 连接下，请改用手机录音工具，或选择已保存的录音。Studio 服务器会转写音频，并将文字添加到您的消息中。",
+        audioUploadChooseFile: "选择录音",
+        audioUploadRecord: "录制音频",
+        audioUploadIphoneHint:
+          "在 iPhone 上，请通过“语音备忘录”(Voice Memos) 或其他录音应用保存录音，然后在此处选择。",
+        audioUploadServerModelNote:
+          "此录音会使用 Studio 服务器上方显示的本地模型，即使普通语音输入使用的是其他引擎。",
+        audioUploadAutomatic: "自动",
+        audioUploadModelReady: "已在此 Studio 服务器上就绪",
+        audioUploadRetryTitle: "无法转写 {file}",
+        audioUploadRetry: "重试转写",
+        audioUploadChooseModel:
+          "请在“语音”设置中选择本地语音识别模型。",
+        audioUploadEmpty: "所选录音为空。",
+        audioUploadTooLarge: "请选择小于 {size} 的录音。",
+        audioUploadVideoUnsupported: "请选择录音文件，而不是视频。",
+        audioUploadNoSpeech: "模型未在该录音中检测到语音。",
+        audioUploadFailed: "无法转写该录音。",
+        audioUploadCancel: "取消转录",
+        audioUploadTranscribing: "正在转录音频…",
         sectionTitle: "语音输入",
         engineLabel: "语音输入引擎",
         engineBrowser: "浏览器",
@@ -1599,6 +1621,10 @@ export const zhCN = {
       pastedTextThresholdOff: "关闭",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
+      inlineReadAloud: "在回复上显示朗读",
+      inlineReadAloudDescription: "在每条回复上显示朗读，而不是放在“更多”菜单中。",
+      inlineEditResponse: "在回复上显示编辑回复",
+      inlineEditResponseDescription: "在每条回复上显示编辑回复，而不是放在“更多”菜单中。",
       modelDisclaimer: "显示模型免责声明",
       modelDisclaimerDescription:
         "在聊天框下方显示“LLM 可能会出错”。",

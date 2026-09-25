@@ -616,6 +616,29 @@ export const es = {
       title: "Voz",
       description: "Micrófono, dictado, voz a texto y lectura en voz alta",
       dictation: {
+        audioUploadTitle: "Dictar con una grabación",
+        audioUploadDescription:
+          "Tu navegador necesita una conexión segura (HTTPS) para grabar directamente en Studio. Con esta conexión HTTP, usa la grabadora de tu teléfono o elige una grabación guardada. Tu servidor de Studio transcribirá el audio y añadirá el texto a tu mensaje.",
+        audioUploadChooseFile: "Elegir grabación",
+        audioUploadRecord: "Grabar audio",
+        audioUploadIphoneHint:
+          "En iPhone, guarda una grabación de Notas de Voz o de otra aplicación de grabación y elígela aquí.",
+        audioUploadServerModelNote:
+          "Esta grabación usa el modelo local que se muestra arriba en el servidor de Studio, aunque el dictado normal use un motor diferente.",
+        audioUploadAutomatic: "Automático",
+        audioUploadModelReady: "Listo en este servidor de Studio",
+        audioUploadRetryTitle: "No se pudo transcribir {file}",
+        audioUploadRetry: "Reintentar la transcripción",
+        audioUploadChooseModel:
+          "Elige un modelo local de reconocimiento de voz en los ajustes de Voz.",
+        audioUploadEmpty: "La grabación seleccionada está vacía.",
+        audioUploadTooLarge: "Elige una grabación de menos de {size}.",
+        audioUploadVideoUnsupported:
+          "Elige una grabación de audio, no un vídeo.",
+        audioUploadNoSpeech: "El modelo no detectó voz en esa grabación.",
+        audioUploadFailed: "No se pudo transcribir la grabación.",
+        audioUploadCancel: "Cancelar transcripción",
+        audioUploadTranscribing: "Transcribiendo audio…",
         sectionTitle: "Dictado",
         engineLabel: "Motor de dictado",
         engineBrowser: "Navegador",
@@ -1667,6 +1690,10 @@ export const es = {
       showResponseModel: "Mostrar el modelo de respuesta",
       showResponseModelDescription:
         "Muestra los metadatos del modelo en las respuestas del asistente.",
+      inlineReadAloud: "Lectura en voz alta en las respuestas",
+      inlineReadAloudDescription: "Mostrar Lectura en voz alta en cada respuesta, en lugar de en el menú Más.",
+      inlineEditResponse: "Editar respuesta en las respuestas",
+      inlineEditResponseDescription: "Mostrar Editar respuesta en cada respuesta, en lugar de en el menú Más.",
       modelDisclaimer: "Mostrar aviso del modelo",
       modelDisclaimerDescription:
         'Muestra "Los LLM pueden cometer errores" bajo el cuadro de chat.',

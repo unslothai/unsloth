@@ -1654,6 +1654,152 @@ def fix_transformers_fully_masked_rows():
         logger.info(f"Unsloth: Failed patching sdpa_mask ({e})")
 
 
+_CHUNKED_MASK_PATCH_FLAG = "_unsloth_patched_chunked_block_sequence_ids"
+_BLOCK_SEQUENCE_IDS = "block_sequence_ids"
+
+
+def _names_parameter(function, name):
+    # Ignores **kwargs on purpose: unsloth_zoo's bare (*args, **kwargs) wrapper would match 5.4.
+    try:
+        return name in inspect.signature(function).parameters
+    except Exception:
+        return False
+
+
+def _accepts_keyword(function, name):
+    try:
+        parameters = inspect.signature(function).parameters
+    except Exception:
+        return True  # Unknown signature: leave it alone.
+    if name in parameters:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
+
+
+def _masks_pass_block_sequence_ids(masking_utils):
+    # Several markers: unsloth_zoo wraps create_masks_for_generate/create_causal_mask sans signature.
+    if callable(getattr(masking_utils, "blockwise_overlay", None)):
+        return True
+    for name in (
+        "create_masks_for_generate",
+        "_unsloth_original_create_causal_mask",
+        "create_causal_mask",
+    ):
+        function = getattr(masking_utils, name, None)
+        if function is not None and _names_parameter(function, _BLOCK_SEQUENCE_IDS):
+            return True
+    return False
+
+
+def _chunked_mask_rejects_block_sequence_ids(masking_utils = None):
+    if masking_utils is None:
+        try:
+            from transformers import masking_utils
+        except Exception:
+            return False
+    function = getattr(masking_utils, "create_chunked_causal_mask", None)
+    if function is None:
+        return False
+    if getattr(function, _CHUNKED_MASK_PATCH_FLAG, False):
+        function = getattr(function, "__wrapped__", function)
+    if _accepts_keyword(function, _BLOCK_SEQUENCE_IDS):
+        return False
+    return _masks_pass_block_sequence_ids(masking_utils)
+
+
+def _bounded_blockwise_overlay(block_sequence_ids):
+    # Upstream pads ids with -1 to kv_length + kv_offset (unknown here); out-of-range = -1 matches.
+    import torch
+
+    length = block_sequence_ids.shape[-1]
+    device = block_sequence_ids.device
+
+    def group_of(batch_idx, index):
+        index = torch.as_tensor(index, device = device)
+        inside = index < length
+        return torch.where(
+            inside,
+            block_sequence_ids[batch_idx, index.clamp(max = length - 1)],
+            -1,
+        )
+
+    def inner_mask(batch_idx, head_idx, q_idx, kv_idx):
+        q_group = group_of(batch_idx, q_idx)
+        kv_group = group_of(batch_idx, kv_idx)
+        return (q_group == kv_group) & (q_group >= 0)
+
+    return inner_mask
+
+
+def _swap_function_references(masking_utils, original, replacement):
+    # vars(), not getattr: a transformers _LazyModule must never be asked to import anything.
+    swap = lambda value: replacement if value is original else value
+    mapping = getattr(masking_utils, "LAYER_PATTERN_TO_MASK_FUNCTION_MAPPING", None)
+    if isinstance(mapping, dict):
+        for key, value in list(mapping.items()):
+            if isinstance(value, dict):
+                for inner_key, inner_value in list(value.items()):
+                    if inner_value is original:
+                        value[inner_key] = replacement
+            elif isinstance(value, functools.partial) and value.func is original:
+                mapping[key] = functools.partial(replacement, *value.args, **value.keywords)
+            else:
+                mapping[key] = swap(value)
+    masking_utils.create_chunked_causal_mask = replacement
+    for name, module in list(sys.modules.items()):
+        if module is None or module is masking_utils:
+            continue
+        if not (name.startswith("transformers.") or "unsloth_compiled" in name):
+            continue
+        try:
+            namespace = vars(module)
+        except TypeError:
+            continue
+        if namespace.get("create_chunked_causal_mask") is original:
+            namespace["create_chunked_causal_mask"] = replacement
+
+
+def fix_transformers_chunked_mask_block_sequence_ids():
+    """5.17 passes `block_sequence_ids` to chunked masks that reject it (Llama-4 static cache)."""
+    try:
+        from transformers import masking_utils
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the chunked mask fix ({e})")
+        return
+    try:
+        current = getattr(masking_utils, "create_chunked_causal_mask", None)
+        if current is None or getattr(current, _CHUNKED_MASK_PATCH_FLAG, False):
+            return
+        if not _chunked_mask_rejects_block_sequence_ids(masking_utils):
+            return
+        original = current
+        signature = inspect.signature(original)
+
+        @functools.wraps(original)
+        def create_chunked_causal_mask(*args, **kwargs):
+            block_sequence_ids = kwargs.pop(_BLOCK_SEQUENCE_IDS, None)
+            # Never drop a real tensor: that would silently make bidirectional media blocks causal.
+            if block_sequence_ids is None:
+                return original(*args, **kwargs)
+            arguments = signature.bind_partial(*args, **kwargs).arguments
+            overlay = _bounded_blockwise_overlay(block_sequence_ids)
+            or_mask_function = arguments.get("or_mask_function")
+            if or_mask_function is not None:
+                overlay = masking_utils.or_masks(or_mask_function, overlay)
+            arguments["or_mask_function"] = overlay
+            return original(**arguments)
+
+        create_chunked_causal_mask.__wrapped__ = original
+        setattr(create_chunked_causal_mask, _CHUNKED_MASK_PATCH_FLAG, True)
+        _swap_function_references(masking_utils, original, create_chunked_causal_mask)
+        logger.info(
+            "Unsloth: Patching transformers `create_chunked_causal_mask` to accept "
+            "`block_sequence_ids`, so chunked-attention models can generate with a static cache"
+        )
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching create_chunked_causal_mask ({e})")
+
+
 _COMPOSITE_PREFIX_RENAMING_FLAG = "_unsloth_patched_composite_prefix_renaming"
 
 # unsloth_zoo marks its own copy of this repair with this. Spelled as a literal rather than
