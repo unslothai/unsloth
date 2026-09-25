@@ -15,7 +15,7 @@ import {
   type LibraryChatHandoff,
   useLibraryChatHandoffStore,
 } from "./chat-handoff-store";
-import { mediaFileName } from "./media-file-name";
+import { mediaFileName } from "@/lib/prompt-text";
 
 type Navigate = ReturnType<typeof useNavigate>;
 
