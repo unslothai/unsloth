@@ -286,7 +286,6 @@ _WINDOWS_ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
     "gfx1151": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
     "gfx1150": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
     "gfx1152": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
-    # Floored: install.ps1 keeps a venv's torch minor unless the arch has a floor.
     "gfx1030": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
     "gfx1031": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
     "gfx1032": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
