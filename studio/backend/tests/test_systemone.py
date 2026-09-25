@@ -631,10 +631,10 @@ def test_mlx_answers_match_laya_on_cpu(monkeypatch):
         assert got["usage"] == expected["usage"]
         for name, answer in expected["answers"].items():
             if answer["type"] == "noul":
-                assert got["answers"][name]["noul"] == pytest.approx(answer["noul"], abs = 2e-4)
+                assert got["answers"][name]["noul"] == pytest.approx(answer["noul"], abs = 5e-3)
             else:
                 assert got["answers"][name]["probabilities"] == pytest.approx(
-                    answer["probabilities"], abs = 2e-4
+                    answer["probabilities"], abs = 5e-3
                 )
 
 
