@@ -164,8 +164,17 @@ def en_string(key: str, catalog: Path = EN_LOCALE_TS) -> str:
 def aria_label_selector(label: str) -> str:
     """A CSS selector for `[aria-label="<label>"]`, with the label quoted as a CSS string.
 
-    Catalog text is data: English that holds a `"` or a `\\` would otherwise end the attribute
-    value early or read as an escape, and the selector would be invalid or match something else.
+    Catalog text is data: English that holds a `"`, a `\\` or a control character such as CR or FF
+    would otherwise end the string early or read as an escape, and the selector would be invalid or
+    match something else.
     """
-    quoted = label.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\a ")
+    quoted = "".join(
+        "\\" + char
+        if char in '\\"'
+        # CSS reads CR, LF and FF as line breaks, which end a string; write controls as code points.
+        else f"\\{ord(char):x} "
+        if ord(char) < 0x20 or char == "\x7f"
+        else char
+        for char in label
+    )
     return f'[aria-label="{quoted}"]'

@@ -93,6 +93,9 @@ def test_a_template_with_placeholders_is_refused(sample):
         ('Delete "{name}"?', '[aria-label="Delete \\"{name}\\"?"]'),
         ("C:\\models", '[aria-label="C:\\\\models"]'),
         ("two\nlines", '[aria-label="two\\a lines"]'),
+        ("carriage\rreturn", '[aria-label="carriage\\d return"]'),
+        ("form\ffeed", '[aria-label="form\\c feed"]'),
+        ("tab\there", '[aria-label="tab\\9 here"]'),
     ],
 )
 def test_a_label_is_quoted_as_a_css_string(label, selector):
