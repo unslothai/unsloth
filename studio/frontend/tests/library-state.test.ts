@@ -153,6 +153,7 @@ test("a browser download with a file of unknown size goes one by one, never as a
     "./file-kind": {},
     "./file-name": { hasOwnFile: () => true, uniqueFileNames: (n: string[]) => n },
     "./chat-handoff-store": {},
+    "./start-chat": {},
   });
   await downloadLibraryItems([
     { name: "a.txt", sizeBytes: 10 },
