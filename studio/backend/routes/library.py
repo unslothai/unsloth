@@ -130,6 +130,11 @@ def _still_there(item_id: str, fingerprint: Optional[str]) -> bool:
 
 @router.patch("/items")
 def patch_item(body: ItemPatch, current_subject: str = Depends(get_current_subject)) -> dict:
+    # A path can name another file later, so the row is kept for this one. With the file gone
+    # there is nothing to keep it for: an unmarked row would pass to a file made there later.
+    fingerprint = library.fingerprint(body.id)
+    if fingerprint is None and library.path_derived(body.id):
+        raise HTTPException(status_code = 404, detail = "Item not found")
     try:
         library_db.update_entry(
             body.id,
@@ -137,8 +142,7 @@ def patch_item(body: ItemPatch, current_subject: str = Depends(get_current_subje
             favorite = body.favorite,
             folder_id = body.folderId,
             move = "folderId" in body.model_fields_set,
-            # A path can name another file later; the row is kept for this one.
-            fingerprint = library.fingerprint(body.id),
+            fingerprint = fingerprint,
         )
     except KeyError:
         raise HTTPException(status_code = 404, detail = "Folder not found")

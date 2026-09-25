@@ -193,7 +193,10 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
       optimistic(
         (state) => ({ items: state.items.filter((item) => item.id !== id) }),
         async () => {
+          const epoch = getAuthSessionEpoch();
           await deleteLibraryItem(id);
+          // Signed in as another account meanwhile: its chats can hold an attachment of this id.
+          if (getAuthSessionEpoch() !== epoch) return;
           // Those pages stay mounted off-screen and would keep showing it; an open chat would
           // keep an attachment, and write it back with its next save.
           const [kind, messageId, ...rest] = id.split(":");
