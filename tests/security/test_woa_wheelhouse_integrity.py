@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Every input to a wheel we Authenticode sign has to be immutable.
-
-woa-wheelhouse.yml builds pyarrow and sqlite-vec for win_arm64, signs the native images
-inside those wheels with the Azure Trusted Signing credentials, and `--clobber`s them onto
-the rolling release that install.ps1 fetches by default on Windows ARM64. The build pulls
-its ARM64 support from a third-party fork of Arrow and EXECUTES that fork's batch files, so
-a branch ref there would mean whoever can push to it decides what we sign. The smoke tests
-prove the wheel works and the signature check proves we signed it; neither says anything
-about provenance. So the ref is pinned to a commit, and this is the gate that keeps it that
-way.
-"""
+"""ARROW_WOA_REF must stay a commit SHA: the fork's batch files build a wheel we sign and publish."""
 
 from __future__ import annotations
 
@@ -67,7 +57,6 @@ def test_overlay_checkout_uses_that_pin():
 
 
 def test_the_run_re_checks_the_pin_before_copying_the_batch_files():
-    """A pin nobody verifies is a comment. The build asserts it at run time too."""
     steps = _steps(_workflow(), "build-pyarrow")
     names = [step.get("name") for step in steps]
     assert "Confirm the overlay is the pinned commit" in names, names
@@ -80,15 +69,12 @@ def test_the_run_re_checks_the_pin_before_copying_the_batch_files():
 
 
 def test_upstream_sources_are_tags_not_branches():
-    """apache/arrow and asg017/sqlite-vec come from the dispatch inputs, which default to
-    release tags. A default that drifted to a branch would reopen the same hole."""
     inputs = _dispatch_inputs(_workflow())
     assert inputs["arrow_tag"]["default"].startswith("apache-arrow-")
     assert re.match(r"^v\d+\.\d+\.\d+$", inputs["sqlite_vec_tag"]["default"])
 
 
 def test_publishing_is_off_by_default():
-    """`publish: true` is what reaches the signing environment and the release."""
     publish = _dispatch_inputs(_workflow())["publish"]
     assert publish["type"] == "boolean"
     assert publish["default"] is False

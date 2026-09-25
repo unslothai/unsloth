@@ -50,15 +50,6 @@ concurrency:
 env:
   # Windows ARM64 support in Arrow's wheel build is CI-only and still unmerged, so it is
   # overlaid onto the release tag. Both halves move together or not at all.
-  #
-  # Pinned to a commit, not to the Pyarrow_WoA branch it sits on. This overlay is a
-  # third-party fork whose batch files are copied into the Arrow tree and EXECUTED, and the
-  # wheel that comes out is Authenticode signed and --clobbered onto the rolling release
-  # install.ps1 reads. A branch is mutable, so tracking it would hand whoever can push to
-  # that fork the contents of a wheel we sign; the smoke tests and the signature check
-  # downstream prove the wheel works and that we signed it, neither proves where it came
-  # from. Same rule as the digest pin on trusted-signing-cli in the sign job: bump this
-  # deliberately, after reading the diff.
   ARROW_WOA_REPO: MugundanMCW/arrow
   ARROW_WOA_REF: 423b9b38f85a2b7634f7fc8e4975b3ed573f3697  # Pyarrow_WoA @ 2026-08-18
 
@@ -96,9 +87,6 @@ jobs:
             ci/vcpkg
           sparse-checkout-cone-mode: false
 
-      # A ref that is not a full commit SHA is mutable, and this overlay's batch files are
-      # executed to produce a wheel we sign. Checkout already resolved it, so this only
-      # states what was checked out and refuses anything that is not the pin.
       - name: Confirm the overlay is the pinned commit
         shell: pwsh
         run: |

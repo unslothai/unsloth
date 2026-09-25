@@ -1301,14 +1301,13 @@ function Get-NvidiaLibraryProbeType {
 }
 
 # "source;cudaMajor;cudaMinor;cap,cap" from NVML, else the CUDA driver API; "" when neither
-# answers. Versions are major*1000 + minor*10. Read in a runspace of its own under a deadline:
-# a wedged driver can block inside the library, and the deadline leaves that runspace behind.
+# answers. Versions are major*1000 + minor*10. One runspace + deadline per reader: a shared one let slow NVML starve CUDA.
 function Read-NvidiaLibraryRaw {
-    param([int]$TimeoutMs = 10000)
+    param([int]$TimeoutMs = 30000)
     $type = Get-NvidiaLibraryProbeType
     if (-not $type) { return "" }
     $reader = {
-        param($T)
+        param($T, $Which)
         function Read-Nvml {
             if ($T::nvmlInit_v2() -ne 0) { return "" }
             try {
@@ -1350,26 +1349,30 @@ function Read-NvidiaLibraryRaw {
             return "cuda;$([int][math]::Floor($ver / 1000));$([int][math]::Floor(($ver % 1000) / 10));$($caps -join ',')"
         }
         $r = ""
-        try { $r = Read-Nvml } catch { $r = "" }
-        if (-not $r) { try { $r = Read-Cuda } catch { $r = "" } }
+        try { if ($Which -eq "nvml") { $r = Read-Nvml } else { $r = Read-Cuda } } catch { $r = "" }
         return "$r"
     }
-    $ps = $null; $handle = $null
-    try {
-        $ps = [powershell]::Create()
-        $null = $ps.AddScript($reader.ToString()).AddArgument($type)
-        $handle = $ps.BeginInvoke()
-        if (-not $handle.AsyncWaitHandle.WaitOne($TimeoutMs)) { return "" }
-        return "$(@($ps.EndInvoke($handle)) | Select-Object -Last 1)"
-    } catch { return "" }
-    finally { if ($ps -and $handle -and $handle.IsCompleted) { $ps.Dispose() } }
+    foreach ($which in @("nvml", "cuda")) {
+        $ps = $null; $handle = $null; $r = ""
+        try {
+            $ps = [powershell]::Create()
+            $null = $ps.AddScript($reader.ToString()).AddArgument($type).AddArgument($which)
+            $handle = $ps.BeginInvoke()
+            if ($handle.AsyncWaitHandle.WaitOne($TimeoutMs)) {
+                $r = "$(@($ps.EndInvoke($handle)) | Select-Object -Last 1)"
+            }
+        } catch { $r = "" }
+        finally { if ($ps -and $handle -and $handle.IsCompleted) { $ps.Dispose() } }
+        if ($r) { return $r }
+    }
+    return ""
 }
 
 # NVIDIA inventory from the driver's own libraries (NVML, then the CUDA driver API), for a
 # host whose nvidia-smi is absent, stale or hangs (#9255). Twin of studio/nvidia_probe.py.
 # Cached. $null, or @{ Source; CudaMajor; CudaMinor; ComputeCaps ("8.9" strings); Count }.
 function Get-NvidiaLibraryInventory {
-    param([int]$TimeoutSec = 10)
+    param([int]$TimeoutSec = 30)
     if ($script:NvidiaLibraryInventoryProbed) { return $script:NvidiaLibraryInventory }
     $script:NvidiaLibraryInventoryProbed = $true
     $script:NvidiaLibraryInventory = $null
@@ -1484,7 +1487,7 @@ function Get-IndexIdentity {
 # _grouped_mm bug: these leaves need the torch 2.11 floor. Must match the other installers.
 function Test-RocmGfx211Leaf {
     param([string]$Leaf)
-    return @('gfx120x-all', 'gfx1151', 'gfx1150', 'gfx1152') -contains $Leaf
+    return @('gfx120x-all', 'gfx1151', 'gfx1150', 'gfx1152', 'gfx103x-all', 'gfx110x-all') -contains $Leaf
 }
 
 # rocm7.2 only; never floor an unknown newer rocm. Matches _ROCM_KNOWN_TORCH211_VERSIONS.
@@ -7590,24 +7593,42 @@ $ROCmIndexUrl = $null
 # Also on a name-inferred gfx: the wheels bundle the runtime, so no HIP SDK is needed.
 if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu") {
     $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
-    # gfx120X and Strix have a null _grouped_mm kernel on torch <2.11.0.
+    # gfx120X, Strix, gfx103X, gfx110X: null _grouped_mm kernel on torch <2.11.0 (unslothai/unsloth#11814).
     # Mirrors the $torchFloorMap in install.ps1 so both installers enforce
     # the same floor and ceiling when pulling from AMD's per-arch index.
     $torchFloorMap = @{
         "gfx1201" = "torch>=2.11.0,<2.12.0"; "gfx1200" = "torch>=2.11.0,<2.12.0"
         "gfx1151" = "torch>=2.11.0,<2.12.0"; "gfx1150" = "torch>=2.11.0,<2.12.0"
         "gfx1152" = "torch>=2.11.0,<2.12.0"
+        "gfx1030" = "torch>=2.11.0,<2.12.0"; "gfx1031" = "torch>=2.11.0,<2.12.0"
+        "gfx1032" = "torch>=2.11.0,<2.12.0"; "gfx1033" = "torch>=2.11.0,<2.12.0"
+        "gfx1034" = "torch>=2.11.0,<2.12.0"; "gfx1035" = "torch>=2.11.0,<2.12.0"
+        "gfx1036" = "torch>=2.11.0,<2.12.0"; "gfx1100" = "torch>=2.11.0,<2.12.0"
+        "gfx1101" = "torch>=2.11.0,<2.12.0"; "gfx1102" = "torch>=2.11.0,<2.12.0"
+        "gfx1103" = "torch>=2.11.0,<2.12.0"
     }
     # Companions bounded to the torch ceiling for a consistent trio (AMD publishes each alone).
     $torchvisionFloorMap = @{
         "gfx1201" = "torchvision>=0.26.0,<0.27.0"; "gfx1200" = "torchvision>=0.26.0,<0.27.0"
         "gfx1151" = "torchvision>=0.26.0,<0.27.0"; "gfx1150" = "torchvision>=0.26.0,<0.27.0"
         "gfx1152" = "torchvision>=0.26.0,<0.27.0"
+        "gfx1030" = "torchvision>=0.26.0,<0.27.0"; "gfx1031" = "torchvision>=0.26.0,<0.27.0"
+        "gfx1032" = "torchvision>=0.26.0,<0.27.0"; "gfx1033" = "torchvision>=0.26.0,<0.27.0"
+        "gfx1034" = "torchvision>=0.26.0,<0.27.0"; "gfx1035" = "torchvision>=0.26.0,<0.27.0"
+        "gfx1036" = "torchvision>=0.26.0,<0.27.0"; "gfx1100" = "torchvision>=0.26.0,<0.27.0"
+        "gfx1101" = "torchvision>=0.26.0,<0.27.0"; "gfx1102" = "torchvision>=0.26.0,<0.27.0"
+        "gfx1103" = "torchvision>=0.26.0,<0.27.0"
     }
     $torchaudioFloorMap = @{
         "gfx1201" = "torchaudio>=2.11.0,<2.12.0"; "gfx1200" = "torchaudio>=2.11.0,<2.12.0"
         "gfx1151" = "torchaudio>=2.11.0,<2.12.0"; "gfx1150" = "torchaudio>=2.11.0,<2.12.0"
         "gfx1152" = "torchaudio>=2.11.0,<2.12.0"
+        "gfx1030" = "torchaudio>=2.11.0,<2.12.0"; "gfx1031" = "torchaudio>=2.11.0,<2.12.0"
+        "gfx1032" = "torchaudio>=2.11.0,<2.12.0"; "gfx1033" = "torchaudio>=2.11.0,<2.12.0"
+        "gfx1034" = "torchaudio>=2.11.0,<2.12.0"; "gfx1035" = "torchaudio>=2.11.0,<2.12.0"
+        "gfx1036" = "torchaudio>=2.11.0,<2.12.0"; "gfx1100" = "torchaudio>=2.11.0,<2.12.0"
+        "gfx1101" = "torchaudio>=2.11.0,<2.12.0"; "gfx1102" = "torchaudio>=2.11.0,<2.12.0"
+        "gfx1103" = "torchaudio>=2.11.0,<2.12.0"
     }
     $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
     $ROCmTorchSpec  = if ($ROCmGfxArch -and $torchFloorMap.ContainsKey($ROCmGfxArch))        { $torchFloorMap[$ROCmGfxArch]        } else { "torch" }
@@ -8329,6 +8350,48 @@ if ($stackExit -ne 0) {
     step "python" "dependencies up to date"
     # Restore ErrorActionPreference (was lowered for pip/python section)
     $ErrorActionPreference = $prevEAP
+}
+
+# Windows MXC Preview is an optional, pinned prebuilt like the other native
+# runtimes. Keep this outside the Python dependency fast path: a missing or
+# corrupt runtime must be installed or repaired even when the venv is current.
+if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+    $_mxcInstaller = Join-Path $PSScriptRoot "install_mxc_prebuilt.py"
+    $_mxcInstallDir = Join-Path $StudioHome "mxc-runtime\windows-x86_64"
+    if (Test-Path -LiteralPath $_mxcInstaller -PathType Leaf) {
+        substep "installing Windows MXC Preview runtime..."
+        # Optional, so a nonzero exit or stderr line must reach the fallback below, not stop setup.
+        $_mxcPrevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        $_mxcRestoreNative = $PSVersionTable.PSVersion.Major -ge 7
+        if ($_mxcRestoreNative) {
+            $_mxcPrevNative = $PSNativeCommandUseErrorActionPreference
+            $PSNativeCommandUseErrorActionPreference = $false
+        }
+        try {
+            $_mxcOutput = & python $_mxcInstaller --install-dir $_mxcInstallDir 2>&1 | Out-String
+            $_mxcExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $_mxcPrevEAP
+            if ($_mxcRestoreNative) {
+                $PSNativeCommandUseErrorActionPreference = $_mxcPrevNative
+            }
+        }
+        if ($_mxcExit -eq 0) {
+            if ($_mxcOutput -match "already matches") {
+                step "MXC Preview" "prebuilt up to date and validated"
+            } else {
+                step "MXC Preview" "prebuilt installed and validated"
+            }
+        } elseif ($_mxcExit -eq 3) {
+            step "MXC Preview" "install blocked by an active MXC process; existing runtime kept" "Yellow"
+        } else {
+            step "MXC Preview" "prebuilt unavailable; Studio will use software safeguards" "Yellow"
+        }
+        if ($script:UnslothVerbose -and $_mxcOutput) {
+            Write-StudioLine $_mxcOutput.Trim() -ForegroundColor $(if ($_mxcExit -eq 0) { "DarkGray" } else { "Yellow" })
+        }
+    }
 }
 
 # ── Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ ──
@@ -9086,7 +9149,7 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
     # caught here; an unowned tree still stops.
     step "whisper.cpp" "install directory cannot be read: access is denied; curated whisper.cpp dictation is unavailable; restore access to $WhisperCppDir or move it aside, then re-run setup; browser and Transformers dictation remain available" "Yellow"
 } elseif (Test-Path -LiteralPath $WhisperInstaller) {
-    # The installer's atomic activation replaces the whole directory, so the
+    # The installer replaces the whole directory during activation, so the
     # custom-home ownership guard must run first (mirrors the llama block).
     if ($RuntimeRootIsCustom) {
         Assert-StudioOwnedOrAbsent -Path $WhisperCppDir -Label "whisper.cpp install" -IsCustom $RuntimeRootIsCustom

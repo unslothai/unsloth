@@ -85,6 +85,9 @@ PIP_CACHE_JOBS = {
     ("version-compat-ci.yml", "grpo-fake-run"),
 }
 
+# Partial saves on purpose: ccache checksums entries, so a truncated cache only costs misses.
+PARTIAL_SAVE_JOBS = {("prebuilt-cuda-wheels.yml", "warm")}
+
 HEAVY = re.compile(
     r"torch|transformers|trl|peft|vllm|bitsandbytes|sentence-transformers|diffusers"
     r"|accelerate|datasets|requirements/"
@@ -676,6 +679,8 @@ def test_a_cache_save_of_downloaded_artifacts_waits_for_the_download_to_succeed(
     """
     offenders = []
     for name, jid, job in _jobs():
+        if (name, jid) in PARTIAL_SAVE_JOBS:
+            continue
         steps = job.get("steps") or []
         producers = {
             s.get("id")

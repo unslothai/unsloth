@@ -20,6 +20,8 @@ from pathlib import Path, PurePosixPath
 from typing import NamedTuple, Optional, Sequence
 from utils.paths.path_utils import is_appledouble_metadata
 
+from .diffusion_nvfp4_flag import nvfp4_blocked
+
 
 # Runtime->route contract: the /images/generate route matches these messages EXACTLY for a 409 (vs a 500), so both
 # engines raise them verbatim.
@@ -1183,6 +1185,8 @@ def family_prequant_repo(
     close enough that planning around it costs nothing, since the base_model_id validation
     refuses the artifact well after the plan was made. A base whose weights really differ belongs
     in ``prequant_excluded_bases``, which returns None here instead."""
+    if nvfp4_blocked(scheme):
+        return None
     # Both tables are keyed on lowercased upstream ids.
     base = canonical_base(base_repo).lower()
     if base:
@@ -1330,6 +1334,18 @@ _DIFFUSERS_MAIN_COMMIT_RE = re.compile(
 )
 
 
+# Leads every refusal: a desktop install has no terminal, so pip spellings come second.
+DIFFUSERS_UPDATE_REMEDY = (
+    "Update Unsloth to install it (in the desktop app: Settings, Check for updates; from a "
+    "terminal: unsloth studio update), then restart Unsloth."
+)
+DIFFUSERS_MAIN_RESTART_REMEDY = (
+    "Restart Unsloth: on start it installs this pinned build by itself when it can reach "
+    "github.com. If that still fails, update Unsloth (in the desktop app: Settings, Check for "
+    "updates)."
+)
+
+
 def _diffusers_main_archive_remedy() -> str:
     """A remedy line a reader can actually run, naming the commit this build wants.
 
@@ -1346,8 +1362,9 @@ def _diffusers_main_archive_remedy() -> str:
     cannot name the SHA.
     """
     generic = (
-        "Re-run the Unsloth installer (leaving UNSLOTH_DIFFUSERS_MAIN unset), which installs it "
-        "from a zip archive when git is missing."
+        f"{DIFFUSERS_MAIN_RESTART_REMEDY} On a pip or server install, re-run the Unsloth installer "
+        "(leaving UNSLOTH_DIFFUSERS_MAIN unset), which installs it from a zip archive when git is "
+        "missing."
     )
     try:
         text = _DIFFUSERS_MAIN_PIN.read_text(encoding = "utf-8-sig")
@@ -1365,7 +1382,7 @@ def _diffusers_main_archive_remedy() -> str:
             f"{found.group('commit').lower()}.zip"
         )
         return (
-            f"{generic} To install it by hand with no git at all: "
+            f"{generic} To install it by hand from a terminal with no git at all: "
             f'pip install "diffusers @ {url}"'
         )
     return generic
@@ -1378,7 +1395,8 @@ def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> s
     if minimum is None:
         return (
             f"'{family_name}' needs a newer diffusers ({pipeline_class}); this environment has "
-            f"diffusers {installed}. Upgrade with: pip install -U diffusers."
+            f"diffusers {installed}. {DIFFUSERS_UPDATE_REMEDY} On a plain pip install: "
+            "pip install -U diffusers."
         )
     if minimum in _UNRELEASED_MIN_DIFFUSERS:
         remedy = _diffusers_main_archive_remedy()
@@ -1386,10 +1404,12 @@ def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> s
             f"'{family_name}' needs diffusers >= {minimum} ({pipeline_class}), which has not been "
             f"released yet; this environment has diffusers {installed}. Unsloth installs a pinned "
             "build of diffusers main for this and that build is not here, which almost always "
-            "means the install had no working git (run: git --version) or could not reach "
+            "means the install had no working git (check with: git --version) or could not reach "
             f"github.com. {remedy}"
         )
-    remedy = f"Upgrade with: pip install -U 'diffusers>={minimum}'."
+    remedy = (
+        f"{DIFFUSERS_UPDATE_REMEDY} On a plain pip install: pip install -U 'diffusers>={minimum}'."
+    )
     if needs_py310:
         remedy += (
             f" diffusers dropped Python 3.9 in {_DIFFUSERS_DROPPED_PY39}, so that release needs "
@@ -1482,7 +1502,8 @@ def assert_pipeline_class_available(
         if strict:
             raise ValueError(
                 f"'{family_name}' needs diffusers ({pipeline_class}), which this environment "
-                f"cannot import: {exc}. Install or repair it with: pip install -U diffusers."
+                f"cannot import: {exc}. {DIFFUSERS_UPDATE_REMEDY} On a plain pip install, repair it "
+                "with: pip install -U diffusers."
             ) from None
         return
 
