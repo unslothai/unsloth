@@ -184,6 +184,9 @@ jobs:
           name: pypi-dist
           path: dist/*.whl
           if-no-files-found: error
+          # A rerun of this job would otherwise hit the name the first attempt kept.
+          # Not run_attempt in the name: a publish-only rerun must find this one.
+          overwrite: true
 
       - name: Studio backend import smoke
         run: |
