@@ -521,3 +521,32 @@ def test_a_kept_wrapper_resolves_its_layer_count_through_the_thinker():
     model = _text_trainable_core(_tiny_omni(), text_intent = False)
     assert _get_total_transformer_layers(model) is None
     assert _get_total_transformer_layers(model.thinker) == model.thinker.config.text_config.num_hidden_layers
+
+
+def test_an_explicit_leaf_list_on_a_kept_wrapper_is_scoped_to_the_thinker(monkeypatch):
+    """PEFT suffix-matches ["q_proj", "v_proj"] in the talker too; those adapters never train."""
+    import functools
+    from unsloth.models import vision
+
+    seen = {}
+
+    @functools.wraps(vision.get_peft_regex)
+    def capture(model, **kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("captured")
+
+    monkeypatch.setattr(vision, "get_peft_regex", capture)
+    model = vision._text_trainable_core(_tiny_omni(), text_intent = False)
+    with pytest.raises(RuntimeError, match = "captured"):
+        vision.FastBaseModel.get_peft_model(model, r = 2, target_modules = ["q_proj", "v_proj"])
+    assert seen["target_modules"] == ["q_proj", "v_proj"]
+
+
+def test_a_kept_wrapper_resizes_its_vocabulary_through_the_thinker():
+    from unsloth.models.vision import _text_trainable_core
+
+    model = _text_trainable_core(_tiny_omni(), text_intent = False)
+    old = model.get_input_embeddings().weight.shape[0]
+    model.resize_token_embeddings(old + 8)
+    assert model.thinker.get_input_embeddings().weight.shape[0] == old + 8
+    assert model.thinker.lm_head.weight.shape[0] == old + 8

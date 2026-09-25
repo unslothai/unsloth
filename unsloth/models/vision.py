@@ -1360,6 +1360,10 @@ def _delegate_text_forward(model, name, core):
         wrapper_input = None
     if wrapper_input is None:
         model.get_input_embeddings = core.get_input_embeddings
+        # resize_token_embeddings pairs the getters with these setters.
+        model.set_input_embeddings = core.set_input_embeddings
+    if wrapper_output is None:
+        model.set_output_embeddings = core.set_output_embeddings
     # Siblings never reach the loss: freeze them, else DDP full finetuning fails on unused parameters.
     core_parameters = {id(parameter) for parameter in core.parameters()}
     for child_name, child in model.named_children():
@@ -2735,7 +2739,8 @@ class FastBaseModel:
                 or not finetune_attention_modules
                 or not finetune_mlp_modules
             )
-            if type(target_modules) in (list, tuple) and (_scoping or finetune_audio_layers):
+            # A kept wrapper (Qwen3-Omni) also holds a talker the forward never reaches: scope leaves to the text core.
+            if type(target_modules) in (list, tuple) and (_scoping or finetune_audio_layers or _core_prefix):
                 if _scoping:
                     print(
                         "Unsloth: Explicit target_modules are constrained by the "
