@@ -21,7 +21,7 @@ flatter distribution on both sides.
 The arithmetic is the SAME ConvRot the hosted Qwen3-VL conditioner already runs, so
 ``build_convrot_hadamard`` / ``rotate_convrot_activation`` live here and
 ``video_minimax_h3_te`` imports them. One Hadamard in the tree, not two: the conditioner's and
-the denoiser's rotations have to agree with the same comfy-kitchen definition, and two copies of
+the denoiser's rotations have to agree on the same ConvRot definition, and two copies of
 a matrix nobody re-derives at review time is how they stop agreeing.
 
 What this module adds on top of those primitives is the DENOISER half: the offline weight
@@ -90,9 +90,24 @@ def is_power_of_four(size: Any) -> bool:
     return (n.bit_length() - 1) % 2 == 0
 
 
-# The rotation itself. Mirrors comfy-kitchen's ``_build_hadamard`` / ``_rotate_activation`` / ``_rotate_weight``, in a
-# few lines of torch rather than a dependency on a wheel Unsloth does not ship.
+# H = kron(H4, ...) / sqrt(size), H4[a, b] = -1 iff a ^ b == 3: sign(i, j) = parity of base-4 digits of i ^ j equal to 3.
+# Must stay bit-identical to the kron construction the hosted checkpoints were rotated with.
 _HADAMARD_CACHE: dict = {}
+
+
+def _convrot_sign_bits(size: int) -> Any:
+    """Bool ``[size, size]`` tensor, True where the unnormalized kron power of H4 is -1."""
+    import torch
+
+    idx = torch.arange(size, dtype = torch.int64)
+    both = idx[:, None] ^ idx[None, :]
+    threes = both & (both >> 1) & 0x5555555555555555
+    parity = torch.zeros_like(threes)
+    # fixed Python loop count keeps this traceable under fullgraph
+    for _ in range((size.bit_length() - 1) // 2):
+        parity ^= threes & 1
+        threes = threes >> 2
+    return parity.bool()
 
 
 def build_convrot_hadamard(
@@ -100,12 +115,7 @@ def build_convrot_hadamard(
     device: Any = "cpu",
     dtype: Any = None,
 ) -> Any:
-    """The normalized regular Hadamard matrix ConvRot rotates by. Cached per (size, device, dtype).
-
-    Built as ``kron(H4, H4, ...) / sqrt(size)``, which is both symmetric and orthogonal -- the
-    property the offline/online pair relies on, since it means the same matrix undoes itself and
-    the weight side can use ``H.T`` interchangeably with ``H``. Building directly in ``dtype`` is
-    exact for every float type: the entries are +-1 and the normalizer is a power of two."""
+    """Normalized ConvRot Hadamard, cached per (size, device, dtype). Symmetric, so ``H.T == H``."""
     import torch
 
     if dtype is None:
@@ -116,29 +126,21 @@ def build_convrot_hadamard(
         return cached
     if not is_power_of_four(size):
         raise ValueError(f"ConvRot group size must be a power of 4, got {size}")
-    h4 = torch.tensor(
-        [[1, 1, 1, -1], [1, 1, -1, 1], [1, -1, 1, 1], [-1, 1, 1, 1]],
-        dtype = dtype,
-        device = device,
-    )
-    h = h4
-    current = 4
-    while current < size:
-        h = torch.kron(h, h4)
-        current *= 4
-    h = h / (size**0.5)
+    scale = 2.0 ** -((size.bit_length() - 1) // 2)
+    negative = _convrot_sign_bits(size).to(device)
+    h = torch.full((size, size), scale, dtype = dtype, device = device)
+    h = h.masked_fill(negative, -scale)
     _HADAMARD_CACHE[key] = h
     return h
 
 
 def rotate_convrot_activation(x: Any, h: Any, group_size: int) -> Any:
-    """``x @ H`` blockwise over the last dimension."""
-    shape = x.shape
-    features = shape[-1]
+    """``x @ blockdiag(H)`` over the last dimension."""
+    features = x.shape[-1]
     if features % group_size != 0:
         raise ValueError(f"features {features} not divisible by ConvRot group {group_size}")
-    grouped = x.reshape(-1, features // group_size, group_size)
-    return grouped.matmul(h.to(dtype = x.dtype, device = x.device)).reshape(shape)
+    blocks = x.reshape(-1, features // group_size, group_size)
+    return (blocks @ h.to(device = x.device, dtype = x.dtype)).reshape(x.shape)
 
 
 def rotate_convrot_weight_(module: Any, group_size: int) -> None:
@@ -156,10 +158,8 @@ def rotate_convrot_weight_(module: Any, group_size: int) -> None:
             f"in_features {in_features} is not divisible by the ConvRot group {group_size}"
         )
     h = build_convrot_hadamard(group_size, device = weight.device, dtype = torch.float32)
-    rotated = torch.matmul(
-        weight.float().reshape(out_features, in_features // group_size, group_size), h.T
-    ).reshape(out_features, in_features)
-    module.weight.data = rotated.to(weight.dtype)
+    blocks = weight.float().reshape(out_features, in_features // group_size, group_size)
+    module.weight.data = (blocks @ h.T).reshape(out_features, in_features).to(weight.dtype)
 
 
 @lru_cache(maxsize = None)

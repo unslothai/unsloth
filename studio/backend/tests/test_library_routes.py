@@ -20,6 +20,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 from auth.authentication import (  # noqa: E402
+    authenticated_via_api_key,
     get_current_subject,
     request_admitted_without_credential,
 )
@@ -40,6 +41,7 @@ def _app(subject) -> TestClient:
     if subject is not None:
         app.dependency_overrides[get_current_subject] = subject
         app.dependency_overrides[request_admitted_without_credential] = lambda: False
+        app.dependency_overrides[authenticated_via_api_key] = lambda: False
     app.include_router(library_routes.router, prefix = "/api/library")
     return TestClient(app)
 
@@ -483,6 +485,70 @@ def test_fine_tuned_models_are_listed_but_not_deleted_here(client, monkeypatch):
         shutil.rmtree(run)
 
 
+def test_an_api_key_lists_fine_tunes_by_reference_and_can_still_act_on_them(client, monkeypatch):
+    import shutil
+
+    from utils.paths.storage_roots import outputs_root
+
+    monkeypatch.setattr(library, "_SOURCES", (library._model_items,))
+    outputs_root().mkdir(parents = True, exist_ok = True)
+    run = outputs_root() / "library-key-run"
+    run.mkdir()
+    local_base = str(outputs_root() / "my-local-base")
+    (run / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": local_base}))
+    (run / "adapter_model.safetensors").write_bytes(b"x" * 10)
+    try:
+        library.invalidate_listing()
+        client.app.dependency_overrides[library_routes.authenticated_via_api_key] = lambda: True
+        body = client.get("/api/library").text
+        assert str(run) not in body and local_base not in body
+        [item] = [i for i in json.loads(body)["items"] if i["name"] == run.name]
+        _patch(client, id = item["id"], favorite = True)
+        assert str(run) not in json.dumps(_favorites(client))
+        client.app.dependency_overrides[library_routes.authenticated_via_api_key] = lambda: False
+        assert f"model:training:{run}" in _favorites(client)
+    finally:
+        shutil.rmtree(run)
+
+
+def test_a_file_part_kept_as_a_data_url_decodes():
+    import base64
+
+    from routes.chat_history import _decode_attachment_base64
+
+    clip = base64.b64encode(_CLIP).decode()
+    assert _decode_attachment_base64(f"data:video/mp4;base64,{clip}") == _CLIP
+    assert _decode_attachment_base64(clip) == _CLIP
+
+
+def test_gallery_iso_dates_and_suffixless_chat_media_names():
+    assert library._to_ms("2026-09-25T10:00:00Z") == 1790330400000
+    assert library._to_ms(1790330400) == 1790330400000
+    assert library._to_ms("not a date") == 0
+    assert library._named_for_type("Chat image", "image/png") == "Chat image.png"
+    assert library._named_for_type("Chat audio", "audio/wav") == "Chat audio.wav"
+    assert library._named_for_type("photo.jpg", "image/jpeg") == "photo.jpg"
+    assert library._named_for_type("notes", "application/pdf") == "notes"
+
+
+def test_an_empty_parent_or_folder_id_is_refused(client):
+    assert _post(client, "folders", name = "x", parentId = "").status_code == 422
+    assert (
+        client.patch("/api/library/items", json = {"id": "upload:x", "folderId": ""}).status_code
+        == 422
+    )
+
+
+def test_an_upload_file_is_revalidated_after_a_note_save(client):
+    [note] = _upload(client, ("plan.md", b"# plan", "text/markdown"))
+    response = client.get(_items(client)[0][note]["fileUrl"])
+    assert "no-cache" in response.headers["cache-control"]
+
+
+def test_the_listing_memo_is_bounded():
+    assert library._LISTING.size > 0
+
+
 def test_the_slow_sources_are_remembered_briefly_and_forgotten_on_a_write(client, monkeypatch):
     calls = []
 
@@ -590,6 +656,25 @@ def test_a_failed_write_leaves_the_uploads_as_they_were(client, monkeypatch):
     assert library.upload_path(_ref(note)).read_bytes() == b"old"
     assert [path.name for path in library.uploads_dir().iterdir()] == [_ref(note)]
     assert note in _items(client)[0]
+
+
+def test_a_note_save_keeps_the_old_file_on_disk_not_in_memory(client, monkeypatch):
+    from pathlib import Path
+
+    [note] = _upload(client, ("n.md", b"old", "text/markdown"))
+    path = library.upload_path(_ref(note))
+    read = Path.read_bytes
+    with monkeypatch.context() as patched:
+        patched.setattr(
+            Path, "read_bytes", lambda self: pytest.fail("read") if self == path else read(self)
+        )
+        patched.setattr(library_db, "touch_upload", _fail)
+        with pytest.raises(sqlite3.OperationalError):
+            library.write_upload_text(_ref(note), "new")
+    assert path.read_bytes() == b"old"
+    assert library.write_upload_text(_ref(note), "new")
+    assert path.read_bytes() == b"new"
+    assert [p.name for p in library.uploads_dir().iterdir()] == [_ref(note)]
 
 
 def test_a_file_held_open_on_windows_answers_409(client, monkeypatch):
@@ -989,6 +1074,17 @@ def test_reveal_opens_an_items_own_file_or_a_location_by_key(client, revealed):
     assert set(paths) == {"uploads", "images", "videos", "audio", "fineTunes", "exports"}
     assert _post(client, "locations/reveal", key = "images").status_code == 200
     assert revealed == [str(library.upload_path(_ref(note))), paths["images"]]
+
+
+def test_locations_hide_host_paths_from_an_api_key(client):
+    signed_in = client.get("/api/library/locations").json()["locations"]
+    assert all(os.path.isabs(entry["path"]) for entry in signed_in)
+    client.app.dependency_overrides[authenticated_via_api_key] = lambda: True
+    keyed = client.get("/api/library/locations").json()["locations"]
+    assert [entry["key"] for entry in keyed] == [entry["key"] for entry in signed_in]
+    for entry, shown in zip(keyed, signed_in):
+        assert entry["path"] != shown["path"]
+        assert shown["path"] not in json.dumps(entry)
 
 
 def test_reveal_is_refused_to_a_managed_account_and_where_no_file_manager_is(

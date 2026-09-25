@@ -15,11 +15,12 @@ from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
 from auth.authentication import (
+    authenticated_via_api_key,
     get_current_subject,
     request_admitted_without_credential,
     subject_for_header_or_query_token,
@@ -60,14 +61,66 @@ def _inline_type(content_type: str) -> Optional[str]:
     return value if value in _INLINE_IMAGE_TYPES else _playable(value)
 
 
-class ItemPatch(BaseModel):
+def _model_ref(item_id: str) -> Optional[tuple[str, str]]:
+    kind, _, rest = item_id.partition(":")
+    origin, sep, path = rest.partition(":")
+    return (origin, path) if kind == "model" and sep and path else None
+
+
+def _for_caller(item_id: str, via_api_key: bool) -> str:
+    """A fine-tune's id names its folder; an API key gets a reference in its place, as the Hub
+    inventory routes give it, which ``_from_caller`` turns back."""
+    from hub.utils.host_paths import cache_reference, host_paths_visible
+
+    ref = _model_ref(item_id)
+    if ref is None or host_paths_visible(via_api_key):
+        return item_id
+    return f"model:{ref[0]}:{cache_reference(ref[1])}"
+
+
+def _from_caller(item_id: str) -> str:
+    from hub.utils.host_paths import resolve_host_path_reference
+
+    ref = _model_ref(item_id)
+    path = resolve_host_path_reference(ref[1]) if ref else None
+    return f"model:{ref[0]}:{path}" if path else item_id
+
+
+def _items_for_caller(items: list[dict], via_api_key: bool) -> list[dict]:
+    from hub.utils.host_paths import (
+        cache_reference,
+        host_paths_visible,
+        redact_inventory_host_paths,
+    )
+
+    if host_paths_visible(via_api_key):
+        return items
+    shown = []
+    for item in items:
+        item = {**item, "id": _for_caller(item["id"], via_api_key)}
+        base = (item.get("model") or {}).get("baseModel")
+        # A fine-tune of a local model names that folder; a Hub repo id is kept.
+        if isinstance(base, str) and os.path.isabs(base):
+            item["model"] = {**item["model"], "baseModel": cache_reference(base)}
+        shown.append(item)
+    return redact_inventory_host_paths(shown, via_api_key = via_api_key)
+
+
+class _ItemIdModel(BaseModel):
+    @field_validator("id", check_fields = False)
+    @classmethod
+    def _resolve_id(cls, value: str) -> str:
+        return _from_caller(value)
+
+
+class ItemPatch(_ItemIdModel):
     id: str = Field(max_length = 4096)
     name: Optional[str] = Field(default = None, min_length = 1, max_length = 255)
     favorite: Optional[bool] = None
-    folderId: Optional[str] = Field(default = None, max_length = 64)
+    folderId: Optional[str] = Field(default = None, min_length = 1, max_length = 64)
 
 
-class ItemRef(BaseModel):
+class ItemRef(_ItemIdModel):
     id: str = Field(max_length = 4096)
 
 
@@ -80,19 +133,19 @@ class LocationRef(BaseModel):
     key: str = Field(max_length = 32)
 
 
-class ProjectCopy(BaseModel):
+class ProjectCopy(_ItemIdModel):
     id: str = Field(max_length = 4096)
     projectId: str = Field(max_length = 256)
 
 
 class FolderCreate(BaseModel):
     name: str = Field(min_length = 1, max_length = 255)
-    parentId: Optional[str] = Field(default = None, max_length = 64)
+    parentId: Optional[str] = Field(default = None, min_length = 1, max_length = 64)
 
 
 class FolderPatch(BaseModel):
     name: Optional[str] = Field(default = None, min_length = 1, max_length = 255)
-    parentId: Optional[str] = Field(default = None, max_length = 64)
+    parentId: Optional[str] = Field(default = None, min_length = 1, max_length = 64)
 
 
 class TextContent(BaseModel):
@@ -101,18 +154,24 @@ class TextContent(BaseModel):
 
 
 @router.get("")
-async def get_library(current_subject: str = Depends(get_current_subject)) -> dict:
+async def get_library(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> dict:
     items = await run_in_threadpool(library.list_items)
-    return {"items": items, "folders": library_db.list_folders()}
+    return {"items": _items_for_caller(items, via_api_key), "folders": library_db.list_folders()}
 
 
 @router.get("/favorites")
-def get_favorites(current_subject: str = Depends(get_current_subject)) -> dict:
+def get_favorites(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> dict:
     """Favorite item ids alone, for pages that mark favorites without listing every source. Only
     those the source still has: a gallery or chat can delete one without the Library."""
     return {
         "ids": [
-            item_id
+            _for_caller(item_id, via_api_key)
             for item_id, entry in library_db.list_entries().items()
             if entry["favorite"] and _still_there(item_id, entry["fingerprint"])
         ]
@@ -251,6 +310,7 @@ def get_item_thumbnail(
 ):
     """An image or video item's card picture. The client adds the item's version to the URL, so it
     can cache."""
+    id = _from_caller(id)
     try:
         data = library.thumbnail(id)
     except LookupError:
@@ -277,6 +337,7 @@ async def download_item(
 ):
     """An item's file as an attachment. Takes ``?token=`` as well: the desktop app streams it
     straight to disk, and its native save sends no header."""
+    id = _from_caller(id)
     await subject_for_header_or_query_token(request, token)
     try:
         item = await run_in_threadpool(library.open_item, id)
@@ -402,6 +463,7 @@ async def get_item_stream_url(
 ) -> dict:
     """A short-lived link an ``<audio>`` or ``<video>`` element plays an item from, with range
     requests. Relative, so it works behind any proxy the page is served through."""
+    id = _from_caller(id)
     if no_credential:
         raise HTTPException(
             status_code = 403,
@@ -456,8 +518,16 @@ async def stream_item(
 
 
 @router.get("/locations")
-async def get_locations(current_subject: str = Depends(get_current_subject)) -> dict:
-    return {"locations": await run_in_threadpool(library.locations)}
+async def get_locations(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> dict:
+    from hub.utils.host_paths import redact_inventory_host_paths
+
+    # Settings > Library shows these to a signed-in user; an API key gets references, as the Hub
+    # inventory routes give it.
+    locations = await run_in_threadpool(library.locations)
+    return redact_inventory_host_paths({"locations": locations}, via_api_key = via_api_key)
 
 
 @router.post("/locations/reveal")
@@ -574,13 +644,15 @@ def get_upload_file(upload_id: str, current_subject: str = Depends(get_current_s
     if record is None or path is None or not path.is_file():
         raise HTTPException(status_code = 404, detail = "File not found")
     content_type = _inline_type(record["contentType"])
+    # A note is saved through another URL, so the browser must ask again rather than reuse this.
+    headers = {"Cache-Control": "private, no-cache", **_NOSNIFF}
     if content_type:
-        return FileResponse(path, media_type = content_type, headers = _NOSNIFF)
+        return FileResponse(path, media_type = content_type, headers = headers)
     return FileResponse(
         path,
         media_type = "application/octet-stream",
         filename = library.safe_file_name(record["name"]),
-        headers = _NOSNIFF,
+        headers = headers,
     )
 
 

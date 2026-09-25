@@ -2623,10 +2623,11 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     (AUDIO_PAGE, "", "h", "34px", 1),
     (AUDIO_PAGE, "[&>button]:", "h", "34px", 1),
     (VIDEO_PAGE, "!", "h", "34px", 2),
-    # The chat page's 30px round controls, including the collapsed New Chat button. The
-    # header they sit in grows with the setting, so one left fixed shrinks against its own row.
+    # The chat page's 30px round controls, including the collapsed New Chat button and the
+    # save-temporary-chat button beside them. The header they sit in grows with the setting, so
+    # one left fixed shrinks against its own row.
     (CHAT_PAGE, "!", "size", "30px", 1),
-    (CHAT_PAGE, "", "size", "30px", 3),
+    (CHAT_PAGE, "", "size", "30px", 4),
 )
 
 # Where a class may begin: the start of the string it is written in, or the space after the
