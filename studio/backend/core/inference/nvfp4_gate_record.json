@@ -232,6 +232,83 @@
           "nvfp4": 21.18
         }
       }
+    },
+    {
+      "family": "qwen-image",
+      "base_repo": "Qwen/Qwen-Image-2512",
+      "policy_id": "qwen2512_m120_attn8_v1",
+      "policy_version": 1,
+      "checkpoint_sha256": "665e8f9a12d31366cfd4ac10a93c751a32219ea2386107b55a43b0cde5955607",
+      "repo_id": "unsloth/Qwen-Image-2512-NVFP4",
+      "filename": "Qwen-Image-2512-NVFP4.pt",
+      "gptq": true,
+      "all_pass": true,
+      "num_pairs": 28,
+      "num_passed": 28,
+      "aggregates": {
+        "lpips_mean": 0.13174473800297296,
+        "ssim_mean": 0.89856672865755,
+        "clip_delta_mean": 0.005002257015023913,
+        "failures": []
+      },
+      "gates": {
+        "lpips_case_max": 0.6,
+        "lpips_mean_max": 0.25,
+        "ssim_case_min": 0.3,
+        "ssim_mean_min": 0.7,
+        "clip_delta_case_max": 0.03,
+        "clip_delta_mean_max": 0.01,
+        "black_luma_min": 0.02
+      },
+      "resolutions": [
+        512,
+        1024
+      ],
+      "seeds": [
+        1234,
+        4321
+      ],
+      "cuda_graphs": true,
+      "backend": "flashinfer",
+      "gpu": "NVIDIA B200",
+      "versions": {
+        "torch": "2.12.1+cu130",
+        "torchao": "0.18.0",
+        "diffusers": "0.41.0.dev0",
+        "flashinfer": "0.6.18.post1"
+      },
+      "gate_script_sha256": "d0b423658874f8430b1508f839cbc7fe39b1ee04d73931ffe4f24c444b11d3b5",
+      "run_date": "2026-09-24",
+      "results_path": "/mnt/disks/unslothai/ubuntu/workspace_81/outputs/nvfp4_repick/q2512_qwen2512_m120_attn8_v1_g32/gate/results.json",
+      "fp8_paired": {
+        "metric": "lpips_vgg(nvfp4, bf16) - lpips_vgg(fp8, bf16), per (prompt, seed)",
+        "prompts": "diffusion_bench image_24 (24 frozen prompts)",
+        "num_pairs": 48,
+        "resolution": 1024,
+        "seeds": [
+          1234,
+          4321
+        ],
+        "fp8_sha256": "d6b26b72e5925220df8e38fad8446850d35d2187f28e4164b77532cf74e80cf0",
+        "d_lpips_mean": 0.0282,
+        "d_lpips_ci95": [
+          0.0076,
+          0.0496
+        ],
+        "d_lpips_prompt_cluster_ci95": [
+          0.0082,
+          0.0493
+        ],
+        "bar_upper_ci95": 0.05,
+        "ssim_vs_bf16": {
+          "fp8": 0.906,
+          "nvfp4": 0.881
+        },
+        "psnr_vs_bf16": {
+          "fp8": 26.38,
+          "nvfp4": 24.9
+        }
+      }
     }
   ]
 }

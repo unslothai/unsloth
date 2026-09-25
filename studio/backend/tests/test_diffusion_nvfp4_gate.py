@@ -94,6 +94,13 @@ def test_the_shipped_record_leaves_every_family_ungated():
     assert nvfp4_gate_passed("flux.1", "black-forest-labs/FLUX.1-schnell") is False
 
 
+def test_the_shipped_2512_record_never_gates_the_original_qwen_image():
+    # Same family, same shapes, different weights: 2512's verdict must not reach Qwen/Qwen-Image.
+    assert nvfp4_gate_passed("qwen-image", "Qwen/Qwen-Image-2512") is True
+    assert nvfp4_gate_passed("qwen-image", "Qwen/Qwen-Image") is False
+    assert nvfp4_gate_passed("qwen-image-edit", "Qwen/Qwen-Image-2512") is False
+
+
 def test_no_record_at_all_reads_false(tmp_path):
     empty = _gate_file(tmp_path)
     assert nvfp4_gate_record("z-image", ZIMAGE_BASE, path = empty) is None
