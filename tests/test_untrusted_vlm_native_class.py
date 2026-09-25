@@ -1,13 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""An untrusted load of a VLM whose repo auto_map names only AutoModelForCausalLM.
-
-stepfun-ai/Step-3.7-Flash ships remote code registered under AutoModelForCausalLM, while
-transformers itself implements the same checkpoint (model_type step3p7) as an image-text class.
-FastModel took the auto_map entry whatever the trust decision, so trust_remote_code = False (the
-default) asked AutoModelForCausalLM to build the repo's class and transformers refused the load
-("contains custom code which must be executed"). Untrusted, only auto_map entries transformers can
-build natively are considered now; a trusted load still takes the repo's class.
-"""
+"""Untrusted FastModel load of a VLM whose auto_map names only AutoModelForCausalLM (Step-3.7-Flash)
+must build the native image-text class instead of refusing on remote code."""
 
 import json
 
@@ -58,8 +51,7 @@ def _tiny_step3p7(path, auto_map):
     model = step3p7.Step3p7ForConditionalGeneration(config).to(torch.bfloat16)
     model.save_pretrained(path)
     cfg = json.loads((path / "config.json").read_text(encoding = "utf-8"))
-    # What the hub repo declares: its own class under AutoModelForCausalLM. The module is never
-    # shipped here, so any attempt to build it fails loudly.
+    # Module never shipped: building the repo class fails loudly.
     cfg["auto_map"] = {
         name: "modeling_step3p7.Step3p7ForConditionalGeneration" for name in auto_map
     }

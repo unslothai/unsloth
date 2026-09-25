@@ -1941,7 +1941,7 @@ class FastModel(FastBaseModel):
                 _auto_map = getattr(model_config, "auto_map", {}) or {}
                 _vlm_class_name = AutoModelForVision2Seq.__name__
                 _has_vlm_class = _vlm_class_name in _auto_map
-                # Untrusted, keep only auto_map entries transformers maps natively (Step-3.7's step3p7 is image-text).
+                # Untrusted: keep only auto_map entries transformers builds natively (Step-3.7: step3p7 is image-text).
                 if not trust_remote_code:
                     import transformers as _transformers
 
@@ -1952,7 +1952,7 @@ class FastModel(FastBaseModel):
                             getattr(_transformers, _name, None), model_config
                         )
                     }
-                    # The repo's causal LM class is remote code, so native AutoModel would build a headless backbone (Kimi-K2.5): use the image-text class.
+                    # Remote causal LM class: native AutoModel would be a headless backbone (Kimi-K2.5).
                     if (
                         "AutoModelForCausalLM" in _auto_map
                         and "AutoModelForCausalLM" not in _native_map
