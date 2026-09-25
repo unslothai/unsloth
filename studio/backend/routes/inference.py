@@ -24589,7 +24589,14 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
 
     wants_stream = bool(payload.stream)
     relay = _NpuStreamRelay(upstream.public_model, _normalize_stop_sequences(payload.stop))
-    upstream_payload = payload.model_copy(update = {"stream": True})
+    update: dict = {"stream": True}
+    if _legacy_image_is_distinct(payload):
+        # The proxy reads messages only, so splice a top-level image in as GGUF chat does.
+        update["messages"] = [
+            ChatMessage.model_validate(message)
+            for message in _openai_messages_for_passthrough(payload, vision = True)
+        ]
+    upstream_payload = payload.model_copy(update = update)
     response = await _proxy_to_external_provider(
         upstream_payload,
         request,

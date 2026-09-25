@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -178,8 +179,9 @@ def _call(**fields):
     )
     out: dict = {}
     loop = asyncio.new_event_loop()
-    previous = ep_mod._http_client
+    previous = ep_mod._http_client, ep_mod._loopback_http_client
     client = httpx.AsyncClient()
+    loopback = httpx.AsyncClient(trust_env = False)
 
     async def go() -> None:
         try:
@@ -194,12 +196,13 @@ def _call(**fields):
                 out["status"], out["body"] = response.status_code, json.loads(response.body)
         finally:
             await client.aclose()
+            await loopback.aclose()
 
-    ep_mod._http_client = client
+    ep_mod._http_client, ep_mod._loopback_http_client = client, loopback
     try:
         loop.run_until_complete(go())
     finally:
-        ep_mod._http_client = previous
+        ep_mod._http_client, ep_mod._loopback_http_client = previous
         loop.close()
     return out["status"], out["body"]
 
@@ -211,6 +214,57 @@ def _data(lines):
     return [
         json.loads(line[5:]) for line in lines if line.startswith("data:") and "[DONE]" not in line
     ]
+
+
+def test_an_environment_proxy_never_sees_npu_chat(flm, monkeypatch):
+    seen = []
+    proxy = socket.socket()
+    proxy.bind(("127.0.0.1", 0))
+    proxy.listen(4)
+    proxy.settimeout(0.2)
+
+    def serve() -> None:
+        while not stop.is_set():
+            try:
+                conn, _ = proxy.accept()
+            except OSError:
+                continue
+            seen.append(conn.recv(4096))
+            conn.close()
+
+    stop = threading.Event()
+    thread = threading.Thread(target = serve, daemon = True)
+    thread.start()
+    # Studio started under a proxy: its shared client picks the proxy up at construction.
+    monkeypatch.delenv("NO_PROXY", raising = False)
+    monkeypatch.delenv("no_proxy", raising = False)
+    monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{proxy.getsockname()[1]}")
+    try:
+        recorded = flm()
+        status, body = _call(stream = False)
+    finally:
+        stop.set()
+        thread.join(timeout = 5)
+        proxy.close()
+    assert seen == []
+    assert status == 200 and recorded[-1]["auth"] == "Bearer secret-key"
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_a_top_level_image_reaches_a_vision_model(flm, stream):
+    import base64
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (4, 4), "red").save(buffer, format = "PNG")
+    recorded = flm(vision = True)
+    status, _ = _call(stream = stream, image_base64 = base64.b64encode(buffer.getvalue()).decode())
+    assert status == 200
+    last = recorded[-1]["body"]["messages"][-1]
+    assert isinstance(last["content"], list)
+    assert any(part.get("type") == "image_url" for part in last["content"])
 
 
 def test_the_body_fastflowlm_receives(flm):
