@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import base64
+import contextlib
 import io
 import json
 import os
@@ -349,7 +350,9 @@ def test_a_sandbox_delete_takes_only_the_file_it_was_listed_as(client, signed_in
     monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
     _directory, path = _sandbox_chat("a.txt", b"listed")
     listed = _items(client)[0][_SANDBOX_A]["fingerprint"]
-    with open(path, "rb"):
+    # Held open so ext4 cannot hand the new file the same inode; Windows refuses to unlink an
+    # open file and never reuses a file id, so nothing is held there.
+    with open(path, "rb") if os.name != "nt" else contextlib.nullcontext():
         os.unlink(path)
         _sandbox_chat("a.txt", b"made since")
     response = _post(client, "items/delete", id = _SANDBOX_A, fingerprint = listed)

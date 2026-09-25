@@ -145,7 +145,7 @@ function TabStrip({
             aria-current={tab.key === active ? "page" : undefined}
             onClick={() => onChange(tab.key)}
             className={cn(
-              "flex h-9 shrink-0 items-center rounded-full px-3.5 text-[15px] text-foreground/80 transition-colors hover:text-foreground",
+              "flex h-9 shrink-0 items-center rounded-full px-3.5 text-ui-15 text-foreground/80 transition-colors hover:text-foreground",
               tab.key === active && cn(RAISED_SURFACE, "font-medium text-foreground"),
             )}
           >

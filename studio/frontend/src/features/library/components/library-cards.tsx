@@ -171,13 +171,13 @@ export function ItemCard({ item }: { item: LibraryItem }) {
         <ImageThumb item={item} />
       ) : (
         <div className="flex aspect-square flex-col px-5 pb-3.5 pt-5">
-          <p className="line-clamp-2 break-all pr-7 font-medium text-[14px] leading-snug text-foreground">
+          <p className="line-clamp-2 break-all pr-7 font-medium text-ui-14 leading-snug text-foreground">
             {item.name}
           </p>
           <div className="flex flex-1 items-center justify-center">
             <KindIcon item={item} className="size-9" />
           </div>
-          <p className="truncate pr-6 text-[12.5px] text-muted-foreground">
+          <p className="truncate pr-6 text-ui-13 text-muted-foreground">
             {formatCardTime(item.updatedAt, locale)}
           </p>
         </div>
@@ -213,8 +213,8 @@ function FolderCard({
         onClick={() => actions.openFolder(folder.id)}
         className="mt-2 block w-full px-1 text-left"
       >
-        <p className="truncate font-medium text-[14px] text-foreground">{folder.name}</p>
-        <p className="text-[13px] text-muted-foreground">{formatItemCount(itemCount, t)}</p>
+        <p className="truncate font-medium text-ui-14 text-foreground">{folder.name}</p>
+        <p className="text-ui-13 text-muted-foreground">{formatItemCount(itemCount, t)}</p>
       </button>
     </div>
   );

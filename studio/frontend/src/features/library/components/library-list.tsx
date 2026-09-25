@@ -95,8 +95,8 @@ function Row({
         className="flex min-w-0 flex-1 items-center gap-4 rounded-lg py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {tile}
-        <span className="flex min-w-0 items-center gap-2 text-[14px] text-foreground">{name}</span>
-        <span className="ml-auto hidden w-44 shrink-0 text-[13px] text-muted-foreground sm:block">
+        <span className="flex min-w-0 items-center gap-2 text-ui-14 text-foreground">{name}</span>
+        <span className="ml-auto hidden w-44 shrink-0 text-ui-13 text-muted-foreground sm:block">
           {activity}
         </span>
       </button>
@@ -143,7 +143,7 @@ export function LibraryList({
       <div className="border-b border-border/60 pb-2">
         <div
           className={cn(
-            "group/library-head relative flex items-center gap-4 text-[13px] text-muted-foreground",
+            "group/library-head relative flex items-center gap-4 text-ui-13 text-muted-foreground",
             ROW_INSET,
           )}
         >

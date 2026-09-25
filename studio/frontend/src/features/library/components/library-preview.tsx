@@ -323,7 +323,7 @@ function PreviewBody({
       // A note the editor would write back wrongly says why it cannot be edited.
       return isEditable(item) && readOnlyReason ? (
         <div className="flex size-full min-h-0 flex-col gap-3">
-          <p className="text-[13px] text-muted-foreground">
+          <p className="text-ui-13 text-muted-foreground">
             {t(READ_ONLY_REASONS[readOnlyReason])}
           </p>
           <TextPrefix text={prefix} className="min-h-0 flex-1" />
