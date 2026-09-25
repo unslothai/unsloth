@@ -477,7 +477,6 @@ def test_core_keeps_the_wrapper_generation_config():
 @pytest.mark.parametrize("spelling", ["LoRA", "lora ", "LORA"])
 def test_adapter_save_spellings_of_a_text_core_are_not_refused(spelling, tmp_path):
     from unsloth.save import unsloth_generic_save
-
     core = _text_trainable_core(_OmniWrapper(_Cfg()))
     try:
         unsloth_generic_save(core, None, str(tmp_path), save_method = spelling)
@@ -492,7 +491,9 @@ def test_full_finetuned_remote_child_core_is_refused(tmp_path):
     from unsloth.save import unsloth_generic_save
 
     core = _text_trainable_core(_OmniWrapper(_Cfg()))
-    core.__class__ = type(type(core).__name__, (type(core),), {"__module__": "transformers_modules.repo.modeling"})
+    core.__class__ = type(
+        type(core).__name__, (type(core),), {"__module__": "transformers_modules.repo.modeling"}
+    )
     with pytest.raises(NotImplementedError, match = "remote code"):
         unsloth_generic_save(core, None, str(tmp_path), save_method = "merged_16bit")
     assert not os.listdir(tmp_path)
