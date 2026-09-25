@@ -94,6 +94,7 @@ def export(monkeypatch, tmp_path):
         return save_mod._unsloth_save_openvino(model = model or _FakeModel(), **kwargs)
 
     run.seen = seen
+    run.tmp_path = tmp_path
     return run
 
 
@@ -273,6 +274,31 @@ def test_export_that_writes_no_model_is_an_error(export, monkeypatch, tmp_path):
     monkeypatch.setattr(save_mod.subprocess, "check_call", lambda cmd, env = None: 0)
     with pytest.raises(RuntimeError, match = "wrote no model"):
         export()
+
+
+class _RecordingLogger:
+    def __init__(self):
+        self.warnings = []
+
+    def warning_once(self, message):
+        self.warnings.append(message)
+
+
+def test_warns_only_when_the_export_has_no_tokenizer(export, monkeypatch):
+    log = _RecordingLogger()
+    monkeypatch.setattr(save_mod, "logger", log)
+    export(tokenizer = None)
+    assert log.warnings == [], "the fake export wrote openvino_tokenizer.xml"
+
+    def export_without_tokenizer(cmd, env = None):
+        os.makedirs(cmd[-1], exist_ok = True)
+        for name in ("openvino_model.xml", "openvino_model.bin"):
+            open(os.path.join(cmd[-1], name), "w").close()
+        return 0
+
+    monkeypatch.setattr(save_mod.subprocess, "check_call", export_without_tokenizer)
+    export(save_directory = str(export.tmp_path / "no_tokenizer"))
+    assert len(log.warnings) == 1 and "openvino_tokenizer.xml" in log.warnings[0]
 
 
 def test_child_process_gets_no_hub_token(export, monkeypatch):

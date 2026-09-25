@@ -7048,11 +7048,6 @@ def _unsloth_save_openvino(
         mismatch = _openvino_transformers_mismatch(model_type, export_kwargs["task"])
         if mismatch:
             raise RuntimeError(mismatch)
-    if tokenizer is None:
-        logger.warning_once(
-            "Unsloth: No tokenizer was passed, so the OpenVINO export has none and "
-            "openvino_genai cannot load it. Pass `tokenizer = tokenizer`."
-        )
 
     if push_to_hub:
         repo_id = os.fspath(save_directory)
@@ -7109,6 +7104,12 @@ def _unsloth_save_openvino(
         exported = os.listdir(final_dir) if os.path.isdir(final_dir) else []
         if not any(f.startswith("openvino_") and f.endswith("model.xml") for f in exported):
             raise RuntimeError(f"Unsloth: OpenVINO export wrote no model to '{final_dir}'.")
+        # A LoRA merge copies the base tokenizer even when none is passed, so check the output.
+        if "openvino_tokenizer.xml" not in exported:
+            logger.warning_once(
+                "Unsloth: The OpenVINO export has no openvino_tokenizer.xml, so openvino_genai "
+                "cannot load it. Pass `tokenizer = tokenizer` and install openvino-tokenizers."
+            )
 
         if push_to_hub:
             print(f"Unsloth: Uploading OpenVINO model to '{repo_id}' ...")
