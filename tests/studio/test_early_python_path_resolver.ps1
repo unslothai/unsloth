@@ -56,10 +56,16 @@ try {
         foreach ($n in @("python3", "python")) {
             foreach ($cmd in @(Get-Command $n -All -CommandType Application -ErrorAction SilentlyContinue)) {
                 if ($onPath -or -not $cmd.Source) { continue }
-                try {
-                    $ran = & $cmd.Source -I -S -c "import os,sys;sys.stdout.write(os.path.realpath('.') if sys.version_info >= (3, 8) else '')" 2>$null
-                    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace("$ran")) { $onPath = $cmd }
-                } catch {}
+                # In a job with a deadline: a shim that starts and never exits must be a skip, not a hang.
+                $job = Start-Job -ArgumentList $cmd.Source -ScriptBlock {
+                    param($exe)
+                    $o = & $exe -I -S -c "import os,sys;sys.stdout.write(os.path.realpath('.') if sys.version_info >= (3, 8) else '')" 2>$null
+                    [pscustomobject]@{ Out = "$o"; Code = $LASTEXITCODE }
+                }
+                $ran = $null
+                if (Wait-Job $job -Timeout 30) { $ran = Receive-Job $job -ErrorAction SilentlyContinue } else { Stop-Job $job }
+                Remove-Job $job -Force
+                if ($ran -and $ran.Code -eq 0 -and -not [string]::IsNullOrWhiteSpace($ran.Out)) { $onPath = $cmd }
             }
         }
         if ($onPath) {
