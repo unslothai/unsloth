@@ -134,6 +134,19 @@ def captured_popen(monkeypatch):
     return cap
 
 
+@pytest.fixture
+def captured_prepared_launch(monkeypatch):
+    cap = {}
+
+    def fake_spawn(prepared, **kwargs):
+        cap["prepared"] = prepared
+        cap["kwargs"] = kwargs
+        return _FakeProc()
+
+    monkeypatch.setattr(tools.os_sandbox, "spawn_prepared_launch", fake_spawn)
+    return cap
+
+
 def _carries(preexec, expected) -> bool:
     """A backend that isolates COMPOSES its pre-exec onto the plan's rather than replacing it, so on such a host the identity is one closure down."""
     if preexec is expected:
@@ -142,11 +155,12 @@ def _carries(preexec, expected) -> bool:
 
 
 @_POSIX_ONLY
-def test_python_sandboxed_uses_sandbox_preexec_and_safe_env(captured_popen, monkeypatch):
+def test_python_sandboxed_uses_sandbox_preexec_and_safe_env(captured_prepared_launch, monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "secret-abc")
     _python_exec("print(1)", None, 5, "t", disable_sandbox = False)
-    assert _carries(captured_popen["kwargs"]["preexec_fn"], tools._sandbox_preexec)
-    assert "HF_TOKEN" not in captured_popen["kwargs"]["env"]
+    kwargs = captured_prepared_launch["kwargs"]
+    assert _carries(kwargs["preexec_fn"], tools._sandbox_preexec)
+    assert "HF_TOKEN" not in kwargs["env"]
 
 
 @_POSIX_ONLY

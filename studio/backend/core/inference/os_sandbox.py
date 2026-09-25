@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio tool launch contract and the OS-isolation backends (bwrap, Seatbelt)."""
+"""Studio tool launch contract and platform OS-isolation backends."""
 
 from __future__ import annotations
 import errno
@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
+from dataclasses import replace
 from typing import Any, BinaryIO, Callable, Literal
 from loggers import get_logger
 
@@ -24,6 +25,7 @@ logger = get_logger(__name__)
 
 ToolExecutionMode = Literal["auto", "required", "full"]
 TOOL_EXECUTION_MODES = ("auto", "required", "full")
+PUBLIC_TOOL_EXECUTION_MODES = ("auto", "required")
 
 PROFILE_VERSION = "unsloth-sandbox-v1"
 
@@ -117,6 +119,14 @@ class ToolExecutionRecord:
     retained_safeguards: tuple[str, ...]
     limitations: tuple[str, ...] = ()
     network_policy: str = "unrestricted"
+    backend_tier: str = "unknown"
+    runtime_revision: str = ""
+    runtime_artifact_digest: str = ""
+    schema_version: str = ""
+    policy_hash: str = ""
+    execution_status: str = "planned"
+    completion_status: str = "pending"
+    cleanup_status: str = "pending"
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -130,6 +140,14 @@ class ToolExecutionRecord:
             "retained_safeguards": list(self.retained_safeguards),
             "limitations": list(self.limitations),
             "network_policy": self.network_policy,
+            "backend_tier": self.backend_tier,
+            "runtime_revision": self.runtime_revision,
+            "runtime_artifact_digest": self.runtime_artifact_digest,
+            "schema_version": self.schema_version,
+            "policy_hash": self.policy_hash,
+            "execution_status": self.execution_status,
+            "completion_status": self.completion_status,
+            "cleanup_status": self.cleanup_status,
         }
 
 
@@ -145,6 +163,7 @@ class ToolLaunchPlan:
     terminate_descendants: bool = True
     # Set by the trusted tool owner, never inferred from model args.
     execution_kind: Literal["python", "terminal"] | None = None
+    cancel_event: Any = None
 
 
 @dataclass
@@ -163,6 +182,7 @@ class PreparedSandboxLaunch:
     terminate_descendants: bool = True
     cleanup_callbacks: list[Callable[[], None]] = field(default_factory = list)
     cleanup_diagnostics: list[str] = field(default_factory = list)
+    spawn_callback: Callable | None = None
     launch_limitations: tuple[str, ...] = ()
 
     def cleanup(self) -> None:
@@ -191,7 +211,12 @@ class PreparedSandboxLaunch:
 
 
 def spawn_prepared_launch(prepared: PreparedSandboxLaunch, **popen_kwargs: Any) -> object:
-    return subprocess.Popen(prepared.argv, **popen_kwargs)
+    if prepared.spawn_callback is not None:
+        return prepared.spawn_callback(prepared, popen_kwargs)
+    proc = subprocess.Popen(prepared.argv, **popen_kwargs)
+    if prepared.execution_record is not None:
+        prepared.execution_record = replace(prepared.execution_record, execution_status = "started")
+    return proc
 
 
 # `auto` launches on this, `required` refuses; one name so both readers agree.
@@ -256,6 +281,9 @@ def _host_channel_hazard(
                 info = os.lstat(path)
             except OSError:
                 return f"changed during its safety scan: {path}"
+            # Windows only: MXC grants the workdir by path, so a junction or symlink inside it widens the grant.
+            if getattr(info, "st_file_attributes", 0) & 0x400:
+                return f"contains a reparse point: {path}"
             if stat.S_ISLNK(info.st_mode):
                 continue
             if stat.S_ISDIR(info.st_mode):
@@ -786,7 +814,21 @@ def _unavailable(reason: str, remediation: str, identity: str) -> SandboxCapabil
     )
 
 
-def capability_snapshot(*, force: bool = False) -> SandboxCapability:
+def capability_snapshot(
+    *,
+    force: bool = False,
+    execution_kind = None,
+    selected_executable = None,
+    cancel_event = None,
+) -> SandboxCapability:
+    if sys.platform == "win32":
+        from .sandbox_windows_mxc import capability_snapshot as windows_capability
+        return windows_capability(
+            force = force,
+            execution_kind = execution_kind,
+            selected_executable = selected_executable,
+            cancel_event = cancel_event,
+        )
     identity = _runtime_identity()
     if sys.platform == "linux":
         from . import sandbox_linux
@@ -863,6 +905,8 @@ def _software_only_limitations() -> tuple[str, ...]:
 
 def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     """Unavailable hosts fall back in auto; unsafe workdirs and build failures refuse."""
+    if plan.cancel_event is not None and plan.cancel_event.is_set():
+        raise SandboxBuildError("execution cancelled before sandbox preparation")
     if plan.requested_mode not in TOOL_EXECUTION_MODES:
         raise SandboxUnavailableError(f"unknown tool execution mode: {plan.requested_mode!r}")
 
@@ -893,7 +937,14 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             ),
         )
 
-    capability = capability_snapshot()
+    capability = capability_snapshot(
+        execution_kind = plan.execution_kind,
+        selected_executable = plan.argv[0] if plan.argv else None,
+        cancel_event = plan.cancel_event,
+    )
+
+    if plan.cancel_event is not None and plan.cancel_event.is_set():
+        raise SandboxBuildError("execution cancelled before sandbox launch")
 
     if not capability.available:
         if plan.requested_mode == "required":
@@ -922,6 +973,9 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             ),
         )
 
+    if sys.platform == "win32":
+        from .sandbox_windows_mxc import prepare
+        return prepare(plan, capability)
     if sys.platform == "linux":
         from . import sandbox_linux as backend
     else:
@@ -953,3 +1007,27 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         limitations = capability.limitations + prepared.launch_limitations,
     )
     return prepared
+
+
+def verify_prepared_completion(prepared: PreparedSandboxLaunch, proc) -> dict | None:
+    if prepared.backend == "mxc-processcontainer":
+        from .sandbox_windows_mxc import verify_success
+        return verify_success(prepared, proc)
+    reason = getattr(proc, "_unsloth_completion_reason", None)
+    if prepared.execution_record is None or reason not in {"finished", "timed_out", "cancelled"}:
+        return None
+    prepared.execution_record = replace(
+        prepared.execution_record,
+        execution_status = "completed",
+        completion_status = reason,
+    )
+    return {"timedOut": reason == "timed_out", "cancelled": reason == "cancelled"}
+
+
+def finalize_prepared_cleanup(prepared: PreparedSandboxLaunch) -> None:
+    if prepared.backend == "mxc-processcontainer" or prepared.execution_record is None:
+        return
+    prepared.execution_record = replace(
+        prepared.execution_record,
+        cleanup_status = "uncertain" if prepared.cleanup_diagnostics else "complete",
+    )

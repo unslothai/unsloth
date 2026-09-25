@@ -9631,7 +9631,7 @@ def _reaches_host_paths(kind: str, text: str) -> bool:
 
 
 def _prepare_tool_launch(plan, *, host_access_approved: bool = False):
-    """Allow auto fallback for unavailable backends or unexpected planner errors; unsafe workdirs and build failures refuse."""
+    """Fall back only when the backend is unavailable; unsafe workdirs, build failures and (outside `full`) planner errors refuse."""
     if host_access_approved and plan.requested_mode == "auto":
         return _software_safeguards_launch(plan, "user_approved_host_access")
     try:
@@ -9661,16 +9661,12 @@ def _prepare_tool_launch(plan, *, host_access_approved: bool = False):
             exc_info = True,
         )
         return _software_safeguards_launch(plan, "sandbox_became_unavailable")
-    except Exception as exc:  # noqa: BLE001 - auto falls back on unexpected planner errors
-        logger.warning("Sandbox planning failed, running with software safeguards", exc_info = True)
-        if plan.requested_mode == "required":
-            raise os_sandbox.SandboxUnavailableError(
-                f"OS_ISOLATION_UNAVAILABLE: the sandbox planner failed: {exc}",
-                remediation = os_sandbox.linux_unavailable_remediation()
-                if sys.platform == "linux"
-                else "This host cannot start an OS sandbox.",
-            ) from exc
-        return _software_safeguards_launch(plan, "sandbox_planner_error")
+    except Exception as exc:  # noqa: BLE001 - construction failures never buy a host replay
+        if plan.requested_mode == "full":
+            return _software_safeguards_launch(plan, "sandbox_planner_error")
+        raise os_sandbox.SandboxBuildError(
+            f"sandbox preparation failed without host fallback: {exc}"
+        ) from exc
 
 
 # Launcher stderr prefixes for refusing to build the sandbox, not payload failures.
@@ -18203,6 +18199,13 @@ def _cancel_watcher(
     short-circuit)."""
     while proc.poll() is None:
         if cancel_event is not None and cancel_event.is_set():
+            request_cancel = getattr(proc, "_unsloth_cancel", None)
+            if request_cancel is not None and request_cancel():
+                try:
+                    proc.wait(timeout = 5)
+                    return
+                except subprocess.TimeoutExpired:
+                    pass
             _killpg_captured(pgid)
             _kill_process_tree(proc)
             return
@@ -19689,13 +19692,14 @@ def _python_exec(
                     requested_mode = requested_mode,
                     timeout_seconds = timeout,
                     execution_kind = "python",
+                    cancel_event = cancel_event,
                 ),
                 host_access_approved = host_access_approved and _reaches_host_paths("python", code),
             )
-            _note_tool_execution(prepared.execution_record)
             proc = os_sandbox.spawn_prepared_launch(
                 prepared, **_apply_prepared_launch(prepared, popen_kwargs)
             )
+            _note_tool_execution(prepared.execution_record)
         else:
             popen_kwargs.update(cwd = workdir, env = safe_env)
             if sys.platform != "win32":
@@ -19721,6 +19725,21 @@ def _python_exec(
         output, timed_out = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
+        if prepared is not None:
+            proc._unsloth_completion_reason = (
+                "timed_out"
+                if timed_out
+                else (
+                    "cancelled"
+                    if cancel_event is not None and cancel_event.is_set()
+                    else "finished"
+                )
+            )
+        if prepared is not None:
+            completion = os_sandbox.verify_prepared_completion(prepared, proc)
+            if completion is not None and completion.get("timedOut"):
+                timed_out = True
+            _note_tool_execution(prepared.execution_record)
         # A run that wrote its file and then hung still produced that file, so report it: `printf data > report.csv;
         # sleep 999` is downloadable.
         if timed_out:
@@ -19765,10 +19784,15 @@ def _python_exec(
         return result
 
     except os_sandbox.SandboxUnavailableError as e:
+        if cancel_event is not None and cancel_event.is_set():
+            # A stop during the (on Windows DACL, multi-second) probe is a cancel, not a sandbox error.
+            return "Execution cancelled."
         return _sandbox_refusal(e)
     except Exception as e:
         # An exception message carries whatever the failure put in it, so it is capped like the result would have
         # been.
+        if prepared is not None and prepared.backend == "mxc-processcontainer":
+            _note_tool_execution(prepared.execution_record)
         return _truncate(f"Execution error: {e}")
     finally:
         _call_finished(call_token)
@@ -19778,6 +19802,8 @@ def _python_exec(
         # Private mounts and descriptors, released on every exit path.
         if prepared is not None:
             prepared.cleanup()
+            os_sandbox.finalize_prepared_cleanup(prepared)
+            _note_tool_execution(prepared.execution_record)
         _forget_tool_pid(locals().get("proc"))
         if tmp_path and os.path.exists(tmp_path):
             try:
@@ -19885,14 +19911,15 @@ def _bash_exec(
                     requested_mode = requested_mode,
                     timeout_seconds = timeout,
                     execution_kind = "terminal",
+                    cancel_event = cancel_event,
                 ),
                 host_access_approved = host_access_approved
                 and _reaches_host_paths("terminal", command),
             )
-            _note_tool_execution(prepared.execution_record)
             proc = os_sandbox.spawn_prepared_launch(
                 prepared, **_apply_prepared_launch(prepared, popen_kwargs)
             )
+            _note_tool_execution(prepared.execution_record)
         else:
             popen_kwargs.update(cwd = workdir, env = safe_env)
             if sys.platform != "win32":
@@ -19917,6 +19944,21 @@ def _bash_exec(
         output, timed_out = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
+        if prepared is not None:
+            proc._unsloth_completion_reason = (
+                "timed_out"
+                if timed_out
+                else (
+                    "cancelled"
+                    if cancel_event is not None and cancel_event.is_set()
+                    else "finished"
+                )
+            )
+        if prepared is not None:
+            completion = os_sandbox.verify_prepared_completion(prepared, proc)
+            if completion is not None and completion.get("timedOut"):
+                timed_out = True
+            _note_tool_execution(prepared.execution_record)
         # A run that wrote its file and then hung still produced that file, so report it: `printf data > report.csv;
         # sleep 999` is downloadable.
         if timed_out:
@@ -19952,16 +19994,23 @@ def _bash_exec(
         return result
 
     except os_sandbox.SandboxUnavailableError as e:
+        if cancel_event is not None and cancel_event.is_set():
+            # A stop during the (on Windows DACL, multi-second) probe is a cancel, not a sandbox error.
+            return "Execution cancelled."
         return _sandbox_refusal(e)
     except Exception as e:
         # An exception message carries whatever the failure put in it, so it is capped like the result would have
         # been.
+        if prepared is not None and prepared.backend == "mxc-processcontainer":
+            _note_tool_execution(prepared.execution_record)
         return _truncate(f"Execution error: {e}")
     finally:
         _call_finished(call_token)
         # Private mounts and descriptors, released on every exit path.
         if prepared is not None:
             prepared.cleanup()
+            os_sandbox.finalize_prepared_cleanup(prepared)
+            _note_tool_execution(prepared.execution_record)
         _forget_tool_pid(locals().get("proc"))
         if _scratch_name:
             with _scratch_lock:
