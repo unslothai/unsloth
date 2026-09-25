@@ -1638,6 +1638,24 @@ function Test-TorchXpuAvailable {
     return ($probe.Ok -and $probe.Output -match '(?m)^\s*True\s*$')
 }
 
+# A bus-only NVIDIA host whose venv still holds an AMD or Intel GPU wheel from before the card
+# changed. On such a host the stale check reads the expected family as unknown, so it keeps the
+# installed +rocm or +xpu build, and bare torch on the CUDA index is satisfied by it: without this
+# the host never leaves a wheel that has no device to use. Stale only when the installed wheel
+# ANSWERED that it sees no device. A wheel that still sees one, or a probe that did not answer,
+# is kept exactly as before: a working venv is never replaced on doubt. Asked once per run.
+function Test-NvidiaPresenceStaleGpuWheel {
+    param([string]$InstalledTag, [string]$PythonExe)
+    if (-not $script:NvidiaPresenceOnly) { return $false }
+    if ($InstalledTag -ne "rocm" -and $InstalledTag -ne "xpu") { return $false }
+    if ($null -ne $script:NvidiaPresenceStaleGpuWheel) { return $script:NvidiaPresenceStaleGpuWheel }
+    $code = "import torch; x = getattr(torch, 'xpu', None); " +
+        "print('DEV=' + str(bool(torch.cuda.is_available() or (x is not None and x.is_available()))))"
+    $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code $code
+    $script:NvidiaPresenceStaleGpuWheel = [bool]($probe.Ok -and $probe.Output -match '(?m)^DEV=False\s*$')
+    return $script:NvidiaPresenceStaleGpuWheel
+}
+
 # Post-install XPU runtime check. A WMI name match says the part is XPU-capable, not that the
 # compute runtime works: on an old Intel driver the wheel installs fine, never initializes, and
 # unsloth/device_type.py raises NotImplementedError at import -- a hard crash, not a chat-only
@@ -3158,6 +3176,7 @@ $script:NvidiaPresenceOnly = $false
 $script:NvidiaPresenceCudaFloor = $null
 $script:NvidiaPresenceDriverRelease = $null
 $script:NvidiaPreR450CpuFallback = $false
+$script:NvidiaPresenceStaleGpuWheel = $null
 
 function Test-NvidiaSmiHasGpu {
     param([Parameter(Mandatory = $true)][string]$Exe)
@@ -7603,6 +7622,14 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
         substep "NVIDIA GPU found on the PCI bus but the installed PyTorch is a CPU build -- reinstalling CUDA PyTorch" "Cyan"
         $SkipPythonDeps = $false
     }
+    # The same host with an AMD or Intel wheel left from a previous card. The pre-R450 exclusion
+    # does not apply: that routing replaces this wheel with CPU torch, and before the promotion
+    # the stale check rebuilt this venv as CPU anyway.
+    if ($SkipPythonDeps -and $script:NvidiaPresenceOnly -and $_nvidiaIsReachable -and
+        (Test-NvidiaPresenceStaleGpuWheel -InstalledTag $installedTorchTag -PythonExe (Join-Path $VenvDir "Scripts\python.exe"))) {
+        substep "NVIDIA GPU found on the PCI bus but the installed PyTorch is a $installedTorchTag build that sees no GPU -- running the dependency pass" "Cyan"
+        $SkipPythonDeps = $false
+    }
     # The installed wheel as well as the scan: an explicit xpu pin on a mixed NVIDIA + Intel box
     # ends up on XPU with $script:IsIntelXpu false, fast-pathing past the bitsandbytes floor and
     # the Triton replacement forever.
@@ -7935,6 +7962,9 @@ if ($PinnedTorchIndexUrl) {
         # expected family as unknown here, so $script:PinChangedForceReinstall stays false. Same
         # mechanism as the ROCm and XPU fallbacks, which set their own flag for the same reason.
         if (Test-CudaFamilyLeaf $installedTorchTag) { $script:NvidiaPreR450CpuFallback = $true }
+        if (Test-NvidiaPresenceStaleGpuWheel -InstalledTag $installedTorchTag -PythonExe (Join-Path $VenvDir "Scripts\python.exe")) {
+            $script:NvidiaPreR450CpuFallback = $true
+        }
         substep "an NVIDIA GPU is present but its driver ($script:NvidiaPresenceDriverRelease series) predates R450 and carries no usable CUDA runtime; installing CPU wheels. Update the NVIDIA driver and re-run to get CUDA" "Yellow"
     }
     if (-not $CuTag -and -not (Test-CudaFamilyLeaf $installedTorchTag) -and
@@ -8374,6 +8404,10 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     # the CUDA build this arm just selected, and the run would report success having changed
     # nothing. Same transition the XPU arm already forces, for the same reason.
     if ($script:NvidiaPresenceOnly -and $installedTorchTag -eq "cpu") {
+        $cudaForce = @("--force-reinstall")
+    }
+    # And from a +rocm or +xpu wheel left by a previous card, which bare torch accepts just as well.
+    if (Test-NvidiaPresenceStaleGpuWheel -InstalledTag $installedTorchTag -PythonExe (Join-Path $VenvDir "Scripts\python.exe")) {
         $cudaForce = @("--force-reinstall")
     }
     # An unknown-leaf custom pin (/simple, /current) routes here with $CuTag as that leaf. Bound

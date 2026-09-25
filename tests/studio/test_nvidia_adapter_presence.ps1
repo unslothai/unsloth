@@ -470,6 +470,63 @@ if ($cpuArm.Success) {
     Check "the same way it does after the ROCm and XPU fallbacks (bites)" (
         $cpuArm.Value -match 'if \(\$ROCmCpuFallback\) \{ \$cpuForce = @\("--force-reinstall"\) \}')
 }
+# A bus-only host whose venv holds a +rocm or +xpu wheel left from a previous AMD or Intel card.
+# The stale check keeps it (expected family unknown) and bare torch on the CUDA index accepts it,
+# so before this the host kept a wheel with no device to use, where the merge base rebuilt it.
+# Executed, not pattern-matched: the helper, the fast-path escape and the CUDA arm's force.
+$staleHelper = Get-FunctionText $setupPs1 "Test-NvidiaPresenceStaleGpuWheel"
+Check "setup.ps1 defines Test-NvidiaPresenceStaleGpuWheel (bites)" (-not [string]::IsNullOrWhiteSpace($staleHelper))
+$staleEscape = $null
+if ($escapes) {
+    $escAst = [System.Management.Automation.Language.Parser]::ParseInput($escapes, [ref]$null, [ref]$null)
+    $staleEscape = @($escAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and
+        $n.Clauses[0].Item1.Extent.Text -match 'Test-NvidiaPresenceStaleGpuWheel' }, $true))[0]
+}
+Check "the fast-path escape asks it (bites)" ($null -ne $staleEscape)
+Check "the CUDA arm forces the reinstall off a stale +rocm/+xpu wheel" (
+    $cudaArm.Success -and
+    $cudaArm.Value -match '(?s)if \(Test-NvidiaPresenceStaleGpuWheel [^{]*\) \{\s*\$cudaForce = @\("--force-reinstall"\)')
+$preArm = [regex]::Match($setupText, '(?s)NvidiaPresenceDriverRelease -lt 450\) \{.{0,2500}?predates R450')
+Check "a pre-R450 demotion replaces a stale +rocm/+xpu wheel too" (
+    $preArm.Success -and
+    $preArm.Value -match '(?s)if \(Test-NvidiaPresenceStaleGpuWheel [^{]*\) \{\s*\$script:NvidiaPreR450CpuFallback = \$true')
+Check "the cached answer starts empty on every run" (
+    $setupText -match '(?m)^\$script:NvidiaPresenceStaleGpuWheel = \$null$')
+if ($staleHelper -and $staleEscape) {
+    foreach ($case in @(
+        # tag, presence-only, probe answer, pre-R450, want stale, want skip afterwards
+        @{ T = "rocm";  P = $true;  A = "DEV=False"; R = $false; Stale = $true;  Skip = $false; N = "+rocm that sees no GPU" },
+        @{ T = "xpu";   P = $true;  A = "DEV=False"; R = $false; Stale = $true;  Skip = $false; N = "+xpu that sees no GPU" },
+        @{ T = "rocm";  P = $true;  A = "DEV=False"; R = $true;  Stale = $true;  Skip = $false; N = "+rocm on a pre-R450 driver (goes to CPU)" },
+        @{ T = "xpu";   P = $true;  A = "DEV=True";  R = $false; Stale = $false; Skip = $true;  N = "+xpu that still sees its GPU (kept, as the base did)" },
+        @{ T = "rocm";  P = $true;  A = "DEV=True";  R = $false; Stale = $false; Skip = $true;  N = "+rocm that still sees a GPU" },
+        @{ T = "rocm";  P = $true;  A = $null;       R = $false; Stale = $false; Skip = $true;  N = "+rocm whose probe did not answer" },
+        @{ T = "cu128"; P = $true;  A = "DEV=False"; R = $false; Stale = $false; Skip = $true;  N = "a CUDA wheel" },
+        @{ T = "cpu";   P = $true;  A = "DEV=False"; R = $true;  Stale = $false; Skip = $true;  N = "a CPU wheel on pre-R450 (this escape)" },
+        @{ T = "rocm";  P = $false; A = "DEV=False"; R = $false; Stale = $false; Skip = $true;  N = "+rocm on a host with no bus promotion" })) {
+        $got = & {
+            param($c)
+            $script:NvidiaPresenceOnly = $c.P
+            $script:NvidiaPresenceStaleGpuWheel = $null
+            $script:ProbeCalls = 0
+            function Invoke-BoundedPythonProbe { param($PythonExe, $Code, $TimeoutSec)
+                $script:ProbeCalls++
+                if ($null -eq $c.A) { return [pscustomobject]@{ Ok = $false; Output = ""; TimedOut = $true } }
+                return [pscustomobject]@{ Ok = $true; Output = "$($c.A)`n"; TimedOut = $false } }
+            function substep { param($a, $b) }
+            . ([scriptblock]::Create($staleHelper))
+            $VenvDir = "venv"; $installedTorchTag = $c.T
+            $_nvidiaIsReachable = $true; $_nvidiaPreR450 = $c.R; $SkipPythonDeps = $true
+            . ([scriptblock]::Create($staleEscape.Extent.Text))
+            $again = Test-NvidiaPresenceStaleGpuWheel -InstalledTag $c.T -PythonExe "C:\venv\Scripts\python.exe"
+            [pscustomobject]@{ Skip = $SkipPythonDeps; Stale = $again; Calls = $script:ProbeCalls }
+        } $case
+        Check "bus-only escape, $($case.N): dependency pass = $(-not $case.Skip)" ($got.Skip -eq $case.Skip)
+        Check "bus-only helper, $($case.N): stale = $($case.Stale), probed at most once" (
+            $got.Stale -eq $case.Stale -and $got.Calls -le 1)
+    }
+    $script:NvidiaPresenceOnly = $false; $script:NvidiaPresenceStaleGpuWheel = $null
+}
 # Reset per run, like the rest of the presence state: under `irm | iex` the script scope is the
 # caller's own session, and a flag left set from a previous run would force a reinstall that this
 # run never asked for.
