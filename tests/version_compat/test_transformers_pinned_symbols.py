@@ -4,48 +4,229 @@
 
 Catches breakage classes from unsloth#3998/5036/5155/5259 and
 unsloth-zoo#572/571/549/543/541/495/491/488/472/393/388/583/584/159.
-CPU-only, no install. Anchor versions: transformers 4.57.6, 5.5.0.
+CPU-only, no install. Anchors: transformers 4.57.6 (floor), 5.17.0 (ceiling) and 5.5.0
+(the old ceiling, still the Apple Silicon cap).
 """
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import tempfile
+import urllib.error
+import urllib.request
+from pathlib import Path
 
 import pytest
 
 from tests.version_compat._fetch import fetch_text, first_match, has_def
 
 
-# 4.57.6 floor + every 5.x minor since 5.0.0, up to the current PyPI latest, + main.
-TRANSFORMERS_TAGS = [
-    "v4.57.6",  # anchor (must work)
+# READ from pyproject, not repeated: a hardcoded 4.57.6 stayed put when the floor moved to
+# 4.52.4, so every 4.52-4.56 release was discarded and the matrix went green regardless.
+_FLOOR_RE = re.compile(r"^\s*\"transformers[^\"]*?>=\s*([0-9]+(?:\.[0-9]+)*)", re.M)
+_FLOOR_FALLBACK = (4, 52, 4)
+
+
+def _declared_floor() -> tuple[int, ...]:
+    """The oldest transformers pyproject admits; the fallback keeps a bad read from
+    widening the matrix to every release ever published."""
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    try:
+        found = _FLOOR_RE.findall(pyproject.read_text(encoding = "utf-8"))
+    except OSError:
+        return _FLOOR_FALLBACK
+    if not found:
+        return _FLOOR_FALLBACK
+    # The lowest, so a marker-gated half cannot raise it and hide releases the other admits.
+    return min(tuple(int(part) for part in v.split(".")) for v in found)
+
+
+_FLOOR = _declared_floor()
+
+# Always present whatever PyPI says: 4.57.6 is the floor, 5.5.0 the Apple Silicon cap, and
+# 5.16.0 first required tokenizers>=0.23.1, which broke that install (test_transformers_tokenizers_pair).
+_ALWAYS = ("v4.57.6", "v5.5.0", "v5.16.0", "v5.10.1", "v5.15.1")
+
+# Exact pins real users run: notebooks pin 5.10.1 and 5.15.x. One tag per minor would replace
+# 5.10.1 with 5.10.4, so a symbol arriving in a later 5.10 patch would break those notebooks
+# while the matrix stayed green. 5.15.1 is anchored because the next patch would evict it too.
+
+# pyproject's cap, read not repeated: one tag per minor means a published 5.17.1 would evict
+# 5.17.0, the exact maximum the window admits, and check a version no user can resolve instead.
+_CAP = re.compile(r"^\s*\"transformers[^\"]*?<=\s*([0-9]+(?:\.[0-9]+)*)", re.M)
+
+
+def _declared_ceiling_tag() -> tuple[str, ...]:
+    """The tag for the newest transformers pyproject admits, or empty if unreadable."""
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    try:
+        found = _CAP.findall(pyproject.read_text(encoding = "utf-8"))
+    except OSError:
+        return ()
+    if not found:
+        return ()
+    # The highest, so a lower marker-gated half of a split cap cannot lower the anchor.
+    ceiling = max(found, key = lambda v: tuple(int(p) for p in v.split(".")))
+    # Through the override table: "v" + version can name a tag upstream never pushed, and every
+    # check against it would then fail on the fetch rather than on the symbol.
+    return (_TAG_OVERRIDES.get(ceiling, "v" + ceiling),)
+
+
+# PyPI version -> the tag that carries it, where upstream disagrees with itself. PyPI 5.10.4 is
+# tagged v5.10.3 (its __init__ says 5.10.4, and no v5.10.4 exists); PyPI 4.54.1 is tagged
+# v4.54-release (v4.54.0's __init__ says 4.54.0, so it is a different release).
+_TAG_OVERRIDES = {"5.10.4": "v5.10.3", "4.54.1": "v4.54-release"}
+
+# Used when PyPI is unreachable; frozen so an outage cannot shrink the matrix and report green.
+# It must START at the declared floor: beginning at 4.57.6 dropped every 4.52-4.56 check, and
+# _ALWAYS does not restore them. test_the_outage_fallback_reaches_the_declared_floor pins this.
+_TAGS_FALLBACK = (
+    "v4.52.4",
+    "v4.53.3",
+    "v4.54-release",
+    "v4.55.4",
+    "v4.56.2",
+    "v4.57.6",
     "v5.0.0",
     "v5.1.0",
     "v5.2.0",
     "v5.3.0",
     "v5.4.0",
-    "v5.5.0",  # anchor (must work)
     "v5.5.4",
     "v5.6.2",
     "v5.7.0",
-    "v5.8.0",
     "v5.8.1",
     "v5.9.0",
-    "v5.10.0",
-    "v5.10.1",
     "v5.10.2",
-    # Upstream tagged PyPI 5.10.4 as v5.10.3 (the tag's __init__ says 5.10.4); there is no v5.10.4 tag and no 5.10.3 on
-    # PyPI, so fetch by the tag name.
     "v5.10.3",
     "v5.11.0",
-    "v5.12.0",
     "v5.12.1",
-    "v5.13.0",
     "v5.13.1",
-    "v5.14.0",
-    "v5.14.1",  # current PyPI latest
-    "main",
-]
+    "v5.14.1",
+    "v5.15.1",
+    "v5.16.1",
+    "v5.17.0",
+)
+
+
+# Where the resolved matrix is shared between processes. xdist requires every worker to collect
+# the SAME parameters, but each resolves the matrix during collection, so one worker timing out
+# takes the fallback list, the parameter sets diverge and xdist aborts the run
+# (https://pytest-xdist.readthedocs.io/en/stable/known-limitations.html). PYTEST_ and not UNSLOTH_
+# because it is a harness knob, inert at runtime and read by nothing under unsloth/ or studio/.
+_MATRIX_CACHE_ENV = "PYTEST_TRANSFORMERS_MATRIX_FILE"
+
+
+def _cached_matrix() -> list[str] | None:
+    """The shared matrix, or None when there is no cache or it is unreadable."""
+    path = os.environ.get(_MATRIX_CACHE_ENV)
+    if not path:
+        return None
+    try:
+        tags = json.loads(Path(path).read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return None
+    return [str(tag) for tag in tags] if isinstance(tags, list) and tags else None
+
+
+def _write_cached_matrix(tags: list[str]) -> None:
+    """Publish `tags` for the other workers. Atomic, so no worker reads a partial file."""
+    path = os.environ.get(_MATRIX_CACHE_ENV)
+    if not path:
+        return
+    target = Path(path)
+    try:
+        target.parent.mkdir(parents = True, exist_ok = True)
+        handle, temporary = tempfile.mkstemp(dir = str(target.parent), suffix = ".json")
+        with os.fdopen(handle, "w", encoding = "utf-8") as stream:
+            json.dump(tags, stream)
+        os.replace(temporary, target)
+    except OSError:
+        pass
+
+
+def _resolved_tags() -> list[str]:
+    """`_release_tags()`, resolved once per run and shared across xdist workers.
+
+    Every return goes through `_with_always`, the published one included: the cache agrees on the
+    PyPI half of the answer, it is not a second source of truth for the anchors. A file written by
+    another revision and returned verbatim dropped the floor, the old ceiling and the notebook pins
+    while reporting green.
+    """
+    cached = _cached_matrix()
+    if cached is not None:
+        return _with_always(cached)
+    tags = _release_tags()
+    # Re-read before publishing: another worker may have resolved it, and its answer is in use.
+    cached = _cached_matrix()
+    if cached is not None:
+        return _with_always(cached)
+    _write_cached_matrix(tags)
+    return tags
+
+
+def _release_tags() -> list[str]:
+    """Every transformers minor at or above the floor, latest patch of each, oldest first.
+
+    Read from PyPI, not pinned: this suite says which versions the cap may be lifted to, and a
+    hand-maintained list answers for the day it was edited. One tag per minor bounds the matrix; a
+    patch that broke something earns a place in `_ALWAYS`. Yanked and rc/dev/post builds are
+    skipped, since pip will not install them.
+    """
+    try:
+        with urllib.request.urlopen(
+            "https://pypi.org/pypi/transformers/json",
+            timeout = 20,
+        ) as response:
+            releases = json.loads(response.read().decode("utf-8"))["releases"]
+    except (urllib.error.URLError, TimeoutError, ValueError, KeyError):
+        return _with_always(_TAGS_FALLBACK)
+
+    latest_by_minor: dict[tuple[int, int], tuple[int, ...]] = {}
+    for version, files in releases.items():
+        if not files or all(f.get("yanked") for f in files):
+            continue
+        if re.fullmatch(r"\d+(?:\.\d+){2,}", version) is None:
+            continue
+        parts = tuple(int(g) for g in version.split("."))
+        if parts < _FLOOR:
+            continue
+        minor = parts[:2]
+        if parts > latest_by_minor.get(minor, ()):
+            latest_by_minor[minor] = parts
+    if not latest_by_minor:
+        return _with_always(_TAGS_FALLBACK)
+
+    tags = []
+    for parts in sorted(latest_by_minor.values()):
+        name = ".".join(str(p) for p in parts)
+        tags.append(_TAG_OVERRIDES.get(name, "v" + name))
+    return _with_always(tags)
+
+
+def _with_always(tags) -> list[str]:
+    """`tags` with every `_ALWAYS` anchor present, sorted, deduplicated.
+
+    Every return path goes through here, the fallback ones included: `_TAGS_FALLBACK` carries one
+    tag per minor so it holds neither v5.5.0 nor v5.16.0, and returning it unmerged let an outage
+    drop the Apple Silicon ceiling and the tokenizers breakpoint and still report green.
+    """
+    return sorted(set(tuple(tags) + _ALWAYS + _declared_ceiling_tag()), key = _sort_key)
+
+
+# Inverted so a tag whose NAME is not its version still sorts by the release it carries.
+_TAG_TO_RELEASE = {tag: release for release, tag in _TAG_OVERRIDES.items()}
+
+
+def _sort_key(tag: str) -> tuple[int, ...]:
+    name = _TAG_TO_RELEASE.get(tag, tag).lstrip("v")
+    return tuple(int(g) for g in name.split("."))
+
+
+# `main` catches drift before it ships to PyPI.
+TRANSFORMERS_TAGS = _resolved_tags() + ["main"]
 
 # Every check runs once per tag; one that cannot skips from inside so the tag stays in the report.
 pytestmark = pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
@@ -334,11 +515,31 @@ def test_training_args_parallel_mode_importable(tag: str):
     )
 
 
+def test_the_matrix_starts_at_the_declared_floor(tag: str) -> None:
+    """The matrix is only a compatibility claim if it begins where the claim does.
+
+    `_FLOOR` was a literal 4.57.6 while pyproject declared 4.52.4, so every 4.52-4.56 release was
+    discarded and a change landing after the floor could break supported users, matrix still green.
+    """
+    declared = _declared_floor()
+    assert _FLOOR == declared, (
+        f"_FLOOR is {_FLOOR} but pyproject declares {declared}; the matrix would skip "
+        f"every release between them"
+    )
+    if tag == "main":
+        return
+    assert _sort_key(tag) >= declared, (
+        f"{tag} sits below the declared floor {declared}, so the matrix is checking a "
+        f"release no supported install can resolve"
+    )
+
+
 def test_trainer_training_step_model_train_call_is_standalone(tag: str):
-    """unsloth#11238 rewrites the FIRST `model.train()` inside Trainer.training_step into
-    `_unsloth_train_if_needed(model)`. A release that wrote `self.model.train()` earlier in that
-    method would turn the same replace into `self._unsloth_train_if_needed(model)`, and every
-    training step would die with AttributeError. Nothing else in the rewrite guards that."""
+    """unsloth#11238 rewrites the FIRST `model.train()` in Trainer.training_step.
+
+    A release writing `self.model.train()` earlier in that method turns the same replace into
+    `self._unsloth_train_if_needed(model)` and every training step dies with AttributeError.
+    """
     candidates = ["src/transformers/trainer.py", "src/transformers/trainer/__init__.py"]
     hit = first_match("huggingface/transformers", tag, candidates)
     assert hit is not None

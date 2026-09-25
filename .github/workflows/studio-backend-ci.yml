@@ -1,31 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Runs the existing studio/backend/tests/ suite (~860 tests, all CPU-friendly)
-# on every PR that touches the backend or unsloth library. Until this lands,
-# none of those tests run automatically. Verified locally on Python 3.13 with
-# the surgical exclusions below: 861 pass, 4 skipped.
+# Runs studio/backend/tests/ on every PR touching the backend or the unsloth library.
+# Excluded: tests/test_studio_api.py (end-to-end against a live model + GGUF download) and
+# llama_cpp_load_progress_live (spawns a real llama.cpp process), neither fit for a
+# CPU-only free runner.
 #
-# Exclusions:
-#   - tests/test_studio_api.py: end-to-end against a live model + GGUF download,
-#     too heavy for free runners. Run separately when GPU CI is available.
-#   - -k 'not llama_cpp_load_progress_live': spawns a real llama.cpp process,
-#     not appropriate for CPU-only runners.
-#
-# Two jobs:
-#   - pytest on 3.13 over studio/backend/tests, with the floor checked statically
-#   - repo-cpu-tests: auto-discovered tests/ + state-isolated spoof files
-#
-#
-# runs-on: ubuntu-24.04, not ubuntu-latest. Same image, so the jobs are unchanged; different
-# queue, because nearly all of the org's ~871 queued runs ask for ubuntu-latest. Identical
-# no-op jobs in one matrix: ubuntu-latest still queued past 40 min, every other label under
-# 2 min (#10914). Cost: the image no longer tracks the fleet default, so bump it for 26.04.
-#
-# Whole-repo Python lint (syntax + ruff + debugger-leftover scan)
-# moved to the dedicated `Lint CI` workflow (.github/workflows/lint-ci.yml)
-# so it fires on every PR rather than only on studio/unsloth/tests
-# path changes.
+# runs-on: ubuntu-24.04, not ubuntu-latest, for the QUEUE: the org's backlog is almost all
+# ubuntu-latest, and identical no-op jobs measured past 40 min there against under 2 min on
+# every other label (#10914). Cost: the image no longer tracks the fleet default.
 
 name: Backend CI
 
@@ -39,20 +22,16 @@ on:
       # The validate_studio_features.py step below guards docker/jupyter and the
       # docker notebook helpers, so a docker-only change must trigger this CI.
       - 'docker/**'
-      # The root installers: tests/sh/*.sh and tests/studio/install/* assert
-      # against these two files, so a change here must run the suite that
-      # covers it. Without them an install-only edit (the shape most AMD/ROCm
-      # routing fixes take) skipped Backend CI entirely.
+      # tests/sh/*.sh and tests/studio/install/* assert against these two files. Without
+      # them an install-only edit (the shape most AMD/ROCm routing fixes take) skipped
+      # Backend CI entirely.
       - 'install.sh'
       - 'install.ps1'
       - 'scripts/**'
       - 'pyproject.toml'
-      # Nine tests under tests/studio read .github/actions/*/action.yml and assert
-      # properties of those composite actions: cache naming, install phase timing, uv and
-      # pip cache discipline, and the unsloth_zoo revision notice. This is the suite that
-      # covers them, and without this entry an action-only change ran Core, which does not
-      # execute tests/studio, and skipped Backend CI, which does. The guards were then
-      # absent for exactly the change they guard. Same reason as install.sh above.
+      # tests/studio reads .github/actions/*/action.yml and asserts properties of those
+      # composite actions. Without this entry an action-only change ran Core, which does
+      # not execute tests/studio, and skipped this workflow, which does.
       - '.github/actions/**'
       # Test inputs, not sources: tests/python/test_docker_publish_tag_scheme.py and
       # test_docker_publish_ref_freeze.py read docker-publish.yml, and
@@ -88,38 +67,23 @@ concurrency:
   # Unique per commit on main, so a merge burst cannot cancel a pending run
   # before it starts. See the note below for what this is buying.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
-  # On a PR branch: latest-only, which is what cancel-in-progress buys.
-  #
-  # On main it buys less than it looks like. GitHub cancels any PENDING run in a
-  # concurrency group as soon as a newer one is queued, and cancel-in-progress
-  # governs only runs that are already EXECUTING ("any existing pending job or
-  # workflow in the same concurrency group will be canceled", workflow-syntax docs).
-  # So a burst of merges leaves only the tip's run alive: on 2026-08-17 four merges
-  # in 37 minutes cancelled three consecutive main runs of this workflow and none
-  # completed. Detection survives on the tip, since the tree is cumulative;
-  # per-commit attribution does not.
+  # On main this buys less than it looks like: GitHub cancels any PENDING run in the group
+  # as soon as a newer one is queued, and cancel-in-progress governs only EXECUTING runs
+  # (workflow-syntax docs), so a merge burst leaves only the tip's run alive. Detection
+  # survives on the cumulative tree; per-commit attribution does not.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
 
 env:
-  # The oldest interpreter this code is expected to run on.
-  #
-  # Nothing executes it any more. The 3.10, 3.11 and 3.12 legs ran the same suite as 3.13
-  # and differed by exactly one skip marker, at 97 runner-minutes per push against a queue
-  # that has been observed 195 deep, so they are gone and the wall-clock they were costing
-  # every other workflow is gone with them.
-  #
-  # What they were really defending is that nothing reaches for a symbol newer than this,
-  # which is static, and scripts/lint_backend_python_floor.py now checks it here on every
-  # pull request in seconds across 1093 files. Raise this number only with a reason, and
-  # remember that raising it is a support decision, not a CI one.
-  #
+  # The oldest interpreter this code is expected to run on. Nothing EXECUTES it: the old
+  # 3.10/3.11/3.12 legs differed from 3.13 by one skip marker, and what they defended is
+  # static, so scripts/lint_backend_python_floor.py checks it instead. Raising this is a
+  # support decision, not a CI one.
   # 3.10 rather than the 3.9 pyproject.toml declares, because 3.9 is not true today:
   # unsloth/models/_utils.py uses dataclasses.dataclass(kw_only) and
-  # tempfile.TemporaryDirectory(ignore_cleanup_errors), both 3.10. Reconciling those two
-  # is worth doing separately; this lint is what made it visible.
+  # tempfile.TemporaryDirectory(ignore_cleanup_errors), both 3.10.
   PYTHON_FLOOR: '3.10'
 
 
@@ -127,107 +91,39 @@ jobs:
   pytest:
     name: (Python ${{ matrix.python }}, ${{ matrix.shard }})
     runs-on: ubuntu-24.04
-    # 45 guards against a hang; it is not a performance budget. The comment this replaces
-    # claimed 14.1 to 15.0 minutes against a limit of 30, but this step now measures 22.5 to
-    # 29.2 minutes across the matrix, and it has been cancelling at the limit: across the six
-    # open PRs on this branch's stack, five had one leg cancelled at 30m9s while its siblings
-    # passed at 25 to 29 minutes. Which leg loses is luck, so every PR carries a red check
-    # that says nothing about the PR.
-    # Running it on all four cores would fix the duration properly and is worth ~79
-    # runner-minutes a push, but this suite is not order-independent enough yet. Measured
-    # under `-n 4` on a 4-vCPU runner it fails tests serial does not, in more than one way and
-    # not the same way twice. The repo job below IS order-independent and does run parallel;
-    # this one waits until those dependencies are found and fixed individually. Raising the
-    # limit costs nothing until a job actually needs it, and a cancelled leg costs the whole
-    # 30 minutes anyway.
-    #
-    # This cap is the last line, not the first one. It reports the word "cancelled" and
-    # names nothing, which is how a single deadlocked test held main red for forty hours
-    # (run 32385375389 onward) while the step timings said the suite itself still finished
-    # its work in six minutes. The per-test --timeout below is what actually names a hang;
-    # this stays as the backstop for a wedge the per-test timer cannot see, such as one in
-    # collection or in a worker that never comes up.
-    #
-    # Unchanged by the split below, deliberately. A shard does less work than the leg it
-    # came from, so 45 only gets looser, and retuning it on a prediction is the failure
-    # this number was raised to fix: the sharded spread has not been measured on a runner
-    # yet. Retune it once there are runs to retune it against.
+    # A hang guard, NOT a performance budget: a cap that lands inside the real spread makes
+    # every PR carry a red check that says nothing about the PR. It reports "cancelled" and
+    # names nothing, so the per-test --timeout below is what names a hang and this is only
+    # the backstop for a wedge that timer cannot see (collection, a worker that never comes
+    # up). Leave it through the shard split: a shard does less work, so 45 only gets looser,
+    # and retuning on a prediction is the failure this number was raised to fix.
     timeout-minutes: 45
     strategy:
-      # fail-fast off: three shards of one suite, and cancelling the other two on the first
-      # failure would hide which of them were also red. It was already off for the
-      # 3.13/3.11 pair, for the same reason.
+      # fail-fast off: cancelling the other shards on the first failure would hide which
+      # of them were also red.
       fail-fast: false
       matrix:
-        # 3.13 only, on pull requests and on main alike.
+        # 3.13 only: the four old legs collected the same tests and differed by ONE skip
+        # marker, and what they defended (nothing reaches for a symbol newer than the floor)
+        # is static and now checked by scripts/lint_backend_python_floor.py. A static check
+        # runs nothing, though, and a sys.version_info branch is only parsed, never taken --
+        # hence the second entry: 3.11, the newest version still on the pre-3.12 side of the
+        # three backend files that straddle it, running those files and nothing else.
         #
-        # Measured on one runner over the same tree: the four legs collected the same
-        # 26,320 tests and differed by exactly ONE of them, the >= 3.12 gate on
-        # test_demonstrates_the_underlying_stdlib_regression. 3.10 and 3.11 reported
-        # 26193 passed / 127 skipped, 3.12 and 3.13 reported 26194 / 126. Four legs cost
-        # 97 runner-minutes per push (1663 + 1249 + 1419 + 1506 seconds) against a queue
-        # that has been observed 195 deep, to re-run one identical suite four times and
-        # learn the value of a single skip marker.
-        #
-        # What the older legs were really defending is that nothing in the tree reaches
-        # for a symbol newer than the floor, and that is a static property. It is now
-        # checked statically, on every pull request, in seconds, by
-        # scripts/lint_backend_python_floor.py, which reads stdlib API availability
-        # rather than syntax alone and covers 1093 shipped and executed files.
-        #
-        # A static check does not run anything, though, and that part cannot be waved
-        # away: two interpreters that both accept a line can still behave differently on
-        # it, and a sys.version_info branch is only ever parsed, never taken.
-        #
-        # So the branches were counted rather than assumed. Seven backend files carry one, at
-        # 3.10, 3.12 and 3.14. The 3.10 ones were never straddled even by the old matrix
-        # (oldest leg 3.10), and 3.14 is above every leg there has ever been. What is
-        # genuinely lost is the PRE-3.12 side of three files.
-        #
-        # Hence the second entry: 3.11, the newest version still on that side, running those
-        # three files and nothing else. Roughly 40 tests in under ten seconds, beside the full
-        # leg rather than in front of it, so the critical path is unchanged.
-        #
-        # The 3.13 leg is three shards of one selection, balanced on measured time rather than
-        # file count, for the reason repo-cpu-tests was split below: it is now the longest
-        # thing a pull request waits for, at 763-822s parallel plus 201-234s serial.
-        #
-        # Summed test time is 1886.1s across 922 files (`--durations=0 --durations-min=0`,
-        # -n 16; the default 0.005s cutoff hides ~105,000 durations and is unusable here),
-        # split on the first letter after `test_`:
-        #
-        #   a-k                        542.8s   396 files   28.8%
-        #   l-r                        693.7s   318 files   36.8%
-        #   s-z + every subdirectory   649.6s   208 files   34.4%
-        #
-        # so the longest shard is 1.103x an ideal third. The letters are lumpy (l is 217.2s,
-        # t is 280.4s, multi_account's 159.3s is stuck in the catch-all) and no contiguous
-        # split does better. A hand-picked letter SET reaches 1.001x and is not worth it: an
-        # allowlist tuned to one measurement is what the shape below exists to avoid.
-        #
-        # The shape. All three shards root at `tests/` and differ only in what they ignore:
-        # `--ignore=FILE` does NOT filter a file passed as an explicit argument (checked
-        # against pytest), so a shard rooted at an expanded glob would drag the twelve serial
-        # files back in past the shared --ignore list below. Shards 1 and 2 name their range
-        # and exclude everything else, including names outside a-z and anything below a
-        # subdirectory. Shard 3 is "tests/ minus the other two ranges", never an allowlist, so
-        # a new file lands in exactly one shard with no workflow edit: test_apple.py in 1,
-        # test_monkey.py in 2, and test_snake.py, tests/a_new_dir/test_x.py, foo_test.py and
-        # test_Zebra.py in 3. test_ci_backend_pytest_shards.py fails if that stops holding,
-        # and test_backend_ci_parallel_isolation.py fails if a shard collects one of the twelve.
-        #
-        # Two name shapes the split cannot absorb, forbidden by name in that guard rather than
-        # left to be discovered: a subdirectory called test_*, and a file matching BOTH
-        # discovery patterns (test_api_test.py). Each lands in no shard, because fnmatch's *
-        # crosses / and the suffix rule cannot say "unless it starts with test_" in one pattern.
-        # Diverging per prefix character was tried and reverted: it fixes test_api_test.py but
-        # over-consumes te_test.py into BOTH ranged shards, and completing it needs nine globs
-        # per shard for a filename this repo does not use.
-        #
-        # Verified at the level of the test id, not the count: the unsharded selection and the
-        # three shards run with --junitxml and the reports diffed gave 13,073 + 17,483 + 12,053
-        # = 42,609 against the baseline's 42,609, no id in two shards or in neither, and the
-        # same 332 skipped and 386 errored.
+        # The 3.13 leg is three shards of ONE selection, balanced on measured time, not file
+        # count. All three root at `tests/` and differ only in what they ignore, because
+        # `--ignore=FILE` does NOT filter a file passed as an explicit argument, so a shard
+        # rooted at an expanded glob would drag the twelve serial files back in past the
+        # shared --ignore list below. Shard 3 is "tests/ minus the other two ranges", never
+        # an allowlist, so a new file lands in exactly one shard with no workflow edit.
+        # test_ci_backend_pytest_shards.py fails if that stops holding, and
+        # test_backend_ci_parallel_isolation.py fails if a shard collects one of the twelve.
+        # Two name shapes the split cannot absorb are forbidden by name in that guard: a
+        # subdirectory called test_*, and a file matching BOTH discovery patterns
+        # (test_api_test.py). Each lands in no shard, because fnmatch's * crosses / and the
+        # suffix rule cannot say "unless it starts with test_" in one pattern. Diverging per
+        # prefix character was tried and reverted: it over-consumes te_test.py into BOTH
+        # ranged shards.
         include:
           - python: '3.13'
             scope: full
@@ -311,116 +207,63 @@ jobs:
             pyyaml jinja2 mammoth unpdf requests \
             'numpy<3' pytest pytest-asyncio pytest-xdist pytest-timeout httpx \
             soundfile librosa
-          # pytest-timeout: see the --timeout flags below. Without it a test that never
-          # returns is indistinguishable from a slow suite, and the job reports only
-          # "cancelled".
+          # pytest-timeout: see the --timeout flags below; without it a test that never
+          # returns is indistinguishable from a slow suite.
           # soundfile + librosa: test_audio_dataset_decode importorskips both, so without
           # them the no-torchcodec decode path is silently untested here.
-          # Torch CPU + transformers are required by a chunk of the backend test
-          # suite (gpu_selection, kv_cache_estimation, utils). CPU-only torch
-          # keeps the install ~250 MB / ~1 min on a clean runner.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchaudio<2.11'
-          pip install 'transformers>=4.51,<5.5'
-          # peft: core/inference/inference.py imports it at module scope, and it is listed
-          # only in extras-no-deps.txt and no-torch-runtime.txt, neither of which this job
-          # installs. Without it every importorskip of that module SKIPS instead of running,
-          # which is invisible: test_safetensors_reasoning_stream.py reported 10 passed and
-          # 3 skipped here, green. Stubbing it instead does not work -- transformers probes
+          # Tracks pyproject.toml's cap rather than an independent number: the old `<5.5`
+          # had drifted below it and excluded the very release the package shipped as
+          # its ceiling, so this job tested 5.4.x while every user got 5.5.0.
+          pip install 'transformers>=4.51,<=5.17.0'
+          # peft: imported at module scope by core/inference/inference.py but listed only in
+          # files this job does not install, so without it every importorskip of that module
+          # SKIPS and stays green. A stub does not work: transformers probes
           # `importlib.util.find_spec("peft")`, which raises on a stub whose __spec__ is None.
-          # AFTER the CPU torch line above, not before it: peft depends on torch, so pip
-          # would resolve that from PyPI, and the CUDA wheel it picks satisfies the range
-          # the next line asks for, leaving this nominally CPU-only job carrying the CUDA
-          # distribution and its nvidia-* dependencies.
-          # The version comes from the requirements file rather than being written here:
-          # extras-no-deps.txt pins peft==0.18.1 deliberately (0.19.0 breaks Unsloth's
-          # export subprocess), and an unconstrained install takes the newest release,
-          # so this job would test against a peft production never ships and no other
-          # job installs. Read out of the file so the two cannot drift apart.
+          # AFTER the CPU torch line, never before: peft depends on torch, so pip resolves it
+          # from PyPI and the CUDA wheel satisfies the range, leaving this CPU-only job
+          # carrying the CUDA distribution. The version is read out of extras-no-deps.txt
+          # rather than written here, because that file pins peft deliberately (0.19.0 breaks
+          # Unsloth's export subprocess) and the two must not drift apart.
           pip install "$(grep -m1 -E '^peft==' studio/backend/requirements/extras-no-deps.txt)"
-          # torchao: the pre-quant allowlist is built by importing the torchao tensor
-          # constructors a checkpoint names, and registration refuses unless at least one of
-          # them resolves. Without it every pre-quant load returns None and 21 tests across
-          # test_diffusion_prequant.py and test_diffusion_convrot.py fail on an install that is
-          # simply missing a dependency they need. CPU-only is fine: it declines to load its cpp
+          # torchao: the pre-quant allowlist is built by importing the tensor constructors a
+          # checkpoint names, and registration refuses unless one resolves, so without it
+          # every pre-quant load returns None. CPU-only is fine: it declines its cpp
           # extensions under torch < 2.11 and the pure-Python constructors still import.
           pip install torchao
 
       - name: Backend tests
         if: matrix.scope == 'full'
         working-directory: studio/backend
-        # Locally validated against this dep set: 831 passed, 5 skipped, 35 deselected.
-        # Deselections (all environment-specific, would never pass on a GPU-less
-        # `ubuntu-latest` runner regardless of code correctness):
-        #   - llama_cpp_load_progress_live: spawns a real llama.cpp process
-        #   - TestGpuAutoSelection / TestPreSpawnGpuResolution / TestPerGpuFitGuardAllCounts:
-        #       require live transformers config introspection on real GPUs
-        #   - TestTransformersIntrospection: same
-        #   - test_returns_cuda_when_cuda_available / test_calls_cuda_cache_when_cuda:
-        #       assume CUDA-capable GPU
+        # The deselections are all environment-specific: they need a real GPU or a live
+        # llama.cpp process, so they can never pass on a GPU-less runner whatever the code
+        # does.
         #
-        # -n 4: 1322.6s -> 343.0s locally on the same 4-worker shape as the runner, with
-        # an IDENTICAL result -- 51 failed / 26190 passed serial against 51 failed /
-        # 26188 passed parallel, and the two failure sets compared equal name for name,
-        # so nothing here depends on the order it runs in. (Those 51 are a local
-        # environment missing peft and a diffusers pin; the point is that the two modes
-        # agree, not the count.) Same shape as repo-cpu-tests below, which has run -n 4
-        # since it measured 806s -> 220s.
-        #
-        # Unit tests, so this is CPU and not memory bound: the job installs --no-torch
-        # style CPU wheels and loads no model, unlike the inference smoke workflows
-        # where four workers on one runner would not fit.
+        # -n 4 was checked to be order-independent here: serial and parallel produced the
+        # same failure set name for name. Unit tests on CPU wheels with no model loaded, so
+        # this is CPU-bound rather than memory-bound, unlike the inference smoke workflows.
         #
         # test_streaming_stripper is ignored here and run serially below, for the reason
-        # repo-cpu-tests already isolates load_freeze: it compares its own measured cost
-        # against a reference implementation timed in the same process, and a worker
-        # descheduled by the other three inflates one side of that ratio. Observed on
-        # staging, where the 3.10 leg reported "early markup cost 1.354s against the
-        # reference's 0.854s" while 3.13 passed the same commit.
+        # repo-cpu-tests isolates load_freeze: it compares its own cost against a reference
+        # timed in the same process, and a descheduled worker inflates one side of the
+        # ratio. The other isolated files assert ABSOLUTE elapsed time at 50-100ms, which is
+        # inside one scheduler quantum. Bounds of 0.5s and up stay in the parallel run, and
+        # the isolation guard scans for the tight ones, so a new test below that threshold
+        # fails the guard instead of flaking here.
         #
-        # The other two assert ABSOLUTE elapsed time, and tightly: 50ms for a
-        # short-circuit that should not run at all, and 100ms for a regex backtracking
-        # guard. Bounds that small are inside one scheduler quantum, so under four
-        # workers they measure the scheduler as much as the code. Bounds of 0.5s and up
-        # are left in the parallel run; there are 22 files with elapsed-time bounds and
-        # serialising all of them would give back most of what this change buys. The
-        # isolation guard scans for the tight ones, so a new test below the threshold
-        # fails that guard instead of flaking here.
+        # --timeout is a per-test cap, so a test that never returns fails with its own name
+        # instead of taking the job down as "cancelled"; it is set at several times the
+        # slowest legitimate test in this suite. It arms INSIDE each xdist worker, so a
+        # stuck CONTROLLER escapes it -- when a worker wedges holding the pipe the session
+        # waits forever and no per-test cap is consulted. Hence the outer `timeout`, which a
+        # wedged worker cannot defeat: SIGINT first so pytest dumps where it was stuck,
+        # SIGKILL 60s later. Expect a stuck FRAME, not always a test name.
         #
-        # test_media_auto_switch has a 0.4s budget that xdist scheduling can exceed.
-        # test_pr5624_regressions exceeded its 1s R1 parser bound in two contended runs.
-        #
-        # --timeout: a per-test wall-clock cap, so a test that never returns fails with its
-        # own name in the summary instead of taking the job's 45 minutes down with it and
-        # reporting "cancelled". 330s comes off the measured distribution rather than taste:
-        # the slowest legitimate test in this suite is
-        # test_conversation_archive.py::test_the_newest_revision_survives_a_tied_run_LONGER_than_the_cap
-        # at 82.5s (measured under -n 4 on a contended box; 75.4s serially), and the next
-        # ones down are 76s and 25s, so the cap is 4x the worst real test. Nothing here is
-        # near it, and a deadlock is caught in minutes rather than never.
-        #
-        # --timeout arms inside each xdist worker, so a stuck CONTROLLER escapes it: when a
-        # worker wedges holding the pipe, the session waits forever and no per-test cap is
-        # consulted. On the #9473 branch this step sat silent from 95% for 36.8 minutes,
-        # three runs running, each burning the whole 45 minute budget and reporting
-        # "cancelled" -- unreadable against ordinary concurrency supersession.
-        #
-        # So bound the session from outside, where a wedged worker cannot defeat it. SIGINT
-        # first so pytest dumps where it was stuck, SIGKILL 60s later if it will not.
-        # Reproduced with a test forking a child that never exits: unwrapped it hangs
-        # silently, wrapped it exits 124 through execnet safe_terminate -> workerpool.waitall.
-        # Expect a stuck FRAME, not always a test name. 1500s is ~3x the 8-10 minute norm.
-        #
-        # The thirteen --ignore flags and the -k filter stay HERE rather than moving into
-        # the matrix: they are the selection every shard inherits, and one copy of them is
-        # what makes "the twelve serial files are ignored by every parallel shard" a
-        # property of the step instead of three lists that have to agree. The shards differ
-        # only in `${{ matrix.selection }}`.
-        #
-        # The outer 1500s is not retuned on a prediction, for the reason repo-cpu-tests
-        # gives below: a bound that lands inside the real spread is the failure this kind of
-        # number exists to prevent, and the sharded spread has not been measured on a runner
-        # yet. It only ever gets looser as the work per shard drops.
+        # The --ignore flags and the -k filter stay HERE rather than in the matrix: they are
+        # the selection every shard inherits, so one copy is what makes "the thirteen serial
+        # files are ignored by every parallel shard" a property of the step rather than
+        # three lists that have to agree. Shards differ only in `${{ matrix.selection }}`.
         run: |
           timeout --signal=INT --kill-after=60 1500 \
           python -m pytest ${{ matrix.selection }} -q --tb=short -n 4 --dist loadgroup --timeout=330 \
@@ -441,11 +284,8 @@ jobs:
             -k 'not llama_cpp_load_progress_live and not TestGpuAutoSelection and not TestPreSpawnGpuResolution and not TestPerGpuFitGuardAllCounts and not TestTransformersIntrospection and not test_returns_cuda_when_cuda_available and not test_calls_cuda_cache_when_cuda'
 
       - name: Backend tests that cannot share a worker
-        # One shard, one process, the same twelve files. Not split and not redistributed:
-        # whether any of them could go back into the parallel run was asked separately and
-        # the answer was no, so this step is carried unchanged and only has to be carried
-        # ONCE. a-k because it is the shortest shard at 28.8% of summed test time, and this
-        # step is 201-234s: it lands there rather than on the 36.8% shard.
+        # One shard, one process, the same twelve files, carried ONCE: none of them can go
+        # back into the parallel run. a-k because it is the shortest shard.
         if: matrix.scope == 'full' && matrix.shard == 'a-k'
         working-directory: studio/backend
         # Relative timing against a reference measured in the same process. Serial, so the
@@ -469,17 +309,10 @@ jobs:
       - name: Pre-3.12 branches, on the newest interpreter that takes them
         if: matrix.scope == 'floor-spot-check'
         working-directory: studio/backend
-        # Not a second copy of the suite. Seven backend files carry a sys.version_info
-        # branch, at 3.10, 3.12 and 3.14. The 3.10 ones were never straddled even by the
-        # old four-leg matrix, whose oldest leg WAS 3.10, so every leg took the same side
-        # and dropping legs loses nothing there. 3.14 is above every leg there has ever
-        # been. What a 3.13-only matrix genuinely stops executing is the pre-3.12 side of
-        # these files, and that is small enough to keep running rather than argue about.
-        #
-        # 3.11 because it is the newest version that still takes that side: closest to
-        # the ceiling, so anything it catches is about the boundary rather than about
-        # being old. Roughly 40 tests in under ten seconds, beside the full leg rather
-        # than in front of it, so the critical path is the full leg either way.
+        # Not a second copy of the suite: only the pre-3.12 side of the backend files that
+        # carry a sys.version_info branch, which a 3.13-only matrix stops executing. 3.11 is
+        # the newest version still on that side, so what it catches is about the boundary
+        # rather than about being old. It runs beside the full leg, not in front of it.
         run: |
           python -m pytest -q --tb=short --timeout=330 \
             tests/test_third_party_source.py \
@@ -503,34 +336,18 @@ jobs:
           cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
 
   repo-cpu-tests:
-    # Auto-discover everything under tests/ that is not GPU-bound by
-    # design. New tests added in covered directories are picked up
-    # without a workflow edit. Locally validated: 760 passed, 1 skipped,
-    # 23 deselected. tests/conftest.py (mirroring unsloth-zoo PR #624)
-    # pre-loads unsloth_zoo.device_type and unsloth.device_type under a
-    # mocked torch.cuda.is_available so the unsloth import chain
-    # succeeds on CPU.
+    # Auto-discovers everything under tests/ that is not GPU-bound, so a new test in a
+    # covered directory needs no workflow edit. tests/conftest.py pre-loads
+    # unsloth_zoo.device_type and unsloth.device_type under a mocked
+    # torch.cuda.is_available so the unsloth import chain succeeds on CPU.
     name: Repo tests (CPU, ${{ matrix.shard }})
     runs-on: ubuntu-24.04
-    # Same reason as the matrix above, and now the same number. The comment this replaces
-    # claimed 13.4 minutes. Across the last 40 runs of this job on main the pytest step
-    # alone measured 852s to 1683s (14.2 to 28.1 minutes), and the install plus the four
-    # steps after it add a further 351s. So the worst measured run needs 33.9 minutes and
-    # the cap was 30: it sat inside the spread rather than above it. The clearest single
-    # run is 0eedeeeb, which passed -- at 1738s, 62 seconds under the limit.
-    #
-    # Which run loses is therefore a property of the runner, not of the PR. #10849 and
-    # #10861 were both cancelled at 30m1x against a green main, on branches that touch
-    # none of this.
-    #
-    # A cancelled job is also worse than a slow one, twice over. The cap fires mid-step, so
-    # the run blames whichever step was unlucky -- on both of those it was "Shell installer
-    # tests", 84s in and unrelated -- and the shell, CLI and Docker steps never run at all,
-    # so the PR loses that coverage silently. The suite is not the problem; the budget was.
-    #
-    # The cap stays at 45 through the split below rather than being retuned on a prediction:
-    # a cap that lands inside the real spread is exactly the failure this number was raised
-    # to fix, and the sharded spread has not been measured on a runner yet.
+    # Same reason and same number as the matrix above: the old 30 sat INSIDE this job's
+    # measured spread, so which run lost was a property of the runner, not of the PR. A
+    # cancelled job is worse than a slow one twice over -- the cap fires mid-step and blames
+    # whichever step was unlucky, and every step after it never runs, so the PR loses that
+    # coverage silently. Leave it at 45 through the split below rather than retuning on a
+    # prediction.
     timeout-minutes: 45
     strategy:
       # Three shards of one selection, balanced on measured time, not on file count.
@@ -670,11 +487,9 @@ jobs:
             pyproject.toml
             studio/backend/requirements/*.txt
 
-      # node + uv unlock ~60 tests that previously skipped on CI:
-      #   - 9 tests in test_chat_preset_builtin_invariants.py need node to
-      #     compile a tiny TS harness against the frontend chat sources.
-      #   - tests/python/* spawn fresh `uv venv`s to verify the no-torch
-      #     install path; they self-skip when uv is missing.
+      # node compiles the TS harness test_chat_preset_builtin_invariants.py needs, and
+      # tests/python/* spawn fresh `uv venv`s for the no-torch install path. Both suites
+      # self-skip when the tool is missing.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
@@ -696,17 +511,17 @@ jobs:
           # torchvision: unsloth_zoo.vision_utils imports it at module scope.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchvision<0.26' 'torchaudio<2.11'
-          pip install 'transformers>=4.51,<5.5'
+          # Tracks pyproject.toml's cap rather than an independent number: the old `<5.5`
+          # had drifted below it and excluded the very release the package shipped as
+          # its ceiling, so this job tested 5.4.x while every user got 5.5.0.
+          pip install 'transformers>=4.51,<=5.17.0'
           # bitsandbytes: hard import in unsloth/models/_utils.py. Recent
           # versions ship a CPU build that imports cleanly on Linux.
           pip install 'bitsandbytes>=0.45'
-          # unsloth.device_type imports unsloth_zoo.utils.Version at module
-          # scope, so the conftest preload needs unsloth_zoo. Pull from
-          # git main so this job sees the same zoo HEAD as Core / MLX /
-          # install.sh do (otherwise a fix on zoo main hides until release).
-          # No --no-deps: matches prior `pip install 'unsloth_zoo>=2026.5.1'`
-          # behaviour so triton etc. still come in for the Repo tests CPU
-          # collection imports.
+          # The conftest preload needs unsloth_zoo (unsloth.device_type imports
+          # unsloth_zoo.utils.Version at module scope). From git main so this job sees the
+          # same zoo HEAD as Core / MLX / install.sh, or a fix on zoo main hides until
+          # release. No --no-deps, so triton still comes in for the CPU collection imports.
           for attempt in 1 2 3; do
             if pip install "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo"; then
               break
@@ -716,12 +531,10 @@ jobs:
           done
           pip install -e . --no-deps
 
-      # tests/test_formatter_fixed_point.py runs the real formatting hook, and it
-      # skips when the installed ruff is not the one the repo is formatted with,
-      # because another ruff answers a different question. Without this the guard
-      # would be permanently skipped here, which is the failure mode it exists to
-      # stop. The version is read out of .pre-commit-config.yaml rather than
-      # pinned a second time: a stale copy would silently disable the guard.
+      # tests/test_formatter_fixed_point.py skips unless the installed ruff is the one the
+      # repo is formatted with, so without this the guard is permanently skipped here. The
+      # version is read out of .pre-commit-config.yaml, because a second pin would go stale
+      # and silently disable the guard.
       - name: Install the pinned ruff (formatter fixed-point guard)
         run: |
           pin="$(python -c 'import sys; sys.path.insert(0, "scripts"); import run_ruff_format as r; print(r.pinned_ruff_version(r.CONFIG.read_text(encoding = "utf-8")) or "")')"
@@ -738,52 +551,26 @@ jobs:
           # Skip lazy compilation work the unsloth import chain wants to
           # do at import time on a real GPU.
           UNSLOTH_COMPILE_DISABLE: '1'
-        # --ignore: GPU-bound directories (qlora/saving need real weights;
-        #   tests/sh is the shell suite the next step handles; tests/utils
-        #   is a helpers folder); tests/vllm_compat + tests/version_compat
-        #   are dedicated multi-version drift canaries with their own job
-        #   in version-compat-ci.yml that installs the heavier dep set
-        #   (torchcodec, full transformers/peft/bnb pins) those tests need.
-        # State-sensitive hardware-spoofing files run in isolation in the
-        # next step because they mutate hardware.py module globals, and
-        # tests/studio/load_freeze in the step after that because its
-        # assertions are wall-clock latency bounds.
-        # -m: honour markers from tests/python/conftest.py (`server` =
-        #   needs studio venv, `e2e` = needs network).
-        # --deselect:
-        #   - test_model_registration / test_all_model_registration:
-        #     hit huggingface_hub for live model existence checks.
-        #   test_autoconfig_works_with_no_torch_runtime / test_autoconfig_succeeds
-        #   used to be deselected here too, for a tokenizers pin no-torch-runtime.txt
-        #   was missing. #5359 added that pin and both now pass, so the lines are gone
-        #   -- they were redundant anyway, since the -m filter above already excludes
-        #   their `e2e` class marker, and the reason they gave outlived the bug.
+        # --ignore: GPU-bound directories (qlora/saving need real weights), tests/sh (the
+        #   next step's shell suite), tests/utils (a helpers folder), and
+        #   tests/vllm_compat + tests/version_compat, which are drift canaries with their
+        #   own job in version-compat-ci.yml that installs the heavier dep set they need.
+        #   The hardware-spoofing files run isolated in the next step because they mutate
+        #   hardware.py module globals, and tests/studio/load_freeze in the one after
+        #   because its assertions are wall-clock latency bounds.
+        # -m: honour markers from tests/python/conftest.py (`server` = needs studio venv,
+        #   `e2e` = needs network).
+        # --deselect test_model_registration / test_all_model_registration: they hit
+        #   huggingface_hub for live model existence checks.
         #
-        # -n 4: 806.1s -> 219.7s locally on the same 4-worker shape as the runner, with an
-        # identical 2-failed / 8066-passed / 178-skipped / 40-subtest result. The three pytest
-        # steps below stay serial deliberately: the hardware-spoof step exists precisely
-        # because those files mutate hardware.py module globals, and all three already measure
-        # under 0.1 minutes on the runner, so there is nothing to win and isolation to lose.
+        # -n 4 was checked to be order-independent here. The three pytest steps below stay
+        # serial deliberately: the hardware-spoof step exists because those files mutate
+        # hardware.py module globals, and all three run in well under a minute, so there is
+        # nothing to win and isolation to lose.
         #
-        # --timeout / the outer `timeout`: the job cap above went from 30 to 45 minutes, and
-        # a backstop is only worth raising if something below it can still name a hang. Both
-        # mirror the backend pytest job for the reasons written out there; the numbers are
-        # this suite's own.
-        #
-        # 330s per test comes off this suite's measured tail, not off taste. The tail used
-        # to start at test_source_read_encoding.py::test_checked_in_file_reads_name_an_encoding
-        # at 63.6s, then 48.3s, then a run of ~31s docker-notebook durability cases. Those
-        # first two have since been made much cheaper and that scan now runs as 16 batches,
-        # so the docker-notebook cases are the tail: ~50s for the worst. This step runs
-        # ~2.2x slower on a 4-vCPU runner than on the box those came off, so call the worst
-        # legitimate test ~110s and the cap ~3x that. The headroom only grew, so 330 stands,
-        # and it is the same 330 the backend pytest job settled on against its own tail.
-        # Nothing here is near it, and a deadlock is named in minutes.
-        #
-        # --timeout arms inside each xdist worker, so a wedged CONTROLLER escapes it. 2100s
-        # bounds the session from outside, where it cannot: 1.25x the worst of the 40 runs
-        # measured above, and 2100 + the 351s of surrounding steps still lands 4 minutes
-        # under the job cap, so this fires first and says where it was stuck.
+        # --timeout and the outer `timeout` mirror the backend pytest job for the reasons
+        # written out there; the numbers are this suite's own tail. The outer one must stay
+        # far enough under the job cap that it fires first and says where it was stuck.
         run: |
           timeout --signal=INT --kill-after=60 2100 \
           python -m pytest ${{ matrix.selection }} -q --tb=short -n 4 --dist loadgroup --timeout=330 \
@@ -795,10 +582,8 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/studio
           UNSLOTH_COMPILE_DISABLE: '1'
-        # These files mutate hardware.py module globals at runtime via the
-        # spoof fixtures (CUDA/ROCm/XPU/MLX/CPU), which leaks state into any
-        # other test that imports hardware. Run them in their own pytest
-        # invocation so the leak does not cross file boundaries.
+        # The spoof fixtures mutate hardware.py module globals at runtime, leaking into any
+        # other test that imports hardware, so they get their own pytest invocation.
         run: |
           python -m pytest -q --tb=short \
             tests/studio/test_hardware_dispatch_matrix.py \
@@ -813,19 +598,12 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/studio
           UNSLOTH_COMPILE_DISABLE: '1'
-        # These drive a live uvicorn server and assert upper bounds on real elapsed
-        # time: 50 concurrent probes under 15s, a fast-shim probe under 2s, five
-        # sequential probes under 10s, and a not-loaded short circuit under 50 ms.
-        # A descheduled worker inflates them, so they run alone.
-        #
-        # The two tightest bounds this step used to carry, 250 ms for a /health burst
-        # and 350 ms for a 100-request burst, are gone. Both were proxies for one
-        # property, that the route hands its blocking call to a thread and leaves the
-        # event loop free, and both could be falsified by a descheduled thread with the
-        # code entirely correct. Those two tests now hold the blocking call open on an
-        # event and require /health to answer while it is held, which asserts the
-        # property itself and does not move with load.
-        # 20s serially, against the ~10 minutes -n 4 saves on this job.
+        # These drive a live uvicorn server and assert upper bounds on real elapsed time,
+        # which a descheduled worker inflates, so they run alone. Assert the property rather
+        # than a tight bound where you can: the /health burst tests now hold the blocking
+        # call open on an event and require /health to answer while it is held, which is
+        # what "the route leaves the event loop free" actually means and does not move with
+        # load.
         run: python -m pytest tests/studio/load_freeze -q --tb=short
 
       - name: CLI tests (unsloth_cli)
@@ -865,16 +643,11 @@ jobs:
           cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
 
   shell-installer-tests:
-    # Its own job rather than the tail of the longest one. 64 hermetic bash suites, run
-    # serially at 158-165s measured, sharing nothing with the Python install they used to sit
-    # behind: they mock uv, wsl.exe and the venv, and extract functions out of install.sh with
-    # sed. Two consequences of the old placement, both measured: those 165s were on the
-    # critical path of a job that was already the longest on the board, and when that job hit
-    # its cap mid-run it was this step that got named (#10849, #10861) while the steps after
-    # it silently never ran.
-    #
-    # No pip install here at all -- the runner's own python3 and bash are what these scripts
-    # use -- so the job is checkout plus the loop, and it finishes long before the shards do.
+    # Its own job rather than the tail of the longest one: these hermetic bash suites share
+    # nothing with the Python install they used to sit behind (they mock uv, wsl.exe and the
+    # venv, and sed functions out of install.sh), yet they sat on that job's critical path
+    # and got named when its cap fired (#10849, #10861) while later steps never ran.
+    # No pip install at all here, so the job is checkout plus the loop.
     name: Shell installer tests
     runs-on: ubuntu-24.04
     # 165s measured, and a hung mock would otherwise sit here until the workflow's own limit.
@@ -889,13 +662,11 @@ jobs:
           python-version: '3.12'
 
       - name: Shell installer tests
-        # Auto-discovered rather than allowlisted. The old hardcoded list had
-        # silently fallen seven files behind tests/run_all.sh, including
-        # test_strixhalo_wsl_reroute.sh -- the only shell coverage of the ROCm
-        # WSL reroute -- so that suite never ran on a PR. Skips are explicit,
-        # each with a reason, and tests/studio/test_ci_shell_suite_coverage.py
-        # fails if this step stops discovering the directory or the skip list
-        # grows without one.
+        # Auto-discovered rather than allowlisted: the old hardcoded list had silently
+        # fallen seven files behind tests/run_all.sh, so those suites never ran on a PR.
+        # Skips are explicit and each carries a reason;
+        # tests/studio/test_ci_shell_suite_coverage.py fails if this step stops discovering
+        # the directory or the skip list grows without one.
         #
         # Skipped:
         #   test_install_rollback_lifecycle.sh: covered by cross-platform-parity-ci.yml.
