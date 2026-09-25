@@ -4136,12 +4136,18 @@ class DiffusionBackend:
         try:
             from .diffusion_te_prequant import (
                 TE_PREQUANT_BUDGET_SCALE,
+                TE_PREQUANT_COMPONENTS,
                 te_candidate_filenames,
                 te_prequant_sources_for_base,
             )
 
+            extra: dict[str, Any] = {}
+            if getattr(fam, "name", None) == HIDREAM_FAMILY_NAME:
+                # TE4 comes from its own repo (hidream_te4_kwargs), as in the download planner.
+                extra["components"] = (*TE_PREQUANT_COMPONENTS, "text_encoder_4")
+                extra["standalone_component_bases"] = {"text_encoder_4": HIDREAM_LLAMA_REPO}
             sources = te_prequant_sources_for_base(
-                fam, base, te_quant_mode = text_encoder_quant, target = target
+                fam, base, te_quant_mode = text_encoder_quant, target = target, **extra
             )
             if not sources:
                 return None
