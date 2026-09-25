@@ -55,7 +55,7 @@ REAL_MSVCRT = sys.modules.get("msvcrt")
 
 
 @pytest.fixture
-def studio(monkeypatch):
+def studio(monkeypatch, tmp_path):
     package = types.ModuleType("unsloth_cli")
     package.__path__ = [str(REPO_ROOT / "unsloth_cli")]
     commands = types.ModuleType("unsloth_cli.commands")
@@ -81,6 +81,10 @@ def studio(monkeypatch):
     module = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, module_name, module)
     spec.loader.exec_module(module)
+    # update() takes an exclusive flock under STUDIO_HOME, which defaults to the real
+    # ~/.unsloth/studio. Another xdist worker holding it made update() exit 1 before
+    # the call order these tests check, and the tests wrote into the user's home.
+    monkeypatch.setattr(module, "STUDIO_HOME", tmp_path / "studio_home")
     return module
 
 
