@@ -47,13 +47,11 @@ PREQUANT_FORMAT = "unsloth_prequant_transformer_state_dict_v1"
 # hand-edited tag nor a builder that forgot one half can produce something that loads.
 PREQUANT_FORMAT_ROTATED = "unsloth_prequant_transformer_state_dict_v2"
 
-# v1 plus a PER-LAYER POLICY (nvfp4 + fp8). Own tag, or an older build reads it as whole-model
-# nvfp4. Biconditional: v3 MUST declare a policy, v1/v2 must NOT.
+# Own tag, else an older build reads it as whole-model nvfp4. v3 MUST declare a policy, v1/v2 must NOT.
 PREQUANT_FORMAT_POLICY = "unsloth_prequant_transformer_state_dict_v3"
 
 PREQUANT_FORMATS = (PREQUANT_FORMAT, PREQUANT_FORMAT_ROTATED, PREQUANT_FORMAT_POLICY)
 
-# A MoE video family's second expert lives in "transformer_2".
 DEFAULT_PREQUANT_COMPONENT = "transformer"
 
 
@@ -178,7 +176,6 @@ _SCHEME_REQUIRED_GLOBALS: dict = {
             "torchao.quantization.quantize_.common.kernel_preference.KernelPreference",
         }
     ),
-    # Includes fp8's names: a v3 policy checkpoint holds Float8Tensor weights too.
     "nvfp4": frozenset(
         {
             "torchao.prototype.mx_formats.nvfp4_tensor.NVFP4Tensor",
@@ -1230,7 +1227,6 @@ def load_prequantized_transformer(
         except Exception:  # noqa: BLE001 - eval() is best-effort
             pass
         if scheme == "nvfp4":
-            # Here so video loads tune M = 1 too. Own try: a tuning failure must not lose the load.
             try:
                 from .diffusion_nvfp4_linear import nvfp4_prewarm
                 nvfp4_prewarm(transformer, (1,), logger = logger)
@@ -1644,7 +1640,6 @@ def _validate_checkpoint(
     from .diffusion_nvfp4_policy import declares_policy
     from .diffusion_transformer_quant import FP8_GRANULARITY, TQ_FP8
 
-    # A policy checkpoint is declared nvfp4 but is mostly fp8, so both fp8 invariants govern it too.
     holds_fp8 = scheme == TQ_FP8 or declares_policy(meta)
     if holds_fp8 and meta.get("fp8_granularity") != FP8_GRANULARITY:
         _warn(

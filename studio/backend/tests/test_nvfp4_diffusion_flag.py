@@ -482,8 +482,6 @@ def test_enabled_the_routes_let_nvfp4_through_the_switch(monkeypatch):
     )
 
 
-# ---------------------------------------------------------------------------------------------
-# Per-layer image policies, gated auto rows and the flashinfer backend (studio-nvfp4-image)
 
 
 def _record_nvfp4_probes(monkeypatch):
@@ -647,7 +645,6 @@ def test_the_image_family_nvfp4_repos_are_recognised_by_the_table():
     from core.inference.diffusion_prequant import hosted_nvfp4_repo_ids
 
     ids = hosted_nvfp4_repo_ids()
-    # A (scheme, repo) row and a (base, scheme, repo) variant row.
     assert "unsloth/z-image-turbo-nvfp4" in ids
     assert "unsloth/flux.1-schnell-nvfp4" in ids
     assert not any("fp8" in repo and "nvfp4" not in repo for repo in ids)

@@ -308,7 +308,6 @@ class _AutoPrefer:
     backend: Optional[str] = None
 
 
-# Image rows are gated (inert until a record lands); nvfp4 below int8/fp8 is a memory lever.
 _FAMILY_AUTO_PREFER: dict[str, _AutoPrefer] = {
     "z-image": _AutoPrefer(
         floor = (10, 0), schemes = (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8), gated = True
@@ -975,9 +974,7 @@ def _auto_scheme_order(
         return ()
     prefer = _FAMILY_AUTO_PREFER.get(str(family or "").strip().lower())
     if prefer is not None and (prefer.gated or prefer.backend) and not nvfp4_diffusion_enabled():
-        # The NVFP4 switch is off, and a gated or backend-keyed row is NVFP4 machinery: drop it
-        # whole, before its gate record or backend probe (which imports flashinfer) is consulted.
-        # What remains is the family-blind ladder, which is what such a row minus nvfp4 is.
+        # Switch off: drop gated/backend rows before their gate record or backend probe (imports flashinfer).
         prefer = None
     head: tuple[str, ...] = ()
     if prefer is not None and cap >= prefer.floor:
@@ -1627,7 +1624,6 @@ def quantize_transformer(
             from .diffusion_nvfp4_policy import quantize_with_policy, resolve_policy
             policy = resolve_policy(family, base_repo)
         if policy is not None:
-            # Fails closed: ``PolicyMismatch`` drops to GGUF rather than ship unmeasured precisions.
             quantize_with_policy(
                 transformer,
                 policy,
