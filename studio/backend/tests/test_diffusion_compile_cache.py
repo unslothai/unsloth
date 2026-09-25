@@ -1277,6 +1277,7 @@ def test_removed_key_reads_as_a_miss_not_a_broken_pair(monkeypatch, tmp_path, fa
 def test_fresh_compile_count_ignores_a_retrace_the_cache_serves():
     """A restarted process re-traces every graph (dynamo's count grows) while inductor serves it from the cache; only
     an FX graph cache miss is new work a compile-cache bundle lacks."""
+    pytest.importorskip("torch")
     from torch._dynamo.utils import counters
 
     from core.inference import diffusion_speed as ds_mod
