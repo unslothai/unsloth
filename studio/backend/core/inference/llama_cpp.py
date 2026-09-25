@@ -9968,13 +9968,12 @@ class LlamaCppBackend:
         """
         if sys.platform != "win32":
             return False
-        # Keyed by the resolved path, so switching runtimes is not answered from the old one.
         if binary is None:
             try:
                 binary = LlamaCppBackend._find_llama_server_binary()
             except Exception:  # noqa: BLE001 - classify with whatever the lib lookup resolves
                 binary = None
-        # By build revision too: an update swaps the binary in place at the same path.
+        # Keyed by resolved path and build revision: runtimes switch, updates swap in place.
         key = LlamaCppBackend._binary_revision(binary) or binary
         cached = LlamaCppBackend._SYSMEM_FALLBACK_RISK.get(key)
         if cached is not None:
@@ -14527,7 +14526,6 @@ class LlamaCppBackend:
         self._pin_baseline_free_mib = None
         self._pin_baseline_shared_usage = None
         self._pin_gpu_indices = None
-        # q8_0 advice only helps a cache that is still f16.
         self._pin_kv_hint = (cache_type_kv or "f16").strip().lower() in ("f16", "fp16", "")
         self._pin_kv_layout = None
         self._pin_exe = Path(binary).name if binary else "llama-server.exe"
@@ -14535,8 +14533,7 @@ class LlamaCppBackend:
             return
         if not floor_bytes or floor_bytes <= 0 or not gpu_indices:
             return
-        # CUDA builds only: a Vulkan launch has no CUDA sysmem fallback, and its
-        # ordinals are not the NVML indices the probe reports.
+        # CUDA only: Vulkan has no sysmem fallback, and its ordinals are not NVML indices.
         if not self._sysmem_fallback_risk(binary) or self._nvml_library() is None:
             return
         try:
@@ -14602,12 +14599,7 @@ class LlamaCppBackend:
         after: Optional[dict[str, int]],
         n_adapters: Optional[int] = None,
     ) -> Optional[int]:
-        """Shared-memory gain on the adapters this load landed on, or None if unreadable.
-
-        The counter covers every adapter, including a display iGPU whose shared usage moves
-        on its own, so only adapters whose dedicated VRAM grew across the spawn count, and
-        at most ``n_adapters`` of them (the pinned cards grow the most).
-        """
+        """Shared growth on the adapters whose dedicated VRAM grew most (<= ``n_adapters``)."""
         if not before or not after:
             return None
         common = set(before) & set(after)
@@ -14643,8 +14635,7 @@ class LlamaCppBackend:
             fit or ""
         ).strip().lower() not in _LLAMA_ARG_FALSE_VALUES:
             return False
-        # User extras are appended after the pin and can keep weights or the KV cache on
-        # the host deliberately (--cpu-moe, -ot, -nkvo, --device none): not a spill.
+        # User extras follow the pin and may keep weights or KV on the host on purpose.
         source_env = os.environ if env is None else env
         return not (
             _args_place_tensors_on_cpu(tokens)
@@ -14683,8 +14674,7 @@ class LlamaCppBackend:
             self._pin_baseline_free_mib = None
             self._pin_baseline_shared_usage = None
             return
-        # The floor was priced for the first spawn's slots and KV layout; a retry that
-        # changes them (e.g. --parallel 1 after a unified-KV rejection) would be misjudged.
+        # The floor was priced for the first spawn's slot/KV layout; a changed retry is not.
         layout = self._kv_layout_of(argv)
         if self._pin_kv_layout is None:
             self._pin_kv_layout = layout
@@ -14694,8 +14684,7 @@ class LlamaCppBackend:
             self._pin_baseline_free_mib = None
             self._pin_baseline_shared_usage = None
             return
-        # A retry's killed child frees VRAM asynchronously; a baseline taken before that
-        # would book the release as memory the new child failed to take.
+        # A killed retry child frees VRAM asynchronously; do not book that as a shortfall.
         self._wait_for_vram_settle(since_kill = getattr(self, "_last_kill_monotonic", 0.0))
         # Overlap the counter read with nvidia-smi: cost is max, not sum.
         _shared_box: dict[str, Optional[dict[str, int]]] = {}
@@ -14767,9 +14756,8 @@ class LlamaCppBackend:
         except Exception as e:
             logger.debug(f"Shared GPU memory read failed: {e}")
             spilled = None
-        # WDDM spills only once dedicated VRAM is exhausted, so shared growth counts only
-        # when a pinned card is nearly full. Not ``shortfall > 0``: the measured delta also
-        # holds the CUDA context and compute buffers, which would mask a small spill.
+        # WDDM spills only once dedicated VRAM is exhausted. Not ``shortfall > 0``: the delta
+        # also holds the CUDA context and compute buffers, which mask a small spill.
         card_full = any(
             now[i]
             < (
@@ -14800,7 +14788,6 @@ class LlamaCppBackend:
                 spilled / (1024**2),
                 shortfall / (1024**3),
             )
-        # The counter measures the spill itself; the floor delta is only an inference.
         amount = spilled if direct_hit else shortfall
         message = _VRAM_SPILL_ADVICE.format(
             spilled = (
@@ -15401,8 +15388,7 @@ class LlamaCppBackend:
             "",
         ):
             kv_hint = " Setting the KV cache to q8_0 makes this context fit without shortening it."
-        # Worded for planned offload on every OS: the notice fires only once the load was
-        # handed to --fit on or a spill plan, which place host tensors deliberately.
+        # Fires only after a --fit on or spill-plan hand-off: planned CPU offload on every OS.
         cause = (
             "The GPU cannot hold it, so layers will be moved to the CPU and generation "
             f"will be slower. Lower the context to {max_available_ctx:,} or less, or "
@@ -25649,8 +25635,7 @@ class LlamaCppBackend:
                             )
                             # No silent shrink: effective_ctx stays == requested_ctx.
                             # use_fit = the pin failed; warn (Windows spills silently).
-                            # Only when some context fits: else max_available_ctx is the
-                            # Auto fallback anchor, and "lower it to N" would not fit either.
+                            # Else max_available_ctx is the Auto anchor, which does not fit either.
                             # -nkvo keeps the cache on the host, so the priced overflow is not real.
                             if (
                                 use_fit
@@ -26295,8 +26280,7 @@ class LlamaCppBackend:
                         0, (model_size or 0) - max(0, mmproj_size or 0)
                     ) + max(0, kv_cache_bytes)
                     if self._sysmem_fallback_risk(binary):
-                        # Host-only tensors: token_embd stays on the CPU unless the file is
-                        # tied, and the MTP blocks load only when the embedded head drafts.
+                        # Host-only: untied token_embd and undrafting MTP blocks (_unified_need_now).
                         _floor_layout = self._tensor_spill_layout(model_path, all_shards = True)
                         if _floor_layout is not None and getattr(_floor_layout, "complete", True):
                             if int(getattr(_floor_layout, "lm_head_bytes", 0) or 0):
@@ -31030,9 +31014,7 @@ class LlamaCppBackend:
                 logger.info(
                     f"llama-server ready on port {self._port} for model '{model_identifier}'"
                 )
-                # Sysmem fallback never crashes, so no retry rung sees it. Checked here,
-                # after every post-health respawn, so the verdict describes the final child
-                # and reaches the load response (a later warning is never shown).
+                # Sysmem fallback never crashes a rung. Here: after every respawn, before the response.
                 try:
                     self._verify_vram_residency()
                 except Exception as e:  # advisory only; never fail a healthy load
