@@ -9781,6 +9781,7 @@ def test_an_explicit_video_scheme_on_amd_runs_weight_only_without_forcing_compil
     assert status["transformer_quant"] == scheme
     assert status["speed_mode"] == "off"
     assert "requires compile" not in status["resolved"]["speed_mode"]["reason"]
+    assert "weight-only" in status["resolved"]["transformer_quant"]["reason"]
     backend.unload()
 
 
