@@ -76,7 +76,11 @@ def test_options_vlm_task_remote_code_token_and_missing_tokenizer(run, monkeypat
     assert "--sym" not in cmd and cmd[cmd.index("--group-size") + 1] == "64"
     assert cmd[cmd.index("--task") + 1] == "image-text-to-text" and "--trust-remote-code" in cmd
     assert not {"hf_parent", "hf_explicit"} & {*env.values()}  # the child reads a local checkpoint
-    assert run(is_main_process = False) is None and len(run.seen.merges) == 1 and not warnings
+    t5 = SimpleNamespace(config = SimpleNamespace(model_type = "t5", is_encoder_decoder = True))
+    with pytest.raises(ValueError, match = "encoder-decoder"):
+        run(t5)  # its task cannot be assumed, so the caller must name it
+    run(t5, task = "text2text-generation-with-past")
+    assert run(is_main_process = False) is None and len(run.seen.merges) == 2 and not warnings
     monkeypatch.setattr(save_mod.subprocess, "check_call", lambda c, env: _write(c, env, _OUT[0]))
     run(out = "no_tokenizer")
     assert len(warnings) == 1 and "openvino_tokenizer.xml" in warnings[0]

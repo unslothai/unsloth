@@ -7039,6 +7039,12 @@ def _unsloth_save_openvino(
     is_vlm = hasattr(config, "vision_config") or any(
         x.endswith("ForVisionText2Text") for x in archs
     )
+    # T5/BART export as text2text-generation, Whisper as speech recognition: no default fits them all.
+    if not is_vlm and getattr(config, "is_encoder_decoder", False) and "task" not in export_kwargs:
+        raise ValueError(
+            f"Unsloth: {getattr(config, 'model_type', 'this model')} is an encoder-decoder model, so "
+            "its OpenVINO export task must be given, e.g. task = 'text2text-generation-with-past'."
+        )
     export_kwargs.setdefault(
         "task", "image-text-to-text" if is_vlm else "text-generation-with-past"
     )
