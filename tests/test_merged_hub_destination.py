@@ -183,6 +183,7 @@ def saving(monkeypatch, tmp_path):
         "_is_adapter_save_method",
         "_honours_safe_serialization",
         "_assert_export_target_is_not_base_with_lora_layers",
+        "_refuse_unsaveable_text_core",
     }
     nodes = []
     for node in tree.body:

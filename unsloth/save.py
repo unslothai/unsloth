@@ -736,6 +736,38 @@ def _preserve_tokenizer_eos_token(
         )
 
 
+def _preserve_repaired_tokenizer_class(
+    tokenizer,
+    save_directory,
+    filename_prefix = None,
+):
+    """A tokenizer rebuilt from tokenizer.json still saves as LlamaTokenizer, which transformers v5 reloads with Metaspace and loses every space. Save it as PreTrainedTokenizerFast, which v4 and v5 load from tokenizer.json as-is. Never fails the save."""
+    if tokenizer is None or save_directory is None:
+        return
+    source_tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+    if not getattr(source_tokenizer, "_unsloth_tokenizer_json_repaired", False):
+        return
+    tokenizer_config_name = (
+        f"{filename_prefix}-tokenizer_config.json" if filename_prefix else "tokenizer_config.json"
+    )
+    tokenizer_config = os.path.join(str(save_directory), tokenizer_config_name)
+    if not os.path.isfile(tokenizer_config):
+        return
+    try:
+        with open(tokenizer_config, "r", encoding = "utf-8") as file:
+            config = json.load(file)
+        if config.get("tokenizer_class") == "PreTrainedTokenizerFast":
+            return
+        config["tokenizer_class"] = "PreTrainedTokenizerFast"
+        with open(tokenizer_config, "w", encoding = "utf-8") as file:
+            json.dump(config, file, indent = 2, ensure_ascii = False)
+            file.write("\n")
+    except Exception as error:
+        logger.warning_once(
+            f"Unsloth: Could not set tokenizer_class in {tokenizer_config}: {error}"
+        )
+
+
 def _strip_absent_mtp_declaration(config_dict, tensor_names):
     """Drop `mtp_num_hidden_layers` from a config dict when the tensors carry no MTP weights. Never raises. "Has a head" comes from the zoo's `mtp_head_is_present`, so this and `reconcile_mtp_config` cannot disagree."""
     # Unknown is not empty: editing a declaration blind is never justified.
@@ -1372,6 +1404,11 @@ def unsloth_save_model(
 
         tokenizer.save_pretrained(**tokenizer_save_settings)
         _preserve_tokenizer_eos_token(
+            tokenizer,
+            tokenizer_save_settings["save_directory"],
+            filename_prefix = tokenizer_save_settings.get("filename_prefix"),
+        )
+        _preserve_repaired_tokenizer_class(
             tokenizer,
             tokenizer_save_settings["save_directory"],
             filename_prefix = tokenizer_save_settings.get("filename_prefix"),
@@ -5444,6 +5481,31 @@ def _push_merged_to_hub_revision(save_kwargs):
         return commit
 
 
+def _refuse_unsaveable_text_core(model, save_method):
+    """A helper, not inline: unsloth_generic_save forwards its own locals() as keywords."""
+    get_base_model = (
+        getattr(model, "get_base_model", None) if isinstance(model, PeftModel) else None
+    )
+    core = get_base_model() if callable(get_base_model) else model
+    # A str set by _text_trainable_core; mocks answer any attribute with a truthy stand-in.
+    parent = getattr(core, "_unsloth_composed_parent", None)
+    if isinstance(parent, str) and not _is_adapter_save_method(save_method):
+        if isinstance(model, PeftModel):
+            # The merge re-reads the repo's shards, which hold the wrapper's layout, not this child's.
+            raise NotImplementedError(
+                f"Unsloth: this model is the text core of `{parent}` (loaded with text_only = True), "
+                f"so `{save_method}` would write the wrapper's weights under the text core's config. "
+                'Save the adapter with `save_method = "lora"` and reload it with `text_only = True` instead.'
+            )
+        if "transformers_modules" in (type(core).__module__ or ""):
+            # A full finetune writes its own weights, but a remote child class gets no auto_map or code copy.
+            raise NotImplementedError(
+                f"Unsloth: this model is the text core of `{parent}` (loaded with text_only = True) "
+                f"and its class `{type(core).__name__}` exists only in the repo's remote code, so a "
+                f"`{save_method}` checkpoint of it could not be reloaded. Load without text_only to save the full model."
+            )
+
+
 @_normalize_tied_weights_keys_for_save
 @torch.inference_mode
 def unsloth_generic_save(
@@ -5478,6 +5540,7 @@ def unsloth_generic_save(
             "if you're planning to do multiple saves.\n"
             "If you are certain, change `save_method` to `merged_4bit_forced`."
         )
+    _refuse_unsaveable_text_core(model, save_method)
 
     # Rebound rather than kept in a new local, because the `locals()` below is forwarded as
     # this function's own keywords.
@@ -6944,6 +7007,11 @@ def patch_saving_functions(model, vision = False):
             token = kwargs.get("token", None),
         )
         _preserve_tokenizer_eos_token(
+            self,
+            save_directory,
+            filename_prefix = filename_prefix,
+        )
+        _preserve_repaired_tokenizer_class(
             self,
             save_directory,
             filename_prefix = filename_prefix,
