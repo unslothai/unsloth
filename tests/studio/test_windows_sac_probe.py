@@ -1890,9 +1890,21 @@ exit 0
     run = tmp_path / "run"
     run.mkdir()
     proc = subprocess.run(
-        [pwsh, "-NoProfile", "-File", str(driver), "-Src", str(PROBE_DIR / "sac-probe.ps1"),
-         "-Run", str(run), "-Py", str(fake)],
-        capture_output = True, text = True, timeout = 120,
+        [
+            pwsh,
+            "-NoProfile",
+            "-File",
+            str(driver),
+            "-Src",
+            str(PROBE_DIR / "sac-probe.ps1"),
+            "-Run",
+            str(run),
+            "-Py",
+            str(fake),
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 120,
     )
     assert proc.returncode == 0, proc.stdout[-1500:] + proc.stderr[-1500:]
 
