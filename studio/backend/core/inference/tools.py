@@ -10584,11 +10584,20 @@ def _legacy_session_dir(session_id: str) -> "str | None":
         names.append(session_id)
     for name in names:
         candidate = os.path.join(legacy_root, name)
-        if not os.path.isdir(candidate) or os.path.islink(candidate):
+        if os.path.islink(candidate):
             continue
+        if os.path.isdir(candidate):
+            lock = _legacy_lock_for(name)
+        else:
+            # Gone from the legacy root can mean sitting in staging, where neither root holds it and the caller would
+            # fall through to a destination that does not exist yet. The same durable trace
+            # _migrate_one_legacy_session waits on: an entry means a move began, so waiting on it lets the move land.
+            lock = _legacy_lock_peek(name)
+            if lock is None:
+                continue
         # Under this session's move lock, and checked again inside it: the move is a rename, so a path handed back
         # mid-move lists nothing and 404s every card. One that already ran sends the caller to the destination.
-        with _legacy_lock_for(name):
+        with lock:
             if os.path.isdir(candidate) and not os.path.islink(candidate):
                 return candidate
     return None

@@ -682,13 +682,68 @@ def test_the_legacy_migration_is_startup_work(tmp_path, monkeypatch):
     Path(tools.resolve_sandbox_workdir("__LOCALID_upgrade"))
     assert (legacy / "sales.csv").is_file()
 
-    tools.migrate_legacy_sandbox_in_background()
-    for _ in range(50):
-        if not legacy.exists():
-            break
-        time.sleep(0.05)
+    # Joined, not polled: the legacy folder is gone for the whole staging window, well before the
+    # move lands, so its absence says nothing about whether the migration has finished.
+    mover = tools.migrate_legacy_sandbox_in_background()
+    mover.join(60)
+    assert not mover.is_alive(), "the background migration never finished"
     resolved = Path(tools.resolve_sandbox_workdir("__LOCALID_upgrade"))
     assert (resolved / "sales.csv").is_file(), "the file did not follow the migration"
+    # A read falls back to the legacy root while a session is still there, so the file being
+    # readable does not by itself show that anything moved.
+    assert not legacy.exists(), "the session was left at the legacy root"
+    assert resolved.resolve().is_relative_to(Path(tools.sandbox_root()).resolve())
+
+
+def test_a_read_does_not_answer_from_inside_a_legacy_move_s_staging_window(tmp_path, monkeypatch):
+    """A listing or download that lands while a session sits in staging must wait for the move.
+
+    Through that window the session is in neither root, so answering then hands back the
+    destination before it exists: the sandbox lists empty and every file card 404s.
+    """
+    fake_home = tmp_path / "userprofile"
+    fake_home.mkdir()
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
+
+    session = fake_home / "studio_sandbox" / "__LOCALID_reading"
+    session.mkdir(parents = True)
+    (session / "data.csv").write_text("a\n")
+
+    tools = _shared_setup_6()
+
+    staged = threading.Event()
+    release = threading.Event()
+    real_move = shutil.move
+
+    def gated_move(source, destination, *args, **kwargs):
+        moved = real_move(source, destination, *args, **kwargs)
+        if "__LOCALID_reading" in str(destination):
+            staged.set()  # the source is gone and the destination is not in place yet
+            release.wait(10)
+        return moved
+
+    monkeypatch.setattr(tools.shutil, "move", gated_move)
+
+    mover = tools.migrate_legacy_sandbox_in_background()
+    assert staged.wait(10), "the migration never reached the staging window"
+
+    result = {}
+    reader = threading.Thread(
+        target = lambda: result.update(
+            workdir = Path(tools.resolve_sandbox_workdir("__LOCALID_reading")),
+        ),
+        daemon = True,
+    )
+    reader.start()
+    reader.join(1.0)
+    returned_early = not reader.is_alive()
+    release.set()
+    reader.join(10)
+    mover.join(10)
+
+    assert not returned_early, "the read answered from inside the staging window"
+    assert "workdir" in result, "the read never returned"
+    assert (result["workdir"] / "data.csv").is_file(), f"{result['workdir']} lost its files"
 
 
 def test_the_migration_is_serialised(tmp_path, monkeypatch):
