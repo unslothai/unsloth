@@ -17,7 +17,7 @@ import threading
 import uuid
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, BinaryIO, Optional, Union
 
 from core.inference import gallery_flags
 from loggers import get_logger
@@ -198,26 +198,50 @@ def thumbnail(video_id: str) -> Optional[bytes]:
     path = owned_video_path(video_id)
     if path is None:
         return None
-    return _thumbnail_webp(path)
+    return first_frame_webp(path)
 
 
-def _thumbnail_webp(path: Path) -> bytes:
+def first_frame_webp(
+    source: Union[Path, BinaryIO],
+    width: int = _THUMBNAIL_WIDTH,
+    *,
+    container: Optional[str] = None,
+    max_pixels: Optional[int] = None,
+    max_height: Optional[int] = None,
+) -> bytes:
+    """The first frame of a clip (a file or an open binary stream), at most `width` wide and
+    `max_height` tall (four widths unless given), as WebP.
+
+    ``container`` forces the demuxer instead of probing for one, and then nothing but the stream
+    itself is read: a probed HLS or concat playlist names other files to open. ``max_pixels``
+    refuses a frame larger than that before it is decoded."""
     import io
+
     try:
         import av
         from PIL import Image
     except Exception as exc:  # noqa: BLE001 -- a missing decoder dependency makes thumbnails unavailable
         raise RuntimeError("Thumbnail generation needs the 'av' and 'Pillow' packages.") from exc
+    if isinstance(source, Path):
+        target, protocols = str(source), "file"
+    else:
+        target, protocols = source, "none"
+    options = {"protocol_whitelist": protocols} if container else {}
     try:
-        with av.open(str(path)) as src:
+        with av.open(target, format = container, options = options) as src:
             if not src.streams.video:
                 raise RuntimeError("Thumbnail generation failed: the clip has no video stream.")
-            frame = next(src.decode(src.streams.video[0]), None)
+            stream = src.streams.video[0]
+            if max_pixels is not None:
+                if stream.width * stream.height > max_pixels:
+                    raise RuntimeError(f"{stream.width}x{stream.height} is too large to thumbnail.")
+                stream.codec_context.options = {"max_pixels": str(max_pixels)}
+            frame = next(src.decode(stream), None)
             if frame is None:
                 raise RuntimeError("Thumbnail generation failed: the clip has no decodable frames.")
             image = frame.to_image()
-            if image.width > _THUMBNAIL_WIDTH:
-                scale = _THUMBNAIL_WIDTH / image.width
+            scale = min(1, width / image.width, (max_height or width * 4) / image.height)
+            if scale < 1:
                 image = image.resize(
                     (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
                     Image.LANCZOS,

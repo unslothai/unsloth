@@ -201,6 +201,15 @@ def _warn(logger: Any, what: str, exc: Any) -> None:
         logger.warning("diffusion.cuda_graph: %s failed: %s", what, exc)
 
 
+def _outer_layer(module: Any) -> Any:
+    """The ``_unsloth_outer_forward`` layer in ``module``'s forward slot (its ``inner`` None = class forward)."""
+    try:
+        slot = module.__dict__.get("forward")
+    except Exception:  # noqa: BLE001 - no instance dict, nothing layered
+        return None
+    return slot if getattr(slot, "_unsloth_outer_forward", False) is True else None
+
+
 class _Entry:
     """One captured graph plus the static buffers it replays into."""
 
@@ -264,11 +273,20 @@ class GraphedForward:
         _LIVE_WRAPPERS.add(self)
 
     def install(self) -> "GraphedForward":
-        """Write ``forward`` into the instance ``__dict__``; ``__setattr__`` would inspect it."""
+        """Set ``forward`` via ``__dict__`` (``__setattr__`` would inspect it), under any outer step-skip layer."""
+        outer = _outer_layer(self.module)
+        if outer is not None:
+            outer.inner = self
+            return self
         self.module.__dict__["forward"] = self
         return self
 
     def uninstall(self) -> "GraphedForward":
+        outer = _outer_layer(self.module)
+        if outer is not None:
+            if outer.inner is self:
+                outer.inner = None
+            return self
         self.module.__dict__.pop("forward", None)
         return self
 

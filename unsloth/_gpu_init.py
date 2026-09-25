@@ -256,6 +256,8 @@ from .import_fixes import (
     fix_transformers_chunked_mask_block_sequence_ids,
     fix_transformers_rope_scaling_drops_theta,
     fix_transformers_validate_rope_ignore_keys,
+    fix_transformers5_remote_code_legacy_defaults,
+    fix_transformers_config_only_remote_code,
     fix_transformers_remote_rope_scaling_none,
     fix_transformers_is_torch_fx_available,
     fix_xformers_performance_issue,
@@ -318,6 +320,8 @@ del check_transformers_prequantized_vlm_quant_state
 # retry in models/llama.py sees a config that kept its base (#2405).
 fix_transformers_rope_scaling_drops_theta()
 fix_transformers_validate_rope_ignore_keys()
+fix_transformers5_remote_code_legacy_defaults()
+fix_transformers_config_only_remote_code()
 # Remote code written for 4.x reads plain RoPE as rope_scaling None and imports is_torch_fx_available.
 fix_transformers_remote_rope_scaling_none()
 fix_transformers_is_torch_fx_available()

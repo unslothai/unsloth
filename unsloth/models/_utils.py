@@ -86,6 +86,9 @@ __all__ = [
     "is_moe_model",
     "get_moe_target_parameters",
     "get_moe_target_modules",
+    "get_moe_expert_submodule_leaves",
+    "moe_expert_submodule_regex",
+    "widen_target_regex_to_expert_submodules",
     "warn_if_zoo_cannot_merge_moe_experts",
     "_select_moe_detection_targets",
     "EMBEDDING_MODULES",
@@ -117,6 +120,7 @@ import copy
 import re
 from dataclasses import dataclass, field
 import functools
+import threading
 import textwrap
 import logging
 import warnings, subprocess, inspect, psutil, os, math
@@ -772,6 +776,43 @@ def _declares_flex_support(model_class):
     return None
 
 
+def _model_class_supports_flash_attention(model_class):
+    """Whether installed transformers lets this class dispatch flash attention."""
+    if model_class is None:
+        return False
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+    except Exception:
+        PreTrainedModel = None
+    new_flag_dispatched = PreTrainedModel is not None and hasattr(
+        PreTrainedModel, "_supports_flash_attn"
+    )
+    if new_flag_dispatched and not _flash_dispatch_reads_legacy_flag(PreTrainedModel):
+        return bool(getattr(model_class, "_supports_flash_attn", False))
+    return bool(
+        getattr(model_class, "_supports_flash_attn_2", False)
+        or getattr(model_class, "_supports_flash_attn", False)
+    )
+
+
+def _flash_dispatch_reads_legacy_flag(PreTrainedModel) -> bool:
+    # Read from source: later versions keep the legacy name only in the error message.
+    import inspect
+    for name in ("_flash_attn_can_dispatch", "_flash_attn_2_can_dispatch"):
+        check = getattr(PreTrainedModel, name, None)
+        if check is None:
+            continue
+        try:
+            source = inspect.getsource(check)
+        except (OSError, TypeError):
+            return False
+        return any(
+            "_supports_flash_attn_2" in line and line.lstrip().startswith("if not")
+            for line in source.splitlines()
+        )
+    return False
+
+
 def _enable_flex_attention_support(model_class, model_type = ""):
     """Set `_supports_flex_attn` on an interface-based architecture that leaves it unset (qwen3_5,
     qwen3_5_moe). Returns True when flex is now permitted."""
@@ -1086,7 +1127,73 @@ def _set_attn_impl(config, impl):
     return impl
 
 
-def resolve_model_class(auto_model, config):
+_REMOTE_CODE_HUB_KWARGS = (
+    "revision",
+    "code_revision",
+    "token",
+    "cache_dir",
+    "local_files_only",
+    "force_download",
+    "proxies",
+)
+
+
+def _resolve_remote_model_class(auto_model, config, **hub_kwargs):
+    """Remote-code class `auto_model` would build for `config`, or None when native.
+    Auto mapping keys on config class name, so a remote `NemotronHConfig` would resolve native."""
+    if hub_kwargs.get("trust_remote_code", None) is False:
+        return None
+    auto_name = getattr(auto_model, "__name__", None)
+    auto_map = getattr(config, "auto_map", None)
+    if not auto_name or not isinstance(auto_map, dict) or auto_name not in auto_map:
+        return None
+    if not str(getattr(type(config), "__module__", "")).startswith("transformers_modules"):
+        return None
+    class_ref = auto_map[auto_name]
+    if not isinstance(class_ref, str) or "." not in class_ref:
+        return None
+    repo_id = getattr(config, "_name_or_path", None) or getattr(config, "name_or_path", None)
+    full_ref = class_ref
+    cross_repo = "--" in class_ref
+    if cross_repo:
+        _, class_ref = class_ref.split("--", 1)
+    module_name, class_name = class_ref.rsplit(".", 1)
+    # These may replace an already imported sibling module (revision = code revision same-repo).
+    if (
+        not cross_repo
+        and not hub_kwargs.get("force_download", False)
+        and not hub_kwargs.get("code_revision", None)
+        and not hub_kwargs.get("revision", None)
+    ):
+        config_module = str(type(config).__module__)
+        try:
+            import importlib
+
+            sibling = importlib.import_module(f"{config_module.rsplit('.', 1)[0]}.{module_name}")
+            klass = getattr(sibling, class_name, None)
+            if isinstance(klass, type):
+                return klass
+        except Exception:
+            pass
+    if not repo_id or not hub_kwargs.get("trust_remote_code", None):
+        return None
+    try:
+        from transformers.dynamic_module_utils import get_class_from_dynamic_module
+
+        passed = {
+            k: v for k, v in hub_kwargs.items() if k in _REMOTE_CODE_HUB_KWARGS and v is not None
+        }
+        # Same call as from_pretrained, so `revision` applies only to same-repo code.
+        klass = get_class_from_dynamic_module(full_ref, repo_id, **passed)
+        return klass if isinstance(klass, type) else None
+    except Exception:
+        return None
+
+
+def resolve_model_class(auto_model, config, **hub_kwargs):
+    remote_class = _resolve_remote_model_class(auto_model, config, **hub_kwargs)
+    if remote_class is not None:
+        return remote_class
     mapping = getattr(auto_model, "_model_mapping", {})
     try:
         result = mapping[config.__class__]
@@ -1111,6 +1218,69 @@ def resolve_model_class(auto_model, config):
         if result is None:
             return None
     return result[0] if isinstance(result, (list, tuple)) else result
+
+
+@functools.lru_cache(maxsize = None)
+def _auto_loader_prefers_explicit_local_code():
+    """5 lets a class registered for the exact config class beat auto_map; 4.x never does."""
+    try:
+        import inspect
+        from transformers.models.auto.auto_factory import _BaseAutoModelClass
+        return "explicit_local_code" in inspect.getsource(_BaseAutoModelClass.from_pretrained)
+    except Exception:
+        return True
+
+
+_REMOTE_CLASS_HUB_OPTIONS = ("code_revision", "cache_dir", "proxies", "force_download")
+
+
+def resolve_remote_code_model_class(
+    auto_model,
+    config,
+    model_name,
+    trust_remote_code = False,
+    **hub_kwargs,
+):
+    """(True, cls) if the load builds the remote class, (True, None) if unfetchable, else (False, None); `resolve_model_class` matches by NAME and misses remote shadows (Trinity-Large)."""
+    if not trust_remote_code or config is None or model_name is None:
+        return False, None
+    auto_map = getattr(config, "auto_map", None)
+    auto_name = getattr(auto_model, "__name__", None)
+    if not isinstance(auto_map, dict) or auto_name not in auto_map:
+        return False, None
+    # Exact match only, as transformers checks `type(config) in cls._model_mapping`.
+    try:
+        mapping = auto_model._model_mapping
+        if type(config) in mapping and _auto_loader_prefers_explicit_local_code():
+            from transformers.models.auto.auto_factory import _get_model_class
+            local_class = _get_model_class(config, mapping)
+            if not (getattr(local_class, "__module__", "") or "").startswith("transformers."):
+                return False, None
+    except Exception:
+        pass
+    class_ref = auto_map[auto_name]
+    if isinstance(class_ref, (list, tuple)):
+        class_ref = class_ref[0]
+    if not isinstance(class_ref, str):
+        return True, None
+    try:
+        from transformers.dynamic_module_utils import get_class_from_dynamic_module
+        hub_kwargs = {k: v for k, v in hub_kwargs.items() if v is not None}
+        return True, get_class_from_dynamic_module(class_ref, model_name, **hub_kwargs)
+    except Exception:
+        return True, None
+
+
+def attention_class_for_load(model_class, builds_remote_class, remote_class, supports_sdpa):
+    """A remote class replaces only a native class it shadows; otherwise it may only rule sdpa out, so remote code that already loaded keeps its attention route."""
+    if not builds_remote_class:
+        return model_class, supports_sdpa
+    if model_class is None and remote_class is None:
+        return None, supports_sdpa
+    return (
+        remote_class if model_class is not None else None,
+        bool(supports_sdpa) and bool(getattr(remote_class, "_supports_sdpa", False)),
+    )
 
 
 def _is_family_text_decoder(parent_model_type, text_model_type):
@@ -1197,6 +1367,86 @@ def _get_text_only_key_mapping(parent_config, text_config):
     }
 
 
+_TEXT_ONLY_PARENT_MODEL_TYPES = {}
+# Per-thread, set only during one text-only `get_model_conversion_mapping` call.
+_TEXT_ONLY_LOOKUP_OVERRIDES = threading.local()
+_TEXT_ONLY_PREFIX_RENAME = r"^language_model\.model\."
+
+
+def _parent_conversions_for_text_only(parent_model_type):
+    """VLM conversions a decoder-only load needs, minus start-anchored prefix renames the text-only key_mapping replaces."""
+    try:
+        from transformers.conversion_mapping import get_checkpoint_conversion_mapping
+        from transformers.core_model_loading import WeightRenaming
+    except Exception:
+        return []
+    kept = []
+    for transform in get_checkpoint_conversion_mapping(parent_model_type) or []:
+        sources = transform.source_patterns
+        if not isinstance(sources, (list, tuple)):
+            sources = [sources]
+        if isinstance(transform, WeightRenaming) and all(str(s).startswith("^") for s in sources):
+            continue
+        kept.append(transform)
+    return kept
+
+
+def _install_text_only_conversion_carry():
+    """Give text-only VLM loads (Unsloth key_mapping, no own conversions) the VLM's conversions."""
+    try:
+        import transformers.conversion_mapping as conversion_mapping
+        import transformers.modeling_utils as modeling_utils
+        lookup = conversion_mapping.get_checkpoint_conversion_mapping
+    except Exception:
+        return
+    original = getattr(modeling_utils, "get_model_conversion_mapping", None)
+    if original is None or getattr(original, "_unsloth_text_only_carry", False):
+        return
+
+    # Installed once, never swapped per call: concurrent loads would race on the module global.
+    if not getattr(lookup, "_unsloth_text_only_carry", False):
+
+        @functools.wraps(lookup)
+        def get_checkpoint_conversion_mapping(model_type, *args, **kwargs):
+            overrides = getattr(_TEXT_ONLY_LOOKUP_OVERRIDES, "value", None)
+            if overrides and model_type in overrides:
+                return copy.deepcopy(overrides[model_type])
+            return lookup(model_type, *args, **kwargs)
+
+        get_checkpoint_conversion_mapping._unsloth_text_only_carry = True
+        conversion_mapping.get_checkpoint_conversion_mapping = get_checkpoint_conversion_mapping
+
+    @functools.wraps(original)
+    def get_model_conversion_mapping(
+        model,
+        key_mapping = None,
+        *args,
+        **kwargs,
+    ):
+        text_model_type = getattr(getattr(model, "config", None), "model_type", None)
+        parent_model_type = _TEXT_ONLY_PARENT_MODEL_TYPES.get(text_model_type)
+        if (
+            parent_model_type is None
+            or not key_mapping
+            or _TEXT_ONLY_PREFIX_RENAME not in key_mapping
+            or lookup(type(model).__name__) is not None
+            or lookup(text_model_type) is not None
+        ):
+            return original(model, key_mapping, *args, **kwargs)
+        extra = _parent_conversions_for_text_only(parent_model_type)
+
+        # Same list position as a native registration so the quantizer rewrites them too (FP8).
+        previous = getattr(_TEXT_ONLY_LOOKUP_OVERRIDES, "value", None)
+        _TEXT_ONLY_LOOKUP_OVERRIDES.value = {**(previous or {}), text_model_type: extra}
+        try:
+            return original(model, key_mapping, *args, **kwargs)
+        finally:
+            _TEXT_ONLY_LOOKUP_OVERRIDES.value = previous
+
+    get_model_conversion_mapping._unsloth_text_only_carry = True
+    modeling_utils.get_model_conversion_mapping = get_model_conversion_mapping
+
+
 def _apply_text_only_key_mapping(kwargs, parent_config, text_config):
     # Add the text-only key_mapping to from_pretrained kwargs, under any user mapping.
     mapping = _get_text_only_key_mapping(parent_config, text_config)
@@ -1204,6 +1454,15 @@ def _apply_text_only_key_mapping(kwargs, parent_config, text_config):
         return
     user_mapping = kwargs.get("key_mapping", None)
     kwargs["key_mapping"] = {**mapping, **user_mapping} if user_mapping else mapping
+    parent_model_type = getattr(parent_config, "model_type", None)
+    text_model_type = getattr(text_config, "model_type", None)
+    if (
+        parent_model_type
+        and text_model_type
+        and _parent_conversions_for_text_only(parent_model_type)
+    ):
+        _TEXT_ONLY_PARENT_MODEL_TYPES[text_model_type] = parent_model_type
+        _install_text_only_conversion_carry()
 
 
 def _cast_text_only_prequantized_params(model, dtype):
@@ -1262,14 +1521,9 @@ def resolve_attention_implementation(
         supports_sdpa = model_class is not None and getattr(model_class, "_supports_sdpa", False)
     if _is_sdpa_excluded(model_type):
         supports_sdpa = False
-    supports_flash_attention = (
-        model_class is not None
-        and (
-            getattr(model_class, "_supports_flash_attn_2", False)
-            or getattr(model_class, "_supports_flash_attn", False)
-        )
-        and not _is_flash_excluded(model_type)
-    )
+    supports_flash_attention = _model_class_supports_flash_attention(
+        model_class
+    ) and not _is_flash_excluded(model_type)
     supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
     # Before the ladder, since every branch below reads supports_flex_attention.
     prefers_flex_for_head_dim = _prefers_flex_for_head_dim(config)
@@ -1373,8 +1627,9 @@ def resolve_encoder_attention_implementation(
     config,
     model_type = "",
     disable_sdpa_model_names = (),
+    **hub_kwargs,
 ):
-    model_class = resolve_model_class(auto_model, config)
+    model_class = resolve_model_class(auto_model, config, **hub_kwargs)
     supports_sdpa = model_class is not None and getattr(model_class, "_supports_sdpa", False)
     if any(name in model_type.lower() for name in disable_sdpa_model_names):
         return "eager"
@@ -4945,7 +5200,9 @@ def get_moe_target_modules(model, target_modules = None) -> List[str]:
         return []
 
     # Scope the suffixes to the requested leaves, matching get_moe_target_parameters: gate/up/gate_up map to the fused gate_up ModuleList and down_proj to the down one, so a down-only request must not pull in the other projection.
-    want_gate_up = bool(target_set & {"gate_proj", "up_proj", "gate_up_proj"})
+    # gate_proj alone must not collect up_proj leaves; only gate_up_proj asks for both.
+    want_gate = bool(target_set & {"gate_proj", "gate_up_proj"})
+    want_up = bool(target_set & {"up_proj", "gate_up_proj"})
     want_down = "down_proj" in target_set
 
     targets = set()
@@ -4964,16 +5221,130 @@ def get_moe_target_modules(model, target_modules = None) -> List[str]:
             continue
         leaf_lower = leaf.lower()
         is_down = "down" in leaf_lower
-        is_gate_up = (not is_down) and ("gate" in leaf_lower or "up" in leaf_lower)
+        is_gate = (not is_down) and "gate" in leaf_lower
+        is_up = (not is_down) and "up" in leaf_lower
+        is_gate_up = is_gate or is_up
         if is_down and not want_down:
             continue
-        if is_gate_up and not want_gate_up:
+        if is_gate and is_up:  # a fused gate_up leaf: either request reaches it
+            if not (want_gate or want_up):
+                continue
+        elif is_gate and not want_gate:
+            continue
+        elif is_up and not want_up:
             continue
         # One entry per expert index; leaf.<i> matches expert i in every layer.
         for expert_index in range(len(module)):
             targets.add(f"{leaf}.{expert_index}")
 
     return sorted(targets)
+
+
+_EXPERT_SUBMODULE_PATTERN = re.compile(r"(?:^|\.)(?:experts\.\d+|shared_experts?)\.([A-Za-z_]\w*)$")
+_EXPERT_BLOCK_PATTERN = re.compile(r"(?:^|\.)(?:experts\.\d+|shared_experts?)$")
+
+
+def get_moe_expert_submodule_leaves(model, target_modules = None) -> List[str]:
+    """Requested MLP leaves inside expert submodules, unreached by the text-only regex."""
+    if not is_moe_model(model):
+        return []
+    if target_modules is None or not hasattr(model, "named_modules"):
+        return []
+    if isinstance(target_modules, str):
+        target_set = _moe_target_set_from_string(target_modules)
+    else:
+        target_set = {
+            target
+            for target in target_modules or ()
+            if (isinstance(target, str) and "." not in target and target in _MOE_BROAD_MLP_TARGETS)
+        }
+    if not (target_set & _MOE_BROAD_MLP_TARGETS):
+        return []
+    # gate_proj alone must not collect up_proj leaves; only gate_up_proj asks for both.
+    want_gate = bool(target_set & {"gate_proj", "gate_up_proj"})
+    want_up = bool(target_set & {"up_proj", "gate_up_proj"})
+    want_down = "down_proj" in target_set
+
+    leaves = set()
+    for name, module in model.named_modules():
+        matched = _EXPERT_SUBMODULE_PATTERN.search(name)
+        if matched is None:
+            continue
+        if not (
+            isinstance(module, torch.nn.Linear)
+            or isinstance(getattr(module, "base_layer", None), torch.nn.Linear)
+        ):
+            continue
+        leaf = matched.group(1)
+        leaf_lower = leaf.lower()
+        is_down = "down" in leaf_lower
+        is_gate = (not is_down) and "gate" in leaf_lower
+        is_up = (not is_down) and "up" in leaf_lower
+        is_gate_up = is_gate or is_up
+        if is_down and not want_down:
+            continue
+        if is_gate and is_up:  # a fused gate_up leaf: either request reaches it
+            if not (want_gate or want_up):
+                continue
+        elif is_gate and not want_gate:
+            continue
+        elif is_up and not want_up:
+            continue
+        if not (is_down or is_gate_up):
+            continue
+        leaves.add(leaf)
+    return sorted(leaves)
+
+
+def moe_expert_submodule_regex(leaves, prefixes = None) -> str:
+    parent = r".*" if not prefixes else "(?:" + "|".join(sorted(prefixes)) + ")"
+    return (
+        parent
+        + r"\.(?:experts\.\d+|shared_experts?)\.(?:"
+        + "|".join(re.escape(leaf) for leaf in leaves)
+        + r")"
+    )
+
+
+def _remote_expert_parents(model):
+    parents = set()
+    for name, module in model.named_modules():
+        matched = _EXPERT_BLOCK_PATTERN.search(name)
+        if matched is None:
+            continue
+        if "transformers_modules" not in (getattr(type(module), "__module__", "") or ""):
+            continue
+        parent = name[: matched.start()]
+        parents.add(
+            r"\.".join(r"\d+" if part.isdigit() else re.escape(part) for part in parent.split("."))
+        )
+    return parents
+
+
+def widen_target_regex_to_expert_submodules(
+    model, target_modules, detect_targets, auto_regex: bool
+):
+    """Widen a generated regex to ``experts.<i>.<leaf>``; a user-written regex is never widened."""
+    if not auto_regex or not isinstance(target_modules, str):
+        return target_modules, detect_targets, []
+    # Remote expert blocks only: widening native ones (Qwen3-MoE on 4.x) LoRAs every routed expert.
+    parents = _remote_expert_parents(model)
+    if not parents:
+        return target_modules, detect_targets, []
+    leaves = get_moe_expert_submodule_leaves(model, detect_targets)
+    if not leaves:
+        return target_modules, detect_targets, []
+    if any(
+        re.fullmatch(target_modules, name)
+        for name, _ in model.named_modules()
+        if ".experts." in name
+    ):
+        return target_modules, detect_targets, []
+    detect_was_the_regex = detect_targets is target_modules
+    target_modules = f"(?:{target_modules})|(?:{moe_expert_submodule_regex(leaves, parents)})"
+    if detect_was_the_regex:
+        detect_targets = target_modules
+    return target_modules, detect_targets, leaves
 
 
 def warn_if_zoo_cannot_merge_moe_experts():

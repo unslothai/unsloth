@@ -224,8 +224,13 @@ def _config_uses_remote_code(config):
             auto_map = cfg.get("auto_map", auto_map)
         if not auto_map:
             return False
+        config_is_native = (getattr(type(cfg), "__module__", "") or "").startswith("transformers.")
         # A custom tokenizer, processor or feature extractor is not code the compiler traces.
-        return any(str(k).startswith(("AutoModel", "AutoConfig")) for k in auto_map)
+        return any(
+            str(k).startswith("AutoModel")
+            or (str(k).startswith("AutoConfig") and not config_is_native)
+            for k in auto_map
+        )
 
     # Sub-configs go beyond text/vision/audio (Qwen-Omni thinker_config, nested llm_config) and nest;
     # a remote child read as native puts the compiler on untraceable code, so walk every level.
@@ -401,7 +406,11 @@ def _config_has_native_class(auto_class, config):
         return False
 
 
-def _resolve_omni_auto_model(model_config):
+def _resolve_omni_auto_model(
+    model_config,
+    trust_remote_code = None,
+    **hub_kwargs,
+):
     """A multimodal auto class that really maps this config, or None.
 
     Qwen3-Omni names Qwen3OmniMoeForConditionalGeneration so it reads as a VLM,
@@ -416,7 +425,12 @@ def _resolve_omni_auto_model(model_config):
         if auto_class is None:
             continue
         try:
-            if resolve_model_class(auto_class, model_config) is not None:
+            if (
+                resolve_model_class(
+                    auto_class, model_config, trust_remote_code = trust_remote_code, **hub_kwargs
+                )
+                is not None
+            ):
                 return auto_class
         except Exception:
             continue
@@ -800,8 +814,11 @@ class FastLanguageModel(FastLlamaModel):
                     f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
                     f"4bit/8bit/fp8 loading is disabled and the model will "
                     f"load in 16bit, which needs far more VRAM. Unsloth loads "
-                    f"4bit by default; point at the 4bit repo instead if you "
-                    f"wanted that."
+                    f"4bit by default. To train in 4bit, point at a 4bit repo or "
+                    f"pass quantization_config = BitsAndBytesConfig(load_in_4bit = True, "
+                    f"bnb_4bit_use_double_quant = True, bnb_4bit_quant_type = 'nf4', "
+                    f"bnb_4bit_compute_dtype = torch.bfloat16), which quantizes this "
+                    f"checkpoint while it loads."
                 )
             load_in_4bit = False
             load_in_8bit = False
@@ -989,8 +1006,11 @@ class FastLanguageModel(FastLlamaModel):
                         f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
                         f"4bit/8bit/fp8 loading is disabled and the model will "
                         f"load in 16bit, which needs far more VRAM. Unsloth loads "
-                        f"4bit by default; point at the 4bit repo instead if you "
-                        f"wanted that."
+                        f"4bit by default. To train in 4bit, point at a 4bit repo or "
+                        f"pass quantization_config = BitsAndBytesConfig(load_in_4bit = True, "
+                        f"bnb_4bit_use_double_quant = True, bnb_4bit_quant_type = 'nf4', "
+                        f"bnb_4bit_compute_dtype = torch.bfloat16), which quantizes this "
+                        f"checkpoint while it loads."
                     )
                 load_in_4bit = False
                 load_in_8bit = False
@@ -1583,8 +1603,11 @@ class FastModel(FastBaseModel):
                     f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
                     f"4bit/8bit/fp8 loading is disabled and the model will "
                     f"load in 16bit, which needs far more VRAM. Unsloth loads "
-                    f"4bit by default; point at the 4bit repo instead if you "
-                    f"wanted that."
+                    f"4bit by default. To train in 4bit, point at a 4bit repo or "
+                    f"pass quantization_config = BitsAndBytesConfig(load_in_4bit = True, "
+                    f"bnb_4bit_use_double_quant = True, bnb_4bit_quant_type = 'nf4', "
+                    f"bnb_4bit_compute_dtype = torch.bfloat16), which quantizes this "
+                    f"checkpoint while it loads."
                 )
             load_in_4bit = False
             load_in_8bit = False
@@ -1922,8 +1945,11 @@ class FastModel(FastBaseModel):
                         f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
                         f"4bit/8bit/fp8 loading is disabled and the model will "
                         f"load in 16bit, which needs far more VRAM. Unsloth loads "
-                        f"4bit by default; point at the 4bit repo instead if you "
-                        f"wanted that."
+                        f"4bit by default. To train in 4bit, point at a 4bit repo or "
+                        f"pass quantization_config = BitsAndBytesConfig(load_in_4bit = True, "
+                        f"bnb_4bit_use_double_quant = True, bnb_4bit_quant_type = 'nf4', "
+                        f"bnb_4bit_compute_dtype = torch.bfloat16), which quantizes this "
+                        f"checkpoint while it loads."
                     )
                 load_in_4bit = False
                 load_in_8bit = False
@@ -2060,12 +2086,25 @@ class FastModel(FastBaseModel):
                     "loaded. If it was trained with `text_only = True`, pass `text_only = True` here too."
                 )
         load_text_only = text_only and auto_model is None
+        # Class probes below fetch remote modeling code exactly as the load will.
+        _probe_hub_kwargs = dict(
+            trust_remote_code = trust_remote_code,
+            revision = base_revision if not is_peft else None,
+            code_revision = kwargs.get("code_revision", None),
+            token = token,
+            cache_dir = kwargs.get("cache_dir", None),
+            local_files_only = local_files_only,
+            force_download = kwargs.get("force_download", None),
+            proxies = kwargs.get("proxies", None),
+        )
         text_only_decoder = False
         if load_text_only:
             if hasattr(model_config, "vision_config"):
                 text_config = _get_text_only_config(model_config, old_model_name)
                 # Skip the vision tower only for families with their own text decoder (Gemma 3); others would load random weights, so keep the full model.
-                text_class = resolve_model_class(AutoModelForCausalLM, text_config)
+                text_class = resolve_model_class(
+                    AutoModelForCausalLM, text_config, **_probe_hub_kwargs
+                )
                 if text_class is None or not _is_family_text_decoder(
                     getattr(model_config, "model_type", ""),
                     getattr(text_config, "model_type", ""),
@@ -2129,8 +2168,11 @@ class FastModel(FastBaseModel):
                     auto_model = AutoModelForVision2Seq
                     # Only when the image-text class has no mapping, so anything that
                     # resolves today keeps the class it resolves to now.
-                    if resolve_model_class(auto_model, model_config) is None:
-                        auto_model = _resolve_omni_auto_model(model_config) or auto_model
+                    if resolve_model_class(auto_model, model_config, **_probe_hub_kwargs) is None:
+                        auto_model = (
+                            _resolve_omni_auto_model(model_config, **_probe_hub_kwargs)
+                            or auto_model
+                        )
             else:
                 auto_model = AutoModelForCausalLM
 
