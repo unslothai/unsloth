@@ -92,6 +92,31 @@ def test_subclass_weights_are_not_kept():
     assert not dm._keepable(lin.weight)
 
 
+def test_an_all_subclass_module_is_not_rescanned_every_forward():
+    class Sub(torch.Tensor):
+        pass
+
+    pipe = _pipe("meta", "transformer")
+    lin = pipe.transformer
+    lin.weight = torch.nn.Parameter(lin.weight.detach().as_subclass(Sub))
+    lin.bias = torch.nn.Parameter(lin.bias.detach().as_subclass(Sub))
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    scans = []
+    stock = type(lin).named_parameters
+
+    def named_parameters(self, *args, **kwargs):
+        # accelerate's own device probe passes recurse=; the wrapper's scans pass nothing.
+        if not args and not kwargs:
+            scans.append(1)
+        return stock(self, *args, **kwargs)
+
+    lin.named_parameters = types.MethodType(named_parameters, lin)
+    for _ in range(5):
+        lin._hf_hook.pre_forward(lin, torch.zeros(1, 8))
+    assert scans == []
+
+
 def test_model_offload_plan_wraps_the_pipeline():
     pipe = _pipe("meta", "transformer")
     plan = types.SimpleNamespace(
