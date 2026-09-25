@@ -18,8 +18,19 @@ const requested = new Function(
   `${runtime.slice(start, end)}\nreturn requestedEngine;`,
 ) as (...args: unknown[]) => string;
 
+type Params = {
+  checkpoint: string;
+  engine: string;
+  enginePrecision: string;
+  engineParallelism: string;
+};
+
 function store(engine: string) {
-  const state = {
+  const state: {
+    params: Params;
+    activeGgufVariant: null;
+    setParams(params: Params): void;
+  } = {
     params: {
       checkpoint: "org/A",
       engine,
@@ -27,7 +38,7 @@ function store(engine: string) {
       engineParallelism: "data",
     },
     activeGgufVariant: null,
-    setParams(params: typeof state.params) {
+    setParams(params: Params) {
       state.params = params;
     },
   };
