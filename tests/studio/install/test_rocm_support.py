@@ -1400,8 +1400,7 @@ GPU: 2
         assert f(f"{amd}/gfx90a", "2.10.0+rocm6.3") is False
         assert f(f"{amd}/gfx908", "2.10.0+rocm7.0") is False
         assert f(f"{amd}/gfx90a", "2.11.0+rocm7.2") is True
-        # gfx103X-all / gfx110X-all joined the 2.11 allowlist (#11814): a 2.10 per-arch
-        # build is the _grouped_mm crash and IS a mismatch; the 2.11 per-arch build is not.
+        # gfx103X-all / gfx110X-all are floored: a 2.10 per-arch build IS a mismatch.
         assert f(f"{amd}/gfx103X-all", "2.10.0+rocm7.13.0") is True
         assert f(f"{amd}/gfx110X-all", "2.10.0+rocm6.4") is True
         assert f(f"{amd}/gfx103X-all", "2.11.0+rocm7.13.0") is False
@@ -6936,8 +6935,8 @@ class TestStrixRocm71Override:
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
         # The 2.11 constraint block must switch on $_torch_index_leaf, not the full
         # $TORCH_INDEX_URL (a */gfx* match false-positives on a mirror base path). Only the
-        # _grouped_mm-bug gfx families (gfx120X-all / gfx1151 / gfx1150 / gfx1152, and since
-        # #11814 gfx103X-all / gfx110X-all) go to 2.11; a bare gfx* would also floor
+        # _grouped_mm-bug gfx families (gfx120X-all / gfx1151 / gfx1150 / gfx1152 /
+        # gfx103X-all / gfx110X-all) go to 2.11; a bare gfx* would also floor
         # gfx90a/gfx908, left bare on purpose.
         assert (
             'case "$_torch_index_leaf" in\n    rocm7.2|gfx120x-all|gfx1151|gfx1150|gfx1152|gfx103x-all|gfx110x-all)'

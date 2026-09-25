@@ -82,8 +82,7 @@ Check "gfx1151 pin + 2.10.0+rocm6.4 -> stale"           (IsStale "gfx1151" "2.10
 Check "gfx90a pin + 2.10.0+rocm6.3 -> not stale"       (-not (IsStale "gfx90a" "2.10.0+rocm6.3"))
 Check "gfx908 pin + 2.10.0+rocm7.0 -> not stale"       (-not (IsStale "gfx908" "2.10.0+rocm7.0"))
 Check "gfx90a pin + 2.11.0+rocm7.2 -> stale"           (IsStale "gfx90a" "2.11.0+rocm7.2")
-# gfx103X-all / gfx110X-all joined the 2.11 allowlist (unslothai/unsloth#11814): a 2.10
-# per-arch build is the _grouped_mm crash and IS stale; the 2.11 per-arch build is not.
+# gfx103X-all / gfx110X-all are floored: a 2.10 per-arch build IS stale.
 Check "gfx103x-all pin + 2.10.0+rocm7.13.0 -> stale"     (IsStale "gfx103x-all" "2.10.0+rocm7.13.0")
 Check "gfx110x-all pin + 2.10.0+rocm6.4 -> stale"        (IsStale "gfx110x-all" "2.10.0+rocm6.4")
 Check "gfx103x-all pin + 2.11.0+rocm7.13.0 -> not stale" (-not (IsStale "gfx103x-all" "2.11.0+rocm7.13.0"))
