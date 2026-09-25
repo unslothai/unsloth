@@ -97,7 +97,7 @@ def test_compiled_real_rope_is_bit_identical_to_the_complex_one(dynamic, seq):
 def test_the_real_form_runs_inside_the_compiled_block(monkeypatch):
     calls = []
     real = rope._real_rope
-    monkeypatch.setattr(rope, "_real_rope", lambda x, f: calls.append(x.shape) or real(x, f))
+    monkeypatch.setattr(rope, "_real_rope", lambda x, f, fusion: calls.append(x.shape) or real(x, f, fusion))
     assert rope.install()
     attn = _attention("cuda")
     prep, x, freqs = _qk(attn, 64, "cuda")
@@ -105,8 +105,15 @@ def test_the_real_form_runs_inside_the_compiled_block(monkeypatch):
     assert len(calls) == 2  # traced once for q, once for k
 
 
-def test_eager_calls_keep_the_complex_form(monkeypatch):
+def _fake_fusion(monkeypatch):
     monkeypatch.setattr(rope, "inductor_addcmul_is_fma", lambda: True)
+    monkeypatch.setattr(rope, "probe_fusion", lambda device: ("x", "x"))
+    monkeypatch.setattr(rope, "_FUSION", {})
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+
+
+def test_eager_calls_keep_the_complex_form(monkeypatch):
+    _fake_fusion(monkeypatch)
     assert rope.install()
     monkeypatch.setattr(rope, "_real_rope", lambda *a: pytest.fail("real form used outside a compile"))
     attn = _attention("cpu")
@@ -120,7 +127,7 @@ def test_eager_calls_keep_the_complex_form(monkeypatch):
 
 
 def test_install_is_idempotent_reuses_one_wrapper_and_uninstall_restores(monkeypatch):
-    monkeypatch.setattr(rope, "inductor_addcmul_is_fma", lambda: True)
+    _fake_fusion(monkeypatch)
     stock = qmod.apply_rotary_emb_qwen
     assert rope.install() and rope.install()
     wrapper = qmod.apply_rotary_emb_qwen
@@ -139,7 +146,7 @@ def test_installed_diffusers_matches_the_fingerprints():
 
 
 def test_a_drifted_rope_is_left_alone(monkeypatch):
-    monkeypatch.setattr(rope, "inductor_addcmul_is_fma", lambda: True)
+    _fake_fusion(monkeypatch)
     fake = types.SimpleNamespace(**vars(qmod))
 
     def apply_rotary_emb_qwen(x, freqs_cis, use_real = True, use_real_unbind_dim = -1):
@@ -160,8 +167,13 @@ def test_kill_switch_and_non_fma_inductor_keep_the_complex_form(monkeypatch):
     monkeypatch.setattr(rope, "inductor_addcmul_is_fma", lambda: False)
     assert rope.install() is False
     assert qmod.apply_rotary_emb_qwen is stock
-    monkeypatch.setattr(rope, "inductor_addcmul_is_fma", lambda: True)
+    _fake_fusion(monkeypatch)
     monkeypatch.setenv(rope.REAL_ROPE_ENV, "0")
+    assert rope.install() is False
+    assert qmod.apply_rotary_emb_qwen is stock
+    monkeypatch.delenv(rope.REAL_ROPE_ENV)
+    # A card whose complex multiply is neither fused form.
+    monkeypatch.setattr(rope, "probe_fusion", lambda device: None)
     assert rope.install() is False
     assert qmod.apply_rotary_emb_qwen is stock
 
@@ -178,3 +190,48 @@ def test_addcmul_probe_reads_the_lowering():
     except Exception:  # noqa: BLE001 - torch without that lowering
         want = False
     assert rope.inductor_addcmul_is_fma() is want
+
+
+def _fused(a, c, bd):
+    """float32 fma(a, c, bd) for float32 numpy inputs in [1, 2): exact in float64, one rounding."""
+    import numpy as np
+
+    return (a.astype(np.float64) * c.astype(np.float64) + bd.astype(np.float64)).astype(np.float32)
+
+
+@pytest.mark.parametrize("even", ["x", "s"])
+@pytest.mark.parametrize("odd", ["x", "s"])
+def test_classify_fusion_names_each_half(even, odd):
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    a, b, c, d = (((rng.random(4096) + 1) * rng.choice([-1, 1], 4096)).astype(np.float32) for _ in range(4))
+    real = _fused(a, c, -(b * d)) if even == "x" else _fused(-b, d, a * c)
+    imag = _fused(b, c, a * d) if odd == "x" else _fused(a, d, b * c)
+    assert rope.classify_fusion(a, b, c, d, real, imag) == (even, odd)
+    # Unfused (two roundings) is neither form.
+    assert rope.classify_fusion(a, b, c, d, a * c - b * d, imag) is None
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+def test_this_card_multiplies_complex_numbers_in_a_known_fused_form():
+    assert rope.probe_fusion(torch.device("cuda")) in {("x", "x"), ("x", "s"), ("s", "x"), ("s", "s")}
+
+
+@_needs_exact
+@pytest.mark.parametrize("fusion", [("x", "x"), ("x", "s"), ("s", "x"), ("s", "s")])
+def test_each_fusion_form_compiles_to_that_fma(fusion):
+    """The compiled real form reproduces the fused form it was asked for, bit for bit, on inputs
+    where the forms disagree: the check that inductor did not re-fuse the products."""
+    import numpy as np
+
+    g = torch.Generator(device = "cpu").manual_seed(1)
+    x = (torch.rand(1, 64, 4, 32, generator = g) + 1) * (torch.randint(0, 2, (1, 64, 4, 32), generator = g) * 2 - 1)
+    f = (torch.rand(64, 16, 2, generator = g) + 1) * (torch.randint(0, 2, (64, 16, 2), generator = g) * 2 - 1)
+    freqs = torch.view_as_complex(f.contiguous())
+    fn = torch.compile(lambda x, fr: rope._real_rope(x, fr, fusion))
+    out = fn(x.cuda(), freqs.cuda()).cpu().numpy()
+    a, b = x[..., 0::2].numpy(), x[..., 1::2].numpy()
+    c = f[..., 0].unsqueeze(1).expand(64, 4, 16).unsqueeze(0).numpy()
+    d = f[..., 1].unsqueeze(1).expand(64, 4, 16).unsqueeze(0).numpy()
+    assert rope.classify_fusion(a, b, c, d, out[..., 0::2], out[..., 1::2]) == fusion
