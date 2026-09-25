@@ -1839,7 +1839,8 @@ def _finish_move(key: str, target: Path) -> None:
 def _resume_move(key: str) -> None:
     """Finish a move a crash cut short: what is still in the folder it left goes on into the chosen
     one, merged as the move merges. While the chosen folder is not there, the old one is used
-    again. A failure is logged and tried again on the next start."""
+    again; while the old one is not, the move waits for it. A failure is logged and tried again on
+    the next start."""
     with _move_lock:
         source = relocations.moving_from(key)
         if source is None:
@@ -1849,6 +1850,11 @@ def _resume_move(key: str) -> None:
             logger.warning("library.move_resume_unavailable: %s", target)
             default = _same_folder(source, _location_default(key))
             relocations.set_chosen(key, None if default else source)
+            return
+        if not relocations.moving_from_available(key):
+            # What is still on its drive waits for it: the move stays open, and is finished on the
+            # first start the drive is back. The chosen folder takes new files meanwhile.
+            logger.warning("library.move_resume_source_unavailable: %s", source)
             return
         try:
             if source.is_dir():

@@ -1449,6 +1449,68 @@ def test_a_move_cut_short_is_finished_on_the_next_start(client, tmp_path, monkey
     assert _location(client, "images")["custom"] is not unplugged
 
 
+def test_a_move_cut_short_waits_for_the_drive_it_was_leaving(client, tmp_path, monkeypatch):
+    import shutil
+
+    from storage.studio_db import get_app_setting
+    from utils.paths.relocations import forget_cache
+
+    drive = (tmp_path / "Drive").resolve()
+    drive.mkdir()
+    mounts = {str(drive)}
+    _mounted(monkeypatch, mounts)
+    source, target = drive / "Pictures", tmp_path / "Pictures"
+    assert _move(client, "images", str(source)).status_code == 200
+    _fill(_images())
+    real = library._move_entry
+
+    def crash_after_one(entry, dest, log):
+        if log.moved:
+            raise _Crash
+        real(entry, dest, log)
+
+    monkeypatch.setattr(library, "_move_entry", crash_after_one)
+    with pytest.raises(_Crash):
+        library.move_location("images", str(target))
+    monkeypatch.setattr(library, "_move_entry", real)
+    # Started again with the drive unplugged: what is on it is not given up for moved.
+    shutil.move(source, tmp_path / "unplugged")
+    mounts.clear()
+    forget_cache()
+    assert _images() == target.resolve() and len(_files(target)) == 1
+    assert "moving_from" in str(get_app_setting("library.locations", {}))
+    # Plugged back in, the next start brings the rest.
+    shutil.move(tmp_path / "unplugged", source)
+    mounts.add(str(drive))
+    forget_cache()
+    assert _images() == target.resolve() and len(_files(target)) == 3
+    assert "moving_from" not in str(get_app_setting("library.locations", {}))
+
+
+def test_a_folder_choice_read_before_a_move_saved_does_not_replace_it(
+    client, tmp_path, monkeypatch
+):
+    import storage.studio_db as studio_db
+    from utils.paths import relocations
+
+    real = studio_db.get_app_setting
+    newer = (tmp_path / "Pictures").resolve()
+    newer.mkdir()
+    reads = []
+
+    def read_while_a_move_saves(*args, **kwargs):
+        value = real(*args, **kwargs)
+        reads.append(value)
+        if len(reads) == 1:
+            relocations.set_chosen("images", newer)
+        return value
+
+    relocations.forget_cache()
+    monkeypatch.setattr(studio_db, "get_app_setting", read_while_a_move_saves)
+    relocations.chosen("images")
+    assert relocations.chosen("images") == newer
+
+
 def test_a_folder_choice_that_cannot_be_read_fails_rather_than_saving_to_the_default(
     client, tmp_path, monkeypatch
 ):

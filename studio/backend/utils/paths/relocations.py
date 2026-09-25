@@ -28,8 +28,11 @@ _lock = threading.Lock()
 # Each choice is {"path", "mount"}: `mount` is the drive or share the folder was on when picked.
 # One saved before mount points were recorded is its bare path, and is marked `bare` until its
 # folder is there to ask (while it is not, the drive is what it would name). A move under way also
-# keeps `moving_from`, the folder its files are leaving, until they have all left it.
+# keeps `moving_from`, the folder its files are leaving, until they have all left it, and
+# `moving_mount`, the drive or share that folder is on.
 _cache: dict[str, dict[str, dict]] = {}
+# Bumped by each write, so a load that read the database before one never caches what it read.
+_generation = 0
 # Resolving the database path walks the filesystem, and the galleries ask on every file lookup.
 # It only moves with the variables that place Studio's home (or a test swapping the function).
 _HOME_VARIABLES = ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME", "UNSLOTH_HOME")
@@ -64,6 +67,10 @@ def _entry(value) -> Optional[dict]:
         }
         if isinstance(source, str) and source:
             entry["moving_from"] = source
+            source_mount = value.get("moving_mount")
+            entry["moving_mount"] = (
+                source_mount if isinstance(source_mount, str) and source_mount else None
+            )
         return entry
     return None
 
@@ -73,7 +80,11 @@ def _save(chosen: dict[str, dict]) -> None:
     stored = {
         kind: entry["path"]
         if entry.get("bare")
-        else {key: entry[key] for key in ("path", "mount", "moving_from") if key in entry}
+        else {
+            key: entry[key]
+            for key in ("path", "mount", "moving_from", "moving_mount")
+            if key in entry
+        }
         for kind, entry in chosen.items()
     }
     upsert_app_settings({_SETTING: stored}, read_back = False)
@@ -84,19 +95,26 @@ def _load() -> dict[str, dict]:
     with _lock:
         if key in _cache:
             return _cache[key]
+        generation = _generation
     from storage.studio_db import get_app_setting
 
     raw = get_app_setting(_SETTING, {})
     raw = raw if isinstance(raw, dict) else {}
     chosen = {kind: _entry(value) for kind, value in raw.items() if kind in MOVABLE}
     chosen = {kind: entry for kind, entry in chosen.items() if entry is not None}
-    # A bare path whose folder is there now learned its mount: saved, so it is asked once.
-    if any(isinstance(raw[kind], str) and not entry.get("bare") for kind, entry in chosen.items()):
-        try:
-            _save(chosen)
-        except (sqlite3.Error, OSError):
-            pass
+    learned = any(
+        isinstance(raw[kind], str) and not entry.get("bare") for kind, entry in chosen.items()
+    )
     with _lock:
+        # Written meanwhile: what was read is older than what that write cached.
+        if _generation != generation:
+            return _cache.get(key, chosen)
+        # A bare path whose folder is there now learned its mount: saved, so it is asked once.
+        if learned:
+            try:
+                _save(chosen)
+            except (sqlite3.Error, OSError):
+                pass
         _cache[key] = chosen
     # Loaded once per database, so a move cut short is finished before its folder is used.
     interrupted = [kind for kind, entry in chosen.items() if entry.get("moving_from")]
@@ -186,6 +204,20 @@ def moving_from(key: str) -> Optional[Path]:
     return Path(entry["moving_from"]) if entry and entry.get("moving_from") else None
 
 
+def moving_from_available(key: str) -> bool:
+    """False while the folder `key`'s files are leaving is on a drive that is not there: a folder
+    missing from it then is not one the move emptied."""
+    entry = _chosen_entry(key)
+    if not entry or not entry.get("moving_from"):
+        return True
+    mount = entry.get("moving_mount")
+    if mount:
+        return os.path.ismount(mount)
+    # A drive with a letter or volume of its own goes away whole.
+    anchor = Path(entry["moving_from"]).anchor
+    return not anchor or os.path.isdir(anchor)
+
+
 def set_chosen(
     key: str,
     path: Optional[Path],
@@ -202,13 +234,18 @@ def set_chosen(
         updated[key] = {"path": str(path), "mount": mount_point(path)}
         if moving_from is not None:
             updated[key]["moving_from"] = str(moving_from)
-    _save(updated)
+            updated[key]["moving_mount"] = mount_point(moving_from)
+    global _generation
     with _lock:
+        _save(updated)
+        _generation += 1
         _cache[_db_key()] = updated
 
 
 def forget_cache() -> None:
     """For tests that swap the database under a live process."""
+    global _generation
     with _lock:
+        _generation += 1
         _cache.clear()
         _db_keys.clear()
