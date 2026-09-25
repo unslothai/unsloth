@@ -1712,6 +1712,7 @@ def _format_context_length_line(load_result: dict) -> Optional[str]:
 @studio_app.callback(invoke_without_command = True)
 def studio_default(
     ctx: typer.Context,
+    force_global_env: bool = typer.Option(False, "--force-global-env", help="Bypass the Unsloth Studio venv check and run in the current global python environment. Useful for custom AI stacks like Intel XPU (Arc GPUs) or OpenVINO which are not currently autodetected by the default studio setup script."),
     port: int = typer.Option(8888, "--port", "-p"),
     host: str = typer.Option("127.0.0.1", "--host", "-H"),
     frontend: Optional[Path] = typer.Option(None, "--frontend", "-f"),
@@ -1906,7 +1907,7 @@ def studio_default(
 
     # Resolve the child launcher BEFORE the gate: a headless gate strips the seeded password, so aborting afterwards leaves no way to log in.
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
-    in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
+    in_studio_venv = True if force_global_env else sys.prefix.startswith(str(studio_venv_dir))
     # Before the env reaches a child: an override contradicting single-arch wheels fails every kernel launch, and install.sh's unset cannot reach here (#7331).
     _clear_hsa_override_before_launch(silent = silent)
     studio_python = run_py = None
@@ -2152,6 +2153,7 @@ _RUN_PANEL_ADVANCED = "Advanced"
 )
 def run(
     ctx: typer.Context,
+    force_global_env: bool = typer.Option(False, "--force-global-env", help="Bypass the Unsloth Studio venv check and run in the current global python environment. Useful for custom AI stacks like Intel XPU (Arc GPUs) or OpenVINO which are not currently autodetected by the default studio setup script."),
     model: Optional[str] = typer.Option(
         None,
         "--model",
@@ -2528,7 +2530,7 @@ def run(
     )
 
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
-    in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
+    in_studio_venv = True if force_global_env else sys.prefix.startswith(str(studio_venv_dir))
     studio_bin = None
     resolved_frontend = frontend
     if not in_studio_venv:
