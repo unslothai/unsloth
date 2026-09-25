@@ -4210,8 +4210,10 @@ def remap_chat_thread_document_ids(thread_id: str, document_ids: dict[str, str])
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
+        _ensure_chat_attachment_inventory_current(conn)
         rows = conn.execute(
-            "SELECT id, content_json, metadata_json FROM chat_messages WHERE thread_id = ?",
+            "SELECT id, content_json, attachments_json, metadata_json FROM chat_messages "
+            "WHERE thread_id = ?",
             (thread_id,),
         ).fetchall()
         for row in rows:
@@ -4225,6 +4227,10 @@ def remap_chat_thread_document_ids(thread_id: str, document_ids: dict[str, str])
                     "WHERE thread_id = ? AND id = ?",
                     (content_json, metadata_json, thread_id, row["id"]),
                 )
+                _replace_chat_attachment_inventory(
+                    conn, row["id"], row["attachments_json"], content_json
+                )
+        _mark_chat_attachment_inventory_clean(conn)
         conn.commit()
     except Exception:
         conn.rollback()

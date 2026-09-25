@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from auth.authentication import get_current_subject
 from core.rag import ingestion, store
 from routes import chat_history, rag as rag_routes
-from storage import rag_db
+from storage import rag_db, studio_db
 
 
 @pytest.fixture
@@ -462,6 +462,7 @@ def _cite(client, thread_id, message_id, document_id):
             "parentId": "m1",
             "role": "assistant",
             "content": [part],
+            "metadata": {"custom": {"sources": sources}},
             "createdAt": 2,
         },
     )
@@ -484,7 +485,14 @@ def test_a_forks_copied_messages_cite_the_forks_documents(client):
     copy = _thread_documents(client, "fork")[0]["id"]
     stored = client.get("/api/chat/threads/fork/messages").json()["messages"]
     for messages in (forked["messages"], stored):
-        cited = _cited([m for m in messages if m["role"] == "assistant"][0])
+        answer = [m for m in messages if m["role"] == "assistant"][0]
+        cited = _cited(answer)
         assert (cited["documentId"], cited["chunkId"]) == (copy, f"{copy}:0")
+        assert answer["metadata"]["custom"]["sources"][0]["documentId"] == copy
     parent = client.get("/api/chat/threads/source/messages/m2").json()
     assert (_cited(parent)["documentId"], _cited(parent)["chunkId"]) == (source, f"{source}:0")
+    conn = studio_db.get_connection()
+    try:
+        assert conn.execute("SELECT dirty FROM chat_attachment_inventory_state").fetchone()[0] == 0
+    finally:
+        conn.close()
