@@ -968,7 +968,7 @@ const ROW_ACTIONS_CLASS =
 
 // Drop line for a pinned-row drag, same as the sidebar's.
 const PINNED_DROP_CUE_BASE =
-  "before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-0.5 before:rounded-full before:bg-primary before:content-['']";
+  "before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-[1.5px] before:rounded-full before:bg-primary before:content-['']";
 const PINNED_DROP_CUE: Record<PinnedDropEdge, string> = {
   top: `${PINNED_DROP_CUE_BASE} before:top-0`,
   bottom: `${PINNED_DROP_CUE_BASE} before:bottom-0`,
