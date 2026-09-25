@@ -50,10 +50,24 @@ export function startLibraryChat(
 // The composer's image and text limit.
 export const MAX_IMAGE_OR_TEXT_BYTES = 20 * 1024 * 1024;
 
-// The composer's own limits, checked first so a clip it would refuse never opens an empty chat.
-const MEDIA_LIMITS = {
-  image: { bytes: MAX_IMAGE_OR_TEXT_BYTES, extension: "png", type: "image/png" },
-  video: { bytes: MAX_VIDEO_SIZE, extension: "mp4", type: "video/mp4" },
+// The composer's own limits, checked first so a file it would refuse never opens an empty chat.
+const MEDIA = {
+  image: {
+    bytes: MAX_IMAGE_OR_TEXT_BYTES,
+    extension: "png",
+    type: "image/png",
+    tooLarge: "library.toast.imageTooLarge",
+    attaching: "library.toast.attachingImage",
+    readFailed: "library.toast.readImageFailed",
+  },
+  video: {
+    bytes: MAX_VIDEO_SIZE,
+    extension: "mp4",
+    type: "video/mp4",
+    tooLarge: "library.toast.videoTooLarge",
+    attaching: "library.toast.attachingVideo",
+    readFailed: "library.toast.readVideoFailed",
+  },
 } as const;
 
 // Long enough that a small image never flashes a toast.
@@ -63,58 +77,49 @@ const LOADING_TOAST_DELAY_MS = 400;
 let handoffInFlight = false;
 
 /**
- * Open a fresh chat with a generated image or clip attached, named after its prompt. `source` is
- * a URL to fetch, or a loader for a response a URL cannot give (WebKit will not refetch an object
- * URL it is displaying, and a signed link can die with a server restart).
+ * Open a fresh chat with a generated image or clip attached, named after its prompt. `load` fetches
+ * it: WebKit will not refetch an object URL it is displaying, and a signed link can die.
  */
 export async function chatAboutMedia(
   navigate: Navigate,
-  source: string | (() => Promise<Response>),
+  load: () => Promise<Response>,
   prompt: string,
-  kind: keyof typeof MEDIA_LIMITS,
+  kind: keyof typeof MEDIA,
 ): Promise<void> {
   if (handoffInFlight) return;
   handoffInFlight = true;
-  const limit = MEDIA_LIMITS[kind];
+  const media = MEDIA[kind];
   const tooLarge = () =>
-    toast.error(translate(kind === "image" ? "library.toast.imageTooLarge" : "library.toast.videoTooLarge"), {
+    toast.error(translate(media.tooLarge), {
       description: translate("library.toast.attachmentLimit", {
-        size: Math.round(limit.bytes / (1024 * 1024)),
+        size: Math.round(media.bytes / (1024 * 1024)),
       }),
     });
   let loadingToast: string | number | null = null;
   const loadingTimer = setTimeout(() => {
-    loadingToast = toast.loading(
-      translate(kind === "image" ? "library.toast.attachingImage" : "library.toast.attachingVideo"),
-    );
+    loadingToast = toast.loading(translate(media.attaching));
   }, LOADING_TOAST_DELAY_MS);
   // A sign-out while the file downloads would hand it to the next account's chat.
   const epoch = getAuthSessionEpoch();
   try {
-    const response = typeof source === "string" ? await fetch(source) : await source();
-    if (!response.ok) {
-      throw new Error(
-        translate(kind === "image" ? "library.toast.readImageFailed" : "library.toast.readVideoFailed", {
-          status: response.status,
-        }),
-      );
-    }
+    const response = await load();
+    if (!response.ok) throw new Error(translate(media.readFailed, { status: response.status }));
     // Before reading the body, so an oversized file is never buffered.
-    if (Number(response.headers.get("content-length")) > limit.bytes) {
+    if (Number(response.headers.get("content-length")) > media.bytes) {
       void response.body?.cancel();
       tooLarge();
       return;
     }
     const blob = await response.blob();
     if (getAuthSessionEpoch() !== epoch) return;
-    if (blob.size > limit.bytes) {
+    if (blob.size > media.bytes) {
       tooLarge();
       return;
     }
     // A missing or generic type would not be taken as an image or a clip by the composer.
-    const type = blob.type.startsWith(`${kind}/`) ? blob.type : limit.type;
+    const type = blob.type.startsWith(`${kind}/`) ? blob.type : media.type;
     startLibraryChat(navigate, {
-      files: [new File([blob], mediaFileName(prompt, limit.extension), { type })],
+      files: [new File([blob], mediaFileName(prompt, media.extension), { type })],
     });
   } catch (error) {
     toast.error(translate("library.toast.openFileFailed"), {
