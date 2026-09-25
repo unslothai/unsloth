@@ -177,7 +177,7 @@ def test_the_74_mib_case_the_inferred_floor_could_never_see(on_windows):
     _arm(backend)
     message = backend._verify_vram_residency()
     assert message is not None, "the direct counter missed a 74 MiB spill"
-    assert "About 0.1 GB" in message and "-" not in message.split("GB")[0]
+    assert "About 74 MiB" in message
     assert backend._warnings == [message]
 
 
@@ -527,3 +527,37 @@ def test_a_small_card_is_full_only_below_its_own_reserve(on_windows):
     backend._arm_residency_check(3000 * MIB, [0])
     backend._sample_residency_baseline(PIN_ARGV, {})
     assert backend._verify_vram_residency() is None
+
+
+def test_a_release_on_one_pinned_adapter_does_not_cancel_a_spill_on_another():
+    second = "luid_0x00000000_0x0000beef_phys_0"
+    before = {
+        NVIDIA_LUID: 0,
+        second: 100 * MIB,
+        "dedicated|" + NVIDIA_LUID: 0,
+        "dedicated|" + second: 0,
+    }
+    after = {
+        NVIDIA_LUID: 74 * MIB,
+        second: 0,
+        "dedicated|" + NVIDIA_LUID: 9000 * MIB,
+        "dedicated|" + second: 9000 * MIB,
+    }
+    assert LlamaCppBackend._shared_usage_growth_bytes(before, after, 2) == 74 * MIB
+
+
+def test_fallback_risk_follows_an_in_place_binary_update(monkeypatch):
+    monkeypatch.setattr(mod.sys, "platform", "win32")
+    monkeypatch.setattr(LlamaCppBackend, "_SYSMEM_FALLBACK_RISK", {})
+    build = ["vulkan"]
+    monkeypatch.setattr(
+        LlamaCppBackend, "_binary_revision", staticmethod(lambda binary: (binary, build[0]))
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_installed_ggml_backends",
+        staticmethod(lambda binary = None: frozenset({build[0]})),
+    )
+    assert LlamaCppBackend._sysmem_fallback_risk("/llama-server") is False
+    build[0] = "cuda"
+    assert LlamaCppBackend._sysmem_fallback_risk("/llama-server") is True

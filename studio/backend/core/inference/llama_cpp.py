@@ -3845,7 +3845,7 @@ _DEDICATED_USAGE_KEY = "dedicated|"
 
 # The per-executable driver setting is the only way to turn the fallback off.
 _VRAM_SPILL_ADVICE = (
-    "About {spilled_gb:.1f} GB of this model appears to be running from shared system "
+    "About {spilled} of this model appears to be running from shared system "
     "memory over PCIe instead of GPU memory, which makes generation several times slower. Windows does this "
     "instead of reporting out of memory. To fix it, either lower the context size{kv_hint}, "
     "or open NVIDIA Control Panel -> Manage 3D "
@@ -9973,7 +9973,9 @@ class LlamaCppBackend:
                 binary = LlamaCppBackend._find_llama_server_binary()
             except Exception:  # noqa: BLE001 - classify with whatever the lib lookup resolves
                 binary = None
-        cached = LlamaCppBackend._SYSMEM_FALLBACK_RISK.get(binary)
+        # By build revision too: an update swaps the binary in place at the same path.
+        key = LlamaCppBackend._binary_revision(binary) or binary
+        cached = LlamaCppBackend._SYSMEM_FALLBACK_RISK.get(key)
         if cached is not None:
             return cached
         try:
@@ -9981,7 +9983,7 @@ class LlamaCppBackend:
         except Exception as e:  # noqa: BLE001 - an unreadable lib dir is not a load failure
             logger.debug("sysmem-fallback classification failed, keeping the base budget: %s", e)
             return False  # not cached: a transient read error must not pin False forever
-        LlamaCppBackend._SYSMEM_FALLBACK_RISK[binary] = risk
+        LlamaCppBackend._SYSMEM_FALLBACK_RISK[key] = risk
         return risk
 
     @staticmethod
@@ -14616,7 +14618,7 @@ class LlamaCppBackend:
         )[: n_adapters or None]
         if not loaded:
             return None
-        return sum(after[i] - before[i] for i in loaded)
+        return sum(max(0, after[i] - before[i]) for i in loaded)
 
     @staticmethod
     def _argv_claims_full_offload(
@@ -14767,8 +14769,13 @@ class LlamaCppBackend:
                 shortfall / (1024**3),
             )
         # The counter measures the spill itself; the floor delta is only an inference.
+        amount = spilled if direct_hit else shortfall
         message = _VRAM_SPILL_ADVICE.format(
-            spilled_gb = (spilled if direct_hit else shortfall) / (1024**3),
+            spilled = (
+                f"{amount / (1024**3):.1f} GB"
+                if amount >= 1024**3
+                else f"{max(1, round(amount / (1024**2)))} MiB"
+            ),
             kv_hint = " or set the KV cache to q8_0" if kv_hint else "",
         )
         if getattr(self, "_last_load_warning", None):
@@ -15342,13 +15349,12 @@ class LlamaCppBackend:
         max_available_ctx: int,
         cache_type_kv: Optional[str] = None,
         *,
-        windows: bool = False,
         quantised_ctx_fits: bool = False,
     ) -> Optional[str]:
         """Advisory when a hand-set context exceeds what a discrete GPU holds (else None).
 
-        Metal refuses this (shared wired pool panics the machine); a discrete GPU spills, to
-        the CPU on Linux or silently to host RAM on Windows (#11349), so only warn.
+        Metal refuses this (shared wired pool panics the machine); a discrete GPU offloads
+        layers to the CPU instead, so only warn.
         ``quantised_ctx_fits`` is the caller's q8_0 pricing verdict, not a guess.
         """
         if requested_ctx <= 0 or max_available_ctx <= 0:
@@ -15362,23 +15368,13 @@ class LlamaCppBackend:
             "",
         ):
             kv_hint = " Setting the KV cache to q8_0 makes this context fit without shortening it."
-        if windows:
-            cause = (
-                "On Windows the driver does not report this as an error: it serves the "
-                "overflow from system memory over PCIe, so the model loads and generation "
-                "runs several times slower with no warning from the GPU. Lower the context "
-                f"to {max_available_ctx:,} or less, or leave it on Auto. On NVIDIA GPUs you "
-                "can make the overflow fail loudly instead of running slowly by setting "
-                "this executable's 'CUDA - Sysmem Fallback Policy' to 'Prefer No Sysmem "
-                "Fallback' in the NVIDIA Control Panel, under Manage 3D settings, Program "
-                "Settings."
-            )
-        else:
-            cause = (
-                "The GPU cannot hold it, so layers will be moved to the CPU and generation "
-                f"will be slower. Lower the context to {max_available_ctx:,} or less, or "
-                "leave it on Auto."
-            )
+        # Worded for planned offload on every OS: the notice fires only once the load was
+        # handed to --fit on or a spill plan, which place host tensors deliberately.
+        cause = (
+            "The GPU cannot hold it, so layers will be moved to the CPU and generation "
+            f"will be slower. Lower the context to {max_available_ctx:,} or less, or "
+            "leave it on Auto."
+        )
         return (
             f"A context of {requested_ctx:,} tokens does not fit in this GPU's memory with "
             f"this model. The largest that fits is {max_available_ctx:,} tokens. "
@@ -25661,7 +25657,6 @@ class LlamaCppBackend:
                                     effective_ctx,
                                     max_available_ctx,
                                     cache_type_kv,
-                                    windows = self._sysmem_fallback_risk(binary),
                                     quantised_ctx_fits = _q8_fits,
                                 )
                         else:

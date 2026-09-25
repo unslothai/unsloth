@@ -151,26 +151,10 @@ class TestOvercommitNotice:
         assert msg is not None
         assert "65,536" in msg and "32,768" in msg
 
-    def test_windows_names_the_driver_behaviour_and_the_setting(self):
-        """On Windows the whole point is that nothing else will tell the user."""
-        msg = LlamaCppBackend._cuda_context_overcommit_notice(65536, 32768, None, windows = True)
-        assert "system memory" in msg
-        assert "Sysmem Fallback Policy" in msg
-        assert "Prefer No Sysmem Fallback" in msg
-        assert "does not report this as an error" in msg
-
-    def test_windows_remedy_is_attributed_to_nvidia(self):
-        """The NVIDIA-only fix must be named as NVIDIA's (no vendor signal in scope)."""
-        msg = LlamaCppBackend._cuda_context_overcommit_notice(65536, 32768, None, windows = True)
-        idx = msg.index("NVIDIA Control Panel")
-        assert (
-            "On NVIDIA GPUs" in msg[:idx]
-        ), "the NVIDIA Control Panel instruction must be qualified before it is given"
-
-    def test_non_windows_describes_cpu_offload_instead(self):
-        msg = LlamaCppBackend._cuda_context_overcommit_notice(65536, 32768, None, windows = False)
+    def test_describes_the_planned_cpu_offload(self):
+        msg = LlamaCppBackend._cuda_context_overcommit_notice(65536, 32768, None)
         assert "moved to the CPU" in msg
-        assert "Sysmem" not in msg, "the Windows-only remedy must not leak to other platforms"
+        assert "Sysmem" not in msg
 
     def test_q8_hint_only_when_it_actually_fixes_it(self):
         """A suggestion that would not help is worse than no suggestion."""
@@ -190,10 +174,9 @@ class TestOvercommitNotice:
         )
         assert "q8_0" not in msg
 
-    @pytest.mark.parametrize("windows", [True, False])
-    def test_never_raises_and_always_returns_text(self, windows):
+    def test_never_raises_and_always_returns_text(self):
         msg = LlamaCppBackend._cuda_context_overcommit_notice(
-            65536, 4096, None, windows = windows, quantised_ctx_fits = True
+            65536, 4096, None, quantised_ctx_fits = True
         )
         assert isinstance(msg, str) and msg.strip()
 
@@ -229,17 +212,12 @@ def test_no_context_is_offered_when_the_weights_alone_overflow(tmp_path, monkeyp
     assert "The largest that fits is" not in warning
 
 
-def test_windows_wording_follows_the_cuda_build(tmp_path, monkeypatch):
-    """A Vulkan or HIP build on Windows has no CUDA sysmem fallback to describe."""
-    monkeypatch.setattr(
-        LlamaCppBackend, "_sysmem_fallback_risk", staticmethod(lambda b = None: False)
-    )
-    warning = _launch_explicit_ctx(tmp_path, monkeypatch, model_gb = 18, n_ctx = 131072)
-    assert "NVIDIA Control Panel" not in warning
+def test_a_windows_cuda_build_is_not_told_the_driver_spills(tmp_path, monkeypatch):
+    """--fit on and spill plans place host tensors on purpose; WDDM advice cannot undo that."""
     monkeypatch.setattr(LlamaCppBackend, "_sysmem_fallback_risk", staticmethod(lambda b = None: True))
-    (tmp_path / "cuda").mkdir()
-    warning = _launch_explicit_ctx(tmp_path / "cuda", monkeypatch, model_gb = 18, n_ctx = 131072)
-    assert "NVIDIA Control Panel" in warning
+    warning = _launch_explicit_ctx(tmp_path, monkeypatch, model_gb = 18, n_ctx = 131072)
+    assert "moved to the CPU" in warning
+    assert "NVIDIA Control Panel" not in warning
 
 
 @pytest.mark.parametrize("q8_scratch_gib, offered", [(0, True), (8, False)])
