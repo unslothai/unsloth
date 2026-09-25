@@ -253,8 +253,7 @@ def protect_graph_key(
     *,
     controller: Optional[NVFP4StepController] = None,
 ) -> tuple:
-    """The CUDA-graph cache-key suffix for the branch in flight, or ``()`` when the lever is off. A
-    captured graph records ONE branch, so without this the lever is silently inert under capture."""
+    """CUDA-graph key suffix for the branch in flight (a graph records ONE branch), or ``()`` when off."""
     ctl = controller if controller is not None else module_controller(module)
     if not ctl.armed:
         return ()

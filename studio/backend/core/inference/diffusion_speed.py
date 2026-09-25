@@ -24,9 +24,8 @@ this). On opt-in it applies the near-lossless speedups in the diffusers-recommen
 ``default`` is the cheap always-amortising compile; ``max`` pays the larger regional tax for the
 bigger warm speedup. The compiled dequant is skipped under ``max``, which subsumes it.
 
-Knobs, safe unset: ``UNSLOTH_DIFFUSION_COMPILE_VAE=auto|0|1`` (compile a DiT's VAE decode too; ``auto`` does so
-on ``max`` only, since its cost is a 60-70 s longer first render; ``1`` forces it on any compiled tier), and in their
-own modules ``UNSLOTH_NVFP4_FAST_BIAS``, ``_FAST_DISPATCH``, ``_ZERO_BUFFER`` and ``_BACKEND``.
+Knobs, safe unset: ``UNSLOTH_DIFFUSION_COMPILE_VAE=auto|0|1`` (DiT VAE decode compile; ``auto`` = ``max`` only),
+and in their own modules ``UNSLOTH_NVFP4_FAST_BIAS``, ``_FAST_DISPATCH``, ``_ZERO_BUFFER`` and ``_BACKEND``.
 
 The flags this flips (TF32, cudnn.benchmark) are PROCESS-WIDE, so ``snapshot_backend_flags`` /
 ``restore_backend_flags`` let the caller restore prior values at unload, keeping a later ``off``
@@ -735,8 +734,8 @@ def settle_compile_fallback(
     """After a render, fold a runtime compile fallback into ``state.speed_optims`` (image and video backends share it).
 
     Adds ``compile_fallback_eager`` once, and drops ``compiled`` only when NO guarded DiT still runs compiled, so a
-    dual-DiT load whose second expert still compiles keeps the LoRA gate and the compile-cache shape registry. A VAE
-    decode that fell back drops ``compiled_vae_decode``. Returns the recorded failure, or None when nothing fell back."""
+    dual-DiT load whose second expert still compiles keeps the LoRA gate and the compile-cache shape registry. Returns
+    the recorded failure, or None when nothing fell back."""
     dit_error = compile_fallback_error(pipe)
     vae_error = getattr(getattr(pipe, "vae", None), "_unsloth_compile_decode_error", None)
     fallback = dit_error or vae_error
@@ -794,17 +793,12 @@ _VAE_COMPILE_ALLOW: frozenset[str] = frozenset({"AutoencoderKL"})
 
 
 def vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
-    """For the compile-cache key, so a bundle saved without VAE decode artifacts is not a hit. False for a U-Net,
-    whose bundles have always carried the decode, so its key is the one existing installs already saved under."""
+    """Compile-cache key input; False for a U-Net so its existing bundles keep their key."""
     return _denoiser_unet(pipe) is None and _vae_decode_compile_allowed(pipe, speed_mode)
 
 
 def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
-    """Whether the VAE decode compile covers this pipe; U-Nets always do and ignore the env.
-
-    ``auto`` compiles a DiT's decode on ``max`` only: its cost is compile time (the first render after a load goes
-    60-70 s slower, Z-Image 26 -> 97 s, FLUX 20 -> 83 s) for an 8-18% warm render gain, and compile-time levers
-    belong to the explicit tier. ``1`` still forces it on the default tier."""
+    """U-Nets always; a DiT only on ``max`` (it costs a 60-70 s slower first render) or with the env forced on."""
     if _denoiser_unet(pipe) is not None:
         return True
     raw = os.environ.get(COMPILE_VAE_ENV, "").strip().lower()
@@ -819,10 +813,7 @@ def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
 
 
 def _guard_compiled_decode(vae: Any, compiled: Any, eager: Any, logger: Any) -> Any:
-    """``compiled`` behind an eager fallback. torch.compile is lazy: dynamo / inductor run on the first ``decode``, after
-    the compile call returned, so a lowering or codegen failure there would fail the render. On a compile-time failure
-    (``is_compile_failure``; an OOM or a kernel error still raises) the original ``decode`` is put back and the same call
-    is answered eagerly, as the denoiser block guard does."""
+    """``compiled`` behind an eager fallback: torch.compile is lazy, so lowering fails on the first call; OOMs still raise."""
     had_own = "decode" in getattr(vae, "__dict__", {})
     failed: list = []
 
@@ -871,7 +862,6 @@ def _compile_vae_decode(
     # A dual-DiT family calls apply_speed_optims twice over the same pipe.
     if getattr(vae, "_unsloth_compiled_decode", False):
         return True
-    # Its decode already failed to compile on this load; retrying would hit the same lowering.
     if getattr(vae, "_unsloth_compile_decode_error", None):
         return False
     try:

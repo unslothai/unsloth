@@ -773,9 +773,7 @@ def _packed_bytes(tensor: Any, torch: Any) -> bytes:
 
 
 def _hash_packed_payload(tensor: Any, digest: Any, torch: Any) -> bool:
-    """Feed one weight's packed payload into ``digest``. False when its class is not covered.
-
-    Attribute names are hashed too; no payload attribute present reads as uncovered, not an empty digest."""
+    """Feed one weight's packed payload (with attribute names) into ``digest``; False when uncovered."""
     names = _FINGERPRINT_PAYLOAD.get(type(tensor).__name__)
     if names is None:
         return False
@@ -796,15 +794,7 @@ def _hash_packed_payload(tensor: Any, digest: Any, torch: Any) -> bool:
 
 
 def packed_weight_fingerprint(state_dict: Any, *, select: Any = None) -> dict:
-    """md5 of every quantized weight's packed payload, keyed by fqn.
-
-    Written by the builder into ``metadata["fingerprint"]`` and recomputed by the loader, so a
-    checkpoint corrupted between the two is refused instead of rendering. It hashes the QUANTIZED
-    bytes, not the pickle; unrecognised ``.weight`` entries go under ``skipped``.
-
-    ``select`` narrows WHICH fqns are hashed, so a partial verification pays only for what it
-    compares.
-    """
+    """md5 of every quantized weight's packed payload by fqn (``select`` narrows it); unknown ones go under ``skipped``."""
     import hashlib
 
     import torch
@@ -859,10 +849,7 @@ def _verify_packed_fingerprint(
     *,
     logger: Any = None,
 ) -> bool:
-    """Recompute the packed-weight fingerprint and compare it with the one the artifact carries.
-
-    A mismatch drops to dense (a flipped byte renders plausible garbage); no block, or one this build
-    cannot compute, is accepted."""
+    """Check the artifact's packed fingerprint: a mismatch drops to dense, a missing or uncomputable block passes."""
     block = (metadata or {}).get("fingerprint")
     expected = (block or {}).get("modules") if isinstance(block, dict) else None
     if not expected:
@@ -1464,10 +1451,7 @@ _FLOAT8_TENSOR_CLASS = "Float8Tensor"
 
 
 def _fp8_activation_floor_present(state_dict: Any, logger: Any) -> bool:
-    """True unless some fp8 tensor was quantised with no activation lower bound.
-
-    Only the first FLOAT8 tensor is inspected (one fp8 config, uniform floor). Filter by class: an
-    NVFP4Tensor also has ``act_quant_kwargs`` without ``hp_value_lb`` and must not trip the check."""
+    """True unless the first Float8Tensor has no activation lower bound (by class: NVFP4Tensor lacks one too)."""
     from .diffusion_transformer_quant import TQ_FP8
 
     try:
@@ -1637,10 +1621,7 @@ def _validate_checkpoint(
     fast_accum: Optional[bool] = None,
     component: Optional[str] = None,
 ) -> bool:
-    """Reject a checkpoint that is the wrong format / scheme / base model / filter / denoiser.
-
-    A different ``min_features`` or ``fast_accum`` would silently install a mismatched model (absent
-    fields predate them and pass); ``component`` tells the two MoE experts apart."""
+    """Reject a wrong format / scheme / base / filter / denoiser; absent ``min_features`` / ``fast_accum`` pass."""
     if not isinstance(ckpt, dict) or ckpt.get("format") not in PREQUANT_FORMATS:
         _warn(logger, scheme, ValueError("unrecognised pre-quant checkpoint format"))
         return False

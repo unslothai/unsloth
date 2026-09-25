@@ -456,7 +456,6 @@ def test_unet_whole_compile_default_tier(monkeypatch):
 
 @pytest.mark.parametrize("tier", [SPEED_DEFAULT, SPEED_MAX])
 def test_a_unet_keeps_its_decode_recipe_and_bundle_key_on_every_tier(monkeypatch, tier):
-    # The U-Net decode was measured with this recipe, and its existing bundles carry it under the flag-less key.
     torch = _stub_torch(monkeypatch)
     monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
     pipe = _UNetPipe()
@@ -468,7 +467,6 @@ def test_a_unet_keeps_its_decode_recipe_and_bundle_key_on_every_tier(monkeypatch
 
 
 def test_dit_default_tier_keeps_fuse_off_and_leaves_the_vae_decode_eager(monkeypatch):
-    # The VAE decode compile costs a 60-70 s longer first render, so under auto it is a max-tier lever only.
     torch = _stub_torch(monkeypatch)
     monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
     pipe = _Pipe(with_compile = True, with_fuse = True)
@@ -1421,7 +1419,6 @@ def test_the_loader_keys_the_compile_bundle_on_the_vae_decode_decision():
         encoding = "utf-8"
     )
     assert src.count('"vae_decode": vae_decode_compile_allowed(') == 2
-    # The decision depends on the tier, so each key passes the tier its apply_speed_optims call runs at.
     assert '"vae_decode": vae_decode_compile_allowed(pipe, effective_speed)' in src
     assert '"vae_decode": vae_decode_compile_allowed(state.pipe, SPEED_DEFAULT)' in src
     assert ds_mod.vae_decode_compile_allowed is not None
@@ -1665,17 +1662,15 @@ def _stub_lazy_compile(monkeypatch, failure):
 
 
 def test_vae_decode_compile_failure_at_first_decode_falls_back_to_eager(monkeypatch):
-    # torch.compile returned, so _compile_vae_decode's own try is long gone when inductor fails on the first decode.
     calls = _stub_lazy_compile(
         monkeypatch, lambda: _BackendCompilerFailed("LoweringException: no lowering for aten.foo")
     )
     vae = _Vae()
     pipe = types.SimpleNamespace(vae = vae)
     assert ds_mod._compile_vae_decode(pipe, None, max_autotune = True) is True
-    assert "decode" in vae.__dict__  # the compiled wrapper is installed
-    assert vae.decode(1) == 2  # the failing call itself is answered eagerly
+    assert "decode" in vae.__dict__
+    assert vae.decode(1) == 2
     assert vae.eager_calls == 1
-    # The original method is back, so later decodes skip the wrapper and the broken lowering is not retried.
     assert "decode" not in vae.__dict__
     assert vae.decode(5) == 6
     assert calls["compiled"] == 1
@@ -1683,8 +1678,7 @@ def test_vae_decode_compile_failure_at_first_decode_falls_back_to_eager(monkeypa
 
 
 def test_vae_decode_fallback_is_settled_into_status_and_not_recompiled(monkeypatch):
-    # A VAE decode that fell back must stop reporting compiled_vae_decode, and a later pass (dual-DiT loads run
-    # apply_speed_optims twice) must not treat the stale marker as a live compile.
+    # Dual-DiT loads run apply_speed_optims twice: a fallen-back decode must not read as a live compile.
     calls = _stub_lazy_compile(monkeypatch, lambda: _BackendCompilerFailed("LoweringException"))
     vae = _Vae()
     pipe = types.SimpleNamespace(vae = vae)
@@ -1733,9 +1727,7 @@ def test_vae_decode_non_compile_errors_are_not_swallowed(monkeypatch, kind):
     with pytest.raises((RuntimeError, _BackendCompilerFailed)):
         vae.decode(1)
     assert vae.eager_calls == 0
-    assert (
-        "decode" in vae.__dict__
-    )  # still compiled: a kernel error or OOM is not a reason to drop the compile
+    assert "decode" in vae.__dict__
 
 
 class _TorchaoWeight:

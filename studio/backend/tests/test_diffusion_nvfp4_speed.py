@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Kernel-side tests for the NVFP4 flashinfer path: the device guard and the ordering barrier.
-
-The hermetic half stubs ``torch`` and ``flashinfer``: launch device and call ORDER are not observable.
-"""
+"""Kernel-side tests for the NVFP4 flashinfer path: the device guard and the ordering barrier."""
 
 from __future__ import annotations
 

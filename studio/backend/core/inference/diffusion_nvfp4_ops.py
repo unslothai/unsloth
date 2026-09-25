@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FlashInfer NVFP4 kernels behind ``torch.library`` custom ops, plus the backend decision.
-
-FlashInfer 0.6.6 registers no custom ops, so these wrappers enable ``fullgraph = True``. Fake impls
-must match FlashInfer's allocation EXACTLY (a wrong meta shape is silent). Imports stay torch-free.
-"""
+"""FlashInfer NVFP4 kernels as custom ops (for ``fullgraph``); fake impls must match its allocation EXACTLY."""
 
 from __future__ import annotations
 

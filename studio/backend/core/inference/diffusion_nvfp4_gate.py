@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The checked-in record of which NVFP4 checkpoints actually passed the accuracy gate.
-
-Verdicts are per (family, base, policy), re-derived rather than trusted as stored, so retuning a
-policy invalidates them. Torch-free: the smoke-probe child reads it too.
-"""
+"""Checked-in NVFP4 accuracy-gate verdicts per (family, base, policy); torch-free (the smoke probe reads it)."""
 
 from __future__ import annotations
 

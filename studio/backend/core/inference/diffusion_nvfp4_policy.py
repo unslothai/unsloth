@@ -43,8 +43,7 @@ class Rule:
 
 @dataclass(frozen = True)
 class Admit:
-    """A linear the shared filter rejects that this policy quantises anyway. ``shape`` is asserted
-    exactly: dropping the floor instead would admit ``t_embedder.mlp.*``, which must stay bf16."""
+    """A filter-rejected linear this policy quantises anyway; ``shape`` is exact so ``t_embedder.mlp.*`` stays bf16."""
 
     suffix: str
     shape: tuple

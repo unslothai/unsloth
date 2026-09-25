@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Bias add for the NVFP4 layer's M x N output: eager only, bit-identical to ``add_``.
-
-CUTLASS's fused FP4 epilogue is WRONG here (it adds before the single rounding). Under
-``torch.compile`` this defers to ``add_``, which inductor can fuse.
-"""
+"""Eager bias add for the NVFP4 output, bit-identical to ``add_``; CUTLASS's fused epilogue rounds wrong."""
 
 from __future__ import annotations
 

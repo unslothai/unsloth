@@ -224,8 +224,7 @@ def apply_zero_row_guard(
     *,
     logger: Any = None,
 ) -> tuple[str, ...]:
-    """Guard this family's zero-row-reachable quantized Linears against empty activations; call AFTER
-    quantization. Not best-effort: without it the first t2v render crashes."""
+    """Guard zero-row-reachable quantized Linears; call AFTER quantization (else the first t2v render crashes)."""
     tokens = zero_row_tokens_for_scheme(scheme, family)
     if not tokens:
         return ()
@@ -448,8 +447,7 @@ def explain_unusable_scheme(
     *,
     prequant_missing: bool = False,
 ) -> str:
-    """Why ``select_transformer_quant_scheme`` answered None for an EXPLICIT ``scheme``: family deny,
-    unusable torchao, or a GPU without the kernels (only the last is a hardware limit)."""
+    """Why an EXPLICIT ``scheme`` got None: family deny, unusable torchao, or a GPU without the kernels."""
     if nvfp4_blocked(scheme):
         return nvfp4_disabled_message()
     if family_denies_scheme(family, scheme, base_repo):
@@ -1601,8 +1599,7 @@ def quantize_transformer(
     fast_accum: Optional[bool] = None,
     logger: Any = None,
 ) -> Optional[str]:
-    """Quantise ``pipe.transformer`` in place, returning the scheme or None (GGUF). ``base_repo`` selects
-    the per-layer NVFP4 policy, applied as the builder does so the render matches what the gate measured."""
+    """Quantise ``pipe.transformer`` in place, returning the scheme or None (GGUF); ``base_repo`` picks the NVFP4 policy."""
     scheme = select_transformer_quant_scheme(target, mode, family = family, base_repo = base_repo)
     if scheme is None:
         return None

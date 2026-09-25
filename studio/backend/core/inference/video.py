@@ -3139,8 +3139,7 @@ class VideoBackend:
         cancel_event: Optional[threading.Event] = None,
         local_files_only: bool = False,
     ) -> None:
-        """Pre-fetch the hosted pre-quantized denoiser checkpoint(s) under the load's cancel event.
-        Both candidate names are tried in the load's order. Best effort except cancellation."""
+        """Pre-fetch the hosted denoiser checkpoint(s) under the load's cancel event; best effort except cancellation."""
         cancel = cancel_event if cancel_event is not None else self._cancel_event
         from core.inference.diffusion_prequant import candidate_filenames_of
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
@@ -3247,14 +3246,8 @@ class VideoBackend:
         api: Any,
         h3_task: Optional[str] = None,
     ) -> tuple[Optional[str], list[tuple[str, int]]]:
-        """``(repo_id, [(rfilename, size)])`` for the hosted pre-quantized denoiser, or ``(None, [])``.
-
-        The denoiser mirror of ``_te_prequant_hub_files``. ``_denoiser_prequant_covered`` already
-        drops the dense DiT shards, so without this the checkpoint replacing them is in no entry at
-        all, and the byte total and disk preflight under-count.
-
-        A family with several denoisers lists EVERY component's artifact, and none unless all
-        resolve (seeding is all-or-nothing). An unreachable repo yields no files and is only logged."""
+        """``(repo_id, [(rfilename, size)])`` for every hosted denoiser artifact, or ``(None, [])``, so preflight
+        counts the checkpoint that replaces the dropped dense shards."""
         sources = VideoBackend._denoiser_prequant_source_list(fam, transformer_quant, base, h3_task)
         if not sources or any(getattr(src, "kind", None) != "repo" for src in sources):
             return None, []

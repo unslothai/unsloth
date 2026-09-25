@@ -3,10 +3,7 @@
 
 """Seed a conventional video pipeline with hosted pre-quantized denoisers, all-or-nothing.
 
-The dual-expert MoE's second denoiser is addressed through the ``task`` slot of
-``prequant_filenames``, which deliberately gets no filename fallback: falling back would load
-expert 1 as expert 2 and pass every check on the way. Seeding is ALL-OR-NOTHING across experts.
-Torch-free at import.
+The MoE's second expert uses the ``task`` slot with NO filename fallback: it would load expert 1 as expert 2.
 """
 
 from __future__ import annotations

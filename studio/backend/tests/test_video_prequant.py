@@ -1554,8 +1554,7 @@ def test_a_conventional_plan_drops_no_shard_the_load_will_not_seed(monkeypatch):
 
 
 def test_a_seed_the_plan_declined_is_pinned_into_the_load(monkeypatch):
-    """The plan decides the seed while the PREVIOUS pipeline is still resident, so it sees less free
-    memory than the load will, so the decline travels as its own value rather than None."""
+    """The plan runs with the PREVIOUS pipeline resident, so its decline travels as its own value, not None."""
     from core.inference import video as vid
     from core.inference.video_families import detect_video_family
 
