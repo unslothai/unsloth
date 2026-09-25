@@ -540,11 +540,13 @@ def test_max_steps_bound_subsets_before_formatting(monkeypatch):
     assert len(bounded) == 1024
     # Shuffled: the head of a corpus ordered by source is not a sample of it.
     assert bounded.shuffle_seeds == [99]
+    assert trainer._kept_row_fraction == 1024 / 500_000
 
 
 def test_max_steps_bound_leaves_a_small_dataset_alone(monkeypatch):
     train = _SizedDataset(40)
     trainer = _cached_only_loader(monkeypatch, train)
+    trainer._kept_row_fraction = 0.5  # left over from an earlier bounded load
 
     result = trainer.load_and_format_dataset(
         "org/dataset",
@@ -556,6 +558,7 @@ def test_max_steps_bound_leaves_a_small_dataset_alone(monkeypatch):
     assert result is not None
     # Untouched: no shuffle cost or reordering for a run that reads it all.
     assert result[0]["dataset"] is train
+    assert trainer._kept_row_fraction == 1.0
 
 
 def test_max_steps_bound_defers_to_an_explicit_slice(monkeypatch):

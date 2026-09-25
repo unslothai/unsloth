@@ -67,6 +67,41 @@ fi
 # regression tests can stage a fake device tree; leave it unset in normal use.
 DEV_ROOT="${UNSLOTH_DEV_ROOT:-}"
 
+# WSL2 has no /dev/kfd: the amdgpu kernel driver is not loaded there and the card
+# is reached over the DXG bridge instead. /dev/dxg plus librocdxg is the same GPU
+# evidence install.sh gates on for a WSL host. The bridge is userspace, so this
+# needs a device and an env var, not group ids: WSL exposes /dev/dxg to everyone
+# and has no render group.
+wsl_dxg_host() {
+    [[ ! -e "$DEV_ROOT/dev/kfd" && -e "$DEV_ROOT/dev/dxg" ]]
+}
+amd_dxg_flags() {
+    printf '%s\n' --device /dev/dxg
+    # librocdxg is NOT in the image and cannot be: its cmake build needs the Windows
+    # 11 SDK 'shared' headers off the host (see scripts/install_rocm_wsl_strixhalo.sh),
+    # which no Linux build runner has. Mount the host's, which that helper installs.
+    local _so=""
+    for _c in "$DEV_ROOT"/opt/rocm/lib/librocdxg.so.1* "$DEV_ROOT"/opt/rocm-*/lib/librocdxg.so.1* \
+              "$DEV_ROOT"/opt/rocm/lib64/librocdxg.so.1* ; do
+        [[ -e "$_c" ]] && { _so="$_c"; break; }
+    done
+    if [[ -z "$_so" ]]; then
+        printf "\033[1;33mWARN:\033[0m /dev/dxg is present but no librocdxg was found under /opt/rocm.\n" >&2
+        printf "      Install ROCm for WSL first:  bash scripts/install_rocm_wsl_strixhalo.sh\n" >&2
+        return 0
+    fi
+    printf '%s\n' -v "${_so}:/usr/lib/x86_64-linux-gnu/librocdxg.so:ro"
+    # librocdxg dlopens libdxcore from WSL's own lib directory, which the image
+    # does not have on its search path.
+    if [[ -d "$DEV_ROOT/usr/lib/wsl/lib" ]]; then
+        printf '%s\n' -v /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro -e LD_LIBRARY_PATH=/usr/lib/wsl/lib
+    else
+        printf "\033[1;33mWARN:\033[0m /usr/lib/wsl/lib is missing, so librocdxg cannot load libdxcore.\n" >&2
+    fi
+    # The standard HSA runtime only looks for the bridge when this is set.
+    printf '%s\n' -e HSA_ENABLE_DXG_DETECTION=1
+    return 0
+}
 # Named once: the NVIDIA toolkit installer, both as the fallback download below
 # and in the message that tells you to run it yourself.
 TOOLKIT_URL="${UNSLOTH_TOOLKIT_URL:-https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh}"
@@ -100,18 +135,28 @@ collect_amd_device_flags() {
         GPU_FLAG+=("$_flag")
     done < <(amd_device_flags)
 }
+collect_amd_dxg_flags() {
+    local _flag
+    GPU_FLAG=()
+    while IFS= read -r _flag; do
+        GPU_FLAG+=("$_flag")
+    done < <(amd_dxg_flags)
+}
 
 if [[ $ROCM -eq 1 ]]; then
     IMAGE="${UNSLOTH_IMAGE:-unsloth/unsloth-rocm:latest}"
     GPUS=none
     if [[ -e "$DEV_ROOT/dev/kfd" ]]; then
         collect_amd_device_flags
+    elif wsl_dxg_host; then
+        collect_amd_dxg_flags
+        printf "\033[1;33mNOTE:\033[0m no /dev/kfd; passing /dev/dxg, the WSL2 bridge to the card.\n" >&2
     else
         GPU_FLAG=()
         printf "\033[1;33mWARN:\033[0m /dev/kfd is not present, so no AMD GPU can be passed through.\n" >&2
         printf "      On Linux install the amdgpu driver and add yourself to the video/render\n" >&2
-        printf "      groups. Docker Desktop on Windows and macOS has no /dev/kfd at all: the\n" >&2
-        printf "      ROCm image cannot reach a GPU there, whatever the host card is.\n\n" >&2
+        printf "      groups. On Windows the card is reached over WSL2's /dev/dxg, which only a\n" >&2
+        printf "      docker engine running INSIDE your WSL distribution can pass through.\n\n" >&2
     fi
 else
 IMAGE="${UNSLOTH_IMAGE:-unsloth/unsloth:latest}"
@@ -308,11 +353,13 @@ declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
 [[ -n "${WANDB_API_KEY:-}"     ]] && ENV_FORWARD+=(-e WANDB_API_KEY)
 [[ -n "${UNSLOTH_LICENSE:-}"   ]] && ENV_FORWARD+=(-e UNSLOTH_LICENSE)
 [[ -n "${UNSLOTH_ALLOW_CPU:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_ALLOW_CPU)
+[[ -n "${UNSLOTH_SKIP_GPU_CHECK:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_SKIP_GPU_CHECK)
 # gfx overrides for cards the installed ROCm build has no kernels for
 [[ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ]] && ENV_FORWARD+=(-e HSA_OVERRIDE_GFX_VERSION)
 [[ -n "${UNSLOTH_ROCM_GFX_ARCH:-}"    ]] && ENV_FORWARD+=(-e UNSLOTH_ROCM_GFX_ARCH)
 # read by studio_launch.sh; without these it uses a random password and no sshd
 [[ -n "${JUPYTER_PASSWORD:-}"           ]] && ENV_FORWARD+=(-e JUPYTER_PASSWORD)
+[[ -n "${JUPYTER_PORT:-}"               ]] && ENV_FORWARD+=(-e JUPYTER_PORT)
 [[ -n "${UNSLOTH_STUDIO_PASSWORD:-}"    ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_PASSWORD)
 [[ -n "${UNSLOTH_STUDIO_PORT:-}"        ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_PORT)
 [[ -n "${UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT)
@@ -322,6 +369,8 @@ declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
 [[ -n "${PUBLIC_KEY:-}"                 ]] && ENV_FORWARD+=(-e PUBLIC_KEY)
 [[ -n "${SSH_KEY:-}"                    ]] && ENV_FORWARD+=(-e SSH_KEY)
 [[ -n "${UNSLOTH_JUPYTER_CLOUDFLARE:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_JUPYTER_CLOUDFLARE)
+[[ -n "${UNSLOTH_SKIP_NOTEBOOK_SYNC:-}"    ]] && ENV_FORWARD+=(-e UNSLOTH_SKIP_NOTEBOOK_SYNC)
+[[ -n "${UNSLOTH_SKIP_NOTEBOOK_REFRESH:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_SKIP_NOTEBOOK_REFRESH)
 # Studio's two exposure modes, read by studio_run.sh inside the container. The
 # allowlist is explicit, so leaving them out made both silently inert through the
 # helper the documentation recommends.

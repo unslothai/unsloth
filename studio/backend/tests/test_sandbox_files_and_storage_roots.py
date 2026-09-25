@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from .thread_drain import join_when_started
+
 
 def _shared_setup_1(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
@@ -346,7 +348,7 @@ def test_legacy_sandbox_is_migrated(tmp_path, monkeypatch):
     # waits on the whole tree.
     for thread in threading.enumerate():
         if thread.name == "sandbox-migrate":
-            thread.join(30)
+            join_when_started(thread, timeout = 30)
     moved = wd.parent / "__LOCALID_old1234" / "results.csv"
     print(f"\nmigrated to {moved}")
     assert moved.is_file()
@@ -680,13 +682,153 @@ def test_the_legacy_migration_is_startup_work(tmp_path, monkeypatch):
     Path(tools.resolve_sandbox_workdir("__LOCALID_upgrade"))
     assert (legacy / "sales.csv").is_file()
 
-    tools.migrate_legacy_sandbox_in_background()
-    for _ in range(50):
-        if not legacy.exists():
-            break
-        time.sleep(0.05)
+    # Joined, not polled: the legacy folder is gone for the whole staging window, well before the
+    # move lands, so its absence says nothing about whether the migration has finished.
+    mover = tools.migrate_legacy_sandbox_in_background()
+    mover.join(60)
+    assert not mover.is_alive(), "the background migration never finished"
     resolved = Path(tools.resolve_sandbox_workdir("__LOCALID_upgrade"))
     assert (resolved / "sales.csv").is_file(), "the file did not follow the migration"
+    # A read falls back to the legacy root while a session is still there, so the file being
+    # readable does not by itself show that anything moved.
+    assert not legacy.exists(), "the session was left at the legacy root"
+    assert resolved.resolve().is_relative_to(Path(tools.sandbox_root()).resolve())
+
+
+@pytest.mark.parametrize("paused_after", ["move", "mark"])
+@pytest.mark.parametrize(
+    "session_id",
+    [
+        "__LOCALID_reading",
+        # Kept its legacy folder under the literal id, so its move is locked under that name while
+        # its marker carries the derived one.
+        "_id-reading",
+    ],
+)
+def test_a_read_does_not_answer_from_inside_a_legacy_move_s_staging_window(
+    tmp_path, monkeypatch, paused_after, session_id
+):
+    """A listing or download that lands while a session sits in staging must wait for the move.
+
+    Through that window the session is in neither root. Before the staging tree is marked a read
+    falls through to the destination before it exists; after, it finds the staging tree, which
+    the rename is about to take away. Either way the sandbox lists empty and every file card 404s.
+    """
+    fake_home = tmp_path / "userprofile"
+    fake_home.mkdir()
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
+
+    session = fake_home / "studio_sandbox" / session_id
+    session.mkdir(parents = True)
+    (session / "data.csv").write_text("a\n")
+
+    tools = _shared_setup_6()
+
+    staged = threading.Event()
+    release = threading.Event()
+    real_move = shutil.move
+
+    real_mark = tools._mark_sandbox
+
+    def pause_in_staging():
+        staged.set()  # the source is gone and the destination is not in place yet
+        release.wait(10)
+
+    def gated_move(source, destination, *args, **kwargs):
+        moved = real_move(source, destination, *args, **kwargs)
+        if paused_after == "move" and tools._STAGING_SUFFIX in os.path.basename(destination):
+            pause_in_staging()
+        return moved
+
+    def gated_mark(path, name):
+        marked = real_mark(path, name)
+        if paused_after == "mark" and tools._STAGING_SUFFIX in os.path.basename(path):
+            pause_in_staging()
+        return marked
+
+    monkeypatch.setattr(tools.shutil, "move", gated_move)
+    monkeypatch.setattr(tools, "_mark_sandbox", gated_mark)
+
+    mover = tools.migrate_legacy_sandbox_in_background()
+    assert staged.wait(10), "the migration never reached the staging window"
+
+    result = {}
+    reader = threading.Thread(
+        target = lambda: result.update(
+            workdir = Path(tools.resolve_sandbox_workdir(session_id)),
+        ),
+        daemon = True,
+    )
+    reader.start()
+    reader.join(1.0)
+    returned_early = not reader.is_alive()
+    release.set()
+    reader.join(10)
+    mover.join(10)
+
+    assert not returned_early, "the read answered from inside the staging window"
+    assert "workdir" in result, "the read never returned"
+    assert (result["workdir"] / "data.csv").is_file(), f"{result['workdir']} lost its files"
+
+
+def test_a_read_that_waited_out_a_stranded_move_finds_the_staging_tree(tmp_path, monkeypatch):
+    """A move whose rename and rollback both fail leaves the only copy in its marked staging tree.
+
+    A read whose first scan ran before the staging tree was marked waits the move out at the
+    legacy lookup, finds the legacy folder gone, and must look for the staging tree again rather
+    than hand back a destination that will never exist.
+    """
+    fake_home = tmp_path / "userprofile"
+    fake_home.mkdir()
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
+
+    session = fake_home / "studio_sandbox" / "__LOCALID_stranded"
+    session.mkdir(parents = True)
+    (session / "data.csv").write_text("a\n")
+
+    tools = _shared_setup_6()
+
+    staged = threading.Event()
+    release = threading.Event()
+    real_move = shutil.move
+    real_rename = os.rename
+
+    def gated_move(source, destination, *args, **kwargs):
+        moved = real_move(source, destination, *args, **kwargs)
+        if tools._STAGING_SUFFIX in os.path.basename(destination):
+            staged.set()  # in staging and not yet marked
+            release.wait(10)
+        return moved
+
+    def failing_rename(source, destination, *args, **kwargs):
+        if tools._STAGING_SUFFIX in os.path.basename(os.fspath(source)):
+            raise OSError("rename refused")  # both the rename into place and the rollback
+        return real_rename(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(tools.shutil, "move", gated_move)
+    monkeypatch.setattr(tools.os, "rename", failing_rename)
+
+    mover = tools.migrate_legacy_sandbox_in_background()
+    assert staged.wait(10), "the migration never reached the staging window"
+
+    result = {}
+    reader = threading.Thread(
+        target = lambda: result.update(
+            workdir = Path(tools.resolve_sandbox_workdir("__LOCALID_stranded")),
+        ),
+        daemon = True,
+    )
+    reader.start()
+    reader.join(1.0)
+    returned_early = not reader.is_alive()
+    release.set()
+    reader.join(10)
+    mover.join(10)
+
+    assert not returned_early, "the read answered from inside the staging window"
+    assert "workdir" in result, "the read never returned"
+    assert tools._STAGING_SUFFIX in result["workdir"].name, result["workdir"]
+    assert (result["workdir"] / "data.csv").is_file(), f"{result['workdir']} lost its files"
 
 
 def test_the_migration_is_serialised(tmp_path, monkeypatch):
@@ -5138,7 +5280,17 @@ def test_a_traversal_id_stays_inside_the_sandbox_root_and_opens_nothing(tmp_path
 
     from fastapi import HTTPException
 
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    # The legacy root is `~/studio_sandbox`, read straight off `expanduser("~")`, and an id the
+    # filesystem cannot hold is looked for in its shared `_invalid` bucket on the way to the 404.
+    # UNSLOTH_STUDIO_HOME does not move that, so without a fake home this test asks about whoever
+    # is running it: on a machine that has ever run Studio with a bad id the bucket is there, the
+    # resolver finds a real directory, and the reveal answers 200 instead. It passed on CI only
+    # because a fresh runner has no such folder.
+    _shared_setup_11(tmp_path / "fake-home", monkeypatch, tmp_path)
+    legacy_bucket = tmp_path / "fake-home" / "studio_sandbox" / "_invalid"
+    assert (
+        not legacy_bucket.exists()
+    ), "the refusals below only hold while the legacy bucket is absent"
 
     from routes import inference
 
@@ -5167,6 +5319,28 @@ def test_a_traversal_id_stays_inside_the_sandbox_root_and_opens_nothing(tmp_path
             Path(resolved).is_relative_to(tmp_path / "home") or not Path(resolved).exists()
         ), probe
     assert opened == [], "a refused id must never reach the file manager"
+
+
+def test_an_unusable_id_still_reads_the_legacy_shared_bucket(tmp_path, monkeypatch):
+    """The other half of the test above, and the reason it needs a fake home.
+
+    Before the per-id names, every id the filesystem could not hold shared one
+    bucket at the legacy root. `_legacy_session_dir` still reads that bucket, on
+    purpose, so those chats' files stay reachable after the upgrade. So "a
+    traversal id resolves to nothing" is not unconditional: it holds while the
+    bucket is absent, which is a precondition the previous test now states
+    instead of inheriting from whoever runs it. Pinning the read-back here means
+    deleting it cannot quietly turn that test into a tautology.
+    """
+    from core.inference import tools
+
+    _shared_setup_11(tmp_path / "fake-home", monkeypatch, tmp_path)
+    bucket = tmp_path / "fake-home" / "studio_sandbox" / tools._LEGACY_SHARED_BUCKET
+    bucket.mkdir(parents = True)
+
+    assert tools.resolve_sandbox_workdir("../../../../etc") == str(bucket)
+    # A usable id is a chat of its own and never lands in the shared bucket, whatever is in there.
+    assert tools.resolve_sandbox_workdir("thread-1") != str(bucket)
 
 
 def test_a_sandbox_file_named_reveal_is_still_served(tmp_path):

@@ -94,6 +94,10 @@ async function fetchWithTauriNetworkRetry(
       ) {
         throw error;
       }
+      // Tauri only, below the guard above. `fetch` cannot tell a refused port from a silent
+      // one and the native side can, so ask it once on the FIRST failure rather than sleeping
+      // out #10520's 10.5s ladder to be told what the refusal already proved.
+      if (attempt === 0 && (await nativeBackendIsGone())) throw error;
       await wait(delays[attempt]);
       beforeRetry?.();
     }
@@ -187,6 +191,51 @@ async function nativeBackendIsAlive(): Promise<boolean> {
     // Identity, not the port: a probe for a newer port owns the slot now.
     if (nativeHealthInflight === inflight) {
       nativeHealthInflight = null;
+    }
+  }
+}
+
+/** `check_backend_is_gone` and NOT `check_backend_present`: presence reports a backend of ours that has not bound its port yet as absent. */
+let nativeGoneInflight: { port: number; probe: Promise<boolean> } | null = null;
+
+/**
+ * Whether the retry ladder has anything left to wait for.
+ *
+ * Only ever answers true on positive proof, so every failure mode below returns false and
+ * leaves the ladder exactly as long as it is today: the browser build, which has no native
+ * side to ask; a port the webview has not been given yet; and a shell too old to carry the
+ * command, whose rejected `invoke` is caught here.
+ */
+async function nativeBackendIsGone(): Promise<boolean> {
+  if (!isTauri) {
+    return false;
+  }
+  const port = getApiPort();
+  if (port === null) {
+    return false;
+  }
+  // Single flight, like the presence probe: a hub losing the backend fails every panel at once.
+  if (nativeGoneInflight !== null && nativeGoneInflight.port === port) {
+    return nativeGoneInflight.probe;
+  }
+  const probe = (async () => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return (
+        (await invoke<boolean>("check_backend_is_gone", { port })) === true
+      );
+    } catch {
+      return false;
+    }
+  })();
+  const inflight = { port, probe };
+  nativeGoneInflight = inflight;
+  try {
+    return await probe;
+  } finally {
+    // Identity, not the port: a probe for a newer port owns the slot now.
+    if (nativeGoneInflight === inflight) {
+      nativeGoneInflight = null;
     }
   }
 }

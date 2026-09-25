@@ -38,11 +38,15 @@ Download the native Unsloth Desktop app for your operating system:
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-MacOS.dmg'>Download</a></td>
   </tr>
   <tr>
-    <td><b>Linux / Ubuntu (deb)</b></td>
+    <td><b>Linux x64 / Ubuntu (deb)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu.deb'>Download</a></td>
   </tr>
   <tr>
-    <td><b>Linux (AppImage)</b></td>
+    <td><b>Linux ARM64 / Ubuntu 24.04+ (deb)</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu-ARM64.deb'>Download</a></td>
+  </tr>
+  <tr>
+    <td><b>Linux x64 (AppImage)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Linux.AppImage'>Download</a></td>
   </tr>
 </table>
@@ -59,6 +63,10 @@ curl -fsSL https://unsloth.ai/install.sh | sh
 ```powershell
 irm https://unsloth.ai/install.ps1 | iex
 ```
+#### Docker
+
+The [Unsloth Docker image](https://hub.docker.com/r/unsloth/unsloth) `unsloth/unsloth` is available on Docker. [Read guide.](https://unsloth.ai/docs/get-started/install/docker)
+
 #### Community:
 
 - [Discord](https://discord.gg/unsloth)
@@ -69,7 +77,7 @@ irm https://unsloth.ai/install.ps1 | iex
 Unsloth works on **Windows, Linux, WSL** and **macOS**. We support **Multi GPU setups, NVIDIA, AMD, Intel GPUs, CPUs** and the **Vulkan** backend.
 
 ### Run & Build with AI
-* Run and train LLMs, MLX, GGUF, diffusion, embedding, audio models: [Qwen3.8](https://unsloth.ai/docs/models/qwen3.8), [GLM-5.3-Flash](https://unsloth.ai/docs/models/glm-5.3-flash), [Kimi K3](https://unsloth.ai/docs/models/kimi-k3), MiniMax-H3, [DeepSeek-V4](https://unsloth.ai/docs/models/deepseek-v4), [Gemma 4](https://unsloth.ai/docs/models/gemma-4).
+* Run and train LLMs, MLX, GGUF, diffusion, embedding, audio models: [Qwen3.8](https://unsloth.ai/docs/models/qwen3.8), [GLM-5.3-Flash](https://unsloth.ai/docs/models/glm-5.3-flash), [Kimi K3](https://unsloth.ai/docs/models/kimi-k3), [Qwen-Image-2.1](https://unsloth.ai/docs/models/qwen-image-2.1), MiniMax-H3, [DeepSeek-V4](https://unsloth.ai/docs/models/deepseek-v4), [Gemma 4](https://unsloth.ai/docs/models/gemma-4).
 * **Agents & Tools:** Use local models with [Claude Code](https://unsloth.ai/docs/basics/claude-code), [Codex](https://unsloth.ai/docs/basics/codex), and [MCP](https://unsloth.ai/docs/basics/mcp), including tool calling and code execution.
 * **Search & RAG:** Use private and unlimited web search, deep research, auto-compaction (rolling context window) and RAG.
 * **Image and video:** Run and train [image](https://unsloth.ai/docs/basics/diffusion-image) and video diffusion or multimodal models
@@ -119,12 +127,20 @@ Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/downlo
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-MacOS.dmg'>Download</a></td>
   </tr>
   <tr>
-    <td><b>Linux / Ubuntu (deb)</b></td>
+    <td><b>Linux x64 / Ubuntu (deb)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu.deb'>Download</a></td>
   </tr>
   <tr>
-    <td><b>Linux (AppImage)</b></td>
+    <td><b>Linux ARM64 / Ubuntu 24.04+ (deb)</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu-ARM64.deb'>Download</a></td>
+  </tr>
+  <tr>
+    <td><b>Linux x64 (AppImage)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Linux.AppImage'>Download</a></td>
+  </tr>
+  <tr>
+    <td><b>Windows ARM64</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.811-beta/Unsloth-Desktop-Windows-ARM64.exe'>Download</a></td>
   </tr>
 </table>
 
@@ -163,9 +179,9 @@ docker run -d --name unsloth --gpus all --ipc=host \
   -v unsloth-studio:/opt/unsloth-studio \
   unsloth/unsloth && docker logs -f unsloth
 ```
-The log ends with your links and a generated JupyterLab password, plus a generated Studio password on the first run against a new `unsloth-studio` volume; change that one on first sign-in or Studio stops after an hour. A reused volume keeps the password already stored on it, and `docker exec unsloth unsloth studio reset-password --username unsloth` mints a new one and prints it. Ctrl-C stops following the log, not the container; `docker rm -f unsloth` deletes it. The Hugging Face cache keeps your models and the `unsloth-studio` volume keeps your accounts, chats and trained models, both across `docker rm`; a volume from an older image is migrated on first start, its old code kept under `.unsloth-studio-legacy/`. Those ports publish on every interface: on a cloud host add `-e UNSLOTH_STUDIO_SECURE=1`, drop `-p 8000:8000` and bind JupyterLab to `-p 127.0.0.1:8888:8888`, or bind both to `127.0.0.1` and use an SSH tunnel. Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
+See [Docker docs](https://unsloth.ai/docs/get-started/install/docker) for more information. For cloud hosting / global serving, add `-e UNSLOTH_STUDIO_SECURE=1`, drop `-p 8000:8000` and bind JupyterLab to `-p 127.0.0.1:8888:8888`, or bind both to `127.0.0.1` and use an SSH tunnel. Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
 
-On AMD there is a separate image, [`unsloth/unsloth-rocm`](https://hub.docker.com/r/unsloth/unsloth-rocm), with the run command and the supported cards on its [Docker Hub page](https://hub.docker.com/r/unsloth/unsloth-rocm). It carries the training stack only, so there is no Studio or JupyterLab in it, and it needs native Linux: WSL exposes `/dev/dxg` rather than the `/dev/kfd` that ROCm needs.
+On AMD there is a separate image, [`unsloth/unsloth-rocm`](https://hub.docker.com/r/unsloth/unsloth-rocm), with the run command and the supported cards on its [Docker Hub page](https://hub.docker.com/r/unsloth/unsloth-rocm).
 
 #### Remote HTTPS & LAN Access
 Server-side tools are on by default - so **be careful**! Keep your password safe, or use `--disable-tools` when exposing Unsloth.
@@ -182,7 +198,7 @@ unsloth studio -H 0.0.0.0 -p 8888
 **LAN Access (home network)**: `Settings > API keys > LAN access`
 
 #### Password management & headless starts
-Exposing Unsloth (`--secure`, `--cloudflare`, or a non-loopback `-H`) asks once at the terminal for a new admin password. Ctrl+C there aborts the launch rather than exposing the auto-generated one; set a password non-interactively instead, or use `-H 127.0.0.1` to stay off the network. On a non-loopback `-H` bind a terminal nobody answers is not a refusal: after ~30s Unsloth starts anyway and shuts down on the bootstrap deadline, so detached launches (`docker run -dt`, `tmux new -d`) are unaffected. Setting `UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0` disables that shutdown, so give those launches a password instead. A tunnel gets no such timeout and waits indefinitely rather than publish a public URL unasked, so give a detached `--secure` / `--cloudflare` launch its password non-interactively.
+Exposing Unsloth (`--secure`, `--cloudflare`, or a non-loopback `-H`) asks once at the terminal for a new admin password. Ctrl+C there aborts the launch rather than exposing the auto-generated one; set a password non-interactively instead, or use `-H 127.0.0.1` to stay off the network.
 
 Headless starts:
 ```bash
@@ -327,7 +343,7 @@ curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_SKIP_AUTOSTART=1 sh
 $env:UNSLOTH_SKIP_AUTOSTART=1; irm https://unsloth.ai/install.ps1 | iex
 ```
 
-Keep the install-time package cache under the Studio directory instead of reusing an existing uv cache. Downloads are slower the first time, and an explicit `UV_CACHE_DIR` still wins over this:
+Keep the install-time package cache under the Unsloth Studio directory instead of reusing an existing uv cache. Downloads are slower the first time, and an explicit `UV_CACHE_DIR` still wins over this:
 ```bash
 curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_ISOLATE_UV_CACHE=1 sh
 ```
@@ -340,6 +356,21 @@ For a local run the flag is `--isolated-uv-cache`:
 ```
 ```powershell
 .\install.ps1 --local --isolated-uv-cache
+```
+
+Discard the previous environment immediately when reinstalling, instead of keeping a copy until the new one works. A reinstall normally holds both at once, so it needs room for two; this needs room for one, at the cost of not being able to undo a failed install:
+```bash
+curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_INSTALL_NO_ROLLBACK=1 sh
+```
+```powershell
+$env:UNSLOTH_INSTALL_NO_ROLLBACK=1; irm https://unsloth.ai/install.ps1 | iex
+```
+For a local run the flag is `--no-rollback`:
+```bash
+./install.sh --local --no-rollback
+```
+```powershell
+.\install.ps1 --local --no-rollback
 ```
 
 Pinning the Python version:

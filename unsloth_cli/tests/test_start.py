@@ -162,6 +162,7 @@ def test_claude_settings_overlay_pins_local_routing_and_auth():
         assert overlay["env"][name] == ""
     # The attribution-header suppression is preserved alongside it.
     assert overlay["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
+    assert overlay["env"]["CLAUDE_CODE_TOTAL_TOKENS_REMINDER"] == "off"
     # Subagents fall through to the served model instead of a user's opus/sonnet pin.
     assert overlay["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "inherit"
 
@@ -1565,6 +1566,7 @@ def test_connect_claude_no_launch(fake_studio):
     # Attribution header is suppressed for the session via env + --settings, never
     # by writing the user's ~/.claude/settings.json.
     _assert_env_set(result.output, "CLAUDE_CODE_ATTRIBUTION_HEADER", "0")
+    _assert_env_set(result.output, "CLAUDE_CODE_TOTAL_TOKENS_REMINDER", "off")
     # Claude assumes 200k for an unrecognized model id and clamps the auto-compact
     # window into [100k, that], so the real window has to be pinned as well.
     _assert_env_set(result.output, "CLAUDE_CODE_MAX_CONTEXT_TOKENS", str(MODEL["context_length"]))
@@ -1876,6 +1878,7 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
     assert captured["env"]["ANTHROPIC_BASE_URL"] == BASE
     assert captured["env"]["ANTHROPIC_MODEL"] == MODEL["id"]
     assert captured["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
+    assert captured["env"]["CLAUDE_CODE_TOTAL_TOKENS_REMINDER"] == "off"
 
 
 @pytest.mark.skipif(
@@ -2932,6 +2935,106 @@ def test_connect_model_flag_loads_on_server(fake_studio):
         f"Switching the Unsloth server from {MODEL['id']} to unsloth/Qwen3.5-35B-A3B.\n"
     ) < result.output.index("This unloads the current model for every attached session.\n")
     _assert_env_set(result.output, "ANTHROPIC_MODEL", "unsloth/Qwen3.5-35B-A3B")
+
+
+def _fake_path_resident(
+    monkeypatch,
+    listed_id,
+    load_status,
+    *,
+    load_error = None,
+    after_failure = "kept",
+):
+    # API-key status exposes an opaque ref instead of the resident path.
+    inner = start._http_json
+    state = {"after": None, "listed": listed_id}
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/api/inference/loaded-models"):
+            if state["after"] == "unreachable":
+                raise TimeoutError("timed out")
+            return {"data": [{"id": state["listed"], "loaded": state["after"] != "gone"}]}
+        if url.endswith("/api/inference/status"):
+            return {"is_gguf": True, "active_model": listed_id, "model_identifier": "ref:0123"}
+        if url.endswith("/api/inference/load"):
+            if load_error is not None:
+                state["after"] = after_failure
+                raise load_error
+            # Load responses use the path and short name; snapshot listings use the repo ID.
+            name = os.path.basename(payload["model_path"]).removesuffix(".gguf")
+            if load_status == "loaded":
+                state["listed"] = name
+            return {"status": load_status, "model": payload["model_path"], "display_name": name}
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+
+@pytest.mark.parametrize(
+    "requested, listed_id",
+    [
+        ("/models/old/foo-Q4_K_M.gguf", "foo-Q4_K_M"),
+        (
+            "/cache/hub/models--unsloth--Foo-GGUF/snapshots/abc123/Foo-UD-IQ1_S.gguf",
+            "unsloth/Foo-GGUF",
+        ),
+    ],
+)
+def test_connect_model_path_reattach_announces_no_switch(
+    fake_studio, monkeypatch, requested, listed_id
+):
+    _fake_path_resident(monkeypatch, listed_id, "already_loaded")
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", "--model", requested])
+    assert result.exit_code == 0, result.output
+    assert "Switching" not in result.output
+    assert "unload" not in result.output
+    assert f"Reusing loaded model: {requested}" in result.output
+
+
+def test_connect_model_path_same_name_switch_announced_after_load(fake_studio, monkeypatch):
+    _fake_path_resident(monkeypatch, "foo-Q4_K_M", "loaded")
+    requested = "/models/new/foo-Q4_K_M.gguf"
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", "--model", requested])
+    assert result.exit_code == 0, result.output
+    assert "Switching" not in result.output
+    assert f"Loaded {requested} in place of foo-Q4_K_M.\n" in result.output
+    assert "This unloaded the previous model for every attached session.\n" in result.output
+
+
+def test_connect_model_path_other_name_switch_announced_before_load(fake_studio, monkeypatch):
+    _fake_path_resident(monkeypatch, "foo-Q4_K_M", "loaded")
+    requested = "/models/bar-Q4_K_M.gguf"
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", "--model", requested])
+    assert result.exit_code == 0, result.output
+    assert f"Switching the Unsloth server from foo-Q4_K_M to {requested}.\n" in result.output
+    assert "in place of" not in result.output
+
+
+@pytest.mark.parametrize("after_failure", ["kept", "gone", "unreachable"])
+def test_connect_model_path_failed_same_name_load_reports_eviction(
+    fake_studio, monkeypatch, after_failure
+):
+    # An unreachable listing must not be treated as evidence of eviction.
+    failure = urllib.error.HTTPError(
+        f"{BASE}/api/inference/load", 500, "Internal Server Error", None, None
+    )
+    _fake_path_resident(
+        monkeypatch, "foo-Q4_K_M", None, load_error = failure, after_failure = after_failure
+    )
+    result = CliRunner().invoke(
+        start.start_app, ["claude", "--no-launch", "--model", "/models/new/foo-Q4_K_M.gguf"]
+    )
+    assert result.exit_code != 0
+    evicted = "foo-Q4_K_M was unloaded for every attached session." in result.output
+    assert evicted is (after_failure == "gone")
+    assert "Nothing was unloaded" not in result.output
 
 
 def test_connect_model_flag_forwards_load_options(fake_studio):
@@ -7731,8 +7834,8 @@ def test_hub_gguf_files_ignores_auxiliary_ggufs(monkeypatch):
     assert start._hub_gguf_files("owner/mmproj-pack") == []
 
 
-def test_hub_gguf_files_ignores_dspark_and_dflash_drafters(monkeypatch):
-    # Mirrors hub.utils.gguf.is_mtp_drafter_path: basename prefix (all three kinds) or exact
+def test_hub_gguf_files_ignores_prefixed_drafters(monkeypatch):
+    # Mirrors hub.utils.gguf.is_mtp_drafter_path: basename prefix (every kind) or exact
     # parent dir (mtp/, dspark/ only -- dflash/ is a real family name).
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
@@ -7740,10 +7843,12 @@ def test_hub_gguf_files_ignores_dspark_and_dflash_drafters(monkeypatch):
         "siblings": [
             {"rfilename": "DSpark-drafter-Q2K-Q8.gguf"},
             {"rfilename": "dflash-drafter-Q8_0.gguf"},
+            {"rfilename": "eagle3-gpt-oss-20b-Q8_0.gguf"},
             {"rfilename": "dspark/DeepSeek-V4-Flash-Q8_0.gguf"},
             # Family names, not companions: these ARE the model.
             {"rfilename": "Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf"},
             {"rfilename": "DFlash/Qwen3.6-27B-DFlash-Q4_K_M.gguf"},
+            {"rfilename": "Llama-3.1-8B-Eagle3-Q4_K_M.gguf"},
         ]
     }
     monkeypatch.setattr(
@@ -7754,6 +7859,7 @@ def test_hub_gguf_files_ignores_dspark_and_dflash_drafters(monkeypatch):
     assert start._hub_gguf_files("owner/dspark-pack") == [
         "Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf",
         "DFlash/Qwen3.6-27B-DFlash-Q4_K_M.gguf",
+        "Llama-3.1-8B-Eagle3-Q4_K_M.gguf",
     ]
 
 

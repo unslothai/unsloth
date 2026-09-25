@@ -142,6 +142,49 @@ def check_defaults(page, engine: str, platform: str) -> None:
         check(engine, platform, "no unreachable Ctrl default off macOS", not ctrl, str(ctrl))
 
 
+def check_every_default(page, engine: str, platform: str) -> None:
+    """Press every chord the build ships, not just the handful named below.
+
+    The harness registers the registry itself, so this is the dispatch layer end to
+    end: a default the matcher cannot match, a chord another action owns, a modifier
+    that maps differently off macOS. The app's own call sites are pinned separately,
+    by "every action has a useShortcut call site" in the node suite.
+    """
+    rows = page.evaluate(
+        """() => {
+            const r = window.__shortcutsSmoke.registry;
+            const mac = r.isMacPlatform();
+            const out = [];
+            for (const def of r.SHORTCUT_DEFS) {
+                for (const slot of r.SHORTCUT_SLOTS) {
+                    const value = r.defaultBindingFor(def, slot, mac);
+                    if (value != null) out.push({ id: def.id, slot, value });
+                }
+            }
+            return out;
+        }"""
+    )
+    recorded_as = page.evaluate("window.__shortcutsSmoke.recordedAs")
+    missed: list[str] = []
+    for row in rows:
+        reset(page)
+        # The Tab chords in this loop move focus, and a focused control keeps
+        # its own Enter, so the bare-key pair would look dead without this.
+        page.evaluate("document.activeElement && document.activeElement.blur()")
+        page.keyboard.press(to_press(row["value"], platform))
+        expected = recorded_as.get(row["id"], row["id"])
+        if expected not in actions(page):
+            missed.append(f"{row['id']}.{row['slot']} {row['value']}")
+    reset(page)
+    check(
+        engine,
+        platform,
+        f"every shipped chord fires its action ({len(rows)} slots)",
+        not missed,
+        ", ".join(missed)[:300],
+    )
+
+
 def check_dispatch(page, engine: str, platform: str) -> None:
     reset(page)
     page.keyboard.press(to_press("Mod+Comma", platform))
@@ -594,6 +637,7 @@ def run_engine(pw, engine: str) -> None:
             page.wait_for_selector("#smoke-ready", timeout = 120000)
             try:
                 check_defaults(page, engine, platform)
+                check_every_default(page, engine, platform)
                 check_dispatch(page, engine, platform)
                 check_text_fields(page, engine, platform)
                 check_bare_keys(page, engine, platform)

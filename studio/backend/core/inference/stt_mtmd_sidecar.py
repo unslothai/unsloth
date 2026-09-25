@@ -938,7 +938,7 @@ class MtmdSttSidecar:
             # step-7 sweep has already passed by.
             if is_process_shutting_down():
                 raise SttLoadCancelledError(
-                    "Studio is shutting down; not starting the MTMD server."
+                    "Unsloth is shutting down; not starting the MTMD server."
                 )
             process = subprocess.Popen(
                 cmd,
@@ -963,7 +963,7 @@ class MtmdSttSidecar:
             if is_process_shutting_down():
                 _reap(process)
                 raise SttLoadCancelledError(
-                    "Studio is shutting down; not starting the MTMD server."
+                    "Unsloth is shutting down; not starting the MTMD server."
                 )
             if not self._wait_for_server(process, port, cancel_event):
                 # Reap it here: _process was never assigned, so unload() cannot reach a child that ignores SIGTERM and

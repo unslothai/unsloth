@@ -328,11 +328,19 @@ foreach ($file in @($installPs1, $setupPs1)) {
         $def = $text.IndexOf("function $fn")
         Check "$name defines $fn before the promotion that uses it" ($def -gt 0 -and $def -lt $presence)
     }
+    $scanCalls = 0
     foreach ($m in [regex]::Matches($text, '(?<!function )Invoke-BoundedVideoControllerScan')) {
+        # A name in a comment is prose, not a call: other code documents itself by pointing at
+        # this helper, and such a comment is free to sit anywhere in the file.
+        $lineStart = $text.LastIndexOf("`n", [Math]::Max($m.Index - 1, 0)) + 1
+        if ($text.Substring($lineStart, $m.Index - $lineStart).Contains("#")) { continue }
+        $scanCalls++
         $def = $text.IndexOf("function Invoke-BoundedVideoControllerScan")
         Check "$name calls Invoke-BoundedVideoControllerScan at offset $($m.Index) after its definition" (
             $m.Index -gt $def)
     }
+    # Bites: skipping comments must not skip everything.
+    Check "$name has real calls to the bounded scan to order (bites)" ($scanCalls -gt 0)
 }
 
 # setup.ps1 must NOT guess a family. Get-PytorchCudaTag returning "" means unknown, and the
