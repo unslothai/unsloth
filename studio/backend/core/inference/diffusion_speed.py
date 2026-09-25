@@ -315,7 +315,10 @@ def apply_speed_optims(
     if applied["compiled"] and _vae_decode_compile_allowed(pipe, mode):
         # A U-Net keeps the decode recipe its whole-module compile was measured with.
         applied["compiled_vae_decode"] = _compile_vae_decode(
-            pipe, logger, max_autotune = mode == SPEED_MAX and _denoiser_unet(pipe) is None
+            pipe,
+            logger,
+            max_autotune = mode == SPEED_MAX and _denoiser_unet(pipe) is None,
+            eager_when_tiled = _vae_eager_when_tiled(pipe),
         )
 
     if mode == SPEED_MAX:
@@ -804,12 +807,26 @@ def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
     return name in _VAE_COMPILE_ALLOW and name not in _VAE_COMPILE_DENY
 
 
-def _guard_compiled_decode(vae: Any, compiled: Any, eager: Any, logger: Any) -> Any:
-    """``compiled`` behind an eager fallback: torch.compile is lazy, so lowering fails on the first call; OOMs still raise."""
+def _vae_eager_when_tiled(pipe: Any) -> bool:
+    """A DiT decode not forced on by the env runs eager while tiled; U-Nets keep their measured recipe."""
+    if pipe is not None and _denoiser_unet(pipe) is not None:
+        return False
+    return os.environ.get(COMPILE_VAE_ENV, "").strip().lower() not in _VAE_TRUE_TOKENS
+
+
+def _guard_compiled_decode(
+    vae: Any, compiled: Any, eager: Any, logger: Any, eager_when_tiled: bool = False
+) -> Any:
+    """``compiled`` behind an eager fallback: torch.compile is lazy, so lowering fails on the first call; OOMs still raise.
+
+    ``eager_when_tiled``: a tiled decode unrolls its tile loop into one graph (minutes of compile on low-VRAM loads),
+    and tiling is only settled by the memory plan after the compile, so it is read per call."""
     had_own = "decode" in getattr(vae, "__dict__", {})
     failed: list = []
 
     def guarded(*args: Any, **kwargs: Any) -> Any:
+        if eager_when_tiled and getattr(vae, "use_tiling", False):
+            return eager(*args, **kwargs)
         if not failed:
             try:
                 return compiled(*args, **kwargs)
@@ -845,6 +862,7 @@ def _compile_vae_decode(
     pipe: Any,
     logger: Any,
     max_autotune: bool = False,
+    eager_when_tiled: bool = False,
 ) -> bool:
     """torch.compile the VAE ``decode`` in place; no cudagraphs, whose capture would pin decode activations."""
     vae = getattr(pipe, "vae", None)
@@ -863,7 +881,9 @@ def _compile_vae_decode(
         if max_autotune:
             kwargs["mode"] = "max-autotune-no-cudagraphs"
         compiled = torch.compile(decode, **kwargs)
-        vae.decode = _guard_compiled_decode(vae, compiled, decode, logger)
+        vae.decode = _guard_compiled_decode(
+            vae, compiled, decode, logger, eager_when_tiled = eager_when_tiled
+        )
         vae._unsloth_compiled_decode = True
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only

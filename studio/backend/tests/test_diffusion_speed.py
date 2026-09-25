@@ -1708,6 +1708,34 @@ def test_vae_decode_compile_fallback_restores_an_instance_decode(monkeypatch):
     assert vae.decode is original
 
 
+@pytest.mark.parametrize("forced", [False, True])
+def test_a_tiled_dit_decode_stays_eager_unless_the_compile_is_forced(monkeypatch, forced):
+    # Tiled decode unrolls its tile loop into one graph: minutes of first-render compile for a low-VRAM load.
+    if forced:
+        monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "1")
+    else:
+        monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    calls = {"compiled": 0, "eager": 0}
+
+    def compiled(z):
+        calls["compiled"] += 1
+        return z
+
+    def eager(z):
+        calls["eager"] += 1
+        return z
+
+    vae = types.SimpleNamespace(decode = eager, use_tiling = True)
+    vae.decode = ds_mod._guard_compiled_decode(
+        vae, compiled, eager, None, eager_when_tiled = ds_mod._vae_eager_when_tiled(None)
+    )
+    vae.decode(1)
+    assert calls == ({"compiled": 1, "eager": 0} if forced else {"compiled": 0, "eager": 1})
+    vae.use_tiling = False
+    vae.decode(1)
+    assert calls["compiled"] == (2 if forced else 1)
+
+
 @pytest.mark.parametrize("kind", ["runtime", "oom"])
 def test_vae_decode_non_compile_errors_are_not_swallowed(monkeypatch, kind):
     def failure():
