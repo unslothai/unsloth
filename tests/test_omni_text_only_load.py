@@ -521,7 +521,10 @@ def test_a_kept_wrapper_resolves_its_layer_count_through_the_thinker():
 
     model = _text_trainable_core(_tiny_omni(), text_intent = False)
     assert _get_total_transformer_layers(model) is None
-    assert _get_total_transformer_layers(model.thinker) == model.thinker.config.text_config.num_hidden_layers
+    assert (
+        _get_total_transformer_layers(model.thinker)
+        == model.thinker.config.text_config.num_hidden_layers
+    )
 
 
 def test_an_explicit_leaf_list_on_a_kept_wrapper_is_scoped_to_the_thinker(monkeypatch):
@@ -556,7 +559,9 @@ def test_a_kept_wrapper_resizes_its_vocabulary_through_the_thinker():
 def _kept_wrapper_peft(monkeypatch, **peft_kwargs):
     from unsloth.models import vision
 
-    monkeypatch.setattr(vision.FastBaseModel, "post_patch_model", staticmethod(lambda model, *a, **k: model))
+    monkeypatch.setattr(
+        vision.FastBaseModel, "post_patch_model", staticmethod(lambda model, *a, **k: model)
+    )
     model = vision._text_trainable_core(_tiny_omni(), text_intent = False)
     model.max_seq_length = 64
     return vision.FastBaseModel.get_peft_model(model, r = 2, **peft_kwargs)
@@ -572,7 +577,9 @@ def test_a_qualified_target_on_a_kept_wrapper_reaches_peft_unchanged(monkeypatch
 
 def test_saved_modules_on_a_kept_wrapper_skip_the_talker(monkeypatch):
     """An unqualified "lm_head" also suffix-matched talker.code_predictor.lm_head, a ModuleList PEFT refuses."""
-    peft_model = _kept_wrapper_peft(monkeypatch, target_modules = ["q_proj"], modules_to_save = ["lm_head"])
+    peft_model = _kept_wrapper_peft(
+        monkeypatch, target_modules = ["q_proj"], modules_to_save = ["lm_head"]
+    )
     trained = [n for n, p in peft_model.named_parameters() if p.requires_grad]
     assert any("thinker.lm_head" in n for n in trained)
     assert not any(".talker." in n for n in trained)
