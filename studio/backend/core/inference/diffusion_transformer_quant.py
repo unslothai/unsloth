@@ -519,8 +519,8 @@ def stored_denoiser_precision(local_dir: Optional[str]) -> Optional[str]:
     is the only place left to look.
 
     Headers only, and only under a directory we already have: no download, no tensor read, and no
-    verdict without a local snapshot, which is the behaviour without this check. A hub id is not a
-    directory and answers None, so the caller may pass the staged snapshot or the load's own base."""
+    verdict without a local snapshot, which is the behaviour without this check. A hub id resolves to
+    its already-cached snapshot (``local_files_only``: an offline load stages nothing), else None."""
     if not local_dir:
         return None
     try:
@@ -529,6 +529,9 @@ def stored_denoiser_precision(local_dir: Optional[str]) -> Optional[str]:
         import safetensors
 
         root = Path(local_dir).expanduser()
+        if not root.is_dir():
+            from huggingface_hub import snapshot_download
+            root = Path(snapshot_download(str(local_dir), local_files_only = True))
         for attr in DENOISER_ATTRS:
             sub = root / attr
             if not sub.is_dir():
