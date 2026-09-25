@@ -121,7 +121,10 @@ class Credentials:
                 base_url, "POST", "/api/auth/refresh", {"refresh_token": self.refresh}, None, 30
             )
             if status != 200 or not isinstance(body, dict) or not body.get("access_token"):
-                self.refresh = None
+                # Only a refusal spends the token. A transport failure or a 5xx may never
+                # have reached the store, so keep it for the next 401 to try again.
+                if status in (400, 401, 403):
+                    self.refresh = None
                 return False
             self.access = body["access_token"]
             self.refresh = body.get("refresh_token")

@@ -2005,6 +2005,8 @@ def test_the_app_control_verdict_scopes_by_the_evaluated_file(tmp_path):
     driver.write_text(
         r"""
 param([string]$Snippet)
+# Scoping only: policy attribution is exercised by its own test.
+$fromPolicy = { $true }
 function New-Ev([string]$msg, [hashtable]$data) {
   $x = '<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><EventData>'
   foreach ($k in $data.Keys) { $x += "<Data Name='$k'>$([Security.SecurityElement]::Escape($data[$k]))</Data>" }
@@ -2431,3 +2433,70 @@ def test_an_expired_session_is_renewed_with_the_refresh_token(tmp_path, monkeypa
     assert streamed == ["a2", "a3"] and refreshes == ["r1", "r2"]
     # A plain string token (no refresh) keeps the old single-call behaviour.
     assert s._request("http://x", "GET", "/api/inference/status", token = "stale")[0] == 401
+
+
+def test_a_transient_refresh_failure_keeps_the_refresh_token(monkeypatch):
+    """A transport error or a 5xx from /api/auth/refresh may never have reached
+    Studio's store, so the single-use token is kept for the next 401. Only an
+    explicit refusal spends it."""
+    s = _load_scenario()
+    answers = [
+        (0, "connection reset"),
+        (503, "busy"),
+        (200, {"access_token": "a2", "refresh_token": "r2"}),
+    ]
+
+    def once(base_url, method, path, payload, token, timeout):
+        assert path == "/api/auth/refresh" and payload["refresh_token"] == "r1"
+        return answers.pop(0)
+
+    monkeypatch.setattr(s, "_request_once", once)
+    creds = s.Credentials("a1", "r1")
+    assert creds.renew("http://x", "a1") is False and creds.refresh == "r1"
+    assert creds.renew("http://x", "a1") is False and creds.refresh == "r1"
+    assert creds.renew("http://x", "a1") is True and (creds.access, creds.refresh) == ("a2", "r2")
+
+    monkeypatch.setattr(s, "_request_once", lambda *a: (401, "Invalid or expired refresh token"))
+    assert creds.renew("http://x", "a2") is False and creds.refresh is None
+
+
+def test_the_workflow_attributes_its_3076_events_to_the_installed_policy(tmp_path):
+    """Another audit-mode policy on the runner logs 3076s as well. Both the
+    positive control and the runtime verdict count only events attributed to
+    the NoISG policy the job installed, as the probe's own control does."""
+    import shutil
+
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    marker = "          $fromPolicy = {\n"
+    assert body.count(marker) == 2
+    assert "$fired = @($named | Where-Object { & $fromPolicy $_ })" in body
+    assert '$tail -and $subject -like "*$tail*" -and (& $fromPolicy $_)' in body
+    start = body.index("          $policyBare = ")
+    end = body.index("\n          }\n", body.index(marker)) + len("\n          }\n")
+    block = "\n".join(line[10:] for line in body[start:end].splitlines())
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is required")
+    script = tmp_path / "attr.ps1"
+    script.write_text(
+        "$env:SAC_POLICY_ID = '{5283AC0F-FFF1-49AE-ADA1-8A933130CAD6}'\n"
+        + block
+        + r"""
+function Ev([string]$xml) { $o = [pscustomobject]@{ X = $xml }; $o | Add-Member ScriptMethod ToXml { $this.X }; $o }
+$ns = 'http://schemas.microsoft.com/win/2004/08/events/event'
+$ours = Ev "<Event xmlns='$ns'><EventData><Data Name='File Name'>C:\x\unsigned-control.exe</Data><Data Name='PolicyGUID'>{5283ac0f-fff1-49ae-ada1-8a933130cad6}</Data></EventData></Event>"
+$byName = Ev "<Event xmlns='$ns'><EventData><Data Name='PolicyNameBuffer'>VerifiedAndReputableDesktopEvaluationAuditNoISG</Data></EventData></Event>"
+$other = Ev "<Event xmlns='$ns'><EventData><Data Name='File Name'>C:\x\unsigned-control.exe</Data><Data Name='PolicyGUID'>{11111111-2222-3333-4444-555555555555}</Data><Data Name='PolicyNameBuffer'>ContosoAllowList</Data></EventData></Event>"
+$broken = Ev "not xml"
+if ($true -ne (& $fromPolicy $ours)) { exit 81 }
+if ($true -ne (& $fromPolicy $byName)) { exit 82 }
+if ($true -eq (& $fromPolicy $other)) { exit 83 }
+if ($true -eq (& $fromPolicy $broken)) { exit 84 }
+exit 0
+""",
+        encoding = "utf-8",
+    )
+    proc = subprocess.run(
+        [pwsh, "-NoProfile", "-File", str(script)], capture_output = True, text = True
+    )
+    assert proc.returncode == 0, proc.stdout[-1500:] + proc.stderr[-1500:]

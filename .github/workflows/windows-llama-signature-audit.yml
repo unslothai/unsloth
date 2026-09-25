@@ -348,6 +348,22 @@ jobs:
           # so a fixed wait that is slightly too short reports "the policy is not
           # evaluating loads" for a policy that is working, which is the one
           # conclusion this step must never reach by accident.
+          # Attributed to the NoISG policy this job installed: its GUID in the event data or an
+          # AuditNoISG policy name, as the probe's own control checks. Another audit-mode policy
+          # on the runner logs 3076s too, and those say nothing about the policy under test.
+          $policyBare = "$env:SAC_POLICY_ID".Trim('{', '}').ToLowerInvariant()
+          $fromPolicy = {
+            param($e)
+            try {
+              foreach ($node in ([xml] $e.ToXml()).Event.EventData.Data) {
+                $v = [string] $node.'#text'
+                if (-not $v) { continue }
+                if ($policyBare -and $v.ToLowerInvariant().Contains($policyBare)) { return $true }
+                if ($node.Name -like 'PolicyName*' -and $v -like '*AuditNoISG*') { return $true }
+              }
+            } catch { }
+            return $false
+          }
           $since = [datetime]::Parse($env:AUDIT_START).ToUniversalTime()
           $events = @()
           $fired = @()
@@ -356,10 +372,11 @@ jobs:
             $events = @(Get-WinEvent -FilterHashtable @{
               LogName = 'Microsoft-Windows-CodeIntegrity/Operational'; Id = 3076; StartTime = $since
             } -ErrorAction SilentlyContinue)
-            $fired = @($events | Where-Object { $_.Message -like '*unsigned-control*' })
+            $named = @($events | Where-Object { $_.Message -like '*unsigned-control*' })
+            $fired = @($named | Where-Object { & $fromPolicy $_ })
             if ($fired.Count -gt 0) { break }
           }
-          Write-Host "3076 events since policy apply: $($events.Count); naming the control: $($fired.Count)"
+          Write-Host "3076 events since policy apply: $($events.Count); naming the control: $($named.Count); from the installed policy: $($fired.Count)"
           if ($fired.Count -eq 0) {
             Write-Host '::error::the unsigned positive control raised no 3076 event, so this policy is not evaluating loads here; the bundle result below would be meaningless'
             "control_fired=false" | Add-Content -Path $env:GITHUB_OUTPUT
@@ -452,6 +469,22 @@ jobs:
           # ends the moment llama-server exits, and a single query run before
           # the record lands would report the shipped runtime as allowed. An
           # allow is the one verdict here that must never be reached by timing.
+          # Attributed to the NoISG policy this job installed: its GUID in the event data or an
+          # AuditNoISG policy name, as the probe's own control checks. Another audit-mode policy
+          # on the runner logs 3076s too, and those say nothing about the policy under test.
+          $policyBare = "$env:SAC_POLICY_ID".Trim('{', '}').ToLowerInvariant()
+          $fromPolicy = {
+            param($e)
+            try {
+              foreach ($node in ([xml] $e.ToXml()).Event.EventData.Data) {
+                $v = [string] $node.'#text'
+                if (-not $v) { continue }
+                if ($policyBare -and $v.ToLowerInvariant().Contains($policyBare)) { return $true }
+                if ($node.Name -like 'PolicyName*' -and $v -like '*AuditNoISG*') { return $true }
+              }
+            } catch { }
+            return $false
+          }
           $events = @()
           $ours = @()
           foreach ($attempt in 1..10) {
@@ -483,7 +516,7 @@ jobs:
                   if ($node.Name -eq 'FileNameBuffer' -and $node.'#text') { $subject = [string] $node.'#text' }
                 }
               } catch { }
-              $tail -and $subject -like "*$tail*"
+              $tail -and $subject -like "*$tail*" -and (& $fromPolicy $_)
             })
             if ($ours.Count -gt 0) { break }
             if ($attempt -lt 10) { Start-Sleep -Seconds 3 }
