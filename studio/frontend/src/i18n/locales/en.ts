@@ -3016,6 +3016,7 @@ export const en = {
       attachedMany: "Attached {count} files",
       skippedTooLarge: "{count} too large to attach.",
       skippedOverLimit: "{count} more past the {limit} file limit.",
+      chatFilesWaiting: "{count} will be attached once a model that reads them is loaded.",
       openFilesFailed: "Could not open the files",
       speechModel: "{name} is a speech model",
       speechModelDescription: "Pick it from the model menu on the Audio page.",

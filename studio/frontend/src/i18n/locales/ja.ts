@@ -2966,6 +2966,7 @@ export const ja = {
       attachedMany: "{count} 個のファイルを添付しました",
       skippedTooLarge: "{count} 個は大きすぎるため添付できません。",
       skippedOverLimit: "{limit} ファイルの上限を超えた {count} 個は添付されていません。",
+      chatFilesWaiting: "{count} 個は、読み取れるモデルが読み込まれると添付されます。",
       openFilesFailed: "ファイルを開けませんでした",
       speechModel: "{name} は音声モデルです",
       speechModelDescription: "音声ページのモデルメニューから選択してください。",

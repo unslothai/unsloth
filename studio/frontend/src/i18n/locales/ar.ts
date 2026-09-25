@@ -3018,6 +3018,7 @@ export const ar = {
       attachedMany: "تم إرفاق الملفات ({count})",
       skippedTooLarge: "ملفات أكبر من أن تُرفق: {count}.",
       skippedOverLimit: "ملفات إضافية تتجاوز حد {limit} ملفات: {count}.",
+      chatFilesWaiting: "ستُرفق عند تحميل نموذج يمكنه قراءتها: {count}.",
       openFilesFailed: "تعذّر فتح الملفات",
       speechModel: "{name} نموذج كلام",
       speechModelDescription: "اختره من قائمة النماذج في صفحة الصوت.",

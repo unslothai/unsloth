@@ -3025,6 +3025,7 @@ export const hi = {
       attachedMany: "{count} फ़ाइलें अटैच की गईं",
       skippedTooLarge: "{count} अटैच करने के लिए बहुत बड़ी हैं।",
       skippedOverLimit: "{limit} फ़ाइलों की सीमा से {count} और ज़्यादा हैं।",
+      chatFilesWaiting: "{count} फ़ाइलें तब अटैच होंगी जब उन्हें पढ़ सकने वाला मॉडल लोड हो जाएगा।",
       openFilesFailed: "फ़ाइलें खोली नहीं जा सकीं",
       speechModel: "{name} एक स्पीच मॉडल है",
       speechModelDescription: "इसे ऑडियो पेज के मॉडल मेनू से चुनें।",

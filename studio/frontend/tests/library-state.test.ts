@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Library's state across failures: an edit whose rollback cannot reach the server, a deleted
-// chat attachment, and a download of unknown size.
+// The Library's state across failures: a chat handoff the composer refuses, a sign-out, an edit
+// whose rollback cannot reach the server, a deleted chat attachment, and a download of unknown size.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -13,10 +13,45 @@ import { installLocalStorageFake } from "./helpers/kit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 // The modules listen for sign-out when they load, so the window has to exist first.
-installLocalStorageFake();
+const { fireWindowEvent } = installLocalStorageFake();
 const SIGNED_OUT = "unsloth:auth-session-cleared";
+const { attachLibraryChatFiles, useLibraryChatHandoffStore } = await import(
+  "../src/features/library/chat-handoff-store.ts"
+);
 
 const file = (name: string) => new File(["x"], name);
+const names = (files: File[] | undefined) => files?.map((f) => f.name);
+
+test("files the composer refuses wait for a model instead of being lost", async () => {
+  const handoff = useLibraryChatHandoffStore.getState();
+  handoff.offer("single:1", { files: [file("a.png"), file("notes.md")] });
+  const added: string[] = [];
+  let modelLoaded = false;
+  const add = async (f: File) => {
+    if (f.name.endsWith(".png") && !modelLoaded) throw new Error("Load a model first");
+    added.push(f.name);
+  };
+  assert.equal(await attachLibraryChatFiles("single:2", add), 0);
+  assert.equal(await attachLibraryChatFiles("single:1", add), 1);
+  assert.deepEqual(added, ["notes.md"]);
+  assert.deepEqual(names(useLibraryChatHandoffStore.getState().held?.files), ["a.png"]);
+  // Another chat's retry leaves them; a failed retry keeps them; a loaded model takes them.
+  assert.equal(await attachLibraryChatFiles("single:2", add, true), 0);
+  assert.equal(await attachLibraryChatFiles("single:1", add, true), 1);
+  modelLoaded = true;
+  assert.equal(await attachLibraryChatFiles("single:1", add, true), 0);
+  assert.deepEqual(added, ["notes.md", "a.png"]);
+  assert.equal(useLibraryChatHandoffStore.getState().held, null);
+});
+
+test("a sign-out drops files handed to a chat that has not taken them", async () => {
+  const handoff = useLibraryChatHandoffStore.getState();
+  handoff.offer("single:3", { files: [file("a.png")] });
+  useLibraryChatHandoffStore.setState({ held: { targetKey: "single:3", files: [file("b.png")] } });
+  fireWindowEvent(SIGNED_OUT, {});
+  assert.equal(handoff.take("single:3"), null);
+  assert.equal(useLibraryChatHandoffStore.getState().held, null);
+});
 
 type Item = { id: string; name: string; favorite: boolean; folderId: string | null };
 

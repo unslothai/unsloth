@@ -3046,6 +3046,7 @@ export const ptBR = {
       attachedMany: "{count} arquivos anexados",
       skippedTooLarge: "{count} grandes demais para anexar.",
       skippedOverLimit: "Mais {count} além do limite de {limit} arquivos.",
+      chatFilesWaiting: "{count} serão anexados assim que um modelo capaz de lê-los for carregado.",
       openFilesFailed: "Não foi possível abrir os arquivos",
       speechModel: "{name} é um modelo de fala",
       speechModelDescription: "Escolha-o no menu de modelos da página Áudio.",

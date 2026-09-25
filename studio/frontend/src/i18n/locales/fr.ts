@@ -3098,6 +3098,7 @@ export const fr = {
       attachedMany: "{count} fichiers joints",
       skippedTooLarge: "{count} trop volumineux pour être joints.",
       skippedOverLimit: "{count} de plus au-delà de la limite de {limit} fichiers.",
+      chatFilesWaiting: "{count} seront joints dès qu'un modèle capable de les lire sera chargé.",
       openFilesFailed: "Impossible d'ouvrir les fichiers",
       speechModel: "{name} est un modèle vocal",
       speechModelDescription: "Sélectionnez-le dans le menu des modèles de la page Audio.",
