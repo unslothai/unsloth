@@ -2403,6 +2403,7 @@ class TestGfx1102Rocm64Floor:
         hip: str,
         gfx_target: str,
         floor: "tuple[int, int]" = (6, 4),
+        arch_routed: str = "false",
     ) -> str:
         """Execute install.sh's migrated-environment ROCm repair with a stubbed venv torch."""
         shell = shutil.which("bash")
@@ -2441,6 +2442,7 @@ class TestGfx1102Rocm64Floor:
                 + f'_VENV_PY="{venv_py}"\n'
                 + f"_gfx_rocm64_target={gfx_target}\n"
                 + f"_gfx_rocm64_floor_maj={floor[0]}\n_gfx_rocm64_floor_min={floor[1]}\n"
+                + f"_amd_arch_index_routed={arch_routed}\n"
                 + f'_torch_index_leaf="rocm{floor[0]}.{floor[1]}"\n'
                 + source[start:end]
                 + '\nprintf "DONE\\n"\n'
@@ -2471,6 +2473,26 @@ class TestGfx1102Rocm64Floor:
         self, torch_version, hip, gfx_target, floor, reinstalls
     ):
         out = self._run_migrated_rocm_repair(torch_version, hip, gfx_target, floor)
+        assert "DONE" in out, out
+        assert ("REINSTALL" in out) is reinstalls, out
+
+    @pytest.mark.parametrize(
+        ("torch_version", "arch_routed", "reinstalls"),
+        (
+            # Routed to a per-arch index: a migrated generic 7.2 wheel is what the route replaces.
+            ("2.11.0+rocm7.2", "true", True),
+            ("2.9.1+rocm6.4", "true", True),
+            ("2.11.0+rocm7.13.0", "true", False),
+            # controls: not routed, so above the 6.4 floor it stays
+            ("2.11.0+rocm7.2", "false", False),
+        ),
+    )
+    def test_install_sh_migrated_repair_honors_the_arch_index_route(
+        self, torch_version, arch_routed, reinstalls
+    ):
+        out = self._run_migrated_rocm_repair(
+            torch_version, "7.2.0", "true", (6, 4), arch_routed = arch_routed
+        )
         assert "DONE" in out, out
         assert ("REINSTALL" in out) is reinstalls, out
 
