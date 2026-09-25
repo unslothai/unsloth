@@ -3369,6 +3369,7 @@ class AnthropicToolResultBlock(BaseModel):
     type: Literal["tool_result"]
     tool_use_id: str
     content: Union[str, list] = ""
+    is_error: Optional[bool] = None
 
     @field_validator("content", mode = "before")
     @classmethod
