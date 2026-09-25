@@ -455,11 +455,8 @@ def _adapter_name_is_live(name: Optional[str], live_names: list[str]) -> bool:
 
 
 def _pci_function_is_behind_a_port(device_dir: str) -> Optional[bool]:
-    """Whether this PCI function sits on a nonzero bus, i.e. behind a PCIe port: True for a
-    discrete card, False for a root-complex endpoint such as Intel's integrated graphics at
-    00:02.0. The kernel publishes no Intel name, so this is what tells an Arc from a UHD iGPU.
-    None when the address cannot be read. A card passed through into a VM can land on bus 0 and
-    reads as integrated, which errs on the side of not flagging it."""
+    """True on a nonzero PCI bus (discrete Arc), False on bus 0 (iGPU at 00:02.0), None if unreadable.
+    A VM passthrough card on bus 0 reads as integrated, erring toward not flagging it."""
     try:
         address = os.path.basename(os.path.realpath(device_dir))
     except OSError:
@@ -863,8 +860,7 @@ def _devices_that_can_establish_a_mismatch(devices: list[Dict[str, Any]]) -> lis
         if device.get("vendor") != "intel":
             keep.append(device)
             continue
-        # A nameless Linux record counts when its PCI address puts it behind a port: that is a
-        # discrete card, the Linux counterpart of setup.ps1's Arc / Data Center name rule.
+        # Nameless Linux record: PCI address stands in for setup.ps1's Arc / Data Center name rule.
         if (
             xpu_expected
             or _XPU_ADAPTER_NAME_RE.search(str(device.get("name") or ""))
@@ -1371,8 +1367,7 @@ def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
 
 
 def _xpu_device_name_or_placeholder(torch) -> str:
-    """XPU device 0's name, or "<unavailable>" as the CUDA branch does: the device was already
-    found, so a failing name probe must not turn it into CPU + detection_failed."""
+    """A failing name probe must not demote an already-found XPU to CPU + detection_failed."""
     try:
         return torch.xpu.get_device_name(0)
     except Exception as e:
@@ -1430,8 +1425,7 @@ def _detect_hardware_locked() -> DeviceType:
                 print(f"Hardware detected: XPU -- {device_name} ({reason})")
                 return DEVICE
 
-        # The guarded answer above, not a second call: a raising is_available() used to escape to
-        # CPU + detection_failed here, taking an XPU that the branch below would have found with it.
+        # Reuse the guarded answer: a raising second is_available() would skip the XPU branch below.
         if not cuda_unavailable:
             DEVICE = DeviceType.CUDA
             CHAT_ONLY = False
@@ -1641,9 +1635,7 @@ _WHEEL_LABEL_OTHER_VENDOR_RE = re.compile(r"\+[a-z]*(?:cu\d|xpu)")
 
 
 def _intel_xpu_pin_hint(vendors: "set[str]") -> str:
-    """The repair for a Linux Intel-only host, or "". The Linux installers install the XPU build
-    only when asked, so "re-run the installer" alone reinstalls the CPU build it replaced;
-    Windows autodetects Arc, so it needs no pin."""
+    """Linux installers install XPU only when asked, so a plain re-run reinstalls CPU; Windows autodetects Arc."""
     if vendors != {"intel"} or platform.system() != "Linux":
         return ""
     return (
@@ -1704,8 +1696,6 @@ def _gpu_present_but_unusable_message(
         return f"This host has a GPU, but {feature} cannot use it. {node_hint}"
     # Both routes, always. The repair row exists only in the desktop app and only for a backend it manages, so a browser-hosted Studio, or a desktop attached to a server someone started from a terminal, was being sent to a control that is not on the page.
     if reason == "torch_cpu_build":
-        # Replaces the repair advice rather than following it: on a Linux Intel-only host
-        # Repair and a plain re-run both reinstall the CPU build this sentence is about.
         repair = _intel_xpu_pin_hint(vendors) or (
             "Reinstall the GPU build: use Repair installation in Settings in the desktop app, "
             "or re-run the Unsloth installer."

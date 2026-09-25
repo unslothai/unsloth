@@ -1,19 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A GPU that works must not be lost to a probe that fails, or to a name the kernel omits.
-
-Three shapes, each measured against main before the fix:
-  * one vendor's probe raising turned the whole pass into CPU + detection_failed, taking a
-    working device of another vendor (or the device whose NAME could not be read) with it;
-  * a Linux Intel Arc on a CPU wheel read "no_gpu", because sysfs publishes no Intel name
-    and the mismatch check keyed on the name, so no repair was ever offered;
-  * a WSL NVIDIA host whose nvidia-smi sits in /usr/lib/wsl/lib, off PATH, read "no_gpu"
-    for the same reason: WSL has no /proc/driver/nvidia to fall back on.
-
-No Arc, XPU or WSL hardware exists here, so torch, sysfs and the filesystem are faked in
-the shapes those hosts present.
-"""
+"""A working GPU must not be lost to a failing probe or a name the kernel omits (XPU, Linux Arc,
+WSL nvidia-smi). No such hardware here: torch, sysfs and the filesystem are faked."""
 
 from __future__ import annotations
 
@@ -104,7 +93,6 @@ def test_a_raising_xpu_probe_is_a_measured_cpu_host_not_a_detection_failure(monk
 
 
 def test_the_winner_is_unchanged_when_every_probe_succeeds(monkeypatch):
-    """The control: CUDA still outranks XPU on a host where both answer."""
     assert _detect(monkeypatch, _fake_torch(cuda = True, xpu = True)) == hw.DeviceType.CUDA
     assert _detect(monkeypatch, _fake_torch(xpu = True)) == hw.DeviceType.XPU
 
@@ -133,8 +121,7 @@ def test_a_discrete_intel_record_establishes_a_mismatch(monkeypatch):
     monkeypatch.setattr(hw, "_vendors_masked_off", lambda: set())
     arc = [{"vendor": "intel", "name": None, "index": 0, "discrete": True}]
     assert hw._devices_that_can_establish_a_mismatch(arc) == arc
-    # The controls: an integrated or unreadable one still does not, which is what keeps an
-    # ordinary UHD laptop from being told its correct CPU install is broken.
+    # Controls: an iGPU laptop's correct CPU install must not be flagged.
     for discrete in (False, None):
         igpu = [{"vendor": "intel", "name": None, "index": 0, "discrete": discrete}]
         assert hw._devices_that_can_establish_a_mismatch(igpu) == []
@@ -156,7 +143,6 @@ def test_a_linux_intel_host_is_told_the_pin_instead_of_a_repair_that_reinstalls_
     monkeypatch.setattr(hw, "CHAT_ONLY_MISMATCH_VENDORS", frozenset(vendors))
     message = hw._gpu_present_but_unusable_message("training", ("torch_cpu_build", "2.11.0+cpu"))
     assert ("UNSLOTH_TORCH_INDEX_FAMILY=xpu" in message) is pinned
-    # Repair and a plain re-run reinstall the CPU build there, so they must not be offered.
     assert ("Repair installation" in message) is not pinned
 
 

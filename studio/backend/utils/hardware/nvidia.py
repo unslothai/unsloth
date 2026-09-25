@@ -247,8 +247,7 @@ def _nvidia_smi_executable() -> str:
     if found:
         return found
     if platform.system() != "Windows":
-        # WSL ships it in /usr/lib/wsl/lib, which is often off PATH (sudo's secure_path strips
-        # it), and WSL has no /proc/driver/nvidia to fall back on. The file exists only there.
+        # WSL: often off PATH (secure_path strips it), and no /proc/driver/nvidia fallback.
         if platform.system() == "Linux" and os.path.isfile(_WSL_NVIDIA_SMI):
             return _WSL_NVIDIA_SMI
         return "nvidia-smi"
