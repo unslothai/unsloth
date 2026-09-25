@@ -41,6 +41,7 @@ export const en = {
       hex: "Context\\x20window",
       codePoint: "Smile \\u{1F600}",
       continued: "one \\\ntwo",
+      joined: "Context " + "window usage",
     },
   },
 };
@@ -102,6 +103,11 @@ def test_a_label_is_quoted_as_a_css_string(label, selector):
     assert aria_label_selector(label) == selector
 
 
+def test_a_concatenated_value_is_refused_not_truncated(sample):
+    with pytest.raises(ValueError, match = "expression"):
+        en_string("settings.chat.joined", sample)
+
+
 def test_a_comment_is_not_read_as_a_key(sample):
     with pytest.raises(KeyError):
         en_string("key", sample)
@@ -141,7 +147,8 @@ def test_the_composer_workflow_runs_on_a_catalog_only_change():
     the one that runs them. A PR that changes only the reader has to run it too.
 
     Deliberately literal: the reader is listed by name in `pull_request.paths`, and every
-    driver that reads the catalog is invoked by this workflow. A workflow restructured some
+    driver that reads the catalog is run by a `python tests/studio/<driver>` line in some
+    step's `run`, not in a comment. A workflow restructured some
     other way updates this test with it.
     """
     import yaml
@@ -159,5 +166,17 @@ def test_the_composer_workflow_runs_on_a_catalog_only_change():
         and "from _en_catalog import" in path.read_text(encoding = "utf-8")
     )
     assert drivers, "no browser driver reads the catalog any more"
-    missing = [name for name in drivers if f"tests/studio/{name}" not in text]
+    # What a step runs, with shell comments dropped: a commented-out command runs nothing.
+    commands = "\n".join(
+        line
+        for job in (workflow.get("jobs") or {}).values()
+        for step in job.get("steps") or []
+        for line in str(step.get("run") or "").splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    missing = [
+        name
+        for name in drivers
+        if not re.search(rf"\bpython3?\s+tests/studio/{re.escape(name)}\b", commands)
+    ]
     assert not missing, f"catalog drivers not run by {COMPOSER_WORKFLOW.name}: {missing}"

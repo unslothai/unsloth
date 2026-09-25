@@ -365,10 +365,15 @@ def test_assistant_more_menu_exposes_response_details_action():
     """
     src = _without_block_comments(THREAD_TSX.read_text(encoding = "utf-8"))
     assert "MessageResponseDetailsSheet" in src
-    assert re.search(
-        r"<MessageMenuTime\s+onShowDetails=\{\s*\(\)\s*=>\s*setDetailsOpen\(\s*true\s*\)\s*\}",
-        src,
-    ), "thread.tsx no longer hands MessageMenuTime a callback that opens the details sheet"
+    caller = _opening_tag(src, "<MessageMenuTime ")
+    assert (
+        caller
+        and re.match(
+            r"<MessageMenuTime\s+onShowDetails=\{\s*\(\)\s*=>\s*setDetailsOpen\(\s*true\s*\)\s*\}",
+            caller,
+        )
+    ), f"thread.tsx no longer hands MessageMenuTime a callback that opens the details sheet: {caller}"
+    assert not _spread_overrides(caller, "onShowDetails"), caller
     menu = _without_block_comments(MESSAGE_MENU_TIME_TSX.read_text(encoding = "utf-8"))
     item = _opening_tag(menu, "<ActionBarMorePrimitive.Item")
     assert item, "message-menu-time.tsx no longer renders a More-menu item"

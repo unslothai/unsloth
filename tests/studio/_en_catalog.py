@@ -53,6 +53,10 @@ class _Interpolated(str):
     """A template literal with `${...}` in it: not a label a test can match as written."""
 
 
+class _Expression(str):
+    """A value built from more than one literal: not something this reader evaluates."""
+
+
 def _decode(literal: str) -> str:
     """The value of a JavaScript string literal, in any of its three quote styles.
 
@@ -134,7 +138,12 @@ def _flatten(source: str) -> dict[str, str]:
         elif kind == "string":
             if pending is not None:
                 dotted = ".".join(p for p in [*path, pending] if p is not None)
-                strings[dotted] = _decode(match.group("string"))
+                value = _decode(match.group("string"))
+                # `"Context " + "window"` is an expression, not one literal; reading only the
+                # first piece would hand back a prefix of the label.
+                if re.match(r"\s*\+", source[match.end() :]):
+                    value = _Expression(value)
+                strings[dotted] = value
             pending = None
     return strings
 
@@ -158,6 +167,8 @@ def en_string(key: str, catalog: Path = EN_LOCALE_TS) -> str:
         raise ValueError(
             f"{key!r} is a template with ${{...}} in it, not a fixed label ({catalog})"
         )
+    if isinstance(value, _Expression):
+        raise ValueError(f"{key!r} is an expression, not a single string literal ({catalog})")
     return str(value)
 
 
