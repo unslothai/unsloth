@@ -286,6 +286,8 @@ jobs:
           if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = "1" ]; then
             bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
               'apt-get install -y --no-install-recommends apparmor-profiles || { apt-get update && apt-get install -y --no-install-recommends apparmor-profiles; }'
+            # The package ships the profile disabled, under extra-profiles; it has to be copied in to load.
+            [ -f /etc/apparmor.d/bwrap-userns-restrict ] || sudo install -m 644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/ || true
             sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict || true
           fi
           # Report unavailable isolation so host-dependent skips are explicit.
