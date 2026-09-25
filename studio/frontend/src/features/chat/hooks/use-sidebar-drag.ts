@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   dropEdgeAt,
   equivalentDrop,
+  litRingKey,
   planKey,
   planSidebarDrop,
   rowKey,
@@ -470,8 +471,7 @@ export function useSidebarDrag(options: UseSidebarDragOptions): SidebarDragApi {
   );
 
   const ringLit = useCallback(
-    (key: string): boolean =>
-      Boolean(plan && "ring" in plan.cue && plan.cue.ring === key),
+    (key: string): boolean => litRingKey(plan) === key,
     [plan],
   );
 

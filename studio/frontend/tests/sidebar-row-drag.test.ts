@@ -11,6 +11,7 @@ import {
   dropEdgeAt,
   equivalentDrop,
   folderRingKey,
+  litRingKey,
   planKey,
   planSidebarDrop,
   rowKey,
@@ -1388,4 +1389,25 @@ test("the two edges of one gap are one drop, and draw one line", () => {
   // Neighbours are found by key and a point probe, not by scanning every zone per frame.
   assert.match(HOOK, /document\.querySelector\(`\[\$\{ROW_KEY_ATTR\}="\$\{CSS\.escape\(key\)\}"\]`\)/);
   assert.doesNotMatch(HOOK, /querySelectorAll\(`\[\$\{DROP_ZONE_ATTR\}\]`\)/);
+});
+
+test("a drop into a folder lights the folder, even while a line shows the slot", () => {
+  const ctx = context();
+  const drag = chat("r1", "recents", RECENTS_ORDER_SCOPE, null);
+  const homeScope = projectOrderScope("home");
+  const slotted = plannedDrop(
+    planSidebarDrop(drag, chatRow("projects", homeScope, "c3", "home", { index: 0, count: 1 }), "top", ctx),
+  );
+  assert.deepEqual(slotted.action, { kind: "move", projectId: "home" });
+  assert.ok("line" in slotted.cue);
+  assert.equal(litRingKey(slotted), folderRingKey("home"));
+
+  // A reorder within Recents files nothing, so nothing is lit.
+  const ctxRecents = context({ orders: { ...context().orders, recents: ["r1", "r2", "r3"] } });
+  const reorder = plannedDrop(
+    planSidebarDrop(chat("r3", "recents", RECENTS_ORDER_SCOPE, null), chatRow("recents", RECENTS_ORDER_SCOPE, "r1"), "top", ctxRecents),
+  );
+  assert.equal(litRingKey(reorder), null);
+  assert.equal(litRingKey(null), null);
+  assert.match(HOOK, /\(key: string\): boolean => litRingKey\(plan\) === key/);
 });

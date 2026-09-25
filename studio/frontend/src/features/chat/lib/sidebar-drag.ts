@@ -498,6 +498,17 @@ function reorder(
   };
 }
 
+/** The folder or section to outline. A drop that files the chat into a folder lights that folder
+ *  even while a line shows its slot, so "into the folder" never reads as "under it". */
+export function litRingKey(plan: SidebarDropPlan | null): string | null {
+  if (!plan) return null;
+  if ("ring" in plan.cue) return plan.cue.ring;
+  if (plan.action.kind === "move" && plan.action.projectId) {
+    return folderRingKey(plan.action.projectId);
+  }
+  return null;
+}
+
 /** Whether two plans land the row identically. `place` is ignored: it names the same slot
  *  from different neighbours. */
 export function equivalentDrop(a: SidebarDropPlan, b: SidebarDropPlan): boolean {
