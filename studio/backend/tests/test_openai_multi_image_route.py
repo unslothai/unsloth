@@ -346,3 +346,20 @@ def test_managed_engine_refuses_a_remote_image_the_guarded_fetch_rejects(monkeyp
         )
     assert raised.value.status_code == 400
     assert not backend.calls
+
+
+def test_managed_engine_applies_the_served_image_cap(monkeypatch):
+    from routes import inference as inference_route
+
+    monkeypatch.setattr(inference_route, "_MAX_SERVED_IMAGES", 3)
+    backend = passthrough._ScriptedBackend(passthrough._fixed("an answer"))
+    backend.models["sf-model"].update(engine = "vllm", is_vision = True)
+    parts = [_sized(4) for _ in range(4)]
+    messages = [ChatMessage(role = "user", content = [*parts, _text("Describe.")])]
+    with pytest.raises(HTTPException) as raised:
+        passthrough._call(
+            passthrough._request(messages = messages, stream = False), monkeypatch, backend
+        )
+    assert raised.value.status_code == 400
+    assert "at most" in str(raised.value.detail)
+    assert not backend.calls

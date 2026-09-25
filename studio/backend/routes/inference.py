@@ -8496,6 +8496,15 @@ def _local_target_may_take_several_images(load_path: Optional[str]) -> bool:
         return False
 
 
+def _override_selects_managed_engine(target_id, override_id, variant) -> bool:
+    """A saved vLLM/SGLang choice: the managed branch inlines remote URLs and takes several images."""
+    from utils.openai_auto_switch_settings import resolve_override_for_load
+    return resolve_override_for_load(target_id, override_id, variant)[1].get("engine") in (
+        "vllm",
+        "sglang",
+    )
+
+
 async def _preflight_image_for_switch(
     image_preflight: dict,
     target_is_gguf: bool,
@@ -10112,6 +10121,10 @@ async def _maybe_auto_switch_model(
             image_preflight is not None
             and resolved is not None
             and (target_is_gguf or not require_audio_input)
+            and not (
+                not target_is_gguf
+                and _override_selects_managed_engine(target_id, override_id, variant)
+            )
         ):
             await _preflight_image_for_switch(
                 image_preflight,
@@ -27460,6 +27473,18 @@ async def produce_openai_chat_completions(
         ) and not backend.models.get(backend.active_model_name, {}).get("is_vision"):
             raise _reject(
                 400, "Image provided but current model is text-only. Load a vision model."
+            )
+        _managed_image_count = sum(
+            part.get("type") == "image_url"
+            for message in chat_messages
+            if isinstance(message.get("content"), list)
+            for part in message["content"]
+        )
+        if _managed_image_count > _MAX_SERVED_IMAGES:
+            raise _reject(
+                400,
+                f"This request carries {_managed_image_count} images; at most "
+                f"{_MAX_SERVED_IMAGES} are served per request. Send fewer, or split the conversation.",
             )
 
     if not _managed_images and (image_b64 or images_on_turn > 1):

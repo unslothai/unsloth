@@ -11650,3 +11650,64 @@ def test_preset_reasoning_budget_rejects_booleans():
     with pytest.raises(ValueError, match = "Expected a number, got a boolean"):
         ChatPresetLoadConfig(reasoningBudget = True)
     assert ChatPresetLoadConfig(reasoningBudget = 0).reasoningBudget == 0
+
+
+@pytest.mark.parametrize(
+    "image_preflight",
+    [{"b64": None, "multiple": True}, {"b64": None, "multiple": False, "remote": True}],
+    ids = ["multiple images", "remote url"],
+)
+def test_a_saved_managed_engine_target_skips_the_default_image_preflight(
+    monkeypatch, image_preflight
+):
+    from utils import openai_auto_switch_settings as settings
+
+    llama = _FakeBackend("org/A-GGUF")
+
+    class _FakeOrchestrator:
+        active_model_name = None
+        models: dict = {}
+
+    orchestrator = _FakeOrchestrator()
+    calls = []
+
+    async def _load(request, *_args, **_kwargs):
+        calls.append(request)
+        orchestrator.active_model_name = request.model_path
+
+    _wire_on(
+        monkeypatch,
+        resolves_to = ("/srv/models/Vision", None, "org/Vision"),
+        backend = llama,
+        recorder = _load,
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: orchestrator)
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: orchestrator)
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *_a, **_kw: False)
+    monkeypatch.setattr(inference_route, "_target_accepts_request_input", lambda *_a: True)
+    monkeypatch.setattr(
+        settings,
+        "resolve_override_for_load",
+        lambda *_a: ("org/Vision", {"engine": "vllm", "engine_precision": "auto"}),
+    )
+
+    try:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/Vision",
+                object(),
+                "tester",
+                require_vision = True,
+                image_preflight = image_preflight,
+            )
+        )
+    except HTTPException as exc:
+        assert exc.status_code != 400 or "image" not in str(exc.detail).lower(), exc.detail
+    assert calls and calls[0].engine == "vllm"
+
+
+def test_the_legacy_bare_delete_clears_a_managed_engine_choice(override_store):
+    settings.set_model_override("org/Model", engine = "vllm", engine_precision = "int4")
+
+    _put("org/Model")
+    assert settings.get_model_override("org/Model") == {}
