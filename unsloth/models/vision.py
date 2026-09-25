@@ -156,6 +156,7 @@ from transformers import __version__ as transformers_version
 import types
 import functools
 import os
+import copy
 import gc
 import math
 import warnings
@@ -1212,6 +1213,260 @@ def _get_total_transformer_layers(model):
     return None
 
 
+def _cast_unquantized_floats(model, dtype):
+    """Cast every floating parameter and buffer that is not a quantized weight."""
+    for tensor in list(model.parameters()) + list(model.buffers()):
+        if not tensor.is_floating_point() or tensor.dtype == dtype:
+            continue
+        # bitsandbytes packed weights (Params4bit / Int8Params) must not move.
+        if (
+            hasattr(tensor, "quant_state")
+            or hasattr(tensor, "SCB")
+            or type(tensor).__name__ in ("Params4bit", "Int8Params")
+        ):
+            continue
+        tensor.data = tensor.data.to(dtype)
+    return model
+
+
+def _inherit_gradient_checkpointing_support(model):
+    """Remote-code wrappers (Nemotron-3-Nano-Omni) keep the default False; inherit from submodels."""
+    if getattr(model, "supports_gradient_checkpointing", False):
+        return False
+    if not hasattr(model, "gradient_checkpointing_enable"):
+        return False
+    try:
+        from transformers.modeling_layers import GradientCheckpointingLayer
+    except Exception:
+        GradientCheckpointingLayer = ()
+    for name, module in model.named_modules():
+        if module is model or not name:
+            continue
+        if (
+            getattr(module, "supports_gradient_checkpointing", False)
+            and hasattr(module, "gradient_checkpointing_enable")
+        ) or (GradientCheckpointingLayer and isinstance(module, GradientCheckpointingLayer)):
+            model.supports_gradient_checkpointing = True
+            logger.info(
+                f"Unsloth: {type(model).__name__} inherits gradient checkpointing support from {name}."
+            )
+            return True
+    return False
+
+
+_TEXT_BATCH_KEYS = frozenset(
+    (
+        "input_ids",
+        "inputs_embeds",
+        "attention_mask",
+        "token_type_ids",
+        "labels",
+        "position_ids",
+        "past_key_values",
+        "use_cache",
+        "output_attentions",
+        "output_hidden_states",
+        "return_dict",
+        "cache_position",
+        "logits_to_keep",
+        "num_logits_to_keep",
+    )
+)
+
+
+# What a text collator puts in a batch; required control arguments (cache_position, ...) are not.
+_COLLATOR_SUPPLIED_KEYS = frozenset(
+    ("input_ids", "attention_mask", "labels", "token_type_ids", "position_ids")
+)
+
+
+def _required_non_text_inputs(forward):
+    try:
+        parameters = inspect.signature(forward).parameters
+    except (TypeError, ValueError):
+        return []
+    return [
+        name
+        for name, p in parameters.items()
+        if name != "self"
+        and p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        and p.default is inspect.Parameter.empty
+        and name not in _COLLATOR_SUPPLIED_KEYS
+    ]
+
+
+def _text_trainable_core(model, text_intent = True):
+    """Nemotron-3-Nano-Omni's forward requires `pixel_values`: with text_only, train the one text child instead."""
+    if os.environ.get("UNSLOTH_KEEP_COMPOSED_WRAPPER", "0") == "1":
+        return model
+    forward = getattr(type(model), "forward", None)
+    if forward is None or forward is torch.nn.Module.forward:
+        return model
+    required = _required_non_text_inputs(forward)
+    if not required:
+        return model
+    if not text_intent:
+        print(
+            f"Unsloth: `{type(model).__name__}.forward` requires {', '.join(required)}, so it "
+            "trains on multimodal batches only. Pass `text_only = True` to from_pretrained to "
+            "train its language model on text batches instead."
+        )
+        return model
+    try:
+        from transformers import PreTrainedModel
+    except Exception:
+        return model
+    cores = []
+    for name, child in model.named_children():
+        if not isinstance(child, PreTrainedModel):
+            continue
+        child_forward = getattr(type(child), "forward", None)
+        if child_forward is None or child_forward is torch.nn.Module.forward:
+            continue
+        if _required_non_text_inputs(child_forward):
+            continue
+        try:
+            has_embeddings = (
+                child.get_input_embeddings() is not None
+                and child.get_output_embeddings() is not None
+            )
+        except Exception:
+            has_embeddings = False
+        if has_embeddings:
+            cores.append((name, child))
+    preferred = [core for core in cores if core[0] in ("language_model", "thinker")]
+    if len(preferred) == 1:
+        cores = preferred
+    if len(cores) != 1:
+        return model
+    name, core = cores[0]
+    dropped = [child_name for child_name, _ in model.named_children() if child_name != name]
+    for child_name in dropped:
+        delattr(model, child_name)
+    gc.collect()
+    clean_gpu_cache()
+    print(
+        f"Unsloth: `{type(model).__name__}.forward` requires {', '.join(required)}, which a text "
+        f"batch does not carry, so training uses its `{name}` (`{type(core).__name__}`)."
+        + (f" Dropped {', '.join(dropped)}: not used by text training." if dropped else "")
+        + " Saving writes a checkpoint of that module."
+    )
+    core._unsloth_composed_parent = type(model).__name__
+    _carry_loader_state_to_core(model, core, name)
+    return core
+
+
+_LOADER_STATE_ATTRIBUTES = (
+    "is_loaded_in_4bit",
+    "is_loaded_in_8bit",
+    "is_4bit_serializable",
+    "is_8bit_serializable",
+    "is_quantized",
+    "quantization_method",
+    "hf_quantizer",
+    "_is_quantized_training_enabled",
+)
+
+
+def _carry_loader_state_to_core(model, core, name):
+    """PEFT reads `is_loaded_in_4bit` to choose `lora.bnb.Linear4bit` over `lora.Linear`."""
+    for attribute in _LOADER_STATE_ATTRIBUTES:
+        if attribute in vars(core):
+            continue
+        if attribute in vars(model):
+            try:
+                setattr(core, attribute, vars(model)[attribute])
+            except Exception:
+                pass
+    device_map = getattr(model, "hf_device_map", None)
+    if isinstance(device_map, dict) and getattr(core, "hf_device_map", None) is None:
+        prefix = name + "."
+        carried = {}
+        for key, device in device_map.items():
+            if key == "" or key == name:
+                carried[""] = device
+            elif key.startswith(prefix):
+                carried[key[len(prefix) :]] = device
+        if carried:
+            core.hf_device_map = carried
+    wrapper_config = getattr(model, "config", None)
+    core_config = getattr(core, "config", None)
+    # A sub-config without its own dtype leaves correct_dtype None, so bnb quant_state.dtype becomes None.
+    wrapper_dtype = getattr(wrapper_config, "dtype", None)
+    # A child built in __init__ has no _name_or_path: adapter_config and merged saves need the repo.
+    wrapper_path = getattr(wrapper_config, "_name_or_path", "") or getattr(
+        model, "name_or_path", ""
+    )
+    if core_config is not None and wrapper_path and not getattr(core_config, "_name_or_path", ""):
+        core_config._name_or_path = wrapper_path
+        try:
+            core.name_or_path = wrapper_path
+        except Exception:
+            pass
+    if (
+        core_config is not None
+        and wrapper_dtype is not None
+        and getattr(core_config, "dtype", None) is None
+    ):
+        try:
+            core_config.dtype = wrapper_dtype
+        except Exception:
+            pass
+    # generation_config.json is loaded onto the wrapper only; the child has config defaults (EOS etc).
+    wrapper_generation_config = getattr(model, "generation_config", None)
+    if wrapper_generation_config is not None:
+        try:
+            core.generation_config = copy.deepcopy(wrapper_generation_config)
+        except Exception:
+            pass
+    quantization_config = getattr(wrapper_config, "quantization_config", None)
+    if (
+        quantization_config is not None
+        and core_config is not None
+        and getattr(core_config, "quantization_config", None) is None
+    ):
+        try:
+            core_config.quantization_config = quantization_config
+        except Exception:
+            pass
+
+
+@contextlib.contextmanager
+def _tolerate_dtype_cast_on_quantized_model(enabled):
+    """Phi-4-reasoning-vision calls `model.to(dtype)`, which transformers refuses on bitsandbytes models."""
+    if not enabled:
+        yield
+        return
+    from transformers.modeling_utils import PreTrainedModel
+
+    original_to = PreTrainedModel.to
+
+    def to(self, *args, **kwargs):
+        # bitsandbytes only: GPTQ / HQQ / Quark keep their own dtype handling.
+        quantized = getattr(self, "quantization_method", None) == "bitsandbytes"
+        dtype = kwargs.get("dtype", None)
+        rest = []
+        for arg in args:
+            if isinstance(arg, torch.dtype) and dtype is None:
+                dtype = arg
+            else:
+                rest.append(arg)
+        if not quantized or dtype is None:
+            # Pass through unchanged; `dtype` is read with .get, not popped, so the cast is kept.
+            return original_to(self, *args, **kwargs)
+        kwargs.pop("dtype", None)
+        _cast_unquantized_floats(self, dtype)
+        if rest or kwargs:
+            return original_to(self, *rest, **kwargs)
+        return self
+
+    PreTrainedModel.to = to
+    try:
+        yield
+    finally:
+        PreTrainedModel.to = original_to
+
+
 class FastBaseModel:
     @staticmethod
     @_offline_aware_load
@@ -1252,6 +1507,8 @@ class FastBaseModel:
         # True when auto_config came from the caller. It cannot be inferred here: FastModel pops config out of kwargs before this sees them, so it looks exactly like one we resolved ourselves.
         auto_config_from_caller = False,
         fix_tokenizer = True,
+        # The caller's text_only before loader.py normalised it; None means same as text_only.
+        text_intent = None,
         **kwargs,
     ):
         user_config = kwargs.pop("config", None)
@@ -1765,14 +2022,26 @@ class FastBaseModel:
                 _cfg_val = kwargs.pop("max_position_embeddings", None)
                 if _cfg_val is not None:
                     setattr(model_config, "max_position_embeddings", _cfg_val)
-                model = auto_model.from_pretrained(
-                    model_name,
-                    config = model_config,
-                    device_map = device_map,
-                    token = token,
-                    trust_remote_code = trust_remote_code,
-                    **kwargs,
+                with _tolerate_dtype_cast_on_quantized_model(
+                    bool(trust_remote_code)
+                    and (
+                        load_in_4bit
+                        or load_in_8bit
+                        or kwargs.get("quantization_config") is not None
+                    )
+                ):
+                    model = auto_model.from_pretrained(
+                        model_name,
+                        config = model_config,
+                        device_map = device_map,
+                        token = token,
+                        trust_remote_code = trust_remote_code,
+                        **kwargs,
+                    )
+                model = _text_trainable_core(
+                    model, text_intent = bool(text_only) if text_intent is None else bool(text_intent)
                 )
+                _inherit_gradient_checkpointing_support(model)
                 warn_if_bitsandbytes_quantized_nothing(
                     model, kwargs.get("quantization_config", None), model_name
                 )
