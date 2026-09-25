@@ -1839,3 +1839,59 @@ def test_a_runtime_at_the_root_of_a_volume_is_refused_not_matched_against_everyt
     collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
     assert "$tail = Get-ScopeTail (Resolve-LlamaDir $dir)" in collect
     assert "$venvTail = Get-ScopeTail (Resolve-VenvDir $dir)" in collect
+
+
+def test_revert_stops_only_the_elevated_studio_this_probe_started(tmp_path):
+    """Every stage asserts elevation, so the Studio that prepare/run starts
+    (and each terminal/Python tool it spawns) holds an administrator token.
+    revert has to stop that instance, and only that instance: a record whose
+    start time no longer matches is a recycled PID and must be left alone."""
+    import shutil
+
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is required to drive the probe functions")
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    revert = ps1[ps1.index("function Invoke-Revert") :]
+    assert "Stop-ProbeStudio $dir" in revert
+    assert "$studioStillRunning -or" in revert
+    fake = tmp_path / "fakepy"
+    fake.write_text("#!/bin/sh\nexec sleep 300\n")
+    fake.chmod(0o755)
+    driver = tmp_path / "drive.ps1"
+    driver.write_text(
+        r"""
+param([string]$Src,[string]$Run,[string]$Py)
+$a=[System.Management.Automation.Language.Parser]::ParseFile($Src,[ref]$null,[ref]$null)
+foreach($f in $a.FindAll({$args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true)){
+  if($f.Name -in 'Start-Studio','Stop-ProcessTree','Stop-ProbeStudio'){ Invoke-Expression $f.Extent.Text } }
+function Get-RunDir { $Run }
+function Test-StudioResponding($p){ $true }
+function Start-Sleep { }
+function Get-CimInstance { }
+function Start-Process { param($FilePath,$ArgumentList,$RedirectStandardOutput,$RedirectStandardError,$WindowStyle,[switch]$PassThru)
+  Microsoft.PowerShell.Management\Start-Process -FilePath $FilePath -ArgumentList $ArgumentList `
+    -RedirectStandardOutput $RedirectStandardOutput -RedirectStandardError $RedirectStandardError -PassThru:$PassThru }
+Start-Studio $Py 8888 "$Run/log" | Out-Null
+$r = Get-Content "$Run/probe-studio.json" -Raw | ConvertFrom-Json
+if (-not (Stop-ProbeStudio $Run)) { exit 11 }
+if (Get-Process -Id $r.Id -ErrorAction SilentlyContinue) { exit 12 }
+Start-Studio $Py 8888 "$Run/log" | Out-Null
+$r = Get-Content "$Run/probe-studio.json" -Raw | ConvertFrom-Json
+@{ Id = $r.Id; StartTicks = 1 } | ConvertTo-Json | Set-Content "$Run/probe-studio.json"
+[void](Stop-ProbeStudio $Run)
+$alive = [bool](Get-Process -Id $r.Id -ErrorAction SilentlyContinue)
+Stop-Process -Id $r.Id -Force -ErrorAction SilentlyContinue
+if (-not $alive) { exit 13 }
+exit 0
+""",
+        encoding = "utf-8",
+    )
+    run = tmp_path / "run"
+    run.mkdir()
+    proc = subprocess.run(
+        [pwsh, "-NoProfile", "-File", str(driver), "-Src", str(PROBE_DIR / "sac-probe.ps1"),
+         "-Run", str(run), "-Py", str(fake)],
+        capture_output = True, text = True, timeout = 120,
+    )
+    assert proc.returncode == 0, proc.stdout[-1500:] + proc.stderr[-1500:]

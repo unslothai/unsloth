@@ -555,9 +555,20 @@ function Start-Studio([string] $python, [int] $port, [string] $logPath) {
     # sys.path so a stray unsloth_cli folder cannot shadow the package.
     # Not $args: that is a PowerShell automatic variable.
     $cliArgs = @('-X', 'utf8', '-I', '-m', 'unsloth_cli', 'studio', '-p', "$port")
-    Start-Process -FilePath $python -ArgumentList $cliArgs `
+    $proc = Start-Process -FilePath $python -ArgumentList $cliArgs `
         -RedirectStandardOutput $logPath -RedirectStandardError "$logPath.err" `
-        -WindowStyle Hidden | Out-Null
+        -WindowStyle Hidden -PassThru
+    # Every stage is elevated, so this Studio and every terminal or Python tool
+    # it spawns carry an administrator token. Recorded so revert stops exactly
+    # this instance and nothing the operator started.
+    # Best effort: a missing record only means revert cannot stop it, which it
+    # then says, so it must never fail the start itself.
+    try {
+        @{ Id = $proc.Id; StartTicks = $proc.StartTime.ToUniversalTime().Ticks } | ConvertTo-Json |
+            Set-Content -LiteralPath (Join-Path (Get-RunDir) 'probe-studio.json') -Encoding UTF8
+    } catch {
+        Write-Warning "could not record the Studio process for revert: $_"
+    }
 
     # Studio imports torch on a warm thread, so first start is slow. Poll rather
     # than sleep, and give it long enough that a slow machine is not called dead.
@@ -601,6 +612,30 @@ function Stop-Studio([int] $port) {
     }
     Write-Warning "Studio is still answering on port $port after being stopped"
     return $false
+}
+
+function Stop-ProcessTree([int] $id) {
+    Get-CimInstance Win32_Process -Filter "ParentProcessId = $id" -ErrorAction SilentlyContinue |
+        ForEach-Object { Stop-ProcessTree ([int] $_.ProcessId) }
+    Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+}
+
+function Stop-ProbeStudio([string] $dir) {
+    <# Stop the elevated Studio this probe started, if it is still that process. Returns $false if it survives. #>
+    $record = Join-Path $dir 'probe-studio.json'
+    if (-not (Test-Path -LiteralPath $record)) { return $true }
+    $r = Get-Content -LiteralPath $record -Raw | ConvertFrom-Json
+    $p = Get-Process -Id ([int] $r.Id) -ErrorAction SilentlyContinue
+    # Start time guards PID reuse: a recycled id is somebody else's process.
+    # Ticks, not an ISO string: pwsh 7's ConvertFrom-Json turns ISO strings into
+    # DateTime, so a string comparison never matches there.
+    if ($p -and $p.StartTime.ToUniversalTime().Ticks -eq [int64] $r.StartTicks) {
+        Stop-ProcessTree $p.Id
+        # TerminateProcess is asynchronous, so wait rather than re-query at once.
+        if (-not $p.WaitForExit(10000)) { return $false }
+    }
+    Remove-Item -LiteralPath $record -Force -ErrorAction SilentlyContinue
+    return $true
 }
 
 function Initialize-Studio([string] $dir, [bool] $allowInstall) {
@@ -2000,6 +2035,11 @@ function Invoke-Revert {
     # back while raised settings remain.
     $restoreFailures = $failed
 
+    Write-Section 'Stop the elevated Studio'
+    $studioStillRunning = -not (Stop-ProbeStudio $dir)
+    if ($studioStillRunning) { Write-Warning 'the Studio prepare/run started as administrator is still running; stop it by hand' }
+    else { Write-Host 'no probe-started Studio left running; start Studio normally (unelevated) to use it' }
+
     Write-Section 'Restore Studio tree access'
     # Every stage is elevated, so a Studio that prepare installs is installed as
     # administrator, and the trees the installer creates (llama.cpp,
@@ -2091,7 +2131,7 @@ function Invoke-Revert {
     # Every restoration is attempted first, then the failures decide the exit
     # status. Reporting success here while settings stayed raised is the same
     # class of bug as collect implying evidence it did not have.
-    if ($restoreFailures -gt 0 -or $null -ne $ciRestoreError -or $aclFailures -gt 0 -or $script:EfiStillMounted) {
+    if ($restoreFailures -gt 0 -or $null -ne $ciRestoreError -or $aclFailures -gt 0 -or $studioStillRunning -or $script:EfiStillMounted) {
         if ($null -ne $ciRestoreError) {
             Write-Warning "the $CI_LOG channel settings were not restored: $ciRestoreError"
         }
