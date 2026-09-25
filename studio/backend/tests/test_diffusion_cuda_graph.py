@@ -828,7 +828,6 @@ def test_real_cuda_capture_replays_bit_identically():
         cg.uninstall_all([handle])
 
 
-
 _RESOLVED_ON = {
     "cuda_graph": {
         "value": "on",
