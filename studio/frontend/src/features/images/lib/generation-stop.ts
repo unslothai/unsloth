@@ -30,3 +30,16 @@ export function shouldReportGenerateError(input: {
   }
   return !input.message.toLowerCase().includes("cancelled");
 }
+
+/** The in-flight button's label. A cancel only lands at the end of the current denoise step, which
+ *  can be a long compile, so an acknowledged Stop has to look different or it reads as ignored. */
+export function stopButtonLabel(input: {
+  stopping: boolean;
+  done: number | null;
+  count: number;
+  idle?: string;
+}): string {
+  if (input.stopping) return "Stopping…";
+  const idle = input.idle ?? "Stop";
+  return input.done != null && input.count > 1 ? `${idle} (${input.done}/${input.count})` : idle;
+}
