@@ -1803,6 +1803,8 @@ class InferenceOrchestrator:
                 anonymous_hf_access,
                 engine_options,
                 trust_remote_code,
+                approved_remote_code_fingerprint,
+                subject,
             )
         if getattr(self, "_managed_engine", None) is not None:
             if not self._shutdown_subprocess():
@@ -2109,7 +2111,11 @@ class InferenceOrchestrator:
         anonymous,
         options = None,
         trust_remote_code = False,
+        approved_remote_code_fingerprint = None,
+        subject = None,
     ):
+        from types import SimpleNamespace
+
         from core.inference.managed_engine import ManagedEngine
         from utils.hf_cache_settings import get_hf_cache_paths
         from hub.utils.hf_tokens import apply_token_to_child_env
@@ -2124,6 +2130,23 @@ class InferenceOrchestrator:
             managed = ManagedEngine(engine)
             self._managed_engine = managed
         try:
+            # The engine loads the checkpoint itself, so the worker's malware and consent gates run here.
+            from core.inference.worker import _run_security_gates
+
+            replies = []
+            if not _run_security_gates(
+                [config.path if getattr(config, "is_local", False) else model],
+                trust_remote_code = bool(trust_remote_code),
+                hf_token = None if anonymous else hf_token,
+                approved_fingerprint = approved_remote_code_fingerprint,
+                resp_queue = SimpleNamespace(put = replies.append),
+                compute_subdirs = False,
+                subject = subject,
+            ):
+                raise RuntimeError(
+                    (replies[-1].get("message") if replies else None)
+                    or "The model was blocked by the security scan."
+                )
             env = get_hf_cache_paths().child_env()
             if cache_environment:
                 env.update(cache_environment)

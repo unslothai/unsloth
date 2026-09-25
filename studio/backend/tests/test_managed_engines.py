@@ -556,6 +556,12 @@ def test_managed_load_launches_the_validated_local_path(monkeypatch):
             return True
 
     monkeypatch.setattr(managed_engine, "ManagedEngine", Engine)
+    from core.inference import worker
+
+    scanned = []
+    monkeypatch.setattr(
+        worker, "_run_security_gates", lambda targets, **kwargs: scanned.extend(targets) or True
+    )
     orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
     orchestrator._managed_engine = None
     orchestrator._subprocess_shutdown_lock = _threading.RLock()
@@ -567,6 +573,7 @@ def test_managed_load_launches_the_validated_local_path(monkeypatch):
     )
     assert orchestrator._load_managed_engine("vllm", config, 4096, [0], None, None, None, False)
     assert started == {"model": "C:\\models\\foo", "model_path": "/mnt/c/models/foo"}
+    assert scanned == ["/mnt/c/models/foo"]
     assert orchestrator.active_model_name == "C:\\models\\foo"
 
     args = ADAPTERS["vllm"].command(
@@ -1661,3 +1668,53 @@ def test_status_never_waits_for_a_slow_support_probe(monkeypatch):
     release.set()
     assert install.support_reason("vllm") is None
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("trust_remote_code", [False, True])
+def test_managed_load_runs_the_worker_security_gates(monkeypatch, trust_remote_code):
+    import threading as _threading
+    from types import SimpleNamespace
+    from core.inference import managed_engine, worker
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    started, gates = [], []
+
+    class Engine:
+        context = 4096
+
+        def __init__(self, name):
+            pass
+
+        def start(self, *args, **kwargs):
+            started.append(args)
+
+        def alive(self):
+            return True
+
+    def blocked(targets, *, resp_queue, **kwargs):
+        gates.append((targets, kwargs))
+        resp_queue.put({"type": "loaded", "success": False, "message": "flagged as CRITICAL"})
+        return False
+
+    monkeypatch.setattr(managed_engine, "ManagedEngine", Engine)
+    monkeypatch.setattr(worker, "_run_security_gates", blocked)
+    orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orchestrator._managed_engine = None
+    orchestrator._subprocess_shutdown_lock = _threading.RLock()
+    orchestrator._shutdown_subprocess = lambda *args, **kwargs: True
+    orchestrator.models, orchestrator.loading_models = {}, set()
+    orchestrator.active_model_name, orchestrator.load_generation = None, 0
+    config = SimpleNamespace(identifier = "org/model", is_local = False, is_vision = False)
+    with pytest.raises(RuntimeError, match = "CRITICAL"):
+        orchestrator.load_model(
+            config,
+            hf_token = "tok",
+            trust_remote_code = trust_remote_code,
+            approved_remote_code_fingerprint = "fp",
+            subject = "user",
+            engine = "vllm",
+        )
+    assert started == [] and orchestrator.active_model_name is None
+    assert gates[0][0] == ["org/model"]
+    assert gates[0][1]["trust_remote_code"] is trust_remote_code
+    assert gates[0][1]["approved_fingerprint"] == "fp" and gates[0][1]["subject"] == "user"
