@@ -4,7 +4,6 @@
 """Library API: one view over uploads, chat attachments, generated images and audio, fine-tuned
 models and sandbox files, plus folders, favorites and renames. See ``core.library`` for the sources."""
 
-import base64
 import hashlib
 import hmac
 import os
@@ -49,16 +48,16 @@ _INLINE_IMAGE_TYPES = frozenset(
 _NOSNIFF = {"X-Content-Type-Options": "nosniff"}
 
 
+def _playable(content_type: Optional[str]) -> Optional[str]:
+    """The exact audio or video type the Library's fixed map has, else None."""
+    value = library.media_type(content_type)
+    known = library.content_types().values()
+    return value if value in known and value.startswith(("audio/", "video/")) else None
+
+
 def _inline_type(content_type: str) -> Optional[str]:
     value = library.media_type(content_type)
-    if value in _INLINE_IMAGE_TYPES:
-        return value
-    playable = {
-        known
-        for known in library.content_types().values()
-        if known.startswith(("audio/", "video/"))
-    }
-    return value if value in playable else None
+    return value if value in _INLINE_IMAGE_TYPES else _playable(value)
 
 
 class ItemPatch(BaseModel):
@@ -281,16 +280,44 @@ async def download_item(
         raise HTTPException(status_code = 404, detail = "Item not found")
     except ValueError:
         raise HTTPException(status_code = 400, detail = "This item has no file to download")
-    headers = {
-        **_attachment_headers(item.name),
-        "Content-Length": str(item.size),
-        "Cache-Control": "private, no-store",
-    }
+    # RFC 5987, as the sandbox route sends it: an ASCII fallback plus the UTF-8 name.
+    ascii_name = item.name.encode("ascii", "replace").decode("ascii").replace('"', "_")
+    disposition = f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(item.name)}"
+    headers = {"Content-Disposition": disposition, "Cache-Control": "private, no-store", **_NOSNIFF}
+    return _send(request, item, "application/octet-stream", headers)
+
+
+def _send(
+    request: Request,
+    item,
+    media_type: str,
+    headers: dict,
+    span = None,
+) -> Response:
+    """The open file, or its (first, last) ``span`` as a 206, never past Content-Length even if the
+    file grows meanwhile, as the sandbox route streams; the headers alone for a HEAD."""
+    start, end = span or (0, item.size - 1)
+    headers["Content-Length"] = str(end - start + 1)
+    status_code = 206 if span else 200
     if request.method.upper() == "HEAD":
         item.close()
-        return Response(status_code = 200, media_type = "application/octet-stream", headers = headers)
+        return Response(status_code = status_code, media_type = media_type, headers = headers)
+
+    def read():
+        with item:
+            item.handle.seek(start)
+            remaining = end - start + 1
+            while remaining > 0 and (chunk := item.handle.read(min(_CHUNK_BYTES, remaining))):
+                remaining -= len(chunk)
+                yield chunk
+
     return StreamingResponse(
-        _read_exactly(item), media_type = "application/octet-stream", headers = headers
+        read(),
+        status_code = status_code,
+        media_type = media_type,
+        headers = headers,
+        # A player that hangs up mid-range leaves the generator unfinished: the file still closes.
+        background = BackgroundTask(item.close),
     )
 
 
@@ -298,7 +325,7 @@ async def download_item(
 
 # An audio or video preview plays from a link the element fetches itself, with range requests, so
 # a long file is never buffered whole and can seek. The bearer mints the link; the link alone then
-# serves that one item, for that one account, until it expires. A secret and domain of its own, so
+# serves that one item, in that one account, until it expires. A secret and domain of its own, so
 # a gallery's media link never works here, nor one of these there.
 _STREAM_LINK_TTL = 6 * 3600
 _STREAM_LINK_SECRET = secrets.token_bytes(32)
@@ -313,14 +340,13 @@ def _stream_signature(payload: str) -> str:
 
 def _sign_stream_id(item_id: str) -> str:
     """A link token for ``item_id`` in the calling account."""
-    target = base64.urlsafe_b64encode(account_access.media_link_target(item_id).encode())
-    payload = f"{target.decode().rstrip('=')}.{int(time.time()) + _STREAM_LINK_TTL}"
+    payload = f"{account_access.media_link_target(item_id)}.{int(time.time()) + _STREAM_LINK_TTL}"
     return f"{payload}.{_stream_signature(payload)}"
 
 
 def _stream_link_account(token: str, item_id: str):
     """The account a valid, unexpired token for ``item_id`` was minted in, else None."""
-    parts = token.split(".")
+    parts = token.rsplit(".", 2)
     if len(parts) != 3:
         return None
     target, expires, signature = parts
@@ -328,41 +354,20 @@ def _stream_link_account(token: str, item_id: str):
         return None
     if not expires.isdigit() or int(expires) < time.time():
         return None
-    try:
-        signed = base64.urlsafe_b64decode(target + "=" * (-len(target) % 4)).decode()
-    except ValueError:
-        return None
-    return account_access.media_link_account(signed, item_id)
+    return account_access.media_link_account(target, item_id)
 
 
 def _stream_type(item_id: str) -> Optional[str]:
-    """The exact audio or video type an item plays as, from the Library's fixed map; None for
-    anything else, which this route never serves. Read in the item's own account; LookupError for
-    an upload it does not have."""
-    kind, _, ref = item_id.partition(":")
-    if kind == "audio":
-        value = "audio/wav"
-    elif kind == "video":
-        value = "video/mp4"
-    elif kind == "upload":
-        record = library_db.get_upload(ref)
-        if record is None:
-            raise LookupError(item_id)
-        value = library.media_type(record["contentType"])
-    elif kind == "sandbox":
-        value = library.content_types().get(os.path.splitext(ref)[1].lower())
-    else:
-        return None
-    playable = {
-        known
-        for known in library.content_types().values()
-        if known.startswith(("audio/", "video/"))
-    }
-    return value if value in playable else None
+    """The exact audio or video type an item plays as, None for anything this route never serves.
+    Read in the item's own account; LookupError for an upload it does not have."""
+    return _playable(library.item_type(item_id))
 
 
 class _Unsatisfiable(Exception):
     pass
+
+
+_RANGE_RE = re.compile(r"\s*bytes\s*=\s*([0-9]*)-([0-9]*)\s*", re.IGNORECASE)
 
 
 def _byte_range(request: Request, size: int) -> Optional[tuple[int, int]]:
@@ -370,44 +375,20 @@ def _byte_range(request: Request, size: int) -> Optional[tuple[int, int]]:
 
     What RFC 9110 lets a server ignore is ignored (another unit, several ranges, a malformed one,
     an ``If-Range`` this route has no validator to match); a range past the end is unsatisfiable."""
-    header = request.headers.get("range")
-    if not header or request.headers.get("if-range"):
+    match = _RANGE_RE.fullmatch(request.headers.get("range") or "")
+    if not match or request.headers.get("if-range") or match.groups() == ("", ""):
         return None
-    unit, _, spec = header.partition("=")
-    if unit.strip().lower() != "bytes" or "," in spec:
-        return None
-    first, dash, last = spec.strip().partition("-")
-    if (
-        not dash
-        or not (first.isdigit() or last.isdigit())
-        or not all(part.isdigit() for part in (first, last) if part)
-    ):
-        return None
+    first, last = match.groups()
     if not first:
-        suffix = int(last)
-        if suffix == 0 or size == 0:
+        if int(last) == 0 or size == 0:
             raise _Unsatisfiable
-        return max(0, size - suffix), size - 1
+        return max(0, size - int(last)), size - 1
     start = int(first)
-    end = int(last) if last else size - 1
-    if last and end < start:
+    if last and int(last) < start:
         return None
     if start >= size:
         raise _Unsatisfiable
-    return start, min(end, size - 1)
-
-
-def _read_range(item, start: int, length: int):
-    """``length`` bytes from ``start`` of the open file, never past them."""
-    with item:
-        item.handle.seek(start)
-        remaining = length
-        while remaining > 0:
-            chunk = item.handle.read(min(_CHUNK_BYTES, remaining))
-            if not chunk:
-                return
-            remaining -= len(chunk)
-            yield chunk
+    return start, min(int(last) if last else size - 1, size - 1)
 
 
 @router.get("/items/stream-url")
@@ -466,45 +447,9 @@ async def stream_item(
         return Response(
             status_code = 416, headers = {"Content-Range": f"bytes */{item.size}", **headers}
         )
-    start, end = requested or (0, item.size - 1)
-    length = max(0, end - start + 1)
-    headers["Content-Length"] = str(length)
     if requested is not None:
-        headers["Content-Range"] = f"bytes {start}-{end}/{item.size}"
-    status_code = 206 if requested is not None else 200
-    if request.method.upper() == "HEAD":
-        item.close()
-        return Response(status_code = status_code, media_type = content_type, headers = headers)
-    return StreamingResponse(
-        _read_range(item, start, length),
-        status_code = status_code,
-        media_type = content_type,
-        headers = headers,
-        # A player that hangs up mid-range leaves the generator unfinished: the file still closes.
-        background = BackgroundTask(item.close),
-    )
-
-
-def _attachment_headers(name: str) -> dict:
-    # RFC 5987, as the sandbox route sends it: an ASCII fallback plus the UTF-8 name.
-    ascii_name = name.encode("ascii", "replace").decode("ascii").replace('"', "_")
-    return {
-        "Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name)}",
-        **_NOSNIFF,
-    }
-
-
-def _read_exactly(item):
-    """The file's bytes up to the length sent in the header, as the sandbox route streams: a file
-    still being appended to must not send a body longer than Content-Length."""
-    remaining = item.size
-    with item:
-        while remaining > 0:
-            chunk = item.handle.read(min(_CHUNK_BYTES, remaining))
-            if not chunk:
-                return
-            remaining -= len(chunk)
-            yield chunk
+        headers["Content-Range"] = f"bytes {requested[0]}-{requested[1]}/{item.size}"
+    return _send(request, item, content_type, headers, requested)
 
 
 @router.get("/locations")
@@ -559,9 +504,9 @@ async def upload_files(
     if folderId and library_db.get_folder(folderId) is None:
         raise HTTPException(status_code = 404, detail = "Folder not found")
 
-    def _check_native(lease: str) -> None:
+    def _native(read, lease: str):
         try:
-            name, size = library.check_native_upload(lease)
+            return read(lease)
         except (ValueError, OSError) as exc:
             # A bad or expired grant, a path outside this account's workspace, or a file gone.
             # The reason can name the path, so it goes to the log alone.
@@ -569,19 +514,16 @@ async def upload_files(
             raise HTTPException(
                 status_code = 400, detail = "The dropped file could not be read. Drop it again."
             ) from exc
+
+    def _check_native(lease: str) -> None:
+        name, size = _native(library.check_native_upload, lease)
         if size > _MAX_UPLOAD_BYTES:
             raise HTTPException(status_code = 413, detail = f"{name} is too large")
 
     consumed: list[str] = []
 
     def _save_native(lease: str) -> dict:
-        try:
-            name, content_type, handle = library.open_native_upload(lease)
-        except (ValueError, OSError) as exc:
-            logger.info("library.native_drop_refused: %s", exc)
-            raise HTTPException(
-                status_code = 400, detail = "The dropped file could not be read. Drop it again."
-            ) from exc
+        name, content_type, handle = _native(library.open_native_upload, lease)
         consumed.append(lease)
         with handle:
             # Refused before a byte is copied; _chunks still caps a file that grows meanwhile.
