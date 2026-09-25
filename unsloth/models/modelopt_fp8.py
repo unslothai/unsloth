@@ -38,6 +38,7 @@ __all__ = [
     "modelopt_planner_quantization_config",
     "keep_fp8_scale_names_on_save",
     "attach_hf_quant_config",
+    "move_config_overrides_onto_config",
 ]
 
 UNSLOTH_MODELOPT_KEY_MAPPING_ATTR = "_unsloth_modelopt_key_mapping"
@@ -252,15 +253,20 @@ def _modelopt_block_from_hf_quant_config(path) -> Optional[dict]:
     return {"quant_method": "modelopt", **data}
 
 
-def attach_hf_quant_config(config, token = None) -> bool:
+def attach_hf_quant_config(
+    config,
+    token = None,
+    model_name = None,
+    revision = None,
+) -> bool:
     """Older ModelOpt exports (nvidia/Llama-3.1-8B-Instruct-FP8) keep their quantization only in
     hf_quant_config.json; config.json has none, so they loaded as unquantized fp8 bytes. Attach the
     block when it is an FP8 plan this module loads; every other ModelOpt format is left as is."""
     if getattr(config, "quantization_config", None) is not None:
         return False
-    path = _hf_quant_config_path(
-        getattr(config, "_name_or_path", None), getattr(config, "_commit_hash", None), token
-    )
+    name = model_name or getattr(config, "_name_or_path", None)
+    rev = revision if model_name else getattr(config, "_commit_hash", None)
+    path = _hf_quant_config_path(name, rev, token)
     quant = _modelopt_block_from_hf_quant_config(path) if path else None
     if quant is None:
         return False
@@ -383,6 +389,18 @@ def _dequantize_modelopt_on_merged_save() -> None:
     zoo_saving.check_model_quantization_status = check_model_quantization_status
 
 
+def _is_modelopt_rename(conversion, ours) -> bool:
+    if type(conversion).__name__ != "WeightRenaming":
+        return False
+    # 5.3 / 5.5 keep only the live patterns; later releases also store `_original_*` copies.
+    sources = getattr(conversion, "_original_source_patterns", None) or getattr(
+        conversion, "source_patterns", None
+    )
+    if isinstance(sources, str):
+        sources = [sources]
+    return bool(sources) and set(sources) <= ours
+
+
 def keep_fp8_scale_names_on_save(model) -> None:
     """save_pretrained reverses the load-time key_mapping, which would write ModelOpt scale names
     beside the rewritten fp8 config and leave a checkpoint neither format reloads. Drop just those
@@ -392,17 +410,31 @@ def keep_fp8_scale_names_on_save(model) -> None:
         conversions = getattr(module, "_weight_conversions", None)
         if not isinstance(conversions, list):
             continue
-        kept = [
-            c
-            for c in conversions
-            if not (
-                type(c).__name__ == "WeightRenaming"
-                and set(getattr(c, "_original_source_patterns", None) or ()) <= ours
-                and getattr(c, "_original_source_patterns", None)
-            )
-        ]
+        kept = [c for c in conversions if not _is_modelopt_rename(c, ours)]
         if len(kept) != len(conversions):
             module._weight_conversions = kept
+
+
+@functools.lru_cache(maxsize = 1)
+def _from_pretrained_own_kwargs() -> frozenset:
+    from transformers import PreTrainedModel
+
+    fn = PreTrainedModel.from_pretrained
+    names = set(inspect.signature(fn).parameters)
+    try:
+        names |= set(re.findall(r"kwargs\.pop\(\s*[\"'](\w+)[\"']", inspect.getsource(fn)))
+    except Exception:
+        pass
+    return frozenset(names | {"quantization_config", "key_mapping", "attn_implementation"})
+
+
+def move_config_overrides_onto_config(config, kwargs: dict) -> None:
+    """Without config= transformers consumes kwargs naming config attributes (use_cache=False);
+    the rewritten ModelOpt load passes config=, which would hand them to the strict model init."""
+    own = _from_pretrained_own_kwargs()
+    for key in list(kwargs):
+        if key not in own and hasattr(config, key):
+            setattr(config, key, kwargs.pop(key))
 
 
 def _class_checkpoint_mapping(model_class) -> dict:

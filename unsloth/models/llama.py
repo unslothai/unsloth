@@ -2605,10 +2605,13 @@ class FastLlamaModel:
             load_in_8bit = load_in_8bit,
             rewrite_modelopt = not _vllm_will_load_weights(fast_inference, num_labels),
             token = token,
+            model_name = model_name,
+            revision = revision,
         )
         # The ModelOpt rewrite lives on model_config, so weights must load against it.
         from .modelopt_fp8 import (
             keep_fp8_scale_names_on_save,
+            move_config_overrides_onto_config,
             keep_task_heads_unquantized,
             modelopt_planner_quantization_config,
             modelopt_rewritten,
@@ -2811,6 +2814,8 @@ class FastLlamaModel:
                     _rope_scaling = kwargs.pop("rope_scaling", None)
                     if _rope_scaling is not None:
                         model_config.rope_scaling = _rope_scaling
+                    if _modelopt_rewritten and user_config is None:
+                        move_config_overrides_onto_config(model_config, kwargs)
                     model = AutoModelForCausalLM.from_pretrained(
                         model_name,
                         config = model_config,

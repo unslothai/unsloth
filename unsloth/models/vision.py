@@ -1492,6 +1492,8 @@ class FastBaseModel:
             load_in_8bit = load_in_8bit,
             rewrite_modelopt = not (fast_inference and is_vLLM_available()),
             token = token,
+            model_name = model_name,
+            revision = _revision,
         )
         from .modelopt_fp8 import (
             keep_fp8_scale_names_on_save,

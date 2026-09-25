@@ -993,12 +993,24 @@ def test_standalone_hf_quant_config_is_rewritten(tmp_path):
         )
         assert method is None and getattr(config, "quantization_config", None) is None
 
-    # vLLM reads hf_quant_config.json itself.
+    # Under vLLM the block is attached but not rewritten (vLLM reads ModelOpt itself); the
+    # default load_in_4bit must still drop so vLLM is not asked for bitsandbytes.
     config = AutoConfig.from_pretrained(str(fp8))
-    check_and_disable_bitsandbytes_loading(
-        config, load_in_4bit = False, verbose = False, rewrite_modelopt = False
+    load_in_4bit, _, method = check_and_disable_bitsandbytes_loading(
+        config, load_in_4bit = True, verbose = False, rewrite_modelopt = False
     )
-    assert getattr(config, "quantization_config", None) is None
+    assert method == "modelopt" and load_in_4bit is False
+    assert config.quantization_config["quant_method"] == "modelopt"
+    assert not hasattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
+
+    # A caller-built config carries no checkpoint path; the loader's model name finds the file.
+    from transformers import LlamaConfig
+
+    config = LlamaConfig(hidden_size = 64, num_hidden_layers = 1, num_attention_heads = 4)
+    _, _, method = check_and_disable_bitsandbytes_loading(
+        config, load_in_4bit = False, verbose = False, model_name = str(fp8)
+    )
+    assert method == "fp8"
 
 
 @needs_per_tensor_fp8
@@ -1016,3 +1028,38 @@ def test_merged_save_detects_a_standalone_hf_quant_config(tmp_path, monkeypatch)
     arm_modelopt_fp8_loading(SimpleNamespace(quantization_config = _sarvam_quant()), verbose = False)
     assert status(fp8) == (True, "fp8")
     assert status(nvfp4) == (False, None)
+
+
+def test_config_overrides_move_onto_the_rewritten_config():
+    from transformers import LlamaConfig
+    from unsloth.models.modelopt_fp8 import move_config_overrides_onto_config
+
+    config = LlamaConfig(hidden_size = 64, num_hidden_layers = 1, num_attention_heads = 4)
+    kwargs = {
+        "use_cache": False,
+        "pad_token_id": 7,
+        "dtype": torch.bfloat16,
+        "key_mapping": {},
+        "subfolder": "x",
+    }
+    move_config_overrides_onto_config(config, kwargs)
+    assert config.use_cache is False and config.pad_token_id == 7
+    # from_pretrained's own arguments stay load arguments.
+    assert set(kwargs) == {"dtype", "key_mapping", "subfolder"}
+
+
+def test_save_keeps_fp8_scale_names_without_original_pattern_copies():
+    from unsloth.models.modelopt_fp8 import keep_fp8_scale_names_on_save
+
+    class WeightRenaming(SimpleNamespace):  # transformers 5.3 / 5.5: live patterns only
+        pass
+
+    renames = [
+        WeightRenaming(source_patterns = [k], target_patterns = [v])
+        for k, v in MODELOPT_FP8_KEY_MAPPING.items()
+    ]
+    other = WeightRenaming(source_patterns = ["^old"], target_patterns = ["new"])
+    model = nn.Module()
+    model._weight_conversions = [other, *renames]
+    keep_fp8_scale_names_on_save(model)
+    assert model._weight_conversions == [other]

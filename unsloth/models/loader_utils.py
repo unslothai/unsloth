@@ -1417,12 +1417,17 @@ def check_and_disable_bitsandbytes_loading(
     verbose = True,
     rewrite_modelopt = True,
     token = None,
+    model_name = None,
+    revision = None,
 ):
     """Disable bitsandbytes loading (load_in_4bit/load_in_8bit) when the model already carries a non-bitsandbytes quantization config. Returns ``(load_in_4bit, load_in_8bit, quant_method)``, with both flags False if they were disabled and quant_method the detected method or None. ``rewrite_modelopt`` converts ModelOpt FP8 to fp8; pass False when vLLM loads it natively."""
     quant_method = get_quant_type(model_config)
-    if quant_method is None and rewrite_modelopt:
+    if quant_method is None:
+        # Also under vLLM: it reads the file itself, but the bitsandbytes flags must still drop.
         from .modelopt_fp8 import attach_hf_quant_config
-        if attach_hf_quant_config(model_config, token = token):
+        if attach_hf_quant_config(
+            model_config, token = token, model_name = model_name, revision = revision
+        ):
             quant_method = get_quant_type(model_config)
 
     if quant_method is None or quant_method == "bitsandbytes":
