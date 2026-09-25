@@ -34,6 +34,34 @@ def test_the_default_is_off_and_lives_in_one_constant():
     assert flag.nvfp4_diffusion_enabled() is False
 
 
+@pytest.mark.parametrize("requested", ["auto", "fp8", "int8"])
+def test_a_video_family_without_a_usable_hosted_seed_spends_no_smoke_probe(monkeypatch, requested):
+    import torch
+
+    import core.inference.video as vid
+    from core.inference.video_families import _FAMILIES
+
+    calls = []
+    monkeypatch.setattr(
+        tq, "_child_probe_table", lambda card: calls.append(card) or {s: None for s in tq.TQ_SCHEMES}
+    )
+    monkeypatch.setattr(tq, "_smoke_probe", lambda s, d, unproven_ok = False: calls.append(s) or unproven_ok)
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda t: True)
+    monkeypatch.setattr(tq, "_capability", lambda: (10, 0))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    target = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16, ordinal = 0)
+    for fam in _FAMILIES:
+        if getattr(fam, "modular_workflow", None):
+            continue
+        assert (
+            vid._video_auto_denoiser_scheme(
+                fam, target = target, requested = requested, base_repo = fam.base_repo
+            )
+            is None
+        )
+    assert calls == []
+
+
 @pytest.mark.parametrize("value", ["1", "true", "TRUE", " yes ", "on", "On"])
 def test_truthy_values_enable(monkeypatch, value):
     monkeypatch.setenv(ENV, value)
