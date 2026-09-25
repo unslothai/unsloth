@@ -695,13 +695,13 @@ def clear_compiled_cache_unless_shared(app: FastAPI) -> None:
 
 
 def banner_autofill_available(app_state, environ) -> bool:
-    """Whether _inject_bootstrap will hand the login page the credential.
+    # """Whether _inject_bootstrap will hand the login page the credential.
 
-    Read from the launch, not the environment: run_server sets UNSLOTH_API_ONLY and never
-    clears it, and an embedded host may call run_server() again in the same process with
-    different flags, so the variable outlives the launch that set it. The environment is
-    only the fallback for a direct uvicorn launch that never went through run_server.
-    """
+    # Read from the launch, not the environment: run_server sets UNSLOTH_API_ONLY and never
+    # clears it, and an embedded host may call run_server() again in the same process with
+    # different flags, so the variable outlives the launch that set it. The environment is
+    # only the fallback for a direct uvicorn launch that never went through run_server.
+    # """
     if getattr(app_state, "suppress_bootstrap_injection", False):
         return False
     api_only = getattr(app_state, "api_only", None)
@@ -2340,14 +2340,14 @@ def _refresh_dense_quant_capability() -> bool:
 
 
 def _dense_quant_supported() -> bool:
-    """The dense-quant bit for ``/api/system``, from already-loaded state only.
+    # """The dense-quant bit for ``/api/system``, from already-loaded state only.
 
-    This route is polled throughout startup, and ``import torch`` and ``import torchao.quantization``
-    cost ~0.8s each and hold the GIL, the stall ``_await_hardware_detection`` already keeps off this
-    path. So never import here. The post-warm worker resolves it once the warm has the stack up, and
-    a request finding both modules loaded refreshes it, so a load's kernel verdict reaches the picker
-    on the next poll. False before that is honest: the picker renders no fast label, as it does for
-    an unknown VRAM budget."""
+    # This route is polled throughout startup, and ``import torch`` and ``import torchao.quantization``
+    # cost ~0.8s each and hold the GIL, the stall ``_await_hardware_detection`` already keeps off this
+    # path. So never import here. The post-warm worker resolves it once the warm has the stack up, and
+    # a request finding both modules loaded refreshes it, so a load's kernel verdict reaches the picker
+    # on the next poll. False before that is honest: the picker renders no fast label, as it does for
+    # an unknown VRAM budget."""
     if "torch" in sys.modules and "torchao" in sys.modules:
         return _refresh_dense_quant_capability()
     return bool(_dense_quant_capability)
