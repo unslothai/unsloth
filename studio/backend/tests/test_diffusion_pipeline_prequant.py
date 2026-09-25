@@ -1078,3 +1078,125 @@ def test_an_uncompilable_family_quantises_auto_when_the_budget_is_unmeasured(
     _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
 
     assert spy.quantised == ["auto"]
+
+
+def test_a_resident_plan_whose_requirement_exceeds_the_budget_proves_no_fit():
+    """Unified memory plans 'none' even when the weights do not fit, so the two numbers decide."""
+    fits = types.SimpleNamespace(
+        offload_policy = "none",
+        estimates = {"safe_device_budget_mib": 60_000, "resident_required_mib": 60_000},
+    )
+    over = types.SimpleNamespace(
+        offload_policy = "none",
+        estimates = {"safe_device_budget_mib": 50_000, "resident_required_mib": 60_000},
+    )
+    assert dmod._plan_proves_resident(fits)
+    assert not dmod._plan_proves_resident(over)
+
+
+def test_an_uncompilable_family_seeds_when_bf16_overflows_a_unified_pool(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    monkeypatch.setattr(dmod, "family_compiles_regionally", lambda _fam: False)
+    monkeypatch.setattr(dmod, "family_bf16_components_gb", lambda *_a, **_k: (90.0, 10.0, 0.2))
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        lambda *_a, **_k: types.SimpleNamespace(
+            offload_policy = "none",
+            estimates = {"safe_device_budget_mib": 50_000, "resident_required_mib": 60_000},
+        ),
+    )
+    assert _settle(backend) == "fp8"
+
+
+def test_an_uncompilable_family_prices_a_pre_cast_text_encoder(monkeypatch):
+    """The pull skips the dense encoder shards for a hosted pre-cast one, so the bf16 plan budgets that size."""
+    import core.inference.diffusion_te_prequant as teq
+
+    backend = _settle_backend(monkeypatch)
+    monkeypatch.setattr(
+        teq,
+        "te_prequant_budget_scale",
+        lambda _fam, *, te_quant_mode, target, base: 0.5 if te_quant_mode == "fp8" else 1.0,
+    )
+    # Released weights resident only when the encoder share is priced pre-cast (5.2 GB companions, not 10.2 GB).
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        lambda *_a, **k: types.SimpleNamespace(
+            offload_policy = "none"
+            if (k.get("companion_override_mib") or 0) < 6_000
+            or (k.get("transformer_resident_override_mib") or 0) < 80_000
+            else "sequential"
+        ),
+    )
+    _uncompilable(monkeypatch)
+    assert _settle(backend) == "fp8"
+    assert _settle(backend, text_encoder_quant = "fp8") is None
+
+
+def test_an_offline_uncompilable_pick_keeps_a_cached_seed_without_released_shards(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    _offload_when_bf16_sized(monkeypatch, "none")
+    _uncompilable(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend, "_released_transformer_cached", staticmethod(lambda _base: False)
+    )
+    assert _settle(backend, local_files_only = True) == "fp8"
+    assert _settle(backend) is None
+    monkeypatch.setattr(
+        DiffusionBackend, "_released_transformer_cached", staticmethod(lambda _base: True)
+    )
+    assert _settle(backend, local_files_only = True) is None
+
+
+def test_released_transformer_cached_reads_the_transformer_folder(tmp_path):
+    (tmp_path / "vae").mkdir()
+    (tmp_path / "vae" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+    assert not DiffusionBackend._released_transformer_cached(str(tmp_path))
+    (tmp_path / "transformer").mkdir()
+    (tmp_path / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+    assert DiffusionBackend._released_transformer_cached(str(tmp_path))
+    assert not DiffusionBackend._released_transformer_cached(None)
+
+
+def test_the_seed_planner_hears_the_encoder_choice_and_offline_flag(monkeypatch):
+    backend, _seen, _fetched = _run_load_backend(monkeypatch, planned = None)
+    heard: dict = {}
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_pipeline_planned_denoiser_scheme",
+        lambda _self, _fam, **k: heard.update(k),
+    )
+    backend._run_load(
+        repo_id = Z_IMAGE_REPO, model_kind = "pipeline", local_files_only = True, _load_token = 1
+    )
+    assert heard["local_files_only"] is True
+    assert "text_encoder_quant" in heard
+
+
+def test_an_uncompilable_family_keeps_bf16_when_the_resident_table_fits(fake_runtime, monkeypatch):
+    """Cached fp32 shards price the plan at twice the bf16 load, so the decision re-prices from the table."""
+    backend, spy = _load_backend(monkeypatch)
+    _uncompilable(monkeypatch)
+    real_plan = DiffusionBackend._plan_memory
+    overrides: list = []
+
+    def _plan(self, *a, **k):
+        plan = real_plan(self, *a, **k)
+        overrides.append(k.get("transformer_resident_override_mib"))
+        if k.get("transformer_resident_override_mib") is None:
+            plan.offload_policy = "sequential"
+        return plan
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _plan)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resident_sized_plan",
+        lambda _s, plan, *_a, **_k: types.SimpleNamespace(**vars(plan)),
+    )
+    status = _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+
+    assert spy.quantised == []
+    assert int(90.0 * 1000.0**3 / (1024.0 * 1024.0)) in overrides
+    assert status["resolved"]["transformer_quant"]["value"] == "off"

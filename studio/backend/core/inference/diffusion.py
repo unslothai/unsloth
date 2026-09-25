@@ -1489,13 +1489,17 @@ def _pipeline_quant_uncompilable_reason(
 
 
 def _plan_proves_resident(plan: Any) -> bool:
-    """A resident plan with a measured budget and requirement. The planner also stays resident when it cannot
-    read the card, which proves no fit."""
+    """A resident plan whose measured requirement fits its measured budget. The planner also stays resident when it
+    cannot read the card, which proves no fit."""
     estimates = getattr(plan, "estimates", None) or {}
+    budget = estimates.get("safe_device_budget_mib")
+    required = estimates.get("resident_required_mib")
+    # Unified memory plans 'none' whatever the size (offload frees nothing there), so compare the two as well.
     return (
         getattr(plan, "offload_policy", None) == OFFLOAD_NONE
-        and estimates.get("safe_device_budget_mib") is not None
-        and estimates.get("resident_required_mib") is not None
+        and budget is not None
+        and required is not None
+        and int(required) <= int(budget)
     )
 
 
@@ -2589,6 +2593,8 @@ class DiffusionBackend:
                 gpu_ordinal = kwargs.get("gpu_ordinal"),
                 repo_id = kwargs["repo_id"],
                 fast_accum = kwargs.get("transformer_quant_fast_accum"),
+                text_encoder_quant = te_quant_planned,
+                local_files_only = local_files_only,
             )
             if local_files_only and pipeline_planned not in (None, PIPELINE_SEED_DECLINED):
                 # Offline twin of the Hub probe below. The first load left the released shards out of the cache,
@@ -2961,6 +2967,8 @@ class DiffusionBackend:
         repo_id: Optional[str] = None,
         fetch_base: Optional[str] = None,
         fast_accum: Optional[bool] = None,
+        text_encoder_quant: Optional[str] = None,
+        local_files_only: bool = False,
     ) -> Optional[str]:
         """The scheme an official ``kind == "pipeline"`` pick seeds its denoiser from, settled BEFORE
         anything is downloaded; None keeps the released bf16 weights and ``PIPELINE_SEED_DECLINED``
@@ -2994,30 +3002,31 @@ class DiffusionBackend:
                     is not None
                 ):
                     return None
-                if (
-                    auto
-                    and not family_compiles_regionally(fam)
-                    and (table := family_bf16_components_gb(fam, base)) is not None
-                ):
+                if auto and not family_compiles_regionally(fam):
                     # The loader keeps the released weights when they fit resident, so they are what the pull needs.
                     bf16_memory = snapshot_device_memory(target)
-                    mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
-                    bf16_plan = self._plan_memory(
+                    bf16_plan = self._bf16_table_plan(
                         target,
-                        None,
-                        base or repo_id or "",
                         fam,
+                        base or repo_id or "",
                         memory_mode,
                         cpu_offload,
                         kind = kind,
                         repo_id = repo_id,
                         fetch_base = fetch_base,
-                        transformer_resident_override_mib = int(table[0] * mib_per_gb),
-                        companion_override_mib = int(sum(table[1:]) * mib_per_gb),
-                        text_encoder_override_mib = int(table[1] * mib_per_gb),
+                        text_encoder_quant = text_encoder_quant,
                         device_memory_override = replace(bf16_memory, free_mib = bf16_memory.total_mib),
                     )
-                    if _auto_quant_eager_reason(fam, bf16_plan) is not None:
+                    # Offline, a snapshot an earlier seeded load left without the released shards cannot assemble
+                    # bf16, so a cached seed is still the only way to load it.
+                    if (
+                        bf16_plan is not None
+                        and _auto_quant_eager_reason(fam, bf16_plan) is not None
+                        and not (
+                            local_files_only
+                            and not self._released_transformer_cached(fetch_base or base or repo_id)
+                        )
+                    ):
                         return None
                 scheme = select_transformer_quant_scheme(
                     target, mode, family = getattr(fam, "name", None)
@@ -3537,6 +3546,7 @@ class DiffusionBackend:
                 gpu_ordinal = load_kwargs.get("gpu_ordinal"),
                 repo_id = repo_id,
                 fast_accum = load_kwargs.get("transformer_quant_fast_accum"),
+                text_encoder_quant = te_quant_planned,
             )
             if allow_device_probe
             else None
@@ -4465,12 +4475,32 @@ class DiffusionBackend:
                 transformer_quant_decline: Optional[str] = None
                 transformer_quant_decline_status = RESOLVED_FELL_BACK
                 # The seed decision asked the same question before the pull, so a seeded pick never reaches it.
+                # A GGUF is excluded while it bakes LoRAs: only the dense build can carry them.
                 if (
                     transformer_quant == TQ_AUTO
                     and pipeline_seed_scheme is None
                     and dense_quant_supported_kind(kind)
                     and dense_transformer_supported(target)
-                    and (eager_reason := _auto_quant_eager_reason(fam, plan)) is not None
+                    and not (kind == "gguf" and _has_active_lora(loras))
+                    and (
+                        eager_reason := _auto_quant_eager_reason(
+                            fam,
+                            self._bf16_resident_plan(
+                                plan,
+                                target,
+                                fam,
+                                base,
+                                memory_mode,
+                                cpu_offload,
+                                kind = kind,
+                                repo_id = repo_id,
+                                fetch_base = fetch_base,
+                                base_local_dir = _base_local_dir,
+                                text_encoder_quant = text_encoder_quant,
+                            ),
+                        )
+                    )
+                    is not None
                 ):
                     logger.info(
                         "diffusion.transformer_quant: auto keeps %s (%s)", kind, eager_reason
@@ -6201,6 +6231,118 @@ class DiffusionBackend:
         check_cancelled()
         pipe.to(device)
         return pipe
+
+    def _bf16_table_plan(
+        self,
+        target: DiffusionDeviceTarget,
+        fam: DiffusionFamily,
+        base: str,
+        memory_mode: Optional[str],
+        cpu_offload: bool,
+        *,
+        kind: str,
+        repo_id: Optional[str],
+        fetch_base: Optional[str] = None,
+        base_local_dir: Optional[str] = None,
+        text_encoder_quant: Optional[str] = None,
+        device_memory_override: Optional[DeviceMemory] = None,
+    ) -> Any:
+        """The plan for the released weights priced from the family's bf16-resident table, with the text encoder
+        at its pre-cast size when this pick takes one, or None when the table does not know this family."""
+        table = family_bf16_components_gb(fam, base)
+        if table is None:
+            return None
+        try:
+            from .diffusion_te_prequant import te_prequant_budget_scale
+            te_scale = te_prequant_budget_scale(
+                fam, te_quant_mode = text_encoder_quant, target = target, base = base
+            )
+        except Exception:  # noqa: BLE001 -- sizing aid only; budget the dense encoder
+            te_scale = 1.0
+        mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
+        text_encoder_mib = int(table[1] * te_scale * mib_per_gb)
+        return self._plan_memory(
+            target,
+            None,
+            base,
+            fam,
+            memory_mode,
+            cpu_offload,
+            kind = kind,
+            repo_id = repo_id,
+            fetch_base = fetch_base,
+            base_local_dir = base_local_dir,
+            transformer_resident_override_mib = int(table[0] * mib_per_gb),
+            companion_override_mib = text_encoder_mib + int(table[2] * mib_per_gb),
+            text_encoder_override_mib = text_encoder_mib,
+            device_memory_override = device_memory_override,
+        )
+
+    def _bf16_resident_plan(
+        self,
+        plan: Any,
+        target: DiffusionDeviceTarget,
+        fam: DiffusionFamily,
+        base: str,
+        memory_mode: Optional[str],
+        cpu_offload: bool,
+        *,
+        kind: str,
+        repo_id: Optional[str],
+        fetch_base: Optional[str] = None,
+        base_local_dir: Optional[str] = None,
+        text_encoder_quant: Optional[str] = None,
+    ) -> Any:
+        """``plan`` re-priced from the bf16-resident table when ``_resident_sized_plan`` lowers it (a recognised
+        pipeline base whose cached shards are wider than bf16, e.g. Lumina-2's fp32), else ``plan``. Same device
+        reading, so only the weight term moves."""
+        if (
+            kind != "pipeline"
+            or self._resident_sized_plan(
+                plan, fam, base, target, kind, text_encoder_quant = text_encoder_quant
+            )
+            is plan
+        ):
+            return plan
+        try:
+            repriced = self._bf16_table_plan(
+                target,
+                fam,
+                base,
+                memory_mode,
+                cpu_offload,
+                kind = kind,
+                repo_id = repo_id,
+                fetch_base = fetch_base,
+                base_local_dir = base_local_dir,
+                text_encoder_quant = text_encoder_quant,
+                device_memory_override = getattr(plan, "device_memory", None),
+            )
+        except Exception:  # noqa: BLE001 -- sizing aid only; decide on the plan as built
+            return plan
+        return plan if repriced is None else repriced
+
+    @staticmethod
+    def _released_transformer_cached(base: Optional[str]) -> bool:
+        """Whether any cached snapshot of ``base`` (or the local directory) holds ``transformer/`` weights."""
+        if not base:
+            return False
+        try:
+            return (
+                DiffusionBackend._union_over_cached_revs(
+                    base,
+                    lambda d: {
+                        rel: size
+                        for rel, size in DiffusionBackend._local_dir_weight_sizes(
+                            d, exclude_transformer = False
+                        ).items()
+                        if rel.startswith("transformer/")
+                    },
+                )
+                > 0
+            )
+        except Exception:  # noqa: BLE001 -- unreadable cache: treat the shards as missing
+            return False
 
     @staticmethod
     def _precast_scaled_companions_mib(
