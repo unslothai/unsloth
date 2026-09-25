@@ -105,7 +105,7 @@ function MemoryFigure({
             ref={buttonRef}
             type="button"
             aria-label={`${label}: ${value}`}
-            className={`relative inline-flex h-8 w-auto min-w-[64px] max-w-full shrink-0 cursor-default! items-center justify-center overflow-hidden rounded-full border-transparent bg-[var(--panel-input-surface)] px-3.5 text-ui-13 font-medium leading-none tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 ${tone ?? "text-foreground"}`}
+            className={`relative inline-flex h-8 w-auto min-w-[calc(64px*var(--ui-space-scale,1))] max-w-full shrink-0 cursor-default! items-center justify-center overflow-hidden rounded-full border-transparent bg-[var(--panel-input-surface)] px-3.5 text-ui-13 font-medium leading-none tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 ${tone ?? "text-foreground"}`}
           >
             <span aria-hidden="true" className="min-w-0 truncate">
               {candidates[displayIndex] ?? value}

@@ -585,7 +585,7 @@ export function UploadedFilesView() {
                   <span className="flex min-w-0 items-center gap-2">
                     {/* Floor keeps the name visible when the chip and fixed
                       columns squeeze the cell at narrow widths. */}
-                    <span className="min-w-[3.5rem] truncate underline-offset-2 group-hover/name:underline">
+                    <span className="min-w-[calc(3.5rem*var(--ui-space-scale,1))] truncate underline-offset-2 group-hover/name:underline">
                       {row.name}
                     </span>
                     {row.typeLabel ? (
