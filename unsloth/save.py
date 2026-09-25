@@ -5492,16 +5492,23 @@ def unsloth_generic_save(
             "if you're planning to do multiple saves.\n"
             "If you are certain, change `save_method` to `merged_4bit_forced`."
         )
-    # Only a PEFT merge re-reads the repo's shards (the wrapper's layout); a full finetune saves its resident weights.
-    _composed_parent = isinstance(model, PeftModel) and getattr(
-        model.get_base_model(), "_unsloth_composed_parent", None
-    )
+    _saved_core = model.get_base_model() if isinstance(model, PeftModel) else model
+    _composed_parent = getattr(_saved_core, "_unsloth_composed_parent", None)
     if _composed_parent and not _is_adapter_save_method(save_method):
-        raise NotImplementedError(
-            f"Unsloth: this model is the text core of `{_composed_parent}` (loaded with text_only = True), "
-            f"so `{save_method}` would write the wrapper's weights under the text core's config. "
-            'Save the adapter with `save_method = "lora"` and reload it with `text_only = True` instead.'
-        )
+        if isinstance(model, PeftModel):
+            # The merge re-reads the repo's shards, which hold the wrapper's layout, not this child's.
+            raise NotImplementedError(
+                f"Unsloth: this model is the text core of `{_composed_parent}` (loaded with text_only = True), "
+                f"so `{save_method}` would write the wrapper's weights under the text core's config. "
+                'Save the adapter with `save_method = "lora"` and reload it with `text_only = True` instead.'
+            )
+        if "transformers_modules" in (type(_saved_core).__module__ or ""):
+            # A full finetune writes its own weights, but a remote child class gets no auto_map or code copy.
+            raise NotImplementedError(
+                f"Unsloth: this model is the text core of `{_composed_parent}` (loaded with text_only = True) "
+                f"and its class `{type(_saved_core).__name__}` exists only in the repo's remote code, so a "
+                f"`{save_method}` checkpoint of it could not be reloaded. Load without text_only to save the full model."
+            )
 
     # Rebound rather than kept in a new local, because the `locals()` below is forwarded as
     # this function's own keywords.

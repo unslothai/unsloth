@@ -485,3 +485,14 @@ def test_adapter_save_spellings_of_a_text_core_are_not_refused(spelling, tmp_pat
         pytest.fail(f"adapter save refused: {error}")
     except Exception:
         pass
+
+
+def test_full_finetuned_remote_child_core_is_refused(tmp_path):
+    """A remote-code child class is saved without auto_map or its modeling file: nothing could reload it."""
+    from unsloth.save import unsloth_generic_save
+
+    core = _text_trainable_core(_OmniWrapper(_Cfg()))
+    core.__class__ = type(type(core).__name__, (type(core),), {"__module__": "transformers_modules.repo.modeling"})
+    with pytest.raises(NotImplementedError, match = "remote code"):
+        unsloth_generic_save(core, None, str(tmp_path), save_method = "merged_16bit")
+    assert not os.listdir(tmp_path)
