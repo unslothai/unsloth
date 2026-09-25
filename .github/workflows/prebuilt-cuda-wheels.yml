@@ -317,12 +317,10 @@ jobs:
       max-parallel: 5
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
-      # Not a hidden directory: upload-artifact skips those by default.
       CCACHE_DIR: ${{ github.workspace }}/ccache
       CCACHE_BASEDIR: ${{ github.workspace }}
       CCACHE_NOHASHDIR: 'true'
       CCACHE_MAXSIZE: 20G
-      # torch reads this for the nvcc in build.ninja.
       PYTORCH_NVCC: ccache /usr/local/cuda-13.0/bin/nvcc
     steps:
       # Keep setup through the mamba patch in sync with warm.
