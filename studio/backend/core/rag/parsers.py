@@ -467,14 +467,12 @@ def _docx(path: str) -> list[Page]:
     return [_page("\n".join(lines), None)]
 
 
-# Where a page names its charset: <meta charset="..."> or the http-equiv Content-Type. Browsers look for it in
-# the first 1024 bytes.
+# Browsers look for the charset declaration in the first 1024 bytes.
 _META_CHARSET = re.compile(rb"<meta[^>]+charset\s*=\s*[\"']?\s*([\w.:-]+)", re.IGNORECASE)
 
 
 def _declared_charset(data: bytes) -> str | None:
-    """The charset an HTML page declares near its top. Like a browser, only an encoding that writes ASCII as
-    ASCII counts, since only such an encoding could have written the declaration this way."""
+    """Only an ASCII-compatible encoding could have written the declaration, so others are ignored."""
     match = _META_CHARSET.search(data[:1024])
     if match is None:
         return None
@@ -486,10 +484,7 @@ def _declared_charset(data: bytes) -> str | None:
 
 
 def _decode_text(data: bytes, *, html: bool = False) -> str:
-    """Decode a text, Markdown or HTML file. A byte-order mark decides first, then UTF-8, then the charset an
-    HTML page declares. Bytes that are UTF-8 nowhere come from a legacy code page, most often the Windows-1252
-    ("ANSI") that Notepad and Excel write in Western Europe; read as UTF-8 they would lose every accented letter
-    to U+FFFD. A file that is UTF-8 apart from a few damaged bytes keeps its text, as before."""
+    """BOM, then UTF-8, then HTML-declared charset; mostly-UTF-8 files stay UTF-8, else cp1252."""
     # Check UTF-32 before its overlapping UTF-16 prefix.
     for bom, codec in (
         (codecs.BOM_UTF32_LE, "utf-32"),

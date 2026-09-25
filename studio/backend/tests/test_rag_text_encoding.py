@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Text, Markdown and HTML uploads are read in the encoding they were written in.
-
-Decoded as UTF-8 with ``errors="replace"``, a Windows-1252 file ("ANSI", what
-Notepad and Excel write in Western Europe) loses every accented letter to
-U+FFFD, and an HTML page in Shift_JIS or GBK loses all of its text.
-"""
+"""Text, Markdown and HTML uploads are read in the encoding they were written in."""
 
 from __future__ import annotations
 
