@@ -2054,13 +2054,18 @@ export function useChatModelRuntime() {
           ) {
             await ensureGpuDeviceCache();
           }
-          let loadSelectedGpuIds =
+          // The staged config's GPUs, or none: what a switch that resets per-model settings loads with.
+          const stagedGpuIds =
             pendingLoadConfig?.selectedGpuIds !== undefined
               ? reconcilePersistedGpuIds(
                   pendingLoadConfig.selectedGpuIds,
                   pendingLoadConfig.selectedGpuIndexKind,
                   targetIsDiffusion,
                 )
+              : null;
+          let loadSelectedGpuIds =
+            pendingLoadConfig?.selectedGpuIds !== undefined
+              ? stagedGpuIds
               : reconcilePersistedGpuIds(
                   stateBeforeUnload.selectedGpuIds,
                   stateBeforeUnload.selectedGpuIndexKind,
@@ -2117,7 +2122,7 @@ export function useChatModelRuntime() {
               ? null
               : loadCustomContextLength;
             const validateGpuIds = resetsPerModelSettings
-              ? null
+              ? stagedGpuIds
               : loadSelectedGpuIds;
             // The reset below re-baselines gpuLayers to Auto; mirror it here.
             const validateGpuLayers = resetsPerModelSettings
@@ -2386,14 +2391,7 @@ export function useChatModelRuntime() {
               // cleared per-model knobs. An explicit staged config from run-settings still wins.
               loadCustomContextLength =
                 pendingLoadConfig?.customContextLength ?? null;
-              loadSelectedGpuIds =
-                pendingLoadConfig?.selectedGpuIds !== undefined
-                  ? reconcilePersistedGpuIds(
-                      pendingLoadConfig.selectedGpuIds,
-                      pendingLoadConfig.selectedGpuIndexKind,
-                      targetIsDiffusion,
-                    )
-                  : null;
+              loadSelectedGpuIds = stagedGpuIds;
               loadGpuLayers = pendingLoadConfig?.gpuLayers ?? GPU_LAYERS_AUTO;
               loadNCpuMoe = pendingLoadConfig?.nCpuMoe ?? 0;
               loadSplitRatio = null;
