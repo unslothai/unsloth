@@ -181,14 +181,12 @@ if _IS_MLX:
     except Exception:
         pass
     try:
-        # Same reason: 5.0-era remote configs call validate_rope(ignore_keys = ...).
         from .import_fixes import fix_transformers_validate_rope_ignore_keys as _fix_validate_rope
         _fix_validate_rope()
         del _fix_validate_rope
     except Exception:
         pass
     try:
-        # Same reason: remote modeling code written against 4.x imports is_torch_fx_available.
         from .import_fixes import fix_transformers_is_torch_fx_available as _fix_torch_fx
         _fix_torch_fx()
         del _fix_torch_fx

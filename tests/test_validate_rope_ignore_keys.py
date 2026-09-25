@@ -12,8 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""5.0-era remote configs call ``validate_rope(ignore_keys = ...)``, which 5.4 dropped."""
-
 import inspect
 
 import pytest
@@ -48,9 +46,8 @@ def test_validate_rope_accepts_ignore_keys_after_the_fix():
         intermediate_size = 8,
         vocab_size = 16,
     )
-    # "rope_type" is required, so ignoring it raises KeyError even on 5.0; use model keys.
     config.validate_rope(ignore_keys = {"mscale", "mscale_all_dim"})
-    config.validate_rope({"mscale", "mscale_all_dim"})  # the 5.0 positional form
+    config.validate_rope({"mscale", "mscale_all_dim"})
     config.validate_rope()
 
 
@@ -76,15 +73,13 @@ def test_the_mlx_branch_installs_the_fix_too():
 
 
 def test_is_torch_fx_available_is_importable_from_transformers_utils_after_the_fix():
-    """Hub modeling code imports is_torch_fx_available, which transformers 5 removed."""
     fix_transformers_is_torch_fx_available()
     from transformers.utils import is_torch_fx_available
     import transformers.utils.import_utils as import_utils
 
-    # The 4.x definition: is_torch_available().
     assert is_torch_fx_available() == import_utils.is_torch_available()
     assert import_utils.is_torch_fx_available() == import_utils.is_torch_available()
-    fix_transformers_is_torch_fx_available()  # idempotent
+    fix_transformers_is_torch_fx_available()
     assert import_utils.is_torch_fx_available is import_utils.is_torch_fx_available
 
 
@@ -97,7 +92,6 @@ def test_the_mlx_branch_installs_the_fx_shim_too():
 
 
 def test_a_config_with_its_own_validator_accepts_ignore_keys_too():
-    """Phi3Config overrides validate_rope; later subclasses are covered by the hook."""
     fix_transformers_validate_rope_ignore_keys()
     from transformers import Phi3Config
 
@@ -112,7 +106,7 @@ def test_a_config_with_its_own_validator_accepts_ignore_keys_too():
     )
     config.validate_rope(ignore_keys = {"mscale", "mscale_all_dim"})
 
-    class LaterConfig(Phi3Config):  # defined after the fix, like a remote configuration
+    class LaterConfig(Phi3Config):
         model_type = "later_phi3_for_test"
 
         def validate_rope(self):
@@ -122,8 +116,6 @@ def test_a_config_with_its_own_validator_accepts_ignore_keys_too():
 
 
 def test_ignore_keys_keep_their_meaning_on_a_validator_without_the_parameter():
-    """5.4 moved ``ignore_keys`` onto ``ignore_keys_at_rope_validation``; keys must still be
-    suppressed from the "Unrecognized keys" warning."""
     import logging
 
     from transformers import LlamaConfig
@@ -158,10 +150,9 @@ def test_ignore_keys_keep_their_meaning_on_a_validator_without_the_parameter():
             records.clear()
             call()
             assert not [m for m in records if "Unrecognized keys" in m], records
-            # scoped to the call, as the 5.0 parameter was
             assert set(config.ignore_keys_at_rope_validation or ()) == before
         records.clear()
         config.validate_rope()
-        assert [m for m in records if "Unrecognized keys" in m]  # the control: the key is unknown
+        assert [m for m in records if "Unrecognized keys" in m]
     finally:
         rope_logger.removeHandler(handler)

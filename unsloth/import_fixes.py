@@ -2314,8 +2314,7 @@ def _transformers_rope_scaling_assignment_drops_theta():
 
 
 def fix_transformers_is_torch_fx_available():
-    """Restore ``transformers.utils.is_torch_fx_available`` (removed in 5.0) for remote
-    modeling code written against 4.x. The 4.x definition was ``is_torch_available()``."""
+    """Restore ``is_torch_fx_available`` (removed in 5.0) for 4.x-era remote code."""
     try:
         import transformers.utils as utils
         import transformers.utils.import_utils as import_utils
@@ -2343,7 +2342,6 @@ _no_own_ignore_keys = object()
 
 
 def _validate_rope_accepting_ignore_keys(original):
-    """``original`` wrapped to accept the 5.0 ``ignore_keys`` argument, or ``None`` if not needed."""
     if original is None or getattr(original, "_unsloth_ignore_keys", False):
         return None
     try:
@@ -2352,8 +2350,7 @@ def _validate_rope_accepting_ignore_keys(original):
         return None
     if "ignore_keys" in parameters:
         return None
-    # The 5.0 signature was (self, ignore_keys = None). A single positional argument is that
-    # parameter only when the current validator takes no positional argument of its own.
+    # 5.0 was (self, ignore_keys = None): a lone positional arg is ignore_keys only if the validator takes none.
     takes_positional = any(
         p.kind
         in (
@@ -2408,11 +2405,8 @@ def _patch_own_validate_rope(cls):
 
 
 def fix_transformers_validate_rope_ignore_keys():
-    """Accept ``validate_rope(ignore_keys = ...)`` from 5.0-era remote configuration code;
-    transformers 5.4 removed the parameter, raising TypeError in AutoConfig.from_pretrained.
-
-    Some configs (e.g. Phi3Config) define their own validator, so every existing subclass is
-    patched and an ``__init_subclass__`` hook covers lazily imported and remote configs."""
+    """Accept 5.0-era ``validate_rope(ignore_keys = ...)``, removed in 5.4 (TypeError on load).
+    Configs like Phi3Config define their own validator: patch subclasses, hook later/remote ones."""
     try:
         from transformers.modeling_rope_utils import RotaryEmbeddingConfigMixin
     except Exception:
