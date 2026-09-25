@@ -224,17 +224,61 @@ def _config_uses_remote_code(config):
             auto_map = cfg.get("auto_map", auto_map)
         if not auto_map:
             return False
+        config_is_native = (getattr(type(cfg), "__module__", "") or "").startswith("transformers.")
         # A custom tokenizer, processor or feature extractor is not code the compiler traces.
-        return any(str(k).startswith(("AutoModel", "AutoConfig")) for k in auto_map)
+        return any(
+            str(k).startswith("AutoModel")
+            or (str(k).startswith("AutoConfig") and not config_is_native)
+            for k in auto_map
+        )
 
-    if _remote(config):
-        return True
-    for sub in ("text_config", "vision_config", "audio_config"):
-        cfg = getattr(config, sub, None)
-        if cfg is None and isinstance(config, dict):
-            cfg = config.get(sub)
-        if cfg is not None and _remote(cfg):
+    # Sub-configs go beyond text/vision/audio (Qwen-Omni thinker_config, nested llm_config) and nest;
+    # a remote child read as native puts the compiler on untraceable code, so walk every level.
+    try:
+        from transformers import PretrainedConfig as _config_class
+    except Exception:
+        _config_class = ()
+
+    def _is_config(value):
+        return isinstance(value, dict) or (bool(_config_class) and isinstance(value, _config_class))
+
+    def _children(node):
+        if isinstance(node, dict):
+            return [value for value in node.values() if _is_config(value)]
+        names = ["text_config", "vision_config", "audio_config"]
+        # Instance read: transformers 4.57 makes backbone configs' `sub_configs` a property.
+        sub_configs = getattr(node, "sub_configs", None)
+        for sub in sub_configs if isinstance(sub_configs, dict) else ():
+            if sub not in names:
+                names.append(sub)
+        # A callable (e.g. a Mock) is not a config.
+        children = [
+            child
+            for child in (getattr(node, name, None) for name in names)
+            if child is not None and (_is_config(child) or not callable(child))
+        ]
+        try:
+            children.extend(value for value in vars(node).values() if _is_config(value))
+        except TypeError:
+            pass
+        return children
+
+    pending = [(config, 0)]
+    seen = set()
+    while pending:
+        current, depth = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if _remote(current):
             return True
+        children = _children(current)
+        if not children:
+            continue
+        # Past the bound, answer conservatively.
+        if depth >= 8:
+            return True
+        pending.extend((child, depth + 1) for child in children)
     return False
 
 
@@ -265,6 +309,14 @@ _OMNI_AUTO_CLASS_NAMES = (
     "AutoModelForImageTextToText",
     "AutoModelForTextToWaveform",
 )
+
+
+def _config_has_native_class(auto_class, config):
+    """True when transformers itself maps ``type(config)`` in ``auto_class`` (no repo code needed)."""
+    try:
+        return auto_class is not None and type(config) in auto_class._model_mapping
+    except Exception:
+        return False
 
 
 def _resolve_omni_auto_model(model_config):
@@ -1933,6 +1985,24 @@ class FastModel(FastBaseModel):
                 _auto_map = getattr(model_config, "auto_map", {}) or {}
                 _vlm_class_name = AutoModelForVision2Seq.__name__
                 _has_vlm_class = _vlm_class_name in _auto_map
+                # Untrusted: keep only auto_map entries transformers builds natively (Step-3.7: step3p7 is image-text).
+                if not trust_remote_code:
+                    import transformers as _transformers
+
+                    _native_map = {
+                        _name: _ref
+                        for _name, _ref in _auto_map.items()
+                        if _config_has_native_class(
+                            getattr(_transformers, _name, None), model_config
+                        )
+                    }
+                    # Remote causal LM class: native AutoModel would be a headless backbone (Kimi-K2.5).
+                    if (
+                        "AutoModelForCausalLM" in _auto_map
+                        and "AutoModelForCausalLM" not in _native_map
+                    ):
+                        _native_map.pop("AutoModel", None)
+                    _auto_map = _native_map
                 if not _has_vlm_class and "AutoModelForCausalLM" in _auto_map:
                     auto_model = AutoModelForCausalLM
                 elif not _has_vlm_class and "AutoModel" in _auto_map:

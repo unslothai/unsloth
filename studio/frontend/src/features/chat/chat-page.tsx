@@ -79,6 +79,7 @@ import {
   useNativeModelDrop,
   useNativePathLeasesSupported,
 } from "@/features/native-intents";
+import { isNpuModelId } from "@/features/npu";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
@@ -110,6 +111,10 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
+import {
+  SaveTemporaryChatButton,
+  TemporaryChatSaveBridge,
+} from "./components/temporary-chat-save";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import {
   type CSSProperties,
@@ -253,6 +258,7 @@ import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import {
   consumeProjectSourcesPending,
   hasProjectSourcesPending,
+  noteProjectLandingMounted,
 } from "@/features/rag/components/project-source-dropzone";
 import {
   exportConversationCsv,
@@ -1365,6 +1371,7 @@ function ProjectLanding({
   // Drop the marker once committed: React may replay the initializer above.
   useEffect(() => {
     consumeProjectSourcesPending(projectId);
+    return noteProjectLandingMounted(projectId);
   }, [projectId]);
   const [pendingNewThreadId, setPendingNewThreadId] = useState<string | null>(
     null,
@@ -2391,6 +2398,7 @@ export function ChatPage({
 
     isModelSelectionIntentCurrent,
     selectModel,
+    loadNpuModel,
     ejectModel,
     cancelLoading,
     loadingModel,
@@ -3220,6 +3228,13 @@ export function ChatPage({
           return;
         }
       }
+      if (isNpuModelId(value)) {
+        void loadNpuModel(value, {
+          forceReload: meta?.forceReload,
+          config: meta?.config,
+        });
+        return;
+      }
       if (isExternalSelection) {
         // Any pending local preflight is stale now, even before it has published a loading run.
         const externalIntentId = invalidatePendingModelSelection();
@@ -3464,6 +3479,7 @@ export function ChatPage({
     [
       activeThreadId,
       externalProvidersForChat,
+      loadNpuModel,
       modelsFromStore,
       stageOrLoad,
       view,
@@ -4242,6 +4258,9 @@ export function ChatPage({
                 className="h-[var(--studio-chat-control-height,34px)]"
               />
             ) : null}
+            {view.mode === "single" && incognito ? (
+              <SaveTemporaryChatButton className="mr-[calc(6px*var(--ui-space-scale,1))] flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:text-white" />
+            ) : null}
             {view.mode === "single" && (
               <Tooltip>
                 <TooltipPrimitive.Trigger asChild={true}>
@@ -4398,6 +4417,7 @@ export function ChatPage({
                   <NativeAttachmentTargetContext.Provider
                     value={baseAttachmentTargetKey}
                   >
+                    <TemporaryChatSaveBridge />
                     <SingleContent
                       threadId={baseView.threadId}
                       artifact={selectedArtifact}
