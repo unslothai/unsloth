@@ -75,13 +75,32 @@ _warming = False
 # has retired.
 _warm_pending = False
 _last_scan_s = 0.0
+_managed_last_scan_s: dict[str, float] = {}
 # rescan at most a tenth of the time: on the TTL alone a slow scan would run continuously
 _WARM_DUTY = 10.0
 
 
+def _account_scope() -> Optional[str]:
+    return None if is_owner_context() else current_account_id()
+
+
+def _account_duty_window(account_id: Optional[str]) -> float:
+    scan_s = _last_scan_s if account_id is None else _managed_last_scan_s.get(account_id, 0.0)
+    return max(_CACHE_TTL_S, scan_s * _WARM_DUTY)
+
+
 def _duty_window() -> float:
     """Minimum snapshot age for a background rescan."""
-    return max(_CACHE_TTL_S, _last_scan_s * _WARM_DUTY)
+    return _account_duty_window(_account_scope())
+
+
+def _record_scan_duration(duration: float) -> None:
+    global _last_scan_s
+    account_id = _account_scope()
+    if account_id is None:
+        _last_scan_s = duration
+    else:
+        _managed_last_scan_s[account_id] = duration
 
 
 def _is_abs_path_id(value: str) -> bool:
@@ -963,7 +982,12 @@ def recently_downloaded(repo_id: str) -> bool:
     return repo_id.strip().lower() in _just_downloaded
 
 
-def _snapshot_is_trusted(timestamp: float, now: float) -> bool:
+def _snapshot_is_trusted(
+    timestamp: float,
+    now: float,
+    *,
+    duty_window: Optional[float] = None,
+) -> bool:
     """Whether a snapshot stamped *timestamp* may answer a model switch at *now*.
 
     Positive is an ordinary scan, trusted for the TTL. Negative is when an
@@ -974,7 +998,7 @@ def _snapshot_is_trusted(timestamp: float, now: float) -> bool:
     if timestamp > 0.0:
         return now - timestamp < _CACHE_TTL_S
     if timestamp < 0.0:
-        return now + timestamp < _duty_window()
+        return now + timestamp < (duty_window if duty_window is not None else _duty_window())
     return False
 
 
@@ -1008,17 +1032,26 @@ def invalidate_index(*, additions_only: bool = False) -> None:
         now = time.monotonic()
         _generation += 1
 
-        def _invalidated(snapshot):
+        def _invalidated(snapshot, account_id):
             timestamp, retained = snapshot
             # Entries and trust state publish together: a lock-free reader never sees a fresh
             # timestamp paired with revoked trust.
-            stamp = -now if additions_only and _snapshot_is_trusted(timestamp, now) else 0.0
+            stamp = (
+                -now
+                if additions_only
+                and _snapshot_is_trusted(
+                    timestamp,
+                    now,
+                    duty_window = _account_duty_window(account_id),
+                )
+                else 0.0
+            )
             return (stamp, retained)
 
         # Every account's snapshot: what changed on disk is not scoped to whoever noticed.
-        _scan = _invalidated(_scan)
+        _scan = _invalidated(_scan, None)
         for account_id, snapshot in list(_managed_scans.items()):
-            _managed_scans[account_id] = _invalidated(snapshot)
+            _managed_scans[account_id] = _invalidated(snapshot, account_id)
     # This may have waited out a scan on _lock, so the warmer that just published can still own the slot with a snapshot
     # that is stale again. See _warm_pending.
     with _warm_lock:
@@ -1027,7 +1060,6 @@ def invalidate_index(*, additions_only: bool = False) -> None:
 
 
 def _index() -> dict[str, _LocalGgufEntry]:
-    global _last_scan_s
     # Build under the lock so concurrent callers with an expired cache don't all run the (multi-dir) scan at once; the
     # rest wait and reuse the fresh result.
     with _lock:
@@ -1041,7 +1073,7 @@ def _index() -> dict[str, _LocalGgufEntry]:
         try:
             fresh = _build_index()
         finally:
-            _last_scan_s = time.monotonic() - now
+            _record_scan_duration(time.monotonic() - now)
         # Stamp AFTER the scan, not with the pre-scan ``now``: a multi-root scan on an install with many local models
         # can itself exceed the TTL, which would store the cache already expired and make every request rebuild the
         # index.
@@ -1132,7 +1164,7 @@ def warm_index_soon() -> None:
 
 
 def _miss_scope() -> Optional[str]:
-    return None if is_owner_context() else current_account_id()
+    return _account_scope()
 
 
 def resolve_local_gguf_for_switch(

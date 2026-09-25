@@ -19,7 +19,7 @@ from core.inference import local_model_resolver as resolver
 from hub.services.models import account_access as access
 from storage import studio_db
 from utils import openai_auto_switch_settings as switch_settings
-from utils.account_context import OWNER, AccountContext, arun_as, run_as
+from utils.account_context import OWNER, AccountContext, arun_as, current_account_id, run_as
 
 ALICE = AccountContext("a" * 32, "alice")
 BOB = AccountContext("b" * 32, "bob")
@@ -114,3 +114,28 @@ def test_the_owner_keeps_one_index_on_a_single_user_install(home, monkeypatch):
     for _ in range(3):
         assert resolver.resolve_local_gguf("owner-model")[0] == str(owner_model)
     assert len(scans) == 1
+
+
+def test_a_fast_account_scan_does_not_expire_another_accounts_slow_scan_miss(home, monkeypatch):
+    clock = SimpleNamespace(now = 1_000.0)
+    monkeypatch.setattr(resolver.time, "monotonic", lambda: clock.now)
+    monkeypatch.setattr(resolver, "_managed_scans", {})
+    monkeypatch.setattr(resolver, "_managed_last_scan_s", {}, raising = False)
+    monkeypatch.setattr(resolver, "_last_scan_s", 0.0)
+    monkeypatch.setattr(resolver, "_misses", {})
+    scans = []
+
+    def _scan():
+        account_id = current_account_id()
+        scans.append(account_id)
+        clock.now += 17.0 if account_id == ALICE.account_id else 0.1
+        return {}
+
+    monkeypatch.setattr(resolver, "_build_index", _scan)
+    assert run_as(ALICE, resolver.resolve_local_gguf_for_switch, "missing") is None
+    assert run_as(BOB, resolver.resolve_local_gguf_for_switch, "missing") is None
+
+    # Bob's cheap scan must not replace the duty window earned by Alice's slow one.
+    clock.now += 10.0
+    assert run_as(ALICE, resolver.resolve_local_gguf_for_switch, "missing") is None
+    assert scans == [ALICE.account_id, BOB.account_id]
