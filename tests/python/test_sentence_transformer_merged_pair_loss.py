@@ -237,7 +237,6 @@ def test_batch_norm_added_after_loss_construction_keeps_stock_semantics():
     candidate_model = copy.deepcopy(reference_model)
     reference = MODULE.MultipleNegativesRankingLoss(reference_model)
     candidate = MODULE.FastMultipleNegativesRankingLoss(candidate_model)
-    # Training code may replace a projection after constructing its loss.
     reference_model.projection = nn.Sequential(reference_model.projection, nn.BatchNorm1d(8))
     candidate_model.projection = nn.Sequential(candidate_model.projection, nn.BatchNorm1d(8))
     expected = reference(list(pair_features()), None)

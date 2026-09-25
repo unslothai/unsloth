@@ -7,25 +7,17 @@ import torch
 
 try:
     from sentence_transformers.sentence_transformer.losses import MultipleNegativesRankingLoss
-except ImportError:  # Older releases used the top-level losses package.
+except ImportError:
     from sentence_transformers.losses import MultipleNegativesRankingLoss
 
 try:
     from sentence_transformers.base.losses.merged_forward import merge_feature_batches
-except ImportError:  # Older SentenceTransformers versions keep the reference path.
+except ImportError:
     merge_feature_batches = None
 
 
 class FastMultipleNegativesRankingLoss(MultipleNegativesRankingLoss):
-    """Embed homogeneous anchor/positive columns together, preserving the stock loss.
-
-    SentenceTransformers normally keeps the anchor separate because query and
-    document widths can differ substantially. This opt-in class is intended for
-    short, similar-width FP32 sentence pairs. Its existing merge guard rejects
-    incompatible features, including different tasks and flattened packed inputs.
-    Distributed gathering and mixed-precision arithmetic keep the stock forward
-    path until their training-update parity is established.
-    """
+    """MNRL embedding anchor+positive in one forward; falls back to stock when parity is unproven."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -61,9 +53,7 @@ class FastMultipleNegativesRankingLoss(MultipleNegativesRankingLoss):
             self.fallback_calls += 1
             return super().forward(features, labels)
         widths = [tensor.shape[1] for tensor in tensors]
-        # The RTX 5090 MiniLM control improved through width 128, but a 44/192
-        # query/document batch regressed. Avoid padding long short-queries to
-        # document length; other backends remain opt-in and need their own data.
+        # Padding a short query to a long document width regressed throughput.
         if max(widths) > 128 and max(widths) >= 2 * min(widths):
             self.fallback_calls += 1
             return super().forward(features, labels)
