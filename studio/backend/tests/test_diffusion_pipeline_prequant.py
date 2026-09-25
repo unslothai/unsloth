@@ -56,6 +56,13 @@ DENOISER_BYTES = 22_000 * MIB
 ALL_BYTES = sum(size for _name, size in Z_IMAGE_FILES)
 
 
+@pytest.fixture(autouse = True)
+def _safetensors_readable_regardless_of_the_installed_torchao(monkeypatch):
+    """Pin the torchao floor so planning tests ignore the installed release."""
+    import core.inference.prequant_safetensors as prequant_safetensors
+    monkeypatch.setattr(prequant_safetensors, "_torchao_version", lambda: None)
+
+
 def _family():
     fam = detect_family_for_pick(Z_IMAGE_REPO, None, None)
     assert fam is not None and fam.name == "z-image"

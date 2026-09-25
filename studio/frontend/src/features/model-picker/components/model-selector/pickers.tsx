@@ -188,10 +188,12 @@ import {
 import { usePinnedConnectedModelsStore } from "./pinned-connected-models";
 import {
   makePinRank,
+  pinDropAnchor,
   pinKey,
   pinnedQuantEntries,
   usePinnedModelsStore,
 } from "./pinned-models";
+import { usePinnedRowDrag, type PinnedDropEdge } from "./use-pinned-row-drag";
 import {
   type FormatFilter,
   estimateQuantBytes,
@@ -964,6 +966,14 @@ const META_COLUMN = {
 const ROW_ACTIONS_CLASS =
   "mr-0.5 flex w-[calc(38px*var(--ui-space-scale,1))] shrink-0 items-center justify-end -space-x-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100";
 
+// Drop line for a pinned-row drag, same as the sidebar's.
+const PINNED_DROP_CUE_BASE =
+  "before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-[1.5px] before:rounded-full before:bg-primary before:content-['']";
+const PINNED_DROP_CUE: Record<PinnedDropEdge, string> = {
+  top: `${PINNED_DROP_CUE_BASE} before:top-0`,
+  bottom: `${PINNED_DROP_CUE_BASE} before:bottom-0`,
+};
+
 // Partial rows keep their buttons on screen. Everywhere else the gutter hides until hover because
 // the row itself is the action, but a partial cannot be loaded at all: the menu IS its only
 // affordance, and hiding it reads as the stalled download having no controls.
@@ -1225,12 +1235,13 @@ function ModelRow({
             </span>
           ) : null}
           <span className="min-w-0 flex-1 truncate">{name}</span>
-          {/* Here it eats name width instead of moving the meta columns. */}
+          {/* Here it eats name width instead of moving the meta columns. self-center: on the
+              baseline the empty dot sat the tag low. */}
           {aligned && loaded && (
             <DotTag
               tone="success"
               label="Loaded"
-              className="ml-2 h-[calc(18px*var(--ui-space-scale,1))] shrink-0 gap-1 rounded-md px-1.5"
+              className="ml-2 h-[calc(18px*var(--ui-space-scale,1))] shrink-0 gap-1 self-center rounded-md px-1.5"
               dotClassName="size-[calc(5px*var(--ui-space-scale,1))]"
             />
           )}
@@ -1685,7 +1696,7 @@ function GgufVariantExpander({
     getDeleteSuccessMessage?: (quant: string) => string;
     deleteDisabled?: boolean;
   };
-  /** On Device rows honor the Show all quantizations setting; browse lists always show every quant. */
+  /** On Device rows honor the All quantizations setting; browse lists always show every quant. */
   onDevice?: boolean;
   /** Only managed cached-Hub rows can surface quant pins in the Pinned section; local-path
    *  expanders leave this false. */
@@ -1936,7 +1947,7 @@ function GgufVariantExpander({
     });
   }, [variants, variantGroups, effectiveRecommendedByGroup, getVariantFit]);
 
-  // On Device only: with Show all quantizations off, list quants already on disk, torn ones included.
+  // On Device only: with All quantizations off, list quants already on disk, torn ones included.
   const showAllQuantizations = useChatRuntimeStore(
     (s) => s.showAllQuantizations,
   );
@@ -4414,20 +4425,6 @@ export function HubModelPicker({
   const togglePinnedConnected = usePinnedConnectedModelsStore(
     (s) => s.togglePinnedConnected,
   );
-  const movePinnedConnected = usePinnedConnectedModelsStore(
-    (s) => s.movePinnedConnected,
-  );
-  const beginPinnedConnectedDrag = usePinnedConnectedModelsStore(
-    (s) => s.beginPinnedConnectedDrag,
-  );
-  const endPinnedConnectedDrag = usePinnedConnectedModelsStore(
-    (s) => s.endPinnedConnectedDrag,
-  );
-  // The id under the cursor mid-drag. A ref, not state: dragenter fires on every row crossed.
-  const draggingPinnedConnectedRef = useRef<string | null>(null);
-  const [draggingPinnedConnectedId, setDraggingPinnedConnectedId] = useState<
-    string | null
-  >(null);
   const pinnedConnectedSet = useMemo(
     () => new Set(pinnedConnectedIds),
     [pinnedConnectedIds],
@@ -4540,7 +4537,13 @@ export function HubModelPicker({
     validated: boolean;
     downloaded: ReadonlySet<string>;
     visionByRepo: ReadonlyMap<string, boolean>;
-  }>({ validated: false, downloaded: new Set(), visionByRepo: new Map() });
+    sizes: ReadonlyMap<string, number>;
+  }>({
+    validated: false,
+    downloaded: new Set(),
+    visionByRepo: new Map(),
+    sizes: new Map(),
+  });
   const prunePinnedQuantValidation = useCallback(
     (repoId: string, quant: string) => {
       const key = pinKey(repoId, quant);
@@ -4570,17 +4573,24 @@ export function HubModelPicker({
             { preferLocalCache: true },
           );
           const normalized = normalizeGgufVariantsResponse(response);
+          const downloaded = normalized.variants.filter(
+            (variant) => variant.downloaded === true,
+          );
           return {
             repoId,
             hasVision: normalized.hasVision,
-            downloaded: normalized.variants
-              .filter((variant) => variant.downloaded === true)
-              .map((variant) => pinKey(repoId, variant.quant)),
+            downloaded: downloaded.map((variant) =>
+              pinKey(repoId, variant.quant),
+            ),
+            sizes: downloaded.map(
+              (variant) =>
+                [pinKey(repoId, variant.quant), variant.size_bytes] as const,
+            ),
           };
         } catch {
           // If the backend cannot verify a quant, hiding the direct-load row is safer than claiming a
           // missing file is downloaded.
-          return { repoId, hasVision: undefined, downloaded: [] };
+          return { repoId, hasVision: undefined, downloaded: [], sizes: [] };
         }
       }),
     ).then((groups) => {
@@ -4595,6 +4605,7 @@ export function HubModelPicker({
                 : [[group.repoId, group.hasVision] as const],
             ),
           ),
+          sizes: new Map(groups.flatMap((group) => group.sizes)),
         });
       }
     });
@@ -4646,14 +4657,45 @@ export function HubModelPicker({
     return rows;
   }, [pinnedIds, pinnedQuants, pinnedCachedModelRows]);
 
+  // A repo whose only quant is pinned moves its sole-quant row into Pinned instead of showing
+  // twice. Multi-quant repos stay, since their row picks the other quants.
+  const pinnedSoleQuantRows = useMemo(() => {
+    const rows = new Map<
+      string,
+      { repo: (typeof sortedCachedGguf)[number]; sole: SoleDownloadedQuant }
+    >();
+    for (const entry of pinnedQuants) {
+      const sole = soleQuants.quants.get(entry.repoId);
+      const repo = sortedCachedGguf.find((c) => c.repo_id === entry.repoId);
+      if (sole && repo && sole.variant.quant === entry.quant) {
+        rows.set(pinKey(entry.repoId, entry.quant), { repo, sole });
+      }
+    }
+    return rows;
+  }, [pinnedQuants, soleQuants.quants, sortedCachedGguf]);
+  const pinnedSoleQuantRepoIds = useMemo(
+    () => new Set([...pinnedSoleQuantRows.values()].map(({ repo }) => repo.repo_id)),
+    [pinnedSoleQuantRows],
+  );
+
   // Split downloaded models so non-Unsloth repos get their own "Other models" section above Fine-tuned.
   const unslothCachedGguf = useMemo(
-    () => visibleCachedGguf.filter((c) => isUnslothPublisherRepoId(c.repo_id)),
-    [visibleCachedGguf],
+    () =>
+      visibleCachedGguf.filter(
+        (c) =>
+          isUnslothPublisherRepoId(c.repo_id) &&
+          !pinnedSoleQuantRepoIds.has(c.repo_id),
+      ),
+    [visibleCachedGguf, pinnedSoleQuantRepoIds],
   );
   const otherCachedGguf = useMemo(
-    () => visibleCachedGguf.filter((c) => !isUnslothPublisherRepoId(c.repo_id)),
-    [visibleCachedGguf],
+    () =>
+      visibleCachedGguf.filter(
+        (c) =>
+          !isUnslothPublisherRepoId(c.repo_id) &&
+          !pinnedSoleQuantRepoIds.has(c.repo_id),
+      ),
+    [visibleCachedGguf, pinnedSoleQuantRepoIds],
   );
   const unslothCachedModelRows = useMemo(
     () =>
@@ -4904,6 +4946,33 @@ export function HubModelPicker({
       .sort((a, b) => rank(a.id) - rank(b.id));
   }, [connectedMatches, pinnedConnectedIds, pinnedConnectedSet]);
 
+  // Drag to reorder both Pinned groups. Drops go through the stores' drag session so they
+  // persist once.
+  const pinnedDrag = usePinnedRowDrag({
+    scope: "on-device",
+    order: () => pinnedRows.map((row) => row.key),
+    onDrop: (fromKey, drop) => {
+      const store = usePinnedModelsStore.getState();
+      const anchor = pinDropAnchor(store.pinned, fromKey, drop.key, drop.edge);
+      if (!anchor) return;
+      store.beginPinnedDrag();
+      store.movePinned(fromKey, anchor);
+      store.endPinnedDrag(true);
+    },
+  });
+  const pinnedConnectedDrag = usePinnedRowDrag({
+    scope: "connected",
+    order: () => pinnedConnectedRows.map((model) => model.id),
+    onDrop: (fromId, drop) => {
+      const store = usePinnedConnectedModelsStore.getState();
+      const anchor = pinDropAnchor(store.pinned, fromId, drop.key, drop.edge);
+      if (!anchor) return;
+      store.beginPinnedConnectedDrag();
+      store.movePinnedConnected(fromId, anchor);
+      store.endPinnedConnectedDrag(true);
+    },
+  });
+
   const connectedGroups = useMemo(() => {
     const byProvider = new Map<
       string,
@@ -4981,7 +5050,9 @@ export function HubModelPicker({
       keys.push(
         ...pinnedRows.map((row) =>
           row.entry
-            ? makeModelOptionKey("pinned-quant", row.key)
+            ? pinnedSoleQuantRows.has(row.key)
+              ? makeModelOptionKey("downloaded-gguf", row.entry.repoId)
+              : makeModelOptionKey("pinned-quant", row.key)
             : makeModelOptionKey("downloaded-model", row.model.repo_id),
         ),
       );
@@ -5100,6 +5171,7 @@ export function HubModelPicker({
     collapsedConnectedGroups,
     pinnedRows,
     pinnedCollapsed,
+    pinnedSoleQuantRows,
     downloadedCollapsed,
     fineTunedRows,
     fineTunedCollapsed,
@@ -5467,12 +5539,29 @@ export function HubModelPicker({
       selected && "bg-sidebar-accent",
     );
 
+  // A draggable Pinned row: faded while carried, lined where it would land.
+  const renderPinnedDragRow = (
+    drag: ReturnType<typeof usePinnedRowDrag>,
+    key: string,
+    row: ReactNode,
+  ) => {
+    const edge = drag.lineEdge(key);
+    return (
+      <div
+        key={key}
+        {...drag.rowProps(key)}
+        className={cn("relative", edge && PINNED_DROP_CUE[edge])}
+        style={drag.draggingKey === key ? { opacity: 0.4 } : undefined}
+      >
+        {row}
+      </div>
+    );
+  };
+
   // One connected model, through ModelRow like every On Device row, so the badges and the hover
   // gutter are the same components rather than a second set that drifts.
   const renderConnectedModelRow = (
     model: ExternalModelOption,
-    // Only pinned rows drag: the groups below are sorted, so a drop there could not be honoured.
-    draggable = false,
     // No heading above this row to name its connection: the pinned group, and the flat list the
     // name sort produces. Two connections can serve one model id, so the row has to say.
     headless = false,
@@ -5499,61 +5588,6 @@ export function HubModelPicker({
         // it takes the pill's left edge leftward rather than moving the name off that label.
         // The reserved leading slot used to put 23.5px of empty pill in front of every name.
         className={cn(downloadedRowShellClassName(isSelected), "ml-4")}
-        style={
-          draggingPinnedConnectedId === model.id ? { opacity: 0.4 } : undefined
-        }
-        draggable={draggable}
-        onDragStart={
-          draggable
-            ? (event) => {
-                event.dataTransfer.effectAllowed = "move";
-                // Firefox will not start a drag without data.
-                event.dataTransfer.setData("text/plain", model.id);
-                draggingPinnedConnectedRef.current = model.id;
-                setDraggingPinnedConnectedId(model.id);
-                // Reordering is live on dragenter; this is what a cancelled drag rolls back to.
-                beginPinnedConnectedDrag();
-              }
-            : undefined
-        }
-        onDragEnd={
-          draggable
-            ? () => {
-                draggingPinnedConnectedRef.current = null;
-                setDraggingPinnedConnectedId(null);
-                // Escape, or a release off-row, reaches dragend without a drop. After a drop the
-                // session is already committed and cleared, so this is a no-op.
-                endPinnedConnectedDrag(false);
-              }
-            : undefined
-        }
-        onDragOver={
-          draggable
-            ? (event) => {
-                if (draggingPinnedConnectedRef.current) event.preventDefault();
-              }
-            : undefined
-        }
-        onDragEnter={
-          draggable
-            ? () => {
-                const dragId = draggingPinnedConnectedRef.current;
-                if (dragId && dragId !== model.id) {
-                  movePinnedConnected(dragId, model.id);
-                }
-              }
-            : undefined
-        }
-        onDrop={
-          draggable
-            ? (event) => {
-                event.preventDefault();
-                draggingPinnedConnectedRef.current = null;
-                setDraggingPinnedConnectedId(null);
-                endPinnedConnectedDrag(true);
-              }
-            : undefined
-        }
       >
         <div className="min-w-0 flex-1">
           <ModelRow
@@ -5653,6 +5687,9 @@ export function HubModelPicker({
 
   // A pinned quant: repo name with the quant as a grey chip, loaded in one click.
   const renderPinnedQuantRow = (entry: { repoId: string; quant: string }) => {
+    // Its repo's own sole-quant row, with that row's load target and selection state.
+    const soleRow = pinnedSoleQuantRows.get(pinKey(entry.repoId, entry.quant));
+    if (soleRow) return renderSoleQuantGgufRow(soleRow.repo, soleRow.sole);
     const optionKey = makeModelOptionKey(
       "pinned-quant",
       pinKey(entry.repoId, entry.quant),
@@ -5669,6 +5706,13 @@ export function HubModelPicker({
       pinnedQuantValidation.visionByRepo.get(entry.repoId) === false
         ? false
         : undefined;
+    // Same size and vision mark as this quant's row below.
+    const sizeBytes = pinnedQuantValidation.sizes.get(
+      pinKey(entry.repoId, entry.quant),
+    );
+    const hasVision =
+      pinnedQuantValidation.visionByRepo.get(entry.repoId) ??
+      sortedCachedGguf.find((c) => c.repo_id === entry.repoId)?.has_vision;
     return (
       <div
         key={optionKey}
@@ -5681,8 +5725,11 @@ export function HubModelPicker({
             tooltipText={`${entry.repoId} (${ggufQuantDetailLabel(
               entry.quant,
             )})`}
-            meta="GGUF"
+            meta={
+              sizeBytes ? `GGUF · ${formatBytes(sizeBytes)}` : "GGUF"
+            }
             quantChip={ggufQuantChipLabel(entry.quant)}
+            showVision={hasVision}
             // Same runtime gate the sole-quant row applies: a pinned quant can belong to an image, video
             // or audio task, which load through the media planner, so the KV estimator would measure
             // the wrong runtime and fall back to the file size.
@@ -5776,7 +5823,7 @@ export function HubModelPicker({
     );
   };
 
-  // One quant on disk with "Show all quantizations" off: the expander would list just that
+  // One quant on disk with "All quantizations" off: the expander would list just that
   // quant, so the row carries it as a chip and loads it in one click.
   const renderSoleQuantGgufRow = (
     c: (typeof visibleCachedGguf)[number],
@@ -6346,7 +6393,11 @@ export function HubModelPicker({
                       {pinnedConnectedCollapsed
                         ? null
                         : pinnedConnectedRows.map((model) =>
-                            renderConnectedModelRow(model, true, true),
+                            renderPinnedDragRow(
+                              pinnedConnectedDrag,
+                              model.id,
+                              renderConnectedModelRow(model, true),
+                            ),
                           )}
                     </div>
                   ) : null}
@@ -6383,7 +6434,7 @@ export function HubModelPicker({
                         {collapsed
                           ? null
                           : group.models.map((model) =>
-                              renderConnectedModelRow(model, false, !headed),
+                              renderConnectedModelRow(model, !headed),
                             )}
                       </div>
                     );
@@ -6435,9 +6486,13 @@ export function HubModelPicker({
                     </ListLabel>
                     {!pinnedCollapsed &&
                       pinnedRows.map((row) =>
-                        row.entry
-                          ? renderPinnedQuantRow(row.entry)
-                          : renderDownloadedModelRow(row.model),
+                        renderPinnedDragRow(
+                          pinnedDrag,
+                          row.key,
+                          row.entry
+                            ? renderPinnedQuantRow(row.entry)
+                            : renderDownloadedModelRow(row.model),
+                        ),
                       )}
                   </>
                 ) : null}
