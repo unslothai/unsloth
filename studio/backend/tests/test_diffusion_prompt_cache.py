@@ -337,7 +337,7 @@ def test_load_installs_the_prompt_cache_and_unload_releases_it(fake_runtime, tmp
 
 
 def test_budget_respects_a_cgroup_memory_limit(monkeypatch):
-    # Pinned entries count against memory.max, so the budget is RAM/64 of the 2 GiB limit, not the host.
+    # Entries count against memory.max, so the budget is RAM/64 of the 2 GiB limit, not the host.
     from core.inference import diffusion_memory
 
     monkeypatch.delenv(prompt_cache._ENV_BUDGET_MB, raising = False)
