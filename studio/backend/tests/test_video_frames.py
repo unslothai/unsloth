@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""video_frames: the device-side uint8 conversion must hand the encoder exactly the frames diffusers' np / pil export
-produced, and give back the legacy object whenever it does not apply."""
+"""video_frames must match diffusers' np / pil export exactly, else fall back."""
 
 import types
 
@@ -28,7 +27,7 @@ def _clip(
 ):
     g = torch.Generator().manual_seed(seed)
     video = torch.rand((1, 3, frames, height, width), generator = g)
-    # Values sitting exactly on the rounding boundaries (k + 0.5) / 255 and the ends of the range.
+    # Exact rounding boundaries (k + 0.5) / 255 plus range ends.
     edge = (
         (torch.arange(height * width) % 256)
         .float()

@@ -1,16 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Turn a decoded clip into the uint8 RGB frames the mp4 encoder takes, on the device that decoded it.
-
-A video pipeline's np / pil postprocess copies the float clip to pageable host memory and rounds it on the CPU (PIL
-also builds one image per frame), then ``encode_video`` stacks and converts it again: about 1.4-1.9 s at 960x544x124
-and 3-7 s at 1344x768x141 on MiniMax-H3. Around the pipeline call, the processor's np / pil request instead runs the
-same ``(x * 255).round()`` in float32 on the GPU, slice by slice into pinned host memory, and hands back a CPU uint8
-(B, F, H, W, C) tensor, which ``encode_video`` takes as is. The frames are bit-identical: float32 multiply and
-round-half-to-even agree between numpy and torch, and the clip is range-checked first. A clip with any value outside
-[0, 1] (NaN included), or on a device other than CUDA / CPU, goes through the original postprocess unchanged.
-"""
+"""Convert a decoded clip to uint8 RGB frames on its own device, bit-identical to the np / pil export
+(float32 ``(x * 255).round()`` matches numpy); out-of-range clips or non CUDA / CPU devices use the original path."""
 
 from __future__ import annotations
 
@@ -52,7 +44,7 @@ def device_uint8(frames: Any) -> Optional[Any]:
         if pinned:
             torch.cuda.current_stream(device).synchronize()
     except torch.cuda.OutOfMemoryError:
-        # The np / pil paths copy straight to the host, so a card too full for one slice still renders.
+        # np / pil copy straight to host, so fall back rather than fail a render.
         return None
     return host if bool(in_range) else None
 
