@@ -300,3 +300,35 @@ def test_repeated_calls_keep_the_first_answer(tmp_path):
     ns["apply_accepts_loss_kwargs_fix"](model)
     ns["apply_accepts_loss_kwargs_fix"](_PeftLike(model))
     assert model.accepts_loss_kwargs is False
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        'CrossEntropyLoss(None, None, -100, None, "sum")(logits, labels)',
+        'torch.nn.functional.cross_entropy(logits, labels, None, None, -100, None, "none")',
+        "CrossEntropyLoss(size_average=False)(logits, labels)",
+        "CrossEntropyLoss(reduce=False)(logits, labels)",
+        "CrossEntropyLoss(*loss_args)(logits, labels)",
+    ],
+)
+def test_non_mean_reductions_in_any_spelling_keep_the_hf_default(call):
+    ns = _load()
+    source = f"def forward(self, logits, labels, **kwargs):\n    return {call}\n"
+    assert ns["_ce_calls_all_mean"](source) is False
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "CrossEntropyLoss()(logits, labels)",
+        "CrossEntropyLoss(None, None, -100)(logits, labels)",
+        'CrossEntropyLoss(ignore_index=-100, reduction="mean")(logits, labels)',
+        "torch.nn.functional.cross_entropy(logits, labels, None, None, -100)",
+        "CrossEntropyLoss(size_average=None, reduce=True)(logits, labels)",
+    ],
+)
+def test_mean_reductions_in_any_spelling_count_as_a_mean(call):
+    ns = _load()
+    source = f"def forward(self, logits, labels, **kwargs):\n    return {call}\n"
+    assert ns["_ce_calls_all_mean"](source) is True

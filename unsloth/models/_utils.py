@@ -4024,11 +4024,20 @@ def _ce_calls_all_mean(source):
         name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
         if name not in ("CrossEntropyLoss", "cross_entropy"):
             continue
+        # reduction is positional index 4 of CrossEntropyLoss and 6 of F.cross_entropy.
+        pos_reduction = 4 if name == "CrossEntropyLoss" else 6
+        if len(node.args) > pos_reduction or any(isinstance(a, ast.Starred) for a in node.args):
+            return False
         for kw in node.keywords:
             if kw.arg is None:
                 return False
             if kw.arg == "reduction" and not (
                 isinstance(kw.value, ast.Constant) and kw.value.value == "mean"
+            ):
+                return False
+            # Legacy size_average / reduce also switch off the mean.
+            if kw.arg in ("size_average", "reduce") and not (
+                isinstance(kw.value, ast.Constant) and kw.value.value in (None, True)
             ):
                 return False
     return True
