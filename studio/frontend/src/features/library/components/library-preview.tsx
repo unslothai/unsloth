@@ -12,7 +12,7 @@ import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { toast } from "@/lib/toast";
-import { useNavigate } from "@tanstack/react-router";
+import { useBlocker, useNavigate } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
 import { PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -368,6 +368,7 @@ export function LibraryPreview({
   );
   // The same draft, readable after an await: a save must not return while typing moved past it.
   const latestEdit = useRef(edit);
+  const lastSaved = useRef<{ itemId: string; text: string } | null>(null);
   const current = item && edit?.itemId === item.id ? edit : null;
   if (
     current?.savedAt !== undefined &&
@@ -412,6 +413,7 @@ export function LibraryPreview({
         sent = latest.text;
       }
       const savedAt = item.updatedAt;
+      lastSaved.current = { itemId: item.id, text: sent };
       setEdit((latest) =>
         latest?.itemId === item.id && latest.text === sent ? { ...latest, savedAt } : latest,
       );
@@ -446,6 +448,18 @@ export function LibraryPreview({
     }
     onOpenChange(open);
   }
+
+  // Back, or any link, closes the preview without handleOpenChange: save first, as closing does.
+  // Refs, not `unsaved`: a discard or a save just made has not rendered yet when it navigates.
+  useBlocker({
+    shouldBlockFn: async () => {
+      const latest = latestEdit.current;
+      const saved = lastSaved.current;
+      if (!latest || (saved?.itemId === latest.itemId && saved.text === latest.text)) return false;
+      return !(await save());
+    },
+    enableBeforeUnload: () => unsaved,
+  });
 
   function discardAndClose() {
     setCloseError(null);
