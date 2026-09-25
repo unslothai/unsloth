@@ -849,7 +849,11 @@ class _WallClockWatchdog:
             self.kicked = True
             self._deadline = self._clamp(time.monotonic() + self._budget_s)
 
-    def begin_step(self, name: str, budget_s: float | None = None) -> None:
+    def begin_step(
+        self,
+        name: str,
+        budget_s: float | None = None,
+    ) -> None:
         """Step `name` starts now: a kick that also records what is running.
 
         With `budget_s`, the step gets its own ceiling, which kicks inside the step cannot
@@ -1007,7 +1011,9 @@ def wait_until(
         if value:
             return value
         if time.monotonic() >= deadline:
-            raise TimeoutError(f"{what}: still not true after {timeout_s:g}s (last value {value!r})")
+            raise TimeoutError(
+                f"{what}: still not true after {timeout_s:g}s (last value {value!r})"
+            )
         if page is not None:
             page.wait_for_timeout(interval_s * 1000.0)
         else:
@@ -1034,7 +1040,12 @@ _SETTLED_JS = """
 _settle_nonce = [0]
 
 
-def wait_for_settled(locator: Any, *, frames: int = 3, timeout_ms: int = 10_000) -> None:
+def wait_for_settled(
+    locator: Any,
+    *,
+    frames: int = 3,
+    timeout_ms: int = 10_000,
+) -> None:
     """Wait for `locator.first` to stop moving: same box, nothing animating, `frames` frames running.
 
     The condition behind "wait N ms for the transition / reflow to finish": a resize, an
