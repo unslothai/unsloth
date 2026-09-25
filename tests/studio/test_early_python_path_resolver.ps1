@@ -64,6 +64,12 @@ foreach ($name in $wanted) {
     Invoke-Expression $fn[0].Extent.Text
 }
 
+# CI's Windows runners are elevated and their Python is not admin-owned, so the real elevation
+# gate declines it and every row below would skip, which is how these suites once passed on
+# Windows having tested nothing. The rung itself is what they test; the gate has its own rows
+# in test_early_python_path_resolver.ps1, driven by stubs. So run the rows below as unelevated.
+if ($env:OS -eq "Windows_NT") { function Test-StudioChildScriptDirectoryElevated { return $false } }
+
 
 # The emitted rung that used to sit above this one is gone, so nothing needs forcing off: the
 # interpreter IS the exact rung now, and the lexical answer is what sits below it.
@@ -682,7 +688,7 @@ try {
             Remove-Variable -Name VenvDir -ErrorAction SilentlyContinue
         }
     } finally {
-        Remove-Item Function:Test-StudioChildScriptDirectoryElevated -ErrorAction SilentlyContinue
+        function Test-StudioChildScriptDirectoryElevated { return $false }  # back to the unelevated default above
         if ($null -eq $savedOsElev) { Remove-Item Env:OS -ErrorAction SilentlyContinue } else { $env:OS = $savedOsElev }
         $script:StudioEarlyPythonProbed = $false
         $script:StudioEarlyPython = $null
@@ -775,7 +781,7 @@ try {
             Check "control: an unelevated run is unaffected by the file check" (
                 -not [string]::IsNullOrWhiteSpace((& $reprobe)))
         } finally {
-            Remove-Item Function:Test-StudioChildScriptDirectoryElevated -ErrorAction SilentlyContinue
+            function Test-StudioChildScriptDirectoryElevated { return $false }  # back to the unelevated default above
             Remove-Item Function:Get-Acl -ErrorAction SilentlyContinue
             $env:PATH = $savedPath2
             if ($null -eq $savedPF2) { Remove-Item Env:ProgramFiles -ErrorAction SilentlyContinue } else { $env:ProgramFiles = $savedPF2 }

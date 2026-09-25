@@ -45,6 +45,12 @@ foreach ($name in @(
     Invoke-Expression $fn[0].Extent.Text
 }
 
+# CI's Windows runners are elevated and their Python is not admin-owned, so the real elevation
+# gate declines it and every row below would skip, which is how these suites once passed on
+# Windows having tested nothing. The rung itself is what they test; the gate has its own rows
+# in test_early_python_path_resolver.ps1, driven by stubs. So run the rows below as unelevated.
+if ($env:OS -eq "Windows_NT") { function Test-StudioChildScriptDirectoryElevated { return $false } }
+
 $script:StudioEarlyPythonProbed = $false
 $script:StudioEarlyPython = $null
 if (-not (Get-StudioEarlyPython)) {
