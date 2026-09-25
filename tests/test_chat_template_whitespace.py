@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """Expected strings: transformers apply_chat_template renders from unsloth/Starling-LM-7B-beta,
 01-ai/Yi-6B-Chat and LiquidAI/LFM2(.5)-1.2B, hard coded for offline runs."""
 
