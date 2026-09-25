@@ -23,7 +23,6 @@ _WSL_TERMINAL_MARKERS = ("\\system32\\bash.exe", "\\windowsapps\\bash.exe")
 
 
 def _studio_ui_policy() -> dict:
-    """Return Studio's explicit ProcessContainer UI policy."""
     return {
         "ui": {
             "disable": False,
