@@ -1771,6 +1771,7 @@ _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
 # cancel() (#7617), so teardown abandons the task rather than hold the response, and
 # the process-wide slot, open forever.
 _TEARDOWN_TASK_STOP_TIMEOUT_S = 5.0
+_TEARDOWN_TASK_RECANCEL_S = 0.01
 # Idle window before a local tool-loop stream emits an SSE keepalive comment
 # (e.g. prompt prefill between tool iterations). A second layer atop the
 # tool_stream_exec heartbeats, keeping proxies (Cloudflare drops idle at ~100s).
@@ -3471,6 +3472,7 @@ from models.inference import (
     OpenAIContainerSummary,
 )
 from core.inference.anthropic_compat import (
+    TOOL_RESULT_IMAGE_OMITTED,
     anthropic_messages_to_openai,
     anthropic_reference_block_text,
     fold_tool_results_into_user,
@@ -3660,6 +3662,7 @@ from utils.utils import is_hf_authentication_error, safe_error_detail, log_and_h
 
 import io
 import base64
+import zlib
 
 from utils.current_date_prompt_settings import (
     contains_current_date_prompt_line,
@@ -5003,11 +5006,19 @@ async def _await_cancel_or_disconnect_then_close_client(
 async def _stop_local_disconnect_cancel_watcher(
     watcher, timeout_s: float = _TEARDOWN_TASK_STOP_TIMEOUT_S
 ) -> None:
-    # Bounded: this runs in the stream's finally, so awaiting the watcher outright would let a
-    # wedged poll loop hold the response open forever. asyncio.wait neither cancels nor re-raises,
-    # and an abandoned watcher owns no resources.
-    watcher.cancel()
-    done, _pending = await asyncio.wait({watcher}, timeout = timeout_s)
+    # Request.is_disconnected() can swallow cancel() (#7617). Retry so successful
+    # passthroughs don't wait out the teardown timeout before their first byte (#11809).
+    # Keep the wait bounded in case the watcher never exits.
+    deadline = time.monotonic() + timeout_s
+    done = set()
+    while not done:
+        watcher.cancel()
+        remaining_s = deadline - time.monotonic()
+        if remaining_s <= 0:
+            break
+        done, _pending = await asyncio.wait(
+            {watcher}, timeout = min(remaining_s, _TEARDOWN_TASK_RECANCEL_S)
+        )
     if not done:
         # _wait_preheader_cancel has no exception handler, so a raise after we stop
         # waiting would surface as "Task exception was never retrieved".
@@ -7296,6 +7307,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
     fields.update(
         # Not MLX, so the MLX runtime fields report as absent.
         is_mlx = False,
+        is_npu = False,
         mlx_kv_bits = None,
         mlx_kv_bits_requested = None,
         mlx_kv_quant_eligibility = None,
@@ -8523,6 +8535,25 @@ def _messages_have_image(messages) -> bool:
     )
 
 
+def _omit_tool_images(messages) -> None:
+    for message in messages:
+        if message.role != "tool" or not _messages_have_image((message,)):
+            continue
+        parts = [
+            TextContentPart(type = "text", text = TOOL_RESULT_IMAGE_OMITTED)
+            if isinstance(part, ImageContentPart)
+            else part
+            for part in message.content
+        ]
+        # Text-only is flattened, as _responses_tool_output_content and anthropic_messages_to_openai
+        # do: some templates render a part list as an empty tool result.
+        message.content = (
+            "\n".join(part.text for part in parts)
+            if all(isinstance(part, TextContentPart) for part in parts)
+            else parts
+        )
+
+
 def _messages_have_remote_image(messages) -> bool:
     return any(
         isinstance(m.content, list)
@@ -8890,7 +8921,15 @@ async def _no_model_loaded_error(
     """
     from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
     from core.inference.local_model_resolver import resolve_local_gguf
+    from core.inference.npu_backend import peek_npu_backend
 
+    _npu = peek_npu_backend()
+    _npu_model = _npu.loaded_model if _npu is not None else None
+    if _npu_model is not None:
+        return 400, (
+            f"The loaded NPU model ({_npu_model.model_path}) serves "
+            "/v1/chat/completions only. Load a GGUF model to use this endpoint."
+        )
     named = (
         requested_model
         if isinstance(requested_model, str)
@@ -9057,6 +9096,14 @@ def _resident_id_is_namespaced() -> bool:
     return any("/" in (public_model_id(c) or "") for c in candidates if c)
 
 
+def _resident_npu_model():
+    """The NPU model serving chat, or None. It answers to its own names only."""
+    from core.inference.npu_backend import peek_npu_backend
+
+    npu = peek_npu_backend()
+    return npu.loaded_model if npu is not None else None
+
+
 def _loaded_satisfies(requested: str) -> bool:
     """Whether what is serving right now actually answers to *requested*.
 
@@ -9065,6 +9112,9 @@ def _loaded_satisfies(requested: str) -> bool:
     """
     from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
+    npu_model = _resident_npu_model()
+    if npu_model is not None:
+        return requested in (npu_model.model_path, npu_model.id)
     base, variant = split_model_ref(requested)
     llama_backend = get_llama_cpp_backend()
     if getattr(llama_backend, "is_loaded", False):
@@ -9117,6 +9167,9 @@ def _loaded_identity_satisfies(requested: str) -> bool:
     """
     from core.inference.openai_auto_download import split_model_ref
 
+    npu_model = _resident_npu_model()
+    if npu_model is not None:
+        return requested in (npu_model.model_path, npu_model.id)
     base, _ = split_model_ref(requested)
     llama_backend = get_llama_cpp_backend()
     if getattr(llama_backend, "is_loaded", False):
@@ -9413,6 +9466,23 @@ async def _reject_unservable_model(
         warm_index_soon,
     )
     from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
+    from core.inference.npu_backend import is_npu_model_path
+
+    if is_npu_model_path(requested_model) and not await asyncio.to_thread(
+        _loaded_satisfies, requested_model
+    ):
+        message = f"The NPU model '{requested_model}' is not loaded. Load it in Unsloth Studio."
+        path = getattr(getattr(fastapi_request, "url", None), "path", None)
+        raise HTTPException(
+            status_code = 404,
+            detail = (
+                error_body_for_path(
+                    path, message, status = 404, code = "model_not_found", param = "model"
+                )
+                if isinstance(path, str)
+                else message
+            ),
+        )
 
     still_indexing = False
     try:
@@ -9421,6 +9491,7 @@ async def _reject_unservable_model(
         if not (
             get_llama_cpp_backend().is_loaded
             or getattr(await asyncio.to_thread(get_inference_backend), "active_model_name", None)
+            or _resident_npu_model() is not None
         ):
             return
         # Refresh in the background and read the index as-is: scanning here would stall the
@@ -9616,6 +9687,7 @@ async def _maybe_auto_switch_model(
     image_preflight: Optional[dict] = None,
     require_speech: bool = False,
     speech_budget: Optional[dict] = None,
+    tool_images_only: bool = False,
 ) -> None:
     """Load a downloaded local model named by an OpenAI request when auto-switch is on.
 
@@ -9644,6 +9716,10 @@ async def _maybe_auto_switch_model(
     :func:`_preflight_audio_for_switch`. ``image_preflight`` does the same for
     non-GGUF image count and byte validation.
     """
+    # A text-only GGUF reads tool-result images as a note, so only audio or video needs its mmproj.
+    gguf_requires_vision = (
+        (require_audio_input or require_video) if tool_images_only else require_vision
+    )
     # The reload-only sentinel means an omitted model, not a name.
     named_model = requested_model if requested_model != _RELOAD_ONLY_MODEL else None
     if account_access.managed_account():
@@ -9672,7 +9748,7 @@ async def _maybe_auto_switch_model(
         local_gguf_companion_roots,
         local_gguf_companion_state,
         local_target_is_gguf,
-        resolve_local_gguf,
+        resolve_local_gguf_for_switch,
         resolve_trusted_cached_local_gguf,
         warm_index_soon,
     )
@@ -9791,10 +9867,8 @@ async def _maybe_auto_switch_model(
         repo_level_companion_resolution = False
         stashed_gguf_companion_roots: tuple[str, ...] = ()
         if auto_switch_on and not reload_only:
-            # Fresh hits and entries retained across an additions-only download are
-            # safe to use immediately. An expired/config-invalidated hit, a cold
-            # cache, and every miss must refresh before an unrelated resident model
-            # can answer or an entry from a removed scan root can trigger a switch.
+            # Use trusted hits immediately. The switch resolver refreshes stale hits
+            # and unconfirmed misses, keeping removed scan roots out of switches.
             resolved = resolve_trusted_cached_local_gguf(
                 requested_model,
                 include_companion_scope = True,
@@ -9803,7 +9877,7 @@ async def _maybe_auto_switch_model(
                 warm_index_soon()
             else:
                 resolved = await asyncio.to_thread(
-                    resolve_local_gguf,
+                    resolve_local_gguf_for_switch,
                     requested_model,
                     include_companion_scope = True,
                 )
@@ -9815,7 +9889,7 @@ async def _maybe_auto_switch_model(
                     fastapi_request,
                     # GGUF carries both from one mmproj, so the download guard takes
                     # either need; splitting them here would fetch a text-only repo.
-                    require_vision = require_vision or require_audio_input,
+                    require_vision = gguf_requires_vision or require_audio_input,
                     require_speech = require_speech,
                     current_subject = current_subject,
                 )
@@ -9997,14 +10071,17 @@ async def _maybe_auto_switch_model(
         target_requires_image = require_image
         if require_audio_input and not target_is_gguf and audio_preflight is not None:
             target_requires_image = bool(audio_preflight.get("has_image"))
+        target_requires_vision = gguf_requires_vision if target_is_gguf else require_vision
+        if tool_images_only and target_is_gguf:
+            target_requires_image = False
         if (
-            (require_vision or require_audio_input)
+            (target_requires_vision or require_audio_input)
             and resolved is not None
             and not await asyncio.to_thread(
                 _target_accepts_request_input,
                 target_id,
                 target_is_gguf,
-                require_vision,
+                target_requires_vision,
                 require_audio_input,
                 variant,
                 target_requires_image,
@@ -10428,7 +10505,11 @@ def _loaded_slot_ident() -> Optional[str]:
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_loaded and llama_backend.model_identifier:
         return str(llama_backend.model_identifier)
-    return None
+    from core.inference.npu_backend import peek_npu_backend
+
+    npu = peek_npu_backend()
+    npu_model = npu.loaded_model if npu is not None else None
+    return npu_model.model_path if npu_model is not None else None
 
 
 def release_chat_gpu_claim() -> bool:
@@ -15771,6 +15852,118 @@ def _require_resolved_base_access(config) -> None:
         account_access.require_model_access(base.strip())
 
 
+def _npu_load_response(resident, status: str) -> LoadResponse:
+    model = resident.model
+    return LoadResponse(
+        status = status,
+        model = model.model_path,
+        display_name = model.id,
+        is_npu = True,
+        is_vision = model.vision,
+        inference = load_inference_config(model.id),
+        context_length = resident.context_length,
+        max_context_length = model.max_context_length,
+        native_context_length = model.max_context_length,
+        context_length_enforced = True,
+        supports_reasoning = model.reasoning,
+        reasoning_style = "enable_thinking",
+        supports_tools = model.tools,
+    )
+
+
+async def _unload_npu_before_local_load() -> None:
+    """Unload the NPU model before loading another local model."""
+    from core.inference.npu_backend import peek_npu_backend
+
+    npu = peek_npu_backend()
+    if npu is not None and npu.is_loaded:
+        logger.info("Unloading the NPU model before loading a local model")
+        await asyncio.to_thread(npu.unload)
+
+
+async def _load_npu_model(
+    request: LoadRequest,
+    *,
+    current_request_counted: bool,
+    on_reload_confirmed,
+    load_cancel_event: Optional[threading.Event],
+) -> LoadResponse:
+    """``/load`` for a ``lemonade:<id>`` model: the same swap rules as any local model."""
+    from core.inference.npu_backend import (
+        NpuError,
+        NpuLoadCancelled,
+        get_npu_backend,
+        model_id_from_path,
+    )
+    from core.inference.llama_keepwarm import note_model_unloaded
+
+    if account_access.managed_account():
+        raise HTTPException(
+            status_code = 403,
+            detail = "The AMD NPU runtime is available to this installation's owner only.",
+        )
+    npu = get_npu_backend()
+    try:
+        model_id = model_id_from_path(request.model_path)
+    except NpuError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+    requested_ctx = (
+        request.max_seq_length if request.max_seq_length and request.max_seq_length > 0 else None
+    )
+    resident = npu.resident()
+    if (
+        resident is not None
+        and resident.model.id == model_id
+        and not request.force_reload
+        # Exact: Auto after a pin, or a pin after Auto, is a different load.
+        and requested_ctx == resident.requested_context_length
+    ):
+        account_access.join_resident("chat")
+        return _npu_load_response(resident, "already_loaded")
+    try:
+        await asyncio.to_thread(npu.loadable_model, model_id)
+    except NpuError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+    if load_cancel_event is not None and load_cancel_event.is_set():
+        raise HTTPException(status_code = 409, detail = "Model load cancelled")
+    if on_reload_confirmed is not None:
+        on_reload_confirmed(cancel = True)
+        if request.force_cancel_active:
+            await _wait_for_model_switch_idle(
+                current_request_counted = current_request_counted,
+                timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
+            )
+    _set_preview_resident(None)
+    await _unload_llama_before_standard_load(get_llama_cpp_backend())
+    backend = _peek_inference_backend()
+    if backend is not None and backend.active_model_name:
+        logger.info(
+            f"Unloading Unsloth model '{backend.active_model_name}' before loading on the NPU"
+        )
+        await asyncio.to_thread(backend.unload_model, backend.active_model_name)
+    # Nothing to reload once idle: this model is not the one the idle stash names.
+    note_model_unloaded()
+    await asyncio.to_thread(release_chat_gpu_claim)
+    if load_cancel_event is not None and load_cancel_event.is_set():
+        raise HTTPException(status_code = 409, detail = "Model load cancelled")
+    try:
+        await asyncio.to_thread(npu.load, model_id, requested_ctx)
+    except NpuLoadCancelled:
+        raise HTTPException(status_code = 409, detail = "Model load cancelled") from None
+    except NpuError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+    if load_cancel_event is not None and load_cancel_event.is_set():
+        # Cancelled before npu.load marked itself in flight, so cancel_load found nothing to stop.
+        await asyncio.to_thread(npu.unload)
+        raise HTTPException(status_code = 409, detail = "Model load cancelled")
+    resident = npu.resident()
+    if resident is None:
+        raise HTTPException(status_code = 409, detail = "Model load cancelled")
+    account_access.publish_resident("chat", request.model_path)
+    api_monitor.record_lifecycle(event = "load", model = request.model_path)
+    return _npu_load_response(resident, "loaded")
+
+
 async def _load_model_impl(
     request: LoadRequest,
     fastapi_request: Request,
@@ -15784,6 +15977,15 @@ async def _load_model_impl(
     anonymous_hf_access: bool = False,
     speech_codec_path: Optional[str] = None,
 ):
+    from core.inference.npu_backend import is_npu_model_path
+
+    if is_npu_model_path(request.model_path):
+        return await _load_npu_model(
+            request,
+            current_request_counted = current_request_counted,
+            on_reload_confirmed = on_reload_confirmed,
+            load_cancel_event = load_cancel_event,
+        )
     native_access_deferred = _defers_access_to_native_grant(request)
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
@@ -16560,6 +16762,7 @@ async def _load_model_impl(
                     # ownership so a later preview for another checkpoint is not 503'd.
                     _restore_marker_if_prior_preview_still_resident()
                     raise
+            await _unload_npu_before_local_load()
 
             # Every rejection and source check has completed. The immutable
             # intent resolved before teardown is now the only launch input.
@@ -16718,6 +16921,7 @@ async def _load_model_impl(
             # later preview for another checkpoint is not 503'd against it.
             _restore_marker_if_prior_preview_still_resident()
             raise
+        await _unload_npu_before_local_load()
 
         # Free the export's VRAM, but only when this load wants VRAM: a CPU load masks
         # the accelerators, so killing the user's export frees nothing it needs.
@@ -18382,8 +18586,52 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
     # next /v1 request can't resurrect this model. The idle loop unloads via the
     # backend directly (not this route), so clearing here never fights keep-warm.
     from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
+    from core.inference.npu_backend import MODEL_PREFIX, is_npu_model_path, peek_npu_backend
 
     try:
+        if is_npu_model_path(request.model_path):
+            if account_access.managed_account():
+                # Only the owner loads NPU models, so no managed account shares or stops one.
+                raise HTTPException(status_code = 404, detail = "Model not found")
+            npu = peek_npu_backend()
+            requested_id = request.model_path[len(MODEL_PREFIX) :].strip()
+            if request.cancel_load_request_id is not None:
+                # Bound to that attempt: an early cancel leaves a tombstone, a stale one stops nothing newer.
+                attempt, is_running = _cancel_scoped_load_attempt(request, current_subject)
+                if attempt is not None and is_running:
+                    try:
+                        if npu is not None and await asyncio.to_thread(
+                            npu.cancel_load, requested_id
+                        ):
+                            logger.info(
+                                f"Cancelled scoped in-flight NPU load: {request.model_path}"
+                            )
+                    finally:
+                        attempt.cancel_complete.set()
+                return UnloadResponse(status = "unloaded", model = request.model_path)
+            # "Stop loading": /load holds the lifecycle gate until /v1/load returns.
+            if npu is not None and await asyncio.to_thread(npu.cancel_load, requested_id):
+                logger.info(f"Cancelled in-flight NPU load: {request.model_path}")
+                return UnloadResponse(status = "unloaded", model = request.model_path)
+            async with inference_lifecycle_gate():
+                # Only the named model: another tab may have replaced it since.
+                npu_model = npu.loaded_model if npu is not None else None
+                if npu_model is not None and npu_model.id == requested_id:
+                    _raise_or_cancel_active_generations(
+                        force = request.force_cancel_active, action = "Unloading the model"
+                    )
+                    await _drain_and_recancel_before_teardown(
+                        force = request.force_cancel_active, action = "Unloading the model"
+                    )
+                    await asyncio.to_thread(npu.unload)
+                    note_model_unloaded()
+                    account_access.clear_resident("chat")
+                    api_monitor.record_lifecycle(
+                        event = "unload", model = request.model_path, reason = "manual"
+                    )
+                    logger.info(f"Unloaded NPU model: {request.model_path}")
+            return UnloadResponse(status = "unloaded", model = request.model_path)
+
         # Hidden Audio cleanup is cancellation, not a manual eject. Bind it to the
         # exact client load attempt so a delayed request can never stop a newer
         # same-model load or unload a model that has already become resident.
@@ -19152,6 +19400,31 @@ async def get_status(current_subject: str):
         _tracked_loading_id = _loading_public_id(_tracked_loading_id) or ""
         _loading = [_tracked_loading_id] if _tracked_loading_id else []
         backend = _peek_inference_backend()
+
+        from core.inference.npu_backend import peek_npu_backend
+
+        _npu = peek_npu_backend()
+        _npu_resident = _npu.resident() if _npu is not None else None
+        if _npu_resident is not None:
+            _npu_model = _npu_resident.model
+            return InferenceStatusResponse(
+                active_model = _npu_model.id,
+                model_identifier = _npu_model.model_path,
+                is_npu = True,
+                is_vision = _npu_model.vision,
+                loading = _loading,
+                loaded = [_npu_model.model_path],
+                inference = load_inference_config(_npu_model.id),
+                context_length = _npu_resident.context_length,
+                requested_context_length = _npu_resident.requested_context_length,
+                max_context_length = _npu_model.max_context_length,
+                native_context_length = _npu_model.max_context_length,
+                context_length_enforced = True,
+                supports_reasoning = _npu_model.reasoning,
+                reasoning_style = "enable_thinking",
+                supports_tools = _npu_model.tools,
+                llama_cpp_supports_mtp = _supports_mtp,
+            )
 
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:
@@ -23023,16 +23296,91 @@ def _safe_retry_after_header(value: Any) -> Optional[str]:
     return candidate
 
 
+def _sse_line_finishes(line: str) -> bool:
+    """Whether an OpenAI stream line carries a choice's finish_reason."""
+    raw = line[len("data:") :].strip() if line.startswith("data:") else line
+    try:
+        chunk = json.loads(raw)
+    except ValueError:
+        return False
+    return isinstance(chunk, dict) and any(
+        isinstance(choice, dict) and choice.get("finish_reason")
+        for choice in chunk.get("choices") or ()
+    )
+
+
+class _TurnFinish:
+    """Whether a stream's last provider turn carried a finish_reason (the tool loop relays intermediate ones)."""
+
+    def __init__(self) -> None:
+        self.turn = False
+        self.last: bool | None = None
+
+    def see(self, line: str) -> None:
+        if not self.turn:
+            self.turn = _sse_line_finishes(line)
+
+    def end_turn(self) -> None:
+        self.last, self.turn = self.turn, False
+
+    @property
+    def finished(self) -> bool:
+        return self.turn or bool(self.last)
+
+
+async def _stop_on_cancel(agen, cancel_event: threading.Event):
+    """Yield from ``agen`` until ``cancel_event`` is set, even while it waits for a frame.
+
+    A managed runtime can prefill for seconds before its first frame, and a check between frames
+    leaves a cancelled generation holding the model through a swap's teardown.
+    """
+
+    async def _cancelled() -> None:
+        while not cancel_event.is_set():
+            await asyncio.sleep(0.1)
+
+    waiter = asyncio.ensure_future(_cancelled())
+    step = None
+    try:
+        while True:
+            step = asyncio.ensure_future(agen.__anext__())
+            done, _ = await asyncio.wait({step, waiter}, return_when = asyncio.FIRST_COMPLETED)
+            if step not in done:
+                return
+            try:
+                line = step.result()
+            except StopAsyncIteration:
+                return
+            yield line
+    finally:
+        for task in (step, waiter):
+            if task is not None and not task.done():
+                # Cancelling the pending read closes the upstream response inside ``agen``.
+                task.cancel()
+                await asyncio.gather(task, return_exceptions = True)
+        try:
+            await agen.aclose()
+        except RuntimeError:
+            pass
+
+
 async def _proxy_to_external_provider(
     payload: ChatCompletionRequest,
     request: Request,
     current_subject: Optional[str] = None,
+    *,
+    managed = None,
+    early_close_status = None,
 ) -> Response:
     """
     Proxy a chat completion request to an external LLM provider.
 
     Resolves provider config (DB or registry), decrypts the API key, and returns
     either one Chat Completion JSON object or an OpenAI-compatible SSE stream.
+
+    Managed upstreams supply server-owned routing and credentials. Their streams are
+    tracked for cancellation during model swaps. ``early_close_status`` names the monitor
+    status for a consumer closing the stream before it ends ("cancelled" when omitted).
     """
     # Resolve provider type and base URL
     provider_type = payload.provider_type
@@ -23040,7 +23388,11 @@ async def _proxy_to_external_provider(
     api_type = payload.provider_api_type
     saved_provider_snapshot: Optional[dict] = None
 
-    if payload.provider_id and not payload.encrypted_api_key:
+    if managed is not None:
+        provider_type = managed.provider_type
+        base_url = managed.base_url
+        api_type = "chat_completions"
+    elif payload.provider_id and not payload.encrypted_api_key:
         # Saved-provider SQLite reads must not block the event loop.
         config = await asyncio.to_thread(providers_db.get_provider, payload.provider_id)
         if config is None:
@@ -23079,6 +23431,7 @@ async def _proxy_to_external_provider(
         # native translator, so entering the loop for them would advertise tools
         # the model is never shown and finish as if none were selected.
         provider_model_runs_local_tools(provider_type, payload.external_model or payload.model)
+        and (managed is None or managed.supports_tools)
         and payload.stream is True
         and _explicit_studio_tool_loop_requested(payload)
         # A selection of purely hosted names is the provider's tool envelope, not
@@ -23127,10 +23480,8 @@ async def _proxy_to_external_provider(
                 param = "confirm_tool_calls",
             ),
         )
-    # Fall back to registry default base URL. The registry lookup is checked on
-    # its own: a caller-supplied base_url used to make an unknown provider_type
-    # pass straight through to the proxy.
-    if get_provider_info(provider_type) is None:
+    _provider_info_entry = get_provider_info(provider_type)
+    if _provider_info_entry is None or (managed is None and _provider_info_entry.get("managed")):
         raise HTTPException(
             status_code = 400,
             detail = f"Unknown provider type: {provider_type}",
@@ -23143,11 +23494,12 @@ async def _proxy_to_external_provider(
             detail = f"Base URL is required for provider type: {provider_type}",
         )
     # Validate the proxy destination before the API key is decrypted, so a
-    # refused target never sees a credential.
-    try:
-        base_url = validate_provider_base_url(base_url)
-    except ValueError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc)) from None
+    # refused target never sees a credential. A managed upstream is Unsloth's own loopback.
+    if managed is None:
+        try:
+            base_url = validate_provider_base_url(base_url)
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc)) from None
 
     if provider_type == "openai_codex":
         from core.inference.openai_codex_auth import (
@@ -23596,7 +23948,9 @@ async def _proxy_to_external_provider(
         )
 
     api_key: Optional[str] = None
-    if saved_provider_snapshot is not None:
+    if managed is not None:
+        api_key = managed.api_key
+    elif saved_provider_snapshot is not None:
         async with provider_config_guard(payload.provider_id):
             current = await asyncio.to_thread(providers_db.get_provider, payload.provider_id)
             routing_fields = ("provider_type", "base_url", "api_type", "is_enabled")
@@ -23632,7 +23986,7 @@ async def _proxy_to_external_provider(
             ),
         )
 
-    model = payload.external_model or payload.model
+    model = managed.model if managed is not None else (payload.external_model or payload.model)
     if model == "default":
         raise HTTPException(
             status_code = 400,
@@ -23643,7 +23997,9 @@ async def _proxy_to_external_provider(
     from core.inference.providers import get_provider_info as _get_provider_info
 
     _pinfo = _get_provider_info(provider_type) or {}
-    _supports_vision = _pinfo.get("supports_vision", False)
+    _supports_vision = (
+        managed.supports_vision if managed is not None else _pinfo.get("supports_vision", False)
+    )
     _external_promoted_parts: list = []
     chat_messages = await _build_external_messages_async(
         payload.messages,
@@ -23667,9 +24023,9 @@ async def _proxy_to_external_provider(
             endpoint = request.url.path,
             via_api_key = _request_used_api_key(request),
             method = request.method,
-            model = model,
+            model = managed.public_model if managed is not None else model,
             prompt = _monitor_prompt_from_messages(payload.messages),
-            context_length = None,
+            context_length = managed.context_length if managed is not None else None,
             subject = current_subject,
         )
 
@@ -23678,19 +24034,21 @@ async def _proxy_to_external_provider(
         base_url = base_url,
         api_key = api_key,
         api_type = api_type,
+        **({"managed_loopback": True} if managed is not None else {}),
     )
     _non_stream_custom_responses = (
         provider_type == "custom" and api_type == "responses" and payload.stream is False
     )
 
-    # Schema defaults are non-None (20, 0.01, 1.0) for the local path, so only
-    # `model_fields_set` separates "asked for 20" from "said nothing", and the provider keeps
-    # its own default for the latter. Read before ANY write: a setattr marks a field explicit.
-    _top_p_explicit = payload.top_p if "top_p" in payload.model_fields_set else None
-    _top_k_explicit = payload.top_k if "top_k" in payload.model_fields_set else None
+    # Always send defaults to FastFlowLM, which otherwise reuses the previous request's values.
+    _always_send = managed is not None
+    _top_p_explicit = payload.top_p if _always_send or "top_p" in payload.model_fields_set else None
+    _top_k_explicit = payload.top_k if _always_send or "top_k" in payload.model_fields_set else None
     _min_p_explicit = payload.min_p if "min_p" in payload.model_fields_set else None
     _repetition_penalty_explicit = (
-        payload.repetition_penalty if "repetition_penalty" in payload.model_fields_set else None
+        payload.repetition_penalty
+        if _always_send or "repetition_penalty" in payload.model_fields_set
+        else None
     )
 
     # Unsloth-owned tool loop for every non-Codex provider that declares the
@@ -23772,6 +24130,8 @@ async def _proxy_to_external_provider(
             fast_mode = payload.fast_mode,
             response_format = _extract_response_format(payload),
         )
+        # A managed runtime that drops a reply still closes with [DONE]; it is cut short, not done.
+        managed_finish = _TurnFinish()
         if run_studio_tool_loop:
             # The Unsloth loop owns the tool surface for this turn. The caller's
             # own catalog is dropped for the same reason the Codex path drops it
@@ -23793,6 +24153,12 @@ async def _proxy_to_external_provider(
                 else provider_type
             )
             loop_hosted_tools = hosted_only_tools(hosted_provider_type, payload.enabled_tools)
+
+            def _end_provider_turn() -> None:
+                managed_finish.end_turn()
+                if not _ui_events:
+                    _tool_call_stripper.end_turn()
+
             gen = stream_with_studio_tools(
                 OAICompatTransport(
                     client,
@@ -23836,7 +24202,7 @@ async def _proxy_to_external_provider(
                     # Matches the strip below: only a headerless caller has its calls
                     # withheld, so only it needs a healed one the wire never carried flagged.
                     on_withheld_tool_call = (None if _ui_events else _tool_call_stripper.arm),
-                    on_provider_turn_end = (None if _ui_events else _tool_call_stripper.end_turn),
+                    on_provider_turn_end = _end_provider_turn,
                 ),
                 cancel_event = cancel_event,
             )
@@ -23851,11 +24217,33 @@ async def _proxy_to_external_provider(
                 stream = payload.stream,
                 **_provider_kwargs,
             )
+        if managed is not None:
+            # Stopping the read stops FastFlowLM, which a model swap is waiting on.
+            gen = _stop_on_cancel(gen, cancel_event)
         disconnect_task = asyncio.create_task(_watch_disconnect()) if run_studio_tool_loop else None
+
+        def _managed_cut_short() -> bool:
+            return (
+                managed is not None
+                and not stream_failed
+                and not managed_finish.finished
+                and not cancel_event.is_set()
+            )
+
+        def _fail_cut_short() -> str:
+            api_monitor.fail(monitor_id, _NPU_CUT_SHORT_ERROR["message"])
+            return "data: " + json.dumps({"error": dict(_NPU_CUT_SHORT_ERROR)}) + "\n\n"
+
         try:
             sent_done = False
             stream_failed = False
             async for line in gen:
+                if _is_openai_sse_done(line) and _managed_cut_short():
+                    # Before [DONE] reaches the monitor, which would record the reply completed.
+                    yield _fail_cut_short()
+                    stream_failed = True
+                if managed is not None:
+                    managed_finish.see(line)
                 monitor_event = _monitor_openai_sse_line(monitor_id, line)
                 if monitor_event is None:
                     try:
@@ -23901,14 +24289,37 @@ async def _proxy_to_external_provider(
             # the GGUF passthrough places its own synthetic finish.
             _owed = _tool_call_stripper.owed_terminal_chunk()
             if _owed is not None and not stream_failed:
+                managed_finish.see(_owed)
                 _monitor_openai_sse_line(monitor_id, _owed)
                 yield f"{_owed}\n\n"
+            if not sent_done and _managed_cut_short():
+                yield _fail_cut_short()
+                stream_failed = True
+            if managed is not None and cancel_event.is_set() and not sent_done:
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "id": f"chatcmpl-{uuid.uuid4().hex}",
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": model,
+                            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                        }
+                    )
+                    + "\n\n"
+                )
             if not sent_done:
                 if not stream_failed:
                     _monitor_openai_sse_line(monitor_id, "data: [DONE]")
                 yield "data: [DONE]\n\n"
         except asyncio.CancelledError:
             api_monitor.finish(monitor_id, "cancelled")
+            raise
+        except GeneratorExit:
+            api_monitor.finish(
+                monitor_id, early_close_status() if early_close_status else "cancelled"
+            )
             raise
         except Exception as exc:
             logger.error("external_provider.stream_error", error = str(exc))
@@ -23944,16 +24355,18 @@ async def _proxy_to_external_provider(
             await client.close()
 
     def _tracked_stream():
-        # Only the tool loop is registered: it can run for minutes and a /load
-        # needs to know it would interrupt a chat. The plain proxy stays
-        # untracked, as it was before.
-        if not run_studio_tool_loop:
+        if not run_studio_tool_loop and managed is None:
             return _stream()
 
         async def _wrapped():
+            inner = _stream()
             with _TrackedCancel.for_payload(cancel_event, payload, *cancel_keys):
-                async for chunk in _stream():
-                    yield chunk
+                try:
+                    async for chunk in inner:
+                        yield chunk
+                finally:
+                    # Close it now, not at garbage collection: that releases the upstream request.
+                    await inner.aclose()
 
         return _wrapped()
 
@@ -24009,6 +24422,324 @@ async def _proxy_to_external_provider(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+_NPU_CUT_SHORT_ERROR = {
+    "message": "The NPU model stopped before finishing its reply.",
+    "type": "upstream_error",
+}
+
+
+class _NpuStreamRelay:
+    """Normalize model IDs, enforce stop sequences, and collect non-streaming replies.
+
+    FastFlowLM ignores stop sequences, so buffer partial matches until resolved.
+    """
+
+    def __init__(self, public_model: str, stop: Optional[list[str]]) -> None:
+        self.public_model = public_model
+        self.stop = stop or []
+        self._pending = ""
+        self.stopped = False
+        self.content = ""
+        self.reasoning = ""
+        self.tool_calls: dict[int, dict] = {}
+        self.finish_reason: Optional[str] = None
+        self.usage: Optional[dict] = None
+        self.error: Optional[dict] = None
+        self.completion_id: Optional[str] = None
+        self.created: Optional[int] = None
+
+    def _held_back(self, text: str) -> int:
+        """Length of the longest tail of ``text`` that begins some stop sequence."""
+        longest = 0
+        for stop in self.stop:
+            for size in range(min(len(stop) - 1, len(text)), 0, -1):
+                if stop.startswith(text[-size:]):
+                    longest = max(longest, size)
+                    break
+        return longest
+
+    def _take_content(self, text: str) -> str:
+        buffer = self._pending + text
+        hits = [index for index in (buffer.find(stop) for stop in self.stop) if index >= 0]
+        if hits:
+            self._pending = ""
+            self.stopped = True
+            return buffer[: min(hits)]
+        keep = self._held_back(buffer)
+        self._pending = buffer[len(buffer) - keep :] if keep else ""
+        return buffer[: len(buffer) - keep] if keep else buffer
+
+    def _chunk(self, delta: dict, finish_reason: Optional[str]) -> str:
+        return "data: " + json.dumps(
+            {
+                "id": self.completion_id or "chatcmpl-npu",
+                "object": "chat.completion.chunk",
+                "created": self.created or int(time.time()),
+                "model": self.public_model,
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+            }
+        )
+
+    def feed(self, line: str) -> list[str]:
+        """The lines to send on for one line of the upstream stream."""
+        if not line.startswith("data:"):
+            return [line]
+        raw = line[len("data:") :].strip()
+        if raw == "[DONE]":
+            out = []
+            if self._pending:
+                self.content += self._pending
+                out.append(self._chunk({"content": self._pending}, None))
+                self._pending = ""
+            out.append(line)
+            return out
+        try:
+            chunk = json.loads(raw)
+        except ValueError:
+            return [line]
+        if not isinstance(chunk, dict):
+            return [line]
+        if "error" in chunk:
+            self.error = (
+                chunk["error"]
+                if isinstance(chunk["error"], dict)
+                else {"message": str(chunk["error"])}
+            )
+            return [line]
+        self.completion_id = self.completion_id or chunk.get("id")
+        self.created = self.created or chunk.get("created")
+        if "model" in chunk:
+            chunk["model"] = self.public_model
+        if isinstance(chunk.get("usage"), dict):
+            self.usage = chunk["usage"]
+        out: list[str] = []
+        for choice in chunk.get("choices") or []:
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+            reasoning = delta.get("reasoning_content")
+            if isinstance(reasoning, str):
+                self.reasoning += reasoning
+            for call in delta.get("tool_calls") or []:
+                if not isinstance(call, dict):
+                    continue
+                slot = self.tool_calls.setdefault(
+                    int(call.get("index", len(self.tool_calls))),
+                    {"id": None, "type": "function", "function": {"name": "", "arguments": ""}},
+                )
+                slot["id"] = call.get("id") or slot["id"]
+                function = call.get("function") or {}
+                slot["function"]["name"] += function.get("name") or ""
+                slot["function"]["arguments"] += function.get("arguments") or ""
+            content = delta.get("content")
+            if isinstance(content, str) and self.stop:
+                visible = self._take_content(content)
+                self.content += visible
+                delta["content"] = visible
+                if self.stopped:
+                    self.finish_reason = "stop"
+                    choice["finish_reason"] = None
+                    out.append("data: " + json.dumps(chunk))
+                    out.append(self._chunk({}, "stop"))
+                    out.append("data: [DONE]")
+                    return out
+            elif isinstance(content, str):
+                self.content += content
+            if choice.get("finish_reason") is not None:
+                self.finish_reason = choice["finish_reason"]
+                if self._pending:
+                    # The reply ended partway into a stop sequence, so what was held back is text.
+                    delta["content"] = (delta.get("content") or "") + self._pending
+                    self.content += self._pending
+                    self._pending = ""
+                    choice["delta"] = delta
+        out.append("data: " + json.dumps(chunk))
+        return out
+
+    def completion(self) -> dict:
+        message: dict[str, Any] = {"role": "assistant", "content": self.content or None}
+        if self.reasoning:
+            message["reasoning_content"] = self.reasoning
+        if self.tool_calls:
+            message["tool_calls"] = [self.tool_calls[index] for index in sorted(self.tool_calls)]
+        body = {
+            "id": self.completion_id or f"chatcmpl-{uuid.uuid4().hex}",
+            "object": "chat.completion",
+            "created": self.created or int(time.time()),
+            "model": self.public_model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": message,
+                    "finish_reason": self.finish_reason or "stop",
+                    "logprobs": None,
+                }
+            ],
+        }
+        if self.usage is not None:
+            body["usage"] = self.usage
+        return body
+
+
+async def _npu_chat_completions(payload, request: Request, current_subject: str):
+    """Proxy NPU chat, rejecting unsupported parameters.
+
+    Always stream upstream: FastFlowLM's non-streaming replies mishandle reasoning
+    and finish reasons on length cutoffs. Collect the stream for JSON callers.
+    """
+    from core.inference.npu_backend import NpuError, get_npu_backend
+
+    try:
+        upstream = await asyncio.to_thread(get_npu_backend().upstream)
+    except NpuError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+    if _wants_multiple_choices(payload):
+        _raise_unsupported_n("NPU chat completions")
+    if _response_format_constrains_decoding(payload):
+        _raise_unsupported_openai_parameter(
+            "response_format", "FastFlowLM on the NPU has no guided decoding for response_format."
+        )
+    if getattr(payload, "seed", None) is not None:
+        _raise_unsupported_openai_parameter(
+            "seed", "FastFlowLM on the NPU does not take a sampling seed."
+        )
+    if getattr(payload, "frequency_penalty", 0.0):
+        _raise_unsupported_openai_parameter(
+            "frequency_penalty", "FastFlowLM on the NPU does not take a frequency penalty."
+        )
+    if getattr(payload, "logit_bias", None):
+        _raise_unsupported_openai_parameter(
+            "logit_bias", "FastFlowLM on the NPU does not take a logit bias."
+        )
+    if payload.logprobs or payload.top_logprobs is not None:
+        _raise_unsupported_openai_parameter(
+            "logprobs", "FastFlowLM on the NPU does not report log probabilities."
+        )
+    if (
+        _request_has_video(payload)
+        or payload.audio_base64
+        or _messages_have_input_audio(payload.messages)
+    ):
+        raise HTTPException(
+            status_code = 400, detail = "Audio and video input are not supported on the NPU."
+        )
+    if not upstream.supports_vision and _request_has_attached_image(payload):
+        raise HTTPException(
+            status_code = 400,
+            detail = "This NPU model does not read images. Load a vision model to send one.",
+        )
+    if payload.tool_choice == "none":
+        # FastFlowLM 1.0.3 ignores tool_choice and calls a tool anyway.
+        payload.tools = None
+    elif payload.tools and payload.parallel_tool_calls is False:
+        _raise_unsupported_openai_parameter(
+            "parallel_tool_calls", "FastFlowLM on the NPU cannot limit a reply to one tool call."
+        )
+    elif payload.tools and payload.tool_choice not in (None, "auto"):
+        _raise_unsupported_openai_parameter(
+            "tool_choice", "FastFlowLM on the NPU chooses its own tool; use auto or none."
+        )
+    elif payload.tools and not upstream.supports_tools:
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                "This NPU model does not support tool calling.",
+                status = 400,
+                code = "unsupported_parameter",
+                param = "tools",
+            ),
+        )
+
+    _fill_recommended_sampling_openai(payload, upstream.model)
+    _normalize_chat_reasoning_controls(payload)
+    if not upstream.supports_reasoning:
+        payload.enable_thinking = False
+    elif payload.enable_thinking is None:
+        payload.enable_thinking = payload.reasoning_effort != "none"
+
+    wants_stream = bool(payload.stream)
+    relay = _NpuStreamRelay(upstream.public_model, _normalize_stop_sequences(payload.stop))
+    update: dict = {"stream": True}
+    if _legacy_image_is_distinct(payload):
+        # The proxy reads messages only, so splice a top-level image in as GGUF chat does.
+        update["messages"] = [
+            ChatMessage.model_validate(message)
+            for message in _openai_messages_for_passthrough(payload, vision = True)
+        ]
+    upstream_payload = payload.model_copy(update = update)
+    response = await _proxy_to_external_provider(
+        upstream_payload,
+        request,
+        current_subject,
+        managed = upstream,
+        early_close_status = lambda: "completed" if relay.stopped else "cancelled",
+    )
+
+    async def _lines():
+        body = response.body_iterator
+        try:
+            async for piece in body:
+                text = piece.decode("utf-8") if isinstance(piece, bytes) else piece
+                for line in text.split("\n"):
+                    if line.strip():
+                        yield line
+        finally:
+            await body.aclose()
+
+    if wants_stream:
+
+        async def _stream():
+            lines = _lines()
+            try:
+                async for line in lines:
+                    for out in relay.feed(line):
+                        yield f"{out}\n\n"
+                    if relay.stopped:
+                        return
+            finally:
+                await lines.aclose()
+
+        return StreamingResponse(
+            _stream(),
+            media_type = "text/event-stream",
+            headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # Nothing cancels a handler whose caller left, so watch for it: FastFlowLM is the one runtime.
+    disconnected = threading.Event()
+
+    async def _watch_disconnect() -> None:
+        while not disconnected.is_set():
+            if await request.is_disconnected():
+                disconnected.set()
+                return
+            await asyncio.sleep(0.25)
+
+    watcher = asyncio.create_task(_watch_disconnect())
+    lines = _stop_on_cancel(_lines(), disconnected)
+    try:
+        async for line in lines:
+            relay.feed(line)
+            if relay.stopped or relay.error is not None:
+                break
+    finally:
+        watcher.cancel()
+        await asyncio.gather(watcher, return_exceptions = True)
+        await lines.aclose()
+    if disconnected.is_set():
+        return Response(status_code = 499)
+    if relay.error is not None:
+        try:
+            status = int(relay.error.get("code") or 502)
+        except (TypeError, ValueError):
+            status = 502
+        status = status if 400 <= status < 600 else 502
+        return JSONResponse(status_code = status, content = {"error": relay.error})
+    if relay.finish_reason is None:
+        return JSONResponse(status_code = 502, content = {"error": dict(_NPU_CUT_SHORT_ERROR)})
+    return JSONResponse(content = relay.completion())
 
 
 # ── OpenAI shell-tool container management ───────────────────────
@@ -24600,6 +25331,7 @@ async def produce_openai_chat_completions(
     _modality_label = "image or audio"
     _needs_audio_input = False
     _needs_video = False
+    _tool_images_only = False
     _predecoded_audio = None
     _preprepared_audio = None
     _image_preflight = None
@@ -24711,6 +25443,11 @@ async def produce_openai_chat_completions(
         # projector carries no vision tower. A safetensors or MLX checkpoint
         # declares audio input separately, so it is tracked apart as well.
         _needs_image = bool(_pre_parsed[2]) or _request_has_attached_image(payload)
+        _tool_images_only = (
+            _needs_image
+            and not payload.image_base64
+            and not _messages_have_image(m for m in payload.messages if m.role != "tool")
+        )
         # Video rides that projector too. Its own /props gate can only run after
         # the load, so this at least keeps a text-only target from evicting a
         # working model to serve a clip it could never take.
@@ -24792,10 +25529,17 @@ async def produce_openai_chat_completions(
         require_video = _needs_video,
         audio_preflight = _audio_preflight,
         image_preflight = _image_preflight,
+        tool_images_only = _tool_images_only,
     )
     if _audio_preflight is not None:
         _predecoded_audio = _audio_preflight.get("decoded")
         _preprepared_audio = _audio_preflight.get("prepared")
+
+    from core.inference.npu_backend import peek_npu_backend
+
+    _npu = peek_npu_backend()
+    if _npu is not None and _npu.is_loaded:
+        return await _npu_chat_completions(payload, request, current_subject)
 
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
@@ -25323,6 +26067,10 @@ async def produce_openai_chat_completions(
     _supports_tool_passthrough = getattr(
         llama_backend, "supports_tool_passthrough", llama_backend.supports_tools
     )
+    # Before the route split, so the passthrough and the Unsloth tool loop both read a tool
+    # result's image as a note on a text-only GGUF, as /v1/messages does.
+    if using_gguf and not llama_backend.is_vision:
+        _omit_tool_images(payload.messages)
     # Before the passthrough dispatch and the parse, so every later reader sees the fold.
     if using_gguf and _folds_studio_tool_history(payload, llama_backend):
         payload.messages = _folded_studio_tool_messages(payload.messages)
@@ -29199,6 +29947,25 @@ def _openai_model_objects() -> list[dict]:
     models: list[dict] = []
     _created = int(time.time())
 
+    from core.inference.npu_backend import peek_npu_backend
+
+    _npu = peek_npu_backend()
+    _npu_resident = _npu.resident() if _npu is not None else None
+    if _npu_resident is not None:
+        _npu_model = _npu_resident.model
+        _npu_entry = {
+            "id": _npu_model.model_path,
+            "object": "model",
+            "created": _created,
+            "owned_by": _OWNED_BY,
+            "device": "npu",
+        }
+        if _npu_resident.context_length:
+            _npu_entry["context_length"] = _npu_resident.context_length
+        if _npu_model.max_context_length:
+            _npu_entry["max_context_length"] = _npu_model.max_context_length
+        models.append(_npu_entry)
+
     # Check GGUF backend
     llama_backend = get_llama_cpp_backend()
     # Claiming a re-pulled tag would displace the scanned row holding its weights, and the id
@@ -31990,15 +32757,14 @@ async def _responses_stream(
         )
         raise HTTPException(status_code = _status, detail = _detail)
 
-    # Direct pass-through bypasses the openai_chat_completions image gate.
-    if not llama_backend.is_vision and any(
-        isinstance(m.content, list) and any(isinstance(p, ImageContentPart) for p in m.content)
-        for m in messages
-    ):
-        raise HTTPException(
-            status_code = 400,
-            detail = "Image provided but current GGUF model does not support vision.",
-        )
+    # Direct pass-through bypasses the openai_chat_completions tool-image note and image gate.
+    if not llama_backend.is_vision:
+        _omit_tool_images(chat_req.messages)
+        if _messages_have_image(chat_req.messages):
+            raise HTTPException(
+                status_code = 400,
+                detail = "Image provided but current GGUF model does not support vision.",
+            )
 
     # Same bypass, same reason as the image gate: without this the non-streaming half of this
     # very route folds a Studio tool thread and answers while the streaming half still ships
@@ -33163,7 +33929,7 @@ async def openai_responses(
             )
     if payload.stream:
         # streaming preflights here; non-streaming delegates its complete preflight to chat.
-        _responses_has_image = _messages_have_image(messages)
+        _responses_has_image = _messages_have_image(m for m in messages if m.role != "tool")
         _responses_image_b64s = _local_image_payloads_from_messages(messages)
         await _maybe_auto_switch_model(
             _switch_model_for_payload(payload),
@@ -33278,6 +34044,13 @@ def _guard_anthropic_client_tool_catalog(
     )
 
 
+def _anthropic_client_tools_for_turn(openai_client_tools, openai_tool_choice, openai_messages):
+    """Withdraw a disabled catalog unless replayed history still needs its schemas."""
+    if openai_tool_choice == "none" and not _has_openai_tool_history(openai_messages):
+        return []
+    return openai_client_tools
+
+
 def _anthropic_requested_studio_tools(tools: Optional[list]) -> set[str]:
     requested: set[str] = set()
     for tool in tools or []:
@@ -33334,17 +34107,97 @@ def _pil_to_png_b64(img) -> str:
 
 
 def _image_bytes_to_png_b64(raw: bytes) -> str:
-    """Decode raw image bytes and re-encode to a base64-ascii PNG string.
-
-    llama-server's stb_image only handles a few formats (JPEG/PNG/BMP/...); re-
-    encoding to PNG keeps JPEG/WebP/... inputs loadable. Raises on undecodable
-    input; callers wrap the call in ``try`` -> HTTPException(400)."""
+    """Convert image bytes to base64 PNG for formats llama-server cannot decode."""
     from PIL import Image
 
     img = _scaled_from_16_bit(Image.open(io.BytesIO(raw))).convert("RGB")
     buf = io.BytesIO()
     img.save(buf, format = "PNG")
     return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def _stb_reads_jpeg(raw: bytes) -> bool:
+    """Accept 8-bit SOF0-SOF2 JPEG frames with one or three components."""
+    i = 2
+    while i + 4 <= len(raw):
+        if raw[i] != 0xFF:
+            return False
+        marker = raw[i + 1]
+        if marker == 0xFF:  # Fill byte before a marker.
+            i += 1
+            continue
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            if marker not in (0xC0, 0xC1, 0xC2) or i + 10 > len(raw):
+                return False
+            height = int.from_bytes(raw[i + 5 : i + 7], "big")
+            width = int.from_bytes(raw[i + 7 : i + 9], "big")
+            return raw[i + 4] == 8 and height > 0 and width > 0 and raw[i + 9] in (1, 3)
+        if marker in (0xD9, 0xDA):  # EOI or scan data before any frame header.
+            return False
+        i += 2 + int.from_bytes(raw[i + 2 : i + 4], "big")
+    return False
+
+
+def _stb_reads_png(raw: bytes) -> bool:
+    """Accept PNGs whose chunks end at IEND and whose IDAT zlib stream is complete.
+
+    Pillow decodes a PNG whose deflate stream or IEND is cut short once the rows are
+    complete; stb_image rejects those, and unknown critical chunks. Pillow also stops
+    at the last row, so inflation is capped near the IHDR size: a compressed tail past
+    it would otherwise cost unbounded CPU here and memory in stb_image.
+    """
+    i = len(_PNG_SIGNATURE)
+    inflater = zlib.decompressobj()
+    budget = 0
+    try:
+        while i + 12 <= len(raw):
+            kind = raw[i + 4 : i + 8]
+            end = i + 12 + int.from_bytes(raw[i : i + 4], "big")
+            if end > len(raw) or (kind == b"IHDR") != (i == len(_PNG_SIGNATURE)):
+                return False
+            if kind == b"IHDR":
+                if end - i != 25:
+                    return False
+                width = int.from_bytes(raw[i + 8 : i + 12], "big")
+                height = int.from_bytes(raw[i + 12 : i + 16], "big")
+                bits = raw[i + 16] * {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}.get(raw[i + 17], 4)
+                # Doubled for Adam7, whose pass rows each add a filter byte and padding.
+                budget = 2 * height * ((width * bits + 7) // 8 + 1) + 64
+            elif kind == b"IEND":
+                return inflater.eof
+            elif kind == b"IDAT":
+                data = raw[i + 8 : end - 4]
+                while data and not inflater.eof:
+                    budget -= len(inflater.decompress(data, 1 << 20))
+                    if budget < 0:
+                        return False
+                    data = inflater.unconsumed_tail
+            elif kind != b"PLTE" and not kind[0] & 0x20:
+                return False
+            i = end
+    except zlib.error:
+        pass
+    return False
+
+
+def _llama_image_data_url(raw: bytes) -> str:
+    """Preserve PNG and JPEG bytes stb_image reads; convert other images to PNG.
+
+    Avoid inflating photos while still rejecting corrupt images with Pillow:
+    stb_image silently accepts some truncated JPEGs. Callers map failures to HTTP 400.
+    """
+    from PIL import Image
+
+    with Image.open(io.BytesIO(raw)) as img:
+        img.load()
+    if raw.startswith(_PNG_SIGNATURE) and _stb_reads_png(raw):
+        return f"data:image/png;base64,{base64.b64encode(raw).decode('ascii')}"
+    if raw.startswith(b"\xff\xd8") and _stb_reads_jpeg(raw):
+        return f"data:image/jpeg;base64,{base64.b64encode(raw).decode('ascii')}"
+    return f"data:image/png;base64,{_image_bytes_to_png_b64(raw)}"
 
 
 # Match llama-server's per-image limit and add a per-request budget.
@@ -33428,7 +34281,7 @@ def _inline_remote_image_url(
     rejection = _remote_image_scheme_rejection(scheme)
     if rejection is not None:
         raise HTTPException(status_code = rejection[0], detail = rejection[1])
-    # llama-server never read the content type, and the bytes are decoded and re-encoded here.
+    # Detect the MIME type from the fetched bytes.
     fetched = safe_fetch_remote_image_sync(
         url,
         "image/png",
@@ -33486,15 +34339,11 @@ def _inline_request_remote_images(payload) -> None:
                 part.image_url.url = fetches.inline(part.image_url.url)
 
 
-def _normalize_openai_image_parts_to_png(openai_messages: list[dict], on_image = None) -> bool:
-    """Re-encode every base64-data-URL ``image_url`` part to PNG, in place.
+def _normalize_openai_image_parts_for_llama(openai_messages: list[dict], on_image = None) -> bool:
+    """Fetch and normalize image URLs for llama-server in place.
 
-    Remote URLs are fetched here so llama-server receives bytes rather than a URL. All images
-    are converted to PNG for llama-server's limited image decoder.
-
-    ``on_image`` runs once per image part before conversion, so a caller can
-    apply its own guard. Returns ``True`` when any image part was seen. Raises
-    HTTPException(400) when an image cannot be decoded or fetched.
+    Calls ``on_image`` before processing each image. Returns whether any image was
+    seen; raises HTTP 400 if fetching or decoding fails.
     """
     has_image = False
     fetches = _RemoteImageFetches()
@@ -33522,15 +34371,14 @@ def _normalize_openai_image_parts_to_png(openai_messages: list[dict], on_image =
             try:
                 _, b64data = url.split(",", 1)
                 raw = base64.b64decode(b64data)
-                png_b64 = _image_bytes_to_png_b64(raw)
+                data_url = _llama_image_data_url(raw)
             except Exception:
                 raise HTTPException(
                     status_code = 400,
                     detail = "Failed to process image.",
                 )
-            # Only the url is re-encoded; `detail` is the client's request, not
-            # part of the encoding, and replacing the object would drop it.
-            image_url["url"] = f"data:image/png;base64,{png_b64}"
+            # Preserve the client's `detail` setting.
+            image_url["url"] = data_url
 
     return has_image
 
@@ -33543,7 +34391,7 @@ def _normalize_anthropic_openai_images(openai_messages: list[dict], is_vision: b
                 detail = "Image provided but current GGUF model does not support vision.",
             )
 
-    return _normalize_openai_image_parts_to_png(openai_messages, on_image = _guard)
+    return _normalize_openai_image_parts_for_llama(openai_messages, on_image = _guard)
 
 
 def _validate_anthropic_client_tools(tools) -> None:
@@ -33569,6 +34417,36 @@ def _validate_anthropic_client_tools(tools) -> None:
                 status_code = 400,
                 detail = "Client tool is missing required field 'name'.",
             )
+
+
+def _anthropic_response_format(
+    payload, *, require_llama_compatibility: bool = True
+) -> Optional[dict]:
+    output_config = payload.output_config if isinstance(payload.output_config, dict) else {}
+    fmt = output_config.get("format")
+    if fmt is None:
+        fmt = (payload.model_extra or {}).get("output_format")
+    if fmt is None:
+        return None
+    if not (
+        isinstance(fmt, dict)
+        and fmt.get("type") == "json_schema"
+        and isinstance(fmt.get("schema"), dict)
+    ):
+        logger.warning("Ignoring unsupported Anthropic output format: %r", fmt)
+        return None
+    schema = fmt["schema"]
+    if require_llama_compatibility and _llama_compatible_tool_schema(schema) != schema:
+        raise HTTPException(
+            status_code = 400,
+            detail = anthropic_error_body(
+                "The output format schema contains constraints that llama.cpp cannot enforce "
+                "without weakening them; use anchored patterns and supported repetition bounds.",
+                status = 400,
+                err_type = "invalid_request_error",
+            ),
+        )
+    return {"type": "json_schema", "json_schema": {"name": "response", "schema": schema}}
 
 
 def _append_to_codex_instructions(messages: list[dict], addition: str) -> list[dict]:
@@ -33996,6 +34874,16 @@ async def chat_count_tokens(
             detail = "Cannot count tokens for messages containing images.",
         )
 
+    from core.inference.npu_backend import peek_npu_backend
+
+    _npu = peek_npu_backend()
+    if _npu is not None and _npu.is_loaded:
+        # FastFlowLM has no tokenizer endpoint; each reply's usage still reports the prompt size.
+        raise HTTPException(
+            status_code = 503,
+            detail = "Token counting is not available for NPU models.",
+        )
+
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
         # The refusals above are about the request and so are shared; the ones below are
@@ -34205,6 +35093,8 @@ async def anthropic_count_tokens(
     # Reject malformed tools before the switch, like /messages, so an invalid
     # count request can't evict the loaded model.
     _validate_anthropic_client_tools(payload.tools)
+    # Counting compiles no output grammar, matching Anthropic's count_tokens behavior.
+    _count_response_format = _anthropic_response_format(payload, require_llama_compatibility = False)
     # Count with the requested model's tokenizer, like the sibling /messages.
     # Carry the vision guard too: an image count naming a text-only GGUF must not
     # evict a loaded vision model for a swap that can't serve the request.
@@ -34273,7 +35163,6 @@ async def anthropic_count_tokens(
     openai_messages = _sanitize_anthropic_openai_messages(openai_messages, llama_backend)
     # /apply-template fetches remote media even though token counting only needs its marker.
     _placeholder_remote_images_for_count(openai_messages)
-    openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
     # Only the client-tool passthrough is forwarded verbatim, so reproduce /messages' own
     # routing rather than "any tools": a Studio server-tool alias, or a template without
     # passthrough support, falls through to plain generation there and does carry the date.
@@ -34283,19 +35172,39 @@ async def anthropic_count_tokens(
         or anthropic_schema_client_tool_kind(t) is not None
         for t in payload.tools or []
     )
+    _count_openai_tool_choice = anthropic_tool_choice_to_openai(payload.tool_choice) or "auto"
+    _count_schema_disables_server_tools = (
+        _count_openai_tool_choice == "none" and _count_response_format is not None
+    )
     _count_server_tools = (
         _anthropic_selects_server_tools(payload, _count_studio_tools, _count_has_client_tool)
         and llama_backend.supports_tools
         and not _anthropic_request_has_image(payload, tool_results = llama_backend.is_vision)
+        and not _count_schema_disables_server_tools
     )
-    _count_openai_client_tools = [
-        tool
-        for tool in anthropic_tools_to_openai(payload.tools or [])
-        if tool.get("function", {}).get("name") not in _count_studio_tools
-    ]
+    _count_selected_server_tools = []
+    if _count_server_tools:
+        from core.inference.tools import ALL_TOOLS as _ANTHROPIC_COUNT_TOOLS
+        _count_selected_server_tools = _tools_for_search_images(
+            _select_anthropic_server_tools(
+                _ANTHROPIC_COUNT_TOOLS,
+                _count_studio_tools,
+                payload.enabled_tools,
+            )
+        )
+        _count_server_tools = bool(_count_selected_server_tools)
+    _count_openai_client_tools = _anthropic_client_tools_for_turn(
+        [
+            tool
+            for tool in anthropic_tools_to_openai(payload.tools or [])
+            if tool.get("function", {}).get("name") not in _count_studio_tools
+        ],
+        _count_openai_tool_choice,
+        openai_messages,
+    )
     _guard_anthropic_client_tool_catalog(
         _count_openai_client_tools,
-        anthropic_tool_choice_to_openai(payload.tool_choice) or "auto",
+        _count_openai_tool_choice,
         _count_server_tools,
         llama_backend,
     )
@@ -34304,6 +35213,7 @@ async def anthropic_count_tokens(
         and bool(_count_openai_client_tools)
         and getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools)
     )
+    openai_tools = _count_openai_client_tools if _count_client_tools else None
     if _count_client_tools:
         from core.inference.chat_template_helpers import (
             forced_tool_catalog,
@@ -34315,10 +35225,7 @@ async def anthropic_count_tokens(
             openai_tools, None, getattr(llama_backend, "markup_profile", None)
         )
         openai_tools = (
-            forced_tool_catalog(
-                anthropic_tool_choice_to_openai(payload.tool_choice), _count_safe_tools
-            )
-            or openai_tools
+            forced_tool_catalog(_count_openai_tool_choice, _count_safe_tools) or openai_tools
         )
     else:
         openai_messages = _prepend_current_date_to_messages(
@@ -34327,15 +35234,7 @@ async def anthropic_count_tokens(
             include_api_key = _count_server_tools,
         )
     if _count_server_tools:
-        from core.inference.tools import ALL_TOOLS as _ANTHROPIC_COUNT_TOOLS
-
-        openai_tools = _tools_for_search_images(
-            _select_anthropic_server_tools(
-                _ANTHROPIC_COUNT_TOOLS,
-                _count_studio_tools,
-                payload.enabled_tools,
-            )
-        )
+        openai_tools = _count_selected_server_tools
         _count_full_access = bool(getattr(payload, "bypass_permissions", False))
         if _count_full_access:
             # Same schemas /messages renders under Full access, or the count prices a different prompt.
@@ -34499,20 +35398,31 @@ async def anthropic_messages(
     _selects_server_tools = _anthropic_selects_server_tools(
         payload, requested_studio_tools, _has_client_tool
     )
-    _server_tools_requested_pre = _selects_server_tools and not _anthropic_top_level_image
-    if _server_tools_requested_pre:
+    _response_format = _anthropic_response_format(payload)
+    _schema_disables_server_tools = (
+        _response_format is not None
+        and anthropic_tool_choice_to_openai(payload.tool_choice) == "none"
+    )
+    _server_tools_selected_pre = (
+        _selects_server_tools
+        and not _anthropic_top_level_image
+        and not _schema_disables_server_tools
+    )
+    selected_server_tools = []
+    if _server_tools_selected_pre:
         from core.inference.tools import ALL_TOOLS as _ALL_TOOLS_PRE
-
-        _selected_pre = _tools_for_search_images(
+        selected_server_tools = _tools_for_search_images(
             _select_anthropic_server_tools(
                 _ALL_TOOLS_PRE, requested_studio_tools, payload.enabled_tools
             )
         )
+    _server_tools_requested_pre = bool(selected_server_tools)
+    if _server_tools_requested_pre:
         _perm_mode_pre = getattr(payload, "permission_mode", None)
         _confirm_opt_out_pre = getattr(payload, "confirm_tool_calls", None) is False
         _gated_tool_selected_pre = any(
             tool["function"]["name"] not in _ANTHROPIC_UNPROMPTED_SAFE_TOOLS
-            for tool in _selected_pre
+            for tool in selected_server_tools
         )
         # An explicit confirm_tool_calls=False opts out of the gate entirely (it
         # wins over the mode, mirroring _permission_mode_confirm and the GGUF path),
@@ -34597,8 +35507,7 @@ async def anthropic_messages(
 
     openai_messages = _sanitize_anthropic_openai_messages(openai_messages, llama_backend)
 
-    # Enforce vision guard + re-encode embedded images to PNG so the Anthropic
-    # endpoint matches /v1/chat/completions.
+    # Apply the same vision guard and image normalization as /v1/chat/completions.
     # Promoted parts count too: _anthropic_has_image was read off the original
     # blocks, so a replay-only request took the synchronous branch and re-decoded up
     # to eight promoted PNGs on the shared loop.
@@ -34655,11 +35564,15 @@ async def anthropic_messages(
     # Match /v1/chat/completions: server tools reject caller attachments but
     # accept replayed images. Check original blocks because promotion also sets
     # _has_image. Tool selection and mixed-mode rejection preceded the switch.
-    openai_client_tools = [
-        tool
-        for tool in anthropic_tools_to_openai(payload.tools or [])
-        if tool.get("function", {}).get("name") not in requested_studio_tools
-    ]
+    openai_client_tools = _anthropic_client_tools_for_turn(
+        [
+            tool
+            for tool in anthropic_tools_to_openai(payload.tools or [])
+            if tool.get("function", {}).get("name") not in requested_studio_tools
+        ],
+        openai_tool_choice,
+        openai_messages,
+    )
 
     # An Anthropic server-tool declaration implies server-tool mode, but only
     # when tools aren't explicitly disabled (CLI --disable-tools or per-request
@@ -34667,7 +35580,10 @@ async def anthropic_messages(
     # permission gate above: deciding "did this request select server tools"
     # twice is what let the gate reject requests the router then served.
     server_tools = (
-        _selects_server_tools and llama_backend.supports_tools and not _anthropic_has_image
+        bool(selected_server_tools)
+        and llama_backend.supports_tools
+        and not _anthropic_has_image
+        and not _schema_disables_server_tools
     )
     # One short-circuiting chain: a backend whose supports_tools raises must not turn a plain
     # no-tools turn into a 500.
@@ -34680,6 +35596,17 @@ async def anthropic_messages(
     _guard_anthropic_client_tool_catalog(
         openai_client_tools, openai_tool_choice, server_tools, llama_backend
     )
+
+    # Decided on the final routing: a tool request that cannot run tools (image, tool-less
+    # template, tool_choice none) still gets its schema.
+    response_format = _response_format
+    if (
+        response_format is not None
+        and (server_tools or client_tools)
+        and openai_tool_choice != "none"
+    ):
+        logger.warning("Ignoring Anthropic output format: callable tools cannot run under a schema")
+        response_format = None
 
     # Studio composes the prompt on every branch but the client-tool passthrough, which forwards
     # the caller's own request verbatim (mirrors the GGUF passthrough gate in /chat/completions).
@@ -34976,8 +35903,8 @@ async def anthropic_messages(
                 reservation.cancel()
 
     # ── Client-side pass-through path ─────────────────────────
-    if client_tools:
-        openai_tools = openai_client_tools
+    if client_tools or response_format is not None:
+        openai_tools = openai_client_tools if client_tools else []
 
         if payload.stream:
             return await _admitted_anthropic(
@@ -35003,6 +35930,7 @@ async def anthropic_messages(
                     cancel_id = payload.cancel_id,
                     disable_parallel_tool_use = _disable_parallel,
                     auto_heal_tool_calls = payload.auto_heal_tool_calls,
+                    response_format = response_format,
                     parse_think = _think_parsing_expected(llama_backend, payload),
                     **_anthropic_reasoning_args(payload),
                 )
@@ -35029,6 +35957,7 @@ async def anthropic_messages(
                 nudge_tool_calls = payload.nudge_tool_calls,
                 request = request,
                 cancel_event = cancel_event,
+                response_format = response_format,
                 parse_think = _think_parsing_expected(llama_backend, payload),
                 **_anthropic_reasoning_args(payload),
             )
@@ -35056,19 +35985,13 @@ async def anthropic_messages(
                     err_type = "invalid_request_error",
                 ),
             )
-        from core.inference.tools import ALL_TOOLS, apply_full_access_tool_descriptions
+        from core.inference.tools import apply_full_access_tool_descriptions
 
         # ask/auto (and an omitted mode selecting a gate-needing terminal/python
         # tool) were already rejected before the auto-switch above, so an invalid
         # confirm-gated request never evicts the resident model; the selection
         # here just picks the tools for the actual server-tool loop.
-        openai_tools = _tools_for_search_images(
-            _select_anthropic_server_tools(
-                ALL_TOOLS,
-                requested_studio_tools,
-                payload.enabled_tools,
-            )
-        )
+        openai_tools = selected_server_tools
         # Mirrors _select_request_tools: this path builds its own selection, so
         # the Full access swap has to be repeated rather than inherited.
         _full_access = bool(getattr(payload, "bypass_permissions", False))
@@ -36258,6 +37181,7 @@ async def _anthropic_passthrough_stream(
     cancel_id = None,
     disable_parallel_tool_use = False,
     auto_heal_tool_calls = None,
+    response_format = None,
     enable_thinking = None,
     reasoning_effort = None,
     preserve_thinking = None,
@@ -36280,6 +37204,7 @@ async def _anthropic_passthrough_stream(
         presence_penalty = presence_penalty,
         seed = seed,
         tool_choice = tool_choice,
+        response_format = response_format,
         chat_template_kwargs = _reasoning_template_kwargs(
             llama_backend, enable_thinking, reasoning_effort, preserve_thinking
         ),
@@ -36587,6 +37512,7 @@ async def _anthropic_passthrough_non_streaming(
     nudge_tool_calls = None,
     request: Optional[Request] = None,
     cancel_event = None,
+    response_format = None,
     enable_thinking = None,
     reasoning_effort = None,
     preserve_thinking = None,
@@ -36614,6 +37540,7 @@ async def _anthropic_passthrough_non_streaming(
         presence_penalty = presence_penalty,
         seed = seed,
         tool_choice = tool_choice,
+        response_format = response_format,
         chat_template_kwargs = _reasoning_template_kwargs(
             llama_backend, enable_thinking, reasoning_effort, preserve_thinking
         ),
@@ -36767,7 +37694,7 @@ async def _anthropic_passthrough_non_streaming(
                 # or no-client-tool requests. The protected helper preserves <think> rehearsal and
                 # balanced [TOOL_CALLS] prose, gated on the declared tools so an inactive
                 # NAME[ARGS]{...} example is kept.
-                if not healing_active:
+                if not healing_active and response_format is None:
                     text = _strip_tool_xml_for_display(
                         text,
                         auto_heal_tool_calls = True,
@@ -37116,31 +38043,14 @@ def _openai_messages_for_passthrough(
     normalize_images: bool = True,
     promote_mcp_images: bool = True,
 ) -> list[dict]:
-    """Build OpenAI-format message dicts for the /v1/chat/completions
-    passthrough path.
+    """Build /v1/chat/completions messages, preserving tool calls and results.
 
-    ``payload.messages`` are dumped through Pydantic (dropping unset optional
-    fields), so they're already standard OpenAI format -- including
-    ``role="tool"`` tool-result messages and assistant messages carrying
-    structured ``tool_calls``. Base64-data-URL images already in the list are
-    re-encoded to PNG exactly as ``_openai_messages_for_gguf_chat`` does, so
-    turning tools on does not change which formats llama-server can decode, and
-    a remote URL is fetched here rather than by llama-server, for the same
-    reason and by the same helper. The vision guard lives in the callers,
-    which reject a non-vision model before the body is built.
+    Uses the same image normalizer as GGUF chat; callers enforce vision support.
+    ``normalize_images=False`` preserves bytes for callers that decode and resize
+    images themselves, avoiding an intermediate RGB conversion.
 
-    ``normalize_images=False`` is for callers that decode these bytes themselves: re-encoding
-    converts to RGB, which the resize they apply would then resample.
-
-    When a client uses Unsloth's legacy ``image_base64`` top-level field, the
-    image is spliced into the last user message as an OpenAI ``image_url`` content part -- as PNG
-    while normalizing, since llama-server's stb_image is limited, byte-for-byte otherwise.
-
-    Only when it is a real second image, matching ``_openai_messages_for_gguf_chat`` and
-    what admission charges for. Studio echoes the current image into both spellings, so
-    splicing that unconditionally sent a tools or response_format request two copies
-    against a reservation for one: 4417 reserved against 8466 charged, which overcommits
-    the KV cache wherever the slot count lets that gap accumulate.
+    Adds legacy ``image_base64`` to the last user message only if it is distinct,
+    matching GGUF chat and admission accounting to avoid duplicate images.
     """
     messages = _strip_provider_synthetic_tool_history(
         _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
@@ -37151,7 +38061,7 @@ def _openai_messages_for_passthrough(
         messages = promote_mcp_history_images(messages, vision = vision)
 
     if normalize_images:
-        _normalize_openai_image_parts_to_png(messages)
+        _normalize_openai_image_parts_for_llama(messages)
 
     if not _legacy_image_is_distinct(payload):
         return messages
@@ -37159,13 +38069,12 @@ def _openai_messages_for_passthrough(
     if normalize_images:
         try:
             raw = base64.b64decode(payload.image_base64)
-            png_b64 = _image_bytes_to_png_b64(raw)
+            data_url = _llama_image_data_url(raw)
         except Exception:
             raise HTTPException(
                 status_code = 400,
                 detail = "Failed to process image.",
             )
-        data_url = f"data:image/png;base64,{png_b64}"
     else:
         # As it arrived; the media type is never read back.
         data_url = f"data:application/octet-stream;base64,{payload.image_base64}"
@@ -37249,8 +38158,7 @@ def _openai_messages_for_gguf_chat(
     # part already here and must not be spliced twice, but a legacy image the thread
     # does not hold is a real attachment. Admission charges on the same predicate.
     if _legacy_image_is_distinct(payload):
-        # Legacy bytes can be any format; the normalizer below sniffs and
-        # re-encodes to PNG, so the declared mime is rewritten anyway.
+        # The normalizer detects the MIME type from the bytes.
         image_part = {
             "type": "image_url",
             "image_url": {

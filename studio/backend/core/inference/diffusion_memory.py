@@ -391,10 +391,16 @@ def _wrap_cpu_offload_hook(
 def reclaim_offload_host_memory(offload_policy: str, logger: Any = None) -> bool:
     """Return unused allocator pages after whole-model CPU offload, without touching live
     tensors, Python GC, or device caches. Unsupported allocators and failures are non-fatal."""
-    global _host_memory_reclaim_warning_logged
-    global _host_memory_reclaim_unsupported_logged
     if offload_policy != OFFLOAD_MODEL:
         return False
+    return reclaim_host_memory(logger = logger)
+
+
+def reclaim_host_memory(logger: Any = None) -> bool:
+    """Return freed allocator pages to the OS regardless of offload policy (unload / teardown).
+    Best effort: unsupported allocators and failures return False."""
+    global _host_memory_reclaim_warning_logged
+    global _host_memory_reclaim_unsupported_logged
     try:
         reclaim = _resolve_host_memory_reclaimer()
         if reclaim is None:
@@ -404,7 +410,7 @@ def reclaim_offload_host_memory(offload_policy: str, logger: Any = None) -> bool
                 try:
                     logger.info(
                         "diffusion.memory: no host allocator pressure API on this platform "
-                        "(%s); offloaded host pages will not be returned early",
+                        "(%s); freed host pages will not be returned early",
                         sys.platform,
                     )
                 except Exception:  # noqa: BLE001
