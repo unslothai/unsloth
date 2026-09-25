@@ -130,6 +130,24 @@ try {
     if ($loopOk) {
         $loopAnswer = Get-StudioPythonFinalPath -Path $loopA
         Check "a link loop is not promoted to an exact identity" ([string]::IsNullOrWhiteSpace($loopAnswer))
+        # Test-Path reports the link itself (lstat / GetFileAttributes), so the walk stops AT the
+        # link rather than stripping it and resolving only the ancestor.
+        $loopChild = Resolve-StudioFinalPathInfo -Path (Join-Path $loopA "studio")
+        Check "a missing path under a link loop is not exact" ($loopChild.Exact -eq $false)
+    }
+
+    $dangling = Join-Path $tmp "dangling"
+    $danglingOk = $false
+    try {
+        New-Item -ItemType SymbolicLink -Path $dangling -Target (Join-Path $tmp "gone") -ErrorAction Stop | Out-Null
+        $danglingOk = $true
+    } catch {}
+    if ($danglingOk) {
+        foreach ($suffix in @("", "studio", "a\b")) {
+            $probePath = if ($suffix) { Join-Path $dangling $suffix } else { $dangling }
+            $info = Resolve-StudioFinalPathInfo -Path $probePath
+            Check "a dangling link is not exact (suffix '$suffix')" ($info.Exact -eq $false)
+        }
     }
 
     # 5.1 has no ArgumentList, so arguments go through one quoted string.
