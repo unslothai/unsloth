@@ -143,6 +143,7 @@ from .video_families import (
     video_family_prequant_repo,
     video_family_prequant_schemes,
 )
+from .video_frames import legacy_output_type, to_uint8_frames
 from .video_minimax_h3 import (
     H3_ANCHOR_FIRST,
     H3_ANCHOR_LAST,
@@ -6097,6 +6098,11 @@ class VideoBackend:
                     kwargs[fam.cfg2_kwarg] = float(guidance_2)
                 if fam.modular_workflow:
                     kwargs["output"] = ["videos", "audio", "sampling_rate"]
+                # Decoded frames come back as a device tensor and become uint8 on the GPU (video_frames); the legacy
+                # type is kept for the clips that path hands back unchanged.
+                frames_output_type = legacy_output_type(pipe, call_params, fam.modular_workflow)
+                if frames_output_type is not None:
+                    kwargs["output_type"] = "pt"
                 # Auto-blocks distinguish omitted conditioning from empty conditioning.
                 if first_pil is not None:
                     kwargs["image"] = first_pil
@@ -6303,6 +6309,8 @@ class VideoBackend:
                     audio = getattr(output, "audio", None)
                     audio_track = audio[0] if fam.has_audio and audio is not None else None
                     audio_sample_rate = None
+                if frames_output_type is not None:
+                    video_frames = to_uint8_frames(video_frames, frames_output_type)
                 if audio_sample_rate is None:
                     mp4_bytes = self._encode_mp4(
                         video_frames, out_fps, audio_track, pipe if fam.has_audio else None
