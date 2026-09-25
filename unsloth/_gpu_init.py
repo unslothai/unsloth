@@ -315,8 +315,6 @@ del check_transformers_prequantized_vlm_quant_state
 # RoPE base frequency. Ordered here, before any config is built, so the object-style delegation
 # retry in models/llama.py sees a config that kept its base (#2405).
 fix_transformers_rope_scaling_drops_theta()
-# Lazy: wraps the fp8 quantizer's pre-load hook, so the fp8 integration module is only imported by an
-# fp8 load. Keeps remote-code ModuleList experts from being swapped for a stacked FP8Experts.
 fix_transformers_fp8_modulelist_experts()
 # Remote code written for 4.x reads plain RoPE as rope_scaling None and imports is_torch_fx_available.
 fix_transformers_remote_rope_scaling_none()

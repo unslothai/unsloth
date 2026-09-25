@@ -11,24 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Load an NVIDIA ModelOpt FP8 checkpoint through transformers' own fp8 quantizer.
+"""Load NVIDIA ModelOpt FP8 checkpoints through transformers' fp8 quantizer.
 
-ModelOpt (``quant_method: modelopt``, ``quant_algo: FP8``) writes the same thing
-transformers' fine-grained fp8 format calls a static per-tensor checkpoint: an
-``float8_e4m3fn`` weight, one float32 weight scale and one float32 input scale per
-Linear. Only the names differ (``weight_scale`` / ``input_scale`` against
-``weight_scale_inv`` / ``activation_scale``; both scales are dequantization
-multipliers in either format), and transformers has no ``modelopt`` quantizer, so
-such a checkpoint stops in ``from_pretrained`` with ``KeyError: 'modelopt'`` or, on
-paths that skip the lookup, loads fp8 bytes into plain Linear layers without their
-scales.
-
-``arm_modelopt_fp8_loading`` rewrites the config's quantization block into the
-equivalent ``quant_method: fp8`` one and returns the ``key_mapping`` that renames
-the two scale tensors while the checkpoint streams in. After that it is an ordinary
-static fp8 checkpoint: loaded as published it trains with fp8 base weights, and with
-``load_in_16bit = True`` transformers dequantizes it. NVFP4 and every other ModelOpt
-algorithm are left untouched.
+ModelOpt per-tensor FP8 equals transformers' static fp8 format except for scale names
+(``weight_scale`` / ``input_scale`` vs ``weight_scale_inv`` / ``activation_scale``), so the
+config block is rewritten to ``quant_method: fp8`` and the scales renamed via ``key_mapping``.
 """
 
 import fnmatch
@@ -47,7 +34,6 @@ __all__ = [
     "modelopt_planner_quantization_config",
 ]
 
-# Private attribute the key mapping is parked on until the loader hands it to from_pretrained.
 UNSLOTH_MODELOPT_KEY_MAPPING_ATTR = "_unsloth_modelopt_key_mapping"
 
 # Anchored at the end of the key, so `weight_scale_inv` or `weight_scale_2` never match.
@@ -60,12 +46,7 @@ _FP8_ALGOS = ("FP8", "FP8_PER_TENSOR")
 
 
 def _modelopt_pattern(name) -> str:
-    """One ModelOpt ``ignore`` / ``exclude_modules`` entry as a ``modules_to_not_convert`` pattern.
-
-    ModelOpt writes fnmatch globs (vLLM matches them with fnmatch), while transformers reads
-    ``modules_to_not_convert`` as regexes. Verbatim, ``backbone.layers.16*`` would also skip
-    layers 1 and 10-19, and ``*embed_tokens*`` does not compile. Globs are translated to an
-    anchored regex; plain names keep transformers' own prefix and suffix matching."""
+    # ModelOpt ignore entries are fnmatch globs; as regexes `layers.16*` would also skip layers 1, 10-19.
     name = str(name)
     if any(ch in name for ch in "*?["):
         return fnmatch.translate(name)
@@ -95,7 +76,6 @@ def _group_is_fp8(group) -> bool:
         return False
     if str(weights.get("type", "")).lower() != "float" or int(weights.get("num_bits", 0) or 0) != 8:
         return False
-    # Per-tensor only: a block or channel strategy would need a different scale layout.
     if weights.get("strategy", "tensor") not in (None, "tensor"):
         return False
     if weights.get("dynamic", False):
@@ -104,10 +84,7 @@ def _group_is_fp8(group) -> bool:
 
 
 def _activations_map_onto_fp8(inputs) -> bool:
-    """transformers' static fp8 keeps one scalar activation scale per Linear, so static input
-    scales must be per-tensor fp8. Its dynamic scheme quantizes per token, which is what a
-    dynamic "token" group declares and a finer form of "tensor"; channel, group or block
-    activation scaling has no counterpart and is declined."""
+    # transformers' dynamic fp8 is per token, so dynamic "token" maps; static must be per tensor.
     if not isinstance(inputs, dict):
         return False
     if str(inputs.get("type", "")).lower() != "float" or int(inputs.get("num_bits", 0) or 0) != 8:
@@ -119,8 +96,6 @@ def _activations_map_onto_fp8(inputs) -> bool:
 
 
 def modelopt_fp8_plan(config) -> Optional[dict]:
-    """Return the transformers fp8 quantization dict equivalent to ``config``'s ModelOpt FP8
-    block, or ``None`` when ``config`` is not a ModelOpt per-tensor FP8 checkpoint."""
     quant = _as_dict(getattr(config, "quantization_config", None))
     if quant is None:
         return None
@@ -138,8 +113,7 @@ def modelopt_fp8_plan(config) -> Optional[dict]:
             return None
         if not all(_group_is_fp8(group) for group in groups.values()):
             return None
-        # The fp8 form converts every Linear outside the ignore list, so only groups that
-        # target every Linear map onto it; narrower targets would convert unscaled layers.
+        # fp8 converts every Linear not ignored; narrower targets would convert unscaled layers.
         if not all(
             list(group.get("targets") or ["Linear"]) == ["Linear"] for group in groups.values()
         ):
@@ -148,13 +122,10 @@ def modelopt_fp8_plan(config) -> Optional[dict]:
         if all(x is None for x in inputs):
             activation_scheme = None
         elif any(x is None for x in inputs):
-            # Mixed weight-only and W8A8 groups do not map onto one activation scheme.
             return None
         elif not all(_activations_map_onto_fp8(x) for x in inputs):
             return None
         elif len({bool(x.get("dynamic", False)) for x in inputs}) > 1:
-            # Neither do mixed static and dynamic groups: one scheme would either drop the
-            # calibrated input scales or invent scales the dynamic groups do not have.
             return None
         elif inputs[0].get("dynamic", False):
             activation_scheme = "dynamic"
@@ -171,13 +142,12 @@ def modelopt_fp8_plan(config) -> Optional[dict]:
     if activation_scheme is not None:
         plan["activation_scheme"] = activation_scheme
     else:
-        # Weight-only: no input scales in the checkpoint, so quantize activations on the fly.
         plan["activation_scheme"] = "dynamic"
     return plan
 
 
 def _transformers_accepts_fp8_plan(plan) -> bool:
-    """Older transformers (4.x) only know dynamic block fp8 and reject a per-tensor plan."""
+    # transformers 4.x only knows dynamic block fp8 and rejects a per-tensor plan.
     try:
         from transformers.utils.quantization_config import FineGrainedFP8Config
         FineGrainedFP8Config(**{k: v for k, v in plan.items() if k != "quant_method"})
@@ -186,9 +156,7 @@ def _transformers_accepts_fp8_plan(plan) -> bool:
     return True
 
 
-# Configs this module rewrote, by id. A caller's config object is reused by a retry or a
-# second load and then reads as native fp8, with the parked mapping already moved off it;
-# this keeps the scale renaming reachable without writing anything serializable onto it.
+# A retried / second load reuses the config (now native fp8, marker moved off): keep the renaming by id.
 _REWRITTEN_CONFIGS: dict = {}
 
 
@@ -213,8 +181,6 @@ def _remembered_mapping(config) -> Optional[dict]:
 
 
 def modelopt_rewritten(config) -> bool:
-    """Whether ``config`` carries a ModelOpt FP8 block rewritten to the transformers fp8 form,
-    on this load or an earlier one with the same config object."""
     return (
         hasattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
         or _remembered_mapping(config) is not None
@@ -222,9 +188,6 @@ def modelopt_rewritten(config) -> bool:
 
 
 def arm_modelopt_fp8_loading(config, verbose: bool = True) -> Optional[dict]:
-    """Rewrite ``config.quantization_config`` from ModelOpt FP8 to the transformers fp8 form
-    and park the scale renaming on the config for the loader. Returns the new quantization
-    dict, or ``None`` (config untouched) when the checkpoint is not ModelOpt FP8."""
     plan = modelopt_fp8_plan(config)
     if plan is None or not _transformers_accepts_fp8_plan(plan):
         return None
@@ -243,10 +206,7 @@ def arm_modelopt_fp8_loading(config, verbose: bool = True) -> Optional[dict]:
 
 
 def _class_checkpoint_mapping(model_class) -> dict:
-    """The class-level VLM checkpoint renames that transformers applies only when the caller
-    passes no ``key_mapping`` (``if key_mapping ... elif VLM`` in 5.3). Empty where the class
-    carries none, as on the transformers releases that collect them from the registry and
-    add a caller ``key_mapping`` on top."""
+    # transformers 5.3 applies VLM class renames only when no caller key_mapping is passed.
     mapping = getattr(model_class, "_checkpoint_conversion_mapping", None)
     if not isinstance(mapping, dict) or not mapping:
         return {}
@@ -268,13 +228,8 @@ def pop_modelopt_key_mapping(
     kwargs: dict,
     model_class = None,
 ) -> None:
-    """Move a parked ModelOpt key mapping off ``config`` into ``kwargs['key_mapping']``. A
-    caller-supplied ``key_mapping`` is kept and extended, never replaced. Without one, the
-    VLM checkpoint renames of ``model_class`` are carried over, since passing any
-    ``key_mapping`` makes some transformers releases skip them."""
     mapping = getattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR, None)
     if mapping is None:
-        # Already moved off on an earlier load of this same config object.
         mapping = _remembered_mapping(config)
         if mapping is None:
             return
@@ -288,15 +243,11 @@ def pop_modelopt_key_mapping(
     else:
         merged = _class_checkpoint_mapping(model_class)
     for pattern, target in mapping.items():
-        # A user rule for the same pattern wins.
         merged.setdefault(pattern, target)
     kwargs["key_mapping"] = merged
 
 
-# Heads a task class adds on top of the checkpoint (GenericForSequenceClassification and
-# GenericForTokenClassification name theirs `score`; older task classes use `classifier`,
-# encoder-decoder ones `classification_head`, question answering `qa_outputs`). They have no
-# fp8 weight or scales on disk.
+# Fresh task heads with no fp8 weight on disk.
 _TASK_HEAD_MODULES = ("score", "classifier", "classification_head", "qa_outputs")
 _TASK_CLASS_SUFFIXES = (
     "ForSequenceClassification",
@@ -311,13 +262,6 @@ _TASK_CLASS_SUFFIXES = (
 
 
 def keep_task_heads_unquantized(config, *model_classes) -> bool:
-    """Keep the new task head of a classification load out of the rewritten fp8 plan.
-
-    The ModelOpt ignore list only names checkpoint modules, so a fresh `score` would be
-    converted to FP8Linear and its random init fails on an fp8 weight. Applied only when
-    one of ``model_classes`` (the auto or resolved class the load builds) is a task class,
-    so a causal LM keeps its plan unchanged, and only when the checkpoint is not itself a task
-    checkpoint whose head is on disk. Returns True when the plan was extended."""
     names = [getattr(cls, "__name__", "") for cls in model_classes if cls is not None]
     if not any(name.endswith(_TASK_CLASS_SUFFIXES) for name in names):
         return False
@@ -335,9 +279,6 @@ def keep_task_heads_unquantized(config, *model_classes) -> bool:
 
 
 def modelopt_planner_quantization_config(config, dequantize: bool = False) -> Optional[dict]:
-    """The rewritten fp8 plan on ``config`` as the load will apply it, for the device-map
-    planner, which rebuilds the repo's ModelOpt block and cannot size it. ``dequantize``
-    mirrors a 16-bit load, which asks the fp8 quantizer for bf16 weights."""
     quant = getattr(config, "quantization_config", None)
     if not isinstance(quant, dict):
         return None

@@ -1491,8 +1491,6 @@ class FastBaseModel:
             load_in_8bit = load_in_8bit,
             rewrite_modelopt = not (fast_inference and is_vLLM_available()),
         )
-        # A ModelOpt FP8 checkpoint was rewritten to the transformers fp8 form above; its two
-        # scale tensors are renamed on the way in.
         from .modelopt_fp8 import (
             keep_task_heads_unquantized,
             modelopt_planner_quantization_config,
@@ -1502,7 +1500,6 @@ class FastBaseModel:
 
         _modelopt_rewritten = modelopt_rewritten(auto_config)
         if _modelopt_rewritten:
-            # A task auto_model builds a head (`score`) with no fp8 weight on disk.
             keep_task_heads_unquantized(auto_config, auto_model, model_class)
         pop_modelopt_key_mapping(auto_config, kwargs, model_class)
         # Correct UNSLOTH_MODEL_NAME's bnb tokens now the effective bnb state is known (the per-load env was built before remap/disable). gpt-oss only.
@@ -1565,8 +1562,6 @@ class FastBaseModel:
                 load_in_4bit = load_in_4bit,
                 load_in_8bit = load_in_8bit,
                 quantization_config = user_quantization_config,
-                # The planner rebuilds the repo's ModelOpt block, which transformers cannot size;
-                # hand it the fp8 form the load uses.
                 rewritten_quantization_config = modelopt_planner_quantization_config(
                     auto_config, dequantize = load_in_16bit
                 )
@@ -1713,15 +1708,12 @@ class FastBaseModel:
                     quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING["bitsandbytes_4bit"]
                 else:
                     quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING.get(quant_method)
-                # Only vLLM may take a method transformers cannot load (a ModelOpt format the
-                # fp8 rewrite declines); in process it would load raw quantized tensors unscaled.
+                # In process, an unknown method would load quantized tensors unscaled; only vLLM may.
                 if quantizer is None and not (fast_inference and is_vLLM_available()):
                     raise KeyError(
                         f"Unsloth: transformers cannot load this `{quant_method}` checkpoint in process."
                     )
                 quantizer_kwargs = {}
-                # A method transformers has no quantizer for (ModelOpt left as is because vLLM
-                # reads it natively) is not converted here.
                 if quant_method == "compressed-tensors" or quantizer is None:
                     pass
                 else:

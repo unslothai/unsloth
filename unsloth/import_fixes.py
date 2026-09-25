@@ -2314,8 +2314,6 @@ def _transformers_rope_scaling_assignment_drops_theta():
 
 
 def _fp8_replace_swaps_named_experts(fn) -> bool:
-    """Whether this ``replace_with_fp8_linear`` turns every ``*.experts`` module into a stacked
-    ``FP8Experts`` by name alone (transformers 5.x). Unknown source means leave it alone."""
     try:
         return 'endswith(".experts")' in inspect.getsource(fn)
     except Exception:
@@ -2348,9 +2346,7 @@ def _wrap_fp8_replace_for_modulelist_experts(original):
         if not hidden:
             return original(model, *args, **kwargs)
 
-        # Park each list under a name that does not end in `.experts`, so its Linear children
-        # take the plain FP8Linear branch. A child the original names excluded stays excluded
-        # under its parked name.
+        # Rename off `.experts` so children take the FP8Linear branch; keep exclusions under the new name.
         parked_suffix = "_unsloth_modulelist"
         extra_patterns = []
         renames = []
@@ -2386,18 +2382,7 @@ def _wrap_fp8_replace_for_modulelist_experts(original):
 
 
 def fix_transformers_fp8_modulelist_experts():
-    """Keep an ``nn.ModuleList`` of per-expert Linears intact under the transformers fp8 quantizer.
-
-    transformers 5.x ``replace_with_fp8_linear`` swaps any module whose name ends in ``.experts``
-    for a stacked ``FP8Experts``. Remote-code MoE models (sarvam, DeepSeek-style remote code)
-    keep ``mlp.experts`` as an ``nn.ModuleList`` of ``nn.Linear`` projections, so the swap
-    discards the list and the next replacement fails with ``FP8Experts has no attribute `0```
-    before a single weight loads. The list is parked under another name for the call so each
-    projection becomes an ``FP8Linear``, which matches how those checkpoints are stored
-    (``experts.<i>.gate_proj.weight`` plus its scales). Native stacked experts (a module, not a
-    list) keep the ``FP8Experts`` path. Wired through the quantizer, so
-    ``transformers.integrations.finegrained_fp8`` is only imported when an fp8 load happens.
-    """
+    """transformers 5.x swaps any `*.experts` for FP8Experts, breaking remote-code ModuleList experts (sarvam)."""
     try:
         from transformers.quantizers import quantizer_finegrained_fp8
     except Exception:
@@ -2430,8 +2415,7 @@ def fix_transformers_fp8_modulelist_experts():
 
 
 def _cast_fp8_dequantize_to_model_dtype(op_cls):
-    """transformers 5.4 returns a dequantized fp8 weight in its scale's dtype (fp32), so a 16-bit
-    load kept every converted Linear in fp32. Cast it to the dtype of the parameter it replaces."""
+    # transformers 5.4 dequantizes to the scale's fp32; cast to the replaced parameter's dtype.
     convert = getattr(op_cls, "convert", None)
     if convert is None or getattr(convert, "_unsloth_model_dtype", False):
         return

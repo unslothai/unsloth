@@ -2605,8 +2605,7 @@ class FastLlamaModel:
             load_in_8bit = load_in_8bit,
             rewrite_modelopt = not _vllm_will_load_weights(fast_inference, num_labels),
         )
-        # A ModelOpt FP8 checkpoint was rewritten to the transformers fp8 form above. The rewrite
-        # lives on model_config, so it has to be the config the weights load against.
+        # The ModelOpt rewrite lives on model_config, so weights must load against it.
         from .modelopt_fp8 import (
             keep_task_heads_unquantized,
             modelopt_planner_quantization_config,
@@ -2616,11 +2615,8 @@ class FastLlamaModel:
 
         _modelopt_rewritten = modelopt_rewritten(model_config)
         if _modelopt_rewritten:
-            # The check above saw `modelopt`; the load now needs fp8 hardware like any fp8 checkpoint.
             verify_fp8_support_if_applicable(model_config)
         if _modelopt_rewritten and num_labels is not None:
-            # num_labels builds AutoModelForSequenceClassification; its new `score` has no fp8
-            # weight on disk.
             keep_task_heads_unquantized(model_config, AutoModelForSequenceClassification)
         pop_modelopt_key_mapping(model_config, kwargs)
         # Correct UNSLOTH_MODEL_NAME's bnb tokens now the effective bnb state is known (the per-load env
@@ -2685,8 +2681,6 @@ class FastLlamaModel:
                 load_in_4bit = load_in_4bit,
                 load_in_8bit = load_in_8bit,
                 quantization_config = kwargs.get("quantization_config", None),
-                # The planner rebuilds the repo's ModelOpt block, which transformers cannot size;
-                # hand it the fp8 form the load uses.
                 rewritten_quantization_config = modelopt_planner_quantization_config(model_config)
                 if _modelopt_rewritten
                 else None,
@@ -2811,8 +2805,7 @@ class FastLlamaModel:
                     # on the config and pass the single config object through.
                     if max_position_embeddings is not None:
                         model_config.max_position_embeddings = max_position_embeddings
-                    # The RoPE extension above travels as a kwarg, which the model init would receive
-                    # next to config= and reject; it belongs on the config, as the num_labels branch does.
+                    # rope_scaling kwarg next to config= is rejected by model init.
                     _rope_scaling = kwargs.pop("rope_scaling", None)
                     if _rope_scaling is not None:
                         model_config.rope_scaling = _rope_scaling

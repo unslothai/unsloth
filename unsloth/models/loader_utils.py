@@ -238,8 +238,6 @@ def planner_quantization_kwargs(
     rewritten_quantization_config = None,
 ):
     """The quantization the planner must size for, as the load will really apply it. The config or the flags, never both, since transformers refuses both and loader.py clears the flags whenever it forwards a config; bare flags would describe a full-precision load and raise `DeviceMapInfeasible` on one that would have fit. The skip list travels with the flags: SKIP_QUANTIZATION_MODULES stays in compute dtype as `modules_to_not_convert`, and sizing it at 4bit understates the head device by GiBs on a large-vocab VLM. A pre-quantized checkpoint carries its own list in config.json."""
-    # A checkpoint block Unsloth rewrote on the loaded config (ModelOpt FP8 into fp8) replaces the
-    # serialized one the planner would read; a planner without the option cannot size it anyway.
     rewritten = (
         {}
         if rewritten_quantization_config is None
@@ -1419,9 +1417,7 @@ def check_and_disable_bitsandbytes_loading(
     verbose = True,
     rewrite_modelopt = True,
 ):
-    """Disable bitsandbytes loading (load_in_4bit/load_in_8bit) when the model already carries a non-bitsandbytes quantization config. Returns ``(load_in_4bit, load_in_8bit, quant_method)``, with both flags False if they were disabled and quant_method the detected method or None.
-
-    ``rewrite_modelopt`` turns an NVIDIA ModelOpt FP8 quantization block on ``model_config`` into the equivalent transformers ``fp8`` one (see ``modelopt_fp8.py``); the caller then moves the parked scale renaming into ``from_pretrained`` with ``pop_modelopt_key_mapping``. Pass False when vLLM reads the checkpoint itself, since it understands ModelOpt natively."""
+    """Disable bitsandbytes loading (load_in_4bit/load_in_8bit) when the model already carries a non-bitsandbytes quantization config. Returns ``(load_in_4bit, load_in_8bit, quant_method)``, with both flags False if they were disabled and quant_method the detected method or None. ``rewrite_modelopt`` converts ModelOpt FP8 to fp8; pass False when vLLM loads it natively."""
     quant_method = get_quant_type(model_config)
 
     if quant_method is None or quant_method == "bitsandbytes":

@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""NVIDIA ModelOpt FP8 checkpoints load through the transformers fp8 quantizer.
-
-transformers has no ``modelopt`` quantizer, so ``sarvamai/sarvam-105b-fp8`` (and every
-``quant_method: modelopt`` / ``quant_algo: FP8`` checkpoint) stopped in the loader with
-``KeyError: 'modelopt'``. The checkpoint is a static per-tensor fp8 one under other names:
-``weight_scale`` / ``input_scale`` where transformers says ``weight_scale_inv`` /
-``activation_scale``. These tests pin the classifier, the config rewrite, the key mapping
-hand-off, and (on a GPU) the round trip of a tiny ModelOpt-format Llama in both the fp8 and
-the dequantized 16-bit form against the same weights dequantized by hand.
-
-Also here: transformers 5 ``replace_with_fp8_linear`` swaps any ``*.experts`` module for a
-stacked ``FP8Experts``, which breaks remote-code MoE models whose experts are an
-``nn.ModuleList`` of Linears (sarvam: ``FP8Experts has no attribute `0```).
-"""
+"""ModelOpt FP8 checkpoints (sarvam-105b-fp8) load via the transformers fp8 quantizer."""
 
 import inspect
 import json
@@ -178,7 +165,6 @@ def test_arm_rewrites_config_and_hands_mapping_to_kwargs():
         r"^old\.": "new.",
         r"\.input_scale$": ".activation_scale",
     }
-    # Idempotent: nothing parked, nothing touched.
     before = dict(kwargs)
     pop_modelopt_key_mapping(config, kwargs)
     assert kwargs == before
@@ -196,8 +182,7 @@ def _pin_vlm_names(monkeypatch, names):
 
 
 def test_key_mapping_keeps_the_vlm_checkpoint_renames(monkeypatch):
-    """transformers 5.3 picks either the caller key_mapping or a VLM's class-level checkpoint
-    renames, never both, so the scale renames alone left a VLM's weights unmatched."""
+    """transformers 5.3 applies a VLM's class renames only without a caller key_mapping."""
     _pin_vlm_names(monkeypatch, ["llava"])
 
     class LlavaForConditionalGeneration:
@@ -289,7 +274,6 @@ def test_check_and_disable_rewrites_only_when_asked():
     assert hasattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
 
 
-# ----------------------------------------------------------------------------- ModuleList experts
 
 
 def _fp8_quantizer(**config_kwargs):
@@ -356,7 +340,6 @@ def test_modulelist_experts_become_fp8_linears():
                 excluded = (i, j, proj) == (1, 2, "down_proj")
                 assert isinstance(module, FP8Linear) != excluded, (i, j, proj)
     assert type(model.lm_head) is nn.Linear
-    # The child order the checkpoint keys index into is unchanged.
     assert list(model.model.layers[0].mlp._modules) == ["gate", "experts"]
 
 
@@ -394,7 +377,6 @@ def test_wrapper_hides_only_modulelist_experts():
     assert isinstance(model.model.layers[1].mlp.experts, nn.ModuleList)
     assert list(model.model.layers[1].mlp._modules) == ["gate", "experts"]
 
-    # An exception inside the original still restores the names.
     def boom(
         model,
         modules_to_not_convert = None,
@@ -408,7 +390,6 @@ def test_wrapper_hides_only_modulelist_experts():
     assert list(model.model.layers[1].mlp._modules) == ["gate", "experts"]
 
 
-# ----------------------------------------------------------------------------- GPU round trip
 
 
 def _write_tiny_modelopt_llama(path):
@@ -482,8 +463,6 @@ def test_tiny_modelopt_llama_round_trip(tmp_path, dequantize):
 
 
 def test_rewrite_follows_who_loads_the_weights():
-    # vLLM reads ModelOpt natively, but only when it really owns the load: a num_labels
-    # classification load and a missing vLLM both stay in process and need the rewrite.
     import inspect
     from unsloth.models import llama, vision
 
@@ -501,8 +480,6 @@ def test_rewrite_follows_who_loads_the_weights():
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "FastModel loads need an accelerator")
 def test_a_declined_modelopt_format_still_refuses_to_load_in_process(tmp_path):
-    """NVFP4 is not rewritten; without vLLM owning the load, transformers would skip the
-    quantization and load the packed tensors unscaled."""
     from transformers import LlamaConfig, LlamaForCausalLM
     from unsloth import FastModel
 
@@ -525,8 +502,7 @@ def test_a_declined_modelopt_format_still_refuses_to_load_in_process(tmp_path):
 @needs_per_tensor_fp8
 @pytest.mark.skipif(not has_real_cuda(), reason = "FastLanguageModel loads need an accelerator")
 def test_fast_llama_checks_fp8_hardware_on_the_rewritten_config(tmp_path):
-    """The early check sees `modelopt`; the rewritten `fp8` plan must be checked too.
-    Runs in a subprocess: FastLanguageModel patches the Llama classes for the whole process."""
+    """Subprocess: FastLanguageModel patches the Llama classes process-wide."""
     import subprocess
     import sys
 
@@ -550,8 +526,6 @@ print("SEEN", seen)
 
 
 def test_config_branch_moves_rope_extension_onto_the_config():
-    # A ModelOpt load passes config=, so a context extension's rope_scaling kwarg would reach the
-    # model init and raise TypeError; it has to be set on the config instead.
     import inspect
     from unsloth.models import llama
 
@@ -584,7 +558,6 @@ def test_task_heads_stay_out_of_the_rewritten_plan_only_for_task_loads():
         "classification_head",
         "qa_outputs",
     ]
-    # Idempotent, and the resolved concrete class counts too.
     assert keep_task_heads_unquantized(config, None, LlamaForSequenceClassification)
     assert len(config.quantization_config["modules_to_not_convert"]) == 5
 
@@ -592,7 +565,6 @@ def test_task_heads_stay_out_of_the_rewritten_plan_only_for_task_loads():
         config = rewritten()
         assert not keep_task_heads_unquantized(config, causal)
         assert config.quantization_config["modules_to_not_convert"] == ["lm_head"]
-    # Only the rewritten fp8 plan is touched.
     other = SimpleNamespace(quantization_config = {"quant_method": "gptq"})
     assert not keep_task_heads_unquantized(other, AutoModelForSequenceClassification)
     assert "modules_to_not_convert" not in other.quantization_config
@@ -697,8 +669,6 @@ def test_both_loaders_hand_the_planner_the_rewritten_plan():
 
 @needs_per_tensor_fp8
 def test_the_planner_sizes_a_modelopt_checkpoint_from_the_rewritten_plan(tmp_path):
-    # The planner rebuilds config.json, whose `modelopt` block transformers cannot build a
-    # quantizer for; the rewritten plan the loader hands it is what gets sized.
     from transformers import AutoConfig, LlamaConfig
     from unsloth.models.loader_utils import planner_quantization_kwargs
     from unsloth.models.modelopt_fp8 import modelopt_planner_quantization_config
@@ -791,8 +761,6 @@ def test_a_task_checkpoint_keeps_its_quantized_head():
 
 
 def test_a_reused_config_keeps_the_scale_renaming():
-    # The offline retry and a second load hand the same config object back in; it already reads
-    # as native fp8, so the renaming has to come from somewhere other than the moved marker.
     from transformers import LlamaConfig
 
     from unsloth.models.modelopt_fp8 import modelopt_rewritten
@@ -819,8 +787,6 @@ def test_a_reused_config_keeps_the_scale_renaming():
 
 @needs_per_tensor_fp8
 def test_modelopt_ignore_globs_keep_fnmatch_meaning():
-    # ModelOpt ignore lists are fnmatch globs (Nemotron-3-Super: `backbone.layers.16*`); read as
-    # regexes they would also skip layers 1 and 10-19, and a leading `*` does not compile.
     from transformers.quantizers.quantizers_utils import should_convert_module
 
     quant = _sarvam_quant()
