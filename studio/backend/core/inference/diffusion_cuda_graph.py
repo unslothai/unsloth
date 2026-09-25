@@ -432,7 +432,6 @@ class GraphedForward:
                     from .diffusion_nvfp4_protect import module_controller
                     self.protect_ctl = module_controller(self.module)
                 if self.protect_keyed:
-                    # Each input shape now has two branches, so double the cap.
                     self.max_graphs *= 2
                     if self.logger is not None:
                         self.logger.info(

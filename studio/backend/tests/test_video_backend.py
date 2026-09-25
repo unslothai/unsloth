@@ -9234,7 +9234,6 @@ def test_a_seed_the_plan_declined_is_not_re_taken_by_the_load(fake_runtime, monk
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(video_mod, "quantize_transformer", lambda *a, **k: "nvfp4")
     calls, _modules = _stub_denoiser_seed(monkeypatch, plan_scheme = None)
-    # The load's own probe would answer yes on this roomy card.
     monkeypatch.setattr(video_mod, "_video_auto_denoiser_scheme", lambda fam, **kw: "nvfp4")
 
     backend = VideoBackend()
@@ -9333,7 +9332,6 @@ def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
     }
     monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: sources)
     monkeypatch.setattr(video_mod, "_video_auto_denoiser_scheme", lambda fam, **kw: "nvfp4")
-    # Its residency question reads live free VRAM, which a shared test card moves under the test.
     monkeypatch.setattr(video_mod, "_video_seed_stays_resident", lambda fam, **kw: True)
 
     plan = VideoBackend().download_plan(
@@ -9357,8 +9355,7 @@ def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
 
 
 def test_an_explicit_scheme_under_speed_off_stages_the_hosted_experts(monkeypatch):
-    """An EXPLICIT scheme under speed_mode="off" is still quantized, so the plan keeps its seed and
-    stages the hosted checkpoint rather than the ~56 GB of dense experts."""
+    """An EXPLICIT scheme under speed_mode="off" is still quantized, so the plan keeps its seed."""
     import core.inference.video as video_mod
     import core.inference.video_denoiser_prequant as dq
 
@@ -9395,7 +9392,6 @@ def test_an_explicit_scheme_under_speed_off_stages_the_hosted_experts(monkeypatc
         ),
     }
     monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: sources)
-    # The runner's own GPU and memory must not decide the seed: this pins the speed-off rule only.
     monkeypatch.setattr(
         video_mod, "select_transformer_quant_scheme", lambda target, requested, **kw: requested
     )
@@ -9578,7 +9574,6 @@ def test_a_dense_encoder_fallback_that_forces_offload_also_drops_the_seed(
     def _plan(**kwargs):
         seen.append(kwargs.get("model_dense_mib"))
         planned = real_plan(**kwargs)
-        # The artifact-sized plan with the pre-cast encoder fits; every plan after it offloads.
         return planned if len(seen) == 1 else dataclasses.replace(planned, offload_policy = "model")
 
     monkeypatch.setattr(video_mod, "plan_diffusion_memory", _plan)

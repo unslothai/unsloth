@@ -2418,8 +2418,7 @@ def get_system_info(
         # pure read of that same pass.
         "dense_quant_supported": _dense_quant_supported(),
         "dense_quant_schemes": _dense_quant_schemes(),
-        # The NVFP4 switch (UNSLOTH_NVFP4_DIFFUSION), so the image and video pages offer NVFP4 only
-        # when the backend will accept it. Torch-free env read, safe on this polled route.
+        # Torch-free env read, safe on this polled route.
         "nvfp4_diffusion": _nvfp4_diffusion_enabled(),
     }
 

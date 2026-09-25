@@ -480,7 +480,6 @@ def test_an_unprewarmed_gemm_shape_autotunes_on_its_first_eager_call_only(monkey
         _mm(8192)
         assert calls == [(1, False), (4352, True), (4352, False), (8192, False)]
         assert (4352, 32, 64) in nl._TUNED_SHAPES
-        # Seen under capture, so still untuned: the next eager call gets to tune it.
         assert (8192, 32, 64) not in nl._TUNED_SHAPES
     finally:
         nl.reset_tuned_shapes()

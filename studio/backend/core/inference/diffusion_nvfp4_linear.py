@@ -28,7 +28,6 @@ ACT_SCALES_KEY = "act_global_scales"
 POLICY_KEY = "nvfp4_policy"
 POLICY_BAKED_KEY = "activation_scales_baked"
 
-# Process-wide, not per module: FlashInfer caches tactics per shape.
 _TUNED_SHAPES: set = set()
 
 
@@ -191,7 +190,6 @@ def nvfp4_linear_from_torchao(
         alpha = alpha,
         a_gsf = _as_scale_tensor(a_gsf, device = device, dtype = torch.float32),
         bias = bias,
-        # Kept as torchao stored it: the W4A16 branch must land on torchao's own bytes.
         w_scale = _as_scale_tensor(per_tensor_scale, device = device, dtype = torch.float32),
         backend = backend,
         activation_scales_baked = True,

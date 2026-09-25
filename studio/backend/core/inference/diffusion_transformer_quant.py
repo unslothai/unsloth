@@ -308,7 +308,6 @@ class _AutoPrefer:
     backend: Optional[str] = None
 
 
-# Image rows are gated (inert until a record lands); nvfp4 below int8/fp8 is a memory lever.
 _FAMILY_AUTO_PREFER: dict[str, _AutoPrefer] = {
     "z-image": _AutoPrefer(
         floor = (10, 0), schemes = (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8), gated = True
@@ -613,7 +612,6 @@ def normalize_transformer_quant(value: Optional[str]) -> Optional[str]:
         raise ValueError(
             f"Unsupported transformer_quant '{value}'. Use one of: {', '.join(TQ_MODES)}."
         )
-    # The NVFP4 switch (diffusion_nvfp4_flag) refuses the scheme at validation, never swaps it.
     if nvfp4_blocked(normalized):
         raise ValueError(nvfp4_disabled_message("transformer_quant"))
     return normalized
@@ -975,9 +973,7 @@ def _auto_scheme_order(
         return ()
     prefer = _FAMILY_AUTO_PREFER.get(str(family or "").strip().lower())
     if prefer is not None and (prefer.gated or prefer.backend) and not nvfp4_diffusion_enabled():
-        # The NVFP4 switch is off, and a gated or backend-keyed row is NVFP4 machinery: drop it
-        # whole, before its gate record or backend probe (which imports flashinfer) is consulted.
-        # What remains is the family-blind ladder, which is what such a row minus nvfp4 is.
+        # Switch off: drop gated/backend rows before their gate record or backend probe (imports flashinfer).
         prefer = None
     head: tuple[str, ...] = ()
     if prefer is not None and cap >= prefer.floor:
@@ -989,8 +985,7 @@ def _auto_scheme_order(
                 if prefer.backend is None or _nvfp4_backend_is(device, prefer.backend):
                     head = prefer.schemes
     order: list[str] = []
-    # Filtered here, so the NVFP4 switch reaches every reader of the order: the selector, both
-    # candidate lists and the /api/system ladder.
+    # Filtered here so the NVFP4 switch reaches every reader of the order.
     for scheme in without_nvfp4(head + tier):
         if scheme not in order:
             order.append(scheme)
@@ -1036,7 +1031,6 @@ def _scheme_supported(
 ) -> bool:
     """CUDA + (for fp8) the fp8 dtype + a cached quantise+matmul smoke test for ``scheme``."""
     if nvfp4_blocked(scheme):
-        # Switched off: no probe (child or in-process) is spent on a scheme nothing may use.
         return False
     try:
         import torch
@@ -1627,7 +1621,6 @@ def quantize_transformer(
             from .diffusion_nvfp4_policy import quantize_with_policy, resolve_policy
             policy = resolve_policy(family, base_repo)
         if policy is not None:
-            # Fails closed: ``PolicyMismatch`` drops to GGUF rather than ship unmeasured precisions.
             quantize_with_policy(
                 transformer,
                 policy,

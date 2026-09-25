@@ -2790,7 +2790,6 @@ def test_a_gguf_pick_whose_base_comes_from_its_card_is_judged_on_the_gated_base(
     seen = []
 
     def _select(target, requested, **kwargs):
-        # What the real selector does once the GPU is fine: the deny holds unless the base is gated.
         seen.append(kwargs.get("base_repo"))
         return (
             None
