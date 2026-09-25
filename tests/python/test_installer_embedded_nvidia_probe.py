@@ -266,6 +266,36 @@ class TestCudaRung:
         out = _run(INSTALL_PROBE, {LINUX_NVML: None, LINUX_CUDA: _cuda()})
         assert out == "cuda;12;6;9.0,9.0"
 
+    def test_the_skip_switch_goes_straight_to_the_driver_api(self):
+        # The CUDA-only retry after a child NVML held past its deadline: NVML is never loaded or
+        # initialised, and the driver API is.
+        nvml, cuda = _nvml(), _cuda()
+        saved = os.environ.get("UNSLOTH_NVIDIA_PROBE_SKIP_NVML")
+        os.environ["UNSLOTH_NVIDIA_PROBE_SKIP_NVML"] = "1"
+        try:
+            out = _run(INSTALL_PROBE, {LINUX_NVML: nvml, LINUX_CUDA: cuda})
+        finally:
+            if saved is None:
+                os.environ.pop("UNSLOTH_NVIDIA_PROBE_SKIP_NVML", None)
+            else:
+                os.environ["UNSLOTH_NVIDIA_PROBE_SKIP_NVML"] = saved
+        assert "nvmlInit_v2" not in nvml.calls
+        assert "cuInit" in cuda.calls and "cuDriverGetVersion" in cuda.calls
+        assert out == "cuda;12;6;9.0,9.0"
+
+    def test_any_other_switch_value_still_reads_nvml_first(self):
+        nvml = _nvml()
+        saved = os.environ.get("UNSLOTH_NVIDIA_PROBE_SKIP_NVML")
+        os.environ["UNSLOTH_NVIDIA_PROBE_SKIP_NVML"] = "0"
+        try:
+            out = _run(INSTALL_PROBE, {LINUX_NVML: nvml, LINUX_CUDA: _cuda()})
+        finally:
+            if saved is None:
+                os.environ.pop("UNSLOTH_NVIDIA_PROBE_SKIP_NVML", None)
+            else:
+                os.environ["UNSLOTH_NVIDIA_PROBE_SKIP_NVML"] = saved
+        assert "nvmlInit_v2" in nvml.calls and out.startswith("nvml;")
+
     def test_nvml_is_preferred_when_both_answer(self):
         out = _run(INSTALL_PROBE, {LINUX_NVML: _nvml(), LINUX_CUDA: _cuda()})
         assert out.startswith("nvml;")
