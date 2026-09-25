@@ -828,7 +828,6 @@ def test_real_cuda_capture_replays_bit_identically():
         cg.uninstall_all([handle])
 
 
-# Live status: an armed graph that never engaged must not keep reporting "on".
 
 _RESOLVED_ON = {
     "cuda_graph": {
@@ -868,7 +867,6 @@ def test_live_status_turns_off_when_every_call_was_refused(stub_torch):
     assert resolved["cuda_graph"]["status"] == "applied"
     assert resolved["speed_mode"] is _RESOLVED_ON["speed_mode"]
     assert optims == ["compiled"]
-    # The load-time record is not rewritten in place.
     assert _RESOLVED_ON["cuda_graph"]["value"] == "on"
     assert json.loads(json.dumps(resolved)) == resolved
 
@@ -909,7 +907,6 @@ def test_live_status_keeps_on_once_a_graph_replayed(stub_torch):
     handle = _armed()
     handle(_t(), timestep = _t((1,)), return_dict = False)
     handle(_t(), timestep = _t((1,)), return_dict = False)
-    # A later refused call does not undo a graph that is replaying.
     handle(_t(), timestep = 0.25, return_dict = False)
     assert handle.stats["replays"] == 2
     resolved, optims = cg.live_status(_RESOLVED_ON, ("cuda_graph",), (handle,))

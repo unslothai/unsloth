@@ -406,7 +406,6 @@ def test_qwen_image_21_is_declined_with_the_reason(fresh_cache):
         "QwenImage21Transformer2DModel forward is not capture-safe (its pipeline passes the prefix KV "
         "cache as a Python object on every step and its forward syncs the host)"
     )
-    # A subclass that brings its own forward is a different forward.
     Sub = type("Sub", (QwenImage21Transformer2DModel,), {"forward": lambda self, x: x})
     assert cs.resolve(Sub) == (None, None)
 

@@ -654,11 +654,7 @@ def stats(handles: Any) -> dict:
 
 
 def never_engaged(handles: Any) -> Optional[str]:
-    """Why the armed graphs have not replayed a single step, or None while that claim is still open.
-
-    None before the first denoiser call and once anything captured or replayed. Otherwise a short
-    reason naming where the calls went, so a status that says "on" at load cannot outlive a run in
-    which every step ran eager."""
+    """Why the armed graphs never replayed a step; None before the first call or once any captured."""
     if not handles:
         return None
     s = stats(handles)
@@ -683,8 +679,7 @@ def never_engaged(handles: Any) -> Optional[str]:
 
 
 def live_status(resolved: Any, speed_optims: Any, handles: Any) -> tuple:
-    """``(resolved, speed_optims)`` for a status payload, with ``cuda_graph`` turned off when the
-    armed graphs never engaged. Copies, never mutates: the load-time record stays as recorded."""
+    """Status ``(resolved, speed_optims)`` with ``cuda_graph`` off when it never engaged; copies, never mutates."""
     why = never_engaged(handles)
     optims = list(speed_optims or ())
     if why is None:

@@ -204,11 +204,8 @@ _REWRITES: dict[str, tuple[str, Callable[[Callable], Callable]]] = {
     ),
 }
 
-# class name -> why its stock call cannot be captured at all, with no rewrite to offer. Declined at
-# load, so status says "off" with the reason instead of arming a wrapper that refuses every step.
+# class name -> why its stock forward cannot be captured; declined at load instead of refusing every step.
 _UNCAPTURABLE: dict[str, str] = {
-    # The pipeline passes its prefix KV cache (a QwenImage21KVCache) on every step, and the forward
-    # syncs the host (repeat_interleave, boolean indexing, nonzero, .tolist) before its first block.
     "QwenImage21Transformer2DModel": "its pipeline passes the prefix KV cache as a Python object "
     "on every step and its forward syncs the host",
 }
