@@ -468,14 +468,12 @@ def _docx(path: str) -> list[Page]:
 
 
 def _declared_charset(data: bytes) -> str | None:
-    """The codec a browser would use for the charset this HTML page declares, if any."""
     # Lazy: tools is heavy, and only HTML that is not UTF-8 gets here.
     from ..inference.tools import _META_CHARSET_SCAN_BYTES, _sniff_meta_charset
     return _sniff_meta_charset(data[:_META_CHARSET_SCAN_BYTES], "text/html")
 
 
 def _decode_text(data: bytes, *, html: bool = False) -> str:
-    """BOM, then UTF-8, then HTML-declared charset; mostly-UTF-8 files stay UTF-8, else cp1252."""
     # Check UTF-32 before its overlapping UTF-16 prefix.
     for bom, codec in (
         (codecs.BOM_UTF32_LE, "utf-32"),
@@ -500,8 +498,7 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
     if declared and declared != "utf-8":
         return data.decode(declared, errors = "replace")
     text = data.decode("utf-8", errors = "replace")
-    # Keep UTF-8 unless damaged bytes outnumber valid non-ASCII: legacy bytes can form a stray valid
-    # sequence (cp1252 "à\xa0»"), and a truncated UTF-8 file has as many of each.
+    # Ties stay UTF-8 (truncated file); cp1252 can form a stray valid sequence ("à\xa0»").
     non_ascii = len(text) - len(text.encode("ascii", "ignore"))
     if non_ascii >= 2 * text.count("\ufffd"):
         return text
