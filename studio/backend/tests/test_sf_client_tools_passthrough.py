@@ -884,6 +884,65 @@ def test_tool_choice_none_does_not_advertise_tools(monkeypatch):
     assert backend.calls[0]["tools"] is None
 
 
+_CLIENT_TOOL_HISTORY = [
+    {"role": "user", "content": "look up cats"},
+    {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": '{"q": "cats"}'},
+            }
+        ],
+    },
+    {"role": "tool", "tool_call_id": "call_1", "content": "cats are mammals"},
+]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        dict(tools = [LOOKUP_TOOL], tool_choice = "required"),
+        dict(tools = [LOOKUP_TOOL]),
+        dict(tools = [LOOKUP_TOOL], messages = _CLIENT_TOOL_HISTORY),
+        dict(tools = [LOOKUP_TOOL], enable_tools = True),
+    ],
+)
+@pytest.mark.parametrize("gptoss", [False, True])
+def test_client_tools_the_model_cannot_take_are_refused(monkeypatch, kwargs, gptoss):
+    backend = _ScriptedBackend(_fixed("prose instead of a call"))
+    if gptoss:
+        backend._is_gpt_oss_model = lambda: True
+    payload = _request(stream = False, **kwargs)
+    entry, error = _monitor_entry(payload, monkeypatch, backend, supports_tools = gptoss)
+
+    assert error is not None and error.status_code == 400
+    assert error.detail["error"]["code"] == "unsupported_parameter"
+    assert error.detail["error"]["param"] == "tools"
+    assert ("gpt-oss" in error.detail["error"]["message"]) is gptoss
+    assert backend.calls == []
+    assert entry["status"] == "error"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        dict(tools = [LOOKUP_TOOL], tool_choice = "none"),
+        dict(tools = [LOOKUP_TOOL], tool_choice = "none", messages = _CLIENT_TOOL_HISTORY),
+        dict(messages = _CLIENT_TOOL_HISTORY),
+        dict(enable_tools = True),
+    ],
+)
+def test_requests_without_an_active_client_catalog_still_answer(monkeypatch, kwargs):
+    backend = _ScriptedBackend(_fixed("plain answer"))
+    payload = _request(stream = False, **kwargs)
+    body = _json_body(_call(payload, monkeypatch, backend, supports_tools = False))
+    assert body["choices"][0]["message"]["content"] == "plain answer"
+    assert backend.calls[0]["tools"] is None
+
+
 def test_developer_message_folded_into_system_prompt(monkeypatch):
     # The "developer" role folds into one leading system message (local templates reject it).
     backend = _ScriptedBackend(_fixed("ok"))
