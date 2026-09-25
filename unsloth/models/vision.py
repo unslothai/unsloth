@@ -345,13 +345,9 @@ _MODALITY_SUB_CONFIGS = ("vision_config", "audio_config", "speech_config", "soun
 
 
 def _align_root_hook_with_input_embeddings(model):
-    """Point the root dispatch hook at the input embedding's device.
-
-    accelerate uses the first device in the map, which may not hold the embedding; then only
-    input_ids follow it and remote code that builds its mask there hits a device mismatch.
-    Remote-code text models only: native code moves the mask itself, and the root hook moves
-    every input, so a vision or audio tower would get its tensors on the text card.
-    Returns the new root device, or None when untouched."""
+    """Point the root dispatch hook at the input embedding's device (remote text models only).
+    accelerate picks the first mapped device, so remote code building its mask there mismatches;
+    vision/audio towers are skipped since the hook moves every input to the text card."""
     if "transformers_modules" not in (getattr(type(model), "__module__", "") or ""):
         return None
     config = getattr(model, "config", None)
@@ -2697,8 +2693,7 @@ class FastBaseModel:
             finetune_language_layers = finetune_language_layers,
         )
 
-        # Per-expert submodules (mixer.experts.<i>.up_proj) are one level below what the
-        # generated regex reaches. Widen it before expert detection; never for vision-only.
+        # Widen to per-expert submodules before expert detection; never for vision-only.
         target_modules, _moe_module_detect, _expert_submodule_leaves = (
             widen_target_regex_to_expert_submodules(
                 model,

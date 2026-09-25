@@ -1447,8 +1447,7 @@ class FastSentenceTransformer(FastModel):
                 "Run `pip install sentence-transformers` to install it."
             )
 
-        # The remote-class probes below look at the class this load builds: same trust,
-        # revision, credentials, cache, proxies and offline mode.
+        # Remote-class probes must use this load's trust, revision and hub options.
         _remote_class_probe_kwargs = dict(
             trust_remote_code = trust_remote_code,
             revision = revision,

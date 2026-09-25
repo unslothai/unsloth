@@ -776,8 +776,7 @@ def _declares_flex_support(model_class):
 
 
 def _model_class_supports_flash_attention(model_class):
-    """Whether the installed transformers will let this class dispatch flash attention.
-    The legacy `_supports_flash_attn_2` flag only counts where the dispatch check still reads it."""
+    """Whether installed transformers lets this class dispatch flash attention."""
     if model_class is None:
         return False
     try:
@@ -796,8 +795,7 @@ def _model_class_supports_flash_attention(model_class):
 
 
 def _flash_dispatch_reads_legacy_flag(PreTrainedModel) -> bool:
-    """True when the installed dispatch check still accepts ``_supports_flash_attn_2``
-    (read from its source, since later versions keep the name only in the error message)."""
+    # Read from source: later versions keep the legacy name only in the error message.
     import inspect
 
     for name in ("_flash_attn_can_dispatch", "_flash_attn_2_can_dispatch"):
@@ -1141,12 +1139,8 @@ _REMOTE_CODE_HUB_KWARGS = (
 
 
 def _resolve_remote_model_class(auto_model, config, **hub_kwargs):
-    """The remote-code class `auto_model` would instantiate for `config`, or None when native.
-
-    The auto mapping is keyed by config class name, so a remote config reusing a native name
-    (e.g. `NemotronHConfig`) would otherwise resolve to the native class. `hub_kwargs` mirror
-    the load so any fetch uses the same revision, credentials and offline mode."""
-    # Never import remote code the caller did not trust.
+    """Remote-code class `auto_model` would build for `config`, or None when native.
+    Auto mapping keys on config class name, so a remote `NemotronHConfig` would resolve native."""
     if hub_kwargs.get("trust_remote_code", None) is False:
         return None
     auto_name = getattr(auto_model, "__name__", None)
@@ -1164,15 +1158,13 @@ def _resolve_remote_model_class(auto_model, config, **hub_kwargs):
     if cross_repo:
         _, class_ref = class_ref.split("--", 1)
     module_name, class_name = class_ref.rsplit(".", 1)
-    # force_download, code_revision or revision (the code revision for same-repo code) may
-    # replace an already imported sibling module.
+    # These may replace an already imported sibling module (revision = code revision same-repo).
     if (
         not cross_repo
         and not hub_kwargs.get("force_download", False)
         and not hub_kwargs.get("code_revision", None)
         and not hub_kwargs.get("revision", None)
     ):
-        # The modeling module is usually already imported next to the config module.
         config_module = str(type(config).__module__)
         try:
             import importlib
@@ -1183,7 +1175,6 @@ def _resolve_remote_model_class(auto_model, config, **hub_kwargs):
                 return klass
         except Exception:
             pass
-    # A Hub fetch only for a load that asked for remote code, with its own options.
     if not repo_id or not hub_kwargs.get("trust_remote_code", None):
         return None
     try:
@@ -5054,9 +5045,7 @@ _EXPERT_BLOCK_PATTERN = re.compile(r"(?:^|\.)(?:experts\.\d+|shared_experts?)$")
 
 
 def get_moe_expert_submodule_leaves(model, target_modules = None) -> List[str]:
-    """Requested MLP leaf names that live inside an expert submodule (``experts.<i>.up_proj``,
-    ``shared_experts.up_proj``), which the text-only ``get_peft_regex`` regex does not reach.
-    Returns [] when there are none."""
+    """Requested MLP leaves inside expert submodules, unreached by the text-only regex."""
     if not is_moe_model(model):
         return []
     if target_modules is None or not hasattr(model, "named_modules"):
@@ -5108,8 +5097,6 @@ def get_moe_expert_submodule_leaves(model, target_modules = None) -> List[str]:
 
 
 def moe_expert_submodule_regex(leaves, prefixes = None) -> str:
-    """The regex alternative that reaches ``experts.<i>.<leaf>`` and ``shared_experts.<leaf>``,
-    under any parent, or only under the parent patterns in ``prefixes``."""
     parent = r".*" if not prefixes else "(?:" + "|".join(sorted(prefixes)) + ")"
     return (
         parent
@@ -5120,8 +5107,6 @@ def moe_expert_submodule_regex(leaves, prefixes = None) -> str:
 
 
 def _remote_expert_parents(model):
-    """Parent path patterns (layer indices as ``\\d+``) of expert blocks whose class comes from
-    the checkpoint's own code, e.g. ``model\\.layers\\.\\d+\\.mixer``."""
     parents = set()
     for name, module in model.named_modules():
         matched = _EXPERT_BLOCK_PATTERN.search(name)
@@ -5139,15 +5124,10 @@ def _remote_expert_parents(model):
 def widen_target_regex_to_expert_submodules(
     model, target_modules, detect_targets, auto_regex: bool
 ):
-    """Widen a ``get_peft_regex`` target regex (``auto_regex = True``) to reach
-    ``experts.<i>.<leaf>`` submodules. A user-written regex is never widened. Returns
-    ``(target_modules, detect_targets, leaves)``; ``leaves`` is empty when nothing changed."""
+    """Widen a generated regex to ``experts.<i>.<leaf>``; a user-written regex is never widened."""
     if not auto_regex or not isinstance(target_modules, str):
         return target_modules, detect_targets, []
-    # Remote-code expert blocks only (Nemotron-Labs-Teacher), and only under their own parents.
-    # Native per-expert layouts (Qwen3-MoE and friends on transformers 4.x, or a native tower
-    # next to remote code) keep their targets: widening them would add LoRA to every routed
-    # expert, hundreds of millions of parameters nobody asked for.
+    # Remote expert blocks only: widening native ones (Qwen3-MoE on 4.x) LoRAs every routed expert.
     parents = _remote_expert_parents(model)
     if not parents:
         return target_modules, detect_targets, []

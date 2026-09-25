@@ -16,9 +16,6 @@ def _utils():
     return _utils
 
 
-# --------------------------------------------------------------------------------------
-# flash attention class flag
-# --------------------------------------------------------------------------------------
 
 
 def test_old_flag_alone_is_not_flash_support_on_new_transformers():
@@ -72,9 +69,6 @@ def test_resolver_does_not_request_flash_for_old_flag_remote_class(monkeypatch):
     assert impl == "flash_attention_2"
 
 
-# --------------------------------------------------------------------------------------
-# remote class resolution
-# --------------------------------------------------------------------------------------
 
 
 def _install_fake_remote_modules(monkeypatch, package = "transformers_modules.fake_repo.abc123"):
@@ -205,9 +199,6 @@ def test_remote_config_without_auto_class_entry_stays_native(monkeypatch):
     assert U.resolve_model_class(AutoModelForCausalLM, config) is LlamaForCausalLM
 
 
-# --------------------------------------------------------------------------------------
-# per-expert submodule LoRA targets
-# --------------------------------------------------------------------------------------
 
 
 class _Expert(torch.nn.Module):
