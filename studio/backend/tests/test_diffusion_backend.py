@@ -7130,10 +7130,7 @@ def test_pipeline_load_uses_predownloaded_dir(fake_runtime, tmp_path):
 
 
 def test_unload_mid_render_releases_the_pipeline(fake_runtime, monkeypatch):
-    # Regression: the cancelled render's traceback pinned generate()'s frame (state, pipe) past the slot
-    # release, so the unload's cache clear ran while the weights were still referenced and ~7 GiB of VRAM
-    # stayed reserved. The pipeline must be gone, and the cache cleared after that, while the caller still
-    # holds the exception.
+    # Regression: the cancelled render's traceback pinned the pipe past unload's cache clear, leaking VRAM.
     import threading
     import weakref
 
@@ -7206,9 +7203,7 @@ def test_unload_mid_render_releases_the_pipeline(fake_runtime, monkeypatch):
 def test_replacing_load_mid_render_releases_the_pipeline(
     fake_runtime, monkeypatch, transition_ends_first
 ):
-    # begin_load bumps the token before its prefetch, so a render started then keeps that token while
-    # load_pipeline cancels it and tears down. Forced order: the teardown's cache clear runs while the
-    # render's traceback still pins the pipe, so the render must clear again after dropping it.
+    # Render starts after begin_load's token bump; teardown clears while the pipe is pinned, render must re-clear.
     import threading
     import weakref
 
@@ -7269,7 +7264,6 @@ def test_replacing_load_mid_render_releases_the_pipeline(
         real_clear_frames(exc)
 
     monkeypatch.setattr(diffusion_mod, "_clear_exception_frames", _late_clear_frames)
-    # begin_load's bump, before the render starts.
     backend._load_token += 1
     out: dict = {}
 
@@ -7281,7 +7275,6 @@ def test_replacing_load_mid_render_releases_the_pipeline(
         render_done.set()
 
     def _replacing_load():
-        # load_pipeline's teardown, then the new load holding the slot.
         with backend._lock:
             with backend._generation_cancel_lock:
                 backend._active_generate_cancel.set()
