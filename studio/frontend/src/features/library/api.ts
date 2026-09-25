@@ -7,7 +7,6 @@ import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { libraryFileName, libraryFileType } from "./file-name";
 import { type DecodedNote, type NoteEncoding, decodeNote } from "./note-text";
-import { streamUrlPath } from "./stream-source";
 
 export type LibrarySource = "uploaded" | "generated";
 
@@ -67,6 +66,10 @@ export interface LibrarySnapshot {
   folders: LibraryFolder[];
   /** The disk holding the Library's own files; null when it could not be read. */
   disk?: LibraryDisk | null;
+}
+
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function ensureOk(response: Response): Promise<Response> {
@@ -267,7 +270,7 @@ export async function uploadLibraryFiles(
 export async function writeLibraryText(
   itemId: string,
   text: string,
-  encoding: NoteEncoding = "utf-8",
+  encoding: NoteEncoding,
 ): Promise<void> {
   const uploadId = itemId.replace(/^upload:/, "");
   await ensureOk(
@@ -322,7 +325,8 @@ export async function fetchLibraryBlob(item: LibraryItem, type: string): Promise
  * this one item only, so no long-lived token ends up in a URL.
  */
 export async function fetchLibraryStreamUrl(item: LibraryItem): Promise<string> {
-  const response = await ensureOk(await authFetch(streamUrlPath(item.id)));
+  const params = new URLSearchParams({ id: item.id });
+  const response = await ensureOk(await authFetch(`/api/library/items/stream-url?${params}`));
   const { url } = (await response.json()) as { url?: string };
   if (!url) throw new Error(translate("library.toast.noMediaLink"));
   // Absolute, since the element fetches it without authFetch, and under Tauri a relative path
@@ -349,7 +353,7 @@ export async function fetchLibraryText(
     const truncated = bytes.length > maxBytes;
     return { ...decodeNote(bytes.subarray(0, maxBytes), truncated), truncated };
   }
-  const chunks: Uint8Array[] = [];
+  const chunks: Uint8Array<ArrayBuffer>[] = [];
   let read = 0;
   let truncated = false;
   for (;;) {
@@ -357,7 +361,6 @@ export async function fetchLibraryText(
     if (done) break;
     if (read + value.length > maxBytes) {
       chunks.push(value.subarray(0, maxBytes - read));
-      read = maxBytes;
       truncated = true;
       void reader.cancel();
       break;
@@ -365,12 +368,7 @@ export async function fetchLibraryText(
     chunks.push(value);
     read += value.length;
   }
-  const bytes = new Uint8Array(read);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.length;
-  }
+  const bytes = new Uint8Array(await new Blob(chunks).arrayBuffer());
   return { ...decodeNote(bytes, truncated), truncated };
 }
 

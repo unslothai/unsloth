@@ -64,19 +64,23 @@ function percent(scale: number, locale: string): string {
   );
 }
 
-/** The header's scale pill: the current scale, and a menu of the ones on offer. */
+/** The header's scale pill: the current scale, and a menu of `scales`, after Fit when the frame's
+ *  `fitScale` is given. */
 export function ScaleMenu({
-  label,
   value,
-  options,
+  scales,
+  fitScale,
   onChange,
 }: {
-  label: string;
-  value: string;
-  options: { value: string; label: string }[];
-  onChange: (value: string) => void;
+  value: MediaZoom;
+  scales: readonly number[];
+  fitScale?: number;
+  onChange: (value: MediaZoom) => void;
 }) {
   const t = useT();
+  const locale = useLocale();
+  const options = scales.map((scale) => ({ value: String(scale), label: percent(scale, locale) }));
+  if (fitScale !== undefined) options.unshift({ value: "fit", label: t("library.viewer.fit") });
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild={true}>
@@ -85,12 +89,15 @@ export function ScaleMenu({
           aria-label={t("library.viewer.scale")}
           className="mr-1 flex h-9 shrink-0 items-center gap-1 rounded-full bg-muted px-3.5 text-sm tabular-nums outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
         >
-          {label}
+          {percent(value === "fit" ? (fitScale ?? 1) : value, locale)}
           <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={1.75} className="size-4" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-40">
-        <DropdownMenuRadioGroup value={value} onValueChange={onChange}>
+        <DropdownMenuRadioGroup
+          value={String(value)}
+          onValueChange={(next) => onChange(next === "fit" ? "fit" : Number(next))}
+        >
           {options.map((option) => (
             <DropdownMenuRadioItem key={option.value} value={option.value}>
               {option.label}
@@ -133,7 +140,6 @@ export function MediaViewer({
   children: ReactNode;
 }) {
   const t = useT();
-  const locale = useLocale();
   const [menuOpen, setMenuOpen] = useState(false);
   const [zoom, setZoom] = useState<MediaZoom>("fit");
   const [fitScale, setFitScale] = useState<number | null>(null);
@@ -183,18 +189,7 @@ export function MediaViewer({
           </div>
           {extra}
           {media && fitScale !== null && (
-            <ScaleMenu
-              label={percent(zoom === "fit" ? fitScale : zoom, locale)}
-              value={String(zoom)}
-              options={[
-                { value: "fit", label: t("library.viewer.fit") },
-                ...MEDIA_ZOOMS.map((scale) => ({
-                  value: String(scale),
-                  label: percent(scale, locale),
-                })),
-              ]}
-              onChange={(value) => setZoom(value === "fit" ? "fit" : Number(value))}
-            />
+            <ScaleMenu value={zoom} scales={MEDIA_ZOOMS} fitScale={fitScale} onChange={setZoom} />
           )}
           {actions.primary && (
             <button
@@ -210,8 +205,8 @@ export function MediaViewer({
           {actions.onDownload && (
             <button
               type="button"
-              aria-label={t("library.viewer.download")}
-              title={t("library.viewer.download")}
+              aria-label={t("library.menu.download")}
+              title={t("library.menu.download")}
               onClick={actions.onDownload}
               className={iconButton}
             >
@@ -267,7 +262,7 @@ export function MediaViewer({
             </DropdownMenu>
           )}
           <DialogClose asChild={true}>
-            <button type="button" aria-label={t("library.viewer.close")} className={iconButton}>
+            <button type="button" aria-label={t("common.close")} className={iconButton}>
               <HugeiconsIcon icon={Cancel01Icon} strokeWidth={1.75} className="size-5" />
             </button>
           </DialogClose>

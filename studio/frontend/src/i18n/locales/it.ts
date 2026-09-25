@@ -2993,7 +2993,6 @@ export const it = {
       tryAgain: "Riprova",
     },
     sections: {
-      folders: "Cartelle",
       items: "Elementi",
     },
     breadcrumb: "Percorso di navigazione",
@@ -3006,8 +3005,6 @@ export const it = {
     selectItem: "Seleziona {name}",
     selection: {
       startChat: "Avvia chat",
-      download: "Scarica",
-      moreActions: "Altre azioni",
       move: "Sposta",
       clear: "Annulla selezione",
     },
@@ -3050,7 +3047,6 @@ export const it = {
       audio: "Audio",
       model: "Modello",
       folder: "Cartella",
-      uploadFiles: "Carica file",
       untitledNote: "Nota senza titolo",
     },
     list: {
@@ -3080,8 +3076,6 @@ export const it = {
       model: "Modello",
     },
     dialog: {
-      name: "Nome",
-      newFolder: "Nuova cartella",
       create: "Crea",
       renameFolder: "Rinomina cartella",
       renameFile: "Rinomina file",
@@ -3101,7 +3095,6 @@ export const it = {
       unsavedDescription: "{reason} Riprova, oppure annulla le modifiche per chiudere il file.",
       keepEditing: "Continua a modificare",
       discardChanges: "Annulla modifiche",
-      tryAgain: "Riprova",
     },
     preview: {
       code: "Codice",
@@ -3125,8 +3118,6 @@ export const it = {
     viewer: {
       scale: "Scala",
       fit: "Adatta",
-      download: "Scarica",
-      close: "Chiudi",
       moreActionsImage: "Altre azioni per questa immagine",
       moreActionsVideo: "Altre azioni per questo video",
       moreActionsClip: "Altre azioni per questa clip",

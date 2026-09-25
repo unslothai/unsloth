@@ -97,10 +97,3 @@ export function formatSize(bytes: number | null, locale: Locale, t: Translate): 
 export function formatItemCount(count: number, t: Translate): string {
   return t(count === 1 ? "library.itemCountOne" : "library.itemCount", { count });
 }
-
-/** A scale as the locale writes a percentage: 1.25 is "125%". */
-export function formatPercent(scale: number, locale: Locale): string {
-  return new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 0 }).format(
-    scale,
-  );
-}

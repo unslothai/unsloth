@@ -2920,7 +2920,6 @@ export const ko = {
       tryAgain: "다시 시도",
     },
     sections: {
-      folders: "폴더",
       items: "항목",
     },
     breadcrumb: "이동 경로",
@@ -2933,8 +2932,6 @@ export const ko = {
     selectItem: "{name} 선택",
     selection: {
       startChat: "채팅 시작",
-      download: "다운로드",
-      moreActions: "추가 작업",
       move: "이동",
       clear: "선택 해제",
     },
@@ -2977,7 +2974,6 @@ export const ko = {
       audio: "오디오",
       model: "모델",
       folder: "폴더",
-      uploadFiles: "파일 업로드",
       untitledNote: "제목 없는 메모",
     },
     list: {
@@ -3007,8 +3003,6 @@ export const ko = {
       model: "모델",
     },
     dialog: {
-      name: "이름",
-      newFolder: "새 폴더",
       create: "만들기",
       renameFolder: "폴더 이름 변경",
       renameFile: "파일 이름 변경",
@@ -3028,7 +3022,6 @@ export const ko = {
       unsavedDescription: "{reason} 다시 시도하거나 변경 사항을 버리고 파일을 닫으세요.",
       keepEditing: "계속 편집",
       discardChanges: "변경 사항 버리기",
-      tryAgain: "다시 시도",
     },
     preview: {
       code: "코드",
@@ -3052,8 +3045,6 @@ export const ko = {
     viewer: {
       scale: "배율",
       fit: "맞춤",
-      download: "다운로드",
-      close: "닫기",
       moreActionsImage: "이 이미지에 대한 추가 작업",
       moreActionsVideo: "이 동영상에 대한 추가 작업",
       moreActionsClip: "이 클립에 대한 추가 작업",

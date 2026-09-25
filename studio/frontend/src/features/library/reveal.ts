@@ -6,7 +6,7 @@ import { useIsAccountOwner } from "@/features/auth";
 import { isTauri } from "@/lib/api-base";
 import { translate, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
-import { type LibraryItem, revealLibraryItem } from "./api";
+import { type LibraryItem, errorMessage, revealLibraryItem } from "./api";
 import { isLoopbackHost, revealLabelFor } from "./reveal-label";
 
 /**
@@ -35,7 +35,7 @@ export function canReveal(item: LibraryItem): boolean {
 export function revealInFolder(id: string): void {
   revealLibraryItem(id).catch((error: unknown) =>
     toast.error(translate("library.toast.revealFailed"), {
-      description: error instanceof Error ? error.message : String(error),
+      description: errorMessage(error),
     }),
   );
 }

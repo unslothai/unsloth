@@ -13,6 +13,7 @@ import {
   createLibraryFolder,
   deleteLibraryFolder,
   deleteLibraryItem,
+  errorMessage,
   getLibrary,
   markLibraryItemOpened,
   updateLibraryFolder,
@@ -112,7 +113,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
         if (generation !== refreshGeneration) return;
         set({
           status: get().status === "ready" ? "ready" : "error",
-          error: error instanceof Error ? error.message : String(error),
+          error: errorMessage(error),
         });
       }
     },

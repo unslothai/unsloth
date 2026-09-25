@@ -2954,7 +2954,6 @@ export const ptBR = {
       tryAgain: "Tentar novamente",
     },
     sections: {
-      folders: "Pastas",
       items: "Itens",
     },
     breadcrumb: "Trilha de navegação",
@@ -2967,8 +2966,6 @@ export const ptBR = {
     selectItem: "Selecionar {name}",
     selection: {
       startChat: "Iniciar chat",
-      download: "Baixar",
-      moreActions: "Mais ações",
       move: "Mover",
       clear: "Limpar seleção",
     },
@@ -3011,7 +3008,6 @@ export const ptBR = {
       audio: "Áudio",
       model: "Modelo",
       folder: "Pasta",
-      uploadFiles: "Enviar arquivos",
       untitledNote: "Nota sem título",
     },
     list: {
@@ -3041,8 +3037,6 @@ export const ptBR = {
       model: "Modelo",
     },
     dialog: {
-      name: "Nome",
-      newFolder: "Nova pasta",
       create: "Criar",
       renameFolder: "Renomear pasta",
       renameFile: "Renomear arquivo",
@@ -3062,7 +3056,6 @@ export const ptBR = {
       unsavedDescription: "{reason} Tente novamente ou descarte suas alterações para fechar o arquivo.",
       keepEditing: "Continuar editando",
       discardChanges: "Descartar alterações",
-      tryAgain: "Tentar novamente",
     },
     preview: {
       code: "Código",
@@ -3086,8 +3079,6 @@ export const ptBR = {
     viewer: {
       scale: "Escala",
       fit: "Ajustar",
-      download: "Baixar",
-      close: "Fechar",
       moreActionsImage: "Mais ações para esta imagem",
       moreActionsVideo: "Mais ações para este vídeo",
       moreActionsClip: "Mais ações para este clipe",

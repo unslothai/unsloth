@@ -2909,7 +2909,6 @@ export const en = {
       tryAgain: "Try again",
     },
     sections: {
-      folders: "Folders",
       items: "Items",
     },
     breadcrumb: "Breadcrumb",
@@ -2924,8 +2923,6 @@ export const en = {
     // The bar that floats over the page while anything is selected.
     selection: {
       startChat: "Start chat",
-      download: "Download",
-      moreActions: "More actions",
       move: "Move",
       clear: "Clear selection",
     },
@@ -2970,7 +2967,6 @@ export const en = {
       audio: "Audio",
       model: "Model",
       folder: "Folder",
-      uploadFiles: "Upload files",
       // File name of a new note, before its .md extension.
       untitledNote: "Untitled note",
     },
@@ -3003,8 +2999,6 @@ export const en = {
       model: "Model",
     },
     dialog: {
-      name: "Name",
-      newFolder: "New folder",
       create: "Create",
       renameFolder: "Rename folder",
       renameFile: "Rename file",
@@ -3027,7 +3021,6 @@ export const en = {
       unsavedDescription: "{reason} Try again, or discard your changes to close the file.",
       keepEditing: "Keep editing",
       discardChanges: "Discard changes",
-      tryAgain: "Try again",
     },
     preview: {
       code: "Code",
@@ -3053,8 +3046,6 @@ export const en = {
     viewer: {
       scale: "Scale",
       fit: "Fit",
-      download: "Download",
-      close: "Close",
       moreActionsImage: "More actions for this image",
       moreActionsVideo: "More actions for this video",
       moreActionsClip: "More actions for this clip",
