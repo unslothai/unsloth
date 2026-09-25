@@ -55,7 +55,6 @@ class _Experts(nn.Module):
 
 
 class _Model(nn.Module):
-
     def __init__(
         self,
         E = 4,
@@ -144,7 +143,6 @@ def test_no_fp8_params_is_a_noop_without_reading_the_checkpoint():
 
 
 def test_vlm_key_remap_resolves_language_model_prefix():
-
     class _Inner(nn.Module):
         def __init__(self):
             super().__init__()
