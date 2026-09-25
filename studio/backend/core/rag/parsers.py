@@ -68,6 +68,7 @@ class _Stripper(HTMLParser):
         super().__init__()
         self._skip = 0
         self._pre = 0
+        self._templates: list[bool] = []
         self._line: list[str] = []
         self.out: list[str] = []
 
@@ -80,7 +81,12 @@ class _Stripper(HTMLParser):
             self.out.append(text)
 
     def handle_starttag(self, tag, attrs):
-        if tag in _HTML_SKIP_TAGS:
+        if tag == "template":
+            # A declarative shadow root (shadowrootmode=open|closed) is rendered; other templates are inert.
+            inert = (dict(attrs).get("shadowrootmode") or "").lower() not in ("open", "closed")
+            self._templates.append(inert)
+            self._skip += inert
+        elif tag in _HTML_SKIP_TAGS:
             self._skip += 1
         elif tag in _HTML_BLOCK_TAGS and not self._skip:
             self._flush()
@@ -90,7 +96,10 @@ class _Stripper(HTMLParser):
             self._line.append(" ")
 
     def handle_endtag(self, tag):
-        if tag in _HTML_SKIP_TAGS:
+        if tag == "template":
+            if self._templates and self._templates.pop() and self._skip:
+                self._skip -= 1
+        elif tag in _HTML_SKIP_TAGS:
             if self._skip:
                 self._skip -= 1
         elif tag in _HTML_BLOCK_TAGS and not self._skip:

@@ -403,6 +403,15 @@ def test_html_skips_script_style_and_template(tmp_path):
     assert text == "Visible"
 
 
+def test_html_keeps_declarative_shadow_root_text(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        '<my-card><template shadowrootmode="open"><p>Shadow text</p>'
+        "<template><p>inert</p></template></template></my-card><p>After</p>",
+    )
+    assert text == "Shadow text\nAfter"
+
+
 def test_html_template_blocks_do_not_split_visible_text(tmp_path):
     text = _parse_html(tmp_path, "<p>Hello <template><div>hidden</div></template>world</p>")
     assert text == "Hello world"
