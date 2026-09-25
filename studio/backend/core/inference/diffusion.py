@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 from core._torchao_stub import (
+    hide_xformers_built_for_another_torch,
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
 )
@@ -111,7 +112,9 @@ from .diffusion_memory import (
     raise_on_image_activation_shortfall,
     raise_on_unified_memory_shortfall,
     reclaimable_snapshot_device_memory,
+    reclaim_host_memory,
     reclaim_offload_host_memory,
+    release_pinned_host_memory,
     refine_memory_plan_for_components,
     settled_snapshot_device_memory,
     snapshot_device_memory,
@@ -128,7 +131,9 @@ from .diffusion_speed import (
     compile_dynamic,
     compile_eligible,
     compiled_shapes_are_static,
-    dynamo_graph_count,
+    fp16_compile_explicit_only,
+    fp16_unet_offloaded,
+    fresh_compile_count,
     normalize_speed_mode,
     resolve_speed_mode,
     restore_backend_flags,
@@ -143,6 +148,7 @@ from .diffusion_attention import (
 )
 from . import diffusion_compile_cache as compile_cache
 from . import diffusion_cond_cache as cond_cache
+from . import diffusion_prompt_cache as prompt_cache
 from . import diffusion_gguf_compile as gguf_compile
 from . import diffusion_cuda_graph as cuda_graph
 from .diffusion_batched import (
@@ -155,12 +161,14 @@ from .diffusion_batched import (
 from .diffusion_cache import (
     FBCACHE_MIN_STEPS,
     TC_AUTO,
-    TC_FBCACHE,
     apply_step_cache,
+    auto_step_cache_allowed,
     effective_denoise_steps,
     effective_request_strength,
     maybe_toggle_step_cache,
     normalize_transformer_cache,
+    resolve_auto_step_cache,
+    step_cache_supported,
 )
 from .diffusion_precision import (
     TE_QUANT_FP8,
@@ -238,6 +246,7 @@ logger = get_logger(__name__)
 # Every `import diffusers` below is lazy, so this runs first. On Windows ROCm both reach an absent distributed
 # backend: diffusers imports xformers on sight, its quantizers torchao.
 install_xformers_windows_rocm_stub()
+hide_xformers_built_for_another_torch()
 install_torchao_windows_rocm_stub()
 install_torchao_int_mm_patch()
 
@@ -959,9 +968,8 @@ class _LoadState:
     attention_backend: Optional[str] = None
     # Caller original attention request, so deferred engagement re-runs the same selection.
     attention_request: Optional[str] = None
-    # Step cache engaged ("fbcache") or None. Opt-in, for many-step models.
     transformer_cache: Optional[str] = None
-    # AUTO: generate() toggles FBCache across FBCACHE_MIN_STEPS; an explicit request never toggles
+    # Auto only: generate() toggles it across FBCACHE_MIN_STEPS; explicit never toggles
     cache_auto: bool = False
     # Inputs the generation-time toggle re-applies (quantised threshold + override).
     cache_quant_active: bool = False
@@ -1036,6 +1044,29 @@ def _account_owned_load(method):
         finally:
             with self._load_cancel_lock:
                 self._load_accounts.pop(request, None)
+
+    return wrapped
+
+
+def _release_render_on_unload(method):
+    """Free VRAM when an unload lands mid-render: the cancelled render's traceback pins ``pipe`` past
+    the teardown's cache clear, so drop its frames and clear again once the last reference is gone."""
+
+    @functools.wraps(method)
+    def wrapped(self, *args, **kwargs):
+        token, teardowns = self._load_token, self._teardown_epoch
+        try:
+            return method(self, *args, **kwargs)
+        except BaseException as exc:
+            _clear_exception_frames(exc)
+            raise
+        finally:
+            # Epoch too: a replacing load bumps the token before this render starts, then tears down.
+            if self._load_token != token or self._teardown_epoch != teardowns:
+                try:
+                    clear_gpu_cache()
+                except Exception as exc:
+                    logger.debug("diffusion.generate: cache release after unload failed: %s", exc)
 
     return wrapped
 
@@ -1560,6 +1591,8 @@ class DiffusionBackend:
         self._transition_owns_slot = False
         # Teardowns waiting to free this pipeline; a count supports concurrent reservations.
         self._teardown_waiters = 0
+        # Monotonic count of reserved teardowns; lets a render detect one ran under it.
+        self._teardown_epoch = 0
         # Set when no teardown is reserved; an Event keeps waiting independent of _lock.
         self._teardown_drained = threading.Event()
         self._teardown_drained.set()
@@ -1625,6 +1658,7 @@ class DiffusionBackend:
         """Fence queued generations off the pipeline this teardown is about to free. Call only while
         holding ``_lock``, so the count and the gate move together."""
         self._teardown_waiters += 1
+        self._teardown_epoch += 1
         self._teardown_drained.clear()
 
     def _release_teardown_locked(self) -> None:
@@ -3691,6 +3725,14 @@ class DiffusionBackend:
             if not missing:
                 return
 
+            # Staged but not counted: the worker links unchanged files from an older snapshot (hub.utils.snapshot_reuse).
+            reusable = self._reusable_from_older_snapshot(
+                repo,
+                [n for n in missing if where.get(n) is None],
+                revision,
+                declared_sizes,
+                hf_token,
+            )
             if checkpoint:
                 missing_checkpoints.add(repo)
             for entry in entries:
@@ -3699,7 +3741,9 @@ class DiffusionBackend:
                 newly_missing = [n for n in missing if n not in entry["files"]]
                 added = [n for n in scope if n not in entry["files"]]
                 entry["files"].extend(added)
-                entry["bytes"] += int(sum(declared_sizes.get(n, 0) for n in newly_missing))
+                entry["bytes"] += int(
+                    sum(declared_sizes.get(n, 0) for n in newly_missing if n not in reusable)
+                )
                 entry["gguf_filename"] = scoped_gguf[repo]
                 entry["checkpoint"] = repo in missing_checkpoints
                 return
@@ -3710,7 +3754,9 @@ class DiffusionBackend:
                     # are cheap no-op hf_hub_download calls; only the genuinely missing subset contributes to
                     # bytes/preflight below.
                     "files": list(scope),
-                    "bytes": int(sum(declared_sizes.get(name, 0) for name in missing)),
+                    "bytes": int(
+                        sum(declared_sizes.get(name, 0) for name in missing if name not in reusable)
+                    ),
                     "gguf_filename": scoped_gguf[repo],
                     "checkpoint": repo in missing_checkpoints,
                 }
@@ -3830,6 +3876,44 @@ class DiffusionBackend:
         if live:
             return set()
         return wanted if _hits(roots[1]) == wanted else set()
+
+    @staticmethod
+    def _reusable_from_older_snapshot(
+        repo_id: str,
+        names: list[str],
+        revision: Optional[str],
+        declared_sizes: dict[str, int],
+        hf_token: Optional[str],
+    ) -> set[str]:
+        """Missing files an older snapshot holds with the same content; never hashes on the request path."""
+        if not names:
+            return set()
+        try:
+            from hub.utils.snapshot_reuse import (
+                cached_ref_commit,
+                hub_remote_digests,
+                reusable_paths,
+            )
+
+            # Unpinned entries were probed against refs/main; the worker fetches the Hub head.
+            digest_revision = None if revision else "main"
+            revision = revision or cached_ref_commit("model", repo_id, hub_cache_dir())
+            if not revision:
+                return set()
+            return reusable_paths(
+                "model",
+                repo_id,
+                revision,
+                {name: int(declared_sizes.get(name) or 0) for name in names},
+                hub_cache = hub_cache_dir(),
+                # False is the managed-account anonymous sentinel; None would send the installation token.
+                remote_digests = hub_remote_digests(
+                    "model", repo_id, hf_token if hf_token is False else (hf_token or None)
+                ),
+                digest_revision = digest_revision,
+            )
+        except Exception:  # noqa: BLE001 -- counting the bytes is the conservative answer
+            return set()
 
     @staticmethod
     def _current_sha(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
@@ -5588,6 +5672,7 @@ class DiffusionBackend:
                         and effective_speed == SPEED_OFF
                         and transformer_quant_engaged is None
                         and compile_eligible(target, is_gguf = False, family = fam)
+                        and not fp16_compile_explicit_only(target)
                     )
                     # Speed optims run BEFORE placement, so snapshot the global backend flags first for unload restore.
                     # The dense transformer quant above builds quiet configs, so it mutated none of these flags.
@@ -5603,9 +5688,10 @@ class DiffusionBackend:
                     )
                     self._raise_if_load_cancelled(_load_token)
                     # Step caching (First-Block-Cache), also before compile: reuses the transformer tail across steps and
-                    # drops compile fullgraph. Tri-state: unset/auto -> FBCACHE_MIN_STEPS policy; off/fbcache pinned.
+                    # drops compile fullgraph. Tri-state: off/fbcache pinned; unset/auto only on max, by FBCACHE_MIN_STEPS.
                     cache_request = normalize_transformer_cache(transformer_cache)
                     cache_auto = transformer_cache is None or cache_request == TC_AUTO
+                    cache_auto_live = cache_auto and auto_step_cache_allowed(effective_speed)
                     cache_quant_active = transformer_quant_engaged is not None or bool(
                         gguf_filename
                     )
@@ -5614,7 +5700,7 @@ class DiffusionBackend:
                         default_steps, _ = default_generation_params(
                             gguf_filename, repo_id, base, fam.name
                         )
-                        cache_request = TC_FBCACHE if default_steps >= FBCACHE_MIN_STEPS else None
+                        cache_request = resolve_auto_step_cache(effective_speed, default_steps)
                     cache_engaged = apply_step_cache(
                         pipe,
                         mode = cache_request,
@@ -5627,17 +5713,25 @@ class DiffusionBackend:
                         logger = logger,
                     )
                     self._raise_if_load_cancelled(_load_token)
-                    # An auto decision can flip at generation time, but only on a cache-capable transformer
-                    cache_may_toggle = cache_auto and callable(
-                        getattr(getattr(pipe, "transformer", None), "enable_cache", None)
+                    # Arm only where FBCache can engage: a live toggle drops fullgraph and retries every generation.
+                    cache_may_toggle = cache_auto_live and (
+                        cache_engaged is not None
+                        or (cache_request is None and step_cache_supported(pipe, logger = logger))
                     )
                     if cache_auto:
-                        if cache_engaged:
+                        if not cache_auto_live:
+                            # Only name the max tier where it would help: SDXL / LTX-2 never cache on any tier.
+                            cache_reason = (
+                                "auto: step caching engages on the max speed tier only"
+                                if step_cache_supported(pipe, logger = logger)
+                                else "auto: model does not support step caching"
+                            )
+                        elif cache_engaged:
                             cache_reason = (
                                 f"auto: {default_steps}-step default schedule reaches "
                                 f"{FBCACHE_MIN_STEPS}; re-checked per generation"
                             )
-                        elif cache_request is not None:
+                        elif cache_request is not None or not cache_may_toggle:
                             cache_reason = "auto: model does not support step caching"
                         else:
                             cache_reason = (
@@ -5667,8 +5761,12 @@ class DiffusionBackend:
                     self._raise_if_load_cancelled(_load_token)
                     # Pre-warmed torch.compile cache: a per-fingerprint inductor dir plus a bundle loaded before the
                     # first compiled forward pays the 25-58s compile once.
-                    if effective_speed in (SPEED_DEFAULT, SPEED_MAX) and compile_eligible(
-                        target, is_gguf = gguf_transformer, family = fam
+                    if (
+                        effective_speed in (SPEED_DEFAULT, SPEED_MAX)
+                        and compile_eligible(target, is_gguf = gguf_transformer, family = fam)
+                        and not fp16_unet_offloaded(
+                            target, pipe, offload_active = plan.offload_policy != OFFLOAD_NONE
+                        )
                     ):
                         compile_ctx = compile_cache.begin(
                             family = fam.name,
@@ -5782,6 +5880,18 @@ class DiffusionBackend:
                         base_repo = base,
                         dtype = dtype,
                         te_quant = te_quant,
+                        logger = logger,
+                    )
+                    # Outermost, so a repeat skips both the disk cache and the encoders.
+                    prompt_cache.install(
+                        pipe,
+                        identity = {
+                            "family": fam.name,
+                            "repo": str(repo_id),
+                            "base": str(base or repo_id),
+                            "dtype": str(dtype),
+                            "te_quant": str(te_quant),
+                        },
                         logger = logger,
                     )
 
@@ -6658,6 +6768,16 @@ class DiffusionBackend:
         import diffusers
 
         pipe = self._from_pipe_no_recast(state.pipe, getattr(diffusers, class_name))
+        prompt_cache.install(
+            pipe,
+            identity = {
+                "family": state.family.name,
+                "repo": str(state.repo_id),
+                "workflow": class_name,
+            },
+            lora_owner = state.pipe,
+            logger = logger,
+        )
         # Publish to the shared aux cache only if THIS load is still current: from_pipe runs without _lock, so an
         # unload can null _state and caching would hand out stale modules.
         with self._lock:
@@ -6731,6 +6851,17 @@ class DiffusionBackend:
         if pipe is None:
             pipe = self._from_pipe_no_recast(
                 state.pipe, getattr(diffusers, pipe_cls_name), controlnet = cn_model
+            )
+            # from_pipe copies components, not the base pipe's wrapped encode_prompt.
+            prompt_cache.install(
+                pipe,
+                identity = {
+                    "family": fam.name,
+                    "repo": str(getattr(state, "repo_id", "")),
+                    "workflow": pipe_cls_name,
+                },
+                lora_owner = state.pipe,
+                logger = logger,
             )
             with self._lock:
                 # Same race as the model cache: an unload may have cleared _cn_pipes while from_pipe ran.
@@ -7093,6 +7224,7 @@ class DiffusionBackend:
             attention_engaged or "native",
         )
 
+    @_release_render_on_unload
     def generate(
         self,
         *,
@@ -7560,7 +7692,8 @@ class DiffusionBackend:
                 images: list[Any] = []
                 per_image_seeds: list[int] = []
                 chunk_shapes: list[int] = []
-                graphs_before = dynamo_graph_count()
+                graphs_before = fresh_compile_count()
+                compile_cache.note_use(state.compile_cache_ctx)
                 try:
                     pending = list(chunks)
                     while pending:
@@ -7641,7 +7774,10 @@ class DiffusionBackend:
                     # A cancelled or failed render may already have generalised a graph that the next render reuses
                     # without compiling, so the success path below would never see the count grow: dirty it now.
                     try:
-                        if auto_dynamic_active(state.pipe) and dynamo_graph_count() > graphs_before:
+                        if (
+                            auto_dynamic_active(state.pipe)
+                            and fresh_compile_count() > graphs_before
+                        ):
                             compile_cache.mark_recompiled(state.compile_cache_ctx)
                     except Exception:  # noqa: BLE001 - bookkeeping must not mask the render's own error
                         pass
@@ -7666,7 +7802,7 @@ class DiffusionBackend:
                             (reg_width, reg_height, int(chunk_batch)),
                             static = static_shapes,
                         )
-                    if auto_dynamic_active(state.pipe) and dynamo_graph_count() > graphs_before:
+                    if auto_dynamic_active(state.pipe) and fresh_compile_count() > graphs_before:
                         # Automatic dynamic recompiles on the first new text length at an already-registered
                         # (width, height, batch): persist those graphs too, or every fresh process pays them again.
                         compile_cache.mark_recompiled(state.compile_cache_ctx)
@@ -7867,6 +8003,9 @@ class DiffusionBackend:
         compile_cache.restore(state.compile_cache_ctx, logger = logger)
         # Before clear_gpu_cache(), or the graph pool stays reserved for the life of the process.
         cuda_graph.uninstall_all(state.cuda_graphs)
+        prompt_cache.release(state.pipe)
+        for aux in (*self._aux_pipes.values(), *self._cn_pipes.values()):
+            prompt_cache.release(aux)
         gguf_compile.uninstall_all()
         if state.eager_patched:
             # Lazy import to keep diffusion.py torch-free to import.
@@ -7882,7 +8021,13 @@ class DiffusionBackend:
         self._cn_models.clear()
         self._state = None
         del state
-        clear_gpu_cache()
+        try:
+            clear_gpu_cache()
+        finally:
+            # finally: a sticky CUDA fault must not keep the pinned chunks locked.
+            release_pinned_host_memory()
+        # Must follow clear_gpu_cache() (runs gc) so the freed staging buffers can be returned.
+        reclaim_host_memory(logger = logger)
 
     def status(self) -> dict[str, Any]:
         state = self._state
