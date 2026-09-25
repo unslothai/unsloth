@@ -133,3 +133,16 @@ def test_cuda_matches_numpy_and_lands_in_pinned_memory():
     got = _run(vp, video.cuda(), "np")
     assert got.device.type == "cpu" and got.is_pinned()
     assert np.array_equal(got.numpy(), expected)
+
+
+def test_a_card_too_full_for_a_slice_takes_the_original_postprocess(monkeypatch):
+    vp = VideoProcessor(vae_scale_factor = 8, do_normalize = False)
+    video = _clip(torch.float32, normalized = False)
+    expected = vp.postprocess_video(video, output_type = "np")
+
+    def _oom(*args, **kwargs):
+        raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+
+    monkeypatch.setattr(torch, "aminmax", _oom)
+    got = _run(vp, video, "np")
+    assert isinstance(got, np.ndarray) and np.array_equal(got, expected)

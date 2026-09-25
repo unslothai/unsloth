@@ -25,32 +25,36 @@ def device_uint8(frames: Any) -> Optional[Any]:
     import torch
 
     device = frames.device
-    if device.type not in ("cuda", "cpu"):
-        return None
-    try:
-        lo, hi = torch.aminmax(frames)
-        if not (bool(lo >= 0) and bool(hi <= 1)):
-            return None
-    except Exception:  # noqa: BLE001 - empty clip, or a dtype aminmax lacks
+    if device.type not in ("cuda", "cpu") or frames.numel() == 0:
         return None
     count, channels, height, width = frames.shape
+    shape = (count, height, width, channels)
     host = None
     if device.type == "cuda":
         try:
-            host = torch.empty((count, height, width, channels), dtype = torch.uint8, pin_memory = True)
+            host = torch.empty(shape, dtype = torch.uint8, device = "cpu", pin_memory = True)
         except Exception:  # noqa: BLE001 - pinned allocation refused (host limits); a pageable copy is still exact
             host = None
     pinned = host is not None
     if host is None:
-        host = torch.empty((count, height, width, channels), dtype = torch.uint8)
+        host = torch.empty(shape, dtype = torch.uint8, device = "cpu")
     step = max(1, _SLICE_BYTES // max(1, channels * height * width * 4))
-    for start in range(0, count, step):
-        piece = frames[start : start + step].to(torch.float32) * 255
-        piece = piece.round_().to(torch.uint8).permute(0, 2, 3, 1)
-        host[start : start + step].copy_(piece, non_blocking = pinned)
-    if pinned:
-        torch.cuda.current_stream(device).synchronize()
-    return host
+    in_range = None
+    try:
+        for start in range(0, count, step):
+            piece = frames[start : start + step].to(torch.float32)
+            # Range-checked per slice: a whole-clip reduction over the permuted view copies the clip first.
+            lo, hi = torch.aminmax(piece)
+            fits = (lo >= 0) & (hi <= 1)
+            in_range = fits if in_range is None else in_range & fits
+            piece = (piece * 255).round_().to(torch.uint8).permute(0, 2, 3, 1)
+            host[start : start + step].copy_(piece, non_blocking = pinned)
+        if pinned:
+            torch.cuda.current_stream(device).synchronize()
+    except torch.cuda.OutOfMemoryError:
+        # The np / pil paths copy straight to the host, so a card too full for one slice still renders.
+        return None
+    return host if bool(in_range) else None
 
 
 @contextlib.contextmanager
