@@ -59,16 +59,9 @@ def unsloth_save_pretrained_gguf(*args, **kwargs):
     return _impl(*args, **kwargs)
 
 
-def unsloth_save_pretrained_openvino(*args, **kwargs):
-    """Hand off to ``unsloth.save.unsloth_save_pretrained_openvino``, imported on first call."""
-    from ..save import unsloth_save_pretrained_openvino as _impl
-    return _impl(*args, **kwargs)
-
-
 # How unsloth/save.py tells its own shims from functions someone else put here.
 unsloth_save_pretrained_torchao._unsloth_deferred_shim = True
 unsloth_save_pretrained_gguf._unsloth_deferred_shim = True
-unsloth_save_pretrained_openvino._unsloth_deferred_shim = True
 
 
 import contextlib

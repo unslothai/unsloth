@@ -7374,7 +7374,6 @@ _DEFERRED_INTO_MODELS = {
     "unsloth.models.sentence_transformer": (
         "unsloth_save_pretrained_torchao",
         "unsloth_save_pretrained_gguf",
-        "unsloth_save_pretrained_openvino",
     ),
 }
 for _module_name, _deferred_names in _DEFERRED_INTO_MODELS.items():
