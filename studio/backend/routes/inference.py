@@ -11169,6 +11169,7 @@ async def _maybe_auto_switch_model(
     require_audio_input: bool = False,
     require_video: bool = False,
     gguf_only: bool = False,
+    gguf_only_reason: Optional[str] = None,
     audio_preflight: Optional[dict] = None,
     image_preflight: Optional[dict] = None,
     require_speech: bool = False,
@@ -11197,8 +11198,9 @@ async def _maybe_auto_switch_model(
     token. ``modality_label`` names the inputs attached, so the
     rejection does not report a modality the request never carried. ``gguf_only``
     marks an endpoint that reads llama.cpp alone, where loading a non-GGUF model
-    would unload the resident one and leave the handler with nothing to serve.
-    ``audio_preflight`` carries an audio upload whose format-dependent
+    would unload the resident one and leave the handler with nothing to serve;
+    ``gguf_only_reason`` replaces its refusal message when the request, not the
+    endpoint, is what only llama.cpp can serve. ``audio_preflight`` carries an audio upload whose format-dependent
     checks only the resolved target can decide; see
     :func:`_preflight_audio_for_switch`. ``image_preflight`` does the same for
     non-GGUF image count and byte validation. ``require_audio_workflow`` refuses a target that
@@ -11303,7 +11305,7 @@ async def _maybe_auto_switch_model(
         a resident non-GGUF model reaches the handler's own error instead, since no
         swap is pending to refuse.
         """
-        message = (
+        message = gguf_only_reason or (
             f"This endpoint serves GGUF models only, and '{requested_model}' is not one. "
             "Use /v1/chat/completions for this model."
         )
@@ -30578,6 +30580,48 @@ class _DroppedFrameKeepalive:
         return True
 
 
+def _chat_image_preflight(payload: ChatCompletionRequest, parsed_image_b64) -> dict:
+    """The switch's ``image_preflight`` for a chat request carrying an image."""
+    images_on_turn = _images_in_last_user_message(payload.messages)
+    legacy_image_distinct = _legacy_image_is_distinct(payload)
+    local_image_payloads = _request_local_image_payloads(payload)
+    # A remote image the model reads is decoded after its fetch; no older image stands in for it.
+    selected_image = _served_image_part(payload.messages)
+    selects_remote = _remote_image_part(selected_image)
+    image_b64 = (
+        (payload.image_base64 if legacy_image_distinct else None)
+        if selects_remote
+        else parsed_image_b64 or payload.image_base64
+    )
+    if image_b64 is None and local_image_payloads and not selects_remote:
+        image_b64 = local_image_payloads[0]
+    # Read as the render reads it after the fetch; b64s stays as sent for GGUF to validate.
+    served_messages = _remote_images_as_served(payload.messages)
+    admitted_payloads = _conversation_with_image_markers(served_messages)[1]
+    if legacy_image_distinct:
+        admitted_payloads = [*admitted_payloads, payload.image_base64]
+    return {
+        "b64": image_b64,
+        "b64s": local_image_payloads,
+        "admitted": admitted_payloads,
+        "multiple": (
+            images_on_turn + int(legacy_image_distinct) > 1
+            or bool((parsed_image_b64 or selects_remote) and legacy_image_distinct)
+        ),
+        # Refused after the load whatever the target is, so refused before evicting for it.
+        "unservable_alongside": _newest_turn_shows_more_images_than_it_sends(
+            served_messages, legacy_image_distinct
+        ),
+        "fetch_schemes": {
+            several: [
+                _image_url_scheme(part.image_url.url)
+                for part in _served_remote_parts(payload.messages, several)
+            ]
+            for several in (False, True)
+        },
+    }
+
+
 @router.post("/chat/completions")
 @account_access.gpu_busy_route
 async def openai_chat_completions(
@@ -30890,44 +30934,7 @@ async def produce_openai_chat_completions(
         else None
     )
     if _needs_image and _pre_parsed is not None:
-        _images_on_turn = _images_in_last_user_message(payload.messages)
-        _legacy_image_distinct = _legacy_image_is_distinct(payload)
-        _local_image_payloads = _request_local_image_payloads(payload)
-        # A remote image the model reads is decoded after its fetch; no older image stands in for it.
-        _selected_image = _served_image_part(payload.messages)
-        _selects_remote = _remote_image_part(_selected_image)
-        _image_b64 = (
-            (payload.image_base64 if _legacy_image_distinct else None)
-            if _selects_remote
-            else _pre_parsed[2] or payload.image_base64
-        )
-        if _image_b64 is None and _local_image_payloads and not _selects_remote:
-            _image_b64 = _local_image_payloads[0]
-        # Read as the render reads it after the fetch; b64s stays as sent for GGUF to validate.
-        _served_messages = _remote_images_as_served(payload.messages)
-        _admitted_payloads = _conversation_with_image_markers(_served_messages)[1]
-        if _legacy_image_distinct:
-            _admitted_payloads = [*_admitted_payloads, payload.image_base64]
-        _image_preflight = {
-            "b64": _image_b64,
-            "b64s": _local_image_payloads,
-            "admitted": _admitted_payloads,
-            "multiple": (
-                _images_on_turn + int(_legacy_image_distinct) > 1
-                or bool((_pre_parsed[2] or _selects_remote) and _legacy_image_distinct)
-            ),
-            # Refused after the load whatever the target is, so refused before evicting for it.
-            "unservable_alongside": _newest_turn_shows_more_images_than_it_sends(
-                _served_messages, _legacy_image_distinct
-            ),
-            "fetch_schemes": {
-                several: [
-                    _image_url_scheme(part.image_url.url)
-                    for part in _served_remote_parts(payload.messages, several)
-                ]
-                for several in (False, True)
-            },
-        }
+        _image_preflight = _chat_image_preflight(payload, _pre_parsed[2])
 
     # Defer the resident claim: chat has several post-switch capability checks that can still
     # reject (Whisper without audio, n>1 on a non-GGUF backend, tool or response_format
@@ -39987,11 +39994,182 @@ class _ResponsesStreamTranslator:
         yield self.sse(terminal_event, terminal_response)
 
 
+@contextmanager
+def _delegated_request_state(request, **values):
+    """Set ``request.state`` attributes around a call into another handler, then restore them."""
+    state = getattr(request, "state", None)
+    if state is None:
+        state = type("_RequestState", (), {})()
+        try:
+            setattr(request, "state", state)
+        except Exception:
+            state = None
+    missing = object()
+    previous = {}
+    if state is not None:
+        previous = {name: getattr(state, name, missing) for name in values}
+        for name, value in values.items():
+            setattr(state, name, value)
+    try:
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is missing:
+                delattr(state, name)
+            else:
+                setattr(state, name, value)
+
+
+class _InProcessChatStream:
+    """``openai_chat_completions`` on an in-process model as the inner stream of a compat route.
+
+    The caller owns the API monitor, so the inner one is suppressed and asked for usage. The
+    inner run polls ``cancel_event``, and a cancelled run ends like a finished one, so
+    ``cancelled`` is how the caller tells them apart.
+    """
+
+    def __init__(self, response, cancel_event: threading.Event) -> None:
+        self._iterator = response.body_iterator
+        self._unstarted_cleanup = getattr(response, "_unstarted_cleanup", None)
+        self._started = False
+        self.cancel_event = cancel_event
+
+    @classmethod
+    async def open(cls, chat_req: ChatCompletionRequest, request, current_subject):
+        chat_req.stream = True
+        chat_req.stream_options = {"include_usage": True}
+        cancel_event = threading.Event()
+        with _delegated_request_state(
+            request, skip_api_monitor = True, generation_cancel_event = cancel_event
+        ):
+            response = await openai_chat_completions(chat_req, request, current_subject)
+        if getattr(response, "body_iterator", None) is None:
+            raise HTTPException(
+                status_code = 400, detail = "The loaded model does not produce a text stream."
+            )
+        return cls(response, cancel_event)
+
+    @property
+    def cancelled(self) -> bool:
+        return self.cancel_event.is_set()
+
+    async def chunks(self):
+        """Each chat chunk as a dict, or ``_LLAMA_STREAM_KEEPALIVE`` for a stall keepalive."""
+        self._started = True
+        async for raw in self._iterator:
+            text = raw.decode() if isinstance(raw, bytes) else raw
+            for line in text.split("\n"):
+                if line.startswith(":"):
+                    yield _LLAMA_STREAM_KEEPALIVE
+                    continue
+                if not line.startswith("data: "):
+                    continue
+                data = line[6:]
+                if data.strip() == "[DONE]":
+                    return
+                try:
+                    yield json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+
+    async def close(self, *, cancelled: bool) -> None:
+        if self._started:
+            await _close_openai_admitted_stream_iterator(self._iterator, cancelled = cancelled)
+        else:
+            # Its tracker was entered before it returned, and only this hook exits it.
+            await _release_unstarted_anthropic_stream(self._iterator, self._unstarted_cleanup)
+
+
+async def _responses_in_process_stream(
+    payload: ResponsesRequest,
+    chat_req: ChatCompletionRequest,
+    request: Request,
+    monitor_id: Optional[str],
+    current_subject: Optional[str],
+    resp_id: str,
+    created_at: int,
+):
+    """Stream /v1/responses from an in-process model (MLX, transformers) through chat."""
+    from core.inference.llama_keepwarm import mark_response_failed
+
+    # Registered by the chat handler's tracker, so a cancel by response id, thread or run
+    # reaches the run just as it does on llama-server.
+    chat_req.cancel_id = resp_id
+    chat_req.thread_id = getattr(payload, "thread_id", None)
+    chat_req.generation_run_id = getattr(payload, "generation_run_id", None)
+    source = await _InProcessChatStream.open(chat_req, request, current_subject)
+    try:
+        backend = await asyncio.to_thread(get_inference_backend)
+        translator = _ResponsesStreamTranslator(
+            payload = payload,
+            chat_req = chat_req,
+            request = request,
+            monitor_id = monitor_id,
+            resp_id = resp_id,
+            created_at = created_at,
+            model = _orchestrator_public_model_id(backend) or payload.model,
+            context_length = _monitor_context_length(),
+            parse_think_markers = _responses_should_parse_think_markers(
+                chat_req, get_llama_cpp_backend()
+            ),
+            # Chat already healed text-form tool calls.
+            healer = None,
+        )
+    except BaseException:
+        await source.close(cancelled = False)
+        raise
+
+    async def event_generator():
+        chunks = source.chunks()
+        cancelled = False
+        try:
+            yield translator.created()
+            async for chunk in chunks:
+                if chunk is _LLAMA_STREAM_KEEPALIVE:
+                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    continue
+                for event in translator.feed(chunk):
+                    yield event
+                if translator.terminated:
+                    return
+            if source.cancelled:
+                mark_response_failed(getattr(request, "scope", None))
+                api_monitor.finish(monitor_id, "cancelled")
+                return
+            for event in translator.finish():
+                yield event
+        except asyncio.CancelledError:
+            cancelled = True
+            source.cancel_event.set()
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
+        except Exception as e:
+            if source.cancelled:
+                mark_response_failed(getattr(request, "scope", None))
+                api_monitor.finish(monitor_id, "cancelled")
+                return
+            logger.error("responses stream error: %s", e)
+            api_monitor.fail(monitor_id, _friendly_error(e))
+            yield translator.failed(e)
+        finally:
+            await chunks.aclose()
+            await source.close(cancelled = cancelled)
+
+    async def _unstarted_cleanup() -> None:
+        api_monitor.finish(monitor_id, "cancelled")
+        await source.close(cancelled = False)
+
+    return _sse_streaming_response(
+        event_generator(), unstarted_cleanup = _unstarted_cleanup, monitor_id = monitor_id
+    )
+
+
 async def _responses_stream(
     payload: ResponsesRequest,
     messages: list[ChatMessage],
     request: Request,
     monitor_id: Optional[str] = None,
+    current_subject: Optional[str] = None,
 ):
     """Handle a streaming Responses API call, emitting named SSE events.
 
@@ -40014,17 +40192,24 @@ async def _responses_stream(
     chat_req = _build_chat_request(payload, messages, stream = True)
 
     llama_backend = get_llama_cpp_backend()
+    orchestrator = _peek_inference_backend()
+    entry = (getattr(orchestrator, "models", None) or {}).get(
+        getattr(orchestrator, "active_model_name", None)
+    )
+    # An NPU model streams through a provider proxy that keeps its own cancel event, and chat
+    # answers a TTS model with a finished clip rather than a text stream.
+    if (
+        not llama_backend.is_loaded
+        and isinstance(entry, dict)
+        and not (entry.get("is_audio") and entry.get("audio_type") != "whisper")
+    ):
+        return await _responses_in_process_stream(
+            payload, chat_req, request, monitor_id, current_subject, resp_id, created_at
+        )
     if not llama_backend.is_loaded:
-        # The direct pass-through is GGUF-only. Non-GGUF /v1/responses streaming
-        # isn't a Codex-compatible path today, and wrapping the transformers
-        # backend's streaming generator here would re-introduce the
-        # double-layer asyncgen close pattern that produces "Attempted to exit
-        # cancel scope in a different task" on Python 3.13. Surface a typed 400
-        # so the client sees a useful error instead of a dangling stream.
         _status, _detail = await _no_model_loaded_error(
-            "Streaming /v1/responses requires a GGUF model loaded via "
-            "llama-server. Use non-streaming /v1/responses, "
-            "/v1/chat/completions, or load a GGUF model.",
+            "Streaming /v1/responses requires a GGUF model loaded via llama-server or an "
+            "in-process model. Use non-streaming /v1/responses or /v1/chat/completions.",
             _switch_model_for_payload(payload),
             request,
             status = 400,
@@ -40490,24 +40675,44 @@ async def openai_responses(
             )
     if payload.stream:
         # streaming preflights here; non-streaming delegates its complete preflight to chat.
-        _responses_has_image = _messages_have_image(m for m in messages if m.role != "tool")
-        _responses_image_b64s = _local_image_payloads_from_messages(messages)
+        # Either source may serve the stream, so refuse before loading what chat would refuse.
+        _stream_chat_req = _build_chat_request(payload, messages, stream = True)
+        _stream_parts = _extract_content_parts(_stream_chat_req.messages, keep_tool_images = True)
+        _responses_has_image = _messages_have_image(messages)
+        # A text-only GGUF reads a tool result's image as a note, as in chat.
+        _tool_images_only = _responses_has_image and not _messages_have_image(
+            m for m in messages if m.role != "tool"
+        )
+        from utils.hardware import DeviceType, get_device
+
+        _stream_needs_grammar = (
+            get_device() != DeviceType.MLX
+            and _response_format_constrains_decoding(_stream_chat_req)
+            and (
+                _explicit_studio_tool_loop_requested(_stream_chat_req)
+                or not _tools_outrank_response_format(_stream_chat_req, _stream_chat_req.tools)
+            )
+        )
         await _maybe_auto_switch_model(
             _switch_model_for_payload(payload),
             request,
             current_subject,
             require_vision = _responses_has_image,
             claim_resident = False,
-            gguf_only = True,
             image_preflight = (
-                {
-                    "b64": _responses_image_b64s[0],
-                    "b64s": _responses_image_b64s,
-                    "multiple": False,
-                }
-                if _responses_image_b64s
+                _chat_image_preflight(_stream_chat_req, _stream_parts[2])
+                if _responses_has_image
                 else None
             ),
+            tool_images_only = _tool_images_only,
+            # Off an MLX host a non-GGUF target is transformers, which has no grammar engine.
+            gguf_only = _stream_needs_grammar,
+            gguf_only_reason = (
+                "response_format needs a grammar engine, and the transformers backend has none; "
+                "load an MLX or GGUF model to use it."
+            )
+            if _stream_needs_grammar
+            else None,
         )
         monitor_id = None
         if not getattr(request.state, "skip_api_monitor", False):
@@ -40521,7 +40726,11 @@ async def openai_responses(
                 subject = current_subject,
             )
         try:
-            return await _responses_stream(payload, messages, request, monitor_id)
+            return await _responses_stream(payload, messages, request, monitor_id, current_subject)
+        except asyncio.CancelledError:
+            # Before the stream exists, nothing else finishes the entry.
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
         except HTTPException as exc:
             detail = exc.detail
             if not isinstance(detail, str):

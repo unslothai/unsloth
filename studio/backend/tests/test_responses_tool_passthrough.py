@@ -4097,3 +4097,126 @@ def test_admission_timeout_fails_the_stream_with_server_is_overloaded(monkeypatc
 
     [failed] = TestResponsesStreamAdapter._payloads(asyncio.run(run()), "response.failed")
     assert failed["response"]["error"]["code"] == "server_is_overloaded"
+
+
+class TestResponsesInProcessStream:
+    _TC = {"index": 0, "id": "c1", "function": {"name": "f", "arguments": "{}"}}
+    _CHUNKS = [
+        {"choices": [{"delta": {"reasoning_content": "plan"}}]},
+        {"choices": [{"delta": {"content": "33"}}]},
+        {"choices": [{"delta": {"tool_calls": [_TC]}}]},
+        {"choices": [{"delta": {}, "finish_reason": "length"}]},
+        {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
+    ]
+
+    @staticmethod
+    def _run(
+        monkeypatch,
+        chunks,
+        stop_at = None,
+        taken = -1,
+        entry = {},
+    ):
+        # Streams an in-process run of `chunks`; taken >= 0 cancels after that many events,
+        # None disconnects before the body starts.
+        import routes.inference as inf_mod
+        from starlette.requests import Request
+
+        seen = {"closed": [], "unstarted": 0, "finish": []}
+
+        async def fake_chat(chat_req, request, subject):
+            seen.update(req = chat_req, skip = request.state.skip_api_monitor)
+            event = seen["event"] = request.state.generation_cancel_event
+
+            async def body():
+                try:
+                    for i, chunk in enumerate(chunks):
+                        if i == stop_at:
+                            event.set()  # a Stop through the run's tracked event
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                    yield "data: [DONE]\n\n"
+                except BaseException as exc:
+                    seen["closed"].append(type(exc).__name__)
+                    raise
+
+            async def unstarted():
+                seen["unstarted"] += 1
+
+            return _SameTaskStreamingResponse(body(), unstarted_cleanup = unstarted)
+
+        monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat)
+        monkeypatch.setattr(
+            inf_mod, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        )
+        orchestrator = SimpleNamespace(
+            active_model_name = None if entry is None else "m", models = {"m": entry}
+        )
+        monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: orchestrator)
+        monkeypatch.setattr(inf_mod, "_peek_inference_backend", lambda: orchestrator)
+        monkeypatch.setattr(inf_mod.api_monitor, "finish", lambda _id, *a: seen["finish"].append(a))
+        request = seen["request"] = Request({"type": "http", "headers": []})
+        payload = ResponsesRequest(input = "hi", stream = True, thread_id = "t1", generation_run_id = "r1")
+
+        async def run():
+            messages = [ChatMessage(role = "user", content = "hi")]
+            response = await _responses_stream(payload, messages, request, monitor_id = "m")
+            if taken is None:
+                return await response._unstarted_cleanup()
+            if taken < 0:
+                return [line async for line in response.body_iterator]
+            for _ in range(taken):
+                await response.body_iterator.__anext__()
+            with pytest.raises(asyncio.CancelledError):
+                await response.body_iterator.athrow(asyncio.CancelledError())
+
+        seen["lines"] = asyncio.run(run())
+        return seen
+
+    def test_chat_chunks_stream_the_same_events_as_llama_server(self, monkeypatch):
+        import re
+
+        def norm(lines):
+            return [
+                re.sub(r'_[0-9a-f]{12}|"created_at": \d+|"model": "[^"]*"', "", l) for l in lines
+            ]
+
+        TestResponsesStreamAdapter._install_stream_mock(monkeypatch, self._CHUNKS)
+        gguf = TestResponsesStreamAdapter()._stream_lines(
+            ResponsesRequest(input = "hi", stream = True), [ChatMessage(role = "user", content = "hi")]
+        )
+        seen = self._run(monkeypatch, self._CHUNKS)
+        assert norm(seen["lines"]) == norm(gguf)
+        assert gguf[-1].startswith("event: response.incomplete")
+        # Reachable by the response's keys; only the outer monitor counts the run.
+        req = seen["req"]
+        resp_id = json.loads(seen["lines"][0].split("data: ", 1)[1])["response"]["id"]
+        keys = (req.cancel_id, req.thread_id, req.generation_run_id, seen["skip"])
+        assert keys == (resp_id, "t1", "r1", True)
+        assert req.stream_options == {"include_usage": True}
+        assert not hasattr(seen["request"].state, "skip_api_monitor")
+
+    @pytest.mark.parametrize("stop_at", [None, 2])
+    def test_inner_failure_and_stop_end_without_success(self, monkeypatch, stop_at):
+        chunks = self._CHUNKS if stop_at else self._CHUNKS[1:2] + [{"error": {"message": "boom"}}]
+        seen = self._run(monkeypatch, chunks, stop_at)
+        names = [line.split("\n", 1)[0] for line in seen["lines"]]
+        assert not {"event: response.completed", "event: response.incomplete"} & set(names)
+        assert (names[-1] == "event: response.failed") is (stop_at is None)
+        assert (seen["finish"][-1:] == [("cancelled",)]) is (stop_at is not None)
+
+    @pytest.mark.parametrize(
+        "taken, closed, unstarted", [(None, [], 1), (1, [], 1), (2, ["CancelledError"], 0)]
+    )
+    def test_outer_cancel_closes_the_inner_stream(self, monkeypatch, taken, closed, unstarted):
+        seen = self._run(monkeypatch, self._CHUNKS, taken = taken)
+        assert (seen["closed"], seen["unstarted"]) == (closed, unstarted)
+        assert seen["finish"][-1] == ("cancelled",)
+        assert seen["event"].is_set() is (taken is not None)
+
+    @pytest.mark.parametrize("entry", [None, {"is_audio": True, "audio_type": "tts"}])
+    def test_only_a_text_model_in_the_orchestrator_streams_through_chat(self, monkeypatch, entry):
+        # An NPU model's provider proxy keeps its own cancel event, so the stream cannot see a
+        # Stop; chat answers a TTS model with a finished clip, not a text stream.
+        with pytest.raises(HTTPException) as err:
+            self._run(monkeypatch, self._CHUNKS, entry = entry)
+        assert err.value.status_code == 400
