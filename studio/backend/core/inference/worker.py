@@ -207,10 +207,16 @@ def _needs_nemotron_trust(model_name: str, hf_token: str | None = None) -> bool:
 def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     """Reconcile load_in_4bit with a LoRA adapter's recorded training method.
 
-    lora -> base is full precision (4bit off); qlora -> base is quantized (4bit
-    on); unknown method -> force off only when the base is not a -bnb-4bit repo.
+    A recorded unsloth_load_in_4bit wins; otherwise lora -> base is full precision
+    (4bit off); qlora -> base is quantized (4bit on); unknown method -> force off
+    only when the base is not a -bnb-4bit repo.
     A missing or unreadable adapter_config.json leaves the value unchanged.
     """
+    from utils.models.checkpoints import is_full_finetune_output
+
+    if load_in_4bit and not mc.is_lora and is_full_finetune_output(mc.path):
+        logger.info("Full fine-tune output has no quantization_config — setting load_in_4bit=False")
+        return False
     if not (mc.is_lora and mc.path):
         return load_in_4bit
 
@@ -223,6 +229,15 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     try:
         with open(adapter_cfg_path, encoding = "utf-8-sig") as f:
             adapter_cfg = json.load(f)
+        trained_in_4bit = adapter_cfg.get("unsloth_load_in_4bit")
+        if isinstance(trained_in_4bit, bool):
+            if trained_in_4bit != load_in_4bit:
+                logger.info(
+                    "adapter_config.json says unsloth_load_in_4bit=%s — setting load_in_4bit=%s",
+                    trained_in_4bit,
+                    trained_in_4bit,
+                )
+            return trained_in_4bit
         training_method = adapter_cfg.get("unsloth_training_method")
         if training_method == "lora" and load_in_4bit:
             logger.info("adapter_config.json says lora — setting load_in_4bit=False")
@@ -451,12 +466,30 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         # loads; a no-progress Xet download is reported as a stall so the parent
         # can respawn over HTTP. Watch model + base repos (base is the LoRA
         # download bottleneck).
+        from core.inference.model_ids import mlx_bnb_substitutions
         from utils.hf_xet_fallback import start_watchdog
 
         watch_repos = [mc.identifier]
         base = getattr(mc, "base_model", None)
         if base and str(base) != mc.identifier:
             watch_repos.append(str(base))
+
+        # Watch the repositories Zoo downloads after substitution.
+        if getattr(backend, "device", None) == "mlx":
+            substitutions = mlx_bnb_substitutions(watch_repos)
+            replacements = dict(substitutions)
+            watch_repos = list(dict.fromkeys(replacements.get(repo, repo) for repo in watch_repos))
+            for requested, mlx_base in substitutions:
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "status",
+                        "message": (
+                            f"MLX cannot read bitsandbytes 4-bit weights; "
+                            f"downloading {mlx_base} instead of {requested}"
+                        ),
+                    },
+                )
 
         heartbeat_stop = start_watchdog(
             repo_ids = watch_repos,
@@ -676,6 +709,10 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     request_id = cmd.get("request_id", "")
 
     try:
+        image = None
+        image_b64 = cmd.get("image_base64")
+        if image_b64:
+            image = _resize_image(_decode_image(image_b64))
         images = [
             _resize_image(_decode_image(encoded))
             for encoded in cmd.get("images_base64") or ()
@@ -685,6 +722,7 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
         gen_kwargs = {
             "messages": cmd["messages"],
             "system_prompt": cmd.get("system_prompt", ""),
+            "image": image,
             "images": images,
             "temperature": cmd.get("temperature", 0.7),
             "top_p": cmd.get("top_p", 0.9),
@@ -706,6 +744,9 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
         ):
             if opt_key in cmd:
                 gen_kwargs[opt_key] = cmd[opt_key]
+
+        if cmd.get("image_ordinal") is not None and _backend_declares(backend, "image_ordinal"):
+            gen_kwargs["image_ordinal"] = cmd["image_ordinal"]
 
         # Not every backend declares these (transformers declares only ``stop``)
         # and none takes **kwargs, so forwarding unconditionally would turn a

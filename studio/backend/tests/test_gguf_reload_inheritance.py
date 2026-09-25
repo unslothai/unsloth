@@ -548,3 +548,244 @@ def test_an_inherited_env_budget_does_not_force_a_reload():
         )
         is True
     )
+
+
+# ── Canonical identity normalization ────────────────────────────
+
+
+def test_canonical_model_identity_resolves_snapshot_to_repo():
+    from routes.inference import _canonical_model_identity
+    snapshot = "/models--unsloth--Qwen3.8-27B-GGUF/snapshots/abc123"
+    assert _canonical_model_identity(snapshot) == "unsloth/qwen3.8-27b-gguf"
+
+
+def test_canonical_model_identity_folds_repo_id_case():
+    from routes.inference import _canonical_model_identity
+    assert _canonical_model_identity("unsloth/Qwen3.8-27B-GGUF") == "unsloth/qwen3.8-27b-gguf"
+
+
+def test_canonical_model_identity_reads_windows_snapshot_path():
+    from routes.inference import _canonical_model_identity
+    snapshot = r"C:\hub\models--unsloth--Qwen3.8-27B-GGUF\snapshots\abc123"
+    assert _canonical_model_identity(snapshot) == "unsloth/qwen3.8-27b-gguf"
+
+
+def test_canonical_model_identity_empty_and_none():
+    from routes.inference import _canonical_model_identity
+    assert _canonical_model_identity("") == ""
+    assert _canonical_model_identity(None) == ""
+
+
+def test_canonical_model_identity_keeps_other_local_paths():
+    from routes.inference import _canonical_model_identity
+    assert _canonical_model_identity("/models/my-model.gguf") == "/models/my-model.gguf"
+    # A models-- folder outside the cache layout is not a repo id.
+    assert _canonical_model_identity("/models--org--name/x.gguf") == "/models--org--name/x.gguf"
+
+
+# ── _resolve_inherited_extra_args: snapshot vs repo id ──────────
+
+
+def test_inheritance_works_when_stored_is_snapshot_and_load_is_repo():
+    """Storing extras under a snapshot-path identifier and resolving on a JIT
+    auto-switch load of the same repo id must still inherit them.
+    """
+    from routes.inference import _resolve_inherited_extra_args
+
+    class FakeRequest:
+        model_path = "unsloth/Qwen3.8-27B-GGUF"
+        gguf_variant = None
+        llama_extra_args = None
+        model_fields_set = set()
+
+    class FakeConfig:
+        is_gguf = True
+        gguf_variant = "ud-q6_k_l"
+        identifier = "unsloth/Qwen3.8-27B-GGUF"
+
+    class FakeBackend:
+        extra_args = ["--rope-scaling", "yarn", "-c", "300000"]
+        extra_args_source = ("/models--unsloth--Qwen3.8-27B-GGUF/snapshots/abc123", "ud-q6_k_l")
+
+    import routes.inference as _routes
+
+    _get_llama_cpp_backend_orig = _routes.get_llama_cpp_backend
+    _routes.get_llama_cpp_backend = lambda: FakeBackend()
+    try:
+        result = _resolve_inherited_extra_args(
+            FakeRequest(), FakeConfig(), "unsloth/Qwen3.8-27B-GGUF", None
+        )
+        assert result == [
+            "--rope-scaling",
+            "yarn",
+            "-c",
+            "300000",
+        ], f"Expected inherited extras but got: {result}"
+    finally:
+        _routes.get_llama_cpp_backend = _get_llama_cpp_backend_orig
+
+
+def test_inheritance_works_when_case_differs():
+    """A stored snapshot/repo with different casing than the load model_identifier
+    still inherits extras for the same Hub GGUF + same variant."""
+    from routes.inference import _resolve_inherited_extra_args
+
+    class FakeRequest:
+        model_path = "unsloth/Qwen3.8-27B-GGUF"
+        gguf_variant = None
+        llama_extra_args = None
+        model_fields_set = set()
+
+    class FakeConfig:
+        is_gguf = True
+        gguf_variant = "ud-q6_k_l"
+        identifier = "unsloth/Qwen3.8-27B-GGUF"
+
+    class FakeBackend:
+        extra_args = ["--rope-scaling", "yarn", "-c", "300000"]
+        extra_args_source = ("/models--Unsloth--Qwen3.8-27B-GGUF/snapshots/abc123", "ud-q6_k_l")
+
+    import routes.inference as _routes
+
+    _get_llama_cpp_backend_orig = _routes.get_llama_cpp_backend
+    _routes.get_llama_cpp_backend = lambda: FakeBackend()
+    try:
+        result = _resolve_inherited_extra_args(
+            FakeRequest(), FakeConfig(), "unsloth/qwen3.8-27b-gguf", None
+        )
+        assert result == [
+            "--rope-scaling",
+            "yarn",
+            "-c",
+            "300000",
+        ], f"Expected inherited extras for case-variant match, got: {result}"
+    finally:
+        _routes.get_llama_cpp_backend = _get_llama_cpp_backend_orig
+
+
+def test_inheritance_refuses_different_repo():
+    """Different repo ids must not inherit extras."""
+    from routes.inference import _resolve_inherited_extra_args
+
+    class FakeRequest:
+        model_path = "different/repo"
+        gguf_variant = None
+        llama_extra_args = None
+        model_fields_set = set()
+
+    class FakeConfig:
+        is_gguf = True
+        gguf_variant = None
+        identifier = "different/repo"
+
+    class FakeBackend:
+        extra_args = ["--rope-scaling", "yarn"]
+        extra_args_source = ("/models--unsloth--Qwen3.8-27B-GGUF/snapshots/abc123", "ud-q6_k_l")
+
+    import routes.inference as _routes
+
+    _get_llama_cpp_backend_orig = _routes.get_llama_cpp_backend
+    _routes.get_llama_cpp_backend = lambda: FakeBackend()
+    try:
+        result = _resolve_inherited_extra_args(FakeRequest(), FakeConfig(), "different/repo", None)
+        assert result == [], f"Expected empty extras for cross-model, got: {result}"
+    finally:
+        _routes.get_llama_cpp_backend = _get_llama_cpp_backend_orig
+
+
+def test_inheritance_refuses_different_variant():
+    """Different variants must not inherit extras."""
+    from routes.inference import _resolve_inherited_extra_args
+
+    class FakeRequest:
+        model_path = "unsloth/Qwen3.8-27B-GGUF"
+        gguf_variant = "Q4_K_M"
+        llama_extra_args = None
+        model_fields_set = set()
+
+    class FakeConfig:
+        is_gguf = True
+        gguf_variant = "Q4_K_M"
+        identifier = "unsloth/Qwen3.8-27B-GGUF"
+
+    class FakeBackend:
+        extra_args = ["--rope-scaling", "yarn"]
+        extra_args_source = ("/models--unsloth--Qwen3.8-27B-GGUF/snapshots/abc123", "q6_k_l")
+
+    import routes.inference as _routes
+
+    _get_llama_cpp_backend_orig = _routes.get_llama_cpp_backend
+    _routes.get_llama_cpp_backend = lambda: FakeBackend()
+    try:
+        result = _resolve_inherited_extra_args(
+            FakeRequest(), FakeConfig(), "unsloth/Qwen3.8-27B-GGUF", None
+        )
+        assert result == [], f"Expected empty extras for variant mismatch, got: {result}"
+    finally:
+        _routes.get_llama_cpp_backend = _get_llama_cpp_backend_orig
+
+
+def test_explicit_empty_extras_still_clears():
+    """An explicit [] still clears extras regardless of identity match."""
+    from routes.inference import _resolve_inherited_extra_args
+
+    class FakeRequest:
+        model_path = "unsloth/Qwen3.8-27B-GGUF"
+        gguf_variant = None
+        llama_extra_args = []
+        model_fields_set = set()
+
+    class FakeConfig:
+        is_gguf = True
+        gguf_variant = None
+        identifier = "unsloth/Qwen3.8-27B-GGUF"
+
+    class FakeBackend:
+        extra_args = ["--rope-scaling", "yarn"]
+        extra_args_source = ("unsloth/Qwen3.8-27B-GGUF", "ud-q6_k_l")
+
+    import routes.inference as _routes
+
+    _get_llama_cpp_backend_orig = _routes.get_llama_cpp_backend
+    _routes.get_llama_cpp_backend = lambda: FakeBackend()
+    try:
+        result = _resolve_inherited_extra_args(
+            FakeRequest(), FakeConfig(), "unsloth/Qwen3.8-27B-GGUF", None
+        )
+        assert result is None  # early return because llama_extra_args is not None (it's [])
+    finally:
+        _routes.get_llama_cpp_backend = _get_llama_cpp_backend_orig
+
+
+def test_missing_extra_args_source_refuses_without_raising():
+    """Stored extras with no recorded source are not inherited, and the refusal log
+    must not index into the missing source."""
+    from routes.inference import _resolve_inherited_extra_args
+    import routes.inference as _routes
+
+    class FakeRequest:
+        model_path = "unsloth/Qwen3.8-27B-GGUF"
+        gguf_variant = None
+        llama_extra_args = None
+        model_fields_set = set()
+
+    class FakeConfig:
+        is_gguf = True
+        gguf_variant = "ud-q6_k_l"
+        identifier = "unsloth/Qwen3.8-27B-GGUF"
+
+    original = _routes.get_llama_cpp_backend
+    try:
+        for source in (None, (None, "ud-q6_k_l"), ("", None)):
+
+            class FakeBackend:
+                extra_args = ["--rope-scaling", "yarn"]
+                extra_args_source = source
+
+            _routes.get_llama_cpp_backend = lambda: FakeBackend()
+            result = _resolve_inherited_extra_args(
+                FakeRequest(), FakeConfig(), "unsloth/Qwen3.8-27B-GGUF", None
+            )
+            assert result == [], (source, result)
+    finally:
+        _routes.get_llama_cpp_backend = original

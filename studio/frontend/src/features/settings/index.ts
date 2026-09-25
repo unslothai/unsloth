@@ -41,6 +41,8 @@ export {
   migrateShippedSidebarNavDefault,
   prefersReducedMotion,
   sanitizeCustomization,
+  sidebarNavAutoAfterChoice,
+  sidebarNavRowPinned,
   useAppearanceCustomStore,
 } from "./stores/appearance-custom-store";
 export type {

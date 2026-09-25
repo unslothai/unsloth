@@ -22,6 +22,8 @@ _FAKE_PROC_NV_DIR=$(mktemp -d)
     echo ""
     sed -n '/^_has_usable_nvidia_gpu()/,/^}/p' "$INSTALL_SH"
     echo ""
+    sed -n '/^_rocm_torch_explicitly_requested()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^_ensure_rocm_probe_env()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_probe_amd_gfx_arch()/,/^}/p' "$INSTALL_SH"
