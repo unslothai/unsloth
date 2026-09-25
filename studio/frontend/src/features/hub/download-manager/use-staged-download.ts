@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { toast } from "@/lib/toast";
 
@@ -12,6 +12,13 @@ import {
   scopedVariant,
 } from "./download-manager-types";
 import { useRepoDownload } from "./use-repo-download";
+
+/** Total progress for the plan ID returned by `stage()`. */
+export interface StagedDownloadProgress {
+  downloadedBytes: number;
+  totalBytes: number;
+  plan: number;
+}
 
 export interface StagedDownloadEntry {
   repoId: string;
@@ -37,6 +44,8 @@ export function useStagedDownload({
   onCancelled?: () => void;
 }) {
   const [queue, setQueue] = useState<StagedDownloadEntry[] | null>(null);
+  // Keep the original total as completed entries leave the queue.
+  const [staged, setStaged] = useState({ bytes: 0, plan: 0 });
   const current = queue?.[0] ?? null;
 
   // Every entry is scoped, including a GGUF checkpoint: the Hub's snapshot ignore list drops *.gguf, so a plain snapshot job would finish having fetched everything EXCEPT the weights.
@@ -53,6 +62,8 @@ export function useStagedDownload({
   // Keyed by entry AND staging generation: every scoped pick in a repo shares the "@scope" variant, so restaging would let the first job's completion pass for the new pick.
   const inFlight = useRef<{ key: string; generation: number } | null>(null);
   const generation = useRef(0);
+  // Only the first entry in each plan may reserve a Xet notice.
+  const noticedGeneration = useRef<number | null>(null);
   const isOurs = (variant: string | null | undefined) =>
     (variant ?? null) === activeVariant &&
     current !== null &&
@@ -60,7 +71,7 @@ export function useStagedDownload({
     inFlight.current.key === entryKey(current) &&
     inFlight.current.generation === generation.current;
 
-  useRepoDownload({
+  const job = useRepoDownload({
     kind: DOWNLOAD_KIND.MODEL,
     repoId: current?.repoId ?? "__staged_download_idle__",
     activeVariant,
@@ -94,6 +105,8 @@ export function useStagedDownload({
     const started = { key: entryKey(current), generation: generation.current };
     // Register ownership before the start request: the panel can expose the job before this await resumes, and a very fast cancel in that window must still belong to this plan.
     inFlight.current = started;
+    const laterEntry = noticedGeneration.current === generation.current;
+    noticedGeneration.current = generation.current;
     void (async () => {
       const outcome = await downloadManager.requestStart({
         kind: DOWNLOAD_KIND.MODEL,
@@ -104,6 +117,7 @@ export function useStagedDownload({
         scopeId,
         files: current.files,
         checkpoint: current.checkpoint,
+        skipXetNotice: laterEntry,
       });
       if (!active) return;
       if (outcome === "started") return;
@@ -132,11 +146,28 @@ export function useStagedDownload({
     };
   }, [current, activeVariant, scopeId]);
 
-  const stage = useCallback((entries: StagedDownloadEntry[]) => {
+  const stage = useCallback((entries: StagedDownloadEntry[]): number => {
     generation.current += 1;
     inFlight.current = null;
     setQueue(entries.length > 0 ? entries : null);
+    setStaged({
+      bytes: entries.reduce((sum, entry) => sum + Math.max(0, entry.bytes), 0),
+      plan: generation.current,
+    });
+    return generation.current;
   }, []);
 
-  return { stage, staging: queue !== null };
+  const remainingBytes = (queue ?? []).reduce((sum, entry) => sum + Math.max(0, entry.bytes), 0);
+  const currentBytes = current
+    ? Math.min(Math.max(0, current.bytes), job.progress?.downloadedBytes ?? 0)
+    : 0;
+  const downloadedBytes = queue ? Math.max(0, staged.bytes - remainingBytes) + currentBytes : 0;
+  const totalBytes = queue ? staged.bytes : 0;
+  const plan = staged.plan;
+  const progress = useMemo<StagedDownloadProgress | null>(
+    () => (totalBytes > 0 ? { downloadedBytes, totalBytes, plan } : null),
+    [downloadedBytes, totalBytes, plan],
+  );
+
+  return { stage, staging: queue !== null, progress };
 }

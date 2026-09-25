@@ -322,6 +322,23 @@ def _isolate_generation_state():
 
 
 @pytest.fixture(autouse = True)
+def _forget_the_cached_owner_identity():
+    """Drop ``process_lifetime``'s cached owner identity after each test.
+
+    ``_own_identity`` reads this process's identity once and keeps it, which is right in a server,
+    where it cannot change. A test that patches ``_pid_identity`` and then adopts a pid caches the
+    fake instead: test_concurrent_adopts_all_survive left ``id-<pid>`` behind, and the next test in
+    the same xdist worker to write a record wrote that, so the reaper read its own live owner as
+    gone and killed the child test_a_live_owner_is_never_reaped had just adopted. The cache is
+    recomputed on demand, so clearing it costs one ``ps`` at most.
+    """
+    yield
+    lifetime = sys.modules.get("utils.process_lifetime")
+    if lifetime is not None:
+        lifetime._owner_identity = None
+
+
+@pytest.fixture(autouse = True)
 def _isolate_wal_keepers():
     """Close the WAL keepers a test opened, so the next test starts without them.
 
@@ -378,6 +395,7 @@ def _no_background_model_scan(monkeypatch):
     # assertion became a 503 "still indexing". Cold-path tests reset _scan themselves;
     # _build_index is untouched so tests calling it directly still walk for real.
     monkeypatch.setattr(local_model_resolver, "_scan", (time.monotonic(), {}))
+    monkeypatch.setattr(local_model_resolver, "_misses", {})
 
 
 @pytest.fixture(scope = "session")

@@ -3,7 +3,7 @@
 
 // What a quantization expander shows, and when it opens. No React/DOM deps so it stays easy to test.
 
-/** On Device with "Show all quantizations" off lists what the repo holds on disk: complete quants,
+/** On Device with "All quantizations" off lists what the repo holds on disk: complete quants,
  *  plus torn ones, which still occupy space and need a resume. Never-downloaded quants stay
  *  hidden. Browse lists always show every quant. */
 export function visibleGgufVariants<
