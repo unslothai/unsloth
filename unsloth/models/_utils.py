@@ -30,6 +30,8 @@ __all__ = [
     "USE_MODELSCOPE",
     "platform_system",
     "patch_tokenizer",
+    "patch_harmony_tool_call_eos",
+    "patch_harmony_tool_call_eos_vllm",
     "get_statistics",
     "Unsloth_Offloaded_Gradient_Checkpointer",
     "offload_to_disk",
@@ -4180,10 +4182,240 @@ def apply_accepts_loss_kwargs_fix(model):
     return f"{value} ({reason})"
 
 
+# Harmony (gpt-oss) ends a TOOL CALL with `<|call|>`, a third terminal token beside
+# `<|return|>` and `<|endoftext|>`. The `unsloth/gpt-oss-*` mirrors were snapshotted four
+# days before `openai/gpt-oss-*` added it to `generation_config.json`, so their stop set is
+# `[200002, 199999]` where upstream ships `[200002, 199999, 200012]`, and a checkpoint
+# fine-tuned from one of those mirrors inherits the gap through `save_pretrained`.
+#
+# With `<|call|>` missing from the stop set, generation does not halt when the model
+# finishes a tool call. Everything past that point is out of distribution -- gpt-oss training
+# sequences always terminate at `<|call|>` and the harness injects the tool result -- so the
+# model writes the next harmony role or channel as PLAIN BPE TEXT ("commentary",
+# "assistant") where a special token was required. That is unslothai/unsloth#5162, reported
+# downstream as `openai_harmony.HarmonyError 200006` ("Unexpected token ... while expecting
+# start token 200006") and as vLLM tool calls that fail while ordinary chat works.
+#
+# Only `generation_config` is touched. `config.eos_token_id` is the scalar `200002` upstream
+# too, and widening it there would change what `model.config` reports about the turn end.
+_HARMONY_TOOL_CALL_TOKEN = "<|call|>"
+# Every one of these must resolve for the model to be harmony. `<|call|>` alone is not
+# enough of a fingerprint: a tokenizer that maps unknown text to a single id would answer
+# for it, and `<|channel|>` / `<|return|>` are what make the vocabulary o200k_harmony.
+_HARMONY_FINGERPRINT_TOKENS = ("<|call|>", "<|channel|>", "<|return|>")
+
+
+def _harmony_tool_call_token_id(tokenizer):
+    """The id of ``<|call|>`` when ``tokenizer`` really is a harmony tokenizer, else None."""
+    if tokenizer is None:
+        return None
+    convert = getattr(tokenizer, "convert_tokens_to_ids", None)
+    if not callable(convert):
+        return None
+    unknown = getattr(tokenizer, "unk_token_id", None)
+    seen = {}
+    for token in _HARMONY_FINGERPRINT_TOKENS:
+        try:
+            token_id = convert(token)
+        except Exception:
+            return None
+        if not isinstance(token_id, int) or token_id < 0 or token_id == unknown:
+            return None
+        seen[token] = token_id
+    # Distinct ids: a tokenizer that folds every unrecognised string onto one id would
+    # otherwise pass the loop above.
+    if len(set(seen.values())) != len(_HARMONY_FINGERPRINT_TOKENS):
+        return None
+    return seen[_HARMONY_TOOL_CALL_TOKEN]
+
+
+def patch_harmony_tool_call_eos(model, tokenizer):
+    """Add `<|call|>` to a harmony model's generation stop set when it is missing.
+
+    Additive and idempotent: an existing list keeps its order and its other entries, and a
+    model that already stops on `<|call|>` (upstream `openai/gpt-oss-*`, or a Hub repo once
+    it is corrected) is left untouched.
+    """
+    if model is None:
+        return model
+    generation_config = getattr(model, "generation_config", None)
+    if generation_config is None:
+        return model
+    call_id = _harmony_tool_call_token_id(tokenizer)
+    if call_id is None:
+        return model
+
+    current = getattr(generation_config, "eos_token_id", None)
+    if current is None:
+        # No stop set at all. Adding `<|call|>` here would make it the ONLY terminator,
+        # dropping `<|return|>`, so generation would run past the end of an ordinary
+        # reply instead of past a tool call: the same defect pointed the other way.
+        # Widening an existing set is this function's whole remit.
+        return model
+    elif isinstance(current, bool):
+        # bool is an int subclass and would otherwise become a token id of 0 or 1.
+        return model
+    elif isinstance(current, int):
+        eos_ids = [current]
+    elif isinstance(current, (list, tuple)):
+        # Anything that is not plainly an int id means this is a shape we do not
+        # understand. Bail out rather than raise: this runs inside patch_tokenizer
+        # during from_pretrained, llama.py wraps it in no except, and vision.py
+        # responds by re-fetching the tokenizer over the network. Declining to widen
+        # costs a user the tool-call stop token; raising costs them the load.
+        eos_ids = []
+        for token_id in current:
+            if isinstance(token_id, bool) or not isinstance(token_id, int):
+                return model
+            eos_ids.append(token_id)
+    else:
+        # An unrecognised shape is left exactly as it is rather than guessed at.
+        return model
+    if call_id in eos_ids:
+        return model
+    if not eos_ids:
+        # An EMPTY list or tuple is the `current is None` case wearing a different shape:
+        # there is nothing to widen, and appending here would leave `<|call|>` as the only
+        # terminator with `<|return|>` gone. `isinstance([], list)` is true, so this has to
+        # be caught after the shape check rather than with it.
+        return model
+
+    # The shape checks above decline instead of raising, for the reason given there. The
+    # ASSIGNMENT needs the same treatment and cannot get it from a check: a
+    # `generation_config` whose `eos_token_id` is a read-only property, or a setter that
+    # validates and rejects a third id, raises here and that raise escapes `patch_tokenizer`
+    # mid-`from_pretrained`. Transformers' own `GenerationConfig` assigns plainly, so this
+    # is about subclasses and remote-code configs, and it costs a `try` to be sure.
+    try:
+        generation_config.eos_token_id = eos_ids + [call_id]
+    except Exception as error:
+        logger.warning(
+            f"Unsloth: Could not add `{_HARMONY_TOOL_CALL_TOKEN}` to the generation stop "
+            f"tokens ({error}). Tool calls may not stop on their own terminator. Pass "
+            "`eos_token_id` to `generate` to work around it."
+        )
+        return model
+    logger.warning(
+        f"Unsloth: Added `{_HARMONY_TOOL_CALL_TOKEN}` (id {call_id}) to the generation stop "
+        "tokens. Harmony ends a tool call with it, and without it generation runs past a "
+        "finished tool call into plain-text harmony markup."
+    )
+    return model
+
+
+# `fast_inference = True` does not go through `model.generate`, so the edit above cannot
+# reach it. `llama.py` builds the vLLM engine and binds `model.fast_generate =
+# model.vllm_engine.generate` BEFORE the tokenizer is even loaded, and vLLM reads
+# `generation_config.json` into its own process state, so the HF `generation_config` it
+# snapshotted is the SHORT list and stays that way.
+#
+# vLLM applies the model's generation stop set per request, in
+# `Processor.process_inputs` -> `SamplingParams.update_from_generation_config`, reading a
+# plain dict it captured at engine construction. That dict is the seam: it is re-read on
+# EVERY request, for a caller-supplied `SamplingParams` as much as for the default one, which
+# matters because GRPO always passes its own. Widening it there is additive (vLLM merges into
+# the caller's `stop_token_ids` rather than replacing them) and is skipped entirely when the
+# caller sets `ignore_eos = True`, so the opt-out keeps working.
+#
+# The attribute is internal and has moved between vLLM versions, so every lookup is
+# defensive. Failing to widen costs a user the tool-call stop token; raising here would cost
+# them the model load, on the inference path, for a model that was loading fine before.
+_VLLM_GENERATION_CONFIG_FIELD_PATHS = (
+    ("llm_engine", "input_processor"),
+    ("input_processor",),
+    ("llm_engine", "processor"),
+    ("processor",),
+)
+# vLLM refuses a request whose stop set exceeds this, but only when `min_tokens > 0`.
+# Never reached by a harmony stop set of three, and cheap to respect.
+_VLLM_MAX_STOP_TOKEN_IDS = 128
+
+
+def _vllm_generation_config_fields(engine):
+    """The engine's per-request generation-config dict, if this vLLM exposes one."""
+    for path in _VLLM_GENERATION_CONFIG_FIELD_PATHS:
+        holder = engine
+        for attribute in path:
+            holder = getattr(holder, attribute, None)
+            if holder is None:
+                break
+        else:
+            fields = getattr(holder, "generation_config_fields", None)
+            if isinstance(fields, dict):
+                return fields
+    return None
+
+
+def patch_harmony_tool_call_eos_vllm(model, tokenizer):
+    """Add `<|call|>` to the stop set a vLLM engine applies to every request.
+
+    A no-op unless `fast_inference = True` actually built an engine and the tokenizer
+    fingerprints as harmony. Additive and idempotent.
+    """
+    engine = getattr(model, "vllm_engine", None)
+    if engine is None:
+        return model
+    try:
+        call_id = _harmony_tool_call_token_id(tokenizer)
+        if call_id is None:
+            return model
+        fields = _vllm_generation_config_fields(engine)
+        if fields is None:
+            logger.warning(
+                f"Unsloth: Could not reach the vLLM stop-token set, so `{_HARMONY_TOOL_CALL_TOKEN}` "
+                "was not added to it. Tool calls under `fast_inference = True` may not stop on "
+                "their own terminator. Pass `stop_token_ids` to work around it."
+            )
+            return model
+
+        current = fields.get("eos_token_id", None)
+        if isinstance(current, bool):
+            # bool is an int subclass and would otherwise be read as a token id.
+            return model
+        elif isinstance(current, int):
+            eos_ids = [current]
+        elif isinstance(current, (list, tuple)):
+            eos_ids = []
+            for token_id in current:
+                if isinstance(token_id, bool) or not isinstance(token_id, int):
+                    return model
+                eos_ids.append(token_id)
+        elif current is None:
+            # Absent key, or explicitly null. Unlike the HF branch above, seeding
+            # `[<|call|>]` here does NOT drop the ordinary terminator: vLLM tracks the
+            # primary eos separately, off the tokenizer, and this dict only ever ADDS to it.
+            # An empty list is the same case, and is inert until it is seeded.
+            eos_ids = []
+        else:
+            return model
+
+        if call_id in eos_ids:
+            return model
+        if len(eos_ids) + 1 > _VLLM_MAX_STOP_TOKEN_IDS:
+            return model
+
+        fields["eos_token_id"] = eos_ids + [call_id]
+        logger.warning(
+            f"Unsloth: Added `{_HARMONY_TOOL_CALL_TOKEN}` (id {call_id}) to the vLLM stop "
+            "tokens. Harmony ends a tool call with it, and without it generation runs past a "
+            "finished tool call into plain-text harmony markup."
+        )
+    except Exception as error:
+        # Never turn a working load into a failed one over a stop token.
+        logger.warning(
+            f"Unsloth: Could not add `{_HARMONY_TOOL_CALL_TOKEN}` to the vLLM stop tokens "
+            f"({error}). Tool calls under `fast_inference = True` may not stop on their own "
+            "terminator."
+        )
+    return model
+
+
 def patch_tokenizer(model, tokenizer):
     model, tokenizer = _patch_tokenizer(model, tokenizer)
     if model is not None:
         model.config.update({"unsloth_version": __version__})
+    model = patch_harmony_tool_call_eos(model, tokenizer)
+    model = patch_harmony_tool_call_eos_vllm(model, tokenizer)
     return model, tokenizer
 
 
