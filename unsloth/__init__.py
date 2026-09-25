@@ -210,8 +210,6 @@ if _IS_MLX:
     except Exception:
         pass
     try:
-        # Same reason: configs are built here too, and 4.x-era values such as Llama 4's
-        # attn_temperature_tuning: 4 fail transformers 5's strict config validation.
         from .import_fixes import fix_transformers5_legacy_config_types as _fix_legacy_types
         _fix_legacy_types()
         del _fix_legacy_types

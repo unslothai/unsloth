@@ -687,10 +687,7 @@ def fix_transformers5_bare_annotation_configs():
         logger.info(f"Unsloth: Failed patching PretrainedConfig ({e})")
 
 
-# Bool flags whose 4.x value was only ever read for truthiness, so ANY int means what bool(int)
-# means. Keyed by field, valued by the model_types it holds for. attn_temperature_tuning: 4.51.0
-# to 4.51.3 defaulted it to 4 and Llama4TextAttention only did `if self.attn_temperature_tuning`;
-# 4.52.0 made it `True`, and every Llama 4 checkpoint saved on 4.51 still carries the 4.
+# 4.51 defaulted attn_temperature_tuning to 4, only ever read for truthiness; 4.52 made it True.
 _LEGACY_TRUTHY_BOOL_FIELDS = {
     "attn_temperature_tuning": frozenset({"llama4_text"}),
 }
@@ -701,11 +698,6 @@ _legacy_config_coercions_logged = set()
 
 
 def _legacy_config_accepted_types(annotation):
-    """The plain types a field annotation accepts, or ``None`` if it is not simple enough.
-
-    Only ``X`` and unions of ``X`` / ``None`` / ``Literal`` / ``list[...]`` / ``tuple[...]``.
-    String and forward-reference annotations are never validated by ``@strict``, so they
-    can never fail and are left alone."""
     import typing
     import types as _types
 
@@ -734,11 +726,7 @@ def _legacy_config_accepted_types(annotation):
 
 
 def _legacy_config_fields(cls):
-    """``{field: accepted types}`` for the fields ``@strict`` validates on ``cls``, cached per class.
-
-    Read from the class owning ``__validators__`` (the nearest ``@strict`` one): its annotations
-    are what the validators were built from. A subclass that is a dataclass but not ``@strict``
-    validates neither its own fields nor re-annotated inherited ones, so those are left alone."""
+    # Read from the class owning __validators__: non-strict dataclass subclasses validate nothing.
     cached = _legacy_config_field_types.get(cls)
     if cached is not None:
         return cached
@@ -778,12 +766,6 @@ def _legacy_truthy_bool_field(cls, name):
 
 
 def _legacy_config_coerced_value(cls, name, value, accepted):
-    """``value`` converted to what ``accepted`` allows, or ``_LEGACY_CONFIG_NOT_COERCED``.
-
-    Only conversions that lose nothing or whose 4.x meaning is established: int or float 0/1
-    to bool, any int to bool for a known truthiness flag, int to float, integral float to int,
-    and list to tuple (JSON has no tuple). Strings, other ints for bool, fractional floats for
-    int and enum values are never touched, so their real validation error still surfaces."""
     import math
 
     wants_bool = bool in accepted
@@ -812,11 +794,7 @@ def _legacy_config_coerced_value(cls, name, value, accepted):
 
 
 def _coerce_legacy_config_kwargs(cls, kwargs):
-    """``kwargs`` with values the class's ``@strict`` validator would reject converted to the
-    annotated type where that is safe. Returns ``kwargs`` itself when nothing changes.
-
-    A value is only touched when the real type validator rejects it AND accepts the converted
-    value, so a config transformers already loads is never altered."""
+    """Convert only values the real validator rejects and accepts once converted."""
     fields = _legacy_config_fields(cls)
     if not fields:
         return kwargs
@@ -864,7 +842,6 @@ def _coerce_legacy_config_kwargs(cls, kwargs):
 
 
 def _patch_config_init_for_legacy_types(cls):
-    """Wrap ``cls``'s own ``__init__`` so legacy kwargs are converted before ``@strict`` sees them."""
     init = cls.__dict__.get("__init__")
     if init is None or getattr(init, _LEGACY_CONFIG_INIT_FLAG, False):
         return
@@ -886,18 +863,7 @@ def _patch_config_init_for_legacy_types(cls):
 
 
 def fix_transformers5_legacy_config_types():
-    """Load configs whose values 4.x wrote with a type transformers 5 now rejects.
-
-    From 5.4 every config is a ``huggingface_hub`` ``@strict`` dataclass: each assignment in
-    the generated ``__init__`` runs a type validator, which rejects a value but cannot rewrite
-    it. So ``text_config.attn_temperature_tuning: 4`` in a Llama 4 checkpoint saved by 4.51
-    raises ``StrictDataclassFieldValidationError`` inside ``AutoConfig.from_pretrained``.
-
-    The kwargs are converted before the validator runs, only where the conversion is lossless
-    or its 4.x meaning is established (see ``_legacy_config_coerced_value``), and only when the
-    original value would have been rejected. Every existing config class is patched, and an
-    ``__init_subclass__`` hook covers lazily imported and remote ones. No-op below 5.0 and on
-    5.0 to 5.3, where configs are not strict dataclasses."""
+    """Coerce 4.x-era config values (e.g. Llama 4 attn_temperature_tuning: 4) that 5.x @strict rejects."""
     try:
         import transformers
         if Version(transformers.__version__) < Version("5.0.0"):
@@ -924,8 +890,7 @@ def fix_transformers5_legacy_config_types():
 
     hook = _BaseConfig.__dict__.get("__init_subclass__")
     previous = getattr(hook, "__func__", hook)
-    # Other fixes wrap this hook too and keep what they wrapped on `__wrapped__`, so ours may
-    # sit anywhere in the chain; installing again would only stack a second copy.
+    # Chained fixes keep what they wrapped on __wrapped__; skip if ours is already there.
     link, depth = previous, 0
     while link is not None and depth < 32:
         if getattr(link, _LEGACY_CONFIG_INIT_FLAG, False):
@@ -937,8 +902,7 @@ def fix_transformers5_legacy_config_types():
             previous(cls, *args, **kwargs)
         else:
             super(_BaseConfig, cls).__init_subclass__(*args, **kwargs)
-        # Runs before a class decorator such as @strict wraps __init__, so the conversion
-        # still happens first: @strict calls whatever __init__ it found.
+        # Runs before @strict wraps __init__, so conversion still happens first.
         try:
             _patch_config_init_for_legacy_types(cls)
         except Exception as e:

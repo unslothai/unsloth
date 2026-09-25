@@ -292,10 +292,7 @@ from .import_fixes import (
     patch_accelerate_recursively_apply,
 )
 
-# Before any config is built: 4.x-era config.json values (Llama 4's `attn_temperature_tuning: 4`)
-# that transformers 5's strict config validation rejects are converted where that is safe. Ahead
-# of the bare-annotation fix so its __init_subclass__ hook stays outermost, which is the one its
-# tests unwrap to observe the original failure.
+# Before the bare-annotation fix so its __init_subclass__ hook stays outermost (its tests unwrap it).
 fix_transformers5_legacy_config_types()
 # Must run first: guards PretrainedConfig before vLLM defines its config classes.
 fix_transformers5_bare_annotation_configs()

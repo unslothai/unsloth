@@ -12,14 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Config values written by transformers 4.x with a type transformers 5 rejects.
-
-Llama 4 checkpoints saved on 4.51 carry ``text_config.attn_temperature_tuning: 4`` (the 4.51
-default, only ever read for truthiness). transformers 5.4+ declares it ``bool`` and its strict
-config validation raises ``StrictDataclassFieldValidationError`` inside
-``AutoConfig.from_pretrained``. Runs on CPU: ``import unsloth`` needs ``UNSLOTH_ALLOW_CPU=1``
-on a host without an accelerator.
-"""
+"""Llama 4 configs saved on 4.51 (attn_temperature_tuning: 4) must load on transformers 5.4+."""
 
 import json
 import logging
@@ -49,7 +42,6 @@ needs_strict = pytest.mark.skipif(
 
 
 def _llama4_config_dict(attn_temperature_tuning = 4):
-    """A tiny Llama 4 config.json shaped like one saved by transformers 4.51.0."""
     return {
         "architectures": ["Llama4ForConditionalGeneration"],
         "model_type": "llama4",
@@ -108,7 +100,6 @@ def _write(tmp_path, config):
 
 
 def test_llama4_4x_config_loads_through_autoconfig(tmp_path):
-    """The reported failure: AutoConfig on a 4.51-saved Llama 4 config.json."""
     from transformers import AutoConfig
 
     config = AutoConfig.from_pretrained(_write(tmp_path, _llama4_config_dict(4)))
@@ -134,7 +125,6 @@ def test_llama4_bool_config_is_untouched(tmp_path):
 
 @needs_strict
 def test_direct_construction_and_save_round_trip(tmp_path):
-    """Sub-configs built from a dict in __post_init__ and the saved file are both bool."""
     from transformers import Llama4Config, Llama4TextConfig
 
     assert Llama4TextConfig(attn_temperature_tuning = 4).attn_temperature_tuning is True
@@ -203,7 +193,6 @@ def test_other_int_for_llama4_is_a_real_error_only_outside_the_allowlist():
 
 @needs_strict
 def test_classes_defined_after_import_are_covered():
-    """Lazily imported and remote configs are built after `import unsloth`."""
     from huggingface_hub.dataclasses import strict
     from transformers.configuration_utils import PretrainedConfig
 
@@ -280,8 +269,7 @@ def test_the_mlx_branch_installs_the_fix_too():
 
 @needs_strict
 def test_fields_strict_does_not_validate_are_not_touched():
-    """A config that already loads must load byte-identically: fields of a non-@strict subclass
-    are never validated, and a re-annotated inherited field is validated with the parent's type."""
+    """A config that already loads must load byte-identically."""
     from transformers import LlamaConfig
     from transformers.configuration_utils import PretrainedConfig
 
