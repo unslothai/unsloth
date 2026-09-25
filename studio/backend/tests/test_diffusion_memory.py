@@ -167,6 +167,26 @@ def test_host_memory_reclaimer_is_policy_scoped_and_best_effort(monkeypatch):
     assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_MODEL) is False
 
 
+def test_reclaim_host_memory_ignores_the_offload_policy(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        diffusion_memory, "_resolve_host_memory_reclaimer", lambda: lambda: calls.append(0)
+    )
+    assert diffusion_memory.reclaim_host_memory() is True
+    assert calls == [0]
+    for policy in (OFFLOAD_NONE, OFFLOAD_GROUP, OFFLOAD_SEQUENTIAL):
+        assert diffusion_memory.reclaim_offload_host_memory(policy) is False
+    assert calls == [0]
+
+    def call_failure():
+        raise OSError("allocator unavailable")
+
+    monkeypatch.setattr(diffusion_memory, "_resolve_host_memory_reclaimer", lambda: call_failure)
+    assert diffusion_memory.reclaim_host_memory() is False
+    monkeypatch.setattr(diffusion_memory, "_resolve_host_memory_reclaimer", lambda: None)
+    assert diffusion_memory.reclaim_host_memory() is False
+
+
 def test_host_memory_reclaimer_caches_unsupported_or_missing_apis(monkeypatch):
     loads = []
     monkeypatch.setattr(diffusion_memory.sys, "platform", "linux")
@@ -2377,23 +2397,17 @@ def test_the_pin_budget_leaves_the_reserve_free(monkeypatch):
     monkeypatch.setattr(mem, "_system_memory_mib", lambda: (65_536, 30_000))
     monkeypatch.setattr(mem, "_available_system_memory_mib", lambda: 30_000)
     assert mem._pin_budget_mib() == 30_000 - int(65_536 * 0.15)
+    # A 64 GiB container on a 512 GiB host: the reserve comes from the container, as _pin_host_weights does.
+    monkeypatch.setattr(mem, "_cgroup_memory_limit_mib", lambda: 65_536)
+    monkeypatch.setattr(mem, "_system_memory_mib", lambda: (524_288, 60_000))
+    monkeypatch.setattr(mem, "_available_system_memory_mib", lambda: 60_000)
+    assert mem._pin_budget_mib() == 60_000 - int(65_536 * 0.15)
+    monkeypatch.setattr(mem, "_cgroup_memory_limit_mib", lambda: None)
     monkeypatch.setattr(mem, "_system_memory_mib", lambda: (16_384, 3_000))
     monkeypatch.setattr(mem, "_available_system_memory_mib", lambda: 3_000)
     assert mem._pin_budget_mib() == 0
     monkeypatch.setattr(mem, "_system_memory_mib", lambda: (None, None))
     assert mem._pin_budget_mib() is None
-
-
-def test_the_pin_reserve_is_sized_from_the_container_not_the_host(monkeypatch):
-    """A 64 GiB container on a 512 GiB host: 15% of the host would eat the whole allowance."""
-    import core.inference.diffusion_memory as mem
-
-    monkeypatch.setattr(mem, "_system_memory_mib", lambda: (524_288, 400_000))
-    monkeypatch.setattr(mem, "_available_system_memory_mib", lambda: 60_000)
-    monkeypatch.setattr(mem, "_cgroup_memory_limit_mib", lambda: 65_536)
-    assert mem._pin_budget_mib() == 60_000 - int(65_536 * 0.15)
-    monkeypatch.setattr(mem, "_cgroup_memory_limit_mib", lambda: 10_000_000)
-    assert mem._pin_budget_mib() == max(0, 60_000 - int(524_288 * 0.15))
 
 
 def test_a_late_encoder_refusal_streams_the_transformer_before_placing_the_encoder(monkeypatch):
