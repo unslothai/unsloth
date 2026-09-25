@@ -79,8 +79,9 @@ def test_is_torch_fx_available_is_importable_from_transformers_utils_after_the_f
 
     assert is_torch_fx_available() == import_utils.is_torch_available()
     assert import_utils.is_torch_fx_available() == import_utils.is_torch_available()
+    first = import_utils.is_torch_fx_available
     fix_transformers_is_torch_fx_available()
-    assert import_utils.is_torch_fx_available is import_utils.is_torch_fx_available
+    assert import_utils.is_torch_fx_available is first
 
 
 def test_the_mlx_branch_installs_the_fx_shim_too():
@@ -105,6 +106,8 @@ def test_a_config_with_its_own_validator_accepts_ignore_keys_too():
         vocab_size = 16,
     )
     config.validate_rope(ignore_keys = {"mscale", "mscale_all_dim"})
+    if not getattr(_mixin().__dict__.get("validate_rope"), "_unsloth_ignore_keys", False):
+        return  # 5.0 to 5.3 take ignore_keys natively, so the fix is not installed
 
     class LaterConfig(Phi3Config):
         model_type = "later_phi3_for_test"
