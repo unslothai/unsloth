@@ -36,6 +36,9 @@ _PREFLIGHT_LOCK = threading.Lock()
 _PREFLIGHT: dict[int, dict] = {}
 _WARNED: set = set()
 
+_BARRIER_LOCK = threading.Lock()
+_BARRIERS: dict[int, Any] = {}
+
 
 def _swizzled_sf_numel(
     rows: int,
@@ -56,22 +59,72 @@ def _zero_buffer_enabled() -> bool:
     return os.environ.get(NVFP4_ZERO_BUFFER_ENV, "").strip().lower() in _TRUE_TOKENS
 
 
+def _device_index(device: Any) -> int:
+    import torch
+    index = getattr(device, "index", None)
+    return torch.cuda.current_device() if index is None else int(index)
+
+
+def _is_capturing() -> bool:
+    try:
+        import torch
+        return bool(torch.cuda.is_current_stream_capturing())
+    except Exception:  # noqa: BLE001 - a torch without the query cannot be capturing
+        return False
+
+
+def _barrier(device: Any):
+    """Per-device 1-element buffer, UNCACHED under capture: an allocation made in a capture dies with the graph."""
+    import torch
+
+    index = _device_index(device)
+    buf = _BARRIERS.get(index)
+    if buf is not None:
+        return buf
+    fresh = torch.empty(1, device = device, dtype = torch.bfloat16)
+    if _is_capturing():
+        return fresh
+    with _BARRIER_LOCK:
+        return _BARRIERS.setdefault(index, fresh)
+
+
+def _fire_barrier(device: Any):
+    buf = _barrier(device)
+    buf.zero_()
+    return buf
+
+
+def reset_barriers() -> None:
+    """One allocated under a model's allocator state must not reach the next model's graph pool."""
+    with _BARRIER_LOCK:
+        _BARRIERS.clear()
+
+
 def global_scale(t: Any):
     return (FP4_MAX * FP8_MAX / t.float().abs().amax().clamp(min = 1e-8)).reshape(1).to(t.device)
 
 
 def _quantize_impl(x: Any, global_sf: Any):
     import flashinfer
+
+    from . import diffusion_nvfp4_dispatch as dispatch
     with _device_guard(x):
+        xq, sf = dispatch._fast_quantize(x, global_sf)
+        if xq is not None:
+            return xq, sf
         return flashinfer.nvfp4_quantize(x, global_sf, do_shuffle = False)
 
 
 def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend: str):
-    """Weight row-major, transposed inside (a ``.T`` input is an alias). A KERNEL must run between
-    the quantiser and this GEMM (cutlass PDL without griddepcontrol reads unfinished operands):
-    ``torch.zeros(1)`` per call works, ``torch.empty`` does NOT."""
+    """NVFP4 GEMM on a row-major ``[N, K/2]`` weight (a ``.T`` input would be an alias Dynamo must track).
+
+    A kernel MUST run between the activation quantiser and this GEMM: cutlass launches with PDL but its
+    ``griddepcontrol`` is compiled out, so ``torch.empty`` alone is NOT enough; a one-element fill is.
+    """
     import flashinfer
     import torch
+
+    from . import diffusion_nvfp4_dispatch as dispatch
 
     with _device_guard(xq):
         m = xq.shape[0]
@@ -79,8 +132,9 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
             out = torch.zeros(m, n, device = xq.device, dtype = torch.bfloat16)
         else:
             out = torch.empty(m, n, device = xq.device, dtype = torch.bfloat16)
-            torch.zeros(1, device = xq.device, dtype = torch.bfloat16)
+            _fire_barrier(xq.device)
         if _claim_first_call_tune(m, xq.shape[1] * 2, n):
+            # Before the dispatch plan, which caches whatever tactic FlashInfer holds on its first build.
             try:
                 with flashinfer.autotune(True):
                     return flashinfer.mm_fp4(
@@ -88,19 +142,41 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
                     )
             except Exception:  # noqa: BLE001 - claimed, so it is not retried; run it untuned
                 pass
+        if dispatch.enabled(xq.device):
+            wq_t, w_sf_t = dispatch.transposed(wq), dispatch.transposed(w_sf)
+            plan = dispatch.gemm_plan(xq, wq_t, x_sf, w_sf_t, alpha, out, n, backend)
+            if plan is not None:
+                runner, tactic, workspace = plan
+                runner(
+                    inputs = [
+                        xq,
+                        wq_t,
+                        x_sf,
+                        w_sf_t,
+                        alpha,
+                        torch.bfloat16,
+                        out,
+                        16,
+                        True,
+                        workspace,
+                    ],
+                    tactic = tactic,
+                )
+                return out
         return flashinfer.mm_fp4(
             xq, wq.T, x_sf, w_sf.T, alpha, torch.bfloat16, out = out, backend = backend
         )
 
 
 def _claim_first_call_tune(m: int, k: int, n: int) -> bool:
-    """True once per untuned ``(M, K, N)``, never under graph capture (profiling is illegal there)."""
-    import torch
-
+    """True exactly once per ``(M, K, N)`` not yet autotuned, and only outside a CUDA graph
+    capture, where profiling is illegal (the warm-up before a capture is eager, so a graphed
+    shape tunes there). Shares ``nvfp4_prewarm``'s process-wide set, so a prewarmed shape is
+    never profiled twice."""
     from .diffusion_nvfp4_linear import _TUNED_SHAPES
 
     key = (int(m), int(k), int(n))
-    if key in _TUNED_SHAPES or torch.cuda.is_current_stream_capturing():
+    if key in _TUNED_SHAPES or _is_capturing():
         return False
     _TUNED_SHAPES.add(key)
     return True
@@ -297,6 +373,12 @@ def nvfp4_preflight(device: Any = None, *, refresh: bool = False) -> dict:
         finite = _preflight_probe(dev)
         rec["ok"] = finite
         rec["reason"] = "ok" if finite else "mm_fp4 produced a non-finite result"
+        if finite:
+            from . import diffusion_nvfp4_dispatch as dispatch
+
+            fast_ok, fast_reason = dispatch.verify(dev)
+            rec["fast_dispatch"] = fast_ok
+            rec["fast_dispatch_reason"] = fast_reason
     except Exception as exc:  # noqa: BLE001 - every failure mode here means "use torchao"
         rec["reason"] = f"{type(exc).__name__}: {str(exc)[:200]}"
         if _transient_preflight_failure(exc):

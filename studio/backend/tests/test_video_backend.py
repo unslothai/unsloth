@@ -10450,6 +10450,34 @@ def test_the_boundary_marker_waits_out_a_busy_capture_lock(fake_runtime, monkeyp
     assert at_decode.get("phase") == "decode"
 
 
+@pytest.mark.parametrize("resident", [True, False])
+def test_a_failed_replacement_keeps_the_resident_models_nvfp4_state(monkeypatch, resident):
+    """A failed replacement keeps the old model, whose CUDA graph still uses the NVFP4 tensors."""
+    import core.inference.video as vid
+    from core.inference import diffusion_nvfp4_linear as lin
+
+    backend = VideoBackend()
+    resets: list = []
+    monkeypatch.setattr(lin, "reset_nvfp4_state", lambda: resets.append(True))
+    monkeypatch.setattr(vid, "clear_gpu_cache", lambda: None)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("metadata lookup failed")
+
+    monkeypatch.setattr(vid, "_detect_load_family", _boom)
+    if resident:
+        backend._state = types.SimpleNamespace(pipe = None)
+        import core.inference.gpu_arbiter as arbiter
+        import hub.services.models.account_access as access
+
+        monkeypatch.setattr(arbiter, "restore_owner_account", lambda *_a, **_k: None)
+        monkeypatch.setattr(access, "restore_resident_metadata", lambda *_a, **_k: None)
+    backend._load_token = 7
+    backend._run_load(repo_id = "org/model", _load_token = 7)
+
+    assert resets == ([] if resident else [True])
+
+
 @pytest.mark.parametrize("scheme", ["int8", "fp8"])
 def test_an_explicit_video_scheme_on_amd_runs_weight_only_without_forcing_compile(
     fake_runtime, monkeypatch, scheme

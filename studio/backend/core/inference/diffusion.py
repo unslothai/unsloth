@@ -5596,6 +5596,12 @@ class DiffusionBackend:
                                 f"the quantised transformer build failed ({exc})"
                             )
                             _clear_exception_frames(exc)
+                            # The NVFP4 caches hold VIEWS of the failed transformer, which clear_gpu_cache() cannot free.
+                            try:
+                                from .diffusion_nvfp4_linear import reset_nvfp4_state
+                                reset_nvfp4_state()
+                            except Exception:  # noqa: BLE001 - cleanup is best effort
+                                pass
                             try:
                                 clear_gpu_cache()
                             except Exception:  # noqa: BLE001
@@ -6568,6 +6574,12 @@ class DiffusionBackend:
                         gguf_compile.uninstall_all()  # idempotent
                         cuda_graph.uninstall_all(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
                         uninstall_static_step_skip(pipe)
+                        # After the graphs: the NVFP4 caches hold views that would pin the aborted transformer.
+                        try:
+                            from .diffusion_nvfp4_linear import reset_nvfp4_state
+                            reset_nvfp4_state()
+                        except Exception:  # noqa: BLE001 - teardown is best effort
+                            pass
                         if eager_patched:
                             uninstall_patches()
                             uninstall_arch_patches()
@@ -8745,6 +8757,11 @@ class DiffusionBackend:
         for aux in (*self._aux_pipes.values(), *self._cn_pipes.values()):
             prompt_cache.release(aux)
         gguf_compile.uninstall_all()
+        try:
+            from .diffusion_nvfp4_linear import reset_nvfp4_state
+            reset_nvfp4_state()
+        except Exception:  # noqa: BLE001 - teardown is best effort
+            pass
         if state.eager_patched:
             # Lazy import to keep diffusion.py torch-free to import.
             from .diffusion_eager_patches import uninstall_patches

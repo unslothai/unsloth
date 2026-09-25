@@ -35,11 +35,24 @@ def reset_tuned_shapes() -> None:
     _TUNED_SHAPES.clear()
 
 
+def reset_nvfp4_state() -> None:
+    from . import diffusion_nvfp4_dispatch as _dispatch
+    from . import diffusion_nvfp4_ops as _ops
+
+    reset_tuned_shapes()
+    _ops.reset_barriers()
+    _dispatch.reset()
+    # verify() runs only in the preflight, so a memoised one would leave _VERIFIED empty next load.
+    _ops.reset_preflight_cache()
+
+
 @lru_cache(maxsize = 1)
 def nvfp4_linear_class():
     import torch
     from torch import nn
     from torch.nn import functional as F
+
+    from .diffusion_nvfp4_bias import fused_bias_add_
 
     class NVFP4FlashInferLinear(nn.Module):
         """Runs inside a captured CUDA graph: no host synchronize, no device-value branch."""
@@ -94,6 +107,7 @@ def nvfp4_linear_class():
                 )
                 out = F.linear(flat, weight)
             else:
+                # Zero graph breaks under compile; without it a flashinfer launch can hit the wrong card.
                 with _device_guard(flat):
                     xq, x_sf = torch.ops.unsloth_nvfp4.quantize(flat, self.a_gsf)
                     out = torch.ops.unsloth_nvfp4.mm(
@@ -101,7 +115,7 @@ def nvfp4_linear_class():
                     )
             out = out.to(out_dtype)
             if self.bias is not None:
-                out.add_(self.bias)
+                fused_bias_add_(out, self.bias)
             return out.reshape(*shape[:-1], self.out_features)
 
         def extra_repr(self) -> str:  # pragma: no cover - debug aid

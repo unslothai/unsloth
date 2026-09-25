@@ -552,6 +552,18 @@ def test_the_per_layer_policy_factor_is_not_applied(monkeypatch):
     assert policy_steady_factor("z-image", "Tongyi-MAI/Z-Image-Turbo") is not None
 
 
+def test_the_fast_dispatch_is_never_probed_or_verified(monkeypatch):
+    from core.inference import diffusion_nvfp4_dispatch as dispatch
+    from core.inference import diffusion_nvfp4_ops as ops
+
+    touched = []
+    monkeypatch.setattr(dispatch, "verify", lambda device: touched.append("verify") or (True, ""))
+    monkeypatch.setattr(dispatch, "_probe", lambda: touched.append("probe") or (True, ""))
+    assert ops.nvfp4_preflight(0, refresh = True)["ok"] is False
+    assert ops.select_nvfp4_backend(0) == ops.BACKEND_TORCHAO
+    assert touched == []
+
+
 def _prequant_dir(root, name, scheme):
     """A directory holding one tiny safetensors pre-quant artifact that records ``scheme``."""
     import json

@@ -146,11 +146,30 @@ def _is_guard(node: ast.AST) -> bool:
     return name.endswith("torch.cuda.device") or name.endswith("_device_guard")
 
 
+# FlashInfer PRIVATE entry points: imported by name, so a prefix check cannot see them.
+_PRIVATE_LAUNCHES = frozenset(
+    {
+        "choose_one",
+        "cutlass_fp4_gemm_runner",
+        "get_cutlass_fp4_gemm_module",
+        "_get_cache_buf",
+        "fp4_quantize_sm100",
+        "get_fp4_quantization_module",
+    }
+)
+
+
 def _is_launch(node: ast.Call) -> str:
+    # A Triton launch is a Call on a SUBSCRIPT (``kernel[grid](...)``), on the CURRENT device.
+    if isinstance(node.func, ast.Subscript):
+        name = _dotted(node.func.value)
+        return name if name.endswith("_kernel") else ""
     name = _dotted(node.func)
     if name.startswith("flashinfer.") or name.startswith("_fi."):
         return name
     if "torch.ops.unsloth_nvfp4" in name:
+        return name
+    if name.rsplit(".", 1)[-1] in _PRIVATE_LAUNCHES:
         return name
     return ""
 
@@ -195,12 +214,18 @@ def test_the_guard_visitor_catches_an_unguarded_launch():
         "        flashinfer.mm_fp4(x)\n"
         "    flashinfer.nvfp4_quantize(x)\n"
         "    torch.ops.unsloth_nvfp4.mm(x)\n"
+        "    _bias_add_kernel[grid](x)\n"
+        "    with torch.cuda.device(x.device):\n"
+        "        _bias_add_kernel[grid](x)\n"
+        "    _get_cache_buf('ws', 1, x.device)\n"
     )
     visitor = _LaunchVisitor()
     visitor.visit(tree)
     assert [name for _, name in visitor.unguarded] == [
         "flashinfer.nvfp4_quantize",
         "torch.ops.unsloth_nvfp4.mm",
+        "_bias_add_kernel",
+        "_get_cache_buf",
     ]
 
 
@@ -218,9 +243,34 @@ def test_every_flashinfer_launch_in_the_nvfp4_modules_sits_inside_a_device_guard
     assert not offences, "\n".join(offences)
 
 
-def test_the_modules_never_set_the_current_stream():
+_STREAM_BANNED = ("set_stream", "set_device", "setDevice")
+
+
+def _banned_stream_calls(source: str) -> list[tuple[int, str]]:
+    """``set_stream`` silently sets the current DEVICE; ``set_device`` moves what the guard restores."""
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Attribute) and node.attr in _STREAM_BANNED:
+            found.append((node.lineno, _dotted(node) or node.attr))
+        elif isinstance(node, ast.Name) and node.id in _STREAM_BANNED:
+            found.append((node.lineno, node.id))
+    return found
+
+
+def test_the_banned_call_detector_sees_an_aliased_set_stream():
+    assert _banned_stream_calls("import torch\ncuda = torch.cuda\ncuda.set_stream(s)\n")
+    assert _banned_stream_calls("from torch.cuda import set_device\nset_device(1)\n")
+    assert not _banned_stream_calls("def reset_stream_cache():\n    return None\n")
+
+
+def test_the_modules_never_set_the_current_stream_or_device():
+    offences: list[str] = []
     for path in _nvfp4_sources():
-        assert "set_stream" not in path.read_text(encoding = "utf-8"), path.name
+        offences += [
+            f"{path.name}:{line}: {name} switches the current device behind the guard"
+            for line, name in _banned_stream_calls(path.read_text(encoding = "utf-8"))
+        ]
+    assert not offences, "\n".join(offences)
 
 
 @pytest.mark.parametrize(
@@ -409,6 +459,10 @@ def test_an_unprewarmed_gemm_shape_autotunes_on_its_first_eager_call_only(monkey
     fake.mm_fp4 = _mm_fp4
     monkeypatch.setitem(sys.modules, "flashinfer", fake)
     monkeypatch.setattr(ops, "_device_guard", lambda t: contextlib.nullcontext())
+    monkeypatch.setattr(ops, "_fire_barrier", lambda device: None)
+    from core.inference import diffusion_nvfp4_dispatch as dispatch
+
+    monkeypatch.setattr(dispatch, "enabled", lambda device: False)
     monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: state["capturing"])
     nl.reset_tuned_shapes()
     try:
@@ -427,5 +481,59 @@ def test_an_unprewarmed_gemm_shape_autotunes_on_its_first_eager_call_only(monkey
         assert calls == [(1, False), (4352, True), (4352, False), (8192, False)]
         assert (4352, 32, 64) in nl._TUNED_SHAPES
         assert (8192, 32, 64) not in nl._TUNED_SHAPES
+    finally:
+        nl.reset_tuned_shapes()
+
+
+def test_the_first_call_tune_runs_before_the_cached_dispatch_plan_is_built(monkeypatch):
+    """``gemm_plan`` snapshots the tactic on its first build, so a plan before the tune pins the fallback."""
+    import contextlib
+    import sys
+    import types
+
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_nvfp4_dispatch as dispatch
+    from core.inference import diffusion_nvfp4_linear as nl
+
+    events = []
+    tuning = {"on": False}
+
+    @contextlib.contextmanager
+    def _autotune(flag = True):
+        tuning["on"] = flag
+        try:
+            yield
+        finally:
+            tuning["on"] = False
+
+    def _mm_fp4(
+        *args,
+        out = None,
+        **kwargs,
+    ):
+        events.append(("mm_fp4", tuning["on"]))
+        return out
+
+    def _plan(xq, *args, **kwargs):
+        events.append(("plan_built", tuning["on"]))
+        return (lambda inputs, tactic: events.append(("plan_run", tactic)), 7, None)
+
+    fake = types.ModuleType("flashinfer")
+    fake.autotune = _autotune
+    fake.mm_fp4 = _mm_fp4
+    monkeypatch.setitem(sys.modules, "flashinfer", fake)
+    monkeypatch.setattr(ops, "_device_guard", lambda t: contextlib.nullcontext())
+    monkeypatch.setattr(ops, "_fire_barrier", lambda device: None)
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    monkeypatch.setattr(dispatch, "enabled", lambda device: True)
+    monkeypatch.setattr(dispatch, "transposed", lambda t: t)
+    monkeypatch.setattr(dispatch, "gemm_plan", _plan)
+    nl.reset_tuned_shapes()
+    try:
+        wq = torch.zeros(64, 16, dtype = torch.uint8)
+        xq = torch.zeros(4352, 16, dtype = torch.uint8)
+        ops._mm_impl(xq, wq, None, wq, None, 64, "cutlass")
+        ops._mm_impl(xq, wq, None, wq, None, 64, "cutlass")
+        assert events == [("mm_fp4", True), ("plan_built", False), ("plan_run", 7)]
     finally:
         nl.reset_tuned_shapes()
