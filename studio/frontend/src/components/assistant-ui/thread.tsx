@@ -2573,9 +2573,9 @@ const ComposerAnimated: FC<{
     // unsloth-composer-shell is the size container the tight (mobile) layout
     // in index.css queries. It sits outside the surface so those rules can
     // trim the surface's own padding.
-    // Its own width variable: every parent here is already capped by the width
-    // setting, so re-reading that one would apply the cap twice.
-    <div className="unsloth-composer-shell relative mx-auto min-w-0 w-full max-w-[var(--custom-chat-shell-max-width,46rem)]">
+    // Same width as the message column. Full chat width sets its own variable, since
+    // its percentage would otherwise resolve against this narrower parent.
+    <div className="unsloth-composer-shell relative mx-auto min-w-0 w-full max-w-[var(--custom-chat-shell-max-width,var(--thread-content-max-width,46rem))]">
       <div className="relative z-10 w-full">
         <Composer
           disabled={disabled}

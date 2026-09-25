@@ -892,11 +892,14 @@ export function applyCustomizationToDocument(
         ? "72rem"
         : null,
   );
-  // The composer shell fills whatever its parent was capped to, so the cap is
-  // never applied twice. Same result as before at every width.
+  // Unset, the composer shell takes the message column's width. Full width's cap
+  // holds a percentage, so the shell gets the same number worked out from its
+  // parent, which is already capped: 72rem, or the pane less 6rem.
   setVar(
     "--custom-chat-shell-max-width",
-    c.chatWidth === "standard" ? null : "100%",
+    c.chatWidth === "full"
+      ? "min(100%, max(calc(72rem - 1.5rem), calc(100% - 1.5rem)))"
+      : null,
   );
   setVar(
     "--custom-chat-welcome-padding",
