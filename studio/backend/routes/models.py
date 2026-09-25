@@ -4742,11 +4742,11 @@ def _one_shard_family_of(entries: list) -> list:
     two files that do not are two checkpoints, and the family kept is the one holding the first file."""
     if len(entries) < 2:
         return list(entries)
-    from hub.utils.gguf import gguf_variant_family
+    from hub.utils.gguf import gguf_shard_set
 
-    families: dict[str, list] = {}
+    families: dict[tuple[str, int], list] = {}
     for entry in entries:
-        families.setdefault(gguf_variant_family(entry[0]), []).append(entry)
+        families.setdefault(gguf_shard_set(entry[0]), []).append(entry)
     if len(families) < 2:
         return list(entries)
     return min(families.values(), key = lambda group: min(e[0] for e in group))

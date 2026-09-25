@@ -2759,7 +2759,7 @@ _GGUF_KNOWN_QUANT_RE = re.compile(
 
 
 _FLOAT_PRECISION_QUANTS = frozenset({"BF16", "F16", "F32"})
-_GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-\d{3,}", re.IGNORECASE)
+_GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-(\d{3,})", re.IGNORECASE)
 
 
 def _select_known_quant_match(text: str):
@@ -2818,6 +2818,12 @@ def _gguf_variant_family(filename: str) -> str:
         return stem or "gguf"
     parents = filename.rsplit("/", 1)[0].strip("/")
     return f"{parents}/{stem}" if parents and stem else stem or "gguf"
+
+
+# MIRROR of ``hub.utils.gguf.gguf_shard_set``.
+def _gguf_shard_set(filename: str) -> tuple[str, int]:
+    split = _GGUF_SPLIT_SUFFIX_RE.search(filename.rsplit("/", 1)[-1])
+    return _gguf_variant_family(filename), int(split.group(1)) if split else 0
 
 
 # MIRROR of ``hub.utils.gguf._GGUF_BPW_SUFFIX_RE``. Applied with ``match`` against the text that
@@ -3126,9 +3132,9 @@ def _group_gguf_variant_files(entries: list[tuple[str, str, int]]) -> dict[str, 
     that fits. The family kept is the one holding the lexicographically first file, which is the
     shard this lister advertises and the loader opens.
     """
-    families: dict[str, dict[str, list[tuple[str, int]]]] = {}
+    families: dict[str, dict[tuple[str, int], list[tuple[str, int]]]] = {}
     for name, quant, size in entries:
-        families.setdefault(quant, {}).setdefault(_gguf_variant_family(name), []).append(
+        families.setdefault(quant, {}).setdefault(_gguf_shard_set(name), []).append(
             (name, int(size or 0))
         )
     grouped: dict[str, tuple[str, int]] = {}
