@@ -2677,9 +2677,12 @@ class TestAnthropicRequestedStudioTools:
             "web_search",
             "web_search_20250305",
             "web_search_20260209",
+            "web_search_20260318",
             "web_fetch",
             "web_fetch_20250910",
             "web_fetch_20260209",
+            "web_fetch_20260309",
+            "web_fetch_20260318",
         ],
     )
     def test_recognizes_every_web_server_tool_version(self, tool_type):
@@ -3450,7 +3453,9 @@ class TestAnthropicMessagesToolRouting:
         assert '"type": "error"' in blob
         assert "event: message_stop" not in blob
 
-    @pytest.mark.parametrize("tool_type", ["web_search_20250305", "web_search_20260209"])
+    @pytest.mark.parametrize(
+        "tool_type", ["web_search_20250305", "web_search_20260209", "web_search_20260318"]
+    )
     def test_mixed_server_and_client_tools_rejected_with_400(self, monkeypatch, tool_type):
         _mock_backend(monkeypatch)
         payload = _basic_payload(
@@ -3677,7 +3682,9 @@ class TestAnthropicMessagesToolRouting:
         _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert backend.calls[0][0] == "plain"
 
-    @pytest.mark.parametrize("tool_type", ["web_search_20250305", "web_search_20260209"])
+    @pytest.mark.parametrize(
+        "tool_type", ["web_search_20250305", "web_search_20260209", "web_search_20260318"]
+    )
     def test_server_tool_alias_enters_tool_path_when_policy_unset(self, monkeypatch, tool_type):
         # Mirror of the previous test for the default (None) policy. An omitted
         # permission_mode still runs here because web_search is a safe server tool
