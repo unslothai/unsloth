@@ -26,6 +26,7 @@ import functools
 import hashlib
 import importlib
 import io
+import mimetypes
 import os
 import re
 import stat
@@ -34,6 +35,7 @@ import time
 import uuid
 import zlib
 from collections import OrderedDict
+from datetime import datetime
 from pathlib import Path
 from types import ModuleType
 from typing import BinaryIO, Callable, NamedTuple, Optional, Union
@@ -57,8 +59,22 @@ def _to_ms(value: object) -> int:
     try:
         number = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
-        return 0
+        # Video and audio records keep ISO-8601 ("2026-09-25T10:00:00Z").
+        try:
+            return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp() * 1000)
+        except ValueError:
+            return 0
     return int(number if number > 1e12 else number * 1000)
+
+
+def _named_for_type(name: str, content_type: str) -> str:
+    """A pasted image or clip is named "Chat image"; the download needs its format's suffix."""
+    if Path(name).suffix or not content_type.startswith(("image/", "audio/", "video/")):
+        return name
+    suffix = next(
+        (ext for ext, known in content_types().items() if known == content_type), None
+    ) or mimetypes.guess_extension(content_type)
+    return f"{name}{suffix}" if suffix else name
 
 
 def _item(
@@ -302,7 +318,7 @@ def _attachment_items() -> list[dict]:
         items.append(
             _item(
                 _attachment_id(message_id, attachment_id),
-                name = attachment.get("name") or "Attachment",
+                name = _named_for_type(attachment.get("name") or "Attachment", content_type),
                 source = "uploaded",
                 content_type = content_type or "application/octet-stream",
                 size_bytes = attachment.get("sizeBytes"),

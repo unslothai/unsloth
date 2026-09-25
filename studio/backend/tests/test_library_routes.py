@@ -521,6 +521,16 @@ def test_a_file_part_kept_as_a_data_url_decodes():
     assert _decode_attachment_base64(clip) == _CLIP
 
 
+def test_gallery_iso_dates_and_suffixless_chat_media_names():
+    assert library._to_ms("2026-09-25T10:00:00Z") == 1790330400000
+    assert library._to_ms(1790330400) == 1790330400000
+    assert library._to_ms("not a date") == 0
+    assert library._named_for_type("Chat image", "image/png") == "Chat image.png"
+    assert library._named_for_type("Chat audio", "audio/wav") == "Chat audio.wav"
+    assert library._named_for_type("photo.jpg", "image/jpeg") == "photo.jpg"
+    assert library._named_for_type("notes", "application/pdf") == "notes"
+
+
 def test_an_empty_parent_or_folder_id_is_refused(client):
     assert _post(client, "folders", name = "x", parentId = "").status_code == 422
     assert (
