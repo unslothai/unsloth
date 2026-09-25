@@ -1189,7 +1189,7 @@ def _load_fp8_weight_map(
     cache_dir = None,
     variant = None,
 ):
-    """The checkpoint's tensor->file map, using the same snapshot the load used. Prefers the sharded `model.safetensors.index.json`, falling back to a single `model.safetensors` so unsharded checkpoints are covered too. Honors `variant` like transformers."""
+    """Tensor->file map from the load's snapshot; sharded index, else single `model.safetensors`."""
 
     def _local_path(filename):
         return (
@@ -1210,7 +1210,6 @@ def _load_fp8_weight_map(
             token = token,
         )
 
-    # Same naming as transformers' _add_variant.
     index_file = (
         f"model.safetensors.index.{variant}.json" if variant else "model.safetensors.index.json"
     )
@@ -1409,7 +1408,7 @@ def _restore_dropped_fp8_scales(
 
 
 _FP8_SCALE_SUFFIXES = (".weight_scale_inv", "_scale_inv", ".weight_scale", "_scale")
-_FP8_LEFTOVER_MAX_CHUNK = 1 << 26  # fp32 elements dequantized at a time: 256 MiB
+_FP8_LEFTOVER_MAX_CHUNK = 1 << 26
 
 
 def _empty_device_cache(device):
@@ -1423,8 +1422,7 @@ def _empty_device_cache(device):
 
 
 def _orient_block_scale(scale, rows, cols, block_size):
-    """Transpose a block-scale grid stored as `(in_blocks, out_blocks)`, using the configured
-    block size when both orientations would tile the weight."""
+    """Fix a grid stored `(in_blocks, out_blocks)`; block size decides when both orientations tile."""
     if block_size is None or scale.ndim < 2:
         return scale
     try:
@@ -1448,15 +1446,13 @@ def _fp8_scale_grid_dequant(
     out_dtype,
     block_size = None,
 ):
-    """Dequantize a 2-D or 3-D fp8 tensor with a per-tensor, per-expert or block-grid scale.
-    Returns None when the grid does not tile the weight."""
+    """Returns None when the scale grid does not tile the weight."""
     # MXFP8 stores E8M0 exponents as uint8: the scale is 2 ** (byte - 127).
     if scale.dtype == torch.uint8:
         scale = (scale.to(torch.float32) - 127.0).exp2()
     else:
         scale = scale.to(torch.float32)
     q_shape = tuple(quantized.shape)
-    # Per-tensor. A 3-D stack uses the chunked branch below to avoid a full fp32 copy.
     if scale.numel() == 1:
         if quantized.ndim == 3:
             scale = scale.reshape(()).expand(q_shape[0], 1, 1)
@@ -1490,7 +1486,6 @@ def _fp8_scale_grid_dequant(
             return None
         bm, bn = rows // p, cols // q
         out = torch.empty((E, rows, cols), dtype = out_dtype, device = quantized.device)
-        # Chunked: an fp32 copy of a whole stack is 4x the fp8 bytes.
         step = max(1, _FP8_LEFTOVER_MAX_CHUNK // max(1, rows * cols))
         for start in range(0, E, step):
             stop = min(E, start + step)
@@ -1536,9 +1531,7 @@ def _dequantize_leftover_fp8_params(
     cache_dir = None,
     variant = None,
 ):
-    """Dequantize fp8 parameters transformers left behind on a 16bit load (e.g. MoE stacks like
-    `experts.gate_up_proj` with no `.weight` suffix, whose scale it drops). Modules that kept
-    their own scale are left alone. Returns (dequantized, skipped)."""
+    """Dequantize fp8 params transformers left on a 16bit load. Returns (dequantized, skipped)."""
     try:
         if not _FP8_DTYPES:
             return (0, 0)
@@ -1547,7 +1540,6 @@ def _dequantize_leftover_fp8_params(
             for name, param in model.named_parameters()
             if param.dtype in _FP8_DTYPES and param.ndim in (2, 3)
         ]
-        # See _orient_block_scale.
         block_size = None
         try:
             _qc = getattr(getattr(model, "config", None), "quantization_config", None)
@@ -1634,9 +1626,8 @@ def _dequantize_leftover_fp8_params(
                 hasattr(torch, "OutOfMemoryError") and isinstance(error, torch.OutOfMemoryError)
             ) or (isinstance(error, RuntimeError) and "out of memory" in str(error).lower())
 
-        # Pass 1: dequantize in place. On OOM park the stack on the CPU and finish it in pass 2.
         deferred = []
-        converted = set()  # (module, attr)
+        converted = set()
         for weight_key, (module, live_name, attr) in target_of_ckpt.items():
             param = getattr(module, attr, None)
             if not isinstance(param, torch.Tensor) or param.dtype not in _FP8_DTYPES:
@@ -1683,7 +1674,6 @@ def _dequantize_leftover_fp8_params(
                 last_error = f"{weight_key}: {type(e).__name__}: {e}"
                 continue
 
-        # Pass 2: dequantize parked stacks on the CPU, then move them back.
         for weight_key, module, attr, device in deferred:
             try:
                 param = getattr(module, attr)
@@ -1717,8 +1707,6 @@ def _dequantize_leftover_fp8_params(
                     pass
 
         if dequantized > 0:
-            # Drop activation scales of converted attributes; a module-level one goes only once
-            # nothing in the module is fp8.
             by_module = {}
             for module, attr in converted:
                 by_module.setdefault(module, set()).add(attr)

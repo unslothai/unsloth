@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""`_dequantize_leftover_fp8_params` on fp8 tensors transformers leaves quantized on a 16bit
-load (e.g. `experts.gate_up_proj` stacks). Offline, CPU, synthetic checkpoints."""
+"""`_dequantize_leftover_fp8_params` on synthetic fp8 checkpoints, offline on CPU."""
 
 import json
 import os
@@ -27,7 +26,6 @@ import torch
 from torch import nn
 from safetensors.torch import save_file
 
-# Import unsloth first to set UNSLOTH_IS_PRESENT env var.
 import unsloth
 from unsloth.models.loader_utils import (
     _dequantize_leftover_fp8_params,
@@ -55,7 +53,6 @@ class _Experts(nn.Module):
 
 
 class _Model(nn.Module):
-    """Dense linears already dequantized, expert stacks left as raw fp8 in a plain module."""
 
     def __init__(
         self,
@@ -117,7 +114,6 @@ def test_leftover_expert_stacks_are_dequantized_from_checkpoint_scale():
     assert model.experts.down_proj.dtype == torch.bfloat16
     assert torch.equal(model.experts.gate_up_proj.detach(), expected["experts.gate_up_proj"])
     assert torch.equal(model.experts.down_proj.detach(), expected["experts.down_proj"])
-    # The already-dequantized dense weight is not touched a second time.
     assert torch.equal(model.q_proj.weight.detach(), q_proj_before)
     assert not any(p.dtype in _FP8_DTYPES for p in model.parameters())
 
@@ -146,7 +142,6 @@ def test_no_fp8_params_is_a_noop_without_reading_the_checkpoint():
 
 
 def test_vlm_key_remap_resolves_language_model_prefix():
-    """VLM checkpoint keys map onto the live `model.language_model` tree."""
 
     class _Inner(nn.Module):
         def __init__(self):
@@ -227,7 +222,6 @@ def test_scale_grid_that_does_not_tile_is_refused():
 # has_real_cuda(): another test spoofs torch.cuda.is_available() process-wide.
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_out_of_memory_on_the_device_is_finished_through_the_cpu(monkeypatch):
-    """On OOM the stack is parked on the CPU, dequantized there and moved back."""
     from unsloth.models import loader_utils
 
     model, tensors, expected = _build()
@@ -254,7 +248,6 @@ def test_out_of_memory_on_the_device_is_finished_through_the_cpu(monkeypatch):
 
 
 def test_standard_weight_and_weight_scale_inv_pair_is_dequantized():
-    """`layer.weight_scale_inv` belongs to `layer.weight`."""
     model, tensors, expected = _build()
     q_w = tensors["q_proj.weight"]
     s_w = tensors["q_proj.weight_scale_inv"]
@@ -269,7 +262,6 @@ def test_standard_weight_and_weight_scale_inv_pair_is_dequantized():
 
 
 def test_no_reference_to_the_fp8_parameter_survives_into_the_cpu_pass(monkeypatch):
-    """The OOM fallback must free the original Parameter before the CPU pass."""
     import gc
     import weakref
     from unsloth.models import loader_utils
@@ -298,7 +290,6 @@ def test_no_reference_to_the_fp8_parameter_survives_into_the_cpu_pass(monkeypatc
 
 
 def test_disk_offloaded_leftover_is_refused_with_an_instruction():
-    """A disk-offloaded (meta) leftover cannot be dequantized, so the load stops here."""
     model, tensors, expected = _build()
     model.experts.gate_up_proj = nn.Parameter(
         torch.empty_like(model.experts.gate_up_proj, device = "meta"), requires_grad = False
@@ -310,7 +301,6 @@ def test_disk_offloaded_leftover_is_refused_with_an_instruction():
 
 
 def test_activation_scale_survives_on_a_module_that_kept_its_fp8_weight():
-    """Cleanup of stale activation scales is limited to modules whose weights were converted."""
     model, tensors, expected = _build()
     # q_proj keeps its own scale, so it stays fp8 and must keep its activation scale.
     model.q_proj.weight = nn.Parameter(tensors["q_proj.weight"], requires_grad = False)
@@ -329,7 +319,6 @@ def test_activation_scale_survives_on_a_module_that_kept_its_fp8_weight():
 
 
 def test_per_tensor_scale_on_a_3d_stack_is_chunked(monkeypatch):
-    """A per-tensor scale on a 3-D stack must not materialise the whole stack in fp32."""
     from unsloth.models import loader_utils
 
     E, M, N = 8, 32, 32
@@ -350,13 +339,10 @@ def test_per_tensor_scale_on_a_3d_stack_is_chunked(monkeypatch):
     monkeypatch.undo()
     assert torch.equal(out, (q.float() * 0.25).to(torch.bfloat16))
     assert seen, "no fp32 cast observed"
-    # Never the whole stack at once.
     assert max(seen) == 2, (seen, E)
 
 
 def test_activation_scale_cleanup_is_per_attribute():
-    """Only the converted attribute's activation scale goes; the module-level one stays while
-    anything in the module is still fp8."""
     model, tensors, expected = _build()
     model.experts.down_proj_scale_inv = nn.Parameter(
         tensors["experts.down_proj_scale_inv"], requires_grad = False
@@ -375,7 +361,6 @@ def test_activation_scale_cleanup_is_per_attribute():
 
 
 def test_a_trainable_fp8_parameter_stays_trainable_after_dequantization():
-    """The 16bit replacement keeps requires_grad (full_finetuning)."""
     model, tensors, expected = _build()
     model.experts.gate_up_proj.requires_grad_(True)
     with tempfile.TemporaryDirectory() as d:
@@ -387,7 +372,6 @@ def test_a_trainable_fp8_parameter_stays_trainable_after_dequantization():
 
 
 def test_a_transposed_block_grid_is_turned_around_by_the_configured_block_size():
-    """Both orientations of a (2, 1) grid tile a [4, 2] weight; the block size decides."""
     from unsloth.models.loader_utils import _fp8_scale_grid_dequant, _orient_block_scale
 
     raw = (torch.arange(8, dtype = torch.float32).reshape(4, 2) + 1).to(_FP8_DTYPES[0])
@@ -397,7 +381,6 @@ def test_a_transposed_block_grid_is_turned_around_by_the_configured_block_size()
     assert torch.equal(_orient_block_scale(stored_transposed, 4, 2, (2, 2)), scale)
     out = _fp8_scale_grid_dequant(raw, stored_transposed, torch.float32, block_size = (2, 2))
     assert torch.equal(out, expected)
-    # without a block size the shape is taken as stored
     assert not torch.equal(_fp8_scale_grid_dequant(raw, stored_transposed, torch.float32), expected)
 
 
@@ -429,7 +412,6 @@ def test_generic_out_of_memory_runtime_errors_defer_to_the_cpu(monkeypatch):
 
 
 def test_a_variant_index_uses_transformers_naming(tmp_path):
-    """transformers names a variant's shard index model.safetensors.index.<variant>.json."""
     import json
     from unsloth.models.loader_utils import _load_fp8_weight_map
 
