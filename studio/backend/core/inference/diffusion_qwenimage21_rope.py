@@ -22,7 +22,7 @@ and L4, as many as the stock compile already has against eager. A card whose mul
 neither form, torch <= 2.10 (no ``fma`` lowering), ROCm and eager calls keep the complex form.
 
 Installed on the diffusers module global only when the installed ``apply_rotary_emb_qwen`` and its
-caller are the functions this was written against (AST fingerprint). Kill switch:
+caller are the functions this was written against (source fingerprint). Kill switch:
 ``UNSLOTH_DIFFUSION_Q21_REAL_ROPE=0``.
 """
 
@@ -32,20 +32,22 @@ import ast
 import functools
 import hashlib
 import inspect
+import io
 import os
 import textwrap
 import threading
+import tokenize
 from typing import Any, Optional
 
 REAL_ROPE_ENV = "UNSLOTH_DIFFUSION_Q21_REAL_ROPE"
 
 _MODULE = "diffusers.models.transformers.transformer_qwenimage21"
 
-# AST digests (docstrings stripped) of the stock functions, from the diffusers commit that added
+# Source digests (``_digest``) of the stock functions, from the diffusers commit that added
 # Qwen-Image 2.1 through current main.
 _FINGERPRINTS: dict[str, frozenset] = {
-    "apply_rotary_emb_qwen": frozenset({"d0ce7d309f0321b0"}),
-    "_qwenimage21_prepare_qkv": frozenset({"e482e20a0db7ce74"}),
+    "apply_rotary_emb_qwen": frozenset({"ba81dd3fc907c23a"}),
+    "_qwenimage21_prepare_qkv": frozenset({"574bacc8f355456d"}),
 }
 
 _LOCK = threading.Lock()
@@ -60,22 +62,32 @@ def real_rope_disabled() -> bool:
 
 
 def _digest(fn: Any) -> Optional[str]:
-    """Hash of ``fn``'s AST with docstrings removed, or None when its source is unreadable."""
+    """Hash of ``fn``'s source without docstrings, comments or blank lines, or None when unreadable.
+    Source text, not ``ast.dump``, whose output changes between Python versions."""
     try:
-        tree = ast.parse(textwrap.dedent(inspect.getsource(inspect.unwrap(fn))))
-    except (OSError, TypeError, SyntaxError, ValueError):
+        src = textwrap.dedent(inspect.getsource(inspect.unwrap(fn)))
+        tree = ast.parse(src)
+        comments = [
+            tok.start for tok in tokenize.generate_tokens(io.StringIO(src).readline) if tok.type == tokenize.COMMENT
+        ]
+    except (OSError, TypeError, SyntaxError, ValueError, tokenize.TokenError):
         return None
+    lines = src.splitlines()
+    for row, col in comments:
+        lines[row - 1] = lines[row - 1][:col]
     for node in ast.walk(tree):
         body = getattr(node, "body", None)
         if (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
             and body
             and isinstance(body[0], ast.Expr)
             and isinstance(getattr(body[0], "value", None), ast.Constant)
             and isinstance(body[0].value.value, str)
         ):
-            node.body = body[1:] or [ast.Pass()]
-    return hashlib.sha256(ast.dump(tree, annotate_fields = False).encode()).hexdigest()[:16]
+            for row in range(body[0].lineno, body[0].end_lineno + 1):
+                lines[row - 1] = ""
+    text = "\n".join(line.rstrip() for line in lines if line.strip())
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
 def why_unsupported(module: Any) -> Optional[str]:
