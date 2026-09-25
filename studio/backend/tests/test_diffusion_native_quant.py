@@ -1105,6 +1105,7 @@ def test_signature_sees_rotation_past_an_unrotated_first_layer():
     )
     assert model[0].rot_group == 0 and model[1].rot_group == 256
     assert nq.native_quant_signature(model) == "int8-w8a8-rot256"
+    assert "g256 ConvRot" in nq.native_quant_reason(model, "int8")
 
 
 def test_a_rotated_layer_passes_an_empty_input_through():

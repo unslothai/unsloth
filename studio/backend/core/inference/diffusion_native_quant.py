@@ -237,28 +237,32 @@ def _first_native_linear(module: Any) -> Any:
         return None
 
 
+def _rotation_group(module: Any, layer: Any) -> int:
+    # Every layer: rotation skips widths the group does not divide, so the first layer alone can read unrotated.
+    try:
+        return max(
+            int(getattr(sub, "rot_group", 0) or 0)
+            for sub in module.modules()
+            if is_native_linear(sub)
+        )
+    except Exception:  # noqa: BLE001 -- a probe must never raise
+        return int(getattr(layer, "rot_group", 0) or 0)
+
+
 def native_quant_signature(module: Any) -> Optional[str]:
     layer = _first_native_linear(module)
     if layer is None:
         return None
     if not getattr(layer, "act_int8", False):
         return f"{layer.scheme}-wo"
-    # Every layer: rotation skips widths the group does not divide, so the first layer alone can read unrotated.
-    try:
-        rot = max(
-            int(getattr(sub, "rot_group", 0) or 0)
-            for sub in module.modules()
-            if is_native_linear(sub)
-        )
-    except Exception:  # noqa: BLE001 -- a probe must never raise
-        rot = int(getattr(layer, "rot_group", 0) or 0)
+    rot = _rotation_group(module, layer)
     return f"{layer.scheme}-w8a8" + (f"-rot{rot}" if rot else "")
 
 
 def native_quant_reason(module: Any, scheme: str) -> str:
     layer = _first_native_linear(module)
     if layer is not None and getattr(layer, "act_int8", False):
-        rot = int(getattr(layer, "rot_group", 0) or 0)
+        rot = _rotation_group(module, layer)
         return (
             f"W8A8: {scheme} weights and activations through torch._int_mm"
             + (f" with a g{rot} ConvRot rotation" if rot else "")
