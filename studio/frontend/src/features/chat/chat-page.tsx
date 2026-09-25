@@ -110,6 +110,10 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
+import {
+  SaveTemporaryChatButton,
+  TemporaryChatSaveBridge,
+} from "./components/temporary-chat-save";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import {
   type CSSProperties,
@@ -133,6 +137,7 @@ import {
   useChatArtifactsStore,
   useSelectedChatArtifact,
 } from "./artifacts/store";
+import { isKnownTextOnlySelection } from "./utils/model-vision-capability";
 import type { ChatArtifact, ChatArtifactSurface } from "./artifacts/types";
 import { McpServersDialogMount } from "./mcp-composer-button";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
@@ -179,6 +184,7 @@ import {
 import {
   externalReasoningTakesEffort,
   getExternalReasoningCapabilities,
+  providerSupportsPreserveThinking,
   getProviderCapabilities,
   modelCatalogVersion,
   providerHostsCodeExecution,
@@ -222,6 +228,7 @@ import {
   reconcilePinnedReasoningEffort,
   takeEffortDisplacedByPin,
   threadScopedOverride,
+  resolvePreserveThinkingOnLoad,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import { wantsDownloadManagerStaging } from "./utils/model-download-staging";
@@ -250,6 +257,7 @@ import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import {
   consumeProjectSourcesPending,
   hasProjectSourcesPending,
+  noteProjectLandingMounted,
 } from "@/features/rag/components/project-source-dropzone";
 import {
   exportConversationCsv,
@@ -1362,6 +1370,7 @@ function ProjectLanding({
   // Drop the marker once committed: React may replay the initializer above.
   useEffect(() => {
     consumeProjectSourcesPending(projectId);
+    return noteProjectLandingMounted(projectId);
   }, [projectId]);
   const [pendingNewThreadId, setPendingNewThreadId] = useState<string | null>(
     null,
@@ -2381,6 +2390,12 @@ export function ChatPage({
   );
   const {
     refresh,
+    cancelLoadingForReplacement,
+    invalidatePendingModelSelection,
+    discardExternalReplacement,
+    restoreConfigForExternalReplacement,
+
+    isModelSelectionIntentCurrent,
     selectModel,
     ejectModel,
     cancelLoading,
@@ -2483,7 +2498,12 @@ export function ChatPage({
     const provider = externalProvidersForChat.find(
       (p) => p.id === selection.providerId,
     );
-    const baseCapabilities = getProviderCapabilities(provider?.providerType);
+    const baseCapabilities = getProviderCapabilities(
+      provider?.providerType,
+      provider?.apiType,
+      selection.modelId,
+      provider?.baseUrl,
+    );
     if (!baseCapabilities) return baseCapabilities;
     const anthropicThinkingEnabled =
       provider?.providerType === "anthropic" &&
@@ -2516,6 +2536,7 @@ export function ChatPage({
       {
         isReasoningProvider: provider?.isReasoningModel === true,
         baseUrl: provider?.baseUrl ?? null,
+        apiType: provider?.apiType,
       },
     );
     const state = useChatRuntimeStore.getState();
@@ -2529,6 +2550,7 @@ export function ChatPage({
     const nextReasoningEffort = resolveExternalReasoningEffort({
       caps: reasoningCaps,
       providerType: provider?.providerType,
+      apiType: provider?.apiType,
       // Same as the switch below: a checkpoint that changed without going through it leaves the
       // previous model's pin in the live level, which an unpinned model must not inherit.
       current:
@@ -2550,12 +2572,14 @@ export function ChatPage({
       provider?.providerType,
       selection.modelId,
       provider?.baseUrl,
+      provider?.apiType,
     );
     const supportsBuiltinImageGeneration =
       providerSupportsBuiltinImageGeneration(
         provider?.providerType,
         selection.modelId,
         provider?.baseUrl,
+        provider?.apiType,
       );
     const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
       provider?.providerType,
@@ -2595,7 +2619,11 @@ export function ChatPage({
     // provider that cannot use it runs nothing either way.
     const canRunCode = codeToolCanRun({
       hostedCodeExecutionForThisTurn: supportsBuiltinCodeExecution,
-      providerHostsCodeExecution: providerHostsCodeExecution(provider?.providerType),
+      providerHostsCodeExecution: providerHostsCodeExecution(
+        provider?.providerType,
+        provider?.baseUrl,
+        provider?.apiType,
+      ),
       supportsStudioTools: supportsStudioToolsHere,
     });
     const nextToolsEnabled = canSearch
@@ -2617,7 +2645,10 @@ export function ChatPage({
             : state.reasoningEnabled
           : true
         : state.reasoningEnabled,
-      supportsPreserveThinking: false,
+      supportsPreserveThinking: providerSupportsPreserveThinking(provider?.providerType),
+      preserveThinking: resolvePreserveThinkingOnLoad({
+        supports_preserve_thinking: providerSupportsPreserveThinking(provider?.providerType),
+      }),
       supportsTools: supportsStudioToolsHere,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
@@ -2658,12 +2689,14 @@ export function ChatPage({
       {
         isReasoningProvider: provider?.isReasoningModel === true,
         baseUrl: provider?.baseUrl ?? null,
+        apiType: provider?.apiType,
       },
     );
     reconcilePinnedReasoningEffort({
       checkpoint: inferenceParams.checkpoint,
       caps,
       providerType: provider?.providerType,
+      apiType: provider?.apiType,
     });
   }, [activePinnedEffort, externalProvidersForChat, inferenceParams.checkpoint]);
   // A catalog that lands after selection refreshes only the stored reasoning fields (the effort shortcut reads them),
@@ -2688,6 +2721,7 @@ export function ChatPage({
       {
         isReasoningProvider: provider?.isReasoningModel === true,
         baseUrl: provider?.baseUrl ?? null,
+        apiType: provider?.apiType,
       },
     );
     useChatRuntimeStore.setState(
@@ -2699,6 +2733,7 @@ export function ChatPage({
       checkpoint: inferenceParams.checkpoint,
       caps,
       providerType: provider?.providerType,
+      apiType: provider?.apiType,
     });
   }, [modelCatalogChange, inferenceParams.checkpoint]);
   const canCompare = useMemo(() => {
@@ -2898,7 +2933,10 @@ export function ChatPage({
           toast.info("This model is already loading", {
             description: "It's downloading as part of the load in progress.",
           });
-        } else if (wantManagerStaging) {
+          // The duplicate click is the only pick this guard refuses.
+          return;
+        }
+        if (wantManagerStaging) {
           const outcome = await downloadManager.requestStart({
             kind: DOWNLOAD_KIND.MODEL,
             repoId: selection.id,
@@ -2923,12 +2961,11 @@ export function ChatPage({
                 "Another download for this model is still running. Reselect it once that finishes to load it.",
             });
           }
-        } else {
-          toast.info("Another model is already loading", {
-            description: "Wait for it to finish or cancel it first.",
-          });
+          return;
         }
-        return;
+        // A different pick takes the slot rather than being rejected: fall through to
+        // selectModel below, which cancels the pending load and keeps the working
+        // checkpoint as the rollback target for the replacement.
       }
       if (wantManagerStaging) {
         setPendingHubAutoLoad((current) =>
@@ -3174,13 +3211,56 @@ export function ChatPage({
       const currentVariant = store.activeGgufVariant;
       if (!value) return;
       setPendingHubAutoLoad(null);
+      const isExternalSelection =
+        meta?.source === "external" || isExternalModelId(value);
+      const isActiveModelLoad = modelOperationInProgress || loadingModel;
       const isSameLoadedModel =
         value === currentCheckpoint &&
         (meta?.ggufVariant ?? null) === (currentVariant ?? null);
       if (isSameLoadedModel && !meta?.forceReload) {
-        return;
+        if (!isExternalSelection) return;
+        // A repeated external pick is a no-op unless it supersedes a local load. With only a
+        // preflight in flight, invalidate it here even though no loading flag has been published.
+        if (!isActiveModelLoad) {
+          invalidatePendingModelSelection();
+          return;
+        }
       }
-      if (meta?.source === "external" || isExternalModelId(value)) {
+      if (isExternalSelection) {
+        // Any pending local preflight is stale now, even before it has published a loading run.
+        const externalIntentId = invalidatePendingModelSelection();
+        let externalCapabilityPatch: Partial<ReturnType<typeof useChatRuntimeStore.getState>> | null = null;
+        // A local load still in flight has to be stopped by this external pick. Leaving it
+        // running pins modelLoading true, which makes the composer treat even this external
+        // checkpoint as unavailable, and the local run's completion would write the local
+        // model's capability fields over the ones set below. The intent is invalidated before
+        // the cancellation so a local run still parked in its preflight yields on wakeup
+        // instead of adopting its status and starting anyway.
+        if (isActiveModelLoad) {
+          void cancelLoadingForReplacement(externalIntentId).then((stopped) => {
+            // A newer pick already owns the store; this one must not write to it.
+            if (!isModelSelectionIntentCurrent(externalIntentId)) return;
+            if (!stopped) {
+              // The backend is uncertain after a failed stop, so drop the rollback marker a
+              // later local pick would otherwise inherit from the run that did not stop.
+              discardExternalReplacement(externalIntentId);
+              return;
+            }
+            restoreConfigForExternalReplacement(externalIntentId);
+            // The cancelled run's own reconciliation clears the store checkpoint when it had
+            // already unloaded the resident. The external pick is still the user's choice, so
+            // put it back rather than leaving the bar naming a model that is gone.
+            const live = useChatRuntimeStore.getState();
+            if (live.params.checkpoint !== value) {
+              live.setCheckpoint(value, null);
+            }
+            // Cancellation can finish after clearCheckpoint reset these fields. Reapply the
+            // complete external capability/tool state computed below, not just its checkpoint.
+            if (externalCapabilityPatch) {
+              useChatRuntimeStore.setState(externalCapabilityPatch);
+            }
+          });
+        }
         const selectedExternal = parseExternalModelId(value);
         const selectedProvider = selectedExternal
           ? externalProvidersForChat.find(
@@ -3193,6 +3273,7 @@ export function ChatPage({
           {
             isReasoningProvider: selectedProvider?.isReasoningModel === true,
             baseUrl: selectedProvider?.baseUrl ?? null,
+            apiType: selectedProvider?.apiType,
           },
         );
         const effortLevels = reasoningCaps.reasoningEffortLevels;
@@ -3202,6 +3283,7 @@ export function ChatPage({
         const nextReasoningEffort = resolveExternalReasoningEffort({
           caps: reasoningCaps,
           providerType: selectedProvider?.providerType,
+          apiType: selectedProvider?.apiType,
           // The outgoing model's pin is what the live level holds, so an unpinned target resolves
           // from the chat's own effort rather than inheriting one model's override.
           current:
@@ -3230,12 +3312,14 @@ export function ChatPage({
             selectedProvider?.providerType,
             selectedExternal?.modelId,
             selectedProvider?.baseUrl,
+            selectedProvider?.apiType,
           );
         const supportsBuiltinImageGeneration =
           providerSupportsBuiltinImageGeneration(
             selectedProvider?.providerType,
             selectedExternal?.modelId,
             selectedProvider?.baseUrl,
+            selectedProvider?.apiType,
           );
         const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
           selectedProvider?.providerType,
@@ -3274,6 +3358,8 @@ export function ChatPage({
           hostedCodeExecutionForThisTurn: supportsBuiltinCodeExecution,
           providerHostsCodeExecution: providerHostsCodeExecution(
             selectedProvider?.providerType,
+            selectedProvider?.baseUrl,
+            selectedProvider?.apiType,
           ),
           supportsStudioTools: supportsStudioToolsHere,
         });
@@ -3282,7 +3368,7 @@ export function ChatPage({
             ? false
             : (storedToolsEnabled ?? searchOnByDefault)
           : false;
-        useChatRuntimeStore.setState({
+        externalCapabilityPatch = {
           activeGgufVariant: null,
           ...loadedContextFields(null),
           activeNativePathToken: null,
@@ -3304,7 +3390,10 @@ export function ChatPage({
                 : store.reasoningEnabled
               : true
             : store.reasoningEnabled,
-          supportsPreserveThinking: false,
+          supportsPreserveThinking: providerSupportsPreserveThinking(selectedProvider?.providerType),
+          preserveThinking: resolvePreserveThinkingOnLoad({
+            supports_preserve_thinking: providerSupportsPreserveThinking(selectedProvider?.providerType),
+          }),
           supportsTools: supportsStudioToolsHere,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
@@ -3321,7 +3410,8 @@ export function ChatPage({
             ? (storedWebFetchToolsEnabled ?? false)
             : false,
           ...(stillOnOpenRouterFree ? {} : { lastOpenRouterChosenModel: null }),
-        });
+        };
+        useChatRuntimeStore.setState(externalCapabilityPatch);
         return;
       }
       // Local model picked: drop any cached openrouter/free chosen model.
@@ -3341,7 +3431,11 @@ export function ChatPage({
                 (model) => model.id === value,
               );
               showImageCompatibilityWarning =
-                hasImage && targetModel?.isVision === false;
+                hasImage &&
+                isKnownTextOnlySelection(
+                  { isVision: meta?.isVision, isGguf: meta?.isGguf },
+                  targetModel,
+                );
             }
           }
         }
@@ -3363,6 +3457,7 @@ export function ChatPage({
           expectedBytes: meta?.expectedBytes,
           downloadPresentation: meta?.downloadPresentation,
           isGguf: meta?.isGguf,
+          isVision: meta?.isVision,
           isDiffusion: meta?.isDiffusion,
           config: meta?.config,
           nativePathToken: meta?.nativePathToken,
@@ -3378,6 +3473,14 @@ export function ChatPage({
       modelsFromStore,
       stageOrLoad,
       view,
+      modelOperationInProgress,
+      loadingModel,
+      cancelLoadingForReplacement,
+      invalidatePendingModelSelection,
+      discardExternalReplacement,
+      restoreConfigForExternalReplacement,
+
+      isModelSelectionIntentCurrent,
     ],
   );
   const handleReloadActiveModel = useCallback(
@@ -4145,6 +4248,9 @@ export function ChatPage({
                 className="h-[var(--studio-chat-control-height,34px)]"
               />
             ) : null}
+            {view.mode === "single" && incognito ? (
+              <SaveTemporaryChatButton className="mr-[calc(6px*var(--ui-space-scale,1))] flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:text-white" />
+            ) : null}
             {view.mode === "single" && (
               <Tooltip>
                 <TooltipPrimitive.Trigger asChild={true}>
@@ -4301,6 +4407,7 @@ export function ChatPage({
                   <NativeAttachmentTargetContext.Provider
                     value={baseAttachmentTargetKey}
                   >
+                    <TemporaryChatSaveBridge />
                     <SingleContent
                       threadId={baseView.threadId}
                       artifact={selectedArtifact}

@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import errno
 import hashlib
+import http.client
 import json
 import os
 import stat
@@ -248,6 +249,9 @@ def is_retryable_url_error(exc: Exception) -> bool:
     if isinstance(exc, urllib.error.HTTPError):
         return exc.code in RETRYABLE_HTTP_STATUS
     if isinstance(exc, (urllib.error.URLError, TimeoutError, socket.timeout)):
+        return True
+    # A dropped connection or a body cut short is not wrapped in URLError; see prebuilt_core.
+    if isinstance(exc, (ConnectionError, http.client.IncompleteRead)):
         return True
     return False
 

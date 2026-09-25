@@ -461,6 +461,8 @@ def test_concurrent_adopts_all_survive(tmp_path, monkeypatch):
     pl._tracked_pids.clear()
     pids = list(range(900000, 900040))
     monkeypatch.setattr(pl, "_pid_identity", lambda pid: f"id-{pid}")
+    # Adopting caches this process's identity through the fake above; keep that to this test.
+    monkeypatch.setattr(pl, "_owner_identity", None)
 
     def adopt(chunk):
         for pid in chunk:
