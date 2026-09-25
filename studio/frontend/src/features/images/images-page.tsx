@@ -107,7 +107,12 @@ import {
   sortGalleryItems,
   subscribeGalleryChanged,
 } from "@/lib/gallery-flags";
-import { readLastPrompt, saveLastPrompt } from "@/lib/last-prompt";
+import {
+  dismissExample,
+  isExampleDismissed,
+  readLastPrompt,
+  saveLastPrompt,
+} from "@/lib/last-prompt";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useImageWorkflowStore } from "./stores/image-workflow-store";
 import { WORKFLOW_EXAMPLE_PROMPTS, WORKFLOW_TABS, type WorkflowId } from "./workflows";
@@ -1249,14 +1254,17 @@ export function ImagesPage({
   const imageModels = useImageModels(hostClass, denseQuantSchemes);
   const { rootStyle: railRootStyle } = useMediaRailWidth("images");
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
-  // One prompt per workflow: each starts from its example, then the last one generated with.
+  // One prompt per workflow, starting from the last one generated with.
   const [prompts, setPrompts] = useState<Record<WorkflowId, string>>(() =>
     Object.fromEntries(
-      WORKFLOW_TABS.map(({ id }) => [
-        id,
-        readLastPrompt(`images:${id}`, WORKFLOW_EXAMPLE_PROMPTS[id]),
-      ]),
+      WORKFLOW_TABS.map(({ id }) => [id, readLastPrompt(`images:${id}`)]),
     ) as Record<WorkflowId, string>,
+  );
+  // Workflows whose example hint is gone: it shows as a placeholder until the box is first focused.
+  const [examplesDismissed, setExamplesDismissed] = useState<Record<WorkflowId, boolean>>(() =>
+    Object.fromEntries(
+      WORKFLOW_TABS.map(({ id }) => [id, isExampleDismissed(`images:${id}`)]),
+    ) as Record<WorkflowId, boolean>,
   );
   const setPromptFor = useCallback((id: WorkflowId, next: SetStateAction<string>) => {
     setPrompts((prev) => ({
@@ -4299,7 +4307,7 @@ export function ImagesPage({
       />
       <AdvancedSelect
         label="Speed"
-        hint="Auto picks per model: GGUF compiles at load; a dense model keeps the first two images exact and eager, then compiles from the 3rd (~2x from there). eager = fused kernels, no compile. default/max add torch.compile (max also TF32 + fused QKV)."
+        hint="Auto picks per model: GGUF compiles at load; a dense model keeps the first two images exact and eager, then compiles from the 3rd (~2x from there). eager = fused kernels, no compile. default/max add torch.compile (max also TF32 + fused QKV, plus the step cache on 20+ step models)."
         badge={<ResolvedBadge status={status} controlKey="speed_mode" />}
         value={speedMode}
         onValueChange={(v) => setSpeedMode(v as typeof speedMode)}
@@ -4412,7 +4420,7 @@ export function ImagesPage({
       )}
       <AdvancedSelect
         label="Step cache"
-        hint="First-Block-Cache reuses the transformer tail across steps for many-step models (~1.4x). Auto turns it on at 20+ steps and off for few-step distilled models, re-checked per image."
+        hint="First-Block-Cache reuses the transformer tail across steps for many-step models (~1.4x, small quality cost). Auto turns it on only on the Max speed tier at 20+ steps, re-checked per image."
         badge={<ResolvedBadge status={status} controlKey="transformer_cache" />}
         value={transformerCache}
         onValueChange={(v) => setTransformerCache(v as typeof transformerCache)}
@@ -5013,9 +5021,14 @@ export function ImagesPage({
               <Textarea
                 rows={4}
                 placeholder={
-                  workflow === "edit" ? "Describe the edit, e.g. make the sky sunset orange" : undefined
+                  examplesDismissed[workflow] ? undefined : WORKFLOW_EXAMPLE_PROMPTS[workflow]
                 }
                 value={prompt}
+                onFocus={() => {
+                  if (examplesDismissed[workflow]) return;
+                  dismissExample(`images:${workflow}`);
+                  setExamplesDismissed((prev) => ({ ...prev, [workflow]: true }));
+                }}
                 onChange={(e) => setPrompt(e.target.value)}
               />
             </Field>
@@ -5388,11 +5401,7 @@ export function ImagesPage({
                   )}
                   <button
                     type="button"
-                    onClick={() => {
-                      setSelectedId(image.id);
-                      // Show the prompt this image was made with.
-                      setPrompt(image.prompt);
-                    }}
+                    onClick={() => setSelectedId(image.id)}
                     className="relative size-full overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     {srcById[image.id] ? (

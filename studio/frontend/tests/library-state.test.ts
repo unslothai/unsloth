@@ -151,6 +151,18 @@ test("a batch of more than 1000 files goes as several requests", async () => {
   assert.deepEqual(perRequest, [1000, 1000, 500]);
 });
 
+test("a desktop drop of more than 999 files keeps each request under the field limit", async () => {
+  const fields: number[] = [];
+  const { uploadLibraryFiles } = loadApi({ epoch: 1 }, async (_url, init) => {
+    const form = init?.body as FormData;
+    fields.push(form.getAll("nativePathLeases").length + form.getAll("folderId").length);
+    return new Response(JSON.stringify({ ids: ["upload:x"] }));
+  });
+  const nativePathLeases = Array.from({ length: 1500 }, (_, i) => `lease${i}`);
+  await uploadLibraryFiles({ nativePathLeases, sessionEpoch: 1 }, "folder1");
+  assert.deepEqual(fields, [1000, 502]);
+});
+
 test("the next account's edit does not wait behind one the account that left never finished", { timeout: 2000 }, async () => {
   const session = { epoch: 1 };
   const sent: string[] = [];

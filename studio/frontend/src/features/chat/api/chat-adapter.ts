@@ -300,6 +300,7 @@ import {
   hasRenderableContent,
   incompleteLabel,
   type IncompleteReason,
+  noteRunStartedThisSession,
   readIncompleteInfo,
   resolveIncompleteReason,
   readContinuationRequest,
@@ -8370,6 +8371,8 @@ export function createOpenAIStreamAdapter(
   } satisfies ChatModelAdapter;
   return {
     async *run(args) {
+      // Only runs started here may auto-continue a Max Tokens cut.
+      noteRunStartedThisSession(args.unstable_assistantMessageId);
       invalidateMinPRecoveries();
       const preStreamThreadIds = preStreamRunThreadIdsForAdapter(
         args.unstable_threadId,

@@ -73,12 +73,16 @@ from ._utils import (
     importlib_version,
     _prepare_model_for_qat,
     resolve_model_class,
+    resolve_remote_code_model_class,
+    attention_class_for_load,
+    _REMOTE_CLASS_HUB_OPTIONS,
     resolve_attention_implementation,
     _get_text_only_config,
     _is_family_text_decoder,
     _config_get,
     _is_flash_attention_requested,
     _apply_text_only_key_mapping,
+    _cast_text_only_prequantized_params,
     _select_moe_detection_targets,
     set_task_config_attr,
 )
@@ -99,6 +103,7 @@ from .loader_utils import (
     planner_quantization_kwargs,
     requested_device_map,
     resolve_unsloth_device_map,
+    warn_if_bitsandbytes_quantized_nothing,
 )
 # `unsloth.save` imports `.models.loader_utils`, so binding a name out of it here at module
 # scope closes a cycle and a cold `import unsloth.save` fails on the half-built module.
@@ -882,12 +887,13 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     if do_bfloat16_mixed_precision:
         dtype = torch.bfloat16
 
+    # text_only configs have architectures=None.
+    architectures = getattr(self.config, "architectures", None) or [type(self).__name__]
     is_vlm = any(
-        x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
-        for x in self.config.architectures
+        x.endswith(("ForConditionalGeneration", "ForVisionText2Text")) for x in architectures
     )
     is_vlm = is_vlm or hasattr(self.config, "vision_config")
-    arch = self.config.architectures[0]
+    arch = architectures[0]
 
     # Removing token_type_ids is WRONG for Gemma 3, which uses bidirectional attention.
     if hasattr(self, "generate") and hasattr(self, "forward"):
@@ -1458,6 +1464,17 @@ class FastBaseModel:
                 local_files_only = local_files_only,
                 revision = _revision,
             )
+        # Remote classes shadowing a native name can differ in attention flags.
+        _builds_remote_class, _remote_class = resolve_remote_code_model_class(
+            auto_model,
+            auto_config,
+            model_name,
+            trust_remote_code = trust_remote_code,
+            token = token,
+            revision = _revision,
+            local_files_only = local_files_only,
+            **{k: kwargs.get(k, None) for k in _REMOTE_CLASS_HUB_OPTIONS},
+        )
         model_class = resolve_model_class(auto_model, auto_config)
         # Forced float32 loads in bfloat16 then casts to float16. Resolved here, not at the load, because attention resolution and the device-map planner both size the same dtype.
         torch_dtype = dtype
@@ -1465,11 +1482,14 @@ class FastBaseModel:
             torch_dtype = torch.bfloat16
         # What attention actually runs in, not the load dtype: the UNSLOTH_FORCE_CUSTOM_DTYPE families (csm, falcon_h1, nemotron_h) load float32 for Mamba precision then cast projections back to correct_dtype, so flash stays.
         attn_dtype = correct_dtype if correct_dtype is not None else torch_dtype
+        _attn_class, _attn_supports_sdpa = attention_class_for_load(
+            model_class, _builds_remote_class, _remote_class, supports_sdpa
+        )
         attn_impl = resolve_attention_implementation(
-            model_class,
+            _attn_class,
             auto_config,
             requested_attn_implementation = kwargs.get("attn_implementation", None),
-            supports_sdpa = supports_sdpa,
+            supports_sdpa = _attn_supports_sdpa,
             dtype = attn_dtype,
         )
 
@@ -1499,12 +1519,9 @@ class FastBaseModel:
             load_in_8bit = False
             load_in_16bit = False
 
-        # text_only loads the decoder alone, but the planner gets only model_name and rebuilds the whole VLM: it budgets a vision tower this load never creates and names model.language_model.layers.0 where the standalone decoder has model.layers.0.
-        _planner_skip_reason = (
-            "text_only loads a decoder the repo config does not describe"
-            if text_only_decoder
-            else None
-        )
+        # text_only builds the bare decoder; from model_name the planner would plan the whole VLM.
+        _planner_skip_reason = None
+        _planner_config = auto_config if text_only_decoder else None
         # Same failure from the other direction: num_labels (or an explicit auto_model) loads a task head whose `score` replaces the planned lm_head, and dispatch refuses a map with no score.weight.
         if _planner_skip_reason is None:
             _planner_skip_reason = planner_class_mismatch_reason(
@@ -1535,6 +1552,8 @@ class FastBaseModel:
             full_finetuning = full_finetuning,
             planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
             skip_reason = _planner_skip_reason,
+            planner_config = _planner_config,
+            planner_config_reason = "text_only loads a decoder the repo config does not describe",
             **planner_config_overrides(kwargs),
             token = token,
             trust_remote_code = trust_remote_code,
@@ -1754,6 +1773,12 @@ class FastBaseModel:
                     trust_remote_code = trust_remote_code,
                     **kwargs,
                 )
+                warn_if_bitsandbytes_quantized_nothing(
+                    model, kwargs.get("quantization_config", None), model_name
+                )
+                if text_only_decoder:
+                    # Must run before offload / hooks capture the weights.
+                    _cast_text_only_prequantized_params(model, torch_dtype)
                 # transformers 5 leaves remote code's non-persistent buffers (RoPE inv_freq, decay slopes) uninitialised.
                 restore_remote_code_non_persistent_buffers(model)
                 # Must precede _attach_bnb_multidevice_hooks: it returns early while offload_embedding is True.
@@ -1779,6 +1804,7 @@ class FastBaseModel:
                     subfolder = kwargs.get("subfolder"),
                     cache_dir = kwargs.get("cache_dir"),
                     variant = kwargs.get("variant"),
+                    dtype = torch_dtype,
                 )
                 if hasattr(model, "generate"):
                     model.fast_generate = make_fast_generate_wrapper(model.generate)
@@ -2151,6 +2177,8 @@ class FastBaseModel:
             tokenizer,
             fix_tokenizer = fix_tokenizer,
             config = auto_config if auto_config is not None else getattr(model, "config", None),
+            cache_dir = kwargs.get("cache_dir"),
+            revision = _tokenizer_revision,
         )
         patch_saving_functions(tokenizer, vision = True)
 

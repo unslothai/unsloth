@@ -29,6 +29,7 @@ import functools
 import hashlib
 import importlib
 import io
+import mimetypes
 import os
 import platform
 import re
@@ -40,6 +41,7 @@ import time
 import uuid
 import zlib
 from collections import OrderedDict
+from datetime import datetime
 from pathlib import Path
 from types import ModuleType
 from typing import BinaryIO, Callable, NamedTuple, Optional, Union
@@ -63,8 +65,22 @@ def _to_ms(value: object) -> int:
     try:
         number = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
-        return 0
+        # Video and audio records keep ISO-8601 ("2026-09-25T10:00:00Z").
+        try:
+            return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp() * 1000)
+        except ValueError:
+            return 0
     return int(number if number > 1e12 else number * 1000)
+
+
+def _named_for_type(name: str, content_type: str) -> str:
+    """A pasted image or clip is named "Chat image"; the download needs its format's suffix."""
+    if Path(name).suffix or not content_type.startswith(("image/", "audio/", "video/")):
+        return name
+    suffix = next(
+        (ext for ext, known in content_types().items() if known == content_type), None
+    ) or mimetypes.guess_extension(content_type)
+    return f"{name}{suffix}" if suffix else name
 
 
 def _item(
@@ -290,14 +306,27 @@ def write_upload_text(
         path = upload_path(upload_id)
         if library_db.get_upload(upload_id) is None:
             return False
-        previous = path.read_bytes() if path.exists() else None
-        _swap_in(path, data)
+        # The old file stays on disk under a second name for the rollback, not in memory: an
+        # upload can be 512 MiB. Where links are not supported, it is held in memory as before.
+        kept, previous = None, None
+        if path.exists():
+            kept = path.with_name(f".{upload_id}.{uuid.uuid4().hex}.tmp")
+            try:
+                os.link(path, kept)
+            except OSError:
+                kept, previous = None, path.read_bytes()
         try:
+            _swap_in(path, data)
             library_db.touch_upload(upload_id, len(data))
         except BaseException:
-            if previous is not None:
+            if kept is not None:
+                os.replace(kept, path)
+            elif previous is not None:
                 _swap_in(path, previous)
             raise
+        finally:
+            if kept is not None:
+                kept.unlink(missing_ok = True)
     return True
 
 
@@ -396,7 +425,7 @@ def _attachment_items() -> list[dict]:
         items.append(
             _item(
                 _attachment_id(message_id, attachment_id),
-                name = attachment.get("name") or "Attachment",
+                name = _named_for_type(attachment.get("name") or "Attachment", content_type),
                 source = "uploaded",
                 content_type = content_type or "application/octet-stream",
                 size_bytes = attachment.get("sizeBytes"),
@@ -932,7 +961,8 @@ class _Memo:
 
 _SANDBOX_TTL_SECONDS = 5.0
 _MODEL_TTL_SECONDS = 60.0
-_LISTING = _Memo()
+# Bounded: sandboxes of chats and accounts nobody lists again would otherwise stay forever.
+_LISTING = _Memo(size = 1024)
 invalidate_listing = _LISTING.forget
 
 
