@@ -252,7 +252,7 @@ def test_remote_composite_resolves_text_config_and_mapping(tmp_path):
     assert ns["_is_remote_code_config"](parent)
     plan = ns["_get_remote_composite_text_only"](parent, str(repo), trust_remote_code = True)
     assert plan is not None
-    text_config, mapping = plan
+    text_config, mapping, _ = plan
     assert text_config.model_type == "llama"
     assert not hasattr(text_config, "vision_config")
     assert mapping == {r"^language_model\.": ""}
@@ -267,7 +267,7 @@ def test_llm_config_without_text_config_alias(tmp_path):
     parent = _load_parent_config(repo)
     # get_text_config() does not see llm_config here, so the family path had nothing to offer.
     assert parent.get_text_config() is parent
-    text_config, mapping = ns["_get_remote_composite_text_only"](
+    text_config, mapping, _ = ns["_get_remote_composite_text_only"](
         parent, str(repo), trust_remote_code = True
     )
     assert text_config.model_type == "llama"
@@ -350,7 +350,7 @@ def test_plan_loads_only_the_language_model_with_real_weights(tmp_path):
     ns = _ns()
     repo, weights = _write_repo(tmp_path)
     parent = _load_parent_config(repo)
-    text_config, mapping = ns["_get_remote_composite_text_only"](
+    text_config, mapping, _ = ns["_get_remote_composite_text_only"](
         parent, str(repo), trust_remote_code = True
     )
     model, info = transformers.AutoModelForCausalLM.from_pretrained(
@@ -481,7 +481,7 @@ def test_text_config_keeps_the_parent_commit(tmp_path, monkeypatch):
         repo_id, trust_remote_code = True, local_files_only = True
     )
     assert parent._commit_hash == sha
-    text_config, mapping = ns["_get_remote_composite_text_only"](
+    text_config, mapping, _ = ns["_get_remote_composite_text_only"](
         parent, repo_id, trust_remote_code = True, local_files_only = True
     )
     assert text_config._commit_hash == sha
@@ -530,7 +530,7 @@ def test_adapter_trained_on_the_wrapper_keeps_the_full_model(tmp_path):
     ns = _ns()
     repo, _ = _write_repo(tmp_path, name = "peft_base")
     parent = _load_parent_config(repo)
-    text_config, mapping = ns["_get_remote_composite_text_only"](
+    text_config, mapping, text_names = ns["_get_remote_composite_text_only"](
         parent, str(repo), trust_remote_code = True
     )
     lora = dict(r = 4, target_modules = ["q_proj", "v_proj"], init_lora_weights = False)
@@ -569,6 +569,11 @@ def test_adapter_trained_on_the_wrapper_keeps_the_full_model(tmp_path):
     assert ns["_adapter_fits_text_model"](str(wrapper_adapter), mapping) is False
     # An adapter trained on the text-only load (no wrapper prefix) keeps the fast path.
     assert ns["_adapter_fits_text_model"](str(text_adapter), mapping) is True
+    assert ns["_adapter_fits_text_model"](str(text_adapter), mapping, text_names = text_names) is True
+    assert (
+        ns["_adapter_fits_text_model"](str(wrapper_adapter), mapping, text_names = text_names)
+        is False
+    )
     # Unreadable (no safetensors adapter): decline.
     assert ns["_adapter_fits_text_model"](str(tmp_path / "missing"), mapping) is False
 
@@ -577,6 +582,11 @@ def test_loader_checks_the_adapter_before_taking_the_text_only_branch():
     loader = LOADER_PATH.read_text(encoding = "utf-8")
     i_plan = loader.index("remote_text_only = _get_remote_composite_text_only(")
     i_gate = loader.index("and not _adapter_fits_text_model(", i_plan)
+    # The decoder's own parameter names, so an adapter on vision_model. / mlp1. alone is caught too.
+    assert (
+        "text_names = remote_text_only[2],"
+        in loader[i_gate : loader.index("\n                ):", i_gate)]
+    )
     i_take = loader.index("text_config, _text_key_mapping = remote_text_only", i_plan)
     assert i_plan < i_gate < i_take
     gate = loader[loader.rindex("if (", 0, i_gate) : i_take]
@@ -643,7 +653,7 @@ def test_skip_modules_rebased_once_for_nested_prefixes(tmp_path, prefix, alias):
     parent.quantization_config = {
         "llm_int8_skip_modules": [prefix + "lm_head", prefix + "model.layers.0.mlp", "vision_model"]
     }
-    text_config, mapping = ns["_get_remote_composite_text_only"](
+    text_config, mapping, _ = ns["_get_remote_composite_text_only"](
         parent, str(repo), trust_remote_code = True
     )
     assert mapping == {"^" + re.escape(prefix): ""}
@@ -680,7 +690,7 @@ def test_sharded_bin_checkpoint_is_probed_from_its_index(tmp_path, monkeypatch):
     weights = _convert_to_sharded_bin(repo)
     assert ns["_checkpoint_weight_names"](str(repo)) == set(weights)
     parent = _load_parent_config(repo)
-    text_config, mapping = ns["_get_remote_composite_text_only"](
+    text_config, mapping, _ = ns["_get_remote_composite_text_only"](
         parent, str(repo), trust_remote_code = True
     )
     model, info = transformers.AutoModelForCausalLM.from_pretrained(
@@ -769,7 +779,7 @@ def test_bin_adapter_is_read_like_a_safetensors_one(tmp_path):
     ns = _ns()
     repo, _ = _write_repo(tmp_path, name = "peft_bin_base")
     parent = _load_parent_config(repo)
-    text_config, mapping = ns["_get_remote_composite_text_only"](
+    text_config, mapping, _ = ns["_get_remote_composite_text_only"](
         parent, str(repo), trust_remote_code = True
     )
     lora = dict(r = 4, target_modules = ["q_proj", "v_proj"])
@@ -852,7 +862,7 @@ def test_nested_own_repo_code_still_takes_the_plan(tmp_path):
         tmp_path, name = "own_repo_code", text_auto_map = "modeling_tiny_omni.TinyTextLM"
     )
     parent = _load_parent_config(repo)
-    text_config, mapping = ns["_get_remote_composite_text_only"](
+    text_config, mapping, _ = ns["_get_remote_composite_text_only"](
         parent, str(repo), trust_remote_code = True
     )
     model, info = transformers.AutoModelForCausalLM.from_pretrained(
@@ -883,7 +893,7 @@ def test_subfolder_checkpoint_is_probed_where_the_load_reads_it(tmp_path, monkey
     parent = _load_parent_config(repo)
     assert ns["_checkpoint_weight_names"](str(repo)) is None
     assert ns["_checkpoint_weight_names"](str(repo), subfolder = "weights") == set(weights)
-    text_config, mapping = ns["_get_remote_composite_text_only"](
+    text_config, mapping, _ = ns["_get_remote_composite_text_only"](
         parent, str(repo), trust_remote_code = True, subfolder = "weights"
     )
     model, info = transformers.AutoModelForCausalLM.from_pretrained(
@@ -930,7 +940,7 @@ def test_module_keyed_device_map_keeps_the_full_composite(tmp_path):
     parent = _load_parent_config(repo)
     composite_map = {"language_model": "cpu", "vision_model": "cpu", "mlp1": "cpu"}
     plan = ns["_get_remote_composite_text_only"](parent, str(repo), trust_remote_code = True)
-    text_config, mapping = plan
+    text_config, mapping, _ = plan
     model = transformers.LlamaForCausalLM(text_config)
     # None of the standalone decoder's parameters falls under any key of the composite's map.
     assert not any(
@@ -1004,7 +1014,7 @@ def test_variant_checkpoint_is_probed_where_the_load_reads_it(tmp_path, monkeypa
     parent = _load_parent_config(repo)
     assert ns["_checkpoint_weight_names"](str(repo)) is None
     assert ns["_checkpoint_weight_names"](str(repo), variant = "fp16") == set(weights)
-    text_config, mapping = ns["_get_remote_composite_text_only"](
+    text_config, mapping, _ = ns["_get_remote_composite_text_only"](
         parent, str(repo), trust_remote_code = True, variant = "fp16"
     )
     model, info = transformers.AutoModelForCausalLM.from_pretrained(
@@ -1098,7 +1108,7 @@ def test_nested_text_class_is_resolved_at_code_revision(tmp_path, monkeypatch):
         )
         is None
     )
-    text_config, mapping = ns["_get_remote_composite_text_only"](
+    text_config, mapping, _ = ns["_get_remote_composite_text_only"](
         parent,
         repo_id,
         trust_remote_code = True,
@@ -1130,3 +1140,74 @@ def test_loader_and_vision_forward_code_revision_to_the_plan():
                 break
             j += 1
         assert 'code_revision = kwargs.get("code_revision"),' in src[i : j + 1], path.name
+
+
+# ---------------------------------------------------------------- adapters on wrapper-only modules
+
+
+@needs_tf5
+def test_adapter_on_wrapper_only_modules_keeps_the_full_model(tmp_path):
+    # LoRA on vision_model / mlp1 only: no key falls under language_model., yet the standalone decoder
+    # has neither module, so PeftModel finds no target on it.
+    peft = pytest.importorskip("peft")
+
+    ns = _ns()
+    repo, _ = _write_repo(tmp_path, name = "peft_vision")
+    parent = _load_parent_config(repo)
+    text_config, mapping, text_names = ns["_get_remote_composite_text_only"](
+        parent, str(repo), trust_remote_code = True
+    )
+    wrapper = transformers.AutoModelForCausalLM.from_pretrained(
+        repo, trust_remote_code = True, dtype = torch.float32, local_files_only = True
+    )
+    adapter = tmp_path / "vision_adapter"
+    peft.get_peft_model(
+        wrapper, peft.LoraConfig(r = 4, target_modules = ["vision_model", "mlp1"])
+    ).save_pretrained(adapter)
+    text = transformers.AutoModelForCausalLM.from_pretrained(
+        repo,
+        config = text_config,
+        key_mapping = mapping,
+        trust_remote_code = True,
+        dtype = torch.float32,
+        local_files_only = True,
+    )
+    with pytest.raises(ValueError):
+        peft.PeftModel.from_pretrained(text, adapter)
+    assert ns["_adapter_fits_text_model"](str(adapter), mapping, text_names = text_names) is False
+
+
+@needs_tf5
+def test_adapter_in_text_model_naming_still_fits(tmp_path):
+    # LoRA on attention plus a saved lm_head / embed_tokens with tied embeddings (lm_head.weight is a tied alias).
+    peft = pytest.importorskip("peft")
+
+    ns = _ns()
+    repo, _ = _write_repo(
+        tmp_path,
+        llm_extra = {"tie_word_embeddings": True},
+        drop = ("lm_head.weight",),
+        name = "peft_tied",
+    )
+    parent = _load_parent_config(repo)
+    text_config, mapping, text_names = ns["_get_remote_composite_text_only"](
+        parent, str(repo), trust_remote_code = True
+    )
+    text = transformers.AutoModelForCausalLM.from_pretrained(
+        repo,
+        config = text_config,
+        key_mapping = mapping,
+        trust_remote_code = True,
+        dtype = torch.float32,
+        local_files_only = True,
+    )
+    adapter = tmp_path / "tied_adapter"
+    peft.get_peft_model(
+        text,
+        peft.LoraConfig(
+            r = 4,
+            target_modules = ["q_proj", "v_proj", "lm_head"],
+            modules_to_save = ["embed_tokens"],
+        ),
+    ).save_pretrained(adapter)
+    assert ns["_adapter_fits_text_model"](str(adapter), mapping, text_names = text_names) is True

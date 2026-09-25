@@ -1938,12 +1938,13 @@ class FastModel(FastBaseModel):
                         revision = revision,
                         local_files_only = local_files_only,
                         cache_dir = kwargs.get("cache_dir"),
+                        text_names = remote_text_only[2],
                     )
                 ):
                     # An adapter trained on the full composite names its weights (and often its target regex) under the wrapper prefix; keep the full model it was trained on.
                     remote_text_only = None
                 if remote_text_only is not None:
-                    text_config, _text_key_mapping = remote_text_only
+                    text_config, _text_key_mapping = remote_text_only[:2]
                     logger.warning_once(
                         f"Loading {old_model_name} as text-only: only its language model "
                         f"({type(text_config).__name__}) is built, vision/audio weights are skipped. "

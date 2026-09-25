@@ -1365,7 +1365,8 @@ def _resolve_text_causal_lm_class(
 
 
 def _meta_parameter_names(model_class, config):
-    # Parameter names of model_class(config), built on the meta device (no memory, no weights). Tied weights count once.
+    # Parameter names of model_class(config), built on the meta device (no memory, no weights).
+    # Returns (names with tied weights counted once, every name including tied aliases such as lm_head.weight).
     import torch
 
     config = copy.deepcopy(config)
@@ -1376,7 +1377,10 @@ def _meta_parameter_names(model_class, config):
         pass
     with torch.device("meta"):
         model = model_class(config)
-    return [name for name, _ in model.named_parameters()]
+    return (
+        [name for name, _ in model.named_parameters()],
+        [name for name, _ in model.named_parameters(remove_duplicate = False)],
+    )
 
 
 def _get_remote_composite_text_only(
@@ -1394,7 +1398,7 @@ def _get_remote_composite_text_only(
     code_revision = None,
 ):
     # Text-only load plan for a repo-code composite (Nemotron-Omni: llm_config + vision/sound) whose text sub-model is a whole causal LM stored under one prefix.
-    # Returns (text_config, key_mapping) or None; None keeps the previous full-model load.
+    # Returns (text_config, key_mapping, text_parameter_names) or None; None keeps the previous full-model load.
     if not trust_remote_code or not _is_remote_code_config(model_config):
         return None
     if isinstance(device_map, dict) and any(key != "" for key in device_map):
@@ -1456,7 +1460,7 @@ def _get_remote_composite_text_only(
             in parent_class_names
         ):
             return None  # the text entry points back at the wrapper itself
-        expected = _meta_parameter_names(text_class, text_config)
+        expected, text_names = _meta_parameter_names(text_class, text_config)
     except Exception:
         return None
     names = _checkpoint_weight_names(
@@ -1474,7 +1478,7 @@ def _get_remote_composite_text_only(
     qc = getattr(text_config, "quantization_config", None)
     if qc is not None:
         text_config.quantization_config = _strip_skip_module_prefix(qc, prefix)
-    return text_config, {"^" + re.escape(prefix): ""}
+    return text_config, {"^" + re.escape(prefix): ""}, text_names
 
 
 def _strip_skip_module_prefix(qc, prefix):
@@ -1507,9 +1511,11 @@ def _adapter_fits_text_model(
     revision = None,
     local_files_only = False,
     cache_dir = None,
+    text_names = None,
 ):
     # False when a PEFT adapter was trained on the full composite (its weights sit under the wrapper prefix
-    # key_mapping strips) or its weights cannot be read: PeftModel would drop them on the standalone decoder.
+    # key_mapping strips, or under a wrapper-only module outside text_names such as vision_model.) or its
+    # weights cannot be read: PeftModel would drop them on the standalone decoder.
     import os
 
     names = None
@@ -1545,9 +1551,16 @@ def _adapter_fits_text_model(
     if not names:
         return False
     patterns = [re.compile(p) for p in key_mapping]
+    # Standalone decoder modules that own a weight; LoRA tensors hang off them (q_proj.lora_A.weight).
+    owners = {n.rsplit(".", 1)[0] for n in text_names or () if "." in n}
     for name in names:
         name = name.removeprefix("base_model.model.")
         if any(p.match(name) for p in patterns):
+            return False
+        if text_names is None or name in text_names:
+            continue
+        parts = name.split(".")
+        if not any(".".join(parts[:i]) in owners for i in range(1, len(parts))):
             return False
     return True
 

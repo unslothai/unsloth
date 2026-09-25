@@ -1322,7 +1322,7 @@ class FastBaseModel:
                     code_revision = kwargs.get("code_revision"),
                 )
                 if remote_text_only is not None:
-                    auto_config, _text_key_mapping = remote_text_only
+                    auto_config, _text_key_mapping = remote_text_only[:2]
                     auto_model = AutoModelForCausalLM
                     _merge_key_mapping(kwargs, _text_key_mapping)
                     text_only_decoder = True
