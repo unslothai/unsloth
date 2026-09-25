@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for ``diffusion_qwenimage21.py`` (the Qwen-Image-2.1 step without per-step host syncs).
-
-CPU by default: a tiny random ``QwenImage21Transformer2DModel`` runs the pipeline's call pattern (one
-``extract`` step, then ``cached`` steps) through the stock forward and the fast one, and every step
-must match bit for bit. Skipped when the installed diffusers has no Qwen-Image 2.1.
-"""
+"""Stock vs fast Qwen-Image-2.1 forward, bit for bit; skipped without Qwen-Image 2.1 in diffusers."""
 
 from __future__ import annotations
 
@@ -54,7 +49,6 @@ def _inputs(
     pad = 0,
     seed = 7,
 ):
-    """Pipeline-shaped inputs: ``cond`` puts a condition image's slots in the middle of the text."""
     g = torch.Generator().manual_seed(seed)
     th, tw = target
     shapes = []
@@ -94,7 +88,6 @@ def _render(
     steps = 4,
     cache = True,
 ):
-    """The QwenImage21Pipeline denoise loop's transformer calls; returns every step's output."""
     outs = []
     kv = qmod.QwenImage21KVCache(len(m.transformer_blocks)) if cache else None
     lat = inp["latents"]
@@ -134,7 +127,6 @@ def test_fast_step_is_bit_identical_to_the_stock_forward(case, cache):
     assert q.install()
     assert getattr(type(m).forward, "__unsloth_q21_fast_step__", False)
     first = _render(m, inp, cache = cache)
-    # A second render with fresh mask objects finds the layout by content.
     again = _render(m, _inputs(**case), cache = cache)
     for a, b, c in zip(ref, first, again):
         assert torch.equal(a, b)
@@ -165,7 +157,6 @@ def test_layout_is_built_once_per_render_and_found_by_content():
 
 
 def test_a_different_layout_of_the_same_length_is_not_reused():
-    """Same shapes, image slots moved: the content key must tell them apart."""
     m = _model()
     a = _inputs(text = 8, cond = (4, 4))
     b = _inputs(text = 8, cond = (4, 4))
@@ -230,7 +221,6 @@ def test_install_is_idempotent_and_uninstall_restores_the_stock_forward():
     patched = vars(cls)["forward"]
     assert patched is not stock
     assert patched.__unsloth_stock_forward__ is stock
-    # The graph layer and hooks read the signature; it must be the stock one.
     import inspect
 
     assert inspect.signature(patched) == inspect.signature(stock)
@@ -241,8 +231,7 @@ def test_install_is_idempotent_and_uninstall_restores_the_stock_forward():
 
 
 def test_installed_diffusers_matches_the_fingerprints():
-    """Fails when the pinned diffusers changes one of these functions: re-check the fast forward
-    against the new stock one, then add the new digest."""
+    """On failure: re-check the fast forward against the new stock function, then add its digest."""
     assert q.why_unsupported(qmod) is None
 
 
@@ -351,7 +340,7 @@ def test_a_cached_layout_does_not_alias_the_callers_mask():
     m = _model()
     inp = _inputs(text = 8, cond = (4, 4), pad = 2)
     assert q.install()
-    _render(m, dict(inp, encoder_hidden_states_mask = None))  # the text index is built lazily, later
+    _render(m, dict(inp, encoder_hidden_states_mask = None))
     original = inp["img_mask"].clone()
     inp["img_mask"][:, :12] = inp["img_mask"][:, :12].roll(3, dims = 1).clone()
     fresh = dict(inp, img_mask = original)

@@ -5549,7 +5549,6 @@ class DiffusionBackend:
                     else:
                         uninstall_patches()
                         uninstall_arch_patches()
-                    # Every tier: bit-identical, it only stops rebuilding the token layout on every step.
                     from .diffusion_qwenimage21 import install_for_pipe as install_q21_fast_step
 
                     install_q21_fast_step(pipe, logger)

@@ -1,26 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Qwen-Image-2.1 denoiser forward without the per-step host syncs.
+"""Qwen-Image-2.1 denoiser forward with the per-step token layout built once (bit-identical).
 
-The stock ``QwenImage21Transformer2DModel.forward`` rebuilds the joint token layout on EVERY denoising
-step before its first block can launch: ``repeat_interleave`` with a tensor of repeats, a boolean
-``index_put``, two ``nonzero``, ``.tolist()`` in the RoPE and prefix-segment builders and
-``int(tensor.sum())``. Each is a device-to-host sync (about 18 per step), and the RoPE positions are
-built as Python lists. None of it changes between steps: it is a function of ``img_mask``,
-``img_shapes`` and the device only.
-
-The forward below builds that layout once per render and then runs the stock ops on the same
-tensors, so the output is bit-identical. The layout is found again from the ``img_mask`` object the
-pipeline passes on every step (no sync) and, across renders, from its content (one sync on the first
-step). On the cached (decode) steps the stock forward projects the text and then slices it off; that
-projection is skipped, and only the rows the blocks read are written.
-
-Installed on the class only when the installed diffusers' functions are the ones this was written
-against (a source fingerprint that ignores docstrings, comments and blank lines); any other version
-keeps the stock forward. Training (grad enabled) and a whole-model ``torch.compile`` trace take the
-stock forward. Kill switch: ``UNSLOTH_DIFFUSION_Q21_FAST_STEP=0``.
-"""
+Kill switch: ``UNSLOTH_DIFFUSION_Q21_FAST_STEP=0``."""
 
 from __future__ import annotations
 
@@ -42,8 +25,7 @@ FAST_STEP_ENV = "UNSLOTH_DIFFUSION_Q21_FAST_STEP"
 _MODULE = "diffusers.models.transformers.transformer_qwenimage21"
 _CLASS = "QwenImage21Transformer2DModel"
 
-# Source digests (``_digest``) of every stock function whose behaviour the fast forward relies
-# on, as shipped from the diffusers commit that added Qwen-Image 2.1 through current main.
+# Stock diffusers sources the fast forward relies on; any drift keeps the stock forward.
 _FINGERPRINTS: dict[str, frozenset] = {
     "forward": frozenset({"7c1fd48f75efbe41"}),
     "build_token_metadata": frozenset({"51818c1674e0d406"}),
@@ -51,7 +33,6 @@ _FINGERPRINTS: dict[str, frozenset] = {
     "prefix_segments": frozenset({"27729cffc22b0aa5"}),
 }
 
-# Layouts kept per transformer: a render needs one per prompt layout (cond and uncond can differ).
 _LAYOUTS_PER_MODULE = 8
 _RECENT_PER_MODULE = 4
 
@@ -64,8 +45,7 @@ def fast_step_disabled() -> bool:
 
 
 def _digest(fn: Any) -> Optional[str]:
-    """Hash of ``fn``'s source without docstrings, comments or blank lines, or None when unreadable.
-    Source text, not ``ast.dump``, whose output changes between Python versions."""
+    """Source text, not ``ast.dump``, whose output changes between Python versions."""
     try:
         src = textwrap.dedent(inspect.getsource(inspect.unwrap(fn)))
         tree = ast.parse(src)
@@ -112,7 +92,6 @@ def stock_digests(module: Any) -> dict[str, Optional[str]]:
 
 
 def why_unsupported(module: Any) -> Optional[str]:
-    """None when every fingerprinted function matches; else which one drifted."""
     got = stock_digests(module)
     for name, want in _FINGERPRINTS.items():
         if got.get(name) not in want:
@@ -121,8 +100,6 @@ def why_unsupported(module: Any) -> Optional[str]:
 
 
 class _Layout:
-    """The step-invariant token layout of one ``(img_mask row 0, img_shapes[0], device)``."""
-
     __slots__ = (
         "repeats",
         "image_pad_mask",
@@ -142,8 +119,6 @@ class _Layout:
 
 
 def _build_layout(model: Any, mod: Any, img_mask: Any, shapes: list, device: Any) -> _Layout:
-    """The stock forward's layout ops, run once. Every tensor is produced by the same call the stock
-    forward makes on every step, so reusing it is exact."""
     import torch
 
     lay = _Layout()
@@ -155,8 +130,7 @@ def _build_layout(model: Any, mod: Any, img_mask: Any, shapes: list, device: Any
     lay.rotary_emb = model.pos_embed(shapes, lay.image_pad_mask, device = device)
     lay.image_ids, lay.target_token_mask = model.build_token_metadata(lay.image_pad_mask, shapes)
     lay.prefix_len = int((~lay.target_token_mask).sum())
-    # The decode steps read rows [prefix_len:] only; when every one of them is an image row they all
-    # come from hidden_states and the text projection never reaches the blocks.
+    # Decode steps read rows [prefix_len:] only; all-image tails never need the text projection.
     lay.tail_is_image = bool(lay.image_pad_mask[lay.prefix_len :].all())
     lay.vlm_row = img_mask[0].clone()  # the caller may reuse and rewrite its mask
     lay._segments = None
@@ -171,7 +145,6 @@ def _segments(lay: _Layout, mod: Any) -> list:
 
 
 def _vlm_text(lay: _Layout, length: int) -> Any:
-    """Index form of the stock ``~img_mask[0][:length]`` boolean selector (no sync when reused)."""
     idx = lay._vlm_text.get(length)
     if idx is None:
         idx = (~lay.vlm_row[:length]).nonzero(as_tuple = True)[0]
@@ -180,7 +153,6 @@ def _vlm_text(lay: _Layout, length: int) -> Any:
 
 
 def _mask_version(img_mask: Any) -> Any:
-    """The in-place write counter, or None for an inference tensor, which has none."""
     try:
         return img_mask._version
     except Exception:  # noqa: BLE001 - inference tensors do not track versions
@@ -202,9 +174,7 @@ def _layout_for(
     if state is None:
         state = {"recent": [], "by_content": {}}
         model.__dict__["_unsloth_q21_layouts"] = state
-    # Same img_mask object as a recent step of this render: the pipeline builds it once per call and
-    # passes it to every step, so this is the steady-state path and touches no device memory. Only a
-    # cached step may trust it (its KV cache already fixes the prefix layout); the others check content.
+    # Only a cached step may trust img_mask identity (its KV cache fixes the prefix); others check content.
     version = _mask_version(img_mask)
     if reuse_identity:
         for ref, key, lay in state["recent"]:
@@ -229,7 +199,6 @@ def _layout_for(
 
 
 def forget_layouts(model: Any) -> None:
-    """Drop the cached layouts (unload, or a device move)."""
     try:
         model.__dict__.pop("_unsloth_q21_layouts", None)
     except Exception:  # noqa: BLE001
@@ -245,15 +214,13 @@ def _cached_step(
     encoder_hidden_states_mask: Any,
     kv_cache: Any,
 ) -> Any:
-    """One ``cached`` (decode) step on a layout whose tail rows are all image rows: the stock ops on
-    the rows the blocks read, with no host sync. Returns the ``proj_out`` output."""
     import torch
 
     batch_size = hidden_states.shape[0]
     device = hidden_states.device
     prefix_len = lay.prefix_len
     hidden_states = model.img_in(hidden_states)
-    # The buffer keeps the stock (batch, total, dim) layout so the blocks see the same strides.
+    # Keep the stock (batch, total, dim) layout so the blocks see the same strides.
     full = torch.empty(
         (batch_size, lay.total, hidden_states.shape[2]), dtype = text_dtype, device = device
     )
@@ -302,8 +269,6 @@ def _autocast_state(device_type: str) -> tuple:
 
 
 def _text_dtype(model: Any, encoder_hidden_states: Any) -> tuple:
-    """``(key, dtype)``: the text projection's output dtype, which the stock joint buffer takes,
-    remembered from a full step and keyed on what decides it (None until a full step ran)."""
     weight = getattr(getattr(model.txt_in, "out_layer", None), "weight", None)
     key = (
         encoder_hidden_states.dtype,
@@ -315,7 +280,6 @@ def _text_dtype(model: Any, encoder_hidden_states: Any) -> tuple:
 
 
 def _make_forward(mod: Any, stock: Any) -> Any:
-    """The fast forward for ``mod``'s class; ``stock`` is the installed forward (decorated)."""
     import torch
 
     stock_inner = inspect.unwrap(stock)
@@ -473,8 +437,6 @@ def _make_forward(mod: Any, stock: Any) -> Any:
 
 
 def install(logger: Any = None) -> bool:
-    """Patch the installed ``QwenImage21Transformer2DModel.forward``. Idempotent. False (stock kept)
-    under the kill switch, without the class, or when a fingerprinted function drifted."""
     if fast_step_disabled():
         return False
     try:
@@ -508,7 +470,6 @@ def install(logger: Any = None) -> bool:
 
 
 def install_for_pipe(pipe: Any, logger: Any = None) -> bool:
-    """``install`` when ``pipe``'s denoiser is Qwen-Image-2.1; never raises."""
     if type(getattr(pipe, "transformer", None)).__name__ != _CLASS:
         return False
     try:
@@ -520,7 +481,6 @@ def install_for_pipe(pipe: Any, logger: Any = None) -> bool:
 
 
 def uninstall() -> None:
-    """Restore every stock forward this module replaced. Idempotent."""
     with _LOCK:
         for cls, stock in list(_INSTALLED.items()):
             if getattr(vars(cls).get("forward"), "__unsloth_q21_fast_step__", False):
