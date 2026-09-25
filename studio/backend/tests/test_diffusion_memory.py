@@ -2233,8 +2233,6 @@ def test_apply_memory_plan_threads_the_resident_transformer_flag(monkeypatch):
     assert seen == {"stream_text_encoders": True}
 
 
-
-
 def _sized_stream_te_kwargs(monkeypatch, sizes, budget, **call_kw):
     import core.inference.diffusion_memory as mem
 
