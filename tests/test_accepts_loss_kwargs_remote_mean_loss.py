@@ -315,7 +315,6 @@ def test_explicit_mean_reduction_is_still_a_mean_loss(tmp_path):
 
 
 def test_instance_declaration_is_kept(tmp_path):
-    # HF Trainer honours an instance attribute set in __init__; the heuristic must not overwrite it.
     ns = _load()
     mods = _models(tmp_path)
     model = mods.InstanceDeclaredForCausalLM()
@@ -327,7 +326,6 @@ def test_instance_declaration_is_kept(tmp_path):
 
 
 def test_repeated_calls_keep_the_first_answer(tmp_path):
-    # Load time and Trainer.__init__ both run the fix; the second call must agree with the first.
     ns = _load()
     mods = _models(tmp_path)
     model = mods.NemotronHForCausalLM()
@@ -425,7 +423,6 @@ def test_the_instance_forward_is_the_one_inspected(tmp_path):
     ns = _load()
     mods = _models(tmp_path)
 
-    # A replacement forward that consumes num_items_in_batch keeps the HF default.
     model = mods.NemotronHForCausalLM()
 
     def consuming_forward(
@@ -472,7 +469,6 @@ def test_an_lm_head_model_is_a_causal_lm(tmp_path):
 
 
 def test_a_forward_replaced_after_load_is_checked_again(tmp_path):
-    # The load-time guess must not stick once the user swaps in a forward that consumes num_items_in_batch.
     ns = _load()
     mods = _models(tmp_path)
     model = mods.NemotronHForCausalLM()

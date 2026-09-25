@@ -4120,7 +4120,6 @@ _DEFAULT_CE_NAMESPACE = {
 
 
 def _resolve_ce_callee(func, namespace):
-    # Name of the PyTorch cross-entropy op this callee is bound to in namespace, else None.
     dotted = _dotted_name(func)
     if dotted is None or not namespace:
         return None
@@ -4180,7 +4179,6 @@ def _forward_ignores_num_items_in_batch(model):
             return None
         seen.add(id(m))
         name = type(m).__name__
-        # QWenLMHeadModel-style remote classes are causal LMs too.
         if "CausalLM" in name or "ForConditionalGeneration" in name or "LMHeadModel" in name:
             break
         nxt = getattr(m, "base_model", None)
