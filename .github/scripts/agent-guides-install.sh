@@ -36,16 +36,40 @@ npm_retry() {
   return 1
 }
 
+# An installer option written as ?--flag is one we pass only to save time, and it
+# is kept only while the downloaded installer still parses it as a case label.
+# These installers track the vendor's main branch and treat any unknown option as
+# fatal, so a vendor dropping a nicety turned every PR red: hermes removed
+# --no-skills on 2026-09-24. Everything else is required and passed as written.
+installer_args() {
+  local script="$1"; shift
+  local arg flag
+  for arg in "$@"; do
+    if [[ "$arg" == \?* ]]; then
+      flag="${arg#\?}"
+      if grep -qE -- "(^|[[:space:]|(])${flag}[|)]" "$script"; then
+        printf '%s\n' "$flag"
+      else
+        echo "[install] the installer no longer takes $flag; installing without it" | tee -a "$LOG" >&2
+      fi
+    else
+      printf '%s\n' "$arg"
+    fi
+  done
+}
+
 # curl|bash installers, retried at the curl layer. We download to a temp file
 # first and only execute on a fully successful fetch, so a truncated download
 # (network hiccup mid-stream) can never run a half-written installer.
 curl_bash() {
   local url="$1"; shift
   local i tmp
+  local -a args
   tmp="$(mktemp)"
   for i in 1 2 3; do
     if curl -fsSL --retry 3 --retry-delay 5 "$url" -o "$tmp" 2>>"$LOG" \
-        && bash "$tmp" "$@" >> "$LOG" 2>&1; then
+        && mapfile -t args < <(installer_args "$tmp" "$@") \
+        && bash "$tmp" "${args[@]}" >> "$LOG" 2>&1; then
       rm -f "$tmp"
       return 0
     fi
@@ -95,7 +119,7 @@ case "$AGENT" in
     # start.py install_hint:
     #   curl -fsSL .../NousResearch/hermes-agent/main/scripts/install.sh | bash
     curl_bash "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh" \
-      --non-interactive --skip-setup --skip-browser --no-skills \
+      --non-interactive '?--skip-setup' '?--skip-browser' '?--no-skills' \
       || install_fail "hermes installer failed"
     echo "$HOME/.local/bin" >> "$GITHUB_PATH"
     ;;
