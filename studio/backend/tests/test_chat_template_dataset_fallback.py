@@ -13,8 +13,6 @@ OVERRIDE = "unsloth-override"
 
 
 class _TemplatedTokenizer:
-    """Only the checkpoint template supports tool turns."""
-
     eos_token = "</s>"
 
     def __init__(self):
@@ -166,7 +164,6 @@ def test_a_separate_eval_split_renders_with_the_template_training_chose(monkeypa
 
 
 def test_an_eval_split_does_not_move_the_template_training_chose(monkeypatch):
-    # Evaluation must keep training's choice even when its rows fail.
     tokenizer = _TemplatedTokenizer()
 
     train = _format(_dataset_info(_plain_convo), tokenizer, monkeypatch)
