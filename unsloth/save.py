@@ -6960,6 +6960,47 @@ def _openvino_export_args(quantization_type, export_kwargs):
     return args
 
 
+# Prints the [min, max] transformers bounds optimum-intel's OpenVINO exporter declares for one architecture and task.
+_OPENVINO_BOUNDS_PROBE = """
+import json, sys
+import optimum.exporters.openvino.model_configs
+from optimum.exporters.tasks import TasksManager
+c = TasksManager.get_exporter_config_constructor(
+    exporter = "openvino", model_type = sys.argv[1], task = sys.argv[2], library_name = "transformers"
+)
+c = getattr(c, "func", c)
+bounds = (getattr(c, "MIN_TRANSFORMERS_VERSION", None), getattr(c, "MAX_TRANSFORMERS_VERSION", None))
+print(json.dumps([None if v is None else str(getattr(v, "base_version", v)) for v in bounds]))
+"""
+
+
+def _openvino_transformers_mismatch(model_type, task):
+    """Why optimum-intel will refuse to export this architecture under the installed transformers, or None. It checks its per-architecture bounds only inside the export, after the 16bit merge is written (qwen2_vl, qwen3_vl and gemma3_text stop at transformers 5.0 in optimum-intel 2.2), so ask first, as the compressed export does for llm-compressor's ceiling. The probe runs in a child process because optimum's export registry loads the OpenVINO runtime; any failure defers to the export."""
+    import transformers
+
+    try:
+        probe = subprocess.run(
+            [sys.executable, "-c", _OPENVINO_BOUNDS_PROBE, model_type, task],
+            capture_output = True,
+            text = True,
+            timeout = 300,
+        )
+        low, high = json.loads(probe.stdout.strip().splitlines()[-1])
+        installed = Version(transformers.__version__)
+        too_old = low is not None and installed < Version(low)
+        too_new = high is not None and installed > Version(high)
+    except Exception:
+        return None
+    if not (too_old or too_new):
+        return None
+    needed = f"transformers >= {low}" if too_old else f"transformers <= {high.replace('99', '*')}"
+    return (
+        f"Unsloth: optimum-intel cannot export {model_type} under transformers "
+        f"{transformers.__version__}; it needs {needed}. Install a supported transformers, or an "
+        "optimum-intel that supports this one, before exporting."
+    )
+
+
 def _unsloth_save_openvino(
     model,
     save_directory: Union[str, os.PathLike],
@@ -7002,6 +7043,11 @@ def _unsloth_save_openvino(
         "task", "image-text-to-text" if is_vlm else "text-generation-with-past"
     )
     cli_args = _openvino_export_args(quantization_type, export_kwargs)
+    model_type = getattr(config, "model_type", None)
+    if isinstance(model_type, str):
+        mismatch = _openvino_transformers_mismatch(model_type, export_kwargs["task"])
+        if mismatch:
+            raise RuntimeError(mismatch)
     if tokenizer is None:
         logger.warning_once(
             "Unsloth: No tokenizer was passed, so the OpenVINO export has none and "

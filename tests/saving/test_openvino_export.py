@@ -67,6 +67,7 @@ def export(monkeypatch, tmp_path):
     """Call _unsloth_save_openvino with the merge and the subprocess faked, recording both."""
     seen = {"merges": [], "cmds": [], "envs": [], "staging": []}
     monkeypatch.setattr(save_mod, "_openvino_cli_parser", _fake_cli_parser)
+    monkeypatch.setattr(save_mod, "_openvino_transformers_mismatch", lambda model_type, task: None)
     monkeypatch.setattr(save_mod, "get_token", lambda: None)
 
     def fake_merge(**kwargs):
@@ -193,6 +194,60 @@ def test_missing_optimum_intel_fails_before_the_merge(export, monkeypatch):
     with pytest.raises(ImportError, match = "requires `optimum-intel` and `openvino`"):
         export()
     assert export.seen["merges"] == []
+
+
+def test_architecture_outside_optimum_bounds_fails_before_the_merge(export, monkeypatch, tmp_path):
+    seen = []
+
+    def mismatch(model_type, task):
+        seen.append((model_type, task))
+        return "Unsloth: optimum-intel cannot export qwen2_vl under transformers 5.5.0"
+
+    monkeypatch.setattr(save_mod, "_openvino_transformers_mismatch", mismatch)
+
+    class _FakeVLM:
+        config = type(
+            "cfg",
+            (),
+            {
+                "model_type": "qwen2_vl",
+                "architectures": ["Qwen2VLForConditionalGeneration"],
+                "vision_config": {},
+            },
+        )()
+
+    with pytest.raises(RuntimeError, match = "cannot export qwen2_vl"):
+        export(model = _FakeVLM())
+    assert seen == [("qwen2_vl", "image-text-to-text")]
+    assert export.seen["merges"] == [] and _leftover_staging(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "bounds, installed, expected",
+    [
+        ('[null, "5.0"]', "5.5.0", "transformers <= 5.0"),
+        ('[null, "5.2.99"]', "5.2.1", None),
+        ('[null, "5.2.99"]', "5.3.0", "transformers <= 5.2.*"),
+        ('["4.57", null]', "4.52.4", "transformers >= 4.57"),
+        ('["4.57", null]', "5.5.0", None),
+        ("[null, null]", "5.5.0", None),
+    ],
+)
+def test_bounds_probe_comparison(monkeypatch, bounds, installed, expected):
+    import transformers
+
+    monkeypatch.setattr(save_mod, "_OPENVINO_BOUNDS_PROBE", f"print({bounds!r})")
+    monkeypatch.setattr(transformers, "__version__", installed)
+    message = save_mod._openvino_transformers_mismatch("some_model", "text-generation-with-past")
+    if expected is None:
+        assert message is None
+    else:
+        assert expected in message and installed in message
+
+
+def test_bounds_probe_failure_defers_to_the_export(monkeypatch):
+    monkeypatch.setattr(save_mod, "_OPENVINO_BOUNDS_PROBE", "raise SystemExit(3)")
+    assert save_mod._openvino_transformers_mismatch("llama", "text-generation-with-past") is None
 
 
 def test_staging_sits_beside_the_destination_and_is_removed(export, tmp_path):
@@ -331,6 +386,16 @@ def _tiny_llama_and_tokenizer():
         eos_token_id = tokenizer.eos_token_id,
     )
     return LlamaForCausalLM(config), tokenizer
+
+
+def test_real_bounds_probe_allows_llama():
+    pytest.importorskip("optimum.intel")
+    # Llama exports under this stack (the test below), so the probe must not block it.
+    assert save_mod._openvino_transformers_mismatch("llama", "text-generation-with-past") is None
+    assert (
+        save_mod._openvino_transformers_mismatch("not_a_model_type", "text-generation-with-past")
+        is None
+    )
 
 
 def test_real_export_while_the_forward_is_patched(monkeypatch, tmp_path):
