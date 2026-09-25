@@ -60,10 +60,8 @@ _INDUCTOR_FLAGS = (
 _INDUCTOR_TRITON_FLAGS = (("unique_kernel_names", "inductor_triton_unique_kernel_names"),)
 
 
-# allow_fp16_accumulation has one owner. Loads and unloads write the process value through ``_write_fp16_accum``; a
-# decode overrides it only for its own duration through ``fp16_accumulation_scope``. A write or read that lands while
-# a scope is open goes to the recorded process value, so closing the scope applies the latest one instead of a stale
-# copy taken when it opened.
+# allow_fp16_accumulation has one owner: writes during an open scope go to the recorded process value, so closing
+# the scope restores the latest value, not a stale copy.
 _FP16_ACCUM_LOCK = threading.RLock()
 _fp16_accum_scopes: list = []
 _fp16_accum_base: Optional[bool] = None
@@ -87,8 +85,7 @@ def _write_fp16_accum(matmul: Any, value: Any) -> None:
 
 @contextmanager
 def fp16_accumulation_scope(value: bool) -> Iterator[None]:
-    """Hold ``torch.backends.cuda.matmul.allow_fp16_accumulation`` at ``value`` for the body, then put back the
-    process value, including one a concurrent load or unload wrote meanwhile."""
+    """Hold ``allow_fp16_accumulation`` at ``value`` for the body, then restore the latest process value."""
     global _fp16_accum_base
     import torch
 

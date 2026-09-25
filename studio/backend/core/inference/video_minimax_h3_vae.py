@@ -1,42 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Faster MiniMax-H3 video VAE encode and decode on the Diffusers path.
+"""Faster MiniMax-H3 video VAE encode and decode: Triton-fused GroupNorm/SiLU/pad, RMSNorm/rope/SwiGLU and
+tile batching around Diffusers' own matmuls and convolutions.
 
-Diffusers' ``AutoencoderKLMiniMaxH3`` spends most of its time outside its matmuls. Profiled on a B200 at
-1344x768: the encoder's per-frame GroupNorm, SiLU, reflect pad and causal pad are six full passes over an
-activation between two convolutions (plus cuDNN's own NCDHW <-> NDHWC conversions around every conv), and the
-ViT decoder's fp32 RMSNorms, rope ``torch.cat``s and residual arithmetic cost more than its GEMMs and attention
-together. This module replaces those passes with a few Triton kernels and leaves the matmuls, the convolutions,
-the tiling and the chunking exactly as Diffusers runs them.
-
-Levers, each reported by name. Numbers are 1344x768, 129 frames of real footage, B200:
-
-* ``fused_encoder``: per-frame GroupNorm + SiLU + reflect/causal padding in one kernel that writes the
-  channels-last layout the next convolution wants, so cuDNN runs NDHWC natively. Each conv's bias rides into the
-  next fused pass instead of PyTorch's separate strided bias add. A single-frame encode (the keyframe and
-  image-reference path) convolves only the last temporal tap instead of two all-zero frames. Same float32
-  arithmetic: 122 dB latent SNR against the stock encoder with TF32 off on both sides.
-* ``fp16_encoder``: the encoder runs in float16 (statistics and epilogues in float32) instead of float32 with TF32
-  convs. TF32 already rounds every conv input to float16's 10-bit mantissa, and the encode recipe rounds its
-  latent to float16 afterwards: 64 dB latent SNR against the stock TF32 encode, 59 dB PSNR / LPIPS 6e-5 after
-  decoding, against a 22 dB reconstruction floor for the VAE itself on the same footage. A keyframe moves 25x
-  less than the posterior noise the recipe samples on top. ``default`` and ``max``.
-* ``fused_decoder``: float32 RMSNorm fused with the residual add, per-head QK RMSNorm fused with the partial rope
-  (in place), and SwiGLU in one pass, keeping the reference's float16 / float32 rounding points: 77.6 dB PSNR
-  against the stock decode, 98.6% of 8-bit values identical.
-* ``tile_batch``: several spatial tiles of a clip go through the decoder as one batch (bit-identical).
-* ``fp16_accum`` (``max`` on consumer GPUs, diffusion_speed's rule for a float16-compute workload): the decode's
-  float16 GEMMs accumulate in float16, 64.5 dB PSNR against float32 accumulation. Everywhere else the flag is held
-  OFF for the decode: the bf16 denoiser's speed layer sets it process-wide on consumer GPUs in every tier, and it
-  used to leak into this float16-autocast decode. ``UNSLOTH_DISABLE_FP16_ACCUM=1`` turns it off here too. cuDNN has
-  no float16-accumulate mode, so the encoder's convolutions never see the flag.
-* ``int8_decoder`` (opt-in, ``UNSLOTH_H3_VAE_INT8=1``): the second half of the decoder's blocks as ConvRot W8A8
-  through ``torch._int_mm`` (62 dB; all blocks measured 53 dB, the early blocks carry the error). Not faster on
-  a B200, where the activation quantisation eats the GEMM saving, so it stays out of every tier.
-
-``UNSLOTH_H3_VAE_FAST=0`` turns everything off. NVIDIA CUDA only: ROCm, MPS and CPU keep the stock Diffusers path,
-and so does a host without Triton.
+Levers: fused_encoder, fp16_encoder, fused_decoder, tile_batch, fp16_accum, int8_decoder (opt-in,
+``UNSLOTH_H3_VAE_INT8=1``). ``UNSLOTH_H3_VAE_FAST=0`` disables all. NVIDIA CUDA with Triton only; else stock.
 """
 
 from __future__ import annotations
@@ -51,7 +20,6 @@ from typing import Any, Optional
 H3_VAE_FAST_ENV = "UNSLOTH_H3_VAE_FAST"
 H3_VAE_INT8_ENV = "UNSLOTH_H3_VAE_INT8"
 H3_VAE_TILE_BATCH_ENV = "UNSLOTH_H3_VAE_TILE_BATCH"
-# The denoiser speed layer's own opt-out (diffusion_speed._enable_fp16_accumulation), honoured here too.
 FP16_ACCUM_DISABLE_ENV = "UNSLOTH_DISABLE_FP16_ACCUM"
 
 LEVER_FUSED_ENCODER = "fused_encoder"
@@ -61,20 +29,12 @@ LEVER_TILE_BATCH = "tile_batch"
 LEVER_INT8_DECODER = "int8_decoder"
 LEVER_FP16_ACCUM = "fp16_accum"
 
-# Tiles per decoder call. Each 256x256 tile over a 7-latent-frame clip is ~1.8k tokens. Measured at 1344x768 on a
-# B200: 1 tile 2.64 s, 2 tiles 2.03 s, 4 tiles 2.02 s (+0.06 GiB), 8 tiles 1.96 s (+0.61 GiB), so 4. The batch also
-# shrinks to what the device has free.
 _TILE_BATCH_MAX = 4
-# One tile's decoder activations measured ~150 MB at float16 (the 4-tile batch peaked 0.06 GiB over one tile at a
-# time, the 8-tile batch 0.61 GiB); 256 MiB per tile keeps headroom in the free-memory check.
 _TILE_BATCH_BYTES_PER_TILE = 256 * 2**20
-# ConvRot group for the int8 decoder: 256 input channels share one rotation.
 H3_VAE_INT8_ROT_GROUP = 256
-# Blocks the opt-in int8 decoder leaves in float16. Quantising only blocks 0-8 measured 56 dB, only 27-35 73 dB: the
-# early blocks' error propagates through the rest, so the first half stays float (62 dB for the whole decode).
+# int8 error in early blocks propagates through the rest, so the first half stays float.
 H3_VAE_INT8_FLOAT_BLOCKS = 18
-# Oldest Triton the kernels are verified on. Triton 3.2 compiles them but computes wrong GroupNorm statistics for a
-# channels-last input (the encoder's layout), silently, so older releases keep the stock path.
+# Triton 3.2 silently computes wrong GroupNorm statistics for a channels-last input.
 H3_VAE_MIN_TRITON = (3, 3)
 
 _SPEED_OFF = "off"
@@ -98,32 +58,23 @@ def plan_h3_vae_levers(
     workflow: Optional[str] = None,
     consumer_gpu: bool = False,
 ) -> tuple[str, ...]:
-    """Which levers a load should engage. Pure: no torch, no device probe, so it is testable anywhere.
-
-    ``off`` is the bit-exact tier and gets nothing. ``eager`` gets the rounding-level fusions and tile batching,
-    ``default`` adds the float16 encoder, ``max`` adds the float16-accumulate decode on a consumer GPU. ``t2va``
-    never encodes, so the encoder levers are skipped for it (its encoder is not even resident after
-    ``trim_h3_video_vae``). The int8 decoder is opt-in only.
-    """
+    """Which levers a load should engage. Pure: no torch, no device probe."""
     mode = str(speed_mode or "").strip().lower()
     if h3_vae_fast_disabled() or mode == _SPEED_OFF:
         return ()
     levers: list[str] = []
     if workflow != "t2va":
         levers.append(LEVER_FUSED_ENCODER)
-        # near-lossless rather than rounding-level, so not in "eager", the lossless-only tier
         if mode != _SPEED_EAGER:
             levers.append(LEVER_FP16_ENCODER)
     levers += [LEVER_FUSED_DECODER, LEVER_TILE_BATCH]
     if _env(H3_VAE_INT8_ENV) in _TRUE:
         levers.append(LEVER_INT8_DECODER)
-    # diffusion_speed's own rule for a float16-compute workload: float16 accumulation only under "max"
     if mode == _SPEED_MAX and consumer_gpu and _env(FP16_ACCUM_DISABLE_ENV) not in _TRUE:
         levers.append(LEVER_FP16_ACCUM)
     return tuple(levers)
 
 
-# ── Triton kernels ─────────────────────────────────────────────────────────────────────────────────────────────────
 
 
 @lru_cache(maxsize = 1)
@@ -135,8 +86,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         from triton.language.extra import libdevice
     except Exception:  # noqa: BLE001 - no Triton means the stock path
         return None
-    # this module's annotations are strings (``from __future__ import annotations``) and Triton 3.2 and older resolve
-    # ``tl.constexpr`` and the kernel bodies' names against the module globals, not this function's locals
+    # Triton <= 3.2 resolves string annotations against module globals, not this function's locals
     globals().update(triton = triton, tl = tl, libdevice = libdevice)
 
     @triton.jit
@@ -161,8 +111,6 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         BLOCK_P: tl.constexpr,
         HAS_BIAS: tl.constexpr,
     ):
-        # Per (batch*frame, pixel chunk): each group's count, mean and M2 over BLOCK_P pixels x its channels. A chunk
-        # spans every channel, so a channels-last read is one contiguous run per pixel.
         chunk = tl.program_id(0)
         bt = tl.program_id(1)
         t = bt % T
@@ -198,7 +146,6 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     def _gn_combine(
         pn_ptr, pmean_ptr, pm2_ptr, mean_ptr, rstd_ptr, n_chunks, G, eps, BLOCK: tl.constexpr
     ):
-        # Chan's parallel merge of the chunk partials of one (batch*frame, group), in two vectorised passes.
         row = tl.program_id(0)
         g = row % G
         bt = (row // G).to(tl.int64)
@@ -256,9 +203,6 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         BLOCK_W: tl.constexpr,
         BLOCK_C: tl.constexpr,
     ):
-        # One program per (batch, output frame, output row) x a block of output columns x a block of channels.
-        # Reads any 5D layout, writes channels-last [B, To, Ho, Wo, C]: the input plus its pending conv bias, then
-        # GroupNorm, SiLU, reflect in space and zero frames in front. 64-bit math only for the per-program bases.
         pid_row = tl.program_id(0)
         pid_w = tl.program_id(1)
         pid_c = tl.program_id(2)
@@ -282,7 +226,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         c = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
         cmask = c < C
         m = wmask[:, None] & cmask[None, :]
-        # int64: an NCDHW input's channel stride times 127 passes 2^31 from ~1 MP x 17 frames (an untiled encode)
+        # int64: an NCDHW channel stride x 127 passes 2^31 on a large untiled encode
         in_off = q.to(tl.int64)[:, None] * sw + c.to(tl.int64)[None, :] * sc
         v = tl.load(in_base + in_off, mask = m & t_ok, other = 0.0).to(tl.float32)
         if HAS_IN_BIAS:
@@ -293,7 +237,6 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             rs = tl.load(rstd_ptr + gidx, mask = cmask, other = 0.0)
             gw = tl.load(w_ptr + c, mask = cmask, other = 0.0).to(tl.float32)
             gb = tl.load(b_ptr + c, mask = cmask, other = 0.0).to(tl.float32)
-            # PyTorch's GroupNorm folds the affine the same way: y = x * (rstd * gamma) + (beta - mean * rstd * gamma)
             a = rs * gw
             v = v * a[None, :] + (gb - mu * a)[None, :]
             v = v / (1.0 + tl.exp(-v))
@@ -321,8 +264,6 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         R_SAME: tl.constexpr,
         BLOCK_P: tl.constexpr,
     ):
-        # o (channels-last, contiguous) = o + o_bias + r + r_bias over BLOCK_P pixels x all C channels, r in any
-        # layout: the conv bias, the shortcut's bias and the skip connection in one pass.
         p = tl.program_id(0) * BLOCK_P + tl.arange(0, BLOCK_P)
         pmask = p < P
         c = tl.arange(0, C)
@@ -358,7 +299,6 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     def _add_rmsnorm(
         h_ptr, o_ptr, s_ptr, w_ptr, n_ptr, N, eps, HAS_RES: tl.constexpr, BLOCK_N: tl.constexpr
     ):
-        # h (fp32 residual stream) += o * s in place, then n = rmsnorm(h) * w in float32, stored in n's dtype.
         row = tl.program_id(0).to(tl.int64)
         cols = tl.arange(0, BLOCK_N)
         mask = cols < N
@@ -387,9 +327,6 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         ROT: tl.constexpr,
         BLOCK: tl.constexpr,
     ):
-        # In place over BLOCK consecutive (token, head) rows of a contiguous [tokens, heads * HEAD_D] tensor, so one
-        # program reads one contiguous span: x = rope(rmsnorm_fp32(x) -> x.dtype). The rotary partner of lane d is
-        # d +- ROT/2, gathered from the lines the first load already brought in.
         hr = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
         rmask = hr < n_head_rows
         d = tl.arange(0, HEAD_D)
@@ -408,8 +345,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         cs_m = rmask[:, None] & rot[None, :]
         cos = tl.load(cos_ptr + cs_off, mask = cs_m, other = 1.0).to(tl.float32)
         sin = tl.load(sin_ptr + cs_off, mask = cs_m, other = 0.0).to(tl.float32)
-        # The rope in x.dtype arithmetic, each product and the sum rounded, as eager's separate kernels compute it.
-        # mul_rn / add_rn because the compiler otherwise contracts the pair into one fma and skips a rounding.
+        # mul_rn / add_rn: without them the compiler contracts into one fma and skips eager's rounding.
         xps = tl.where((d < half)[None, :], -xpn, xpn)
         a = libdevice.mul_rn(xn, cos).to(dt).to(tl.float32)
         bb = libdevice.mul_rn(xps, sin).to(dt).to(tl.float32)
@@ -418,7 +354,6 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
     @triton.jit
     def _swiglu(x_ptr, out_ptr, N, BLOCK_N: tl.constexpr):
-        # out = hidden * silu(gate) for x = [hidden | gate], silu and product each rounded to out's dtype.
         row = tl.program_id(0).to(tl.int64)
         pid_n = tl.program_id(1)
         cols = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
@@ -431,8 +366,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
     @triton.jit
     def _quant_rows(x_ptr, q_ptr, s_ptr, N, BLOCK_N: tl.constexpr):
-        # Symmetric per-row int8: s = absmax / 127, q = round(x / s) with IEEE division and half-to-even rounding,
-        # the same codes as the torch path.
+        # IEEE division + half-to-even rounding: the same codes as the torch path.
         row = tl.program_id(0).to(tl.int64)
         cols = tl.arange(0, BLOCK_N)
         mask = cols < N
@@ -477,7 +411,6 @@ def _next_pow2(n: int) -> int:
     return 1 << max(0, int(n) - 1).bit_length()
 
 
-# ── runtime fallback ───────────────────────────────────────────────────────────────────────────────────────────
 
 
 def _is_oom(exc: BaseException) -> bool:
@@ -491,9 +424,7 @@ def _is_oom(exc: BaseException) -> bool:
 
 
 def _guarded(fast: Any, stock: Any, label: str) -> Any:
-    """A forward that runs ``fast`` until it raises something the ``stock`` path does not, then logs once and runs
-    ``stock`` from then on. A Triton or driver problem on some host costs the speedup, never the render; an OOM is
-    the caller's to handle, exactly as it would be on the stock path."""
+    """Runs ``fast`` until it raises something ``stock`` does not, then logs once and runs ``stock``."""
 
     def forward(self, *args, **kwargs):
         if getattr(self, "_unsloth_fast_failed", False):
@@ -503,8 +434,7 @@ def _guarded(fast: Any, stock: Any, label: str) -> Any:
         except Exception as exc:  # noqa: BLE001
             if _is_oom(exc):
                 raise
-            # an input the stock path rejects too is the caller's error, not a broken kernel: raise it, keep the
-            # fast path for the next call
+            # the stock path rejects this input too: caller's error, keep the fast path
             out = stock(self, *args, **kwargs)
             self._unsloth_fast_failed = True
             log = getattr(self, "_unsloth_logger", None)
@@ -517,12 +447,8 @@ def _guarded(fast: Any, stock: Any, label: str) -> Any:
     return forward
 
 
-# ── encoder ────────────────────────────────────────────────────────────────────────────────────────────────────────
-#
-# Every activation travels as (tensor, pending_bias): cuDNN convolves without its bias, and the bias is added by
-# whichever fused pass reads that output next (the GroupNorm statistics and apply, the downsample pad, or the
-# residual add). PyTorch otherwise adds a conv bias as its own strided pass over a channels-last output, which
-# measured ~30% of the fused encoder's time. A 1x1 conv folds its input's pending bias through its weight exactly.
+# Activations travel as (tensor, pending_bias): the next fused pass adds the conv bias, avoiding PyTorch's
+# separate strided bias pass. A 1x1 conv folds its input's pending bias through its weight exactly.
 
 
 def _bias_view(bias: Any) -> Any:
@@ -536,13 +462,12 @@ def norm_silu_pad_reference(
     front: int,
     in_bias: Any = None,
 ) -> Any:
-    """The unfused semantics the kernel reproduces, for tests and hosts without Triton: add the pending bias,
-    per-frame GroupNorm, SiLU, reflect ``(left, right, top, bottom)`` and ``front`` zero frames, channels-last out."""
+    """Unfused reference of the kernel, for tests and hosts without Triton."""
     import torch
     import torch.nn.functional as F
 
     if norm is not None:
-        # float32 from the bias add through the SiLU, one rounding to x.dtype at the end, as the kernel does
+        # float32 through the SiLU, one rounding at the end, as the kernel does
         b, c, t, h, w = x.shape
         y = x.float() if in_bias is None else x.float() + _bias_view(in_bias).float()
         y = y.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)
@@ -580,8 +505,7 @@ def norm_silu_pad(
     front: int,
     in_bias: Any = None,
 ) -> Any:
-    """Fused pending-bias add + per-frame GroupNorm (float32 statistics) + SiLU + reflect/causal pad,
-    channels-last out."""
+    """Fused pending-bias add + per-frame GroupNorm + SiLU + reflect/causal pad, channels-last out."""
     import torch
 
     if not _fusable(x, pad, norm):
@@ -597,7 +521,6 @@ def norm_silu_pad(
         g = int(norm.num_groups)
         cpg = c // g
         hw = h * w
-        # half the chunk for a float32 NCDHW frame (the conv_in output in the float32 tier): 8x faster on a B200
         budget = 4096 if sw == 1 and x.element_size() == 4 else 8192
         block_p = max(1, min(128, budget // c))
         n_chunks = (hw + block_p - 1) // block_p
@@ -637,7 +560,6 @@ def norm_silu_pad(
         # unused without a norm; constant, so the pad-only kernel compiles once for every channel count
         g, cpg = 1, 1
         mean = rstd = weight = bias = x
-    # the whole channel run per pixel (up to 128) and 4096 elements per program measured fastest on a B200
     block_c = min(128, _next_pow2(c))
     block_w = max(16, 4096 // block_c)
     grid = (b * to * ho, (wo + block_w - 1) // block_w, (c + block_c - 1) // block_c)
@@ -718,8 +640,7 @@ def add_residual(out: Any, out_bias: Any, res: Any, res_bias: Any) -> Any:
 
 
 def _last_tap(weight: Any) -> Any:
-    """A conv weight's last temporal tap, for a single frame whose causal front padding is all zeros. Sliced per call
-    rather than cached: a cached tensor would not follow the module through the offload hooks' ``.to()``."""
+    """A conv weight's last temporal tap. Not cached: must follow offload hooks' ``.to()``."""
     import torch
     return weight[:, :, -1:].contiguous(memory_format = torch.channels_last_3d)
 
@@ -742,14 +663,13 @@ def _causal_conv(
     weight = conv.weight
     bias = conv.bias
     if x.shape[2] == 1 and kt > 1 and front == kt - 1:
-        # zeros times the first taps add exactly nothing
         front = 0
         weight = _last_tap(weight)
     if norm is not None or front or any(pad):
         if x.shape[1] % 8 == 0 or norm is not None:
             x = norm_silu_pad(x, norm, pad, front, in_bias = x_bias)
         else:
-            # conv_in's 3 RGB channels: channels-last buys nothing and cuDNN would convert it back
+            # conv_in's 3 channels: cuDNN would convert channels-last back
             if x_bias is not None:
                 x = x + _bias_view(x_bias).to(x.dtype)
             x = _pad_reference(x, pad, front)
@@ -808,8 +728,7 @@ def _install_encoder(vae: Any, *, fp16: bool) -> bool:
     convs = [m for m in encoder.modules() if isinstance(m, torch.nn.Conv3d)]
     stock_dtype = encoder.conv_in.weight.dtype
     with torch.no_grad():
-        # every new tensor first, then assign: a failure part way (an OOM on a resident VAE) must leave the stock
-        # encoder exactly as it was, not half float16
+        # build every tensor before assigning: a mid-way OOM must leave the stock encoder intact
         new = []
         for module in convs:
             w = module.weight.data.to(torch.float16) if fp16 else module.weight.data
@@ -823,8 +742,7 @@ def _install_encoder(vae: Any, *, fp16: bool) -> bool:
             if b is not None:
                 module.bias.data = b
     encoder._unsloth_compute_dtype = torch.float16 if fp16 else None
-    # Diffusers' encode casts the pixels to the encoder's parameter dtype, float16 once cast here, while quant_conv
-    # stays in the stock dtype: hand back what the stock encoder would have
+    # quant_conv stays in the stock dtype: hand back what the stock encoder would
     encoder._unsloth_out_dtype = stock_dtype if fp16 else None
     encoder._unsloth_stock_forward = encoder.forward
     encoder.forward = types.MethodType(
@@ -834,8 +752,7 @@ def _install_encoder(vae: Any, *, fp16: bool) -> bool:
 
 
 def _stock_encoder_forward(self: Any, hidden_states: Any) -> Any:
-    """Diffusers' own encoder forward over the (possibly float16) weights: under float16 autocast when the weights
-    were cast, which is the arithmetic the fused float16 path reproduces."""
+    """Diffusers' encoder forward, under float16 autocast when the weights were cast."""
     import torch
 
     if getattr(self, "_unsloth_compute_dtype", None) is not torch.float16:
@@ -847,7 +764,6 @@ def _stock_encoder_forward(self: Any, hidden_states: Any) -> Any:
     return self._unsloth_stock_forward(hidden_states.to(torch.float16)).to(out_dtype)
 
 
-# ── decoder ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 
 def _add_rmsnorm(h: Any, o: Any, scale: Any, norm: Any, out_dtype: Any) -> Any:
@@ -903,7 +819,6 @@ def _qk_norm_rope_(x: Any, cos: Any, sin: Any, heads: int, eps: float) -> None:
         return
     head_d = x.shape[-1] // heads
     n = x.numel() // head_d
-    # 32 head-rows x 4 warps measured 1.4x a plain copy of the same bytes on a B200; 128 was 5x
     block = 32
     k.qk_norm_rope[((n + block - 1) // block,)](
         x,
@@ -936,8 +851,7 @@ def _swiglu(x: Any) -> Any:
 
 
 def _fast_block_stack(decoder: Any, hidden_states: Any, cos: Any, sin: Any, gemm_dtype: Any) -> Any:
-    """The transformer blocks. ``gemm_dtype`` is the autocast dtype the GEMMs run in; the kernels store the normed
-    activations straight in it."""
+    """The transformer blocks; the kernels store normed activations in ``gemm_dtype``."""
     import torch.nn.functional as F
 
     blocks = decoder.transformer_blocks
@@ -1052,7 +966,6 @@ def _install_decoder(vae: Any) -> bool:
     return True
 
 
-# ── tile batching ─────────────────────────────────────────────────────────────────────────────────────────────────
 
 
 def _tile_batch_size(z: Any) -> int:
@@ -1071,8 +984,7 @@ def _tile_batch_size(z: Any) -> int:
 
 
 def _batched_decode_clip(self: Any, z: Any) -> Any:
-    """``AutoencoderKLMiniMaxH3._decode_clip`` with the tiles of a clip decoded several at a time. ``_split_tiles``
-    gives every tile of an axis the same length, so they stack along batch."""
+    """``_decode_clip`` with several tiles per decoder call (``_split_tiles`` makes them equal-sized)."""
     import torch
 
     if not self.use_tiling:
@@ -1129,7 +1041,6 @@ def _install_tile_batch(vae: Any) -> bool:
     return True
 
 
-# ── int8 decoder ───────────────────────────────────────────────────────────────────────────────────────────────────
 
 
 def _int8_linear(linear: Any, x: Any) -> Any:
@@ -1144,8 +1055,7 @@ def _int8_linear(linear: Any, x: Any) -> Any:
     out_dtype = torch.get_autocast_dtype("cuda") if torch.is_autocast_enabled("cuda") else x.dtype
     rot = getattr(linear, "_unsloth_rot", None)
     if rot is not None:
-        # ConvRot: x @ blockdiag(H), the weight was stored as W @ blockdiag(H).T, so the product is unchanged while
-        # the Hadamard spreads the outlier channels that would otherwise pin each token's int8 scale
+        # ConvRot: weight stored as W @ H.T, so x @ H keeps the product while spreading outlier channels
         g = rot.shape[0]
         x = (x.reshape(-1, x.shape[-1] // g, g).to(out_dtype) @ rot.to(out_dtype)).reshape(x.shape)
     x2 = x.reshape(-1, x.shape[-1])
@@ -1198,11 +1108,8 @@ def _quantize_int8_weight(w: Any, hadamard: Any) -> tuple:
 
 
 def _install_int8_decoder(vae: Any, *, keep_blocks: Optional[tuple] = None) -> int:
-    """Quantize the decoder's transformer-block Linears to int8 (per output channel), ConvRot-rotated in
-    ``H3_VAE_INT8_ROT_GROUP`` blocks when the input width allows, leaving ``keep_blocks`` (default: the first
-    ``H3_VAE_INT8_FLOAT_BLOCKS``) in float. The float weight is dropped; the class is swapped so the stock decoder
-    path runs W8A8 as well. Every weight is quantized before any module is touched, so a failure part way leaves
-    the decoder fully float. Returns the bytes freed."""
+    """Quantize decoder block Linears to ConvRot W8A8, leaving ``keep_blocks`` float. Every weight is quantized
+    before any module is touched, so a failure leaves the decoder fully float. Returns the bytes freed."""
     import torch
 
     decoder = getattr(vae, "decoder", None)
@@ -1253,8 +1160,7 @@ def _install_int8_decoder(vae: Any, *, keep_blocks: Optional[tuple] = None) -> i
 def _int8_linear_class():
     import torch
     class H3Int8Linear(torch.nn.Linear):
-        """A Linear whose weight lives in ``_unsloth_wq`` (int8) and ``_unsloth_ws`` (fp32 scales stored as int32,
-        so a module-wide ``.to(dtype)`` from an offload hook cannot round them)."""
+        """int8 Linear; fp32 scales stored as int32 so an offload hook's ``.to(dtype)`` cannot round them."""
 
         @property
         def _unsloth_int8(self):
@@ -1266,14 +1172,10 @@ def _int8_linear_class():
     return H3Int8Linear
 
 
-# ── fp16 accumulation scope ────────────────────────────────────────────────────────────────────────────────────────
 
 
 def _install_decode_scope(vae: Any, *, fp16_accum: bool) -> bool:
-    """Pin ``allow_fp16_accumulation`` for the duration of the decode: ON only when the plan says so, otherwise
-    OFF even if a bf16 denoiser's speed layer turned the process-wide flag on (the decode is float16 autocast,
-    so the flag would change it). The scope is shared with the speed layer's own writes, so a load or unload
-    that lands mid-decode is not undone when the decode ends."""
+    """Hold ``allow_fp16_accumulation`` ON only when planned, else OFF, for the decode, via the shared owner."""
     import torch
 
     from .diffusion_speed import fp16_accumulation_scope
@@ -1290,7 +1192,6 @@ def _install_decode_scope(vae: Any, *, fp16_accum: bool) -> bool:
     return True
 
 
-# ── entry point ────────────────────────────────────────────────────────────────────────────────────────────────────
 
 
 @lru_cache(maxsize = 4)
@@ -1309,8 +1210,7 @@ def _triton_version_ok(version: Optional[str] = None) -> bool:
 
 @lru_cache(maxsize = 1)
 def _triton_jit_toolchain_ok() -> bool:
-    """On Windows, Triton's JIT needs the MSVC CRT headers; ask the same probe the compile gate asks. Elsewhere,
-    and when the probe itself cannot run, True: a kernel that still fails to build falls back per call."""
+    """Windows: Triton needs the MSVC CRT headers. Elsewhere, or if the probe fails, True."""
     if sys.platform != "win32":
         return True
     try:
@@ -1344,8 +1244,7 @@ def apply_h3_vae_speedups(
     consumer_gpu: Optional[bool] = None,
     logger: Any = None,
 ) -> tuple[str, ...]:
-    """Engage the planned levers on a loaded H3 video VAE. Never raises: a lever that fails is logged and skipped,
-    and the stock Diffusers path stays in place for it. Returns the engaged lever names."""
+    """Engage the planned levers; never raises (a failing lever keeps stock). Returns engaged lever names."""
     if vae is None:
         return ()
     done = getattr(vae, "_unsloth_h3_vae_levers", None)
@@ -1393,7 +1292,7 @@ def apply_h3_vae_speedups(
     if LEVER_TILE_BATCH in planned:
         _try(LEVER_TILE_BATCH, lambda: _install_tile_batch(vae))
     fp16_accum = LEVER_FP16_ACCUM in planned
-    # installed on every engaged load: it also holds the flag OFF when float16 accumulation is not planned
+    # always installed: also holds the flag OFF when float16 accumulation is not planned
     try:
         if _install_decode_scope(vae, fp16_accum = fp16_accum) and fp16_accum:
             engaged.append(LEVER_FP16_ACCUM)
@@ -1409,8 +1308,7 @@ def apply_h3_vae_speedups(
 
 
 def settle_h3_vae_fallback(state: Any, pipe: Any) -> None:
-    """After a render, drop a fused lever the runtime fell back from out of ``state.speed_optims``, the way
-    ``settle_compile_fallback`` does for a compile, so the status reports what actually ran. Never raises."""
+    """Drop fused levers the runtime fell back from out of ``state.speed_optims``. Never raises."""
     try:
         vae = getattr(pipe, "vae", None)
         failed = [

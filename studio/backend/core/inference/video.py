@@ -5267,8 +5267,7 @@ class VideoBackend:
             speed_optims = tuple(k for k, v in applied.items() if v)
         except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
             logger.warning("video.h3_speed_optims failed, continuing unoptimised: %s", exc)
-        # The video VAE's own layer: fused encoder / decoder passes and tile batching, none of which compiles, so it
-        # follows the REQUESTED tier rather than the denoiser's eager downgrade above. "off" keeps the stock decode.
+        # nothing here compiles, so it follows the REQUESTED tier, not the denoiser's eager downgrade above
         try:
             from .video_minimax_h3_vae import apply_h3_vae_speedups
             vae_levers = apply_h3_vae_speedups(

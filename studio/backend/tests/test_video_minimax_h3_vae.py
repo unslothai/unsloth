@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the MiniMax-H3 video VAE speed layer (core/inference/video_minimax_h3_vae.py).
-
-The CPU tests are hermetic: the lever plan is pure, and the patched encoder / decoder / tile loop fall back to torch
-ops off CUDA, so their STRUCTURE is checked against Diffusers' own ``AutoencoderKLMiniMaxH3`` built at a tiny config
-(skipped when the installed diffusers predates the class). The CUDA tests check each Triton kernel against its
-unfused reference and skip without a GPU.
-"""
+"""Tests for the MiniMax-H3 video VAE speed layer; CPU tests hermetic, CUDA tests skip without a GPU."""
 
 from __future__ import annotations
 
@@ -26,7 +20,6 @@ needs_cuda = pytest.mark.skipif(
 )
 
 
-# ── the plan ───────────────────────────────────────────────────────────────────────────────────────────────────────
 
 
 @pytest.fixture(autouse = True)
@@ -156,7 +149,6 @@ def test_decode_scope_pins_and_restores_fp16_accumulation():
         matmul.allow_fp16_accumulation = prev
 
 
-# ── structure against Diffusers' own VAE at a tiny config (CPU) ───────────────────────────────────────────────────
 
 
 def _tiny_vae():
@@ -245,8 +237,7 @@ def test_fused_encoder_fp16_casts_weights_and_returns_the_input_dtype():
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("frames", [1, 9])
 def test_the_condition_encode_recipe_runs_through_the_fp16_encoder(frames, device):
-    # the keyframe / ref2va path: float32 pixels into vae.encode, whose _encode_clip applies the float32 quant_conv
-    # to the encoder's output outside any autocast, so the encoder must hand back float32
+    # keyframe path: vae.encode feeds the encoder output to a float32 quant_conv, so it must be float32
     from core.inference.video_minimax_h3 import trim_h3_video_vae
 
     vae = _tiny_vae().to(device)
@@ -272,8 +263,7 @@ def test_the_condition_encode_recipe_runs_through_the_fp16_encoder(frames, devic
 
 @needs_cuda
 def test_the_decoder_residual_stream_stays_float32_under_the_decode_autocast(monkeypatch):
-    # the decode runs under float16 autocast over pre-cast float16 Linears; the stock blocks keep the residual in
-    # float32 (the float32 register tokens promote the cat, the float32 scales promote each update), so must we
+    # the stock blocks keep the residual in float32 under float16 autocast, so must we
     from core.inference.video_minimax_h3 import trim_h3_video_vae
 
     vae = _tiny_vae().cuda()
@@ -419,7 +409,6 @@ def test_apply_skips_when_already_applied(monkeypatch):
     assert vae.encoder.forward is encoder_forward
 
 
-# ── Triton kernels against their references (CUDA), and the runtime fallbacks ─────────────────────────────────────
 
 
 @needs_cuda
@@ -790,8 +779,7 @@ def test_the_fast_path_asks_the_windows_triton_toolchain(monkeypatch, platform, 
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("stock_fallback", [False, True])
 def test_the_fp16_encoder_survives_diffusers_casting_the_pixels(device, stock_fallback):
-    # diffusers 0.40.0's encode() casts the pixels to get_parameter_dtype(encoder), float16 once the encoder is cast,
-    # and hands the encoder output to a float32 quant_conv
+    # diffusers 0.40.0 encode() casts pixels to the encoder dtype and feeds a float32 quant_conv
     get_parameter_dtype = pytest.importorskip("diffusers.models.modeling_utils").get_parameter_dtype
 
     vae = _tiny_vae().to(device)
@@ -829,9 +817,7 @@ def test_the_video_backend_wires_the_layer_into_the_h3_load_only():
     (apply_call,) = calls(load, "apply_h3_vae_speedups")
     assert len(calls(tree, "apply_h3_vae_speedups")) == 1, "only the H3 load engages the layer"
     assert {k.arg for k in apply_call.keywords} >= {"speed_mode", "workflow", "logger"}
-    # after the denoiser's speed layer, whose cudnn.benchmark and flags it builds on
     assert calls(load, "apply_speed_optims")[0].lineno < apply_call.lineno
-    # a runtime fallback is settled after every render, next to the compile fallback
     (settle,) = calls(methods["generate"], "settle_h3_vae_fallback")
     (compile_settle,) = calls(methods["generate"], "settle_compile_fallback")
     assert compile_settle.lineno < settle.lineno
@@ -839,8 +825,7 @@ def test_the_video_backend_wires_the_layer_into_the_h3_load_only():
 
 @pytest.mark.skipif(H._kernels() is None, reason = "needs Triton")
 def test_kernel_annotations_resolve_against_the_module_globals():
-    # Triton 3.2 and older evaluate a kernel's string annotations (this module uses postponed annotations) in the
-    # function's globals; a closure-local ``tl`` compiles on newer Triton and fails with NameError on those
+    # Triton <= 3.2 resolves kernel annotations in module globals; a closure-local ``tl`` NameErrors there
     k = H._kernels()
     names = [n for n in vars(k) if not n.startswith("_")]
     assert names
@@ -878,7 +863,6 @@ def test_the_fast_path_needs_a_verified_triton(monkeypatch, version, ok):
     assert H.cuda_fast_path_available(AutoencoderKLMiniMaxH3()) is ok
 
 
-# ── shared fp16-accumulation owner, atomic int8 install ───────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
