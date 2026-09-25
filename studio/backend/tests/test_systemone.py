@@ -4,6 +4,7 @@
 import os
 import sys
 import threading
+import weakref
 from types import SimpleNamespace
 
 import pytest
@@ -591,6 +592,52 @@ def test_device_defaults_to_cpu():
     assert laya_runtime._device() == "cpu"
 
 
+def test_gpu_on_apple_silicon_runs_mlx_and_falls_back_to_mps(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from utils.hardware import hardware
+
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_DEVICE", "gpu")
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.MLX)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+    real = laya_runtime._mlx_available
+    monkeypatch.setattr(laya_runtime, "_mlx_available", lambda: True)
+    assert laya_runtime._device() == "mlx"
+    monkeypatch.setattr(laya_runtime, "_mlx_available", real)
+    # An unsloth-zoo release without the module.
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.decision", None)
+    assert laya_runtime._device() == "mps"
+
+
+def test_mlx_answers_match_laya_on_cpu(monkeypatch):
+    path = os.environ.get("SYSTEMONE_TEST_LAYA")
+    if not path:
+        pytest.skip("set SYSTEMONE_TEST_LAYA to a downloaded convaiinnovations/laya snapshot")
+    laya = pytest.importorskip("laya")
+    if not laya_runtime._mlx_available():
+        pytest.skip("needs unsloth_zoo.mlx.decision on Apple Silicon")
+    from pathlib import Path
+
+    reference = laya.load(path, subfolder = "multilingual", device = "cpu")
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", lambda checkpoint: Path(path))
+    monkeypatch.setattr(laya_runtime, "_device", lambda: "mlx")
+    agent, device = _REAL_LOAD(catalog.CHECKPOINTS["laya-multilingual"])
+    assert isinstance(agent, laya_runtime._MLXAgent) and device == "mlx"
+    for state in (
+        "Everything is down and we have a demo at noon.",
+        "Hola, ¿me pueden devolver el dinero? " * 80,
+    ):
+        expected, _ = _REAL_PREDICT(reference, state, QUESTIONS)
+        got, _ = _REAL_PREDICT(agent, state, QUESTIONS)
+        assert got["usage"] == expected["usage"]
+        for name, answer in expected["answers"].items():
+            if answer["type"] == "noul":
+                assert got["answers"][name]["noul"] == pytest.approx(answer["noul"], abs = 2e-4)
+            else:
+                assert got["answers"][name]["probabilities"] == pytest.approx(
+                    answer["probabilities"], abs = 2e-4
+                )
+
+
 def test_managed_account_reads_the_owner_switch(monkeypatch):
     import storage.studio_db as studio_db
     from utils import account_context
@@ -921,6 +968,85 @@ def test_unrelated_gpu_errors_are_not_retried_on_cpu(monkeypatch, gpu_agent):
     with pytest.raises(RuntimeError, match = "shape mismatch"):
         laya_runtime._forward(agent, _items())
     assert agent.device.type == "cuda" and agent.model.moved_to == []
+
+
+@pytest.mark.parametrize("where", ["mx", "mx.metal", None])
+def test_release_memory_clears_the_mlx_cache_under_either_name(monkeypatch, where):
+    cleared = []
+    clear = SimpleNamespace(clear_cache = lambda: cleared.append(where))
+    mx = {"mx": clear, "mx.metal": SimpleNamespace(metal = clear), None: SimpleNamespace()}[where]
+    monkeypatch.setitem(sys.modules, "mlx.core", mx)
+    laya_runtime._release_memory()
+    assert cleared == ([where] if where else [])
+
+
+def test_mlx_out_of_memory_falls_back_to_cpu(monkeypatch, gpu_agent):
+    import torch
+
+    class Model:
+        def __init__(self, message):
+            self.message = message
+
+        def logits(self, batch):
+            raise RuntimeError(self.message)
+
+    cpu = SimpleNamespace(model = MovableModel(), device = torch.device("cpu"), dtype = torch.float32)
+    loads, mlx_models, cleared = [], [], []
+
+    def load(path, device):
+        # The MLX model and MLX's buffer cache are both released before the CPU copy loads.
+        assert mlx_models[-1]() is None and cleared
+        loads.append((path, device))
+        if len(loads) == 1:
+            raise MemoryError
+        return cpu
+
+    def run_out_of_memory(message):
+        agent.model = Model(message)
+        mlx_models.append(weakref.ref(agent.model))
+        cleared.clear()
+        monkeypatch.setattr(laya_runtime, "_agent", agent)
+        monkeypatch.setattr(laya_runtime, "_loaded", "checkpoint")
+        return laya_runtime._forward(agent, _items())
+
+    monkeypatch.setitem(sys.modules, "laya", SimpleNamespace(load = load))
+    monkeypatch.setitem(
+        sys.modules, "mlx.core", SimpleNamespace(clear_cache = lambda: cleared.append(True))
+    )
+    ran_on = []
+    monkeypatch.setattr(
+        laya_runtime,
+        "_run_model",
+        lambda agent, batch: ran_on.append(agent.device.type) or torch.tensor([[0.5, 1.5]]),
+    )
+    monkeypatch.setattr(laya_runtime, "_device_name", "mlx")
+    agent = laya_runtime._MLXAgent.__new__(laya_runtime._MLXAgent)
+    agent.folder, agent.tok, agent.model = "ckpt", gpu_agent.tok, Model("shape mismatch")
+    with pytest.raises(RuntimeError, match = "shape mismatch"):
+        laya_runtime._forward(agent, _items())
+    assert loads == [] and agent.device == "mlx"
+
+    with pytest.raises(MemoryError):
+        run_out_of_memory("[malloc] Unable to allocate 2147483648 bytes.")
+    assert (laya_runtime._agent, laya_runtime._loaded, laya_runtime._device_name) == (
+        None,
+        None,
+        None,
+    )
+
+    logits, tokens = run_out_of_memory(
+        "[METAL] Command buffer execution failed: Insufficient Memory."
+    )
+    assert logits.tolist() == [[0.5, 1.5]] and tokens == 3
+    assert loads == [("ckpt", "cpu")] * 2
+    assert (agent.model, agent.device.type, agent.dtype, laya_runtime._device_name) == (
+        cpu.model,
+        "cpu",
+        torch.float32,
+        "cpu",
+    )
+    laya_runtime._forward(agent, _items())
+    assert ran_on == ["cpu", "cpu"] and len(loads) == 2
 
 
 def test_fast_path_matches_laya_predict():
