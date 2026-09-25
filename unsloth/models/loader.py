@@ -2084,6 +2084,7 @@ class FastModel(FastBaseModel):
             disable_log_stats = disable_log_stats,
             load_in_fp8 = load_in_fp8,
             text_only = load_text_only,
+            text_intent = bool(text_only),
             text_only_decoder = text_only_decoder,
             *args,
             **kwargs,
