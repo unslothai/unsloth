@@ -36,9 +36,7 @@ _QWEN_IMAGE_SOURCES: tuple[str, ...] = (
     r".*\['image_rotary_emb'\]\[1\]$",
 )
 
-# MiniMax-H3: the packed video + audio + caption length S (MiniMaxH3TransformerBlock: hidden_states, adaln_indices,
-# rotary_emb), the caption length (MiniMaxH3TokenRefinerBlock: hidden_states) and the distinct-timestep count (temb;
-# i2v adds the conditioning rows' timestep).
+# MiniMax-H3: packed length S (transformer block), caption length (refiner block), timestep count (temb; i2v adds one).
 _MINIMAX_H3_SOURCES: tuple[str, ...] = (
     "L['hidden_states']",
     "L['adaln_indices']",

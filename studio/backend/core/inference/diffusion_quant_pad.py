@@ -149,10 +149,8 @@ class PadToMinM(nn.Module):
             # width-sensitive add, so synthesise the empty result at the right width instead of calling through.
             return x.new_empty((*lead, self.inner.out_features))
         if torch.compiler.is_compiling():
-            # Traced without a branch on m: `m < pad_to` would guard a dynamic row count to one side, and the first
-            # caption past it (H3 i2v: ~540 rows) would recompile. Same rows as below: m's own, then row 0 up to pad_to.
-            # max(m, pad_to) as arithmetic: dynamo on torch 2.8 and older rejects torch.sym_max on a concrete m, and max()
-            # left an `m <= pad_to` guard behind on an inductor cache hit.
+            # Branch-free: `m < pad_to` guards a dynamic row count, so an H3 i2v caption past it recompiles.
+            # Arithmetic max: dynamo <= 2.8 rejects torch.sym_max on a concrete m; max() left an `m <= pad_to` guard.
             rows = torch.arange((m + self.pad_to + abs(m - self.pad_to)) // 2, device = flat.device)
             out = self.inner(flat.index_select(0, torch.where(rows < m, rows, 0)))[:m]
         elif m < self.pad_to:

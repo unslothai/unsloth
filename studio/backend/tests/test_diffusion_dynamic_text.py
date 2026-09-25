@@ -222,7 +222,6 @@ def test_torch_that_reads_the_allowlist_once_is_not_armed(monkeypatch):
 
 
 class MiniMaxH3Transformer3DModel(torch.nn.Module):
-    """Stand-in for H3: an outer forward feeding one compiled block, like compile_repeated_blocks."""
 
     def __init__(self):
         super().__init__()
@@ -260,7 +259,6 @@ def test_minimax_h3_packed_length_is_armed():
 
 
 def test_minimax_h3_new_caption_and_i2v_reuse_the_first_graphs():
-    # Caption changes move the packed length S; i2v adds a timestep. Only the first render may compile.
     from torch._dynamo.utils import counters
 
     def graphs_per_render(install):
