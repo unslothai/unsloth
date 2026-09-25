@@ -4,6 +4,7 @@
 // Barrel import (lint rule); the model-picker cycle is fine because the call
 // happens at runtime, not module eval.
 import {
+  adoptCachedRepoConfig,
   loadedContextFields,
   resolveResidentInitialConfig,
   savedContextPin,
@@ -156,6 +157,8 @@ export function applyActiveModelStatusToStore(
   // Only reached with a model active, so this is the one place both the status poll and the
   // readopt path can publish residency from. Without it a load looks unloaded for up to 10s.
   useChatRuntimeStore.setState({ residentCheckpoint: checkpointId });
+  // Before the settings panel can open on it, which reads only the repo id.
+  adoptCachedRepoConfig(checkpointId, status.gguf_variant ?? null);
 
   const store = useChatRuntimeStore.getState();
   const previousCheckpoint =
