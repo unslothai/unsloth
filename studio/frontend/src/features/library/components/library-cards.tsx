@@ -6,7 +6,7 @@ import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { Folder01Icon, PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, useContext, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useContext, useRef, useState } from "react";
 import type { LibraryFolder, LibraryItem } from "../api";
 import {
   KIND_ICONS,
@@ -17,7 +17,8 @@ import {
 import { formatCardTime, formatItemCount } from "../format";
 import { useColumnCount, useLibraryThumbnail, useSeen } from "../hooks";
 import { useLibraryActions } from "../actions-context";
-import { GLASS_CONTROL, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
+import { CARD_COLUMNS, useLibrarySettingsStore } from "../settings-store";
+import { GLASS_CONTROL, GLASS_SURFACE, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
 import { CardSelectionContext } from "./card-selection";
 import { LibraryActionsMenu } from "./library-actions";
 
@@ -44,7 +45,15 @@ export function KindIcon({ item, className }: { item: LibraryItem; className?: s
 const MIN_THUMB_RATIO = 2 / 3;
 const MAX_THUMB_RATIO = 3 / 2;
 
-function ImageThumb({ item, className }: { item: LibraryItem; className?: string }) {
+function ImageThumb({
+  item,
+  className,
+  square = false,
+}: {
+  item: LibraryItem;
+  className?: string;
+  square?: boolean;
+}) {
   const holder = useRef<HTMLDivElement>(null);
   const { url, failed } = useLibraryThumbnail(item, useSeen(holder));
   const [ratio, setRatio] = useState<number | null>(null);
@@ -60,9 +69,9 @@ function ImageThumb({ item, className }: { item: LibraryItem; className?: string
   return (
     <div
       ref={holder}
-      className={cn("relative overflow-hidden", className)}
+      className={cn("relative overflow-hidden", square && "aspect-square", className)}
       style={
-        loaded
+        loaded && !square
           ? { aspectRatio: 1 / Math.min(Math.max(ratio, MIN_THUMB_RATIO), MAX_THUMB_RATIO) }
           : undefined
       }
@@ -151,6 +160,8 @@ function CardFrame({
 export function ItemCard({ item }: { item: LibraryItem }) {
   const locale = useLocale();
   const actions = useLibraryActions();
+  const showTime = useLibrarySettingsStore((s) => s.showCardDates);
+  const square = useLibrarySettingsStore((s) => s.imageLayout === "square");
   const thumb = hasThumbnail(item);
   return (
     <CardFrame
@@ -165,10 +176,22 @@ export function ItemCard({ item }: { item: LibraryItem }) {
         />
       }
       glass={thumb}
-      className={thumb ? cn("bg-muted", CARD_SHADOW) : CARD_SURFACE}
+      className={thumb ? cn("relative bg-muted", CARD_SHADOW) : CARD_SURFACE}
     >
       {thumb ? (
-        <ImageThumb item={item} />
+        <>
+          <ImageThumb item={item} square={square && fileKind(item) === "image"} />
+          {showTime && (
+            <span
+              className={cn(
+                GLASS_SURFACE,
+                "pointer-events-none absolute bottom-2 left-2 rounded-full px-2 py-0.5 text-ui-12 opacity-0 transition-opacity group-hover/library-card:opacity-100 group-has-[:focus-visible]/library-card:opacity-100 pointer-coarse:opacity-100",
+              )}
+            >
+              {formatCardTime(item.updatedAt, locale)}
+            </span>
+          )}
+        </>
       ) : (
         <div className="flex aspect-square flex-col px-5 pb-3.5 pt-5">
           <p className="line-clamp-2 break-all pr-7 font-medium text-ui-14 leading-snug text-foreground">
@@ -178,7 +201,7 @@ export function ItemCard({ item }: { item: LibraryItem }) {
             <KindIcon item={item} className="size-9" />
           </div>
           <p className="truncate pr-6 text-ui-13 text-muted-foreground">
-            {formatCardTime(item.updatedAt, locale)}
+            {showTime && formatCardTime(item.updatedAt, locale)}
           </p>
         </div>
       )}
@@ -220,6 +243,11 @@ function FolderCard({
   );
 }
 
+function useCardColumns(container: RefObject<HTMLDivElement | null>): number {
+  const { minWidth, max } = CARD_COLUMNS[useLibrarySettingsStore((s) => s.cardSize)];
+  return useColumnCount(container, minWidth, max);
+}
+
 export function Masonry<T>({
   items,
   getKey,
@@ -230,7 +258,7 @@ export function Masonry<T>({
   render: (item: T) => ReactNode;
 }) {
   const container = useRef<HTMLDivElement>(null);
-  const columns = useColumnCount(container);
+  const columns = useCardColumns(container);
   const buckets: T[][] = Array.from({ length: columns }, () => []);
   items.forEach((item, index) => buckets[index % columns]!.push(item));
   return (
@@ -254,7 +282,7 @@ export function FolderGrid({
   counts: Map<string, number>;
 }) {
   const container = useRef<HTMLDivElement>(null);
-  const columns = useColumnCount(container);
+  const columns = useCardColumns(container);
   return (
     <div
       ref={container}
@@ -271,13 +299,13 @@ export function FolderGrid({
 export function ItemTile({ item }: { item: LibraryItem }) {
   if (hasThumbnail(item)) {
     return (
-      <div className="size-9 shrink-0 overflow-hidden rounded-xl border border-border/60 bg-muted [&_img]:size-9 [&_img]:object-cover [&_img]:object-top">
+      <div className="size-9 shrink-0 overflow-hidden rounded-[10px] border border-border/60 bg-muted [&_img]:size-9 [&_img]:object-cover [&_img]:object-top">
         <ImageThumb item={item} />
       </div>
     );
   }
   return (
-    <div className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-border/60">
+    <div className="flex size-9 shrink-0 items-center justify-center rounded-[10px] border border-border/60">
       <KindIcon item={item} className="size-5" />
     </div>
   );

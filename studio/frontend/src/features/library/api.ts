@@ -17,6 +17,7 @@ export interface LibraryItem {
   source: LibrarySource;
   contentType: string;
   sizeBytes: number | null;
+  storageBytes?: number;
   fingerprint?: string;
   createdAt: number;
   updatedAt: number;
@@ -26,6 +27,7 @@ export interface LibraryItem {
   textOnly: boolean;
   favorite: boolean;
   folderId: string | null;
+  openedAt: number | null;
   /** Set for fine-tuned models, which are directories: opened in chat, never downloaded. */
   model: LibraryModel | null;
   archived?: boolean;
@@ -46,9 +48,16 @@ export interface LibraryFolder {
   updatedAt: number;
 }
 
+export interface LibraryDisk {
+  totalBytes: number;
+  freeBytes: number;
+  sources?: string[];
+}
+
 export interface LibrarySnapshot {
   items: LibraryItem[];
   folders: LibraryFolder[];
+  disk?: LibraryDisk | null;
 }
 
 export function errorMessage(error: unknown): string {
@@ -125,6 +134,10 @@ export function updateLibraryItem(
   );
 }
 
+export async function markLibraryItemOpened(id: string): Promise<void> {
+  await ensureOk(await sendWrite("/api/library/items/opened", jsonInit("POST", { id })));
+}
+
 export async function addLibraryItemToProject(
   id: string,
   projectId: string,
@@ -137,6 +150,36 @@ export async function addLibraryItemToProject(
 
 export async function revealLibraryItem(id: string): Promise<void> {
   await ensureOk(await sendWrite("/api/library/items/reveal", jsonInit("POST", { id })));
+}
+
+export interface LibraryLocation {
+  key: "uploads" | "images" | "videos" | "audio" | "fineTunes" | "exports";
+  path: string;
+  movable?: boolean;
+  custom?: boolean;
+  available?: boolean;
+  disk?: LibraryDisk | null;
+  device?: string | null;
+}
+
+export async function getLibraryLocations(): Promise<LibraryLocation[]> {
+  const response = await ensureOk(await authFetch("/api/library/locations"));
+  return (await response.json()).locations;
+}
+
+export async function revealLibraryLocation(key: LibraryLocation["key"]): Promise<void> {
+  await ensureOk(await sendWrite("/api/library/locations/reveal", jsonInit("POST", { key })));
+}
+
+export async function moveLibraryLocation(
+  key: LibraryLocation["key"],
+  path: string | null,
+): Promise<{ locations: LibraryLocation[]; leftBehind: string | null }> {
+  const response = await ensureOk(
+    await sendWrite("/api/library/locations/move", jsonInit("POST", { key, path })),
+  );
+  const body = await response.json();
+  return { locations: body.locations, leftBehind: body.leftBehind ?? null };
 }
 
 export async function deleteLibraryItem(id: string, fingerprint?: string): Promise<void> {
