@@ -4,6 +4,7 @@
 import {
   DEFAULT_APP_WINDOW_SIZE_BOUNDS,
   type LogicalWindowSize,
+  PREFERRED_SETUP_WINDOW_SIZE,
   type WindowSizeBounds,
   calculateWindowSizeBounds,
 } from "./window-layout.ts";
@@ -124,8 +125,27 @@ export async function measureWindowLayout<Monitor extends WorkAreaMonitor>(
 
 export function shouldFinishWindowLayoutWait(
   sawNativeChange: boolean,
+  alreadyRestored = false,
 ): boolean {
-  return sawNativeChange;
+  return sawNativeChange || alreadyRestored;
+}
+
+/** A non-setup-sized hidden window has already received native startup restoration. */
+export function hasRestoredStartupGeometry(
+  innerSize: LogicalWindowSize,
+  scaleFactor: number,
+  maximized: boolean,
+): boolean {
+  if (maximized) return true;
+  if (!(scaleFactor > 0)) return false;
+  return (
+    Math.abs(
+      innerSize.width / scaleFactor - PREFERRED_SETUP_WINDOW_SIZE.width,
+    ) > 2 ||
+    Math.abs(
+      innerSize.height / scaleFactor - PREFERRED_SETUP_WINDOW_SIZE.height,
+    ) > 2
+  );
 }
 
 type ResolutionQuery = {

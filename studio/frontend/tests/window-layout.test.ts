@@ -5,6 +5,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  finalizeAppWindowLayout,
+  hasRestoredStartupGeometry,
+  measureWindowLayout,
+  observeDevicePixelRatio,
+  prepareSetupWindow,
+  shouldFinishWindowLayoutWait,
+} from "../src/app/window-layout-lifecycle.ts";
+import {
   DEFAULT_APP_WINDOW_SIZE_BOUNDS,
   MINIMUM_APP_WINDOW_SIZE,
   PREFERRED_SETUP_WINDOW_SIZE,
@@ -14,13 +22,6 @@ import {
   constrainWindowSize,
   fitWindowSize,
 } from "../src/app/window-layout.ts";
-import {
-  finalizeAppWindowLayout,
-  measureWindowLayout,
-  observeDevicePixelRatio,
-  prepareSetupWindow,
-  shouldFinishWindowLayoutWait,
-} from "../src/app/window-layout-lifecycle.ts";
 
 // A work area is the panel minus the taskbar, in logical pixels.
 function workArea(
@@ -79,9 +80,33 @@ test("repair setup unmaximizes before sizing or locking the window", async () =>
   ]);
 });
 
-test("waits for the first native restore event before settling", () => {
-  assert.equal(shouldFinishWindowLayoutWait(false), false);
-  assert.equal(shouldFinishWindowLayoutWait(true), true);
+test("native-restored geometry need not wait for a new event", () => {
+  assert.equal(shouldFinishWindowLayoutWait(false, true), true);
+  assert.equal(shouldFinishWindowLayoutWait(false, false), false);
+  assert.equal(shouldFinishWindowLayoutWait(true, false), true);
+});
+
+test("only an un-restored setup-sized window needs a native restore event", () => {
+  assert.equal(
+    hasRestoredStartupGeometry({ width: 760, height: 560 }, 1, false),
+    false,
+  );
+  assert.equal(
+    hasRestoredStartupGeometry({ width: 761, height: 559 }, 1, false),
+    false,
+  );
+  assert.equal(
+    hasRestoredStartupGeometry({ width: 1520, height: 1120 }, 2, false),
+    false,
+  );
+  assert.equal(
+    hasRestoredStartupGeometry({ width: 1440, height: 890 }, 1, false),
+    true,
+  );
+  assert.equal(
+    hasRestoredStartupGeometry({ width: 760, height: 560 }, 1, true),
+    true,
+  );
 });
 test("keeps the nominal minimum and preferred size on a roomy work area", () => {
   const bounds = calculateWindowSizeBounds({ width: 1920, height: 1040 });

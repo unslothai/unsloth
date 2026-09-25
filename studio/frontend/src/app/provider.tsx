@@ -19,6 +19,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { WebUpdateBanner } from "@/components/web/update-banner";
 import { fetchDeviceType } from "@/config/env";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
+import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
 import { DeepLinkHandler } from "@/features/deep-links";
 import {
   DownloadManagerPanel,
@@ -42,10 +43,9 @@ import { TauriRepairContext } from "@/hooks/tauri-repair-context";
 import { TauriUpdateContext } from "@/hooks/tauri-update-context";
 import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { isTauri } from "@/lib/api-base";
 import { followDesktopUpdateScreen } from "@/lib/desktop-update-activity";
-import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
-import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { getToastOffsets } from "@/lib/toast-offset";
 import { Z_LAYER } from "@/lib/z-layers";
 import { useRouterState } from "@tanstack/react-router";
@@ -72,6 +72,7 @@ import {
   type PixelRatioSource,
   type WindowLayoutGuard,
   finalizeAppWindowLayout,
+  hasRestoredStartupGeometry,
   measureWindowLayout,
   observeDevicePixelRatio,
   prepareSetupWindow,
@@ -135,6 +136,7 @@ function delay(milliseconds: number): Promise<void> {
 async function observeWindowLayout(
   win: TauriWindow,
   isCurrent: WindowLayoutGuard,
+  alreadyRestored: boolean,
 ): Promise<WindowLayoutObserver | null> {
   let revision = 0;
   const noteChange = () => {
@@ -170,7 +172,7 @@ async function observeWindowLayout(
           sawNativeChange = true;
           continue;
         }
-        if (shouldFinishWindowLayoutWait(sawNativeChange)) {
+        if (shouldFinishWindowLayoutWait(sawNativeChange, alreadyRestored)) {
           return;
         }
       }
@@ -356,8 +358,20 @@ async function applyAppWindowLayout(
   try {
     if (hasInitializedAppLayout && hasSavedState) {
       restored = true;
+      // A non-setup-sized window already has native restoration applied.
+      // The subsequent restoreStateCurrent can be a no-op with no native event.
+      const [initialSize, initialScale, initialMaximized] = await Promise.all([
+        win.innerSize(),
+        win.scaleFactor(),
+        win.isMaximized(),
+      ]);
+      if (!isCurrent()) return;
       // Subscribe before restoring so native events cannot race listener setup.
-      layoutObserver = await observeWindowLayout(win, isCurrent);
+      layoutObserver = await observeWindowLayout(
+        win,
+        isCurrent,
+        hasRestoredStartupGeometry(initialSize, initialScale, initialMaximized),
+      );
       if (!layoutObserver) return;
       await restoreStateCurrent(
         StateFlags.SIZE | StateFlags.POSITION | StateFlags.MAXIMIZED,
@@ -894,7 +908,10 @@ function TauriWrapper({ children }: { children: ReactNode }) {
                 </>
               }
             >
-              <LlamaUpdateBanner positioned={false} enabled={!hidesTitlebarSidebar} />
+              <LlamaUpdateBanner
+                positioned={false}
+                enabled={!hidesTitlebarSidebar}
+              />
               <DownloadManagerPanel positioned={false} />
               <LoadedModelsIndicator positioned={false} />
             </TauriUpdateLayer>
