@@ -464,7 +464,6 @@ def test_a_worker_that_outlives_the_kill_keeps_the_model_it_is_still_holding(mon
 
 
 class _SwappedDuringRead(queue.Queue):
-
     def __init__(self, orchestrator, replacement, resp):
         super().__init__()
         self._orchestrator = orchestrator

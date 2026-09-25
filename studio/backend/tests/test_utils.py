@@ -712,7 +712,6 @@ class TestFormatErrorMessage:
 
 
 class TestSafeErrorDetailNamesAMetalFailure:
-
     @pytest.mark.parametrize(
         "message",
         [
