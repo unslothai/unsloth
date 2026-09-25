@@ -4887,6 +4887,13 @@ _TARGET_ROLLBACK_SPEC_TYPES = frozenset(
 )
 
 
+# Recurrent-layer rules for SSM headers with no full_attention_interval (llama.cpp's
+# is_recr_impl). Otherwise a layer is recurrent when head_count_kv is 0 for it.
+_SSM_EVERY_LAYER_ARCHS = frozenset({"mamba", "mamba2", "falcon-h1"})
+# Nemotron-H also zeroes head_count_kv on its MLP/MoE layers; its SSM layers have no FFN.
+_SSM_FFN_FREE_LAYER_ARCHS = frozenset({"nemotron_h", "nemotron_h_moe"})
+
+
 # Architectures whose TARGET context leaves the embedded MTP/NextN blocks out of
 # its KV cache, so block_count must lose them before the target is priced.
 #
@@ -7228,6 +7235,7 @@ class LlamaCppBackend:
         # For the compute-graph buffer estimate; vocab from the tokens array len.
         # feed_forward_length is the widest layer when the GGUF stores one per layer.
         self._feed_forward_length: Optional[int] = None
+        self._feed_forward_length_by_layer: Optional[list[int]] = None
         self._expert_used_count: Optional[int] = None
         self._expert_feed_forward_length: Optional[int] = None
         self._expert_shared_feed_forward_length: Optional[int] = None
@@ -15904,6 +15912,26 @@ class LlamaCppBackend:
         arch = getattr(self, "_architecture", None)
         return bool(arch) and str(arch).strip().lower() in _TARGET_KV_EXCLUDES_NEXTN_ARCHS
 
+    def _ssm_recurrent_layer_count(self, n_layers: int) -> int:
+        """SSM layers of a header with no attention interval, by llama.cpp's is_recr rules."""
+        arch = getattr(self, "_architecture", None)
+        if arch in _SSM_EVERY_LAYER_ARCHS:
+            return n_layers
+        heads = getattr(self, "_n_kv_heads_by_layer", None)
+        # KDA hybrids size their state in _recurrent_state_bytes.
+        if not heads or getattr(self, "_kda_head_dim", None):
+            return 0
+        ffn = (
+            getattr(self, "_feed_forward_length_by_layer", None)
+            if arch in _SSM_FFN_FREE_LAYER_ARCHS
+            else None
+        ) or []
+        return sum(
+            1
+            for i, n_kv in enumerate(heads[:n_layers])
+            if n_kv == 0 and not (i < len(ffn) and ffn[i] > 0)
+        )
+
     def _mamba_recurrent_state_bytes(
         self,
         n_parallel: int = 1,
@@ -15922,17 +15950,16 @@ class LlamaCppBackend:
         n_group_raw = getattr(self, "_ssm_group_count", None)
         d_conv_raw = getattr(self, "_ssm_conv_kernel", None)
         fai_raw = getattr(self, "_full_attention_interval", None)
+        # Mamba1 (Jamba, Mamba) writes no group count; llama.cpp reads it as 0.
         if not all(
             value is not None
             for value in (
                 n_layers_raw,
                 d_inner_raw,
                 d_state_raw,
-                n_group_raw,
                 d_conv_raw,
-                fai_raw,
             )
-        ):
+        ) or (fai_raw is not None and n_group_raw is None):
             return 0
         # Excludes the embedded MTP blocks, as _estimate_kv_cache_bytes does and
         # for the same reason: llama.cpp keeps them out of the target's n_layer.
@@ -15940,9 +15967,12 @@ class LlamaCppBackend:
             0,
             int(n_layers_raw or 0) - int(getattr(self, "_nextn_predict_layers", None) or 0),
         )
-        fai = int(fai_raw or 0)
-        n_attn = -(-n_layers // fai) if fai > 0 else n_layers
-        n_recurrent = max(0, n_layers - n_attn)
+        if fai_raw is not None:
+            fai = int(fai_raw or 0)
+            n_attn = -(-n_layers // fai) if fai > 0 else n_layers
+            n_recurrent = max(0, n_layers - n_attn)
+        else:
+            n_recurrent = self._ssm_recurrent_layer_count(n_layers)
         if n_recurrent == 0:
             return 0
         d_inner = int(d_inner_raw or 0)
@@ -16169,6 +16199,10 @@ class LlamaCppBackend:
             )
             return int(global_bytes + swa_bytes + slots * checkpoint_extra_per_slot)
 
+        # SSM hybrids with no attention interval (Granite-H, Nemotron-H, Jamba, Falcon-H1)
+        # reach the attention paths below, which size only their KV layers.
+        ssm_state = self._mamba_recurrent_state_bytes(n_parallel) + recurrent_checkpoints
+
         # Path 4: Standard GQA with explicit key/value dimensions
         if key_len is not None and val_len is not None:
             padded_v_width = None if flash_attn else self._max_kv_value_width(val_len)
@@ -16177,11 +16211,11 @@ class LlamaCppBackend:
                 layer_n_kv = self._kv_heads_for_layer(layer_idx, n_kv)
                 v_width = layer_n_kv * val_len if padded_v_width is None else padded_v_width
                 bytes_per_cell += layer_n_kv * key_len * bpe_k + v_width * bpe_v
-            return int(total_cells * bytes_per_cell)
+            return int(total_cells * bytes_per_cell) + ssm_state
 
         # Path 5: Legacy fallback (old GGUFs without explicit dimensions)
         head_dim = self._legacy_head_dim()
-        return int(2 * n_kv * head_dim * n_layers_kv * total_cells * bpe_k)
+        return int(2 * n_kv * head_dim * n_layers_kv * total_cells * bpe_k) + ssm_state
 
     def _draft_backend_for(self, drafter_path: str) -> Optional["LlamaCppBackend"]:
         """Lightweight backend with a drafter GGUF's metadata, to size its own KV
@@ -17530,6 +17564,7 @@ class LlamaCppBackend:
         self._pooling_type = None
         self._gguf_path = gguf_path
         self._feed_forward_length = None
+        self._feed_forward_length_by_layer = None
         self._expert_used_count = None
         self._expert_feed_forward_length = None
         self._expert_shared_feed_forward_length = None
@@ -17723,7 +17758,10 @@ class LlamaCppBackend:
                                     self._sliding_window_pattern = [bool(x) for x in val_a]
                                     sliding_window_pattern_period = None
                                 elif attr == "feed_forward_length" and val_a:
-                                    self._feed_forward_length = max(int(x) for x in val_a)
+                                    self._feed_forward_length_by_layer = [int(x) for x in val_a]
+                                    self._feed_forward_length = max(
+                                        self._feed_forward_length_by_layer
+                                    )
                             else:
                                 self._gguf_skip_value(f, vtype)
                         else:

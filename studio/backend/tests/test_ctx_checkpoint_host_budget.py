@@ -1224,3 +1224,59 @@ def test_both_estimates_price_the_count_the_launcher_emits(gemma4_gguf, monkeypa
     # The snapshot is sized at the attention mode each estimate prices its cache with.
     assert set(sized_with) == {flash_attn is None}
 
+
+# --------------------------------------------------------------- SSM hybrids without an interval
+
+# unsloth/granite-4.0-h-small-GGUF's header: attention on blocks 5/15/25/35, Mamba2 elsewhere,
+# and no full_attention_interval, so each snapshot is 36 layers of f32 conv + SSM state.
+_GRANITE_H_SMALL = {
+    "context_length": 1048576,
+    "block_count": 40,
+    "embedding_length": 4096,
+    "attention.head_count": 32,
+    "attention.head_count_kv": [8 if i % 10 == 5 else 0 for i in range(40)],
+    "ssm.conv_kernel": 4,
+    "ssm.state_size": 128,
+    "ssm.group_count": 1,
+    "ssm.inner_size": 8192,
+}
+GRANITE_SNAPSHOT = 36 * (3 * (8192 + 2 * 128) + 128 * 8192) * 4
+
+
+@pytest.fixture
+def granite_gguf(tmp_path, monkeypatch):
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "_kv_cache_estimation_for_checkpoints",
+        Path(__file__).parent / "test_kv_cache_estimation.py",
+    )
+    helpers = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helpers)
+    kv = {"general.architecture": "granitehybrid"}
+    kv.update({f"granitehybrid.{k}": v for k, v in _GRANITE_H_SMALL.items()})
+    path = tmp_path / "granite-4.0-h-small-Q4_K_M.gguf"
+    path.write_bytes(helpers._make_gguf_bytes("granitehybrid", kv))
+    monkeypatch.delenv("LLAMA_ARG_CTX_SIZE", raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: 94 * 1024)
+    )
+    caps = {**_caps(), "supports_kv_unified": True, "supports_flash_attn": True}
+    monkeypatch.setattr(
+        LlamaCppBackend, "probe_server_capabilities", classmethod(lambda cls, *a, **k: caps)
+    )
+    return path
+
+
+def test_an_interval_free_hybrid_is_capped_and_priced(granite_gguf):
+    from routes import inference as inference_routes
+
+    b = LlamaCppBackend()
+    b._read_gguf_metadata(str(granite_gguf))
+    assert b._rollback_state_bytes(1) == GRANITE_SNAPSHOT
+    # 5% of 94 GiB over four 147.5 MiB snapshots a round: 8 per slot, not llama.cpp's 32.
+    emitted = b._bounded_ctx_checkpoints(4, _caps())
+    assert emitted == 8
+    panel = inference_routes._gguf_runtime_bytes(str(granite_gguf), 32768, None, 4, "f16", False)
+    assert panel.kv_checkpoint_bytes == 4 * emitted * GRANITE_SNAPSHOT
