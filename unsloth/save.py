@@ -3772,7 +3772,7 @@ def _model_basename(name_or_path, default = "model") -> str:
 
 def _assert_export_target_is_not_base_with_lora_layers(self):
     """`peft.PeftModel.from_pretrained` forwards to the base's bound export method, which would silently write the un-merged base (unsloth#11698)."""
-    if isinstance(self, (PeftModel, PeftModelForCausalLM)):
+    if isinstance(self, PeftModel):
         return
 
     try:
@@ -3780,7 +3780,8 @@ def _assert_export_target_is_not_base_with_lora_layers(self):
     except ImportError:
         return
 
-    if any(isinstance(module, BaseTunerLayer) for module in self.modules()):
+    modules = getattr(self, "modules", None)
+    if callable(modules) and any(isinstance(m, BaseTunerLayer) for m in modules()):
         raise RuntimeError(
             "Unsloth: This model has LoRA layers, but the save method was called on the "
             "base model. This happens when the adapter is attached with "

@@ -47,10 +47,6 @@ class _FakePeftModel:
     pass
 
 
-class _FakePeftModelForCausalLM:
-    pass
-
-
 class _Model:
     def __init__(self, *modules):
         self._modules = modules
@@ -81,7 +77,6 @@ def peft_guard_env(monkeypatch):
 def _load_guard(monkeypatch):
     namespace = {
         "PeftModel": _FakePeftModel,
-        "PeftModelForCausalLM": _FakePeftModelForCausalLM,
     }
     exec(
         compile(
