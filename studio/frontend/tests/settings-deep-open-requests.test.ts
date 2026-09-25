@@ -133,23 +133,20 @@ test("consuming a scroll target clears it", () => {
   assert.equal(store.getState().scrollTarget, null);
 });
 
-test("the canvas network target lands on Chat and stays until Chat reads it", () => {
-  reset();
-  store.getState().openDialog("chat", { scrollTarget: "chat-canvas-network" });
-  assert.equal(store.getState().activeTab, "chat");
-  assert.equal(store.getState().scrollTarget, "chat-canvas-network");
-  store.getState().setActiveTab("about");
-  assert.equal(store.getState().scrollTarget, null);
-});
-
-test("Manage storage in Data moves the open dialog to Library storage", () => {
-  reset();
-  store.getState().openDialog("data");
-  store.getState().openDialog("library", { scrollTarget: "library-storage" });
-  assert.equal(store.getState().activeTab, "library");
-  assert.equal(store.getState().scrollTarget, "library-storage");
-  store.getState().setActiveTab("data");
-  assert.equal(store.getState().scrollTarget, null);
+test("canvas network and Library storage land on their tab and stay until it reads them", () => {
+  for (const [tab, target, from] of [
+    ["chat", "chat-canvas-network", null],
+    // Manage storage in Data moves the open dialog.
+    ["library", "library-storage", "data"],
+  ] as const) {
+    reset();
+    if (from) store.getState().openDialog(from);
+    store.getState().openDialog(tab, { scrollTarget: target });
+    assert.equal(store.getState().activeTab, tab);
+    assert.equal(store.getState().scrollTarget, target);
+    store.getState().setActiveTab(from ?? "about");
+    assert.equal(store.getState().scrollTarget, null);
+  }
 });
 
 test("a deep link can provide a stable focus fallback", () => {
