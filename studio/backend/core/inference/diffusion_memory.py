@@ -613,6 +613,36 @@ def _safe_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
     return max(0, int(memory.free_mib) - _reserve_mib(memory.memory_kind, base))
 
 
+def plan_keeps_transformer_resident(plan: Any) -> bool:
+    """Whether ``plan`` places the denoiser(s) once and never moves them again: fully resident, or
+    the group tier that streams only the text encoders. torchao weights survive that one placement
+    but not the per-forward offload hooks, so this is the test for combining the two."""
+    policy = getattr(plan, "offload_policy", OFFLOAD_NONE)
+    if policy == OFFLOAD_NONE:
+        return True
+    return policy == OFFLOAD_GROUP and not bool(getattr(plan, "stream_transformer", True))
+
+
+def _holds_torchao_weights(module: Any) -> bool:
+    """Whether any parameter of ``module`` is a torchao tensor subclass (GGUF and native int8 are not)."""
+    try:
+        for param in module.parameters():
+            for tensor in (param, getattr(param, "data", None)):
+                if tensor is not None and type(tensor).__module__.startswith("torchao"):
+                    return True
+    except Exception:  # noqa: BLE001 - an unreadable module is treated as movable, today's behaviour
+        return False
+    return False
+
+
+def _pipe_denoisers_hold_torchao(pipe: Any) -> bool:
+    return any(
+        _holds_torchao_weights(getattr(pipe, name, None))
+        for name in ("transformer", "transformer_2", "unconditional_transformer")
+        if getattr(pipe, name, None) is not None
+    )
+
+
 def plan_fits_total_capacity(plan: Any) -> bool:
     """Whether ``plan``'s resident requirement fits TOTAL device capacity under the standard
     reserve + the 0.85 resident margin -- i.e. an offload decision can only stem from the
@@ -1081,6 +1111,11 @@ def apply_memory_plan(
         if not bool(getattr(plan, "stream_transformer", True)):
             group_kwargs["stream_transformer"] = False
         if not _apply_group_offload(pipe, placement, logger, **group_kwargs):
+            if "stream_transformer" in group_kwargs and _pipe_denoisers_hold_torchao(pipe):
+                raise RuntimeError(
+                    "the text encoder could not be streamed beside the resident quantised "
+                    "transformer, and whole-module offload cannot move torchao weights"
+                )
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
     elif policy == OFFLOAD_STREAMING:
@@ -1386,6 +1421,9 @@ def _apply_group_offload(
                     _remove_group_offload_hooks(module)
                     raise
                 if not stream_transformer and not transformer_demoted:
+                    if _pipe_denoisers_hold_torchao(pipe):
+                        # torchao weights cannot be streamed either, so there is no placement left that fits.
+                        raise
                     # Hooks exist on an earlier encoder, so whole-module offload is gone. Stream the transformer
                     # after all (the streamed-encoder group tier, with this encoder degraded to resident as there)
                     # BEFORE placing the encoder, so the two are never resident together. Unpinned: this path was
