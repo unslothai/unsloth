@@ -114,14 +114,7 @@ class Confinement:
 
     @property
     def confines(self) -> bool:
-        """Whether this actually confines anything.
-
-        ``unconfined-by-owner`` is a placeholder recording that the owner
-        allowed managed accounts to run without confinement on a host that
-        cannot provide it; it carries neither a pre-exec nor a wrapper. Callers
-        that treat "not None" as "boundary present" would skip the generic
-        sandbox for it and run unisolated even in `required` mode.
-        """
+        """Whether this confines anything; ``unconfined-by-owner`` is a placeholder and must not skip the generic sandbox."""
         return self.preexec is not None or bool(self.wrapper)
 
 

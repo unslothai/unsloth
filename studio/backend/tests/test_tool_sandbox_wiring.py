@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The two tool launches, now routed through the OS-isolation planner.
-
-Every assertion here must hold on BOTH paths, isolated and fallback. One that
-only passes when the sandbox is unavailable is a check on the machine.
-"""
+"""The two tool launches, now routed through the OS-isolation planner."""
 
 from __future__ import annotations
 
@@ -223,10 +219,7 @@ def test_an_unknown_mode_is_reported_rather_than_silently_downgraded():
     sys.platform == "win32", reason = "pre-exec and pass_fds are POSIX; Windows keeps today's path"
 )
 def test_the_process_unsloth_holds_still_lands_in_its_own_session():
-    """Asserted about the OUTER process: under bubblewrap the payload is not a
-    session leader, so asking it about its own sid only passes on a fallback."""
-    # Warm both executors before counting per-call spawns. Capability probes,
-    # xcode-select and shell discovery are one-time initialization costs.
+    """Asserted about the OUTER process: under bubblewrap the payload is not a session leader, so asking it about its own sid only passes on a fallback."""
     tools._python_exec("pass", None, 60, _SESSION)
     tools._bash_exec("true", None, 60, _SESSION)
 
@@ -243,17 +236,11 @@ def test_the_process_unsloth_holds_still_lands_in_its_own_session():
         assert "6" in tools._bash_exec("echo 6", None, 60, _SESSION)
     finally:
         subprocess.Popen = real
-    # Count pre-exec tool launches separately from known bookkeeping spawns,
-    # including macOS's per-call ps liveness check.
     launches = [preexec for _, preexec in seen if preexec is not None]
     bookkeeping = [argv for argv, preexec in seen if preexec is None]
-    # The argv is in the message because a count alone cannot say WHICH extra
-    # spawn appeared, and this only ever fails on a runner nobody can attach to.
     assert len(launches) == 2, [argv for argv, _ in seen]
     assert all(tuple(argv)[:1] == ("ps",) for argv in bookkeeping), bookkeeping
     seen = launches
-    # Asked by result, not identity: an isolated launch composes the plan's
-    # pre-exec with the backend's, so the object differs either way.
     for preexec in seen:
         read_fd, write_fd = os.pipe()
         child = os.fork()
@@ -468,7 +455,7 @@ def test_a_backend_that_drops_the_pre_exec_has_it_put_back(monkeypatch):
             argv = plan.argv,
             workdir = plan.workdir,
             env = plan.env,
-            preexec_fn = None,  # the bug
+            preexec_fn = None,
             backend = "forgetful",
         )
 
@@ -575,10 +562,6 @@ def test_tool_code_cannot_switch_the_boundary_off_for_the_next_call(monkeypatch)
     workdir = tools._get_workdir(_SESSION)
     planted = os.path.join(workdir, "planted.sock")
     holder = socket.socket(socket.AF_UNIX)
-    # Bound RELATIVE: an AF_UNIX address is capped at ~108 bytes, and under
-    # `pytest -n 4` the studio home is a per-worker tmp_path that alone exceeds
-    # it, so the absolute spelling raised "AF_UNIX path too long" instead of
-    # planting anything. Backend CI runs -n 4.
     monkeypatch.chdir(workdir)
     holder.bind("planted.sock")
     try:
@@ -699,8 +682,6 @@ def test_a_planner_os_error_refuses_rather_than_running_unisolated(monkeypatch):
     def full_disk(plan, *_args):
         raise OSError(errno.ENOSPC, "No space left on device")
 
-    # Through the real prepare_tool_launch, because the wrap that types this
-    # lives in it.
     monkeypatch.setattr(
         os_sandbox,
         "capability_snapshot",
@@ -736,12 +717,7 @@ def test_the_shipped_sitecustomize_is_found_before_the_session_packages(tmp_path
 
 
 def test_a_seatbelt_launch_failure_also_drops_the_cached_verdict(monkeypatch):
-    """A rejected Seatbelt profile is reported as `sandbox-exec:`, not `bwrap:`.
-
-    Matching only the bubblewrap prefix left macOS launching a backend already
-    known to be broken for the whole positive TTL, instead of re-probing and
-    letting `auto` fall back.
-    """
+    """A rejected Seatbelt profile is reported as `sandbox-exec:`, not `bwrap:`."""
     reset = []
     monkeypatch.setattr(
         "core.inference.sandbox_probe.reset_probe_cache", lambda: reset.append(True)
@@ -759,8 +735,6 @@ def test_a_seatbelt_launch_failure_also_drops_the_cached_verdict(monkeypatch):
     )
     assert reset == [True]
 
-    # A payload that failed inside a sandbox that was built correctly says
-    # nothing about the host, and must not cost a re-probe.
     tools._forget_sandbox_capability_if_the_backend_failed(
         prepared, "Exit code 1:\nTraceback (most recent call last):\n"
     )
@@ -768,9 +742,7 @@ def test_a_seatbelt_launch_failure_also_drops_the_cached_verdict(monkeypatch):
 
 
 def test_an_unknown_execution_mode_is_refused_whatever_the_account(monkeypatch):
-    """A managed account's confinement is the outer launch contract and skips
-    the planner, which was the only place the mode was checked. So whether an
-    unknown mode was refused depended on which account ran the call."""
+    """A managed account's confinement is the outer launch contract and skips the planner, which was the only place the mode was checked."""
     import pytest
 
     with pytest.raises(os_sandbox.SandboxUnavailableError) as refusal:
@@ -783,11 +755,7 @@ def test_an_unknown_execution_mode_is_refused_whatever_the_account(monkeypatch):
 
 
 def test_the_unconfined_placeholder_is_not_treated_as_a_boundary():
-    """`unconfined-by-owner` records that the owner ALLOWED unconfined tools on
-    a host that cannot confine them. It carries neither a pre-exec nor a
-    wrapper, so a caller reading "not None" as "boundary present" would skip
-    the generic sandbox and run the call unisolated even in `required` mode.
-    """
+    """`unconfined-by-owner` records that the owner ALLOWED unconfined tools on a host that cannot confine them."""
     from core.inference.tool_confinement import Confinement
 
     assert Confinement(mechanism = "unconfined-by-owner").confines is False
@@ -833,11 +801,8 @@ def test_a_managed_account_without_confinement_still_refuses_required(monkeypatc
 @pytest.mark.parametrize(
     "approved, mode, jailed",
     [
-        # The user approved a call that names a host path the jail does not bind.
         (True, "auto", False),
-        # Nobody approved it: the jail stays, whatever the path.
         (False, "auto", True),
-        # `required` is a promise about the boundary, so an approval does not lift it.
         (True, "required", True),
     ],
 )
@@ -869,6 +834,5 @@ def test_an_approval_does_not_lift_the_jail_for_a_call_that_needs_no_host_path(m
         return _echoing_prepare(_Recorder())(plan)
 
     monkeypatch.setattr(os_sandbox, "prepare_tool_launch", prepare)
-    # "ask" mode approves every call; only one that reaches the host may leave the jail.
     assert "3" in tools._python_exec("print(1 + 2)", None, 60, _SESSION, host_access_approved = True)
     assert len(planned) == 1

@@ -148,10 +148,7 @@ def captured_prepared_launch(monkeypatch):
 
 
 def _carries(preexec, expected) -> bool:
-    """A backend that isolates COMPOSES its pre-exec onto the plan's rather than
-    replacing it, so on such a host the identity is one closure down. Asserted
-    rather than relaxed to "not the bypass one": the setsid every kill path here
-    signals has to still be in there, and a backend that dropped it must fail."""
+    """A backend that isolates COMPOSES its pre-exec onto the plan's rather than replacing it, so on such a host the identity is one closure down."""
     if preexec is expected:
         return True
     return any(cell.cell_contents is expected for cell in (preexec.__closure__ or ()))

@@ -9126,9 +9126,7 @@ def _is_trusted_windows_program_dir(path: str) -> bool:
 
 # not dot-named: the walks skip dot-dirs, which would hide a model's /tmp write. not "tmp": too common in a workspace,
 # and adopting one is what broke the walks.
-# One spelling, shared with os_sandbox: the workdir scan has to know which
-# entries under the workdir Studio itself owns, and a name that drifted between
-# the two would quietly turn the scan's exemption into a no-op.
+# Shared with os_sandbox: a drifted name would silently disable the scan's exemption.
 _SANDBOX_TEMP_DIRNAME = os_sandbox.TOOL_TEMP_DIRNAME
 
 
@@ -9541,14 +9539,12 @@ def _bypass_preexec():
         pass
 
 
-# Never read back by the executors, so a concurrent second call can only make
-# this stale, never wrong.
+# Never read back by the executors, so a concurrent call can only make this stale.
 _last_tool_execution_record: "os_sandbox.ToolExecutionRecord | None" = None
 
 
 def _note_tool_execution(record) -> None:
-    """Built by ``os_sandbox`` from a live probe, never from anything a model
-    said, which is what makes it safe to show as a badge."""
+    """Built from a live probe, never from model output, so it is safe to show as a badge."""
     global _last_tool_execution_record
     if record is None:
         return
@@ -9557,13 +9553,7 @@ def _note_tool_execution(record) -> None:
 
 
 def _requested_execution_mode(tool_execution_mode: str, disable_sandbox: bool) -> str:
-    """Require disable_sandbox for full access; it also selects env and software guards.
-
-    The membership check lives here rather than in the planner because a managed
-    account's confinement is the outer launch contract and skips the planner
-    entirely, so validating there made the answer to "is this mode real"
-    depend on which account ran the call.
-    """
+    """Require disable_sandbox for full access; checked here because managed accounts skip the planner."""
     if tool_execution_mode not in os_sandbox.TOOL_EXECUTION_MODES:
         raise os_sandbox.SandboxUnavailableError(
             f"TOOL_EXECUTION_MODE_INVALID: {tool_execution_mode!r} is not a tool "
@@ -9587,9 +9577,7 @@ def _with_session_packages(env: dict, workdir: str) -> dict:
     if not os.path.isdir(packages):
         return env
     updated = dict(env)
-    # Block planted usercustomize.py from running before analysis on later
-    # unisolated calls. In safe mode, the trusted sitecustomize shim stays first
-    # on PYTHONPATH so a planted copy cannot shadow it.
+    # Block a planted usercustomize.py; in safe mode the trusted sitecustomize shim stays first on PYTHONPATH.
     updated["PYTHONNOUSERSITE"] = "1"
     for key, value in (
         ("PYTHONPATH", packages),
@@ -9613,8 +9601,7 @@ def _software_safeguards_launch(plan, fault: str):
         terminate_descendants = plan.terminate_descendants,
         execution_record = os_sandbox.ToolExecutionRecord(
             requested_mode = plan.requested_mode,
-            # A record saying "software safeguards" about a launch that skipped
-            # the analysis and the rlimits would claim more than the run got.
+            # Do not claim software safeguards for a launch that skipped them.
             effective_mode = "full" if full else "software_safeguards",
             environment = sys.platform,
             backend = "software-safeguards",
@@ -9628,8 +9615,6 @@ def _software_safeguards_launch(plan, fault: str):
                 )
                 if item != "timeout" or plan.timeout_seconds is not None
             ),
-            # Naming only the fault made the record depend on which door the
-            # fallback came through.
             limitations = (
                 ("security_restrictions_disabled", fault)
                 if full
@@ -9657,12 +9642,7 @@ def _reaches_host_paths(kind: str, text: str) -> bool:
 
 
 def _prepare_tool_launch(plan, *, host_access_approved: bool = False):
-    """Fallback only when capability assessment says the backend is unavailable.
-
-    Unsafe workdirs and backend construction failures always refuse execution.
-    ``host_access_approved``: the user approved this exact call because it reaches host paths, which the jail does not
-    bind, so in ``auto`` it runs as it does without OS isolation. ``required`` keeps the jail.
-    """
+    """Fall back only when the backend is unavailable; unsafe workdirs, build failures and (outside `full`) planner errors refuse."""
     if host_access_approved and plan.requested_mode == "auto":
         return _software_safeguards_launch(plan, "user_approved_host_access")
     try:
@@ -9700,8 +9680,7 @@ def _prepare_tool_launch(plan, *, host_access_approved: bool = False):
         ) from exc
 
 
-# What each launcher prints on stderr when it refuses to build the sandbox, as
-# opposed to the payload failing inside a sandbox that was built correctly.
+# Launcher stderr prefixes for refusing to build the sandbox, not payload failures.
 _LAUNCHER_FAILURE_MARKERS = {
     "bubblewrap": "bwrap: ",
     "macos-seatbelt": "sandbox-exec: ",
@@ -9709,17 +9688,12 @@ _LAUNCHER_FAILURE_MARKERS = {
 
 
 def _forget_sandbox_capability_if_the_backend_failed(prepared, output: str) -> None:
-    """``prepare()`` only builds an argv, so a stale probe verdict is not found
-    until bwrap exits at exec. Dropping it bounds the damage to that one call
-    instead of every call for the rest of the cache's life."""
+    """Drop a stale probe verdict found at exec, so it costs one call rather than the cache's lifetime."""
     if prepared is None or prepared.backend == "software-safeguards":
         return
     if not output.startswith("Exit code "):
         return
-    # Keyed on the backend that actually ran, not on one launcher's prefix:
-    # Seatbelt reports a rejected profile as `sandbox-exec:`, so matching only
-    # `bwrap:` left macOS launching a known-broken backend for the whole
-    # positive TTL instead of re-probing and letting `auto` fall back.
+    # Keyed on the backend that ran: Seatbelt reports `sandbox-exec:`, not `bwrap:`.
     marker = _LAUNCHER_FAILURE_MARKERS.get(prepared.backend)
     if marker is None or marker not in output[:400]:
         return
@@ -9728,8 +9702,6 @@ def _forget_sandbox_capability_if_the_backend_failed(prepared, output: str) -> N
         from .sandbox_probe import reset_probe_cache
         reset_probe_cache()
         if sys.platform == "linux":
-            # Same reasoning as the probe: a launch that failed is the one signal
-            # that something the planner believed about this host has changed.
             from .sandbox_linux import reset_cache_verdicts
             reset_cache_verdicts()
     except Exception:  # noqa: BLE001 - a cache reset never breaks a tool result
@@ -9737,16 +9709,13 @@ def _forget_sandbox_capability_if_the_backend_failed(prepared, output: str) -> N
 
 
 def _sandbox_refusal(exc) -> str:
-    """The remediation is part of the answer, not a log line: the reader is the
-    person who can fix the host."""
+    """The remediation is part of the answer: the reader can fix the host."""
     remediation = getattr(exc, "remediation", "") or ""
     return _truncate(f"Execution error: {exc}{(' ' + remediation) if remediation else ''}")
 
 
 def _apply_prepared_launch(prepared, popen_kwargs: dict) -> dict:
-    """``preexec_fn`` comes from the plan untouched on POSIX: every kill path here
-    is killpg based, so the OUTER process must land in its own session or a
-    timeout signals the Unsloth server's group instead of the tool's."""
+    """The OUTER process needs its own session: every kill path is killpg based."""
     popen_kwargs["cwd"] = prepared.workdir
     popen_kwargs["env"] = prepared.env
     if sys.platform != "win32":
@@ -19656,8 +19625,7 @@ def _python_exec(
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
-            # close_fds leaves 0, 1 and 2 alone, so an unset stdin is the
-            # server's own and no path rule applies to an open descriptor.
+            # close_fds leaves 0-2 open, so an unset stdin would be the server's.
             stdin = subprocess.DEVNULL,
             text = True,
             # Decode child output as utf-8 (it emits utf-8 via PYTHONIOENCODING); replace so non-ASCII output never
@@ -19678,12 +19646,7 @@ def _python_exec(
             if sys.platform == "win32"
             else (_bypass_preexec if disable_sandbox else _sandbox_preexec)
         )
-        # Managed accounts already have a fail-closed, account-specific boundary. Keep it
-        # as the outer launch contract instead of stacking a generic sandbox around it:
-        # on Linux its pre-exec Landlock policy would restrict bwrap before mount setup.
-        # `confines` rather than `is not None`: the unconfined-by-owner placeholder carries
-        # neither a pre-exec nor a wrapper, so treating it as a boundary would run the call
-        # unisolated even in `required` mode.
+        # Managed accounts keep their own boundary as the outer contract; `confines`, not `is not None` (placeholder).
         if confinement is None or not confinement.confines:
             prepared = _prepare_tool_launch(
                 os_sandbox.ToolLaunchPlan(
@@ -19900,7 +19863,6 @@ def _bash_exec(
             if sys.platform == "win32"
             else (_bypass_preexec if disable_sandbox else _sandbox_preexec)
         )
-        # Use the same mutually exclusive launch paths as the Python executor.
         if confinement is None or not confinement.confines:
             prepared = _prepare_tool_launch(
                 os_sandbox.ToolLaunchPlan(
