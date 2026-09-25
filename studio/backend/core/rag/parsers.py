@@ -79,7 +79,7 @@ class _Stripper(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag in _HTML_SKIP_TAGS:
             self._skip += 1
-        elif tag in _HTML_BLOCK_TAGS:
+        elif tag in _HTML_BLOCK_TAGS and not self._skip:
             self._flush()
             if tag == "pre":
                 self._pre += 1
@@ -88,7 +88,7 @@ class _Stripper(HTMLParser):
         if tag in _HTML_SKIP_TAGS:
             if self._skip:
                 self._skip -= 1
-        elif tag in _HTML_BLOCK_TAGS:
+        elif tag in _HTML_BLOCK_TAGS and not self._skip:
             self._flush()
             if tag == "pre" and self._pre:
                 self._pre -= 1

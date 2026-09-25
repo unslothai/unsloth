@@ -385,3 +385,8 @@ def test_html_skips_script_style_and_template(tmp_path):
         "<template><p>Inert until cloned</p></template>",
     )
     assert text == "Visible"
+
+
+def test_html_template_blocks_do_not_split_visible_text(tmp_path):
+    text = _parse_html(tmp_path, "<p>Hello <template><div>hidden</div></template>world</p>")
+    assert text == "Hello world"
