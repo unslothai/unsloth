@@ -937,6 +937,20 @@ class TestExplicitPickWithoutTorchKernels(unittest.TestCase):
         self.assertEqual(metadata["selection_mode"], "explicit")
         mock_auto_select.assert_not_called()
 
+    def test_the_refusal_names_the_arch_on_wheels_without_gcnArchName(self):
+        props = SimpleNamespace(name = "AMD Radeon RX 5700 XT", gcnArchName = "", gfx_arch_name = "gfx1010:xnack-")
+        with (
+            patch("torch.cuda.device_count", return_value = 2),
+            patch("torch.cuda.get_device_properties", return_value = props),
+            patch(
+                "utils.hardware.hardware._get_parent_visible_gpu_spec",
+                return_value = {"numeric_ids": [0, 1], "raw": None},
+            ),
+        ):
+            self.assertEqual(
+                _hw_module._describe_rocm_gpus([1]), ["GPU 1 (AMD Radeon RX 5700 XT, gfx1010)"]
+            )
+
     def test_a_host_where_every_card_is_covered_is_untouched(self):
         with (
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),

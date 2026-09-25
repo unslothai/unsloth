@@ -5324,6 +5324,15 @@ def estimate_required_model_memory_gb(
 _CONCRETE_GFX_ARCH = re.compile(r"^gfx[0-9][0-9a-f]{2,4}$")
 
 
+def _props_gfx_arch(props) -> str:
+    # gcnArchName alone leaves the map empty on AMD SDK / Radeon wheels.
+    for attr in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
+        arch = (getattr(props, attr, "") or "").split(":")[0].strip().lower()
+        if arch:
+            return arch
+    return ""
+
+
 def rocm_gpu_ids_without_torch_kernels() -> set[int]:
     """PHYSICAL ids of visible ROCm GPUs the installed torch wheel has no kernels for. Compares what the device PRESENTS, not its silicon, so HSA_OVERRIDE_GFX_VERSION keeps working (#7624). Every uncertainty fails OPEN, the opposite of the bf16 gate: one unreadable device is skipped rather than voiding the probe, which would restore the known-uncovered card and re-break #8792."""
     try:
@@ -5388,12 +5397,7 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
                 props = torch.cuda.get_device_properties(ordinal)
             except Exception:
                 continue
-            # gcnArchName alone leaves the map empty on AMD SDK / Radeon wheels.
-            arch = ""
-            for attr in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
-                arch = (getattr(props, attr, "") or "").split(":")[0].strip().lower()
-                if arch:
-                    break
+            arch = _props_gfx_arch(props)
             if not arch:
                 logger.debug("Torch arch gate: device %s reports no arch; not gating it", ordinal)
                 continue
@@ -5445,7 +5449,7 @@ def _describe_rocm_gpus(gpu_ids) -> list[str]:
             if physical not in wanted:
                 continue
             props = torch.cuda.get_device_properties(ordinal)
-            arch = str(getattr(props, "gcnArchName", "") or "").split(":")[0].strip()
+            arch = _props_gfx_arch(props)
             detail = ", ".join(
                 part for part in (str(getattr(props, "name", "") or ""), arch) if part
             )
