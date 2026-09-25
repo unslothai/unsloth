@@ -45,6 +45,7 @@ export interface ChatSearchItem {
   projectId?: string | null;
 }
 
+// Messages are indexed for this many most recently updated threads; older chats match by title.
 const THREAD_LIMIT = 200;
 const SEARCH_REBUILD_DEBOUNCE_MS = 300;
 // Past the dialog's 180ms exit, so releasing uncached rows never lands mid-animation.
@@ -215,6 +216,7 @@ export async function buildChatSearchIndex(): Promise<ChatSearchIndexBuild> {
       const arr = messagesByThread.get(tid);
       if (arr) merged.push(...arr);
     }
+    // A chat read as empty is skipped; one whose messages were never loaded keeps its title row.
     if (
       merged.length === 0 &&
       threadIds.every((tid) => messagesByThread.has(tid))
@@ -242,8 +244,9 @@ export async function buildChatSearchIndex(): Promise<ChatSearchIndexBuild> {
   return { items: results, complete };
 }
 
-// THREAD_LIMIT bounds rows, not bytes: a tool-heavy history would otherwise hold tens of
-// megabytes behind a closed dialog. Past this the index is rebuilt on each open.
+// THREAD_LIMIT bounds threads with indexed messages, not bytes: a tool-heavy history would
+// otherwise hold tens of megabytes behind a closed dialog. Past this the index is rebuilt on
+// each open.
 const MAX_CACHED_SEARCH_TEXT_CHARS = 4_000_000;
 
 // Last built index, kept across opens so reopening paints the previous rows at once and

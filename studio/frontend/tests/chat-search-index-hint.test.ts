@@ -506,13 +506,15 @@ test("a chat past the message bound is still found by its title", async () => {
   assert.equal(
     oldest.searchText,
     "zanzibar ledger",
-    "its messages stay unloaded, so the bound on held rows still holds",
+    "its messages stay unloaded",
   );
-  assert.ok(
-    build.items
-      .find((item) => item.id === "thread-0")
-      ?.searchText.includes("body 0 quokka"),
-    "recent chats keep their message text",
-  );
+  for (const i of [0, total - 2]) {
+    assert.ok(
+      build.items
+        .find((item) => item.id === `thread-${i}`)
+        ?.searchText.includes(`body ${i} quokka`),
+      `chat ${i}, inside the bound, keeps its message text`,
+    );
+  }
   configureChatSearchHistoryStub({});
 });
