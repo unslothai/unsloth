@@ -1181,8 +1181,11 @@ def test_unreadability_is_reported_only_when_it_is_what_kept_bfloat16(monkeypatc
     taking it held. speed off, a derivative base or a card the hosted denoiser does not fit keep
     bfloat16 for their own reasons, and must not be reported as a torchao problem."""
     try:
+        import importlib
         import importlib.metadata
+
         importlib.metadata.version("torch")
+        assert hasattr(importlib.import_module("torch"), "Tensor")
     except Exception:  # noqa: BLE001 - a stand-in torch in sys.modules is not an install
         pytest.skip("needs torch installed")
     fam, torch, vid = _shared_setup_1()
