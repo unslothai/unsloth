@@ -11,7 +11,6 @@ export const ar = {
     plainTextDescription: "إبقاء التعليمات البرمجية وMarkdown والروابط كنص حرفي. عطّل هذا الخيار لعرض معاينة منسقة.",
     showContext: "إظهار استخدام نافذة السياق",
     sendShortcut: "اختصار الإرسال",
-    sendDescription: "اختر ما إذا كان Enter يرسل الرسالة أو يضيف سطرًا جديدًا.",
     followUp: "سلوك رسائل المتابعة",
     followUpDescription: "اختر ما يحدث عند الإرسال أثناء الرد. اضغط {shortcut} لتنفيذ الإجراء المعاكس لرسالة واحدة.",
     queue: "إضافة للطابور",

@@ -11,7 +11,6 @@ export const fr = {
     plainTextDescription: "Conserver le code, le Markdown et les liens en texte brut. Désactivez pour afficher un aperçu mis en forme.",
     showContext: "Afficher l’utilisation de la fenêtre de contexte",
     sendShortcut: "Raccourci d’envoi",
-    sendDescription: "Choisissez si Entrée envoie un message ou insère une nouvelle ligne.",
     followUp: "Messages de suivi",
     followUpDescription: "Choisissez l’action lors d’un envoi pendant une réponse. Appuyez sur {shortcut} pour inverser ce choix pour un message.",
     queue: "File d’attente",

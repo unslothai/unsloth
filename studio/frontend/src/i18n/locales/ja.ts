@@ -12,7 +12,6 @@ export const ja = {
     plainTextDescription: "コード、Markdown、リンクをそのままのテキストで表示します。オフにすると書式付きプレビューを表示します。",
     showContext: "コンテキストウィンドウの使用量を表示",
     sendShortcut: "送信ショートカット",
-    sendDescription: "Enter キーで送信するか改行するかを選択します。",
     followUp: "追加メッセージの動作",
     followUpDescription: "応答中に送信した場合の動作を選択します。{shortcut} を押すと、そのメッセージだけ逆の動作になります。",
     queue: "キューに追加",

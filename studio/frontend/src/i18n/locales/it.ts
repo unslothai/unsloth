@@ -8,7 +8,6 @@ export const it = {
     plainTextDescription: "Mantieni codice, Markdown e link come testo letterale. Disattiva per mostrare un’anteprima formattata.",
     showContext: "Mostra l’utilizzo della finestra di contesto",
     sendShortcut: "Scorciatoia di invio",
-    sendDescription: "Scegli se Invio invia un messaggio o inserisce una nuova riga.",
     followUp: "Messaggi successivi",
     followUpDescription: "Scegli cosa accade quando invii durante una risposta. Premi {shortcut} per fare il contrario per un messaggio.",
     queue: "In coda",

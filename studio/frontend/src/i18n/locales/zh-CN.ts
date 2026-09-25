@@ -11,7 +11,6 @@ export const zhCN = {
     plainTextDescription: "将代码、Markdown 和链接保留为原始文本。关闭后显示格式化预览。",
     showContext: "显示上下文窗口使用量",
     sendShortcut: "发送快捷键",
-    sendDescription: "选择按 Enter 发送消息还是插入新行。",
     followUp: "后续消息行为",
     followUpDescription: "选择在回复过程中发送消息时的操作。按 {shortcut} 可对单条消息执行相反操作。",
     queue: "排队",

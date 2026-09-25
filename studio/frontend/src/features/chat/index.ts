@@ -472,6 +472,7 @@ export {
   composerSubmitIntent,
   composerFollowUpBehavior,
   composerShortcutLabels,
+  effectiveSendShortcut,
   followUpSubmitIntent,
   steeringInsertionIndex,
   type ComposerSendShortcut,

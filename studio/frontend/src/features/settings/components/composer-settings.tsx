@@ -27,6 +27,12 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const labels = composerShortcutLabels(prefs.sendShortcut, isMacPlatform());
+  const mod = isMacPlatform() ? "\u2318" : "Ctrl";
+  const sendDescriptionKey = {
+    enter: "composerSettings.sendEnterDescription",
+    "mod-enter-multiline": "composerSettings.sendMultilineDescription",
+    "mod-enter": "composerSettings.sendAlwaysDescription",
+  } as const;
   useEffect(() => {
     if (scrollTarget !== "chat-composer") return;
     const frame = requestAnimationFrame(() => {
@@ -51,26 +57,31 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
         >
           <SettingsRow
             label={t("composerSettings.sendShortcut")}
-            description={t("composerSettings.sendDescription")}
+            description={t(sendDescriptionKey[prefs.sendShortcut], { mod })}
           >
             <Select
               value={prefs.sendShortcut}
               onValueChange={(value) =>
                 prefs.setSendShortcut(
-                  value === "mod-enter" ? "mod-enter" : "enter",
+                  value === "mod-enter" || value === "mod-enter-multiline"
+                    ? value
+                    : "enter",
                 )
               }
             >
               <SelectTrigger
-                className="w-36"
+                className="w-auto max-w-72"
                 aria-label={t("composerSettings.sendShortcut")}
               >
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent align="end">
                 <SelectItem value="enter">Enter</SelectItem>
+                <SelectItem value="mod-enter-multiline">
+                  {t("composerSettings.sendMultiline", { mod })}
+                </SelectItem>
                 <SelectItem value="mod-enter">
-                  {composerShortcutLabels("mod-enter", isMacPlatform()).send}
+                  {t("composerSettings.sendAlways", { mod })}
                 </SelectItem>
               </SelectContent>
             </Select>

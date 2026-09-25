@@ -8,7 +8,12 @@ export const en = {
     plainTextDescription: "Keep code, Markdown, and links as literal text. Turn off to show a formatted preview.",
     showContext: "Show context window usage",
     sendShortcut: "Send shortcut",
-    sendDescription: "Choose when Enter sends a prompt or inserts a new line.",
+    sendMultiline: "{mod} + Enter for multiline prompts",
+    sendAlways: "{mod} + Enter always",
+    sendEnterDescription: "Enter sends. Shift + Enter adds a new line.",
+    sendMultilineDescription:
+      "Enter sends a one-line prompt. Once it has more than one line, Enter adds a new line and {mod} + Enter sends.",
+    sendAlwaysDescription: "{mod} + Enter sends. Enter adds a new line.",
     followUp: "Follow-up behavior",
     followUpDescription: "What happens when you send during a response. Press {shortcut} to do the opposite once.",
     queue: "Queue",

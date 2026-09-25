@@ -11,7 +11,6 @@ export const de = {
     plainTextDescription: "Code, Markdown und Links als wörtlichen Text anzeigen. Ausschalten, um eine formatierte Vorschau zu sehen.",
     showContext: "Auslastung des Kontextfensters anzeigen",
     sendShortcut: "Tastenkürzel zum Senden",
-    sendDescription: "Wähle, ob Enter eine Nachricht sendet oder eine neue Zeile einfügt.",
     followUp: "Folgenachrichten",
     followUpDescription: "Wähle, was beim Senden während einer Antwort passiert. Drücke {shortcut}, um für eine Nachricht das Gegenteil zu tun.",
     queue: "Einreihen",

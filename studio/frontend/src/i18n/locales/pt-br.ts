@@ -11,7 +11,6 @@ export const ptBR = {
     plainTextDescription: "Manter código, Markdown e links como texto literal. Desative para mostrar uma prévia formatada.",
     showContext: "Mostrar uso da janela de contexto",
     sendShortcut: "Atalho de envio",
-    sendDescription: "Escolha se Enter envia uma mensagem ou insere uma nova linha.",
     followUp: "Mensagens de acompanhamento",
     followUpDescription: "Escolha o que acontece ao enviar durante uma resposta. Pressione {shortcut} para fazer o contrário em uma mensagem.",
     queue: "Enfileirar",

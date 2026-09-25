@@ -11,7 +11,6 @@ export const ko = {
     plainTextDescription: "코드, Markdown, 링크를 원문 그대로 표시합니다. 끄면 서식 미리보기를 표시합니다.",
     showContext: "컨텍스트 창 사용량 표시",
     sendShortcut: "전송 단축키",
-    sendDescription: "Enter 키로 메시지를 보내거나 줄을 바꿀지 선택합니다.",
     followUp: "후속 메시지 동작",
     followUpDescription: "응답 중에 전송할 때의 동작을 선택합니다. {shortcut}을 누르면 해당 메시지만 반대로 처리합니다.",
     queue: "대기열",
