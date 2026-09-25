@@ -278,6 +278,19 @@ def test_host_prep_elevates_only_when_needed(monkeypatch, tmp_path, elevated):
     ]
 
 
+def test_elevated_host_prep_is_never_timed_out(monkeypatch, tmp_path):
+    # prepare-system-drive ran 3 to 7 minutes on a CI runner; a kill leaves the drive half re-ACLed.
+    seen: dict = {}
+    monkeypatch.setattr(installer, "_is_elevated", lambda: True)
+    monkeypatch.setattr(
+        installer.subprocess,
+        "run",
+        lambda argv, **kwargs: seen.update(kwargs) or subprocess_result(0),
+    )
+    assert installer._run_host_prep(tmp_path / "wxc-host-prep.exe", "prepare-system-drive") == 0
+    assert "timeout" not in seen
+
+
 def subprocess_result(code):
     import subprocess
     return subprocess.CompletedProcess(args = [], returncode = code)

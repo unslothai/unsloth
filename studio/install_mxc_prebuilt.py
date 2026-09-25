@@ -46,9 +46,6 @@ def _download(destination: Path) -> None:
         ) from exc
 
 
-HOST_PREP_TIMEOUT_SECONDS = 120
-
-
 def _approved_members() -> dict[str, tuple[str, int]]:
     return {
         mxc_runtime.RELEASE_MEMBER: ("wxc-exec.exe", mxc_runtime.WXC_EXEC_SIZE),
@@ -193,7 +190,6 @@ def _run_elevated(executable: Path, arguments: list[str], directory: str) -> int
     kernel32.WaitForSingleObject.restype = wintypes.DWORD
     kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
     kernel32.GetExitCodeProcess.restype = wintypes.BOOL
-    kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
 
@@ -204,7 +200,7 @@ def _run_elevated(executable: Path, arguments: list[str], directory: str) -> int
     info.lpFile = str(executable)
     info.lpParameters = subprocess.list2cmdline(arguments)
     info.lpDirectory = directory
-    info.nShow = 0
+    info.nShow = 1  # its console shows the progress of a multi-minute run
     if not shell32.ShellExecuteExW(ctypes.byref(info)):
         error = ctypes.get_last_error()
         if error == 1223:
@@ -213,9 +209,9 @@ def _run_elevated(executable: Path, arguments: list[str], directory: str) -> int
     if not info.hProcess:
         raise MxcInstallError("wxc-host-prep started without a process handle")
     try:
-        if kernel32.WaitForSingleObject(info.hProcess, HOST_PREP_TIMEOUT_SECONDS * 1000) != 0:
-            kernel32.TerminateProcess(info.hProcess, 1)
-            raise MxcInstallError("wxc-host-prep did not finish in time")
+        # INFINITE: killing prepare-system-drive mid-propagation leaves C:\ half re-ACLed.
+        if kernel32.WaitForSingleObject(info.hProcess, 0xFFFFFFFF) != 0:
+            raise MxcInstallError("could not wait for wxc-host-prep")
         code = wintypes.DWORD()
         if not kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(code)):
             raise MxcInstallError("could not read the wxc-host-prep exit code")
@@ -227,17 +223,15 @@ def _run_elevated(executable: Path, arguments: list[str], directory: str) -> int
 def _run_host_prep(executable: Path, step: str) -> int:
     arguments = [step, "--quiet"] if step == "prepare-null-device" else [step]
     directory = os.environ.get("SystemRoot") or str(executable.parent)
+    # Measured 3 to 7 minutes on a CI runner: it propagates an ACE across the whole system drive.
+    print(f"[mxc-prebuilt] running wxc-host-prep {step}; this can take several minutes")
     if _is_elevated():
-        try:
-            return subprocess.run(
-                [str(executable), *arguments],
-                cwd = directory,
-                stdin = subprocess.DEVNULL,
-                timeout = HOST_PREP_TIMEOUT_SECONDS,
-                check = False,
-            ).returncode
-        except subprocess.TimeoutExpired as exc:
-            raise MxcInstallError("wxc-host-prep did not finish in time") from exc
+        return subprocess.run(
+            [str(executable), *arguments],
+            cwd = directory,
+            stdin = subprocess.DEVNULL,
+            check = False,
+        ).returncode
     return _run_elevated(executable, arguments, directory)
 
 
