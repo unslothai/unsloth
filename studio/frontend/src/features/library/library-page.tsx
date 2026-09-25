@@ -17,6 +17,7 @@ import {
   consumeNativePathToken,
   useNativeFileDrop,
 } from "@/features/native-intents";
+import { getAuthSessionEpoch } from "@/features/auth";
 import { useSettingsDialogStore } from "@/features/settings";
 import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
@@ -407,12 +408,14 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   // Desktop drops arrive as paths. The webview can only read media back, so each path is traded for
   // a signed grant and the backend reads the file itself.
   async function uploadNativeDrops(intents: NativeIntent[]) {
+    // The grants are the signed-in account's: one who signs in meanwhile must not upload them.
+    const sessionEpoch = getAuthSessionEpoch();
     try {
       const leases = await Promise.all(
         intents.map((intent) => consumeNativePathToken(intent.path.token, "attach")),
       );
       await uploadBatch(
-        { nativePathLeases: leases.map((lease) => lease.nativePathLease) },
+        { nativePathLeases: leases.map((lease) => lease.nativePathLease), sessionEpoch },
         leases.length,
         leases[0]?.displayLabel ?? "",
       );
