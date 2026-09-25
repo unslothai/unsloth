@@ -25,6 +25,8 @@ import os
 import sys
 import types
 
+import re
+
 import pytest
 from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 import torch
@@ -879,6 +881,32 @@ def test_packed_expert_targets_follow_the_finetune_family_flags(flags, experts, 
     got = _peft_target_parameters(
         model, monkeypatch, target_modules = ["q_proj", "w1", "w2"], **flags
     )
+    want = ["experts.gate_up_proj", "experts.down_proj"] if experts else []
+    assert sorted(got or []) == sorted(want)
+
+
+@pytest.mark.parametrize(
+    "kwargs, experts",
+    [
+        ({}, True),
+        ({"target_modules": "all-linear"}, True),
+        ({"finetune_mlp_modules": False}, False),
+    ],
+)
+def test_auto_targets_keep_packed_experts_as_they_kept_the_per_expert_linears(
+    kwargs, experts, monkeypatch
+):
+    """The auto regex is built after stacking, so it no longer names w1 / w2 / w3; before
+    stacking it selected them, and the default and all-linear still must."""
+    mod, _ = _tiny_model("transformers_modules.k3s_auto.modeling_tinymoe")
+    model = mod.TinyMoeForCausalLM(mod.TinyMoeConfig(num_hidden_layers = 1)).to(torch.bfloat16)
+    _swap_planned_stacks(model, _keys(layers = 1), torch.bfloat16)
+    _materialize_packed(model)
+    model.max_seq_length = 64
+    model.vision_tower = nn.Module()
+    model.vision_tower.attn = nn.Module()
+    model.vision_tower.attn.q_proj = nn.Linear(H, H, bias = False)
+    got = _peft_target_parameters(model, monkeypatch, **kwargs)
     want = ["experts.gate_up_proj", "experts.down_proj"] if experts else []
     assert sorted(got or []) == sorted(want)
 
