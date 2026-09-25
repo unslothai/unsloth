@@ -1853,6 +1853,23 @@ export function useChatModelRuntime() {
       const postLoadRefresh = { needed: false };
       let progressModelIds = [modelId];
       let mlxLoadProgress = false;
+      const liveBeforeLoad = useChatRuntimeStore.getState();
+      // A switch without a saved config starts on the default engine, as the dedupe above assumes.
+      if (
+        (typeof selection === "string" || !selection.config) &&
+        !keepSpeculative &&
+        liveBeforeLoad.params.checkpoint &&
+        (liveBeforeLoad.params.checkpoint !== modelId ||
+          (liveBeforeLoad.activeGgufVariant ?? null) !== (ggufVariant ?? null)) &&
+        (liveBeforeLoad.params.engine ?? "auto") !== "auto"
+      ) {
+        liveBeforeLoad.setParams({
+          ...liveBeforeLoad.params,
+          engine: "auto",
+          enginePrecision: "auto",
+          engineParallelism: "tensor",
+        });
+      }
       const requestedEngine =
         (typeof selection !== "string" ? selection.config?.engine : undefined) ??
         useChatRuntimeStore.getState().params.engine ?? "auto";
