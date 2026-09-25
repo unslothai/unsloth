@@ -1278,6 +1278,35 @@ def test_http_backend_reports_whether_a_reply_ran_out_of_budget(monkeypatch):
     assert _http_finish(monkeypatch, "stop")[0] is False
 
 
+def _http_reasoning_reply(monkeypatch):
+    # The server's shape for a thinking model: reasoning-only deltas carry content "".
+    deltas = [
+        {"role": "assistant", "content": ""},
+        {"content": "", "reasoning_content": "Two plus "},
+        {"content": "", "reasoning_content": "two."},
+        {"content": "It is "},
+        {"content": "4."},
+    ]
+    lines = [f"data: {json.dumps({'choices': [{'delta': delta}]})}\n".encode() for delta in deltas]
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    monkeypatch.setattr(
+        backend, "_request", lambda *a, **k: _FakeSSEResponse([*lines, b"data: [DONE]\n"])
+    )
+    return backend.stream(
+        [{"role": "user", "content": "2+2?"}], **{**_STREAM_KWARGS, "enable_thinking": True}
+    )
+
+
+def test_http_backend_shows_server_reasoning_with_think(monkeypatch):
+    stream = _http_reasoning_reply(monkeypatch)
+    assert collect_stream(stream, show_thinking = True) == "<think>Two plus two.</think>It is 4."
+
+
+def test_http_backend_hides_server_reasoning_without_think(monkeypatch):
+    stream = _http_reasoning_reply(monkeypatch)
+    assert collect_stream(stream, show_thinking = False) == "It is 4."
+
+
 class _FakeLoadResponse:
     """A /api/inference/load reply that records whether its body was drained.
 
