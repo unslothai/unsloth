@@ -134,7 +134,8 @@ def weight_dequant(
     else:
         # Block quantized weight: scale shape is (ceil(m/block_m), ceil(n/block_n)). Go through the
         # any-shape helper so fast_dequantize's callers get the pre-sm89 fallback too.
-        return _blockwise_weight_dequant_any_shape(x, s, [128, 128], dtype)
+        block_size = getattr(s, "block_size", None) or [128, 128]
+        return _blockwise_weight_dequant_any_shape(x, s, block_size, dtype)
 
 
 # Copied from huggingface.co/deepseek-ai/DeepSeek-V3 inference/kernel.py
