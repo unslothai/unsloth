@@ -31,7 +31,7 @@ import {
   isTextPreviewable,
   modelLabelKey,
 } from "../file-kind";
-import { formatCardTime, formatPercent, formatSize } from "../format";
+import { formatCardTime, formatSize } from "../format";
 import { type EmbeddedBody, hasOwnFile } from "../file-name";
 import { useLibraryPreviewUrl } from "../hooks";
 import { type NoteFormat, type NoteReadOnlyReason, encodeNote } from "../note-text";
@@ -529,12 +529,8 @@ export function LibraryPreview({
         <>
           {body === "web" && item && !showCode && (
             <ScaleMenu
-              label={formatPercent(pageScale, locale)}
-              value={String(pageScale)}
-              options={PAGE_SCALES.map((scale) => ({
-                value: String(scale),
-                label: formatPercent(scale, locale),
-              }))}
+              value={pageScale}
+              scales={PAGE_SCALES}
               onChange={(value) => setZoom({ itemId: item.id, scale: Number(value) })}
             />
           )}
