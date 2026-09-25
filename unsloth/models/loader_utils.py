@@ -367,7 +367,7 @@ def resolve_unsloth_device_map(
     except Exception as error:
         return _fallback(f"the planner is unavailable ({error})")
 
-    # An older planner without a `config` parameter would pass it to AutoConfig and plan the repo's model, so decline.
+    # Older planners without `config` would forward it to AutoConfig and plan the full repo model.
     if planner_config is not None:
         try:
             _planner_params = inspect.signature(plan_device_map_for_pretrained).parameters
@@ -378,7 +378,7 @@ def resolve_unsloth_device_map(
                 planner_config_reason or "this unsloth_zoo cannot plan from a resolved config"
             )
         config_kwargs["config"] = planner_config
-    # One `config` only: two would raise TypeError and silently fall back to "sequential".
+    # Two `config` kwargs raise TypeError, silently falling back to "sequential".
     if "config" in config_kwargs:
         planner_kwargs.pop("config", None)
 

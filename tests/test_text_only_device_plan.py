@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A text_only load of a VLM checkpoint plans its device map from the text config.
-
-An older planner that cannot take a config still declines. No GPU needed.
-"""
+"""text_only VLM loads plan from the text config; an old planner without `config` declines."""
 
 import ast
 import inspect
@@ -157,7 +154,6 @@ def test_vision_loader_hands_the_text_config_to_the_planner():
         passed = {kw.arg: ast.unparse(kw.value) for kw in call.keywords}
         assert passed.get("planner_config") == "_planner_config"
     assert "_planner_config = auto_config if text_only_decoder else None" in source
-    # A text_only load only declines through the old-planner path.
     assert "if text_only_decoder\n            else None" not in source
 
 
