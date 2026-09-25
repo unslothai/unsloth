@@ -12,8 +12,6 @@ const sourceCodePlugin = createCodePlugin({
   themes: [unslothLightTheme, unslothDarkTheme],
 });
 
-// Past either, highlighting a whole file on the main thread freezes the page for seconds; the
-// source shows plain, still line-numbered.
 const MAX_HIGHLIGHT_CHARS = 200_000;
 const MAX_HIGHLIGHT_LINES = 5_000;
 
@@ -25,7 +23,6 @@ function lineCount(source: string): number {
   return lines;
 }
 
-/** Monospace with a line-number gutter, for source too large to highlight. */
 function PlainSource({ code, lines, className }: { code: string; lines: number; className?: string }) {
   const numbers = useMemo(
     () => Array.from({ length: lines }, (_, index) => index + 1).join("\n"),
@@ -52,7 +49,6 @@ function buildFence(source: string, language: string): string {
   return `${fence}${language}\n${source}\n${fence}`;
 }
 
-/** Read-only source, highlighted and line-numbered, styled as the chat canvas shows its source. */
 export function CodeSourceView({
   code,
   language,
@@ -77,7 +73,6 @@ export function CodeSourceView({
       )}
     >
       <Streamdown
-        // Whole, unchanging source: nothing to stream.
         mode="static"
         plugins={{ code: sourceCodePlugin }}
         controls={{ code: false }}

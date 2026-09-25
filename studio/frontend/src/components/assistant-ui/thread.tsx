@@ -2983,9 +2983,6 @@ const Composer: FC<{
   const nativeAttachmentTargetKeyRef = useRef(nativeAttachmentTargetKey);
   nativeAttachmentTargetKeyRef.current = nativeAttachmentTargetKey;
 
-  // Library "Chat about this" opens a fresh chat and leaves its files for it; the composer may
-  // already be mounted, so listen as well as look. Files it refuses (image or video generation
-  // unloaded the chat model) wait for the next model to load rather than being dropped.
   useEffect(() => {
     if (!nativeAttachmentTargetKey) return;
     const targetKey = nativeAttachmentTargetKey;
@@ -2998,7 +2995,6 @@ const Composer: FC<{
     const offers = useLibraryChatHandoffStore.subscribe((state) => {
       if (state.pending?.targetKey === targetKey) void drain();
     });
-    // One retry at a time; a change during one runs another after it, as it may have read too early.
     let retrying = false;
     let again = false;
     const retry = async () => {

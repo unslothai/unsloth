@@ -90,12 +90,9 @@ def _item(
         "fileUrl": file_url,
         "threadId": thread_id,
         "threadTitle": thread_title,
-        # Chat uploads of documents keep only their extracted text, so that is what downloads.
         "textOnly": text_only,
         "model": model,
-        # Off its gallery page's active shelf, so that page cannot open it.
         "archived": archived,
-        # Which file a path-derived id found; the listing takes it off before answering.
         "_fingerprint": fingerprint,
     }
 
@@ -107,12 +104,10 @@ def _fingerprint(info: os.stat_result) -> str:
     so there a file recreated at once can pass for the old one."""
     birth = getattr(info, "st_birthtime", None)
     if birth is None and os.name == "nt":
-        # Before Python 3.12, Windows kept the creation time in st_ctime.
         birth = info.st_ctime
     return str(info.st_ino) if birth is None else f"{info.st_ino}:{birth!r}"
 
 
-# ── Library uploads ──────────────────────────────────────────────
 
 
 def uploads_dir() -> Path:
@@ -154,7 +149,6 @@ def _verify_native(lease: str, *, consume: bool):
         expected_path_type = "file",
         consume = consume,
     )
-    # Refuses a path outside the acting account's workspace for a non-owner account.
     account_path(str(grant.canonical_path))
     return grant
 
@@ -186,8 +180,6 @@ def open_native_upload(lease: str):
     return name, _guess_type(name), handle
 
 
-# Deletes and note saves check a row, then change the file and the row: one at a time, or a file
-# can be left with no row.
 _upload_lock = threading.Lock()
 
 
@@ -212,7 +204,6 @@ def write_upload_text(
     path = upload_path(upload_id)
     if path is None:
         return False
-    # A lone surrogate has no encoding in any of them; the route answers that with a 400.
     data = text.encode(encoding)
     with _upload_lock:
         if library_db.get_upload(upload_id) is None:
@@ -222,14 +213,12 @@ def write_upload_text(
         try:
             library_db.touch_upload(upload_id, len(data))
         except BaseException:
-            # The row still describes the old note, so the old note goes back.
             if previous is not None:
                 _swap_in(path, previous)
             raise
     return True
 
 
-# A crash can leave a staged upload, note or delete behind; nothing that old is still being written.
 _LEFTOVER_AGE_SECONDS = 3600
 _swept_at: dict[str, float] = {}
 
@@ -243,7 +232,6 @@ def _sweep_leftovers() -> None:
     if now - _swept_at.get(str(directory), 0) < _LEFTOVER_AGE_SECONDS:
         return
     _swept_at[str(directory)] = now
-    # Deletes and note saves stage under this lock, so none of theirs is mid-way here.
     with _upload_lock:
         with os.scandir(directory) as entries:
             leftovers = [
@@ -291,7 +279,6 @@ def _upload_items() -> list[dict]:
     return items
 
 
-# ── Chat attachments ─────────────────────────────────────────────
 
 
 def _attachment_id(message_id: str, attachment_id: str) -> str:
@@ -311,8 +298,6 @@ def _attachment_items() -> list[dict]:
 
     items = []
     for attachment in list_chat_attachments():
-        # The essence, as the attachment route reads it: a type is case-insensitive, and a
-        # recorded clip's carries parameters (video/webm;codecs=vp9).
         content_type = str(attachment.get("contentType") or "").split(";", 1)[0].strip().lower()
         has_bytes = attachment.get("type") in ("image", "audio") or content_type.startswith(
             ("image/", "audio/", "video/")
@@ -335,10 +320,8 @@ def _attachment_items() -> list[dict]:
     return items
 
 
-# ── Generated images, video and audio ────────────────────────────
 
 
-# A run of what Windows refuses in a file name, or of whitespace: a prompt's line breaks make no name.
 _NAME_BREAK_RE = re.compile(f"[{UNSAFE_NAME_CHARS}\\s]+")
 
 
@@ -359,7 +342,6 @@ class _Gallery(NamedTuple):
     folder: str  # the project folder Add to project copies into
 
 
-# kind: its module in core.inference, its list and path functions, then the rest of _Gallery.
 _GALLERIES = {
     "image": ("image_gallery", "list_images", "image_path", "Image", "png", "image/png", "images"),
     "video": ("video_gallery", "list_videos", "video_path", "Video", "mp4", "video/mp4", "videos"),
@@ -376,7 +358,6 @@ def _gallery(kind: str) -> _Gallery:
 def _gallery_items(kind: str) -> list[dict]:
     gallery = _gallery(kind)
     items = []
-    # Both shelves: archiving tidies a gallery page, the file is still Studio's.
     for archived in (False, True):
         for record in gallery.records(archived = archived):
             path = gallery.resolve(record["id"])
@@ -413,7 +394,6 @@ def _audio_items() -> list[dict]:
     return _gallery_items("audio")
 
 
-# ── Fine-tuned models ────────────────────────────────────────────
 
 MODEL_CONTENT_TYPE = "application/x-unsloth-model"
 
@@ -484,7 +464,6 @@ def _model_items() -> list[dict]:
     return items
 
 
-# ── Chat sandbox files ───────────────────────────────────────────
 
 
 def _sandbox_sessions() -> list[tuple[str, Optional[str], Optional[str]]]:
@@ -562,7 +541,6 @@ def _sandbox_path(ref: str) -> str:
         resolve_sandbox_workdir,
     )
 
-    # The session is encoded, as any string can be a chat's id: the path is what follows its colon.
     session, _, relative = ref.partition(":")
     session_id = unquote(session)
     parts = relative.split("/")
@@ -636,7 +614,6 @@ def _delete_sandbox_file(ref: str, expected: Optional[str] = None) -> bool:
         if expected is not None and _fingerprint(info) != expected:
             raise ItemChanged("This file changed since the Library listed it.")
         if _USE_DIR_FD:
-            # By the folder's descriptor, so a parent swapped for a link since is not followed.
             dir_fd = os.open(parent, _DIR_FLAGS)
             try:
                 entry = os.stat(name, dir_fd = dir_fd, follow_symlinks = False)
@@ -646,7 +623,6 @@ def _delete_sandbox_file(ref: str, expected: Optional[str] = None) -> bool:
             finally:
                 os.close(dir_fd)
             return True
-    # Windows cannot delete an open file; there a link needs privileges tool code lacks.
     os.unlink(path)
     return True
 
@@ -664,7 +640,6 @@ def _sandbox_items() -> list[dict]:
         except Exception:
             logger.debug("library.sandbox_listing_failed", exc_info = True)
             continue
-        # Left for the per-item routes, so a card just listed is checked without walking again.
         _LISTING.put(("names", directory), frozenset(names), generation)
         for relative in names:
             if os.path.basename(relative).startswith("."):
@@ -680,8 +655,6 @@ def _sandbox_items() -> list[dict]:
                     source = "generated",
                     content_type = _guess_type(relative),
                     size_bytes = info.st_size,
-                    # To the millisecond: a card's thumbnail is cached by it, and a tool can write
-                    # the file again within a second.
                     created_at = info.st_mtime_ns // 1_000_000,
                     file_url = f"/api/inference/sandbox/{quote(session_id, safe = '')}/{quote(relative)}",
                     thread_id = thread_id,
@@ -692,9 +665,6 @@ def _sandbox_items() -> list[dict]:
     return items
 
 
-# By extension and the same on every OS: mimetypes reads the Windows registry, where any installed
-# app can remap a type, and it names `.ts` an MPEG transport stream. The sandbox route's raster
-# types are merged in, so the two agree on every image.
 _CONTENT_TYPES = {
     f".{extension}": content_type
     for content_type, extensions in (
@@ -754,8 +724,6 @@ _CONTENT_TYPES = {
 
 _MEDIA_TYPE_RE = re.compile(r"[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*")
 
-# Types a browser runs or renders as a document of its own. A client that declares one for a file
-# whose extension says otherwise does not get it stored.
 _ACTIVE_TYPES = frozenset(
     "text/html application/xhtml+xml image/svg+xml application/pdf text/xml application/xml"
     " text/javascript application/javascript application/x-shockwave-flash".split()
@@ -801,12 +769,10 @@ def item_type(item_id: str) -> str:
         record = library_db.get_upload(ref)
         if record is None:
             raise LookupError(item_id)
-        # Stored as its extension's type when the map knows it, so this is the name's type too.
         return media_type(record["contentType"]) or ""
     return _guess_type(ref) if kind == "sandbox" else ""
 
 
-# ── Caches ───────────────────────────────────────────────────────
 
 
 def _account_key() -> str:
@@ -862,9 +828,6 @@ class _Memo:
                     self._entries.popitem(last = False)
 
 
-# Walking every fine-tune and every chat's sandbox is most of a listing's time, and the page lists
-# again after each change: remembered a few seconds per account, a fine-tune's a minute while its
-# roots' folders keep their mtimes. The Library's own writes forget them.
 _SANDBOX_TTL_SECONDS = 5.0
 _MODEL_TTL_SECONDS = 60.0
 _LISTING = _Memo()
@@ -900,14 +863,12 @@ def _remembered(
 
     def remembered() -> list[dict]:
         items = _LISTING.get((name,), globals()[name], ttl, stamp() if stamp else None)
-        # Copies: the overlay is written onto each item.
         return [dict(item) for item in items]
 
     remembered.__name__ = name
     return remembered
 
 
-# ── Public API ───────────────────────────────────────────────────
 
 _SOURCES = (
     _upload_items,
@@ -940,10 +901,8 @@ def list_items() -> list[dict]:
             item["fingerprint"] = fingerprint
         if entry and fingerprint is not None and entry["fingerprint"] != fingerprint:
             if entry["fingerprint"] is None:
-                # Written before rows were fingerprinted: this file is taken to be the one.
                 adopt.append((item["id"], fingerprint))
             else:
-                # Made for a file since deleted; this one only shares its path.
                 stale.append((item["id"], entry["fingerprint"]))
                 entry = None
         item["favorite"] = bool(entry and entry["favorite"])
@@ -953,7 +912,6 @@ def list_items() -> list[dict]:
     try:
         library_db.reconcile_entries(adopt, stale)
     except Exception:
-        # Answered as reconciled either way; the next listing tries the write again.
         logger.warning("library.overlay_reconcile_failed", exc_info = True)
     items.sort(key = lambda item: item["updatedAt"], reverse = True)
     return items
@@ -992,9 +950,7 @@ def safe_file_name(
     stem = _NAME_BREAK_RE.sub(" ", stem).strip(" .") or fallback
     ext = _utf8_prefix(re.sub(f"[{UNSAFE_NAME_CHARS}]", "", ext).rstrip(" ."), 16)
     ext = ext if len(ext) > 1 else ""
-    # Cut by UTF-8 bytes, as a file system counts its 255, leaving room for a copy's temp name.
     stem = _utf8_prefix(stem, 160 if item_id else 200).rstrip(" .") or fallback
-    # Cleaned, only a device name can still be refused.
     if _bad_name(stem):
         stem = f"_{stem}"
     if item_id:
@@ -1016,7 +972,6 @@ class ItemFile:
         info = os.fstat(handle.fileno())
         self.size = info.st_size
         self.modified_ns = info.st_mtime_ns
-        # What it downloads as, and where and as what Add to project copies it.
         self.name = name
         self.folder = folder
         self.project_name = project_name
@@ -1064,7 +1019,6 @@ def open_item(item_id: str) -> ItemFile:
         path = upload_path(ref)
         if record is None or path is None:
             raise LookupError(item_id)
-        # Stored under its id alone, so the name the user gave it is the one it downloads as.
         return ItemFile(
             _open_owned(path, item_id),
             safe_file_name(record["name"]),
@@ -1073,8 +1027,6 @@ def open_item(item_id: str) -> ItemFile:
         )
     if kind in _GALLERIES:
         path, prompt = _gallery_file(kind, ref)
-        # Downloads under its prompt (its id with none). A project copy keeps the stored name, as
-        # the gallery pages copy it, so either place sees the other's copy as already there.
         name = safe_file_name(_prompt_name(prompt, ref, path.suffix.lstrip(".")), ref)
         return ItemFile(_open_owned(path, item_id), name, _gallery(kind).folder, path.name)
     if kind == "sandbox":
@@ -1120,20 +1072,13 @@ def local_path(item_id: str) -> Path:
     return Path(resolved)
 
 
-# ── Thumbnails ───────────────────────────────────────────────────
 
-# Cards are up to a few hundred CSS pixels wide, so twice that for high-density screens.
 _THUMBNAIL_WIDTH = 640
 # The grid crops a picture past these heights (as a share of its width), so the rest is never sent.
 _THUMBNAIL_MIN_RATIO = 2 / 3
 _THUMBNAIL_MAX_RATIO = 3 / 2
-# A small file can still decode to an enormous bitmap; past this many pixels a card shows its icon.
 _THUMBNAIL_MAX_PIXELS = 64_000_000
-# Decoders run on whatever a user uploads or a tool writes, so only what a card shows: no
-# PostScript (EPS hands the file to Ghostscript), PDF or long tail of legacy image plugins.
 _THUMBNAIL_IMAGE_FORMATS = ("PNG", "JPEG", "WEBP", "GIF", "BMP", "TIFF", "AVIF")
-# The container a clip is read as, forced rather than probed: a probe can settle on HLS or concat,
-# whose playlists name other files, and those would be read too.
 _THUMBNAIL_VIDEO_CONTAINERS = {
     "video/mp4": "mp4",
     "video/quicktime": "mov",
@@ -1142,7 +1087,6 @@ _THUMBNAIL_VIDEO_CONTAINERS = {
     "video/ogg": "ogg",
     "video/x-msvideo": "avi",
 }
-# A grid of cards asks for dozens at once; each decode holds a full frame in memory.
 _THUMBNAIL_DECODES = threading.BoundedSemaphore(2)
 _THUMBNAILS = _Memo(size = 256)
 
@@ -1182,7 +1126,6 @@ def _attachment_media(ref: str) -> tuple[str, bytes]:
             if isinstance(data, str) and data and mime_type.startswith(("image/", "video/")):
                 return mime_type, _decode_attachment_base64(data)
     except HTTPException as exc:
-        # A corrupt stored payload: no picture, rather than the attachment route's 422.
         raise RuntimeError("The attachment's data is corrupt.") from exc
     raise LookupError(ref)
 
@@ -1197,15 +1140,12 @@ def _image_thumbnail(source: Union[Path, BinaryIO]) -> bytes:
     formats = [name for name in _THUMBNAIL_IMAGE_FORMATS if name in Image.OPEN]
     try:
         with Image.open(source, formats = formats) as opened:
-            # Read from the header, before anything is decoded.
             if opened.width * opened.height > _THUMBNAIL_MAX_PIXELS:
                 raise RuntimeError(f"{opened.width}x{opened.height} is too large to thumbnail.")
-            # A JPEG decodes straight at a fraction of its size, so a huge photo stays cheap.
             opened.draft("RGB", (_THUMBNAIL_WIDTH, _THUMBNAIL_WIDTH))
             image = ImageOps.exif_transpose(opened)
             width, height = image.size
             if height > width * _THUMBNAIL_MAX_RATIO:
-                # From the top, where a screenshot or a page starts.
                 image = image.crop((0, 0, width, round(width * _THUMBNAIL_MAX_RATIO)))
             elif height < width * _THUMBNAIL_MIN_RATIO:
                 keep = round(height / _THUMBNAIL_MIN_RATIO)
@@ -1253,8 +1193,6 @@ def thumbnail(item_id: str) -> bytes:
     LookupError when the item is gone or has no picture; RuntimeError when it cannot be decoded."""
     kind, _, ref = item_id.partition(":")
     if kind == "attachment":
-        # The whole attachment is read and decoded to find its picture, up to a 64 MiB clip, so
-        # that is held to the decodes' count too, not only the frame.
         with _THUMBNAIL_DECODES:
             mime_type, data = _attachment_media(ref)
             version = (item_id, len(data), zlib.crc32(data))
@@ -1278,8 +1216,6 @@ def item_exists(item_id: str, recorded: Optional[str] = None) -> bool:
             message_id, attachment_id = _attachment_ref(ref)
             return get_chat_attachment(message_id, attachment_id) is not None
         if kind in _GALLERIES:
-            # The file being there is enough: reading its recipe decodes a whole PNG, and the
-            # galleries ask this for every star when they open.
             return _gallery(kind).resolve(ref) is not None
         path = local_path(item_id)
     except (LookupError, ValueError):
@@ -1356,7 +1292,6 @@ def delete_item(item_id: str, fingerprint: Optional[str] = None) -> bool:
         from core.inference import video_gallery
         from routes.video import _forget_openai_job, _forget_terminal_video
 
-        # Only for a clip of ours, so a guessed id cannot drop a running generation's job.
         if video_gallery.get_record(ref) is not None:
             # The job goes first, as the Video page's cleanup, so /v1/videos never keeps a ghost
             # of the clip. Failing there leaves the clip listed, and deleting it again finishes.
@@ -1370,16 +1305,11 @@ def delete_item(item_id: str, fingerprint: Optional[str] = None) -> bool:
     elif kind == "sandbox":
         deleted = _delete_sandbox_file(ref, fingerprint)
     elif kind == "model":
-        # Deleting a model has load and training guards of its own; the model picker owns that.
         raise ValueError("Fine-tuned models are deleted from the model picker.")
     else:
         raise ValueError("Unknown library item")
     invalidate_listing()
-    # A gallery keeps a file it could not unlink (open in another app on Windows) listed, so the
-    # delete can be tried again: its name, star and folder stay with it.
     if not deleted and kind in _GALLERIES and item_exists(item_id):
         raise DeleteIncomplete("Could not delete the file. Close any app using it and try again.")
-    # Gone either way, so its name, star and folder go too, or they would sit in the overlay and
-    # be counted among the favorites for good.
     library_db.delete_entry(item_id)
     return deleted

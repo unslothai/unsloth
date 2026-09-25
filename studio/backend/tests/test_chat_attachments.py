@@ -488,7 +488,6 @@ def test_video_attachment_file_serves_bytes_and_lists_with_size(
     response = chat_history.get_attachment_file("msg-1", "att-video", current_subject = "unsloth")
     assert response.body == clip
     assert response.media_type == served
-    # Sized, so the Library can tell a large clip from an unknown one.
     assert abs(studio_db.list_chat_attachments()[0]["sizeBytes"] - len(clip)) <= 2
 
 
