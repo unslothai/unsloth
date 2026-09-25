@@ -3016,6 +3016,17 @@ def _research_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
     }
 
 
+def _research_assistant_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
+    return {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT assistant_message_id FROM research_runs "
+            "WHERE thread_id = ? AND assistant_message_id IS NOT NULL",
+            (thread_id,),
+        ).fetchall()
+    }
+
+
 def _generation_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
     return {
         str(message_id)
@@ -3257,9 +3268,17 @@ def _guard_server_managed_messages(
     allow_research_update: bool = False,
 ) -> None:
     generation = _generation_message_ids(conn, thread_id)
-    protected = set(generation)
-    if not allow_research_update:
-        protected.update(_research_message_ids(conn, thread_id))
+    if allow_research_update:
+        # A deep research run is handed off from a chat generation and reports into that
+        # generation's assistant message. Once the generation has settled, the research run
+        # is the message's only writer, so its authorized updates must not be held to the
+        # generation's monotonic-update rules.
+        generation -= _research_assistant_message_ids(
+            conn, thread_id
+        ) & _terminal_generation_message_ids(conn, thread_id)
+        protected = set(generation)
+    else:
+        protected = generation | _research_message_ids(conn, thread_id)
     if not protected:
         return
     for message in messages:
