@@ -40083,6 +40083,13 @@ async def diffusion_status(
     status_dict = active_status()
     if account_access.resident_hidden("diffusion", status_dict.get("repo_id")):
         return account_access.hidden_resident_response()
+    # Step-skip counters trace a render as it runs, which generate-progress hides from other accounts.
+    if (
+        status_dict.get("transformer_cache_stats") is not None
+        and account_access.account_scope() is not None
+        and not account_access.generation_is_mine("diffusion")
+    ):
+        status_dict = {**status_dict, "transformer_cache_stats": None}
     # Answered long after the resolving request ended, so no handle is in context.
     return redact_host_paths(DiffusionStatusResponse(**status_dict), via_api_key = via_api_key)
 

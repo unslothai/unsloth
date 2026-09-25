@@ -908,3 +908,33 @@ def test_a_short_generation_reports_its_own_uncached_counts():
     _run(pipe, 8)
     ss.reset_static_step_skip(pipe, None)
     assert ss.static_skip_stats(pipe)["stats"] == {"calls": 8, "computed": 8, "skipped": 0}
+
+
+@pytest.mark.parametrize(
+    "scope, mine, shown",
+    [(None, False, True), ("acct", True, True), ("acct", False, False)],
+)
+def test_status_route_hides_skip_counts_from_other_accounts(monkeypatch, scope, mine, shown):
+    import asyncio
+
+    from core.inference import diffusion_engine_router
+    from hub.services.models import account_access
+    from routes import inference as routes
+
+    stats = {
+        "mode": "taylor1",
+        "planned_skips": 9,
+        "stats": {"calls": 25, "computed": 16, "skipped": 9},
+    }
+    monkeypatch.setattr(
+        diffusion_engine_router,
+        "active_status",
+        lambda: {"loaded": True, "transformer_cache": "static", "transformer_cache_stats": stats},
+    )
+    monkeypatch.setattr(account_access, "resident_hidden", lambda *a, **k: False)
+    monkeypatch.setattr(account_access, "account_scope", lambda: scope)
+    monkeypatch.setattr(account_access, "generation_is_mine", lambda modality: mine)
+    body = asyncio.run(routes.diffusion_status(current_subject = "u", via_api_key = False))
+    assert body.transformer_cache == "static"
+    assert (body.transformer_cache_stats == stats) is shown
+    assert (body.transformer_cache_stats is None) is (not shown)
