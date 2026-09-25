@@ -1415,3 +1415,14 @@ def test_an_offline_pick_checks_only_the_repo_the_load_reads(monkeypatch):
         staticmethod(lambda base: base == "unsloth/mirror"),
     )
     assert _settle(backend, local_files_only = True) == "fp8"
+
+
+def test_an_auxiliary_checkpoint_is_not_a_cached_release(tmp_path):
+    folder = tmp_path / "transformer"
+    folder.mkdir()
+    (folder / "adapter_model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"a": "adapter_model-00001-of-00001.safetensors"}})
+    )
+    (folder / "adapter_model-00001-of-00001.safetensors").write_bytes(b"x")
+    (folder / "adapter_model.safetensors").write_bytes(b"x")
+    assert not DiffusionBackend._released_transformer_cached(str(tmp_path))

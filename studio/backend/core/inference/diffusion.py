@@ -1383,19 +1383,18 @@ def _local_base_transformer_present(base_repo: Optional[str]) -> bool:
         return False
 
 
-_SHARD_NAME_RE = re.compile(r"-\d+-of-\d+\.safetensors$")
+_UNSHARDED_PIPELINE_WEIGHT_RE = re.compile(
+    r"^(?:diffusion_pytorch_model|pytorch_model|model)\.(?:bin|safetensors)$"
+)
 
 
 def _transformer_folder_complete(folder: Path) -> bool:
-    """Every weight shard a ``transformer/`` index names is present, or, without an index, a weights file is."""
+    """The weights ``from_pretrained(variant=None)`` reads are all present: every shard the canonical index
+    names, or, without one, the canonical unsharded file. Variant twins and other checkpoints do not count."""
     if not folder.is_dir():
         return False
-    # variant=None loads only the default weights, so a .fp16 / .bf16 twin does not count.
     indexes = [
-        f
-        for f in folder.glob("*.index.json")
-        if f.name.endswith((".safetensors.index.json", ".bin.index.json"))
-        and _pipeline_default_variant_file(f.name)
+        f for f in folder.glob("*.index.json") if _DEFAULT_PIPELINE_WEIGHT_INDEX_RE.match(f.name)
     ]
     if indexes:
         for index in indexes:
@@ -1404,12 +1403,7 @@ def _transformer_folder_complete(folder: Path) -> bool:
             if shards and all((folder / shard).is_file() for shard in shards):
                 return True
         return False
-    # Without an index only an unsharded file is whole; a numbered shard is part of a set whose index is missing.
-    return any_not_appledouble_metadata(
-        f
-        for f in folder.glob("*.safetensors")
-        if not _SHARD_NAME_RE.search(f.name) and _pipeline_default_variant_file(f.name)
-    )
+    return any(_UNSHARDED_PIPELINE_WEIGHT_RE.match(f.name) for f in folder.iterdir() if f.is_file())
 
 
 def _dense_candidate_is_prequant(
