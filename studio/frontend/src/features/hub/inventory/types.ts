@@ -48,8 +48,6 @@ export interface CachedInventoryRow {
   partialTransport?: string | null;
   /** This partial can be continued byte for byte. */
   partialResumable?: boolean;
-  /** A download into this repo is running right now, so `partial` is bytes still arriving,
-   * not a stopped download waiting to be resumed. */
   downloading?: boolean;
   /** A download manifest or cancel marker exists for some quant; moves on a sibling cancel, which changes neither bytes nor mtime. */
   hasVariantState?: boolean;
@@ -99,8 +97,6 @@ export interface LocalInventoryRow {
   partialTransport?: string | null;
   /** This partial can be continued byte for byte. */
   partialResumable?: boolean;
-  /** A download into this repo is running right now, so `partial` is bytes still arriving,
-   * not a stopped download waiting to be resumed. */
   downloading?: boolean;
   activeCache?: boolean | null;
   pipelineTag?: string | null;

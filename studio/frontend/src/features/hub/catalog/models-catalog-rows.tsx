@@ -373,7 +373,6 @@ export function buildRowStatusTooltip({
   isAdapter?: boolean;
   isAvailableOnDevice?: boolean;
   partialRepoId?: string;
-  /** The partial is a download still running. */
   downloading?: boolean;
   unsupported?: boolean;
   unsupportedReason?: string | null;

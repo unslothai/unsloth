@@ -34,7 +34,6 @@ export interface DiscoverRow {
   result: HfModelResult;
   isAvailableOnDevice: boolean;
   isPartialOnDevice: boolean;
-  /** The partial is a download still running, not a stopped one. */
   isDownloadingOnDevice?: boolean;
   summary: string;
   capabilities: Capability[];

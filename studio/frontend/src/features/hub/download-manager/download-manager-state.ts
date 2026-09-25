@@ -414,15 +414,10 @@ export function findActiveJobForRepo(
   return selected;
 }
 
-/** The running scoped job ("@scope" variant) in this repo, if any. A scoped job fetches a named
- * file set, such as the "Required assets" an image GGUF needs from its base repo, so it never
- * holds the repo's own snapshot key: a surface keyed on that alone saw no download at all and
- * offered to resume a partial that was still being written. */
 export function findActiveScopedJobForRepo(
   jobs: Record<string, ManagedDownload>,
   kind: DownloadKind,
   repoId: string,
-  /** Only jobs of this artifact family; a GGUF-scoped job is not a snapshot surface's download. */
   inventoryKind?: "model" | "gguf",
 ): ManagedDownload | null {
   let selected: ManagedDownload | null = null;

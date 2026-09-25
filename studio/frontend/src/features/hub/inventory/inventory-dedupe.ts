@@ -83,11 +83,7 @@ export function findCompleteHfCacheLocalRow(
   );
 }
 
-/** Repos with a download running or cancelling right now, keyed by repo and artifact family. A
- * scoped job (the "Required assets" of an image model, a staged checkpoint) never shares the key
- * of the repo's own row, so the repo is the unit; the family keeps a GGUF job from marking the
- * same repo's safetensors partial as downloading, and vice versa. A job whose family is not known
- * marks every family. */
+// Keyed by repo (scoped jobs never share the row key) and family; unknown family marks every family.
 export function activeDownloadRepoKeys(
   jobs: readonly {
     kind?: DownloadKind;
@@ -116,10 +112,7 @@ export function activeDownloadRepoKeys(
   return keys;
 }
 
-/** Tags the partial rows whose bytes are still arriving. A partial with a live job behind it is
- * a download in progress, and showing it as "Partial download, open it to finish" reads as
- * paused while the transfer runs. A row of a known format only matches a job of its family.
- * Returns `rows` itself when nothing changes, so memoized consumers keep their identity. */
+// Returns `rows` itself when nothing changes, so memoized consumers keep their identity.
 export function markDownloadingRows<
   T extends {
     partial?: boolean;

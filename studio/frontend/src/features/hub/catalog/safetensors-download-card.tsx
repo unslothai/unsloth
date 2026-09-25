@@ -146,7 +146,6 @@ export function SafetensorsDownloadCard({
   const partialsResumable = useHttpPartialsResumable();
   const downloadAction = useDownloadCardState({
     job,
-    // The running job's own variant, so stopping a scoped job cancels that job.
     variant: downloading ? (progress?.variant ?? null) : null,
     expectedBytes: modelTotalBytes ?? 0,
     downloading,

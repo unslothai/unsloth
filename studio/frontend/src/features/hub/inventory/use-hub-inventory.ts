@@ -57,7 +57,6 @@ export interface HubInventory {
   localRows: LocalInventoryRow[];
   availableSet: Set<string>;
   partialSet: Set<string>;
-  /** Repos (lowercased) with a download running right now. Their partial rows carry `downloading`. */
   downloadingSet: Set<string>;
   downloadedReady: boolean;
   inventorySettled: boolean;

@@ -59,11 +59,7 @@ export interface RepoDownloadConfig {
   onError?: JobListeners["onError"];
   // Attach to a no-variant backend download already running (GGUF surfaces adopt their own variant).
   autoAdopt?: boolean;
-  /** With `activeVariant: null`, report a running scoped job in this repo as this surface's own
-   * download when the snapshot key has none. Such a job (an image model's "Required assets", a
-   * staged checkpoint) writes into this repo's cache, so the repo is downloading, not paused.
-   * Only non-GGUF scoped jobs count: this is the snapshot surface, and a GGUF file job belongs to
-   * the GGUF card, whose progress and stop control it must not take over. */
+  /** Non-GGUF scoped jobs only: a GGUF file job's progress and stop control belong to the GGUF card. */
   includeScopedJobs?: boolean;
 }
 

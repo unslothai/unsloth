@@ -343,7 +343,6 @@ function TitleMarkers({
   gated?: false | "auto" | "manual";
   isPrivate?: boolean;
   partial: boolean;
-  /** The partial is a download still running. */
   downloading?: boolean;
   unsupported: boolean;
   onDevice: boolean;

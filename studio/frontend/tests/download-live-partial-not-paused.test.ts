@@ -1,13 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A repo whose download is still running holds an `.incomplete` blob, so the cache scan reports it
-// partial, and the live-download row the inventory injects is partial by construction. Every
-// surface then drew the stopped-download treatment: an amber "Partial download, open it to
-// finish" dot in the On Device list and a "Partial" tag with a "Resume" button on the card. A
-// scoped job (an image model's "Required assets", a staged "Model file") was worse, since the
-// repo's own card keys on the snapshot job and saw no download at all. Users read all of this as
-// the download being paused while the downloads panel and toast said it was running.
+// A live download's `.incomplete` blob must not render as a paused partial (incl. scoped jobs).
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -148,7 +142,6 @@ test("the repo card finds a running scoped job the snapshot key does not", () =>
     completedHintSignature: "",
     completedInventoryHints: [],
   } as never;
-  // The snapshot key the Safetensors card asks for has no job.
   assert.equal(selectActiveJob(state, "model", REPO, null), null);
   const found = findActiveScopedJobForRepo(jsonJobs(scoped), "model", REPO);
   assert.equal(found?.variant, "@hub-required-assets");

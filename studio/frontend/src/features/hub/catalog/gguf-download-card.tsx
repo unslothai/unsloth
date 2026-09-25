@@ -771,8 +771,7 @@ export function GgufDownloadCard({
   const selectedPresentation = pendingDrafterPresentation(selected);
   const downloadingThisVariant =
     progress !== null && ggufVariantsMatch(progress.variant, selectedQuant);
-  // A scoped job (the Images or Video page staging this quant) is writing the selected quant. It
-  // has no quant-keyed job, so without this the card offered to resume a partial still growing.
+  // Images/Video stage quants as scoped jobs with no quant-keyed job.
   const selectedScopedLive =
     !downloadingThisVariant && isScopedLiveVariant(selected, scopedLiveFiles);
   const selectedLiveActive =
@@ -1210,7 +1209,6 @@ export function GgufDownloadCard({
                 Starting…
               </span>
             ) : selectedScopedLive ? (
-              // Another view's scoped job is writing this quant; its stop control is in the panel.
               <span className="inline-flex items-center gap-2 text-muted-foreground">
                 <Spinner />
               </span>

@@ -76,9 +76,6 @@ function scopedFileKey(path: string): string {
   return path.trim().replaceAll("\\", "/").replace(/^\.\//, "").toLowerCase();
 }
 
-/** Files a running scoped job ("@scope") is writing into this repo. The Images and Video pages
- * stage a GGUF as a scoped "Model file" job, so its quant never gets a variant-keyed job and the
- * card would read the growing `.incomplete` as a stopped partial. */
 export function createScopedLiveGgufFilesSelector(repoId: string): (state: {
   jobs: Record<string, ManagedDownload>;
 }) => ReadonlySet<string> {
@@ -103,7 +100,6 @@ export function createScopedLiveGgufFilesSelector(repoId: string): (state: {
   };
 }
 
-/** Whether a running scoped job is writing this variant's weights. */
 export function isScopedLiveVariant(
   variant: Pick<GgufVariantDetail, "filename"> | null | undefined,
   scopedLiveFiles: ReadonlySet<string>,
