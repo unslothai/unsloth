@@ -2182,9 +2182,7 @@ def test_a_policy_mismatch_fails_the_whole_quantise(monkeypatch):
     monkeypatch.setattr(
         np,
         "resolve_policy",
-        lambda family, base_repo = None: types.SimpleNamespace(
-            policy_id = "zimg_rg76_v1", version = 1
-        ),
+        lambda family, base_repo = None: types.SimpleNamespace(policy_id = "zimg_rg76_v1", version = 1),
     )
 
     def _boom(transformer, policy, **kwargs):

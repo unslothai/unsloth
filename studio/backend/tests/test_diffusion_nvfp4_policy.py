@@ -259,7 +259,10 @@ def test_the_superseded_picks_are_gone_rather_than_left_resolvable():
     bases = {}
     for policy in NVFP4_POLICIES:
         for base in policy.base_repos:
-            assert (policy.family, base) not in bases, (policy.policy_id, bases.get((policy.family, base)))
+            assert (policy.family, base) not in bases, (
+                policy.policy_id,
+                bases.get((policy.family, base)),
+            )
             bases[(policy.family, base)] = policy.policy_id
 
 
@@ -430,7 +433,11 @@ def test_the_timestep_embedder_mlp_stays_dense_under_every_image_policy():
     flux = assign_precisions(_flux(), FLUX_R420)
     assert flux["time_text_embed.timestep_embedder.linear_1"] == BF16
     assert flux["x_embedder"] == BF16 and flux["proj_out"] == BF16
-    for policy, tree in ((QWEN_P02, _qwen()), (QWEN2512_M120_ATTN8, _qwen()), (QWEN21_R020, _qwen21())):
+    for policy, tree in (
+        (QWEN_P02, _qwen()),
+        (QWEN2512_M120_ATTN8, _qwen()),
+        (QWEN21_R020, _qwen21()),
+    ):
         qwen = assign_precisions(tree, policy)
         assert qwen["time_text_embed.timestep_embedder.linear_1"] == BF16, policy.policy_id
         assert qwen["img_in"] == BF16 and qwen["proj_out"] == BF16, policy.policy_id
@@ -522,10 +529,7 @@ def test_the_metadata_block_records_the_set_that_was_built():
     assert block["activation_scales_baked"] is False and block["gptq"] is False
     assert declares_policy({"scheme": "nvfp4", **fragment})
     assert policy_metadata_error({"scheme": "nvfp4", **fragment}) is None
-    assert (
-        policy_metadata(ZIMG_RG76, assign_precisions(_zimage(), ZIMG_RG76))
-        == fragment
-    )
+    assert policy_metadata(ZIMG_RG76, assign_precisions(_zimage(), ZIMG_RG76)) == fragment
 
 
 def test_an_unreadable_policy_block_reads_as_declared_so_it_can_be_refused():
