@@ -1,28 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Compile the prompt-length dimensions of a regionally compiled DiT dynamic from its FIRST forward.
-
-Under automatic dynamic (``dynamic=None``: the max tier, and torchao weights on the default tier) the first prompt
-compiles static graphs, and the first prompt of a DIFFERENT token length recompiles every block graph into the
-generalised form it keeps from then on. On Qwen-Image-2.1 that second compile is 14 s (int8, default tier) to 51 s
-(int8, max tier), paid on the user's second prompt; Qwen-Image pays 52-57 s on the max tier.
-
-torch's ``compiler.config.dynamic_sources`` names the inputs dynamo should treat as dynamic up front, so the first
-compile already produces the generalised graphs and no later prompt length recompiles. Only the inputs whose size
-tracks the prompt are named, which keeps the torchao CantSplit that a blanket ``dynamic=True`` hits out of reach.
-
-The allowlist is process-global, so it is set only around the owning transformer's forward (hooks, restored even when
-the forward raises). That needs torch 2.8+, which re-reads the allowlist whenever it changes; 2.7 reads it once per
-process, so a scoped setting would either be ignored or leak into every later compile. Older torch keeps today's
-behaviour.
+"""Mark a regionally compiled DiT's prompt-length inputs dynamic from its FIRST forward via
+``torch.compiler.config.dynamic_sources``, so a new prompt length never recompiles. Only prompt-sized inputs are
+named: a blanket ``dynamic=True`` hits torchao CantSplit. The allowlist is process-global, so it is scoped to the
+forward by hooks; that needs torch 2.8+ (2.7 reads it once per process, so scoping is ignored or leaks).
 """
 
 from __future__ import annotations
 
 from typing import Any, Optional
 
-# QwenImage21TransformerBlock.forward inputs sized by prompt length; regexes (re.match) cover edit-prompt segments.
 # segments[0][0] (always 0) stays static: a symbol there trips torchao CantSplit (rows become ``s0 - s_start``).
 _QWEN_IMAGE_21_SOURCES: tuple[str, ...] = (
     "L['hidden_states']",
@@ -38,8 +26,7 @@ _QWEN_IMAGE_21_SOURCES: tuple[str, ...] = (
     r"L\['segments'\]\[[1-9]\d*\]\[0\]$",
 )
 
-# QwenImageTransformerBlock.forward (Qwen-Image, 2512, Edit): text stream and its RoPE half. Suffix regexes cover
-# FBCache hook paths: ``L['kwargs'][...]`` and, after a graph break, ``___stack0[1][...]``.
+# Suffix regexes cover FBCache hook paths: ``L['kwargs'][...]`` and, after a graph break, ``___stack0[1][...]``.
 _QWEN_IMAGE_SOURCES: tuple[str, ...] = (
     "L['encoder_hidden_states']",
     "L['encoder_hidden_states_mask']",
@@ -77,14 +64,13 @@ def _compiler_config() -> Any:
         getattr(cfg, "dynamic_sources")
     except Exception:  # noqa: BLE001 - knob absent on this build
         return None
-    # Needs 2.8+ (is_dynamic_source): 2.7 caches its first read per process, breaking per-forward scoping.
+    # 2.8+ only (is_dynamic_source): 2.7 caches its first read per process, breaking per-forward scoping.
     if not callable(getattr(builder, "is_dynamic_source", None)):
         return None
     return cfg
 
 
 def supported() -> bool:
-    """Whether this torch honours a per-forward ``torch.compiler.config.dynamic_sources`` (2.8+)."""
     return _compiler_config() is not None
 
 
@@ -93,7 +79,6 @@ def sources_for(transformer: Any) -> tuple[str, ...]:
 
 
 def fingerprint(transformer: Any, dynamic: Any) -> Optional[str]:
-    """The allowlist a compile of ``transformer`` runs under, for the compile-cache key; None when not armed."""
     if dynamic is not None:
         return None
     sources = sources_for(transformer)
@@ -111,8 +96,6 @@ def _merge(current: str, extra: tuple[str, ...]) -> str:
 
 
 def install(transformer: Any, logger: Any = None) -> bool:
-    """Arm the allowlist around ``transformer``'s forward. Idempotent; False when the family has no entry or torch
-    lacks the knob, in which case compilation behaves exactly as before."""
     if getattr(transformer, "_unsloth_dynamic_text", None) is not None:
         return True
     sources = sources_for(transformer)
