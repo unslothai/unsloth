@@ -217,7 +217,7 @@ export async function uploadLibraryFiles(
 export async function writeLibraryText(
   itemId: string,
   text: string,
-  encoding: NoteEncoding = "utf-8",
+  encoding: NoteEncoding,
 ): Promise<void> {
   const uploadId = itemId.replace(/^upload:/, "");
   await ensureOk(
