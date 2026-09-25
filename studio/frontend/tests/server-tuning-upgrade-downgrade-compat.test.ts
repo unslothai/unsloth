@@ -41,9 +41,12 @@ const {
 } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
-const { fromApiOverride, resolveStoredOverride, toApiOverride } = await import(
-  "../src/features/model-picker/api/model-overrides.ts"
-);
+const {
+  fromApiOverride,
+  panelOverrideRow,
+  resolveStoredOverride,
+  toApiOverride,
+} = await import("../src/features/model-picker/api/model-overrides.ts");
 const { backfillModelOverrides } = await import(
   "../src/features/model-picker/api/migrate-model-overrides.ts"
 );
@@ -452,6 +455,23 @@ test("eviction takes the readable records and leaves the future ones", () => {
 // ---------------------------------------------------------------------------
 // F. The server row as the authority, and what that costs the local copy.
 // ---------------------------------------------------------------------------
+
+test("a non-GGUF panel reads a row without its llama-server arguments", () => {
+  const row = {
+    // biome-ignore lint/style/useNamingConvention: API schema
+    chat_template_override: "{{ messages }}",
+    // biome-ignore lint/style/useNamingConvention: API schema
+    llama_extra_args: ["--no-mmap"],
+  };
+  assert.deepEqual(panelOverrideRow(row, true), row);
+  assert.deepEqual(panelOverrideRow(row, false), {
+    // biome-ignore lint/style/useNamingConvention: API schema
+    chat_template_override: "{{ messages }}",
+  });
+  // A row holding nothing else is no row at all.
+  // biome-ignore lint/style/useNamingConvention: API schema
+  assert.equal(panelOverrideRow({ llama_extra_args: [] }, false), null);
+});
 
 test("a row that carries no tuning leaves this browser's tuning standing", () => {
   // The mirror is lossy in both directions: a PUT that never landed, a save from a
