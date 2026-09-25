@@ -1,17 +1,5 @@
-"""The Starling, Yi-chat and LFM2 templates must render byte for byte what the
-models' own chat templates render.
-
-Each one used to leak whitespace that the official template does not emit:
-Starling indented its output expressions, so every turn started with four
-spaces ("<s>    GPT4 Correct User: ..."), and Yi-chat and LFM2 opened with a
-newline, so the first token of every sample was "\\n" instead of BOS or
-<|im_start|>. Training on those strings teaches the model a prompt format it
-never sees at inference.
-
-The expected strings were rendered with transformers' apply_chat_template from
-unsloth/Starling-LM-7B-beta, 01-ai/Yi-6B-Chat, LiquidAI/LFM2-1.2B and
-LiquidAI/LFM2.5-1.2B-Instruct, and are hard coded so the test runs offline.
-"""
+"""Expected strings: transformers apply_chat_template renders from unsloth/Starling-LM-7B-beta,
+01-ai/Yi-6B-Chat and LiquidAI/LFM2(.5)-1.2B, hard coded for offline runs."""
 
 import os
 import re
@@ -35,8 +23,7 @@ def _extract_template(name):
     return m.group(2)
 
 
-# transformers compiles chat templates with trim_blocks and lstrip_blocks on;
-# a plain Environment is what any other Jinja consumer gets.
+# transformers renders with trim_blocks + lstrip_blocks; plain Environment = other Jinja consumers.
 ENVIRONMENTS = {
     "transformers": dict(trim_blocks = True, lstrip_blocks = True),
     "plain": dict(),
