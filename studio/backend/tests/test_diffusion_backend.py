@@ -11692,8 +11692,6 @@ def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypa
     assert "prequant artifact missing" in str(failures[0])
 
 
-
-
 def _stub_amd_weight_only_host(backend, monkeypatch):
     """ROCm / torchao-stub host; records the quantise calls."""
     from core.inference import diffusion as dmod

@@ -72,8 +72,6 @@ def _toy(dtype = torch.bfloat16):
     return _Toy().to(dtype)
 
 
-
-
 @pytest.mark.parametrize("scheme", ["int8", "fp8", "INT8", " fp8 "])
 def test_rocm_and_stub_hosts_take_explicit_int8_and_fp8(rocm, scheme):
     assert tq.native_quant_host(_target())
@@ -203,8 +201,6 @@ def test_the_shared_selector_is_untouched_on_rocm(rocm):
     for scheme in ("int8", "fp8", "auto"):
         assert tq.select_transformer_quant_scheme(_target(), scheme, unproven_ok = True) is None
     assert not tq.dense_transformer_supported(_target())
-
-
 
 
 @pytest.mark.parametrize("scheme,bound", [("int8", 0.01), ("fp8", 0.04)])
@@ -388,8 +384,6 @@ def test_int8_act_kill_switch_reads_only_zero(monkeypatch):
     for value, disabled in (("", False), ("1", False), ("0", True), (" 0 ", True), ("off", False)):
         monkeypatch.setenv(nq.NATIVE_INT8_ACT_ENV, value)
         assert nq.int8_act_disabled() is disabled
-
-
 
 
 def _block_torchao(monkeypatch):
@@ -702,8 +696,6 @@ def test_peft_wrapped_base_layer_runs_native(rocm, monkeypatch):
     assert isinstance(to_q.lora_A["default"], torch.nn.Linear)
     with torch.no_grad():
         assert torch.isfinite(wrapped(x)).all()
-
-
 
 
 def _image_family(name):
