@@ -189,8 +189,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
         icon={GlobeIcon}
       />
       <ToolFallbackContent>
-        {/* A url call parks on Allow/Deny before it has a result, and the path the decision turns on
-            is invisible in the trigger's hostname. Inert text: the argument is untrusted. */}
+        {/* The trigger shows only the host; Allow/Deny needs the full url. Inert text: untrusted. */}
         {isRunning && url ? (
           <div
             data-slot="tool-web-fetch-url"
@@ -199,8 +198,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
             <span className="shrink-0 font-medium text-muted-foreground">
               URL:
             </span>
-            {/* Capped: a generated url can wrap into thousands of lines and push Allow/Deny
-                out of the viewport while the decision is being made. */}
+            {/* Capped so a huge url cannot push Allow/Deny off screen. */}
             <ScrollPane
               className="min-w-0 rounded bg-muted/50 px-2 py-1"
               scrollerClassName="max-h-24 overflow-auto whitespace-pre-wrap break-all text-foreground/85"

@@ -1,16 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A web_search call carrying a `url` fetches that exact page, so the backend gates it even in
-// "Approve for me" (see _web_search_fetches_url in the backend's tools.py). The card is pinned
-// open while it waits, but the expanded content of a *running* call said only
-// `Reading example.com…`: the path, query and fragment the decision turns on are invisible, and an
-// innocuous and a sensitive url on the same host read identically. The finished card already shows
-// the url -- that half landed on main with #5787 -- so this test owns the parked case only.
-//
-// The card is .tsx and this runner cannot execute JSX, so its claims go through the TypeScript AST
-// rather than a source substring: a substring passes on broken code and fails on a reformat, which
-// is backwards. Rendered behaviour lives in tests/studio/playwright_tool_activity.py.
+// The running (Allow/Deny) web-fetch card must show the full url, not just the host.
+// JSX cannot run here, so claims go through the TypeScript AST.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -93,11 +85,7 @@ function classNameOf(opening: ts.JsxOpeningLikeElement): string {
     .join(" ");
 }
 
-/**
- * The condition a node renders under. Walked from the node up rather than searched for: the row
- * has to sit inside a condition naming the running state, and a sibling's condition would
- * satisfy a source-wide scan.
- */
+/** The nearest enclosing conditional, so a sibling's guard cannot satisfy the check. */
 function guardCondition(node: ts.Node): ts.Expression | undefined {
   for (let parent = node.parent; parent; parent = parent.parent) {
     if (ts.isConditionalExpression(parent)) {
@@ -107,7 +95,6 @@ function guardCondition(node: ts.Node): ts.Expression | undefined {
   return undefined;
 }
 
-/** The element whose opening tag carries this data-slot, so its full extent is comparable. */
 function slotElement(slot: string): ts.JsxElement | undefined {
   return find(
     source,
@@ -135,7 +122,6 @@ test("the parked web-fetch card shows the complete raw url", () => {
     "the url must render inside the expanded content; the collapsed trigger stays hostname-only",
   );
 
-  // Rendered while the call runs: that is when it is parked on the decision.
   const guard = guardCondition(row.openingElement);
   assert.ok(
     guard,
@@ -153,7 +139,6 @@ test("the parked web-fetch card shows the complete raw url", () => {
     "the row must be gated on a url being present, or a plain search gains an empty URL line",
   );
 
-  // The raw argument, not the parsed host the trigger names.
   const rendered = find(row, ts.isJsxExpression).map(
     (expression) => expression.expression?.getText(source) ?? "",
   );
@@ -193,7 +178,6 @@ test("the raw url is inert text that wraps inside the card", () => {
     /break-all/,
     "a long url must wrap instead of clipping",
   );
-  // A flex child defaults to min-width: auto and would overflow instead of shrinking.
   const rowClasses = [
     classNameOf(row.openingElement),
     ...find(row, ts.isJsxElement)
@@ -210,7 +194,6 @@ test("the raw url is inert text that wraps inside the card", () => {
     "a flex item without min-w-0 refuses to shrink below its content, which clips the row",
   );
 
-  // An untrusted tool argument must never become a clickable link.
   assert.deepEqual(
     find(
       row,
@@ -231,8 +214,6 @@ test("the raw url is inert text that wraps inside the card", () => {
 });
 
 test("a bidi control in the url is escaped before it reaches the row", () => {
-  // U+202E obeys in `unicode-bidi: plaintext`, so the row could read a different path
-  // than the one being approved.
   const row = requireRow();
   const rendered = find(row, ts.isJsxExpression).map(
     (expression) => expression.expression?.getText(source) ?? "",
@@ -250,8 +231,6 @@ test("a bidi control in the url is escaped before it reaches the row", () => {
 });
 
 test("the url row is height-capped so the approval controls stay reachable", () => {
-  // An unbounded url would push Allow/Deny below the viewport while the decision is
-  // being made.
   const row = requireRow();
   const pane = find(
     row,
@@ -265,8 +244,7 @@ test("the url row is height-capped so the approval controls stay reachable", () 
     1,
     "the url must sit in exactly one scroller rather than setting the card's height",
   );
-  // `className` is the padded wrapper and `scrollerClassName` the inner <pre> that owns the
-  // overflow, so the cap has to sit on the scroller or the text is clipped instead of scrollable.
+  // The cap must sit on the inner scroller, not the padded wrapper, or nothing scrolls.
   const scroller =
     attributeOf(
       pane[0].openingElement,
@@ -295,7 +273,6 @@ test("the url row is height-capped so the approval controls stay reachable", () 
 });
 
 test("the completed card keeps the url link that landed with #5787", () => {
-  // The finished card's link is main's own landed behaviour and stays out of scope here.
   const anchors = tagsNamed("a");
   assert.equal(
     anchors.length,
@@ -316,8 +293,6 @@ test("the completed card keeps the url link that landed with #5787", () => {
 test("the collapsed trigger does not leak the raw url", () => {
   const [trigger] = tagsNamed("ToolFallbackTrigger");
   assert.ok(trigger, "the card no longer has a trigger");
-  // The label comes from webSearchToolName, which web-search-action-variants.test.ts pins. What
-  // matters here is that this change did not put the raw argument in the collapsed row too.
   const identifiers = new Set<string>();
   walk(trigger, (node) => {
     if (ts.isIdentifier(node)) identifiers.add(node.text);
