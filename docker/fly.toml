@@ -6,7 +6,8 @@
 app = 'unsloth'
 primary_region = 'iad'
 
-[build]
+[experimental]
+  entrypoint = ["/usr/local/bin/unsloth-entrypoint"]
 
 [http_service]
   internal_port = 8888
