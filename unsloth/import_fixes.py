@@ -2445,6 +2445,149 @@ def _cast_fp8_dequantize_to_model_dtype(op_cls):
     op_cls.convert = cast_convert
 
 
+def fix_transformers_is_torch_fx_available():
+    """Restore ``is_torch_fx_available`` (removed in 5.0) for 4.x-era remote code."""
+    try:
+        import transformers.utils as utils
+        import transformers.utils.import_utils as import_utils
+    except Exception:
+        return
+    if hasattr(import_utils, "is_torch_fx_available") and hasattr(utils, "is_torch_fx_available"):
+        return
+    is_torch_available = getattr(import_utils, "is_torch_available", None)
+    if is_torch_available is None:
+        return
+
+    def is_torch_fx_available():
+        return is_torch_available()
+
+    is_torch_fx_available._unsloth_restored = True
+    for module in (import_utils, utils):
+        if not hasattr(module, "is_torch_fx_available"):
+            module.is_torch_fx_available = is_torch_fx_available
+    logger.info(
+        "Unsloth: Restored transformers `is_torch_fx_available` for remote modeling code written against 4.x."
+    )
+
+
+_no_own_ignore_keys = object()
+
+
+def _validate_rope_accepting_ignore_keys(original):
+    if original is None or getattr(original, "_unsloth_ignore_keys", False):
+        return None
+    try:
+        parameters = inspect.signature(original).parameters
+    except (TypeError, ValueError):
+        return None
+    if "ignore_keys" in parameters:
+        return None
+    # 5.0 was (self, ignore_keys = None): a lone positional arg is ignore_keys only if the validator takes none.
+    takes_positional = any(
+        p.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.VAR_POSITIONAL,
+        )
+        for p in list(parameters.values())[1:]
+    )
+
+    @functools.wraps(original)
+    def validate_rope(
+        self,
+        *args,
+        ignore_keys = None,
+        **kwargs,
+    ):
+        if len(args) == 1 and not kwargs and not takes_positional:
+            if ignore_keys is None:
+                ignore_keys = args[0]
+            args = ()
+        if not ignore_keys:
+            return original(self, *args, **kwargs)
+        # 5.4 moved ignore_keys onto this attribute; merge them in for this call only.
+        own = self.__dict__.get("ignore_keys_at_rope_validation", _no_own_ignore_keys)
+        try:
+            merged = set(getattr(self, "ignore_keys_at_rope_validation", None) or ()) | set(
+                ignore_keys
+            )
+            self.ignore_keys_at_rope_validation = merged
+        except Exception:
+            return original(self, *args, **kwargs)
+        try:
+            return original(self, *args, **kwargs)
+        finally:
+            if own is _no_own_ignore_keys:
+                self.__dict__.pop("ignore_keys_at_rope_validation", None)
+            else:
+                self.ignore_keys_at_rope_validation = own
+
+    validate_rope._unsloth_ignore_keys = True
+    return validate_rope
+
+
+def _patch_own_validate_rope(cls):
+    wrapped = _validate_rope_accepting_ignore_keys(cls.__dict__.get("validate_rope"))
+    if wrapped is not None:
+        try:
+            cls.validate_rope = wrapped
+        except Exception:
+            pass
+
+
+def fix_transformers_validate_rope_ignore_keys():
+    """Accept 5.0-era ``validate_rope(ignore_keys = ...)``, removed in 5.4 (TypeError on load).
+    Configs like Phi3Config define their own validator: patch subclasses, hook later/remote ones."""
+    try:
+        from transformers.modeling_rope_utils import RotaryEmbeddingConfigMixin
+    except Exception:
+        return
+    original = RotaryEmbeddingConfigMixin.__dict__.get("validate_rope")
+    try:
+        if original is None or "ignore_keys" in inspect.signature(original).parameters:
+            return
+    except (TypeError, ValueError):
+        return
+    _patch_own_validate_rope(RotaryEmbeddingConfigMixin)
+
+    try:
+        from transformers import PretrainedConfig as _BaseConfig
+    except Exception:
+        _BaseConfig = None
+    if _BaseConfig is not None:
+        pending = [_BaseConfig]
+        seen = set()
+        while pending:
+            cls = pending.pop()
+            if id(cls) in seen:
+                continue
+            seen.add(id(cls))
+            _patch_own_validate_rope(cls)
+            try:
+                pending.extend(cls.__subclasses__())
+            except Exception:
+                pass
+        hook = _BaseConfig.__dict__.get("__init_subclass__")
+        if not getattr(getattr(hook, "__func__", hook), "_unsloth_ignore_keys_hook", False):
+            previous = hook.__func__ if isinstance(hook, classmethod) else None
+
+            def __init_subclass__(cls, **kwargs):
+                if previous is not None:
+                    previous(cls, **kwargs)
+                else:
+                    super(_BaseConfig, cls).__init_subclass__(**kwargs)
+                _patch_own_validate_rope(cls)
+
+            __init_subclass__._unsloth_ignore_keys_hook = True
+            if previous is not None:
+                __init_subclass__.__wrapped__ = previous
+            _BaseConfig.__init_subclass__ = classmethod(__init_subclass__)
+    logger.info(
+        "Unsloth: Patched transformers `validate_rope` to accept the 5.0 `ignore_keys` argument."
+    )
+
+
 _PLAIN_ROPE_KEYS = frozenset({"rope_type", "type", "rope_theta", "partial_rotary_factor"})
 _ATTRIBUTE_ROPE_KEYS = ("rope_theta", "partial_rotary_factor")
 _NO_ROPE_ATTRIBUTE = object()
@@ -2508,23 +2651,6 @@ def fix_transformers_remote_rope_scaling_none():
 
     rope_scaling._unsloth_remote_plain_rope_none = True
     PretrainedConfig.rope_scaling = property(rope_scaling, prop.fset, prop.fdel, prop.__doc__)
-
-
-def fix_transformers_is_torch_fx_available():
-    """Restore ``transformers.utils.import_utils.is_torch_fx_available``, removed in 5.x and
-    imported at module level by 4.x-era remote code (Ling / BailingMoe, DeepSeek-V3, Kimi-K2).
-    Same body as 4.57.6; only added when missing."""
-    try:
-        import transformers.utils.import_utils as import_utils
-    except Exception:
-        return
-    if hasattr(import_utils, "is_torch_fx_available"):
-        return
-
-    def is_torch_fx_available():
-        return import_utils.is_torch_available()
-
-    import_utils.is_torch_fx_available = is_torch_fx_available
 
 
 def fix_transformers_rope_scaling_drops_theta():

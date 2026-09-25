@@ -49,7 +49,10 @@ import { Fragment, type ReactNode, memo, useMemo } from "react";
 import { confirmExternalLink } from "../stores/external-link-confirm";
 import type { DiscoverRow } from "../types";
 import { HubOptionMenu } from "./hub-option-menu";
-import { buildRowStatusTooltip } from "./models-catalog-rows";
+import {
+  DOWNLOADING_DOT_CLASS,
+  buildRowStatusTooltip,
+} from "./models-catalog-rows";
 import { OwnerAvatar } from "./owner-avatar";
 import { AccessGlyphs, CapabilityPill } from "./shared";
 
@@ -332,6 +335,7 @@ function TitleMarkers({
   gated,
   isPrivate,
   partial,
+  downloading = false,
   unsupported,
   onDevice,
 }: {
@@ -339,6 +343,7 @@ function TitleMarkers({
   gated?: false | "auto" | "manual";
   isPrivate?: boolean;
   partial: boolean;
+  downloading?: boolean;
   unsupported: boolean;
   onDevice: boolean;
 }) {
@@ -359,11 +364,18 @@ function TitleMarkers({
         />
       )}
       <AccessGlyphs gated={gated} isPrivate={isPrivate} tooltip={false} />
-      {partial && (
+      {partial && !downloading && (
         <span
           role="img"
           aria-label="Partial download"
           className={cn(STATUS_DOT_CLASS, "bg-status-warning")}
+        />
+      )}
+      {partial && downloading && (
+        <span
+          role="img"
+          aria-label="Downloading"
+          className={cn(STATUS_DOT_CLASS, DOWNLOADING_DOT_CLASS)}
         />
       )}
       {unsupported && (
@@ -584,6 +596,10 @@ function useResultRowModel(
     support,
     unsupported,
     partial: row.isAvailableOnDevice && row.isPartialOnDevice,
+    downloading:
+      row.isAvailableOnDevice &&
+      row.isPartialOnDevice &&
+      row.isDownloadingOnDevice === true,
     onDevice: row.isAvailableOnDevice && !row.isPartialOnDevice,
     sizeLabel: sizeLabel !== "N/A" ? sizeLabel : null,
     taskLabel,
@@ -594,18 +610,34 @@ export const ResultCard = memo(function ResultCard({
   row,
   deviceType,
   isDataset,
+  showFormatDot = true,
   onSelect,
 }: {
   row: DiscoverRow;
   deviceType: string | null;
   isDataset: boolean;
+  showFormatDot?: boolean;
   onSelect: (id: string) => void;
 }) {
-  const { support, unsupported, partial, onDevice, sizeLabel, taskLabel } =
+  const {
+    support,
+    unsupported,
+    partial,
+    downloading,
+    onDevice,
+    sizeLabel,
+    taskLabel,
+  } =
     useResultRowModel(row, deviceType, isDataset);
-  const format = isDataset ? null : row.result.isGguf ? "gguf" : "checkpoint";
+  const format =
+    isDataset || !showFormatDot
+      ? null
+      : row.result.isGguf
+        ? "gguf"
+        : "checkpoint";
   const tip = buildRowStatusTooltip({
     partialRepoId: partial ? row.result.id : undefined,
+    downloading,
     unsupported,
     unsupportedReason: support?.reason ?? null,
     resourceLabel: isDataset ? "dataset" : "model",
@@ -658,6 +690,7 @@ export const ResultCard = memo(function ResultCard({
             gated={row.result.gated}
             isPrivate={row.result.private}
             partial={partial}
+            downloading={downloading}
             unsupported={unsupported}
             onDevice={onDevice}
           />
@@ -717,19 +750,35 @@ export const ResultGridRow = memo(function ResultGridRow({
   row,
   deviceType,
   isDataset,
+  showFormatDot = true,
   onSelect,
 }: {
   row: DiscoverRow;
   deviceType: string | null;
   isDataset: boolean;
+  showFormatDot?: boolean;
   onSelect: (id: string) => void;
 }) {
-  const { support, unsupported, partial, onDevice, sizeLabel, taskLabel } =
+  const {
+    support,
+    unsupported,
+    partial,
+    downloading,
+    onDevice,
+    sizeLabel,
+    taskLabel,
+  } =
     useResultRowModel(row, deviceType, isDataset);
   const sizeDisplay = isDataset ? null : sizeLabel;
-  const format = isDataset ? null : row.result.isGguf ? "gguf" : "checkpoint";
+  const format =
+    isDataset || !showFormatDot
+      ? null
+      : row.result.isGguf
+        ? "gguf"
+        : "checkpoint";
   const tip = buildRowStatusTooltip({
     partialRepoId: partial ? row.result.id : undefined,
+    downloading,
     unsupported,
     unsupportedReason: support?.reason ?? null,
     resourceLabel: isDataset ? "dataset" : "model",
@@ -777,6 +826,7 @@ export const ResultGridRow = memo(function ResultGridRow({
                 gated={row.result.gated}
                 isPrivate={row.result.private}
                 partial={partial}
+                downloading={downloading}
                 unsupported={unsupported}
                 onDevice={onDevice}
               />
@@ -854,22 +904,31 @@ export const ResultSplitRow = memo(function ResultSplitRow({
   deviceType,
   isDataset,
   selected,
+  showFormatDot = true,
   onSelect,
 }: {
   row: DiscoverRow;
   deviceType: string | null;
   isDataset: boolean;
   selected: boolean;
+  showFormatDot?: boolean;
   onSelect: (id: string) => void;
 }) {
-  const { support, unsupported, partial, onDevice } = useResultRowModel(
+  const { support, unsupported, partial, downloading, onDevice } =
+    useResultRowModel(
     row,
     deviceType,
     isDataset,
   );
-  const format = isDataset ? null : row.result.isGguf ? "gguf" : "checkpoint";
+  const format =
+    isDataset || !showFormatDot
+      ? null
+      : row.result.isGguf
+        ? "gguf"
+        : "checkpoint";
   const tip = buildRowStatusTooltip({
     partialRepoId: partial ? row.result.id : undefined,
+    downloading,
     unsupported,
     unsupportedReason: support?.reason ?? null,
     resourceLabel: isDataset ? "dataset" : "model",
@@ -899,6 +958,7 @@ export const ResultSplitRow = memo(function ResultSplitRow({
             gated={row.result.gated}
             isPrivate={row.result.private}
             partial={partial}
+            downloading={downloading}
             unsupported={unsupported}
             onDevice={onDevice}
           />

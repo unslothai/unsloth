@@ -5921,7 +5921,7 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
                     fi
                     # Off the family, not the arch: no family straddles this boundary.
                     case "$_amd_family" in
-                        gfx120X-all|gfx1151|gfx1150|gfx1152)
+                        gfx120X-all|gfx1151|gfx1150|gfx1152|gfx103X-all|gfx110X-all)
                             TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
                             TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
                             TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
@@ -6008,7 +6008,7 @@ fi
 
 # rocm7.2 and per-gfx indexes ship torch 2.11.0: raise the floor, matching the FINAL leaf only.
 case "$_torch_index_leaf" in
-    rocm7.2|gfx120x-all|gfx1151|gfx1150|gfx1152)
+    rocm7.2|gfx120x-all|gfx1151|gfx1150|gfx1152|gfx103x-all|gfx110x-all)
         TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
         TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
         TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
@@ -7002,7 +7002,7 @@ _unsloth_desktop_install_spec=""
 if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
-_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.9.10}"
+_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.9.11}"
 
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo, keeping torch unless the ROCm repair fires.

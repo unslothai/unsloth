@@ -110,7 +110,7 @@ def _prune_to_cap() -> int:
     """Drop the oldest owned pairs beyond the count or byte cap; return the count removed.
 
     Best-effort, so a save never fails on housekeeping. Only Unsloth-owned pairs are eligible,
-    archived clips are exempt, and an unreadable flag store skips the prune rather than guess.
+    archived and pinned clips are exempt, and an unreadable flag store skips the prune rather than guess.
     """
     cap = _max_clips()
     byte_cap = _max_bytes()
@@ -122,7 +122,9 @@ def _prune_to_cap() -> int:
         # Select AND delete under one lock, as clear() does. Choosing victims from a snapshot and unlinking after it
         # leaves a window where an archive lands and is deleted anyway.
         with gallery_flags.exclusive(directory, require_file_lock = True):
-            entries = _list_audio_entries()
+            # By age, not display order: a clip dragged down is not older. Pinned clips are exempt.
+            entries = [e for e in _list_audio_entries() if not e[0].get("pinned")]
+            entries.sort(key = lambda e: _mtime(gallery_dir() / f"{e[0]['id']}.wav"), reverse = True)
 
             # Newest first, so the index where either budget runs out is the cut point. The newest is always kept:
             # dropping what the caller just generated looks like a silent failure.
@@ -144,7 +146,9 @@ def _prune_to_cap() -> int:
             pruned: list[str] = []
             for record, _cursor in entries[keep:]:
                 audio_id = record["id"]
-                if gallery_flags.is_archived(flags, audio_id):
+                if gallery_flags.is_archived(flags, audio_id) or gallery_flags.pin_rank(
+                    flags, audio_id
+                ) > float("-inf"):
                     continue
                 path = audio_path(audio_id)
                 if path is None or _read_meta(_sidecar_path(audio_id)) is None:
@@ -189,7 +193,11 @@ def _record(
         **meta,
         "id": audio_id,
         "url": f"/api/inference/audio/gallery/{audio_id}/file",
-        "archived": gallery_flags.is_archived(flags, audio_id),
+        **gallery_flags.flags_for(flags, audio_id),
+        # The listing's own sort key, so a client re-sort agrees with it.
+        "order_at": gallery_flags.order_rank(
+            flags, audio_id, _mtime(gallery_dir() / f"{audio_id}.wav")
+        ),
     }
 
 
@@ -253,7 +261,21 @@ def _mtime(path: Path) -> float:
         return 0.0
 
 
-GalleryCursor = tuple[float, str]
+# (pin rank, order key, id), newest first; an unpinned clip's pin rank is -inf.
+GalleryCursor = tuple[float, float, str]
+
+
+def pin_rank(audio_id: str) -> float:
+    """The clip's current pin rank (-inf if unpinned), for a cursor sent without one."""
+    return gallery_flags.pin_rank(gallery_flags.read(gallery_dir()), audio_id)
+
+
+def _sort_key(flags: dict[str, dict[str, Any]], path: Path) -> GalleryCursor:
+    return (
+        gallery_flags.pin_rank(flags, path.stem),
+        gallery_flags.order_rank(flags, path.stem, _mtime(path)),
+        path.stem,
+    )
 
 
 def _list_audio_entries(
@@ -270,7 +292,7 @@ def _list_audio_entries(
         return []
     flags = gallery_flags.read(gallery_dir())
     paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
-    keyed_paths = [((_mtime(path), path.stem), path) for path in paths]
+    keyed_paths = [(_sort_key(flags, path), path) for path in paths]
     keyed_paths.sort(key = lambda item: item[0], reverse = True)
     want = None if limit is None else offset + limit
     entries = []
@@ -297,9 +319,9 @@ def list_audio(
     valid: Optional[Callable[[dict[str, Any]], bool]] = None,
     archived: bool = False,
 ) -> list[dict[str, Any]]:
-    """A newest-first window of clips for infinite scroll.
+    """A window of clips for infinite scroll: pinned first, then newest first.
 
-    Ordered by WAV mtime; a file without its pair is skipped. ``valid`` filters BEFORE pagination,
+    Ordered by pin, then the drag key or WAV mtime; a file without its pair is skipped. ``valid`` filters BEFORE pagination,
     so offset, limit and has_more count over the accepted records. ``before`` is an exclusive,
     stable cursor for callers that must tolerate deletions between pages, and ``archived`` picks
     the shelf."""
@@ -323,12 +345,45 @@ def list_audio_page(
     return _list_audio_entries(limit, offset, before = before, valid = valid, archived = archived)
 
 
-def set_flags(audio_id: str, *, archived: Optional[bool] = None) -> Optional[dict[str, Any]]:
-    """Archive or restore one owned clip; None when the id is not an Unsloth-owned clip."""
+def set_flags(
+    audio_id: str,
+    *,
+    pinned: Optional[bool] = None,
+    archived: Optional[bool] = None,
+) -> Optional[dict[str, Any]]:
+    """Pin or archive one owned clip; None when the id is not an Unsloth-owned clip."""
     with gallery_flags.exclusive(gallery_dir()):
         if owned_audio_path(audio_id) is None:
             return None
-        gallery_flags.set_flags_locked(gallery_dir(), audio_id, archived = archived)
+        gallery_flags.set_flags_locked(gallery_dir(), audio_id, pinned = pinned, archived = archived)
+        meta = _read_meta(_sidecar_path(audio_id))
+    if meta is None:
+        return None
+    return _record(audio_id, meta)
+
+
+def move(audio_id: str, after_id: Optional[str]) -> Optional[dict[str, Any]]:
+    """Move an active clip to just after ``after_id`` (None = front) and return its record.
+
+    None if the id is not an owned, active clip. Raises KeyError if ``after_id`` is not in history."""
+    with gallery_flags.exclusive(gallery_dir()):
+        if owned_audio_path(audio_id) is None:
+            return None
+        flags = gallery_flags.read(gallery_dir())
+        if gallery_flags.is_archived(flags, audio_id):
+            return None
+        # The whole shelf in listing order, so neighbours past the client's loaded window are known.
+        try:
+            paths = [
+                p
+                for p in gallery_dir().glob("*.wav")
+                if not gallery_flags.is_archived(flags, p.stem)
+            ]
+        except OSError:
+            paths = []
+        paths.sort(key = lambda p: _sort_key(flags, p), reverse = True)
+        keyed = [(p.stem, _mtime(p)) for p in paths]
+        gallery_flags.place_locked(gallery_dir(), audio_id, keyed, after_id = after_id)
         meta = _read_meta(_sidecar_path(audio_id))
     if meta is None:
         return None
