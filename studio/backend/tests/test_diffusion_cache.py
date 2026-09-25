@@ -1317,8 +1317,6 @@ def test_the_hook_probe_sees_the_names_the_low_level_api_installs(monkeypatch):
         assert _first_block_cache_is_hooked(hooked) is True
 
 
-
-
 def test_auto_tier_is_the_speed_layers_max():
     from core.inference.diffusion_speed import SPEED_MAX
     assert dc.AUTO_STEP_CACHE_TIER == SPEED_MAX
