@@ -338,18 +338,11 @@ jobs:
           # to let torchvision pull the right Pillow version.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
                       'torch>=2.8,<2.11' 'torchvision<0.26'
-          # Pin to the same versions update_all_notebooks.py installs in
-          # generated notebooks. Keep these in lockstep with PIN_TRL /
-          # PIN_TRANSFORMERS in unslothai/notebooks/update_all_notebooks.py.
-          # `triton` because unsloth/kernels and unsloth_zoo's compiler and
-          # loss_utils import it at module scope, so `import unsloth` needs it
-          # even though _gpu_init.py treats it as optional. Same rationale as
-          # consolidated-tests-ci.yml line 192-205.
-          # Pillow is listed explicitly as a defensive belt-and-braces
-          # next to torchvision (vision_utils crashes ModuleNotFoundError
-          # if torchvision skipped its Pillow dep for any reason).
-          pip install 'transformers>=4.56,<=5.17.0' 'trl>=0.22,<0.26' 'accelerate>=1.0' \
-                      'datasets>=3.4,<5' 'peft>=0.15,<0.20' \
+          # Keep in lockstep with PIN_TRL / PIN_TRANSFORMERS in unslothai/notebooks/update_all_notebooks.py
+          # and pyproject's caps. triton: `import unsloth` needs it at module scope.
+          # datasets must exclude 4.4.0-4.5.0 (patch_datasets raises NotImplementedError there).
+          pip install 'transformers>=4.56,<=5.17.0' 'trl>=0.22,<=1.13.0' 'accelerate>=1.0' \
+                      'datasets>=3.4.1,!=4.0.*,!=4.1.0,!=4.4.*,!=4.5.0,<5.0.0' 'peft>=0.15,<0.20' \
                       'bitsandbytes>=0.43' 'sentencepiece' 'protobuf' triton \
                       Pillow safetensors tqdm packaging psutil
           # Converter deps (nbformat for notebook_to_python.py).

@@ -20,6 +20,7 @@ on:
       # another workflow never starts the job that exists to catch that drift.
       - '.github/workflows/**'
       - 'tests/test_transformers_cap_sites.py'
+      - 'tests/test_trl_cap_sites.py'
   schedule:
     # Off the :00 / :30 fleet-collision spots.
     - cron: '43 6 * * *'
@@ -121,7 +122,10 @@ jobs:
           pip install 'pytest>=8' packaging pyyaml
       - name: Assert every site declares the same window
         # rootdir has to be the repo so the suite's relative paths resolve.
-        run: python -m pytest tests/test_transformers_cap_sites.py -v --tb=short
+        # Keep on one line: windows-latest runs PowerShell, where a `\` continuation becomes a
+        # literal path and pytest collects the whole drive.
+        run: |
+          python -m pytest tests/test_transformers_cap_sites.py tests/test_trl_cap_sites.py -v --tb=short
 
   # Catches what the static symbol check cannot (import-time side effects). Two lanes,
   # since one pinned set proves one point of the range and nothing about either end.
@@ -184,12 +188,13 @@ jobs:
             # the job split. The interpreter is incidental to what this lane measures,
             # which is the dependency ceiling, and 3.11 is inside requires-python and
             # otherwise uncovered by this job.
+            # Both pins must equal pyproject's ceilings (test_a_ceiling_lane_pins_the_declared_ceiling).
             python: '3.11'
             torch_pins: >-
               torch torchvision 'torchcodec>=0.12'
             pkg_pins: >-
-              'transformers==5.17.0' 'trl==0.24.0'
-              peft sentence-transformers accelerate 'datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0'
+              'transformers==5.17.0' 'trl==1.13.0'
+              peft sentence-transformers accelerate 'datasets>=3.4.1,!=4.0.*,!=4.1.0,!=4.4.*,!=4.5.0,<5.0.0'
               bitsandbytes triton hf_transfer
           - slug: latest
             continue_on_error: true
