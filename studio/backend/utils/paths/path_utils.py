@@ -416,3 +416,26 @@ def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
     elif not _wsl_reveal_in_explorer(path, is_file):
         # No cross-desktop "select file" standard on Linux; open the directory.
         subprocess.Popen(["xdg-open", str(path.parent) if is_file else target])
+
+
+# pathconf's _PC_CASE_SENSITIVE on macOS, which Python has no name for.
+_PC_CASE_SENSITIVE = 11
+
+
+def macos_volume_ignores_case(path: str) -> bool:
+    """Whether the macOS volume holding ``path`` (or its nearest folder that exists) ignores case,
+    as APFS and HFS+ do unless formatted case-sensitive. True off macOS, where only a test acting
+    as macOS asks."""
+    if sys.platform != "darwin":
+        return True
+    probe = path
+    while True:
+        try:
+            return os.pathconf(probe, _PC_CASE_SENSITIVE) == 0
+        except FileNotFoundError:
+            parent = os.path.dirname(probe)
+            if not parent or parent == probe:
+                return True
+            probe = parent
+        except (OSError, ValueError):
+            return True

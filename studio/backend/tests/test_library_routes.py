@@ -1472,6 +1472,48 @@ def test_an_upload_finishing_during_a_move_lands_in_the_new_folder(client, tmp_p
     assert not [p for p in library._location_default("uploads").iterdir() if p.suffix == ".tmp"]
 
 
+def _move_after_lookup(monkeypatch, new):
+    """The first lookup of an upload's file starts a move of the uploads folder, and gives it a
+    moment to finish, before answering with where the file was."""
+    import threading
+
+    real = library.upload_path
+    movers = []
+
+    def lookup(upload_id):
+        path = real(upload_id)
+        if not movers:
+            movers.append(
+                threading.Thread(target = library.move_location, args = ("uploads", str(new)))
+            )
+            movers[0].start()
+            movers[0].join(0.5)
+        return path
+
+    monkeypatch.setattr(library, "upload_path", lookup)
+    return movers
+
+
+def test_an_upload_deleted_or_saved_as_a_move_finishes_is_not_left_behind(
+    client, tmp_path, monkeypatch
+):
+    gone, kept = _upload(
+        client, ("gone.txt", b"gone", "text/plain"), ("kept.txt", b"kept", "text/plain")
+    )
+    new = tmp_path / "uploads"
+    movers = _move_after_lookup(monkeypatch, new)
+    assert _delete(client, gone) == 200
+    movers[0].join()
+    assert _files(new) == [_ref(kept)]
+    assert set(_items(client)[0]) == {kept}
+
+    new = tmp_path / "uploads-again"
+    movers = _move_after_lookup(monkeypatch, new)
+    assert library.write_upload_text(kept.partition(":")[2], "edited", "utf-8")
+    movers[0].join()
+    assert (new / _ref(kept)).read_text() == "edited"
+
+
 def test_a_drive_without_room_for_the_files_is_refused_up_front(client, tmp_path, monkeypatch):
     import shutil
 
@@ -1491,6 +1533,34 @@ def test_a_drive_without_room_for_the_files_is_refused_up_front(client, tmp_path
     assert response.status_code == 400 and "free" in response.json()["detail"]
     assert not target.exists()
     assert (_images() / "big.png").stat().st_size == 1000
+
+
+def test_a_named_folder_linked_onto_a_full_drive_is_refused_up_front(client, tmp_path, monkeypatch):
+    import shutil
+
+    (_images() / "big.png").write_bytes(b"x" * 1000)
+    picked = tmp_path / "Pictures"
+    _made(picked, "holiday.jpg")
+    other = tmp_path / "small-drive"
+    _made(other / "images")
+    (picked / "Unsloth Images").symlink_to(other / "images", target_is_directory = True)
+    real_device = library._device
+    monkeypatch.setattr(
+        library,
+        "_device",
+        lambda path: -1 if str(path).startswith(str(other.resolve())) else real_device(path),
+    )
+    real_usage = shutil.disk_usage
+    monkeypatch.setattr(
+        library.shutil,
+        "disk_usage",
+        lambda path: shutil._ntuple_diskusage(10**6, 10**6, 10)
+        if str(path).startswith(str(other.resolve()))
+        else real_usage(path),
+    )
+    response = _move(client, "images", str(picked))
+    assert response.status_code == 400 and "free" in response.json()["detail"]
+    assert _files(other) == [] and (_images() / "big.png").stat().st_size == 1000
 
 
 def test_temporary_and_cache_folders_cannot_hold_library_files(monkeypatch):

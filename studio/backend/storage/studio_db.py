@@ -33,6 +33,7 @@ from utils.paths import (
     studio_db_path,
 )
 from utils.paths.external_media import is_linux_run_media_path, is_local_filesystem_root
+from utils.paths.path_utils import macos_volume_ignores_case
 from utils.paths.scan_folder_health import is_readable_dir
 from utils.paths.sensitive import (
     contains_sensitive_path_component as _shared_contains_sensitive_path_component,
@@ -83,6 +84,7 @@ def is_denied_system_path(path: str) -> bool:
     symlinks cannot escape into a denied subtree.
     """
     system = platform.system()
+    fold = system == "Darwin" and macos_volume_ignores_case(path)
     if system == "Windows":
         check = os.path.normcase(path)
         # realpath() keeps an extended-length prefix: \\?\C:\Windows is C:\Windows, and
@@ -91,13 +93,13 @@ def is_denied_system_path(path: str) -> bool:
             if check.startswith(extended):
                 check = plain + check[len(extended) :]
                 break
-    elif system == "Darwin":
-        # APFS and HFS+ ignore case by default: /LIBRARY is /Library.
+    elif fold:
+        # APFS and HFS+ ignore case unless formatted case-sensitive: /LIBRARY is /Library.
         check = path.casefold()
     else:
         check = path
     for prefix in _denied_path_prefixes():
-        if system == "Darwin":
+        if fold:
             prefix = prefix.casefold()
         if check == prefix or check.startswith(prefix + os.sep):
             if prefix == "/run" and is_linux_run_media_path(check):

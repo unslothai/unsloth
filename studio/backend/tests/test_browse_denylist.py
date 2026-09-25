@@ -16,6 +16,7 @@ import ast
 import ntpath
 import os
 import posixpath
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
@@ -190,6 +191,23 @@ def test_is_within_any_compares_like_the_disk(monkeypatch):
     monkeypatch.setattr(scan_folders.platform, "system", lambda: "Linux")
     assert not scan_folders.is_within_any("/TMP/x", ["/tmp"])
     assert scan_folders.is_within_any("/tmp", ["/tmp/"])
+
+
+def test_a_case_sensitive_macos_volume_keeps_case_apart(monkeypatch):
+    monkeypatch.setattr(scan_folders.platform, "system", lambda: "Darwin")
+    for module in (scan_folders, studio_db):
+        monkeypatch.setattr(module, "macos_volume_ignores_case", lambda path: False)
+    for check in (studio_db.is_denied_system_path, scan_folders.is_denied_system_path):
+        assert check("/Library/x") and not check("/library/models")
+    assert not scan_folders.is_within_any(
+        "/Users/Me/Library/CACHES/x", ["/Users/me/Library/Caches"]
+    )
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason = "asks the real macOS volume")
+def test_macos_volume_case_is_asked_of_the_nearest_existing_folder():
+    from utils.paths.path_utils import macos_volume_ignores_case
+    assert macos_volume_ignores_case("/no/such/folder/here") == macos_volume_ignores_case("/")
 
 
 # _resolve_browse_target -- real-FS integration (legacy browser)
