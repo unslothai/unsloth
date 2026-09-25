@@ -3440,20 +3440,47 @@ export function useChatModelRuntime() {
         return;
       }
       loadLifecycleLeaseRef.current = lease;
-      modelSelectionIntentEpoch += 1;
+      const loadIntentId = ++modelSelectionIntentEpoch;
       const displayName = modelDisplayName(
         modelPath.slice(modelPath.indexOf(":") + 1),
       );
+      const previous = useChatRuntimeStore.getState();
+      const previousCheckpoint = previous.params.checkpoint;
+      const previousGgufVariant = previous.activeGgufVariant;
+      const abortCtrl = new AbortController();
+      const signal = abortCtrl.signal;
+      let markLoadRunSettled = () => {};
+      const settledPromise = new Promise<void>((resolve) => {
+        markLoadRunSettled = resolve;
+      });
+      // Registered like any local load so Stop loading and a replacing pick can cancel it.
+      const loadRun: ActiveModelLoadRun = {
+        attemptId: loadIntentId,
+        intentId: loadIntentId,
+        abortController: abortCtrl,
+        requestId: crypto.randomUUID(),
+        loadAttemptPath: null,
+        cancelPromise: null,
+        rollbackCheckpoint: previousCheckpoint,
+        rollbackVariant: previousGgufVariant ?? null,
+        rollbackLoadId: previous.activeLoadId ?? null,
+        rollbackNativePathToken: previous.activeNativePathToken ?? null,
+        rollbackNativePathExpiresAtMs:
+          previous.activeNativePathExpiresAtMs ?? null,
+        rollbackLoadedState: previous,
+        residentModelUnloaded: false,
+        forceCancelActive: false,
+        settledPromise,
+        markSettled: markLoadRunSettled,
+      };
+      activeLoadRunRef.current = loadRun;
       let toastId: string | number | undefined;
-      let signal: AbortSignal | undefined;
       try {
         const stopDecision = await confirmStopRunningChatsIfNeeded(
           "Loading a different model",
         );
-        if (!stopDecision.proceed) return;
-        const abortCtrl = new AbortController();
+        if (!stopDecision.proceed || signal.aborted) return;
         loadAbortRef.current = abortCtrl;
-        signal = abortCtrl.signal;
         const loadInfo = {
           id: modelPath,
           displayName,
@@ -3470,9 +3497,8 @@ export function useChatModelRuntime() {
         setLoadProgress({ percent: null, label: null, phase: "starting" });
         toastId = toast.loading(`Loading ${displayName} on the NPU`);
         loadToastIdRef.current = toastId;
-        const previous = useChatRuntimeStore.getState();
-        const previousCheckpoint = previous.params.checkpoint;
-        const previousGgufVariant = previous.activeGgufVariant;
+        loadRun.forceCancelActive = stopDecision.forceCancelActive;
+        loadRun.loadAttemptPath = modelPath;
         cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
         requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
         await loadModel({
@@ -3483,9 +3509,11 @@ export function useChatModelRuntime() {
           is_lora: false,
           force_reload: reload?.forceReload === true,
           force_cancel_active: stopDecision.forceCancelActive,
+          load_request_id: loadRun.requestId,
         });
         if (signal.aborted) return;
         const status = await getInferenceStatus();
+        if (signal.aborted) return;
         useChatRuntimeStore.getState().setCheckpoint(modelPath, null);
         applyActiveModelStatusToStore(status, {
           previousCheckpoint,
@@ -3500,7 +3528,7 @@ export function useChatModelRuntime() {
           duration: 4000,
         });
       } catch (error) {
-        if (signal?.aborted) return;
+        if (signal.aborted) return;
         const message =
           error instanceof Error ? error.message : "Failed to load model";
         setModelsError(message);
@@ -3512,10 +3540,11 @@ export function useChatModelRuntime() {
         });
         await syncInferenceStatusToStore().catch(() => {});
       } finally {
-        resetLoadingUi();
+        resetLoadingUiForRun(loadRun);
+        markLoadRunSettled();
       }
     },
-    [resetLoadingUi, setLastModelLoadError, setModelsError],
+    [resetLoadingUiForRun, setLastModelLoadError, setModelsError],
   );
 
   const ejectModel = useCallback(async (): Promise<boolean> => {
