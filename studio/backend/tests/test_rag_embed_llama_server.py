@@ -372,6 +372,33 @@ def test_spawn_uses_free_port_when_auto(monkeypatch):
     assert b._port == 47000
 
 
+def test_spawn_refreshes_pooling_for_a_replaced_model(monkeypatch, tmp_path):
+    """A cached path survives the reaper, but its file can be replaced between server
+    lifetimes. The relaunched command and the vectors' identity must capture the same pooling."""
+    path = tmp_path / "embed.gguf"
+    _write_gguf(path, "qwen3", 1)
+    backend = LlamaServerBackend()
+    backend._model_pooling = "last"
+    proc = _FakeProc(alive = True)
+    captured = {}
+
+    monkeypatch.setattr(backend, "_resolve_binary", lambda: "/bin/llama-server")
+    monkeypatch.setattr(backend, "_resolve_model_path", lambda model_name = None: str(path))
+    monkeypatch.setattr(backend, "_find_free_port", lambda: 47000)
+    monkeypatch.setattr(backend, "_wait_for_health", lambda *a, **k: True)
+    monkeypatch.setattr(backend, "_build_env", lambda *a, **k: {})
+
+    def fake_popen(cmd, **_kwargs):
+        captured["cmd"] = cmd
+        return proc
+
+    monkeypatch.setattr(mod.subprocess, "Popen", fake_popen)
+    backend._spawn_once(False)
+
+    assert captured["cmd"][captured["cmd"].index("--pooling") + 1] == "mean"
+    assert backend._model_pooling == "mean"
+
+
 def test_spawn_fails_loud_on_early_exit(monkeypatch):
     monkeypatch.setattr(config, "EMBED_PORT", 8124)
     b = LlamaServerBackend()

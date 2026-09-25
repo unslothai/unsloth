@@ -756,7 +756,15 @@ class LlamaServerBackend:
         from core.inference.llama_cpp import LlamaCppBackend
         return LlamaCppBackend._arch_gate_survivors(binary)
 
-    def _build_cmd(self, binary: str, model_path: str, port: int, *, use_gpu: bool) -> list[str]:
+    def _build_cmd(
+        self,
+        binary: str,
+        model_path: str,
+        port: int,
+        *,
+        use_gpu: bool,
+        pooling: str | None = None,
+    ) -> list[str]:
         # No --embd-normalize (absent in some builds; we normalize in Python to match the ST path), and
         # --fit off so ctx/offload are not auto-resized.
         cmd = [
@@ -769,7 +777,7 @@ class LlamaServerBackend:
             str(port),
             "--embedding",
             "--pooling",
-            _gguf_pooling(model_path),
+            pooling or _gguf_pooling(model_path),
             "--fit",
             "off",
         ]
@@ -900,9 +908,13 @@ class LlamaServerBackend:
     ) -> None:
         binary = self._resolve_binary()
         model_path = self._resolve_model_path(model_name)
+        # The cached path can be replaced in place between server lifetimes. Capture pooling once
+        # per spawn so the explicit llama-server flag and the vectors' recorded identity agree.
+        pooling = _gguf_pooling(model_path)
+        self._model_pooling = pooling
         port = config.EMBED_PORT or self._find_free_port()
         env = self._build_env(binary, use_gpu = use_gpu)
-        cmd = self._build_cmd(binary, model_path, port, use_gpu = use_gpu)
+        cmd = self._build_cmd(binary, model_path, port, use_gpu = use_gpu, pooling = pooling)
         logger.info(
             "starting llama-server embedder (%s): %s",
             "gpu" if use_gpu else "cpu",
