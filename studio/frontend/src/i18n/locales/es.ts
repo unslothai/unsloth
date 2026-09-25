@@ -2027,7 +2027,7 @@ export const es = {
         modelTypedDecisions: "Decisiones tipadas",
         recommended: "Recomendado",
         device: "Ejecutar en",
-        deviceDescription: "La GPU responde más rápido, pero mantiene su memoria reservada hasta que Studio se reinicia.",
+        deviceDescription: "La GPU responde más rápido, pero mantiene su memoria reservada hasta reiniciar.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         ragRerank: "Reordenar la búsqueda en documentos",

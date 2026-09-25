@@ -1992,7 +1992,7 @@ export const ar = {
         modelTypedDecisions: "قرارات مُصنَّفة",
         recommended: "موصى به",
         device: "التشغيل على",
-        deviceDescription: "وحدة GPU أسرع في الإجابة، لكنها تحتفظ بذاكرتها محجوزة حتى إعادة تشغيل Studio.",
+        deviceDescription: "وحدة GPU أسرع في الإجابة، لكنها تحتفظ بذاكرتها محجوزة حتى إعادة التشغيل.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         ragRerank: "إعادة ترتيب نتائج البحث في المستندات",

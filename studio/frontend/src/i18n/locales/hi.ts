@@ -1998,7 +1998,7 @@ export const hi = {
         modelTypedDecisions: "टाइप्ड निर्णय",
         recommended: "सुझाया गया",
         device: "यहाँ चलाएँ",
-        deviceDescription: "GPU तेज़ जवाब देता है, लेकिन Studio के रीस्टार्ट होने तक अपनी मेमोरी आरक्षित रखता है।",
+        deviceDescription: "GPU तेज़ जवाब देता है, लेकिन रीस्टार्ट होने तक अपनी मेमोरी आरक्षित रखता है।",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         ragRerank: "दस्तावेज़ खोज को फिर से क्रमित करें",

@@ -1942,7 +1942,7 @@ export const zhCN = {
         modelTypedDecisions: "类型化决策",
         recommended: "推荐",
         device: "运行于",
-        deviceDescription: "GPU 响应更快，但在 Studio 重启前会一直占用显存。",
+        deviceDescription: "GPU 响应更快，但在重启前会一直占用显存。",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         ragRerank: "重新排序文档搜索结果",

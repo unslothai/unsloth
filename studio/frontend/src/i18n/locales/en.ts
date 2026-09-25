@@ -1983,7 +1983,7 @@ export const en = {
         modelTypedDecisions: "Typed decisions",
         recommended: "Recommended",
         device: "Run on",
-        deviceDescription: "GPU answers faster, but keeps its memory reserved until Studio restarts.",
+        deviceDescription: "GPU answers faster, but keeps its memory reserved until restart.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         ragRerank: "Rerank document search",

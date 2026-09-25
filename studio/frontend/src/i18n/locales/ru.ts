@@ -2005,7 +2005,7 @@ export const ru = {
         modelTypedDecisions: "Типизированные решения",
         recommended: "Рекомендуется",
         device: "Запускать на",
-        deviceDescription: "GPU отвечает быстрее, но держит память зарезервированной до перезапуска Studio.",
+        deviceDescription: "GPU отвечает быстрее, но держит память зарезервированной до перезапуска.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         ragRerank: "Переранжировать поиск по документам",

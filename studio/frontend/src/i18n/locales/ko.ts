@@ -1985,7 +1985,7 @@ export const ko = {
         modelTypedDecisions: "유형별 판단",
         recommended: "추천",
         device: "실행 위치",
-        deviceDescription: "GPU가 더 빠르지만 Studio를 다시 시작할 때까지 메모리를 계속 차지합니다.",
+        deviceDescription: "GPU가 더 빠르지만 다시 시작할 때까지 메모리를 계속 차지합니다.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         ragRerank: "문서 검색 재정렬",

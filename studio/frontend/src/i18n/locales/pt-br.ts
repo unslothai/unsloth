@@ -2008,7 +2008,7 @@ export const ptBR = {
         modelTypedDecisions: "Decisões tipadas",
         recommended: "Recomendado",
         device: "Executar em",
-        deviceDescription: "A GPU responde mais rápido, mas mantém a memória reservada até o Studio reiniciar.",
+        deviceDescription: "A GPU responde mais rápido, mas mantém a memória reservada até reiniciar.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         ragRerank: "Reordenar a busca em documentos",

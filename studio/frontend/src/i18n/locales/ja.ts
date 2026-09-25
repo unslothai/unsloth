@@ -1962,7 +1962,7 @@ export const ja = {
         modelTypedDecisions: "型付き判定",
         recommended: "推奨",
         device: "実行先",
-        deviceDescription: "GPU の方が高速ですが、Studio を再起動するまでメモリを確保し続けます。",
+        deviceDescription: "GPU の方が高速ですが、再起動するまでメモリを確保し続けます。",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         ragRerank: "ドキュメント検索を並べ替える",
