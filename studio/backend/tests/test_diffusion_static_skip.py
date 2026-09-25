@@ -127,9 +127,10 @@ def _run(
     signal = True,
     kv = False,
     return_dict = False,
+    owner = None,
 ):
     dit = pipe.transformer
-    ss.reset_static_step_skip(pipe, steps, step_signal = signal)
+    ss.reset_static_step_skip(pipe, steps, step_signal = signal, owner = owner)
     outs: dict = {c: [] for c in contexts}
     x = torch.zeros(1, 4, 2)
     for i in range(steps):
@@ -911,10 +912,10 @@ def test_a_short_generation_reports_its_own_uncached_counts():
 
 
 @pytest.mark.parametrize(
-    "scope, mine, shown",
-    [(None, False, True), ("acct", True, True), ("acct", False, False)],
+    "scope, owner, shown",
+    [(None, "b", True), ("scoped", "a", True), ("scoped", "b", False), ("scoped", None, True)],
 )
-def test_status_route_hides_skip_counts_from_other_accounts(monkeypatch, scope, mine, shown):
+def test_status_route_shows_skip_counts_only_to_their_producer(monkeypatch, scope, owner, shown):
     import asyncio
 
     from core.inference import diffusion_engine_router
@@ -931,10 +932,26 @@ def test_status_route_hides_skip_counts_from_other_accounts(monkeypatch, scope, 
         "active_status",
         lambda: {"loaded": True, "transformer_cache": "static", "transformer_cache_stats": stats},
     )
+    engine = types.SimpleNamespace(static_skip_owner = lambda: owner)
+    monkeypatch.setattr(diffusion_engine_router, "get_active_diffusion_engine", lambda: engine)
     monkeypatch.setattr(account_access, "resident_hidden", lambda *a, **k: False)
     monkeypatch.setattr(account_access, "account_scope", lambda: scope)
-    monkeypatch.setattr(account_access, "generation_is_mine", lambda modality: mine)
+    monkeypatch.setattr(routes, "current_account_id", lambda: "a")
     body = asyncio.run(routes.diffusion_status(current_subject = "u", via_api_key = False))
     assert body.transformer_cache == "static"
-    assert (body.transformer_cache_stats == stats) is shown
-    assert (body.transformer_cache_stats is None) is (not shown)
+    assert body.transformer_cache_stats == (stats if shown else None)
+
+
+def test_a_new_owner_never_inherits_the_previous_owners_counts():
+    pipe = _installed()
+    _run(pipe, 25, owner = "a")
+    ss.reset_static_step_skip(pipe, None)
+    assert ss.static_skip_owner(pipe) == "a"
+    assert ss.static_skip_stats(pipe)["stats"]["skipped"] > 0
+    ss.reset_static_step_skip(pipe, 25, owner = "b")
+    assert ss.static_skip_owner(pipe) == "b"
+    assert ss.static_skip_stats(pipe)["stats"] == {"calls": 0, "computed": 0, "skipped": 0}
+    # The same owner's next generation keeps its last counts visible until it calls.
+    ss.reset_static_step_skip(pipe, None)
+    ss.reset_static_step_skip(pipe, 25, owner = "b")
+    assert ss.static_skip_owner(pipe) == "b"
