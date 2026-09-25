@@ -19,7 +19,7 @@ export const MessageMenuTime: FC = () => {
     <time
       dateTime={date.toISOString()}
       title={date.toLocaleString(locale, { dateStyle: "full", timeStyle: "short" })}
-      className="block select-none px-3 pt-1.5 pb-2 text-sm text-muted-foreground tabular-nums"
+      className="block select-none px-3 py-2 text-sm text-muted-foreground tabular-nums"
     >
       {formatMessageDate(createdAt, Date.now(), locale, {
         today: (time) => t("common.todayAt", { time }),
