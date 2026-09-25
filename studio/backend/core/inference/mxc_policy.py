@@ -202,14 +202,27 @@ def _runtime_read_roots(executable: str) -> list[str]:
         drive, tail = os.path.splitdrive(canonical)
         if not tail.strip("\\/"):
             raise MxcPolicyError(f"volume-root MXC grant is forbidden: {canonical}")
-        if os.path.normcase(canonical) not in {os.path.normcase(value) for value in result}:
-            result.append(canonical)
-    return result
+        result.append(canonical)
+    # A nested grant is redundant, and on the DACL tier each one re-walks its tree (about 9s for site-packages).
+    return [
+        root
+        for index, root in enumerate(result)
+        if not any(
+            _within(root, other) and (not _within(other, root) or other_index < index)
+            for other_index, other in enumerate(result)
+            if other_index != index
+        )
+    ]
+
+
+def _within(path: str, root: str) -> bool:
+    folded, base = os.path.normcase(path), os.path.normcase(root).rstrip("\\/")
+    return folded == base or folded.startswith(base + os.sep)
 
 
 def _model_read_roots(workdir: str, granted: list[str]) -> list[str]:
     """Registered model folders, read-only as on Linux and macOS; one that cannot be granted is skipped."""
-    covered = [os.path.normcase(value) for value in (workdir, *granted)]
+    covered = [workdir, *granted]
     result: list[str] = []
     for root in os_sandbox.model_library_roots():
         try:
@@ -217,10 +230,9 @@ def _model_read_roots(workdir: str, granted: list[str]) -> list[str]:
         except MxcPolicyError as exc:
             logger.info("Not granting a model folder to the MXC profile: %s", exc)
             continue
-        folded = os.path.normcase(canonical)
-        if any(folded == value or folded.startswith(value.rstrip("\\/") + os.sep) for value in covered):
+        if any(_within(canonical, value) for value in covered):
             continue
-        covered.append(folded)
+        covered.append(canonical)
         result.append(canonical)
     return result
 

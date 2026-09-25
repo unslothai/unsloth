@@ -173,11 +173,13 @@ def _probe(
         env["HOME"] = str(workdir)
         env["TEMP"] = str(workdir)
         env["TMP"] = str(workdir)
+        # The DACL tier re-ACLs every granted tree per launch: 10-24s measured on a 24H2 runner.
+        timeout = 60 if mxc_policy.dacl_fallback_enabled() else 20
 
         probe_plan = SimpleNamespace(
             argv = probe_argv,
             execution_kind = execution_kind,
-            timeout_seconds = 20,
+            timeout_seconds = timeout,
             workdir = str(workdir),
             env = env,
         )
@@ -196,7 +198,7 @@ def _probe(
                     "creationflags": subprocess.CREATE_NO_WINDOW,
                 },
             )
-            deadline = time.monotonic() + 25
+            deadline = time.monotonic() + timeout + 5
             while True:
                 if cancel_event is not None and cancel_event.is_set():
                     mxc_adapter.abort(proc)

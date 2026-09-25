@@ -821,3 +821,26 @@ def test_non_windows_capability_does_not_import_windows_backend(monkeypatch):
     capability = os_sandbox.capability_snapshot()
     assert not capability.available
     assert "core.inference.sandbox_windows_mxc" not in sys.modules
+
+
+def test_nested_runtime_grants_collapse_to_their_outermost_root(monkeypatch, tmp_path):
+    # Each DACL-tier grant re-walks its tree: a nested site-packages grant cost about 9s per call.
+    from core.inference import mxc_policy
+
+    prefix = tmp_path / "venv"
+    scripts = prefix / "Scripts"
+    site_packages = prefix / "Lib" / "site-packages"
+    base = tmp_path / "base-python"
+    for path in (scripts, site_packages, base):
+        path.mkdir(parents = True)
+    executable = scripts / "python.exe"
+    executable.touch()
+    monkeypatch.setattr(mxc_policy.sys, "prefix", str(prefix))
+    monkeypatch.setattr(mxc_policy.sys, "base_prefix", str(base))
+    monkeypatch.setattr(mxc_policy.site, "getsitepackages", lambda: [str(site_packages)])
+    monkeypatch.delenv("SystemRoot", raising = False)
+    monkeypatch.delenv("WINDIR", raising = False)
+    roots = mxc_policy._runtime_read_roots(str(executable))
+    assert str(prefix) in roots and str(base) in roots
+    assert str(scripts) not in roots and str(site_packages) not in roots
+    assert len(roots) == len(set(roots))
