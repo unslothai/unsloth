@@ -4465,8 +4465,7 @@ class VideoBackend:
         attention_engaged = None
         # HunyuanVideo-1.5 only, and once for the whole pipe (the installer fans out over every denoiser DiT itself).
         # Before apply_attention_backend below, so the requested kernel pins onto the new processors. Held off on
-        # SPEED_OFF, which must stay bit-identical. SPEED_MAX compiles with automatic dynamic, so the per-prompt text
-        # length costs one generalising recompile, not one per prompt.
+        # SPEED_OFF, which must stay bit-identical.
         attention_trim_engaged = (
             install_hunyuan_attention_trim(pipe, fam, logger = logger)
             if effective_speed != SPEED_OFF

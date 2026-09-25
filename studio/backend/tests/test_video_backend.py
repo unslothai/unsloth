@@ -5374,7 +5374,6 @@ def test_attention_trim_installed_and_reported(fake_runtime, monkeypatch):
 
 
 def test_attention_trim_skipped_on_the_off_tier(fake_runtime, monkeypatch):
-    # speed=off must stay bit-identical.
     calls = _trim_spy(monkeypatch)
     backend = VideoBackend()
     status = backend.load_pipeline(
@@ -5387,8 +5386,6 @@ def test_attention_trim_skipped_on_the_off_tier(fake_runtime, monkeypatch):
 
 @pytest.mark.parametrize("mode", ["eager", "default", "max"])
 def test_attention_trim_installed_on_every_speed_tier(fake_runtime, monkeypatch, mode):
-    # max compiles with automatic dynamic, so the prompt-dependent trimmed length costs one generalising recompile
-    # rather than a graph per prompt, and the untrimmed dense mask forces the slow masked SDPA.
     calls = _trim_spy(monkeypatch)
     backend = VideoBackend()
     status = backend.load_pipeline(

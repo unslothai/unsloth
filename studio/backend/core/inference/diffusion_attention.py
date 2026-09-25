@@ -689,10 +689,8 @@ def _warn(logger: Any, what: str, exc: Exception) -> None:
 # eager forward pre-hook (outside the compiled blocks): drop the all-zero image stream (t2v), trim the mllm/byt5
 # streams to their globally-valid columns, and, when nothing partially-padded remains, flag the DiT so the processor
 # skips the dense mask and runs the fused path. Mixed-padding batches fall back to the stock dense mask. SHAPE NOTE:
-# the trimmed text length is prompt-dependent, so the compiled blocks see a new shape per prompt. Free on the default
-# speed tier (dynamic=True); ``max`` compiles with automatic dynamic (dynamic=None), which generalises the length after
-# its first change, so one recompile covers every later prompt. A static (dynamic=False) compile would need one graph
-# per length and hard-error at dynamo's recompile limit under fullgraph; see the call site in video.py.
+# trimmed length varies per prompt; safe because ``max`` compiles with dynamic=None (one generalising recompile). A
+# static (dynamic=False) compile would recompile per prompt length and hit dynamo's recompile limit under fullgraph.
 _HUNYUAN15_TRANSFORMER_CLS = "HunyuanVideo15Transformer3DModel"
 _HUNYUAN15_PROCESSOR_CLS = "HunyuanVideo15AttnProcessor2_0"
 _NULL_ATTN_FLAG = "_unsloth_null_attn_mask"
