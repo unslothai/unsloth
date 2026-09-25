@@ -469,6 +469,19 @@ def _docx(path: str) -> list[Page]:
 
 # Browsers look for the charset declaration in the first 1024 bytes.
 _META_CHARSET = re.compile(rb"<meta[^>]+charset\s*=\s*[\"']?\s*([\w.:-]+)", re.IGNORECASE)
+# Labels the WHATWG Encoding Standard decodes as a superset (encoding.spec.whatwg.org, "Names and labels").
+_CHARSET_SUPERSETS = {
+    "ascii": "cp1252",
+    "iso8859-1": "cp1252",
+    "iso8859-9": "cp1254",
+    "tis-620": "cp874",
+    "iso8859-11": "cp874",
+    "gb2312": "gb18030",
+    "gbk": "gb18030",
+    "shift_jis": "cp932",
+    "euc_kr": "cp949",
+    "big5": "big5hkscs",
+}
 
 
 def _declared_charset(data: bytes) -> str | None:
@@ -478,9 +491,12 @@ def _declared_charset(data: bytes) -> str | None:
         return None
     name = match.group(1).decode("ascii")
     try:
-        return name if "<meta>".encode(name) == b"<meta>" else None
+        if "<meta>".encode(name) != b"<meta>":
+            return None
+        name = codecs.lookup(name).name
     except (LookupError, UnicodeError):
         return None
+    return _CHARSET_SUPERSETS.get(name, name)
 
 
 def _decode_text(data: bytes, *, html: bool = False) -> str:
@@ -505,7 +521,9 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
         except UnicodeError:
             pass
     text = data.decode("utf-8-sig", errors = "replace")
-    if any("\x7f" < ch != "\ufffd" for ch in text):
+    # Legacy bytes can form a stray valid UTF-8 sequence (cp1252 "à\xa0»"), so one is not enough.
+    non_ascii = len(text) - len(text.encode("ascii", "ignore"))
+    if non_ascii > 2 * text.count("\ufffd"):
         return text
     return data.decode("cp1252", errors = "replace")
 
@@ -528,6 +546,8 @@ def parse(path: str, *, want_images: bool = False):
         is_html = ext in (".html", ".htm")
         with open(path, "rb") as f:
             raw = _decode_text(f.read(), html = is_html)
+        # Universal newlines, as text-mode open() gave: the chunker splits on "\n\n".
+        raw = raw.replace("\r\n", "\n").replace("\r", "\n")
         pages = _html(raw) if is_html else [_page(raw, None)]
         return (pages, []) if want_images else pages
 

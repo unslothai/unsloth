@@ -62,3 +62,28 @@ def test_a_declared_charset_that_cannot_have_written_the_page_is_ignored(tmp_pat
     for charset in ("no-such-charset", "utf-16", "punycode", "idna"):
         page = f'<html><head><meta charset="{charset}"></head><body><p>Grüße</p></body></html>'
         assert _text(tmp_path, "odd.html", page.encode("cp1252")) == "Grüße", charset
+
+
+def test_crlf_and_cr_line_endings_become_newlines(tmp_path):
+    windows = "Para one.\r\nStill one.\r\n\r\nPara two.\r\n"
+    expected = "Para one.\nStill one.\n\nPara two.\n"
+    assert _text(tmp_path, "crlf.txt", windows.encode("utf-8")) == expected
+    assert _text(tmp_path, "crlf_ansi.txt", windows.encode("cp1252")) == expected
+    assert _text(tmp_path, "crlf_wide.txt", windows.encode("utf-16")) == expected
+    assert _text(tmp_path, "cr.md", b"a\rb\r") == "a\nb\n"
+
+
+def test_a_stray_valid_utf8_sequence_does_not_keep_a_windows_1252_file_as_utf8(tmp_path):
+    # Word puts a no-break space before "»" in French; "à\xa0»" is also valid UTF-8.
+    french = "Il a dit «\xa0voilà\xa0» à l'été, café, crème.\n"
+    assert _text(tmp_path, "fr.txt", french.encode("cp1252")) == french
+
+
+def test_a_declared_charset_decodes_as_its_browser_superset(tmp_path):
+    for charset, codec, text in (
+        ("iso-8859-1", "cp1252", "“smart” quotes cost €5"),
+        ("shift_jis", "cp932", "① 髙橋"),
+        ("gb2312", "gbk", "镕"),
+    ):
+        page = f'<html><head><meta charset="{charset}"></head><body><p>{text}</p></body></html>'
+        assert _text(tmp_path, f"{charset}.html", page.encode(codec)) == text, charset
