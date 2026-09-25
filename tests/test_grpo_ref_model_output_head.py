@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""GRPO log-probs must use the output head of the model being scored.
-
-With full fine-tuning and beta > 0, TRL scores a separate ``ref_model``; pairing its hidden
-states with the trained policy's head corrupts the reference log-probs and the KL term.
-"""
+"""Full fine-tuning with beta > 0 scores a separate ref_model: its log-probs need its own head, not the policy's."""
 
 import ast
 import textwrap
