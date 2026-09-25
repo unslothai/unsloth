@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Checkbox } from "@/components/ui/checkbox";
-import { useLocale, useT } from "@/i18n";
+import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { Folder01Icon } from "@hugeicons/core-free-icons";
 import { StarPointedIcon } from "@/lib/hugeicons-derived";
@@ -28,6 +28,14 @@ const CELL = "hidden text-[13px] text-muted-foreground sm:block";
 const ACTIVITY_COLUMN = "w-48 shrink-0";
 const MODIFIED_COLUMN = "w-40 shrink-0";
 const SIZE_COLUMN = "w-28 shrink-0";
+// Suggested shows one relative Last activity column instead of Modified and Size.
+const ACTIVITY_COLUMNS: [LibrarySortKey, TranslationKey, string][] = [
+  ["modified", "library.list.lastActivity", ACTIVITY_COLUMN],
+];
+const COLUMNS: [LibrarySortKey, TranslationKey, string][] = [
+  ["modified", "library.list.modifiedColumn", MODIFIED_COLUMN],
+  ["size", "library.preview.size", SIZE_COLUMN],
+];
 
 function SortHeader({
   column,
@@ -115,9 +123,8 @@ function Row({
   tile: ReactNode;
   name: ReactNode;
   modified: number;
-  opened: number | null;
-  size: number | null;
-  /** Suggested shows one relative Last activity column instead of Modified and Size. */
+  opened?: number | null;
+  size?: number | null;
   activity: boolean;
 }) {
   const t = useT();
@@ -155,7 +162,7 @@ function Row({
         ) : (
           <>
             <span className={cn(MODIFIED_COLUMN, CELL, "ml-auto")}>{formatCardTime(modified, locale)}</span>
-            <span className={cn(SIZE_COLUMN, CELL)}>{formatSize(size, locale, t)}</span>
+            <span className={cn(SIZE_COLUMN, CELL)}>{formatSize(size ?? null, locale, t)}</span>
           </>
         )}
       </button>
@@ -222,32 +229,16 @@ export function LibraryList({
           <span className="flex-1">
             <SortHeader column="name" label={t("library.list.name")} sort={sort} onSortChange={onSortChange} />
           </span>
-          {activity ? (
+          {(activity ? ACTIVITY_COLUMNS : COLUMNS).map(([column, label, width]) => (
             <SortHeader
-              column="modified"
-              label={t("library.list.lastActivity")}
+              key={column}
+              column={column}
+              label={t(label)}
               sort={sort}
               onSortChange={onSortChange}
-              className={cn(ACTIVITY_COLUMN, "hidden sm:flex")}
+              className={cn(width, "hidden sm:flex")}
             />
-          ) : (
-            <>
-              <SortHeader
-                column="modified"
-                label={t("library.list.modifiedColumn")}
-                sort={sort}
-                onSortChange={onSortChange}
-                className={cn(MODIFIED_COLUMN, "hidden sm:flex")}
-              />
-              <SortHeader
-                column="size"
-                label={t("library.list.sizeColumn")}
-                sort={sort}
-                onSortChange={onSortChange}
-                className={cn(SIZE_COLUMN, "hidden sm:flex")}
-              />
-            </>
-          )}
+          ))}
           <span className="w-8 shrink-0" />
         </div>
       </div>
@@ -274,8 +265,6 @@ export function LibraryList({
               </>
             }
             modified={folder.updatedAt}
-            opened={null}
-            size={null}
             activity={activity}
           />
         ))}
