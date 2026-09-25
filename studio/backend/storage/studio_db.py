@@ -273,11 +273,11 @@ _INVENTORY_UPDATE_TRIGGER_SQL = f"""
 
 
 def _replace_inventory_update_trigger(conn: sqlite3.Connection) -> None:
-    """Swap the unscoped trigger for the scoped one, safely for concurrent openers. DDL does not open a
-    transaction under sqlite3's legacy transaction control, only DML does, so a bare DROP + CREATE
-    pair can interleave across processes as drop/drop/create/create and the second CREATE raises out
-    of `get_connection`. Hence: skip when already scoped, hold the writer lock across the pair, IF
-    NOT EXISTS on top."""
+    # """Swap the unscoped trigger for the scoped one, safely for concurrent openers. DDL does not open a
+    # transaction under sqlite3's legacy transaction control, only DML does, so a bare DROP + CREATE
+    # pair can interleave across processes as drop/drop/create/create and the second CREATE raises out
+    # of `get_connection`. Hence: skip when already scoped, hold the writer lock across the pair, IF
+    # NOT EXISTS on top."""
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?",
         (_INVENTORY_UPDATE_TRIGGER,),
@@ -726,7 +726,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
-<<<<<<< HEAD
         CREATE TABLE IF NOT EXISTS research_runs (
             id TEXT NOT NULL PRIMARY KEY,
             owner_subject TEXT NOT NULL,
@@ -998,7 +997,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             );
         END
         """
-=======
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS usage_events (
             id TEXT NOT NULL PRIMARY KEY,
             ts INTEGER NOT NULL,
@@ -1020,7 +1021,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_usage_events_source_ts ON usage_events(source, ts)"
->>>>>>> b69f3d9db (fix: Added CREATE TABLE usage_events)
     )
     inventory_state = conn.execute(
         """
@@ -1218,16 +1218,16 @@ _CONTENDED_BUSY_TIMEOUT_SECONDS = 30.0
 
 
 def _apply_wal_synchronous(conn: sqlite3.Connection) -> None:
-    """Drop to synchronous=NORMAL, but only while the file is really in WAL mode. Under WAL, sqlite
-    still defaults to synchronous=FULL, which fsyncs on every commit while holding the writer lock:
-    on a machine whose disk is busy one commit blocked for 37s, and every other writer spent that
-    window timing out with "database is locked". NORMAL is sqlite's own recommended pairing for WAL:
-    it can lose the last transactions to a host power loss, but the database is never corrupted and
-    commits stay durable across an application crash. The WAL check is not decoration. `PRAGMA
-    journal_mode=WAL` silently declines on filesystems without proper shared-memory support (network
-    shares, some FUSE and container-mounted paths), leaving the file on a rollback journal where
-    NORMAL drops the very fsync that keeps it consistent. Those installs keep FULL. journal_mode is
-    persistent in the file, so this reads what is in force rather than what was requested."""
+    # Drop to synchronous=NORMAL, but only while the file is really in WAL mode. Under WAL, sqlite
+    # still defaults to synchronous=FULL, which fsyncs on every commit while holding the writer lock:
+    # on a machine whose disk is busy one commit blocked for 37s, and every other writer spent that
+    # window timing out with "database is locked". NORMAL is sqlite's own recommended pairing for WAL:
+    # it can lose the last transactions to a host power loss, but the database is never corrupted and
+    # commits stay durable across an application crash. The WAL check is not decoration. `PRAGMA
+    # journal_mode=WAL` silently declines on filesystems without proper shared-memory support (network
+    # shares, some FUSE and container-mounted paths), leaving the file on a rollback journal where
+    # NORMAL drops the very fsync that keeps it consistent. Those installs keep FULL. journal_mode is
+    # persistent in the file, so this reads what is in force rather than what was requested."""
     try:
         mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
     except (sqlite3.Error, TypeError, IndexError):
