@@ -119,14 +119,7 @@ def _cuda_is_available():
 def test_native_model_with_trust_remote_code_keeps_fast_lora(tmp_path, monkeypatch):
     """The arm that fails without the fix: PEFT's Linear4bit forward is left in place.
 
-    The checkpoint is fetched from the Hub and is a Gemma-4, so three things this
-    test cannot control can stop it before it has measured anything: a
-    transformers that predates the architecture (`ValueError: ... model type
-    gemma4 ... Transformers does not recognize this architecture` on 4.57.6), a
-    host without torchvision (`ImportError: Unsloth: Could not load the vision
-    processor`), and no network. All three were live on the declared support
-    range, and each turned into a hard failure that says nothing about the fix.
-    Skip on them; still fail on anything else, which is the arm that matters.
+    Skips only on errors meaning the checkpoint cannot be built here (old transformers, no torchvision, offline).
     """
     monkeypatch.chdir(tmp_path)  # fresh unsloth_compiled_cache
     import torch

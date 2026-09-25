@@ -227,13 +227,8 @@ def _config_uses_remote_code(config):
         # A custom tokenizer, processor or feature extractor is not code the compiler traces.
         return any(str(k).startswith(("AutoModel", "AutoConfig")) for k in auto_map)
 
-    # The three usual names are not the whole set. transformers keys its own composite
-    # configs off `sub_configs` (present since 4.x), and Qwen-Omni calls its children
-    # thinker_config / talker_config / token2wav_config, Nemotron-3-Nano-Omni llm_config
-    # and sound_config. Children nest (omnivinci puts audio_config two levels down, and an
-    # object-shaped llm_config can carry its own audio_config), so walk every level: a
-    # sub-config carrying a model `auto_map` read as native would put the compiler back on
-    # code it cannot trace, which is the one direction this predicate must never get wrong.
+    # Sub-configs go beyond text/vision/audio (Qwen-Omni thinker_config, nested llm_config) and nest;
+    # a remote child read as native puts the compiler on untraceable code, so walk every level.
     try:
         from transformers import PretrainedConfig as _config_class
     except Exception:
@@ -249,13 +244,12 @@ def _config_uses_remote_code(config):
         for sub in getattr(type(node), "sub_configs", None) or ():
             if sub not in names:
                 names.append(sub)
-        # A declared sub-config can be any config-like object; a callable (a Mock) is not one.
+        # A callable (e.g. a Mock) is not a config.
         children = [
             child
             for child in (getattr(node, name, None) for name in names)
             if child is not None and (_is_config(child) or not callable(child))
         ]
-        # Undeclared children only when they really are configs.
         try:
             children.extend(value for value in vars(node).values() if _is_config(value))
         except TypeError:
@@ -274,8 +268,7 @@ def _config_uses_remote_code(config):
         children = _children(current)
         if not children:
             continue
-        # Configs nest a few levels at most; the bound only guards pathological objects,
-        # and past it the answer is the conservative one.
+        # Past the bound, answer conservatively.
         if depth >= 8:
             return True
         pending.extend((child, depth + 1) for child in children)
