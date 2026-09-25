@@ -133,133 +133,31 @@ def test_every_key_the_studio_tests_ask_for_exists():
     assert not missing, f"keys asked for but not in {EN_LOCALE_TS.name}: {missing}"
 
 
-def _github_glob(pattern: str) -> re.Pattern[str]:
-    """A workflow `paths` pattern as a regex: `**` crosses `/` (`**/` also matches nothing), `*` and `?` do not."""
-    out = []
-    index = 0
-    while index < len(pattern):
-        if pattern.startswith("**/", index):
-            # `**/` may match zero directories: `a/**/b` selects `a/b` too.
-            out.append("(?:.*/)?")
-            index += 3
-        elif pattern.startswith("**", index):
-            out.append(".*")
-            index += 2
-        elif pattern[index] == "*":
-            out.append("[^/]*")
-            index += 1
-        elif pattern[index] == "?":
-            out.append("[^/]")
-            index += 1
-        else:
-            out.append(re.escape(pattern[index]))
-            index += 1
-    return re.compile("".join(out))
+COMPOSER_WORKFLOW = HERE.parents[1] / ".github" / "workflows" / "studio-composer-compatibility.yml"
 
 
-def _paths_include(paths: list[str], path: str) -> bool:
-    """Whether a `paths` filter selects `path`: patterns apply in order, the last match wins."""
-    included = False
-    for pattern in paths:
-        negated = pattern.startswith("!")
-        if _github_glob(pattern[1:] if negated else pattern).fullmatch(path):
-            included = not negated
-    return included
+def test_the_composer_workflow_runs_on_a_catalog_only_change():
+    """Both browser drivers find their controls through `_en_catalog.py`, and this workflow is
+    the one that runs them. A PR that changes only the reader has to run it too.
 
-
-@pytest.mark.parametrize(
-    "paths, included",
-    [
-        (["tests/studio/_en_catalog.py"], True),
-        (["tests/studio/*"], True),
-        (["tests/**"], True),
-        (["tests/*"], False),
-        (["tests/studio/*", "!tests/studio/_en_catalog.py"], False),
-        (["!tests/studio/_en_catalog.py", "tests/studio/*"], True),
-        (["tests/**", "!tests/studio/**", "tests/studio/_en_*.py"], True),
-        (["tests/studio/**/_en_catalog.py"], True),
-        (["tests/**/_en_catalog.py"], True),
-        (["tests/**/studio/_en_catalog.py"], True),
-    ],
-)
-def test_the_paths_filter_is_read_in_order(paths, included):
-    assert _paths_include(paths, "tests/studio/_en_catalog.py") is included
-
-
-def _pull_request_runs_on(workflow: dict, path: str) -> bool:
-    """Whether a pull request into main that changes only `path` triggers `workflow`."""
-    # PyYAML reads a bare `on:` key as True and a quoted `"on":` as the string.
-    triggers = workflow.get(True, workflow.get("on"))
-    if isinstance(triggers, str):
-        triggers = [triggers]
-    if isinstance(triggers, list):
-        return "pull_request" in triggers
-    if not isinstance(triggers, dict) or "pull_request" not in triggers:
-        return False
-    event = triggers["pull_request"] or {}
-    # Branch filters name the target branch, and pull requests here target main.
-    if "branches" in event and not _paths_include(event["branches"] or [], "main"):
-        return False
-    if "branches-ignore" in event and _paths_include(event["branches-ignore"] or [], "main"):
-        return False
-    if "paths" in event:
-        return _paths_include(event["paths"] or [], path)
-    if "paths-ignore" in event:
-        # Same ordered reading: a match excludes, a later `!` match puts it back.
-        return not _paths_include(event["paths-ignore"] or [], path)
-    return True
-
-
-@pytest.mark.parametrize(
-    "workflow, runs",
-    [
-        ({True: {"pull_request": None}}, True),
-        ({True: "pull_request"}, True),
-        ({True: ["push", "pull_request"]}, True),
-        ({True: {"push": None}}, False),
-        ({"on": {"pull_request": {"paths": ["tests/other/**"]}}}, False),
-        ({"on": {"pull_request": {"paths": ["tests/studio/**"]}}}, True),
-        ({True: {"pull_request": {"paths": ["tests/studio/**/_en_catalog.py"]}}}, True),
-        ({True: {"pull_request": {"paths-ignore": ["tests/studio/**"]}}}, False),
-        ({True: {"pull_request": {"paths-ignore": ["docs/**"]}}}, True),
-        (
-            {
-                True: {
-                    "pull_request": {"paths-ignore": ["tests/**", "!tests/studio/_en_catalog.py"]}
-                }
-            },
-            True,
-        ),
-        ({True: {"pull_request": {"branches": ["release"]}}}, False),
-        ({True: {"pull_request": {"branches": ["main", "release/**"]}}}, True),
-        ({True: {"pull_request": {"branches-ignore": ["main"]}}}, False),
-        ({True: {"pull_request": {"branches-ignore": ["release/**"]}}}, True),
-    ],
-)
-def test_the_pull_request_trigger_is_read_in_full(workflow, runs):
-    assert _pull_request_runs_on(workflow, "tests/studio/_en_catalog.py") is runs
-
-
-def test_every_workflow_running_a_catalog_driver_also_triggers_on_the_catalog_reader():
-    """A PR that changes only `_en_catalog.py` must still run the browser drivers built on it."""
+    Deliberately literal: the reader is listed by name in `pull_request.paths`, and every
+    driver that reads the catalog is invoked by this workflow. A workflow restructured some
+    other way updates this test with it.
+    """
     import yaml
 
-    repo = HERE.parents[1]
-    reader = "tests/studio/_en_catalog.py"
-    drivers = [
+    text = COMPOSER_WORKFLOW.read_text(encoding = "utf-8")
+    workflow = yaml.safe_load(text)
+    triggers = workflow.get(True, workflow.get("on"))  # PyYAML reads a bare `on:` as True.
+    pull_request = triggers["pull_request"]
+    assert "tests/studio/_en_catalog.py" in pull_request["paths"]
+    assert not {"paths-ignore", "branches", "branches-ignore", "types"} & set(pull_request)
+    drivers = sorted(
         path.name
-        for path in sorted(HERE.glob("*.py"))
-        if not path.name.startswith("test_")
-        and path.name != "_en_catalog.py"
-        and "_en_catalog" in path.read_text(encoding = "utf-8")
-    ]
+        for path in HERE.glob("*.py")
+        if not path.name.startswith(("test_", "_"))
+        and "from _en_catalog import" in path.read_text(encoding = "utf-8")
+    )
     assert drivers, "no browser driver reads the catalog any more"
-    unguarded = {}
-    for workflow in sorted((repo / ".github" / "workflows").glob("*.y*ml")):
-        text = workflow.read_text(encoding = "utf-8")
-        runs = [name for name in drivers if f"tests/studio/{name}" in text]
-        if not runs:
-            continue
-        if not _pull_request_runs_on(yaml.safe_load(text), reader):
-            unguarded[workflow.name] = runs
-    assert not unguarded, f"these workflows run catalog drivers but skip {reader}: {unguarded}"
+    missing = [name for name in drivers if f"tests/studio/{name}" not in text]
+    assert not missing, f"catalog drivers not run by {COMPOSER_WORKFLOW.name}: {missing}"

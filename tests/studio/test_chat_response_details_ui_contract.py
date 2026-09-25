@@ -8,8 +8,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
-
 from _en_catalog import en_string
 
 REPO = Path(__file__).resolve().parents[2]
@@ -266,42 +264,6 @@ def _cn_literals(source: str, anchor: str) -> str | None:
     return " ".join(pieces)
 
 
-_STRING_LITERAL = re.compile(
-    r"""(?:"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)""", re.S
-)
-
-
-def _without_code_comments(source: str) -> str:
-    """`source` with comments blanked, string-aware: `track("a // b")` keeps its text.
-
-    `_without_block_comments` works line by line on whole files and cannot tell a `//` in a
-    string from a comment, which cut a callback short at the quoted marker.
-    """
-    out, index = [], 0
-    while index < len(source):
-        char = source[index]
-        literal = _STRING_LITERAL.match(source, index) if char in "\"'`" else None
-        if literal:
-            out.append(literal.group(0))
-            index = literal.end()
-        elif source.startswith("//", index):
-            end = source.find("\n", index)
-            index = len(source) if end == -1 else end
-        elif source.startswith("/*", index):
-            end = source.find("*/", index + 2)
-            index = len(source) if end == -1 else end + 2
-            out.append(" ")
-        else:
-            out.append(char)
-            index += 1
-    return "".join(out)
-
-
-def _without_strings(text: str) -> str:
-    """`text` with every quoted literal emptied, so words inside a string are not read as code."""
-    return _STRING_LITERAL.sub(lambda m: m.group(0)[0] * 2, text)
-
-
 def _opening_tags(source: str, marker: str) -> list[str]:
     """Every opening JSX tag beginning at `marker`, brace-aware."""
     tags, at = [], source.find(marker)
@@ -323,21 +285,13 @@ def _opening_tag(source: str, marker: str) -> str | None:
     if opens == -1:
         return None
     depth = 0
-    index = opens
-    while index < len(source):
-        char = source[index]
-        # A quoted `>` or brace (`title="a > b"`, `track("}")`) is text, not tag syntax.
-        literal = _STRING_LITERAL.match(source, index) if char in "\"'`" else None
-        if literal:
-            index = literal.end()
-            continue
-        if char == "{":
+    for index in range(opens, len(source)):
+        if source[index] == "{":
             depth += 1
-        elif char == "}":
+        elif source[index] == "}":
             depth -= 1
-        elif char == ">" and depth == 0:
+        elif source[index] == ">" and depth == 0:
             return _without_comments(source[opens : index + 1])
-        index += 1
     return None
 
 
@@ -398,377 +352,31 @@ def _without_comments(tag: str) -> str:
     return re.sub(r"/\*.*?\*/", " ", "\n".join(kept), flags = re.S)
 
 
-def _prop_value(tag: str, name: str) -> str | None:
-    """The expression inside `name={...}` on an opening tag, brace-aware, wherever it sits."""
-    at = re.search(rf"(?:^|[\s{{]){re.escape(name)}=\{{", tag)
-    if at is None:
-        return None
-    depth, index = 1, at.end()
-    while index < len(tag) and depth:
-        # A quoted brace (`track("{")`) is data, not the end of the expression.
-        literal = _STRING_LITERAL.match(tag, index) if tag[index] in "\"'`" else None
-        if literal:
-            index = literal.end()
-            continue
-        depth += {"{": 1, "}": -1}.get(tag[index], 0)
-        index += 1
-    return tag[at.end() : index - 1] if depth == 0 else None
-
-
-_STATEMENT_START = re.compile(
-    r"\s*(?:const|let|var|function|async\s+function|return|if|for|while|switch|export|import"
-    r"|class|type|interface)\b"
-)
-
-
-def _definition_body(name: str, source: str) -> str | None:
-    """The text of `const|let|var name = ...;` or `function name(...) {...}`, brace-aware.
-
-    A regex up to the first semicolon stopped inside a multi-statement body
-    (`() => { track(); setDetailsOpen(true); }`) and missed the call.
-    """
-    at = re.search(
-        # An optional type annotation may itself hold `=>` (`: () => void =`), so it is skipped up
-        # to the first `=` that does not open an arrow.
-        rf"(?:\b(?:const|let|var)\s+{re.escape(name)}\s*(?::(?:[^=;]|=>)*?)?=(?!>)"
-        rf"|\bfunction\s+{re.escape(name)}\s*\()",
-        source,
-    )
-    if at is None:
-        return None
-    is_function = at.group(0).startswith("function")
-    # A function match ends on the `(` of its parameters, so it starts one level in.
-    depth, index = (1 if is_function else 0), at.end()
-    while index < len(source):
-        char = source[index]
-        # Quoted text and comments are not syntax: `track("}")` must not close the body.
-        if char in "\"'`":
-            index += 1
-            while index < len(source) and source[index] != char:
-                index += 2 if source[index] == "\\" else 1
-        elif source.startswith("//", index):
-            index = source.find("\n", index)
-            index = len(source) if index == -1 else index
-        elif source.startswith("/*", index):
-            index = source.find("*/", index + 2)
-            index = len(source) if index == -1 else index + 1
-        elif char in "({[":
-            depth += 1
-        elif char in ")}]":
-            depth -= 1
-            if depth < 0 or (is_function and char == "}" and depth == 0):
-                return source[at.end() : index + 1]
-        elif char == ";" and depth == 0 and not is_function:
-            return source[at.end() : index]
-        elif (
-            char == "\n"
-            and depth == 0
-            and not is_function
-            and source[at.end() : index].strip()
-            and _STATEMENT_START.match(source, index + 1)
-        ):
-            # No semicolon, and the next line starts a new statement: automatic semicolon
-            # insertion ends the declaration here.
-            return source[at.end() : index]
-        index += 1
-    return source[at.end() :]
-
-
-# `setDetailsOpen(true)`, or a functional updater that always answers true
-# (`setDetailsOpen(() => true)`, `setDetailsOpen((open) => true)`).
-_OPENS_SHEET = re.compile(
-    r"(?<![\w$.])setDetailsOpen\(\s*(?:true|(?:\(\s*[\w$]*\s*\)|[\w$]+)\s*=>\s*(?:true|\{\s*return\s+true\s*;?\s*\}))\s*\)"
-)
-
-
-def _opens_details(value: str, source: str) -> bool:
-    """Whether a callback opens the sheet: inline, or the name of one this file defines."""
-    # `analytics("setDetailsOpen(true)")` names the setter inside a string without calling it.
-    if _OPENS_SHEET.search(_without_strings(value)):
-        return True
-    name = re.fullmatch(r"\s*([A-Za-z_$][\w$]*)\s*", value)
-    if name is None:
-        return False
-    # A commented-out setter inside the body does not open anything.
-    body = _definition_body(name.group(1), _without_code_comments(source))
-    return body is not None and bool(_OPENS_SHEET.search(_without_strings(body)))
-
-
-DETAILS_LABEL = "See response details"
-
-
-# The prop itself, not `analytics.onShowDetails()` or `x?.onShowDetails()`.
-_CALLS_SHOW_DETAILS = re.compile(r"(?<![\w$.])onShowDetails\s*(?:\?\.)?\(")
-
-
-def _calls_show_details(
-    value: str | None,
-    source: str = "",
-    _seen: frozenset = frozenset(),
-) -> bool:
-    """Whether an `onSelect` value hands over `onShowDetails` or calls it.
-
-    `onSelect={() => onShowDetails}` mentions the name without calling it, so a bare mention
-    inside a larger expression does not count. A bare name of a local handler
-    (`onSelect={handleShowDetails}`) is followed to its definition in `source`.
-    """
-    if value is None:
-        return False
-    # `analytics("onShowDetails()")` names the call inside a string without making it.
-    value = _without_strings(value)
-    if re.fullmatch(r"\s*onShowDetails\s*", value) or _CALLS_SHOW_DETAILS.search(value):
-        return True
-    name = re.fullmatch(r"\s*([A-Za-z_$][\w$]*)\s*", value)
-    if name is None or name.group(1) in _seen:
-        return False
-    body = _definition_body(name.group(1), _without_code_comments(source))
-    if body is None:
-        return False
-    # The body of `const h = () => onShowDetails();` or `function h() { onShowDetails(); }`,
-    # or `const h = onShowDetails;` which is the handler itself under another name.
-    return _calls_show_details(body, source, _seen | {name.group(1)}) or bool(
-        _CALLS_SHOW_DETAILS.search(_without_strings(body))
-    )
-
-
-def _names_details(tag: str) -> bool:
-    """Whether the tag's own accessible name is the details label, literal or by catalog key."""
-    quoted = rf"""(?:"{DETAILS_LABEL}"|'{DETAILS_LABEL}')"""
-    if re.search(rf"(?<![\w-])aria-label=(?:{quoted}|\{{\s*{quoted}\s*\}})", tag):
-        return True
-    key = re.search(r"""(?<![\w-])aria-label=\{\s*t\(\s*["']([\w.]+)["']\s*\)\s*\}""", tag)
-    if key is None:
-        return False
-    try:
-        return en_string(key.group(1)) == DETAILS_LABEL
-    except (KeyError, ValueError):
-        return False
-
-
-def _details_item_opens_sheet(menu: str) -> bool:
-    """Whether one element both carries the details label and calls `onShowDetails`.
-
-    Checked on the same opening tag: the label also appears in the item's tooltip, so a label
-    anywhere plus a handler anywhere would stay green after either left the item itself.
-    """
-    for at in re.finditer(r"<[A-Za-z][\w.]*", menu):
-        tag = _opening_tag(menu[at.start() :], at.group(0))
-        if (
-            tag
-            and _names_details(tag)
-            and _calls_show_details(_prop_value(tag, "onSelect"), menu)
-            # A later `{...props}` can replace either prop, so the explicit ones prove nothing.
-            and not _spread_overrides(tag, "aria-label")
-            and not _spread_overrides(tag, "onSelect")
-        ):
-            return True
-    return False
-
-
-def _message_menu_time_tags(src: str) -> list[str]:
-    """Opening `<MessageMenuTime` tags by exact name: `<MessageMenuTimestamp` is another component."""
-    return [
-        tag
-        for tag in _opening_tags(src, "<MessageMenuTime")
-        if re.match(r"<MessageMenuTime(?![\w$.])", tag)
-    ]
-
-
-def test_only_the_exact_component_name_counts():
-    src = (
-        "<MessageMenuTimestamp onShowDetails={() => setDetailsOpen(true)} />\n"
-        "<MessageMenuTime.Item />\n"
-        "<MessageMenuTime onShowDetails={open} />"
-    )
-    assert _message_menu_time_tags(src) == ["<MessageMenuTime onShowDetails={open} />"]
-
-
 def test_assistant_more_menu_exposes_response_details_action():
-    """The More menu still opens the details sheet. Since #11928 the item that does it lives in
-    MessageMenuTime, beside the response's timestamp, so the action is followed through the prop
-    the thread hands it rather than looked for in thread.tsx itself. Comments are removed first,
-    so a commented-out element or handler does not count, and the prop is read wherever it sits
-    and however the callback is spelled."""
+    """The More menu still opens the details sheet. Since #11928 the item lives in
+    MessageMenuTime, beside the response's timestamp, so the action is followed through the
+    prop thread.tsx hands it.
+
+    Deliberately literal about today's wiring: thread.tsx passes an inline callback that opens
+    the sheet, and the menu item carries both the label and `onSelect={onShowDetails}` on one
+    tag. A refactor that respells either line updates this test with it, which is cheaper and
+    more honest than a hand-written JavaScript reader that tries to accept every equivalent
+    spelling. Comments are removed first, so commented-out wiring does not count.
+    """
     src = _without_block_comments(THREAD_TSX.read_text(encoding = "utf-8"))
     assert "MessageResponseDetailsSheet" in src
-    tags = _message_menu_time_tags(src)
-    assert tags, "thread.tsx no longer renders MessageMenuTime"
-    callbacks = [_prop_value(tag, "onShowDetails") for tag in tags]
-    assert any(
-        value is not None and _opens_details(value, src) for value in callbacks
-    ), f"no MessageMenuTime is handed a callback that opens the details sheet: {callbacks}"
+    assert re.search(
+        r"<MessageMenuTime\s+onShowDetails=\{\s*\(\)\s*=>\s*setDetailsOpen\(\s*true\s*\)\s*\}",
+        src,
+    ), "thread.tsx no longer hands MessageMenuTime a callback that opens the details sheet"
     menu = _without_block_comments(MESSAGE_MENU_TIME_TSX.read_text(encoding = "utf-8"))
-    assert _details_item_opens_sheet(
-        menu
-    ), f"no element labelled {DETAILS_LABEL!r} calls onShowDetails from its own onSelect"
-
-
-@pytest.mark.parametrize(
-    "value, source, opens",
-    [
-        ("() => setDetailsOpen(true)", "", True),
-        ("showDetails", "const showDetails = () => setDetailsOpen(true);", True),
-        (
-            "showDetails",
-            "const showDetails = () => {\n  track();\n  setDetailsOpen(true);\n};",
-            True,
-        ),
-        (
-            "showDetails",
-            "const showDetails = useCallback(() => {\n  track();\n  setDetailsOpen(true);\n}, []);",
-            True,
-        ),
-        ("showDetails", "function showDetails() {\n  track();\n  setDetailsOpen(true);\n}", True),
-        (
-            "showDetails",
-            "const showDetails = () => {\n  track();\n};\nsetDetailsOpen(true);",
-            False,
-        ),
-        ("showDetails", "function showDetails() {\n  track();\n}\nsetDetailsOpen(true);", False),
-        (
-            "showDetails",
-            "const showDetails: () => void = () => setDetailsOpen(true);",
-            True,
-        ),
-        (
-            "showDetails",
-            "const showDetails: Handler<void> = () => {\n  track();\n  setDetailsOpen(true);\n};",
-            True,
-        ),
-        (
-            "showDetails",
-            "const showDetails: () => void = () => setDetailsOpen(false);",
-            False,
-        ),
-        (
-            "showDetails",
-            'const showDetails = () => {\n  track("}");\n  setDetailsOpen(true);\n};',
-            True,
-        ),
-        (
-            "showDetails",
-            "const showDetails = () => {\n  track(`;)`); // }\n  setDetailsOpen(true);\n};",
-            True,
-        ),
-        (
-            "showDetails",
-            "const showDetails = () => {\n  /* setDetailsOpen(true) */ track();\n};\nsetDetailsOpen(true);",
-            False,
-        ),
-        ("showDetails", "const showDetails = () => setDetailsOpen(false);", False),
-        ("missing", "const showDetails = () => setDetailsOpen(true);", False),
-        ('() => analytics("setDetailsOpen(true)")', "", False),
-        ("() => setDetailsOpen(() => true)", "", True),
-        ("() => setDetailsOpen((open) => true)", "", True),
-        ("() => setDetailsOpen(() => { return true; })", "", True),
-        ("showDetails", "const showDetails = () => setDetailsOpen(() => true);", True),
-        ("() => setDetailsOpen((open) => !open)", "", False),
-        ("() => setDetailsOpen(() => false)", "", False),
-        (
-            "showDetails",
-            'const showDetails = () => { track("a // b"); setDetailsOpen(true); };',
-            True,
-        ),
-        (
-            "showDetails",
-            'const showDetails = () => { track("/* x"); setDetailsOpen(true); track("*/"); };',
-            True,
-        ),
-        (
-            "showDetails",
-            "const showDetails = () => track()\nconst unrelated = () => setDetailsOpen(true);",
-            False,
-        ),
-        (
-            "showDetails",
-            "const showDetails = () =>\n  setDetailsOpen(true)\nconst unrelated = 1;",
-            True,
-        ),
-        ("() => panel.setDetailsOpen(true)", "", False),
-        ("showDetails", 'const showDetails = () => analytics("setDetailsOpen(true)");', False),
-    ],
-)
-def test_the_callback_reader_follows_a_named_callback_to_its_end(value, source, opens):
-    assert _opens_details(value, source) is opens
-
-
-@pytest.mark.parametrize(
-    "menu, opens",
-    [
-        ('<Item onSelect={onShowDetails} aria-label="See response details">', True),
-        ('<Item aria-label="See response details" onSelect={() => onShowDetails()}>', True),
-        (
-            '<Item onSelect={() => { track(); onShowDetails?.(); }} aria-label="See response details">',
-            True,
-        ),
-        ('<Item onSelect={() => onShowDetails} aria-label="See response details">', False),
-        ('<Item onSelect={() => track(onShowDetails)} aria-label="See response details">', False),
-        ('<Item onClick={onShowDetails} aria-label="See response details">', False),
-        # Label and handler on different elements: the tooltip keeps the text, another item
-        # keeps the handler, and the details item itself has neither.
-        (
-            '<Other onSelect={onShowDetails}>x</Other><Item aria-label="Copy">'
-            "<Tip>See response details</Tip>",
-            False,
-        ),
-        ('<Item onSelect={onShowDetails} aria-label="Copy">', False),
-        ('<Item data-aria-label="See response details" onSelect={onShowDetails}>', False),
-        (
-            '<Item title="Open > details" aria-label="See response details" onSelect={onShowDetails}>',
-            True,
-        ),
-        (
-            '<Item onSelect={() => { track("}"); onShowDetails(); }} aria-label="See response details">',
-            True,
-        ),
-        (
-            '<Item onSelect={() => analytics("onShowDetails()")} aria-label="See response details">',
-            False,
-        ),
-        (
-            '<Item aria-label="See response details" onSelect={onShowDetails} {...itemProps}>',
-            False,
-        ),
-        (
-            '<Item {...itemProps} aria-label="See response details" onSelect={onShowDetails}>',
-            True,
-        ),
-        ("<Item aria-label='See response details' onSelect={onShowDetails}>", True),
-        ("<Item aria-label={'See response details'} onSelect={onShowDetails}>", True),
-        (
-            '<Item onSelect={() => { track("{"); onShowDetails(); }} aria-label="See response details">',
-            True,
-        ),
-        (
-            "const handleShowDetails = () => onShowDetails();\n"
-            '<Item aria-label="See response details" onSelect={handleShowDetails}>',
-            True,
-        ),
-        (
-            "function handleShowDetails() {\n  track();\n  onShowDetails();\n}\n"
-            '<Item aria-label="See response details" onSelect={handleShowDetails}>',
-            True,
-        ),
-        (
-            "const handleShowDetails = onShowDetails;\n"
-            '<Item aria-label="See response details" onSelect={handleShowDetails}>',
-            True,
-        ),
-        (
-            "const handleShowDetails = () => onShowDetails;\n"
-            '<Item aria-label="See response details" onSelect={handleShowDetails}>',
-            False,
-        ),
-        ('<Item aria-label="See response details" onSelect={handleShowDetails}>', False),
-        (
-            '<Item aria-label="See response details" onSelect={() => analytics.onShowDetails()}>',
-            False,
-        ),
-        ('<Item aria-label="See response details" onSelect={() => props?.onShowDetails()}>', False),
-    ],
-)
-def test_the_details_item_must_carry_both_the_label_and_the_call(menu, opens):
-    assert _details_item_opens_sheet(menu) is opens
+    item = _opening_tag(menu, "<ActionBarMorePrimitive.Item")
+    assert item, "message-menu-time.tsx no longer renders a More-menu item"
+    assert re.search(r'(?<![\w-])aria-label="See response details"', item), item
+    assert re.search(r"(?<![\w-])onSelect=\{\s*onShowDetails\s*\}", item), item
+    # A later `{...props}` could replace either prop.
+    assert not _spread_overrides(item, "aria-label"), item
+    assert not _spread_overrides(item, "onSelect"), item
 
 
 def test_response_details_sheet_uses_unsloth_sheet_and_key_sections():
@@ -837,7 +445,7 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     assert "showResponseModel: false" in prefs_src
     assert "showResponseModel: saved?.showResponseModel ?? false" in prefs_src
     # The visible label lives in the locale file; the tab holds only the key that resolves to it.
-    # Read by key, not by wording: #11924 rewrote this label without changing where it lives.
+    # By key, not wording: #11924 dropped the leading "Show" from this and seven other labels.
     assert en_string("settings.chat.showResponseModel", EN_LOCALE_TS)
     assert 't("settings.chat.showResponseModel")' in chat_tab_src
     assert "setShowResponseModel" in chat_tab_src
