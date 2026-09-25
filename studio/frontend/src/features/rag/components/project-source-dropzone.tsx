@@ -53,7 +53,7 @@ function formatSize(bytes: number): string {
 // Projects created with staged files, so the landing can open on Sources.
 const projectsWithPendingSources = new Set<string>();
 
-function markProjectSourcesPending(projectId: string): void {
+export function markProjectSourcesPending(projectId: string): void {
   projectsWithPendingSources.add(projectId);
 }
 

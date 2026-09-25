@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import {
   SHORTCUT_SLOTS,
   type ShortcutBinding,
@@ -115,6 +115,39 @@ export interface UseShortcutOptions {
   claims?: () => boolean;
 }
 
+/** Mounted handlers, for running an action without its chord (the desktop menu). Newest last. */
+const triggers = new Map<ShortcutId, Array<() => boolean>>();
+const triggerListeners = new Set<() => void>();
+
+/** Exported for the test. Returns the unregister. */
+export function registerShortcutTrigger(
+  id: ShortcutId,
+  trigger: () => boolean,
+): () => void {
+  triggers.set(id, [...(triggers.get(id) ?? []), trigger]);
+  triggerListeners.forEach((listener) => listener());
+  return () => {
+    triggers.set(id, (triggers.get(id) ?? []).filter((t) => t !== trigger));
+    triggerListeners.forEach((listener) => listener());
+  };
+}
+
+/** Run `id` as if its chord were pressed, minus the key checks. False when nothing took it. */
+export function triggerShortcut(id: ShortcutId): boolean {
+  return [...(triggers.get(id) ?? [])].reverse().some((trigger) => trigger());
+}
+
+/** Whether a mounted, enabled handler would take `id` right now. */
+export function useShortcutMounted(id: ShortcutId): boolean {
+  return useSyncExternalStore(
+    (listener) => {
+      triggerListeners.add(listener);
+      return () => triggerListeners.delete(listener);
+    },
+    () => (triggers.get(id)?.length ?? 0) > 0,
+  );
+}
+
 /** The chords `id` answers to now, joined so the effect re-runs only on a real change. */
 function useBindingValues(id: ShortcutId): string {
   return useKeyboardShortcutsStore((s) =>
@@ -166,6 +199,16 @@ export function useShortcut(
   // tearing down and re-adding the listener on every render.
   const latestRef = useRef({ handler, claims });
   latestRef.current = { handler, claims };
+
+  // Registered even with no chord bound: the menu still reaches the action.
+  useEffect(() => {
+    if (!enabled) return;
+    return registerShortcutTrigger(id, () => {
+      if (latestRef.current.claims?.() === false) return false;
+      latestRef.current.handler(new KeyboardEvent("keydown"));
+      return true;
+    });
+  }, [id, enabled]);
 
   useEffect(() => {
     if (bindings.length === 0 || !enabled) return;

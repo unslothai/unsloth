@@ -55,6 +55,7 @@ export type {
 export { useMonitorOverlayStore } from "./stores/monitor-overlay-store";
 export {
   applyInterfaceScale,
+  stepInterfaceScale,
   useInterfaceScaleStore,
 } from "./stores/interface-scale-store";
 // The runtime module, not the store, so consumers outside this feature do not have to pull
@@ -79,9 +80,11 @@ export {
   isImeComposing,
   isSurfaceBackgrounded,
   isSurfaceInForeground,
+  triggerShortcut,
   useShortcut,
   useShortcutLabel,
   useShortcutLabels,
+  useShortcutMounted,
 } from "./hooks/use-shortcut";
 export { Shortcut } from "./components/shortcut";
 export {

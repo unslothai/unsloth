@@ -19,6 +19,7 @@ import {
   type ChatSearch,
   clearNewChatDraft,
   hydrateModelDisclaimerPreference,
+  openFolderAsProject,
   StopRunningChatsDialog,
   useChatRuntimeStore,
 } from "@/features/chat";
@@ -31,12 +32,18 @@ import { usePersonalizationSync } from "@/features/profile";
 import { RemoteCodeConsentDialog } from "@/features/security";
 import {
   SettingsDialogMount,
+  stepInterfaceScale,
+  triggerShortcut,
+  useInterfaceScaleStore,
   useSettingsDialogStore,
   useShortcut,
+  useShortcutMounted,
 } from "@/features/settings";
 import { useLowDiskNotice } from "@/features/settings/hooks/use-low-disk-notice";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
+import { useNativePathLeasesSupported } from "@/features/native-intents";
+import { useRagAvailabilityStore } from "@/features/rag";
 import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { type TranslationKey, useT } from "@/i18n";
@@ -62,6 +69,7 @@ import {
   useState,
 } from "react";
 import { AppProvider } from "../provider";
+import { useAppMenuActions } from "../use-app-menu-actions";
 
 declare module "@tanstack/react-router" {
   interface StaticDataRouteOption {
@@ -496,6 +504,47 @@ function RootLayout() {
   );
   useShortcut("newStandaloneChat", () => startNewChat({ standalone: true }), {
     enabled: routeShortcutEnabled,
+  });
+
+  // The desktop File and View menus. Open Folder links the folder, so it needs path leases and RAG.
+  const pathLeasesSupported = useNativePathLeasesSupported();
+  const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
+  // Menu items for web shortcuts are live exactly while a handler for them is mounted.
+  const sidebarMounted = useShortcutMounted("toggleSidebar");
+  const findMounted = useShortcutMounted("findInPage");
+  const previousChatMounted = useShortcutMounted("previousChat");
+  const nextChatMounted = useShortcutMounted("nextChat");
+  const viaShortcut = (id: Parameters<typeof triggerShortcut>[0], mounted: boolean) =>
+    mounted ? () => void triggerShortcut(id) : null;
+  const zoomBy = (direction: 1 | -1) => () => {
+    const scale = useInterfaceScaleStore.getState();
+    scale.setScale(stepInterfaceScale(scale.scale, direction));
+  };
+  useAppMenuActions({
+    "new-chat": routeShortcutEnabled ? () => startNewChat() : null,
+    "new-temporary-chat": routeShortcutEnabled
+      ? () => startNewChat({ incognito: true, standalone: true })
+      : null,
+    "open-folder":
+      routeShortcutEnabled && pathLeasesSupported && !ragUnavailable
+        ? () =>
+            void openFolderAsProject().then((project) => {
+              if (!project) return;
+              const chatRuntime = useChatRuntimeStore.getState();
+              chatRuntime.setActiveThreadId(null);
+              chatRuntime.setActiveProjectId(project.id);
+              void navigate({ to: "/chat", search: { project: project.id } });
+            })
+        : null,
+    "toggle-sidebar": viaShortcut("toggleSidebar", sidebarMounted),
+    "find": viaShortcut("findInPage", findMounted),
+    "previous-chat": viaShortcut("previousChat", previousChatMounted),
+    "next-chat": viaShortcut("nextChat", nextChatMounted),
+    "back": routeShortcutEnabled ? () => window.history.back() : null,
+    "forward": routeShortcutEnabled ? () => window.history.forward() : null,
+    "zoom-in": zoomBy(1),
+    "zoom-out": zoomBy(-1),
+    "actual-size": () => useInterfaceScaleStore.getState().reset(),
   });
 
   // Workspaces. The shell is mounted on every route, so the chords live here.
