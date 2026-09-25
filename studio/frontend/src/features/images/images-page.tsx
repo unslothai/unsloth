@@ -1391,14 +1391,11 @@ export function ImagesPage({
   const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
     "unsloth_images_advanced_open",
   );
-  // Per-generation, not load-time: sent as allow_oversized with every run while on, so it never
-  // needs a Reapply. The refusal toast's "Generate anyway" sets the one-shot ref for a single run.
   const [allowOversized, setAllowOversized] = usePersistedToggle(
     "unsloth_images_allow_oversized",
   );
   const oversizedOnce = useRef(false);
-  // "Generate anyway" is clickable while the refused run is still cleaning up (busy stays set until
-  // its awaited status refresh), so the click is queued and run once busy is released.
+  // Queued: "Generate anyway" is clickable before the refused run releases busy.
   const [oversizedRetryQueued, setOversizedRetryQueued] = useState(false);
   // Advanced (load-time) options; "auto"/"off"/"none" map to the backend defaults. Changing one
   // while loaded shows "Reapply".
@@ -3840,8 +3837,7 @@ export function ImagesPage({
   );
 
   const handleGenerate = useCallback(async () => {
-    // Read and consume the one-shot override before anything can return, so it never leaks into a
-    // later run.
+    // Consume before any early return so it never leaks into a later run.
     const allowOversizedSent = allowOversizedField(allowOversized, oversizedOnce.current) === true;
     oversizedOnce.current = false;
     if (!prompt.trim()) {
@@ -4122,8 +4118,6 @@ export function ImagesPage({
         stopRequested: cancelRequested.current && cancelAcked.current,
       });
       if (report && shouldOfferGenerateAnyway({ error: err, allowOversizedSent })) {
-        // The memory estimate refused this size. Say so, and offer the in-app override instead of
-        // an environment variable a desktop install has no terminal to set.
         toast.error(MEMORY_REFUSAL_TITLE, {
           description: msg,
           duration: 20_000,

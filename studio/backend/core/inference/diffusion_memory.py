@@ -1236,33 +1236,24 @@ def _apply_group_offload(
 # then generates at whatever size the sliders say, so ``_plan_memory`` budgets the 1024x1024 default. That is the
 # right call for PLACEMENT, but it means a request for a much larger frame is never checked against anything, so this
 # re-checks per generation with the real dimensions. Opt-in escape hatch, mirroring the load-time one: the activation
-# estimate is coarse, so an operator who believes it is wrong keeps a way through. The env var is the server-side
-# spelling; the Images page and the API send the same override per request (``allow_oversized``), because a desktop
-# install has no terminal to set it from.
+# estimate is coarse, so an operator who believes it is wrong keeps a way through. Also sent per request
+# (``allow_oversized``): a desktop install has no terminal.
 OVERSIZED_GENERATE_ENV = "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_GENERATE"
 
-# What the Images page calls the per-request override. Quoted in the refusal, so the two cannot drift apart.
+# Must match the Images page setting label (frontend memory-refusal.ts).
 OVERSIZED_GENERATE_SETTING_LABEL = "Allow oversized generations"
 
-# Response header /images/generate puts on this refusal's 400, so the Images page can tell it from every other 400 and
-# offer the retry. Exposed through CORS in main.py: the desktop app is cross-origin (tauri://localhost).
+# Exposed through CORS in main.py: the desktop app is cross-origin (tauri://localhost).
 IMAGE_REFUSAL_HEADER = "X-Unsloth-Refusal"
 IMAGE_REFUSAL_MEMORY_ESTIMATE = "memory-estimate"
 
-# The activation guard's three outcomes: run as loaded, run with the VAE tiled for this call, or refuse.
 ACTIVATION_RUN = "run"
 ACTIVATION_TILE = "tile"
 ACTIVATION_REFUSE = "refuse"
 
-# Per output megapixel, per image, of ONE denoiser forward pass with a sub-quadratic attention kernel. Measured on
-# diffusers img2img with every weight resident (peak allocated minus the weights, B200, bf16), 1024 / 1536 / 2048
-# square: Qwen-Image 369 / 819 / 1456 MiB, Z-Image-Turbo 478 / 1071 / 1899, FLUX.1-schnell 463 / 978 / 1700, SDXL
-# 166 / 365 / 645, Qwen-Image-2.1 target tokens ~576 per MP on top of its condition cache. Linear in the token count
-# because flash / memory-efficient SDPA never materialises the score matrix; 1024 is about twice the largest slope.
+# Denoiser MiB per output megapixel per image; linear only for sub-quadratic (flash / mem-efficient) attention.
 DENOISE_MIB_PER_MEGAPIXEL = 1024
 
-# The VAE tile side assumed when a VAE does not say. diffusers' AutoencoderKL tiles at its sample_size (1024 for the
-# FLUX / SDXL / Z-Image VAEs); the Qwen-Image VAEs tile at 256.
 DEFAULT_VAE_TILE_SIDE = 1024
 
 
@@ -1279,11 +1270,7 @@ class ImageActivationShortfallError(ValueError):
 
 @dataclass(frozen = True)
 class ImageActivationVerdict:
-    """What the generate-time guard decided, and the numbers it decided on (MiB).
-
-    ``action`` is ACTIVATION_RUN (as loaded), ACTIVATION_TILE (tile and slice the VAE for this
-    call, which is what makes it fit) or ACTIVATION_REFUSE (``message`` says why and what to do).
-    """
+    """Generate-time guard decision (MiB figures); ACTIVATION_TILE = tile and slice the VAE for this call."""
 
     action: str
     message: Optional[str] = None
@@ -1298,11 +1285,7 @@ def _oversized_generate_override() -> bool:
 
 
 def vae_tile_side(vae: Any) -> Optional[int]:
-    """The pixel side a VAE tiles at, or None when it cannot tile at all.
-
-    Reads diffusers' own attributes (``tile_sample_min_size`` on AutoencoderKL,
-    ``tile_sample_min_height`` / ``_width`` on the Qwen-Image and Wan VAEs) and falls back to
-    ``DEFAULT_VAE_TILE_SIDE`` for a VAE that can tile but does not say at what size."""
+    """The pixel side a VAE tiles at, or None when it cannot tile at all."""
     if vae is None or not callable(getattr(vae, "enable_tiling", None)):
         return None
     sides: list[int] = []
@@ -1324,7 +1307,6 @@ def vae_tile_side(vae: Any) -> Optional[int]:
 
 
 def vae_can_slice(vae: Any) -> bool:
-    """Whether ``vae`` decodes a batch one image at a time already, or offers ``enable_slicing``."""
     if vae is None:
         return False
     return bool(getattr(vae, "use_slicing", False)) or callable(
@@ -1333,27 +1315,18 @@ def vae_can_slice(vae: Any) -> bool:
 
 
 def vae_is_sliced(vae: Any) -> bool:
-    """Whether slicing is on. A VAE without the ``use_slicing`` flag is taken at its word."""
     if vae is None:
         return False
     return bool(getattr(vae, "use_slicing", callable(getattr(vae, "enable_slicing", None))))
 
 
 def engage_vae_tiling_for_call(pipe: Any, logger: Any = None) -> Optional[Callable[[], None]]:
-    """Tile and slice ``pipe``'s VAE for one generation; returns the undo, or None if nothing changed.
-
-    Workflow pipes are built with ``from_pipe`` and share the loaded VAE module, so this reaches
-    the VAE every pipe decodes with. Undone after the call so a normal-sized generation afterwards
-    decodes exactly as it did before (a single tile is bit-identical, several are blended)."""
+    """Tile and slice ``pipe``'s VAE for one generation; returns the undo, or None if nothing changed."""
     return engage_vae_tiling(pipe, logger = logger)[0]
 
 
 def engage_vae_tiling(pipe: Any, logger: Any = None) -> tuple[Optional[Callable[[], None]], bool]:
-    """``engage_vae_tiling_for_call`` plus whether spatial tiling is actually on afterwards.
-
-    The savers are best-effort, so a VAE whose ``enable_tiling()`` raises still comes back with an
-    undo for slicing alone. A caller that is only running this size BECAUSE it will be tiled has to
-    know that, or it goes ahead with the full-frame decode it was told would not fit."""
+    """``engage_vae_tiling_for_call`` plus whether tiling is actually on (``enable_tiling()`` may fail)."""
     vae = getattr(pipe, "vae", None)
     if vae is None:
         return None, False
@@ -1376,7 +1349,6 @@ def engage_vae_tiling(pipe: Any, logger: Any = None) -> tuple[Optional[Callable[
             continue
         undo.append(disable)
         if enable == "enable_tiling":
-            # A VAE without the flag is taken at its word; one with it has to show it.
             tiled = bool(getattr(vae, flag, True))
     if not undo:
         return None, tiled
@@ -1415,21 +1387,8 @@ def estimate_tiled_image_runtime_mib(
     tile_side: Optional[int] = None,
     vae_sliced: bool = False,
 ) -> int:
-    """Per-call working memory for an image gen with the VAE TILED and SLICED, in MiB.
-
-    The untiled estimate is dominated by the VAE: a full-frame decode grows with the pixel count and
-    is several times the denoiser's own peak (measured at 2048x2048: Qwen-Image 16.5 GiB untiled
-    against 0.3 GiB tiled, FLUX / Z-Image 9.5 against 2.4, SDXL's fp32 decode 19.0 against 4.8).
-    Tiled and sliced, the VAE only ever holds one tile of one image, so it is priced by the untiled
-    estimator at the tile's size. Without slicing (``vae_sliced`` False) every tile carries the
-    whole batch, so the tile is priced at ``batch_size``. What still scales with the frame is the denoiser, priced per megapixel at
-    ``DENOISE_MIB_PER_MEGAPIXEL``, plus condition images at the untiled rate their
-    ``condition_pixel_weight`` was calibrated against. The two phases do not overlap in time, so
-    the peak is the larger of them.
-
-    Only valid with a sub-quadratic attention kernel: the SDPA math fallback materialises the full
-    score matrix, which grows with the SQUARE of the token count, so callers must not use this
-    when ``sdpa_math_only`` holds."""
+    """Per-call MiB with the VAE tiled: max(one-tile decode, denoiser); unsliced tiles carry the whole batch.
+    Invalid under the SDPA math fallback, whose score matrix grows with the square of the tokens."""
     w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
     h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
     batch = max(1, int(batch_size or 1))
@@ -1471,9 +1430,7 @@ def _activation_refusal_message(
         )
     else:
         remedy = "Generate at a smaller resolution"
-    # Two decimals, not one: the refusal is often decided by tens of MiB (the 1088x1920 report needed 13,872 MiB against
-    # a 13,822 MiB budget), and one decimal prints both as "13.5 GB". The overhead is part of the comparison, so it has
-    # to be part of the number reported: quoting the activations alone printed a refusal that contradicted itself.
+    # Two decimals and overhead included: refusals are decided by tens of MiB and must not contradict themselves.
     return (
         f"Generating at {width}x{height}{batch_note}{cond_note} needs about {total_mib / 1024:.2f} GB "
         f"of working memory{' even with tiled VAE decoding' if tiled else ''} (including about "
@@ -1481,8 +1438,7 @@ def _activation_refusal_message(
         f"is usable on this device (of the {free_mib / 1024:.2f} GB currently free, after reserving "
         "room for fragmentation and other processes). Working memory holds the image being "
         "generated, so unlike model weights it cannot be moved to the CPU. "
-        # Only when the batch is what was budgeted. A refusal measured on ONE image cannot be answered by asking for
-        # fewer, and pointing there sends the caller at the one change that provably will not help.
+        # Smaller-batch hint only when batch > 1: a one-image refusal cannot be fixed by asking for fewer.
         f"{remedy}"
         f"{' or a smaller batch size' if batch > 1 else ''}"
         f"{', use fewer input images or a lower reference detail' if condition_pixels else ''}, "
@@ -1518,11 +1474,8 @@ def image_activation_verdict(
     Why tiling and not another offload tier: weights can be offloaded, activations cannot. Every
     offload tier moves WEIGHTS between host and device, while the latents, attention buffers and VAE
     intermediates a forward pass allocates have to be on the device while it runs. What CAN shrink
-    is the VAE, which is most of the untiled figure: decoding tile by tile bounds it to one tile, the
-    same fallback ComfyUI takes. ``vae_tile_side`` (None when the loaded VAE cannot tile) enables
-    that second look, priced per image only when ``vae_sliced`` says the VAE decodes the batch one
-    image at a time; ``quadratic_attention`` (the SDPA math fallback) disables it, because there the
-    denoiser, not the VAE, is what grows.
+    is the VAE decode, by tiling (as ComfyUI does); not under ``quadratic_attention``, where the
+    denoiser is what grows.
 
     Refusing has to happen HERE rather than being left to torch. On Linux the overrun raises
     ``torch.OutOfMemoryError`` and the job dies cleanly; on Windows WDDM (including ROCm) it does
@@ -1536,9 +1489,6 @@ def image_activation_verdict(
     a 6963 MiB default-resolution estimate, and those generations complete). So a refusal needs
     BOTH conditions -- over the free budget AND over what the load already budgeted -- which
     confines it to the resolution-driven overrun it is for. The tiled look applies the same rule.
-
-    ``allow_oversized`` (or the env var) turns a refusal into an attempt, still tiled when tiling
-    is available, since that can only lower the peak.
 
     Fail-open on anything unknown (no free reading, no budget) and on any device class where the
     estimate or the offload story means something different, so a broken probe can never block a
@@ -1603,8 +1553,7 @@ def image_activation_verdict(
     if tiled is not None and (int(tiled) + overhead <= int(budget) or tiled <= planned):
         return ImageActivationVerdict(ACTIVATION_TILE, **numbers)
     if override:
-        # Tiled whenever the VAE can tile, including under quadratic attention: the tiled ESTIMATE is not trusted
-        # there, but tiling still lowers the decode peak of the attempt the caller asked for.
+        # Tile even under quadratic attention: the estimate is untrusted there, but tiling still lowers the peak.
         return ImageActivationVerdict(
             ACTIVATION_TILE if vae_tile_side is not None else ACTIVATION_RUN,
             overridden = True,
@@ -1616,7 +1565,6 @@ def image_activation_verdict(
         width = w,
         height = h,
         batch = max(1, int(batch_size or 1)),
-        # The smallest figure this request could run at, i.e. the one the refusal was finally decided on.
         total_mib = int(tiled if tiled is not None else needed) + overhead,
         overhead_mib = overhead,
         budget_mib = int(budget),
@@ -1643,7 +1591,6 @@ def image_activation_shortfall_message(
     quadratic_attention: bool = False,
     allow_oversized: bool = False,
 ) -> Optional[str]:
-    """The user-facing refusal from ``image_activation_verdict``, or None when it does not refuse."""
     return image_activation_verdict(
         device_memory = device_memory,
         width = width,
@@ -1676,8 +1623,7 @@ def raise_on_image_activation_shortfall(
     allow_oversized: bool = False,
     logger: Any = None,
 ) -> ImageActivationVerdict:
-    """Refuse a generation whose activations cannot fit the free device budget; otherwise return
-    the verdict, whose ``action`` tells the caller whether to tile the VAE for this call.
+    """Refuse a generation whose activations cannot fit the free device budget; else return the verdict.
 
     ``ValueError`` on purpose: ``/images/generate`` maps ValueError to HTTP 400 with the message
     as the reason, so this surfaces as an actionable refusal in the UI. RuntimeError there is

@@ -1436,13 +1436,8 @@ def _dense_candidate_is_prequant(
 
 
 def _quadratic_attention(target: Any, engaged_backend: Optional[str] = None) -> bool:
-    """Whether attention on ``target`` can only run on the SDPA math backend, whose memory grows
-    with the square of the token count. False when the probe cannot answer: the activation guard
-    then keeps its tiled look, the same way it fails open on every other unknown.
-
-    ``engaged_backend`` is the dispatcher backend the load engaged (``_LoadState.attention_backend``).
-    Every one of those (cuDNN, flash, SageAttention, xFormers, AITER) is a fused kernel that either
-    runs sub-quadratically or raises, so the SDPA probe only speaks for a pipe left at native."""
+    """Whether attention can only run on SDPA math (quadratic memory); False when unknown.
+    Any engaged non-native backend is a fused kernel, so the SDPA probe only speaks for native."""
     if engaged_backend is not None and str(engaged_backend) != "native":
         return False
     try:
@@ -7021,8 +7016,6 @@ class DiffusionBackend:
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
         # load_identity() of the caller's status() read; refuse rather than run a different load (#9448)
         expected_load: Optional[LoadIdentity] = None,
-        # Run even when the activation guard says this size will not fit (the Images page's "Allow oversized
-        # generations"; the per-request form of UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_GENERATE).
         allow_oversized: bool = False,
     ) -> dict[str, Any]:
         import torch
@@ -7044,7 +7037,6 @@ class DiffusionBackend:
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not
                 # read idle.
                 self._gen = _GenState(total_steps = steps)
-            # Undo for a VAE tiled for this call only (set by the activation guard below).
             restore_vae: Optional[Callable[[], None]] = None
             try:
                 self._state_device_target(state)
@@ -7392,13 +7384,8 @@ class DiffusionBackend:
                             if ref_resolution is not None
                             else 0
                         ),
-                        # Whether decoding tile by tile is a way out: a VAE that can tile bounds the decode, which
-                        # is most of the untiled figure. Not under the SDPA math fallback, whose score matrix grows
-                        # with the square of the token count however the VAE decodes.
                         vae_tile_side = vae_tile_side(getattr(pipe, "vae", None)),
-                        # Without slicing every tile carries the whole batch, so only a sliceable VAE is priced per image.
                         vae_sliced = vae_can_slice(getattr(pipe, "vae", None)),
-                        # The kernel the load engaged, not just what native SDPA could do on this device.
                         quadratic_attention = _quadratic_attention(
                             guard_target, getattr(state, "attention_backend", None)
                         ),
@@ -7409,9 +7396,7 @@ class DiffusionBackend:
                     if verdict.action == ACTIVATION_TILE:
                         restore_vae, vae_tiled = engage_vae_tiling(pipe, logger = logger)
                         if not vae_tiled and not verdict.overridden:
-                            # This size only passed because the decode would be tiled. The saver is best-effort,
-                            # so it can fail and leave the full-frame decode the guard just priced as too big:
-                            # refuse with the untiled reason instead (the finally undoes any slicing).
+                            # Passed only because it would be tiled; tiling failed, so refuse on the untiled figure.
                             raise_on_image_activation_shortfall(
                                 **{**guard_kwargs, "vae_tile_side": None}
                             )
@@ -7421,7 +7406,6 @@ class DiffusionBackend:
                             and not verdict.overridden
                             and not vae_is_sliced(getattr(pipe, "vae", None))
                         ):
-                            # Same for slicing: re-price the tiles at the whole batch.
                             raise_on_image_activation_shortfall(
                                 **{**guard_kwargs, "vae_sliced": False}
                             )

@@ -1330,9 +1330,7 @@ _DIFFUSERS_MAIN_COMMIT_RE = re.compile(
 )
 
 
-# The in-app remedy for a missing or outdated diffusers, which leads every refusal below: a desktop install has no
-# terminal, and the desktop updater and the startup self-heal (utils/diffusers_repair.py) are what install the pinned
-# build there. The pip / installer spelling follows it for pip and server installs.
+# Leads every refusal: a desktop install has no terminal, so pip spellings come second.
 DIFFUSERS_UPDATE_REMEDY = (
     "Update Unsloth to install it (in the desktop app: Settings, Check for updates; from a "
     "terminal: unsloth studio update), then restart Unsloth."

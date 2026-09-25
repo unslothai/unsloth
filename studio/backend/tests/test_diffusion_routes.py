@@ -695,9 +695,6 @@ def test_generate_execution_error_with_cancelled_substring_is_sanitized_500(clie
 def test_generate_memory_refusal_is_a_tagged_400_and_allow_oversized_reaches_the_backend(
     client, monkeypatch
 ):
-    # The Images page offers "Generate anyway" only for THIS refusal, so the 400 carries a tag the
-    # page can read (exposed through CORS for the desktop app), and the retry's allow_oversized has
-    # to arrive at the backend rather than be dropped by the route.
     from core.inference.diffusion_memory import (
         IMAGE_REFUSAL_HEADER,
         IMAGE_REFUSAL_MEMORY_ESTIMATE,
@@ -725,7 +722,6 @@ def test_generate_memory_refusal_is_a_tagged_400_and_allow_oversized_reaches_the
     assert retried.status_code == 200
     assert seen == [False, True]
 
-    # Every other 400 stays untagged.
     def _plain(**kwargs):
         raise ValueError("width and height are required for this workflow.")
 

@@ -164,8 +164,6 @@ export interface DiffusionGenerateRequest {
   strength?: number;
   // Upscale (hires fix): factor > 1 with an init_image enlarges the source and re-denoises at low strength.
   upscale?: number;
-  // Run even when the backend's memory check estimates this size will not fit (the Images page's
-  // "Allow oversized generations" and the refusal toast's "Generate anyway").
   allow_oversized?: boolean;
   // Additional images after init_image, in order, for the reference and edit workflows.
   reference_images?: string[];

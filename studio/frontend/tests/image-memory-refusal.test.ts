@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Reported from Unsloth Desktop: Upscale was refused as too big for the GPU, and the only way past
-// the refusal was an environment variable a desktop install has no terminal to set. The override
-// now travels with the request, from a persisted setting or from the refusal toast.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -23,7 +19,6 @@ import { readSrc, readText } from "./helpers/kit.ts";
 test("only a 400 tagged as the memory estimate is the memory refusal", () => {
   assert.equal(isMemoryEstimateRefusal(400, MEMORY_REFUSAL_KIND), true);
   assert.equal(isMemoryEstimateRefusal(400, " Memory-Estimate "), true);
-  // Every other 400, and any other status, stays an ordinary error.
   assert.equal(isMemoryEstimateRefusal(400, null), false);
   assert.equal(isMemoryEstimateRefusal(400, "something-else"), false);
   assert.equal(isMemoryEstimateRefusal(500, MEMORY_REFUSAL_KIND), false);
@@ -54,7 +49,6 @@ test("the setting label matches the one the backend quotes in its refusal", () =
   );
   assert.ok(backend.includes(`IMAGE_REFUSAL_HEADER = "${MEMORY_REFUSAL_HEADER}"`));
   assert.ok(backend.includes(`IMAGE_REFUSAL_MEMORY_ESTIMATE = "${MEMORY_REFUSAL_KIND}"`));
-  // The desktop app is cross-origin, so the header is unreadable unless CORS exposes it.
   const main = readText("../../backend/main.py");
   assert.match(main, /expose_headers = \[[^\]]*"X-Unsloth-Refusal"/);
 });
@@ -71,13 +65,10 @@ test("the page wires the setting, the request field and the toast action", () =>
 });
 
 test("Generate anyway clicked during the refused run's cleanup waits for busy to clear", () => {
-  // The toast is up before the finally block releases busy; a retry started then hits the busy
-  // guard and would silently do nothing.
   assert.equal(shouldRunQueuedOversizedRetry({ queued: true, busy: "generating" }), false);
   assert.equal(shouldRunQueuedOversizedRetry({ queued: true, busy: null }), true);
   assert.equal(shouldRunQueuedOversizedRetry({ queued: false, busy: null }), false);
   const page = readSrc("features/images/images-page.tsx");
-  // The click only queues; the retry starts from an effect that re-runs when busy changes.
   assert.match(page, /onClick: \(\) => setOversizedRetryQueued\(true\)/);
   assert.match(
     page,

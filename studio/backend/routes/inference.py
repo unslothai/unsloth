@@ -39520,8 +39520,7 @@ async def generate_diffusion_image(
                 )
             break
         except ImageActivationShortfallError as exc:
-            # Tagged so the Images page can offer "Generate anyway" (a retry with allow_oversized) instead of a
-            # dead-end toast. Same 400 and the same reason text as every other refusal.
+            # Tagged so the Images page can offer "Generate anyway".
             raise HTTPException(
                 status_code = 400,
                 detail = str(exc),
