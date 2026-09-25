@@ -1380,6 +1380,18 @@ def test_a_folder_chosen_before_mount_points_learns_its_mount_once_present(
         _images()
 
 
+def test_uploads_left_on_a_reset_drive_are_hidden_until_their_files_are_back(client, tmp_path):
+    [upload] = _upload(client, ("k.txt", b"k", "text/plain"))
+    drive = tmp_path / "Drive"
+    assert _move(client, "uploads", str(drive)).status_code == 200
+    drive.rename(tmp_path / "unplugged")
+    assert _move(client, "uploads", None).status_code == 200
+    # Its file stayed on the drive: no broken card, and no bytes counted toward the default disk.
+    assert _items(client)[0] == {}
+    (tmp_path / "unplugged" / _ref(upload)).rename(library.uploads_dir() / _ref(upload))
+    assert set(_items(client)[0]) == {upload}
+
+
 class _Crash(BaseException):
     """The process dying: nothing the move does on a failure runs."""
 

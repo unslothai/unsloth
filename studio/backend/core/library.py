@@ -346,8 +346,16 @@ def _upload_items() -> list[dict]:
         pass  # Its drive is unplugged: the rows still list, and disk_usage reports it once.
     except OSError:
         logger.debug("library.leftover_sweep_failed", exc_info = True)
+    # A row whose file is not in the folder in use (left in one reset while its drive was away)
+    # stays, so copying the files back brings it back, but is not listed or counted meanwhile.
+    try:
+        present = set(os.listdir(uploads_dir()))
+    except OSError:
+        present = None
     items = []
     for upload in library_db.list_uploads():
+        if present is not None and upload["id"] not in present:
+            continue
         item = _item(
             f"upload:{upload['id']}",
             name = upload["name"],
