@@ -78,6 +78,7 @@ def official_release(tmp_path, monkeypatch):
     source.write_bytes(archive)
     monkeypatch.setattr(installer.sys, "platform", "win32")
     monkeypatch.setattr(installer.mxc_runtime.sys, "platform", "win32")
+    monkeypatch.setattr(installer.mxc_runtime, "_expected_architecture", lambda: "x86_64")
     monkeypatch.setattr(installer.mxc_runtime, "WXC_EXEC_SIZE", len(payload))
     monkeypatch.setattr(
         installer.mxc_runtime, "WXC_EXEC_SHA256", hashlib.sha256(payload).hexdigest()

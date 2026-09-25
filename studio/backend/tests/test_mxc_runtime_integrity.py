@@ -14,8 +14,13 @@ from core.inference import mxc_runtime
 _WXC = b"official-wxc-test-payload"
 
 
+_REAL_ARCHITECTURE = mxc_runtime._expected_architecture
+
+
 @pytest.fixture
 def runtime(tmp_path, monkeypatch):
+    # The runtime is x86-64 only; an arm64 test host (Apple Silicon CI) is not the host under test.
+    monkeypatch.setattr(mxc_runtime, "_expected_architecture", lambda: "x86_64")
     root = tmp_path / "managed" / "windows-x86_64"
     root.mkdir(parents = True)
     (root / "wxc-exec.exe").write_bytes(_WXC)
@@ -60,6 +65,7 @@ def test_missing_wxc_is_rejected(runtime):
 
 
 def test_wrong_architecture_is_rejected(runtime, monkeypatch):
+    monkeypatch.setattr(mxc_runtime, "_expected_architecture", _REAL_ARCHITECTURE)
     monkeypatch.setattr(mxc_runtime.platform, "machine", lambda: "ARM64")
     with pytest.raises(mxc_runtime.MxcRuntimeUnavailable, match = "x86-64"):
         mxc_runtime.selected_runtime(package_root = runtime)
