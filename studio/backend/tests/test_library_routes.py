@@ -1016,6 +1016,16 @@ def test_reveal_is_refused_to_a_managed_account_and_where_no_file_manager_is(
     assert response.json()["detail"] == "No file manager is available on this machine"
 
 
+def _os_named(name):
+    # A copy of os for one module: setting the real os.name to "nt" breaks pathlib in pytest itself.
+    import types
+
+    fake = types.ModuleType("os")
+    fake.__dict__.update(os.__dict__)
+    fake.name = name
+    return fake
+
+
 @pytest.mark.parametrize(
     "platform, os_name, wsl, container, display, expected",
     [
@@ -1034,7 +1044,7 @@ def test_file_manager_is_named_only_where_a_window_can_appear(
     from utils.paths import file_manager, path_utils
 
     monkeypatch.setattr(file_manager.sys, "platform", platform)
-    monkeypatch.setattr(file_manager.os, "name", os_name)
+    monkeypatch.setattr(file_manager, "os", _os_named(os_name))
     monkeypatch.setattr(path_utils, "_IS_WSL", wsl)
     monkeypatch.setattr(file_manager, "_in_container", lambda: container)
     for name in ("DISPLAY", "WAYLAND_DISPLAY"):
@@ -1057,7 +1067,7 @@ def test_explorer_gets_the_documented_select_command(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", lambda command, *args, **kwargs: calls.append(command))
     with monkeypatch.context() as windows:
         windows.setattr(path_utils.sys, "platform", "win32")
-        windows.setattr(path_utils.os, "name", "nt")
+        windows.setattr(path_utils, "os", _os_named("nt"))
         path_utils.reveal_in_file_manager(target)
     assert calls.pop() == f'explorer /select,"{target}"'
     windows_path = "C:\\Users\\me\\a b\\c.txt"
