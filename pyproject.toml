@@ -200,6 +200,10 @@ triton = [
     "triton-windows>=3.8.0.post28 ; (sys_platform == 'win32') and platform_machine == 'ARM64'",
 ]
 
+exllama = [
+    "exllamav3>=0.0.5",
+]
+
 huggingfacenotorch = [
     # unsloth_zoo.compiler embeds its own copy of the empty-logits sentinel in the code it
     # generates for the compiled trainers, so fixing _utils.py here never reached the compiled
