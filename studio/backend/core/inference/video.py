@@ -82,6 +82,7 @@ from .diffusion_memory import (
     raise_on_unified_memory_shortfall,
     reclaim_host_memory,
     reclaim_offload_host_memory,
+    release_pinned_host_memory,
     settled_snapshot_device_memory,
 )
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
@@ -6906,7 +6907,11 @@ class VideoBackend:
                 getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or ()
             )
             del state
-            clear_gpu_cache()
+            try:
+                clear_gpu_cache()
+            finally:
+                # finally: a sticky CUDA fault must not keep the pinned chunks locked.
+                release_pinned_host_memory()
             reclaim_host_memory(logger = logger)
 
     def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:

@@ -11884,6 +11884,45 @@ def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypa
     assert "prequant artifact missing" in str(failures[0])
 
 
+def test_unload_drains_pinned_host_memory_after_the_pipeline_is_gone(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion as diffusion_module
+
+    backend = _loaded_backend(tmp_path)
+    calls: list = []
+    monkeypatch.setattr(
+        diffusion_module, "clear_gpu_cache", lambda: calls.append(("clear", backend._state))
+    )
+    monkeypatch.setattr(
+        diffusion_module,
+        "release_pinned_host_memory",
+        lambda: calls.append(("host", backend._state)),
+    )
+    backend.unload()
+    assert calls == [("clear", None), ("host", None)]
+
+
+def test_unload_drains_pinned_host_memory_even_when_gpu_cleanup_raises(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion as diffusion_module
+
+    backend = _loaded_backend(tmp_path)
+    drained: list = []
+
+    def _sticky():
+        raise RuntimeError("CUDA error: an illegal memory access was encountered")
+
+    monkeypatch.setattr(diffusion_module, "clear_gpu_cache", _sticky)
+    monkeypatch.setattr(
+        diffusion_module, "release_pinned_host_memory", lambda: drained.append(True)
+    )
+    with pytest.raises(RuntimeError, match = "illegal memory access"):
+        backend.unload()
+    assert drained == [True]
+
+
 def test_status_reports_cuda_graph_off_once_every_armed_step_ran_eager():
     backend = DiffusionBackend()
     handle = types.SimpleNamespace(

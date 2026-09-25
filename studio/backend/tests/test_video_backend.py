@@ -9798,6 +9798,43 @@ def test_the_boundary_marker_waits_out_a_busy_capture_lock(fake_runtime, monkeyp
     assert at_decode.get("phase") == "decode"
 
 
+def test_teardown_drains_pinned_host_memory_after_the_pipeline_is_gone(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    calls: list = []
+    monkeypatch.setattr(
+        video_mod, "clear_gpu_cache", lambda: calls.append(("clear", backend._state))
+    )
+    monkeypatch.setattr(
+        video_mod, "release_pinned_host_memory", lambda: calls.append(("host", backend._state))
+    )
+    backend.unload()
+    assert calls == [("clear", None), ("host", None)]
+
+
+def test_teardown_drains_pinned_host_memory_even_when_gpu_cleanup_raises(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    drained: list = []
+
+    def _sticky():
+        raise RuntimeError("CUDA error: an illegal memory access was encountered")
+
+    monkeypatch.setattr(video_mod, "clear_gpu_cache", _sticky)
+    monkeypatch.setattr(video_mod, "release_pinned_host_memory", lambda: drained.append(True))
+    with pytest.raises(RuntimeError, match = "illegal memory access"):
+        backend.unload()
+    assert drained == [True]
+
+
 def test_video_status_reports_cuda_graph_off_once_every_armed_step_ran_eager(fake_runtime):
     backend = VideoBackend()
     backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
