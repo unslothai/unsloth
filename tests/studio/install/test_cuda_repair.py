@@ -2031,7 +2031,6 @@ class TestTheLinuxRepairRemovesAnXformersItsTorchCannotImport:
         assert "could not be removed" in capsys.readouterr().out
 
     def test_the_final_repair_checks_even_when_torch_did_not_move(self):
-        # install_python_stack() is one long procedure, so its wiring is read from source.
         source = inspect.getsource(stack_mod.install_python_stack)
         step = source.split('_progress(_torch_step_label("final"))', 1)[1]
         step = step.split("# 13w.", 1)[0]

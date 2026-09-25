@@ -27,11 +27,9 @@ def _installed(monkeypatch, *, xformers, torch, requires):
 @pytest.mark.parametrize(
     "xformers, torch, requires, expected",
     [
-        # The #11545 venv: the overrides pin let 0.0.35 in next to the cu124 torch.
         ("0.0.35", "2.6.0+cu124", ["torch>=2.10"], ("0.0.35", ">=2.10", "2.6.0+cu124")),
         # 0.0.35 is built against 2.10 on the stable ABI, so a later torch keeps it.
         ("0.0.35", "2.11.0+cu130", ["torch>=2.10"], None),
-        # A local tag does not fail an untagged pin, as pip reads it.
         ("0.0.29.post3", "2.6.0+cu124", ["torch==2.6.0", "numpy"], None),
         (
             "0.0.29.post3",
@@ -41,7 +39,6 @@ def _installed(monkeypatch, *, xformers, torch, requires):
         ),
         # AMD's Windows torch is a prerelease; it still satisfies a floor below it.
         ("0.0.32.post2", "2.8.0a0+gitfc14c65", ["torch>=2.7"], None),
-        # A requirement only an extra asks for is not the package's own.
         ("0.0.35", "2.6.0+cu124", ["torch>=2.10; extra == 'dev'"], None),
     ],
 )

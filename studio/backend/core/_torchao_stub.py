@@ -235,12 +235,7 @@ def install_xformers_windows_rocm_stub() -> None:
 
 
 def hide_xformers_built_for_another_torch() -> None:
-    """Hide incompatible xFormers before diffusers imports it (#11545).
-
-    A None entry makes discovery and imports treat it as absent, enabling SDPA.
-    A stub would falsely advertise usable attention to unsloth. The entry lasts
-    until restart; the on-demand installer skips it while hidden.
-    """
+    """Hide an xFormers whose torch requirement is unmet (#11545); None, not a stub, so nothing sees usable attention."""
     if "xformers" in sys.modules:
         return
     try:

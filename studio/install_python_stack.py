@@ -7198,11 +7198,7 @@ def _evict_xformers_built_for_another_torch() -> bool:
 
 
 def _evict_xformers_requiring_another_torch() -> bool:
-    """Remove xFormers when its torch requirement is unmet; return whether removed.
-
-    Run even when torch is unchanged: install.sh's --overrides can install an
-    incompatible xFormers alongside the pinned torch (#11545).
-    """
+    """Remove an xFormers whose torch requirement is unmet, even if torch is unchanged (--overrides, #11545)."""
     mismatch = xformers_torch_requirement_unmet()
     if mismatch is None:
         return False

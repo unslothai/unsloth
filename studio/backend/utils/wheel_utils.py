@@ -292,12 +292,7 @@ def xformers_wheel_url(env: dict[str, str] | None) -> str | None:
 
 
 def xformers_torch_requirement_unmet() -> tuple[str, str, str] | None:
-    """Return (xformers version, unmet torch specifier, installed torch), or None.
-
-    Read metadata without importing either package. Missing or unreadable metadata
-    yields no mismatch. Use declared requirements because newer xFormers wheels
-    support multiple torch versions through the stable ABI.
-    """
+    """(xformers version, unmet torch specifier, torch version) from metadata, or None if unmet cannot be shown."""
     try:
         from importlib.metadata import requires, version
 
