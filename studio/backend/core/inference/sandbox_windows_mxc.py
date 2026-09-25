@@ -19,6 +19,7 @@ from .os_sandbox import (
     _OS_ISOLATION_SAFEGUARDS,
     _SOFTWARE_SAFEGUARDS,
     _record,
+    with_session_packages,
 )
 
 
@@ -164,6 +165,11 @@ def prepare(plan, capability):
             cancelled = isinstance(exc, mxc_adapter.MxcLaunchCancelled)
             refused = getattr(exc, "stage", None) == "policy"
             if plan.requested_mode == "auto" and not (may_have_started or cancelled or refused):
+                # The same environment as any other unisolated launch, session packages included.
+                kwargs = {
+                    **kwargs,
+                    "env": with_session_packages(kwargs.get("env") or plan.env, plan.workdir),
+                }
                 try:
                     proc = subprocess.Popen(plan.argv, **kwargs)
                 except OSError as fallback_exc:

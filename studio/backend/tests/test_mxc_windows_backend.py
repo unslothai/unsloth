@@ -684,6 +684,9 @@ def test_auto_spawn_failure_before_dispatch_uses_software_safeguards(monkeypatch
         ),
     )
     calls = []
+    envs = []
+    packages = Path(plan.workdir) / os_sandbox.SESSION_PACKAGES_RELPATH
+    packages.mkdir(parents = True, exist_ok = True)
 
     class Proc:
         pass
@@ -691,11 +694,15 @@ def test_auto_spawn_failure_before_dispatch_uses_software_safeguards(monkeypatch
     monkeypatch.setattr(
         sandbox_windows_mxc.subprocess,
         "Popen",
-        lambda argv, **_kwargs: calls.append(tuple(argv)) or Proc(),
+        lambda argv, **kwargs: calls.append(tuple(argv))
+        or envs.append(kwargs.get("env"))
+        or Proc(),
     )
     prepared = os_sandbox.prepare_tool_launch(plan)
     os_sandbox.spawn_prepared_launch(prepared)
     assert calls == [plan.argv]
+    # Packages an earlier isolated call installed must not vanish on this fallback.
+    assert str(packages) in envs[0]["PYTHONPATH"].split(os.pathsep)
     assert prepared.backend == "software-safeguards"
     assert prepared.execution_record.effective_mode == "software_safeguards"
 
