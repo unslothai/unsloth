@@ -86,7 +86,6 @@ def test_env_switches(monkeypatch):
     monkeypatch.setenv(H.H3_VAE_FAST_ENV, "0")
     assert H.plan_h3_vae_levers("max", workflow = "fl2va", consumer_gpu = True) == ()
     monkeypatch.delenv(H.H3_VAE_FAST_ENV)
-    # the int8 opt-in never overrides an explicit off
     monkeypatch.setenv(H.H3_VAE_INT8_ENV, "1")
     assert H.plan_h3_vae_levers("off", workflow = "fl2va") == ()
 
@@ -103,7 +102,6 @@ def test_apply_is_a_no_op_off_cuda(monkeypatch):
 @pytest.mark.skipif(CUDA, reason = "checks the real gate on a host without an NVIDIA GPU")
 @pytest.mark.parametrize("tier", ["eager", "default", "max"])
 def test_without_cuda_the_real_gate_leaves_the_stock_vae_untouched(tier):
-    # no monkeypatching: this is what a Mac, a CPU-only box or a ROCm build gets
     vae = _tiny_vae()
     encoder_forward, decoder_forward, decode = (
         vae.encoder.forward,
@@ -226,7 +224,6 @@ def test_fused_encoder_fp16_casts_weights_and_returns_the_input_dtype():
         for m in convs
         if m is not vae.encoder.conv_in
     )
-    # quant_conv sits outside the encoder and keeps its dtype
     assert vae.quant_conv.weight.dtype is torch.float32
 
 
@@ -378,7 +375,6 @@ def test_int8_decoder_replaces_block_linears_and_stays_close():
     assert freed > 0
     lin = fast.decoder.transformer_blocks[0].attn.to_q
     assert lin.weight is None and lin._unsloth_wq.dtype is torch.int8
-    # the patch/proj Linears outside the blocks stay float
     assert fast.decoder.proj_out.weight is not None
     z = torch.randn(1, 8, 3, 4, 5)
     with torch.no_grad():
@@ -441,7 +437,6 @@ def test_add_rmsnorm_kernel():
     ref_h = h + o * s
     ref_n = norm(ref_h).half()
     got_n = H._add_rmsnorm(h, o, s, norm, torch.float16)
-    # the residual reproduces the reference's separate multiply and add bit for bit
     assert torch.equal(h, ref_h)
     torch.testing.assert_close(got_n, ref_n, rtol = 2e-3, atol = 2e-3)
 
@@ -466,7 +461,6 @@ def test_swiglu_kernel():
     x = torch.randn(64, 2 * 3000, device = "cuda").half()
     hidden, gate = x.chunk(2, dim = -1)
     got, ref = H._swiglu(x), hidden * torch.nn.functional.silu(gate)
-    # silu and the product each rounded to float16, as eager computes them
     assert (got == ref).float().mean() > 0.999
     torch.testing.assert_close(got, ref, rtol = 2e-3, atol = 2e-3)
 

@@ -463,7 +463,6 @@ def norm_silu_pad_reference(
     import torch.nn.functional as F
 
     if norm is not None:
-        # float32 through the SiLU, one rounding at the end, as the kernel does
         b, c, t, h, w = x.shape
         y = x.float() if in_bias is None else x.float() + _bias_view(in_bias).float()
         y = y.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)
@@ -941,7 +940,6 @@ def _decoder_fusable(decoder: Any) -> bool:
             and hasattr(blocks[0].ff.net[0], "proj")
             and hasattr(decoder, "rope")
             and hasattr(decoder, "register_tokens")
-            # the rope kernel spans one head in a single power-of-two block
             and attn.dim_head & (attn.dim_head - 1) == 0
         )
     except Exception:  # noqa: BLE001
