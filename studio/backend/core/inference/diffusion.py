@@ -129,6 +129,7 @@ from .diffusion_speed import (
     compile_eligible,
     compiled_shapes_are_static,
     dynamo_graph_count,
+    fp16_unet_offloaded,
     normalize_speed_mode,
     resolve_speed_mode,
     restore_backend_flags,
@@ -5553,8 +5554,12 @@ class DiffusionBackend:
                     self._raise_if_load_cancelled(_load_token)
                     # Pre-warmed torch.compile cache: a per-fingerprint inductor dir plus a bundle loaded before the
                     # first compiled forward pays the 25-58s compile once.
-                    if effective_speed in (SPEED_DEFAULT, SPEED_MAX) and compile_eligible(
-                        target, is_gguf = gguf_transformer, family = fam
+                    if (
+                        effective_speed in (SPEED_DEFAULT, SPEED_MAX)
+                        and compile_eligible(target, is_gguf = gguf_transformer, family = fam)
+                        and not fp16_unet_offloaded(
+                            target, pipe, offload_active = plan.offload_policy != OFFLOAD_NONE
+                        )
                     ):
                         compile_ctx = compile_cache.begin(
                             family = fam.name,
@@ -6907,7 +6912,11 @@ class DiffusionBackend:
             entry["value"] = attention_engaged or "native"
             object.__setattr__(state, "resolved", {**state.resolved, "attention_backend": entry})
         gguf_transformer = state.kind == "gguf" and state.transformer_quant is None
-        if compile_eligible(target, is_gguf = gguf_transformer, family = state.family):
+        if compile_eligible(
+            target, is_gguf = gguf_transformer, family = state.family
+        ) and not fp16_unet_offloaded(
+            target, state.pipe, offload_active = state.offload_policy != OFFLOAD_NONE
+        ):
             compile_ctx = compile_cache.begin(
                 family = state.family.name,
                 # U-Net families (SDXL) carry the denoiser as pipe.unet.

@@ -24,7 +24,7 @@ this). On opt-in it applies the near-lossless speedups in the diffusers-recommen
 ``default`` is the cheap always-amortising compile; ``max`` pays the larger regional tax for the
 bigger warm speedup. The compiled dequant is skipped under ``max`` (the regional compile subsumes
 it; a separate compiled dequant would break that graph). ``supports_torch_compile`` + bf16/CUDA
-checks gate regional compile.
+(or fp16 on Turing+ NVIDIA) checks gate regional compile.
 
 The flags this flips (TF32, cudnn.benchmark) are PROCESS-WIDE, so ``snapshot_backend_flags`` /
 ``restore_backend_flags`` let the caller restore prior values at unload, keeping a later ``off``
@@ -206,9 +206,10 @@ def torch_compile_runtime_available() -> bool:
 def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
     """Whether the denoiser's repeated block should be regionally compiled.
 
-    Only on CUDA (incl. ROCm), for a bf16 transformer, on a compile-friendly family, in a process
-    that can run inductor. ``is_gguf`` no longer disqualifies (GGUF compiles fine and ~2.3x
-    faster); the param is kept for compat."""
+    Only on CUDA (incl. ROCm), for a bf16 transformer, or an fp16 one on an NVIDIA Turing+ card
+    (T4 and other pre-Ampere GPUs, where Studio computes in fp16), on a compile-friendly family,
+    in a process that can run inductor. ``is_gguf`` no longer disqualifies (GGUF compiles fine and
+    ~2.3x faster); the param is kept for compat."""
     del is_gguf
     if not torch_compile_runtime_available():
         return False
@@ -216,7 +217,14 @@ def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
         return False
     if not bool(getattr(family, "supports_torch_compile", True)):
         return False
-    return _is_bfloat16(getattr(target, "dtype", None))
+    dtype = getattr(target, "dtype", None)
+    if _is_bfloat16(dtype):
+        return True
+    # A family flagged fp16-incompatible runs in fp32 even where the device target still says fp16 (video passes the
+    # pre-promotion target), and fp32 compile is unmeasured, so it stays eager.
+    if bool(getattr(family, "fp16_incompatible", False)):
+        return False
+    return _is_float16(dtype) and _fp16_compile_capable(target)
 
 
 def _is_bfloat16(dtype: Any) -> bool:
@@ -225,6 +233,35 @@ def _is_bfloat16(dtype: Any) -> bool:
         return dtype is torch.bfloat16
     except Exception:
         return str(dtype).endswith("bfloat16")
+
+
+def _is_float16(dtype: Any) -> bool:
+    try:
+        import torch
+        return dtype is torch.float16
+    except Exception:
+        return str(dtype).endswith("float16") and not str(dtype).endswith("bfloat16")
+
+
+# fp16 regional compile was measured on sm75 (T4); Volta and older stay eager.
+_FP16_COMPILE_MIN_CAPABILITY = (7, 5)
+
+
+def _fp16_compile_capable(target: Any) -> bool:
+    if getattr(target, "backend", "cuda") != "cuda":
+        return False
+    try:
+        import torch
+
+        ordinal = getattr(target, "ordinal", None)
+        cap = (
+            torch.cuda.get_device_capability()
+            if ordinal is None
+            else torch.cuda.get_device_capability(ordinal)
+        )
+        return tuple(cap)[:2] >= _FP16_COMPILE_MIN_CAPABILITY
+    except Exception:  # noqa: BLE001 - an unanswerable probe keeps today's eager path
+        return False
 
 
 def apply_speed_optims(
@@ -289,7 +326,9 @@ def apply_speed_optims(
         # Asked directly: this arm never reaches compile_eligible(), unlike the dense arm below.
         if is_gguf and on_cuda and family_allows_compile and torch_compile_runtime_available():
             applied["compiled_dequant"] = gguf_compile.install_compiled_dequant(logger)
-        elif compile_eligible(target, is_gguf = is_gguf, family = family):
+        elif compile_eligible(target, is_gguf = is_gguf, family = family) and not fp16_unet_offloaded(
+            target, pipe, offload_active = offload_active
+        ):
             # A U-Net (SDXL) fuses QKV BEFORE its whole-module compile: 36.3 vs 39.3 ms/step (LPIPS 0.033). DiTs were
             # neutral, so they keep the fuse on max only.
             if _denoiser_unet(pipe) is not None:
@@ -301,7 +340,11 @@ def apply_speed_optims(
                 cache_active = cache_active,
                 offload_active = offload_active,
             )
-    elif mode == SPEED_MAX and compile_eligible(target, is_gguf = is_gguf, family = family):
+    elif (
+        mode == SPEED_MAX
+        and compile_eligible(target, is_gguf = is_gguf, family = family)
+        and not fp16_unet_offloaded(target, pipe, offload_active = offload_active)
+    ):
         applied["compiled"] = _compile_repeated_blocks(
             pipe,
             logger,
@@ -350,6 +393,17 @@ def apply_speed_optims(
                 _warn(logger, "cuda graph capture", exc)
 
     return applied
+
+
+def fp16_unet_offloaded(target: Any, pipe: Any, *, offload_active: bool) -> bool:
+    """An fp16 U-Net under offload stays eager. SDXL-Turbo on L4 in fp16 with whole-model offload rendered 5.43 s
+    compiled vs 4.86 s eager (the fused QKV the compile brings costs more transfer than the compile saves), while the
+    same U-Net resident went 0.55 to 0.39 s. bf16 keeps its existing policy."""
+    return (
+        bool(offload_active)
+        and _is_float16(getattr(target, "dtype", None))
+        and _denoiser_unet(pipe) is not None
+    )
 
 
 def _vae_channels_last(pipe: Any, logger: Any) -> bool:
