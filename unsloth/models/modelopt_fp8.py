@@ -18,8 +18,10 @@ config block is rewritten to ``quant_method: fp8`` and the scales renamed via ``
 """
 
 import fnmatch
+import functools
 import inspect
 import weakref
+from types import SimpleNamespace
 from typing import Optional
 
 __all__ = [
@@ -196,12 +198,40 @@ def arm_modelopt_fp8_loading(config, verbose: bool = True) -> Optional[dict]:
     except Exception:
         return None
     _remember_rewrite(config, MODELOPT_FP8_KEY_MAPPING)
+    _dequantize_modelopt_on_merged_save()
     if verbose:
         print(
             "Unsloth: NVIDIA ModelOpt FP8 checkpoint detected; loading it as a static per-tensor "
             "fp8 checkpoint (weight_scale -> weight_scale_inv, input_scale -> activation_scale)."
         )
     return plan
+
+
+def _dequantize_modelopt_on_merged_save() -> None:
+    """unsloth_zoo's merged_16bit save reads the on-disk config and only dequantizes methods it
+    knows as fp8; a ModelOpt block was skipped, writing raw fp8 bytes beside a config without
+    quantization_config. Its per-tensor dequant already handles ModelOpt scales."""
+    try:
+        import unsloth_zoo.saving_utils as zoo_saving
+    except Exception:
+        return
+    original = getattr(zoo_saving, "_is_fp8_quant_config", None)
+    if original is None or getattr(original, "_unsloth_modelopt", False):
+        return
+    try:
+        if original({"quant_method": "modelopt", "quant_algo": "FP8"}):
+            return
+    except Exception:
+        return
+
+    @functools.wraps(original)
+    def _is_fp8_quant_config(quant_config):
+        if original(quant_config):
+            return True
+        return modelopt_fp8_plan(SimpleNamespace(quantization_config = quant_config)) is not None
+
+    _is_fp8_quant_config._unsloth_modelopt = True
+    zoo_saving._is_fp8_quant_config = _is_fp8_quant_config
 
 
 def _class_checkpoint_mapping(model_class) -> dict:

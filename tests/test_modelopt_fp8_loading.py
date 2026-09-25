@@ -798,3 +798,93 @@ def test_modelopt_ignore_globs_keep_fnmatch_meaning():
     assert not should_convert_module("visual.blocks.0.attn.qkv", patterns)
     assert not should_convert_module("lm_head", patterns)
     assert should_convert_module("model.layers.0.self_attn.q_proj", patterns)
+
+
+@needs_per_tensor_fp8
+def test_merged_save_detects_a_rewritten_modelopt_checkpoint_as_fp8(tmp_path, monkeypatch):
+    zoo_saving = pytest.importorskip("unsloth_zoo.saving_utils")
+    original = getattr(
+        zoo_saving._is_fp8_quant_config, "__wrapped__", zoo_saving._is_fp8_quant_config
+    )
+    if original(_sarvam_quant()):
+        pytest.skip("this unsloth_zoo already dequantizes ModelOpt FP8 on a merged save")
+    monkeypatch.setattr(zoo_saving, "_is_fp8_quant_config", original)
+    dirs = {}
+    for name, quant in (("fp8", _sarvam_quant()), ("nvfp4", _sarvam_quant(quant_algo = "NVFP4"))):
+        dirs[name] = tmp_path / name
+        dirs[name].mkdir()
+        (dirs[name] / "config.json").write_text(
+            json.dumps({"model_type": "llama", "quantization_config": quant})
+        )
+    status = zoo_saving.check_model_quantization_status
+    assert status(str(dirs["fp8"])) == (False, None)
+    arm_modelopt_fp8_loading(SimpleNamespace(quantization_config = _sarvam_quant()), verbose = False)
+    assert status(str(dirs["fp8"])) == (True, "fp8")
+    assert status(str(dirs["nvfp4"])) == (False, None)
+
+
+@needs_per_tensor_fp8
+@pytest.mark.skipif(not has_real_cuda(), reason = "FastLanguageModel loads need an accelerator")
+def test_merged_16bit_save_of_a_modelopt_lora_reloads_without_unsloth(tmp_path):
+    """Subprocess: FastLanguageModel patches the Llama classes process-wide."""
+    import subprocess
+    import sys
+
+    from tokenizers import Tokenizer, models, pre_tokenizers
+    from transformers import PreTrainedTokenizerFast
+
+    if torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("fp8 matmul needs sm_89+")
+    ckpt, merged = tmp_path / "ckpt", tmp_path / "merged"
+    ckpt.mkdir()
+    _write_tiny_modelopt_llama(str(ckpt))
+    vocab = {f"t{i}": i for i in range(512)}
+    raw = Tokenizer(models.WordLevel(vocab, unk_token = "t0"))
+    raw.pre_tokenizer = pre_tokenizers.Whitespace()
+    PreTrainedTokenizerFast(
+        tokenizer_object = raw, unk_token = "t0", pad_token = "t1", eos_token = "t2"
+    ).save_pretrained(str(ckpt))
+    code = f"""
+import torch
+from unsloth import FastLanguageModel
+model, tok = FastLanguageModel.from_pretrained({str(ckpt)!r}, load_in_4bit = False, max_seq_length = 64, dtype = torch.bfloat16)
+model = FastLanguageModel.get_peft_model(model, r = 8, lora_alpha = 16, target_modules = ["q_proj", "v_proj", "down_proj"])
+torch.manual_seed(0)
+with torch.no_grad():
+    for name, p in model.named_parameters():
+        if "lora_B" in name:
+            p.normal_(0, 0.02)
+x = torch.randint(0, 512, (2, 32), device = "cuda")
+model.eval()
+with torch.no_grad():
+    lora = model.base_model.model.model.layers[0].self_attn.q_proj
+    base = lora.base_layer
+    expected = base.weight.float() * base.weight_scale_inv.float() + (
+        lora.lora_B["default"].weight.float() @ lora.lora_A["default"].weight.float()
+    ) * lora.scaling["default"]
+    torch.save((x.cpu(), model(x).logits.float().cpu(), expected.cpu()), {str(tmp_path / "want.pt")!r})
+model.save_pretrained_merged({str(merged)!r}, tok, save_method = "merged_16bit")
+"""
+    out = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, timeout = 900)
+    assert out.returncode == 0, (out.stdout[-2000:], out.stderr[-3000:])
+    check = f"""
+import sys, torch
+from transformers import AutoModelForCausalLM
+x, want, expected = torch.load({str(tmp_path / "want.pt")!r})
+model = AutoModelForCausalLM.from_pretrained({str(merged)!r}, dtype = torch.bfloat16).cuda()
+assert "unsloth" not in sys.modules
+q = model.model.layers[0].self_attn.q_proj.weight
+with torch.no_grad():
+    got = model(x.cuda()).logits.float().cpu()
+w_rel = float((q.float().cpu() - expected).norm() / expected.norm())
+print("CHECK", q.dtype, w_rel, float((got - want).norm() / want.norm()))
+"""
+    out = subprocess.run([sys.executable, "-c", check], capture_output = True, text = True, timeout = 600)
+    line = [l for l in out.stdout.splitlines() if l.startswith("CHECK")]
+    assert line, (out.stdout[-2000:], out.stderr[-3000:])
+    _, dtype, w_rel, rel = line[-1].split()
+    assert dtype == "torch.bfloat16"
+    # dequant(W) + B @ A * scaling, up to bf16 rounding; raw e4m3 bytes are off by ~4 orders.
+    assert float(w_rel) < 1e-2, w_rel
+    # Loose: the in-memory model also rounds activations to e4m3 (raw bytes give ~1.4).
+    assert float(rel) < 0.2, rel
