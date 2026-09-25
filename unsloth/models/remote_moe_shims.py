@@ -350,7 +350,8 @@ def packed_expert_target_parameters(model, target_parameters, requested_leaves):
     `down_proj`). A regex string names them when it matches their original module names, as
     PEFT's `re.fullmatch` would have before stacking; a list entry when it is a dotted suffix
     of one (`w1`, `experts.3.w1`, the full path), as PEFT's list matching would have. A stack
-    trains every expert, so a single named expert opts its whole stack in."""
+    trains every expert, so a single named expert opts its whole stack in, and only its stack
+    when the request names some layers only."""
     counts = {}
     for name, m in model.named_modules():
         if _is_packed_experts(m):
@@ -364,24 +365,24 @@ def packed_expert_target_parameters(model, target_parameters, requested_leaves):
     kept = [p for p in (target_parameters or []) if not p.endswith(names)]
     if isinstance(requested_leaves, str):
         import re
-        leaves = {
-            leaf
-            for leaf in ("w1", "w2", "w3")
-            if any(
+
+        def named(stack, leaf):
+            return any(
                 re.fullmatch(requested_leaves, f"{stack}.{e}.{leaf}")
-                for stack in stacks
                 for e in range(counts[stack])
             )
-        }
     else:
-        leaves = {
-            leaf
-            for leaf in ("w1", "w2", "w3")
-            for entry in requested_leaves or ()
-            if any(_names_a_packed_expert(str(entry), stack, leaf) for stack in stacks)
-        }
-    if leaves & {"w1", "w3"}:
-        kept.append("experts.gate_up_proj")
-    if "w2" in leaves:
-        kept.append("experts.down_proj")
+
+        def named(stack, leaf):
+            return any(
+                _names_a_packed_expert(str(entry), stack, leaf) for entry in requested_leaves or ()
+            )
+
+    for leaves, projection in ((("w1", "w3"), "gate_up_proj"), (("w2",), "down_proj")):
+        chosen = [stack for stack in stacks if any(named(stack, leaf) for leaf in leaves)]
+        # PEFT suffix-matches target_parameters, so a request scoped to some layers stays scoped.
+        if len(chosen) == len(stacks):
+            kept.append(f"experts.{projection}")
+        else:
+            kept.extend(f"{stack}.{projection}" for stack in chosen)
     return kept or None

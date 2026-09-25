@@ -390,9 +390,12 @@ def test_a_target_list_naming_expert_paths_opts_packed_experts_in():
     _swap_planned_stacks(model, _keys(), torch.bfloat16)
     stack = next(n for n, m in model.named_modules() if type(m).__name__ == "Mxfp4StackedExperts")
     auto = ["experts.gate_up_proj", "experts.down_proj"]
+    # One layer named: only that layer's stack, as PEFT suffix-matches target_parameters.
     assert packed_expert_target_parameters(model, auto, ["q_proj", f"{stack}.1.w1"]) == [
-        "experts.gate_up_proj"
+        f"{stack}.gate_up_proj"
     ]
+    scoped = packed_expert_target_parameters(model, auto, rf"{re.escape(stack)}\.\d+\.w2")
+    assert scoped == [f"{stack}.down_proj"]
     assert packed_expert_target_parameters(model, None, ["experts.0.w2"]) == ["experts.down_proj"]
     # Suffixes that name something else, and a non-index where the expert index goes, do not.
     assert packed_expert_target_parameters(model, auto, ["mlp.w1", "experts.x.w1", "0.w1x"]) is None
