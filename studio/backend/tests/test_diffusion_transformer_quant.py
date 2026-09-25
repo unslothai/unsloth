@@ -1742,9 +1742,9 @@ def _capable_host(
 
     monkeypatch.setattr(diffusion_speed, "compile_eligible", lambda target, **kw: True)
     monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
-    monkeypatch.setattr(tq, "_capability", lambda: cap)
+    monkeypatch.setattr(tq, "_capability", lambda ordinal = None: cap)
     monkeypatch.setattr(tq, "_TORCHAO_UNAVAILABLE", (torchao_reason,))
-    monkeypatch.setattr(tq, "_smoke_cache_device_key", lambda device: "cuda:0")
+    monkeypatch.setattr(tq, "_smoke_cache_device_key", lambda device, ordinal = None: "cuda:0")
     monkeypatch.setattr(tq, "_SMOKE_CACHE", {})
 
 

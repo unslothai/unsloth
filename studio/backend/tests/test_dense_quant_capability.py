@@ -22,33 +22,50 @@ def _src(name: str) -> str:
     return ast.get_source_segment(src, node)
 
 
-def _run(monkeypatch, *, device_count, capable_by_ordinal):
-    """Run an uncached copy of ``_dense_quant_supported`` with mocked dependencies."""
-    scoped: list = []
+def _cuda_namespace(device_count, switched):
+    """A ``torch.cuda`` whose device-switching and context-pinning calls record, then raise.
 
-    fake_torch = types.SimpleNamespace(
-        cuda = types.SimpleNamespace(
-            is_available = lambda: device_count > 0,
-            device_count = lambda: device_count,
-        )
+    The probes swallow the raise and answer conservatively, so a regression fails the result
+    assertion AND leaves its name here. On CUDA 12 ``cudaSetDevice`` (what entering
+    ``torch.cuda.device`` does) pins a primary context, which is why none of these may run."""
+
+    def _forbid(name):
+        def _call(*_a, **_k):
+            switched.append(name)
+            raise AssertionError(f"torch.cuda.{name} would pin a context")
+
+        return _call
+
+    return types.SimpleNamespace(
+        is_available = lambda: device_count > 0,
+        device_count = lambda: device_count,
+        device = _forbid("device"),
+        set_device = _forbid("set_device"),
+        _exchange_device = _forbid("_exchange_device"),
+        _maybe_exchange_device = _forbid("_maybe_exchange_device"),
+        mem_get_info = _forbid("mem_get_info"),
     )
 
-    class _Scope:
-        def __init__(self, ordinal):
-            self.ordinal = ordinal
 
-        def __enter__(self):
-            scoped.append(self.ordinal)
-            return None
+def _run(monkeypatch, *, device_count, capable_by_ordinal):
+    """Run an uncached copy of ``_probe_dense_quant_supported`` with mocked dependencies.
 
-        def __exit__(self, *exc):
-            return False
+    Returns the result, the forbidden ``torch.cuda`` calls made, and the ordinals asked. The fake
+    device module has no ``diffusion_device_scope`` on purpose: a probe that imports it again
+    raises inside its guard and reports incapable."""
+    switched: list = []
+    asked: list = []
 
+    fake_torch = types.SimpleNamespace(cuda = _cuda_namespace(device_count, switched))
     fake_device = types.ModuleType("core.inference.diffusion_device")
-    fake_device.diffusion_device_scope = _Scope
     fake_device.resolve_diffusion_device_target = lambda ordinal = None: ordinal
     fake_quant = types.ModuleType("core.inference.diffusion_transformer_quant")
-    fake_quant.dense_quant_host_capable = lambda target: capable_by_ordinal[target]
+
+    def _capable(target):
+        asked.append(target)
+        return capable_by_ordinal[target]
+
+    fake_quant.dense_quant_host_capable = _capable
 
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_device", fake_device)
@@ -56,35 +73,42 @@ def _run(monkeypatch, *, device_count, capable_by_ordinal):
 
     namespace: dict = {}
     exec(_src("_probe_dense_quant_supported"), namespace)  # noqa: S102 -- the real body
-    return namespace["_probe_dense_quant_supported"](), scoped
+    return namespace["_probe_dense_quant_supported"](), switched, asked
 
 
 def test_a_single_capable_gpu_reports_capable(monkeypatch):
-    result, scoped = _run(monkeypatch, device_count = 1, capable_by_ordinal = {None: True})
+    result, switched, asked = _run(monkeypatch, device_count = 1, capable_by_ordinal = {None: True})
     assert result is True
-    assert scoped == []
+    assert switched == []
+    assert asked == [None]
 
 
 def test_a_single_incapable_gpu_reports_incapable(monkeypatch):
-    result, _ = _run(monkeypatch, device_count = 1, capable_by_ordinal = {None: False})
+    result, _, _ = _run(monkeypatch, device_count = 1, capable_by_ordinal = {None: False})
     assert result is False
 
 
 def test_every_visible_card_must_be_capable(monkeypatch):
-    result, scoped = _run(monkeypatch, device_count = 2, capable_by_ordinal = {0: True, 1: False})
+    result, switched, asked = _run(
+        monkeypatch, device_count = 2, capable_by_ordinal = {0: True, 1: False}
+    )
     assert result is False
-    # Probe each ordinal under its own device scope.
-    assert scoped == [0, 1]
+    # Every ordinal is asked by target, none is made current.
+    assert asked == [0, 1]
+    assert switched == []
 
 
 def test_a_homogeneous_multi_gpu_host_still_reports_capable(monkeypatch):
-    result, scoped = _run(monkeypatch, device_count = 2, capable_by_ordinal = {0: True, 1: True})
+    result, switched, asked = _run(
+        monkeypatch, device_count = 2, capable_by_ordinal = {0: True, 1: True}
+    )
     assert result is True
-    assert scoped == [0, 1]
+    assert asked == [0, 1]
+    assert switched == []
 
 
 def test_no_gpu_reports_incapable(monkeypatch):
-    result, _ = _run(monkeypatch, device_count = 0, capable_by_ordinal = {None: False})
+    result, _, _ = _run(monkeypatch, device_count = 0, capable_by_ordinal = {None: False})
     assert result is False
 
 
@@ -95,13 +119,23 @@ def test_a_probe_failure_reports_incapable(monkeypatch):
         def __getitem__(self, key):
             raise RuntimeError("driver went away")
 
-    result, _ = _run(monkeypatch, device_count = 1, capable_by_ordinal = _Boom())
+    result, _, _ = _run(monkeypatch, device_count = 1, capable_by_ordinal = _Boom())
     assert result is False
 
 
-@pytest.mark.parametrize("needle", ["diffusion_device_scope", "device_count"])
+@pytest.mark.parametrize(
+    "needle", ["device_count", "resolve_diffusion_device_target(ordinal = ordinal)"]
+)
 def test_the_wiring_stays_in_place(needle):
     assert needle in _src("_probe_dense_quant_supported")
+
+
+@pytest.mark.parametrize("name", ["_probe_dense_quant_supported", "_probe_dense_quant_schemes"])
+def test_the_probes_never_switch_the_current_device(name):
+    """Entering ``torch.cuda.device(i)`` is ``cudaSetDevice``, which on CUDA 12 pins a primary
+    context; looped over every card it left an idle two-GPU Studio holding VRAM on both. The
+    probes ask each card by its ordinal on the target instead."""
+    assert "diffusion_device_scope" not in _src(name)
 
 
 def test_the_capability_is_published_and_never_memoised():
@@ -138,10 +172,10 @@ def test_the_polled_route_never_imports_the_ml_stack():
 def test_the_probe_follows_the_smoke_cache_as_it_warms(monkeypatch):
     """A verdict the loader has since paid for must reach the next resolution."""
     answers = {None: True}
-    result, _ = _run(monkeypatch, device_count = 1, capable_by_ordinal = answers)
+    result, _, _ = _run(monkeypatch, device_count = 1, capable_by_ordinal = answers)
     assert result is True
     answers[None] = False
-    result, _ = _run(monkeypatch, device_count = 1, capable_by_ordinal = answers)
+    result, _, _ = _run(monkeypatch, device_count = 1, capable_by_ordinal = answers)
     assert result is False
 
 
@@ -169,31 +203,19 @@ def test_the_ladder_is_read_off_the_same_refresh_as_the_bit():
 
 def _run_schemes(monkeypatch, *, device_count, schemes_by_ordinal):
     """Run an uncached copy of ``_probe_dense_quant_schemes`` with mocked dependencies."""
-    scoped: list = []
+    switched: list = []
+    asked: list = []
 
-    fake_torch = types.SimpleNamespace(
-        cuda = types.SimpleNamespace(
-            is_available = lambda: device_count > 0,
-            device_count = lambda: device_count,
-        )
-    )
-
-    class _Scope:
-        def __init__(self, ordinal):
-            self.ordinal = ordinal
-
-        def __enter__(self):
-            scoped.append(self.ordinal)
-            return None
-
-        def __exit__(self, *exc):
-            return False
-
+    fake_torch = types.SimpleNamespace(cuda = _cuda_namespace(device_count, switched))
     fake_device = types.ModuleType("core.inference.diffusion_device")
-    fake_device.diffusion_device_scope = _Scope
     fake_device.resolve_diffusion_device_target = lambda ordinal = None: ordinal
     fake_quant = types.ModuleType("core.inference.diffusion_transformer_quant")
-    fake_quant.auto_scheme_candidates_cached = lambda target: schemes_by_ordinal[target]
+
+    def _ladder(target):
+        asked.append(target)
+        return schemes_by_ordinal[target]
+
+    fake_quant.auto_scheme_candidates_cached = _ladder
 
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_device", fake_device)
@@ -201,34 +223,36 @@ def _run_schemes(monkeypatch, *, device_count, schemes_by_ordinal):
 
     namespace: dict = {"Optional": Optional}
     exec(_src("_probe_dense_quant_schemes"), namespace)  # noqa: S102 -- the real body
-    return namespace["_probe_dense_quant_schemes"](), scoped
+    return namespace["_probe_dense_quant_schemes"](), switched, asked
 
 
 def test_an_ada_host_publishes_fp8_first(monkeypatch):
-    result, scoped = _run_schemes(
+    result, switched, asked = _run_schemes(
         monkeypatch, device_count = 1, schemes_by_ordinal = {None: ("fp8", "int8")}
     )
     assert result == ["fp8", "int8"]
-    assert scoped == []
+    assert switched == []
+    assert asked == [None]
 
 
 def test_an_ampere_host_publishes_int8(monkeypatch):
-    result, _ = _run_schemes(monkeypatch, device_count = 1, schemes_by_ordinal = {None: ("int8",)})
+    result, _, _ = _run_schemes(monkeypatch, device_count = 1, schemes_by_ordinal = {None: ("int8",)})
     assert result == ["int8"]
 
 
 def test_a_mixed_host_publishes_only_what_every_card_runs(monkeypatch):
-    result, scoped = _run_schemes(
+    result, switched, asked = _run_schemes(
         monkeypatch,
         device_count = 2,
         schemes_by_ordinal = {0: ("fp8", "int8"), 1: ("int8",)},
     )
     assert result == ["int8"]
-    assert scoped == [0, 1]
+    assert asked == [0, 1]
+    assert switched == []
 
 
 def test_an_unsupported_host_publishes_nothing(monkeypatch):
-    result, _ = _run_schemes(monkeypatch, device_count = 0, schemes_by_ordinal = {None: ()})
+    result, _, _ = _run_schemes(monkeypatch, device_count = 0, schemes_by_ordinal = {None: ()})
     assert result == []
 
 
@@ -237,7 +261,7 @@ def test_a_scheme_probe_failure_publishes_nothing(monkeypatch):
         def __getitem__(self, key):
             raise RuntimeError("driver went away")
 
-    result, _ = _run_schemes(monkeypatch, device_count = 1, schemes_by_ordinal = _Boom())
+    result, _, _ = _run_schemes(monkeypatch, device_count = 1, schemes_by_ordinal = _Boom())
     assert result == []
 
 
@@ -275,11 +299,62 @@ def test_the_polled_ladder_never_runs_the_allocating_smoke_probe(monkeypatch):
 
     monkeypatch.setattr(tq, "_scheme_supported", _never)
     monkeypatch.setattr(tq, "dense_transformer_supported", lambda _target: True)
-    monkeypatch.setattr(tq, "_capability", lambda: (8, 9))
-    monkeypatch.setattr(tq, "_smoke_cache_device_key", lambda _device: "cuda:0")
+    monkeypatch.setattr(tq, "_capability", lambda ordinal = None: (8, 9))
+    monkeypatch.setattr(tq, "_smoke_cache_device_key", lambda _device, ordinal = None: "cuda:0")
     monkeypatch.setattr(tq, "_SMOKE_CACHE", {("fp8", "cuda:0"): False})
     # An unprobed scheme counts as usable; a probed failure does not.
     assert tq.auto_scheme_candidates_cached(object()) == ("int8",)
     monkeypatch.setattr(tq, "_SMOKE_CACHE", {})
     assert tq.auto_scheme_candidates_cached(object()) == ("int8", "fp8")
     assert "auto_scheme_candidates_cached" in _src("_probe_dense_quant_schemes")
+
+
+def test_the_cached_readers_ask_the_target_card_without_switching(monkeypatch):
+    """``dense_quant_host_capable`` and ``auto_scheme_candidates_cached`` read the card named by
+    ``target.ordinal`` through ``get_device_capability(i)`` and key ``_SMOKE_CACHE`` by it, never
+    by making the card current: on CUDA 12 ``cudaSetDevice`` pins a primary context, and the
+    polled probe asks about every card of the host."""
+    from core.inference import diffusion_speed
+    from core.inference import diffusion_transformer_quant as tq
+
+    asked: list = []
+    forbidden: list = []
+
+    def _forbid(name):
+        def _call(*_a, **_k):
+            forbidden.append(name)
+            raise AssertionError(f"torch.cuda.{name} would pin a context")
+
+        return _call
+
+    torch = types.ModuleType("torch")
+    torch.cuda = types.SimpleNamespace(
+        is_available = lambda: True,
+        device_count = lambda: 2,
+        get_device_capability = lambda device = None: asked.append(device) or (8, 9),
+        current_device = lambda: 0,
+        device = _forbid("device"),
+        set_device = _forbid("set_device"),
+        _exchange_device = _forbid("_exchange_device"),
+        mem_get_info = _forbid("mem_get_info"),
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setattr(diffusion_speed, "compile_eligible", lambda target, **kw: True)
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda _target: True)
+    monkeypatch.setattr(tq, "_TORCHAO_UNAVAILABLE", (None,))
+    # fp8 failed on card 1 only; the readers must file card 1's verdict under card 1.
+    monkeypatch.setattr(tq, "_SMOKE_CACHE", {("fp8", "cuda:1"): False})
+
+    card1 = types.SimpleNamespace(device = "cuda", ordinal = 1)
+    assert tq.dense_quant_host_capable(card1) is True
+    assert tq.auto_scheme_candidates_cached(card1) == ("int8",)
+    assert asked == [1, 1]
+    card0 = types.SimpleNamespace(device = "cuda", ordinal = 0)
+    assert tq.auto_scheme_candidates_cached(card0) == ("int8", "fp8")
+    assert asked == [1, 1, 0]
+    # No ordinal on the target: the current card, still without switching.
+    del asked[:]
+    bare = types.SimpleNamespace(device = "cuda")
+    assert tq.auto_scheme_candidates_cached(bare) == ("int8", "fp8")
+    assert asked == [None]
+    assert forbidden == []

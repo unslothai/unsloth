@@ -220,6 +220,9 @@ def diffusion_device_scope(ordinal: Optional[int]):
     permanent pin on an asyncio.to_thread executor thread outlives the request and leaves the next
     one -- perhaps an automatic load -- resolving bare "cuda" against the previous request's card.
     Worker threads are dedicated and keep the permanent pin.
+
+    Entering is ``cudaSetDevice``, which on CUDA 12 pins a primary context on that card. A caller
+    that only needs a card's capability should put the ordinal on the target instead.
     """
     if ordinal is None:
         yield

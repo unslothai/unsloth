@@ -233,6 +233,154 @@ def test_the_probe_would_catch_a_regression():
     assert mib > 0, "mem_get_info created no context here, so the assertions above prove nothing"
 
 
+# ========== The dense-quant probes, one card at a time ==========
+
+# _probe_dense_quant_supported and _probe_dense_quant_schemes (main.py) ask every visible card,
+# from the post-warm worker and again on each /api/system poll once torch and torchao are up.
+# They used to enter torch.cuda.device(i) per card, and on CUDA 12 that is cudaSetDevice, which
+# pins a primary context on every card of an idle multi-GPU host (a 3090 + 3060 held 256 + 104
+# MiB with no model loaded). Single-GPU hosts skip the loop, so the poll tests above never saw it.
+
+
+def _cuda_device_count() -> int:
+    try:
+        import torch
+        return int(torch.cuda.device_count()) if torch.cuda.is_available() else 0
+    except Exception:
+        return 0
+
+
+def _is_hip() -> bool:
+    try:
+        import torch
+        return bool(getattr(torch.version, "hip", None))
+    except Exception:
+        return False
+
+
+needs_two_nvidia = pytest.mark.skipif(
+    _cuda_device_count() < 2 or _is_hip(),
+    reason = "needs two CUDA devices on NVIDIA to observe a per-card primary context",
+)
+
+# Per-card accounting: one nvidia-smi row per (GPU, process), summed per GPU for this PID, plus
+# torch's own primary-context flag as a second signal that needs no nvidia-smi.
+_PROBE_BY_GPU = textwrap.dedent(
+    """
+    import os, subprocess
+    def _held_by_gpu():
+        try:
+            out = subprocess.run(
+                ["nvidia-smi", "--query-compute-apps=gpu_uuid,pid,used_memory",
+                 "--format=csv,noheader,nounits"],
+                capture_output = True, text = True, timeout = 60,
+            )
+        except Exception:
+            return None
+        if out.returncode != 0:
+            return None
+        me = str(os.getpid())
+        held = {}
+        for line in out.stdout.splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 3 and parts[1] == me:
+                try:
+                    held[parts[0]] = held.get(parts[0], 0) + int(parts[2])
+                except ValueError:
+                    return None
+        return held
+    def _primary_contexts():
+        import torch
+        has = getattr(torch._C, "_cuda_hasPrimaryContext", None)
+        if has is None:
+            return None
+        return [i for i in range(torch.cuda.device_count()) if has(i)]
+    """
+)
+
+_BY_GPU_CHILD = textwrap.dedent(
+    """
+    import sys
+    sys.path.insert(0, {backend!r})
+    import torch
+    assert sum(torch.cuda.memory_reserved(i) for i in range(torch.cuda.device_count())) == 0
+    visited = None
+    {call}
+    print("VISITED:" + repr(visited))
+    print("HELD:" + repr(_held_by_gpu()))
+    print("PRIMARY:" + repr(_primary_contexts()))
+    """
+)
+
+# The two probe bodies exec'd straight out of main.py (importing main builds the app), with the
+# readers they call wrapped to record which card each was asked about.
+_DENSE_QUANT_PROBES = textwrap.dedent(
+    """
+    import ast
+    from typing import Optional
+    src = open({main!r}, encoding = "utf-8").read()
+    tree = ast.parse(src)
+    ns = {{"Optional": Optional}}
+    for name in ("_probe_dense_quant_supported", "_probe_dense_quant_schemes"):
+        node = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
+        exec(ast.get_source_segment(src, node), ns)
+    from core.inference import diffusion_transformer_quant as tq
+    visited = {{"bit": [], "ladder": []}}
+    _capable, _ladder = tq.dense_quant_host_capable, tq.auto_scheme_candidates_cached
+    def _bit(t):
+        visited["bit"].append(getattr(t, "ordinal", None))
+        return _capable(t)
+    def _schemes(t):
+        visited["ladder"].append(getattr(t, "ordinal", None))
+        return _ladder(t)
+    tq.dense_quant_host_capable = _bit
+    tq.auto_scheme_candidates_cached = _schemes
+    ns["_probe_dense_quant_supported"]()
+    ns["_probe_dense_quant_schemes"]()
+    """
+).format(main = str(_BACKEND_DIR / "main.py"))
+
+
+def _run_child_by_gpu(call: str):
+    """Run ``call`` in a fresh interpreter; return (held_by_gpu | None, primary | None, visited)."""
+    src = _PROBE_BY_GPU + _BY_GPU_CHILD.format(backend = str(_BACKEND_DIR), call = call)
+    proc = subprocess.run([sys.executable, "-c", src], capture_output = True, text = True, timeout = 600)
+    assert proc.returncode == 0, f"child failed:\n{proc.stdout}\n{proc.stderr}"
+    out: dict = {}
+    for line in proc.stdout.splitlines():
+        for key in ("VISITED", "HELD", "PRIMARY"):
+            if line.startswith(key + ":"):
+                out[key] = eval(line[len(key) + 1 :])
+    assert set(out) == {"VISITED", "HELD", "PRIMARY"}, proc.stdout
+    return out["HELD"], out["PRIMARY"], out["VISITED"]
+
+
+@needs_two_nvidia
+def test_the_dense_quant_probes_pin_no_context_on_any_card():
+    held, primary, visited = _run_child_by_gpu(_DENSE_QUANT_PROBES)
+    # The loop must really have run over every card: a swallowed import error also answers
+    # "incapable" and would pass the memory assertions below for the wrong reason.
+    assert visited["ladder"] == list(range(_cuda_device_count())), visited
+    assert visited["bit"][:1] == [0], visited
+    if held is None and primary is None:
+        pytest.skip("no per-PID nvidia-smi accounting and no torch primary-context flag")
+    if held is not None:
+        assert not any(held.values()), f"the dense-quant probes pinned a context: {held}"
+    if primary is not None:
+        assert primary == [], f"the dense-quant probes pinned a primary context on {primary}"
+
+
+@needs_two_nvidia
+def test_the_multi_gpu_probe_would_catch_a_regression():
+    # Guards the test above: the exact call the probes used to make, entering card 1's scope,
+    # must show up as a context here, or a green run proves blindness rather than avoidance.
+    held, primary, _ = _run_child_by_gpu("torch.cuda.device(1).__enter__()")
+    if held is None and primary is None:
+        pytest.skip("no per-PID nvidia-smi accounting and no torch primary-context flag")
+    pinned = bool(held and any(held.values())) or bool(primary and 1 in primary)
+    assert pinned, "entering torch.cuda.device(1) pinned nothing, so the test above proves nothing"
+
+
 def _summary_torch(*, properties_total, driver_free, driver_total):
     props = types.SimpleNamespace(total_memory = properties_total, name = "Test GPU")
 

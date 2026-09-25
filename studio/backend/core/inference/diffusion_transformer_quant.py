@@ -345,10 +345,15 @@ def _strip_paths(text: str) -> str:
 _SMOKE_CACHE: dict[tuple[str, str], bool] = {}
 
 
-def _smoke_cache_device_key(device: str) -> str:
-    """``device`` qualified with the current CUDA index, so each card is validated on its own."""
+def _smoke_cache_device_key(device: str, ordinal: Optional[int] = None) -> str:
+    """``device`` qualified with the CUDA index, so each card is validated on its own.
+
+    ``ordinal`` is for a caller that must not make the card current (a polled reader); the load
+    path runs scoped and reads the current one. Both spell the key ``cuda:{i}``."""
     if device != "cuda":
         return device
+    if ordinal is not None:
+        return f"cuda:{ordinal}"
     try:
         import torch
         return f"cuda:{torch.cuda.current_device()}"
@@ -693,7 +698,8 @@ def dense_quant_host_capable(target: Any) -> bool:
     Cheap and non-allocating, so a polled status route can ask it: the arch floors come from
     ``_AUTO_LADDER`` and the probe is only READ from ``_SMOKE_CACHE``, where the load path already
     paid for it. An unprobed scheme counts as usable, like the ``unproven_ok`` path; a probed
-    failure does not.
+    failure does not. Asked of ``target.ordinal`` when there is one, so a polled caller never
+    makes the card current (on CUDA 12 ``cudaSetDevice`` pins a primary context).
 
     ``auto``, not "any scheme": the ladder leaves nvfp4 out, so a host that can only run nvfp4
     honours an explicit request and has nothing automatic to offer."""
@@ -710,10 +716,11 @@ def dense_quant_host_capable(target: Any) -> bool:
     # import fails, so an ABI skew would advertise a fast path every load then falls back from.
     if torchao_unavailable_reason() is not None:
         return False
-    cap = _capability()
+    ordinal = getattr(target, "ordinal", None)
+    cap = _capability(ordinal)
     if cap is None:
         return False
-    card = _smoke_cache_device_key(str(getattr(target, "device", "cuda")))
+    card = _smoke_cache_device_key(str(getattr(target, "device", "cuda")), ordinal)
     for floor, schemes in _AUTO_LADDER:
         if cap >= floor:
             return any(_SMOKE_CACHE.get((scheme, card), True) for scheme in schemes)
@@ -749,13 +756,15 @@ def auto_scheme_candidates_cached(target: Any, family: Optional[str] = None) -> 
     Same ladder and deny list, but no probe: ``_scheme_supported`` can spawn the child smoke probe
     or allocate in this process, and neither belongs on a route polled every few seconds. Unprobed
     counts as usable and a probed failure does not, as in ``dense_quant_host_capable``, so the
-    published ladder sharpens as loads record verdicts instead of paying for them here."""
+    published ladder sharpens as loads record verdicts instead of paying for them here. Read for
+    ``target.ordinal`` without making it current, for the same reason."""
     if not dense_transformer_supported(target):
         return ()
-    cap = _capability()
+    ordinal = getattr(target, "ordinal", None)
+    cap = _capability(ordinal)
     if cap is None:
         return ()
-    card = _smoke_cache_device_key(str(getattr(target, "device", "cuda")))
+    card = _smoke_cache_device_key(str(getattr(target, "device", "cuda")), ordinal)
     for floor, schemes in _AUTO_LADDER:
         if cap >= floor:
             return tuple(
@@ -766,10 +775,10 @@ def auto_scheme_candidates_cached(target: Any, family: Optional[str] = None) -> 
     return ()
 
 
-def _capability() -> Optional[tuple[int, int]]:
+def _capability(ordinal: Optional[int] = None) -> Optional[tuple[int, int]]:
     try:
         import torch
-        major, minor = torch.cuda.get_device_capability()
+        major, minor = torch.cuda.get_device_capability(ordinal)
         return (int(major), int(minor))
     except Exception:
         return None
