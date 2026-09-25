@@ -27,7 +27,7 @@ export const MessageMenuTime: FC<{ onShowDetails: () => void }> = ({
       : null;
 
   return (
-    <div className="flex items-center">
+    <div className="group/menu-time flex items-center">
       {date && (
         <time
           dateTime={date.toISOString()}
@@ -40,13 +40,13 @@ export const MessageMenuTime: FC<{ onShowDetails: () => void }> = ({
           })}
         </time>
       )}
-      {/* Right after the time. Shown while the menu is hovered, or when reached by keyboard. */}
+      {/* Right after the time. Shown while this row is hovered, or when reached by keyboard. */}
       <Tooltip>
         <TooltipTrigger asChild={true}>
           <ActionBarMorePrimitive.Item
             onSelect={onShowDetails}
             aria-label="See response details"
-            className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 outline-none transition-opacity hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground focus:opacity-100 group-hover/more-menu:opacity-100"
+            className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 outline-none transition-opacity hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground focus:opacity-100 group-hover/menu-time:opacity-100"
           >
             <HugeiconsIcon icon={InformationCircleIcon} strokeWidth={1.75} className="size-icon" />
           </ActionBarMorePrimitive.Item>
