@@ -286,20 +286,9 @@ _WINDOWS_ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
     "gfx1150": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
     "gfx1152": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
 }
-# RDNA 1 (gfx1010 / gfx1011 / gfx1012) has no family on repo.amd.com/rocm/whl at all.
-# AMD's multi-arch index (repo.amd.com/rocm/whl-multi-arch) carries per-card kernel packs
-# for it instead: there `torch[device-gfx1010]` resolves torch plus amd-torch-device-gfx1010,
-# and the same spelling pulls the matching rocm-sdk-device pack. Handled here rather than
-# bolted onto the per-family route because the shape differs:
-#   * one URL for every device, the card picked by the extra, not by the path;
-#   * the build is PINNED to one release tag: the index serves torch 2.9.1 through 2.12.0
-#     for this card, and 2.12.0 sits exactly on the `<2.12.0` window the rest of the Windows
-#     install applies, so the pin is the newest release inside that window;
-#   * torchvision and torchaudio carry the very same tag (both published there).
-# Windows only: measured on an RX 5700 XT (unslothai/unsloth#11614, #8529), with the
-# Triton buffer-op fix (#11615) and the zoo's pure-torch gated-delta route (#1356)
-# doing the rest. Linux hosts keep today's behaviour (no route, CPU torch) until someone
-# runs the same matrix on bare-metal Linux; WSL2 cannot, its GPU driver refuses RDNA 1.
+# RDNA 1 has no repo.amd.com/rocm/whl family; AMD's multi-arch index picks the card by the
+# torch[device-gfxNNNN] extra. Pinned to the newest tag inside the Windows <2.12.0 window.
+# Windows only (measured on RX 5700 XT, #11614); Linux untested, WSL2 refuses RDNA 1.
 _ROCM_WINDOWS_MULTIARCH_INDEX_BASE = (
     os.environ.get("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR")
     or "https://repo.amd.com/rocm/whl-multi-arch"
@@ -308,9 +297,7 @@ _ROCM_MULTIARCH_TAG = "rocm7.14.1"
 _ROCM_MULTIARCH_TORCH_VERSION = "2.11.0"
 _ROCM_MULTIARCH_TORCHVISION_VERSION = "0.26.0"
 _ROCM_MULTIARCH_TORCHAUDIO_VERSION = "2.11.0"
-# gfx1011 / gfx1012 have device packs on the same index and share the ISA family, but only
-# gfx1010 has been run; the two are included because the Triton and zoo fixes key on the
-# whole gfx101x family, not one device id.
+# Only gfx1010 tested; gfx1011/gfx1012 included since the Triton and zoo fixes key on gfx101x.
 _WINDOWS_MULTIARCH_GFX: "frozenset[str]" = frozenset({"gfx1010", "gfx1011", "gfx1012"})
 
 
@@ -324,8 +311,6 @@ def _is_windows_multiarch_gfx(gfx_arch: "str | None") -> bool:
 
 
 def _windows_multiarch_torch_pkg_specs(gfx_arch: str) -> tuple[str, str, str]:
-    """The pinned torch / torchvision / torchaudio trio for a multi-arch device, all on
-    one release tag of the multi-arch index."""
     gfx = _bare_gfx(gfx_arch)
     return (
         f"torch[device-{gfx}]=={_ROCM_MULTIARCH_TORCH_VERSION}+{_ROCM_MULTIARCH_TAG}",
@@ -335,8 +320,6 @@ def _windows_multiarch_torch_pkg_specs(gfx_arch: str) -> tuple[str, str, str]:
 
 
 def _windows_rocm_torch_pkg_specs(gfx_arch: "str | None") -> tuple[str, str, str]:
-    """Package specs for the Windows ROCm torch install of `gfx_arch`: the multi-arch pin
-    for RDNA 1, the per-arch ABI pin where one exists, bare names otherwise."""
     if _is_windows_multiarch_gfx(gfx_arch):
         return _windows_multiarch_torch_pkg_specs(gfx_arch)
     return _WINDOWS_ROCM_TORCH_PKG_SPECS.get(
@@ -2048,11 +2031,7 @@ _WIN_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
         r"RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300",
         "gfx1034",
     ),  # Navi 24
-    # RDNA 1 (Navi 10 / Navi 14). Routed to AMD's multi-arch index on Windows, see
-    # _WINDOWS_MULTIARCH_GFX. Names from LLVM's AMDGPU tables plus libdrm amdgpu.ids /
-    # pci.ids for the professional parts LLVM omits. The (?!0) guards on the Polaris rows
-    # of _UNSUPPORTED_GPU_NAME_ARCH_TABLE stop "RX 570" swallowing "RX 5700"; these rows
-    # are checked first anyway.
+    # RDNA 1 (Navi 10 / 14), multi-arch index on Windows. Names from LLVM + libdrm amdgpu.ids.
     (r"Radeon Pro V520|Radeon Pro 5600M", "gfx1011"),
     (r"RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700", "gfx1010"),
     (r"RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300", "gfx1012"),
@@ -2078,8 +2057,6 @@ def _gfx_arch_from_gpu_name(name: str) -> "str | None":
 # for the Navi 10/14 professional parts LLVM omits; nothing is guessed, so Polaris 11/12
 # (RX 460/550/560, a different die) is left out.
 _UNSUPPORTED_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
-    # RDNA 1 used to live here (#8529). It routes now, on Windows, through AMD's multi-arch
-    # index (_WINDOWS_MULTIARCH_GFX); its rows moved to _WIN_GPU_NAME_ARCH_TABLE.
     (
         r"RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100",
         "gfx803",
@@ -2363,11 +2340,7 @@ def _rocm_miscomputing_host() -> bool:
 
 
 def _windows_rocm_index_url(gfx_arch: str | None) -> str | None:
-    """Return the AMD pip index URL for the given GPU arch, or None if unsupported.
-
-    RDNA 1 resolves to AMD's multi-arch index (one URL for every device on it; the
-    device is selected by the `torch[device-gfxNNNN]` extra, not by the path), everything
-    else to its repo.amd.com family."""
+    """Return the AMD pip index URL for the given GPU arch, or None if unsupported."""
     if _is_windows_multiarch_gfx(gfx_arch):
         return _ROCM_WINDOWS_MULTIARCH_INDEX_BASE
     arch_family = _GFX_TO_AMD_INDEX_ARCH.get(_bare_gfx(gfx_arch))
@@ -5788,8 +5761,7 @@ def _ensure_rocm_torch() -> None:
             if _is_win_arm64_interpreter():
                 _rocm_trio = [_torch_pkg, _vision_pkg]
             if _is_windows_multiarch_gfx(gfx_arch):
-                # Not _bare_gfx(): this function binds a local of that name further down,
-                # which makes the module helper unreachable here (UnboundLocalError).
+                # Not _bare_gfx(): a local of that name below shadows it (UnboundLocalError).
                 _safe_print(
                     f"   {(gfx_arch or '').split(':')[0].lower()} is RDNA 1: AMD's multi-arch index, pinned to "
                     f"{_ROCM_MULTIARCH_TORCH_VERSION}+{_ROCM_MULTIARCH_TAG} (torch, torchvision, torchaudio)"

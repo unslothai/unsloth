@@ -410,8 +410,7 @@ def test_a_mask_suppresses_the_handoff(tmp_path, var):
     resolves nothing rather than borrowing the 780M's arch. The installer scans without the mask
     and forwards that very arch, and taking it would install for a GPU the mask hides from the
     runtime entirely (ROCR filters below HIP, so masked devices never reach enumeration)."""
-    # RX 580 (gfx803): the RX 5700 XT routes since #11755, so it no longer plays the
-    # unrecognized card here.
+    # RX 580 (gfx803): the RX 5700 XT routes since #11755.
     adapters = [(_R780M, 0), ("AMD Radeon RX 580", 0)]
     assert _run(tmp_path, adapters, env = {var: "1", HANDOFF: "gfx1103"})["arch"] is None
 

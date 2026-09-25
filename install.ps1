@@ -8762,8 +8762,7 @@ exit 0
         # GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover:
         # RDNA 1 and Polaris 10/20/30 (unslothai#8529). Kept apart from $nameArchTable on
         # purpose: it only WORDS a message, never selects a wheel index. AMD's TheRock
-        # ships RDNA 1 wheels: those route through $multiArchGfx now (unslothai#11614), so
-    # only Polaris is left here; there are none for
+        # ships RDNA 1 wheels (routed via $multiArchGfx, unslothai#11614); none for
         # gfx803. The (?!0) guards stop "RX 570" swallowing an "RX 5700". Names from
         # LLVM's AMDGPU tables plus libdrm amdgpu.ids/pci.ids for the Navi 10/14
         # professional parts LLVM omits; nothing is guessed, so Polaris 11/12 (RX
@@ -8938,13 +8937,8 @@ exit 0
         "gfx1030" = "gfx103X-all"
         "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"        # MI200/MI100
     }
-    # RDNA 1 (gfx1010 / gfx1011 / gfx1012) has no repo.amd.com/rocm/whl family. AMD's
-    # multi-arch index (repo.amd.com/rocm/whl-multi-arch) carries per-card kernel packs for it
-    # instead (unslothai#11614): one URL for every device, the card picked by the
-    # torch[device-gfxNNNN] extra; pinned to one release tag, the newest inside the <2.12.0
-    # window (the index also serves 2.12.0); torchvision and torchaudio on the same tag. In
-    # sync with _WINDOWS_MULTIARCH_GFX / _ROCM_MULTIARCH_* in studio/install_python_stack.py
-    # (test_rdna1_multiarch_windows_route_11614.py).
+    # RDNA 1: AMD multi-arch index (unslothai#11614), card picked by torch[device-gfxNNNN], tag pinned
+    # to the newest <2.12.0. Keep in sync with _ROCM_MULTIARCH_* in studio/install_python_stack.py.
     $multiArchGfx = @("gfx1010", "gfx1011", "gfx1012")
     $MultiArchIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl-multi-arch" }
     $MultiArchTag = "rocm7.14.1"
@@ -9620,7 +9614,6 @@ exit 0
         $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
         $ROCmMultiArch = [bool]($ROCmGfxArch -and $multiArchGfx -contains $ROCmGfxArch)
         if ($ROCmMultiArch) {
-            # RDNA 1: AMD's multi-arch index, one exact release tag for the trio. No family leaf, no kept release.
             $ROCmIndexUrl = "$MultiArchIndexBase/"
             $ROCmTorchFloor = "torch[device-$ROCmGfxArch]==$MultiArchTorchVersion+$MultiArchTag"
             $PinnedRocmVisionSpec = "torchvision==$MultiArchTorchvisionVersion+$MultiArchTag"

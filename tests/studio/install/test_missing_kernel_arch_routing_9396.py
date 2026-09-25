@@ -160,8 +160,7 @@ def test_no_nameable_arch_is_left_without_kernels():
         for arch in nameable
         if arch not in stack_mod._GENERIC_ROCM_WHEEL_GFX
         and not stack_mod._generic_rocm_wheel_lacks_kernels(arch)
-        # RDNA 1 is named on the Windows table and routed there through the multi-arch
-        # index (#11755); it has no Linux route by design, so it is not stranded.
+        # RDNA 1 routes on Windows only (#11755), by design.
         and arch not in stack_mod._WINDOWS_MULTIARCH_GFX
     }
     assert stranded == set(), stranded

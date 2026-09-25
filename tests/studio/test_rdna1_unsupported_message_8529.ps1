@@ -125,8 +125,7 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
         }
         return $null
     }
-    # #11614: RDNA 1 routes on Windows through the multi-arch index, so the supported
-    # table owns it now.
+    # #11614: RDNA 1 is in the supported table now.
     Check "RX 5700 XT -> gfx1010 (supported)"      ((Resolve-Supported "AMD Radeon RX 5700 XT") -eq 'gfx1010')
     Check "RX 5600 XT -> gfx1010 (supported)"      ((Resolve-Supported "AMD Radeon RX 5600 XT") -eq 'gfx1010')
     Check "Radeon Pro W5700 -> gfx1010 (supported)" ((Resolve-Supported "AMD Radeon Pro W5700") -eq 'gfx1010')
@@ -414,9 +413,7 @@ Invoke-Expression (Get-AssignmentSource $installPath '$unsupportedNameArchTable'
 # block's own `$ROCmUnsupportedGfxArch = $row.A` land in that function's scope, so every
 # "claims nothing" case would pass without the guard existing at all.
 $guardCases = @(
-    # Since unslothai#11614 the RX 5700 XT ROUTES on Windows (multi-arch index), so the
-    # uncovered card these cases are built on is Polaris (#8458's RX 580, gfx803). RDNA 1 now
-    # plays the covered-peer part where a covered peer is needed.
+    # Since unslothai#11614 the uncovered card is Polaris (RX 580); RDNA 1 is a covered peer.
     # The reporter's host: one uncovered card, nothing else. The verdict must still be reached.
     @{ N = "lone RX 580 is still named gfx803"
        L = "AMD Radeon RX 580"; A = @("AMD Radeon RX 580"); E = 'gfx803' }

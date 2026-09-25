@@ -68,8 +68,7 @@ stack_mod = _load_stack_module()
 
 # The arch the messaging table owns on every platform. Nothing here may produce an index.
 _UNSUPPORTED_ARCHES = ["gfx803"]
-# RDNA 1 (unslothai/unsloth#11614): routed on Windows to AMD's multi-arch index,
-# still unrouted on Linux. The Linux-side bans below keep covering it.
+# RDNA 1 (#11614): routed on Windows, still unrouted on Linux.
 _RDNA1_ARCHES = ["gfx1010", "gfx1011", "gfx1012"]
 _RDNA1_ARCH_INPUTS = (
     _RDNA1_ARCHES + [a.upper() for a in _RDNA1_ARCHES] + [f"{a}:xnack-" for a in _RDNA1_ARCHES]
@@ -1040,9 +1039,7 @@ def test_the_five_unsupported_tables_agree_on_every_name():
     for source, got in answers.items():
         assert len(got) == len(names), f"{source}: {len(got)} answers for {len(names)} names"
 
-    # Since #11755 the Windows copies route RDNA 1 (no longer in their unsupported table)
-    # while the Linux copies still decline it: those names must disagree, in exactly that
-    # shape, and every other name must agree everywhere.
+    # Since #11755 only RDNA 1 names may disagree (Windows routes, Linux declines).
     _windows_sources = {"install_python_stack.py", "install.ps1", "setup.ps1"}
     _rdna1 = stack_mod._WINDOWS_MULTIARCH_GFX
     disagreements = []
