@@ -92,6 +92,7 @@ from .diffusion_speed import (
     apply_speed_optims,
     resolve_speed_mode,
     restore_backend_flags,
+    settle_compile_fallback,
     snapshot_backend_flags,
 )
 from .diffusion_auto_policy import (
@@ -4541,8 +4542,8 @@ class VideoBackend:
         attention_engaged = None
         # HunyuanVideo-1.5 only, and once for the whole pipe (the installer fans out over every denoiser DiT itself).
         # Before apply_attention_backend below, so the requested kernel pins onto the new processors. Held off on
-        # SPEED_OFF (which must stay bit-identical) and on SPEED_MAX (its blocks compile with dynamic=False, and the
-        # trimmed text length varies per prompt, so every prompt would be a fresh graph).
+        # SPEED_OFF (which must stay bit-identical) and on SPEED_MAX (its blocks compile static until a dimension
+        # changes, and the trimmed text length varies per prompt, so the first prompts would each recompile).
         attention_trim_engaged = (
             install_hunyuan_attention_trim(pipe, fam, logger = logger)
             if effective_speed not in (SPEED_OFF, SPEED_MAX)
@@ -5179,9 +5180,9 @@ class VideoBackend:
         # so "off" has to be known in time to decline it.
         effective_speed = resolve_speed_mode(speed_mode, is_gguf = False, dense_default = SPEED_DEFAULT)
         if effective_speed == SPEED_MAX:
-            # SPEED_MAX compiles with dynamic=False. H3's packed sequence length carries the caption's token rows, so a
-            # static graph recompiles per prompt: measured 0.957-1.000 s/step static against 1.000-1.040 dynamic, and
-            # two recompiles paid for it.
+            # SPEED_MAX compiles static until a dimension changes. H3's packed sequence length carries the caption's
+            # token rows, so a static graph recompiles on new prompts: measured 0.957-1.000 s/step static against
+            # 1.000-1.040 dynamic, and two recompiles paid for it.
             logger.info(
                 "video.speed_mode: MiniMax-H3 runs the 'default' regional profile under max "
                 "(a static graph retraces on the caption's contribution to the packed length)"
@@ -6371,6 +6372,11 @@ class VideoBackend:
                         except Exception:  # noqa: BLE001 -- cleanup is best-effort
                             pass
                     raise RuntimeError(VIDEO_CANCELLED_MSG) from None
+                finally:
+                    # A guarded compiled block that failed to build at its first forward now runs eager; the status
+                    # must not keep reporting it compiled (a forced-compile quantised load runs ~30x slower eager),
+                    # whether this render finished, was cancelled or failed.
+                    settle_compile_fallback(state, pipe, logger)
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
 

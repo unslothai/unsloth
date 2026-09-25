@@ -11,6 +11,7 @@ import {
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
 
+import type { CapabilityKey } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 // eslint-disable-next-line no-restricted-imports -- The settings barrel imports this feature back.
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
@@ -135,6 +136,8 @@ interface ModelSelectorProps {
   communityModelPolicy?: CommunityModelPolicy;
   /** The one opaque on-device artifact kind this task runtime may load. */
   opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
+  /** Hub filter the Search Hub button opens with. Also shows Search Hub on curated task pickers. */
+  hubCapability?: CapabilityKey;
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they
    *  pick so it reads as separate from the chat model. */
   placeholder?: string;
@@ -225,29 +228,44 @@ function ModelSelectorTrigger({
         ) : null}
         {/* A box-centred Hellix label sits above the icon's centre; drop it 0.05em to centre the caps. */}
         <span className="relative top-[0.05em] flex min-w-0 flex-1 items-baseline">
-          <span
-            className={cn(
-              "min-w-0 flex flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground",
-              triggerLabelClassName,
-            )}
-          >
-            {currentModel?.name ?? placeholder}
-            {showCloudIndicator ? (
-              <HugeiconsIcon
-                icon={CloudIcon}
-                strokeWidth={1.75}
-                className="relative top-[0.15625rem] ml-1.5 mr-[calc(0.36rem*var(--ui-space-scale,1))] size-3.5 shrink-0 text-muted-foreground"
-              />
-            ) : null}
-          </span>
-          {currentModel?.description && (
+          {/* Name and quant stay whole; only the description truncates. The suffix sits outside this
+              group, so even an over-long name leaves room for it. */}
+          <span className="flex min-w-0 items-baseline">
             <span
               className={cn(
-                "shrink-0 text-xs leading-none text-muted-foreground",
-                showCloudIndicator ? "" : "ml-2",
+                "flex max-w-full shrink-0 items-baseline whitespace-nowrap font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground",
+                triggerLabelClassName,
               )}
             >
-              {currentModel.description}
+              <span className="min-w-0 truncate">{currentModel?.name ?? placeholder}</span>
+              {showCloudIndicator ? (
+                <HugeiconsIcon
+                  icon={CloudIcon}
+                  strokeWidth={1.75}
+                  className="relative top-[0.15625rem] ml-1.5 mr-[calc(0.36rem*var(--ui-space-scale,1))] size-3.5 shrink-0 text-muted-foreground"
+                />
+              ) : null}
+            </span>
+            {currentModel?.description && (
+              <span
+                className={cn(
+                  "min-w-0 truncate text-xs leading-tight text-muted-foreground",
+                  showCloudIndicator ? "" : "ml-2",
+                )}
+              >
+                {currentModel.description}
+              </span>
+            )}
+          </span>
+          {currentModel?.descriptionSuffix && (
+            <span
+              className={cn(
+                "shrink-0 whitespace-nowrap text-xs leading-none text-muted-foreground",
+                !currentModel.description && !showCloudIndicator && "ml-2",
+              )}
+            >
+              {currentModel.description ? " - " : ""}
+              {currentModel.descriptionSuffix}
             </span>
           )}
         </span>
@@ -692,6 +710,7 @@ export function ModelSelector({
   catalog,
   communityModelPolicy = "none",
   opaqueKind,
+  hubCapability,
   placeholder,
   loaded,
 }: ModelSelectorProps) {
@@ -773,10 +792,11 @@ export function ModelSelector({
     // not the namespaced public id (#7966), matches the catalog row that later replaces this one.
     const fallbackName = missingExternal?.modelName ?? modelDisplayName(selected);
     if (activeGgufVariant) {
+      // The variant is the quant, so it goes in the suffix.
       const desc = `GGUF · ${activeGgufVariant}`;
       return found
-        ? { ...found, description: desc }
-        : { id: selected, name: fallbackName, description: desc };
+        ? { ...found, description: undefined, descriptionSuffix: desc }
+        : { id: selected, name: fallbackName, descriptionSuffix: desc };
     }
     if (missingExternal) {
       const disabled = missingExternal.state === "disabled";
@@ -820,7 +840,10 @@ export function ModelSelector({
 
   function handleBrowseHub() {
     setOpen(false);
-    void navigate({ to: "/hub", search: { tab: "discover" } });
+    void navigate({
+      to: "/hub",
+      search: { tab: "discover", capability: hubCapability },
+    });
   }
 
   // A Connected group's gear. What is configurable about a remote model lives on its connection,
@@ -864,10 +887,11 @@ export function ModelSelector({
         resolveDownloadFootprint={resolveDownloadFootprint}
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}
-        // A curated task picker (Images / Video) is self-contained, so it omits this. A
-        // community-enabled one (Audio) already lists past unsloth, so it keeps it.
+        // Curated task pickers show it only with a Hub filter; community-enabled ones always do.
         onBrowseHub={
-          task && communityModelPolicy === "none" ? undefined : handleBrowseHub
+          task && communityModelPolicy === "none" && !hubCapability
+            ? undefined
+            : handleBrowseHub
         }
         onConfigureConnection={handleConfigureConnection}
         onModelsChange={onModelsChange}
