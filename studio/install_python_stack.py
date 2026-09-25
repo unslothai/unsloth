@@ -327,7 +327,6 @@ def _multiarch_device_pack_installed(gfx_arch: "str | None") -> bool:
     """Whether the venv carries AMD's amd-torch-device-<gfx> kernel pack for this card."""
     try:
         from importlib import metadata
-
         metadata.distribution(f"amd-torch-device-{_bare_gfx(gfx_arch)}")
         return True
     except Exception:
