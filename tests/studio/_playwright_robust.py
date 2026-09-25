@@ -806,6 +806,12 @@ class _WallClockWatchdog:
         # to size against. `total_deadline_s` is a ceiling no kick moves, which makes that
         # bound a sum. Off by default: a ceiling is what cuts a wait off mid-flight.
         self._ceiling = started + float(total_deadline_s) if total_deadline_s else None
+        # The step now running, set by begin_step(). A watchdog nobody names a step to
+        # behaves exactly as before.
+        self.step_name: str | None = None
+        self.step_budget_s: float | None = None
+        self._step_started: float | None = None
+        self._step_ceiling: float | None = None
         self._deadline = self._clamp(started + self._budget_s)
         self._cancelled = threading.Event()
         self._thread = threading.Thread(target = self._run, daemon = True)
@@ -816,8 +822,22 @@ class _WallClockWatchdog:
         with self._lock:
             return self._ceiling is not None and self._deadline >= self._ceiling
 
+    def at_step_ceiling(self) -> bool:
+        """Did the running step's own budget, rather than inactivity, decide the deadline?"""
+        with self._lock:
+            return self._step_ceiling is not None and self._deadline >= self._step_ceiling
+
+    def step_elapsed_s(self) -> float | None:
+        """Seconds since the running step began, or None before the first begin_step()."""
+        with self._lock:
+            started = self._step_started
+        return None if started is None else time.monotonic() - started
+
     def _clamp(self, deadline: float) -> float:
-        return deadline if self._ceiling is None else min(deadline, self._ceiling)
+        for ceiling in (self._ceiling, self._step_ceiling):
+            if ceiling is not None:
+                deadline = min(deadline, ceiling)
+        return deadline
 
     def start(self) -> "_WallClockWatchdog":
         self._thread.start()
@@ -828,6 +848,23 @@ class _WallClockWatchdog:
         with self._lock:
             self.kicked = True
             self._deadline = self._clamp(time.monotonic() + self._budget_s)
+
+    def begin_step(self, name: str, budget_s: float | None = None) -> None:
+        """Step `name` starts now: a kick that also records what is running.
+
+        With `budget_s`, the step gets its own ceiling, which kicks inside the step cannot
+        move: a step that keeps reporting progress but never finishes still ends at
+        start + budget_s, and the exit names it. Without one, only the inactivity budget
+        applies, as before. The next begin_step() replaces both.
+        """
+        with self._lock:
+            now = time.monotonic()
+            self.kicked = True
+            self.step_name = name
+            self._step_started = now
+            self.step_budget_s = float(budget_s) if budget_s else None
+            self._step_ceiling = now + self.step_budget_s if self.step_budget_s else None
+            self._deadline = self._clamp(now + self._budget_s)
 
     def cancel(self) -> None:
         self._cancelled.set()
@@ -861,8 +898,13 @@ def install_wall_clock_watchdog(
         # A caller that kicks is measuring inactivity, one that does not is measuring the
         # whole run. Saying "no step" to a script that never reports one sends its reader
         # looking for a step that was never going to come.
+        step = watchdog.step_name
         if total_deadline_s and watchdog.at_ceiling():
             spent = f"hit the {total_deadline_s:.0f}s total cap"
+        elif step is not None and watchdog.at_step_ceiling():
+            spent = f"step {step!r} used its whole {watchdog.step_budget_s:.0f}s budget"
+        elif step is not None:
+            spent = f"{deadline_s:.0f}s with no progress in step {step!r}"
         elif watchdog.kicked:
             spent = f"{deadline_s:.0f}s with no step reported"
         else:
@@ -896,6 +938,125 @@ def install_wall_clock_watchdog(
     if info is not None:
         info(f"watchdog armed: hard-exit {deadline_s:.0f}s after the last step")
     return watchdog
+
+
+# Per-step budgets are sized for a hosted Linux runner. A slower lane stretches every one
+# of them at once with this, instead of each script growing its own knob.
+STEP_BUDGET_SCALE_ENV = "STUDIO_PW_STEP_BUDGET_SCALE"
+
+
+def step_budget_s(seconds: float) -> float:
+    """`seconds`, stretched by $STUDIO_PW_STEP_BUDGET_SCALE (default 1, never below 1)."""
+    try:
+        scale = float(os.environ.get(STEP_BUDGET_SCALE_ENV) or 1.0)
+    except ValueError:
+        scale = 1.0
+    return float(seconds) * max(1.0, scale)
+
+
+def report_failing_step(watchdog: _WallClockWatchdog, *, label: str = "playwright") -> None:
+    """On an uncaught exception, end the output with the step it happened in.
+
+    A step that times out raises, and the run stops there: nothing after it waits out its
+    own timeout. But the traceback names a line, and the reader wants the step. This adds
+    one line after it, `[label] FAIL in step 'X' after 12.3s: TimeoutError: ...`, taken
+    from the watchdog's begin_step() record. No step begun, nothing added.
+    """
+    previous = sys.excepthook
+
+    def _hook(exc_type, exc, tb) -> None:
+        previous(exc_type, exc, tb)
+        name = watchdog.step_name
+        if name is None or issubclass(exc_type, KeyboardInterrupt):
+            return
+        elapsed = watchdog.step_elapsed_s() or 0.0
+        first = (str(exc).strip().splitlines() or [""])[0][:300]
+        try:
+            sys.stderr.write(
+                f"[{label}] FAIL in step {name!r} after {elapsed:.1f}s: "
+                f"{exc_type.__name__}: {first}\n"
+            )
+            sys.stderr.flush()
+        except Exception:
+            pass
+
+    sys.excepthook = _hook
+
+
+def wait_until(
+    predicate: Callable[[], Any],
+    *,
+    timeout_s: float,
+    what: str,
+    interval_s: float = 0.1,
+    page: Any = None,
+) -> Any:
+    """Poll `predicate` until it returns something truthy, and return that.
+
+    Raises TimeoutError naming `what` and the last value seen once `timeout_s` passes, so
+    a wait that never comes true fails where it waited instead of at a later assertion.
+
+    Pass `page` whenever the predicate reads state that Playwright event handlers fill in
+    (`page.on("request", ...)` lists and the like). The sync API only dispatches events
+    while it is inside a Playwright call, so the pause between polls has to be
+    `page.wait_for_timeout`, not `time.sleep`, or the list never grows.
+    """
+    deadline = time.monotonic() + float(timeout_s)
+    while True:
+        value = predicate()
+        if value:
+            return value
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"{what}: still not true after {timeout_s:g}s (last value {value!r})")
+        if page is not None:
+            page.wait_for_timeout(interval_s * 1000.0)
+        else:
+            time.sleep(interval_s)
+
+
+# True once the element has kept the same box, with none of its (or its subtree's) Web
+# Animations / CSS transitions running, for `frames` animation frames in a row. The nonce
+# keeps one call's count from carrying into the next.
+_SETTLED_JS = """
+([el, frames, nonce]) => {
+    if (!el || !el.isConnected) return false;
+    const r = el.getBoundingClientRect();
+    const sig = [r.left, r.top, r.width, r.height].map((v) => Math.round(v * 10)).join(",");
+    const running = typeof el.getAnimations === "function"
+        && el.getAnimations({ subtree: true }).some((a) => a.playState === "running");
+    if (!window.__pwSettled) window.__pwSettled = new WeakMap();
+    const prev = window.__pwSettled.get(el);
+    const count = !running && prev && prev.nonce === nonce && prev.sig === sig ? prev.count + 1 : 0;
+    window.__pwSettled.set(el, { nonce, sig, count });
+    return count >= frames;
+}
+"""
+_settle_nonce = [0]
+
+
+def wait_for_settled(locator: Any, *, frames: int = 3, timeout_ms: int = 10_000) -> None:
+    """Wait for `locator.first` to stop moving: same box, nothing animating, `frames` frames running.
+
+    The condition behind "wait N ms for the transition / reflow to finish": a resize, an
+    expand, a slide-in. It returns as soon as the element is still, and on a runner slow
+    enough that N was not enough it keeps waiting instead of measuring mid-flight. Raises
+    Playwright's TimeoutError if the element never settles within `timeout_ms`.
+    """
+    _settle_nonce[0] += 1
+    target = locator.first
+    handle = target.element_handle(timeout = timeout_ms)
+    try:
+        target.page.wait_for_function(
+            _SETTLED_JS,
+            arg = [handle, int(frames), _settle_nonce[0]],
+            polling = "raf",
+            timeout = timeout_ms,
+        )
+    finally:
+        try:
+            handle.dispose()
+        except Exception:
+            pass
 
 
 def click_forced(
