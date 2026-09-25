@@ -3294,6 +3294,31 @@ def _guard_server_managed_messages(
             raise ChatMessageProtectedError("server-managed generation messages cannot be edited")
 
 
+def _settle_handed_off_generation(conn: sqlite3.Connection, message: dict) -> dict:
+    # The live tab hands off before settling, so an unsettled row would be replayed by generation
+    # recovery on the next load and its settle write would replace the research report.
+    metadata = message.get("metadata")
+    if not isinstance(metadata, dict):
+        return message
+    row = conn.execute(
+        """SELECT id, status, last_event_seq FROM chat_generation_runs
+           WHERE thread_id = ? AND assistant_message_id = ?
+             AND status IN ('cancelled', 'completed', 'failed')""",
+        (message["threadId"], str(message["id"])),
+    ).fetchone()
+    if row is None or metadata.get("generationRunId") != row["id"]:
+        return message
+    return {
+        **message,
+        "metadata": {
+            **metadata,
+            "generationStatus": row["status"],
+            "generationSeq": int(row["last_event_seq"]),
+            "generationSettled": True,
+        },
+    }
+
+
 def _detach_terminal_generation_for_edit(
     conn: sqlite3.Connection, thread_id: str, message: dict
 ) -> bool:
@@ -3640,6 +3665,8 @@ def upsert_chat_message(
             [message],
             allow_research_update = allow_research_update,
         )
+        if allow_research_update:
+            message = _settle_handed_off_generation(conn, message)
         _raise_if_chat_message_thread_conflicts(
             conn,
             message["threadId"],

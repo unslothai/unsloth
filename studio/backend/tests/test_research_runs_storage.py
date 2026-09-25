@@ -3067,7 +3067,7 @@ def test_create_run_rejects_a_completed_answer_even_beside_the_handoff(research_
     assert research_db.get_run("run-1") is None
 
 
-def _hand_off_from_generation(generation_status):
+def _hand_off_from_generation(generation_status, settled = None):
     # The chat generation that called the deep_research tool owns the assistant message first.
     conn = studio_db.get_connection()
     try:
@@ -3088,8 +3088,10 @@ def _hand_off_from_generation(generation_status):
                         "serverManaged": True,
                         "generationRunId": "gen-1",
                         "generationStatus": generation_status,
-                        "generationSeq": 3,
-                        "generationSettled": generation_status == "completed",
+                        "generationSeq": 3 if settled is not False else 2,
+                        "generationSettled": (
+                            generation_status == "completed" if settled is None else settled
+                        ),
                     }
                 ),
             ),
@@ -3116,6 +3118,36 @@ def test_update_assistant_writes_the_report_after_a_settled_generation_handoff(r
     # Only the research run is exempted: a plain client edit is still refused.
     with pytest.raises(studio_db.ChatMessageProtectedError):
         studio_db.upsert_chat_message({**message, "content": [{"type": "text", "text": "edit"}]})
+
+
+def test_research_report_survives_recovery_of_an_unsettled_handoff(research_home):
+    from core.research_runs import _update_assistant
+
+    # The live tab starts research straight after the stream, leaving its checkpoint unsettled.
+    run = _hand_off_from_generation("completed", settled = False)
+
+    _update_assistant(run, "final report", "completed")
+
+    message = studio_db.get_chat_message("thread-1", "assistant-1")
+    # A recovery follower replays the generation tail and settles at the run's last event.
+    recovered = {
+        **message,
+        "content": [{"type": "text", "text": "final report into it."}],
+        "metadata": {
+            **message["metadata"],
+            "generationSeq": 3,
+            "generationStatus": "completed",
+            "generationSettled": True,
+        },
+    }
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.upsert_chat_message(recovered)
+    stored = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert [part["text"] for part in stored["content"] if part["type"] == "text"] == [
+        "final report"
+    ]
+    assert stored["metadata"]["generationSettled"] is True
+    assert stored["metadata"]["researchStatus"] == "completed"
 
 
 def test_update_assistant_still_waits_for_an_active_generation(research_home):
