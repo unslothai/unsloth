@@ -801,9 +801,9 @@ def group_gguf_variant_files(entries) -> dict[str, tuple[str, int]]:
     """``variant key -> (first filename, size of that variant's shard family)``. *entries* is an iterable of ``(path, size)`` for main GGUFs only, already filtered of mmproj, drafters and big-endian builds. Sizes are summed across the shards of ONE family, never across families: a repo that ships the same quant twice (``BF16/QwQ-32B-BF16-*`` beside ``BF16/QwQ-32B.BF16-*``) therefore advertises what a load would actually read rather than the total of both copies. The family kept is the one holding the lexicographically first file, which is the shard the lister and the loader open."""
     families: dict[str, dict[tuple[str, int], list[tuple[str, int]]]] = {}
     for path, size in entries:
-        families.setdefault(gguf_variant_key(path), {}).setdefault(
-            gguf_shard_set(path), []
-        ).append((path, int(size or 0)))
+        families.setdefault(gguf_variant_key(path), {}).setdefault(gguf_shard_set(path), []).append(
+            (path, int(size or 0))
+        )
     grouped: dict[str, tuple[str, int]] = {}
     for key, by_family in families.items():
         chosen = min(by_family.values(), key = lambda members: min(path for path, _ in members))
