@@ -9,6 +9,7 @@ stack loads."""
 import builtins
 import contextlib
 import dataclasses
+import functools
 import sys
 import threading
 import time
@@ -4498,6 +4499,45 @@ def test_h3_modular_generation_ticks_and_cancels_through_the_scheduler(fake_runt
         backend.generate(prompt = "a fox", steps = 4)
     assert pipe.scheduler.calls == 1
     assert pipe.scheduler.step.__func__ is _FakeH3Scheduler.step
+
+
+def test_the_pipeline_call_runs_with_uint8_frames_on_every_family(
+    fake_runtime, tmp_path, monkeypatch
+):
+    active: list = []
+
+    @contextlib.contextmanager
+    def _frames(pipe):
+        active.append(pipe)
+        try:
+            yield
+        finally:
+            active.remove(pipe)
+
+    monkeypatch.setattr("core.inference.video.uint8_video_frames", _frames)
+    seen_inside: list = []
+    for backend, pipe in (
+        (_load_ltx23_from_dir(tmp_path), None),
+        (VideoBackend(), "h3"),
+    ):
+        if pipe == "h3":
+            pipe = _load_h3_modular(backend)
+        else:
+            pipe = backend._state.pipe
+        original_call = type(pipe).__call__
+
+        def _call(
+            self,
+            *a,
+            _orig = original_call,
+            **k,
+        ):
+            seen_inside.append(list(active) == [self])
+            return _orig(self, *a, **k)
+
+        monkeypatch.setattr(type(pipe), "__call__", functools.wraps(original_call)(_call))
+        backend.generate(prompt = "a fox", steps = 2)
+    assert seen_inside == [True, True] and active == []
 
 
 def test_h3_native_transcode_is_torch_free_and_keeps_audio(monkeypatch, tmp_path):
