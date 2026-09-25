@@ -16,7 +16,13 @@ import { isTauri } from "@/lib/api-base";
 import { downloadFile, downloadUrlStreaming, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { MAX_VIDEO_SIZE } from "@/lib/video-utils";
-import { type LibraryItem, errorMessage, libraryDownloadUrl, libraryItemFile } from "./api";
+import {
+  LibraryFileTooLarge,
+  type LibraryItem,
+  errorMessage,
+  libraryDownloadUrl,
+  libraryItemFile,
+} from "./api";
 import { fileKind } from "./file-kind";
 import { hasOwnFile, libraryFileName, uniqueFileNames } from "./file-name";
 import {
@@ -139,7 +145,7 @@ export async function chatAboutItems(
     return;
   }
   const fitting = items.filter(fitsInChat);
-  const tooLarge = items.length - fitting.length;
+  let tooLarge = items.length - fitting.length;
   if (fitting.length === 0) {
     toast.error(
       items.length === 1
@@ -153,9 +159,23 @@ export async function chatAboutItems(
   try {
     // One at a time, so a folder never holds ten downloads in flight at once.
     const files: File[] = [];
+    // Bounded as it reads: a size the listing did not know, or a file grown since, is only found here.
     for (const item of chosen) {
-      files.push(await libraryItemFile(item));
+      try {
+        files.push(await libraryItemFile(item, chatSizeLimit(item)));
+      } catch (error) {
+        if (!(error instanceof LibraryFileTooLarge)) throw error;
+        tooLarge += 1;
+      }
       if (getAuthSessionEpoch() !== epoch) return;
+    }
+    if (files.length === 0) {
+      toast.error(
+        chosen.length === 1
+          ? translate("library.toast.tooLargeOne", { name: chosen[0].name })
+          : translate("library.toast.tooLargeMany"),
+      );
+      return;
     }
     const leftOut = fitting.length - chosen.length;
     if (tooLarge > 0 || leftOut > 0) {
