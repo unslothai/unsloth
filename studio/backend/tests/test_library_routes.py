@@ -1814,3 +1814,18 @@ def test_a_stream_link_reads_only_its_own_accounts_item(client, two_accounts):
     owner_token = run_as(OWNER, library_routes._sign_stream_id, mine_id)
     response = stream.get("/api/library/items/stream", params = {"id": mine_id, "token": owner_token})
     assert response.status_code == 404
+
+
+def test_favorites_check_a_gallery_file_without_decoding_it(client, monkeypatch):
+    from core.inference import image_gallery
+
+    image = _gallery_image("A star")
+    client.patch("/api/library/items", json = {"id": f"image:{image}", "favorite": True})
+    reads = []
+    real = image_gallery._read_meta
+    monkeypatch.setattr(image_gallery, "_read_meta", lambda path: reads.append(path) or real(path))
+    # The Images, Video and Audio pages ask this for every star each time they open.
+    assert f"image:{image}" in client.get("/api/library/favorites").json()["ids"]
+    assert reads == []
+    image_gallery.image_path(image).unlink()
+    assert f"image:{image}" not in client.get("/api/library/favorites").json()["ids"]
