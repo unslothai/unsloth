@@ -46,6 +46,15 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # Added in place: a studio.db from before it keeps its rows, fingerprinted on first sight.
+    entry_columns = {row["name"] for row in conn.execute("PRAGMA table_info(library_entries)")}
+    if "fingerprint" not in entry_columns:
+        try:
+            conn.execute("ALTER TABLE library_entries ADD COLUMN fingerprint TEXT")
+        except sqlite3.OperationalError as exc:
+            # Another process opening the same database added it first.
+            if "duplicate column" not in str(exc).lower():
+                raise
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS library_uploads (
@@ -244,6 +253,7 @@ def list_entries() -> dict[str, dict]:
                 "favorite": bool(row["favorite"]),
                 "folderId": row["folder_id"],
                 "updatedAt": row["updated_at"],
+                "fingerprint": row["fingerprint"],
             }
             for row in rows
         }
@@ -258,7 +268,10 @@ def update_entry(
     favorite: Optional[bool] = None,
     folder_id: Optional[str] = None,
     move: bool = False,
+    fingerprint: Optional[str] = None,
 ) -> None:
+    """Write an item's overlay. ``fingerprint`` is the file a path-derived id names right now: a
+    row kept for another file at that path is dropped before the write, not carried over."""
     conn = get_connection()
     try:
         _lock(conn)
@@ -271,10 +284,20 @@ def update_entry(
         ):
             raise KeyError(folder_id)
         now = _now_ms()
+        if fingerprint is not None:
+            conn.execute(
+                "DELETE FROM library_entries WHERE item_id = ? AND fingerprint IS NOT NULL AND fingerprint != ?",
+                (item_id, fingerprint),
+            )
         conn.execute(
             "INSERT OR IGNORE INTO library_entries (item_id, updated_at) VALUES (?, ?)",
             (item_id, now),
         )
+        if fingerprint is not None:
+            conn.execute(
+                "UPDATE library_entries SET fingerprint = ? WHERE item_id = ?",
+                (fingerprint, item_id),
+            )
         if name is not None:
             conn.execute("UPDATE library_entries SET name = ? WHERE item_id = ?", (name, item_id))
         if favorite is not None:
@@ -287,6 +310,27 @@ def update_entry(
                 "UPDATE library_entries SET folder_id = ? WHERE item_id = ?", (folder_id, item_id)
             )
         conn.execute("UPDATE library_entries SET updated_at = ? WHERE item_id = ?", (now, item_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def reconcile_entries(adopt: list[tuple[str, str]], stale: list[tuple[str, str]]) -> None:
+    """Fingerprint legacy rows with the file found at their path (``adopt``), and drop rows kept
+    for a file since replaced (``stale``). Each only while the row still reads as the listing saw
+    it, so a write that landed in between is kept."""
+    if not adopt and not stale:
+        return
+    conn = get_connection()
+    try:
+        conn.executemany(
+            "UPDATE library_entries SET fingerprint = ? WHERE item_id = ? AND fingerprint IS NULL",
+            [(fingerprint, item_id) for item_id, fingerprint in adopt],
+        )
+        conn.executemany(
+            "DELETE FROM library_entries WHERE item_id = ? AND fingerprint = ?",
+            stale,
+        )
         conn.commit()
     finally:
         conn.close()
