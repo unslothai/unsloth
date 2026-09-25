@@ -57,6 +57,8 @@ _HTML_BLOCK_TAGS = frozenset(
     " td text textarea th title tr ul xmp".split()
 )
 _HTML_PRE_TAGS = frozenset(("listing", "plaintext", "pre", "textarea", "xmp"))
+# Atomic inline boxes: their text never runs into a neighbour's, but they do not break the line.
+_HTML_BOX_TAGS = frozenset(("button", "img", "input", "select"))
 
 
 class _Stripper(HTMLParser):
@@ -84,6 +86,8 @@ class _Stripper(HTMLParser):
             self._flush()
             if tag in _HTML_PRE_TAGS:
                 self._pre += 1
+        elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:
+            self._line.append(" ")
 
     def handle_endtag(self, tag):
         if tag in _HTML_SKIP_TAGS:
@@ -93,6 +97,8 @@ class _Stripper(HTMLParser):
             self._flush()
             if tag in _HTML_PRE_TAGS and self._pre:
                 self._pre -= 1
+        elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:
+            self._line.append(" ")
 
     def handle_data(self, data):
         if not self._skip:

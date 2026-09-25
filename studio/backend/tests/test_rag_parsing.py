@@ -350,6 +350,13 @@ def test_html_keeps_inline_elements_in_their_line(tmp_path):
     assert text == "The quick brown fox jumps over the lazy dog.\nIt is unbelievable."
 
 
+def test_html_adjacent_buttons_stay_separate_words(tmp_path):
+    text = _parse_html(
+        tmp_path, "<p>Click <button>Accept</button><button>Decline</button> to go on.</p>"
+    )
+    assert text == "Click Accept Decline to go on."
+
+
 def test_html_block_elements_start_new_lines(tmp_path):
     text = _parse_html(
         tmp_path,
