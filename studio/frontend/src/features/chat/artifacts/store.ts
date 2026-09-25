@@ -22,13 +22,27 @@ export function clearAutoOpenedArtifacts(): void {
 type ChatArtifactsState = {
   artifactsById: Record<string, ChatArtifact>;
   selectedArtifactId: string | null;
+  // Bumped on every open, including reopening the one already selected, which is
+  // otherwise invisible to anything watching the selected ID.
+  openSequence: number;
   surface: ChatArtifactSurface;
-  // View the surface should show on the next open (Preview vs Code button).
+  // View the surface should show on the next open (Preview vs Code button), and the one
+  // it is showing now once it is open.
   requestedView: ArtifactViewMode;
   openArtifact: (
     artifact: ChatArtifact,
     options?: { surface?: ChatArtifactSurface; view?: ArtifactViewMode },
   ) => void;
+  // The open surface switched views from its own header. Written back so the card that
+  // opened it can still tell "already on screen" from "switch to the other one".
+  setArtifactView: (view: ArtifactViewMode) => void;
+  // Text the canvas's Fix button wants in the composer, waiting for a component that has a
+  // composer to reach. The fullscreen overlay renders outside the chat runtime, so it
+  // cannot stage the text itself; it leaves it here and the thread picks it up. Never sent,
+  // only typed in: the user reads it and presses send.
+  pendingFixPrompt: string | null;
+  stageFixPrompt: (prompt: string) => void;
+  clearFixPrompt: () => void;
   updateArtifact: (artifact: ChatArtifact) => void;
   closeArtifactSurface: () => void;
   clearArtifactsForThread: (threadId: string | null | undefined) => void;
@@ -39,6 +53,7 @@ type ChatArtifactsState = {
 export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
   artifactsById: {},
   selectedArtifactId: null,
+  openSequence: 0,
   surface: "panel",
   requestedView: "preview",
   openArtifact: (artifact, options) =>
@@ -48,9 +63,14 @@ export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
         [artifact.id]: artifact,
       },
       selectedArtifactId: artifact.id,
+      openSequence: state.openSequence + 1,
       surface: options?.surface ?? state.surface,
       requestedView: options?.view ?? "preview",
     })),
+  setArtifactView: (view) => set({ requestedView: view }),
+  pendingFixPrompt: null,
+  stageFixPrompt: (prompt) => set({ pendingFixPrompt: prompt }),
+  clearFixPrompt: () => set({ pendingFixPrompt: null }),
   updateArtifact: (artifact) =>
     set((state) =>
       state.artifactsById[artifact.id]
@@ -100,6 +120,7 @@ export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
       artifactsById: {},
       selectedArtifactId: null,
       surface: "panel",
+      pendingFixPrompt: null,
     }),
 }));
 

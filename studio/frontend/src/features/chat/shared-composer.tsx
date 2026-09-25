@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useChatArtifactsStore } from "./artifacts/store";
 import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
 import {
   clearedServerTuningState,
@@ -584,6 +585,27 @@ export function SharedComposer({
     navigate({ to: "/chat" });
   }, [navigate, onExitCompare]);
   const [text, setText] = useState("");
+  // This is the composer on screen in compare mode, and it keeps its draft here rather than
+  // in the chat runtime, so a canvas's Fix button cannot reach it the way it reaches a single
+  // chat's. It leaves the text in the artifacts store instead and this picks it up. Staged
+  // only: nothing is sent until the user presses send.
+  const pendingFixPrompt = useChatArtifactsStore(
+    (state) => state.pendingFixPrompt,
+  );
+  useEffect(() => {
+    if (!pendingFixPrompt) return;
+    useChatArtifactsStore.getState().clearFixPrompt();
+    setText((current) =>
+      current.trim().length > 0
+        ? `${current}\n\n${pendingFixPrompt}`
+        : pendingFixPrompt,
+    );
+    window.setTimeout(() => {
+      document
+        .querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)
+        ?.focus();
+    }, 0);
+  }, [pendingFixPrompt]);
   const [running, setRunning] = useState(false);
   const [comparing, setComparing] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);

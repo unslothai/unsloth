@@ -108,6 +108,7 @@ import {
   PencilEdit02Icon,
   Telescope02Icon,
 } from "@hugeicons/core-free-icons";
+import { useAui } from "@assistant-ui/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
@@ -355,6 +356,35 @@ const SingleContent = memo(function SingleContent({
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const isMobile = useIsMobile();
   const chatActive = useChatActive();
+  // A canvas's Fix button leaves its text here rather than typing it itself, because the
+  // fullscreen overlay renders outside this provider and has no composer to reach. This
+  // runs inside it, so it does the typing. Still never sends: the user reads it first.
+  const aui = useAui();
+  // Compare mode keeps this view mounted and hidden behind its own panes, and its composer
+  // with it. Typing into that one would drop the text into a box nobody can see, so the
+  // backgrounded copy leaves the prompt for whoever is on screen: SharedComposer takes it
+  // in compare, this effect once the view is foreground again.
+  const pendingFixPrompt = useChatArtifactsStore(
+    (state) => state.pendingFixPrompt,
+  );
+  useEffect(() => {
+    if (!pendingFixPrompt || !chatActive) return;
+    useChatArtifactsStore.getState().clearFixPrompt();
+    const composer = aui.composer();
+    const current = composer.getState().text;
+    composer.setText(
+      current.trim().length > 0
+        ? `${current}\n\n${pendingFixPrompt}`
+        : pendingFixPrompt,
+    );
+    // The overlay hands focus back to its opener as it unmounts, so the composer takes
+    // focus after that, not before.
+    window.setTimeout(() => {
+      document
+        .querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)
+        ?.focus();
+    }, 0);
+  }, [pendingFixPrompt, aui, chatActive]);
   const openResearchRunId = useResearchRunStore((state) => state.openRunId);
   const closeResearchPanel = useResearchRunStore((state) => state.closePanel);
   useEffect(() => {
@@ -370,6 +400,25 @@ const SingleContent = memo(function SingleContent({
       : undefined,
   );
   const artifactPanelRef = useRef<PanelImperativeHandle | null>(null);
+  // The width the user dragged to, so hiding and reopening the panel gives it back
+  // rather than snapping to the default every time. Sampled when a drag ends, never
+  // from the panel's onResize: that fires on every frame of the open and close
+  // animations too, so closing would record whatever width the animation passed
+  // through on its way to zero.
+  const artifactPanelWidthRef = useRef<string | null>(null);
+  const rememberArtifactPanelWidth = useCallback(() => {
+    const size = artifactPanelRef.current?.getSize().asPercentage;
+    if (size == null) return;
+    // Dragged shut, which is a close however far the drag actually got. Say so rather
+    // than leaving a zero-width panel still holding the selected artifact: the artifact
+    // card reads that to decide whether a click opens or hides, so it would spend the
+    // next click hiding something already invisible.
+    if (size <= 5) {
+      onCloseArtifact();
+      return;
+    }
+    artifactPanelWidthRef.current = `${size}%`;
+  }, [onCloseArtifact]);
   const hasInitializedArtifactPanelRef = useRef(false);
   const [isArtifactLayoutAnimating, setIsArtifactLayoutAnimating] =
     useState(false);
@@ -398,6 +447,35 @@ const SingleContent = memo(function SingleContent({
     isArtifactPanelLayoutActive &&
     !isArtifactLayoutAnimating;
 
+  // A width belongs to the chat it was dragged in. Another thread, or a new one,
+  // starts from the default.
+  const artifactPanelThread = threadId ?? activeThreadId ?? null;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: resetting is the effect
+  useEffect(() => {
+    artifactPanelWidthRef.current = null;
+  }, [artifactPanelThread]);
+
+  // A panel left shut with showContextPanel still true never runs the layout effect
+  // below again, so opening an artifact would resize nothing. The handle reports its own
+  // drags as a close, which covers that; this covers a collapse that arrived any other
+  // way. Keyed on the open count rather than the artifact: reopening the selected one is
+  // the common way to hit this, and its ID does not change.
+  const artifactOpenSequence = useChatArtifactsStore(
+    (state) => state.openSequence,
+  );
+  useEffect(() => {
+    if (!showContextPanel || artifactOpenSequence === 0) return;
+    const panel = artifactPanelRef.current;
+    if (!panel) return;
+    // A drag can stop just short of the collapse threshold, which is shut as far as
+    // anyone looking at it is concerned.
+    if (!panel.isCollapsed() && panel.getSize().asPercentage > 5) return;
+    // expand() alone restores the width from before the collapse, which for a panel
+    // dragged to nothing is nothing.
+    panel.expand();
+    panel.resize(artifactPanelWidthRef.current ?? ARTIFACT_PANEL_DEFAULT_SIZE);
+  }, [artifactOpenSequence, showContextPanel]);
+
   useEffect(() => {
     const panel = artifactPanelRef.current;
     if (!panel) return;
@@ -417,7 +495,11 @@ const SingleContent = memo(function SingleContent({
     let resizeFrameId = 0;
     const prepFrameId = window.requestAnimationFrame(() => {
       resizeFrameId = window.requestAnimationFrame(() => {
-        panel.resize(showContextPanel ? ARTIFACT_PANEL_DEFAULT_SIZE : "0%");
+        panel.resize(
+          showContextPanel
+            ? (artifactPanelWidthRef.current ?? ARTIFACT_PANEL_DEFAULT_SIZE)
+            : "0%",
+        );
       });
     });
     const surfaceTimerId = showContextPanel
@@ -476,6 +558,12 @@ const SingleContent = memo(function SingleContent({
         </ResizablePanel>
         <ResizableHandle
           withHandle={false}
+          onPointerDown={() => {
+            window.addEventListener("pointerup", rememberArtifactPanelWidth, {
+              once: true,
+            });
+          }}
+          onKeyUp={rememberArtifactPanelWidth}
           className={cn(
             "relative z-30 -ml-1 -mr-4 w-5 bg-transparent transition-[width,margin] duration-[260ms] ease-[var(--ease-out-cubic)] hover:bg-transparent hover:shadow-none active:bg-transparent active:shadow-none focus-visible:bg-transparent focus-visible:shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:outline-none",
             !artifactLayoutActive &&
