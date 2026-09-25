@@ -5248,6 +5248,19 @@ def test_declined_dense_without_loras_still_falls_back_to_gguf(
     assert backend.status()["transformer_quant"] is None  # GGUF-as-is fallback
 
 
+def test_an_uncompilable_gguf_baking_loras_keeps_the_dense_build(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _decline_dense_quant(backend, monkeypatch, tmp_path)
+    monkeypatch.setattr(dmod, "family_compiles_regionally", lambda _fam: False)
+    monkeypatch.setattr(dmod, "_plan_proves_resident", lambda _plan: True)
+    with pytest.raises(RuntimeError, match = "LoRA adapters could not be applied"):
+        _load_m(backend, tmp_path, loras = [("adapter", 1.0)])
+
+
 class _BakePipe:
     def __init__(self):
         self.calls: list = []

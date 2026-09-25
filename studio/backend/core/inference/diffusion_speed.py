@@ -283,6 +283,30 @@ def fp16_compile_explicit_only(target: Any) -> bool:
     return _is_float16(getattr(target, "dtype", None))
 
 
+def family_compiles_regionally(family: Any) -> bool:
+    """False only for an EMPTY ``_repeated_blocks`` (``compile_repeated_blocks`` raises); unknown reads True."""
+    if getattr(family, "denoiser_attr", "transformer") != "transformer":
+        return True
+    name = getattr(family, "transformer_class", None)
+    if not isinstance(name, str) or not name:
+        return True
+    # Called before load_pipeline's guard; `import diffusers` imports torch._dynamo, so wait for the torch warm.
+    try:
+        from loggers import get_logger
+        from utils.torch_warmup import close_dynamo_import_window
+        close_dynamo_import_window(get_logger(__name__))
+    except Exception:  # noqa: BLE001, S110 - optimisation only
+        pass
+    try:
+        import diffusers
+        cls = getattr(diffusers, name, None)
+    except Exception:  # noqa: BLE001 - an unanswerable probe keeps today's behaviour
+        return True
+    if cls is None or not hasattr(cls, "_repeated_blocks"):
+        return True
+    return bool(cls._repeated_blocks)
+
+
 def _is_bfloat16(dtype: Any) -> bool:
     try:
         import torch
