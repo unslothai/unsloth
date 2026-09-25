@@ -1197,6 +1197,36 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
     backend.unload()
 
 
+def test_deferred_speed_stays_off_when_only_an_explicit_tier_may_compile(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion as dmod
+
+    seen = []
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
+    monkeypatch.setattr(
+        dmod, "fp16_compile_explicit_only", lambda target: seen.append(target) or True
+    )
+    engaged = []
+    monkeypatch.setattr(
+        DiffusionBackend, "_engage_deferred_speed", lambda self, state: engaged.append(1)
+    )
+    monkeypatch.setattr(dmod.compile_cache, "begin", lambda **k: None)
+
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    status = _load_into(
+        backend, tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image"
+    )
+    assert seen
+    assert status["resolved"]["speed_mode"]["value"] == "off"
+    for p in ("one", "two", "three"):
+        backend.generate(prompt = p)
+    assert engaged == []
+    assert backend.status()["speed_mode"] == "off"
+    backend.unload()
+
+
 def test_deferred_speed_skips_when_lora_requested(fake_runtime, tmp_path, monkeypatch):
     # A compiled transformer rejects LoRA, so the deferral must skip while a LoRA is requested.
     from core.inference import diffusion as dmod
