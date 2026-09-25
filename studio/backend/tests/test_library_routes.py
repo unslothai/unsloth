@@ -3,6 +3,7 @@
 
 import base64
 import io
+import json
 import os
 import sqlite3
 import sys
@@ -286,16 +287,67 @@ def test_chat_attachments_holding_bytes_are_known_by_their_type_in_any_case(clie
     def attachment(attachment_id, content_type):
         return {"messageId": "m", "id": attachment_id, "type": "file", "contentType": content_type}
 
+    # A compare chat's audio part is typed by the inventory at best, and may carry no type at all.
+    voice = {"messageId": "m:1", "id": "voice", "type": "audio", "contentType": None}
     monkeypatch.setattr(library, "_SOURCES", (library._attachment_items,))
     monkeypatch.setattr(
         studio_db,
         "list_chat_attachments",
-        lambda: [attachment("clip", "Video/WebM; codecs=vp9"), attachment("words", "Text/Plain")],
+        lambda: [
+            attachment("clip", "Video/WebM; codecs=vp9"),
+            attachment("words", "Text/Plain"),
+            voice,
+        ],
     )
     items = _items(client)[0]
     clip, words = items["attachment:m:clip"], items["attachment:m:words"]
     assert (clip["contentType"], clip["textOnly"]) == ("video/webm", False)
     assert (words["contentType"], words["textOnly"]) == ("text/plain", True)
+    # Any string is a message id: encoded, so the colon in it is not the one after it.
+    assert items["attachment:m%3A1:voice"]["textOnly"] is False
+    deleted = []
+    monkeypatch.setattr(studio_db, "delete_chat_attachment", lambda *ids: deleted.append(ids) or 1)
+    assert _delete(client, "attachment:m%3A1:voice") == 200
+    assert deleted == [("m:1", "voice")]
+
+
+def test_a_chat_audio_part_is_typed_by_its_format_or_its_bytes():
+    from storage.studio_db import _content_part_attachments
+
+    def typed(audio):
+        [part] = _content_part_attachments(json.dumps([{"type": "audio", "audio": audio}]))
+        return part["contentType"]
+
+    wav = base64.b64encode(b"RIFF\0\0\0\0WAVEfmt ").decode()
+    assert typed(wav) == "audio/wav"
+    assert typed(base64.b64encode(b"ID3\3\0\0\0\0\0\0\0\0").decode()) == "audio/mpeg"
+    assert typed({"data": wav, "format": "flac"}) == "audio/flac"
+    assert typed(f"data:audio/ogg;base64,{wav}") == "audio/ogg"
+    assert typed(base64.b64encode(b"not a sound at all").decode()) is None
+
+
+def test_a_gallery_file_that_cannot_be_deleted_keeps_its_name_star_and_folder(client, monkeypatch):
+    from core.inference import audio_gallery
+
+    monkeypatch.setattr(library, "_SOURCES", (library._audio_items,))
+    item_id = f"audio:{_gallery_audio('Kept')}"
+    _patch(client, id = item_id, name = "Renamed", favorite = True)
+    # As on Windows while another app has it open: the gallery keeps it for another try.
+    monkeypatch.setattr(audio_gallery, "delete", lambda _ref: False)
+    assert _delete(client, item_id) == 500
+    item = _items(client)[0][item_id]
+    assert (item["name"], item["favorite"]) == ("Renamed", True)
+
+
+def test_a_sandbox_file_written_twice_in_a_second_is_a_new_version(client, signed_in, monkeypatch):
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    _directory, path = _sandbox_chat("frame.png", b"one")
+    versions = []
+    for ns in (1_700_000_000_100_000_000, 1_700_000_000_600_000_000):
+        os.utime(path, ns = (ns, ns))
+        library.invalidate_listing()
+        versions.append(_items(client)[0]["sandbox:t-lib:frame.png"]["updatedAt"])
+    assert versions == [1_700_000_000_100, 1_700_000_000_600]
 
 
 def test_generated_audio_and_video_are_listed_and_deleted(client, monkeypatch):

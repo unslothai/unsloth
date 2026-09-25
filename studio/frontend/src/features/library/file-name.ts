@@ -8,8 +8,10 @@ import { isTextAttachmentName } from "../chat/text-attachment-accept.ts";
 const INVALID_CHARS = new Set('<>:"/\\|?*');
 // Device names Windows reserves whatever the extension: CON.txt opens the console.
 const RESERVED_STEM = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]|conin\$|conout\$)$/i;
-// Well inside every file system's 255, with room for a "(1)" the browser may add.
-const MAX_NAME_CHARS = 200;
+// Well inside every file system's 255 (UTF-8 bytes on Linux and macOS, UTF-16 units on Windows),
+// with room for a "(1)" the browser may add.
+const MAX_NAME_BYTES = 200;
+const utf8 = new TextEncoder();
 const FALLBACK_STEM = "file";
 const OPAQUE_TYPE = "application/octet-stream";
 
@@ -48,8 +50,17 @@ export function libraryFileName(item: {
   let stem = base.trim() ? base : FALLBACK_STEM;
   // The device check reads up to the first dot: "con.backup.txt" is reserved too.
   if (RESERVED_STEM.test(stem.split(".", 1)[0]!.trim())) stem = `_${stem}`;
-  if (stem.length + suffix.length > MAX_NAME_CHARS) {
-    stem = clean(stem.slice(0, Math.max(1, MAX_NAME_CHARS - suffix.length)));
+  const budget = MAX_NAME_BYTES - utf8.encode(suffix).length;
+  if (utf8.encode(stem).length > budget) {
+    // By whole characters, so none is cut in half; at least the first is kept.
+    let cut = "";
+    let bytes = 0;
+    for (const char of stem) {
+      bytes += utf8.encode(char).length;
+      if (bytes > budget && cut) break;
+      cut += char;
+    }
+    stem = clean(cut) || FALLBACK_STEM;
   }
   return `${stem}${suffix}`;
 }

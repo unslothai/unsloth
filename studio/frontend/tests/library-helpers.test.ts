@@ -54,8 +54,10 @@ table("a renamed item saves under a name every OS takes, with its file's extensi
   // Text-only chat uploads say so with .txt.
   [["paper.pdf", undefined, true], "paper.pdf.txt"],
   [["notes.txt", undefined, true], "notes.txt"],
-  // A very long name is cut to 200, keeping its extension.
+  // A very long name is cut to 200 bytes of UTF-8, keeping its extension and whole characters.
   [["x".repeat(400), "a.jsonl"], `${"x".repeat(194)}.jsonl`],
+  [["字".repeat(200), "a.txt"], `${"字".repeat(65)}.txt`],
+  [["😀".repeat(100), "a.png"], `${"😀".repeat(49)}.png`],
 ]);
 
 test("names in one download are made unique, ignoring case", () => {

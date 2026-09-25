@@ -6,6 +6,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as fflate from "fflate";
 import * as zustand from "zustand";
 import * as zustandMiddleware from "zustand/middleware";
 
@@ -15,6 +16,7 @@ import { loadWithStubs } from "./helpers/module-stubs.ts";
 // The modules listen for sign-out when they load, so the window has to exist first.
 const { fireWindowEvent } = installLocalStorageFake();
 const SIGNED_OUT = "unsloth:auth-session-cleared";
+const { uniqueFileNames } = await import("../src/features/library/file-name.ts");
 const { attachLibraryChatFiles, useLibraryChatHandoffStore } = await import(
   "../src/features/library/chat-handoff-store.ts"
 );
@@ -188,28 +190,24 @@ test("deleting a chat attachment tells an open chat to drop it", async () => {
   const emitted: unknown[] = [];
   const store = loadStore(
     {
-      getLibrary: async () => ({ items: [item("attachment:m-1:content-part-x")], folders: [] }),
+      getLibrary: async () => ({ items: [item("attachment:m%3A1:content-part-x")], folders: [] }),
       deleteLibraryItem: async () => {},
     },
     emitted,
   );
   await store.getState().refresh();
-  await store.getState().removeItem("attachment:m-1:content-part-x");
+  // The message id comes encoded, as any string can be one.
+  await store.getState().removeItem("attachment:m%3A1:content-part-x");
   await store.getState().removeItem("upload:a");
-  assert.deepEqual(emitted, [{ messageId: "m-1", attachmentId: "content-part-x" }]);
+  assert.deepEqual(emitted, [{ messageId: "m:1", attachmentId: "content-part-x" }]);
 });
 
-test("a browser download with a file of unknown size goes one by one, never as a zip", async () => {
-  const saved: string[] = [];
+function loadDownloads(fflate: object, saved: (File | Blob)[], fileNames: object) {
   const toast = Object.assign(() => {}, { loading: () => 0, dismiss: () => {}, error: () => {} });
-  const { downloadLibraryItems } = loadWithStubs<{
+  return loadWithStubs<{
     downloadLibraryItems: (items: { name: string; sizeBytes: number | null }[]) => Promise<void>;
   }>(new URL("../src/features/library/actions.ts", import.meta.url), {
-    fflate: {
-      zipSync: () => {
-        throw new Error("zipped in memory");
-      },
-    },
+    fflate,
     "@/features/auth": { getAuthSessionEpoch: () => 0 },
     "@/features/chat": {},
     "@/features/model-picker": {},
@@ -217,20 +215,41 @@ test("a browser download with a file of unknown size goes one by one, never as a
     "@/lib/audio-utils": {},
     "@/lib/api-base": { isTauri: false },
     "@/lib/native-files": {
-      downloadFile: async (f: File) => saved.push(f.name),
+      downloadFile: async (f: File | Blob) => saved.push(f),
       isDownloadCancelled: () => false,
     },
     "@/lib/toast": { toast },
     "@/lib/video-utils": {},
     "./api": { errorMessage: String, libraryItemFile: async (i: { name: string }) => file(i.name) },
     "./file-kind": {},
-    "./file-name": { hasOwnFile: () => true, uniqueFileNames: (n: string[]) => n },
+    "./file-name": { hasOwnFile: () => true, ...fileNames },
     "./chat-handoff-store": {},
     "./start-chat": {},
+  }).downloadLibraryItems;
+}
+
+test("a browser download with a file of unknown size goes one by one, never as a zip", async () => {
+  const saved: File[] = [];
+  const zipSync = () => {
+    throw new Error("zipped in memory");
+  };
+  const downloadLibraryItems = loadDownloads({ zipSync }, saved, {
+    uniqueFileNames: (n: string[]) => n,
   });
   await downloadLibraryItems([
     { name: "a.txt", sizeBytes: 10 },
     { name: "clip.webm", sizeBytes: null },
   ]);
-  assert.deepEqual(saved, ["a.txt", "clip.webm"]);
+  assert.deepEqual(names(saved), ["a.txt", "clip.webm"]);
+});
+
+test("a file named __proto__ is kept in a zipped download", async () => {
+  const saved: Blob[] = [];
+  const downloadLibraryItems = loadDownloads(fflate, saved, { uniqueFileNames });
+  await downloadLibraryItems([
+    { name: "__proto__", sizeBytes: 1 },
+    { name: "a.txt", sizeBytes: 1 },
+  ]);
+  const archive = fflate.unzipSync(new Uint8Array(await saved[0]!.arrayBuffer()));
+  assert.deepEqual(Object.keys(archive), ["__proto__ (2)", "a.txt"]);
 });
