@@ -868,3 +868,16 @@ def test_a_stop_during_the_sandbox_probe_reads_as_a_cancel(monkeypatch, executor
     else:
         out = tools._bash_exec("echo never", cancel, 60, _SESSION)
     assert out == "Execution cancelled."
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat /srv/private/report.txt",
+        "cat $'/srv/private/report.txt'",
+        "cat $'/srv/private/rep\\x6frt.txt'",
+    ],
+)
+def test_an_approved_ansi_c_quoted_host_path_is_recognised(command):
+    """The approval classifier decodes $'...' and prompts; the reach check must agree, or the approved call stays jailed."""
+    assert tools._reaches_host_paths("terminal", command)
