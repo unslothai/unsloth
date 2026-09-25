@@ -18572,8 +18572,12 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 attempt, is_running = _cancel_scoped_load_attempt(request, current_subject)
                 if attempt is not None and is_running:
                     try:
-                        if npu is not None and await asyncio.to_thread(npu.cancel_load, requested_id):
-                            logger.info(f"Cancelled scoped in-flight NPU load: {request.model_path}")
+                        if npu is not None and await asyncio.to_thread(
+                            npu.cancel_load, requested_id
+                        ):
+                            logger.info(
+                                f"Cancelled scoped in-flight NPU load: {request.model_path}"
+                            )
                     finally:
                         attempt.cancel_complete.set()
                 return UnloadResponse(status = "unloaded", model = request.model_path)

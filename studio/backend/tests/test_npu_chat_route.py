@@ -1089,4 +1089,3 @@ def test_a_tool_loop_turn_dropped_after_a_tool_call_is_cut_short():
     plain = _TurnFinish()
     plain.see(_chunk({}, "stop").strip())
     assert plain.finished is True
-

@@ -416,7 +416,9 @@ def test_a_cancel_landing_as_the_load_starts_is_kept(npu, monkeypatch):
     class _CancelledAsTheLoadStarts:
         def clear(self):
             # A cancel from another thread lands while the load is publishing itself.
-            thread = threading.Thread(target = lambda: results.append(npu.cancel_load("qwen3-0.6b-FLM")))
+            thread = threading.Thread(
+                target = lambda: results.append(npu.cancel_load("qwen3-0.6b-FLM"))
+            )
             thread.start()
             thread.join(timeout = 0.5)
             event.clear()
