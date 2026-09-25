@@ -3150,6 +3150,32 @@ def test_research_report_survives_recovery_of_an_unsettled_handoff(research_home
     assert stored["metadata"]["researchStatus"] == "completed"
 
 
+def test_research_report_drops_the_acknowledgement_incomplete_mark(research_home):
+    from core.research_runs import _update_assistant
+
+    run = _hand_off_from_generation("completed", settled = False)
+    # The acknowledgement after the tool call hit Max Tokens, and finish_run stamped the message.
+    conn = studio_db.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT metadata_json FROM chat_messages WHERE id = 'assistant-1'"
+        ).fetchone()
+        metadata = {**json.loads(row[0]), "incomplete": {"reason": "length"}}
+        conn.execute(
+            "UPDATE chat_messages SET metadata_json = ? WHERE id = 'assistant-1'",
+            (json.dumps(metadata),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    _update_assistant(run, "final report", "completed")
+
+    message = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert "incomplete" not in message["metadata"]
+    assert message["metadata"]["researchStatus"] == "completed"
+
+
 def test_update_assistant_still_waits_for_an_active_generation(research_home):
     from core.research_runs import _update_assistant
     run = _hand_off_from_generation("running")

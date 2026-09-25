@@ -3308,6 +3308,8 @@ def _settle_handed_off_generation(conn: sqlite3.Connection, message: dict) -> di
     ).fetchone()
     if row is None or metadata.get("generationRunId") != row["id"]:
         return message
+    # The research status now reports the outcome, not the acknowledgement's length/interrupt mark.
+    metadata = {key: value for key, value in metadata.items() if key != "incomplete"}
     return {
         **message,
         "metadata": {
