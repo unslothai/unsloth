@@ -5642,19 +5642,13 @@ exit 0
                     substep "Created Unsloth Studio shortcut"
                     # Per-item SHChangeNotify: the global broadcast misses a rewritten same-name .lnk.
                     # Through a child interpreter, so no type is defined in this script. Cosmetic:
-                    # a failure leaves stale icons and cannot fail the install. Skipped on an
-                    # elevated run whose interpreter a standard user could replace, since it would
-                    # run with the administrator token.
-                    $iconRefreshSafe = $true
-                    if ($env:OS -eq "Windows_NT" -and (Test-StudioChildScriptDirectoryElevated)) {
-                        $iconRefreshSafe = Test-StudioPathUnderAdminRoot -Path "$ManagedPythonPath"
-                    }
-                    if ($iconRefreshSafe) {
-                        try {
-                            $null = Invoke-StudioPythonShellIconRefresh `
-                                -Paths $createdShortcutPaths -Exe $ManagedPythonPath
-                        } catch {}
-                    }
+                    # a failure leaves stale icons and cannot fail the install. No elevation gate:
+                    # this is the venv interpreter the run has already executed directly for its
+                    # installs and the NVIDIA probe, so the same rule as Get-NvidiaProbePythonExe.
+                    try {
+                        $null = Invoke-StudioPythonShellIconRefresh `
+                            -Paths $createdShortcutPaths -Exe $ManagedPythonPath
+                    } catch {}
                     if ($firstInstall -or $iconChanged) {
                         try { & "$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache 2>$null } catch {}
                         try { & "$env:SystemRoot\System32\ie4uinit.exe" -show 2>$null } catch {}
