@@ -4123,6 +4123,77 @@ class DiffusionBackend:
         )
 
     @staticmethod
+    def _precast_text_encoder_mib(
+        fam: Any,
+        base: str,
+        target: Any,
+        text_encoder_quant: Optional[str],
+        staged_dir: Optional[str] = None,
+    ) -> Optional[tuple[int, tuple[str, ...], bool]]:
+        """``(MiB, components, exact)`` for the PRE-CAST text encoder(s) this pick loads from a
+        hosted checkpoint, or None when it loads none (or the size cannot be known).
+
+        Same resolver as the injection (``te_prequant_sources_for_base``), so the plan prices the
+        encoder the load actually opens; ``components`` names which ``text_encoder*`` folders it
+        replaces (FLUX.1 pre-casts only its T5, not CLIP-L). The cached file size is exact: the
+        pre-cast state dict is stored at its load precision. A checkpoint not cached yet is priced
+        from the family table's dense encoder at ``TE_PREQUANT_BUDGET_SCALE`` and reported
+        ``exact=False``, since the load can still fall back to the dense encoder. Never raises."""
+        try:
+            from .diffusion_te_prequant import (
+                TE_PREQUANT_BUDGET_SCALE,
+                te_candidate_filenames,
+                te_prequant_sources_for_base,
+            )
+
+            sources = te_prequant_sources_for_base(
+                fam, base, te_quant_mode = text_encoder_quant, target = target
+            )
+            if not sources:
+                return None
+            total = 0
+            uncached = 0
+            for source in sources.values():
+                size = 0
+                kind = getattr(source, "kind", None)
+                if kind == "path":
+                    try:
+                        size = Path(str(source.location)).expanduser().stat().st_size
+                    except OSError:
+                        size = 0
+                elif kind == "repo":
+                    names = te_candidate_filenames(source)
+
+                    def _sizes(d: Path, names = names) -> dict[str, int]:
+                        # Best candidate first: a repo hosting both spellings loads the preferred one.
+                        for name in names:
+                            f = d / name
+                            if f.is_file():
+                                try:
+                                    return {"precast": f.stat().st_size}
+                                except OSError:
+                                    return {}
+                        return {}
+
+                    size = DiffusionBackend._union_over_cached_revs(str(source.location), _sizes)
+                if size > 0:
+                    total += int(size)
+                else:
+                    uncached += 1
+            if uncached:
+                table = family_bf16_components_gb(fam, base)
+                if table is None:
+                    return None
+                # The table's encoder term covers every encoder; price the uncached share of it.
+                share = uncached / max(1, len(sources))
+                total += int(table[1] * (1000.0**3) * TE_PREQUANT_BUDGET_SCALE * share)
+            if total <= 0:
+                return None
+            return max(1, total // (1024 * 1024)), tuple(sources), uncached == 0
+        except Exception:  # noqa: BLE001 -- sizing aid only; the scanned terms stand
+            return None
+
+    @staticmethod
     def _safetensors_param_count(path: Path) -> int:
         """Total tensor elements in a safetensors file, read from its JSON header without touching
         the tensor data. 0 on any read/parse failure."""
@@ -4325,6 +4396,7 @@ class DiffusionBackend:
                     # companions.
                     base_local_dir = _base_local_dir,
                     fetch_base = fetch_base,
+                    text_encoder_quant = text_encoder_quant,
                 )
                 pipeline_seed_scheme: Optional[str] = None
                 bf16_pipeline_plan = plan
@@ -4353,6 +4425,7 @@ class DiffusionBackend:
                             ),
                             companion_override_mib = seed_estimate.companions_mib,
                             text_encoder_override_mib = seed_estimate.text_encoders_mib,
+                            text_encoder_quant = text_encoder_quant,
                         )
                         if seed_estimate is not None
                         else None
@@ -4578,6 +4651,7 @@ class DiffusionBackend:
                                 text_encoder_override_mib = getattr(
                                     candidate, "text_encoders_mib", None
                                 ),
+                                text_encoder_quant = text_encoder_quant,
                             )
 
                         if candidate is None:
@@ -4721,6 +4795,7 @@ class DiffusionBackend:
                                 # No companion_override here, so this one reads the cache: point it at the snapshot
                                 # the load will read, not the live root alone.
                                 base_local_dir = _base_local_dir,
+                                text_encoder_quant = text_encoder_quant,
                             )
                             # On unified memory the policy cannot express a misfit (the planner returns 'none' for ANY
                             # size there, because offload shuffles bytes within one pool) so the check above never
@@ -5162,6 +5237,7 @@ class DiffusionBackend:
                                         repo_id = repo_id,
                                         base_local_dir = _base_local_dir,
                                         fetch_base = fetch_base,
+                                        text_encoder_quant = text_encoder_quant,
                                     )
                                     bf16_pipeline_plan = plan
                                 self._raise_if_load_cancelled(_load_token)
@@ -5344,6 +5420,7 @@ class DiffusionBackend:
                                         ),
                                         companion_override_mib = estimate.companions_mib,
                                         text_encoder_override_mib = estimate.text_encoders_mib,
+                                        text_encoder_quant = text_encoder_quant,
                                     )
                                     if replanned.offload_policy == OFFLOAD_NONE:
                                         logger.info(
@@ -6337,6 +6414,7 @@ class DiffusionBackend:
         base_local_dir: Optional[str] = None,
         fetch_base: Optional[str] = None,
         device_memory_override: Optional[DeviceMemory] = None,
+        text_encoder_quant: Optional[str] = None,
     ):
         """Build the memory plan for this load: snapshot free device memory and estimate the model's
         resident footprint, then let the planner pick an offload policy + VAE memory savers. Kept on
@@ -6366,6 +6444,12 @@ class DiffusionBackend:
 
         ``device_memory_override`` replaces the live reading for a plan taken BEFORE the download,
         where free memory still describes the OLD model; capacity bounds any later free reading.
+
+        ``text_encoder_quant`` is the RESOLVED encoder scheme. When it makes this pick take its
+        encoder pre-cast from a hosted checkpoint in another repo, the cache-scanned companion and
+        text-encoder terms are re-priced at that checkpoint's size (``_precast_text_encoder_mib``):
+        the base-repo scans never see it, so without this a GGUF Qwen-Image-2.1 load budgeted 0 MiB
+        for its 8.7 GiB encoder. None keeps the previous sizing.
         """
         # Settled (max-over-reads) on cuda: a transient foreign allocation would make an empty card look full
         device_memory = (
@@ -6373,6 +6457,9 @@ class DiffusionBackend:
             if device_memory_override is not None
             else settled_snapshot_device_memory(target)
         )
+        # True where the companion / encoder terms come from the cache scans (not a caller's override), which is the
+        # only place a hosted pre-cast encoder can be missing from them.
+        companions_from_cache = False
         if kind == "pipeline" and transformer_resident_override_mib is not None:
             # Re-planning an assembled pipeline against its dense-quant candidate. The family estimate already
             # splits transformer from companions; the cache scan below would price the bf16 transformer this
@@ -6431,6 +6518,7 @@ class DiffusionBackend:
             companion_mib = int(companion // (1024 * 1024)) if companion else None
             text_encoder = self._text_encoder_cache_bytes(fetch_base or base, base_local_dir)
             text_encoder_mib = int(text_encoder // (1024 * 1024)) if text_encoder else None
+            companions_from_cache = True
             if is_narrow_base and table is not None:
                 # model_dense_mib was raised to the bf16 table above; the companions upcast with it, so take their
                 # share from the same table rather than leaving a narrow on-disk figure beside a bf16 total.
@@ -6477,9 +6565,43 @@ class DiffusionBackend:
                 # as nothing cached, i.e. no split.
                 text_encoder = self._text_encoder_cache_bytes(fetch_base or base, base_local_dir)
                 text_encoder_mib = int(text_encoder // (1024 * 1024)) if text_encoder else None
+                companions_from_cache = True
             model_dense_mib = None
             if transformer_resident is not None:
                 model_dense_mib = transformer_resident + (companion_mib or 0)
+        if companions_from_cache and text_encoder_quant is not None:
+            # The encoder this pick loads may not be the one the scans above priced: a hosted PRE-CAST checkpoint
+            # lives in its own repo (Qwen-Image-2.1's fp8 Qwen3-VL sits in unsloth/Qwen-Image-2.1-FP8), so the
+            # base-repo walk reads it as nothing, or reads dense shards the load will never open. Swap the scanned
+            # encoder share for the checkpoint's size in every term that carries it.
+            precast = self._precast_text_encoder_mib(
+                fam, base, target, text_encoder_quant, base_local_dir
+            )
+            if precast:
+                precast_mib, precast_components, _exact = precast
+                # Only the encoder folders the checkpoint replaces leave the budget (FLUX.1 keeps its dense CLIP-L).
+                covered = frozenset(precast_components)
+                scanned_te = int(
+                    self._union_over_cached_revs(
+                        fetch_base or base,
+                        lambda d: {
+                            rel: size
+                            for rel, size in self._local_dir_text_encoder_sizes(d).items()
+                            if rel.split("/", 1)[0] in covered
+                        },
+                        base_local_dir,
+                    )
+                ) // (1024 * 1024)
+                # Never below the dense shards scanned: load_prequant_text_encoder returns None on a bad or
+                # incompatible checkpoint (cached or not) and assembly then opens those shards instead. The prefetch
+                # skips covered shards, so this is 0 unless a dense load left them behind.
+                precast_mib = max(int(precast_mib), scanned_te)
+                text_encoder_mib = max(0, int(text_encoder_mib or 0) - scanned_te) + int(
+                    precast_mib
+                )
+                companion_mib = max(0, int(companion_mib or 0) - scanned_te) + int(precast_mib)
+                if model_dense_mib is not None:
+                    model_dense_mib = max(0, int(model_dense_mib) - scanned_te) + int(precast_mib)
         # Feed the variant hint so estimate_image_runtime_mib sees distilled markers (distilled needs ~15% less
         # headroom).
         variant_hint = _image_variant_hint(

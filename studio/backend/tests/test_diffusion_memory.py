@@ -1608,7 +1608,11 @@ def test_streaming_the_text_encoders_does_not_pin_host_memory(monkeypatch):
     # whole-module offload, which pins nothing, on a card too small to hold the companions. Those
     # hosts are not reliably RAM-rich, and #8188's machine got into trouble precisely by turning a
     # device shortfall into unswappable host memory. The encoders run once per call, so the slower
-    # unpinned copy is paid once rather than per step.
+    # unpinned copy is paid once rather than per step. On a host with no RAM to spare, nothing is pinned.
+    import core.inference.diffusion_memory as mem
+
+    monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
+    monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 0)
     seen = _stream_te_kwargs(monkeypatch, stream_text_encoders = True)
     assert seen, "the applier never reached diffusers"
     assert all(kw["low_cpu_mem_usage"] is True for kw in seen.values()), seen
@@ -2097,3 +2101,369 @@ def test_the_same_load_reaches_group_offload_once_the_split_is_known():
     )
     assert plan.offload_policy == OFFLOAD_GROUP
     assert plan.vae_tiling is False
+
+
+# ── the resident-transformer tier ─────────────────────────────────────────────
+# Qwen-Image-2.1 GGUF Q8_0 as the image loader prices it once the hosted fp8 encoder is counted: transformer 7650,
+# VAE 1288, encoder 8959 MiB. On a 24 GB card the denoiser fits beside the VAE with room for the decode spike, but not
+# beside the encoder as well, so every tier before this one streamed the transformer on EVERY step while the encoder
+# (used once, before step 0) sat resident. ComfyUI on the same card encodes, drops the encoder and keeps the denoiser.
+_Q21_TRANSFORMER_MIB = 7_650
+_Q21_VAE_MIB = 1_288
+_Q21_TE_MIB = 8_959
+_24G_FREE_MIB = 23_000
+_24G_TOTAL_MIB = 24_576  # budget 23000 - 2457 = 20543
+
+
+def _q21_plan(
+    free_mib,
+    total_mib,
+    *,
+    text_encoder_dense_mib = _Q21_TE_MIB,
+    mode = None,
+):
+    return plan_diffusion_memory(
+        target = _target(),
+        device_memory = _discrete(free_mib, total_mib),
+        model_dense_mib = _Q21_TRANSFORMER_MIB + _Q21_VAE_MIB + _Q21_TE_MIB,
+        companion_dense_mib = _Q21_VAE_MIB + _Q21_TE_MIB,
+        text_encoder_dense_mib = text_encoder_dense_mib,
+        runtime_headroom_mib = 8192,
+        base_overhead_mib = 2048,
+        requested_mode = mode,
+    )
+
+
+def test_the_transformer_stays_resident_when_only_the_encoder_does_not_fit():
+    plan = _q21_plan(_24G_FREE_MIB, _24G_TOTAL_MIB)
+    # 7650 + 1288 + 8192 + 2048 = 19178 <= 20543, while all of it (28137) is not within 0.85 of the budget.
+    assert plan.estimates["resident_transformer_floor_mib"] == 19_178
+    assert plan.offload_policy == OFFLOAD_GROUP
+    assert plan.stream_transformer is False and plan.stream_text_encoders is True
+    # Plain group offload (companions resident, 20487) fits as well; the resident transformer is preferred because
+    # it pays one encoder pass per call instead of a transformer pass per step.
+    assert plan.estimates["group_floor_mib"] <= plan.estimates["safe_device_budget_mib"]
+    assert plan.as_public_dict()["stream_transformer"] is False
+
+
+def test_the_resident_transformer_tier_needs_the_encoder_split():
+    # Unknown split: the previous decision exactly (plain group, transformer streamed), never a guessed floor.
+    plan = _q21_plan(_24G_FREE_MIB, _24G_TOTAL_MIB, text_encoder_dense_mib = None)
+    assert plan.estimates["resident_transformer_floor_mib"] is None
+    assert plan.offload_policy == OFFLOAD_GROUP
+    assert plan.stream_transformer is True and plan.stream_text_encoders is False
+
+
+def test_a_card_too_small_for_the_resident_transformer_still_streams_it():
+    # 16 GB: the resident floor (19178) is over the 13822 budget, so the streamed-encoder group tier stands.
+    plan = _q21_plan(_16G_FREE_MIB, _16G_TOTAL_MIB)
+    assert plan.offload_policy == OFFLOAD_GROUP
+    assert plan.stream_transformer is True and plan.stream_text_encoders is True
+
+
+def test_fast_mode_prefers_the_resident_transformer_over_streaming_it():
+    plan = _q21_plan(_24G_FREE_MIB, _24G_TOTAL_MIB, mode = MEMORY_MODE_FAST)
+    assert plan.offload_policy == OFFLOAD_GROUP
+    assert plan.stream_transformer is False and plan.stream_text_encoders is True
+
+
+def test_every_other_tier_reports_a_streamed_or_resident_transformer_consistently():
+    # stream_transformer is only ever False on the group tier; resident and whole-module plans keep the default.
+    roomy = _q21_plan(80_000, 81_920)
+    assert roomy.offload_policy == OFFLOAD_NONE and roomy.stream_transformer is True
+    tiny = _q21_plan(6_000, 8_192)
+    assert tiny.offload_policy == OFFLOAD_MODEL and tiny.stream_transformer is True
+    balanced = _q21_plan(_24G_FREE_MIB, _24G_TOTAL_MIB, mode = MEMORY_MODE_BALANCED)
+    assert balanced.offload_policy == OFFLOAD_GROUP and balanced.stream_transformer is True
+
+
+def test_apply_group_offload_can_keep_the_transformer_resident(monkeypatch):
+    import core.inference.diffusion_memory as mem
+
+    pipe, applied, transformer, te, te2, vae = _stream_te_pipe(monkeypatch)
+    assert (
+        mem._apply_group_offload(
+            pipe, "cuda", logger = None, stream_text_encoders = True, stream_transformer = False
+        )
+        is True
+    )
+    # Only the encoders get hooks; the transformer is placed resident with the VAE.
+    assert applied == [te, te2]
+    assert transformer.placed is not None and vae.placed is not None
+    assert te.placed is None and te2.placed is None
+
+
+def test_the_resident_transformer_tier_streams_encoders_at_leaf_level(monkeypatch):
+    seen = _stream_te_kwargs(monkeypatch, stream_text_encoders = True, stream_transformer = False)
+    assert "transformer" not in seen
+    assert seen["text_encoder"]["offload_type"] == "leaf_level"
+    assert seen["text_encoder_2"]["offload_type"] == "leaf_level"
+
+
+def test_a_refusing_encoder_hands_the_resident_transformer_tier_to_whole_module_offload(
+    monkeypatch,
+):
+    # Keeping the refusing encoder resident beside a resident transformer is the OOM this tier was picked to avoid.
+    # Nothing is hooked yet, so the applier reports failure and apply_memory_plan falls back to model offload.
+    import core.inference.diffusion_memory as mem
+
+    def _apply(module, **kw):
+        raise ValueError("no leaves to stream")
+
+    pipe, _unused, transformer, te, te2, vae = _stream_te_pipe(monkeypatch)
+    _swap_group_offloading(monkeypatch, _apply)
+    assert (
+        mem._apply_group_offload(
+            pipe, "cuda", logger = None, stream_text_encoders = True, stream_transformer = False
+        )
+        is False
+    )
+
+
+def test_apply_group_offload_refuses_a_plan_that_streams_nothing(monkeypatch):
+    import core.inference.diffusion_memory as mem
+
+    pipe, applied, *_ = _stream_te_pipe(monkeypatch)
+    assert mem._apply_group_offload(pipe, "cuda", logger = None, stream_transformer = False) is False
+    assert applied == []
+
+
+def test_apply_memory_plan_threads_the_resident_transformer_flag(monkeypatch):
+    import core.inference.diffusion_memory as mem
+
+    seen = {}
+
+    def _fake(pipe, device, logger, **kw):
+        seen.clear()
+        seen.update(kw)
+        return True
+
+    monkeypatch.setattr(mem, "_apply_group_offload", _fake)
+    policy, _tiling = apply_memory_plan(
+        _RecordingPipe(), _q21_plan(_24G_FREE_MIB, _24G_TOTAL_MIB), device = "cuda"
+    )
+    assert policy == OFFLOAD_GROUP
+    assert seen == {"stream_text_encoders": True, "stream_transformer": False}
+    # The streamed-transformer tiers keep the call they always made.
+    apply_memory_plan(_RecordingPipe(), _q21_plan(_16G_FREE_MIB, _16G_TOTAL_MIB), device = "cuda")
+    assert seen == {"stream_text_encoders": True}
+
+
+# ── pinning the streamed-encoder tiers when host RAM allows ───────────────────
+# Unpinned (low_cpu_mem_usage) streaming re-pins every tensor on every onload. Measured on Qwen-Image-2.1 GGUF Q8_0:
+# a 16 GB card's 25-step image 25.1 s unpinned against 8.5 s pinned, and the resident-transformer tier's encoder pass
+# 2.37 s against 0.39 s. Pinning is still refused where it would eat the host's last max(4 GiB, 15%).
+
+
+def _sized_stream_te_kwargs(monkeypatch, sizes, budget, **call_kw):
+    import core.inference.diffusion_memory as mem
+
+    monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
+    monkeypatch.setattr(mem, "_pin_budget_mib", lambda: budget)
+    monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: False, raising = False)
+    monkeypatch.setattr(mem, "_module_host_mib", lambda m: sizes.get(getattr(m, "name", ""), 0))
+    return _stream_te_kwargs(monkeypatch, **call_kw)
+
+
+def test_a_ram_rich_host_pins_everything_the_tier_streams(monkeypatch):
+    seen = _sized_stream_te_kwargs(
+        monkeypatch,
+        {"transformer": 7000, "text_encoder": 8000, "text_encoder_2": 500},
+        40_000,
+        stream_text_encoders = True,
+    )
+    assert all(kw["low_cpu_mem_usage"] is False for kw in seen.values()), seen
+
+
+def test_the_transformer_is_pinned_before_the_encoders(monkeypatch):
+    # Room for the transformer (paid every step) but not for it plus the encoders (paid once per call).
+    seen = _sized_stream_te_kwargs(
+        monkeypatch,
+        {"transformer": 7000, "text_encoder": 8000, "text_encoder_2": 500},
+        10_000,
+        stream_text_encoders = True,
+    )
+    assert seen["transformer"]["low_cpu_mem_usage"] is False
+    assert seen["text_encoder"]["low_cpu_mem_usage"] is True
+    assert seen["text_encoder_2"]["low_cpu_mem_usage"] is True
+
+
+def test_the_resident_transformer_tier_pins_its_encoders_when_ram_allows(monkeypatch):
+    seen = _sized_stream_te_kwargs(
+        monkeypatch,
+        {"transformer": 7000, "text_encoder": 8000, "text_encoder_2": 500},
+        10_000,
+        stream_text_encoders = True,
+        stream_transformer = False,
+    )
+    assert "transformer" not in seen
+    assert seen["text_encoder"]["low_cpu_mem_usage"] is False
+    assert seen["text_encoder_2"]["low_cpu_mem_usage"] is False
+
+
+@pytest.mark.parametrize("stream_transformer", [True, False])
+def test_windows_and_wsl_never_pin_the_streamed_tiers(monkeypatch, stream_transformer):
+    # WDDM and WSL2 cap page-locked memory near 1 GiB however much RAM is free, so a multi-GB pin fails part way:
+    # the resident-transformer tier then falls back to whole-module offload, and the streamed tier places the
+    # encoder resident. These hosts keep the unpinned path the tiers had before.
+    import core.inference.diffusion_memory as mem
+
+    seen = _sized_stream_te_kwargs(
+        monkeypatch,
+        {"transformer": 7000, "text_encoder": 8000, "text_encoder_2": 500},
+        1_000_000,
+        stream_text_encoders = True,
+        stream_transformer = stream_transformer,
+    )
+    assert all(
+        kw["low_cpu_mem_usage"] is False for kw in seen.values()
+    ), seen  # control: RAM-rich Linux pins
+    monkeypatch.delattr(mem, "_pinned_memory_capped", raising = False)
+    monkeypatch.undo()
+    monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
+    monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 1_000_000)
+    monkeypatch.setattr(mem.sys, "platform", "win32")
+    seen = _stream_te_kwargs(
+        monkeypatch, stream_text_encoders = True, stream_transformer = stream_transformer
+    )
+    assert seen and all(kw["low_cpu_mem_usage"] is True for kw in seen.values()), seen
+    # The env override still wins for a host known to allow it.
+    monkeypatch.setenv(mem.GROUP_OFFLOAD_PIN_ENV, "1")
+    assert mem._streamed_pin_plan(7000, 8000) == (True, True)
+
+
+def test_a_first_encoder_refusal_is_unhooked_before_whole_module_offload(monkeypatch):
+    # Leaf-level group offload hooks each leaf as it builds it, so a refusal part way (a pinned allocation the host
+    # will not grant) leaves hooks behind, and enable_model_cpu_offload then raises "components with group offloading
+    # enabled": the resident-transformer tier's fallback to whole-module offload would fail the load instead.
+    import core.inference.diffusion_memory as mem
+
+    def _apply(module, **kw):
+        if getattr(module, "name", "") == "text_encoder":
+            raise RuntimeError("CUDA error: out of memory (pin_memory)")
+
+    pipe, _unused, transformer, te, te2, vae = _stream_te_pipe(monkeypatch)
+    _swap_group_offloading(monkeypatch, _apply)
+    unhooked: list[str] = []
+    monkeypatch.setattr(
+        mem, "_remove_group_offload_hooks", lambda m: unhooked.append(m.name), raising = False
+    )
+
+    assert (
+        mem._apply_group_offload(
+            pipe, "cuda", logger = None, stream_text_encoders = True, stream_transformer = False
+        )
+        is False
+    )
+    assert unhooked == ["text_encoder"]
+
+
+def test_pinned_memory_cap_detection(monkeypatch, tmp_path):
+    import builtins
+
+    import core.inference.diffusion_memory as mem
+
+    monkeypatch.setattr(mem.sys, "platform", "win32")
+    assert mem._pinned_memory_capped() is True
+    monkeypatch.setattr(mem.sys, "platform", "linux")
+    real_open = builtins.open
+    for text, capped in (
+        ("Linux version 6.6.87.2-microsoft-standard-WSL2 (gcc)", True),
+        ("Linux version 6.17.0-1007-aws (gcc)", False),
+    ):
+        monkeypatch.setattr(
+            builtins,
+            "open",
+            lambda path, *a, _t = text, **k: (
+                __import__("io").StringIO(_t)
+                if path == "/proc/version"
+                else real_open(path, *a, **k)
+            ),
+        )
+        assert mem._pinned_memory_capped() is capped
+
+
+def test_unknown_host_memory_never_pins(monkeypatch):
+    seen = _sized_stream_te_kwargs(
+        monkeypatch, {"transformer": 1, "text_encoder": 1}, None, stream_text_encoders = True
+    )
+    assert all(kw["low_cpu_mem_usage"] is True for kw in seen.values()), seen
+
+
+@pytest.mark.parametrize("value, pinned", [("0", True), ("1", False)])
+def test_the_pin_env_overrides_the_ram_gate(monkeypatch, value, pinned):
+    import core.inference.diffusion_memory as mem
+
+    monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 40_000 if value == "0" else 0)
+    monkeypatch.setenv(mem.GROUP_OFFLOAD_PIN_ENV, value)
+    seen = _stream_te_kwargs(monkeypatch, stream_text_encoders = True)
+    assert all(kw["low_cpu_mem_usage"] is pinned for kw in seen.values()), seen
+
+
+def test_the_pin_budget_leaves_the_reserve_free(monkeypatch):
+    import core.inference.diffusion_memory as mem
+
+    monkeypatch.setattr(mem, "_system_memory_mib", lambda: (65_536, 30_000))
+    monkeypatch.setattr(mem, "_available_system_memory_mib", lambda: 30_000)
+    assert mem._pin_budget_mib() == 30_000 - int(65_536 * 0.15)
+    monkeypatch.setattr(mem, "_system_memory_mib", lambda: (16_384, 3_000))
+    monkeypatch.setattr(mem, "_available_system_memory_mib", lambda: 3_000)
+    assert mem._pin_budget_mib() == 0
+    monkeypatch.setattr(mem, "_system_memory_mib", lambda: (None, None))
+    assert mem._pin_budget_mib() is None
+
+
+def test_a_late_encoder_refusal_streams_the_transformer_before_placing_the_encoder(monkeypatch):
+    # The first encoder hooked, so whole-module offload is gone; the second refuses. Keeping it resident beside a
+    # resident transformer is the OOM the tier was picked to avoid, so the transformer streams after all, and it
+    # gets its hooks BEFORE the refusing encoder is placed.
+    import core.inference.diffusion_memory as mem
+
+    order: list[str] = []
+
+    def _apply(module, **kw):
+        if getattr(module, "name", "") == "text_encoder_2":
+            raise ValueError("no leaves to stream")
+        order.append("hook:" + module.name)
+
+    pipe, _unused, transformer, te, te2, vae = _stream_te_pipe(monkeypatch)
+    _swap_group_offloading(monkeypatch, _apply)
+    original_to = type(te2).to
+
+    def _to(self, device):
+        if self is te2:
+            order.append("place:text_encoder_2")
+        return original_to(self, device)
+
+    monkeypatch.setattr(type(te2), "to", _to)
+    assert (
+        mem._apply_group_offload(
+            pipe, "cuda", logger = None, stream_text_encoders = True, stream_transformer = False
+        )
+        is True
+    )
+    assert order == ["hook:text_encoder", "hook:transformer", "place:text_encoder_2"]
+
+
+def test_pinned_host_pricing_rounds_each_tensor_to_a_power_of_two(monkeypatch):
+    import core.inference.diffusion_memory as mem
+
+    class _T:
+        def __init__(self, nbytes):
+            self._n = nbytes
+
+        def numel(self):
+            return self._n
+
+        def element_size(self):
+            return 1
+
+    class _M:
+        def parameters(self, recurse = True):
+            return [_T(3 * 1024 * 1024), _T(5 * 1024 * 1024)]
+
+        def buffers(self, recurse = True):
+            return [_T(1024 * 1024)]
+
+    # 3 -> 4, 5 -> 8, 1 -> 1 MiB.
+    assert mem._module_host_mib(_M()) == 13
