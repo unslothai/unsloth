@@ -80,6 +80,7 @@ from .diffusion_memory import (
     normalize_memory_mode,
     plan_diffusion_memory,
     raise_on_unified_memory_shortfall,
+    reclaim_host_memory,
     reclaim_offload_host_memory,
     settled_snapshot_device_memory,
 )
@@ -6896,6 +6897,7 @@ class VideoBackend:
             )
             del state
             clear_gpu_cache()
+            reclaim_host_memory(logger = logger)
 
     def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
         with self._lock:

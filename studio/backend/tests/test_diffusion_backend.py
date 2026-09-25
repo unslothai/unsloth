@@ -8664,6 +8664,30 @@ def test_a_raising_unload_still_drains_the_teardown_fence(fake_runtime, tmp_path
     assert backend.generate(prompt = "after", steps = 2)["images"]
 
 
+def test_unload_returns_freed_host_pages_after_the_gpu_cache(fake_runtime, tmp_path, monkeypatch):
+    # The trim must run after clear_gpu_cache() (which runs gc) and with the state gone.
+    from core.inference import diffusion as diffusion_module
+
+    backend = _loaded_backend(tmp_path)
+    order = []
+    real_clear = diffusion_module.clear_gpu_cache
+
+    def _clear(*args, **kwargs):
+        order.append("clear")
+        return real_clear(*args, **kwargs)
+
+    def _trim(logger = None):
+        order.append(("trim", backend._state is None))
+        return True
+
+    monkeypatch.setattr(diffusion_module, "clear_gpu_cache", _clear)
+    monkeypatch.setattr(diffusion_module, "reclaim_host_memory", _trim)
+    assert backend.unload()["loaded"] is False
+    assert order == ["clear", ("trim", True)]
+    backend.unload()
+    assert order == ["clear", ("trim", True)]
+
+
 class _RecordingGate(threading.Event):
     """Teardown gate that reports every time a generation parks on it."""
 
