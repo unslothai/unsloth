@@ -115,8 +115,6 @@ def _folder(row: sqlite3.Row) -> dict:
     }
 
 
-
-
 def list_folders() -> list[dict]:
     conn = get_connection()
     try:
@@ -239,8 +237,6 @@ def delete_folder(folder_id: str) -> bool:
         return True
     finally:
         conn.close()
-
-
 
 
 def list_entries() -> dict[str, dict]:
@@ -368,8 +364,6 @@ def delete_entry(item_id: str) -> None:
         conn.commit()
     finally:
         conn.close()
-
-
 
 
 def _upload(row: sqlite3.Row) -> dict:
