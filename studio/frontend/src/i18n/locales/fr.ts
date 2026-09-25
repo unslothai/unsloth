@@ -107,6 +107,7 @@ export const fr = {
     error: "Erreur",
     export: "Exporter",
     help: "Aide",
+    justNow: "à l’instant",
     loading: "Chargement...",
     new: "Nouveau",
     rename: "Renommer",

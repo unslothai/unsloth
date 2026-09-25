@@ -104,6 +104,7 @@ export const ar = {
     error: "خطأ",
     export: "تصدير",
     help: "مساعدة",
+    justNow: "الآن",
     loading: "جارٍ التحميل...",
     new: "جديد",
     rename: "إعادة تسمية",

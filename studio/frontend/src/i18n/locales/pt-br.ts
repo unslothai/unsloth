@@ -106,6 +106,7 @@ export const ptBR = {
     error: "Erro",
     export: "Exportar",
     help: "Ajuda",
+    justNow: "agora mesmo",
     loading: "Carregando...",
     new: "Novo",
     rename: "Renomear",

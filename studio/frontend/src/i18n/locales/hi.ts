@@ -107,6 +107,7 @@ export const hi = {
     error: "त्रुटि",
     export: "एक्सपोर्ट करें",
     help: "सहायता",
+    justNow: "अभी-अभी",
     loading: "लोड हो रहा है...",
     new: "नया",
     rename: "नाम बदलें",

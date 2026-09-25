@@ -102,6 +102,7 @@ export const zhCN = {
     error: "错误",
     export: "导出",
     help: "帮助",
+    justNow: "刚刚",
     loading: "加载中...",
     new: "新增",
     rename: "重命名",

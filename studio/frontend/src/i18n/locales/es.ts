@@ -106,6 +106,7 @@ export const es = {
     error: "Error",
     export: "Exportar",
     help: "Ayuda",
+    justNow: "ahora mismo",
     loading: "Cargando...",
     new: "Nuevo",
     rename: "Renombrar",

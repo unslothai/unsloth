@@ -71,6 +71,7 @@ export const it = {
     error: "Errore",
     export: "Esporta",
     help: "Aiuto",
+    justNow: "proprio ora",
     loading: "Caricamento...",
     new: "Nuovo",
     rename: "Rinomina",

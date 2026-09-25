@@ -106,6 +106,7 @@ export const ru = {
     error: "Ошибка",
     export: "Экспорт",
     help: "Справка",
+    justNow: "только что",
     loading: "Загрузка…",
     new: "Новое",
     rename: "Переименовать",

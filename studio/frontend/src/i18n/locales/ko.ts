@@ -104,6 +104,7 @@ export const ko = {
     error: "오류",
     export: "내보내기",
     help: "도움말",
+    justNow: "방금",
     loading: "로딩 중...",
     new: "새로 만들기",
     rename: "이름 변경",
