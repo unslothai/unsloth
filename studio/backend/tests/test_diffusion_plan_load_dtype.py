@@ -3,6 +3,9 @@
 
 """The pipeline memory plan prices weights at the dtype the load casts them to.
 
+A bf16 repo loaded in fp32 (a Mac without bf16, an fp16-incompatible family on an fp16 card)
+doubles the same way.
+
 SDXL (and Lumina-2's text encoder, Z-Image-Turbo's transformer) publish fp32 shards that halve once
 loaded in bf16 / fp16, and a cache can also hold variant twins or single-file checkpoints that
 ``from_pretrained`` never opens. Sizing the plan from those bytes sent SDXL-Turbo to whole-model
@@ -266,9 +269,11 @@ def test_a_unified_pool_no_longer_refuses_an_fp32_repo_that_fits_in_bf16(tmp_pat
     [
         ({"a": ("F32", 10), "b": ("I64", 2)}, 2, 10 * 2 + 16),
         ({"a": ("F64", 10)}, 4, 40),
-        ({"a": ("F32", 10)}, 4, None),
+        ({"a": ("F32", 10)}, 4, 40),
+        ({"a": ("BF16", 10), "b": ("F32", 5)}, 4, 60),
         ({"a": ("I64", 10)}, 2, None),
         ({"a": ("F32", 10), "b": ("F16", 10)}, 2, None),
+        ({"a": ("U8", 10), "b": ("F32", 1)}, 4, None),
     ],
 )
 def test_safetensors_cast_bytes(tmp_path, tensors, itemsize, expected):
@@ -288,3 +293,55 @@ def test_an_oversized_header_length_is_not_read(tmp_path):
     with open(path, "wb") as fh:
         fh.write((2**62).to_bytes(8, "little"))
     assert DiffusionBackend._safetensors_cast_bytes(path, 2) is None
+
+
+def test_a_half_precision_repo_loaded_in_fp32_is_priced_at_fp32(tmp_path, monkeypatch):
+    _snapshot(
+        tmp_path,
+        monkeypatch,
+        {
+            "transformer/diffusion_pytorch_model.safetensors": _bf16(1800),
+            "text_encoder/model.safetensors": _bf16(200),
+        },
+    )
+    _card(monkeypatch)
+    assert _plan(torch.bfloat16).estimates["model_dense_mib"] == 2000
+    fp32 = _plan(torch.float32)
+    assert fp32.estimates["model_dense_mib"] == 4000
+    assert fp32.estimates["text_encoder_dense_mib"] == 400
+    assert fp32.offload_policy != OFFLOAD_NONE
+
+
+def test_a_pinned_component_is_widened_on_an_fp32_load(tmp_path, monkeypatch):
+    _snapshot(
+        tmp_path,
+        monkeypatch,
+        {
+            "text_encoder/config.json": json.dumps({"architectures": ["T5EncoderModel"]}),
+            "text_encoder/model.safetensors": _bf16(400),
+        },
+    )
+    _card(monkeypatch)
+    pinned = types.SimpleNamespace(T5EncoderModel = type("T5", (), {"_keep_in_fp32_modules": ["wo"]}))
+    monkeypatch.setitem(sys.modules, "transformers", pinned)
+    assert _plan(torch.float32).estimates["model_dense_mib"] == 800
+
+
+def test_a_bin_is_kept_beside_safetensors_shards_the_loader_cannot_select(tmp_path, monkeypatch):
+    snapshot = _snapshot(
+        tmp_path,
+        monkeypatch,
+        {
+            # Numbered shards with no index: the loader falls back to the .bin.
+            "text_encoder/model-00001-of-00002.safetensors": _bf16(100),
+            "text_encoder/pytorch_model.bin": _bf16(300),
+            # Indexed shards: selectable, so the .bin twin is never opened.
+            "text_encoder_2/model-00001-of-00002.safetensors": _bf16(100),
+            "text_encoder_2/model-00002-of-00002.safetensors": _bf16(100),
+            "text_encoder_2/model.safetensors.index.json": "{}",
+            "text_encoder_2/pytorch_model.bin": _bf16(200),
+        },
+    )
+    assert snapshot.is_dir()
+    _card(monkeypatch)
+    assert _plan(torch.bfloat16).estimates["model_dense_mib"] == 100 + 300 + 200

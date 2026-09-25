@@ -4056,7 +4056,8 @@ class DiffusionBackend:
         ``_local_dir_weight_bytes`` for what the filter is for.
 
         ``load_itemsize`` (bytes per element of the load dtype) prices what ``from_pretrained``
-        holds instead: default-variant component files, safetensors over ``.bin``, fp32 cast down."""
+        holds instead: default-variant component files, selectable safetensors over ``.bin``, and
+        floats at the load dtype."""
         sizes: dict[str, int] = {}
         for f in path.rglob("*"):
             if f.suffix.lower() not in (".safetensors", ".bin", ".pt", ".ckpt"):
@@ -4077,20 +4078,32 @@ class DiffusionBackend:
                 continue
         if load_itemsize is None:
             return sizes
-        st_dirs = {rel.rsplit("/", 1)[0] for rel in sizes if rel.endswith(".safetensors")}
+        # A .bin only loses to a safetensors checkpoint the loader can select: unsharded, or shards with their index.
+        st_dirs = {
+            rel.rsplit("/", 1)[0]
+            for rel in sizes
+            if _SELECTABLE_SAFETENSORS_RE.match(rel.rsplit("/", 1)[-1])
+        } | {
+            index.parent.relative_to(path).as_posix()
+            for index in path.glob("*/*.safetensors.index.json")
+            if _DEFAULT_PIPELINE_WEIGHT_INDEX_RE.match(index.name)
+        }
         for rel in list(sizes):
             if rel.endswith(".bin") and rel.rsplit("/", 1)[0] in st_dirs:
                 del sizes[rel]
-            elif rel.endswith(".safetensors") and not _component_pins_fp32((path / rel).parent):
+            elif rel.endswith(".safetensors") and not (
+                load_itemsize < 4 and _component_pins_fp32((path / rel).parent)
+            ):
                 cast = DiffusionBackend._safetensors_cast_bytes(path / rel, load_itemsize)
                 if cast is not None:
-                    sizes[rel] = min(sizes[rel], cast)
+                    sizes[rel] = cast
         return sizes
 
     @staticmethod
     def _safetensors_cast_bytes(path: Path, itemsize: int) -> Optional[int]:
-        """Bytes once cast to an ``itemsize``-byte float, or None to keep the stored size: mixed
-        precision (pinned norms), packed / fp8 weights (their scales stay fp32), unreadable header."""
+        """Bytes once loaded at an ``itemsize``-byte float, or None to keep the stored size. An fp32
+        load widens every float; a half load narrows only a file stored wider throughout (a mixed
+        file pins its fp32 norms). Packed / fp8 weights and an unreadable header keep their size."""
         try:
             with open(path, "rb") as fh:
                 length = int.from_bytes(fh.read(8), "little")
@@ -4098,23 +4111,26 @@ class DiffusionBackend:
                 if length > 100_000_000:
                     return None
                 header = json.loads(fh.read(length))
-            total, cast = 0, False
+            total, widths = 0, set()
             for name, meta in header.items():
                 if name == "__metadata__" or not isinstance(meta, dict):
                     continue
                 dtype = str(meta.get("dtype", ""))
                 begin, end = meta["data_offsets"]
-                if dtype in ("F64", "F32") and (8 if dtype == "F64" else 4) > itemsize:
+                width = _SAFETENSORS_FLOAT_WIDTH.get(dtype)
+                if width is not None:
                     numel = 1
                     for dim in meta.get("shape", []):
                         numel *= int(dim)
                     total += numel * itemsize
-                    cast = True
+                    widths.add(width)
                 elif dtype in ("I64", "I32", "BOOL"):
                     total += int(end) - int(begin)
                 else:
                     return None
-            return total if cast else None
+            if widths and (itemsize >= 4 or min(widths) > itemsize):
+                return total
+            return None
         except Exception:  # noqa: BLE001 - corrupt/crafted header keeps the on-disk size
             return None
 
@@ -6509,8 +6525,8 @@ class DiffusionBackend:
                 self._cache_bytes(cache_repo) if cache_repo else 0,
             )
             if load_itemsize is not None:
-                # Cached bytes are what the repo STORES: fp32 SDXL halves in bf16/fp16, and variant twins or single
-                # files beside the pipeline are never opened.
+                # Cached bytes are what the repo STORES: fp32 SDXL halves in bf16/fp16, a bf16 repo doubles in fp32,
+                # and variant twins or single files beside the pipeline are never opened.
                 loaded = max(
                     self._local_dir_weight_bytes(
                         local_repo, exclude_transformer = False, load_itemsize = load_itemsize
@@ -6532,7 +6548,7 @@ class DiffusionBackend:
                     else 0,
                 )
                 if loaded:
-                    cached = min(cached, loaded)
+                    cached = loaded
             cached_mib = int(cached // (1024 * 1024)) if cached else None
             model_dense_mib = estimate_safetensors_dense_mib(cached_mib)
             # A repo can store weights NARROWER than the loaded dtype (ideogram-4 ships raw float8), so cached bytes
@@ -8154,6 +8170,10 @@ _DEFAULT_PIPELINE_WEIGHT_RE = re.compile(
 _DEFAULT_PIPELINE_WEIGHT_INDEX_RE = re.compile(
     r"^(?:diffusion_pytorch_model|pytorch_model|model)\.(?:bin|safetensors)\.index\.json$"
 )
+_SELECTABLE_SAFETENSORS_RE = re.compile(
+    r"^(?:diffusion_pytorch_model|pytorch_model|model)\.safetensors$"
+)
+_SAFETENSORS_FLOAT_WIDTH = {"F64": 8, "F32": 4, "F16": 2, "BF16": 2}
 _PIPELINE_WEIGHT_PREFIX_RE = re.compile(
     r"^(?:diffusion_pytorch_model|pytorch_model|model)[.-].*"
     r"(?:bin|safetensors)(?:\.index.*\.json)?$"
