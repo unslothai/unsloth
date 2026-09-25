@@ -8833,16 +8833,18 @@ main()
     # driver calls, returns the identical string, and is not blocked by the policies that stopped
     # the emitted rung being defined at all. Those policies are exactly where an NVIDIA GPU used to
     # go unnoticed, so this is the wider source, not the narrower one.
+    # $TimeoutMs is a per-reader bound. The one child reads NVML and then the CUDA driver API, so it
+    # gets both: an NVML read within its bound still leaves CUDA a whole bound of its own.
     function Read-NvidiaLibraryRaw {
-        param([int]$TimeoutMs = 10000)
-        try { return (Read-NvidiaLibraryRawViaPython -TimeoutMs $TimeoutMs) } catch { return "" }
+        param([int]$TimeoutMs = 30000)
+        try { return (Read-NvidiaLibraryRawViaPython -TimeoutMs ($TimeoutMs * 2)) } catch { return "" }
     }
 
     # NVIDIA inventory from the driver's own libraries (NVML, then the CUDA driver API), for a
     # host whose nvidia-smi is absent, stale or hangs (#9255). Twin of studio/nvidia_probe.py.
     # Cached. $null, or @{ Source; CudaMajor; CudaMinor; ComputeCaps ("8.9" strings); Count }.
     function Get-NvidiaLibraryInventory {
-        param([int]$TimeoutSec = 10)
+        param([int]$TimeoutSec = 30)
         if ($script:NvidiaLibraryInventoryProbed) { return $script:NvidiaLibraryInventory }
         $script:NvidiaLibraryInventoryProbed = $true
         $script:NvidiaLibraryInventory = $null
@@ -9776,6 +9778,10 @@ main()
         if ($NvidiaSmiExe) {
             try {
                 $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe
+                if ($LASTEXITCODE -eq 124) {
+                    substep "nvidia-smi did not answer within 10s; retrying with a 45s limit..." "Yellow"
+                    $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe -TimeoutSec 45
+                }
                 if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
                     $major = [int]$Matches[1]; $minor = [int]$Matches[2]
                 }
@@ -9790,6 +9796,9 @@ main()
                 return "$baseUrl/cpu"
             } else {
                 substep "could not determine CUDA version from nvidia-smi, defaulting to cu126" "Yellow"
+                $pinHint = if ($env:UNSLOTH_PYTORCH_MIRROR) { "UNSLOTH_TORCH_INDEX_FAMILY=" } else { "UNSLOTH_TORCH_INDEX_URL=$baseUrl/" }
+                substep "cu126 has no kernels for Blackwell (sm_100 / sm_120). To choose the wheel yourself, re-run with" "Yellow"
+                substep "  ${pinHint}cu128   (or cu130 on a driver that supports CUDA 13)" "Yellow"
                 return "$baseUrl/cu126"
             }
         }

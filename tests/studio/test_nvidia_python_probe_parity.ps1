@@ -136,10 +136,12 @@ Write-Host "=== the rung stays underneath the emitted one ==="
 
 $rawBlock = & $strip $setupParts[3]
 # ONE rung. The emitted UnslothNvidiaProbeV2 type is gone, so there is no first rung to sit
-# behind, no shared deadline to split and no leftover budget to pass on. The reader hands the
-# whole timeout to the interpreter and does nothing else.
+# behind and no leftover budget to pass on. $TimeoutMs is a per-reader bound (30s, one for NVML
+# and one for the CUDA driver API), and the one child that runs both readers gets the two of them:
+# NVML answering within its bound still leaves CUDA a whole bound, as with separate readers.
 Check "the reader delegates straight to the Python rung" `
-    ($rawBlock -match 'Read-NvidiaLibraryRawViaPython -TimeoutMs \$TimeoutMs')
+    ($rawBlock -match 'Read-NvidiaLibraryRawViaPython -TimeoutMs \(\$TimeoutMs \* 2\)')
+Check "the per-reader bound defaults to 30s" ($rawBlock -match 'param\(\[int\]\$TimeoutMs = 30000\)')
 Check "the whole budget goes to it, not a remainder" ($rawBlock -notmatch 'remainingMs')
 Check "there is no emitted rung left to attempt first" ($rawBlock -notmatch 'Get-NvidiaLibraryProbeType|\$native')
 Check "a throw in the rung is an empty answer, not a failed install" ($rawBlock -match 'catch \{ return "" \}')

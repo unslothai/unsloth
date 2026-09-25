@@ -43,8 +43,17 @@ $script:FakeIntelAdapters = @()
 function Get-IntelRegistryAdapterNames { return $script:FakeIntelAdapters }
 
 # nvidia-smi stand-in: $script:FakeSmiStdout answers every probe, $script:FakeSmiRc is its exit code.
+# $script:FakeSmiTimeouts calls time out first (exit 124); every bound asked for is recorded.
+$script:FakeSmiTimeouts = 0
+$script:FakeSmiBounds = @()
 function Invoke-NvidiaSmiBounded {
     param([string]$Exe, [string[]]$SmiArgs = @(), [int]$TimeoutSec = 10, [switch]$StdoutOnly)
+    $script:FakeSmiBounds += $TimeoutSec
+    if ($script:FakeSmiTimeouts -gt 0) {
+        $script:FakeSmiTimeouts--
+        $global:LASTEXITCODE = 124
+        return ""
+    }
     $global:LASTEXITCODE = $script:FakeSmiRc
     return $script:FakeSmiStdout
 }
@@ -300,6 +309,14 @@ Check "the cap applies to inventory capabilities" ((Get-TorchIndexUrl) -eq "http
 $script:FakeInventory = $null
 $script:Substeps = @()
 Check "an unreadable banner with no inventory keeps the cu126 default" ((Get-TorchIndexUrl) -eq "https://download.pytorch.org/whl/cu126")
+Check "the cu126 default names the override" (@($script:Substeps | Where-Object { $_ -match 'UNSLOTH_TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128' }).Count -eq 1)
+# A congested driver: nvidia-smi times out once, and the longer retry reads the banner.
+$script:FakeSmiStdout = "| CUDA Version: 13.1 |"
+$script:FakeSmiTimeouts = 1
+$script:FakeSmiBounds = @()
+Check "a timed-out banner is retried and read" ((Get-TorchIndexUrl) -eq "https://download.pytorch.org/whl/cu130")
+Check "the retry has the longer bound" (($script:FakeSmiBounds[0..1] -join ",") -eq "10,45")
+$script:FakeSmiTimeouts = 0
 $script:FakeSmiStdout = "| CUDA Version: 12.6 |"
 Check "a readable banner is still authoritative" ((Get-TorchIndexUrl) -eq "https://download.pytorch.org/whl/cu126")
 

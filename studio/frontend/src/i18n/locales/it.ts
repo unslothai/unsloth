@@ -582,6 +582,29 @@ export const it = {
       description:
         "Microfono, dettatura, riconoscimento vocale e lettura ad alta voce",
       dictation: {
+        audioUploadTitle: "Detta con una registrazione",
+        audioUploadDescription:
+          "Il browser richiede una connessione sicura (HTTPS) per registrare direttamente in Studio. Con questa connessione HTTP, usa invece il registratore del telefono o scegli una registrazione salvata. Il server Studio trascriverà l'audio e aggiungerà il testo al messaggio.",
+        audioUploadChooseFile: "Scegli registrazione",
+        audioUploadRecord: "Registra audio",
+        audioUploadIphoneHint:
+          "Su iPhone, salva una registrazione da Memo Vocali o da un'altra app di registrazione, quindi sceglila qui.",
+        audioUploadServerModelNote:
+          "Questa registrazione usa il modello locale mostrato sopra sul server Studio, anche se la dettatura normale usa un motore diverso.",
+        audioUploadAutomatic: "Automatico",
+        audioUploadModelReady: "Pronto su questo server Studio",
+        audioUploadRetryTitle: "Impossibile trascrivere {file}",
+        audioUploadRetry: "Riprova la trascrizione",
+        audioUploadChooseModel:
+          "Scegli un modello locale di riconoscimento vocale nelle impostazioni Voce.",
+        audioUploadEmpty: "La registrazione selezionata è vuota.",
+        audioUploadTooLarge: "Scegli una registrazione più piccola di {size}.",
+        audioUploadVideoUnsupported:
+          "Scegli una registrazione audio, non un video.",
+        audioUploadNoSpeech: "Il modello non ha rilevato alcuna voce nella registrazione.",
+        audioUploadFailed: "Non è stato possibile trascrivere la registrazione.",
+        audioUploadCancel: "Annulla trascrizione",
+        audioUploadTranscribing: "Trascrizione audio in corso…",
         sectionTitle: "Dettatura",
         engineLabel: "Motore di dettatura",
         engineBrowser: "Browser",

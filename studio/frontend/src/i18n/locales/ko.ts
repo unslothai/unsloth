@@ -613,6 +613,29 @@ export const ko = {
       title: "음성",
       description: "마이크, 받아쓰기, 음성 인식 및 소리 내어 읽기",
       dictation: {
+        audioUploadTitle: "녹음으로 받아쓰기",
+        audioUploadDescription:
+          "Studio에서 직접 녹음하려면 브라우저에 보안 연결(HTTPS)이 필요합니다. 이 HTTP 연결에서는 휴대폰 녹음기를 사용하거나 저장된 녹음을 선택하세요. Studio 서버가 오디오를 텍스트로 변환하여 메시지에 추가합니다.",
+        audioUploadChooseFile: "녹음 선택",
+        audioUploadRecord: "오디오 녹음",
+        audioUploadIphoneHint:
+          "iPhone에서는 Voice Memos 또는 다른 녹음 앱에서 녹음을 저장한 다음 여기에서 선택하세요.",
+        audioUploadServerModelNote:
+          "일반 받아쓰기가 다른 엔진을 사용하더라도 이 녹음에는 Studio 서버에서 위에 표시된 로컬 모델이 사용됩니다.",
+        audioUploadAutomatic: "자동",
+        audioUploadModelReady: "이 Studio 서버에서 준비됨",
+        audioUploadRetryTitle: "{file}을(를) 전사하지 못했습니다",
+        audioUploadRetry: "전사 다시 시도",
+        audioUploadChooseModel:
+          "음성 설정에서 로컬 음성 인식 모델을 선택하세요.",
+        audioUploadEmpty: "선택한 녹음이 비어 있습니다.",
+        audioUploadTooLarge: "{size}보다 작은 녹음을 선택하세요.",
+        audioUploadVideoUnsupported:
+          "동영상이 아닌 오디오 녹음을 선택하세요.",
+        audioUploadNoSpeech: "모델이 해당 녹음에서 음성을 감지하지 못했습니다.",
+        audioUploadFailed: "녹음을 전사하지 못했습니다.",
+        audioUploadCancel: "전사 취소",
+        audioUploadTranscribing: "오디오 전사 중…",
         sectionTitle: "받아쓰기",
         engineLabel: "받아쓰기 엔진",
         engineBrowser: "브라우저",
