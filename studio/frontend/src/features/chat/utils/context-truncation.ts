@@ -112,8 +112,7 @@ export function mergeContextTruncation(
     ...current,
     ...incoming,
     dropped_messages: current.dropped_messages + incoming.dropped_messages,
-    // A tool loop can start a checkpoint and then merely replay it in a later fit.
-    // The assistant turn still needs its notice after that later fit (and on reload).
+    // Sticky: a later replay fit in the same tool loop must not clear it.
     ...(current.checkpoint_started !== undefined ||
     incoming.checkpoint_started !== undefined
       ? {

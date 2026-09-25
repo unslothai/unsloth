@@ -393,7 +393,6 @@ test("a checkpoint inside the current tool loop shows a notice without advancing
     fits: true,
   };
   assert.equal(shouldShowCompactionNotice(recorded, 0), true);
-  // Another checkpoint in the same saved-transcript position is still a new compaction.
   assert.equal(shouldShowCompactionNotice({ ...recorded, boundary_messages: 4 }, 4), true);
   // Sticky replay, with no new checkpoint, must remain quiet.
   assert.equal(shouldShowCompactionNotice({ ...recorded, checkpoint_started: false }, 0), false);

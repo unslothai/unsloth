@@ -7765,9 +7765,8 @@ const AssistantMessage: FC = () => {
   // Once a thread outgrows the window every request runs the fit, so "this turn
   // compacted" is true of every later reply and would put a notice on all of them. What
   // matters is when MORE of the conversation fell out of view: the eviction boundary
-  // rising above the last turn that reported one. A new checkpoint can also evict
-  // messages created inside the current tool loop, without moving that saved-transcript
-  // boundary. Its explicit start signal must show a notice too; sticky replays stay quiet.
+  // rising above the last turn that reported one, or a checkpoint starting inside a tool
+  // loop (which evicts without moving the boundary). Sticky replays stay quiet.
   const showsNotice = useAuiState(({ thread }) => {
     let previousDropped = 0;
     for (const message of thread.messages) {
