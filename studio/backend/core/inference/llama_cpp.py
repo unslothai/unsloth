@@ -4887,8 +4887,7 @@ _TARGET_ROLLBACK_SPEC_TYPES = frozenset(
 )
 
 
-# Recurrent-layer rules for SSM headers with no full_attention_interval (llama.cpp's
-# is_recr_impl). Otherwise a layer is recurrent when head_count_kv is 0 for it.
+# Mirrors llama.cpp is_recr_impl for SSM headers with no full_attention_interval.
 _SSM_EVERY_LAYER_ARCHS = frozenset({"mamba", "mamba2", "falcon-h1"})
 # Nemotron-H also zeroes head_count_kv on its MLP/MoE layers; its SSM layers have no FFN.
 _SSM_FFN_FREE_LAYER_ARCHS = frozenset({"nemotron_h", "nemotron_h_moe"})
@@ -15830,7 +15829,6 @@ class LlamaCppBackend:
         if recurrent > 0:
             return recurrent
 
-        # By difference, so the cap and the KV estimate's charge cannot drift.
         def kv(checkpoints: int) -> int:
             return self._estimate_kv_cache_bytes(
                 1,
@@ -15918,7 +15916,6 @@ class LlamaCppBackend:
         if arch in _SSM_EVERY_LAYER_ARCHS:
             return n_layers
         heads = getattr(self, "_n_kv_heads_by_layer", None)
-        # KDA hybrids size their state in _recurrent_state_bytes.
         if not heads or getattr(self, "_kda_head_dim", None):
             return 0
         ffn = (
@@ -16199,8 +16196,6 @@ class LlamaCppBackend:
             )
             return int(global_bytes + swa_bytes + slots * checkpoint_extra_per_slot)
 
-        # SSM hybrids with no attention interval (Granite-H, Nemotron-H, Jamba, Falcon-H1)
-        # reach the attention paths below, which size only their KV layers.
         ssm_state = self._mamba_recurrent_state_bytes(n_parallel) + recurrent_checkpoints
 
         # Path 4: Standard GQA with explicit key/value dimensions

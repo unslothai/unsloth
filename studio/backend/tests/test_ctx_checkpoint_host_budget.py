@@ -437,7 +437,6 @@ class TestCheckpointsNeverReachAVramFigure:
         source = inspect.getsource(LlamaCppBackend.load_model)
         # One rule, re-asked wherever the slot count changes, never a second spelling.
         assert source.count("def _decide_auto_ctx_checkpoints(") == 1
-        # The emitted cap and the load-mode host charge size one snapshot the same way.
         compact = "".join(source.split())
         sized = (
             "self._ctx_checkpoint_bytes(cache_type_kv,swa_full=swa_full,"
@@ -1090,10 +1089,7 @@ class TestTheGuardOnlyDropsHostBytesFromADiscretePool:
         assert shared > discrete, "the shared pool must not be credited the host share"
 
 
-# --------------------------------------------------------------- sliding-window snapshots
 
-# unsloth/gemma-4-31B-it-GGUF's shape: every sixth block global (4 KV heads x 512), the rest a
-# 1024-token window (16 KV heads x 256), so one f16 snapshot is 50 x 1024 x 16 x 256 x K+V x 2.
 _GEMMA4_31B_SWA = [(i + 1) % 6 != 0 for i in range(60)]
 _GEMMA4_31B = {
     "context_length": 262144,
@@ -1149,7 +1145,6 @@ def test_an_swa_snapshot_is_its_window(gemma4_gguf):
     assert b._rollback_state_bytes(1) == 0
     assert b._ctx_checkpoint_bytes("f16") == GEMMA4_SNAPSHOT
     assert b._ctx_checkpoint_bytes("q8_0") < GEMMA4_SNAPSHOT
-    # --swa-full keeps the whole context, so llama-server takes no SWA checkpoints.
     assert b._ctx_checkpoint_bytes("f16", swa_full = True) == 0
     assert _plain_attention_backend()._ctx_checkpoint_bytes("f16") == 0
     assert _backend()._ctx_checkpoint_bytes("f16") == _backend()._rollback_state_bytes(1)
@@ -1157,13 +1152,11 @@ def test_an_swa_snapshot_is_its_window(gemma4_gguf):
 
 def test_the_launcher_bounds_an_swa_load(gemma4_gguf):
     b = _gemma4_backend(gemma4_gguf)
-    # 5% of 94 GiB is 4.7 GiB: six 800 MiB snapshots for one slot, the floor for four.
     assert b._bounded_ctx_checkpoints(1, _caps(), cache_type_kv = "f16") == 6
     assert b._bounded_ctx_checkpoints(4, _caps(), cache_type_kv = "f16") == (
         CTX_CHECKPOINTS_MIN_USEFUL
     )
     assert b._bounded_ctx_checkpoints(4, _caps(), cache_type_kv = "f16", swa_full = True) is None
-    # Without flash attention a quantized V snapshot is priced as the retry's f16.
     assert b._bounded_ctx_checkpoints(1, _caps(), cache_type_kv = "q8_0", flash_attn = False) < (
         b._bounded_ctx_checkpoints(1, _caps(), cache_type_kv = "q8_0")
     )
@@ -1221,14 +1214,10 @@ def test_both_estimates_price_the_count_the_launcher_emits(gemma4_gguf, monkeypa
         )
     )
     assert hub["kv_checkpoint_bytes"] == expected
-    # The snapshot is sized at the attention mode each estimate prices its cache with.
     assert set(sized_with) == {flash_attn is None}
 
 
-# --------------------------------------------------------------- SSM hybrids without an interval
 
-# unsloth/granite-4.0-h-small-GGUF's header: attention on blocks 5/15/25/35, Mamba2 elsewhere,
-# and no full_attention_interval, so each snapshot is 36 layers of f32 conv + SSM state.
 _GRANITE_H_SMALL = {
     "context_length": 1048576,
     "block_count": 40,
@@ -1275,7 +1264,6 @@ def test_an_interval_free_hybrid_is_capped_and_priced(granite_gguf):
     b = LlamaCppBackend()
     b._read_gguf_metadata(str(granite_gguf))
     assert b._rollback_state_bytes(1) == GRANITE_SNAPSHOT
-    # 5% of 94 GiB over four 147.5 MiB snapshots a round: 8 per slot, not llama.cpp's 32.
     emitted = b._bounded_ctx_checkpoints(4, _caps())
     assert emitted == 8
     panel = inference_routes._gguf_runtime_bytes(str(granite_gguf), 32768, None, 4, "f16", False)

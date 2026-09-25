@@ -1037,7 +1037,6 @@ class TestSsmStateWithoutAttentionInterval:
                 4,
                 id = "parallel-every-layer",
             ),
-            # The Mamba converters write head_count 0 and no head_count_kv.
             pytest.param(
                 "mamba2", {"attention.head_count": 0, "ssm.group_count": 1}, 4, id = "pure-mamba2"
             ),
@@ -1335,7 +1334,6 @@ class TestLegacyEstimation:
                 4 * 8,
                 id = "per-layer-heads-padded-v",
             ),
-            # The Mamba converters write head_count 0 and no head_count_kv.
             pytest.param({"_n_kv_heads": None, "_n_heads": 0}, False, 0, 0, id = "pure-ssm"),
         ],
     )

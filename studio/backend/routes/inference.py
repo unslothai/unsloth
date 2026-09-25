@@ -11325,13 +11325,11 @@ def _gguf_runtime_bytes(
                 tensor_parallel = bool(tensor_parallel),
                 env = os.environ,
             )
-        # Resolve the same capability-dependent count that load_model emits.
         _cc_caps: dict = {}
         try:
             _cc_caps = LlamaCppBackend.probe_server_capabilities() or {}
         except Exception as _cc_exc:
             logger.debug("ctx-checkpoints capability probe failed: %s", _cc_exc)
-        # Older lightweight probes may not provide the new sizing helpers.
         _per_checkpoint = getattr(probe, "_ctx_checkpoint_bytes", lambda *_a, **_k: 0)(
             cache_type_for_budget, swa_full = swa_full, flash_attn = flash_attn
         )
