@@ -73,8 +73,9 @@ for (const blocked of [
     }
   });
 }
-test("mod-enter-multiline is Enter for one line and mod-enter once the draft has a line break", () => {
-  const mod = { ...enter, metaKey: true };
+for (const key of ["metaKey", "ctrlKey"] as const) {
+test(`${key}: mod-enter-multiline is Enter for one line and mod-enter once the draft has a line break`, () => {
+  const mod = { ...enter, [key]: true };
   // One line: Enter sends, Shift+Enter breaks the line.
   assert.equal(composerSubmitIntent(enter, "mod-enter-multiline", "hi"), "default");
   assert.equal(composerSubmitIntent({ ...enter, shiftKey: true }, "mod-enter-multiline", "hi"), null);
@@ -99,11 +100,20 @@ test("mod-enter-multiline is Enter for one line and mod-enter once the draft has
     send: "Enter",
     opposite: "⌘Enter",
   });
+  assert.deepEqual(composerShortcutLabels("mod-enter-multiline", false, "a\nb"), {
+    send: "Ctrl+Enter",
+    opposite: "Ctrl+Shift+Enter",
+  });
+  assert.deepEqual(composerShortcutLabels("mod-enter-multiline", false, "hi"), {
+    send: "Enter",
+    opposite: "Ctrl+Enter",
+  });
   assert.equal(
     normalizeComposerPreferences({ sendShortcut: "mod-enter-multiline" }).sendShortcut,
     "mod-enter-multiline",
   );
 });
+}
 test("one-message override flips both preferences without changing the default", () => {
   assert.equal(composerFollowUpBehavior("queue", "default"), "queue");
   assert.equal(composerFollowUpBehavior("queue", "opposite"), "steer");
