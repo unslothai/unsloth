@@ -2404,11 +2404,8 @@ def _count_gguf_admission_prompt(
     tools = None,
     cancel_event = None,
 ) -> int:
-    """Count the prepared chat, retaining the existing allowance for media embeddings.
-
-    If no exact count succeeds, reserve the pool instead of overlapping requests
-    on the character estimate that undercounts numeric and other dense ASCII text.
-    """
+    """Exact prompt count plus media allowance; the whole pool if counting fails
+    (the character estimate undercounts numeric text, #10671)."""
     from core.inference.chat_template_helpers import trailing_assistant_text
 
     budget = _openai_llama_admission_budget(llama_backend) or 0

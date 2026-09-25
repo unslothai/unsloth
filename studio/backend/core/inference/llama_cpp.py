@@ -38790,8 +38790,7 @@ class LlamaCppBackend:
         caller's job; this only stops a count that was admitted while idle from spending its
         second round trip once the answer stopped mattering. Raises when it fires.
 
-        Admission can prefer the single-request chat count endpoint. If unavailable,
-        the rendered-prompt tokenizer below still provides an exact count.
+        ``prefer_native`` tries /v1/chat/completions/input_tokens first (one round trip).
         """
         if not self.is_loaded:
             if strict:
