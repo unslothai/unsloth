@@ -5458,6 +5458,29 @@ def _push_merged_to_hub_revision(save_kwargs):
         return commit
 
 
+def _refuse_unsaveable_text_core(model, save_method):
+    """A helper, not inline: unsloth_generic_save forwards its own locals() as keywords."""
+    get_base_model = getattr(model, "get_base_model", None) if isinstance(model, PeftModel) else None
+    core = get_base_model() if callable(get_base_model) else model
+    # A str set by _text_trainable_core; mocks answer any attribute with a truthy stand-in.
+    parent = getattr(core, "_unsloth_composed_parent", None)
+    if isinstance(parent, str) and not _is_adapter_save_method(save_method):
+        if isinstance(model, PeftModel):
+            # The merge re-reads the repo's shards, which hold the wrapper's layout, not this child's.
+            raise NotImplementedError(
+                f"Unsloth: this model is the text core of `{parent}` (loaded with text_only = True), "
+                f"so `{save_method}` would write the wrapper's weights under the text core's config. "
+                'Save the adapter with `save_method = "lora"` and reload it with `text_only = True` instead.'
+            )
+        if "transformers_modules" in (type(core).__module__ or ""):
+            # A full finetune writes its own weights, but a remote child class gets no auto_map or code copy.
+            raise NotImplementedError(
+                f"Unsloth: this model is the text core of `{parent}` (loaded with text_only = True) "
+                f"and its class `{type(core).__name__}` exists only in the repo's remote code, so a "
+                f"`{save_method}` checkpoint of it could not be reloaded. Load without text_only to save the full model."
+            )
+
+
 @_normalize_tied_weights_keys_for_save
 @torch.inference_mode
 def unsloth_generic_save(
@@ -5492,6 +5515,7 @@ def unsloth_generic_save(
             "if you're planning to do multiple saves.\n"
             "If you are certain, change `save_method` to `merged_4bit_forced`."
         )
+    _refuse_unsaveable_text_core(model, save_method)
 
     # Rebound rather than kept in a new local, because the `locals()` below is forwarded as
     # this function's own keywords.

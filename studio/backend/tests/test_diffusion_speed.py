@@ -1584,3 +1584,77 @@ def test_auto_dynamic_active_follows_the_torchao_marker():
     dit._unsloth_auto_dynamic = True
     assert ds_mod.auto_dynamic_active(pipe) is True
     assert isinstance(ds_mod.dynamo_graph_count(), int)
+
+
+def test_real_rope_installed_before_the_qwen_image_21_block_compile_only(monkeypatch):
+    from core.inference import diffusion_qwenimage21_rope as rope
+
+    _stub_torch(monkeypatch)
+    order = []
+    monkeypatch.setattr(rope, "install", lambda logger = None: order.append("rope") or True)
+    pipe = _Pipe(with_compile = True)
+    real_compile = pipe._compile
+    pipe.transformer.compile_repeated_blocks = lambda **kw: order.append("compile") or real_compile(
+        **kw
+    )
+    apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT)
+    assert order == ["compile"]  # any other DiT keeps the stock RoPE
+
+    order.clear()
+    QwenImage21Transformer2DModel = type("QwenImage21Transformer2DModel", (), {})
+    pipe = _Pipe(with_compile = True)
+    pipe.transformer = QwenImage21Transformer2DModel()
+    pipe.transformer.compile_repeated_blocks = lambda **kw: order.append("compile")
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert order == ["rope", "compile"] and applied["compiled"] is True
+
+    order.clear()
+    monkeypatch.setattr(
+        rope, "install", lambda logger = None: (_ for _ in ()).throw(RuntimeError("probe"))
+    )
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert order == ["compile"] and applied["compiled"] is True
+
+
+def test_family_compiles_regionally_reads_the_repeated_blocks_declaration(monkeypatch):
+    from core.inference.diffusion_speed import family_compiles_regionally
+
+    diffusers = types.ModuleType("diffusers")
+    diffusers.Blocked = type("Blocked", (), {"_repeated_blocks": ["Block"]})
+    diffusers.Unblocked = type("Unblocked", (), {"_repeated_blocks": []})
+    diffusers.Undeclared = type("Undeclared", (), {})
+    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
+
+    def fam(cls, denoiser_attr = "transformer"):
+        return types.SimpleNamespace(transformer_class = cls, denoiser_attr = denoiser_attr)
+
+    assert family_compiles_regionally(fam("Blocked")) is True
+    assert family_compiles_regionally(fam("Unblocked")) is False
+    assert family_compiles_regionally(fam("Undeclared")) is True
+    assert family_compiles_regionally(fam("NotInThisDiffusers")) is True
+    assert family_compiles_regionally(fam("Unblocked", denoiser_attr = "unet")) is True
+    assert family_compiles_regionally(fam(None)) is True
+    assert family_compiles_regionally(None) is True
+
+
+def test_family_compiles_regionally_closes_the_dynamo_import_window_first(monkeypatch):
+    import utils.torch_warmup as warmup
+
+    from core.inference.diffusion_speed import family_compiles_regionally
+
+    events: list = []
+    monkeypatch.setattr(warmup, "close_dynamo_import_window", lambda _log: events.append("guard"))
+
+    class _Diffusers(types.ModuleType):
+        def __getattr__(self, name):
+            events.append("probe")
+            raise AttributeError(name)
+
+    monkeypatch.setitem(sys.modules, "diffusers", _Diffusers("diffusers"))
+    fam = types.SimpleNamespace(transformer_class = "Lumina2Transformer2DModel")
+    assert family_compiles_regionally(fam) is True
+    assert events[:2] == ["guard", "probe"]
