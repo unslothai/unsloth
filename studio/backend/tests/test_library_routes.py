@@ -1309,6 +1309,7 @@ def test_a_tampered_expired_foreign_or_other_kind_of_link_is_refused(client, mon
     target, expires, signature = token.rsplit(".", 2)
     for bad in (
         f"{target}.{expires}.{'0' * len(signature)}",
+        f"{target}.{expires}." + "\u00e9" * len(signature),
         f"{target}.{int(expires) + 60}.{signature}",
         f"{library_routes._sign_stream_id(other).rsplit('.', 2)[0]}.{expires}.{signature}",
         "nonsense",

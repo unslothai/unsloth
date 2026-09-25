@@ -152,12 +152,17 @@ export interface LibraryUploadBatch {
 }
 
 export const MAX_LIBRARY_UPLOAD_BYTES = 512 * 1024 * 1024;
+// Starlette's form parser refuses more than 1000 files in one request (Request.form max_files).
+const MAX_LIBRARY_UPLOAD_FILES = 1000;
 
 function uploadGroups(files: File[]): File[][] {
   const groups: File[][] = [];
   let bytes = Infinity;
   for (const file of files) {
-    if (bytes + file.size > MAX_LIBRARY_UPLOAD_BYTES) {
+    if (
+      bytes + file.size > MAX_LIBRARY_UPLOAD_BYTES ||
+      (groups.at(-1)?.length ?? 0) >= MAX_LIBRARY_UPLOAD_FILES
+    ) {
       groups.push([]);
       bytes = 0;
     }
