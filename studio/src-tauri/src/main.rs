@@ -378,6 +378,22 @@ fn get_tray_icon_visible(app: tauri::AppHandle) -> Option<bool> {
     cfg!(target_os = "macos").then(|| stored_tray_icon_visible_preference(&app))
 }
 
+/// tray-icon removes the macOS status item when hidden and builds a new one when shown, so the
+/// appearance observer has to move to the new button or the artwork stops following light/dark.
+fn apply_tray_icon_visible(tray: &tauri::tray::TrayIcon, visible: bool) -> tauri::Result<()> {
+    tray.set_visible(visible)?;
+    #[cfg(target_os = "macos")]
+    if visible {
+        if let Err(error) = macos_tray::install_appearance_observer(tray) {
+            // The template icon remains visible and adaptive if native observation is unavailable.
+            warn!("Could not install the macOS tray appearance observer: {error}");
+        }
+    } else {
+        macos_tray::remove_appearance_observer();
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn set_tray_icon_visible(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
     if !cfg!(target_os = "macos") {
@@ -387,7 +403,7 @@ fn set_tray_icon_visible(app: tauri::AppHandle, enabled: bool) -> Result<bool, S
         .tray_by_id(TRAY_ID)
         .ok_or_else(|| "Menu bar icon is not available".to_string())?;
     let previous = stored_tray_icon_visible_preference(&app);
-    tray.set_visible(enabled)
+    apply_tray_icon_visible(&tray, enabled)
         .map_err(|error| format!("Could not update the menu bar icon: {error}"))?;
     let persisted = app
         .path()
@@ -397,7 +413,7 @@ fn set_tray_icon_visible(app: tauri::AppHandle, enabled: bool) -> Result<bool, S
     if let Err(error) = persisted {
         // The icon already changed; a failed save must not leave it out of sync with the
         // (unsaved) preference, which would make the toggle lie on the next launch.
-        if let Err(restore_error) = tray.set_visible(previous) {
+        if let Err(restore_error) = apply_tray_icon_visible(&tray, previous) {
             warn!("Could not restore the previous menu bar icon visibility: {restore_error}");
         }
         return Err(error);
@@ -1867,11 +1883,8 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(target_os = "macos")]
     {
-        if let Err(error) = macos_tray::install_appearance_observer(&tray) {
-            // The template icon remains visible and adaptive if native observation is unavailable.
-            warn!("Could not install the macOS tray appearance observer: {error}");
-        }
-        if let Err(error) = tray.set_visible(stored_tray_icon_visible_preference(app.handle())) {
+        let visible = stored_tray_icon_visible_preference(app.handle());
+        if let Err(error) = apply_tray_icon_visible(&tray, visible) {
             warn!("Could not apply the stored tray icon visibility: {error}");
         }
     }
