@@ -1580,7 +1580,7 @@ def quantize_transformer(
 ) -> Optional[str]:
     """Quantise ``pipe.transformer`` in place, returning the scheme or None (GGUF). ``base_repo`` selects
     the per-layer NVFP4 policy, applied as the builder does so the render matches what the gate measured."""
-    scheme = select_transformer_quant_scheme(target, mode, family = family)
+    scheme = select_transformer_quant_scheme(target, mode, family = family, base_repo = base_repo)
     if scheme is None:
         return None
     transformer = getattr(pipe, "transformer", None)

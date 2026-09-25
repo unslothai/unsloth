@@ -194,7 +194,7 @@ def main(argv = None) -> int:
     import diffusers
 
     from core.inference.diffusion_families import detect_family
-    from core.inference.diffusion_prequant import prequant_format_for
+    from core.inference.diffusion_prequant import DEFAULT_PREQUANT_COMPONENT, prequant_format_for
 
     # Reuse the runtime quant factory + filter so offline == runtime (the LPIPS-0 invariant).
     from core.inference.diffusion_transformer_quant import (
@@ -348,6 +348,8 @@ def main(argv = None) -> int:
         "torch_dtype": args.dtype,
         "quant_backend": "torchao",
         "transformer_class": fam.transformer_class,
+        # The subfolder built above: the loader refuses it as another denoiser (e.g. transformer_2).
+        "component": DEFAULT_PREQUANT_COMPONENT,
         "torch_version": torch.__version__,
         "torchao_version": getattr(torchao, "__version__", "?"),
         "diffusers_version": diffusers.__version__,

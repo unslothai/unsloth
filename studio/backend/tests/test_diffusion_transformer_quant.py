@@ -1181,6 +1181,31 @@ def test_quantize_transformer_threads_family(monkeypatch):
     assert called == {}
 
 
+def test_quantize_transformer_threads_base_repo(monkeypatch):
+    # A per-base gate record (Qwen-Image-2512 NVFP4) lifts the family deny only when the selector sees the base.
+    import core.inference.diffusion_transformer_quant as dtq
+
+    seen = {}
+
+    def _select(
+        target,
+        mode,
+        family = None,
+        **kwargs,
+    ):
+        seen.update(kwargs, family = family)
+        return None
+
+    monkeypatch.setattr(dtq, "select_transformer_quant_scheme", _select)
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
+    base = "Qwen/Qwen-Image-2512"
+    assert (
+        quantize_transformer(pipe, _target(), mode = "nvfp4", family = "qwen-image", base_repo = base)
+        is None
+    )
+    assert seen == {"family": "qwen-image", "base_repo": base}
+
+
 def test_the_attention_trim_families_exclude_their_small_m_text_streams():
     """The trim in this PR is what makes these excludes necessary, so they ship together.
 
