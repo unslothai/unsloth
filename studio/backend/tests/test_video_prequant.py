@@ -1396,10 +1396,8 @@ def test_speed_off_and_the_modular_workflow_are_never_seeded_here(monkeypatch):
 
 
 def test_an_explicit_scheme_keeps_its_seed_under_speed_off(monkeypatch):
-    """The loader honors an explicit scheme under Speed="off" (and upgrades the speed), so the plan
-    must not drop the hosted checkpoint and stage the dense denoiser for a runtime quantize."""
+    """An explicit scheme under Speed="off" is honored, so the plan keeps the hosted checkpoint."""
     assert _video_auto(monkeypatch, scheme = "nvfp4", speed_mode = "off", requested = "nvfp4") == "nvfp4"
-    # The loader's own rewrite of an auto request ("off") never selects a scheme.
     from core.inference.diffusion_transformer_quant import select_transformer_quant_scheme
 
     assert select_transformer_quant_scheme(object(), "off") is None
@@ -1542,7 +1540,6 @@ def test_a_conventional_plan_drops_no_shard_the_load_will_not_seed(monkeypatch):
         _planned_denoiser_request(monkeypatch, wan, transformer_quant = "nvfp4", speed_mode = "off")
         is None
     )
-    # The modular workflow honours an explicit scheme whatever the speed mode.
     h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
     assert h3 is not None and h3.modular_workflow
     assert (
@@ -1606,7 +1603,6 @@ def test_the_seeded_denoiser_repo_is_claimed_against_a_concurrent_delete(monkeyp
     monkeypatch.setattr(backend, "_video_planned_auto_denoiser_scheme", lambda *a, **k: "nvfp4")
     monkeypatch.setattr(backend, "_denoiser_prequant_verified", lambda *a, **k: True)
     monkeypatch.setattr(backend, "_run_load_h3_native", lambda **kwargs: None)
-    # Sampled inside the build: a claim published later cannot revoke an admitted delete.
     claimed: list = []
     monkeypatch.setattr(
         backend, "load_pipeline", lambda **kwargs: claimed.extend(backend.loading_repo_ids())

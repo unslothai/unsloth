@@ -1182,7 +1182,6 @@ def test_quantize_transformer_threads_family(monkeypatch):
 
 
 def test_quantize_transformer_threads_base_repo(monkeypatch):
-    # A per-base gate record (Qwen-Image-2512 NVFP4) lifts the family deny only when the selector sees the base.
     import core.inference.diffusion_transformer_quant as dtq
 
     seen = {}
@@ -2812,7 +2811,6 @@ def test_a_missing_nvfp4_prequant_is_named_instead_of_the_gpu(monkeypatch):
     monkeypatch.setattr(tq, "family_denies_scheme", lambda *a, **k: False)
     message = tq.explain_unusable_scheme("z-image", TQ_NVFP4, prequant_missing = True)
     assert "needs a pre-quantized checkpoint" in message and "on this GPU" not in message
-    # A gate deny still wins: that answer holds even with a checkpoint.
     monkeypatch.setattr(tq, "family_denies_scheme", lambda *a, **k: True)
     assert "accuracy-gate record" in tq.explain_unusable_scheme(
         "qwen-image", TQ_NVFP4, prequant_missing = True

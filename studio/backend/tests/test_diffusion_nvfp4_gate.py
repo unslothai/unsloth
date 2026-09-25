@@ -95,7 +95,6 @@ def test_the_shipped_record_leaves_every_family_ungated():
 
 
 def test_the_shipped_2512_record_never_gates_the_original_qwen_image():
-    # Same family, same shapes, different weights: 2512's verdict must not reach Qwen/Qwen-Image.
     assert nvfp4_gate_passed("qwen-image", "Qwen/Qwen-Image-2512") is True
     assert nvfp4_gate_passed("qwen-image", "Qwen/Qwen-Image") is False
     assert nvfp4_gate_passed("qwen-image-edit", "Qwen/Qwen-Image-2512") is False
@@ -171,7 +170,6 @@ def test_a_failed_run_reads_false(tmp_path):
 
 
 def test_a_recorded_failure_does_not_mask_a_later_checkpoint_that_passed(tmp_path):
-    # --allow-fail records failures, so a pass can sit behind a failure in file order.
     path = _gate_file(
         tmp_path,
         _record(all_pass = False, checkpoint_sha256 = "b" * 64, backend = "torchao"),
@@ -193,8 +191,6 @@ def test_a_policy_version_bump_invalidates_the_verdict(tmp_path, monkeypatch):
 
 
 def test_a_record_at_a_superseded_policy_no_longer_gates_its_base(tmp_path):
-    # The artifact it measured declares a policy this build no longer resolves, so the loader
-    # refuses it; the record must not keep nvfp4 in the auto ladder on its behalf.
     path = _gate_file(tmp_path, _record(policy_id = "zimg_f8mod_toq34_v1"))
     assert nvfp4_gate_record("z-image", ZIMAGE_BASE, path = path) is not None
     assert nvfp4_gate_passed("z-image", ZIMAGE_BASE, path = path) is False

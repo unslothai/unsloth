@@ -102,7 +102,6 @@ class VideoFamily:
     # parameters), so 0.55 x 66.3 GB over-states it by 16 GB and a hard refusal turns away a load that fits. Measured
     # from Hub file metadata (2026-08-09): MiniMax-H3-FP8.pt 20,260,192,855 bytes, MiniMax-H3-INT8.pt 20,253,894,865.
     prequant_resident_gb: Optional[float] = None
-    # Per-scheme (scheme, resident_gb); else prequant_resident_gb, then _QUANT_STEADY_FACTOR.
     prequant_resident_gb_by_scheme: tuple[tuple[str, float], ...] = field(default_factory = tuple)
     # Per-variant overrides as (base_repo, scheme, repo_id), keyed on the LOWERCASED upstream base id. A pre-quantized
     # checkpoint is baked from ONE base's weights and the loader refuses it for any other base, so a variant that ships
@@ -255,7 +254,6 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         base_repo = "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
         prequant_repos = (("nvfp4", "unsloth/Wan2.2-TI2V-5B-NVFP4"),),
         prequant_filenames = (("nvfp4", "Wan2.2-TI2V-5B-NVFP4.pt"),),
-        # DENOISER term only, like bf16_components_gb[0].
         prequant_resident_gb_by_scheme = (("nvfp4", 2.9),),
         # "wan2.2-5b"/"wan-ti2v" are the picker/GGUF short ids; "wan2.2-ti2v" catches the repo stem
         aliases = ("wan2.2-5b", "wan-ti2v", "wan2.2-ti2v", "wan-ti2v-5b"),
@@ -445,7 +443,6 @@ def video_family_prequant_repo(
     500. A family object that predates these fields simply has no hosted checkpoint.
     """
     if nvfp4_blocked(scheme):
-        # The NVFP4 switch is off, so the hosted *-NVFP4 denoisers are not offered or fetched.
         return None
     base = _prequant_base_key(base_repo)
     if base:

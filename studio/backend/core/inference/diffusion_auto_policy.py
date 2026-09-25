@@ -37,8 +37,7 @@ _QUANT_STEADY_FACTOR: dict[str, float] = {
     "nvfp4": 0.33,
 }
 
-# A policy artifact is mostly fp8 by weight; 0.33 would keep resident a model that does not fit. Measured transformer
-# residency over the family's bf16 size, plus the ~0.04 slack that turns fp8's measured 0.50-0.51 into its 0.55.
+# Measured policy residency over bf16 + ~0.04 slack; 0.33 would keep a non-fitting model resident.
 _POLICY_STEADY_FACTOR: dict[str, float] = {
     "zimg_rg76_v1": 0.50,
     "flux_r420_v1": 0.45,

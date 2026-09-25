@@ -34,7 +34,6 @@ RECORD_FIELDS = RECORD_KEY_FIELDS + (
     "results_path",
 )
 
-# Keyed on the stat, so a rewritten file is picked up without a restart.
 _CACHE: dict[tuple, tuple] = {}
 
 

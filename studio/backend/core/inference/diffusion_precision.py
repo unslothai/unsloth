@@ -81,7 +81,6 @@ def normalize_te_quant(value: Optional[str]) -> Optional[str]:
         raise ValueError(
             f"Unsupported text_encoder_quant '{value}'. Use one of: {', '.join(TE_QUANT_MODES)}."
         )
-    # The NVFP4 switch (diffusion_nvfp4_flag) refuses the encoder scheme too, never swaps it.
     if nvfp4_blocked(normalized):
         raise ValueError(nvfp4_disabled_message("text_encoder_quant"))
     return normalized
@@ -116,7 +115,6 @@ def resolve_te_quant_request(
     if not te_quant_is_auto(value):
         return normalize_te_quant(value), False
     if auto_scheme is None or nvfp4_blocked(auto_scheme):
-        # A family default of nvfp4 while the NVFP4 switch is off is simply no default: nobody asked for it.
         return None, False
     # Validate the family's own field rather than trusting it: a typo here would otherwise reach
     # quantize_text_encoders as an unknown mode on every default load of that family.

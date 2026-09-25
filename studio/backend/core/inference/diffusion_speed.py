@@ -391,8 +391,6 @@ def compiled_shapes_are_static(pipe: Any, speed_mode: Optional[str]) -> bool:
         return _denoiser_unet(pipe) is not None or not auto_dynamic_active(pipe)
     if mode != SPEED_DEFAULT:
         return False
-    # A torchao-quantised DiT compiles with automatic dynamic: its first shapes get their own artifacts. A
-    # stream-merging DiT compiles static on this tier.
     return (
         _denoiser_unet(pipe) is not None
         or any(getattr(t, "_unsloth_auto_dynamic", False) for t in _denoiser_dits(pipe))
@@ -413,11 +411,9 @@ def _denoiser_dits(pipe: Any) -> list:
     return dits
 
 
-# Blocks MEASURED to raise inductor's CantSplit under dynamic = True (merged text+image streams);
-# ``dynamic = False`` is the only escape. Merging is necessary, not sufficient: measure before adding.
+# Blocks MEASURED to raise inductor CantSplit under dynamic = True; measure before adding.
 _STREAM_MERGING_BLOCKS: frozenset[str] = frozenset({"FluxSingleTransformerBlock"})
 
-# Source match for the same cat; OFF by default since it over-flags.
 _STREAM_MERGE_DETECT_ENV = "UNSLOTH_STATIC_STREAM_MERGE_DETECT"
 _STREAM_MERGE_SOURCE = re.compile(
     r"torch\.cat\(\s*\[\s*(?:encoder_hidden_states\s*,\s*hidden_states"
@@ -481,8 +477,6 @@ def _compile_repeated_blocks(
     # (Qwen-Image-2.1: 4-6s on about half of new prompts). Inductor's own cudagraph modes fail on the regional block --
     # "accessing tensor output of CUDAGraphs that has been overwritten" -- so the tier stays on -no-cudagraphs and the
     # capture is taken one level up, at the denoiser module.
-    # The one exception to "default is dynamic": see _STREAM_MERGING_BLOCKS. max keeps automatic dynamic for every DiT
-    # except a torchao-quantised stream-merging one (below).
     static_shapes = (not max_autotune) and _dits_merge_streams(dits)
     if static_shapes and logger is not None:
         logger.info(
@@ -540,9 +534,7 @@ def _compile_repeated_blocks(
             and _carries_torchao_weights(transformer)
             and _dits_merge_streams([transformer])
         ):
-            # Automatic dynamic generalises the sequence length on the first new resolution, and a torchao-quantised
-            # stream-merging block then hits the same CantSplit (measured on FLUX fp8 at 4096 -> 1024 image tokens),
-            # which drops the DiT to eager for the session. Static recompiles per shape instead. bf16 keeps auto dynamic.
+            # Auto dynamic hits CantSplit on torchao stream-merging blocks and drops to eager; static recompiles.
             dit_kwargs["dynamic"] = False
         # Read by auto_dynamic_active: the generalising recompile on a new text length must reach the bundle.
         transformer._unsloth_auto_dynamic = dit_kwargs["dynamic"] is None

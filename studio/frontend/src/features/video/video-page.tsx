@@ -912,7 +912,6 @@ function VideoGenerator({
   const isMobileShell = useIsMobileShell();
   const hostClass = useHostClass();
   const denseQuantSchemes = useDenseQuantSchemes();
-  // The backend's NVFP4 switch: off, the Precision select does not list NVFP4.
   const nvfp4Diffusion = useNvfp4Diffusion();
   const nvfp4DiffusionKnown = useNvfp4DiffusionKnown();
   const videoModels = useVideoModels(hostClass, denseQuantSchemes);
@@ -1012,8 +1011,6 @@ function VideoGenerator({
   const [transformerQuant, setTransformerQuant] = useState<
     "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8"
   >("auto");
-  // Hidden is not reset: once the backend says NVFP4 is off, a held NVFP4 pick (reseeded from a load
-  // before the switch was turned off) snaps to Auto rather than sitting blank and 400ing the next load.
   useEffect(() => {
     setTransformerQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
   }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant]);

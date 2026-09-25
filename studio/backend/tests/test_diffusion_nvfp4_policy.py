@@ -253,7 +253,6 @@ def test_each_policy_assigns_the_layer_counts_it_was_gated_at(policy, tree_fn, e
 
 
 def test_the_superseded_picks_are_gone_rather_than_left_resolvable():
-    # A hosted artifact built at one of these declares it; the loader must refuse, not load it.
     assert policy_by_id("zimg_f8mod_toq34_v1") is None
     assert policy_by_id("flux_mod_single_v1") is None
     bases = {}

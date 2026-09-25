@@ -210,7 +210,6 @@ def _fake_flashinfer():
 @pytest.fixture
 def stub_kernels(monkeypatch):
     _RECORDER.reset()
-    # A verdict left behind by another file would take a path the stub does not model.
     dispatch.reset()
     monkeypatch.setitem(sys.modules, "torch", _fake_torch())
     monkeypatch.setitem(sys.modules, "flashinfer", _fake_flashinfer())
@@ -253,7 +252,6 @@ def test_the_mm_body_enters_the_tensors_device_for_the_barrier_and_the_gemm(stub
         12288,
         "cutlass",
     )
-    # The barrier is only a barrier if it fires on the card the GEMM will read from.
     assert set(_launch_devices(stub_kernels, "zeros", "empty", "mm_fp4")) == {1}
     assert stub_kernels.current == 0
 
@@ -267,7 +265,6 @@ def test_the_preflight_enters_the_probed_device(stub_kernels):
 
 def test_the_prewarm_enters_each_layers_device(stub_kernels):
     class NVFP4FlashInferLinear:
-        """Named for what ``is_nvfp4_flashinfer_linear`` keys on: the class NAME, not an import."""
 
         def __init__(self):
             self.in_features = 1536
@@ -387,7 +384,6 @@ def test_the_barrier_is_not_cached_when_the_stream_is_capturing(stub_kernels, mo
     monkeypatch.setattr(ops, "_is_capturing", lambda: True)
     _mm_once(1)
     assert ops._BARRIERS == {}
-    # It still fires: an uncached buffer is a cost, a missing barrier is a wrong answer.
     order = [name for name, _ in stub_kernels.launches if name in ("zero_", "mm_fp4")]
     assert order == ["zero_", "mm_fp4"]
 
@@ -458,7 +454,6 @@ def _real_operands(
 
 
 def test_the_persistent_barrier_is_bit_identical_to_the_per_call_one():
-    """50 iterations, because the fault the barrier prevents is intermittent by nature."""
     torch = _nvfp4_cuda_or_skip()
     ops.reset_barriers()
     xq, wq, x_sf, w_sf, alpha = _real_operands(torch, 4096, 3072, 12288)
@@ -623,7 +618,6 @@ def test_the_fused_bias_is_bit_identical_to_add_(m, n, monkeypatch):
     if not fb._HAVE_TRITON:
         pytest.skip("needs triton")
 
-    # The floor is a speed rule, not a correctness one: the kernel must be exact at every shape.
     monkeypatch.setattr(fb, "_FAST_BIAS_MIN_NUMEL", 0)
     out, bias = _bias_pair(torch, m, n)
     want = out.clone().add_(bias)
@@ -644,7 +638,6 @@ def test_an_empty_output_is_left_alone():
 
 
 def test_m3_the_fused_bias_against_add_at_the_bench_shapes(capsys, monkeypatch):
-    """Reported rather than asserted: a timing threshold in a test file is a flake."""
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_nvfp4_bias as fb
 

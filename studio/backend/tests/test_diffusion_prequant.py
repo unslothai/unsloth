@@ -460,7 +460,6 @@ class _CountedBytes(_Bytes):
 
 
 def test_a_class_whose_payload_slots_all_read_none_is_not_fingerprinted():
-    # Renamed payload attrs must read uncovered, not as the md5 of an empty stream.
     from core.inference.diffusion_prequant import packed_weight_fingerprint
 
     renamed = Float8Tensor(b"q0")
@@ -2214,7 +2213,6 @@ def _policy_meta(
         "scheme": "nvfp4",
         "base_model_id": base,
         "family": family,
-        # Stamped by the builder for a policy build too: the fp8 half runs the same per-row kernels.
         "fp8_granularity": "per_row",
         NVFP4_POLICY_KEY: block,
     }
@@ -2585,12 +2583,6 @@ def test_a_cached_name_this_install_cannot_open_is_not_a_cache_hit(monkeypatch, 
     assert pq.cached_checkpoint_path(source) == str(tmp_path / "st")
 
 
-# ── a hosted prequant this user cannot fetch ─────────────────────────────────────
-# The hosted NVFP4 repos can be private or gated. The Hub answers 401 / 403 / 404 for the repo
-# itself, which is "no hosted checkpoint for this user", not a partial plan: the dense shards stay
-# in the pull and download-only still runs.
-
-
 def _refused(cls, status):
     message = f"{status} Client Error: unsloth/Z-Image-Turbo-NVFP4"
     try:
@@ -2729,7 +2721,6 @@ def test_an_unreachable_prequant_is_carried_into_the_load(monkeypatch):
     kwargs = dict(_NVFP4_PREFETCH_KWARGS)
     assert backend._dense_quant_prefetch_needed(_fam(), kwargs) is True
     assert kwargs["_prequant_unreachable"] == ("nvfp4",)
-    # Asked again (download_plan and begin_load both probe), the scheme is recorded once.
     backend._dense_quant_prefetch_needed(_fam(), kwargs)
     assert kwargs["_prequant_unreachable"] == ("nvfp4",)
 
@@ -2763,7 +2754,6 @@ def test_local_only_treats_an_uncached_prequant_as_unreachable(monkeypatch):
     assert backend._dense_quant_prefetch_needed(_fam(), kwargs) is True
     assert kwargs["_prequant_unreachable"] == ("nvfp4",)
     assert tokens == [], "local-only mode must not ask the Hub"
-    # A cached checkpoint still counts as reachable offline.
     backend, _tokens = _prefetch_backend(monkeypatch, cached = True, model_info = _listing)
     kwargs = {**_NVFP4_PREFETCH_KWARGS, "local_files_only": True}
     assert backend._dense_quant_prefetch_needed(_fam(), kwargs) is False

@@ -202,7 +202,6 @@ def test_the_transpose_cache_holds_the_view_and_revalidates_pointer_and_shape():
     # A reallocated buffer at the same address with a new shape must not get the old view.
     other = _Ptr(1024, shape = (4, 8))
     assert dispatch.transposed(other) is not view
-    # Nor may the SAME object whose storage was swapped under it.
     weight._pointer = 2048
     assert dispatch.transposed(weight) is not view
 
@@ -230,7 +229,6 @@ def test_the_transpose_cache_releases_a_weight_that_was_collected():
 
 
 def test_a_live_weight_survives_a_superseded_loads_collection():
-    """Dropping the stale load keeps the replacement's entries, which a blanket reset would not."""
     import gc
 
     live = _Ptr(64)
@@ -429,7 +427,6 @@ def test_a_collected_layer_takes_its_cached_weights_and_their_vram_with_it():
         gc.collect()
         torch.cuda.empty_cache()
         before = torch.cuda.memory_allocated(device)
-        # An untuned shape's first call autotunes through the public mm_fp4 and never reaches the cache.
         nl._TUNED_SHAPES.add((x.shape[0], in_features, out_features))
         layer(x)
         torch.cuda.synchronize(device)

@@ -106,7 +106,6 @@ def _quantize_impl(x: Any, global_sf: Any):
 
     from . import diffusion_nvfp4_dispatch as dispatch
     with _device_guard(x):
-        # Both branches inside the SAME guard: the fast one reaches the same pybind entry point.
         xq, sf = dispatch._fast_quantize(x, global_sf)
         if xq is not None:
             return xq, sf
@@ -129,8 +128,6 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
             out = torch.empty(m, n, device = xq.device, dtype = torch.bfloat16)
             _fire_barrier(xq.device)
         if _claim_first_call_tune(m, xq.shape[1] * 2, n):
-            # A shape nothing prewarmed (a video's token count, a graphed Z-Image's unified
-            # sequence) would otherwise run the fallback tactic for the life of the load.
             # Before the dispatch plan, which caches whatever tactic FlashInfer holds on its first build.
             try:
                 with flashinfer.autotune(True):
@@ -139,7 +136,6 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
                     )
             except Exception:  # noqa: BLE001 - claimed, so it is not retried; run it untuned
                 pass
-        # Same tactic the AutoTuner would choose, minus the per-call runner rebuild.
         if dispatch.enabled(xq.device):
             wq_t, w_sf_t = dispatch.transposed(wq), dispatch.transposed(w_sf)
             plan = dispatch.gemm_plan(xq, wq_t, x_sf, w_sf_t, alpha, out, n, backend)
@@ -263,7 +259,6 @@ def swizzle_sf(sf_lin: Any, m: int, k: int):
     return v.permute(0, 3, 2, 1, 4).reshape(-1).contiguous()
 
 
-# Indexed by the raw nibble (``sign << 3 | magnitude``).
 _E2M1_MAGNITUDES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
 _E2M1_LUT = _E2M1_MAGNITUDES + tuple(-v for v in _E2M1_MAGNITUDES)
 
@@ -303,7 +298,6 @@ def dequantize_nvfp4_weight(
     cols = half_k * 2
     blocks = cols // 16
     lut = e2m1_lut(q.device)
-    # int32, not int64: an int64 gather index costs 8 bytes per 4-bit code.
     codes = q.to(torch.int32)
     values = torch.stack((lut[codes & 0x0F], lut[codes >> 4]), dim = -1).reshape(rows, blocks, 16)
     block_scale = unswizzle_sf(w_sf, rows, cols).to(torch.float32)
@@ -382,7 +376,6 @@ def nvfp4_preflight(device: Any = None, *, refresh: bool = False) -> dict:
     except Exception as exc:  # noqa: BLE001 - every failure mode here means "use torchao"
         rec["reason"] = f"{type(exc).__name__}: {str(exc)[:200]}"
         if _transient_preflight_failure(exc):
-            # Not memoised: a model about to be evicted may own the card, so OOM means "not now".
             return dict(rec)
 
     with _PREFLIGHT_LOCK:
@@ -461,7 +454,6 @@ def _resolve_backend(device: Any = None) -> tuple[str, str]:
     from .diffusion_nvfp4_flag import NVFP4_DIFFUSION_ENV, nvfp4_diffusion_enabled
 
     if not nvfp4_diffusion_enabled():
-        # The NVFP4 switch is off: never import flashinfer or run its preflight on NVFP4's behalf.
         return BACKEND_TORCHAO, (
             f"NVFP4 is disabled in this build (set {NVFP4_DIFFUSION_ENV}=1 to enable it)"
         )
