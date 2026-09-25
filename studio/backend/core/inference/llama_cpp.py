@@ -3100,6 +3100,7 @@ def _cached_variant_candidates(
     """Yield complete cached variant copies in snapshot preference order."""
     try:
         from hub.utils.gguf_sources import cached_gguf_manifest_complete, gguf_cache_snapshots
+
         pending_downloads = []
         for snap in gguf_cache_snapshots(repo_id):
             cached_files = _gguf_snapshot_files(snap)
