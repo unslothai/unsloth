@@ -9623,3 +9623,30 @@ def test_the_boundary_marker_waits_out_a_busy_capture_lock(fake_runtime, monkeyp
     assert marks["calls"] == 1
     assert marks["ok"] is True
     assert at_decode.get("phase") == "decode"
+
+
+def test_video_status_reports_cuda_graph_off_once_every_armed_step_ran_eager(fake_runtime):
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    handle = types.SimpleNamespace(
+        cache = {},
+        stats = {"eager_calls": 0, "refused_object": 0},
+        poisoned = False,
+        capture_error = None,
+    )
+    backend._state.pipe._unsloth_cuda_graphs = [handle]
+    resolved = {**(backend._state.resolved or {}), "cuda_graph": {"value": "on", "reason": "r"}}
+    backend._state = replace(
+        backend._state,
+        speed_optims = ("compiled", "cuda_graph"),
+        resolved = resolved,
+    )
+    assert backend.status()["resolved"]["cuda_graph"]["value"] == "on"
+
+    handle.stats.update(eager_calls = 30, refused_object = 30)
+    st = backend.status()
+    assert st["resolved"]["cuda_graph"]["value"] == "off"
+    assert "all 30 denoiser call(s) so far ran eager" in st["resolved"]["cuda_graph"]["reason"]
+    assert st["speed_optims"] == ["compiled"]
+    assert resolved["cuda_graph"]["value"] == "on"
+    backend.unload()
