@@ -365,11 +365,9 @@ def packed_expert_target_parameters(model, target_parameters, requested_leaves):
     kept = [p for p in (target_parameters or []) if not p.endswith(names)]
     if isinstance(requested_leaves, str):
         import re
-
         def named(stack, leaf):
             return any(
-                re.fullmatch(requested_leaves, f"{stack}.{e}.{leaf}")
-                for e in range(counts[stack])
+                re.fullmatch(requested_leaves, f"{stack}.{e}.{leaf}") for e in range(counts[stack])
             )
     else:
 
