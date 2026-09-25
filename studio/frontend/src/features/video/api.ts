@@ -69,7 +69,6 @@ export interface VideoStatus {
   speed_optims: string[];
   attention_backend?: string | null;
   transformer_cache?: string | null;
-  // Static step skip only: its schedule and the denoiser call counts of the current / last clip.
   transformer_cache_stats?: {
     mode?: string;
     every?: number;

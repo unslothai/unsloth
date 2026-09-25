@@ -273,7 +273,6 @@ def test_joint_audio_video_family_declines_static_with_a_reason(
 
 
 def test_a_transformer_without_forward_runs_uncached_with_a_reason(fake_runtime):
-    # The stock Wan fake has no forward, which is what install_static_step_skip refuses.
     backend = VideoBackend()
     status = backend.load_pipeline(WAN_5B, model_kind = "pipeline", transformer_cache = "static")
     assert status["transformer_cache"] is None

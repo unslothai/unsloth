@@ -4492,8 +4492,7 @@ class VideoBackend:
                     view,
                     mode = cache_request,
                     threshold = transformer_cache_threshold,
-                    # A quantized transformer's residuals are larger, so both engaged quant and GGUF need the higher
-                    # FBCache threshold.
+                    # Quantized residuals are larger: engaged quant and GGUF need the higher FBCache threshold.
                     quant_active = cache_quant_active,
                     logger = logger,
                 )
@@ -6277,7 +6276,6 @@ class VideoBackend:
 
                 def _on_step(p, step_index, timestep, callback_kwargs):
                     if static_skip:
-                        # The step boundary the static schedule counts on (one per denoise step, whatever the CFG).
                         mark_step_end(pipe)
                     # diffusers calls this at the END of a loop iteration, after scheduler.step, so
                     # the step's latent update is already submitted when the marker goes down.
