@@ -1279,6 +1279,21 @@ def _no_recast_pipeline_class(pipe_cls: Any) -> Any:
 _NO_WEIGHT = object()
 
 
+def _torchao_offload_decline(what: str, plan: Any) -> str:
+    """Why a torchao build was declined under ``plan``, quoting the floor that keeps it resident."""
+    estimates = getattr(plan, "estimates", None) or {}
+    floor = estimates.get("resident_transformer_floor_mib")
+    streamed = (
+        f", {floor} MiB even with the text encoders streamed" if floor is not None else ""
+    )
+    return (
+        f"{what} '{plan.offload_policy}' offload here "
+        f"({estimates.get('resident_required_mib')} MiB required vs a "
+        f"{estimates.get('safe_device_budget_mib')} MiB budget{streamed}), "
+        "and torchao tensors cannot be offloaded"
+    )
+
+
 def _has_active_lora(loras: Any) -> bool:
     """True when any adapter would actually be baked, for either shape the callers pass. Weight 0
     means disabled, but /images/load passes ``(id, weight)`` tuples while /images/download-plan
@@ -4690,13 +4705,8 @@ class DiffusionBackend:
                                     replanned.offload_policy,
                                     "; ".join(replanned.reasons),
                                 )
-                                transformer_quant_decline = (
-                                    f"the quantised build still needs '{replanned.offload_policy}' "
-                                    f"offload here ("
-                                    f"{replanned.estimates.get('resident_required_mib')} MiB "
-                                    f"required vs a "
-                                    f"{replanned.estimates.get('safe_device_budget_mib')} MiB "
-                                    "budget), and torchao tensors cannot be offloaded"
+                                transformer_quant_decline = _torchao_offload_decline(
+                                    "the quantised build still needs", replanned
                                 )
                             if plan_keeps_transformer_resident(replanned):
                                 quant_plan = replanned
@@ -4947,13 +4957,8 @@ class DiffusionBackend:
                                 else:
                                     dense_declined = True
                                     dense_fallback_allowed = False
-                                    transformer_quant_decline = (
-                                        "the pre-quantised transformer needs "
-                                        f"'{sized_plan.offload_policy}' offload here ("
-                                        f"{sized_plan.estimates.get('resident_required_mib')} MiB "
-                                        "required vs a "
-                                        f"{sized_plan.estimates.get('safe_device_budget_mib')} MiB "
-                                        "budget), and torchao tensors cannot be offloaded"
+                                    transformer_quant_decline = _torchao_offload_decline(
+                                        "the pre-quantised transformer needs", sized_plan
                                     )
                                     logger.info(
                                         "diffusion.transformer_quant_declined: %s",
