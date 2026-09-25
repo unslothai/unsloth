@@ -673,8 +673,7 @@ def test_offloaded_already_dequantized_weight_is_not_scaled_again():
 
 
 def test_disk_offloaded_orphan_stays_on_disk():
-    """A disk-offloaded orphan (index pointing at the checkpoint, as transformers dispatches it) is written to a new
-    .dat in the offload folder, not held in RAM, and the checkpoint file is left untouched."""
+    """A disk-offloaded orphan goes to a new .dat in the offload folder, not RAM; the checkpoint is untouched."""
     if _FP8 is None:
         return
     import pytest
