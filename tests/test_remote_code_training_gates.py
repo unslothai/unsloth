@@ -4,6 +4,8 @@ padding-free off for a fixed-signature forward, gradient checkpointing inherited
 a wrapper, and text training through the wrapped language model. No downloads.
 """
 
+import os
+
 import pytest
 from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 import torch
@@ -313,9 +315,21 @@ def test_merged_save_of_a_text_core_is_refused(tmp_path):
     """The merge re-reads the wrapper-layout shards: it wrote an unmerged or unloadable checkpoint."""
     from unsloth.save import unsloth_generic_save
 
+    from peft import LoraConfig, get_peft_model
+
     core = _text_trainable_core(_OmniWrapper(_Cfg()))
+    peft_model = get_peft_model(core, LoraConfig(r = 2, target_modules = ["lm_head"]))
     with pytest.raises(NotImplementedError, match = "text_only = True"):
-        unsloth_generic_save(core, None, str(tmp_path), save_method = "merged_16bit")
+        unsloth_generic_save(peft_model, None, str(tmp_path), save_method = "merged_16bit")
+
+
+def test_full_finetuned_text_core_saves_its_own_weights(tmp_path):
+    """No adapter to merge: the core writes its resident state_dict, which the refusal used to block."""
+    from unsloth.save import unsloth_generic_save
+
+    core = _text_trainable_core(_OmniWrapper(_Cfg()))
+    unsloth_generic_save(core, None, str(tmp_path), save_method = "merged_16bit")
+    assert any(name.endswith(".safetensors") for name in os.listdir(tmp_path))
 
 
 def test_core_without_loader_state_gets_none_invented():
