@@ -5457,7 +5457,7 @@ def unsloth_generic_save(
         )
     _saved_core = model.get_base_model() if isinstance(model, PeftModel) else model
     _composed_parent = getattr(_saved_core, "_unsloth_composed_parent", None)
-    if save_method != "lora" and _composed_parent:
+    if _composed_parent and not _is_adapter_save_method(save_method):
         # The merge re-reads the repo's shards, which hold the wrapper's layout, not this child's.
         raise NotImplementedError(
             f"Unsloth: this model is the text core of `{_composed_parent}` (loaded with text_only = True), "

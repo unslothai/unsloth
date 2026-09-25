@@ -151,6 +151,7 @@ from transformers import __version__ as transformers_version
 import types
 import functools
 import os
+import copy
 import gc
 import math
 import warnings
@@ -1445,6 +1446,13 @@ def _carry_loader_state_to_core(model, core, name):
             core_config.dtype = wrapper_dtype
         except Exception:
             pass
+    # generation_config.json is loaded onto the wrapper only; the child has config defaults (EOS etc).
+    wrapper_generation_config = getattr(model, "generation_config", None)
+    if wrapper_generation_config is not None:
+        try:
+            core.generation_config = copy.deepcopy(wrapper_generation_config)
+        except Exception:
+            pass
     quantization_config = getattr(wrapper_config, "quantization_config", None)
     if (
         quantization_config is not None
@@ -1468,9 +1476,8 @@ def _tolerate_dtype_cast_on_quantized_model(enabled):
     original_to = PreTrainedModel.to
 
     def to(self, *args, **kwargs):
-        quantized = getattr(self, "quantization_method", None) is not None or getattr(
-            self, "is_quantized", False
-        )
+        # bitsandbytes only: GPTQ / HQQ / Quark keep their own dtype handling.
+        quantized = getattr(self, "quantization_method", None) == "bitsandbytes"
         dtype = kwargs.get("dtype", None)
         rest = []
         for arg in args:
