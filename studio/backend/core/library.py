@@ -534,11 +534,39 @@ def _sandbox_session_eligible(session_id: str) -> bool:
     return row is not None and _studio_project_root(row["root_path"], _project_workspaces())
 
 
+def _sandbox_names(directory: str) -> frozenset:
+    """The files one sandbox's listing holds, remembered as long as the listing's own walk, so a
+    grid of cards asking for pictures walks a sandbox once rather than once a card. The listing
+    leaves its walk here too, so a card it just listed is checked without walking again."""
+    from routes.inference import _sandbox_listing_names
+
+    key = (_account_key(), directory)
+    now = time.monotonic()
+    with _source_cache_lock:
+        hit = _sandbox_names_cache.get(key)
+        generation = _source_generation
+    if hit is not None and now - hit[0] < _SANDBOX_TTL_SECONDS:
+        return hit[1]
+    names = _sandbox_listing_names(directory) if os.path.isdir(directory) else []
+    return _remember_sandbox_names(key, now, names, generation)
+
+
+def _remember_sandbox_names(key: tuple, now: float, names: list[str], generation: int) -> frozenset:
+    listed = frozenset(names)
+    with _source_cache_lock:
+        # A write that forgot the cache while this walked leaves the answer unsaved.
+        if generation == _source_generation:
+            _sandbox_names_cache[key] = (now, listed)
+    return listed
+
+
 def _sandbox_path(ref: str) -> str:
     """The file a ``sandbox:`` id names, by the rules the listing's walk applies: an eligible
-    session, servable segments, no dotfile, not too deep, and no link anywhere on the way (the walk
-    never follows one). Checked for this one file, so a card's picture or download never lists
-    every chat. Raises LookupError otherwise, so a crafted id reaches nothing else."""
+    session, servable segments, no dotfile, not too deep, no link anywhere on the way (the walk
+    never follows one), and among the files the walk's cap lets through. The segment rules are
+    checked for this one file, so a card's picture or download never lists every chat; the cap
+    needs the walk's order, so that is this sandbox's walk alone, remembered. Raises LookupError
+    otherwise, so a crafted id reaches nothing else."""
     from core.inference.tools import (
         _MAX_SANDBOX_PATH_SEGMENTS,
         _servable_segment,
@@ -557,6 +585,9 @@ def _sandbox_path(ref: str) -> str:
         raise LookupError(ref)
     path = os.path.join(directory, *parts)
     if not same_path(os.path.realpath(path), path) or not is_path_within(path, directory):
+        raise LookupError(ref)
+    # Past the listing's cap, or skipped by its walk: never listed, so not reachable by id either.
+    if relative not in _sandbox_names(directory):
         raise LookupError(ref)
     return path
 
@@ -628,6 +659,9 @@ def _sandbox_items() -> list[dict]:
     from routes.inference import _sandbox_listing_names
 
     items = []
+    account = _account_key()
+    with _source_cache_lock:
+        generation = _source_generation
     for session_id, thread_id, title in _sandbox_sessions():
         try:
             directory = os.path.realpath(resolve_sandbox_workdir(session_id))
@@ -635,6 +669,7 @@ def _sandbox_items() -> list[dict]:
         except Exception:
             logger.debug("library.sandbox_listing_failed", exc_info = True)
             continue
+        _remember_sandbox_names((account, directory), time.monotonic(), names, generation)
         for name in names:
             relative = name.replace(os.sep, "/")
             if os.path.basename(relative).startswith("."):
@@ -791,6 +826,8 @@ def upload_content_type(name: str, declared: Optional[str]) -> str:
 _SANDBOX_TTL_SECONDS = 5.0
 _MODEL_TTL_SECONDS = 60.0
 _source_cache: dict[tuple[str, str], tuple[float, object, list[dict]]] = {}
+# (account, sandbox directory) -> (when, the names its walk listed), for the per-item routes.
+_sandbox_names_cache: dict[tuple[str, str], tuple[float, frozenset]] = {}
 _source_cache_lock = threading.Lock()
 _source_generation = 0
 
@@ -800,6 +837,7 @@ def invalidate_listing() -> None:
     with _source_cache_lock:
         _source_generation += 1
         _source_cache.clear()
+        _sandbox_names_cache.clear()
 
 
 def _model_stamp() -> tuple:

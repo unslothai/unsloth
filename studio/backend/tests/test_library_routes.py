@@ -1445,3 +1445,43 @@ def test_generated_media_download_under_their_prompt(client, signed_in, project)
     names = sorted(path.name for path in (project / "images").iterdir())
     assert len(names) == 2
     assert all(name.startswith("Same prompt-") and name.endswith(".png") for name in names)
+
+
+def test_a_sandbox_file_past_the_listing_cap_is_not_reachable_by_id(client, signed_in, monkeypatch):
+    import os
+
+    import routes.inference as inference
+
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    # The walk counts dotfiles too, which the Library then hides: .env, a.txt, b.txt.
+    monkeypatch.setattr(inference, "_MAX_SNAPSHOT_FILES", 3)
+    directory, _path = _sandbox_chat(monkeypatch, name = "a.txt")
+    for name in ("b.txt", "c.txt", ".env"):
+        with open(os.path.join(directory, name), "w") as handle:
+            handle.write("x")
+    os.makedirs(os.path.join(directory, "d1", "d2", "d3", "d4"))
+    with open(os.path.join(directory, "d1", "d2", "d3", "d4", "deep.txt"), "w") as handle:
+        handle.write("x")
+    download = lambda name: client.get(  # noqa: E731
+        "/api/library/items/download", params = {"id": f"sandbox:t-lib:{name}"}
+    ).status_code
+    # Cold: this sandbox is walked once, and the answer serves every card after it.
+    walks = []
+    real = inference._sandbox_listing_names
+    monkeypatch.setattr(
+        inference, "_sandbox_listing_names", lambda path: walks.append(path) or real(path)
+    )
+    assert (download("a.txt"), download("b.txt")) == (200, 200)
+    assert len(walks) == 1
+    for name in ("c.txt", ".env", "d1/d2/d3/d4/deep.txt"):
+        assert download(name) == 404, name
+    assert set(_items(client)[0]) == {"sandbox:t-lib:a.txt", "sandbox:t-lib:b.txt"}
+    # The listing leaves its walk for the per-item routes.
+    library.invalidate_listing()
+    _items(client)
+    walks.clear()
+    assert download("a.txt") == 200 and download("c.txt") == 404
+    assert walks == []
+    response = client.post("/api/library/items/delete", json = {"id": "sandbox:t-lib:c.txt"})
+    assert response.status_code == 404
+    assert os.path.exists(os.path.join(directory, "c.txt"))
