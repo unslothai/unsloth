@@ -1258,7 +1258,7 @@ export function ImagesPage({
       WORKFLOW_TABS.map(({ id }) => [id, readLastPrompt(`images:${id}`)]),
     ) as Record<WorkflowId, string>,
   );
-  // Workflows whose example hint is gone: it shows as a placeholder until the first edit.
+  // Workflows whose example hint is gone: it shows as a placeholder until the box is first focused.
   const [examplesDismissed, setExamplesDismissed] = useState<Record<WorkflowId, boolean>>(() =>
     Object.fromEntries(
       WORKFLOW_TABS.map(({ id }) => [id, isExampleDismissed(`images:${id}`)]),
@@ -4992,13 +4992,12 @@ export function ImagesPage({
                   examplesDismissed[workflow] ? undefined : WORKFLOW_EXAMPLE_PROMPTS[workflow]
                 }
                 value={prompt}
-                onChange={(e) => {
-                  if (!examplesDismissed[workflow]) {
-                    dismissExample(`images:${workflow}`);
-                    setExamplesDismissed((prev) => ({ ...prev, [workflow]: true }));
-                  }
-                  setPrompt(e.target.value);
+                onFocus={() => {
+                  if (examplesDismissed[workflow]) return;
+                  dismissExample(`images:${workflow}`);
+                  setExamplesDismissed((prev) => ({ ...prev, [workflow]: true }));
                 }}
+                onChange={(e) => setPrompt(e.target.value)}
               />
             </Field>
             <NegativePromptField

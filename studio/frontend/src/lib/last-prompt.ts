@@ -34,7 +34,7 @@ export function isExampleDismissed(key: string): boolean {
   }
 }
 
-/** Called on the user's first edit, so the example hint does not come back. */
+/** Called when the box is first focused, so the example hint does not come back. */
 export function dismissExample(key: string): void {
   try {
     localStorage.setItem(DISMISSED_PREFIX + key, "1");

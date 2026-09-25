@@ -199,7 +199,7 @@ import {
 } from "./api";
 import { videoThumbnailQueue, withThumbnailRetries } from "./thumbnail-request-queue";
 
-/** Placeholder hint until the user first edits the prompt. */
+/** Placeholder hint until the prompt box is first focused. */
 const VIDEO_EXAMPLE_PROMPT =
   "A slow cinematic shot down a quiet Kyoto street at sunrise, cherry blossom petals drifting in the air, a shopkeeper opening a wooden storefront, warm natural light.";
 
@@ -3702,13 +3702,12 @@ function VideoGenerator({
               rows={4}
               placeholder={exampleDismissed ? undefined : VIDEO_EXAMPLE_PROMPT}
               value={prompt}
-              onChange={(e) => {
-                if (!exampleDismissed) {
-                  dismissExample("video");
-                  setExampleDismissed(true);
-                }
-                setPrompt(e.target.value);
+              onFocus={() => {
+                if (exampleDismissed) return;
+                dismissExample("video");
+                setExampleDismissed(true);
               }}
+              onChange={(e) => setPrompt(e.target.value)}
             />
           </Field>
 
