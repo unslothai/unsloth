@@ -324,3 +324,25 @@ def test_int8_padding_is_bitwise_exact_on_a_real_quantized_linear():
     assert activation_granularity_is_per_row(lin) is True
     for m in (1, 10, 13, 16, 17, 19, 64):
         assert padding_is_bitwise_exact(lin, m), f"padding changed the kept rows at M = {m}"
+
+
+def test_a_dynamic_row_count_compiles_one_graph_for_short_and_long_captions():
+    """Traced, the pad takes no branch on M: ``m < pad_to`` guarded a dynamic caption length to <= 31, so H3's first
+    i2v (a ~540-row caption) recompiled the refiner. Same rows either way, so the result matches eager."""
+    from torch._dynamo.utils import counters
+
+    torch.manual_seed(0)
+    wrapped = PadToMinM(_RecordingLinear(64, 48), min_m = 17, pad_to = 32).eval()
+    torch._dynamo.reset()
+    counters.clear()
+    compiled = torch.compile(wrapped, backend = "eager", dynamic = None)
+    for m in (19, 21, 540, 7, 32):
+        x = torch.randn(1, m, 64)
+        torch._dynamo.mark_dynamic(x, 1)
+        with torch.no_grad():
+            got = compiled(x)
+            want = wrapped(x)
+        assert got.shape == (1, m, 48)
+        assert torch.equal(got, want), m
+    assert counters["stats"]["unique_graphs"] == 1
+    torch._dynamo.reset()

@@ -223,3 +223,64 @@ def test_torch_that_reads_the_allowlist_once_is_not_armed(monkeypatch):
     assert dt.fingerprint(model, None) is None
     model(torch.zeros(1))
     assert model.seen == _cfg().dynamic_sources
+
+
+class MiniMaxH3Transformer3DModel(torch.nn.Module):
+    """Stand-in for H3: an outer forward feeding one compiled block, like compile_repeated_blocks."""
+
+    def __init__(self):
+        super().__init__()
+        self.seen = None
+        self.block = torch.compile(self._block, backend = "eager", dynamic = None)
+
+    @staticmethod
+    def _block(hidden_states, temb, adaln_indices, rotary_emb):
+        mod = temb.index_select(0, adaln_indices)
+        return (hidden_states * rotary_emb[0] + rotary_emb[1]) * (1 + mod)
+
+    def forward(self, seq_len, n_timesteps):
+        self.seen = _cfg().dynamic_sources
+        hidden_states = torch.randn(1, seq_len, 8)
+        temb = torch.randn(n_timesteps, 8)
+        adaln_indices = torch.arange(seq_len) % n_timesteps
+        rotary_emb = (torch.randn(seq_len, 8), torch.randn(seq_len, 8))
+        return self.block(hidden_states, temb, adaln_indices, rotary_emb)
+
+
+def test_minimax_h3_packed_length_is_armed():
+    m = MiniMaxH3Transformer3DModel()
+    assert dt.install(m) is True
+    m(12, 2)
+    seen = m.seen.split(",")
+    for name in (
+        "L['hidden_states']",
+        "L['adaln_indices']",
+        "L['rotary_emb'][0]",
+        "L['rotary_emb'][1]",
+        "L['temb']",
+    ):
+        assert name in seen
+    dt.uninstall(m)
+
+
+def test_minimax_h3_new_caption_and_i2v_reuse_the_first_graphs():
+    # Caption changes move the packed length S; i2v adds a timestep. Only the first render may compile.
+    from torch._dynamo.utils import counters
+
+    def graphs_per_render(install):
+        torch._dynamo.reset()
+        counters.clear()
+        m = MiniMaxH3Transformer3DModel()
+        if install:
+            assert dt.install(m)
+        seen = []
+        for render in ((100, 1), (100, 2), (104, 1), (104, 2), (130, 3)):
+            before = counters["stats"]["unique_graphs"]
+            m(*render)
+            seen.append(counters["stats"]["unique_graphs"] - before)
+        dt.uninstall(m)
+        torch._dynamo.reset()
+        return seen
+
+    assert graphs_per_render(False)[2:] != [0, 0, 0]
+    assert graphs_per_render(True)[2:] == [0, 0, 0]
