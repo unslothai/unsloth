@@ -223,7 +223,6 @@ def test_config_disable_reason_still_honors_a_config_seeded_eager(monkeypatch):
 
 
 class LegacyFlashFlagOnly:
-    # 4.x-era remote code (inclusionAI/Ling-2.6-flash) declares only the old flag name.
     _supports_flash_attn_2 = True
     _supports_flex_attn = False
     _supports_sdpa = True

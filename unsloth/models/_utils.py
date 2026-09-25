@@ -1203,9 +1203,7 @@ def _apply_text_only_key_mapping(kwargs, parent_config, text_config):
 
 @functools.cache
 def _transformers_honors_legacy_flash_attn_2_flag():
-    # Remote code written for 4.x declares _supports_flash_attn_2. transformers 4.x dispatch
-    # honors it, but 5.x reads only _supports_flash_attn and raises "does not support Flash
-    # Attention 2 yet" at init (inclusionAI/Ling-2.6-flash). Probe the dispatch check itself.
+    # 5.4+ dispatch reads only _supports_flash_attn, so 4.x remote code (Ling-2.6-flash) raises at init.
     from transformers import PreTrainedModel
 
     if "_supports_flash_attn_2" in vars(PreTrainedModel):

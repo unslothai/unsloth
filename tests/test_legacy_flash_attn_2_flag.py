@@ -1,7 +1,4 @@
-"""Remote code that declares only the 4.x _supports_flash_attn_2 flag gets Flash Attention
-only when the installed transformers still honors that flag at dispatch. From 5.4.0 the
-dispatch reads _supports_flash_attn alone and raises at init (inclusionAI/Ling-2.6-flash);
-4.x through 5.3 still read the old flag."""
+"""Old _supports_flash_attn_2 flag counts only where the installed dispatch still reads it (< 5.4.0)."""
 
 import ast
 import functools
