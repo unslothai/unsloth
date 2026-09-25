@@ -1426,3 +1426,37 @@ def test_an_auxiliary_checkpoint_is_not_a_cached_release(tmp_path):
     (folder / "adapter_model-00001-of-00001.safetensors").write_bytes(b"x")
     (folder / "adapter_model.safetensors").write_bytes(b"x")
     assert not DiffusionBackend._released_transformer_cached(str(tmp_path))
+
+
+@pytest.mark.parametrize("resolved", [{}, {"text_encoder": ("repo", [("te.safetensors", 1)])}])
+def test_the_load_hears_whether_the_pre_cast_encoder_resolved(monkeypatch, resolved):
+    backend, seen, _fetched = _run_load_backend(monkeypatch, planned = None)
+    monkeypatch.setattr(DiffusionBackend, "_te_prequant_plan_files", lambda *_a, **_k: resolved)
+    backend._run_load(
+        repo_id = Z_IMAGE_REPO, model_kind = "pipeline", text_encoder_quant = "fp8", _load_token = 1
+    )
+    assert seen["_te_prequant_resolved"] is bool(resolved)
+
+
+@pytest.mark.parametrize("resolved", [False, True])
+def test_the_load_time_decision_budgets_an_unresolved_encoder_dense(
+    fake_runtime, monkeypatch, resolved
+):
+    backend, _spy = _load_backend(monkeypatch)
+    _uncompilable(monkeypatch)
+    heard: list = []
+    real = DiffusionBackend._bf16_resident_plan
+
+    def _spy_plan(self, plan, *a, **k):
+        heard.append(k.get("text_encoder_quant"))
+        return real(self, plan, *a, **k)
+
+    monkeypatch.setattr(DiffusionBackend, "_bf16_resident_plan", _spy_plan)
+    monkeypatch.setattr(dmod, "resolve_te_quant_request", lambda *_a, **_k: ("fp8", False))
+    _load(
+        backend,
+        _pipeline_prequant_planned = None,
+        _pipeline_prequant_skipped = (),
+        _te_prequant_resolved = resolved,
+    )
+    assert heard == [("fp8" if resolved else None)]
