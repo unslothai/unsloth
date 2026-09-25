@@ -69,6 +69,7 @@ function loadStore(api: Record<string, unknown>, emitted: unknown[] = []) {
     zustand,
     "zustand/middleware": zustandMiddleware,
     "@/features/auth": { AUTH_SESSION_CLEARED_EVENT: SIGNED_OUT, getAuthSessionEpoch: () => 0 },
+    "@/features/chat": { deleteFineTunedModel: async () => {} },
     "@/features/chat/utils/chat-attachment-events": {
       emitChatAttachmentDeleted: (event: unknown) => emitted.push(event),
     },
