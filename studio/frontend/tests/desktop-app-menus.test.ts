@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
 
 import { readSrc, readText, registerBundlerResolver } from "./helpers/kit.ts";
@@ -108,6 +109,41 @@ test("Open Folder lands on the new project's Sources, not its chats", () => {
   assert.doesNotMatch(openFolder, /deleteChatProject/);
   // Keyed by project, so a new project mounts fresh and reads the marker.
   assert.match(landing, /<ProjectLanding\s+key=\{baseView\.projectId\}/);
+});
+
+test("Open Folder still lands on Sources after a visit during the link", () => {
+  const dropzone = readSrc("features/rag/components/project-source-dropzone.tsx");
+  const openFolder = readSrc("features/chat/utils/open-folder-as-project.ts");
+  const landing = readSrc("features/chat/chat-page.tsx");
+  const m = new Function(
+    `${stripTypeScriptTypes(dropzone.slice(dropzone.indexOf("const projectsWithPendingSources"), dropzone.indexOf("/** Upload staged files"))).replace(/^export /gm, "")}
+    return { markProjectSourcesPending, hasProjectSourcesPending, consumeProjectSourcesPending, noteProjectLandingMounted, isProjectLandingMounted };`,
+  )();
+  // The landing's mount effect, and the rule Open Folder applies once the link settles.
+  const mount = (id: string) => (m.consumeProjectSourcesPending(id), m.noteProjectLandingMounted(id));
+  const settle = (id: string) => {
+    if (!m.isProjectLandingMounted(id)) m.markProjectSourcesPending(id);
+  };
+  assert.match(landing, /consumeProjectSourcesPending\(projectId\);\s*return noteProjectLandingMounted\(projectId\);/);
+  assert.match(openFolder, /if \(!isProjectLandingMounted\(project\.id\)\) markProjectSourcesPending\(project\.id\);/);
+
+  // Opened during the link, then left: the completion navigation still lands on Sources.
+  m.markProjectSourcesPending("a");
+  const leave = mount("a");
+  leave();
+  settle("a");
+  assert.equal(m.hasProjectSourcesPending("a"), true);
+
+  // Still on it when the link settles: no marker left over for a later visit.
+  m.markProjectSourcesPending("b");
+  mount("b");
+  settle("b");
+  assert.equal(m.hasProjectSourcesPending("b"), false);
+
+  // Never opened: the first marker is simply still there.
+  m.markProjectSourcesPending("c");
+  settle("c");
+  assert.equal(m.hasProjectSourcesPending("c"), true);
 });
 
 test("Open Folder is disabled until the open in progress finishes", () => {

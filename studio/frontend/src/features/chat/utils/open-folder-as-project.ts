@@ -8,7 +8,10 @@ import {
   noteProjectWork,
   watchProjectFolderJob,
 } from "@/features/rag/api/rag-api";
-import { markProjectSourcesPending } from "@/features/rag/components/project-source-dropzone";
+import {
+  isProjectLandingMounted,
+  markProjectSourcesPending,
+} from "@/features/rag/components/project-source-dropzone";
 import { toast } from "@/lib/toast";
 import { useSyncExternalStore } from "react";
 import { createChatProject } from "../hooks/use-chat-projects";
@@ -63,6 +66,9 @@ export async function openFolderAsProject(): Promise<ProjectRecord | null> {
     } finally {
       noteProjectWork(project.id, -1);
     }
+    // Opened and left during the link, the first visit spent the marker, so renew it for the
+    // navigation that follows. Not while it is on screen: nothing would read it until next time.
+    if (!isProjectLandingMounted(project.id)) markProjectSourcesPending(project.id);
     return project;
   } catch (error) {
     toast.error("Could not open folder", {
