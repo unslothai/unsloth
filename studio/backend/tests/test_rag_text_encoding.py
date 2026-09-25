@@ -37,6 +37,12 @@ def test_a_damaged_byte_in_utf8_costs_only_that_byte(tmp_path):
     assert _text(tmp_path, "damaged.txt", data) == GREETING + "�"
 
 
+def test_a_short_utf8_file_with_a_truncated_character_stays_utf8(tmp_path):
+    assert _text(tmp_path, "cut.txt", b"caf\xc3\xa9\xc3") == "caf\u00e9\ufffd"
+    page = b"<meta charset=utf-8><p>caf\xc3\xa9\xff</p>"
+    assert _text(tmp_path, "cut.html", page) == "caf\u00e9\ufffd"
+
+
 def test_a_utf8_byte_order_mark_wins_over_a_damaged_byte_and_a_declared_charset(tmp_path):
     assert _text(tmp_path, "bom.txt", b"\xef\xbb\xbfhello\xff") == "hello\ufffd"
     page = '<meta charset="shift_jis"><p>café \xff</p>'.encode("utf-8").replace(

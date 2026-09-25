@@ -495,9 +495,10 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
     if declared and declared != "utf-8":
         return data.decode(declared, errors = "replace")
     text = data.decode("utf-8", errors = "replace")
-    # Legacy bytes can form a stray valid UTF-8 sequence (cp1252 "à\xa0»"), so one is not enough.
+    # Keep UTF-8 unless damaged bytes outnumber valid non-ASCII: legacy bytes can form a stray valid
+    # sequence (cp1252 "à\xa0»"), and a truncated UTF-8 file has as many of each.
     non_ascii = len(text) - len(text.encode("ascii", "ignore"))
-    if non_ascii > 2 * text.count("\ufffd"):
+    if non_ascii >= 2 * text.count("\ufffd"):
         return text
     return data.decode("cp1252", errors = "replace")
 
