@@ -386,7 +386,18 @@ def _definition_body(name: str, source: str) -> str | None:
     depth, index = (1 if is_function else 0), at.end()
     while index < len(source):
         char = source[index]
-        if char in "({[":
+        # Quoted text and comments are not syntax: `track("}")` must not close the body.
+        if char in "\"'`":
+            index += 1
+            while index < len(source) and source[index] != char:
+                index += 2 if source[index] == "\\" else 1
+        elif source.startswith("//", index):
+            index = source.find("\n", index)
+            index = len(source) if index == -1 else index
+        elif source.startswith("/*", index):
+            index = source.find("*/", index + 2)
+            index = len(source) if index == -1 else index + 1
+        elif char in "({[":
             depth += 1
         elif char in ")}]":
             depth -= 1
@@ -405,7 +416,8 @@ def _opens_details(value: str, source: str) -> bool:
     name = re.fullmatch(r"\s*([A-Za-z_$][\w$]*)\s*", value)
     if name is None:
         return False
-    body = _definition_body(name.group(1), source)
+    # A commented-out setter inside the body does not open anything.
+    body = _definition_body(name.group(1), _without_block_comments(source))
     return body is not None and bool(re.search(r"\bsetDetailsOpen\(\s*true\s*\)", body))
 
 
@@ -428,9 +440,11 @@ def _calls_show_details(value: str | None) -> bool:
 
 def _names_details(tag: str) -> bool:
     """Whether the tag's own accessible name is the details label, literal or by catalog key."""
-    if re.search(rf"""\baria-label=(?:"{DETAILS_LABEL}"|\{{\s*"{DETAILS_LABEL}"\s*\}})""", tag):
+    if re.search(
+        rf"""(?<![\w-])aria-label=(?:"{DETAILS_LABEL}"|\{{\s*"{DETAILS_LABEL}"\s*\}})""", tag
+    ):
         return True
-    key = re.search(r"""\baria-label=\{\s*t\(\s*["']([\w.]+)["']\s*\)\s*\}""", tag)
+    key = re.search(r"""(?<![\w-])aria-label=\{\s*t\(\s*["']([\w.]+)["']\s*\)\s*\}""", tag)
     if key is None:
         return False
     try:
@@ -509,6 +523,21 @@ def test_assistant_more_menu_exposes_response_details_action():
             "const showDetails: () => void = () => setDetailsOpen(false);",
             False,
         ),
+        (
+            "showDetails",
+            'const showDetails = () => {\n  track("}");\n  setDetailsOpen(true);\n};',
+            True,
+        ),
+        (
+            "showDetails",
+            "const showDetails = () => {\n  track(`;)`); // }\n  setDetailsOpen(true);\n};",
+            True,
+        ),
+        (
+            "showDetails",
+            "const showDetails = () => {\n  /* setDetailsOpen(true) */ track();\n};\nsetDetailsOpen(true);",
+            False,
+        ),
         ("showDetails", "const showDetails = () => setDetailsOpen(false);", False),
         ("missing", "const showDetails = () => setDetailsOpen(true);", False),
     ],
@@ -537,6 +566,7 @@ def test_the_callback_reader_follows_a_named_callback_to_its_end(value, source, 
             False,
         ),
         ('<Item onSelect={onShowDetails} aria-label="Copy">', False),
+        ('<Item data-aria-label="See response details" onSelect={onShowDetails}>', False),
     ],
 )
 def test_the_details_item_must_carry_both_the_label_and_the_call(menu, opens):

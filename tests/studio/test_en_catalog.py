@@ -131,3 +131,53 @@ def test_every_key_the_studio_tests_ask_for_exists():
         except KeyError:
             missing[key] = where
     assert not missing, f"keys asked for but not in {EN_LOCALE_TS.name}: {missing}"
+
+
+def _github_glob(pattern: str) -> re.Pattern[str]:
+    """A workflow `paths` pattern as a regex: `**` crosses `/`, `*` and `?` do not."""
+    out = []
+    index = 0
+    while index < len(pattern):
+        if pattern.startswith("**", index):
+            out.append(".*")
+            index += 2
+        elif pattern[index] == "*":
+            out.append("[^/]*")
+            index += 1
+        elif pattern[index] == "?":
+            out.append("[^/]")
+            index += 1
+        else:
+            out.append(re.escape(pattern[index]))
+            index += 1
+    return re.compile("".join(out))
+
+
+def test_every_workflow_running_a_catalog_driver_also_triggers_on_the_catalog_reader():
+    """A PR that changes only `_en_catalog.py` must still run the browser drivers built on it."""
+    import yaml
+
+    repo = HERE.parents[1]
+    reader = "tests/studio/_en_catalog.py"
+    drivers = [
+        path.name
+        for path in sorted(HERE.glob("*.py"))
+        if not path.name.startswith("test_")
+        and path.name != "_en_catalog.py"
+        and "_en_catalog" in path.read_text(encoding = "utf-8")
+    ]
+    assert drivers, "no browser driver reads the catalog any more"
+    unguarded = {}
+    for workflow in sorted((repo / ".github" / "workflows").glob("*.y*ml")):
+        text = workflow.read_text(encoding = "utf-8")
+        runs = [name for name in drivers if f"tests/studio/{name}" in text]
+        if not runs:
+            continue
+        triggers = yaml.safe_load(text).get(True) or {}  # PyYAML reads the `on:` key as True.
+        pull_request = triggers.get("pull_request") if isinstance(triggers, dict) else None
+        paths = (pull_request or {}).get("paths") if isinstance(pull_request, dict) else None
+        if not paths:
+            continue  # No path filter: every PR runs it.
+        if not any(_github_glob(p).fullmatch(reader) for p in paths if not p.startswith("!")):
+            unguarded[workflow.name] = runs
+    assert not unguarded, f"these workflows run catalog drivers but skip {reader}: {unguarded}"
