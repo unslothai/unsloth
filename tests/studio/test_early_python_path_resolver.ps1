@@ -702,7 +702,7 @@ try {
     # never looks at either. Real files on this host, a stubbed Get-Acl, and ProgramFiles pointed
     # at a temporary root so the directory half passes and only the file half is under test.
     $hostPy3 = (Get-Command python3 -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
-    if ($IsWindows -or -not $hostPy3) {
+    if ($IsWindows -or $env:OS -eq "Windows_NT" -or -not $hostPy3) {
         Write-Host "  SKIP  interpreter-file checks need a non-Windows host with python3" -ForegroundColor Yellow
     } else {
         $savedPF2 = $env:ProgramFiles; $savedSR2 = $env:SystemRoot; $savedOS2 = $env:OS; $savedPath2 = $env:PATH
