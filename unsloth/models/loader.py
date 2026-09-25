@@ -241,7 +241,9 @@ def _config_uses_remote_code(config):
         if isinstance(node, dict):
             return [value for value in node.values() if _is_config(value)]
         names = ["text_config", "vision_config", "audio_config"]
-        for sub in getattr(type(node), "sub_configs", None) or ():
+        # Instance read: transformers 4.57 makes backbone configs' `sub_configs` a property.
+        sub_configs = getattr(node, "sub_configs", None)
+        for sub in sub_configs if isinstance(sub_configs, dict) else ():
             if sub not in names:
                 names.append(sub)
         # A callable (e.g. a Mock) is not a config.

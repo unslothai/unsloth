@@ -258,3 +258,28 @@ def test_configs_past_the_depth_bound_count_as_remote():
     assert f(chain(3, native_leaf)) is False
     assert f(chain(3, remote_leaf)) is True
     assert f(chain(12, remote_leaf)) is True
+
+
+def test_sub_configs_declared_as_a_property_are_read():
+    """transformers 4.57 declares backbone configs' `sub_configs` as a property (VitMatte, DPT)."""
+    from transformers import PretrainedConfig
+
+    f = _helper()
+
+    class RemoteBackbone(PretrainedConfig):
+        model_type = "remote_backbone_test"
+
+    RemoteBackbone.__module__ = "transformers_modules.some_repo.configuration_x"
+
+    class BackboneHolder(PretrainedConfig):
+        model_type = "backbone_holder_test"
+
+        @property
+        def sub_configs(self):
+            return {"backbone_config": PretrainedConfig}
+
+    holder = BackboneHolder()
+    holder.backbone_config = PretrainedConfig()
+    assert f(holder) is False
+    holder.backbone_config = RemoteBackbone()
+    assert f(holder) is True
