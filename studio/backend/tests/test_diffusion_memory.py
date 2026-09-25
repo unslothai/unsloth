@@ -167,6 +167,26 @@ def test_host_memory_reclaimer_is_policy_scoped_and_best_effort(monkeypatch):
     assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_MODEL) is False
 
 
+def test_reclaim_host_memory_ignores_the_offload_policy(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        diffusion_memory, "_resolve_host_memory_reclaimer", lambda: lambda: calls.append(0)
+    )
+    assert diffusion_memory.reclaim_host_memory() is True
+    assert calls == [0]
+    for policy in (OFFLOAD_NONE, OFFLOAD_GROUP, OFFLOAD_SEQUENTIAL):
+        assert diffusion_memory.reclaim_offload_host_memory(policy) is False
+    assert calls == [0]
+
+    def call_failure():
+        raise OSError("allocator unavailable")
+
+    monkeypatch.setattr(diffusion_memory, "_resolve_host_memory_reclaimer", lambda: call_failure)
+    assert diffusion_memory.reclaim_host_memory() is False
+    monkeypatch.setattr(diffusion_memory, "_resolve_host_memory_reclaimer", lambda: None)
+    assert diffusion_memory.reclaim_host_memory() is False
+
+
 def test_host_memory_reclaimer_caches_unsupported_or_missing_apis(monkeypatch):
     loads = []
     monkeypatch.setattr(diffusion_memory.sys, "platform", "linux")
