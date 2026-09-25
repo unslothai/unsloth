@@ -11751,15 +11751,28 @@ class _MLXCompletionBackend:
             raise ValueError("Prompt contains invalid tokens.")
         if prompt == "queued":
             active_generations.cancel_all()  # e.g. a model swap while behind another generation
-        return {"ids": [1, 2], "text": "P"}
+        ids = [1, 2] * len(prompt) if isinstance(prompt, str) else [1, 2]
+        return {"ids": ids, "text": prompt if isinstance(prompt, str) else "P"}
 
     def generate_completion(self, prompt_ids, cancel_event, stats_holder, **kw):
-        self.call = (prompt_ids, kw)
+        self.call, self.runs = (
+            (prompt_ids, kw),
+            [*getattr(self, "runs", []), (prompt_ids, kw["seed"])],
+        )
         if kw["stop"] == ["cancel"]:
             cancel_event.set()
+        if kw["stop"] == ["budget"]:
+            from core.inference.context_refusal import ContextBudgetExceeded
+            raise ContextBudgetExceeded(9, 4)
+        if kw["stop"] == ["refused"]:
+            from core.inference.orchestrator import GenStreamError
+            yield GenStreamError("No grammar here.", public = True, openai_param = "response_format")
+            return
         yield from ("a", "ab")
-        usage = {"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4}
-        stats_holder["stats"] = {"usage": usage, "finish_reason": "length"}
+        n = len(prompt_ids)
+        usage = {"prompt_tokens": n, "completion_tokens": n, "total_tokens": 2 * n}
+        usage["prompt_tokens_details"] = {"cached_tokens": n - 1}
+        stats_holder["stats"] = {"usage": usage, "finish_reason": "length" if n == 2 else "stop"}
 
     def reset_generation_state(self, _event):
         pass
@@ -11851,12 +11864,50 @@ def test_mlx_completion_streams_text_completion_chunks(monkeypatch):
     assert active_generations.count() == 0
 
 
+def test_mlx_completion_fans_out_prompts_and_n_in_llama_server_order(monkeypatch):
+    body = {"prompt": ["a", "bb"], "n": 2, "seed": 7, "echo": True}
+    backend, out = _run_mlx_completion(monkeypatch, body)
+    got = [(c["index"], c["text"], c["finish_reason"]) for c in out["choices"]]
+    assert got == [
+        (0, "aab", "length"),
+        (1, "aab", "length"),
+        (2, "bbab", "stop"),
+        (3, "bbab", "stop"),
+    ]
+    assert backend.runs == [([1, 2], 7), ([1, 2], 8), ([1, 2] * 2, 7), ([1, 2] * 2, 8)]
+    # Cached prompt tokens count once per prompt, as its prompt tokens do.
+    cached = {"prompt_tokens_details": {"cached_tokens": 4}}
+    assert out["usage"] == {
+        "prompt_tokens": 6,
+        "completion_tokens": 12,
+        "total_tokens": 18,
+        **cached,
+    }
+    assert "Choice 4:\nab" in inf_mod.api_monitor.snapshot()[0]["reply_preview"]
+    # Cancelled during the first choice: it answers, the rest never start.
+    cancelled, out = _run_mlx_completion(monkeypatch, {**body, "stop": "cancel"})
+    assert len(cancelled.runs) == 1 and [c["finish_reason"] for c in out["choices"]] == ["stop"]
+
+
+@pytest.mark.parametrize(
+    "stop, code", [("budget", "context_length_exceeded"), ("refused", "unsupported_parameter")]
+)
+def test_mlx_completion_refusals_are_client_errors_as_in_chat(monkeypatch, stop, code):
+    with pytest.raises(HTTPException) as err:
+        _run_mlx_completion(monkeypatch, {"prompt": "P", "stop": stop, "grammar": 'root ::= "a"'})
+    assert err.value.status_code == 400 and err.value.detail["error"]["code"] == code
+    # A runtime grammar refusal names the field the request sent.
+    assert err.value.detail["error"]["param"] == ("prompt" if stop == "budget" else "grammar")
+    _, lines = _run_mlx_completion(monkeypatch, {"prompt": "P", "stop": stop, "stream": True})
+    assert [line["error"]["code"] for line in lines if "error" in line] == [code]
+
+
 # llama-server's /v1/completions fields at b11160 (tools/server/server-schema.cpp) that MLX
 # serves, or ignores because they change neither the text nor the response shape.
 _LLAMA_SERVED = (
     "stream stream_options n_predict max_tokens max_completion_tokens top_k top_p min_p "
     "temperature repeat_last_n repeat_penalty frequency_penalty presence_penalty seed "
-    "logit_bias stop echo"
+    "logit_bias stop echo n n_cmpl"
 )
 _LLAMA_IGNORED = (
     "cache_prompt sse_ping_interval n_keep n_discard n_cache_reuse backend_sampling "
@@ -11870,7 +11921,7 @@ _LLAMA_IGNORED = (
 _LLAMA_UNSERVED = json.loads(
     '{"logprobs": [2, 0], "n_probs": [1, 0], "best_of": [2, 1], "suffix": ["x", ""], "response_format":'
     ' [{"type": "json_object"}, {"type": "text"}], "grammar": ["r ::= x", ""], "json_schema": [{}, null],'
-    ' "n": [2, 1], "n_cmpl": [2, 1], "timings_per_token": [true, false], "return_tokens": [true, false],'
+    ' "timings_per_token": [true, false], "return_tokens": [true, false],'
     ' "return_progress": [true, false], "verbose": [true, false], "response_fields": [["id"], []], "lora":'
     ' [[{"id": 0, "scale": 1}], []], "n_indent": [2, 0], "t_max_predict_ms": [100, -1], "ignore_eos":'
     ' [true, false], "min_keep": [2, 0], "samplers": ["kt", "edskypmxt"], "typical_p": [0.5, 1.0],'
@@ -11911,8 +11962,11 @@ def test_mlx_completion_refuses_only_what_mlx_cannot_reproduce(monkeypatch):
     for prompt in ([1, "a"], ["a", 1], [[1, 2]], {"prompt_string": [1, "a"]}):
         assert refusal({"prompt": prompt, "n_predict": -1, "repeat_last_n": 0}) is None
     for bad in (
-        {"prompt": ["a", "b"]},
-        {"prompt": {"prompt_string": "a", "multimodal_data": ["x"]}},
+        {"prompt": ["a", "b"], "stream": True},
+        {"prompt": "p", "n": 2, "stream": True},
+        {"prompt": "p", "n": 0},
+        {"prompt": "p", "n_cmpl": 129, "n": 1},
+        {"prompt": ["a", {"prompt_string": "a", "multimodal_data": ["x"]}]},
         {"prompt": [1, 1.5]},
         {"prompt": "p", "typical_p": "x"},
         {"prompt": [True]},

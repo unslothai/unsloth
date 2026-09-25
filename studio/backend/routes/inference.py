@@ -37260,8 +37260,6 @@ _MLX_COMPLETION_FIELDS_OFF = {
     "response_format": lambda v, b: v == {"type": "text"},
     "grammar": lambda v, b: _llama_grammar_off(b),
     "json_schema": lambda v, b: _llama_grammar_off(b),
-    "n": lambda v, b: v == 1,
-    "n_cmpl": lambda v, b: v == 1,
     "timings_per_token": lambda v, b: v is False,
     "return_tokens": lambda v, b: v is False,
     "return_progress": lambda v, b: v is False,
@@ -37293,7 +37291,12 @@ _MLX_COMPLETION_FIELDS_OFF = {
     "reasoning_budget_tokens": lambda v, b: v == -1,
 }
 
-_LLAMA_HARD_LIMITS = {"n_predict": (-1, 2**31 - 1), "repeat_last_n": (0, 2**31 - 1)}
+# n_cmpl's upper bound is llama-server's slot count there; here it is chat's cap on n.
+_LLAMA_HARD_LIMITS = {
+    "n_predict": (-1, 2**31 - 1),
+    "n_cmpl": (1, 128),
+    "repeat_last_n": (0, 2**31 - 1),
+}
 
 
 # llama-server reads only the first non-null name of each group.
@@ -37313,8 +37316,10 @@ def _llama_read_fields(body: dict) -> dict:
     return fields
 
 
-def _llama_n_predict(body: dict):
-    return next((body[n] for n in _LLAMA_ALIASES[0] if body.get(n) is not None), None)
+def _llama_value(body: dict, name: str):
+    """*name*, or the alias of it llama-server reads."""
+    names = next((group for group in _LLAMA_ALIASES if group[0] == name), (name,))
+    return next((body[n] for n in names if body.get(n) is not None), None)
 
 
 # llama-server's defaults for the fields no pin or per-model recommendation sets, so an MLX
@@ -37360,9 +37365,7 @@ def _mlx_completions_refusal(body: dict) -> Optional[str]:
             "'prompt' must be a string, a list of strings and token ids, a "
             '{"prompt_string": ...} object, or an array of those.'
         )
-    if len(prompts) > 1:
-        return "Multiple prompts are not supported for MLX models."
-    if isinstance(prompts[0], dict) and prompts[0].get("multimodal_data"):
+    if any(isinstance(p, dict) and p.get("multimodal_data") for p in prompts):
         return "'multimodal_data' is not supported for MLX models; send images to /v1/chat/completions."
     fields = _llama_read_fields(body)
     for name, off in _MLX_COMPLETION_FIELDS_OFF.items():
@@ -37373,13 +37376,14 @@ def _mlx_completions_refusal(body: dict) -> Optional[str]:
             neutral = False
         if not neutral:
             return f"'{name}' is not supported for MLX models."
-    limited = {**fields, "n_predict": _llama_n_predict(body)}
     for name, (low, high) in _LLAMA_HARD_LIMITS.items():
-        value = limited.get(name)
+        value = _llama_value(body, name)
         if value is not None and not (_is_token_id(value) and low <= value <= high):
             return (
                 f"Field '{name}': Value must be between {low} <= value <= {high}, but got {value}"
             )
+    if body.get("stream") is True and len(prompts) * (_llama_value(body, "n_cmpl") or 1) > 1:
+        return "Streaming more than one completion is not supported for MLX models."
     try:
         _llama_logit_bias(body.get("logit_bias"))
     except ValueError as exc:
@@ -37426,6 +37430,23 @@ def _mlx_completion_sampling(body: dict, model_id) -> dict:
     )
 
 
+def _mlx_completion_error(failure, message: str, body: dict) -> tuple:
+    """A failed MLX completion's status and OpenAI error body, typed as chat types them."""
+    if isinstance(failure, context_refusal.ContextBudgetExceeded):
+        code, param = "context_length_exceeded", "prompt"
+    else:
+        code, param = "unsupported_parameter", _refused_parameter(failure)
+    if param == "response_format":
+        # Name the field the grammar came from, in _mlx_completion_grammar's precedence.
+        if "grammar" in body:
+            param = "grammar"
+        elif body.get("json_schema") is not None:
+            param = "json_schema"
+    if param is None:
+        return 500, {"error": {"message": message, "type": "server_error"}}
+    return 400, openai_error_body(message, status = 400, code = code, param = param)
+
+
 def _text_completion_chunk(completion_id, created, model_name, text, finish_reason) -> dict:
     return {
         "id": completion_id,
@@ -37443,8 +37464,9 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
             status_code = 400,
             detail = openai_error_body(refusal, status = 400, code = "unsupported_parameter"),
         )
-    n_predict = _llama_n_predict(body)
+    n_predict = _llama_value(body, "n_predict")
     budget = None if n_predict == -1 else n_predict
+    n = _llama_value(body, "n_cmpl") or 1
     stream_options = body.get("stream_options")
     include_usage = isinstance(stream_options, dict) and stream_options.get("include_usage") is True
     try:
@@ -37462,9 +37484,11 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
     tracker.__enter__()
     watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel_event))
     try:
-        resolved = await asyncio.to_thread(
-            backend.resolve_completion_prompt, _completion_prompts(body["prompt"])[0]
-        )
+        # Every prompt first, so an invalid one is a 400 before anything generates.
+        resolved = [
+            await asyncio.to_thread(backend.resolve_completion_prompt, prompt)
+            for prompt in _completion_prompts(body["prompt"])
+        ]
     except BaseException as exc:
         tracker.__exit__(None, None, None)
         if not isinstance(exc, ValueError):
@@ -37475,8 +37499,7 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
         )
     finally:
         await _stop_local_disconnect_cancel_watcher(watcher)
-    prompt_ids = resolved["ids"]
-    echo = resolved["text"] if body.get("echo") is True else ""
+    echo = body.get("echo") is True
     created = int(time.time())
     stats_holder: dict = {}
     monitor_id = api_monitor.start(
@@ -37484,23 +37507,25 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
         via_api_key = _request_used_api_key(request),
         method = request.method,
         model = model_name,
-        prompt = resolved["text"],
+        prompt = resolved[0]["text"]
+        if len(resolved) == 1
+        else "\n\n".join(f"Prompt {i + 1}:\n{r['text']}" for i, r in enumerate(resolved)),
         context_length = _monitor_context_length(),
         subject = current_subject,
     )
 
-    def generate():
+    def generate(prompt_ids, choice = 0):
         return backend.generate_completion(
             prompt_ids,
             cancel_event = cancel_event,
             stats_holder = stats_holder,
             max_new_tokens = budget,
-            **sampling,
+            **{**sampling, "seed": _choice_seed(sampling["seed"], choice)},
         )
 
-    def finish():
-        """The finish reason and usage, recorded on the monitor."""
-        stats = stats_holder.get("stats")
+    def choice_end(prompt_ids):
+        """The finish reason, usage and stats of the choice that just ran."""
+        stats = stats_holder.pop("stats", None)
         if budget == 0:
             reason = "length"
         elif cancel_event.is_set():
@@ -37512,11 +37537,10 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
             "completion_tokens": 0,
             "total_tokens": len(prompt_ids),
         }
-        api_monitor.set_perf(monitor_id, stop_reason = reason)
-        _monitor_usage(monitor_id, usage, timings = (stats or {}).get("timings"))
-        return reason, usage
+        return reason, usage, stats
 
     if body.get("stream") is True:
+        prompt_ids = resolved[0]["ids"]
 
         def sse(obj) -> str:
             return f"data: {json.dumps(obj)}\n\n"
@@ -37530,10 +37554,12 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
 
                 if echo:
                     yield sse(
-                        _text_completion_chunk(completion_id, created, model_name, echo, None)
+                        _text_completion_chunk(
+                            completion_id, created, model_name, resolved[0]["text"], None
+                        )
                     )
                 _DONE = object()
-                gen = generate() if budget != 0 else iter(())
+                gen = generate(prompt_ids) if budget != 0 else iter(())
                 prev = ""
                 while True:
                     if cancel_event.is_set():
@@ -37553,7 +37579,7 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
                         message = _friendly_gen_stream_error(cumulative)
                         api_monitor.fail(monitor_id, message)
                         yield _openai_stream_error_sse(
-                            {"error": {"message": message, "type": "server_error"}}
+                            _mlx_completion_error(cumulative, message, body)[1]
                         )
                         return
                     delta, prev = cumulative[len(prev) :], cumulative
@@ -37565,7 +37591,9 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
                 if cancel_event.is_set():
                     backend.reset_generation_state(cancel_event)
                     mark_current_response_failed()
-                reason, usage = finish()
+                reason, usage, stats = choice_end(prompt_ids)
+                api_monitor.set_perf(monitor_id, stop_reason = reason)
+                _monitor_usage(monitor_id, usage, timings = (stats or {}).get("timings"))
                 yield sse(_text_completion_chunk(completion_id, created, model_name, "", reason))
                 if include_usage:
                     yield sse(
@@ -37589,9 +37617,7 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
                 logger.error("MLX completions stream error: %s", exc, exc_info = True)
                 message = _friendly_error(exc)
                 api_monitor.fail(monitor_id, message)
-                yield _openai_stream_error_sse(
-                    {"error": {"message": message, "type": "server_error"}}
-                )
+                yield _openai_stream_error_sse(_mlx_completion_error(exc, message, body)[1])
             finally:
                 await _stop_local_disconnect_cancel_watcher(watcher)
                 await _drain_pending_worker(next_task, cancel_event)
@@ -37608,46 +37634,92 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
 
         return _sse_streaming_response(stream_chunks(), unstarted_cleanup = unstarted_cleanup)
 
-    def drain():
+    def drain(prompt_ids, choice):
         text = ""
-        for text in generate():
+        for text in generate(prompt_ids, choice):
             if isinstance(text, GenStreamError):
                 return text
         return text
 
+    # llama-server's order: each prompt's n choices in turn, choice j seeded as chat seeds it.
+    choices, replies, stats = [], [], None
+    prompt_tokens = completion_tokens = 0
+    cached_tokens: Optional[int] = None
+    failure = None
     watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel_event))
     try:
-        text = (
-            ""
-            if budget == 0 or cancel_event.is_set()
-            else await _run_blocking_generation(drain, cancel_event, name = "openai-completions")
-        )
+        for index in range(len(resolved) * n):
+            prompt_index, choice = divmod(index, n)
+            # Choice 0 answers even when cancelled; the rest are not started.
+            if index and cancel_event.is_set():
+                break
+            prompt_ids = resolved[prompt_index]["ids"]
+            text = (
+                ""
+                if budget == 0 or cancel_event.is_set()
+                else await _run_blocking_generation(
+                    lambda: drain(prompt_ids, choice), cancel_event, name = "openai-completions"
+                )
+            )
+            if isinstance(text, GenStreamError):
+                failure = text
+                break
+            reason, usage, stats = choice_end(prompt_ids)
+            if not choice:
+                prompt_tokens += usage["prompt_tokens"]
+                cached = cached_prompt_tokens(usage)
+                if cached is not None:
+                    cached_tokens = (cached_tokens or 0) + cached
+            completion_tokens += usage["completion_tokens"]
+            prefix = resolved[prompt_index]["text"] if echo else ""
+            choices.append(
+                {"text": prefix + text, "index": index, "logprobs": None, "finish_reason": reason}
+            )
+            replies.append(text)
     except asyncio.CancelledError:
         backend.reset_generation_state(cancel_event)
         api_monitor.finish(monitor_id, "cancelled")
         raise
     except Exception as exc:
-        text = exc
+        failure = exc
     finally:
         await _stop_local_disconnect_cancel_watcher(watcher)
         tracker.__exit__(None, None, None)
-    if isinstance(text, (GenStreamError, Exception)):
+    if failure is not None:
         backend.reset_generation_state(cancel_event)
         message = (
-            _friendly_gen_stream_error(text)
-            if isinstance(text, GenStreamError)
-            else _friendly_error(text)
+            _friendly_gen_stream_error(failure)
+            if isinstance(failure, GenStreamError)
+            else _friendly_error(failure)
         )
         api_monitor.fail(monitor_id, message)
-        raise HTTPException(status_code = 500, detail = message)
-    api_monitor.set_reply(monitor_id, text)
-    reason, usage = finish()
+        status, error = _mlx_completion_error(failure, message, body)
+        raise HTTPException(status_code = status, detail = message if status == 500 else error)
+    usage = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+    }
+    if cached_tokens is not None:
+        usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
+    single = len(choices) == 1
+    api_monitor.set_reply(
+        monitor_id,
+        replies[0]
+        if single
+        else "\n\n".join(f"Choice {i + 1}:\n{r}" for i, r in enumerate(replies)),
+    )
+    # One choice's reason and timings would misdescribe several.
+    if single:
+        api_monitor.set_perf(monitor_id, stop_reason = choices[0]["finish_reason"])
+    _monitor_usage(monitor_id, usage, timings = (stats or {}).get("timings") if single else None)
     if cancel_event.is_set():
         from core.inference.llama_keepwarm import mark_current_response_failed
         mark_current_response_failed()
     api_monitor.finish(monitor_id, "cancelled" if cancel_event.is_set() else "completed")
     return {
-        **_text_completion_chunk(completion_id, created, model_name, echo + text, reason),
+        **_text_completion_chunk(completion_id, created, model_name, "", None),
+        "choices": choices,
         "usage": usage,
     }
 
