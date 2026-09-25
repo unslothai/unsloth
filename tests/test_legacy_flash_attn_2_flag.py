@@ -18,7 +18,7 @@ NAME = "_transformers_honors_legacy_flash_attn_2_flag"
 
 
 def _load():
-    tree = ast.parse(SOURCE.read_text())
+    tree = ast.parse(SOURCE.read_text(encoding = "utf-8"))
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == NAME]
     assert len(nodes) == 1
     namespace = {"functools": functools, "inspect": inspect}
