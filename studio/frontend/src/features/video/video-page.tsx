@@ -8,7 +8,6 @@ import {
   Download01Icon,
   FlimSlateIcon,
   ImageCropIcon,
-  Image03Icon,
   InformationCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { Volume02Icon } from "@/lib/volume-icons";
@@ -21,7 +20,9 @@ import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
 import { ImageDropzone } from "@/components/image-dropzone";
-import { MediaPageLink } from "@/components/media-page-link";
+import { LibraryPageLink } from "@/components/media-page-link";
+import { translate } from "@/i18n";
+import { useLibraryFavorites } from "@/features/library";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { videoTourSteps } from "./tour";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
@@ -153,6 +154,7 @@ import {
   isDownloadCancelled,
 } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
+import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 
@@ -1926,6 +1928,7 @@ function VideoGenerator({
 
   // The pin state each id was last CLICKED into, so a failing request can tell whether it is
   // still the current intent; without it a slow failure rolls back a later success.
+  const { isFavorite, toggleFavorite } = useLibraryFavorites();
   const pinAttempt = useRef(new Map<string, number>());
   const pinSeq = useRef(0);
 
@@ -2940,6 +2943,37 @@ function VideoGenerator({
     videoPresets.hydrated,
   ]);
 
+  // A Library "View in" link arrives as ?item=: select that clip, paging back until it loads. A
+  // counter, not effect cleanup, retires a lookup: clearing the query must not cancel its own.
+  const routedItem = active ? routeSearch?.item : undefined;
+  const routedLookup = useRef(0);
+  useEffect(() => {
+    if (!active) routedLookup.current += 1;
+  }, [active]);
+  useEffect(() => {
+    if (!routedItem) return;
+    const lookup = ++routedLookup.current;
+    void navigateSelf({ to: "/video", search: {}, replace: true });
+    void loadGalleryUntil({
+      has: () => galleryCache.videos.some((entry) => entry.id === routedItem),
+      count: () => galleryCache.videos.length,
+      hasMore: () => galleryCache.hasMore,
+      refresh: loadGallery,
+      loadMore,
+      busy: () => loadingMore.current,
+      cancelled: () => lookup !== routedLookup.current,
+    }).then((found) => {
+      if (lookup !== routedLookup.current) return;
+      if (found) {
+        setSelectedId(routedItem);
+      } else {
+        toast(translate("library.toast.clipNotFound"), {
+          description: translate("library.toast.notFoundDescription"),
+        });
+      }
+    });
+  }, [routedItem, navigateSelf, loadGallery, loadMore]);
+
 
   // The task dialog defers the load out of the branch that snapshotted the rollback, so the two
   // ways out carry that branch's two endings: choosing runs the load and reverts if it never
@@ -3638,11 +3672,9 @@ function VideoGenerator({
           )}
         </div>
         <div className="pointer-events-auto flex shrink-0 items-center gap-2">
-          {/* Images is a separate page, so it sits out here, not in this page's controls. */}
-          <MediaPageLink
-            to="/images"
-            label="Images"
-            icon={Image03Icon}
+          {/* A separate page, so it sits outside this page's controls. */}
+          <LibraryPageLink
+            tab="videos"
             labelClassName="@max-[30rem]:hidden"
             arrowClassName="@max-[30rem]:hidden"
           />
@@ -4279,6 +4311,8 @@ function VideoGenerator({
                     active={active}
                     pinned={Boolean(selected.pinned)}
                     archived={Boolean(selected.archived)}
+                    favorite={isFavorite(`video:${selected.id}`)}
+                    onToggleFavorite={() => toggleFavorite(`video:${selected.id}`)}
                     onTogglePin={() =>
                       void handleTogglePin(selected.id, !selected.pinned)
                     }
@@ -4431,6 +4465,8 @@ function VideoGenerator({
                     active={active}
                     pinned={Boolean(video.pinned)}
                     archived={Boolean(video.archived)}
+                    favorite={isFavorite(`video:${video.id}`)}
+                    onToggleFavorite={() => toggleFavorite(`video:${video.id}`)}
                     onTogglePin={() => void handleTogglePin(video.id, !video.pinned)}
                     onToggleArchive={() => void handleArchive(video.id)}
                     onDelete={() => void handleDelete(video.id)}
