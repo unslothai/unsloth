@@ -300,10 +300,12 @@ def recover_dacl_state(env: dict[str, str] | None = None) -> bool:
     stderr = completed.stderr or ""
     # main.rs prints "DACL recovery: ... N error(s)" only when there was work, or "DACL recovery failed".
     report = re.search(r"DACL recovery: .*?(\d+) error\(s\)", stderr)
+    # Deleting a journal that is already gone is not a restore error: a concurrent run finished it.
+    already_gone = len(re.findall(r"^\s*remove .*\(os error 2\)\s*$", stderr, re.MULTILINE))
     clean = (
         completed.returncode == 0
         and "DACL recovery failed" not in stderr
-        and (report is None or report.group(1) == "0")
+        and (report is None or int(report.group(1)) <= already_gone)
     )
     if not clean:
         logger.warning("MXC DACL recovery reported a problem: %s", stderr.strip()[-500:])

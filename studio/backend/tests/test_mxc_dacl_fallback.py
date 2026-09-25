@@ -244,8 +244,31 @@ def test_clean_or_non_dacl_exits_need_no_replay(monkeypatch, reason, dacl):
         (0, "DACL recovery: 1 file(s), 2 ACE(s) restored, 0 pruned (missing), 1 error(s)\n", False),
         (0, "DACL recovery failed: state file I/O error\n", False),
         (1, "", False),
+        # Measured on windows-latest with three concurrent DACL launches.
+        (
+            0,
+            "DACL recovery: 2 file(s), 6 ACE(s) restored, 0 pruned (missing), 2 error(s)\n"
+            "  remove C:\\s\\dacl-restore\\pid-4980-48aa.json: The system cannot find the file specified. (os error 2)\n"
+            "  remove C:\\s\\dacl-restore\\pid-7312-2d4c.json: The system cannot find the file specified. (os error 2)\n",
+            True,
+        ),
+        (
+            0,
+            "DACL recovery: 2 file(s), 6 ACE(s) restored, 0 pruned (missing), 2 error(s)\n"
+            "  remove C:\\s\\dacl-restore\\pid-4980-48aa.json: The system cannot find the file specified. (os error 2)\n"
+            "  C:\\work: Access is denied. (os error 5)\n",
+            False,
+        ),
     ],
-    ids = ["nothing", "restored", "restore_error", "recovery_failed", "probe_failed"],
+    ids = [
+        "nothing",
+        "restored",
+        "restore_error",
+        "recovery_failed",
+        "probe_failed",
+        "journal_already_removed",
+        "one_real_error",
+    ],
 )
 def test_journal_replay_reads_wxc_recovery_report(monkeypatch, returncode, stderr, clean):
     import subprocess
