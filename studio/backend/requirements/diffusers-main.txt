@@ -31,10 +31,8 @@
 # one place. That fallback is why the commit below must stay a full 40-character SHA: an archive
 # records no ref, so only a SHA in the URL makes the resident build identifiable afterwards.
 #
-# The SHA in an archive URL names the tree but does not check the bytes served for it (a git clone
-# does, an archive does not), so the zip route also carries the archive's SHA-256 below. pip and uv
-# both refuse a download that does not match before any of it is built, and without the line the
-# zip route is skipped rather than taken unverified. Bump it with the commit:
+# Unlike a clone, an archive's bytes are not checked against the commit, so pip and uv verify this
+# SHA-256 before building; no digest line means no zip route. Bump it with the commit:
 #   curl -sL https://github.com/huggingface/diffusers/archive/<commit>.zip | sha256sum
 # archive-sha256: 7b0d00b5b44f5ca1745d477ae4a0c2da125d58b89cff8470c422d3181a797a09
 #

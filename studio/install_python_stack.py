@@ -10676,12 +10676,9 @@ def _archive_sha256_in_requirements(req: Path) -> "str | None":
 
 
 def _diffusers_main_archive(req: Path) -> "str | None":
-    """The zip route 11c takes on a host with no working git, or None when it has none.
+    """The hash-pinned zip route 11c takes with no working git, or None when it has none.
 
-    The commit in the URL does not check the bytes GitHub serves for it, so the URL carries the
-    pinned ``#sha256=``: pip and uv both refuse a mismatched download before building it, and both
-    record the URL without the fragment, so ``_direct_reference_is_installed`` still matches it.
-    No pinned digest means no zip route, the same skip a host with no archive URL takes.
+    pip and uv record the URL without the ``#sha256=`` fragment, so residency still matches it.
     """
     wanted = _direct_reference_in_requirements(req)
     archive = _github_archive_url(*wanted) if wanted is not None else None
