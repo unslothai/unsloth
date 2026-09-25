@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A new Hub commit must not re-download files it did not change.
-
-Without symlinks (Windows without Developer Mode) huggingface_hub MOVES each downloaded blob into
-its ``snapshots/<commit>/`` dir, so ``blobs/`` stays empty and the next commit, even a README-only
-one, finds nothing to link and downloads every file again. The end-to-end tests run the real
-download worker and real ``snapshot_download`` against a fake Hub with two revisions.
-"""
+"""A new Hub commit must not re-download files it did not change (no-symlink cache)."""
 
 from __future__ import annotations
 
@@ -53,9 +47,6 @@ def _blob(seed: int, size: int) -> bytes:
     return bytes(out[:size])
 
 
-# ---------------------------------------------------------------------------------------------
-# Unit tests on a hand-built cache
-# ---------------------------------------------------------------------------------------------
 
 
 def _copy_layout(
@@ -63,7 +54,6 @@ def _copy_layout(
     files: dict[str, bytes],
     commit: str = OLD,
 ) -> Path:
-    """A repo cache as huggingface_hub leaves it with no symlinks: files IN the snapshot, no blobs."""
     repo_dir = tmp_path / "hub" / "models--Org--Model"
     snap = repo_dir / "snapshots" / commit
     for rel, data in files.items():
@@ -83,7 +73,7 @@ def _reuse(tmp_path, expected, **kwargs):
 
 def test_unchanged_file_is_linked_and_a_same_size_changed_file_is_not(tmp_path):
     same = _blob(1, 4096)
-    old_changed, new_changed = _blob(2, 4096), _blob(3, 4096)  # same size, different bytes
+    old_changed, new_changed = _blob(2, 4096), _blob(3, 4096)
     repo_dir = _copy_layout(
         tmp_path, {"model.safetensors": same, "vae/vae.safetensors": old_changed}
     )
@@ -108,7 +98,6 @@ def test_unchanged_file_is_linked_and_a_same_size_changed_file_is_not(tmp_path):
 
 
 def test_symlink_layout_is_left_to_huggingface_hub(tmp_path):
-    """With symlinks the blob is still in blobs/, which huggingface_hub reuses itself."""
     data = _blob(4, 2048)
     digest = _sha256(data)
     repo_dir = tmp_path / "hub" / "models--Org--Model"
@@ -182,7 +171,6 @@ def test_hub_digest_mismatch_falls_back_to_hashing_and_still_refuses_changed_byt
 
 
 def test_unreachable_old_commit_is_verified_by_hashing(tmp_path):
-    """A squashed history 404s the old commit: the local hash settles it instead."""
     data = _blob(9, 4096)
     _copy_layout(tmp_path, {"model.safetensors": data})
 
@@ -200,7 +188,6 @@ def test_unreachable_old_commit_is_verified_by_hashing(tmp_path):
 
 
 def _linked_snapshots(tmp_path: Path, data: bytes, n: int) -> list[str]:
-    """n older snapshots holding hard links of ONE file, as repeated README-only reuse leaves them."""
     commits = [f"{i + 3:x}" * 40 for i in range(n)]
     repo_dir = _copy_layout(tmp_path, {"model.safetensors": data}, commit = commits[0])
     for commit in commits[1:]:
@@ -213,7 +200,7 @@ def _linked_snapshots(tmp_path: Path, data: bytes, n: int) -> list[str]:
 
 
 def test_one_file_linked_into_many_snapshots_is_hashed_once(tmp_path):
-    old, new = _blob(20, 8192), _blob(21, 8192)  # a same-size weights update after 5 card edits
+    old, new = _blob(20, 8192), _blob(21, 8192)
     _linked_snapshots(tmp_path, old, 5)
 
     result = _reuse(tmp_path, [ExpectedFile("model.safetensors", len(new), _sha256(new))])
@@ -228,7 +215,7 @@ def test_hub_digests_are_asked_newest_first_and_only_until_matched(tmp_path):
     for i in range(4):
         commit = f"{i + 3:x}" * 40
         commits.append(commit)
-        _copy_layout(tmp_path, {"model.safetensors": data}, commit = commit)  # separate copies
+        _copy_layout(tmp_path, {"model.safetensors": data}, commit = commit)
     calls = []
 
     def remote(commit, paths):
@@ -245,7 +232,7 @@ def test_hub_digests_are_asked_newest_first_and_only_until_matched(tmp_path):
     )
 
     assert found == {"model.safetensors"}
-    assert len(calls) == 2  # the target commit, then one older commit, not all four
+    assert len(calls) == 2
     assert calls[0] == NEW and calls[1] in commits
 
 
@@ -263,9 +250,7 @@ def test_a_copy_cut_short_by_a_cancel_is_removed_by_the_next_reuse(tmp_path):
 
 
 def test_a_retry_does_not_preflight_files_an_earlier_attempt_already_placed(tmp_path, monkeypatch):
-    # The first attempt linked the encoder in and was cancelled before the rest arrived. The retry
-    # finds nothing left to reuse, but snapshot_download still skips the placed file, so the disk
-    # preflight must not ask for its size again (there is no blob to discount it by).
+    # Preflight must not count a file an earlier cancelled attempt already placed.
     from huggingface_hub import constants
 
     from hub.workers import hf_download
@@ -285,7 +270,6 @@ def test_a_retry_does_not_preflight_files_an_earlier_attempt_already_placed(tmp_
     left = hf_download._reuse_unchanged_files("model", REPO, NEW, expected, None)
 
     assert [f.path for f in left] == ["vae/vae.safetensors"]
-    # Offline (no commit) keeps the whole manifest, as before.
     assert hf_download._reuse_unchanged_files("model", REPO, None, expected, None) == expected
 
 
@@ -453,14 +437,11 @@ def test_reusable_paths_makes_no_request_without_a_local_candidate(tmp_path):
     assert found == set()
 
 
-# ---------------------------------------------------------------------------------------------
-# End to end: the real worker and real snapshot_download against a fake Hub
-# ---------------------------------------------------------------------------------------------
 
 _UNCHANGED = _blob(100, 3 * 1024 * 1024)
 _VAE = _blob(101, 256 * 1024)
 _CHANGED_OLD = _blob(102, 512 * 1024)
-_CHANGED_NEW = _blob(103, 512 * 1024)  # same size, new bytes
+_CHANGED_NEW = _blob(103, 512 * 1024)
 _REVISIONS = {
     OLD: {
         "README.md": b"# v1\n",
@@ -503,7 +484,6 @@ class _FakeHub:
 
             def _resolve(self, head_only):
                 parts = urlsplit(self.path).path.split("/")
-                # /Org/Model/resolve/<rev>/<path...>
                 commit = self._commit(parts[4])
                 rel = unquote("/".join(parts[5:]))
                 data = _REVISIONS.get(commit, {}).get(rel)
@@ -663,12 +643,11 @@ def test_new_revision_downloads_only_what_changed(tmp_path, fake_hub, mode, syml
     first = dict(fake_hub.downloaded)
     assert first[(OLD, "text_encoder.safetensors")] == len(_UNCHANGED)
 
-    fake_hub.head = NEW  # a card edit plus one re-published file lands on the Hub
+    fake_hub.head = NEW
     fake_hub.downloaded.clear()
     proc = _run_worker(tmp_path, fake_hub, mode, symlinks)
 
     second = fake_hub.downloaded
-    # Only the file whose bytes changed moves over the wire; the 3 MB encoder and the VAE do not.
     assert (NEW, "text_encoder.safetensors") not in second, proc.stderr[-2000:]
     assert (NEW, "vae/vae.safetensors") not in second
     assert second[(NEW, "changed.safetensors")] == len(_CHANGED_NEW)
@@ -681,7 +660,6 @@ def test_new_revision_downloads_only_what_changed(tmp_path, fake_hub, mode, syml
     assert (old_snap / "changed.safetensors").read_bytes() == _CHANGED_OLD
     assert (tmp_path / "hub" / "models--Org--Model" / "refs" / "main").read_text() == NEW
     if symlinks:
-        # Unchanged: huggingface_hub's own blob links, no copies and nothing from the reuse step.
         assert (snap / "text_encoder.safetensors").is_symlink()
         assert "Reused" not in proc.stderr
     else:
@@ -697,7 +675,7 @@ def test_a_corrupted_same_size_copy_is_downloaded_again_not_carried_forward(tmp_
     )
     damaged = bytearray(old_encoder.read_bytes())
     damaged[1000:1010] = b"\x00" * 10
-    old_encoder.write_bytes(bytes(damaged))  # same size, different bytes
+    old_encoder.write_bytes(bytes(damaged))
 
     fake_hub.head = NEW
     fake_hub.downloaded.clear()

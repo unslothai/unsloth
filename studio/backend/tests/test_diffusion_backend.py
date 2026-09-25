@@ -7671,9 +7671,7 @@ def test_download_plan_omits_a_cached_gguf_but_keeps_missing_companions(monkeypa
 
 
 def test_download_plan_stages_but_does_not_count_a_file_an_older_snapshot_holds(monkeypatch):
-    """A README-only commit left the GGUF "missing" at the new revision on a no-symlink cache, so the
-    plan counted all 7 GB again. The download worker links the unchanged file in from the older
-    snapshot, so the plan still stages it (only that job materializes it) but counts no bytes."""
+    """README-only commit on a no-symlink cache: the GGUF is still staged but counts no bytes."""
     _fake_flux_hub(monkeypatch)
     _no_cache(monkeypatch)
     asked = []
@@ -7693,7 +7691,6 @@ def test_download_plan_stages_but_does_not_count_a_file_an_older_snapshot_holds(
     assert checkpoint["checkpoint"] is True
     assert base["bytes"] > 0
     assert plan["total_bytes"] == base["bytes"]
-    # The footprint the selector shows is unchanged; only the pending download shrinks.
     assert plan["checkpoint_bytes"] == 7 * GB
     assert ("unsloth/FLUX.1-dev-GGUF", ("flux1-dev-Q4_K_M.gguf",)) in asked
 

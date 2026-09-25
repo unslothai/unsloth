@@ -3641,8 +3641,7 @@ class DiffusionBackend:
             if not missing:
                 return
 
-            # Still staged, since only the job links them into this revision, but not counted: the worker reuses an
-            # unchanged file from an older snapshot instead of downloading it (hub.utils.snapshot_reuse).
+            # Staged but not counted: the worker links unchanged files from an older snapshot (hub.utils.snapshot_reuse).
             reusable = self._reusable_from_older_snapshot(
                 repo,
                 [n for n in missing if where.get(n) is None],
@@ -3802,13 +3801,7 @@ class DiffusionBackend:
         declared_sizes: dict[str, int],
         hf_token: Optional[str],
     ) -> set[str]:
-        """Missing files an older snapshot in the live cache holds with the same content.
-
-        Without symlinks (Windows without Developer Mode) huggingface_hub keeps no blob to reuse, so
-        a README-only commit made every file of the new revision look missing and cost its full size.
-        The download worker now links such files in instead. Proof here comes from the Hub's digests
-        for both commits, or from a digest the worker cached earlier: the plan never hashes a
-        multi-GB file on the request path, and no network is used unless a same-size copy exists."""
+        """Missing files an older snapshot holds with the same content; never hashes on the request path."""
         if not revision or not names:
             return set()
         try:

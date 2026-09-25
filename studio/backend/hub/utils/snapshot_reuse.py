@@ -1,29 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Reuse files a new Hub revision did not change instead of downloading them again.
-
-huggingface_hub dedups across revisions only through ``blobs/<etag>``: a new commit's snapshot
-entry becomes a symlink to the blob that is already there. Where symlinks cannot be created
-(Windows without Developer Mode or admin, FAT/exFAT, ``HF_HUB_DISABLE_SYMLINKS``),
-``file_download._create_symlink`` MOVES a freshly downloaded blob into the snapshot instead, so
-``blobs/`` stays empty. The next commit, even one that only edits the README, then finds no blob,
-and ``hf_hub_download`` fetches every file again into the new ``snapshots/<commit>/`` directory.
-
-Before a download starts, this module looks for the same relative path in the repo's other
-snapshots. A candidate must be a regular file (a symlink means the blob layout, which
-huggingface_hub already reuses) with the declared size, and its content must match the digest
-the Hub reports for the target commit (LFS sha256, or the git blob id for small files). The
-download worker proves that by hashing the local file right before placing it.
-A matching file is hard linked into the target snapshot, or copied when hard links are
-unavailable. huggingface_hub then finds the pointer path present and skips the file
-(``os.path.exists(pointer_path)``).
-
-Plans cannot hash multi-GB files on the request path, so ``reusable_paths`` also accepts the Hub
-reporting the same digest for the candidate's own commit, or a digest the worker persisted
-earlier. That is an estimate only: the worker re-proves the bytes before placing anything, and
-downloads when they differ.
-"""
+"""Reuse unchanged files from older snapshots on a no-symlink cache, where ``file_download._create_symlink`` moves each blob into its snapshot and leaves ``blobs/`` empty."""
 
 from __future__ import annotations
 
@@ -52,8 +30,6 @@ _DIGEST_CACHE_LIMIT = 2048
 _PATHS_INFO_BATCH = 100
 _digest_cache_lock = threading.Lock()
 
-# (commit, paths) -> {path: digest}. Digest is the LFS sha256, else the git blob id, the same
-# value ``gguf_plan.sibling_sha256`` returns for a sibling.
 RemoteDigests = Callable[[str, Sequence[str]], Mapping[str, str]]
 
 
@@ -77,7 +53,6 @@ def digest_kind(digest: Optional[str]) -> Optional[str]:
 
 
 def file_digest(path: Path, kind: str) -> str:
-    """sha256 of the content, or the git blob id (sha1 over ``blob <size>\\0`` + content)."""
     if kind == "sha256":
         h = hashlib.sha256()
     elif kind == "git-sha1":
@@ -104,8 +79,6 @@ def _digest_cache_path() -> Optional[Path]:
 
 
 def _digest_cache_key(path: Path, kind: str, st: os.stat_result) -> str:
-    # Keyed by identity AND content markers, so a rewritten file usually misses. On POSIX ctime
-    # also moves when mtime is restored; Windows reports creation time there, so it adds nothing.
     return "|".join(
         (
             kind,
@@ -156,9 +129,7 @@ def cached_file_digest(
     *,
     compute: bool = True,
 ) -> tuple[Optional[str], int]:
-    """(digest, bytes hashed now). With ``compute`` the file is always hashed: stat metadata cannot
-    prove the bytes are unchanged (mtime can be restored, FAT/exFAT has 2 s granularity, Windows has
-    no change time), so the persisted cache only serves read-only estimates (``compute=False``)."""
+    """(digest, bytes hashed). Stat metadata cannot prove unchanged bytes, so the persisted cache only serves ``compute=False`` estimates."""
     try:
         st = os.stat(path)
     except OSError:
@@ -176,7 +147,7 @@ def cached_file_digest(
     except OSError:
         return None, 0
     if (after.st_size, after.st_mtime_ns) != (st.st_size, st.st_mtime_ns):
-        return None, st.st_size  # changed while we read it: prove nothing
+        return None, st.st_size
     _remember_digest(key, digest)
     return digest, st.st_size
 
@@ -216,8 +187,7 @@ def _candidates(snapshots: Iterable[Path], rel_path: str, size: int) -> list[Pat
     seen: set[tuple[int, int]] = set()
     for snap in snapshots:
         candidate = snap / rel_path
-        # A symlink points into blobs/, which huggingface_hub already reuses on its own; only a
-        # materialized copy (the no-symlink layout) is invisible to it.
+        # A symlink means the blob layout, which huggingface_hub already reuses.
         if not _is_regular_file(candidate):
             continue
         try:
@@ -226,7 +196,6 @@ def _candidates(snapshots: Iterable[Path], rel_path: str, size: int) -> list[Pat
             continue
         if st.st_size != size:
             continue
-        # Each reuse hard links the same file into one more snapshot: check those bytes once.
         inode = (st.st_dev, st.st_ino)
         if st.st_ino and inode in seen:
             continue
@@ -237,9 +206,9 @@ def _candidates(snapshots: Iterable[Path], rel_path: str, size: int) -> list[Pat
 
 def _needs_reuse(repo_dir: Path, target: Path, digest: str) -> bool:
     if os.path.lexists(target):
-        return False  # present (or a link huggingface_hub will repair itself)
+        return False
     if os.path.exists(repo_dir / "blobs" / digest):
-        return False  # huggingface_hub links or copies this blob without downloading
+        return False
     return True
 
 
@@ -251,8 +220,6 @@ def find_reusable_copies(
     remote_digests: Optional[RemoteDigests] = None,
     allow_hashing: bool = True,
 ) -> tuple[dict[str, Path], int]:
-    """Map each path in ``expected`` ({path: (size, digest)}) to a verified identical copy in another
-    snapshot of ``repo_dir``. Returns (matches, bytes hashed)."""
     snapshots = _other_snapshots(repo_dir, commit_hash)
     if not snapshots:
         return {}, 0
@@ -264,9 +231,7 @@ def find_reusable_copies(
 
     matches: dict[str, Path] = {}
     hashed = 0
-    # The Hub says an older commit served the same bytes and the local copy has the full size. Good
-    # enough for a plan's estimate; the worker passes no remote_digests and hashes instead. Newest
-    # snapshot first, one request per commit, and none once every path has a match.
+    # Plan estimate only: the worker passes no remote_digests and hashes instead.
     if remote_digests is not None:
         for snap in snapshots:
             here = {
@@ -300,9 +265,7 @@ def find_reusable_copies(
 
 
 def _place(src: Path, dst: Path, size: int) -> Optional[str]:
-    """Hard link ``src`` at ``dst`` (copy when linking fails). Atomic: a temp name, then replace."""
     dst.parent.mkdir(parents = True, exist_ok = True)
-    # A cancel kills the worker, so a copy cut short never reached the cleanup below.
     for stale in dst.parent.glob(f".{glob.escape(dst.name)}.reuse-*"):
         try:
             stale.unlink()
@@ -315,14 +278,12 @@ def _place(src: Path, dst: Path, size: int) -> Optional[str]:
             os.link(src, tmp)
             how = "link"
         except OSError:
-            # No hard links here (FAT/exFAT, some network shares). A copy costs the disk space the
-            # download would have used anyway, never the bandwidth.
             if shutil.disk_usage(dst.parent).free < size:
                 return None
             shutil.copyfile(src, tmp)
             how = "copy"
         if os.path.lexists(dst):
-            return None  # a concurrent writer got there first
+            return None
         os.replace(tmp, dst)
         return how
     except OSError as exc:
@@ -337,8 +298,6 @@ def _place(src: Path, dst: Path, size: int) -> Optional[str]:
 
 
 def _drop_superseded_partial(repo_dir: Path, digest: str, protected: frozenset[str]) -> None:
-    """A resumable ``blobs/<digest>.incomplete`` from an earlier attempt is dead weight once the file
-    is in place: huggingface_hub returns the pointer and never reopens it."""
     if digest in protected:
         return
     partial = repo_dir / "blobs" / f"{digest}.incomplete"
@@ -364,9 +323,7 @@ def reuse_unchanged_snapshot_files(
     allow_hashing: bool = True,
     protected_blob_hashes: frozenset[str] = frozenset(),
 ) -> ReuseResult:
-    """Materialize every file of ``expected_files`` (``ExpectedFile``-like: path, size, sha256) that
-    ``snapshots/<commit_hash>/`` lacks but another snapshot holds with identical content. Never
-    raises: anything it cannot prove is left for the normal download."""
+    """Never raises: anything it cannot prove is left for the normal download."""
     try:
         from hub.utils.download_manifest import expected_path_is_safe, normalized_commit_hash
 
@@ -420,8 +377,6 @@ def paths_in_snapshot(
     *,
     hub_cache: Optional[str | Path] = None,
 ) -> set[str]:
-    """Paths already present in ``snapshots/<commit_hash>/``, which ``hf_hub_download`` skips (a
-    dangling link is not present)."""
     try:
         from hub.utils.download_manifest import expected_path_is_safe, normalized_commit_hash
 
@@ -435,7 +390,6 @@ def paths_in_snapshot(
 
 
 def hub_remote_digests(repo_type: str, repo_id: str, token) -> RemoteDigests:
-    """A ``RemoteDigests`` backed by ``HfApi.get_paths_info`` (one request per commit)."""
 
     def lookup(commit: str, paths: Sequence[str]) -> Mapping[str, str]:
         from huggingface_hub import HfApi
@@ -477,9 +431,7 @@ def reusable_paths(
     remote_digests: Optional[RemoteDigests] = None,
     allow_hashing: bool = False,
 ) -> set[str]:
-    """Paths of ``sizes`` ({path: declared size}) missing from ``snapshots/<commit_hash>/`` that
-    the reuse step would supply from an older snapshot. Read-only, for plans: no network unless a
-    same-size local copy exists, and no hashing unless asked (a cached digest still counts)."""
+    """Read-only plan estimate: no network unless a same-size local copy exists."""
     try:
         from hub.utils.download_manifest import expected_path_is_safe, normalized_commit_hash
 

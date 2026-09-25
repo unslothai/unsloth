@@ -179,7 +179,6 @@ def _retry_metadata_fetch(repo_id: str, fetch, *, label: str):
     raise RuntimeError(f"{label} unavailable for {repo_id}")
 
 
-# repo_id -> commit the metadata described. The worker is one download per process, so this only carries the commit from the plan lookup to the reuse step without widening the plan helpers' return types.
 _RESOLVED_COMMITS: dict[str, str] = {}
 
 
@@ -205,9 +204,7 @@ def _model_info_with_retry(repo_id: str, hf_token: str | None):
 def _reuse_unchanged_files(
     repo_type: RepoType, repo_id: str, commit_hash, expected_files: list, hf_token: str | None
 ) -> list:
-    """Link files this commit did not change in from an older snapshot, and return the expected files still to download.
-
-    Without symlinks (Windows without Developer Mode) huggingface_hub moves each blob into its snapshot, so a new commit, even a README-only one, finds no blob and downloads every file again. See :mod:`hub.utils.snapshot_reuse`. Needs the target commit and per-file digests from metadata, so an offline run reuses nothing and behaves as before."""
+    """Link files unchanged since an older snapshot into this commit; return the files still to download."""
     from hub.utils.snapshot_reuse import paths_in_snapshot, reuse_unchanged_snapshot_files
 
     if not expected_files or not commit_hash:
@@ -217,9 +214,7 @@ def _reuse_unchanged_files(
         repo_id,
         commit_hash,
         expected_files,
-        # No Hub-digest shortcut here: it proves what the older commit served, not what is on disk
-        # now, and a same-size corrupted copy would be carried into the new revision. The local
-        # file is hashed on every reuse for the same reason.
+        # Always hash locally: a Hub digest proves what the old commit served, not what is on disk now.
         protected_blob_hashes = _protected_blob_hashes(),
     )
     if result.reused:
@@ -228,8 +223,7 @@ def _reuse_unchanged_files(
             f"from an older snapshot of {repo_id} instead of downloading them again.",
             file = sys.stderr,
         )
-    # Files an earlier, cancelled attempt already placed in this revision are skipped by
-    # snapshot_download too, and without symlinks they have no blob the preflight could discount.
+    # Files an earlier attempt placed are skipped by snapshot_download and have no blob for the preflight to discount.
     present = paths_in_snapshot(
         repo_type, repo_id, commit_hash, [getattr(f, "path", None) for f in expected_files]
     )
