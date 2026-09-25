@@ -731,8 +731,9 @@ def _open_sandbox_file(ref: str) -> tuple[BinaryIO, str]:
         raise LookupError(ref) from None
 
 
-def _delete_sandbox_file(ref: str) -> bool:
-    """Unlink the file an id names, only while its name is still the file checked."""
+def _delete_sandbox_file(ref: str, expected: Optional[str] = None) -> bool:
+    """Unlink the file an id names, only while its name is still the file checked, and with
+    `expected`, only while it is the file listed with that fingerprint."""
     from core.inference.gallery_projects import _DIR_FLAGS, _USE_DIR_FD
 
     try:
@@ -742,6 +743,8 @@ def _delete_sandbox_file(ref: str) -> bool:
     parent, name = os.path.split(path)
     with handle:
         info = os.fstat(handle.fileno())
+        if expected is not None and _fingerprint(info) != expected:
+            raise ItemChanged("This file changed since the Library listed it.")
         if _USE_DIR_FD:
             # By the folder's descriptor, so a parent swapped for a link since is not followed.
             dir_fd = os.open(parent, _DIR_FLAGS)
@@ -1044,6 +1047,9 @@ def list_items() -> list[dict]:
     for item in items:
         entry = overlay.get(item["id"])
         fingerprint = item.pop("_fingerprint", None)
+        if fingerprint is not None:
+            # Sent back with a delete, so a stale card never deletes a file made at its path since.
+            item["fingerprint"] = fingerprint
         if entry and fingerprint is not None and entry["fingerprint"] != fingerprint:
             if entry["fingerprint"] is None:
                 # Written before rows were fingerprinted: this file is taken to be the one.
@@ -2014,6 +2020,10 @@ class DeleteIncomplete(RuntimeError):
     """A delete that stopped part way; the item is still there to delete again."""
 
 
+class ItemChanged(RuntimeError):
+    """Another file now has the path the item was listed at; nothing was deleted."""
+
+
 # Held by a delete and by an open's check and write, so an open cannot land between a delete's
 # removal of the item and of its row, and bring the row back.
 _overlay_lock = threading.Lock()
@@ -2030,13 +2040,15 @@ def mark_opened(item_id: str) -> bool:
         return True
 
 
-def delete_item(item_id: str) -> bool:
-    """Delete an item from its source. Returns False when the source no longer has it."""
+def delete_item(item_id: str, fingerprint: Optional[str] = None) -> bool:
+    """Delete an item from its source. Returns False when the source no longer has it. With the
+    `fingerprint` it was listed with, a path-derived item is only deleted while it is that file;
+    ItemChanged otherwise."""
     with _overlay_lock:
-        return _delete_item(item_id)
+        return _delete_item(item_id, fingerprint)
 
 
-def _delete_item(item_id: str) -> bool:
+def _delete_item(item_id: str, fingerprint: Optional[str]) -> bool:
     kind, _, ref = item_id.partition(":")
     deleted = False
     if kind == "upload":
@@ -2063,7 +2075,7 @@ def _delete_item(item_id: str) -> bool:
     elif kind in _GALLERIES:
         deleted = _gallery(kind).module.delete(ref)
     elif kind == "sandbox":
-        deleted = _delete_sandbox_file(ref)
+        deleted = _delete_sandbox_file(ref, fingerprint)
     elif kind == "model":
         # The models route deletes the files, with its own load and training guards. Once they are
         # gone, this drops what the Library kept about the model.

@@ -22,6 +22,8 @@ export interface LibraryItem {
   sizeBytes: number | null;
   /** What it takes on disk with the files kept beside it (a clip's recipe), when that is more. */
   storageBytes?: number;
+  /** The file a path-derived item (sandbox) was listed as; a delete only takes that file. */
+  fingerprint?: string;
   createdAt: number;
   updatedAt: number;
   /** Served by the item's own source route; always fetched with auth. */
@@ -203,9 +205,9 @@ export async function moveLibraryLocation(
   return { locations: body.locations, leftBehind: body.leftBehind ?? null };
 }
 
-export async function deleteLibraryItem(id: string): Promise<void> {
+export async function deleteLibraryItem(id: string, fingerprint?: string): Promise<void> {
   await ensureOk(
-    await sendWrite("/api/library/items/delete", jsonInit("POST", { id })),
+    await sendWrite("/api/library/items/delete", jsonInit("POST", { id, fingerprint })),
   );
 }
 

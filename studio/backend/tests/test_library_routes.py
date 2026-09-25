@@ -371,6 +371,25 @@ def test_a_sandbox_file_that_is_gone_takes_no_rename_a_later_file_would_inherit(
     assert _items(client)[0][_SANDBOX_A]["name"] == "a.txt"
 
 
+def test_a_sandbox_delete_takes_only_the_file_it_was_listed_as(client, signed_in, monkeypatch):
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    _directory, path = _sandbox_chat("a.txt", b"listed")
+    listed = _items(client)[0][_SANDBOX_A]["fingerprint"]
+    # A tool makes the file again at the same path before the delete is confirmed. Held open
+    # meanwhile, so Linux, which fingerprints by inode alone, cannot hand its inode to the new one.
+    with open(path, "rb"):
+        os.unlink(path)
+        _sandbox_chat("a.txt", b"made since")
+    response = _post(client, "items/delete", id = _SANDBOX_A, fingerprint = listed)
+    assert response.status_code == 409
+    assert Path(path).read_bytes() == b"made since"
+    library.invalidate_listing()
+    current = _items(client)[0][_SANDBOX_A]["fingerprint"]
+    assert current != listed
+    assert _post(client, "items/delete", id = _SANDBOX_A, fingerprint = current).status_code == 200
+    assert not os.path.exists(path)
+
+
 def test_a_sandbox_file_of_a_chat_whose_id_has_a_colon_is_reachable(client, signed_in, monkeypatch):
     monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
     _sandbox_chat("a.txt", b"mine", thread = "imported:1")

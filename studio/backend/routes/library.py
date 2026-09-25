@@ -72,6 +72,11 @@ class ItemRef(BaseModel):
     id: str = Field(max_length = 4096)
 
 
+class ItemDelete(ItemRef):
+    # The file a sandbox item was listed as, so a delete never takes one made at its path since.
+    fingerprint: Optional[str] = Field(default = None, max_length = 256)
+
+
 class LocationRef(BaseModel):
     key: str = Field(max_length = 32)
 
@@ -163,13 +168,17 @@ def mark_item_opened(body: ItemRef, current_subject: str = Depends(get_current_s
 
 
 @router.post("/items/delete")
-async def delete_item(body: ItemRef, current_subject: str = Depends(get_current_subject)) -> dict:
+async def delete_item(
+    body: ItemDelete, current_subject: str = Depends(get_current_subject)
+) -> dict:
     try:
-        deleted = await run_in_threadpool(library.delete_item, body.id)
+        deleted = await run_in_threadpool(library.delete_item, body.id, body.fingerprint)
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc))
     except library.DeleteIncomplete as exc:
         raise HTTPException(status_code = 500, detail = str(exc))
+    except library.ItemChanged as exc:
+        raise HTTPException(status_code = 409, detail = str(exc))
     except ChatMessageProtectedError as exc:
         raise log_and_http_error(
             exc,
