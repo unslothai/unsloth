@@ -8,6 +8,7 @@ firmware 1.1.2.65)."""
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -23,7 +24,8 @@ def _device(
     *,
     driver: str | None = None,
 ) -> Path:
-    path = root / "devices" / name
+    # Windows forbids ":" in names; the probe never reads the directory name.
+    path = root / "devices" / (name.replace(":", "_") if os.name == "nt" else name)
     path.mkdir(parents = True)
     (path / "vendor").write_text(f"0x{vendor}\n")
     (path / "device").write_text(f"0x{device}\n")
