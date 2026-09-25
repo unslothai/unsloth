@@ -41,6 +41,25 @@ def apply() -> None:
     torch.cuda.is_bf16_supported = lambda *a, **k: True
     torch.cuda._is_in_bad_fork = lambda *a, **k: False  # type: ignore[attr-defined]
 
+    # The raw-stream handle, which a CPU-only wheel does not export. This module already
+    # knows that -- the bitsandbytes import above exists because of it -- but only worked
+    # around it for bitsandbytes and never supplied the symbol, so anything that reads it
+    # AFTER is_available() flips still dies. unsloth/kernels/utils.py does, at import:
+    #
+    #     torch._C._cuda_getCurrentRawStream(index)
+    #
+    # under `if DEVICE_COUNT > 0`, which this spoof makes true. The notebooks smoke matrix
+    # showed it on the one leg whose install cell pulls vLLM and the CUDA userspace packages
+    # (cuda-python, cuda-bindings, flashinfer): seven legs passed and Llama3.1-(8B)-GRPO
+    # failed with `AttributeError: module 'torch._C' has no attribute
+    # '_cuda_getCurrentRawStream'`.
+    #
+    # 0 is the null (default) stream. Callers wrap it in ctypes.c_void_p and no kernel is
+    # ever launched under the spoof, so a handle that names no stream is the honest value --
+    # and set only when absent, so a real CUDA build keeps its own.
+    if not hasattr(torch._C, "_cuda_getCurrentRawStream"):
+        torch._C._cuda_getCurrentRawStream = lambda index = 0: 0  # type: ignore[attr-defined]
+
     class _Props:
         name = "NVIDIA A100-SPOOFED"
         major = 8

@@ -342,7 +342,7 @@ export function ProjectSourceDropzone({
           addFiles(Array.from(e.dataTransfer.files ?? []));
         }}
         className={cn(
-          "rounded-[22px] border border-border transition-colors dark:border-white/10",
+          "rounded-[22px] border border-border transition-colors dark:border-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]",
           dragging && "border-primary/60 bg-primary/5",
           disabled && "opacity-60",
         )}

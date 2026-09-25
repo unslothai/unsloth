@@ -499,7 +499,12 @@ def main() -> None:
         if not CHECKPOINT_CACHED:
             assert "Model file" in panel_text
         assert page.get_by_text("Downloading model requirements", exact = False).count() == 0
-        assert page.get_by_text("Downloading model…", exact = True).count() == 0
+        # A load pick's own toast tracks the staged plan; a download-only pick shows none.
+        pick_toast = page.locator("[data-sonner-toast]").filter(has_text = "Downloading model…")
+        if DOWNLOAD_ONLY:
+            assert pick_toast.count() == 0
+        else:
+            expect(pick_toast).to_contain_text("of 8.2 GB" if CHECKPOINT_CACHED else "of 11 GB")
         assert page.get_by_text("Loading to GPU…", exact = True).count() == 0
         assert state["load_calls"] == 0, "missing companion bypassed staging"
         page.screenshot(path = str(ART_DIR / "image-companion-download.png"), full_page = True)

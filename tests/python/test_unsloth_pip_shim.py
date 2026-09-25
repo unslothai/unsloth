@@ -677,6 +677,8 @@ def test_local_dir_without_metadata_passes_through(shim, tmp_path):
         pytest.param("uv", "--exclude-newer", "2026-01-01", id = "uv-exclude-newer"),
         pytest.param("uv", "-b", "build-constraints.txt", id = "uv-build-constraints-short"),
         pytest.param("uv", "--prerelease-package", "snac", id = "uv-prerelease-package"),
+        # uv 0.12 added `uv pip install --output-format text|json`, which failed the image build
+        pytest.param("uv", "--output-format", "json", id = "uv-output-format"),
         pytest.param("pip", "--proxy", "http://proxy:3128", id = "pip-proxy"),
         pytest.param("pip", "--retries", "3", id = "pip-retries"),
         pytest.param("pip", "--trusted-host", "mirror.internal", id = "pip-trusted-host"),
@@ -692,6 +694,7 @@ def test_value_flag_protected_only_noops(shim, tool, flag, value):
     [
         pytest.param("uv", "--torch-backend", "cu128", id = "uv-torch-backend"),
         pytest.param("uv", "--resolution", "lowest", id = "uv-resolution"),
+        pytest.param("uv", "--output-format", "json", id = "uv-output-format"),
         pytest.param("pip", "--proxy", "http://proxy:3128", id = "pip-proxy"),
     ],
 )

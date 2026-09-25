@@ -64,6 +64,41 @@ function Get-StudioTempRoots {
     return $result
 }
 
+function Test-StudioPathIsGone {
+    <#
+    .SYNOPSIS
+    Did this enumeration failure mean the directory does not exist, as opposed to could not
+    be read?
+
+    .DESCRIPTION
+    The distinction decides whether a directory is dropped or recorded as a gap, so it has to
+    come from the error itself. Test-Path cannot answer it. Measured under pwsh with
+    $ErrorActionPreference = 'Stop':
+
+        missing directory  ->  ItemNotFoundException, Test-Path returns $false
+        denied directory   ->  Test-Path THROWS "Access to the path ... is denied"
+
+    So probing with Test-Path both mis-answers the ACL case and can raise from inside the
+    catch that was meant to contain the failure.
+
+    Fails safe. Anything not positively identified as a missing path is reported as still
+    present, which records the directory as unread: over-reporting a gap costs a withheld
+    path or a voided run, while under-reporting one silently drops a directory out of the
+    comparison, which is the defect this whole file exists to prevent.
+    #>
+    param([Parameter(Mandatory = $true)]$ErrorRecord)
+    $exception = $ErrorRecord.Exception
+    while ($null -ne $exception) {
+        if ($exception -is [System.Management.Automation.ItemNotFoundException] -or
+            $exception -is [System.IO.DirectoryNotFoundException] -or
+            $exception -is [System.IO.FileNotFoundException]) {
+            return $true
+        }
+        $exception = $exception.InnerException
+    }
+    return $false
+}
+
 function Get-StudioTempSubtree {
     <#
     .SYNOPSIS
@@ -132,10 +167,19 @@ function Get-StudioTempSubtree {
             # A directory that no longer exists is not a gap. It cannot contribute a file to
             # a later listing of itself, and re-reading a path that raised for any other
             # reason is how a transient lock gets a second chance.
-            if (Test-Path -LiteralPath $dir) {
-                try { $entries = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop) }
-                catch { $unread.Add($dir); continue }
-            } else {
+            #
+            # Classified from the error, never by probing the path. Test-Path answers $false
+            # for a missing directory but THROWS on an ACL-denied one, so probing would both
+            # call an unreadable directory deleted - dropping it silently, which is the exact
+            # defect this file exists to prevent - and raise from inside the catch meant to
+            # contain the failure.
+            if (Test-StudioPathIsGone -ErrorRecord $_) { continue }
+            try { $entries = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop) }
+            catch {
+                # Re-classified rather than assumed: the deletion race can land in the window
+                # between the two reads, and recording that as unread would void a run for the
+                # ordinary temp deletion this change exists to tolerate.
+                if (-not (Test-StudioPathIsGone -ErrorRecord $_)) { $unread.Add($dir) }
                 continue
             }
         }
@@ -326,11 +370,21 @@ function Start-StudioTempWatch {
             $identifier = "StudioTempWatch-" + [guid]::NewGuid().ToString('N')
             $null = Register-ObjectEvent -InputObject $watcher -EventName Created `
                 -SourceIdentifier $identifier
+            # The Error event, subscribed for the same reason the buffer was enlarged above. An
+            # overflow raises Error and drops the events it could not queue, silently, and a
+            # watcher that dropped events is one the caller must not count as covering its root:
+            # an artifact can then be missing from the live stream AND from the listing, which
+            # reads as a clean run. Without this subscription the failure is not observable at
+            # all, so the handle would stay in $watchedRoots looking healthy.
+            $errorIdentifier = $identifier + "-error"
+            $null = Register-ObjectEvent -InputObject $watcher -EventName Error `
+                -SourceIdentifier $errorIdentifier
             $watcher.EnableRaisingEvents = $true
             $handles += [pscustomobject]@{
-                Watcher          = $watcher
-                SourceIdentifier = $identifier
-                Root             = $root
+                Watcher               = $watcher
+                SourceIdentifier      = $identifier
+                ErrorSourceIdentifier = $errorIdentifier
+                Root                  = $root
             }
         } catch {
             continue
@@ -355,6 +409,7 @@ function Stop-StudioTempWatch {
     Start-Sleep -Milliseconds 750
 
     $seen = @()
+    $failedRoots = @()
     foreach ($entry in $Handle) {
         try { $entry.Watcher.EnableRaisingEvents = $false } catch { }
         try {
@@ -366,10 +421,30 @@ function Stop-StudioTempWatch {
                 Remove-Event -EventIdentifier $record.EventIdentifier -ErrorAction SilentlyContinue
             }
         } catch { }
+        # Any Error at all condemns the root. There is no partial credit available here: the
+        # event carries the exception, not the list of creations it dropped, so a watcher that
+        # raised once cannot say what it missed and the caller cannot treat it as covering
+        # anything.
+        if ($entry.PSObject.Properties['ErrorSourceIdentifier']) {
+            try {
+                $errors = @(Get-Event -SourceIdentifier $entry.ErrorSourceIdentifier `
+                        -ErrorAction SilentlyContinue)
+                if ($errors.Count -gt 0) { $failedRoots += $entry.Root }
+                foreach ($record in $errors) {
+                    Remove-Event -EventIdentifier $record.EventIdentifier `
+                        -ErrorAction SilentlyContinue
+                }
+            } catch { }
+            Unregister-Event -SourceIdentifier $entry.ErrorSourceIdentifier `
+                -ErrorAction SilentlyContinue
+        }
         Unregister-Event -SourceIdentifier $entry.SourceIdentifier -ErrorAction SilentlyContinue
         try { $entry.Watcher.Dispose() } catch { }
     }
-    return ,[string[]]$seen
+    return [pscustomobject]@{
+        Paths       = [string[]]$seen
+        FailedRoots = [string[]]$failedRoots
+    }
 }
 
 function Get-StudioEventField {
@@ -575,6 +650,7 @@ function Invoke-WithCompilerWatch {
 
     $failure = $null
     $live = @()
+    $watchFailedRoots = @()
     try {
         # Out-Host, not the success stream. The installer action tees its log, and those
         # lines would be emitted as function output ahead of the result hashtable, making
@@ -587,7 +663,12 @@ function Invoke-WithCompilerWatch {
         $failure = $_
     } finally {
         # In the finally, so an action that threw still closes its subscriptions.
-        $live = @(Stop-StudioTempWatch -Handle $watch)
+        $drained = Stop-StudioTempWatch -Handle $watch
+        $live = @($drained.Paths)
+        # Roots whose watcher raised. Carried out of the finally so the coverage check
+        # below can refuse to count them, and initialised above so an action that threw
+        # before the watch started still leaves the variable defined.
+        $watchFailedRoots = @($drained.FailedRoots)
     }
 
     # Closed before the temp sweep, which can take seconds: anything the machine
@@ -614,23 +695,34 @@ function Invoke-WithCompilerWatch {
     # $left, and which directories those were is recorded in the evidence rather than
     # dropped silently.
     $unread = @($beforeScan.Unread + $afterScan.Unread | Sort-Object -Unique)
+    # Only the roots whose watcher stayed healthy. A FileSystemWatcher that overflowed its
+    # buffer raises Error and drops the creations it could not queue, and its handle is still
+    # in $watch looking exactly like a working one. Counting it as coverage is what would let
+    # an artifact go missing from the live stream AND from the listing at once, which is the
+    # only combination that reports a compile as a clean run.
     $watchedRoots = New-Object 'System.Collections.Generic.HashSet[string]' (
-        [string[]]@($watch | ForEach-Object { $_.Root }), [StringComparer]::OrdinalIgnoreCase)
-    if ($unread.Count -gt 0) {
-        foreach ($dir in $unread) {
-            # Withholding is only safe while the watcher is covering that root: it reports
-            # creations live, so a compile inside an unread directory still lands in
-            # $transient. With no watcher on the root the listing is the only evidence there
-            # is, and withholding part of it would report a hole as a clean result. That is
-            # the same call as the traversal cap in Get-StudioTempSubtree, for the same
-            # reason, so it is the same answer: declare the measurement void.
-            $covered = @($watchedRoots | Where-Object { Test-StudioPathUnder -Path $dir -Directory $_ })
-            if ($covered.Count -eq 0) {
-                throw ("the temp sweep could not read $dir, and no file watcher is attached " +
-                       "to the root containing it. The listing is the only evidence here and " +
-                       "it is incomplete, so this run cannot say whether a compiler ran.")
+        [string[]]@(
+            $watch | ForEach-Object { $_.Root } | Where-Object {
+                $watchFailedRoots -notcontains $_
             }
-        }
+        ), [StringComparer]::OrdinalIgnoreCase)
+    # Collected, not thrown on. Withholding is only safe while the watcher is covering that
+    # root: it reports creations live, so a compile inside an unread directory still lands in
+    # $transient. With no watcher on the root the listing is the only evidence there is, and
+    # withholding part of it would report a hole as a clean result. That is the same call as
+    # the traversal cap in Get-StudioTempSubtree, for the same reason, so it is the same
+    # answer: declare the measurement void.
+    #
+    # Raised at the END of this function rather than here. The action may already have thrown,
+    # and that failure is held in $failure to be written to <name>-error.txt and rethrown
+    # below. Voiding from this point would run before either, so an installer that genuinely
+    # died would be reported as a scanner problem and its promised evidence file would never
+    # be written. The scan being incomplete is worth failing on; it is not worth failing on
+    # INSTEAD of what the caller was actually measuring.
+    $uncovered = @()
+    foreach ($dir in $unread) {
+        $covered = @($watchedRoots | Where-Object { Test-StudioPathUnder -Path $dir -Directory $_ })
+        if ($covered.Count -eq 0) { $uncovered += $dir }
     }
 
     $left = @(
@@ -659,16 +751,49 @@ function Invoke-WithCompilerWatch {
     # Written even when empty, so "the sweep read everything" is a statement the evidence
     # makes rather than the absence of a file, which is also what a crash looks like.
     $unread | Out-File -FilePath "$stem-unread-dirs.txt" -Encoding utf8
+    # Written even when empty, for the same reason as the unread list: "every watcher stayed
+    # healthy" should be a statement the evidence makes, not the absence of a file.
+    $watchFailedRoots | Out-File -FilePath "$stem-watch-failures.txt" -Encoding utf8
     if ($failure) {
         $failure | Out-String | Out-File -FilePath "$stem-error.txt" -Encoding utf8
     }
 
+    # The action's own failure first, always. It is the thing under measurement, it is already
+    # on disk as <name>-error.txt, and an incomplete sweep is the lesser report of the two.
     if ($failure) { throw $failure }
+
+    # Only once the action itself succeeded and all the evidence is written does an incomplete
+    # measurement void the run. Both reasons are reported together rather than racing each
+    # other, so the caller is told everything that was wrong with the sweep at once.
+    $incomplete = @()
+    if ($watchFailedRoots.Count -gt 0) {
+        # A watcher that raised is not merely "not covering unread directories". This half of
+        # the detector exists for artifacts that never reach the listing at all: CodeDom
+        # deletes its intermediate directory once the assembly is loaded, so a compile can be
+        # invisible to the before/after diff and visible only as live events. An overflow drops
+        # those events silently, so two clean scans plus a failed watcher is exactly the shape
+        # of a missed compile, with nothing in $uncovered to notice it.
+        $incomplete += ("the file watcher on " + ($watchFailedRoots -join ', ') + " raised an " +
+                        "error, so creations under it may have been dropped. A compile whose " +
+                        "intermediates were deleted before the final sweep is visible only in " +
+                        "those events")
+    }
+    if ($uncovered.Count -gt 0) {
+        $incomplete += ("the temp sweep could not read " + ($uncovered -join ', ') + ", and no " +
+                        "file watcher is attached to the root containing it, so the listing is " +
+                        "the only evidence here and it is incomplete")
+    }
+    if ($incomplete.Count -gt 0) {
+        # $uncovered and $watchFailedRoots are in the evidence either way, through
+        # <name>-unread-dirs.txt and <name>-watch-failures.txt.
+        throw (($incomplete -join '; ') + ". This run cannot say whether a compiler ran.")
+    }
 
     return @{
         Compilers     = $compilers
         TempLibraries = $newLibraries
         TempArtifacts = $newArtifacts
         UnreadDirs    = $unread
+        WatchFailures = $watchFailedRoots
     }
 }

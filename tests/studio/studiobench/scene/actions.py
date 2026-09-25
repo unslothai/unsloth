@@ -1606,6 +1606,79 @@ IMAGE_BUTTON_DIAGNOSTIC = """() => {
 }"""
 
 
+#: THERE ARE TWO COMPOSERS AND THEY SHARE NO MARKUP, so counting one of them is counting none on
+#: the screen that uses the other. The chat thread renders assistant-ui's composer, where every
+#: attachment goes through `AttachmentPrimitive.Root` as `.aui-attachment-root` inside
+#: `.aui-composer-attachments` (studio/frontend/src/components/assistant-ui/attachment.tsx). The
+#: compare screen renders `SharedComposer`, which keeps its own pending-image and pending-audio
+#: markup (studio/frontend/src/features/chat/shared-composer.tsx) and carries the assistant-ui
+#: classes nowhere; its elements are tagged `data-composer-attachment` inside
+#: `[data-composer-attachments]` so they have a handle that is not a utility class.
+#:
+#: Both containers are mounted whenever their composer is, and hidden while empty, so a missing
+#: container means the markup moved rather than that nothing is attached.
+#: `selftest/test_studiobench_composer_attachment_selector.py` pins every name below against the
+#: file that renders it, because a selector that matches nothing counts zero and reads exactly like
+#: an upload that never happened.
+_COMPOSER_ATTACHMENT_CONTAINERS = (".aui-composer-attachments", "[data-composer-attachments]")
+_COMPOSER_ATTACHMENT_TILES = (".aui-attachment-root", "[data-composer-attachment]")
+
+_COMPOSER_ATTACHMENT_SELECTOR = ", ".join(
+    f"{container} {tile}"
+    for container, tile in zip(_COMPOSER_ATTACHMENT_CONTAINERS, _COMPOSER_ATTACHMENT_TILES)
+)
+
+_COMPOSER_ATTACHMENT_CONTAINER_SELECTOR = ", ".join(_COMPOSER_ATTACHMENT_CONTAINERS)
+
+_COUNT_COMPOSER_ATTACHMENTS_JS = (
+    f"() => document.querySelectorAll('{_COMPOSER_ATTACHMENT_SELECTOR}').length"
+)
+
+_COUNT_COMPOSER_ATTACHMENT_CONTAINERS_JS = (
+    f"() => document.querySelectorAll('{_COMPOSER_ATTACHMENT_CONTAINER_SELECTOR}').length"
+)
+
+
+#: The composer's "Tools and attachments" menu is a MODAL Radix dropdown, and a modal one sets
+#: `pointer-events: none` on everything outside itself for as long as it is open. Menus are told apart
+#: by identity, not presence: the chat UI also has non-modal menus, whose outside pointerdown is let
+#: through, so the attachments click can dismiss one of those and open its own in the same moment.
+_MARK_MENUS_BEFORE_JS = """() => {
+  window.__sbMenusBefore = new WeakSet(document.querySelectorAll('[role="menu"]'));
+}"""
+_NEW_MENU_OPEN_JS = """() => {
+  const before = window.__sbMenusBefore || new WeakSet();
+  return Array.from(document.querySelectorAll('[role="menu"]')).some(m => !before.has(m));
+}"""
+
+
+def _close_open_menu(ctx: ActionContext) -> Optional[bool]:
+    """Escape until no menu opened by this attempt is left, bounded. True when one was open and is
+    now closed, False when none was, None when one is still open after the attempts.
+
+    An action that gives up must leave the page as it found it. A menu this action opened and then
+    abandoned is not this action's failure alone: the next action's click hit-tests to nothing, it
+    reports the control as unclickable, and a run that allows this action not to run still fails on
+    the one after it. A menu that was already open is not this action's to close: it can be the very
+    thing that made the click time out, and it belongs to whatever opened it. Escape dismisses the top
+    layer first, which is the one this attempt opened, so the loop stops before reaching an older one.
+    """
+    if _ev(ctx, _NEW_MENU_OPEN_JS) is not True:
+        return False
+    for _ in range(3):
+        ctx.page.keyboard.press("Escape")
+        ctx.page.wait_for_timeout(100)
+        if _ev(ctx, _NEW_MENU_OPEN_JS) is not True:
+            return True
+    return None
+
+
+def _left_menu_note(closed: Optional[bool]) -> str:
+    if closed is None:
+        return " (a menu it opened is still open after Escape)"
+    return " (closed the menu it opened)" if closed else ""
+
+
 @register_action(name = "image_upload", default_budget_ms = 12000)
 def image_upload(ctx: ActionContext) -> ActionResult:
     """Attach an image through the composer's file chooser.
@@ -1641,17 +1714,21 @@ def image_upload(ctx: ActionContext) -> ActionResult:
             "no visible attachments button on the composer: "
             + json.dumps(_ev(ctx, IMAGE_BUTTON_DIAGNOSTIC) or {})
         )
-    before = _ev(
-        ctx,
-        "() => document.querySelectorAll('.aui-composer-attachment, "
-        '[data-slot="composer-attachment"]\').length',
-    )
+    before = _ev(ctx, _COUNT_COMPOSER_ATTACHMENTS_JS)
+    _ev(ctx, _MARK_MENUS_BEFORE_JS)
     started = time.monotonic()
     # Bounded by what is left of the slot, never by Playwright's 30s default.
     try:
         plus.click(timeout = max(500, min(ctx.budget_ms // 3, 5000)))
     except Exception as exc:  # noqa: BLE001
-        return not_run(f"the attachments button could not be clicked: {type(exc).__name__}")
+        # A click can open the menu and still time out: Radix opens it on pointerdown. Left open, it
+        # blocked the next action's New chat button (thread_reopen NOT RUN, "no point on the control
+        # hit-tests to it") on a run that allowed only this action not to run.
+        closed = _close_open_menu(ctx)
+        return not_run(
+            f"the attachments button could not be clicked: {type(exc).__name__}"
+            + _left_menu_note(closed)
+        )
     ctx.page.wait_for_timeout(200)
     try:
         with ctx.page.expect_file_chooser(timeout = 6000) as fc:
@@ -1661,22 +1738,42 @@ def image_upload(ctx: ActionContext) -> ActionResult:
             }""")
         fc.value.set_files(png)
     except Exception as exc:  # noqa: BLE001
-        ctx.page.keyboard.press("Escape")
-        return not_run(f"the file chooser never opened: {type(exc).__name__}: {exc}")
+        closed = _close_open_menu(ctx)
+        return not_run(
+            f"the file chooser never opened: {type(exc).__name__}: {exc}" + _left_menu_note(closed)
+        )
     ctx.page.wait_for_timeout(800)
-    after = _ev(
-        ctx,
-        "() => document.querySelectorAll('.aui-composer-attachment, "
-        '[data-slot="composer-attachment"]\').length',
-    )
+    after = _ev(ctx, _COUNT_COMPOSER_ATTACHMENTS_JS)
     elapsed = (time.monotonic() - started) * 1000
     ok = after is not None and before is not None and after > before
+    containers = None
+    reason = None
+    if not ok:
+        # A STALE SELECTOR AND A FAILED UPLOAD BOTH COUNT ZERO, and that is exactly how this
+        # assertion spent its first life: it counted a class the frontend has never rendered, so
+        # `after > before` could not come out true however well the composer worked. It stayed
+        # invisible because the action only mounts once a model is selected, and until then
+        # `--allow-not-run image_upload` excused every row. Probe the container before blaming the
+        # upload, so the next failure says which file to open.
+        containers = _ev(ctx, _COUNT_COMPOSER_ATTACHMENT_CONTAINERS_JS)
+        if not containers:
+            reason = (
+                "no attachment appeared, and neither composer's attachment container "
+                f"({_COMPOSER_ATTACHMENT_CONTAINER_SELECTOR}) is in the page either, so this run "
+                "cannot tell a failed upload from a selector that no longer matches the frontend"
+            )
+        else:
+            reason = "no attachment appeared in the composer after the file was set"
     return ActionResult(
         ran = True,
         expect_ok = ok,
-        expect = {"attachments_before": before, "attachments_after": after},
+        expect = {
+            "attachments_before": before,
+            "attachments_after": after,
+            "attachment_containers": containers,
+        },
         timings = {"upload_ms": round(elapsed, 1)},
-        reason = None if ok else "no attachment appeared in the composer after the file was set",
+        reason = reason,
     )
 
 
