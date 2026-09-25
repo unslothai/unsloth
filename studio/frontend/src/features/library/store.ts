@@ -187,8 +187,6 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
       const star = useLibraryFavoritesStore.getState().mark(id, false);
       return optimistic(
         (state) => ({ items: state.items.filter((item) => item.id !== id) }),
-        // Fine-tunes go through the models route, which refuses while one is training or loaded,
-        // and drops the Library's name, folder and star with the files.
         async () => {
           const epoch = getAuthSessionEpoch();
           try {
@@ -219,7 +217,6 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
         star.undo,
       );
     },
-    // Best effort: a lost open only leaves Last activity a little stale.
     markOpened: (id) => {
       const openedAt = Date.now();
       set((state) => ({

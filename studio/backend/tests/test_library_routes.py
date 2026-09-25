@@ -30,7 +30,6 @@ import hub.storage.scan_folders as _scan_folders  # noqa: E402
 
 from .test_rag_native_drop_upload import SECRET, _sign  # noqa: E402
 
-# Before a fixture swaps them for tests that use temp folders.
 _REAL_DENIED = _scan_folders.is_denied_system_path
 _REAL_SCRATCH = library._scratch_and_system_folders
 
@@ -245,12 +244,10 @@ def test_rename_favorite_and_folders_are_an_overlay(client):
     _patch(client, id = image, name = "photo.txt", favorite = True, folderId = folder)
     item = _items(client)[0][image]
     assert (item["name"], item["favorite"], item["folderId"]) == ("photo.txt", True, folder)
-    # Opening it records when, for Suggested's Last activity, and leaves the rest be.
     assert item["openedAt"] is None
     assert _post(client, "items/opened", id = image).status_code == 200
     item = _items(client)[0][image]
     assert item["createdAt"] <= item["openedAt"] and item["favorite"] is True
-    # An open landing after a delete, or naming nothing, leaves no row behind.
     for missing in ("upload:gone", "sandbox:t-lib:gone.txt"):
         assert _post(client, "items/opened", id = missing).status_code == 404
     assert "upload:gone" not in library_db.list_entries()
@@ -451,17 +448,14 @@ def test_the_listing_reports_the_library_disk_and_the_sources_on_it(client, monk
         assert 0 <= disk["freeBytes"] <= disk["totalBytes"] and disk["totalBytes"] > 0
         return set(disk["sources"])
 
-    # Everything sits under one test home here, so every source is on the measured disk.
     every = {"upload", "attachment", "image", "video", "audio", "sandbox"}
     every |= {"model:training", "model:exported"}
     assert sources() == every
     real, exports, uploads = library._device, str(exports_root()), str(library.uploads_dir())
-    # Fine-tunes and exports are placed apart; a root that cannot be found leaves the rest.
     monkeypatch.setattr(library, "_device", lambda path: -1 if str(path) == exports else real(path))
     assert sources() == every - {"model:exported"}
     monkeypatch.setitem(library._SOURCE_ROOTS, "sandbox", _fail)
     assert sources() == every - {"model:exported", "sandbox"}
-    # A source on another disk is left out of the bar.
     monkeypatch.setattr(library, "_device", lambda path: 1 if str(path) == uploads else -1)
     assert sources() == {"upload"}
 
@@ -521,7 +515,6 @@ def test_fine_tuned_models_are_listed_but_not_deleted_here(client, monkeypatch):
     run.mkdir()
     (run / "adapter_config.json").write_text('{"base_model_name_or_path": "unsloth/base"}')
     (run / "adapter_model.safetensors").write_bytes(b"x" * 10)
-    # A GGUF export is listed by one of its files, but every quantization beside it is on disk.
     gguf.mkdir(parents = True)
     (gguf / "model.Q4_K_M.gguf").write_bytes(b"x" * 10)
     (gguf / "model.Q8_0.gguf").write_bytes(b"x" * 20)
@@ -532,14 +525,12 @@ def test_fine_tuned_models_are_listed_but_not_deleted_here(client, monkeypatch):
         assert item["contentType"] == library.MODEL_CONTENT_TYPE
         assert (item["model"]["origin"], item["model"]["exportType"]) == ("training", "lora")
         assert item["sizeBytes"] >= 10 and export["sizeBytes"] == 30
-        # The export's star is kept by the listed file, which a lookup by its id checks.
         for starred in (item, export):
             _patch(client, id = starred["id"], favorite = True)
         assert _items(client)[0][export["id"]]["favorite"] is True
         assert set(_favorites(client)) == {item["id"], export["id"]}
         assert _delete(client, item["id"]) == 400
         assert run.is_dir()
-        # Once the models route has deleted it, the Library forgets its favorite too.
         shutil.rmtree(run)
         assert _delete(client, item["id"]) == 200
         assert _favorites(client) == [export["id"]]
@@ -627,7 +618,6 @@ def test_an_older_database_is_upgraded_and_checked_once(client, monkeypatch, tmp
     conn.close()
     (tmp_path / "link").symlink_to(tmp_path / "real", target_is_directory = True)
     monkeypatch.setattr(library_db, "studio_db_path", lambda: tmp_path / "link" / "studio.db")
-    # Its rows are kept and gain the opened and fingerprint columns.
     assert library_db.list_entries()["x"] == {
         "name": None,
         "favorite": True,
@@ -1007,8 +997,6 @@ def test_a_projects_own_files_are_listed(client, monkeypatch, tmp_path):
     assert "sandbox:project-p-lib:files/notes.txt" not in _items(client)[0]
 
 
-# ── Moving a kind of file ────────────────────────────────────────
-
 
 @pytest.fixture(autouse = True)
 def _temp_folders_are_ordinary(monkeypatch):
@@ -1107,12 +1095,10 @@ def test_images_move_to_a_new_folder_and_back(client, tmp_path):
     assert _files(old) == ["a.json", "a.png"] and _images() == old
     assert _location(client, "images")["custom"] is False
 
-    # A folder that holds files gets a named folder made inside it.
     (new / "holiday.jpg").write_bytes(b"jpg")
     assert _move(client, "images", str(new)).status_code == 200
     assert _images() == (new / "Unsloth Images").resolve()
     assert _files(new) == ["Unsloth Images/a.json", "Unsloth Images/a.png", "holiday.jpg"]
-    # So does a default that holds files by then, and a second Reset keeps to it.
     (old / "stray.txt").write_text("left behind")
     for _ in range(2):
         response = _move(client, "images", None)
@@ -1164,24 +1150,18 @@ def _studio(sub = ""):
         ("images", lambda _: "/etc/unsloth-images", "System"),
         ("images", lambda tmp: tmp / "missing" / "deeper", "parent folder"),
         ("images", _read_only, "cannot write"),
-        # A same-named "Unsloth Images" with files in it.
         (
             "images",
             lambda tmp: _made(tmp / "full" / "Unsloth Images", "keep").parent,
             "holds files",
         ),
-        # Inside another kind's folder, where its listing would pick the files up, or a chat
-        # sandbox, whose listing would show them and whose chat would take them when cleared.
         ("images", lambda _: _videos() / "images", "inside another Unsloth folder"),
         ("uploads", lambda _: _made(_sandbox() / "chat-1") / "uploads", "inside another Unsloth"),
         ("images", lambda _: _sandbox(), "inside another Unsloth folder"),
-        # Inside the current folder, or Unsloth's own.
         ("images", lambda _: _images() / "sub", "inside another Unsloth folder"),
         ("images", lambda _: _images() / "new", "inside another Unsloth folder"),
         ("images", lambda _: _studio(), "Unsloth's own folder"),
         ("images", lambda _: _studio("elsewhere"), "Unsloth's own folder"),
-        # The named folder made inside a folder with files: another kind's, a link to one, or a
-        # link out to a credential folder.
         ("images", _named_folder, "inside another Unsloth folder"),
         ("images", lambda tmp: _named_folder(tmp, _videos()), "inside another Unsloth folder"),
         ("images", lambda tmp: _named_folder(tmp, _made(tmp / "home" / ".ssh")), "credential"),
@@ -1192,7 +1172,6 @@ def _studio(sub = ""):
 )
 def test_a_folder_that_cannot_take_the_files_is_refused(client, tmp_path, key, target, detail):
     def tree():
-        # Folders too, so none is made; the database's own files come and go.
         return {
             str(path)
             for root in (tmp_path, _studio())
@@ -1202,7 +1181,6 @@ def test_a_folder_that_cannot_take_the_files_is_refused(client, tmp_path, key, t
 
     _fill(_images())
     (_images() / "sub").mkdir()
-    # The folders are listed first, which makes each default.
     target, folders = str(target(tmp_path)), _location(client)
     before = tree()
     response = _move(client, key, target)
@@ -1232,11 +1210,9 @@ def test_an_unplugged_folder_is_not_made_again_and_can_be_reset(
     _mounted(monkeypatch, mounts)
     assert _move(client, "images", str(drive)).status_code == 200
     assert _move(client, "uploads", str(tmp_path / "Uploads")).status_code == 200
-    # A mount point gets a named folder, so the drive's own top level stays the user's.
     folder = (drive / "Unsloth Images" if mount_point else drive).resolve()
     assert _images() == folder
 
-    # Unplugged: gone, or its mount point an ordinary empty folder on the system disk again.
     if mount_point:
         mounts.clear()
     else:
@@ -1245,7 +1221,6 @@ def test_an_unplugged_folder_is_not_made_again_and_can_be_reset(
     with pytest.raises(LocationUnavailable):
         _images()
     assert drive.exists() is mount_point
-    # Each folder is logged once, though every listing asks, and the bar measures Studio's disk.
     logged = []
     for level in ("debug", "info", "warning"):
         monkeypatch.setattr(
@@ -1255,8 +1230,6 @@ def test_an_unplugged_folder_is_not_made_again_and_can_be_reset(
         assert client.get("/api/library").json()["disk"]["totalBytes"] > 0
     assert len(logged) == len(set(logged)) == 2
     assert all("location_unavailable" in line for line in logged)
-    # Settings still shows it, will not make it to reveal it, refuses to move files it cannot
-    # reach, and can reset it.
     location = _location(client, "images")
     assert (location["path"], location["available"], location["disk"]) == (str(folder), False, None)
     assert _post(client, "locations/reveal", key = "images").status_code == 409
@@ -1285,7 +1258,6 @@ def test_a_failed_move_puts_everything_back(client, tmp_path, monkeypatch, failu
     copies = []
 
     def filling_copy(src, dst, **kwargs):
-        # The second copy runs out of space part way, leaving half a file behind it.
         copies.append(src)
         if len(copies) == 2:
             Path(dst).write_bytes(b"par")
@@ -1293,14 +1265,12 @@ def test_a_failed_move_puts_everything_back(client, tmp_path, monkeypatch, failu
         return real_copy(src, dst, **kwargs)
 
     def locked(path):
-        # Windows copies an open file but will not delete it (ERROR_SHARING_VIOLATION).
         if Path(path).name == "open.png":
             exc = PermissionError(errno.EACCES, "The process cannot access the file")
             exc.winerror = 32
             raise exc
         real_unlink(path)
 
-    # Another drive: nothing renames, so every entry is copied.
     monkeypatch.setattr(library, "_rename", _cross_device)
     if failure == "full":
         monkeypatch.setattr(library.shutil, "copy2", filling_copy)
@@ -1310,7 +1280,6 @@ def test_a_failed_move_puts_everything_back(client, tmp_path, monkeypatch, failu
     target = tmp_path / "other-drive"
     response = _move(client, "images", str(target))
     assert response.status_code == 500 and detail in response.json()["detail"]
-    # Everything back with what was saved into the new folder meanwhile, and no copy left there.
     assert _files(old) == ["0.png", "1.png", "2.png", "d/open.png", "saved-meanwhile.png"]
     assert (old / "1.png").read_bytes() == b"png1" and _files(target) == []
     assert _images() == old and _location(client, "images")["custom"] is False
@@ -1337,7 +1306,6 @@ def test_another_spelling_of_a_folder_is_that_folder(client, tmp_path, monkeypat
 
     # The current folder under another name: nothing moves (a move onto itself would empty it).
     assert _move(client, "images", str(alias(images))).status_code == 200
-    # Another kind's folder under another name: refused.
     assert _move(client, "images", str(alias(videos))).status_code == 400
     assert _files(images) == ["0.png", "1.png", "2.png"] and _files(videos) == ["v.mp4"]
     assert _images() == images
@@ -1364,7 +1332,6 @@ def test_a_move_across_drives_merges_skips_and_waits(client, tmp_path, monkeypat
     (old / ".late.mp4.tmp").write_text("late")
 
     def save(new):
-        # A video job and two files saved into the new folder before the move reaches them.
         (new / ".jobs").mkdir()
         (new / ".jobs" / "new.json").write_text("running job")
         (new / "same.txt").write_text("same")
@@ -1372,13 +1339,11 @@ def test_a_move_across_drives_merges_skips_and_waits(client, tmp_path, monkeypat
 
     def rename(src, dst):
         if Path(src).name == "gone.mp4":
-            # Deleted from the Library just before the move reached it.
             Path(src).unlink()
             raise FileNotFoundError(2, "No such file or directory")
         _cross_device(src, dst)
 
     def finish():
-        # A gallery save still writing when the move starts.
         time.sleep(0.5)
         os.replace(old / ".late.mp4.tmp", old / "late.mp4")
 
@@ -1389,7 +1354,6 @@ def test_a_move_across_drives_merges_skips_and_waits(client, tmp_path, monkeypat
     new = tmp_path / "videos"
     assert _move(client, "videos", str(new)).status_code == 200
     writer.join()
-    # Never overwritten: an identical file lets the original go, a different one keeps both.
     assert {name: (new / name).read_text() for name in _files(new)} == {
         ".jobs/new.json": "running job",
         ".jobs/old.json": "old job",
@@ -1408,7 +1372,6 @@ def test_an_upload_finishing_during_a_move_lands_in_the_new_folder(client, tmp_p
 
     def chunks():
         yield b"first half, "
-        # Moved while the upload is still writing to the old folder.
         library.move_location("uploads", str(new))
         yield b"second half"
 
@@ -1514,7 +1477,6 @@ def test_a_named_folder_linked_onto_a_full_drive_is_refused_up_front(client, tmp
 def test_temporary_and_cache_folders_cannot_hold_library_files(monkeypatch):
     import tempfile
 
-    # The real lists, temp folders and all.
     monkeypatch.setattr(_scan_folders, "is_denied_system_path", _REAL_DENIED)
     monkeypatch.setattr(
         library, "_scratch_and_system_folders", lambda: [*_REAL_SCRATCH(), "/scratch-for-test"]
@@ -1522,7 +1484,6 @@ def test_temporary_and_cache_folders_cannot_hold_library_files(monkeypatch):
     for folder in (Path(tempfile.gettempdir()) / "images", Path("/var/tmp/images")):
         with pytest.raises(ValueError, match = "cannot hold these files"):
             library._refuse_denied(folder.resolve())
-    # Library-only: the model download folder's check lets it be.
     assert not _REAL_DENIED("/scratch-for-test/images")
     with pytest.raises(ValueError, match = "Temporary"):
         library._refuse_denied(Path("/scratch-for-test/images"))
@@ -1541,11 +1502,9 @@ def test_a_folder_chosen_before_mount_points_learns_its_mount_once_present(
     _mounted(monkeypatch, mounts)
     upsert_app_settings({"library.locations": {"images": str(folder)}}, read_back = False)
     forget_cache()
-    # Its drive is out: nothing to learn yet, so the bare path is kept as it was.
     with pytest.raises(LocationUnavailable):
         _images()
     assert get_app_setting("library.locations", {})["images"] == str(folder)
-    # Back in: it resolves, and its mount is recorded, and saved.
     folder.mkdir(parents = True)
     mounts.add(mount)
     forget_cache()
@@ -1554,7 +1513,6 @@ def test_a_folder_chosen_before_mount_points_learns_its_mount_once_present(
         "path": str(folder),
         "mount": mount,
     }
-    # Unplugged again, its empty mount point left behind: now that is caught.
     mounts.clear()
     forget_cache()
     with pytest.raises(LocationUnavailable):
@@ -1567,7 +1525,6 @@ def test_uploads_left_on_a_reset_drive_are_hidden_until_their_files_are_back(cli
     assert _move(client, "uploads", str(drive)).status_code == 200
     drive.rename(tmp_path / "unplugged")
     assert _move(client, "uploads", None).status_code == 200
-    # Its file stayed on the drive: no broken card, and no bytes counted toward the default disk.
     assert _items(client)[0] == {}
     (tmp_path / "unplugged" / _ref(upload)).rename(library.uploads_dir() / _ref(upload))
     assert set(_items(client)[0]) == {upload}
@@ -1615,23 +1572,17 @@ def test_a_move_cut_short_waits_for_the_drive_it_was_moving_onto(client, tmp_pat
     old, new = _images(), tmp_path / "Pictures"
     _fill(old)
     _crash_moving(monkeypatch, "images", new)
-    # Started again with that drive unplugged: the old folder stands in, and the move stays open.
     shutil.move(new, tmp_path / "unplugged")
     forget_cache()
     assert _images() == old and len(_files(old)) == 2
     assert _location(client, "images")["available"] is True
     assert "moving_from" in str(get_app_setting("library.locations", {}))
-    # Plugged back in, the old folder stays in use until the move is taken up again: the new one
-    # alone would hide what the old one holds.
     shutil.move(tmp_path / "unplugged", new)
     assert _images() == old and len(_files(old)) == 2
-    # The next start brings the rest over.
     forget_cache()
     assert _images() == new.resolve() and len(_files(new)) == 3
     assert "moving_from" not in str(get_app_setting("library.locations", {}))
 
-    # Choosing the folder standing in is a choice to stay: the move is dropped, and the folder
-    # still holding files is named.
     _crash_moving(monkeypatch, "images", tmp_path / "Other")
     shutil.move(tmp_path / "Other", tmp_path / "unplugged")
     forget_cache()
@@ -1666,7 +1617,6 @@ def test_a_copy_across_drives_cut_short_leaves_no_partial_file_for_the_next_star
     monkeypatch.setattr(library.shutil, "copy2", real_copy)
     monkeypatch.setattr(library, "_discard", real_discard)
     forget_cache()
-    # Each file once, whole, under its own name; nothing half-copied is left.
     assert _images() == new.resolve()
     assert _files(new) == ["0.png", "1.png", "2.png"]
     assert (new / "0.png").read_bytes() == b"png0"
@@ -1680,7 +1630,6 @@ def test_an_open_cannot_land_between_a_delete_and_its_row(client, monkeypatch):
     real = library.item_exists
 
     def a_delete_meanwhile(item_id, *args):
-        # The item is there when the open looks; a delete then gets as far as it can in a moment.
         found = real(item_id, *args)
         deleting = threading.Thread(target = library.delete_item, args = (upload,))
         deleting.start()
@@ -1707,10 +1656,8 @@ def test_a_new_move_finishes_one_cut_short_first_or_waits_for_its_drive(
     _crash_moving(monkeypatch, "images", new)
     shutil.move(new, tmp_path / "unplugged")
     forget_cache()
-    # While the drive is out, a move from the folder standing in would leave its file behind.
     response = _move(client, "images", str(other))
     assert response.status_code == 400 and str(new.resolve()) in response.text
-    # Plugged back in without a restart: the move cut short is finished before the new one.
     shutil.move(tmp_path / "unplugged", new)
     assert _move(client, "images", str(other)).status_code == 200
     assert _images() == other.resolve() and len(_files(other)) == 3
@@ -1731,13 +1678,11 @@ def test_a_move_cut_short_waits_for_the_drive_it_was_leaving(client, tmp_path, m
     assert _move(client, "images", str(source)).status_code == 200
     _fill(_images())
     _crash_moving(monkeypatch, "images", target)
-    # Started again with the drive unplugged: what is on it is not given up for moved.
     shutil.move(source, tmp_path / "unplugged")
     mounts.clear()
     forget_cache()
     assert _images() == target.resolve() and len(_files(target)) == 1
     assert "moving_from" in str(get_app_setting("library.locations", {}))
-    # Plugged back in, the next start brings the rest.
     shutil.move(tmp_path / "unplugged", source)
     mounts.add(str(drive))
     forget_cache()
@@ -1785,12 +1730,10 @@ def test_a_folder_choice_that_cannot_be_read_fails_rather_than_saving_to_the_def
 
         return read
 
-    # A lock held too long: a save must not land in the default, out of sight once it clears.
     monkeypatch.setattr(studio_db, "get_app_setting", failing("database is locked"))
     forget_cache()
     with pytest.raises(sqlite3.OperationalError):
         _images()
-    # A database without the settings table never had a folder moved.
     monkeypatch.setattr(studio_db, "get_app_setting", failing("no such table: app_settings"))
     forget_cache()
     assert _images() == _studio("images")

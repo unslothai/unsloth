@@ -156,8 +156,6 @@ def test_is_denied_system_path_windows_allows_non_system(path):
     assert is_denied(path) is False
 
 
-# realpath() keeps a Windows extended-length prefix, which must not hide the folder behind it, and
-# macOS disks ignore case by default: /LIBRARY is /Library.
 @pytest.mark.parametrize(
     "system, path, denied",
     [

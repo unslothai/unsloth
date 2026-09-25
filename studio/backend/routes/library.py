@@ -498,7 +498,6 @@ async def reveal_location(
 
 class LocationMove(BaseModel):
     key: str = Field(max_length = 32)
-    # None moves the files back to the default folder.
     path: Optional[str] = Field(default = None, max_length = 4096)
 
 
@@ -522,8 +521,6 @@ async def move_location(
         "leftBehind": left_behind,
     }
 
-
-# ── Library-owned uploads ────────────────────────────────────────
 
 
 def _chunks(stream, name: str):

@@ -116,12 +116,9 @@ def _fingerprint(info: os.stat_result) -> str:
 
 
 def uploads_dir() -> Path:
-    # Settings > Library can move the owner's folder elsewhere; other accounts keep theirs.
     return relocations.location_dir("uploads", account_path("library"))
 
 
-# Where each source keeps its bytes, to tell which sit on the Library's disk. Fine-tunes and exports
-# are told apart (`model:<origin>` starts their ids): either can be elsewhere.
 _SOURCE_ROOTS: dict[str, Callable[[], Path]] = {
     "upload": lambda: uploads_dir(),
     "attachment": lambda: storage_roots.studio_db_path().parent,
@@ -461,7 +458,6 @@ def _gallery_items(kind: str) -> list[dict]:
                 size = path.stat().st_size if path is not None else None
             except OSError:
                 size = None
-            # Audio and video keep their recipe beside the file, which takes space on disk too.
             sidecar = None
             if size is not None:
                 try:
@@ -539,14 +535,12 @@ def _model_items() -> list[dict]:
     )
     items = []
     for name, path, origin, model_type, base_model in found:
-        # A GGUF export is listed by one of its files, but every quantization beside it is on disk.
         stats_path = Path(path)
         if model_type == "gguf" and stats_path.is_file():
             stats_path = stats_path.parent
         try:
             size, modified, info = _tree_stats(stats_path)
             if stats_path != Path(path):
-                # Fingerprinted by the listed file itself, as a lookup by its id stats it.
                 info = os.stat(path)
         except OSError:
             continue
@@ -1343,7 +1337,6 @@ def item_exists(item_id: str, recorded: Optional[str] = None) -> bool:
         return False
 
 
-# Settings > Library's kinds of file, by the source that lists them.
 _LOCATIONS = {
     "uploads": "upload",
     "images": "image",
@@ -1387,7 +1380,6 @@ def locations() -> list[dict]:
     return entries
 
 
-# Left behind by a move and ignored in an "empty" target: the OS writes them into any folder it shows.
 _OS_CLUTTER = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
 # Held for a whole move. A Library upload lands under it, in whichever folder the move leaves in use.
 # Reentrant: the first read of the chosen folders, made under it, can finish a move cut short.
@@ -1413,7 +1405,6 @@ def _identity(path) -> Optional[tuple[int, int]]:
 
 
 def _loose(path: Path) -> str:
-    # For folders that are not there to ask: as spelled, case ignored, erring toward "the same".
     return os.path.normcase(str(path)).casefold()
 
 
@@ -1500,7 +1491,6 @@ def _move_target(raw: str) -> Path:
     return resolved
 
 
-# A picked folder that already holds files gets one of these made inside it instead.
 _SUBFOLDERS = {
     "uploads": "Unsloth Library",
     "images": "Unsloth Images",
@@ -1576,7 +1566,6 @@ def _refuse_short_space(current: Path, target: Path) -> None:
     except OSError:
         return
     free = (_disk(target) or {}).get("freeBytes")
-    # Room to spare for saves made meanwhile and for the filesystem's own bookkeeping.
     if free is not None and need + max(need // 50, 64 * 1024 * 1024) > free:
         raise ValueError(
             f"The files take {_readable_size(need)} and that drive has {_readable_size(free)} "
@@ -1594,7 +1583,6 @@ class _MoveLog:
         self.created: list[Path] = []
 
 
-# Patched in tests to force the copy path, or a file another program holds open.
 _rename = os.rename
 _unlink = os.remove
 
@@ -1747,7 +1735,6 @@ def _undo(log: _MoveLog) -> None:
             if not kept:
                 _move_entry(dest, source, _MoveLog())
             elif not os.path.lexists(source):
-                # The file at `dest` was there before: copied back, never taken.
                 shutil.copy2(dest, source, follow_symlinks = False)
         except OSError:
             logger.error("library.move_rollback_failed: %s", dest, exc_info = True)
@@ -1828,7 +1815,6 @@ def move_location(key: str, path: Optional[str]) -> Optional[str]:
             _resume_move(key)
         current = _location_path(key).resolve()
         if not relocations.is_available(key):
-            # Its drive unplugged: nothing can move, but Reset still lets go of the folder.
             if path is not None:
                 raise ValueError(
                     f"{current} is not available, so its files cannot move. Reconnect its drive, "
@@ -1848,7 +1834,6 @@ def move_location(key: str, path: Optional[str]) -> Optional[str]:
         if _same_folder(target, current):
             return _settle_waiting_move(key, current)
         _refuse_overlap(target, key, final = True)
-        # Again where the files really go: the named folder can be a link onto another drive.
         _refuse_short_space(current, target)
         previous, previous_from = relocations.chosen(key), relocations.moving_from(key)
         before = {entry.name for entry in target.iterdir()}
@@ -1860,10 +1845,8 @@ def move_location(key: str, path: Optional[str]) -> Optional[str]:
         except OSError as exc:
             _undo(log)
             relocations.set_chosen(key, previous, moving_from = previous_from)
-            # Saved into the new folder while the move ran: back with the rest, or out of sight.
             _settle(target, current, wait = False, only = lambda entry: entry.name not in before)
             raise RuntimeError(f"Could not move the files: {exc.strerror or exc}") from exc
-        # Library uploads land under the move lock, so only the galleries' saves are waited for.
         _settle(current, target, wait = key != "uploads")
         _finish_move(key, target)
     return None
@@ -1897,7 +1880,6 @@ def _settle_waiting_move(key: str, current: Path) -> Optional[str]:
 
 
 def _finish_move(key: str, target: Path) -> None:
-    # A default already holding files gets a subfolder, which has to be recorded to be used.
     relocations.set_chosen(key, None if _same_folder(target, _location_default(key)) else target)
 
 
@@ -2019,8 +2001,6 @@ def _delete_item(item_id: str, fingerprint: Optional[str]) -> bool:
     elif kind == "sandbox":
         deleted = _delete_sandbox_file(ref, fingerprint)
     elif kind == "model":
-        # The models route deletes the files, with its own load and training guards. Once they are
-        # gone, this drops what the Library kept about the model.
         _origin, _, path = ref.partition(":")
         if not path or os.path.exists(path):
             raise ValueError("Fine-tuned models are deleted from the model picker.")

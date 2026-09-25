@@ -175,7 +175,6 @@ function LoadingGrid() {
   );
 }
 
-// Everything but media and models: the Storage Files row.
 const FILE_TYPES: LibraryTypeFilter[] = ["documents", "spreadsheets", "presentations", "pdfs"];
 
 export function LibraryPage() {
@@ -190,8 +189,6 @@ export function LibraryPage() {
     return () => window.removeEventListener("focus", onFocus);
   }, [refresh]);
 
-  // Search, filters and selection belong to the view they were made in, so each tab and folder
-  // gets a fresh one, as does a link from Settings.
   return (
     <LibraryView
       key={`${visit}:${search.show ?? ""}:${search.folder ?? ""}:${search.filter ?? ""}`}
@@ -206,7 +203,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const { items: allItems, folders, status, error, refresh, patchItem, removeItem, upload, addFolder, patchFolder, removeFolder, markOpened } =
     useLibraryStore();
   const settings = useLibrarySettingsStore();
-  // Sources switched off in settings are left out everywhere, folder counts included.
   const items = useMemo(
     () => allItems.filter((item) => includedBySettings(item.id, settings)),
     [allItems, settings],
@@ -238,7 +234,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const tab: LibraryTab =
     search.show ??
     (tabVisible(preferred) ? preferred : (LIBRARY_TABS.find(tabVisible) ?? "all"));
-  // A column click or ?sort link (in the URL, so a Storage link always lands by size) beats the setting.
   const sort = SORT_STATES[search.sort ?? settings.sort];
   const folderId = search.folder ?? null;
   const folderById = useMemo(() => new Map(folders.map((f) => [f.id, f])), [folders]);
@@ -274,7 +269,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
 
   const kindFilter = folderId ? undefined : KIND_TABS[tab];
 
-  // The open tab always shows, so a link straight to a hidden or empty one still lands somewhere.
   const shownTabs = LIBRARY_TABS.filter((entry) => entry === tab || tabVisible(entry));
 
   const setLibrarySettings = settings.set;
@@ -290,7 +284,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     pool = pool.filter(
       (item) => nameMatches(item.name, needle) && matchesFilters(item, filters, !kindFilter),
     );
-    // Suggested is the most recently active slice, where opening a file counts as activity.
     if (tab === "suggested" && !folderId) {
       const byActivity = [...pool].sort((a, b) => lastActivity(b) - lastActivity(a));
       pool = needle || filtersActive(filters) ? byActivity : byActivity.slice(0, settings.suggestedLimit);
@@ -305,7 +298,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     return folders
       .filter((folder) => folder.parentId === folderId)
       .filter((folder) => nameMatches(folder.name, needle))
-      // Folders have no size of their own.
       .sort(compareBySort(sort.key === "size" ? { key: "name", desc: false } : sort));
   }, [folders, folderId, tab, needle, filters, sort]);
 
@@ -324,7 +316,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   }
 
   const previewItem = search.item ? (items.find((item) => item.id === search.item) ?? null) : null;
-  // Recorded whenever the preview opens, so a shared link or history entry counts, not only a click.
   const previewId = previewItem?.id ?? null;
   useEffect(() => {
     if (previewId) markOpened(previewId);

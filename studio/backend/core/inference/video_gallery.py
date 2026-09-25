@@ -37,7 +37,6 @@ _THUMBNAIL_WIDTH = 192
 
 def gallery_dir() -> Path:
     if is_owner_context():
-        # Settings > Library can move the owner's folder elsewhere.
         return location_dir("videos", studio_root() / "videos")
     return ensure_account_dir(account_path("videos"))
 

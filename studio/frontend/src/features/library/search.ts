@@ -20,9 +20,7 @@ export interface LibrarySearch {
   show?: LibraryTab;
   folder?: string;
   item?: string;
-  /** Sorted this way instead of the Sort setting: a column click, or Settings > Library > Storage. */
   sort?: LibraryUrlSort;
-  /** Start filtered to files that are not media or models, for the Storage Files row. */
   filter?: "files";
 }
 

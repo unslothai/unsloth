@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Library's pure rules: file naming and typing, note encodings, preview streaming, Reveal, the
-// thumbnail URL cache, card times, folder paths and the Library settings.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -239,13 +237,11 @@ table("the folder picker starts in the folder above, drive and share roots inclu
   [["/Users/me/Pictures/Unsloth Images"], "/Users/me/Pictures"],
   [["/Unsloth Images"], "/"],
   [["/Users/me/Pictures/"], "/Users/me"],
-  // `D:` alone is drive D's current folder, not its root.
   [["D:\\Unsloth Images"], "D:\\"],
   [["D:/Unsloth Images"], "D:/"],
   [["C:\\Users\\me\\Unsloth"], "C:\\Users\\me"],
   [["\\\\server\\share\\Unsloth Images"], "\\\\server\\share\\"],
   [["\\\\server\\share\\a\\b"], "\\\\server\\share\\a"],
-  // A root has nothing above it to start from.
   [["/"], undefined],
   [["D:\\"], undefined],
   [["\\\\server\\share"], undefined],

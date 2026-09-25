@@ -10,7 +10,6 @@ import { includedBySettings, useLibrarySettingsStore } from "./settings-store";
 
 type StorageCategory = "files" | "images" | "videos" | "audio" | "fineTunes";
 
-/** Settings names for storage categories and Library locations. */
 export const STORAGE_LABELS: Record<StorageCategory | LibraryLocation["key"], TranslationKey> = {
   files: "settings.data.filesSection",
   uploads: "settings.library.locationUploads",
@@ -23,7 +22,6 @@ export const STORAGE_LABELS: Record<StorageCategory | LibraryLocation["key"], Tr
 
 interface StorageUsage {
   category: StorageCategory;
-  /** Where Manage storage opens it, sorted by size. */
   link: LibrarySearch;
   bytes: number;
   count: number;
@@ -31,11 +29,8 @@ interface StorageUsage {
 
 interface LibraryStorage {
   status: "loading" | "ready" | "error";
-  /** Everything on disk, hidden sources included. */
   totalBytes: number;
-  /** The part of totalBytes that Content settings hide, so no category counts it. */
   hiddenBytes: number;
-  /** The share of totalBytes on `disk`, which the bar draws. */
   diskBytes: number;
   categories: StorageUsage[];
   disk: LibraryDisk | null;
@@ -56,7 +51,6 @@ const KIND_CATEGORIES: Partial<Record<string, StorageCategory>> = {
   model: "fineTunes",
 };
 
-/** The id prefix `disk.sources` names: the source, and for a model where it came from. */
 function diskSource(id: string): string {
   const [source, origin] = id.split(":", 2);
   return source === "model" ? `${source}:${origin}` : source!;
@@ -64,13 +58,10 @@ function diskSource(id: string): string {
 
 const STALE_EVENT = "unsloth:library-storage-stale";
 
-/** Measure again wherever storage is on screen, after files left outside the Library (a chat clear). */
 export function refreshLibraryStorage(): void {
   window.dispatchEvent(new Event(STALE_EVENT));
 }
 
-/** What the Library holds on disk, by category, largest first. Hidden sources count toward the
- *  total and the bar but no category, so each link lands on exactly what it counted. */
 export function useLibraryStorage(): LibraryStorage {
   const settings = useLibrarySettingsStore();
   const [snapshot, setSnapshot] = useState<{

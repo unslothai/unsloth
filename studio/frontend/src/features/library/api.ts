@@ -17,9 +17,7 @@ export interface LibraryItem {
   source: LibrarySource;
   contentType: string;
   sizeBytes: number | null;
-  /** What it takes on disk with the files kept beside it (a clip's recipe), when that is more. */
   storageBytes?: number;
-  /** The file a path-derived item (sandbox) was listed as; a delete only takes that file. */
   fingerprint?: string;
   createdAt: number;
   updatedAt: number;
@@ -29,7 +27,6 @@ export interface LibraryItem {
   textOnly: boolean;
   favorite: boolean;
   folderId: string | null;
-  /** Last time it was opened in the Library, if ever. */
   openedAt: number | null;
   /** Set for fine-tuned models, which are directories: opened in chat, never downloaded. */
   model: LibraryModel | null;
@@ -54,14 +51,12 @@ export interface LibraryFolder {
 export interface LibraryDisk {
   totalBytes: number;
   freeBytes: number;
-  /** Item sources on this disk (id prefix, `model:<origin>` for models); others may be elsewhere. */
   sources?: string[];
 }
 
 export interface LibrarySnapshot {
   items: LibraryItem[];
   folders: LibraryFolder[];
-  /** The disk holding the Library's own files; null when it could not be read. */
   disk?: LibraryDisk | null;
 }
 
@@ -143,7 +138,6 @@ export async function markLibraryItemOpened(id: string): Promise<void> {
   await ensureOk(await sendWrite("/api/library/items/opened", jsonInit("POST", { id })));
 }
 
-/** Copies the item's file into a project's folder; the Library keeps its item. */
 export async function addLibraryItemToProject(
   id: string,
   projectId: string,
@@ -161,15 +155,10 @@ export async function revealLibraryItem(id: string): Promise<void> {
 export interface LibraryLocation {
   key: "uploads" | "images" | "videos" | "audio" | "fineTunes" | "exports";
   path: string;
-  /** Can be moved to another folder (installation owner only). */
   movable?: boolean;
-  /** Already moved away from the default. */
   custom?: boolean;
-  /** False while a chosen folder's drive is not connected. */
   available?: boolean;
-  /** Space on the disk holding the folder; null while it cannot be read. */
   disk?: LibraryDisk | null;
-  /** Tells folders on one disk from folders on another. */
   device?: string | null;
 }
 
@@ -182,8 +171,6 @@ export async function revealLibraryLocation(key: LibraryLocation["key"]): Promis
   await ensureOk(await sendWrite("/api/library/locations/reveal", jsonInit("POST", { key })));
 }
 
-/** Move one kind of file, files and all (`path` null: back to the default), untimed, as that can
- *  take a while across drives. `leftBehind`: a folder Reset let go of on an unplugged drive. */
 export async function moveLibraryLocation(
   key: LibraryLocation["key"],
   path: string | null,

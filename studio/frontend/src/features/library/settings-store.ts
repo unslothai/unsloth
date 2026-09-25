@@ -9,7 +9,6 @@ export const LIBRARY_SETTINGS_STORAGE_KEY = "unsloth_library_settings";
 export const LIBRARY_VIEW_STORAGE_KEY = "unsloth_library_view";
 
 type LibrarySort = "recent" | "oldest" | "name" | "size";
-/** "auto" shows a tab once it has something in it. */
 export type LibraryTabVisibility = "always" | "auto" | "hidden";
 
 export interface LibrarySettings {
@@ -18,7 +17,6 @@ export interface LibrarySettings {
   showCardDates: boolean;
   sort: LibrarySort;
   startTab: "last" | "suggested" | "favorites" | "folders" | "all";
-  /** Where "Last visited" reopens. */
   lastTab: LibraryTab;
   tabs: Record<LibraryTab, LibraryTabVisibility>;
   suggestedLimit: number;
@@ -56,7 +54,6 @@ export const DEFAULT_LIBRARY_SETTINGS: LibrarySettings = {
 
 export const SUGGESTED_LIMITS = [20, 40, 80] as const;
 
-/** Smallest card width and most columns per row, per card size. */
 export const CARD_COLUMNS: Record<LibrarySettings["cardSize"], { minWidth: number; max: number }> = {
   small: { minWidth: 170, max: 6 },
   medium: { minWidth: 200, max: 5 },
@@ -124,17 +121,14 @@ const SOURCE_SETTING: Record<string, keyof LibrarySettings> = {
   model: "showFineTunes",
 };
 
-/** Whether the settings let this item into the Library. Library uploads always show. */
 export function includedBySettings(itemId: string, settings: LibrarySettings): boolean {
   const key = SOURCE_SETTING[itemId.slice(0, itemId.indexOf(":"))];
   return !key || Boolean(settings[key]);
 }
 
-/** A list column and direction; the Sort setting is one of these. */
 export type LibrarySortKey = "name" | "modified" | "size";
 export type LibrarySortState = { key: LibrarySortKey; desc: boolean };
 
-/** A page's `?sort=`: the setting's four orders plus the two a column click can add. */
 export type LibraryUrlSort = LibrarySort | "name-desc" | "size-asc";
 
 export const SORT_STATES: Record<LibraryUrlSort, LibrarySortState> = {
@@ -148,21 +142,18 @@ export const SORT_STATES: Record<LibraryUrlSort, LibrarySortState> = {
 
 export const LIBRARY_URL_SORTS = Object.keys(SORT_STATES) as LibraryUrlSort[];
 
-/** The `?sort=` value for a column and direction. */
 export function sortParam(state: LibrarySortState): LibraryUrlSort {
   return LIBRARY_URL_SORTS.find(
     (sort) => SORT_STATES[sort].key === state.key && SORT_STATES[sort].desc === state.desc,
   )!;
 }
 
-/** Clicking a column flips it, or starts a new one in its natural direction. */
 export function nextSort(current: LibrarySortState, key: LibrarySortKey): LibrarySortState {
   return current.key === key ? { key, desc: !current.desc } : { key, desc: key !== "name" };
 }
 
 type Sortable = { name: string; updatedAt: number; sizeBytes?: number | null };
 
-/** Suggested's Last activity: the later of modified and opened. */
 export function lastActivity(item: { updatedAt: number; openedAt?: number | null }): number {
   return Math.max(item.updatedAt, item.openedAt ?? 0);
 }
@@ -177,7 +168,6 @@ export function compareBySort({ key, desc }: LibrarySortState): (a: Sortable, b:
   return desc ? (a, b) => ascending(b, a) : ascending;
 }
 
-/** Bumped to open the Library afresh, dropping a search or filter left in the view already open. */
 export const useLibraryVisitStore = create<{ visit: number; restart: () => void }>((set) => ({
   visit: 0,
   restart: () => set((state) => ({ visit: state.visit + 1 })),

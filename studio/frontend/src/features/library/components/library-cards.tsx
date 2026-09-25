@@ -45,7 +45,6 @@ export function KindIcon({ item, className }: { item: LibraryItem; className?: s
 const MIN_THUMB_RATIO = 2 / 3;
 const MAX_THUMB_RATIO = 3 / 2;
 
-/** A lazily loaded image or video frame, sized by its own aspect ratio once it arrives, or cropped square. */
 function ImageThumb({
   item,
   className,
@@ -182,7 +181,6 @@ export function ItemCard({ item }: { item: LibraryItem }) {
       {thumb ? (
         <>
           <ImageThumb item={item} square={square && fileKind(item) === "image"} />
-          {/* On hover or keyboard focus, so the grid stays a wall of pictures; always on touch. */}
           {showTime && (
             <span
               className={cn(
@@ -250,8 +248,6 @@ function useCardColumns(container: RefObject<HTMLDivElement | null>): number {
   return useColumnCount(container, minWidth, max);
 }
 
-/** Staggered columns: images keep their shape, so cards fill row by row into the shortest-looking
- *  column. Round-robin keeps newest-first reading order without measuring anything. */
 export function Masonry<T>({
   items,
   getKey,

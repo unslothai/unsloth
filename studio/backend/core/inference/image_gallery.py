@@ -37,7 +37,6 @@ _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 def gallery_dir() -> Path:
     if is_owner_context():
-        # Settings > Library can move the owner's folder elsewhere.
         return location_dir("images", studio_root() / "images")
     return ensure_account_dir(account_path("images"))
 

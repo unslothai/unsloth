@@ -23,8 +23,6 @@ function startOfDay(date: Date): number {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
 }
 
-/** A clock time today, then "Yesterday", a weekday within the week, then a short date, in the
- *  app's `locale`. A time ahead of `now` (another machine's clock) shows its date. */
 export function formatCardTime(ts: number, locale: Locale, now: number = Date.now()): string {
   if (!Number.isFinite(ts)) return "";
   const then = new Date(ts);
@@ -54,7 +52,6 @@ export function formatActivityTime(ts: number, locale: Locale, t: Translate): st
   if (minutes < 60) return formatRelativeTime(locale, -minutes, "minute");
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return formatRelativeTime(locale, -hours, "hour");
-  // Calendar days from here, so the day before today reads as "yesterday".
   const days = Math.round((startOfDay(new Date()) - startOfDay(new Date(ts))) / DAY_MS);
   if (days <= 1) return yesterday(locale);
   if (days < 7) return formatRelativeTime(locale, -days, "day");
