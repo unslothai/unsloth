@@ -1732,57 +1732,22 @@ _FLUX2_BASE_INNER_DIM = {
 
 
 class _HeaderTensor(NamedTuple):
-    """The two fields a FLUX.2 size probe reads off a GGUF tensor table entry."""
+    """Name + shape from a GGUF tensor table entry (header-only parse; no tensor DATA)."""
 
     name: str
     shape: Sequence[int]
 
 
-def flux2_base_inner_dim(base_repo: Optional[str]) -> Optional[int]:
-    """The ``inner_dim`` a FLUX.2 base config expects, or None when the repo is not one we map.
-    Keyed on UPSTREAM ids, reached through ``canonical_base``: a known ungated mirror is
-    byte-identical to what it copies, so it maps back and is checked exactly like its upstream.
-    Anything else -- a local path, a third-party repack, a base we do not ship -- misses, and
-    every caller fails OPEN on the None rather than guessing."""
-    return _FLUX2_BASE_INNER_DIM.get(canonical_base(base_repo or "").lower())
+def _gguf_header_tensors(header: bytes) -> Optional[Sequence[_HeaderTensor]]:
+    """Tensor name/shape pairs from the leading bytes of a GGUF, or None when unreadable.
 
-
-def _flux2_inner_dim_from_tensors(tensors) -> Optional[int]:
-    """``inner_dim`` from a parsed GGUF tensor table, or None when the probe tensor is absent."""
-    for t in tensors:
-        if t.name == _FLUX2_PROBE_TENSOR or t.name.endswith("." + _FLUX2_PROBE_TENSOR):
-            # GGUF stores dims reversed relative to torch, so the input dim leads. A missing or non-positive dim is a
-            # parse that went wrong, and "0" would be compared against the base as a real answer and refuse a valid
-            # pick; say nothing instead.
-            dim = int(t.shape[0]) if len(t.shape) else 0
-            return dim if dim > 0 else None
-    return None
-
-
-def gguf_flux2_inner_dim(path) -> Optional[int]:
-    """``inner_dim`` of a FLUX.2 GGUF, read from its header, or None if it cannot be determined."""
-    try:
-        from gguf import GGUFReader
-        return _flux2_inner_dim_from_tensors(GGUFReader(str(path)).tensors)
-    except Exception:
-        return None
-
-
-def gguf_flux2_inner_dim_from_header(header: bytes) -> Optional[int]:
-    """``inner_dim`` read from the leading bytes of a FLUX.2 GGUF, or None.
-
-    Lets the selection-time preflight range-read a few hundred KiB over HTTP instead of pulling the
-    whole multi-GB checkpoint: the tensor table it needs sits in the first ~15 KiB. Same parser as
-    ``gguf_flux2_inner_dim``, with the two things a PREFIX changes. ``_build_tensors`` is skipped,
-    because the base class builds a numpy view over every tensor's DATA, which a prefix does not
-    carry, and satisfying those reads would allocate the whole declared checkpoint (tens of GiB);
-    only the name and shape from the table are wanted, and both are already parsed. And ``_get``
+    Shared by the FLUX.2 and Qwen-Image size probes so both can range-read a few hundred KiB over
+    HTTP instead of pulling the whole multi-GB checkpoint. ``_build_tensors`` is skipped, because
+    the base class builds a numpy view over every tensor's DATA, which a prefix does not carry, and
+    satisfying those reads would allocate the whole declared checkpoint (tens of GiB). ``_get``
     REFUSES a read past the end instead of returning short or zero-filled data, since the table is
     read field by field and a prefix cutting between a tensor's name and its dims would otherwise
-    hand back a zero shape, a wrong answer rather than a missing one, which would refuse a perfectly
-    valid pick.
-
-    None on anything unreadable: too short a prefix, a non-GGUF file, an absent probe tensor.
+    hand back a zero shape, a wrong answer rather than a missing one.
     """
     if not header:
         return None
@@ -1823,7 +1788,7 @@ def gguf_flux2_inner_dim_from_header(header: bytes) -> Optional[int]:
         # padding was never written.
         if reader.data_offset > len(header) + min(int(reader.alignment), 4096):
             return None
-        return _flux2_inner_dim_from_tensors(reader.tensors)
+        return list(reader.tensors)
     except Exception:  # noqa: BLE001 - an unreadable header is not a verdict
         return None
     finally:
@@ -1834,6 +1799,48 @@ def gguf_flux2_inner_dim_from_header(header: bytes) -> Optional[int]:
                 os.unlink(tmp_path)
             except OSError:
                 pass
+
+
+def flux2_base_inner_dim(base_repo: Optional[str]) -> Optional[int]:
+    """The ``inner_dim`` a FLUX.2 base config expects, or None when the repo is not one we map.
+    Keyed on UPSTREAM ids, reached through ``canonical_base``: a known ungated mirror is
+    byte-identical to what it copies, so it maps back and is checked exactly like its upstream.
+    Anything else -- a local path, a third-party repack, a base we do not ship -- misses, and
+    every caller fails OPEN on the None rather than guessing."""
+    return _FLUX2_BASE_INNER_DIM.get(canonical_base(base_repo or "").lower())
+
+
+def _flux2_inner_dim_from_tensors(tensors) -> Optional[int]:
+    """``inner_dim`` from a parsed GGUF tensor table, or None when the probe tensor is absent."""
+    for t in tensors:
+        if t.name == _FLUX2_PROBE_TENSOR or t.name.endswith("." + _FLUX2_PROBE_TENSOR):
+            # GGUF stores dims reversed relative to torch, so the input dim leads. A missing or non-positive dim is a
+            # parse that went wrong, and "0" would be compared against the base as a real answer and refuse a valid
+            # pick; say nothing instead.
+            dim = int(t.shape[0]) if len(t.shape) else 0
+            return dim if dim > 0 else None
+    return None
+
+
+def gguf_flux2_inner_dim(path) -> Optional[int]:
+    """``inner_dim`` of a FLUX.2 GGUF, read from its header, or None if it cannot be determined."""
+    try:
+        from gguf import GGUFReader
+        return _flux2_inner_dim_from_tensors(GGUFReader(str(path)).tensors)
+    except Exception:
+        return None
+
+
+def gguf_flux2_inner_dim_from_header(header: bytes) -> Optional[int]:
+    """``inner_dim`` read from the leading bytes of a FLUX.2 GGUF, or None.
+
+    Lets the selection-time preflight range-read a few hundred KiB over HTTP instead of pulling the
+    whole multi-GB checkpoint: the tensor table it needs sits in the first ~15 KiB.
+
+    None on anything unreadable: too short a prefix, a non-GGUF file, an absent probe tensor.
+    """
+    tensors = _gguf_header_tensors(header)
+    return _flux2_inner_dim_from_tensors(tensors) if tensors is not None else None
 
 
 def flux2_mismatch_reason(
@@ -1873,6 +1880,102 @@ def assert_flux2_gguf_matches_base(fam, base_repo: str, gguf_path) -> None:
         return
     reason = flux2_mismatch_reason(
         Path(str(gguf_path)).name, base_repo, gguf_flux2_inner_dim(gguf_path), want
+    )
+    if reason is not None:
+        raise ValueError(reason)
+
+
+# Qwen-Image vs Qwen-Image-2.1: same ``img_in.weight`` name, different hidden size (3072 vs 4096).
+# A stale Studio bind that still resolves the pick as family ``qwen-image`` builds
+# ``QwenImageTransformer2DModel`` and dies inside ``gguf_quantizer.check_quantized_param_shape`` with
+# "expected torch.Size([3072, 64]), decodes to (4096, 64)". Same FLUX.2 pattern: refuse off the
+# header before that cryptic Diffusers error. GGUF metadata cannot help -- city96-style files carry
+# no useful architecture kv for this split.
+_QWEN_IMAGE_PROBE_TENSOR = "img_in.weight"
+_QWEN_IMAGE_HIDDEN_DIMS = {
+    3072: "Qwen-Image / Qwen-Image-Edit (hidden 3072)",
+    4096: "Qwen-Image-2.1 (hidden 4096)",
+}
+_QWEN_IMAGE_BASE_HIDDEN_DIM = {
+    "qwen/qwen-image": 3072,
+    "qwen/qwen-image-2512": 3072,
+    "qwen/qwen-image-edit-2511": 3072,
+    "qwen/qwen-image-edit-2509": 3072,
+    "qwen/qwen-image-2.1": 4096,
+}
+
+
+def qwen_image_base_hidden_dim(base_repo: Optional[str]) -> Optional[int]:
+    """The ``img_in`` out-features a Qwen-Image family base expects, or None when unmapped.
+
+    Keyed on UPSTREAM ids through ``canonical_base``, same contract as ``flux2_base_inner_dim``:
+    mirrors map back, anything else fails open."""
+    return _QWEN_IMAGE_BASE_HIDDEN_DIM.get(canonical_base(base_repo or "").lower())
+
+
+def _qwen_image_hidden_dim_from_tensors(tensors) -> Optional[int]:
+    """Hidden size from ``img_in.weight`` in a parsed GGUF tensor table, or None when absent."""
+    for t in tensors:
+        if t.name == _QWEN_IMAGE_PROBE_TENSOR or t.name.endswith("." + _QWEN_IMAGE_PROBE_TENSOR):
+            # ``img_in`` is Linear(in=64, out=hidden). Torch stores [hidden, 64]; GGUF reverses so
+            # the input dim leads and ``shape[-1]`` is the hidden size the Diffusers config must
+            # match. A missing or non-positive dim is a bad parse -- say nothing rather than refuse.
+            dim = int(t.shape[-1]) if len(t.shape) >= 2 else 0
+            return dim if dim > 0 else None
+    return None
+
+
+def gguf_qwen_image_hidden_dim(path) -> Optional[int]:
+    """Hidden size of a Qwen-Image family GGUF from ``img_in.weight``, or None."""
+    try:
+        from gguf import GGUFReader
+        return _qwen_image_hidden_dim_from_tensors(GGUFReader(str(path)).tensors)
+    except Exception:
+        return None
+
+
+def gguf_qwen_image_hidden_dim_from_header(header: bytes) -> Optional[int]:
+    """Hidden size from the leading bytes of a Qwen-Image family GGUF, or None.
+
+    Same header-only contract as ``gguf_flux2_inner_dim_from_header``: selection-time preflight
+    without downloading the checkpoint. None on anything unreadable or an absent probe tensor.
+    """
+    tensors = _gguf_header_tensors(header)
+    return _qwen_image_hidden_dim_from_tensors(tensors) if tensors is not None else None
+
+
+def qwen_image_mismatch_reason(
+    gguf_name: str, base_repo: str, got: Optional[int], want: Optional[int]
+) -> Optional[str]:
+    """Why this Qwen-Image GGUF cannot load against this base, or None when they agree.
+
+    One message for plan, pre-eviction, and loader backstop. Fails open on unknowns."""
+    if want is None or got is None or want == got:
+        return None
+    return (
+        f"'{gguf_name}' is a "
+        f"{_QWEN_IMAGE_HIDDEN_DIMS.get(got, f'Qwen-Image variant with hidden {got}')} "
+        f"checkpoint, but it is being loaded against '{base_repo}', which is "
+        f"{_QWEN_IMAGE_HIDDEN_DIMS.get(want, f'hidden {want}')}. Studio resolved the wrong "
+        f"Qwen-Image family for this GGUF (1.x expects hidden 3072; 2.1 expects 4096). Pick the "
+        f"matching model, or upgrade Studio so ``qwen-image-2.1`` is detected for 2.1 GGUFs."
+    )
+
+
+def assert_qwen_image_gguf_matches_base(fam, base_repo: str, gguf_path) -> None:
+    """Fail early when a Qwen-Image GGUF's ``img_in`` hidden size disagrees with the base config.
+
+    Without this the mismatch surfaces from Diffusers as
+    ``img_in.weight has an expected shape of: torch.Size([3072, 64]), but the loaded GGUF weight
+    decodes to shape: (4096, 64)``. Fail-open on unreadable files, non-Qwen-Image families, or
+    unmapped bases. Loader backstop after the range-read preflight in ``diffusion_compat``."""
+    if gguf_path is None or not str(getattr(fam, "name", "")).startswith("qwen-image"):
+        return
+    want = qwen_image_base_hidden_dim(base_repo)
+    if want is None:
+        return
+    reason = qwen_image_mismatch_reason(
+        Path(str(gguf_path)).name, base_repo, gguf_qwen_image_hidden_dim(gguf_path), want
     )
     if reason is not None:
         raise ValueError(reason)
