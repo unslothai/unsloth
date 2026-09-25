@@ -528,3 +528,31 @@ def test_a_bare_name_bound_to_a_model_helper_is_not_the_torch_op(tmp_path):
     model = mods.OwnHelperForCausalLM()
     ns["apply_accepts_loss_kwargs_fix"](model)
     assert not hasattr(model, "accepts_loss_kwargs")
+
+
+_LOCAL_HELPER_MODEL = """
+import torch
+from torch import nn
+
+
+class LocalHelperForCausalLM(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.model = nn.Identity()
+
+    def summed_loss(self, logits, labels):
+        return torch.nn.functional.cross_entropy(logits, labels, reduction="sum")
+
+    def forward(self, input_ids=None, labels=None, **kwargs):
+        cross_entropy = self.summed_loss
+        logits = torch.zeros(1, 2)
+        return cross_entropy(logits, labels)
+"""
+
+
+def test_a_bare_name_bound_inside_forward_is_not_the_torch_op(tmp_path):
+    ns = _load()
+    mods = _models(tmp_path, _LOCAL_HELPER_MODEL, "local_helper_for_ga_test")
+    model = mods.LocalHelperForCausalLM()
+    ns["apply_accepts_loss_kwargs_fix"](model)
+    assert not hasattr(model, "accepts_loss_kwargs")

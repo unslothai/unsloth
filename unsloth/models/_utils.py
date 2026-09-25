@@ -4124,8 +4124,8 @@ def _scan_ce_calls(source, namespace = None):
         else:
             name = getattr(func, "id", None)
             # A bare name counts only if the forward's module binds it to the PyTorch op.
-            if namespace is not None and name in _TORCH_CE and name in namespace:
-                if namespace[name] is not _TORCH_CE[name]:
+            if namespace is not None and name in _TORCH_CE:
+                if namespace.get(name) is not _TORCH_CE[name]:
                     continue
         params = _CE_PARAMS.get(name)
         if params is None:
