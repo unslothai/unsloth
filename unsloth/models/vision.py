@@ -348,6 +348,61 @@ def _lift_endpoint_hooks_onto_adapters(model):
     return lifted
 
 
+_MODALITY_SUB_CONFIGS = (
+    "vision_config",
+    "audio_config",
+    "speech_config",
+    "sound_config",
+    "vision_encoder_config",
+    "audio_encoder_config",
+    "encoder_config",
+)
+
+
+def _align_root_hook_with_input_embeddings(model):
+    """Point the root dispatch hook at the input embedding's device (remote text models only).
+    accelerate picks the first mapped device, so remote code building its mask there mismatches;
+    vision/audio towers are skipped since the hook moves every input to the text card."""
+    if "transformers_modules" not in (getattr(type(model), "__module__", "") or ""):
+        return None
+    config = getattr(model, "config", None)
+    # Omni configs nest the towers one level down (thinker_config.vision_config).
+    nested = [config] + [getattr(config, name, None) for name in ("thinker_config",)]
+    if any(
+        getattr(sub, name, None) is not None
+        for sub in nested
+        if sub is not None
+        for name in _MODALITY_SUB_CONFIGS
+    ):
+        return None
+    device_map = getattr(model, "hf_device_map", None)
+    if not device_map or len(set(device_map.values())) < 2:
+        return None
+    hook = getattr(model, "_hf_hook", None)
+    current = getattr(hook, "execution_device", None)
+    if current is None:
+        return None
+    try:
+        embedding = model.get_input_embeddings()
+    except Exception:
+        return None
+    weight = getattr(embedding, "weight", None)
+    target = getattr(weight, "device", None)
+    if target is None or target.type in ("cpu", "meta") or target.index is None:
+        return None
+    if isinstance(current, int):
+        current = torch.device(target.type, current)
+    else:
+        try:
+            current = torch.device(current)
+        except (TypeError, RuntimeError):
+            return None
+    if current == target:
+        return None
+    hook.execution_device = target
+    return target
+
+
 def _attach_bnb_multidevice_hooks(
     model, load_in_4bit, load_in_8bit, offload_embedding, fast_inference
 ):
@@ -1557,7 +1612,18 @@ class FastBaseModel:
         if text_only and hasattr(auto_config, "vision_config"):
             parent_config = auto_config
             text_config = _get_text_only_config(parent_config, model_name)
-            text_class = resolve_model_class(AutoModelForCausalLM, text_config)
+            text_class = resolve_model_class(
+                AutoModelForCausalLM,
+                text_config,
+                revision = _revision,
+                code_revision = kwargs.get("code_revision"),
+                token = token,
+                cache_dir = kwargs.get("cache_dir"),
+                proxies = kwargs.get("proxies"),
+                local_files_only = local_files_only,
+                force_download = kwargs.get("force_download", None),
+                trust_remote_code = trust_remote_code,
+            )
             if text_class is not None and _is_family_text_decoder(
                 getattr(parent_config, "model_type", ""),
                 getattr(text_config, "model_type", ""),
@@ -1733,7 +1799,18 @@ class FastBaseModel:
             local_files_only = local_files_only,
             **{k: kwargs.get(k, None) for k in _REMOTE_CLASS_HUB_OPTIONS},
         )
-        model_class = resolve_model_class(auto_model, auto_config)
+        model_class = _remote_class or resolve_model_class(
+            auto_model,
+            auto_config,
+            revision = _revision,
+            code_revision = kwargs.get("code_revision"),
+            token = token,
+            cache_dir = kwargs.get("cache_dir"),
+            proxies = kwargs.get("proxies"),
+            local_files_only = local_files_only,
+            force_download = kwargs.get("force_download", None),
+            trust_remote_code = trust_remote_code,
+        )
         # Forced float32 loads in bfloat16 then casts to float16. Resolved here, not at the load, because attention resolution and the device-map planner both size the same dtype.
         torch_dtype = dtype
         if do_forced_float32:
@@ -2064,6 +2141,12 @@ class FastBaseModel:
                     offload_embedding = offload_embedding,
                     fast_inference = fast_inference,
                 )
+                _aligned_root_device = _align_root_hook_with_input_embeddings(model)
+                if _aligned_root_device is not None:
+                    logger.info(
+                        f"Unsloth: inputs now go straight to {_aligned_root_device}, where the input "
+                        "embedding lives, instead of through the first device in the map."
+                    )
                 # Re-apply block-fp8 weight_scale_inv tensors transformers dropped on load (#6200).
                 _restore_dropped_fp8_scales(
                     model,
@@ -2624,6 +2707,8 @@ class FastBaseModel:
             )
         _raise_if_fast_inference_modules_to_save(model, modules_to_save)
 
+        # Only a regex generated here may be widened to expert submodules below.
+        _target_modules_auto_regex = False
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
                 model,
@@ -2633,6 +2718,7 @@ class FastBaseModel:
                 finetune_mlp_modules = finetune_mlp_modules,
                 **_audio_kwargs,
             )
+            _target_modules_auto_regex = True
         else:
             assert type(target_modules) in (list, tuple, str)
             # Route an explicit list through get_peft_regex when the caller scoped a layer family or opted into audio, so the new audio/embedder branches are considered. finetune_audio_layers is a POSITIVE term: negating it would force every explicit list through the filter.
@@ -2658,6 +2744,7 @@ class FastBaseModel:
                     target_modules = list(target_modules),
                     **_audio_kwargs,
                 )
+                _target_modules_auto_regex = True
 
         if hasattr(model, "vllm_engine"):
             if (
@@ -2694,6 +2781,21 @@ class FastBaseModel:
             finetune_mlp_modules = finetune_mlp_modules,
             finetune_language_layers = finetune_language_layers,
         )
+
+        # Widen to per-expert submodules before expert detection; never for vision-only.
+        target_modules, _moe_module_detect, _expert_submodule_leaves = (
+            widen_target_regex_to_expert_submodules(
+                model,
+                target_modules,
+                _moe_module_detect,
+                auto_regex = _target_modules_auto_regex and bool(finetune_language_layers),
+            )
+        )
+        if _expert_submodule_leaves:
+            print(
+                f"Unsloth: Detected MoE model with per-expert submodules. "
+                f"Enabling LoRA on expert projections {_expert_submodule_leaves}."
+            )
 
         # Per-expert Linear layouts (gpt-oss bnb-4bit) target experts via target_modules, not fused Parameters. Extend either form PEFT accepts: a leaf list, or a regex string.
         _moe_module_targets = get_moe_target_modules(model, _moe_module_detect)
