@@ -273,7 +273,9 @@ try {
         $n.Name -eq "Invoke-StudioEarlyPythonScript"
     }, $true))[0].Extent.Text
     Check "the launcher runs every probe with -S as well as -I" (
-        $launcherFn -match '@\("-I",\s*"-S",\s*"-c"')
+        $launcherFn -match '@\("-I",\s*"-S",\s*"-B",\s*"-c"')
+    # -B as well: these probes run before the install lock, so they must leave no .pyc behind.
+    Check "and with -B, so a pre-lock probe writes no bytecode" ($launcherFn -match '"-B"')
     # A miss recorded before $VenvDir existed (the --tauri path) is probed again once it does.
     $venvHome = Join-Path $tmp "venvhome"
     $venvBin = if ($IsWindows -or $env:OS -eq "Windows_NT") { "Scripts" } else { "bin" }
