@@ -216,7 +216,9 @@ def test_the_poller_abandons_a_read_at_the_frontend_timeout_and_measures_the_sta
     assert len(stalls) == 1 and stalls[0] >= 200, stalls
     # Mixed history: two runs of abandoned reads separated by a good read.
     poller.polls = [(0.0, 50.0, True), (0.06, 50.0, True), (0.2, 5.0, False), (0.3, 50.0, True)]
-    assert [round(x) for x in poller.stalls_ms()] == [110, 50]
+    # A run ends when the read that answered after it completes, not at the
+    # last timeout: the route was unresponsive until that reply arrived.
+    assert [round(x) for x in poller.stalls_ms()] == [205, 50]
 
 
 def test_an_empty_bootstrap_file_means_rotated(tmp_path, monkeypatch):
@@ -2196,6 +2198,18 @@ function Get-WinEvent { param($FilterHashtable, $ErrorAction)
   [pscustomobject]@{ Id = 3000 } }
 $got = @(Read-SettledCiEvents ([datetime]::UtcNow) @(3076, 3077))
 if ($got.Count -ne 3) { Write-Host "got $($got.Count) after $global:reads reads"; exit 41 }
+# A record that lands more than one interval late: two equal empty reads 3 s
+# apart are not settled, so polling runs at least the 30 s floor.
+$global:slept = 0
+function Start-Sleep { param([int]$Seconds) $global:slept += $Seconds }
+$global:reads = 0; $global:script = @('none', 'none', 'none', 'none', 'none', 1)
+$got = @(Read-SettledCiEvents ([datetime]::UtcNow) @(3076, 3077))
+if ($got.Count -ne 1) { Write-Host "late record missed: got $($got.Count) after $global:reads reads"; exit 44 }
+if ($global:slept -lt 30) { Write-Host "settled after only $global:slept s"; exit 45 }
+# Still bounded by default when the channel keeps growing.
+$global:reads = 0; $global:slept = 0; $global:script = @(1..100)
+[void](Read-SettledCiEvents ([datetime]::UtcNow) @(3076))
+if ($global:reads -gt 25 -or $global:slept -gt 75) { exit 46 }
 # Bounded: a channel that never stops growing still returns.
 $global:reads = 0; $global:script = @(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
 $got = @(Read-SettledCiEvents ([datetime]::UtcNow) @(3076) -Attempts 5)
@@ -2329,3 +2343,91 @@ if ((Resolve-StudioHomeFor $d) -ne 'D:\custom-home') { exit 72 }
 exit 0
 """
     _drive_probe(tmp_path, body, ["Resolve-StudioHomeFor"])
+
+
+def test_a_stall_is_measured_through_the_read_that_ended_it():
+    """Seven abandoned 10 s reads and a reply 6 s into the next one is a 76 s
+    stall, past the watchdog's ~75 s budget. Ending the run at the last
+    timeout recorded 70 s and over_75s missed it."""
+    s = _load_scenario()
+    poller = s.StatusPoller("http://127.0.0.1:1", "t")
+    poller.polls = [(10.0 * i, 10_000.0, True) for i in range(7)] + [(70.0, 6_000.0, False)]
+    assert [round(x) for x in poller.stalls_ms()] == [76_000]
+
+
+def test_the_tool_error_prefixes_mirror_the_backend_set():
+    """The loop reports a failed tool with any of the backend's error prefixes
+    ("Search failed", "Execution error", "Blocked:", ...), not only "Error:".
+    The script runs without the backend on its path, so it keeps a copy, and
+    this holds the copy equal to the source."""
+    import ast
+
+    s = _load_scenario()
+    parser = REPO_ROOT / "studio" / "backend" / "core" / "inference" / "tool_call_parser.py"
+    tree = ast.parse(parser.read_text(encoding = "utf-8"))
+    backend = next(
+        ast.literal_eval(node.value)
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(getattr(t, "id", None) == "TOOL_ERROR_PREFIXES" for t in node.targets)
+    )
+    assert tuple(s.TOOL_ERROR_PREFIXES) == tuple(backend)
+    for prefix in backend:
+        assert s.tool_end_failure(prefix + " something went wrong") is not None, prefix
+    for result in (
+        "Search failed: HTTP 429",
+        "Execution error: NameError",
+        "Blocked: the sandbox refused this path",
+        "Failed to fetch https://example.com",
+    ):
+        assert s.tool_end_failure(result) is not None, result
+
+
+def test_an_expired_session_is_renewed_with_the_refresh_token(tmp_path, monkeypatch):
+    """Studio's access token lasts 60 minutes and a scenario can outlive it;
+    the refresh token login returns is exchanged once (it is single use) and
+    the call is made again, for plain requests, streams and the poller."""
+    s = _load_scenario()
+    live = {"access": "a1", "refresh": "r1"}
+    refreshes: list[str] = []
+
+    def once(base_url, method, path, payload, token, timeout):
+        if path == "/api/auth/login":
+            return 200, {"access_token": "a1", "refresh_token": "r1"}
+        if path == "/api/auth/refresh":
+            refreshes.append(payload["refresh_token"])
+            if payload["refresh_token"] != live["refresh"]:
+                return 401, "Invalid or expired refresh token"
+            n = len(refreshes) + 1
+            live.update(access = f"a{n}", refresh = f"r{n}")
+            return 200, {"access_token": f"a{n}", "refresh_token": f"r{n}"}
+        return (200, {"ok": token}) if token == live["access"] else (401, "expired")
+
+    monkeypatch.setattr(s, "_request_once", once)
+    creds = s.authenticate("http://x", tmp_path, "pw")
+    assert isinstance(creds, s.Credentials) and creds.refresh == "r1"
+    assert s._request("http://x", "GET", "/api/inference/status", token = creds) == (
+        200,
+        {"ok": "a1"},
+    )
+    live["access"] = "expired-by-server"  # the 60 minutes are up
+    assert s._request("http://x", "GET", "/api/inference/status", token = creds) == (
+        200,
+        {"ok": "a2"},
+    )
+    assert refreshes == ["r1"] and creds.refresh == "r2"
+    # A caller still holding the replaced token does not spend the new refresh.
+    assert creds.renew("http://x", "a1") is True and refreshes == ["r1"]
+
+    streamed: list[str] = []
+
+    def stream_once(base_url, path, payload, token, timeout):
+        streamed.append(token)
+        return (200, [], None) if token == live["access"] else (401, [], "expired")
+
+    monkeypatch.setattr(s, "_stream_events_once", stream_once)
+    live["access"] = "expired-again"
+    assert s._stream_events("http://x", "/v1/chat/completions", {}, creds)[0] == 200
+    assert streamed == ["a2", "a3"] and refreshes == ["r1", "r2"]
+    # A plain string token (no refresh) keeps the old single-call behaviour.
+    assert s._request("http://x", "GET", "/api/inference/status", token = "stale")[0] == 401

@@ -1578,10 +1578,16 @@ function Invoke-Run {
 # its channel asynchronously (the positive control and the CI verdict poll for
 # the same reason), so one snapshot taken soon after run can miss the last
 # records and grade an empty window as an allow. Re-read until two reads a few
-# seconds apart agree, bounded. "Nothing matched" is an empty read; any other
+# seconds apart agree AND at least MinSettleSeconds of polling have passed: a
+# record that lands more than one interval late would otherwise be missed by
+# two equal early reads. The floor matches the ~30 s the positive control
+# allows for its own event. Bounded by Attempts either way. Elapsed time is
+# the sum of the sleeps taken (Start-Sleep never returns early), so the floor
+# holds without reading a clock. "Nothing matched" is an empty read; any other
 # failure propagates, because an unreadable channel is not an empty one.
-function Read-SettledCiEvents([datetime] $Start, [int[]] $Ids, [int] $Attempts = 10, [int] $IntervalSeconds = 3) {
+function Read-SettledCiEvents([datetime] $Start, [int[]] $Ids, [int] $Attempts = 20, [int] $IntervalSeconds = 3, [int] $MinSettleSeconds = 30) {
     $previous = -1
+    $waited = 0
     $events = @()
     foreach ($attempt in 1..$Attempts) {
         $events = @()
@@ -1593,9 +1599,12 @@ function Read-SettledCiEvents([datetime] $Start, [int[]] $Ids, [int] $Attempts =
         } catch {
             if ($_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') { throw }
         }
-        if ($events.Count -eq $previous) { break }
+        if ($events.Count -eq $previous -and $waited -ge $MinSettleSeconds) { break }
         $previous = $events.Count
-        if ($attempt -lt $Attempts) { Start-Sleep -Seconds $IntervalSeconds }
+        if ($attempt -lt $Attempts) {
+            Start-Sleep -Seconds $IntervalSeconds
+            $waited += $IntervalSeconds
+        }
     }
     return $events
 }

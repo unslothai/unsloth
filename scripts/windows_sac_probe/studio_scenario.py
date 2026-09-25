@@ -90,13 +90,71 @@ class Timed:
 TIMED = Timed()
 
 
+class Credentials:
+    """The session login returned, renewed when the access token expires.
+
+    Studio's access token lasts 60 minutes (auth/authentication.py) and a slow
+    download plus three streamed turns can outlast it; every later call would
+    then be a 401 and the status poller would time 401s instead of the route.
+    /api/auth/refresh swaps the refresh token for a new pair and consumes it
+    (single use), so renewal is serialized and a caller holding an access token
+    that another thread already replaced just picks up the new one.
+    """
+
+    def __init__(
+        self,
+        access: str,
+        refresh: Optional[str] = None,
+    ) -> None:
+        self.access = access
+        self.refresh = refresh
+        self._lock = threading.Lock()
+
+    def renew(self, base_url: str, stale: str) -> bool:
+        """Replace `stale`; True when a fresh access token is now held."""
+        with self._lock:
+            if self.access != stale:
+                return True
+            if not self.refresh:
+                return False
+            status, body = _request_once(
+                base_url, "POST", "/api/auth/refresh", {"refresh_token": self.refresh}, None, 30
+            )
+            if status != 200 or not isinstance(body, dict) or not body.get("access_token"):
+                self.refresh = None
+                return False
+            self.access = body["access_token"]
+            self.refresh = body.get("refresh_token")
+            return True
+
+
+def _bearer(token: Any) -> Optional[str]:
+    return token.access if isinstance(token, Credentials) else token
+
+
 def _request(
     base_url: str,
     method: str,
     path: str,
     payload: Optional[dict] = None,
-    token: Optional[str] = None,
+    token: Any = None,
     timeout: int = 900,
+) -> tuple[int, Any]:
+    """One call; an expired session is renewed and the call made once more."""
+    bearer = _bearer(token)
+    status, body = _request_once(base_url, method, path, payload, bearer, timeout)
+    if status == 401 and isinstance(token, Credentials) and token.renew(base_url, bearer):
+        status, body = _request_once(base_url, method, path, payload, token.access, timeout)
+    return status, body
+
+
+def _request_once(
+    base_url: str,
+    method: str,
+    path: str,
+    payload: Optional[dict],
+    token: Optional[str],
+    timeout: float,
 ) -> tuple[int, Any]:
     headers = {"Content-Type": "application/json"}
     if token:
@@ -147,15 +205,26 @@ def _stream_events(
     base_url: str,
     path: str,
     payload: dict,
-    token: Optional[str],
+    token: Any,
     timeout: int = 900,
 ) -> tuple[int, list[dict], Optional[str]]:
     """POST a streaming request and return every parsed `data:` object.
 
     Tool execution is visible only here: the non-streaming route drains the
     tool loop and returns the final text alone, so a turn that never ran a
-    tool is indistinguishable from one that did.
+    tool is indistinguishable from one that did. An expired session is a 401
+    before any event, so it is renewed and the turn sent once more.
     """
+    bearer = _bearer(token)
+    result = _stream_events_once(base_url, path, payload, bearer, timeout)
+    if result[0] == 401 and isinstance(token, Credentials) and token.renew(base_url, bearer):
+        result = _stream_events_once(base_url, path, payload, token.access, timeout)
+    return result
+
+
+def _stream_events_once(
+    base_url: str, path: str, payload: dict, token: Optional[str], timeout: int
+) -> tuple[int, list[dict], Optional[str]]:
     headers = {
         "Content-Type": "application/json",
         "Accept": "text/event-stream",
@@ -260,7 +329,7 @@ def resolve_studio_home(value: str) -> Path:
         return home
 
 
-def authenticate(base_url: str, home: Path, password: Optional[str]) -> str:
+def authenticate(base_url: str, home: Path, password: Optional[str]) -> Credentials:
     """Log in, rotating the bootstrap credential when this home has never been used.
 
     Studio deletes auth/.bootstrap_password once it has been rotated, so on a
@@ -297,6 +366,7 @@ def authenticate(base_url: str, home: Path, password: Optional[str]) -> str:
     if status != 200:
         raise SystemExit(f"login failed ({status}): {str(body)[:300]}")
     token = body["access_token"]
+    refresh = body.get("refresh_token")
 
     if rotate:
         status, body = _request(
@@ -309,8 +379,9 @@ def authenticate(base_url: str, home: Path, password: Optional[str]) -> str:
         if status != 200:
             raise SystemExit(f"password rotation failed ({status}): {str(body)[:300]}")
         token = body["access_token"]
+        refresh = body.get("refresh_token")
         print("  rotated the bootstrap password to the one given with --password")
-    return token
+    return Credentials(token, refresh)
 
 
 # The frontend's numbers (studio/frontend/src/features/loaded-models): a tick
@@ -328,7 +399,7 @@ class StatusPoller(threading.Thread):
     def __init__(
         self,
         base_url: str,
-        token: str,
+        token: Any,
         interval: float = STATUS_INTERVAL_S,
         read_timeout: float = STATUS_READ_TIMEOUT_S,
     ) -> None:
@@ -371,7 +442,14 @@ class StatusPoller(threading.Thread):
             self._stop_event.wait(max(0.0, self.interval - elapsed))
 
     def stalls_ms(self) -> list[float]:
-        """Length of each run of consecutive abandoned reads, first start to last end."""
+        """Length of each run of consecutive abandoned reads.
+
+        From the first abandoned read's start to the end of the read that
+        answered after it, since the route was unresponsive until then: seven
+        10 s timeouts and a reply 6 s into the next read is a 76 s stall, over
+        the watchdog's budget, not 70 s. A run still going when polling
+        stopped ends at its last abandoned read.
+        """
         runs: list[float] = []
         run_start: Optional[float] = None
         run_end = 0.0
@@ -380,7 +458,7 @@ class StatusPoller(threading.Thread):
                 run_start = start if run_start is None else run_start
                 run_end = start + ms / 1000.0
             elif run_start is not None:
-                runs.append((run_end - run_start) * 1000.0)
+                runs.append((start + ms / 1000.0 - run_start) * 1000.0)
                 run_start = None
         if run_start is not None:
             runs.append((run_end - run_start) * 1000.0)
@@ -402,6 +480,22 @@ TOOL_REJECTED_MESSAGE = "The user declined to run this tool call."
 # disabled, truncated by the provider, cancelled, duplicate) with a result
 # that starts one of these ways.
 TOOL_NOT_RUN_PREFIXES = ("Unsloth did not ", "Unsloth stopped this tool call")
+# A tool that ran and failed. Mirrors TOOL_ERROR_PREFIXES in
+# studio/backend/core/inference/tool_call_parser.py, which the loop uses to
+# tell a failed call from a result; copied rather than imported because this
+# script runs under any Python with no backend on its path. A test holds the
+# two equal.
+TOOL_ERROR_PREFIXES = (
+    "Error:",
+    "Error ",
+    "Search failed",
+    "Execution error",
+    "Blocked:",
+    "Exit code",
+    "Failed to fetch",
+    "Failed to resolve",
+    "No query provided",
+)
 
 
 def tool_end_failure(result: Any) -> Optional[str]:
@@ -411,14 +505,14 @@ def tool_end_failure(result: Any) -> Optional[str]:
     text = result.strip()
     if text == TOOL_REJECTED_MESSAGE:
         return "declined before running"
-    if text.startswith("Error:") or text.startswith(TOOL_NOT_RUN_PREFIXES):
+    if text.startswith(TOOL_ERROR_PREFIXES) or text.startswith(TOOL_NOT_RUN_PREFIXES):
         return text[:160]
     return None
 
 
 def chat(
     base_url: str,
-    token: str,
+    token: Any,
     model: str,
     prompt: str,
     *,
