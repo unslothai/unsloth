@@ -168,6 +168,7 @@ from .diffusion_step_skip import (
     install_static_step_skip,
     mark_step_end,
     reset_static_step_skip,
+    static_skip_owner,
     static_skip_stats,
     uninstall_static_step_skip,
 )
@@ -7492,6 +7493,7 @@ class DiffusionBackend:
                                 denoise_steps,
                                 step_signal = "callback_on_step_end" in chunk_kwargs,
                                 keep_stats = static_chunks_run > 0,
+                                owner = current_account_id(),
                             )
                             static_chunks_run += 1
                             static_skip_pipe = state.pipe
@@ -7793,6 +7795,11 @@ class DiffusionBackend:
         self._state = None
         del state
         clear_gpu_cache()
+
+    def static_skip_owner(self) -> Optional[str]:
+        """Account whose generation produced ``transformer_cache_stats``; never part of status()."""
+        state = self._state
+        return static_skip_owner(state.pipe) if state is not None else None
 
     def status(self) -> dict[str, Any]:
         state = self._state
