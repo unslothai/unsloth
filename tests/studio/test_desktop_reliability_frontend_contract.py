@@ -841,7 +841,8 @@ def test_mac_chat_header_controls_share_the_titlebar_row():
         assert padding is not None and padding > 0, (name, values)
         assert header is not None and control is not None, (name, values)
         assert padding + control <= header, (name, padding, control, header)
-    assert "pt-[var(--studio-content-top-inset,0px)] md:flex-row" in source
+    # #11660 moved the chat split from md to lg, so tablets stack.
+    assert "pt-[var(--studio-content-top-inset,0px)] lg:flex-row" in source
     assert "absolute top-[var(--studio-content-top-inset,0px)]" in source
 
 
@@ -1052,6 +1053,17 @@ def _at_default_scale(source: str) -> str:
     resolved = _MIXED_TOKEN.sub(lambda m: _resolve_mix(resolved, m), resolved)
     resolved = _WHITE_ALPHA.sub(lambda m: _resolve_white_alpha(resolved, m), resolved)
     return _SCALED_AMOUNT.sub(lambda m: _resolve_amount(resolved, m), resolved)
+
+
+# The Create rail on Images and Audio at the default UI scale, as `_ui_source` reads it. Since
+# #11760 the width is the page's resizable --media-rail-width, falling back to the former 408px.
+RAIL_WIDTH = "@[50rem]:w-[min(var(--media-rail-width,408px),calc(100%-13rem))]"
+# The same class as written: `_ui_source` reads a bare 408px identically, so the scale is pinned raw.
+RAIL_WIDTH_SCALED = (
+    "@[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-13rem))]"
+)
+# The header's first column tracks the same variable, so the header divider stays on the rail's.
+HEADER_COLUMNS = "grid-cols-[minmax(0,var(--media-rail-width,408px))_minmax(13rem,1fr)]"
 
 
 def _ui_source(path) -> str:
@@ -2359,16 +2371,20 @@ def test_image_page_structural_panes_share_the_container_breakpoint():
 
     assert "@container" in shell
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in section
-    assert "@[50rem]:w-[408px]" in section
+    # 408px at the default scale, clamped since #11648 so the canvas keeps the 13rem its header column
+    # reserves (`minmax(13rem,1fr)`) when the scaled rail would otherwise eat it.
+    assert RAIL_WIDTH in section
+    assert RAIL_WIDTH_SCALED in IMAGES_PAGE.read_text(encoding = "utf-8"), "the rail stopped scaling"
     assert "md:flex-row" not in section
     # pb-6, not the old pb-20: the action is an in-flow footer now, so the rail no longer
     # reserves 80px for an overlay to sit in. The crossfade into that footer is the
     # -action mask, which is why the two are asserted together -- the small padding is
     # only correct while the fade is there to dissolve the last control into the footer.
     assert "panel-scroll-fade-action" in section
-    assert "gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto" in section
+    # max-sm:px-5 since #11660: a phone gives the controls the 40px the gutter took.
+    assert "gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto" in section
     assert "p-6 px-10 @[50rem]:pt-[60px]" in section
-    assert "border-t border-foreground/10 px-10 py-3" in section
+    assert "border-t border-foreground/10 px-10 max-sm:px-5 py-3" in section
 
 
 def test_audio_page_matches_the_image_rail_header_and_action_footer():
@@ -2379,7 +2395,7 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     header = header_opening + after.split("Below 50rem", 1)[0]
     layout = source.split("Below 50rem", 1)[1]
 
-    assert "grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]" in header_opening
+    assert HEADER_COLUMNS in header_opening
     assert "pointer-events-none" in header_opening
     assert "relative" in header_opening
     assert "z-40" in header_opening
@@ -2396,9 +2412,10 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert "absolute" not in header.split("<PillTabs", 1)[0]
 
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
-    assert "@[50rem]:w-[408px]" in layout
+    assert RAIL_WIDTH in layout
+    assert RAIL_WIDTH_SCALED in AUDIO_PAGE.read_text(encoding = "utf-8"), "the rail stopped scaling"
     assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
-    assert "gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto" in layout
+    assert "gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto" in layout
     assert 'mode === "speak"' in layout
     assert '"panel-scroll-fade-action"' in layout
     assert '"panel-scroll-fade"' in layout
@@ -2408,12 +2425,67 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert layout.count("p-6 px-10 @[50rem]:pt-[60px]") == 2
 
 
+# The Train scroller's classes other than its two right-padding steps. See
+# test_image_train_rail_matches_create_and_header for why they are pinned.
+TRAIN_SCROLLER_LAYOUT = (
+    "flex",
+    "min-h-0",
+    "w-full",
+    "min-w-0",
+    "flex-1",
+    "flex-col",
+    "overflow-y-auto",
+    "overflow-x-hidden",
+    "@[50rem]:flex-row",
+    "@[50rem]:overflow-hidden",
+)
+
+
 def test_image_train_rail_matches_create_and_header():
     source = _ui_source(DIFFUSION_TRAIN_PANEL)
     layout = source.split("overflow-x-hidden: an unset overflow-x", 1)[1]
 
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
-    assert "pl-10 @[50rem]:w-[408px]" in layout
+    # The Create rail's width and clamp, so switching Create and Train keeps the divider still. The
+    # Train rail sits inside a scroller with right padding, so its 100% is that padding narrower
+    # than Create's and the clamp adds exactly that padding back (#11765). Read both numbers rather
+    # than pin either: the divider only lines up while they are the same spacing step.
+    # A spacing step as Tailwind v4 spells it: a multiple of 0.25 written canonically. `8.0` or
+    # `08` still render inside --spacing() but emit no pr- rule, so the two would stop agreeing.
+    step = r"(?:0|[1-9]\d*)(?:\.(?:25|5|75))?"
+    rail = re.search(
+        r"(?<=[\s\"])pl-10 max-sm:pl-5 @\[50rem\]:w-\[min\(var\(--media-rail-width,408px\),"
+        rf"calc\(100%-13rem\+--spacing\(({step})\)\)\)\](?=[\s\"])",
+        layout,
+    )
+    assert rail, "the Train rail no longer uses the Create rail's width variable and clamp"
+    classes = re.search(r'className="([^"]*overflow-y-auto overflow-x-hidden[^"]*)"', layout)
+    assert classes, "the Train scroller moved; the rail clamp depends on its padding"
+    # The class list is all that sets the scroller's padding: an inline style, a spread or any
+    # other attribute on the tag could set padding the list below never sees, so none is allowed.
+    opening = layout[layout.rfind("<", 0, classes.start()) : classes.start()]
+    assert re.fullmatch(r"<div\s+", opening) and re.match(r"\s*>", layout[classes.end() :]), (
+        "the Train scroller's opening tag carries more than its className, which could override "
+        "the right padding the rail clamp adds back"
+    )
+    # Every other class on the scroller is pinned. Anything that narrows or re-boxes it (padding
+    # under any variant or spelling, a border, box-content, an arbitrary property, !important)
+    # changes what the rail's 100% measures, and no pattern list has kept up with Tailwind's
+    # spellings. A change here is a prompt to re-check the clamp, then update this set. Only the
+    # two right-padding steps move freely, and the sm: one is held to the clamp below.
+    tokens = classes.group(1).split()
+    below = [t for t in tokens if re.fullmatch(rf"pr-{step}", t)]
+    at_rail = [t for t in tokens if re.fullmatch(rf"sm:pr-{step}", t)]
+    rest = sorted(t for t in tokens if t not in below and t not in at_rail)
+    assert len(below) == 1 and rest == sorted(TRAIN_SCROLLER_LAYOUT), (
+        f"the Train scroller's classes changed ({classes.group(1)}); the rail clamp adds back only "
+        f"its sm: right padding, so re-check the clamp before updating TRAIN_SCROLLER_LAYOUT"
+    )
+    assert len(at_rail) == 1, f"expected one sm: right padding on the Train scroller, got {at_rail}"
+    assert rail.group(1) == at_rail[0].removeprefix("sm:pr-"), (
+        f"the Train rail adds back --spacing({rail.group(1)}) but its scroller pads "
+        f"{at_rail[0]}, so the divider no longer lines up with Create's"
+    )
     assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
     assert "@container hover-scrollbar" in layout
     assert "@[50rem]:pt-[42px]" in layout
@@ -2481,7 +2553,7 @@ def test_images_header_tracks_preview_and_preserves_titlebar_controls():
     )
 
     assert "const { isMobile, pinned } = useSidebar();" in source
-    assert "grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]" in opening
+    assert HEADER_COLUMNS in opening
     assert "@[50rem]:border-r" in header
     assert "isMobile" in header and "pl-12" in header
     assert "!pinned && isTauri" in header
@@ -2550,10 +2622,11 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     (AUDIO_PAGE, "", "h", "34px", 1),
     (AUDIO_PAGE, "[&>button]:", "h", "34px", 1),
     (VIDEO_PAGE, "!", "h", "34px", 2),
-    # The chat page's 30px round controls, including the collapsed New Chat button. The
-    # header they sit in grows with the setting, so one left fixed shrinks against its own row.
+    # The chat page's 30px round controls, including the collapsed New Chat button and the
+    # save-temporary-chat button beside them. The header they sit in grows with the setting, so
+    # one left fixed shrinks against its own row.
     (CHAT_PAGE, "!", "size", "30px", 1),
-    (CHAT_PAGE, "", "size", "30px", 3),
+    (CHAT_PAGE, "", "size", "30px", 4),
 )
 
 # Where a class may begin: the start of the string it is written in, or the space after the
@@ -2673,3 +2746,20 @@ def test_the_lengths_these_contracts_measure_still_follow_the_ui_scale():
         assert not re.search(
             _CLASS_STARTS + re.escape(f"{variant}{utility}-[{length}]") + _CLASS_ENDS, source
         ), f"{path.name} has a bare {named}, which stays put while its text grows"
+
+
+def test_the_media_rail_fallback_is_the_width_hook_fallback():
+    """The 408px inside var(--media-rail-width,408px) is only what paints before the page sets the
+    variable; the hook's own fallback is what a first visit stores. They have to agree, or the
+    divider jumps on first paint. Each page that reads the variable also has to set it on the
+    element marked as the rail root, or every rail silently sits at the fallback."""
+    hook = (FRONTEND / "hooks/use-media-rail-width.ts").read_text(encoding = "utf-8")
+    for kind, page in (("images", IMAGES_PAGE), ("audio", AUDIO_PAGE)):
+        block = hook.split(f"  {kind}: createPanelWidthStore(", 1)[1].split("}),", 1)[0]
+        assert re.search(r"fallback: 408,", block), (kind, block)
+        source = page.read_text(encoding = "utf-8")
+        assert f'useMediaRailWidth("{kind}")' in source, page
+        # The attribute and the style that sets the variable sit on the same element.
+        root = source.split('{...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}', 1)
+        assert len(root) == 2, page
+        assert "style={railRootStyle}" in root[1].split(">", 1)[0], page

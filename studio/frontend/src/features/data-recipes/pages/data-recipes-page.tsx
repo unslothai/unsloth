@@ -221,7 +221,7 @@ function LearningRecipeCards({
   loadingTemplateId: string | null;
 }): ReactElement {
   return (
-    <div className="grid w-full gap-4 sm:grid-cols-2 xl:grid-cols-3">
+    <div className="grid w-full gap-4 sm:grid-cols-2 xl:grid-cols-3 4xl:grid-cols-4">
       {TEMPLATE_CARDS.map((template) => {
         const learningRecipe = template.learningRecipeId
           ? LEARNING_RECIPE_BY_ID.get(template.learningRecipeId)
@@ -272,7 +272,7 @@ function LearningRecipeCards({
                   {template.description}
                 </p>
               </div>
-              <div className="flex items-center gap-1 overflow-hidden whitespace-nowrap">
+              <div className="flex items-center gap-1 overflow-hidden whitespace-nowrap max-xl:flex-wrap max-xl:gap-y-1">
                 {isLoading ? (
                   <Badge variant="outline">Loading...</Badge>
                 ) : (
@@ -419,7 +419,7 @@ export function DataRecipesPage(): ReactElement {
 
   return (
     <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
-      <main className="mx-auto w-full max-w-7xl px-5 py-8 sm:px-9">
+      <main className="mx-auto w-full max-w-7xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] px-5 py-8 max-sm:px-4 sm:px-9">
         <GuidedTour {...tour.tourProps} />
         <div className="flex items-center justify-between gap-4">
           <div>
@@ -478,7 +478,7 @@ export function DataRecipesPage(): ReactElement {
                   workflows work.
                 </EmptyDescription>
               </EmptyHeader>
-              <EmptyContent className="max-w-6xl items-stretch">
+              <EmptyContent className="max-w-6xl 4xl:max-w-none items-stretch">
                 {/*<Button*/}
                 {/*  type="button"*/}
                 {/*  variant="secondary"*/}

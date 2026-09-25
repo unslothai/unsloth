@@ -1106,6 +1106,18 @@ def test_a_startup_that_raises_takes_its_marker_back(tmp_path, monkeypatch):
     assert run._OWN_STARTUP_MARKERS == []
 
 
+def test_the_real_run_server_takes_its_marker_back(tmp_path):
+    # Exercise the real decorator via run_server's empty-host rejection.
+    run.write_startup_marker()
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) != []
+
+    with pytest.raises(SystemExit):
+        run.run_server(host = "")
+
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) == []
+    assert run._OWN_STARTUP_MARKERS == []
+
+
 def test_a_startup_that_exits_takes_its_marker_back(tmp_path, monkeypatch):
     # SystemExit is a BaseException, and it is the one colab.py catches.
     run.write_startup_marker()
