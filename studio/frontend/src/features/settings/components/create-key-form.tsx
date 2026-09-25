@@ -51,7 +51,7 @@ export function CreateKeyForm({
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder={t("settings.apiKeys.tokenNamePlaceholder")}
-          className="h-9 min-w-[200px] flex-1 text-sm"
+          className="h-9 min-w-[calc(200px*var(--ui-space-scale,1))] flex-1 text-sm"
           aria-label={t("settings.apiKeys.newAccessTokenName")}
         />
         <div className="hub-tab-toggle inline-flex h-8 items-center rounded-full">
@@ -64,7 +64,7 @@ export function CreateKeyForm({
                 onClick={() => setExpiry(p.value)}
                 aria-pressed={active}
                 className={cn(
-                  "inline-flex h-8 items-center rounded-full px-3.5 text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  "inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                   active
                     ? "hub-tab-toggle-pill text-foreground"
                     : "text-muted-foreground hover:text-foreground",

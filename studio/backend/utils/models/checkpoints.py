@@ -3,12 +3,15 @@
 
 """Checkpoint scanning utilities for discovering training runs and checkpoints."""
 
+from __future__ import annotations
+
 import json
 import re
 import structlog
 from loggers import get_logger
 from pathlib import Path
 from typing import List, Optional, Tuple
+from hub.utils.hf_tokens import HfTokenArg
 from storage.studio_db import get_connection
 from utils.training_runs import (
     build_default_output_dir_name,
@@ -16,6 +19,7 @@ from utils.training_runs import (
     model_segment_from_default_output_dir_name,
 )
 from utils.paths import outputs_root, resolve_output_dir
+from utils.paths.storage_roots import own_entry, within_account
 
 logger = get_logger(__name__)
 
@@ -37,7 +41,7 @@ def _checkpoint_sort_key(checkpoint_path: Path) -> tuple[int, int, str]:
 
 
 def _infer_base_model_from_history(checkpoint_dir: Path) -> Optional[str]:
-    """Best-effort base-model lookup using persisted Studio run metadata."""
+    """Best-effort base-model lookup using persisted Unsloth run metadata."""
     checkpoint_name = checkpoint_dir.name
     resolved_checkpoint_dir = str(checkpoint_dir.resolve())
 
@@ -126,10 +130,10 @@ def _infer_base_model_from_history(checkpoint_dir: Path) -> Optional[str]:
 def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
     """Read loss from the last log_history entry of trainer_state.json, or None."""
     trainer_state = checkpoint_path / "trainer_state.json"
-    if not trainer_state.exists():
+    if not own_entry(trainer_state):
         return None
     try:
-        with open(trainer_state) as f:
+        with open(trainer_state, encoding = "utf-8-sig") as f:
             state = json.load(f)
         log_history = state.get("log_history", [])
         if log_history:
@@ -140,7 +144,7 @@ def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
 
 
 def scan_checkpoints(
-    outputs_dir: str = str(outputs_root()),
+    outputs_dir: str | None = None,
 ) -> List[Tuple[str, List[Tuple[str, str, Optional[float]]], dict]]:
     """Scan outputs folder for training runs and their checkpoints.
 
@@ -152,6 +156,8 @@ def scan_checkpoints(
         by numeric step descending; non-numbered checkpoint-* dirs keep the
         previous lexicographic directory order.
     """
+    if outputs_dir is None:
+        outputs_dir = str(outputs_root())
     models = []
     outputs_path = resolve_output_dir(outputs_dir)
 
@@ -163,29 +169,31 @@ def scan_checkpoints(
         for item in outputs_path.iterdir():
             if not item.is_dir():
                 continue
+            if not within_account(item):
+                continue
 
             config_file = item / "config.json"
             adapter_config = item / "adapter_config.json"
 
-            if not (config_file.exists() or adapter_config.exists()):
+            if not (own_entry(config_file) or own_entry(adapter_config)):
                 continue
 
             # Training metadata from adapter_config.json / config.json
             metadata: dict = {}
             try:
-                if adapter_config.exists():
-                    cfg = json.loads(adapter_config.read_text())
+                if own_entry(adapter_config):
+                    cfg = json.loads(adapter_config.read_text(encoding = "utf-8-sig"))
                     metadata["base_model"] = cfg.get("base_model_name_or_path")
                     metadata["peft_type"] = cfg.get("peft_type")
                     metadata["lora_rank"] = cfg.get("r")
-                elif config_file.exists():
-                    cfg = json.loads(config_file.read_text())
+                elif own_entry(config_file):
+                    cfg = json.loads(config_file.read_text(encoding = "utf-8-sig"))
                     metadata["base_model"] = cfg.get("_name_or_path")
 
                 # Detect BNB quantization from config.json
-                if config_file.exists():
+                if own_entry(config_file):
                     if "cfg" not in dir():
-                        cfg = json.loads(config_file.read_text())
+                        cfg = json.loads(config_file.read_text(encoding = "utf-8-sig"))
                     quant_cfg = cfg.get("quantization_config")
                     if (
                         isinstance(quant_cfg, dict)
@@ -221,9 +229,11 @@ def scan_checkpoints(
             for sub in item.iterdir():
                 if not sub.is_dir() or not sub.name.startswith("checkpoint-"):
                     continue
+                if not within_account(sub):
+                    continue
                 sub_config = sub / "config.json"
                 sub_adapter = sub / "adapter_config.json"
-                if sub_config.exists() or sub_adapter.exists():
+                if own_entry(sub_config) or own_entry(sub_adapter):
                     valid_checkpoints.append(sub)
 
             intermediate_checkpoints = []
@@ -248,7 +258,7 @@ def scan_checkpoints(
         # Sort by modification time (newest first)
         models.sort(key = lambda x: Path(x[1][0][1]).stat().st_mtime, reverse = True)
 
-        logger.info(f"Found {len(models)} training runs in {outputs_dir}")
+        logger.debug(f"Found {len(models)} training runs in {outputs_dir}")
         return models
 
     except Exception as e:
@@ -258,6 +268,57 @@ def scan_checkpoints(
 
 def _is_model_dir(path: Path) -> bool:
     return (path / "config.json").exists() or (path / "adapter_config.json").exists()
+
+
+def is_unquantized_full_model_dir(path: str | Path) -> bool:
+    model_dir = Path(path)
+    try:
+        if (model_dir / "adapter_config.json").exists():
+            return False
+        config = json.loads((model_dir / "config.json").read_text(encoding = "utf-8-sig"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(config, dict) and "quantization_config" not in config
+
+
+def _hub_model_config(repo_id: str, hf_token: HfTokenArg) -> Optional[dict]:
+    """config.json of a Hub model repo; None for an adapter repo or on any lookup failure."""
+    try:
+        from huggingface_hub import file_exists, hf_hub_download
+
+        # An adapter repo carries a base config.json too, so a remote LoRA would read as a full model.
+        if file_exists(repo_id, "adapter_config.json", token = hf_token):
+            return None
+        path = hf_hub_download(repo_id, "config.json", token = hf_token)
+        return json.loads(Path(path).read_text(encoding = "utf-8-sig"))
+    except Exception:
+        return None
+
+
+def is_unquantized_full_finetune(checkpoint_path: str, hf_token: HfTokenArg = None) -> bool:
+    """Whether a local or Hub checkpoint is an unquantized full model.
+
+    False when unsure, so the caller keeps the 4-bit load that used to fit."""
+    try:
+        is_local = Path(checkpoint_path).exists()
+    except OSError:
+        return False
+    if is_local:
+        return is_unquantized_full_model_dir(checkpoint_path)
+    config = _hub_model_config(checkpoint_path, hf_token)
+    return isinstance(config, dict) and "quantization_config" not in config
+
+
+def is_full_finetune_output(path: Optional[str]) -> bool:
+    if not path:
+        return False
+    try:
+        # Below 3.13 a symlink loop comes back as RuntimeError, not OSError, whatever
+        # `strict` says, and both callers run this outside any handler.
+        Path(path).resolve().relative_to(outputs_root().resolve())
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return is_unquantized_full_model_dir(path)
 
 
 def has_preview_model(output_dir: Optional[str]) -> bool:
@@ -298,7 +359,9 @@ def resolve_preview_checkpoint(run: str, checkpoint: Optional[str] = None) -> Pa
     return path
 
 
-def list_preview_targets(outputs_dir: str = str(outputs_root())) -> List[dict]:
+def list_preview_targets(outputs_dir: str | None = None) -> List[dict]:
+    if outputs_dir is None:
+        outputs_dir = str(outputs_root())
     targets: List[dict] = []
     for run_name, checkpoints, metadata in scan_checkpoints(outputs_dir):
         for display_name, path, loss in checkpoints:

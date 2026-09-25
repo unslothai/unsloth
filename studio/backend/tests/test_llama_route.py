@@ -100,6 +100,70 @@ def test_status_response_exposes_update_size_bytes():
     assert rl.LlamaUpdateStatusResponse(**without).model_dump()["update_size_bytes"] is None
 
 
+def test_status_response_exposes_update_component():
+    model = rl.LlamaUpdateStatusResponse(
+        supported = True,
+        update_available = True,
+        llama_update_available = False,
+        update_component = "whisper",
+        whisper = {
+            "update_available": True,
+            "installed_tag": "v1",
+            "latest_tag": "v2",
+        },
+    )
+    assert model.model_dump()["update_component"] == "whisper"
+
+
+def test_changelog_response_exposes_structured_links():
+    model = rl.LlamaUpdateChangelogResponse(
+        matched = True,
+        installed_tag = "b10698",
+        latest_tag = "b10715-mix-new",
+        changes = [
+            {
+                "summary": "MTP for Qwen",
+                "links": [
+                    {
+                        "label": "unslothai/llama.cpp#144",
+                        "url": "https://github.com/unslothai/llama.cpp/pull/144",
+                    }
+                ],
+            }
+        ],
+        total_changes = 1,
+        release_url = "https://github.com/unslothai/llama.cpp/releases/tag/new",
+    )
+
+    assert model.model_dump()["changes"][0]["links"][0]["label"].endswith("#144")
+
+
+def test_changelog_handler_runs_off_event_loop(monkeypatch):
+    seen = {}
+
+    def fake_changelog(
+        force_refresh = False,
+        installed_tag = None,
+        latest_tag = None,
+    ):
+        seen["thread"] = threading.current_thread()
+        seen["refresh"] = force_refresh
+        return {"matched": True, "installed_tag": "b1", "latest_tag": "b2"}
+
+    monkeypatch.setattr(rl, "get_update_changelog", fake_changelog)
+    out = asyncio.run(rl.llama_update_changelog(force_refresh = True, current_subject = "test"))
+
+    assert out.matched is True
+    assert seen == {"thread": seen["thread"], "refresh": True}
+    assert seen["thread"] is not threading.main_thread()
+
+
+def test_backend_status_response_exposes_selection_applied():
+    model = rl.LlamaBackendStatusResponse(selection_applied = False)
+
+    assert model.model_dump()["selection_applied"] is False
+
+
 def test_status_handler_runs_off_event_loop(monkeypatch):
     seen = {}
 

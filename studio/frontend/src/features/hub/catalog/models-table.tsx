@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useHfEndpoint } from "@/lib/hf-endpoint";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -18,13 +19,17 @@ import {
   formatRelativeShort,
 } from "@/features/hub/lib/format";
 import {
+  MODEL_TYPE_FILTER_OPTIONS,
+  type ModelTypeFilter,
+} from "@/features/hub/lib/model-type-filter";
+import {
   formatModelParamLabel,
   formatPipelineTag,
 } from "@/features/hub/lib/view-models";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn, formatCompact } from "@/lib/utils";
 import {
-  ArrowLeft01Icon,
+  ArrowUpDownIcon,
   Copy01Icon,
   Download01Icon,
   FavouriteIcon,
@@ -35,6 +40,9 @@ import {
   Refresh01Icon,
   ViewSidebarLeftIcon,
 } from "@hugeicons/core-free-icons";
+import {
+  ChevronLeftIcon,
+} from "lucide-react";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Fragment, type ReactNode, memo, useMemo } from "react";
@@ -64,12 +72,12 @@ export type AllModelsView = "grid" | "two" | "split";
 const LIST_COLS = {
   model: "flex min-w-0 flex-[2.4] items-center gap-3",
   caps: "hidden min-w-0 flex-[1.7] items-center gap-1.5 md:flex",
-  capsModel: "hidden w-[132px] shrink-0 items-center gap-1.5 md:flex",
-  size: "hidden w-[60px] shrink-0 lg:block",
-  updated: "hidden w-[82px] shrink-0 xl:block",
-  downloads: "hidden w-[104px] shrink-0 items-center gap-1.5 sm:flex",
-  likes: "hidden w-[76px] shrink-0 items-center gap-1.5 sm:flex",
-  actions: "flex w-[64px] shrink-0 items-center justify-end gap-0.5",
+  capsModel: "hidden w-[calc(132px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 md:flex",
+  size: "hidden w-[calc(60px*var(--ui-space-scale,1))] shrink-0 lg:block",
+  updated: "hidden w-[calc(82px*var(--ui-space-scale,1))] shrink-0 xl:block",
+  downloads: "hidden w-[calc(104px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 sm:flex",
+  likes: "hidden w-[calc(76px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 sm:flex",
+  actions: "flex w-[calc(64px*var(--ui-space-scale,1))] shrink-0 items-center justify-end gap-0.5",
 } as const;
 
 function ViewToggleButton({
@@ -124,6 +132,7 @@ export function InventorySortControl({
   value: InventorySort;
   onChange: (value: InventorySort) => void;
 }) {
+  const selected = INVENTORY_SORTS.find((option) => option.value === value);
   return (
     <HubOptionMenu<InventorySort>
       value={value}
@@ -131,7 +140,46 @@ export function InventorySortControl({
       onValueChange={onChange}
       ariaLabel="Sort downloads"
       align="end"
-      className="h-8 text-[11.5px]"
+      title={selected?.label}
+      // Capped and shrinkable so a long label truncates instead of wrapping
+      // the "On device" heading beside these pills in the narrow split pane.
+      className="h-8 min-w-[calc(72px*var(--ui-space-scale,1))] max-w-[calc(124px*var(--ui-space-scale,1))] shrink text-ui-11p5"
+      triggerContent={
+        <span className="flex min-w-0 items-center gap-1">
+          <HugeiconsIcon
+            icon={ArrowUpDownIcon}
+            strokeWidth={1.75}
+            className="size-3.5 shrink-0 text-muted-foreground"
+          />
+          <span className="truncate">{selected?.label ?? value}</span>
+        </span>
+      }
+    />
+  );
+}
+
+// Model-type filter pill (Text / Vision / Embedding / …) beside the sort pill.
+export function InventoryTypeFilterControl({
+  value,
+  onChange,
+}: {
+  value: ModelTypeFilter;
+  onChange: (value: ModelTypeFilter) => void;
+}) {
+  const selected = MODEL_TYPE_FILTER_OPTIONS.find(
+    (option) => option.value === value,
+  );
+  return (
+    <HubOptionMenu<ModelTypeFilter>
+      value={value}
+      options={MODEL_TYPE_FILTER_OPTIONS}
+      onValueChange={onChange}
+      ariaLabel="Filter by model type"
+      align="end"
+      title={selected?.label}
+      // Capped and shrinkable so a long label ("Speech to text") truncates
+      // instead of wrapping the "On device" heading beside these pills.
+      className="h-8 min-w-[calc(72px*var(--ui-space-scale,1))] max-w-[calc(124px*var(--ui-space-scale,1))] shrink text-ui-11p5"
     />
   );
 }
@@ -175,19 +223,20 @@ export function HubListHeader({
             // avatars below, just inside the row hover's left edge.
             className="hub-section-chevron -ml-3 inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground"
           >
-            <HugeiconsIcon
-              icon={ArrowLeft01Icon}
+            <ChevronLeftIcon
               strokeWidth={2}
               className="size-4"
             />
           </button>
         )}
         <div className="min-w-0 space-y-0.5">
-          <h2 className="text-[18px] font-semibold tracking-[-0.02em] text-foreground">
+          {/* truncate keeps the heading on one line and clips a long search
+              query with an ellipsis instead of overflowing the pills. */}
+          <h2 className="truncate text-ui-18 font-semibold tracking-[-0.02em] text-foreground">
             {title}
           </h2>
           {subtitle && (
-            <p className="text-[12.5px] leading-tight text-muted-foreground">
+            <p className="text-ui-12p5 leading-tight text-muted-foreground">
               {subtitle}
             </p>
           )}
@@ -205,7 +254,7 @@ export function HubListHeader({
                 <HugeiconsIcon
                   icon={Refresh01Icon}
                   strokeWidth={1.75}
-                  className={cn("size-[11px]", isRefreshing && "animate-spin")}
+                  className={cn("size-[calc(11px*var(--ui-space-scale,1))]", isRefreshing && "animate-spin")}
                 />
               </button>
             </TooltipTrigger>
@@ -216,7 +265,9 @@ export function HubListHeader({
         )}
       </div>
       {(actions || onViewChange) && (
-        <div className="flex shrink-0 items-center gap-2">
+        // min-w-0 (not shrink-0) so shrinkable actions (the On-device filter
+        // pills) compress before the title is forced onto two lines.
+        <div className="flex min-w-0 items-center gap-2">
           {actions}
           {onViewChange && (
             <div
@@ -260,7 +311,7 @@ export function HubListHeader({
 
 export function ResultListHeader({ isDataset }: { isDataset: boolean }) {
   return (
-    <div className="flex w-full items-center gap-3 px-4 pb-2 text-[11px] font-medium text-muted-foreground/55">
+    <div className="flex w-full items-center gap-3 px-4 pb-2 text-ui-11 font-medium text-muted-foreground/55">
       <span className={LIST_COLS.model}>{isDataset ? "Dataset" : "Model"}</span>
       <span className={isDataset ? LIST_COLS.caps : LIST_COLS.capsModel}>
         {isDataset ? "Details" : "Capabilities"}
@@ -274,7 +325,7 @@ export function ResultListHeader({ isDataset }: { isDataset: boolean }) {
   );
 }
 
-const STATUS_DOT_CLASS = "inline-block size-[6px] shrink-0 rounded-full";
+const STATUS_DOT_CLASS = "inline-block size-[calc(6px*var(--ui-space-scale,1))] shrink-0 rounded-full";
 
 function TitleMarkers({
   format,
@@ -340,7 +391,7 @@ function VerifiedOwner({ owner }: { owner: string }) {
       {owner.toLowerCase() === "unsloth" && (
         <span
           aria-label="Verified Unsloth"
-          className="hub-verified-badge size-3.5 shrink-0 text-primary"
+          className="hub-verified-badge size-3.5 shrink-0 text-verified"
         />
       )}
     </span>
@@ -396,7 +447,7 @@ function CapabilitiesCell({
           ))}
           {extra > 0 && <span className="hub-chip shrink-0">+{extra}</span>}
           {shown.length === 0 && taskLabel && (
-            <span className="truncate text-[12px] text-muted-foreground/75">
+            <span className="truncate text-ui-12 text-muted-foreground/75">
               {taskLabel}
             </span>
           )}
@@ -405,7 +456,7 @@ function CapabilitiesCell({
       <TooltipContent side="top" align="start" className="tooltip-compact">
         <div className="flex flex-col items-start gap-1">
           {taskLabel && (
-            <span className="text-[11px] font-medium text-muted-foreground">
+            <span className="text-ui-11 font-medium text-muted-foreground">
               {taskLabel}
             </span>
           )}
@@ -427,9 +478,10 @@ function RowActions({
   isDataset: boolean;
   onSelect: (id: string) => void;
 }) {
-  const hfUrl = `https://huggingface.co/${isDataset ? "datasets/" : ""}${row.result.id}`;
+  const hfEndpoint = useHfEndpoint();
+  const hfUrl = `${hfEndpoint}/${isDataset ? "datasets/" : ""}${row.result.id}`;
   const actionClass =
-    "pointer-events-auto inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:bg-foreground/[0.07] hover:text-foreground focus-visible:text-foreground data-[state=open]:bg-foreground/[0.07] data-[state=open]:text-foreground";
+    "pointer-events-auto inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:text-foreground data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:text-foreground";
   return (
     <>
       <Tooltip>
@@ -469,7 +521,7 @@ function RowActions({
             />
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="min-w-[184px]">
+        <DropdownMenuContent align="end" className="min-w-[calc(184px*var(--ui-space-scale,1))]">
           <DropdownMenuItem
             onClick={async (event) => {
               event.stopPropagation();
@@ -524,8 +576,10 @@ function useResultRowModel(
     [isDataset, row.id, row.result, deviceType],
   );
   const sizeLabel = formatModelParamLabel(row.repo, row.result.totalParams);
-  const taskLabel = isDataset ? null : formatPipelineTag(row.result.pipelineTag);
-  const unsupported = support?.status === "unsupported";
+  const taskLabel = isDataset
+    ? null
+    : formatPipelineTag(row.result.pipelineTag);
+  const unsupported = support?.status === "unsupported" && !support?.supportedIn;
   return {
     support,
     unsupported,
@@ -540,16 +594,23 @@ export const ResultCard = memo(function ResultCard({
   row,
   deviceType,
   isDataset,
+  showFormatDot = true,
   onSelect,
 }: {
   row: DiscoverRow;
   deviceType: string | null;
   isDataset: boolean;
+  showFormatDot?: boolean;
   onSelect: (id: string) => void;
 }) {
   const { support, unsupported, partial, onDevice, sizeLabel, taskLabel } =
     useResultRowModel(row, deviceType, isDataset);
-  const format = isDataset ? null : row.result.isGguf ? "gguf" : "checkpoint";
+  const format =
+    isDataset || !showFormatDot
+      ? null
+      : row.result.isGguf
+        ? "gguf"
+        : "checkpoint";
   const tip = buildRowStatusTooltip({
     partialRepoId: partial ? row.result.id : undefined,
     unsupported,
@@ -586,17 +647,17 @@ export const ResultCard = memo(function ResultCard({
       type="button"
       aria-label={row.repo}
       onClick={() => onSelect(row.id)}
-      className="hub-result-row hub-result-card group/row flex h-full w-full cursor-pointer items-center gap-3.5 px-4 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+      className="hub-result-row hub-result-card group/row flex h-full w-full cursor-pointer items-center gap-3.5 px-4 text-left outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
     >
       <OwnerAvatar
         owner={row.owner}
         repoName={row.repo}
-        className="size-[52px] shrink-0 rounded-[16px] text-[16px] ring-1 ring-black/5 dark:ring-white/10"
+        className="size-[calc(52px*var(--ui-space-scale,1))] shrink-0 rounded-[16px] text-ui-16 ring-1 ring-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] dark:ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
         remote={false}
       />
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-[15px] font-semibold leading-[18px] text-foreground">
+          <span className="truncate text-ui-15 font-semibold leading-ui-18 text-foreground">
             {row.repo}
           </span>
           <TitleMarkers
@@ -608,10 +669,10 @@ export const ResultCard = memo(function ResultCard({
             onDevice={onDevice}
           />
         </div>
-        <span className="flex min-w-0 items-center gap-1 text-[12.5px] leading-[16px] text-muted-foreground/80">
+        <span className="flex min-w-0 items-center gap-1 text-ui-12p5 leading-ui-16 text-muted-foreground/80">
           <VerifiedOwner owner={row.owner} />
         </span>
-        <div className="flex min-w-0 items-center gap-2 overflow-hidden text-[11.5px] leading-[16px] tabular-nums text-muted-foreground/65">
+        <div className="flex min-w-0 items-center gap-2 overflow-hidden text-ui-11p5 leading-ui-16 tabular-nums text-muted-foreground/65">
           {textParts.map((part, index) => (
             <Fragment key={part.key}>
               {index > 0 && (
@@ -652,7 +713,7 @@ export const ResultCard = memo(function ResultCard({
   return (
     <Tooltip>
       <TooltipTrigger asChild={true}>{card}</TooltipTrigger>
-      <TooltipContent side="top" className="tooltip-compact max-w-[260px]">
+      <TooltipContent side="top" className="tooltip-compact max-w-[calc(260px*var(--ui-space-scale,1))]">
         {tip}
       </TooltipContent>
     </Tooltip>
@@ -663,17 +724,24 @@ export const ResultGridRow = memo(function ResultGridRow({
   row,
   deviceType,
   isDataset,
+  showFormatDot = true,
   onSelect,
 }: {
   row: DiscoverRow;
   deviceType: string | null;
   isDataset: boolean;
+  showFormatDot?: boolean;
   onSelect: (id: string) => void;
 }) {
   const { support, unsupported, partial, onDevice, sizeLabel, taskLabel } =
     useResultRowModel(row, deviceType, isDataset);
   const sizeDisplay = isDataset ? null : sizeLabel;
-  const format = isDataset ? null : row.result.isGguf ? "gguf" : "checkpoint";
+  const format =
+    isDataset || !showFormatDot
+      ? null
+      : row.result.isGguf
+        ? "gguf"
+        : "checkpoint";
   const tip = buildRowStatusTooltip({
     partialRepoId: partial ? row.result.id : undefined,
     unsupported,
@@ -685,7 +753,7 @@ export const ResultGridRow = memo(function ResultGridRow({
       type="button"
       aria-label={row.repo}
       onClick={() => onSelect(row.id)}
-      className="absolute inset-0 z-0 cursor-pointer rounded-[inherit] outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+      className="absolute inset-0 z-0 cursor-pointer rounded-[inherit] outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
     />
   );
 
@@ -697,7 +765,7 @@ export const ResultGridRow = memo(function ResultGridRow({
           <TooltipContent
             side="top"
             align="start"
-            className="tooltip-compact max-w-[280px]"
+            className="tooltip-compact max-w-[calc(280px*var(--ui-space-scale,1))]"
           >
             {tip}
           </TooltipContent>
@@ -710,12 +778,12 @@ export const ResultGridRow = memo(function ResultGridRow({
           <OwnerAvatar
             owner={row.owner}
             repoName={row.repo}
-            className="size-9 shrink-0 rounded-[12px] text-[13px] ring-1 ring-black/5 dark:ring-white/10"
+            className="size-9 shrink-0 rounded-[12px] text-ui-13 ring-1 ring-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] dark:ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
             remote={false}
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
-              <span className="truncate text-[13.5px] font-semibold leading-[17px] text-foreground">
+              <span className="truncate text-ui-13p5 font-semibold leading-ui-17 text-foreground">
                 {row.repo}
               </span>
               <TitleMarkers
@@ -727,7 +795,7 @@ export const ResultGridRow = memo(function ResultGridRow({
                 onDevice={onDevice}
               />
             </div>
-            <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11.5px] leading-[15px] text-muted-foreground/80">
+            <span className="mt-0.5 flex min-w-0 items-center gap-1 text-ui-11p5 leading-ui-15 text-muted-foreground/80">
               <VerifiedOwner owner={row.owner} />
             </span>
           </div>
@@ -735,7 +803,7 @@ export const ResultGridRow = memo(function ResultGridRow({
         <div className={isDataset ? LIST_COLS.caps : LIST_COLS.capsModel}>
           {isDataset ? (
             row.summary ? (
-              <span className="truncate text-[12px] text-muted-foreground/75">
+              <span className="truncate text-ui-12 text-muted-foreground/75">
                 {row.summary}
               </span>
             ) : null
@@ -750,7 +818,7 @@ export const ResultGridRow = memo(function ResultGridRow({
         <div
           className={cn(
             LIST_COLS.size,
-            "truncate text-[12px] tabular-nums text-muted-foreground",
+            "truncate text-ui-12 tabular-nums text-muted-foreground",
           )}
         >
           {sizeDisplay ?? "—"}
@@ -758,7 +826,7 @@ export const ResultGridRow = memo(function ResultGridRow({
         <div
           className={cn(
             LIST_COLS.updated,
-            "truncate text-[12px] tabular-nums text-muted-foreground",
+            "truncate text-ui-12 tabular-nums text-muted-foreground",
           )}
         >
           {formatRelativeShort(row.result.updatedAt)}
@@ -766,7 +834,7 @@ export const ResultGridRow = memo(function ResultGridRow({
         <div
           className={cn(
             LIST_COLS.downloads,
-            "text-[12px] tabular-nums text-muted-foreground",
+            "text-ui-12 tabular-nums text-muted-foreground",
           )}
         >
           <StatItem
@@ -777,7 +845,7 @@ export const ResultGridRow = memo(function ResultGridRow({
         <div
           className={cn(
             LIST_COLS.likes,
-            "text-[12px] tabular-nums text-muted-foreground",
+            "text-ui-12 tabular-nums text-muted-foreground",
           )}
         >
           <StatItem
@@ -800,12 +868,14 @@ export const ResultSplitRow = memo(function ResultSplitRow({
   deviceType,
   isDataset,
   selected,
+  showFormatDot = true,
   onSelect,
 }: {
   row: DiscoverRow;
   deviceType: string | null;
   isDataset: boolean;
   selected: boolean;
+  showFormatDot?: boolean;
   onSelect: (id: string) => void;
 }) {
   const { support, unsupported, partial, onDevice } = useResultRowModel(
@@ -813,7 +883,12 @@ export const ResultSplitRow = memo(function ResultSplitRow({
     deviceType,
     isDataset,
   );
-  const format = isDataset ? null : row.result.isGguf ? "gguf" : "checkpoint";
+  const format =
+    isDataset || !showFormatDot
+      ? null
+      : row.result.isGguf
+        ? "gguf"
+        : "checkpoint";
   const tip = buildRowStatusTooltip({
     partialRepoId: partial ? row.result.id : undefined,
     unsupported,
@@ -827,17 +902,17 @@ export const ResultSplitRow = memo(function ResultSplitRow({
       aria-current={selected || undefined}
       data-selected={selected || undefined}
       onClick={() => onSelect(row.id)}
-      className="group/row flex h-full w-full cursor-pointer items-center gap-2.5 rounded-[12px] px-2.5 text-left outline-none transition-colors hover:bg-foreground/[0.04] data-[selected]:bg-foreground/[0.07] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset dark:hover:bg-white/[0.05] dark:data-[selected]:bg-white/[0.08]"
+      className="group/row flex h-full w-full cursor-pointer items-center gap-2.5 rounded-[12px] px-2.5 text-left outline-none transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[selected]:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset dark:hover:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:data-[selected]:bg-accent"
     >
       <OwnerAvatar
         owner={row.owner}
         repoName={row.repo}
-        className="size-8 shrink-0 rounded-[9px] text-[12px]"
+        className="size-8 shrink-0 rounded-[9px] text-ui-12"
         remote={false}
       />
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex min-w-0 items-center gap-1.5">
-          <span className="truncate text-[12.5px] font-semibold leading-[16px] text-foreground">
+          <span className="truncate text-ui-12p5 font-semibold leading-ui-16 text-foreground">
             {row.repo}
           </span>
           <TitleMarkers
@@ -849,17 +924,17 @@ export const ResultSplitRow = memo(function ResultSplitRow({
             onDevice={onDevice}
           />
         </div>
-        <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[10.5px] leading-[14px] text-muted-foreground/80">
+        <span className="mt-0.5 flex min-w-0 items-center gap-1 text-ui-10p5 leading-ui-14 text-muted-foreground/80">
           <VerifiedOwner owner={row.owner} />
         </span>
       </div>
-      <div className="flex shrink-0 flex-col items-end gap-0.5 text-[10.5px] tabular-nums text-muted-foreground/70">
+      <div className="flex shrink-0 flex-col items-end gap-0.5 text-ui-10p5 tabular-nums text-muted-foreground/70">
         <div className="flex items-center gap-2">
           <span className="inline-flex items-center gap-1">
             <HugeiconsIcon
               icon={FavouriteIcon}
               strokeWidth={1.75}
-              className="size-[11px] shrink-0"
+              className="size-[calc(11px*var(--ui-space-scale,1))] shrink-0"
             />
             {formatCompact(row.result.likes)}
           </span>
@@ -867,7 +942,7 @@ export const ResultSplitRow = memo(function ResultSplitRow({
             <HugeiconsIcon
               icon={Download01Icon}
               strokeWidth={1.75}
-              className="size-[11px] shrink-0"
+              className="size-[calc(11px*var(--ui-space-scale,1))] shrink-0"
             />
             {formatCompact(row.result.downloads)}
           </span>
@@ -886,7 +961,7 @@ export const ResultSplitRow = memo(function ResultSplitRow({
   return (
     <Tooltip>
       <TooltipTrigger asChild={true}>{node}</TooltipTrigger>
-      <TooltipContent side="top" className="tooltip-compact max-w-[260px]">
+      <TooltipContent side="top" className="tooltip-compact max-w-[calc(260px*var(--ui-space-scale,1))]">
         {tip}
       </TooltipContent>
     </Tooltip>

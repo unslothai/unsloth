@@ -10,6 +10,7 @@ are lazy, so importing this module never fails on a missing dep.
 
 from __future__ import annotations
 
+import codecs
 import logging
 import os
 import re
@@ -28,6 +29,7 @@ class Page:
     text: str
     page_number: int | None = None
     char_count: int = 0
+    needs_ocr: bool = False
 
 
 @dataclass(frozen = True)
@@ -37,6 +39,9 @@ class ParsedImage:
     image_bytes: bytes
     page_number: int | None
     xref: int
+    full_page: bool = False
+    tile_index: int | None = None
+    tile_count: int = 0
 
 
 def _page(text: str, page_number: int | None) -> Page:
@@ -70,11 +75,9 @@ def _html(raw: str) -> list[Page]:
     return [_page("\n".join(parser.out), 1)]
 
 
-# pymupdf4llm rebuilds text from positioned glyphs, which mangles complex-shaping
-# scripts (RTL Arabic/Hebrew emerge as shaped Presentation Forms, Indic matras drop to
-# U+FFFD) and can silently drop most of a heavy-RTL page. When Markdown trips these
-# signals we fall back to PyMuPDF's logical-order get_text(). Thresholds mirror the chat
-# extractor guard (unslothai/unsloth#5351 review).
+# pymupdf4llm rebuilds text from positioned glyphs and mangles complex-shaping scripts (RTL forms,
+# Indic matras to U+FFFD), so fall back to PyMuPDF's logical-order get_text(); thresholds mirror
+# unslothai/unsloth#5351.
 _SHAPED_PRESENTATION_FORMS = re.compile("[\ufb1d-\ufdff\ufe70-\ufefc]")
 _PDF_FALLBACK_MIN_BAD_GLYPHS = 5
 _PDF_FALLBACK_BAD_GLYPH_RATIO = 0.0005
@@ -103,7 +106,7 @@ def _markdown_incomplete(markdown: str, plain: str) -> bool:
     return markdown_letters < _PDF_INCOMPLETE_RATIO * plain_letters
 
 
-def _pdf_markdown(doc) -> list[str] | None:
+def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
     """Per-page layout-aware Markdown (tables, headings, lists) via pymupdf4llm; index
     i maps to page i+1. Returns None when the lib is missing, extraction fails, or the
     page count does not line up, so the caller falls back to plain PyMuPDF text."""
@@ -112,33 +115,49 @@ def _pdf_markdown(doc) -> list[str] | None:
     except Exception:
         return None
     try:
-        chunks = pymupdf4llm.to_markdown(
-            doc,
-            page_chunks = True,
-            show_progress = False,
-        )
+        kwargs = {"page_chunks": True, "show_progress": False}
+        if pages is not None:
+            kwargs["pages"] = list(pages)
+        chunks = pymupdf4llm.to_markdown(doc, **kwargs)
     except Exception:  # noqa: BLE001 - never let Markdown extraction break ingestion
         logger.warning("pymupdf4llm extraction failed; using plain text", exc_info = True)
         return None
-    if not isinstance(chunks, list) or len(chunks) != doc.page_count:
+    expected_pages = doc.page_count if pages is None else len(pages)
+    if not isinstance(chunks, list) or len(chunks) != expected_pages:
         return None
     return [str(c.get("text") or "") for c in chunks]
 
 
-def _pdf(path: str, want_images: bool) -> tuple[list[Page], list[ParsedImage]]:
-    import fitz  # PyMuPDF
+def _pdf(
+    source: str | bytes,
+    want_images: bool,
+    max_pages: int | None = None,
+) -> tuple[list[Page], list[ParsedImage], int]:
+    import fitz
 
     pages: list[Page] = []
     images: list[ParsedImage] = []
-    doc = fitz.open(path)
+    doc = (
+        fitz.open(stream = source, filetype = "pdf") if isinstance(source, bytes) else fitz.open(source)
+    )
     try:
-        md = _pdf_markdown(doc) if config.PDF_MARKDOWN else None
-        for i, page in enumerate(doc):
+        if doc.needs_pass:
+            raise ValueError("encrypted PDF requires a password")
+        total_pages = doc.page_count
+        page_numbers = range(total_pages if max_pages is None else min(total_pages, max_pages))
+        if not config.PDF_MARKDOWN:
+            md = None
+        elif max_pages is None:
+            md = _pdf_markdown(doc)
+        else:
+            md = _pdf_markdown(doc, page_numbers)
+        for i, page_number in enumerate(page_numbers):
+            page = doc[page_number]
             plain = page.get_text("text") or ""
             candidate = md[i] if md else ""
-            # Prefer layout-aware Markdown (keeps tables/headings legible for retrieval),
-            # but drop to PyMuPDF's logical-order text when Markdown is off/empty or when
-            # pymupdf4llm mangled it (RTL/Indic) or dropped most of the page.
+            # Prefer layout-aware Markdown (keeps tables/headings legible for retrieval), but drop to PyMuPDF's
+            # logical-order text when Markdown is off/empty or when pymupdf4llm mangled it (RTL/Indic) or
+            # dropped most of the page.
             if (
                 candidate
                 and not _markdown_corrupted(candidate)
@@ -147,7 +166,27 @@ def _pdf(path: str, want_images: bool) -> tuple[list[Page], list[ParsedImage]]:
                 text = candidate
             else:
                 text = plain
-            pages.append(_page(text, i + 1))
+            # Markdown may contain image placeholders even when there is no text layer.
+            # Record scanned pages from the PDF itself; blank separator pages need no OCR.
+            images_on_page = page.get_image_info()
+            needs_ocr = bool(images_on_page) and not plain.strip()
+            for info in images_on_page:
+                image_rect = fitz.Rect(info["bbox"]) & page.rect
+                if image_rect.get_area() < page.rect.get_area() * 0.5:
+                    continue
+                # A selectable header/footer does not make the scanned body readable.
+                body = fitz.Rect(
+                    image_rect.x0,
+                    image_rect.y0 + image_rect.height * 0.1,
+                    image_rect.x1,
+                    image_rect.y1 - image_rect.height * 0.1,
+                )
+                if len(page.get_text("text", clip = body).strip()) < config.OCR_MIN_CHARS:
+                    needs_ocr = True
+                    break
+            if needs_ocr:
+                text = plain
+            pages.append(Page(text, page_number + 1, len(text), needs_ocr = needs_ocr))
             if want_images:
                 for img in page.get_images(full = True):
                     xref = img[0]
@@ -161,13 +200,22 @@ def _pdf(path: str, want_images: bool) -> tuple[list[Page], list[ParsedImage]]:
                         images.append(
                             ParsedImage(
                                 image_bytes = image_bytes,
-                                page_number = i + 1,
+                                page_number = page_number + 1,
                                 xref = xref,
                             )
                         )
     finally:
         doc.close()
-    return pages, images
+    return pages, images, total_pages
+
+
+def parse_pdf_bytes(data: bytes, *, max_pages: int | None = None) -> tuple[list[Page], int]:
+    """Extract PDF pages from an in-memory download using the ingestion parser.
+
+    Returns the (capped) pages plus the document's full page count, so a caller
+    that set ``max_pages`` can tell a fully-read short PDF from a truncated one."""
+    pages, _images, total_pages = _pdf(data, want_images = False, max_pages = max_pages)
+    return pages, total_pages
 
 
 def _merge_rects(boxes: list) -> list:
@@ -272,7 +320,7 @@ def render_pdf_figure_tiles(
     wanted = [int(n) for n in page_numbers]
     if not wanted:
         return []
-    rows, cols = max(1, int(rows)), max(1, int(cols))  # never divide by zero
+    rows, cols = max(1, int(rows)), max(1, int(cols))
     try:
         import pymupdf
     except Exception:
@@ -302,10 +350,20 @@ def render_pdf_figure_tiles(
                         )
                         & rect
                     )
-            for clip in clips:
+            for index, clip in enumerate(clips):
                 try:
                     pix = page.get_pixmap(dpi = dpi, clip = clip)
-                    out.append(ParsedImage(image_bytes = pix.tobytes("png"), page_number = num, xref = 0))
+                    is_full_page = fullpage and index == 0
+                    out.append(
+                        ParsedImage(
+                            image_bytes = pix.tobytes("png"),
+                            page_number = num,
+                            xref = 0,
+                            full_page = is_full_page,
+                            tile_index = None if is_full_page else index - int(fullpage),
+                            tile_count = rows * cols,
+                        )
+                    )
                 except Exception:
                     continue
                 if len(out) >= max_tiles:
@@ -361,19 +419,19 @@ def _docx_table_rows(table) -> list[str]:
     from docx.text.paragraph import Paragraph
 
     rows: list[str] = []
-    seen: set = set()  # <w:tc> already emitted; dedups merges spanning columns or rows
+    seen: set = set()
     for row in table.rows:
         cells: list[str] = [""] * getattr(row, "grid_cols_before", 0)
-        trailing: list[str] = []  # nested rows + any post-nested text, kept in order
+        trailing: list[str] = []
         for cell in row.cells:
-            # A merged cell shares one <w:tc> across the columns and rows it spans:
-            # emit its text once, then placeholders, so columns and rows stay aligned.
+            # A merged cell shares one <w:tc> across its span: emit its text once, then placeholders, so columns
+            # and rows stay aligned.
             if cell._tc in seen:
                 cells.append("")
                 continue
             seen.add(cell._tc)
-            # Paragraph text before the first nested table is the aligned field; the
-            # nested table and anything after it flatten below the row, in order.
+            # Paragraph text before the first nested table is the aligned field; the nested table and anything
+            # after it flatten below the row.
             field: list[str] = []
             after_table = False
             for item in cell.iter_inner_content():
@@ -381,7 +439,7 @@ def _docx_table_rows(table) -> list[str]:
                     after_table = True
                     trailing.extend(_docx_table_rows(item))
                 elif isinstance(item, Paragraph):
-                    text = " ".join(item.text.split())  # collapse in-cell newlines
+                    text = " ".join(item.text.split())
                     if text:
                         (trailing if after_table else field).append(text)
             cells.append(" ".join(field))  # empty cells kept so columns line up
@@ -416,7 +474,7 @@ def parse(path: str, *, want_images: bool = False):
     ext = os.path.splitext(path)[1].lower()
 
     if ext == ".pdf":
-        pages, images = _pdf(path, want_images)
+        pages, images, _total = _pdf(path, want_images)
         return (pages, images) if want_images else pages
 
     if ext == ".docx":
@@ -424,7 +482,20 @@ def parse(path: str, *, want_images: bool = False):
         return (pages, []) if want_images else pages
 
     if ext in (".html", ".htm", ".txt", ".md", ".markdown"):
-        with open(path, encoding = "utf-8", errors = "replace") as f:
+        # Honor Unicode BOMs; check UTF-32 before its overlapping UTF-16 prefix.
+        with open(path, "rb") as f:
+            prefix = f.read(4)
+        encoding = "utf-8-sig"
+        for bom, codec in (
+            (codecs.BOM_UTF32_LE, "utf-32"),
+            (codecs.BOM_UTF32_BE, "utf-32"),
+            (codecs.BOM_UTF16_LE, "utf-16"),
+            (codecs.BOM_UTF16_BE, "utf-16"),
+        ):
+            if prefix.startswith(bom):
+                encoding = codec
+                break
+        with open(path, encoding = encoding, errors = "replace") as f:
             raw = f.read()
         pages = _html(raw) if ext in (".html", ".htm") else [_page(raw, None)]
         return (pages, []) if want_images else pages

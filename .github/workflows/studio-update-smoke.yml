@@ -9,7 +9,7 @@
 # This catches regressions in setup.sh's update path that the existing
 # GGUF / wheel jobs would miss because they only invoke install.sh once.
 
-name: Studio Update CI
+name: Unsloth Update CI
 
 on:
   pull_request:
@@ -19,42 +19,137 @@ on:
       - 'studio/setup.sh'
       - 'studio/install_python_stack.py'
       - 'studio/install_llama_prebuilt.py'
+      - 'studio/install_whisper_prebuilt.py'
+      - 'studio/install_node_prebuilt.py'
+      - 'studio/install_manifest.py'
+      - 'studio/prebuilt_core.py'
+      # install_node_prebuilt.py reads the default version and archive digests from here.
+      - 'studio/node_prebuilt_pins.json'
+      - 'studio/setup.ps1'
+      - 'install.ps1'
       - 'studio/backend/requirements/**'
+      # setup.sh and setup.ps1 run npm against these two trees on every update, and the
+      # harness holds the frontend bundle to be current afterwards; a dependency change
+      # there used to reach these jobs only through the push to main.
+      - 'studio/frontend/package.json'
+      - 'studio/frontend/package-lock.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/package.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
+      # The harness below and the proxy it measures with.
+      - 'tests/studio/install/test_update_idempotency.py'
+      - 'tests/studio/install/idempotency_proxy.py'
       - 'unsloth_cli/commands/studio.py'
+      - 'unsloth_cli/__init__.py'
+      - 'unsloth_cli/_system_dir_guard.py'
       - 'pyproject.toml'
       - '.github/workflows/studio-update-smoke.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
+      # Reached through install-unsloth-local, which uses the dist and uv cache pairs.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
   push:
-    branches: [main, pip]
+    branches: [main]
+    # The same list as pull_request. This workflow has a macOS leg, and macOS runners
+    # are capped at five concurrent jobs account-wide, so a push trigger without a
+    # filter would spend them on commits that cannot affect what it tests.
+    paths:
+      - 'install.sh'
+      - 'scripts/uninstall.sh'
+      - 'studio/setup.sh'
+      - 'studio/install_python_stack.py'
+      - 'studio/install_llama_prebuilt.py'
+      - 'studio/install_whisper_prebuilt.py'
+      - 'studio/install_node_prebuilt.py'
+      - 'studio/install_manifest.py'
+      - 'studio/prebuilt_core.py'
+      # install_node_prebuilt.py reads the default version and archive digests from here.
+      - 'studio/node_prebuilt_pins.json'
+      - 'studio/setup.ps1'
+      - 'install.ps1'
+      - 'studio/backend/requirements/**'
+      # setup.sh and setup.ps1 run npm against these two trees on every update, and the
+      # harness holds the frontend bundle to be current afterwards; a dependency change
+      # there used to reach these jobs only through the push to main.
+      - 'studio/frontend/package.json'
+      - 'studio/frontend/package-lock.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/package.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
+      # The harness below and the proxy it measures with.
+      - 'tests/studio/install/test_update_idempotency.py'
+      - 'tests/studio/install/idempotency_proxy.py'
+      - 'unsloth_cli/commands/studio.py'
+      - 'unsloth_cli/__init__.py'
+      - 'unsloth_cli/_system_dir_guard.py'
+      - 'pyproject.toml'
+      - '.github/workflows/studio-update-smoke.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
+      # The dist cache moved out of install-unsloth-local so the Windows jobs could
+      # share one definition of its key; a change to it still has to re-run the jobs
+      # that depend on it.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      # The Windows job restores and saves the uv download cache directly, as the
+      # pull_request list above already records.
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
 
 jobs:
   update-idempotency:
-    name: Studio Updating Tests
+    name: Unsloth Updating Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Sized for the apt step's bounded worst case (15m) plus the smoke itself.
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
       - name: Linux deps for llama.cpp prebuilt
+        # Bounded and retried through the shared helper: an unbounded apt step does
+        # not fail, it spends the job's whole budget and is reported as "cancelled"
+        # with no reason and every later step skipped. update and install go as one
+        # unit, since retrying the install after a stalled update re-reads the same
+        # broken package list.
+        # Two long attempts, not three short ones. 150s killed apt mid-`update`
+        # against a mirror that was degraded rather than dead, and every attempt
+        # then hit the same wall -- three kills and no result. The bound exists to
+        # stop an infinite hang, not to race a slow mirror.
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libssl-dev jq
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq || { apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq; }'
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+      # Node 24 ships npm 11, which meets setup.sh's floor (Node ^20.19 || >=22.12 with
+      # npm >= 11): this job takes the system-Node path, the developer one. Node 22
+      # ships npm 10 and would take the bundled path, which the other two jobs cover.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: '22'
+          node-version: '24'
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
           # Don't cache pip: this job runs `bash install.sh` and
@@ -63,20 +158,46 @@ jobs:
           # post-step then fatal-errors with "Cache folder path is
           # retrieved for pip but doesn't exist on disk".
 
-      - name: Install Studio (--local, --no-torch)
-        # Pass the workflow token so the llama.cpp prebuilt installer's
-        # GitHub-API call to list releases isn't rate-limited (60/hr
-        # unauthenticated). Without this, three consecutive install +
-        # update + update calls in this job exceed the limit and the
-        # prebuilt path falls back to source build.
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install Unsloth (--local, --no-torch)
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+
+      - name: A second update does nothing, and proves it
+        # The first updates after the install, measured rather than read off their logs:
+        # the update runs with a CONNECT proxy as its only route out, so "downloaded
+        # nothing" is a byte count per host rather than an impression of speed, and the
+        # install is diffed before and after so "changed nothing" covers the files no log
+        # line mentions. Before the log-only steps below on purpose: a regression that
+        # downloads or rewrites state on the first or second update and then records
+        # enough evidence to go quiet would otherwise be measured only on a fourth.
+        #
+        # It also damages the install on purpose (a sidecar file, the manifest, a
+        # llama.cpp binary, a requirements file) and asserts the update repairs exactly
+        # the damaged part. Those cases restore what they broke, but they run BEFORE the
+        # manifest-removal step below rather than after, so a failure here cannot be
+        # mistaken for the deliberately incomplete install that step creates.
+        timeout-minutes: 30
+        env:
+          UNSLOTH_IDEMPOTENCY_E2E: '1'
+          # Each run's update log and proxy journal, kept for the upload below. A
+          # failure here is unreadable without them: the assertion says which host
+          # served bytes, not which of the eight runs did it.
+          UNSLOTH_IDEMPOTENCY_ARTIFACTS: ${{ github.workspace }}/logs/idempotency
+          # The install above is --local and editable, so the CLI would find the
+          # checkout on its own; naming it keeps that working if the install ever
+          # stops being editable.
+          STUDIO_LOCAL_REPO: ${{ github.workspace }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p logs
           set -o pipefail
-          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+          mkdir -p logs
+          # setup-python's interpreter runs the harness, and it ships without pytest.
+          python -m pip install --quiet pytest
+          python -m pytest tests/studio/install/test_update_idempotency.py -v -s \
+            2>&1 | tee logs/idempotency.log
 
       - name: First update should be a no-op (prebuilt already validated)
         # `unsloth studio update --local` runs studio/setup.sh against
@@ -122,7 +243,7 @@ jobs:
           grep -qE "prebuilt up to date and validated|prebuilt installed and validated" logs/update2.log
           echo "second update was clean"
 
-      - name: Boot Studio briefly to confirm the install is still usable
+      - name: Boot Unsloth briefly to confirm the install is still usable
         # If `update --local` accidentally broke the venv or wiped the
         # llama-server binary, the server would fail to start here.
         run: |
@@ -138,13 +259,53 @@ jobs:
             sleep 1
           done
           if ! jq -e '.status == "healthy"' /tmp/health.json 2>/dev/null; then
-            echo "Studio failed to come up after `update`"
+            echo "Unsloth failed to come up after `update`"
             tail -200 logs/studio.log
             kill "$PID" 2>/dev/null || true
             exit 1
           fi
           kill "$PID" 2>/dev/null || true
-          echo "post-update Studio /api/health OK"
+          echo "post-update Unsloth /api/health OK"
+
+      - name: A complete install reports itself complete
+        run: |
+          set -o pipefail
+          unsloth studio verify-install
+          unsloth studio desktop-capabilities --json | tee /tmp/caps.json
+          jq -e '.studio_install_ok == true' /tmp/caps.json
+          jq -e '.desktop_manageability_version >= 2' /tmp/caps.json
+
+      - name: An incomplete install must not report itself ready
+        # An installer killed part-way leaves a working CLI but no studio.txt
+        # deps, which the old preflight called ManagedReady. The manifest is
+        # written last, so removing it reproduces that state.
+        run: |
+          set -o pipefail
+          # install.sh's default root, resolved explicitly: `python` on PATH
+          # here is setup-python's, not the managed venv.
+          MANIFEST="$HOME/.unsloth/studio/unsloth_studio/unsloth_install_manifest.json"
+          test -f "$MANIFEST" || { echo "::error::installer never wrote $MANIFEST"; exit 1; }
+          rm -f "$MANIFEST"
+          unsloth studio desktop-capabilities --json | tee /tmp/caps_bad.json
+          jq -e '.studio_install_ok == false' /tmp/caps_bad.json
+          if unsloth studio verify-install; then
+            echo "::error::verify-install passed on an install with no manifest"
+            exit 1
+          fi
+          echo "incomplete install correctly reported not-ready"
+
+      - name: Update repairs an incomplete install
+        # `--local` bypasses setup.sh's PyPI version compare, so this asserts
+        # the repair OUTCOME. The non-local fast path the desktop Repair button
+        # uses is covered by tests/studio/install/test_setup_fast_path_guard.py.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          unsloth studio update --local 2>&1 | tee logs/update_repair.log
+          unsloth studio verify-install
+          unsloth studio desktop-capabilities --json | jq -e '.studio_install_ok == true'
+          echo "update repaired the incomplete install"
 
       - name: Uninstall and verify clean
         # Round-trip the installer through scripts/uninstall.sh: confirms the
@@ -166,6 +327,10 @@ jobs:
           leak=0
           for p in \
             "$HOME/.unsloth/studio" \
+            "$HOME/.unsloth/whisper.cpp" \
+            "$HOME/.unsloth/.llama.cpp.install.lock" \
+            "$HOME/.unsloth/.node.install.lock" \
+            "$HOME/.unsloth/.whisper.cpp.install.lock" \
             "$HOME/.local/share/unsloth" \
             "$HOME/Desktop/Unsloth Studio.desktop" \
             "$HOME/.local/bin/unsloth"; do
@@ -175,6 +340,16 @@ jobs:
               leak=$((leak + 1))
             fi
           done
+          # Catch-all that does not need updating when a new artifact is added:
+          # nothing but Unsloth writes under ~/.unsloth on a runner, so a
+          # surviving directory means the uninstaller missed something. This is
+          # what caught the node/whisper install locks, which individually look
+          # harmless but keep the uninstaller's rmdir from pruning ~/.unsloth.
+          if [ -d "$HOME/.unsloth" ]; then
+            echo "::error::leak: ~/.unsloth survived the uninstall"
+            find "$HOME/.unsloth" | head -40
+            leak=$((leak + 1))
+          fi
           [ "$leak" -eq 0 ] || exit 1
           # Idempotent: re-runs exit 0 on an empty $HOME.
           sh scripts/uninstall.sh 2>&1 | tail -5
@@ -192,6 +367,157 @@ jobs:
             logs/install.log
             logs/update.log
             logs/update2.log
+            logs/idempotency.log
+            logs/idempotency/**/update.log
+            logs/idempotency/**/proxy.jsonl
             logs/studio.log
             logs/uninstall.log
+          retention-days: 7
+
+  idempotency-macos:
+    name: Unsloth Updating Tests (macOS)
+    runs-on: macos-15
+    # The install is the expensive half; the harness itself is three updates that are
+    # supposed to do nothing plus five that do one thing each.
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Below setup.sh's floor (Node ^20.19 || >=22.12 with npm >= 11) on purpose: with
+      # it, setup takes the bundled Node path desktop users without a toolchain take, so
+      # the harness's Node marker snapshot and its "nothing from nodejs.org" assertion
+      # measure a managed Node rather than pass vacuously over a system one. The Linux
+      # job keeps a qualifying system Node (Node 24, npm 11), the developer path.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '20.18.0'
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install Unsloth (--local, --no-torch)
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+
+      - name: A second update does nothing, and proves it
+        # macOS is where a no-op update cost the most before this: the llama.cpp and
+        # whisper.cpp re-validations START the servers, which on Apple Silicon means
+        # loading Metal. Same harness as the Linux leg.
+        timeout-minutes: 30
+        env:
+          UNSLOTH_IDEMPOTENCY_E2E: '1'
+          UNSLOTH_IDEMPOTENCY_ARTIFACTS: ${{ github.workspace }}/logs/idempotency
+          STUDIO_LOCAL_REPO: ${{ github.workspace }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          mkdir -p logs
+          # setup-python's interpreter runs the harness, and it ships without pytest.
+          python -m pip install --quiet pytest
+          python -m pytest tests/studio/install/test_update_idempotency.py -v -s \
+            2>&1 | tee logs/idempotency.log
+
+      - name: Upload macOS idempotency logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: studio-update-idempotency-macos-log
+          path: |
+            logs/install.log
+            logs/idempotency.log
+            logs/idempotency/**/update.log
+            logs/idempotency/**/proxy.jsonl
+          retention-days: 7
+
+  idempotency-windows:
+    name: Unsloth Updating Tests (Windows)
+    runs-on: windows-latest
+    # Windows installs are 3x the Linux ones (268-292s against 88s in the API smoke),
+    # and Defender is why; the harness after it is the same three updates.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Node 22 ships npm 10, below setup.ps1's npm 11 floor, so this job takes the
+      # bundled Node path as the macOS job does; the Linux job covers the system-Node one.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      # install-unsloth-local restores this for the Linux and macOS jobs above; this
+      # hand-written pwsh install never had it, so every run re-downloaded every wheel.
+      # install.ps1 preserves the UV_CACHE_DIR the action exports.
+      - name: Restore the uv download cache
+        id: uv-cache
+        uses: ./.github/actions/uv-cache-restore
+
+      - name: Install Unsloth (--local, --no-torch)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+          # A CHILD process, so install.ps1's Write-StudioLine output reaches
+          # Tee-Object: in-process it goes straight to [Console]::Out and the log is
+          # empty. Same idiom as studio-windows-api-smoke.yml.
+          $child = '$ErrorActionPreference = ''Stop''; $ProgressPreference = ''SilentlyContinue''; & ./install.ps1 --local --no-torch; exit $LASTEXITCODE'
+          # Elapsed-seconds prefix, added to the STEP LOG only. Tee-Object writes
+          # logs/install.log upstream of this filter, so the artifact keeps exactly
+          # what install.ps1 produced. Same idiom as studio-windows-api-smoke.yml.
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
+          pwsh -NoProfile -ExecutionPolicy Bypass -Command $child 2>&1 |
+            Tee-Object -FilePath logs/install.log |
+            ForEach-Object { '[{0,4:N0}s] {1}' -f $sw.Elapsed.TotalSeconds, $_ }
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited with code $LASTEXITCODE" }
+
+      # Paired with the restore above: pruned to built wheels, saved on main only.
+      - name: Save the uv download cache
+        uses: ./.github/actions/uv-cache-save
+        with:
+          cache-hit: ${{ steps.uv-cache.outputs.cache-hit }}
+          key: ${{ steps.uv-cache.outputs.key }}
+
+      - name: A second update does nothing, and proves it
+        # The Windows leg is the one that can catch a path or marker written with the
+        # wrong separator: every comparison in the harness is a byte-for-byte one.
+        timeout-minutes: 40
+        shell: pwsh
+        env:
+          UNSLOTH_IDEMPOTENCY_E2E: '1'
+          UNSLOTH_IDEMPOTENCY_ARTIFACTS: ${{ github.workspace }}\logs\idempotency
+          STUDIO_LOCAL_REPO: ${{ github.workspace }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+          $ErrorActionPreference = 'Continue'
+          # setup-python's interpreter runs the harness, and it ships without pytest.
+          python -m pip install --quiet pytest
+          python -m pytest tests/studio/install/test_update_idempotency.py -v -s 2>&1 |
+            Tee-Object -FilePath logs/idempotency.log
+          if ($LASTEXITCODE -ne 0) { throw "the idempotency harness failed ($LASTEXITCODE)" }
+
+      - name: Upload Windows idempotency logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: studio-update-idempotency-windows-log
+          path: |
+            logs/install.log
+            logs/idempotency.log
+            logs/idempotency/**/update.log
+            logs/idempotency/**/proxy.jsonl
           retention-days: 7

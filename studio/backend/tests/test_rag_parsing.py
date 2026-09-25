@@ -7,6 +7,17 @@ from __future__ import annotations
 
 import pytest
 
+
+def _shared_setup_1():
+    pytest.importorskip("docx")
+    import docx
+
+    from core.rag import parsers
+
+    document = docx.Document()
+    return document, docx, parsers
+
+
 pytest.importorskip("pymupdf")
 
 
@@ -52,6 +63,56 @@ def test_pdf_markdown_off_uses_plain_text(tmp_path, monkeypatch):
     text = "\n".join(p.text for p in parsers.parse(str(pdf)))
     assert "Q2" in text and "$1.5M" in text
     assert "#" not in text and "|" not in text  # plain text path emits no Markdown markup
+
+
+def test_pdf_bytes_use_same_extraction_path(tmp_path, monkeypatch):
+    from core.rag import config, parsers
+
+    monkeypatch.setattr(config, "PDF_MARKDOWN", False)
+    pdf = tmp_path / "table.pdf"
+    _table_pdf(pdf)
+    from_file = parsers.parse(str(pdf))
+    from_bytes, total_pages = parsers.parse_pdf_bytes(pdf.read_bytes())
+    assert [page.text for page in from_bytes] == [page.text for page in from_file]
+    assert total_pages == len(from_file)
+
+
+def test_pdf_bytes_limit_pages_before_extraction(monkeypatch):
+    import pymupdf
+
+    from core.rag import config, parsers
+
+    monkeypatch.setattr(config, "PDF_MARKDOWN", False)
+    doc = pymupdf.open()
+    for marker in ("page one", "page two", "page three"):
+        page = doc.new_page()
+        page.insert_text((40, 40), marker)
+    data = doc.tobytes()
+    doc.close()
+
+    pages, total_pages = parsers.parse_pdf_bytes(data, max_pages = 2)
+    assert len(pages) == 2
+    assert "page two" in pages[-1].text
+    assert total_pages == 3  # full count, not the 2 extracted
+
+
+def test_pdf_markdown_receives_page_limit(monkeypatch):
+    from core.rag import parsers
+
+    captured = {}
+
+    class _FakePymupdf4llm:
+        @staticmethod
+        def to_markdown(doc, **kwargs):
+            captured.update(kwargs)
+            return [{"text": "page"} for _ in kwargs["pages"]]
+
+    class _Doc:
+        page_count = 100
+
+    monkeypatch.setitem(__import__("sys").modules, "pymupdf4llm", _FakePymupdf4llm)
+    assert parsers._pdf_markdown(_Doc(), range(2)) == ["page", "page"]
+    assert captured == {"page_chunks": True, "show_progress": False, "pages": [0, 1]}
 
 
 def test_pdf_markdown_passes_only_supported_legacy_kwargs(monkeypatch):
@@ -157,12 +218,7 @@ def test_docx_extracts_table_cells(tmp_path):
 def test_docx_table_keeps_columns_and_collapses_cell_newlines(tmp_path):
     # Empty cells are kept (so columns stay aligned across rows) and a cell's internal
     # newlines are collapsed to spaces (so a multi-paragraph cell can't break the row).
-    pytest.importorskip("docx")
-    import docx
-
-    from core.rag import parsers
-
-    document = docx.Document()
+    document, docx, parsers = _shared_setup_1()
     table = document.add_table(rows = 2, cols = 3)
     table.cell(0, 0).text = "A"
     table.cell(0, 1).text = ""  # empty middle cell
@@ -184,12 +240,7 @@ def test_docx_table_merged_cell_keeps_grid_alignment(tmp_path):
     # A horizontally merged cell repeats across the spanned columns: emit its text once
     # then a placeholder, so the row keeps as many fields as its siblings (columns stay
     # aligned) without duplicating the merged text.
-    pytest.importorskip("docx")
-    import docx
-
-    from core.rag import parsers
-
-    document = docx.Document()
+    document, docx, parsers = _shared_setup_1()
     table = document.add_table(rows = 2, cols = 3)
     table.cell(0, 0).text = "WIDE"
     table.cell(0, 2).text = "END"
@@ -235,12 +286,7 @@ def test_docx_table_pads_omitted_grid_columns(tmp_path):
 def test_docx_flattens_nested_table(tmp_path):
     # cell.text ignores tables nested inside a cell; walk cell.tables so nested rows are
     # not silently dropped from the indexed text.
-    pytest.importorskip("docx")
-    import docx
-
-    from core.rag import parsers
-
-    document = docx.Document()
+    document, docx, parsers = _shared_setup_1()
     outer = document.add_table(rows = 1, cols = 1).cell(0, 0)
     outer.text = "outer"
     nested = outer.add_table(rows = 1, cols = 2)
@@ -256,12 +302,7 @@ def test_docx_flattens_nested_table(tmp_path):
 def test_docx_nested_table_keeps_in_cell_order(tmp_path):
     # A cell holding paragraph, nested table, paragraph must serialize in that order
     # (cell.text alone would emit both paragraphs before the nested rows).
-    pytest.importorskip("docx")
-    import docx
-
-    from core.rag import parsers
-
-    document = docx.Document()
+    document, docx, parsers = _shared_setup_1()
     cell = document.add_table(rows = 1, cols = 1).cell(0, 0)
     cell.text = "before"
     nested = cell.add_table(rows = 1, cols = 2)
@@ -278,12 +319,7 @@ def test_docx_nested_table_keeps_in_cell_order(tmp_path):
 def test_docx_table_vertical_merge_emitted_once(tmp_path):
     # A vertically merged cell maps every continuation row back to the origin <w:tc>;
     # emit it once and leave placeholders below so a row-spanning label isn't repeated.
-    pytest.importorskip("docx")
-    import docx
-
-    from core.rag import parsers
-
-    document = docx.Document()
+    document, docx, parsers = _shared_setup_1()
     table = document.add_table(rows = 3, cols = 2)
     table.cell(0, 0).merge(table.cell(1, 0)).merge(table.cell(2, 0)).text = "SECTION"
     table.cell(0, 1).text = "r0"

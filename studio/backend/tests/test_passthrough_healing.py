@@ -280,6 +280,56 @@ class TestStreamHealer:
         assert [c["id"] for c in calls] == ["call_0", "call_1"]
         assert _events_text(events).strip() == "then"
 
+    def test_mistral_array_multiple_calls_all_promoted_in_stream(self):
+        # A canonical Mistral [TOOL_CALLS] array carries several calls under a
+        # SINGLE signal. Draining only the first call would leave the residue
+        # starting at ",{...}]" (no signal), so later calls in the same array
+        # must be promoted in the same pass, not flushed as raw text.
+        healer = StreamToolCallHealer({"get_weather", "get_time"})
+        array = (
+            '[TOOL_CALLS][{"name":"get_weather","arguments":{"city":"Paris"}},'
+            '{"name":"get_time","arguments":{"tz":"UTC"}}]'
+        )
+        events = healer.feed(array) + healer.finalize()
+        calls = _events_calls(events)
+        assert [c["function"]["name"] for c in calls] == ["get_weather", "get_time"]
+        assert [c["id"] for c in calls] == ["call_0", "call_1"]
+        assert _events_text(events) == ""
+
+    def test_mistral_array_multiple_calls_promoted_char_by_char(self):
+        healer = StreamToolCallHealer({"get_weather", "get_time"})
+        array = (
+            '[TOOL_CALLS][{"name":"get_weather","arguments":{"city":"Paris"}},'
+            '{"name":"get_time","arguments":{"tz":"UTC"}}]'
+        )
+        events = []
+        for ch in array:
+            events += healer.feed(ch)
+        events += healer.finalize()
+        calls = _events_calls(events)
+        assert [c["function"]["name"] for c in calls] == ["get_weather", "get_time"]
+        assert _events_text(events) == ""
+
+    def test_mistral_array_undeclared_middle_kept_as_text_others_promoted(self):
+        # A mid-array element for a tool that is not declared must survive as
+        # text while the declared neighbours on either side still promote in
+        # document order.
+        healer = StreamToolCallHealer({"a", "c"})
+        array = (
+            '[TOOL_CALLS][{"name":"a","arguments":{}},'
+            '{"name":"b","arguments":{}},{"name":"c","arguments":{}}]'
+        )
+        events = healer.feed(array) + healer.finalize()
+        assert [c["function"]["name"] for c in _events_calls(events)] == ["a", "c"]
+        assert '"b"' in _events_text(events)
+
+    def test_mistral_array_then_trailing_prose(self):
+        healer = StreamToolCallHealer({"a", "b"})
+        array = '[TOOL_CALLS][{"name":"a","arguments":{}},{"name":"b","arguments":{}}]'
+        events = healer.feed(f"{array} all done") + healer.finalize()
+        assert [c["function"]["name"] for c in _events_calls(events)] == ["a", "b"]
+        assert "all done" in _events_text(events)
+
     def test_incomplete_call_healed_at_finalize(self):
         healer = StreamToolCallHealer({"Bash"})
         events = healer.feed('<tool_call>{"name":"Bash","arguments":{"cmd":"ls"}}')
@@ -415,6 +465,11 @@ LOOKUP_TOOL = {
     "function": {"name": "lookup", "parameters": {"type": "object", "properties": {}}},
 }
 LOOKUP_XML = '<tool_call>{"name":"lookup","arguments":{"q":"x"}}</tool_call>'
+OTHER_TOOL = {
+    "type": "function",
+    "function": {"name": "other", "parameters": {"type": "object", "properties": {}}},
+}
+OTHER_XML = '<tool_call>{"name":"other","arguments":{}}</tool_call>'
 
 
 def _payload(**kwargs):
@@ -439,6 +494,7 @@ def _upstream_message(
     content,
     tool_calls = None,
     finish_reason = "stop",
+    usage = None,
 ):
     message = {"role": "assistant", "content": content}
     if tool_calls is not None:
@@ -449,25 +505,31 @@ def _upstream_message(
         "created": 1,
         "model": "gguf",
         "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
-        "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+        "usage": usage or {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
     }
 
 
 class ScriptedClient:
-    """Fake nonstreaming_client() returning scripted JSON bodies, counting POSTs."""
+    """Fake upstream client returning scripted JSON bodies, counting POSTs."""
 
     def __init__(self, bodies):
         self.bodies = list(bodies)
         self.posts = []
+        self.closed = False
 
     async def post(
         self,
         _url,
         json = None,
         timeout = None,
+        headers = None,
     ):
         self.posts.append(json)
         return httpx.Response(200, json = self.bodies[min(len(self.posts) - 1, len(self.bodies) - 1)])
+
+    async def aclose(self):
+        # The Anthropic pass-through owns its client and closes it in a finally.
+        self.closed = True
 
 
 async def _drive_non_streaming(monkeypatch, payload, bodies):
@@ -642,6 +704,25 @@ class TestOpenaiNonStreamingRoute:
 
         asyncio.run(_run())
 
+    def test_forced_function_is_sent_as_its_one_tool_under_required(self, monkeypatch):
+        async def _run():
+            client, data = await _drive_non_streaming(
+                monkeypatch,
+                _payload(
+                    tools = [LOOKUP_TOOL, OTHER_TOOL],
+                    tool_choice = {"type": "function", "function": {"name": "lookup"}},
+                ),
+                [_upstream_message(OTHER_XML)],
+            )
+            (body,) = client.posts
+            assert [t["function"]["name"] for t in body["tools"]] == ["lookup"]
+            assert body["tool_choice"] == "required"
+            message = data["choices"][0]["message"]
+            assert message["content"] == OTHER_XML
+            assert "tool_calls" not in message
+
+        asyncio.run(_run())
+
     def test_mixed_declared_and_undeclared_promotes_and_keeps_text(self, monkeypatch):
         async def _run():
             rogue = '<tool_call>{"name":"rogue","arguments":{}}</tool_call>'
@@ -748,6 +829,49 @@ class TestNudgeRetryOpenai:
 
         asyncio.run(_run())
 
+    def test_retry_usage_includes_both_generation_attempts(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            first = _upstream_message(
+                GARBAGE_SIGNAL,
+                usage = {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+            )
+            retry = _upstream_message(
+                LOOKUP_XML,
+                usage = {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25},
+            )
+            client = ScriptedClient([first, retry])
+            monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+
+            response = await _openai_passthrough_non_streaming(
+                _llama_backend(),
+                _payload(nudge_tool_calls = True),
+                "gguf",
+                monitor_id = monitor_id,
+            )
+            data = json.loads(response.body)
+
+            assert data["usage"] == {
+                "prompt_tokens": 20,
+                "completion_tokens": 8,
+                "total_tokens": 28,
+            }
+            [entry] = monitor.snapshot()
+            assert entry["prompt_tokens"] == 20
+            assert entry["completion_tokens"] == 8
+            assert entry["total_tokens"] == 28
+
+        asyncio.run(_run())
+
     def test_retry_still_garbage_returns_original(self, monkeypatch):
         async def _run():
             client, data = await _drive_non_streaming(
@@ -816,7 +940,7 @@ class TestNudgeRetryAnthropic:
         from routes.inference import _anthropic_passthrough_non_streaming
 
         client = ScriptedClient(bodies)
-        monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+        monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
         response = await _anthropic_passthrough_non_streaming(
             _llama_backend(),
             [{"role": "user", "content": "hi"}],
@@ -845,6 +969,29 @@ class TestNudgeRetryAnthropic:
 
         asyncio.run(_run())
 
+    def test_discarded_retry_usage_still_counts_generated_tokens(self, monkeypatch):
+        async def _run():
+            first = _upstream_message(
+                GARBAGE_SIGNAL,
+                usage = {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+            )
+            retry = _upstream_message(
+                GARBAGE_SIGNAL + "2",
+                usage = {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25},
+            )
+            client, data = await self._drive(
+                monkeypatch,
+                [first, retry],
+                nudge = True,
+            )
+
+            assert len(client.posts) == 2
+            assert data["content"][0]["text"] == GARBAGE_SIGNAL
+            assert data["usage"]["input_tokens"] == 20
+            assert data["usage"]["output_tokens"] == 8
+
+        asyncio.run(_run())
+
     def test_healed_tool_use_precedes_trailing_text(self, monkeypatch):
         async def _run():
             _, data = await self._drive(monkeypatch, [_upstream_message(f"{LOOKUP_XML} done")])
@@ -861,6 +1008,37 @@ class TestNudgeRetryAnthropic:
         asyncio.run(_run())
 
 
+class TestAnthropicForcedToolChoice:
+    def test_forced_tool_is_sent_as_its_one_tool_under_required(self, monkeypatch):
+        import routes.inference as inf_mod
+        from routes.inference import _anthropic_passthrough_non_streaming
+
+        client = ScriptedClient([_upstream_message(OTHER_XML)])
+        monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
+
+        async def _run():
+            response = await _anthropic_passthrough_non_streaming(
+                _llama_backend(),
+                [{"role": "user", "content": "hi"}],
+                [LOOKUP_TOOL, OTHER_TOOL],
+                0.7,
+                0.95,
+                None,
+                256,
+                "msg_test",
+                "gguf",
+                tool_choice = {"type": "function", "function": {"name": "lookup"}},
+            )
+            return json.loads(response.body)
+
+        data = asyncio.run(_run())
+
+        (body,) = client.posts
+        assert [t["function"]["name"] for t in body["tools"]] == ["lookup"]
+        assert body["tool_choice"] == "required"
+        assert "tool_use" not in [block["type"] for block in data["content"]]
+
+
 class TestAnthropicPassthroughHealingText:
     """Non-streaming Anthropic passthrough must relay unpromoted (undeclared)
     text-form calls as text, matching the OpenAI passthrough contract. Once
@@ -874,7 +1052,7 @@ class TestAnthropicPassthroughHealingText:
         from routes.inference import _anthropic_passthrough_non_streaming
 
         client = ScriptedClient([upstream])
-        monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+        monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
         response = await _anthropic_passthrough_non_streaming(
             _llama_backend(),
             [{"role": "user", "content": "hi"}],
@@ -1120,7 +1298,7 @@ class TestAnthropicNonStreamingRoute:
         from routes.inference import _anthropic_passthrough_non_streaming
 
         client = ScriptedClient(bodies)
-        monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+        monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
         response = await _anthropic_passthrough_non_streaming(
             _llama_backend(),
             [{"role": "user", "content": "hi"}],
@@ -1356,3 +1534,99 @@ class TestOpenaiStreamingRoute:
             assert chunks[0] == line + "\n\n"  # byte-for-byte relay
 
         asyncio.run(_run())
+
+
+class TestHealerSignalAlignment:
+    """The passthrough healer buffers only formats its parser can promote.
+    The loops' bare [ARGS] rehearsal signal is gated on active tool names
+    there; ungated in the healer it would stall legitimate prose until
+    finalization without ever producing a promotable call."""
+
+    def test_heal_signals_are_promotable_formats_only(self):
+        from core.inference.passthrough_healing import _HEAL_SIGNALS
+        assert set(_HEAL_SIGNALS) == {
+            "<tool_call>",
+            "<|tool_call>",
+            "<function=",
+            "[TOOL_CALLS]",
+            "<|content_invoke_tool_json|>",
+        }
+
+    def test_prose_with_bare_args_marker_streams_through(self):
+        healer = StreamToolCallHealer({"Bash"})
+        chunks = [
+            "Use the pattern foo",
+            "[ARGS] in templates when calling tools, ",
+            "and remember to close it.",
+        ]
+        streamed = ""
+        for chunk in chunks:
+            streamed += _events_text(healer.feed(chunk))
+        # Incremental relay: nothing withheld for finalize.
+        assert streamed == "".join(chunks)
+        final = healer.finalize()
+        assert not _events_calls(final)
+        assert not healer.healed
+
+    def test_bracket_tool_calls_still_promote_in_stream(self):
+        healer = StreamToolCallHealer({"web_search"})
+        events = healer.feed('[TOOL_CALLS]web_search{"query": "unsloth docs"}') + healer.finalize()
+        (call,) = _events_calls(events)
+        assert call["function"]["name"] == "web_search"
+        assert healer.healed
+
+
+# --- client-supplied tool schemas -------------------------------------------------------
+# A coding agent on `unsloth start` declares its own tools, so schemas live in the request.
+
+
+def _client_tool(name, properties):
+    return {
+        "type": "function",
+        "function": {"name": name, "parameters": {"type": "object", "properties": properties}},
+    }
+
+
+GREP_TOOL = _client_tool(
+    "Grep",
+    {
+        "pattern": {"type": "string"},
+        "multiline": {"type": "boolean"},
+        "head_limit": {"type": "integer"},
+        "timeout": {"type": "integer"},
+    },
+)
+# Spells `timeout` the other way, so neither call reads through the other tool's schema.
+FETCH_TOOL = _client_tool("WebFetch", {"url": {"type": "string"}, "timeout": {"type": "string"}})
+CLIENT_TOOLS = [FETCH_TOOL, GREP_TOOL]
+CLIENT_NAMES = {"WebFetch", "Grep"}
+
+
+def _healed_arguments(content):
+    msg = {"role": "assistant", "content": content}
+    assert heal_openai_message(msg, CLIENT_NAMES, CLIENT_TOOLS) is True
+    (call,) = msg["tool_calls"]
+    return json.loads(call["function"]["arguments"])
+
+
+class TestClientToolSchemaTyping:
+    def test_xml_parameters_arrive_as_their_declared_types(self):
+        """Both spell "false": the declared flag becomes a boolean, the search text stays text."""
+        arguments = _healed_arguments(
+            "<function=Grep>"
+            "<parameter=pattern>false</parameter>"
+            "<parameter=head_limit>25</parameter>"
+            "<parameter=multiline>false</parameter>"
+            "</function>"
+        )
+        assert arguments == {"pattern": "false", "head_limit": 25, "multiline": False}
+
+    def test_each_call_is_typed_through_its_own_tools_schema(self):
+        """One key, two declarations: `timeout` is milliseconds on Grep and a duration
+        string on WebFetch. A schema picked by position, or merged across the request, has
+        one answer for both keys and so reads one of these calls wrong."""
+        call = (
+            "<function=%s><parameter=%s>x</parameter><parameter=timeout>30</parameter></function>"
+        )
+        assert _healed_arguments(call % ("WebFetch", "url")) == {"url": "x", "timeout": "30"}
+        assert _healed_arguments(call % ("Grep", "pattern")) == {"pattern": "x", "timeout": 30}

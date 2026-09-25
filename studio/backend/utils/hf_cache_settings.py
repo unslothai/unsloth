@@ -1,0 +1,501 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Live, persisted Hugging Face cache routing for Unsloth Studio.
+
+Hugging Face reads cache environment variables at import time.  Unsloth therefore
+owns an explicit cache snapshot for each operation instead of trying to refresh
+``huggingface_hub.constants`` in the long-running API process.
+"""
+
+from __future__ import annotations
+
+import os
+import stat
+import sys
+import shutil
+import tempfile
+import threading
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterator, Literal, Mapping, Optional
+
+
+CACHE_HOME_SETTING_KEY = "hugging_face_cache_home"
+CACHE_HISTORY_SETTING_KEY = "hugging_face_cache_history"
+MAX_CACHE_HISTORY = 16
+
+CacheSource = Literal["default", "studio", "environment"]
+
+_CACHE_ENV_KEYS = (
+    "HF_HOME",
+    "HF_HUB_CACHE",
+    "HUGGINGFACE_HUB_CACHE",
+    "HF_XET_CACHE",
+)
+# Imported by storage_roots._setup_cache_env before Unsloth seeds defaults.
+_EXPLICIT_CACHE_ENV = {
+    key: value.strip()
+    for key in _CACHE_ENV_KEYS
+    if (value := os.environ.get(key)) is not None and value.strip()
+}
+_settings_lock = threading.RLock()
+_spawn_env_lock = threading.RLock()
+
+
+@dataclass(frozen = True)
+class HuggingFaceCachePaths:
+    cache_home: Path
+    hub_cache: Path
+    xet_cache: Path
+    source: CacheSource
+    environment_variable: Optional[str] = None
+
+    @property
+    def editable(self) -> bool:
+        return self.source != "environment"
+
+    @property
+    def is_custom(self) -> bool:
+        return self.source == "studio"
+
+    def child_env(self, base: Optional[Mapping[str, str]] = None) -> dict[str, str]:
+        # Scrub either way: an explicit base is usually the caller's own os.environ
+        # copy, so it carries any scoped offline flags an open guard has set.
+        from utils.utils import hf_environment_for_spawn, hf_environment_scrubbed
+
+        env = hf_environment_for_spawn() if base is None else hf_environment_scrubbed(base)
+        # Do not rewrite HF_HOME. It also owns HF's token path.
+        env["HF_HUB_CACHE"] = str(self.hub_cache)
+        env["HF_XET_CACHE"] = str(self.xet_cache)
+        env.pop("HUGGINGFACE_HUB_CACHE", None)
+        return env
+
+
+def _default_cache_home() -> Path:
+    xdg = (os.environ.get("XDG_CACHE_HOME") or "").strip()
+    return (Path(xdg).expanduser() if xdg else Path.home() / ".cache") / "huggingface"
+
+
+def _canonical(path: Path | str) -> Path:
+    return Path(path).expanduser().resolve(strict = False)
+
+
+def _environment_paths() -> Optional[HuggingFaceCachePaths]:
+    explicit_home = _EXPLICIT_CACHE_ENV.get("HF_HOME")
+    explicit_hub = _EXPLICIT_CACHE_ENV.get("HF_HUB_CACHE") or _EXPLICIT_CACHE_ENV.get(
+        "HUGGINGFACE_HUB_CACHE"
+    )
+    if not explicit_home and not explicit_hub:
+        return None
+    explicit_xet = _EXPLICIT_CACHE_ENV.get("HF_XET_CACHE")
+    default_home = _default_cache_home()
+    hf_home = _canonical(explicit_home) if explicit_home else default_home
+    hub = _canonical(explicit_hub) if explicit_hub else hf_home / "hub"
+    # huggingface_hub derives HF_XET_CACHE from HF_HOME, never from HF_HUB_CACHE, so a hub-only
+    # override would leave the chunk and shard caches in the host home.
+    xet_home = hf_home if explicit_home else (_portable_cache_home() or hf_home)
+    xet = _canonical(explicit_xet) if explicit_xet else xet_home / "xet"
+    controlling = next(
+        key
+        for key in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_HOME")
+        if key in _EXPLICIT_CACHE_ENV
+    )
+    # Settings describes model downloads, so an explicit hub path is the
+    # displayed/opened location even when HF_HOME points somewhere else for
+    # credentials or XET data.
+    display_home = (
+        (hub.parent if explicit_hub and hub.name.lower() == "hub" else hub)
+        if explicit_hub
+        else hf_home
+    )
+    return HuggingFaceCachePaths(display_home, hub, xet, "environment", controlling)
+
+
+def _absence_is_real(path: Path) -> bool:
+    """Whether a FileNotFoundError for *path* proves the file is not there.
+
+    On POSIX it always does: a parent component that is a file raises NotADirectoryError, and a
+    parent that cannot be traversed raises PermissionError, both of which are their own types.
+    Windows collapses every one of those into ERROR_PATH_NOT_FOUND, which Python surfaces as
+    FileNotFoundError, so on Windows the exception means "not there, OR somewhere above it is not
+    a directory, OR I could not look" -- and the caller must only skip its read for the first.
+
+    Decided by the nearest ancestor that can actually be stat'ed: a directory means the tree is
+    real and the file genuinely is not in it; anything else means a component is a file or a
+    reparse point and the path could never have existed; an ancestor that cannot be inspected at
+    all is not proof either way, so it reads as "not proven". Running out of ancestors means
+    nothing along the path exists, which is the machine that has never opened Studio -- the case
+    the skip is FOR, so the absence is real there.
+    """
+    current = os.path.dirname(os.fspath(path))
+    while current:
+        try:
+            info = os.stat(current)
+        except FileNotFoundError:
+            parent = os.path.dirname(current)
+            if parent == current:
+                return True
+            current = parent
+            continue
+        except OSError:
+            return False
+        return stat.S_ISDIR(info.st_mode)
+    return True
+
+
+def _stored_cache_home() -> Optional[Path]:
+    # get_app_setting CREATES and migrates studio.db, so an unconditional read built one on
+    # machines that had never opened Studio. os.stat, not Path.exists: only a positively observed
+    # absence may skip the read, and from 3.14 the predicates report EACCES and EIO as False.
+    # stat, not lstat: sqlite follows symlinks.
+    try:
+        if "storage.studio_db" not in sys.modules:
+            from utils.paths.storage_roots import studio_db_path
+            database = studio_db_path()
+            try:
+                os.stat(database)
+            except FileNotFoundError:
+                if _absence_is_real(database):
+                    return None
+    except Exception:  # noqa: BLE001 - fall through to the read on any doubt
+        pass
+    try:
+        from storage.studio_db import get_app_setting
+        from utils.account_context import OWNER, run_as
+        value = run_as(OWNER, get_app_setting, CACHE_HOME_SETTING_KEY, None)
+    except Exception:  # noqa: BLE001 - the shim is optional; a spawn must never depend on it
+        return None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return _canonical(value.strip())
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def configured_cache_key() -> str:
+    """The configured cache location, for keying caches and in-flight work.
+
+    Deliberately unresolved: resolve() can block on the very volume a caller is
+    trying to move off. Only equality matters here, not the real path.
+    """
+    explicit = (
+        _EXPLICIT_CACHE_ENV.get("HF_HUB_CACHE")
+        or _EXPLICIT_CACHE_ENV.get("HUGGINGFACE_HUB_CACHE")
+        or _EXPLICIT_CACHE_ENV.get("HF_HOME")
+    )
+    if explicit:
+        return "env:" + explicit
+    try:
+        from storage.studio_db import get_app_setting
+        from utils.account_context import OWNER, run_as
+        value = run_as(OWNER, get_app_setting, CACHE_HOME_SETTING_KEY, None)
+    except Exception:
+        return "default"
+    if isinstance(value, str) and value.strip():
+        return "studio:" + value.strip()
+    return "default"
+
+
+def _portable_cache_home() -> Optional[Path]:
+    """The HF cache home a portable install uses, else None: a normal install keeps the platform
+    default so models shared with other tools are not re-downloaded. Lazy import, since
+    storage_roots reaches into this module during startup."""
+    try:
+        from utils.paths.storage_roots import cache_root, portable_mode
+    except ImportError:
+        return None
+    if not portable_mode():
+        return None
+    try:
+        return _canonical(cache_root() / "huggingface")
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def get_hf_cache_paths() -> HuggingFaceCachePaths:
+    env_paths = _environment_paths()
+    if env_paths is not None:
+        return env_paths
+    stored = _stored_cache_home()
+    if stored is not None:
+        xet = _EXPLICIT_CACHE_ENV.get("HF_XET_CACHE")
+        return HuggingFaceCachePaths(
+            stored,
+            stored / "hub",
+            _canonical(xet) if xet else stored / "xet",
+            "studio",
+        )
+    # Ranks below env vars and Settings: portable mode is a default, not an override.
+    home = _portable_cache_home() or _default_cache_home()
+    xet = _EXPLICIT_CACHE_ENV.get("HF_XET_CACHE")
+    return HuggingFaceCachePaths(
+        home,
+        home / "hub",
+        _canonical(xet) if xet else home / "xet",
+        "default",
+    )
+
+
+def active_hf_hub_cache() -> str:
+    """Return the current hub cache as a string for library call kwargs."""
+
+    return str(get_hf_cache_paths().hub_cache)
+
+
+@contextmanager
+def _xet_loader_barrier() -> Iterator[None]:
+    """Block while a Xet shim loader holds its process-wide env override. Never fails a spawn."""
+    try:
+        from utils.hf_xet_fallback import env_override_barrier
+        barrier = env_override_barrier()
+    except Exception:  # noqa: BLE001 - the shim is optional; a spawn must never depend
+        yield
+        return
+    with barrier:
+        yield
+
+
+@contextmanager
+def child_environment_for_spawn(environment: Mapping[str, str]) -> Iterator[None]:
+    """Apply captured env before spawn imports the child entrypoint.
+
+    Applying variables only inside the multiprocessing target can be too late
+    for libraries that snapshot environment variables at import. The lock keeps
+    this short parent-process override atomic through ``Process.start()``.
+    """
+
+    from utils.utils import hf_environment_restored_for_spawn
+
+    # Exclude the Xet shim's GPU-init override window: a child spawned inside it inherits the flag for life and
+    # unsloth_zoo hands it STUB triton and bitsandbytes, so the run produces nothing.
+    with _spawn_env_lock, _xet_loader_barrier(), hf_environment_restored_for_spawn():
+        missing = object()
+        saved_environment: dict[str, str | object] = {}
+        for key, value in environment.items():
+            saved_environment[key] = os.environ.get(key, missing)
+            os.environ[key] = value
+        try:
+            yield
+        finally:
+            for key, previous in saved_environment.items():
+                if previous is missing:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = str(previous)
+
+
+def initialize_hf_cache_environment() -> HuggingFaceCachePaths:
+    """Seed import-time HF variables once during backend startup."""
+
+    paths = get_hf_cache_paths()
+    # Preserve an explicit HF_HOME, else keep credentials at the platform default while routing
+    # cache bytes through the selected home.
+    if not os.environ.get("HF_HOME", "").strip():
+        os.environ["HF_HOME"] = str(_default_cache_home())
+    os.environ["HF_HUB_CACHE"] = str(paths.hub_cache)
+    os.environ["HF_XET_CACHE"] = str(paths.xet_cache)
+    if "HUGGINGFACE_HUB_CACHE" not in _EXPLICIT_CACHE_ENV:
+        os.environ.pop("HUGGINGFACE_HUB_CACHE", None)
+    for directory in (paths.hub_cache, paths.xet_cache):
+        try:
+            directory.mkdir(parents = True, exist_ok = True)
+        except OSError:
+            pass
+    return paths
+
+
+def _validate_cache_home(raw_path: str) -> Path:
+    value = raw_path.strip()
+    if not value:
+        raise ValueError("Choose a cache folder.")
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        raise ValueError("The Hugging Face cache folder must be an absolute path.")
+    try:
+        resolved = candidate.resolve(strict = False)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError("The Hugging Face cache folder is invalid.") from exc
+
+    if resolved.parent == resolved:
+        raise ValueError("Choose a folder inside the filesystem or drive root.")
+    try:
+        from hub.storage.scan_folders import (
+            contains_sensitive_path_component,
+            is_denied_system_path,
+        )
+    except ImportError:
+        contains_sensitive_path_component = is_denied_system_path = None
+    if is_denied_system_path is not None and is_denied_system_path(str(resolved)):
+        raise ValueError("System folders cannot be used for model downloads.")
+    if contains_sensitive_path_component is not None and contains_sensitive_path_component(
+        str(resolved)
+    ):
+        raise ValueError("Credential or config folders cannot be used for model downloads.")
+
+    parent = resolved.parent
+    if not parent.exists() or not parent.is_dir():
+        raise ValueError("The parent folder does not exist.")
+    try:
+        resolved.mkdir(exist_ok = True)
+        if not resolved.is_dir():
+            raise ValueError("The selected cache location is not a folder.")
+        for child in (resolved / "hub", resolved / "xet"):
+            child.mkdir(exist_ok = True)
+            with tempfile.NamedTemporaryFile(prefix = ".unsloth-write-test-", dir = child):
+                pass
+    except PermissionError as exc:
+        raise ValueError("Unsloth does not have permission to write to this folder.") from exc
+    except OSError as exc:
+        raise ValueError(f"Unsloth cannot use this cache folder: {exc}") from exc
+    return resolved
+
+
+def _stored_history() -> list[Path]:
+    try:
+        from storage.studio_db import get_app_setting
+        from utils.account_context import OWNER, run_as
+        raw = run_as(OWNER, get_app_setting, CACHE_HISTORY_SETTING_KEY, [])
+    except Exception:
+        raw = []
+    if not isinstance(raw, list):
+        return []
+    out: list[Path] = []
+    seen: set[str] = set()
+    for value in raw:
+        if not isinstance(value, str) or not value.strip():
+            continue
+        try:
+            path = _canonical(value)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        key = os.path.normcase(str(path))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
+    return out[:MAX_CACHE_HISTORY]
+
+
+def set_hf_cache_home(cache_home: Optional[str]) -> HuggingFaceCachePaths:
+    if _environment_paths() is not None:
+        raise RuntimeError("The Hugging Face cache location is managed by an environment variable.")
+    with _settings_lock:
+        previous = _stored_cache_home()
+        next_home = _validate_cache_home(cache_home) if cache_home is not None else None
+        history = _stored_history()
+        if previous is not None and previous != next_home:
+            history.insert(0, previous)
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for path in history:
+            key = os.path.normcase(str(path))
+            if key in seen or path == next_home:
+                continue
+            seen.add(key)
+            deduped.append(str(path))
+            if len(deduped) >= MAX_CACHE_HISTORY:
+                break
+        from storage.studio_db import upsert_app_settings
+
+        upsert_app_settings(
+            {
+                CACHE_HOME_SETTING_KEY: str(next_home) if next_home is not None else None,
+                CACHE_HISTORY_SETTING_KEY: deduped,
+            }
+        )
+    # Inventory scans are cached independently from settings. Invalidate after
+    # persistence so the next request sees both the new active root and history.
+    from hub.utils.inventory_scan import invalidate_hf_cache_scans
+
+    invalidate_hf_cache_scans()
+    # Partial resumability is a property of the filesystem the cache sits on, so it is re-decided
+    # for the new root rather than carried over from the old one.
+    from hub.utils.hf_cache_state import invalidate_partial_resumability
+
+    invalidate_partial_resumability()
+    # And the inventory's remembered sizes, which are keyed by cache rather than by path.
+    from utils.cache_inventory import invalidate_hf_rooted_sizes
+
+    invalidate_hf_rooted_sizes()
+    return get_hf_cache_paths()
+
+
+def effective_cache_home() -> Path:
+    """The directory Hugging Face itself treats as HF_HOME.
+
+    Never ``HuggingFaceCachePaths.cache_home``, which is the DISPLAY home and is
+    not it in either direction: an explicit ``HF_HUB_CACHE=/mnt/project/hub``
+    makes it the hub's parent, and a Studio-selected models folder makes it that
+    folder, while ``initialize_hf_cache_environment`` deliberately leaves HF_HOME
+    at the platform default and redirects only the hub and xet caches. The token,
+    ``assets`` and ``datasets`` stay under the real home, so anything resolving
+    one of those has to ask here.
+    """
+    live = (os.environ.get("HF_HOME") or "").strip()
+    return _canonical(live) if live else _default_cache_home()
+
+
+def known_hf_cache_homes() -> list[Path]:
+    paths = get_hf_cache_paths()
+    stored = _stored_cache_home()
+    candidates: list[Path] = []
+    if paths.source != "environment":
+        candidates.append(paths.cache_home)
+    elif explicit_home := _EXPLICIT_CACHE_ENV.get("HF_HOME"):
+        candidates.append(_canonical(explicit_home))
+    if stored is not None:
+        candidates.append(stored)
+    candidates.extend([*_stored_history(), _default_cache_home()])
+    out: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            canonical = _canonical(candidate)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        key = os.path.normcase(str(canonical))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(canonical)
+    return out
+
+
+def known_hf_hub_caches() -> list[Path]:
+    active = get_hf_cache_paths()
+    out = [active.hub_cache]
+    seen = {os.path.normcase(str(_canonical(active.hub_cache)))}
+    for home in known_hf_cache_homes():
+        hub = _canonical(home / "hub")
+        key = os.path.normcase(str(hub))
+        if key not in seen:
+            seen.add(key)
+            out.append(hub)
+    return out
+
+
+def cache_status(paths: Optional[HuggingFaceCachePaths] = None) -> dict:
+    paths = paths or get_hf_cache_paths()
+    available = paths.cache_home.is_dir()
+    writable = available and os.access(paths.cache_home, os.W_OK | os.X_OK)
+    free_bytes: Optional[int] = None
+    if available:
+        try:
+            free_bytes = int(shutil.disk_usage(paths.cache_home).free)
+        except OSError:
+            pass
+    return {
+        "cache_home": str(paths.cache_home),
+        "hub_cache": str(paths.hub_cache),
+        "xet_cache": str(paths.xet_cache),
+        "source": paths.source,
+        "editable": paths.editable,
+        "is_custom": paths.is_custom,
+        "available": available,
+        "writable": writable,
+        "free_bytes": free_bytes,
+        "environment_variable": paths.environment_variable,
+    }

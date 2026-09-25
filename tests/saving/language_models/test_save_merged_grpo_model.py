@@ -1,6 +1,19 @@
 # -*- coding: utf-8 -*-
 """Llama 3.1 (3B) GRPO LoRA train + merged-model save/eval."""
 
+# tests/saving scripts run their whole body at import, so plain pytest collection would download checkpoints and train.
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+from tests.utils.os_utils import require_opt_in as _require_opt_in
+
+_require_opt_in(
+    "UNSLOTH_RUN_SAVING_SCRIPTS",
+    "GPU + Hub saving script; its body runs at import.",
+)
+
+
 from unsloth import FastLanguageModel
 import torch
 import sys
@@ -519,7 +532,6 @@ def training_run(result_queue):
                 gradient_accumulation_steps = 4,
                 warmup_steps = 5,
                 num_train_epochs = 1,
-                # max_steps = 60,
                 learning_rate = 2e-4,
                 fp16 = not is_bfloat16_supported(),
                 bf16 = is_bfloat16_supported(),
@@ -624,8 +636,6 @@ def training_run(result_queue):
         num_generations = 8,
         max_prompt_length = max_prompt_length,
         max_completion_length = max_seq_length - max_prompt_length,
-        # num_train_epochs = 1, # Set to 1 for a full training run
-        # max_steps = 250,
         max_steps = 1000,
         save_steps = 250,
         max_grad_norm = 0.1,
@@ -699,43 +709,6 @@ def training_run(result_queue):
     torch.cuda.empty_cache()
     gc.collect()
 
-    # # Merged model load 16 bits model AIME eval
-    # result_queue = mp.Queue()
-    # p = mp.Process(target=evaluate_merged_model, args=(result_queue, False, False))
-    # p.start()
-    # p.join()
-    #
-    # merged_16bits = result_queue.get()
-    # all_results.append(merged_16bits)
-    #
-    # # Clean up
-    # del merged_model
-    # del merged_tokenizer
-    # del dataset_ppl
-    # torch.cuda.empty_cache()
-    # gc.collect()
-    #
-    # safe_remove_directory("./unsloth_compiled_cache")
-    #
-    # # Merged model load 8 bits model AIME eval
-    #
-    # result_queue = mp.Queue()
-    # p = mp.Process(target=evaluate_merged_model, args=(result_queue, False, True))
-    # p.start()
-    # p.join()
-    #
-    # merged_16bits = result_queue.get()
-    # all_results.append(merged_16bits)
-
-    # Merged model load 4 bits AIME eval
-    # result_queue = mp.Queue()
-    # p = mp.Process(target=evaluate_merged_model, args=(result_queue, True, False))
-    # p.start()
-    # p.join()
-    #
-    # merged_16bits = result_queue.get()
-    # all_results.append(merged_16bits)
-
 
 if __name__ == "__main__":
     mp.set_start_method("spawn", force = True)
@@ -749,7 +722,6 @@ if __name__ == "__main__":
     results = result_queue.get()
     all_results = results
 
-    # Evaluate merged model loaded 16bit.
     p = mp.Process(target = evaluate_merged_model, args = (result_queue, False, False))
     p.start()
     p.join()
@@ -758,7 +730,6 @@ if __name__ == "__main__":
     all_results.append(merged_load_16bits)
     safe_remove_directory("./unsloth_compiled_cache")
 
-    # Merged model load 8 bits model AIME eval
     p = mp.Process(target = evaluate_merged_model, args = (result_queue, False, True))
     p.start()
     p.join()
@@ -768,7 +739,6 @@ if __name__ == "__main__":
 
     safe_remove_directory("./unsloth_compiled_cache")
 
-    # Merged model load 4 bits model AIME eval
     p = mp.Process(target = evaluate_merged_model, args = (result_queue, True, False))
     p.start()
     p.join()

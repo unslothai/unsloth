@@ -12,6 +12,7 @@ Needs no GPU, network, or libraries beyond pytest and pydantic.
 
 import io
 import json
+import re
 import struct
 import sys
 import types as _types
@@ -36,6 +37,9 @@ sys.modules.setdefault("loggers", _loggers_stub)
 
 # structlog
 _structlog_stub = _types.ModuleType("structlog")
+_structlog_stub.get_logger = lambda *a, **kw: __import__("logging").getLogger(
+    a[0] if a else __name__
+)
 sys.modules.setdefault("structlog", _structlog_stub)
 
 # httpx -- stub only names referenced at import / class-definition time
@@ -66,7 +70,15 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
-sys.modules.setdefault("httpx", _httpx_stub)
+# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
+# what is installed, so setdefault does not defer to a real httpx that nothing in this
+# process has touched yet: the stub wins and shadows it for the whole session. This stub
+# has no Response, and starlette.testclient reads httpx.Response at import, so every
+# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+try:
+    import httpx  # noqa: F401
+except ImportError:
+    sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import LlamaCppBackend
 from models.inference import LoadResponse, InferenceStatusResponse
@@ -374,7 +386,7 @@ class TestRouteCompleteness:
     def _load_source(self):
         """Read routes/inference.py source once."""
         routes_path = Path(__file__).resolve().parent.parent / "routes" / "inference.py"
-        self._source = routes_path.read_text()
+        self._source = routes_path.read_text(encoding = "utf-8")
 
     def _find_construction_blocks(self, class_name: str) -> list[str]:
         """Extract all code blocks that construct a given response class."""
@@ -404,23 +416,28 @@ class TestRouteCompleteness:
         blocks = self._find_construction_blocks("LoadResponse")
         gguf_blocks = [b for b in blocks if "is_gguf = True" in b or "is_gguf=True" in b]
         assert (
-            len(gguf_blocks) >= 2
-        ), f"Expected at least 2 GGUF LoadResponse blocks, found {len(gguf_blocks)}"
+            len(gguf_blocks) == 1
+        ), f"Expected one shared GGUF LoadResponse block, found {len(gguf_blocks)}"
         for i, block in enumerate(gguf_blocks):
             assert (
-                "native_context_length" in block
-            ), f"GGUF LoadResponse block #{i} missing native_context_length:\n{block[:200]}"
+                "_llama_runtime_fields(llama_backend)" in block
+            ), f"GGUF LoadResponse block #{i} missing runtime fields:\n{block[:200]}"
+        assert "for name in _InferenceRuntimeFields.model_fields" in self._source
 
-    def test_non_gguf_load_responses_omit_field(self):
-        """Non-GGUF LoadResponse blocks do not set native_context_length (defaults to None)."""
+    def test_non_gguf_load_responses_report_the_native_window(self):
+        """Non-GGUF LoadResponse blocks carry native_context_length and max_context_length.
+
+        These once had to be absent, back when only GGUF knew its own window; a non-GGUF
+        block that leaves them off now defaults them to None and blanks the control.
+        """
         blocks = self._find_construction_blocks("LoadResponse")
         non_gguf = [b for b in blocks if "is_gguf = True" not in b and "is_gguf=True" not in b]
-        # Non-GGUF paths shouldn't reference native_context_length
-        # (Pydantic defaults it to None, so omitting it is correct).
+        assert non_gguf, "Expected at least one non-GGUF LoadResponse block"
         for block in non_gguf:
-            assert (
-                "native_context_length" not in block
-            ), f"Non-GGUF LoadResponse should not set native_context_length:\n{block[:200]}"
+            for field in ("native_context_length", "max_context_length"):
+                assert re.search(
+                    rf"{field} = _positive_int_or_none\(\s*_model_info\.get\(", block
+                ), f"Non-GGUF LoadResponse should read {field} from _model_info:\n{block[:200]}"
 
     def test_non_gguf_load_responses_set_runtime_context_length(self):
         """Non-GGUF LoadResponse blocks report runtime context_length."""
@@ -433,16 +450,28 @@ class TestRouteCompleteness:
             ), f"Non-GGUF LoadResponse should set context_length:\n{block[:200]}"
 
     def test_status_path(self):
-        """InferenceStatusResponse construction with llama_backend has the field."""
+        """InferenceStatusResponse construction with llama_backend has the field.
+
+        The route may splat the helper's result straight in, or bind it first
+        and adjust a field before passing it on. Both carry the runtime fields.
+        """
         blocks = self._find_construction_blocks("InferenceStatusResponse")
         found = False
         for block in blocks:
-            if "llama_backend" in block and "native_context_length" in block:
+            if "llama_backend" not in block:
+                continue
+            if "_llama_runtime_fields(llama_backend)" in block:
                 found = True
                 break
-        assert (
-            found
-        ), "No InferenceStatusResponse block with llama_backend has native_context_length"
+            if "**_runtime_fields" in block:
+                # Only counts if that dict is the helper's, not any local name.
+                assert (
+                    "_runtime_fields = _llama_runtime_fields(llama_backend)" in self._source
+                ), "**_runtime_fields is not built from _llama_runtime_fields(llama_backend)"
+                found = True
+                break
+        assert found, "No InferenceStatusResponse block with llama_backend has runtime fields"
+        assert "for name in _InferenceRuntimeFields.model_fields" in self._source
 
     def test_non_gguf_status_path_reports_runtime_context_length(self):
         """Non-GGUF InferenceStatusResponse reports context_length from model_info."""
@@ -563,3 +592,20 @@ class TestCrossPlatform:
         json2 = resp.model_dump_json()
         assert json1 == json2
         assert '"native_context_length":131072' in json1
+
+
+def test_the_status_route_reports_what_a_self_sizing_load_asked_for():
+    """The UI re-seeds its context pin from it, because the resolved window cannot say
+    whether anyone chose that length; without it a pin is invisible after a refresh."""
+    route_src = (Path(__file__).resolve().parents[1] / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    assert "requested_context_length = llama_backend.requested_n_ctx" in route_src
+    # The non-GGUF branch is covered by behaviour instead, in
+    # test_non_gguf_reload_settings.py::TestNonGgufStatusReportsWhatTheLoadAskedFor: 0 is
+    # "size it yourself", None is "records no request", and the MLX mirror wins over the
+    # stamped spelling. Pinning that call's exact layout here only duplicated it, and the
+    # duplicate is what went stale when the reader gained the mirror.
+    # The parent cannot recompute the group once the worker holds the model: it mirrors all.
+    src = (Path(__file__).resolve().parents[1] / "core/inference/worker.py").read_text("utf-8")
+    assert '"native_context_length",\n                "max_context_length",' in src

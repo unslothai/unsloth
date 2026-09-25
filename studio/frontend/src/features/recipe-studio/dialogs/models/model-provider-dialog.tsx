@@ -82,7 +82,7 @@ export function ModelProviderDialog({
             type="button"
             className={`rounded-xl border px-4 py-3 text-left transition-colors ${
               isLocal
-                ? "border-primary/40 bg-primary/5"
+                ? "border-ring-strong bg-primary/5"
                 : "border-border/60 bg-muted/10 hover:border-border"
             }`}
             onClick={() =>
@@ -105,7 +105,7 @@ export function ModelProviderDialog({
             type="button"
             className={`rounded-xl border px-4 py-3 text-left transition-colors ${
               !isLocal
-                ? "border-primary/40 bg-primary/5"
+                ? "border-ring-strong bg-primary/5"
                 : "border-border/60 bg-muted/10 hover:border-border"
             }`}
             onClick={() => onUpdate({ is_local: false })}
@@ -183,6 +183,7 @@ export function ModelProviderDialog({
             <Input
               id={apiKeyId}
               className="nodrag"
+              data-reload-snapshot-sensitive
               value={config.api_key ?? ""}
               onChange={(event) => updateField("api_key", event.target.value)}
             />
@@ -220,6 +221,7 @@ export function ModelProviderDialog({
                 <Textarea
                   id={extraHeadersId}
                   className="corner-squircle nodrag"
+                  data-reload-snapshot-sensitive
                   placeholder='{"X-Header": "value"}'
                   value={config.extra_headers ?? ""}
                   onChange={(event) =>
@@ -236,6 +238,7 @@ export function ModelProviderDialog({
                 <Textarea
                   id={extraBodyId}
                   className="corner-squircle nodrag"
+                  data-reload-snapshot-sensitive
                   placeholder='{"key": "value"}'
                   value={config.extra_body ?? ""}
                   onChange={(event) =>

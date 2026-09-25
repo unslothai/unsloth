@@ -27,16 +27,19 @@ export function DotTag({
   label,
   className,
   dotClassName,
+  labelClassName,
 }: {
   tone: DotTagTone;
   label: string;
   className?: string;
   dotClassName?: string;
+  /** Wraps the label, e.g. to sr-only it and keep just the dot. */
+  labelClassName?: string;
 }) {
   return (
     <span
       className={cn(
-        "inline-flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-border/60 bg-transparent px-2 text-[11px] font-medium leading-none text-muted-foreground",
+        "inline-flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-border/60 bg-transparent px-2 text-ui-11 font-medium leading-none text-muted-foreground",
         className,
       )}
     >
@@ -48,7 +51,7 @@ export function DotTag({
           dotClassName,
         )}
       />
-      {label}
+      {labelClassName ? <span className={labelClassName}>{label}</span> : label}
     </span>
   );
 }

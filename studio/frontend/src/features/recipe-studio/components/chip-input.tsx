@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -31,6 +32,7 @@ export function ChipInput({
 }: ChipInputProps): ReactElement {
   const [draft, setDraft] = useState("");
   const [isWrapped, setIsWrapped] = useState(false);
+  const uiSpaceScale = useUiSpaceScale();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const listId = useId();
   const suggestionSet = useMemo(
@@ -43,14 +45,17 @@ export function ChipInput({
     if (!element) {
       return;
     }
+    // min-h-9 follows the UI font size, so a one-line field is 27px at the
+    // 12px setting and 46px at 20px. A fixed cutoff calls the tall one wrapped
+    // before a single chip has moved.
     const syncWrapped = () => {
-      setIsWrapped(element.clientHeight > 44);
+      setIsWrapped(element.clientHeight > 44 * uiSpaceScale);
     };
     syncWrapped();
     const observer = new ResizeObserver(syncWrapped);
     observer.observe(element);
     return () => observer.disconnect();
-  }, [values.length, draft]);
+  }, [values.length, draft, uiSpaceScale]);
 
   function addValue(rawValue: string, allowAny: boolean): void {
     const trimmed = rawValue.trim();
@@ -84,7 +89,7 @@ export function ChipInput({
   return (
     <div
       ref={containerRef}
-      className={`bg-input/30 border-input focus-within:border-ring focus-within:ring-ring/50 flex min-h-9 flex-wrap items-center gap-1.5 border bg-clip-padding px-1.5 py-1.5 text-sm transition-colors focus-within:ring-[3px] ${isWrapped ? "corner-squircle rounded-xl" : "rounded-4xl"}`}
+      className={`bg-input/30 border-input dark:border-transparent focus-within:border-ring dark:focus-within:border-transparent dark:focus-within:bg-[rgb(255_255_255_/_calc(0.09*var(--contrast-wash-gain,1)))] flex min-h-9 flex-wrap items-center gap-1.5 border bg-clip-padding px-1.5 py-1.5 text-sm transition-colors ${isWrapped ? "corner-squircle rounded-xl" : "rounded-4xl"}`}
     >
       {values.map((value, index) => (
         <span

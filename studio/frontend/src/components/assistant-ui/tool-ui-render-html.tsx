@@ -16,6 +16,7 @@ import {
 import { BrowserIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useEffect } from "react";
+import { isToolCallRunning } from "./tool-arg-text";
 
 // Per Context7 assistant-ui docs: tool UIs read streaming args via
 // useToolArgsStatus, so render_html need not wait for tool completion.
@@ -38,7 +39,7 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
   const hasCode = code.trim().length > 0;
   const title =
     typeof parsedArgs.title === "string" ? parsedArgs.title : "HTML canvas";
-  const isRunning = status?.type === "running";
+  const isRunning = isToolCallRunning(status);
   const codeIsStreaming = propStatus.code === "streaming";
 
   // Surface the backend error when the tool call completed with invalid args.
@@ -108,7 +109,7 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
   }
 
   return (
-    <div className="relative my-2 flex min-h-[52px] w-full max-w-md items-center overflow-hidden rounded-lg border border-border/70 bg-muted/15 px-3 py-2 text-left dark:bg-muted/10">
+    <div className="relative my-2 flex min-h-[calc(52px*var(--ui-space-scale,1))] w-full max-w-md items-center overflow-hidden rounded-lg border border-border/70 bg-muted/15 px-3 py-2 text-left dark:bg-muted/10">
       <div className="relative z-10 flex min-w-0 flex-1 items-center gap-2.5">
         <HugeiconsIcon
           icon={BrowserIcon}
@@ -123,7 +124,7 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
                 ? "Canvas interrupted"
                 : "Canvas unavailable"}
           </span>
-          <span className="truncate text-[11px] leading-none text-muted-foreground">
+          <span className="truncate text-ui-11 leading-none text-muted-foreground">
             {errorText ??
               (isStaleGeneratingArtifact
                 ? "Refresh stopped this preview"

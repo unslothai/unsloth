@@ -12,13 +12,22 @@ import warnings
 
 import pytest
 
+
+def _shared_setup_1():
+    unsloth = _import_mlx_unsloth()
+    import mlx.core as mx
+
+    events = []
+    return events, mx, unsloth
+
+
 _MLX_SKIP_REASON = "MLX public trainer API is only active on the MLX backend"
 
 
 def _import_mlx_unsloth():
     """Import unsloth and skip when the current platform is not using MLX."""
-    # Skip before importing unsloth so non-MLX hosts missing optional GPU deps
-    # (e.g. bitsandbytes) skip cleanly instead of erroring at collection.
+    # Skip before importing unsloth so non-MLX hosts missing optional GPU deps (e.g. bitsandbytes) skip cleanly
+    # instead of erroring at collection.
     if not (
         platform.system() == "Darwin"
         and platform.machine() == "arm64"
@@ -73,10 +82,9 @@ def test_non_mlx_exports_public_trainer_api_when_available():
     try:
         unsloth = importlib.import_module("unsloth")
     except ImportError as exc:
-        # Non-MLX import pulls the optional GPU stack (numpy/torch/unsloth-zoo,
-        # bitsandbytes/triton, and _gpu_init can re-raise missing deps as
-        # ImportError). Skip when any of it is unavailable rather than failing
-        # collection on CPU/ROCm/XPU review hosts.
+        # Non-MLX import pulls the optional GPU stack (numpy/torch/unsloth-zoo, bitsandbytes/triton, and _gpu_init can
+        # re-raise missing deps as ImportError). Skip when any of it is unavailable rather than failing collection on
+        # CPU/ROCm/XPU review hosts.
         pytest.skip(f"non-MLX import dependency unavailable: {exc}")
     if getattr(unsloth, "DEVICE_TYPE", None) == "mlx":
         pytest.skip("non-MLX export smoke test only runs on GPU/ROCm backends")
@@ -115,6 +123,9 @@ def test_mlx_training_arguments_accept_trl_style_kwargs():
 def test_mlx_training_arguments_do_not_warn_for_implemented_or_falsey_extras():
     """Implemented and falsey inert compatibility kwargs should stay quiet."""
     unsloth = _import_mlx_unsloth()
+    supported_eval_kwargs = {}
+    if "eval_strategy" in unsloth._MLX_TRAINING_CONFIG_FIELDS:
+        supported_eval_kwargs = {"eval_strategy": "no", "eval_delay": 1}
 
     with warnings.catch_warnings(record = True) as caught:
         warnings.simplefilter("always")
@@ -125,12 +136,16 @@ def test_mlx_training_arguments_do_not_warn_for_implemented_or_falsey_extras():
             remove_unused_columns = False,
             assistant_only_loss = False,
             completion_only_loss = False,
+            **supported_eval_kwargs,
         )
 
     assert args.warmup_steps == 2
     assert args.padding_free is False
     assert args.remove_unused_columns is False
     assert args.completion_only_loss is False
+    if supported_eval_kwargs:
+        assert args.eval_strategy == "no"
+        assert args.eval_delay == 1
     assert caught == []
 
 
@@ -181,6 +196,156 @@ def test_mlx_clear_gpu_memory_uses_metal_fallback(monkeypatch):
     unsloth.clear_gpu_memory()
 
     assert called == ["metal"]
+
+
+_GENERATION_STREAM_MODULES = (
+    "mlx_lm.generate",
+    "mlx_vlm.generate",
+    "mlx_vlm.generate.dispatch",
+    "mlx_vlm.generate.ar",
+    # A second stream since mlx-vlm 0.6.0, never wired-limited.
+    "mlx_vlm.speculative.common",
+)
+
+
+def _stub_generation_streams(monkeypatch, *names):
+    """Generation runs on mlx-lm's / mlx-vlm's own thread-local stream, not the default."""
+    for name in _GENERATION_STREAM_MODULES:
+        if name in names:
+            monkeypatch.setitem(
+                sys.modules,
+                name,
+                types.SimpleNamespace(generation_stream = name),
+            )
+        else:
+            monkeypatch.delitem(sys.modules, name, raising = False)
+
+
+@pytest.mark.parametrize("shape", ["core", "metal"])
+def test_mlx_clear_gpu_memory_drains_gpu_work_before_clearing(monkeypatch, shape):
+    """MLX does not pin a dropped output array, so drain before clearing."""
+    events, mx, unsloth = _shared_setup_1()
+    monkeypatch.setattr(
+        mx,
+        "synchronize",
+        lambda stream = None: events.append(f"synchronize:{'default' if stream is None else stream}"),
+    )
+    clear = lambda: events.append("clear_cache")
+    if shape == "core":
+        monkeypatch.setattr(mx, "clear_cache", clear)
+    else:
+        # Older MLX releases expose cache clearing under mx.metal.clear_cache.
+        monkeypatch.delattr(mx, "clear_cache", raising = False)
+        metal = getattr(mx, "metal", None) or type("Metal", (), {})()
+        monkeypatch.setattr(mx, "metal", metal, raising = False)
+        monkeypatch.setattr(metal, "clear_cache", clear, raising = False)
+    _stub_generation_streams(
+        monkeypatch,
+        "mlx_lm.generate",
+        "mlx_vlm.generate.dispatch",
+    )
+
+    unsloth.clear_gpu_memory()
+
+    assert events == [
+        "synchronize:mlx_lm.generate",
+        "synchronize:mlx_vlm.generate.dispatch",
+        "synchronize:default",
+        "clear_cache",
+    ]
+
+
+def test_mlx_clear_gpu_memory_drains_only_the_streams_that_exist(monkeypatch):
+    events, mx, unsloth = _shared_setup_1()
+    monkeypatch.setattr(
+        mx,
+        "synchronize",
+        lambda stream = None: events.append(f"synchronize:{'default' if stream is None else stream}"),
+    )
+    monkeypatch.setattr(mx, "clear_cache", lambda: events.append("clear_cache"))
+    _stub_generation_streams(monkeypatch, "mlx_lm.generate")
+
+    unsloth.clear_gpu_memory()
+
+    assert events == ["synchronize:mlx_lm.generate", "synchronize:default", "clear_cache"]
+
+
+def test_mlx_clear_gpu_memory_is_a_noop_without_cache_clearing(monkeypatch):
+    events, mx, unsloth = _shared_setup_1()
+    monkeypatch.setattr(mx, "synchronize", lambda *a, **k: events.append("synchronize"))
+    monkeypatch.delattr(mx, "clear_cache", raising = False)
+    monkeypatch.setattr(mx, "metal", type("Metal", (), {})(), raising = False)
+
+    unsloth.clear_gpu_memory()
+
+    assert events == []
+
+
+def _recording_synchronize(
+    monkeypatch,
+    mx,
+    events,
+    failing = (),
+):
+    def synchronize(stream = None):
+        if stream in failing:
+            raise RuntimeError("There is no Stream(gpu, 0) in current thread.")
+        events.append(f"synchronize:{'default' if stream is None else stream}")
+
+    monkeypatch.setattr(mx, "synchronize", synchronize)
+    monkeypatch.setattr(mx, "clear_cache", lambda: events.append("clear_cache"))
+
+
+def test_mlx_clear_gpu_memory_still_clears_when_a_stream_cannot_be_drained(monkeypatch):
+    """empty_cache() routes here from finally arms, and a foreign stream raises."""
+    events, mx, unsloth = _shared_setup_1()
+    _recording_synchronize(monkeypatch, mx, events, failing = ("mlx_lm.generate",))
+    _stub_generation_streams(monkeypatch, "mlx_lm.generate")
+
+    unsloth.clear_gpu_memory()
+
+    assert events == ["synchronize:default", "clear_cache"]
+
+
+def test_mlx_clear_gpu_memory_drains_a_shared_stream_once(monkeypatch):
+    """mlx-vlm 0.6.x defines the stream once and re-exports it from every candidate."""
+    events, mx, unsloth = _shared_setup_1()
+    _recording_synchronize(monkeypatch, mx, events)
+    shared = types.SimpleNamespace(generation_stream = "shared")
+    for name in _GENERATION_STREAM_MODULES:
+        if name.startswith("mlx_vlm.generate"):
+            monkeypatch.setitem(sys.modules, name, shared)
+        else:
+            monkeypatch.delitem(sys.modules, name, raising = False)
+
+    unsloth.clear_gpu_memory()
+
+    assert events == ["synchronize:shared", "synchronize:default", "clear_cache"]
+
+
+def test_mlx_clear_gpu_memory_drains_the_speculative_stream(monkeypatch):
+    events, mx, unsloth = _shared_setup_1()
+    _recording_synchronize(monkeypatch, mx, events)
+    _stub_generation_streams(monkeypatch, "mlx_vlm.speculative.common")
+
+    unsloth.clear_gpu_memory()
+
+    assert events == [
+        "synchronize:mlx_vlm.speculative.common",
+        "synchronize:default",
+        "clear_cache",
+    ]
+
+
+def test_mlx_clear_gpu_memory_still_clears_without_synchronize(monkeypatch):
+    events, mx, unsloth = _shared_setup_1()
+    monkeypatch.setattr(mx, "clear_cache", lambda: events.append("clear_cache"))
+    monkeypatch.delattr(mx, "synchronize", raising = False)
+    _stub_generation_streams(monkeypatch, "mlx_lm.generate")
+
+    unsloth.clear_gpu_memory()
+
+    assert events == ["clear_cache"]
 
 
 def test_mlx_training_arguments_preserve_explicit_epoch_training():
@@ -705,23 +870,56 @@ def test_mlx_trainer_rejects_unsafe_unsupported_sft_kwargs():
         )
 
 
-def test_mlx_trainer_rejects_metrics_and_callbacks():
-    """Trainer hooks should fail because MLXTrainer cannot honor them yet."""
+def test_mlx_trainer_rejects_compute_metrics():
+    """compute_metrics is still unsupported by MLXTrainer."""
     unsloth = _import_mlx_unsloth()
 
-    with pytest.raises(NotImplementedError, match = "callbacks"):
-        unsloth.UnslothTrainer(
-            model = _DummyModel(),
-            tokenizer = None,
-            train_dataset = [],
-            callbacks = [object()],
-        )
     with pytest.raises(NotImplementedError, match = "compute_metrics"):
         unsloth.UnslothTrainer(
             model = _DummyModel(),
             tokenizer = None,
             train_dataset = [],
             compute_metrics = lambda *_: None,
+        )
+
+
+def test_mlx_trainer_accepts_callbacks():
+    """Callbacks are routed to MLXTrainer when the zoo backend supports them."""
+    unsloth = _import_mlx_unsloth()
+    from transformers import TrainerCallback
+
+    if not unsloth._mlx_trainer_supports_kwarg("callbacks"):
+        pytest.skip("requires unsloth-zoo MLXTrainer callback support")
+
+    class Callback(TrainerCallback):
+        pass
+
+    trainer = unsloth.UnslothTrainer(
+        model = _DummyModel(),
+        tokenizer = None,
+        train_dataset = [],
+        callbacks = [Callback()],
+    )
+    assert any(isinstance(cb, Callback) for cb in trainer.callback_handler.callbacks)
+
+
+def test_mlx_trainer_rejects_callbacks_with_old_zoo(monkeypatch):
+    """Older unsloth-zoo builds should fail clearly instead of TypeError."""
+    unsloth = _import_mlx_unsloth()
+    from transformers import TrainerCallback
+
+    monkeypatch.setattr(
+        unsloth,
+        "_mlx_trainer_supports_kwarg",
+        lambda name: name != "callbacks",
+    )
+
+    with pytest.raises(NotImplementedError, match = "callbacks require"):
+        unsloth.UnslothTrainer(
+            model = _DummyModel(),
+            tokenizer = None,
+            train_dataset = [],
+            callbacks = [TrainerCallback()],
         )
 
 
@@ -880,7 +1078,16 @@ def test_mlx_compatibility_shims_are_installed():
     assert issubclass(trl.SFTConfig, unsloth.UnslothTrainingArguments)
     assert trainer_module.UnslothTrainer is unsloth.UnslothTrainer
     assert trainer_module.UnslothVisionDataCollator is unsloth.UnslothVisionDataCollator
-    assert chat_templates.train_on_responses_only is dataset_utils.train_on_responses_only
+    # chat_templates now wraps the zoo function (issue #2693), so the re-export is no longer the same object;
+    # functools.wraps records the original.
+    assert (
+        getattr(
+            chat_templates.train_on_responses_only,
+            "__wrapped__",
+            chat_templates.train_on_responses_only,
+        )
+        is dataset_utils.train_on_responses_only
+    )
     assert callable(unsloth.train_on_responses_only)
 
 
@@ -968,7 +1175,6 @@ def test_mlx_rl_trainers_stub_with_clear_error(monkeypatch):
         assert "MLX" in str(exc.value) and name in str(exc.value)
     # trainers trl never exposed must not be invented
     assert not hasattr(trl, "PPOTrainer")
-    # idempotent: a second install keeps the same stub
     stub = trl.GRPOTrainer
     unsloth._install_mlx_trl_sft_shim()
     assert trl.GRPOTrainer is stub
@@ -1015,7 +1221,6 @@ def test_mlx_stubs_trl_trainers_outside_fixed_set(monkeypatch):
     with pytest.raises(NotImplementedError) as exc:
         trl.RLOOTrainer(model = None)
     assert "MLX" in str(exc.value) and "RLOOTrainer" in str(exc.value)
-    # SFT stays usable; only non-SFT trainers are stubbed
     assert trl.SFTTrainer is unsloth.UnslothTrainer
 
 

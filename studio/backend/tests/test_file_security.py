@@ -5,11 +5,13 @@
 
 The gate reads HF's security scan (model_info securityStatus) metadata-only and never
 downloads flagged files; only the Hub call is stubbed. Policy: block a non-"safe" level
-(unknown levels fail closed), fail open when the scan is unavailable, skip local paths
-only, no first-party exemption. The block is scoped to the load-path RCE vector (a
-root-level code-executing file), so flagged safetensors and subdir pickles do not block.
+(unknown levels fail closed), inspect exact cached snapshots when the scan is unavailable,
+skip other local paths, and apply no first-party exemption. The block is scoped to the
+load-path RCE vector, so flagged inert files and unrelated subdir pickles do not block.
 """
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -165,9 +167,150 @@ def test_skips_local_path():
     assert "local" in d.reason
 
 
+def test_scans_inactive_hf_cache_snapshot_path(tmp_path):
+    # An inactive HF cache loads by snapshot path; the gate must recover the repo id + commit from
+    # models--org--repo/snapshots/<rev> and scan that exact commit, not the default branch.
+    snapshot = tmp_path / "models--evil--repo" / "snapshots" / "deadbeef"
+    snapshot.mkdir(parents = True)
+    status = {
+        "scansDone": True,
+        "filesWithIssues": [{"path": "pytorch_model.bin", "level": "unsafe"}],
+    }
+    with _patch_status(status) as model_info:
+        d = evaluate_file_security(str(snapshot))
+    assert d.blocked is True
+    assert model_info.call_args.args[0] == "evil/repo"
+    assert model_info.call_args.kwargs["revision"] == "deadbeef"
+
+
+def test_local_only_scan_inspects_exact_inactive_snapshot(tmp_path):
+    repo = tmp_path / "models--evil--repo"
+    selected = repo / "snapshots" / "commit-old"
+    active = repo / "snapshots" / "commit-new"
+    selected.mkdir(parents = True)
+    active.mkdir(parents = True)
+    (selected / "pytorch_model.bin").write_bytes(b"pickle")
+    (active / "model.safetensors").write_bytes(b"safe")
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text("commit-new")
+
+    with patch("utils.utils.hf_cache_snapshot_dir", return_value = active):
+        decision = evaluate_file_security(str(selected), local_only_load = True)
+
+    assert decision.blocked is True
+    assert decision.unsafe_files == [{"path": "pytorch_model.bin", "level": "unscanned"}]
+
+
+def test_local_only_scan_allows_exact_safetensors_snapshot(tmp_path):
+    snapshot = tmp_path / "models--good--repo" / "snapshots" / "deadbeef"
+    snapshot.mkdir(parents = True)
+    (snapshot / "model.safetensors").write_bytes(b"safe")
+
+    with patch(
+        "utils.security.file_security._fetch_security_status",
+        side_effect = AssertionError("local-only scan must not contact the Hub"),
+    ):
+        decision = evaluate_file_security(str(snapshot), local_only_load = True)
+
+    assert decision.blocked is False
+    assert "inert" in decision.reason
+
+
+def test_unavailable_hub_scan_falls_back_to_exact_snapshot(tmp_path):
+    snapshot = tmp_path / "models--evil--repo" / "snapshots" / "deadbeef"
+    snapshot.mkdir(parents = True)
+    (snapshot / "pytorch_model.bin").write_bytes(b"pickle")
+
+    with patch(
+        "utils.security.file_security._fetch_security_status",
+        return_value = None,
+    ):
+        decision = evaluate_file_security(str(snapshot))
+
+    assert decision.blocked is True
+    assert "Hub scan unavailable" in decision.reason
+    assert decision.unsafe_files == [{"path": "pytorch_model.bin", "level": "unscanned"}]
+
+
+def test_unavailable_hub_scan_inspects_explicit_load_subdirs(tmp_path):
+    snapshot = tmp_path / "models--evil--repo" / "snapshots" / "deadbeef"
+    llm = snapshot / "LLM"
+    llm.mkdir(parents = True)
+    (llm / "pytorch_model.bin").write_bytes(b"pickle")
+
+    with patch(
+        "utils.security.file_security._fetch_security_status",
+        return_value = None,
+    ):
+        decision = evaluate_file_security(
+            str(snapshot),
+            load_subdirs = ("LLM",),
+        )
+
+    assert decision.blocked is True
+    assert decision.unsafe_files == [{"path": "LLM/pytorch_model.bin", "level": "unscanned"}]
+
+
+def test_local_fallback_preserves_native_sentence_transformer_module_path(tmp_path):
+    snapshot = tmp_path / "models--evil--repo" / "snapshots" / "deadbeef"
+    module_path = r"encoder\pooling"
+    module = snapshot / Path(module_path)
+    module.mkdir(parents = True)
+    pickle = module / "pytorch_model.bin"
+    pickle.write_bytes(b"pickle")
+    (snapshot / "modules.json").write_text(
+        json.dumps([{"path": module_path}]),
+        encoding = "utf-8",
+    )
+
+    decision = evaluate_file_security(str(snapshot), local_only_load = True)
+
+    assert decision.blocked is True
+    assert decision.unsafe_files == [
+        {"path": pickle.relative_to(snapshot).as_posix(), "level": "unscanned"}
+    ]
+
+
+def test_local_fallback_blocks_traversing_sentence_transformer_module_path(tmp_path):
+    snapshot = tmp_path / "models--evil--repo" / "snapshots" / "deadbeef"
+    snapshot.mkdir(parents = True)
+    (snapshot / "modules.json").write_text(
+        json.dumps([{"path": "../payload"}]),
+        encoding = "utf-8",
+    )
+
+    decision = evaluate_file_security(str(snapshot), local_only_load = True)
+
+    assert decision.blocked is True
+    assert "could not read" in decision.reason
+
+
+def test_online_exact_scan_blocks_sentence_transformer_module_weight(tmp_path):
+    snapshot = tmp_path / "models--evil--repo" / "snapshots" / "deadbeef"
+    snapshot.mkdir(parents = True)
+    (snapshot / "modules.json").write_text(
+        json.dumps([{"path": "0_Transformer"}]),
+        encoding = "utf-8",
+    )
+    status = {
+        "scansDone": True,
+        "filesWithIssues": [
+            {
+                "path": "0_Transformer/pytorch_model.bin",
+                "level": "unsafe",
+            }
+        ],
+    }
+
+    with _patch_status(status):
+        decision = evaluate_file_security(str(snapshot))
+
+    assert decision.blocked is True
+    assert decision.unsafe_files == [{"path": "0_Transformer/pytorch_model.bin", "level": "unsafe"}]
+
+
 def test_remote_gguf_named_repo_is_still_scanned():
-    # Only LOCAL paths skip the Hub scan, so a remote .gguf repo is still scanned and a
-    # poisoned pickle smuggled into it is blocked.
+    # Only LOCAL paths skip the Hub scan, so a poisoned pickle in a remote .gguf repo is blocked.
     status = {
         "scansDone": True,
         "filesWithIssues": [{"path": "pytorch_model.bin", "level": "unsafe"}],
@@ -221,8 +364,7 @@ def test_response_payload_shape():
 
 
 def test_flagged_safetensors_does_not_block():
-    # safetensors is tensor-only and cannot execute code, so a flag on one (often
-    # picklescan tripping on a sibling pickle) is not an RCE vector and must not block.
+    # safetensors is tensor-only and cannot execute code, so a flag on one is not an RCE vector.
     status = {
         "scansDone": False,
         "filesWithIssues": [{"path": "model-00001-of-00004.safetensors", "level": "unsafe"}],
@@ -234,8 +376,7 @@ def test_flagged_safetensors_does_not_block():
 
 
 def test_flagged_subdirectory_pickle_does_not_block():
-    # from_pretrained reads only root weights; a flagged subdir pickle no root index
-    # references (e.g. a NeMo checkpoint) is never loaded, so it must not block.
+    # from_pretrained reads only root weights; a flagged subdir pickle no root index references is never loaded.
     status = {
         "scansDone": False,
         "filesWithIssues": [
@@ -250,8 +391,7 @@ def test_flagged_subdirectory_pickle_does_not_block():
 
 
 def test_nemotron_h_shaped_status_loads():
-    # Real Nemotron-H-8B-Base-8K shape: flagged root safetensors + unreferenced nemo/
-    # pickles. None is a load-path vector, so it must load.
+    # Real Nemotron-H-8B-Base-8K shape: flagged root safetensors + unreferenced nemo/ pickles.
     status = {
         "scansDone": False,
         "filesWithIssues": [
@@ -314,8 +454,7 @@ def test_inconclusive_index_lookup_blocks_subdir_pickle():
 
 
 def test_partial_index_read_with_transient_failure_blocks_subdir_pickle():
-    # The bin index (which would list the flagged shard) fails transiently; a partial
-    # path set is not definitive, so fail closed.
+    # The bin index (which would list the flagged shard) fails transiently; a partial path set is not definitive.
     status = {
         "scansDone": False,
         "filesWithIssues": [
@@ -442,8 +581,7 @@ def test_indexed_shard_under_load_subdir_blocks():
 
 
 def test_flagged_root_python_helper_does_not_block():
-    # A root .py is never deserialized; repo code runs only via auto_map under the consent
-    # gate, so flagging it here would false-block.
+    # A root .py is never deserialized; repo code runs only via auto_map under the consent gate.
     status = {
         "scansDone": True,
         "filesWithIssues": [
@@ -486,8 +624,7 @@ def _patch_status_capture(status):
 
 
 def test_spark_tts_llm_alias_scans_real_repo():
-    # "Spark-TTS-0.5B/LLM" loads as unsloth/Spark-TTS-0.5B with LLM as load root; scanning
-    # the literal alias 404s and fails open, missing a flagged LLM/ pickle.
+    # "Spark-TTS-0.5B/LLM" loads as unsloth/Spark-TTS-0.5B with LLM as load root; the literal alias 404s.
     status = {"filesWithIssues": [{"path": "LLM/pytorch_model.bin", "level": "unsafe"}]}
     cap, seen = _patch_status_capture(status)
     with cap, patch("utils.paths.is_local_path", return_value = False), _patch_no_index():
@@ -509,8 +646,7 @@ def test_non_llm_alias_is_not_rewritten():
 
 
 def test_generic_slash_llm_repo_is_scanned_as_itself():
-    # A third-party repo merely ending in "/LLM" is not a bicodec alias, so it must be
-    # scanned as itself; rewriting to unsloth/<parent> would scan the wrong repo.
+    # A third-party repo merely ending in "/LLM" is not a bicodec alias, so scan it as itself.
     status = {"filesWithIssues": [{"path": "pytorch_model.bin", "level": "unsafe"}]}
     cap, seen = _patch_status_capture(status)
     with cap, patch("utils.paths.is_local_path", return_value = False):

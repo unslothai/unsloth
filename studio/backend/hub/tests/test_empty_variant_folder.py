@@ -17,7 +17,7 @@ def _make_snapshot(root: Path) -> Path:
     (snap / "UD-IQ1_M").mkdir(parents = True)
     (snap / "UD-IQ1_M" / "GLM-UD-IQ1_M-00001-of-00002.gguf").write_bytes(b"x")
     (snap / "UD-IQ1_M" / "GLM-UD-IQ1_M-00002-of-00002.gguf").write_bytes(b"y")
-    (snap / "UD-IQ1_S").mkdir(parents = True)  # empty leftover
+    (snap / "UD-IQ1_S").mkdir(parents = True)
     return snap
 
 
@@ -29,17 +29,17 @@ def test_list_empty_gguf_variant_dirs_finds_empty_leftover(tmp_path, monkeypatch
 
 def test_list_empty_excludes_quant_with_files_in_another_snapshot(tmp_path, monkeypatch):
     snap1 = tmp_path / "s1" / "snapshots" / "rev"
-    (snap1 / "UD-IQ1_S").mkdir(parents = True)  # empty here
+    (snap1 / "UD-IQ1_S").mkdir(parents = True)
     snap2 = tmp_path / "s2" / "snapshots" / "rev"
     (snap2 / "UD-IQ1_S").mkdir(parents = True)
-    (snap2 / "UD-IQ1_S" / "m-UD-IQ1_S-00001-of-00001.gguf").write_bytes(b"z")  # has shards
+    (snap2 / "UD-IQ1_S" / "m-UD-IQ1_S-00001-of-00001.gguf").write_bytes(b"z")
     monkeypatch.setattr(gguf, "iter_hf_cache_snapshots", lambda repo_id: iter([snap1, snap2]))
     assert gguf.list_empty_gguf_variant_dirs("org/Repo-GGUF") == set()
 
 
 def test_list_empty_ignores_non_quant_dirs(tmp_path, monkeypatch):
     snap = tmp_path / "snapshots" / "rev"
-    (snap / "not-a-quant").mkdir(parents = True)  # empty but not a quant label
+    (snap / "not-a-quant").mkdir(parents = True)
     monkeypatch.setattr(gguf, "iter_hf_cache_snapshots", lambda repo_id: iter([snap]))
     assert gguf.list_empty_gguf_variant_dirs("org/Repo-GGUF") == set()
 
@@ -61,6 +61,36 @@ def test_remove_empty_variant_dirs_never_touches_populated_folder(tmp_path):
     assert removed == 0
     assert failures == []
     assert len(list((snap / "UD-IQ1_M").iterdir())) == 2
+
+
+def test_remove_empty_variant_dirs_does_not_fold_an_h3_stem_to_its_quant(tmp_path):
+    snap = tmp_path / "snapshots" / "rev0"
+    sibling_dir = snap / "UD-Q2_K_XL"
+    sibling_dir.mkdir(parents = True)
+    repo = SimpleNamespace(repo_path = str(tmp_path))
+
+    removed, failures = deletion._remove_empty_variant_dirs(
+        [repo],
+        "minimax_h3_fl2va_pruned-UD-Q2_K_XL",
+    )
+
+    assert removed == 0
+    assert failures == []
+    assert sibling_dir.is_dir()
+
+
+def test_remove_empty_variant_dirs_reads_a_windows_spelled_key_as_qualified(tmp_path):
+    """A backslash key is the same qualified key; folding it to its quant took a sibling's dir."""
+    snap = tmp_path / "snapshots" / "rev0"
+    sibling_dir = snap / "UD-IQ1_S"
+    sibling_dir.mkdir(parents = True)
+    repo = SimpleNamespace(repo_path = str(tmp_path))
+
+    removed, failures = deletion._remove_empty_variant_dirs([repo], r"distilled\model-UD-IQ1_S")
+
+    assert removed == 0
+    assert failures == []
+    assert sibling_dir.is_dir()
 
 
 def test_remove_empty_variant_dirs_surfaces_real_failure(tmp_path, monkeypatch):
@@ -113,27 +143,37 @@ def test_mark_empty_dir_cleanables_flips_listed_variant(monkeypatch):
 
 
 def _force_compute_to_raise(monkeypatch):
-    # Drive _compute() down its remote path, fail metadata, and have both cache
-    # fallbacks miss so the original error re-raises.
+    # Drive _compute() down its remote path, fail metadata, and have both cache fallbacks miss so the
+    # original error re-raises.
     def _boom(*a, **k):
         raise RuntimeError("offline")
 
     monkeypatch.setattr(gguf_variants, "list_gguf_variants", _boom, raising = False)
     monkeypatch.setattr(
-        gguf_variants, "list_gguf_variants_from_hf_cache", lambda repo_id: None, raising = False
+        gguf_variants,
+        "select_gguf_cache_snapshot",
+        lambda repo_id, root = None: None,
+        raising = False,
     )
     monkeypatch.setattr(
-        gguf_variants, "list_partial_gguf_variants_from_state", lambda repo_id: None, raising = False
+        gguf_variants,
+        "list_partial_gguf_variants_from_state",
+        lambda repo_id, hub_cache = None: None,
+        raising = False,
     )
 
 
 def test_get_variants_surfaces_cleanable_when_metadata_fails(monkeypatch):
-    # Offline / model_info fails and only an empty leftover folder is cached:
-    # the cleanable must still be returned instead of the error propagating.
+    # Offline / model_info fails and only an empty leftover folder is cached: the cleanable must still
+    # be returned instead of the error propagating.
     import asyncio
 
     _force_compute_to_raise(monkeypatch)
-    monkeypatch.setattr(gguf_variants, "list_empty_gguf_variant_dirs", lambda repo_id: {"UD-IQ1_S"})
+    monkeypatch.setattr(
+        gguf_variants,
+        "list_empty_gguf_variant_dirs",
+        lambda repo_id, root = None: {"UD-IQ1_S"},
+    )
 
     resp = asyncio.run(
         gguf_variants.get_gguf_variants_response(
@@ -152,7 +192,11 @@ def test_get_variants_reraises_when_no_cleanable(monkeypatch):
     from fastapi import HTTPException
 
     _force_compute_to_raise(monkeypatch)
-    monkeypatch.setattr(gguf_variants, "list_empty_gguf_variant_dirs", lambda repo_id: set())
+    monkeypatch.setattr(
+        gguf_variants,
+        "list_empty_gguf_variant_dirs",
+        lambda repo_id, root = None: set(),
+    )
 
     try:
         asyncio.run(

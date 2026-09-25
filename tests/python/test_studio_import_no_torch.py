@@ -1,4 +1,4 @@
-"""Sandbox tests: Studio dataset modules load/run in isolated no-torch venvs."""
+"""Sandbox tests: Unsloth dataset modules load/run in isolated no-torch venvs."""
 
 from __future__ import annotations
 
@@ -12,6 +12,16 @@ import textwrap
 from pathlib import Path
 
 import pytest
+
+
+def _shared_setup_1(code, no_torch_venv):
+    result = subprocess.run(
+        [no_torch_venv, "-c", code],
+        capture_output = True,
+        timeout = 30,
+    )
+    return result
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_COLLATORS = REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "data_collators.py"
@@ -148,14 +158,10 @@ class TestDataCollatorsNoTorchVenv:
             loggers = types.ModuleType('loggers')
             loggers.get_logger = lambda n: None
             sys.modules['loggers'] = loggers
-            exec(open({str(DATA_COLLATORS)!r}).read())
+            exec(open({str(DATA_COLLATORS)!r}, encoding = "utf-8").read())
             print("OK: exec succeeded")
         """)
-        result = subprocess.run(
-            [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
-        )
+        result = _shared_setup_1(code, no_torch_venv)
         assert (
             result.returncode == 0
         ), f"data_collators.py failed in no-torch venv:\n{result.stderr.decode()}"
@@ -168,16 +174,12 @@ class TestDataCollatorsNoTorchVenv:
             loggers = types.ModuleType('loggers')
             loggers.get_logger = lambda n: None
             sys.modules['loggers'] = loggers
-            exec(open({str(DATA_COLLATORS)!r}).read())
+            exec(open({str(DATA_COLLATORS)!r}, encoding = "utf-8").read())
             obj = DataCollatorSpeechSeq2SeqWithPadding(processor=None)
             assert obj.processor is None, "processor should be None"
             print("OK: DataCollatorSpeechSeq2SeqWithPadding instantiated")
         """)
-        result = subprocess.run(
-            [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
-        )
+        result = _shared_setup_1(code, no_torch_venv)
         assert (
             result.returncode == 0
         ), f"DataCollatorSpeechSeq2SeqWithPadding failed:\n{result.stderr.decode()}"
@@ -190,18 +192,14 @@ class TestDataCollatorsNoTorchVenv:
             loggers = types.ModuleType('loggers')
             loggers.get_logger = lambda n: None
             sys.modules['loggers'] = loggers
-            exec(open({str(DATA_COLLATORS)!r}).read())
+            exec(open({str(DATA_COLLATORS)!r}, encoding = "utf-8").read())
             obj = DeepSeekOCRDataCollator(processor=None)
             assert obj.processor is None, "processor should be None"
             assert obj.max_length == 2048, "default max_length should be 2048"
             assert obj.ignore_index == -100, "default ignore_index should be -100"
             print("OK: DeepSeekOCRDataCollator instantiated")
         """)
-        result = subprocess.run(
-            [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
-        )
+        result = _shared_setup_1(code, no_torch_venv)
         assert result.returncode == 0, f"DeepSeekOCRDataCollator failed:\n{result.stderr.decode()}"
         assert b"OK: DeepSeekOCRDataCollator instantiated" in result.stdout
 
@@ -212,17 +210,13 @@ class TestDataCollatorsNoTorchVenv:
             loggers = types.ModuleType('loggers')
             loggers.get_logger = lambda n: None
             sys.modules['loggers'] = loggers
-            exec(open({str(DATA_COLLATORS)!r}).read())
+            exec(open({str(DATA_COLLATORS)!r}, encoding = "utf-8").read())
             obj = VLMDataCollator(processor=None)
             assert obj.processor is None
             assert obj.mask_input_tokens is True, "default mask_input_tokens should be True"
             print("OK: VLMDataCollator instantiated")
         """)
-        result = subprocess.run(
-            [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
-        )
+        result = _shared_setup_1(code, no_torch_venv)
         assert result.returncode == 0, f"VLMDataCollator failed:\n{result.stderr.decode()}"
         assert b"OK: VLMDataCollator instantiated" in result.stdout
 
@@ -259,10 +253,14 @@ class TestChatTemplatesNoTorchVenv:
             sys.modules['iterable'] = iterable
 
             # Read and transform the source: replace relative imports with absolute
-            source = open({str(CHAT_TEMPLATES)!r}).read()
+            source = open({str(CHAT_TEMPLATES)!r}, encoding = "utf-8").read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             source = source.replace('from .iterable import', 'from iterable import')
+            # cells.py is stdlib-only, so the exec sites import the real module
+            # rather than another stub: the suite checks what actually ships.
+            sys.path.insert(0, {str(CHAT_TEMPLATES.parent)!r})
+            source = source.replace('from .cells import', 'from cells import')
 
             exec(source)
 
@@ -271,11 +269,7 @@ class TestChatTemplatesNoTorchVenv:
             assert 'DEFAULT_ALPACA_TEMPLATE' in ns, "DEFAULT_ALPACA_TEMPLATE not defined after exec"
             print("OK: chat_templates.py exec succeeded")
         """)
-        result = subprocess.run(
-            [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
-        )
+        result = _shared_setup_1(code, no_torch_venv)
         assert (
             result.returncode == 0
         ), f"chat_templates.py failed in no-torch venv:\n{result.stderr.decode()}"
@@ -305,21 +299,19 @@ class TestChatTemplatesNoTorchVenv:
             sys.modules['iterable'] = iterable
 
             ns = {{}}
-            source = open({str(CHAT_TEMPLATES)!r}).read()
+            source = open({str(CHAT_TEMPLATES)!r}, encoding = "utf-8").read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             source = source.replace('from .iterable import', 'from iterable import')
+            sys.path.insert(0, {str(CHAT_TEMPLATES.parent)!r})
+            source = source.replace('from .cells import', 'from cells import')
             exec(source, ns)
 
             assert 'DEFAULT_ALPACA_TEMPLATE' in ns, "DEFAULT_ALPACA_TEMPLATE not defined"
             assert 'Instruction' in ns['DEFAULT_ALPACA_TEMPLATE'], "Template content unexpected"
             print("OK: DEFAULT_ALPACA_TEMPLATE defined and valid")
         """)
-        result = subprocess.run(
-            [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
-        )
+        result = _shared_setup_1(code, no_torch_venv)
         assert (
             result.returncode == 0
         ), f"DEFAULT_ALPACA_TEMPLATE check failed:\n{result.stderr.decode()}"
@@ -402,14 +394,18 @@ class TestFormatConversionNoTorchVenv:
             sys.modules['utils.hardware'] = hardware_mod
 
             # Read and exec format_conversion.py
-            source = open({str(FORMAT_CONVERSION)!r}).read()
+            source = open({str(FORMAT_CONVERSION)!r}, encoding = "utf-8").read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .iterable import', 'from iterable import')
+            sys.path.insert(0, {str(FORMAT_CONVERSION.parent)!r})
+            source = source.replace('from .cells import', 'from cells import')
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
 
             # Test convert_chatml_to_alpaca with a simple dataset
             class FakeDataset:
+                column_names = ['messages']
+
                 def map(self, fn, **kw):
                     result = fn({{
                         'messages': [[
@@ -425,11 +421,7 @@ class TestFormatConversionNoTorchVenv:
             assert result['output'] == ['Hi there']
             print("OK: convert_chatml_to_alpaca works without torch")
         """)
-        result = subprocess.run(
-            [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
-        )
+        result = _shared_setup_1(code, no_torch_venv)
         assert (
             result.returncode == 0
         ), f"convert_chatml_to_alpaca failed without torch:\n{result.stderr.decode()}"
@@ -463,9 +455,11 @@ class TestFormatConversionNoTorchVenv:
             sys.modules['utils'] = utils_mod
             sys.modules['utils.hardware'] = hardware_mod
 
-            source = open({str(FORMAT_CONVERSION)!r}).read()
+            source = open({str(FORMAT_CONVERSION)!r}, encoding = "utf-8").read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .iterable import', 'from iterable import')
+            sys.path.insert(0, {str(FORMAT_CONVERSION.parent)!r})
+            source = source.replace('from .cells import', 'from cells import')
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
 
@@ -485,11 +479,7 @@ class TestFormatConversionNoTorchVenv:
             assert convo[1]['role'] == 'assistant'
             print("OK: convert_alpaca_to_chatml works without torch")
         """)
-        result = subprocess.run(
-            [no_torch_venv, "-c", code],
-            capture_output = True,
-            timeout = 30,
-        )
+        result = _shared_setup_1(code, no_torch_venv)
         assert (
             result.returncode == 0
         ), f"convert_alpaca_to_chatml failed without torch:\n{result.stderr.decode()}"
@@ -517,7 +507,7 @@ class TestNegativeControls:
                 loggers = types.ModuleType('loggers')
                 loggers.get_logger = lambda n: None
                 sys.modules['loggers'] = loggers
-                exec(open({temp_file!r}).read())
+                exec(open({temp_file!r}, encoding = "utf-8").read())
             """)
             result = subprocess.run(
                 [no_torch_venv, "-c", code],

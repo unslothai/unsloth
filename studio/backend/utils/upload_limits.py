@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared Studio upload/request size limits."""
+"""Shared Unsloth upload/request size limits."""
 
 from __future__ import annotations
 
@@ -14,6 +14,12 @@ MIN_UPLOAD_LIMIT_MB = 1
 MAX_UPLOAD_LIMIT_MB = 8192
 _BYTES_PER_MB = 1024 * 1024
 MULTIPART_OVERHEAD_BYTES = 10 * _BYTES_PER_MB
+STT_AUDIO_RAW_MAX_BYTES = 25 * _BYTES_PER_MB
+VIDEO_INPUT_REFERENCE_MAX_BYTES = 32 * _BYTES_PER_MB
+STT_AUDIO_B64_MAX_CHARS = ((STT_AUDIO_RAW_MAX_BYTES + 2) // 3) * 4
+STT_AUDIO_JSON_MAX_BYTES = STT_AUDIO_B64_MAX_CHARS + 64 * 1024
+VIDEO_INPUT_REFERENCE_B64_MAX_CHARS = ((VIDEO_INPUT_REFERENCE_MAX_BYTES + 2) // 3) * 4
+VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES = VIDEO_INPUT_REFERENCE_B64_MAX_CHARS + 64 * 1024
 
 LOCAL_SEED_UPLOAD_MAX_BYTES = 100 * _BYTES_PER_MB
 LOCAL_SEED_UPLOAD_MAX_LABEL = "100MB"
@@ -52,7 +58,8 @@ def validate_upload_limit_mb(value: Any) -> int:
 def get_upload_limit_mb() -> int:
     try:
         from storage.studio_db import get_app_setting
-        stored = get_app_setting(UPLOAD_LIMIT_SETTING_KEY, None)
+        from utils.account_context import OWNER, run_as
+        stored = run_as(OWNER, get_app_setting, UPLOAD_LIMIT_SETTING_KEY, None)
     except Exception:
         stored = None
     return _coerce_upload_limit_mb(stored) or default_upload_limit_mb()
