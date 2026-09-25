@@ -1798,7 +1798,7 @@ def move_location(key: str, path: Optional[str]) -> Optional[str]:
     later passes then pick up saves that were writing to the old one. On a failure everything
     moved so far goes back, with anything saved into the new folder meanwhile, and the old folder
     stays in use. Returns the folder whose files were left where they are, for a Reset while its
-    drive is not there, else None. Raises ValueError for a folder that cannot be used,
+    drive is not there or a choice of the folder standing in for it, else None. Raises ValueError for a folder that cannot be used,
     RuntimeError when the move itself fails."""
     if key not in relocations.MOVABLE:
         raise ValueError(
@@ -1817,16 +1817,16 @@ def move_location(key: str, path: Optional[str]) -> Optional[str]:
             return str(current)
         target = _move_target(path) if path is not None else _location_default(key).resolve()
         if _same_folder(target, current):
-            return None
+            return _settle_waiting_move(key, current)
         _refuse_overlap(target, key, final = False)
         _refuse_short_space(current, target)
         # Resolved again: the named subfolder can be a link to somewhere else entirely, or another
         # kind's folder.
         target = _prepare_target(target, key, current).resolve()
         if _same_folder(target, current):
-            return None
+            return _settle_waiting_move(key, current)
         _refuse_overlap(target, key, final = True)
-        previous = relocations.chosen(key)
+        previous, previous_from = relocations.chosen(key), relocations.moving_from(key)
         before = {entry.name for entry in target.iterdir()}
         # Recorded with the folder the files leave, so a crash part way is finished on restart.
         relocations.set_chosen(key, target, moving_from = current)
@@ -1835,7 +1835,7 @@ def move_location(key: str, path: Optional[str]) -> Optional[str]:
             _move_entries(current, target, log)
         except OSError as exc:
             _undo(log)
-            relocations.set_chosen(key, previous)
+            relocations.set_chosen(key, previous, moving_from = previous_from)
             # Saved into the new folder while the move ran: back with the rest, or out of sight.
             _settle(target, current, wait = False, only = lambda entry: entry.name not in before)
             raise RuntimeError(f"Could not move the files: {exc.strerror or exc}") from exc
@@ -1845,6 +1845,17 @@ def move_location(key: str, path: Optional[str]) -> Optional[str]:
     return None
 
 
+def _settle_waiting_move(key: str, current: Path) -> Optional[str]:
+    """The folder in use chosen again. While it stands in for a chosen folder whose drive is gone,
+    that is a choice to stay: the move waiting for the drive is dropped, and the folder whose files
+    are left on it returned."""
+    if relocations.moving_from(key) is None or relocations.chosen_available(key):
+        return None
+    waiting = relocations.chosen(key)
+    relocations.set_chosen(key, None if _same_folder(current, _location_default(key)) else current)
+    return str(waiting)
+
+
 def _finish_move(key: str, target: Path) -> None:
     # A default already holding files gets a subfolder, which has to be recorded to be used.
     relocations.set_chosen(key, None if _same_folder(target, _location_default(key)) else target)
@@ -1852,18 +1863,19 @@ def _finish_move(key: str, target: Path) -> None:
 
 def _resume_move(key: str) -> None:
     """Finish a move a crash cut short: what is still in the folder it left goes on into the chosen
-    one, merged as the move merges. While the chosen folder is not there, the old one is used
-    again; while the old one is not, the move waits for it. A failure is logged and tried again on
-    the next start."""
+    one, merged as the move merges. While either folder's drive is not there the move waits for
+    it, the old folder standing in for a missing chosen one. A failure is logged and tried again
+    on the next start."""
     with _move_lock:
         source = relocations.moving_from(key)
         if source is None:
             return
         target = relocations.chosen(key)
-        if not relocations.is_available(key):
+        if not relocations.chosen_available(key):
+            # What went there waits on that drive, so the move stays open: the folder the files
+            # were leaving takes new ones meanwhile, and the first start with the drive back
+            # finishes it.
             logger.warning("library.move_resume_unavailable: %s", target)
-            default = _same_folder(source, _location_default(key))
-            relocations.set_chosen(key, None if default else source)
             return
         if not relocations.moving_from_available(key):
             # What is still on its drive waits for it: the move stays open, and is finished on the

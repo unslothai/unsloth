@@ -1470,15 +1470,8 @@ class _Crash(BaseException):
     """The process dying: nothing the move does on a failure runs."""
 
 
-@pytest.mark.parametrize("unplugged", [False, True])
-def test_a_move_cut_short_is_finished_on_the_next_start(client, tmp_path, monkeypatch, unplugged):
-    import shutil
-
-    from storage.studio_db import get_app_setting
-    from utils.paths.relocations import forget_cache
-
-    old, new = _images(), tmp_path / "Pictures"
-    _fill(old)
+def _crash_moving(monkeypatch, key, path):
+    """Starts moving `key`'s files to `path` and crashes after the first."""
     real = library._move_entry
 
     def crash_after_one(entry, dest, log):
@@ -1488,17 +1481,55 @@ def test_a_move_cut_short_is_finished_on_the_next_start(client, tmp_path, monkey
 
     monkeypatch.setattr(library, "_move_entry", crash_after_one)
     with pytest.raises(_Crash):
-        library.move_location("images", str(new))
+        library.move_location(key, str(path))
     monkeypatch.setattr(library, "_move_entry", real)
+
+
+def test_a_move_cut_short_is_finished_on_the_next_start(client, tmp_path, monkeypatch):
+    from storage.studio_db import get_app_setting
+    from utils.paths.relocations import forget_cache
+
+    old, new = _images(), tmp_path / "Pictures"
+    _fill(old)
+    _crash_moving(monkeypatch, "images", new)
     assert len(_files(new)) == 1 and len(_files(old)) == 2
-    if unplugged:
-        shutil.rmtree(new)
     forget_cache()
-    # The next start finishes it, or, with the new folder gone, goes back to what the old one has.
-    assert _images() == (old if unplugged else new.resolve())
-    assert len(_files(_images())) == (2 if unplugged else 3)
+    assert _images() == new.resolve() and len(_files(new)) == 3
     assert "moving_from" not in str(get_app_setting("library.locations", {}))
-    assert _location(client, "images")["custom"] is not unplugged
+    assert _location(client, "images")["custom"] is True
+
+
+def test_a_move_cut_short_waits_for_the_drive_it_was_moving_onto(client, tmp_path, monkeypatch):
+    import shutil
+
+    from storage.studio_db import get_app_setting
+    from utils.paths.relocations import forget_cache
+
+    old, new = _images(), tmp_path / "Pictures"
+    _fill(old)
+    _crash_moving(monkeypatch, "images", new)
+    # Started again with that drive unplugged: the old folder stands in, and the move stays open.
+    shutil.move(new, tmp_path / "unplugged")
+    forget_cache()
+    assert _images() == old and len(_files(old)) == 2
+    assert _location(client, "images")["available"] is True
+    assert "moving_from" in str(get_app_setting("library.locations", {}))
+    # Plugged back in, the next start brings the rest over.
+    shutil.move(tmp_path / "unplugged", new)
+    forget_cache()
+    assert _images() == new.resolve() and len(_files(new)) == 3
+    assert "moving_from" not in str(get_app_setting("library.locations", {}))
+
+    # Choosing the folder standing in is a choice to stay: the move is dropped, and the folder
+    # still holding files is named.
+    _crash_moving(monkeypatch, "images", tmp_path / "Other")
+    shutil.move(tmp_path / "Other", tmp_path / "unplugged")
+    forget_cache()
+    response = _move(client, "images", str(new))
+    assert response.status_code == 200, response.text
+    assert str((tmp_path / "Other").resolve()) in response.text
+    assert _images() == new.resolve()
+    assert "moving_from" not in str(get_app_setting("library.locations", {}))
 
 
 def test_a_move_cut_short_waits_for_the_drive_it_was_leaving(client, tmp_path, monkeypatch):
@@ -1514,17 +1545,7 @@ def test_a_move_cut_short_waits_for_the_drive_it_was_leaving(client, tmp_path, m
     source, target = drive / "Pictures", tmp_path / "Pictures"
     assert _move(client, "images", str(source)).status_code == 200
     _fill(_images())
-    real = library._move_entry
-
-    def crash_after_one(entry, dest, log):
-        if log.moved:
-            raise _Crash
-        real(entry, dest, log)
-
-    monkeypatch.setattr(library, "_move_entry", crash_after_one)
-    with pytest.raises(_Crash):
-        library.move_location("images", str(target))
-    monkeypatch.setattr(library, "_move_entry", real)
+    _crash_moving(monkeypatch, "images", target)
     # Started again with the drive unplugged: what is on it is not given up for moved.
     shutil.move(source, tmp_path / "unplugged")
     mounts.clear()

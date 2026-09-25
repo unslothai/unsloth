@@ -175,6 +175,28 @@ def _unavailable(entry: dict) -> bool:
     return bool(mount) and not os.path.ismount(mount)
 
 
+def _source_available(entry: dict) -> bool:
+    """Whether the drive of the folder a move is leaving is there."""
+    mount = entry.get("moving_mount")
+    if mount:
+        return os.path.ismount(mount)
+    # A drive with a letter or volume of its own goes away whole.
+    anchor = Path(entry["moving_from"]).anchor
+    return not anchor or os.path.isdir(anchor)
+
+
+def _in_use(entry: dict) -> Optional[Path]:
+    """The folder `entry` saves into now: its own, or, while a move cut short waits for the drive
+    it was moving onto, the folder the files were leaving, where those not moved yet still are.
+    None while neither is there."""
+    if not _unavailable(entry):
+        return Path(entry["path"])
+    source = entry.get("moving_from")
+    if source and _source_available(entry) and Path(source).is_dir():
+        return Path(source)
+    return None
+
+
 def location_dir(key: str, default: Path) -> Path:
     """`key`'s folder, ready to use. Only the default is created: a chosen folder that has gone is
     not made again, or files would land on the disk beneath its mount point and vanish once the
@@ -184,16 +206,24 @@ def location_dir(key: str, default: Path) -> Path:
     entry = _chosen_entry(key)
     if entry is None:
         return ensure_dir(default)
-    folder = Path(entry["path"])
-    if _unavailable(entry):
+    folder = _in_use(entry)
+    if folder is None:
         raise LocationUnavailable(
-            f"{folder} is not available. Reconnect its drive, or reset the folder in Settings."
+            f"{entry['path']} is not available. Reconnect its drive, or reset the folder in "
+            "Settings."
         )
     return folder
 
 
 def is_available(key: str) -> bool:
-    """False while `key`'s chosen folder is on a drive that is not there."""
+    """False while the folder `key` saves into is on a drive that is not there."""
+    entry = _chosen_entry(key)
+    return entry is None or _in_use(entry) is not None
+
+
+def chosen_available(key: str) -> bool:
+    """False while `key`'s chosen folder itself is on a drive that is not there, even while the
+    folder a move was leaving stands in for it."""
     entry = _chosen_entry(key)
     return entry is None or not _unavailable(entry)
 
@@ -208,14 +238,7 @@ def moving_from_available(key: str) -> bool:
     """False while the folder `key`'s files are leaving is on a drive that is not there: a folder
     missing from it then is not one the move emptied."""
     entry = _chosen_entry(key)
-    if not entry or not entry.get("moving_from"):
-        return True
-    mount = entry.get("moving_mount")
-    if mount:
-        return os.path.ismount(mount)
-    # A drive with a letter or volume of its own goes away whole.
-    anchor = Path(entry["moving_from"]).anchor
-    return not anchor or os.path.isdir(anchor)
+    return not entry or not entry.get("moving_from") or _source_available(entry)
 
 
 def set_chosen(
