@@ -503,3 +503,21 @@ def test_only_a_forwardless_composition_redirects_adapter_reloads():
     assert _is_forwardless_composition(_tiny_config()) is True
     assert _is_forwardless_composition(Gemma3Config()) is False
     assert _is_forwardless_composition(Qwen2_5_VLConfig()) is False
+
+
+def test_a_kept_wrapper_freezes_the_siblings_its_forward_never_uses():
+    """DDP (find_unused_parameters=False) fails on trainable talker / code2wav weights with no gradient."""
+    from unsloth.models.vision import _text_trainable_core
+
+    model = _text_trainable_core(_tiny_omni(), text_intent = False)
+    assert all(not p.requires_grad for p in model.talker.parameters())
+    assert all(not p.requires_grad for p in model.code2wav.parameters())
+    assert any(p.requires_grad for p in model.thinker.parameters())
+
+
+def test_a_kept_wrapper_resolves_its_layer_count_through_the_thinker():
+    from unsloth.models.vision import _get_total_transformer_layers, _text_trainable_core
+
+    model = _text_trainable_core(_tiny_omni(), text_intent = False)
+    assert _get_total_transformer_layers(model) is None
+    assert _get_total_transformer_layers(model.thinker) == model.thinker.config.text_config.num_hidden_layers

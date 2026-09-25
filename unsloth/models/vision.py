@@ -1360,6 +1360,14 @@ def _delegate_text_forward(model, name, core):
         wrapper_input = None
     if wrapper_input is None:
         model.get_input_embeddings = core.get_input_embeddings
+    # Siblings never reach the loss: freeze them, else DDP full finetuning fails on unused parameters.
+    core_parameters = {id(parameter) for parameter in core.parameters()}
+    for child_name, child in model.named_children():
+        if child is core:
+            continue
+        for parameter in child.parameters():
+            if id(parameter) not in core_parameters:
+                parameter.requires_grad_(False)
     model._unsloth_text_core = name
     return model
 
@@ -2824,6 +2832,10 @@ class FastBaseModel:
 
         if finetune_last_n_layers is not None and layers_to_transform is None:
             _total_layers = _get_total_transformer_layers(model)
+            _core_name = getattr(model, "_unsloth_text_core", None)
+            if _total_layers is None and isinstance(_core_name, str):
+                # A kept wrapper's config nests the count (Qwen3-Omni: thinker.config.text_config).
+                _total_layers = _get_total_transformer_layers(getattr(model, _core_name, None))
             if _total_layers is not None and _total_layers > 0:
                 n = max(1, min(int(finetune_last_n_layers), _total_layers))
                 layers_to_transform = list(range(_total_layers - n, _total_layers))
