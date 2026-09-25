@@ -331,3 +331,115 @@ def test_docx_table_vertical_merge_emitted_once(tmp_path):
     text = "\n".join(p.text for p in parsers.parse(str(path)))
     assert text.count("SECTION") == 1  # not repeated on each spanned row
     assert "SECTION | r0" in text and " | r1" in text and " | r2" in text
+
+
+_DOCX_XMLNS = (
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+    'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+    'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
+    'xmlns:v="urn:schemas-microsoft-com:vml"'
+)
+
+
+def _docx_from_xml(tmp_path, *fragments):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+
+    section = document.element.body[-1]
+    for element in list(parse_xml(f"<w:body {_DOCX_XMLNS}>{''.join(fragments)}</w:body>")):
+        section.addprevious(element)
+    path = tmp_path / "xml.docx"
+    document.save(str(path))
+    return "\n".join(p.text for p in parsers.parse(str(path)))
+
+
+def _r(text):
+    return f'<w:r><w:t xml:space="preserve">{text}</w:t></w:r>'
+
+
+def test_docx_reads_tracked_insertions_not_deletions(tmp_path):
+    text = _docx_from_xml(
+        tmp_path,
+        "<w:p>"
+        + _r("The fee is ")
+        + '<w:del w:id="1" w:author="a"><w:r><w:delText>ten</w:delText><w:tab/></w:r></w:del>'
+        + f'<w:ins w:id="2" w:author="a">{_r("twelve")}</w:ins>'
+        + f'<w:moveFrom w:id="3" w:author="a">{_r(" moved away")}</w:moveFrom>'
+        + _r(" euros.")
+        + "</w:p>",
+    )
+    assert text == "The fee is twelve euros."
+
+
+def test_docx_reads_content_controls_fields_and_smart_tags(tmp_path):
+    text = _docx_from_xml(
+        tmp_path,
+        f"<w:p>{_r('Client: ')}<w:sdt><w:sdtPr/><w:sdtContent>{_r('Acme Corp')}</w:sdtContent></w:sdt></w:p>",
+        f"<w:sdt><w:sdtPr/><w:sdtContent><w:p>{_r('Block control')}</w:p></w:sdtContent></w:sdt>",
+        f'<w:p><w:fldSimple w:instr=" DOCPROPERTY Company ">{_r("Field result")}</w:fldSimple></w:p>',
+        f'<w:p><w:smartTag w:uri="urn:x" w:element="place">{_r("Smart tag")}</w:smartTag></w:p>',
+        f'<w:customXml w:element="clause"><w:p>{_r("Custom XML")}</w:p></w:customXml>',
+    )
+    assert text == "Client: Acme Corp\nBlock control\nField result\nSmart tag\nCustom XML"
+
+
+def test_docx_table_cells_read_content_controls_and_insertions(tmp_path):
+    text = _docx_from_xml(
+        tmp_path,
+        "<w:tbl><w:tr>"
+        f"<w:tc><w:p>{_r('Owner')}</w:p></w:tc>"
+        f"<w:tc><w:sdt><w:sdtPr/><w:sdtContent><w:p>{_r('Ada')}</w:p></w:sdtContent></w:sdt></w:tc>"
+        f'<w:tc><w:p><w:ins w:id="1" w:author="a">{_r("Engineer")}</w:ins></w:p></w:tc>'
+        "</w:tr></w:tbl>",
+    )
+    assert text == "Owner | Ada | Engineer"
+
+
+def test_docx_reads_text_box_once_after_its_paragraph(tmp_path):
+    # Word writes a text box twice: the DrawingML shape and a VML fallback copy.
+    box = f"<w:txbxContent><w:p>{_r('Callout')}</w:p></w:txbxContent>"
+    text = _docx_from_xml(
+        tmp_path,
+        "<w:p>"
+        + _r("Host line")
+        + "<w:r><mc:AlternateContent>"
+        + f'<mc:Choice Requires="wps"><w:drawing><wps:wsp><wps:txbx>{box}</wps:txbx></wps:wsp></w:drawing></mc:Choice>'
+        + f"<mc:Fallback><w:pict><v:shape><v:textbox>{box}</v:textbox></v:shape></w:pict></mc:Fallback>"
+        + "</mc:AlternateContent></w:r></w:p>",
+    )
+    assert text == "Host line\nCallout"
+
+
+def test_docx_drops_text_box_inside_tracked_deletion_or_move(tmp_path):
+    def box(text):
+        shape = f"<w:txbxContent><w:p>{_r(text)}</w:p></w:txbxContent>"
+        return f"<w:r><w:pict><v:shape><v:textbox>{shape}</v:textbox></v:shape></w:pict></w:r>"
+
+    text = _docx_from_xml(
+        tmp_path,
+        "<w:p>"
+        + _r("Kept")
+        + f'<w:del w:id="1" w:author="a">{box("Deleted box")}</w:del>'
+        + f'<w:moveFrom w:id="2" w:author="a">{box("Moved-away box")}</w:moveFrom>'
+        + "</w:p>",
+    )
+    assert text == "Kept"
+
+
+def test_docx_reads_ruby_base_without_its_guide(tmp_path):
+    text = _docx_from_xml(
+        tmp_path,
+        f"<w:p><w:r><w:ruby><w:rubyPr/><w:rt>{_r('kanji')}</w:rt><w:rubyBase>{_r('漢字')}</w:rubyBase></w:ruby></w:r></w:p>",
+    )
+    assert text == "漢字"
+
+
+def test_docx_reads_one_branch_of_alternate_content(tmp_path):
+    text = _docx_from_xml(
+        tmp_path,
+        "<w:p><mc:AlternateContent>"
+        f'<mc:Choice Requires="w14">{_r("Preferred")}</mc:Choice>'
+        f"<mc:Fallback>{_r('Fallback')}</mc:Fallback>"
+        "</mc:AlternateContent></w:p>",
+    )
+    assert text == "Preferred"
