@@ -969,16 +969,25 @@ class ItemFile:
         self.close()
 
 
-def _gallery_path(kind: str, ref: str) -> tuple[Optional[Path], str]:
+def _gallery_file(kind: str, ref: str) -> tuple[Optional[Path], str, str]:
+    """(path, project folder, prompt) of a gallery item Studio made, path None otherwise. The
+    gallery's own ownership test (``owned_*_path``: a file with a readable recipe), with that
+    recipe read once for the prompt too: an image's sits in its PNG, which Pillow decodes whole."""
     from core.inference import audio_gallery, image_gallery, video_gallery
 
-    owned = {
-        "image": (image_gallery.owned_image_path, "images"),
-        "video": (video_gallery.owned_video_path, "videos"),
-        "audio": (audio_gallery.owned_audio_path, "audio"),
-    }
-    resolve, folder = owned[kind]
-    return resolve(ref), folder
+    if kind == "image":
+        path, folder = image_gallery.image_path(ref), "images"
+        meta = image_gallery._read_meta(path) if path is not None else None
+    else:
+        gallery, folder, resolve = {
+            "video": (video_gallery, "videos", video_gallery.video_path),
+            "audio": (audio_gallery, "audio", audio_gallery.audio_path),
+        }[kind]
+        path = resolve(ref)
+        meta = gallery._read_meta(gallery._sidecar_path(ref)) if path is not None else None
+    if path is None or meta is None:
+        return None, folder, ""
+    return path, folder, str(meta.get("prompt") or "")
 
 
 def _open_owned(path: Path, item_id: str) -> BinaryIO:
@@ -1007,11 +1016,14 @@ def open_item(item_id: str) -> ItemFile:
             _project_name(record["name"], item_id),
         )
     if kind in ("image", "video", "audio"):
-        path, folder = _gallery_path(kind, ref)
+        path, folder, prompt = _gallery_file(kind, ref)
         if path is None:
             raise LookupError(item_id)
-        # Same name as the gallery's own Add to project, so either one finds the other's copy.
-        return ItemFile(_open_owned(path, item_id), path.name, folder, path.name)
+        # Named after its prompt, as the gallery pages name a file they hand on, rather than the
+        # bare id it is stored under; the id when there is no prompt. The project copy carries
+        # the id too, so two items with one prompt are two files.
+        name = safe_file_name(_prompt_name(prompt, ref, path.suffix.lstrip(".")), ref)
+        return ItemFile(_open_owned(path, item_id), name, folder, _project_name(name, item_id))
     if kind == "sandbox":
         handle, path = _open_sandbox_file(ref)
         name = os.path.basename(path)
@@ -1031,7 +1043,7 @@ def local_path(item_id: str) -> Path:
             raise LookupError(item_id)
         return path
     if kind in ("image", "video", "audio"):
-        path, _folder = _gallery_path(kind, ref)
+        path, _folder, _prompt = _gallery_file(kind, ref)
         if path is None:
             raise LookupError(item_id)
         return path

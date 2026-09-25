@@ -1373,3 +1373,75 @@ def test_an_older_database_gains_the_fingerprint_column(client, monkeypatch, tmp
         "updatedAt": 1,
         "fingerprint": None,
     }
+
+
+def _gallery_image(prompt: str) -> str:
+    from PIL import Image
+
+    from core.inference import image_gallery
+
+    record = image_gallery.save(
+        Image.new("RGB", (4, 4)),
+        {
+            "prompt": prompt,
+            "width": 4,
+            "height": 4,
+            "steps": 1,
+            "guidance": 1,
+            "seed": 1,
+            "created_at": 1,
+        },
+    )
+    return record["id"]
+
+
+def test_generated_media_download_under_their_prompt(client, signed_in, project):
+    from urllib.parse import quote
+
+    from core.inference import audio_gallery
+
+    image = _gallery_image('A red fox: "at dawn"')
+    response = client.get("/api/library/items/download", params = {"id": f"image:{image}"})
+    assert response.status_code == 200
+    assert response.headers["content-disposition"].startswith(
+        'attachment; filename="A red fox at dawn.png"'
+    )
+    # The UTF-8 name rides along for a prompt ASCII cannot hold.
+    image = _gallery_image("Café ☕ at noon")
+    disposition = client.get(
+        "/api/library/items/download", params = {"id": f"image:{image}"}
+    ).headers["content-disposition"]
+    assert f"filename*=UTF-8''{quote('Café ☕ at noon.png')}" in disposition
+    # No prompt: the id, never an empty name.
+    image = _gallery_image("  ")
+    disposition = client.get(
+        "/api/library/items/download", params = {"id": f"image:{image}"}
+    ).headers["content-disposition"]
+    assert f'filename="{image}.png"' in disposition
+
+    clip = audio_gallery.save(
+        b"RIFF0000WAVE",
+        {
+            "prompt": "Hello there",
+            "model": "sample-tts",
+            "audio_type": "snac",
+            "sample_rate": 24000,
+            "duration_s": 1.0,
+            "created_at": 1,
+        },
+    )
+    disposition = client.get(
+        "/api/library/items/download", params = {"id": f"audio:{clip['id']}"}
+    ).headers["content-disposition"]
+    assert 'filename="Hello there.wav"' in disposition
+
+    # Add to project names the copy after the prompt too, the id keeping two alike apart.
+    first, second = _gallery_image("Same prompt"), _gallery_image("Same prompt")
+    for image in (first, second):
+        response = client.post(
+            "/api/library/items/project", json = {"id": f"image:{image}", "projectId": "p1"}
+        )
+        assert response.json() == {"already": False}
+    names = sorted(path.name for path in (project / "images").iterdir())
+    assert len(names) == 2
+    assert all(name.startswith("Same prompt-") and name.endswith(".png") for name in names)
