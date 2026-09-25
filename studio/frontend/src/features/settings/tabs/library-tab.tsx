@@ -282,7 +282,7 @@ function LocationsSection() {
             label={nameOf(location)}
             description={
               <>
-                <span className="block truncate font-mono text-[11px]" title={location.path}>
+                <span className="block truncate font-mono text-ui-11" title={location.path}>
                   {location.path}
                 </span>
                 {location.available === false ? (
