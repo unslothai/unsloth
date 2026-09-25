@@ -210,6 +210,41 @@ def test_classes_defined_after_import_are_covered():
     with pytest.raises(Exception):
         LateConfig(flag = 3)
 
+    # accept_kwargs=True replaces __init__ without calling the one it wrapped.
+    @strict(accept_kwargs = True)
+    class LateKwargsConfig(PretrainedConfig):
+        model_type = "unsloth_late_kwargs_probe"
+        flag: bool = False
+
+    assert LateKwargsConfig(flag = 1).flag is True
+    assert LateKwargsConfig(flag = 1, extra = 5).extra == 5
+
+
+@needs_strict
+def test_hand_written_init_normalises_before_coercion():
+    from huggingface_hub.dataclasses import strict
+    from transformers.configuration_utils import PretrainedConfig
+
+    @strict
+    class TupleConfig(PretrainedConfig):
+        model_type = "unsloth_tuple_probe"
+        sizes: tuple[int, ...] = (1,)
+        flag: bool = False
+
+    class ListOpsConfig(TupleConfig):
+        model_type = "unsloth_list_ops_probe"
+
+        def __init__(
+            self,
+            sizes = None,
+            **kwargs,
+        ):
+            super().__init__(sizes = tuple(sizes + [99]), **kwargs)
+
+    config = ListOpsConfig(sizes = [1, 2], flag = 1)
+    assert config.sizes == (1, 2, 99)
+    assert config.flag is True
+
 
 @needs_strict
 def test_coercion_is_logged_once(caplog):
@@ -232,31 +267,28 @@ def test_fix_is_idempotent_and_original_reachable():
     from transformers import LlamaConfig
     from transformers.configuration_utils import PretrainedConfig
 
-    from unsloth.import_fixes import (
-        _LEGACY_CONFIG_INIT_FLAG,
-        fix_transformers5_legacy_config_types,
-    )
+    from unsloth.import_fixes import _legacy_config_wrappers, fix_transformers5_legacy_config_types
 
+    LlamaConfig()
     init = LlamaConfig.__dict__["__init__"]
-    hook = PretrainedConfig.__dict__["__init_subclass__"]
-    assert getattr(init, _LEGACY_CONFIG_INIT_FLAG, False)
+    new = PretrainedConfig.__dict__["__new__"]
+    assert init in _legacy_config_wrappers
     fix_transformers5_legacy_config_types()
     assert LlamaConfig.__dict__["__init__"] is init
-    assert PretrainedConfig.__dict__["__init_subclass__"] is hook
+    assert PretrainedConfig.__dict__["__new__"] is new
     assert getattr(init, "__wrapped__", None) is not None
 
 
 @pytest.mark.skipif(TRANSFORMERS_5, reason = "checks the 4.x no-op")
 def test_noop_on_transformers_4():
     from transformers import LlamaConfig
+    from transformers.configuration_utils import PretrainedConfig
 
-    from unsloth.import_fixes import (
-        _LEGACY_CONFIG_INIT_FLAG,
-        fix_transformers5_legacy_config_types,
-    )
+    from unsloth.import_fixes import fix_transformers5_legacy_config_types
 
     fix_transformers5_legacy_config_types()
-    assert not getattr(LlamaConfig.__dict__.get("__init__"), _LEGACY_CONFIG_INIT_FLAG, False)
+    LlamaConfig()
+    assert "__new__" not in PretrainedConfig.__dict__
 
 
 def test_the_mlx_branch_installs_the_fix_too():

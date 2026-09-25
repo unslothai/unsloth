@@ -292,7 +292,6 @@ from .import_fixes import (
     patch_accelerate_recursively_apply,
 )
 
-# Before the bare-annotation fix so its __init_subclass__ hook stays outermost (its tests unwrap it).
 fix_transformers5_legacy_config_types()
 # Must run first: guards PretrainedConfig before vLLM defines its config classes.
 fix_transformers5_bare_annotation_configs()

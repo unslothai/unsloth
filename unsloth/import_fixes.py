@@ -691,7 +691,9 @@ def fix_transformers5_bare_annotation_configs():
 _LEGACY_TRUTHY_BOOL_FIELDS = {
     "attn_temperature_tuning": frozenset({"llama4_text"}),
 }
-_LEGACY_CONFIG_INIT_FLAG = "_unsloth_legacy_config_types"
+# Identity, not a marker attribute: functools.wraps copies attributes onto whatever wraps us.
+_legacy_config_wrappers = set()
+_legacy_config_ready = set()
 _LEGACY_CONFIG_NOT_COERCED = object()
 _legacy_config_field_types = {}
 _legacy_config_coercions_logged = set()
@@ -841,9 +843,23 @@ def _coerce_legacy_config_kwargs(cls, kwargs):
     return kwargs if updated is None else updated
 
 
+def _legacy_config_init_is_generated(init):
+    # dataclass writes __init__ via exec ("<string>"); a hand-written one normalises its own
+    # arguments before forwarding, so only the generated init it reaches coerces them.
+    depth = 0
+    while hasattr(init, "__wrapped__") and depth < 32:
+        init, depth = init.__wrapped__, depth + 1
+    code = getattr(init, "__code__", None)
+    return code is not None and code.co_filename == "<string>"
+
+
 def _patch_config_init_for_legacy_types(cls):
     init = cls.__dict__.get("__init__")
-    if init is None or getattr(init, _LEGACY_CONFIG_INIT_FLAG, False):
+    if (
+        init is None
+        or init in _legacy_config_wrappers
+        or not _legacy_config_init_is_generated(init)
+    ):
         return
 
     @functools.wraps(init)
@@ -855,7 +871,7 @@ def _patch_config_init_for_legacy_types(cls):
                 logger.info(f"Unsloth: legacy config type coercion skipped ({e})")
         return init(self, *args, **kwargs)
 
-    setattr(__init__, _LEGACY_CONFIG_INIT_FLAG, True)
+    _legacy_config_wrappers.add(__init__)
     try:
         cls.__init__ = __init__
     except Exception:
@@ -874,47 +890,33 @@ def fix_transformers5_legacy_config_types():
         return
     if not isinstance(getattr(_BaseConfig, "__validators__", None), dict):
         return
+    previous = _BaseConfig.__dict__.get("__new__")
+    previous = getattr(previous, "__func__", previous)
+    if previous in _legacy_config_wrappers:
+        return
 
-    pending = [_BaseConfig]
-    seen = set()
-    while pending:
-        cls = pending.pop()
-        if id(cls) in seen:
-            continue
-        seen.add(id(cls))
-        _patch_config_init_for_legacy_types(cls)
-        try:
-            pending.extend(cls.__subclasses__())
-        except Exception:
-            pass
-
-    hook = _BaseConfig.__dict__.get("__init_subclass__")
-    previous = getattr(hook, "__func__", hook)
-    # Chained fixes keep what they wrapped on __wrapped__; skip if ours is already there.
-    link, depth = previous, 0
-    while link is not None and depth < 32:
-        if getattr(link, _LEGACY_CONFIG_INIT_FLAG, False):
-            return
-        link, depth = getattr(link, "__wrapped__", None), depth + 1
-
-    def __init_subclass__(cls, *args, **kwargs):
+    # Patch lazily on first instantiation, once every class decorator has run:
+    # @strict(accept_kwargs=True) swaps in an __init__ that never calls the one it replaced.
+    def __new__(cls, *args, **kwargs):
+        if cls not in _legacy_config_ready:
+            for klass in cls.__mro__:
+                if isinstance(klass, type) and issubclass(klass, _BaseConfig):
+                    try:
+                        _patch_config_init_for_legacy_types(klass)
+                    except Exception as e:
+                        logger.info(
+                            f"Unsloth: legacy config type patch skipped for {klass.__name__} ({e})"
+                        )
+            _legacy_config_ready.add(cls)
         if previous is not None:
-            previous(cls, *args, **kwargs)
-        else:
-            super(_BaseConfig, cls).__init_subclass__(*args, **kwargs)
-        # Runs before @strict wraps __init__, so conversion still happens first.
-        try:
-            _patch_config_init_for_legacy_types(cls)
-        except Exception as e:
-            logger.info(f"Unsloth: legacy config type patch skipped for {cls.__name__} ({e})")
+            return previous(cls, *args, **kwargs)
+        return object.__new__(cls)
 
-    setattr(__init_subclass__, _LEGACY_CONFIG_INIT_FLAG, True)
-    if previous is not None:
-        __init_subclass__.__wrapped__ = previous
+    _legacy_config_wrappers.add(__new__)
     try:
-        _BaseConfig.__init_subclass__ = classmethod(__init_subclass__)
+        _BaseConfig.__new__ = staticmethod(__new__)
     except Exception as e:
-        logger.info(f"Unsloth: Failed patching PretrainedConfig.__init_subclass__ ({e})")
+        logger.info(f"Unsloth: Failed patching PretrainedConfig.__new__ ({e})")
         return
     logger.info("Unsloth: Patched transformers config classes to accept legacy 4.x value types.")
 
