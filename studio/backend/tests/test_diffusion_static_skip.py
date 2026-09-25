@@ -639,7 +639,8 @@ def test_auto_load_never_installs_static(fake_runtime, tmp_path, monkeypatch, re
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = dmod.DiffusionBackend()
     _load_into(backend, tmp_path, transformer_cache = request_cache)
-    assert modes == [dcache.TC_FBCACHE]
+    # Auto resolves per speed tier (FBCache on max, else uncached); never to static.
+    assert len(modes) == 1 and modes[0] in (None, dcache.TC_FBCACHE)
     backend.unload()
 
 
