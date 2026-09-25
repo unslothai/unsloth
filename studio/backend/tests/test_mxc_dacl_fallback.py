@@ -498,3 +498,18 @@ def test_unconfirmed_restore_fails_only_a_run_that_was_not_forced(
     else:
         assert sandbox_windows_mxc.verify_success(prepared, object()) is result
     assert prepared.execution_record.cleanup_status == "uncertain"
+
+
+def test_mxc_workloads_install_into_and_import_from_the_session_packages(tmp_path):
+    """The interpreter is read-only inside the container, so without PIP_TARGET a pip install fails there."""
+    packages = str(tmp_path / ".unsloth-packages")
+    env = mxc_policy._with_session_packages(
+        {"Path": "/windows/system32", "PYTHONPATH": "/shim"}, str(tmp_path)
+    )
+
+    assert env["PIP_TARGET"] == packages
+    assert env["PYTHONNOUSERSITE"] == "1"
+    assert env["PYTHONPATH"].split(os.pathsep) == ["/shim", packages]
+    assert "PATH" not in env, "a second PATH beside Path is ambiguous on Windows"
+    assert env["Path"].split(os.pathsep)[0] == "/windows/system32"
+    assert os.path.join(packages, "Scripts") in env["Path"].split(os.pathsep)

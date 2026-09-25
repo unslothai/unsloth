@@ -846,3 +846,29 @@ def test_nested_runtime_grants_collapse_to_their_outermost_root(monkeypatch, tmp
     assert str(prefix) in roots and str(base) in roots
     assert str(scripts) not in roots and str(site_packages) not in roots
     assert len(roots) == len(set(roots))
+
+
+def test_editable_package_sources_are_granted_read_only(monkeypatch, tmp_path):
+    """The .pth or PEP 660 finder stays visible in site-packages; without its source the import fails only under MXC."""
+    from core.inference import mxc_policy
+
+    workdir = tmp_path / "workdir"
+    package = tmp_path / "checkout" / "mypkg"
+    for path in (workdir, package):
+        path.mkdir(parents = True)
+    module = tmp_path / "checkout" / "single_module.py"
+    module.write_text("", encoding = "utf-8")
+    monkeypatch.setattr(mxc_policy.sys, "platform", "win32")
+    monkeypatch.setattr(os_sandbox, "model_library_roots", lambda: ())
+    monkeypatch.setattr(os_sandbox, "editable_source_roots", lambda: (str(package), str(module)))
+    monkeypatch.setattr(
+        mxc_policy,
+        "_runtime_read_roots",
+        lambda executable, extra = (): [os.path.dirname(executable)],
+    )
+    readonly = mxc_policy.build_launch_request(_policy_plan(workdir))["config"]["filesystem"][
+        "readonlyPaths"
+    ]
+    assert str(package) in readonly
+    assert str(module) not in readonly
+    assert str(tmp_path / "checkout") not in readonly

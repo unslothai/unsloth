@@ -238,14 +238,21 @@ def _within(path: str, root: str) -> bool:
 
 
 def _model_read_roots(workdir: str, granted: list[str]) -> list[str]:
-    """Registered model folders, read-only as on Linux and macOS; one that cannot be granted is skipped."""
+    """Registered model folders and editable package sources, read-only as on Linux and macOS; one that cannot be granted is skipped."""
     covered = [workdir, *granted]
     result: list[str] = []
-    for root in os_sandbox.model_library_roots():
+    candidates = [("model folder", root) for root in os_sandbox.model_library_roots()]
+    # Directories only: a single-module editable install is a file, which the profile does not grant.
+    candidates += [
+        ("editable package", root)
+        for root in os_sandbox.editable_source_roots()
+        if os.path.isdir(root)
+    ]
+    for what, root in candidates:
         try:
             canonical = _safe_canonical_path(root, directory = True)
         except MxcPolicyError as exc:
-            logger.info("Not granting a model folder to the MXC profile: %s", exc)
+            logger.info("Not granting a %s to the MXC profile: %s", what, exc)
             continue
         if any(_within(canonical, value) for value in covered):
             continue
@@ -303,6 +310,27 @@ def verify_launch_identities(request: dict) -> None:
     _scan_workdir(request["cwd"], required = request["requireCompleteScan"])
 
 
+def _with_session_packages(env: dict[str, str], workdir: str) -> dict[str, str]:
+    """As on Linux and macOS: the interpreter is read-only in the container, so pip installs into the session."""
+    packages = os.path.join(workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
+
+    def key(name: str) -> str:
+        # Windows environment names are case-insensitive, and the inherited PATH is often spelled Path.
+        return next((k for k in env if k.upper() == name), name)
+
+    env[key("PIP_TARGET")] = packages
+    env[key("PYTHONNOUSERSITE")] = "1"
+    # Appended, so an installed package or script cannot shadow the sandbox shim or a trusted command.
+    for name, value in (
+        ("PYTHONPATH", packages),
+        ("PATH", os.path.join(packages, "Scripts")),
+        ("PATH", os.path.join(packages, "bin")),
+    ):
+        name = key(name)
+        env[name] = os.pathsep.join(part for part in (env.get(name, ""), value) if part)
+    return env
+
+
 def build_launch_request(plan, *, run_id: str | None = None) -> dict:
     if sys.platform != "win32":
         raise MxcPolicyError("MXC policy construction is Windows-only")
@@ -325,7 +353,7 @@ def build_launch_request(plan, *, run_id: str | None = None) -> dict:
     execution_argv = list(plan.argv)
     execution_argv[0] = selected_runtime
     run_id = run_id or uuid.uuid4().hex
-    workload_env = dict(plan.env)
+    workload_env = _with_session_packages(dict(plan.env), workdir)
     # MXC's Windows ProcessContainer validator requires LOCALAPPDATA to be
     # present. Point it inside the session instead of exposing the real profile.
     workload_env.setdefault("LOCALAPPDATA", workdir)
