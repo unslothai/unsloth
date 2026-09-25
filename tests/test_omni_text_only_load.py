@@ -493,3 +493,13 @@ def test_an_audio_only_wrapper_adapter_stays_on_the_wrapper():
     assert _adapter_targets_text_core(config, thinker_only, children) is True
     regex = type("Config", (), {"target_modules": r"(?:.*?(?:talker).*?(?:q_proj))"})()
     assert _adapter_targets_text_core(regex, None, children) is False
+
+
+def test_only_a_forwardless_composition_redirects_adapter_reloads():
+    """Every VLM maps to an image-text auto class; routing their adapters to text_only dropped the vision tower."""
+    from transformers import Gemma3Config, Qwen2_5_VLConfig
+    from unsloth.models.loader import _is_forwardless_composition
+
+    assert _is_forwardless_composition(_tiny_config()) is True
+    assert _is_forwardless_composition(Gemma3Config()) is False
+    assert _is_forwardless_composition(Qwen2_5_VLConfig()) is False

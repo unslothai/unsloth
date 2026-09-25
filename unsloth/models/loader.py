@@ -344,6 +344,16 @@ def _adapter_targets_text_core(
     return isinstance(targets, str) and not any(child in targets for child in children)
 
 
+def _is_forwardless_composition(model_config):
+    # Only a wrapper with no forward (Qwen3-Omni) can have a thinker-trained adapter; VLM adapters never.
+    auto_class = _resolve_omni_auto_model(model_config)
+    model_class = resolve_model_class(auto_class, model_config) if auto_class is not None else None
+    if model_class is None:
+        return False
+    forward = getattr(model_class, "forward", None)
+    return forward is None or forward is torch.nn.Module.forward
+
+
 def _resolve_omni_auto_model(model_config):
     """A multimodal auto class that really maps this config, or None.
 
@@ -1978,7 +1988,7 @@ class FastModel(FastBaseModel):
             is_peft
             and not text_only
             and auto_model is None
-            and _resolve_omni_auto_model(model_config) is not None
+            and _is_forwardless_composition(model_config)
         ):
             _adapter_keys = _adapter_weight_keys(
                 old_model_name,

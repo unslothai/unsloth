@@ -2775,6 +2775,18 @@ class FastBaseModel:
                 _moe_module_detect,
                 moe_module_targets = _moe_module_targets,
             )
+            # A forward-less wrapper's config hides the thinker's experts; resolve on the core and
+            # name full paths, since PEFT suffix-matches and would also hit the talker's experts.
+            _core_name = getattr(model, "_unsloth_text_core", None)
+            _core = getattr(model, _core_name, None) if isinstance(_core_name, str) else None
+            if target_parameters is None and _core is not None:
+                _core_parameters = get_moe_target_parameters(_core, _moe_module_detect)
+                if _core_parameters:
+                    target_parameters = [
+                        f"{_core_name}.{name}"
+                        for name, _ in _core.named_parameters()
+                        if any(name == t or name.endswith("." + t) for t in _core_parameters)
+                    ] or None
 
         if _moe_module_targets:
             if isinstance(target_modules, (list, tuple)):
