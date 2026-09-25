@@ -332,3 +332,67 @@ def test_install_for_pipe_only_touches_qwen_image_21_and_never_raises(monkeypatc
         q, "install", lambda logger = None: (_ for _ in ()).throw(RuntimeError("boom"))
     )
     assert q.install_for_pipe(pipe) is False
+
+
+def test_a_mask_rewritten_in_place_between_renders_gets_its_new_layout():
+    m = _model()
+    inp = _inputs(text = 8, cond = (4, 4), pad = 2)
+    assert q.install()
+    _render(m, inp)
+    inp["img_mask"][:, :12] = inp["img_mask"][:, :12].roll(3, dims = 1).clone()
+    got = _render(m, inp)
+    q.uninstall()
+    ref = _render(m, inp)
+    for a, b in zip(ref, got):
+        assert torch.equal(a, b)
+
+
+def test_a_cached_layout_does_not_alias_the_callers_mask():
+    m = _model()
+    inp = _inputs(text = 8, cond = (4, 4), pad = 2)
+    assert q.install()
+    _render(m, dict(inp, encoder_hidden_states_mask = None))  # the text index is built lazily, later
+    original = inp["img_mask"].clone()
+    inp["img_mask"][:, :12] = inp["img_mask"][:, :12].roll(3, dims = 1).clone()
+    fresh = dict(inp, img_mask = original)
+    got = _render(m, fresh)
+    q.uninstall()
+    ref = _render(m, fresh)
+    for a, b in zip(ref, got):
+        assert torch.equal(a, b)
+
+
+@pytest.mark.parametrize("prefill, decode", [(False, True), (True, False), (True, True)])
+def test_an_autocast_change_between_steps_matches_the_stock_forward(prefill, decode):
+    m = _model()
+    inp = _inputs(pad = 2)
+
+    def render():
+        outs = []
+        kv = qmod.QwenImage21KVCache(len(m.transformer_blocks))
+        lat = inp["latents"]
+        with torch.inference_mode():
+            for i in range(3):
+                with torch.autocast(
+                    "cpu", dtype = torch.bfloat16, enabled = prefill if i == 0 else decode
+                ):
+                    out = m(
+                        hidden_states = lat,
+                        timestep = torch.full((1,), 1.0 - i / 3),
+                        encoder_hidden_states = inp["encoder_hidden_states"],
+                        encoder_hidden_states_mask = inp["encoder_hidden_states_mask"],
+                        img_shapes = inp["img_shapes"],
+                        img_mask = inp["img_mask"],
+                        kv_cache = kv,
+                        kv_cache_mode = "extract" if i == 0 else "cached",
+                        return_dict = False,
+                    )[0]
+                outs.append(out.float().clone())
+                lat = lat - 0.1 * out.float()[:, -lat.shape[1] :]
+        return outs
+
+    ref = render()
+    assert q.install()
+    got = render()
+    for a, b in zip(ref, got):
+        assert torch.equal(a, b)

@@ -158,7 +158,7 @@ def _build_layout(model: Any, mod: Any, img_mask: Any, shapes: list, device: Any
     # The decode steps read rows [prefix_len:] only; when every one of them is an image row they all
     # come from hidden_states and the text projection never reaches the blocks.
     lay.tail_is_image = bool(lay.image_pad_mask[lay.prefix_len :].all())
-    lay.vlm_row = img_mask[0]
+    lay.vlm_row = img_mask[0].clone()  # the caller may reuse and rewrite its mask
     lay._segments = None
     lay._vlm_text = {}
     return lay
@@ -179,18 +179,37 @@ def _vlm_text(lay: _Layout, length: int) -> Any:
     return idx
 
 
-def _layout_for(model: Any, mod: Any, img_mask: Any, img_shapes: Any, device: Any) -> _Layout:
+def _mask_version(img_mask: Any) -> Any:
+    """The in-place write counter, or None for an inference tensor, which has none."""
+    try:
+        return img_mask._version
+    except Exception:  # noqa: BLE001 - inference tensors do not track versions
+        return None
+
+
+def _layout_for(
+    model: Any,
+    mod: Any,
+    img_mask: Any,
+    img_shapes: Any,
+    device: Any,
+    *,
+    reuse_identity: bool = False,
+) -> _Layout:
     shapes = img_shapes[0]
     shapes_key = tuple(tuple(int(v) for v in s) for s in shapes)
     state = model.__dict__.get("_unsloth_q21_layouts")
     if state is None:
         state = {"recent": [], "by_content": {}}
         model.__dict__["_unsloth_q21_layouts"] = state
-    # Same img_mask object as a recent step: the pipeline builds it once per call and passes it to
-    # every step, so this is the steady-state path and touches no device memory.
-    for ref, key, lay in state["recent"]:
-        if ref() is img_mask and key == (shapes_key, device):
-            return lay
+    # Same img_mask object as a recent step of this render: the pipeline builds it once per call and
+    # passes it to every step, so this is the steady-state path and touches no device memory. Only a
+    # cached step may trust it (its KV cache already fixes the prefix layout); the others check content.
+    version = _mask_version(img_mask)
+    if reuse_identity:
+        for ref, key, lay in state["recent"]:
+            if ref() is img_mask and key == (shapes_key, device, version):
+                return lay
     content = (
         tuple(img_mask.shape),
         str(img_mask.dtype),
@@ -204,7 +223,7 @@ def _layout_for(model: Any, mod: Any, img_mask: Any, img_shapes: Any, device: An
     state["by_content"][content] = lay
     while len(state["by_content"]) > _LAYOUTS_PER_MODULE:
         state["by_content"].pop(next(iter(state["by_content"])))
-    state["recent"].insert(0, (weakref.ref(img_mask), (shapes_key, device), lay))
+    state["recent"].insert(0, (weakref.ref(img_mask), (shapes_key, device, version), lay))
     del state["recent"][_RECENT_PER_MODULE:]
     return lay
 
@@ -273,11 +292,25 @@ def _cached_step(
     return model.proj_out(joint_hidden_states)
 
 
+def _autocast_state(device_type: str) -> tuple:
+    """Autocast decides the text projection's output dtype as much as the weights do."""
+    import torch
+    try:
+        return torch.is_autocast_enabled(device_type), torch.get_autocast_dtype(device_type)
+    except Exception:  # noqa: BLE001 - older signature: CUDA state only
+        return torch.is_autocast_enabled(), None
+
+
 def _text_dtype(model: Any, encoder_hidden_states: Any) -> tuple:
     """``(key, dtype)``: the text projection's output dtype, which the stock joint buffer takes,
     remembered from a full step and keyed on what decides it (None until a full step ran)."""
     weight = getattr(getattr(model.txt_in, "out_layer", None), "weight", None)
-    key = (encoder_hidden_states.dtype, id(weight), getattr(weight, "dtype", None))
+    key = (
+        encoder_hidden_states.dtype,
+        id(weight),
+        getattr(weight, "dtype", None),
+        _autocast_state(encoder_hidden_states.device.type),
+    )
     return key, model.__dict__.setdefault("_unsloth_q21_text_dtype", {}).get(key)
 
 
@@ -334,7 +367,9 @@ def _make_forward(mod: Any, stock: Any) -> Any:
             )
 
         device = hidden_states.device
-        lay = _layout_for(self, mod, img_mask, img_shapes, device)
+        lay = _layout_for(
+            self, mod, img_mask, img_shapes, device, reuse_identity = kv_cache_mode == "cached"
+        )
         dtype_key, text_dtype = _text_dtype(self, encoder_hidden_states)
         if (
             kv_cache_mode == "cached"
