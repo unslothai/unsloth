@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Kept apart from actions.ts so pages outside the Library can start a chat without loading it.
 import type { useNavigate } from "@tanstack/react-router";
 import { getAuthSessionEpoch } from "@/features/auth";
 // eslint-disable-next-line no-restricted-imports -- the chat barrel imports the Library back
@@ -28,22 +27,18 @@ export function resetToNewChat(): void {
   runtime.setIncognito(false);
 }
 
-/** Open a fresh chat with these files attached in the composer. */
 export function startLibraryChat(
   navigate: Navigate,
   handoff: LibraryChatHandoff,
 ): void {
-  // A UUID, or a fallback where plain http to the LAN has no crypto.randomUUID.
   const nonce = createModelConfigHandoffRequestId();
   resetToNewChat();
   useLibraryChatHandoffStore.getState().offer(`single:${nonce}`, handoff);
   void navigate({ to: "/chat", search: { new: nonce } });
 }
 
-// The composer's image and text limit.
 export const MAX_IMAGE_OR_TEXT_BYTES = 20 * 1024 * 1024;
 
-// The composer's own limits, checked first so a file it would refuse never opens an empty chat.
 const MEDIA = {
   image: {
     bytes: MAX_IMAGE_OR_TEXT_BYTES,
@@ -63,16 +58,11 @@ const MEDIA = {
   },
 } as const;
 
-// Long enough that a small image never flashes a toast.
 const LOADING_TOAST_DELAY_MS = 400;
 
 // One hand-off at a time: a second click while a large clip downloads would open a second chat.
 let handoffInFlight = false;
 
-/**
- * Open a fresh chat with a generated image or clip attached, named after its prompt. `load` fetches
- * it: WebKit will not refetch an object URL it is displaying, and a signed link can die.
- */
 export async function chatAboutMedia(
   navigate: Navigate,
   load: () => Promise<Response>,
@@ -109,7 +99,6 @@ export async function chatAboutMedia(
       tooLarge();
       return;
     }
-    // A missing or generic type would not be taken as an image or a clip by the composer.
     const type = blob.type.startsWith(`${kind}/`) ? blob.type : media.type;
     startLibraryChat(navigate, {
       files: [new File([blob], mediaFileName(prompt, media.extension), { type })],

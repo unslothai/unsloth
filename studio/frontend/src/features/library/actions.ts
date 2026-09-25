@@ -25,7 +25,6 @@ type Navigate = ReturnType<typeof useNavigate>;
 
 export const MAX_CHAT_FILES = 10;
 
-// Its PDF, DOCX and OpenDocument limit, and the most any other adapter takes, so the ceiling for the rest.
 const MAX_DOCUMENT_BYTES = 50 * 1024 * 1024;
 
 function chatSizeLimit(item: LibraryItem): number {

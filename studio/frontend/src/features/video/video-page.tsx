@@ -298,7 +298,6 @@ const VIDEO_LINK_REFRESH_MS = 6 * 60 * 60 * 1000;
 // Videos loaded per infinite-scroll page.
 const PAGE_SIZE = 50;
 
-// Where the viewer starts when the inline player has not loaded yet, muted as the inline player starts.
 const INLINE_PLAYBACK: Playback = { time: 0, playing: false, muted: true, volume: 1 };
 
 // Passes a window resync may make before giving up: each extra pass only happens when
@@ -1167,19 +1166,14 @@ function VideoGenerator({
     [videos, selectedId],
   );
   const selectedSrc = selected ? srcById[selected.id] : undefined;
-  // The Library's full-window viewer, picking the clip up where the inline player was and handing it
-  // back on close. Bound to the clip that opened it: a generation finishing moves only the selection.
   const [viewer, setViewer] = useState<{ id: string; from: Playback } | null>(null);
   const viewerVideoRef = useRef<HTMLVideoElement | null>(null);
-  // Set once the viewer's player has seeked to `from`: before that its own time reads 0.
   const viewerPositioned = useRef(false);
-  // Where the viewer's clip got to, handed back to the inline player however the viewer closes.
   const handback = useRef<{ id: string; playback: Playback } | null>(null);
   const navigateToChat = useNavigate();
   const revealLabel = useRevealLabel();
   const viewerVideo = viewer ? (videos.find((video) => video.id === viewer.id) ?? null) : null;
   const viewerSrc = viewerVideo ? srcById[viewerVideo.id] : undefined;
-  // Leaving the page closes it: the dialog portals to the body, past the hidden page, and would play on.
   if (viewer && (!active || !viewerVideo)) setViewer(null);
   const openViewer = () => {
     if (!selected || !selectedSrc) return;
@@ -1187,10 +1181,8 @@ function VideoGenerator({
     viewerPositioned.current = false;
     handback.current = null;
     setViewer({ id: selected.id, from: readPlayback(inline, INLINE_PLAYBACK) });
-    // Only one plays.
     inline?.pause();
   };
-  // Also while it closes: the element is gone once it has, and its late events are not the viewer's.
   const recordViewer = (video: HTMLVideoElement) => {
     if (!viewer || video !== viewerVideoRef.current) return;
     handback.current = {
@@ -1202,9 +1194,6 @@ function VideoGenerator({
     if (viewerVideoRef.current) recordViewer(viewerVideoRef.current);
     setViewer(null);
   };
-  // Also after leaving the page closed it mid-render. Only to the clip the viewer showed, once its link
-  // is minted: if a generation finishing selected another, it waits until that clip is shown again.
-  // Opening the viewer again replaces it, so at most one waits.
   const shownId = selected?.id;
   useEffect(() => {
     const last = handback.current;
@@ -1217,7 +1206,6 @@ function VideoGenerator({
     inline.muted = playback.muted;
     inline.volume = playback.volume;
     if (playback.playing && activeRef.current) void playWithMutedFallback(inline);
-    // A clip shown again loads afresh and would autoplay.
     else inline.pause();
   }, [viewer, shownId, selectedSrc]);
 
@@ -4326,7 +4314,6 @@ function VideoGenerator({
                 onToggleFavorite: () => toggleFavorite(`video:${viewerVideo.id}`),
                 onAddToProject: (projectId) => addGalleryVideoToProject(viewerVideo.id, projectId),
                 onDelete: () => {
-                  // A clip on its way out is not handed back, or the inline player would resume it.
                   viewerVideoRef.current?.pause();
                   handback.current = null;
                   setViewer(null);
@@ -4345,12 +4332,10 @@ function VideoGenerator({
                   if (viewer.from.time) video.currentTime = viewer.from.time;
                   video.volume = viewer.from.volume;
                   viewerPositioned.current = true;
-                  // Not autoPlay: a clip paused inline opens paused.
                   if (viewer.from.playing) void playWithMutedFallback(video);
                 }}
                 onTimeUpdate={(event) => recordViewer(event.currentTarget)}
                 onVolumeChange={(event) => recordViewer(event.currentTarget)}
-                // A dead link is reminted, as inline, resuming where this one stopped or was to start.
                 onError={(event) => {
                   const from = readPlayback(event.currentTarget, viewer.from, viewerPositioned.current);
                   viewerPositioned.current = false;
