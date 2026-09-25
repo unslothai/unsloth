@@ -205,7 +205,6 @@ export function ApiKeysTab() {
         keylessExposure={keyless.exposure}
       />
 
-      {/* Installation-wide and owner-only, after the chat examples so those stay with the keys above them. */}
       {isOwner ? <DecisionApiSection /> : null}
 
       <Dialog

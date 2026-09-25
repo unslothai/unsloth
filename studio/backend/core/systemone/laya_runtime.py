@@ -78,7 +78,6 @@ def _device() -> str:
 
 
 def _mlx_available() -> bool:
-    # An unsloth-zoo without the MLX Laya model keeps the torch MPS path.
     try:
         import unsloth_zoo.mlx.decision  # noqa: F401
     except ImportError:
@@ -266,8 +265,7 @@ def _release_memory() -> None:
         )
         if clear is not None:
             clear()
-    # Torch's caching allocator likewise keeps the freed weights reserved from training and llama-server.
-    # Only backends already initialised are touched, so a CPU-only Studio never opens a device context here.
+    # Torch's allocator too; only already-initialised backends, so a CPU-only Studio never opens a device context.
     if (torch := sys.modules.get("torch")) is not None:
         try:
             if torch.cuda.is_initialized():
@@ -664,7 +662,7 @@ def status() -> dict[str, Any]:
 def unload() -> bool:
     global _agent, _loaded, _device_name, _failure, _install_failure
     with _state_lock:
-        # _loading covers the gap before _ensure_loading starts the thread; unloading there would let the load land after.
+        # _loading: a load claimed but not yet started would otherwise land after this unload.
         if _loading is not None or (_loader is not None and _loader.is_alive()):
             raise Unavailable(409, "model_loading", "Wait for the load to finish before unloading")
     with _run_lock:
