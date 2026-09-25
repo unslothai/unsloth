@@ -63,9 +63,7 @@ def _modelopt_pattern(name) -> str:
 
 
 def _checkpoint_renames(config) -> list:
-    """Single-pattern renames transformers applies to this model's checkpoint keys (VLMs move
-    `visual.*` to `model.visual.*`). ModelOpt ignore entries use checkpoint names, while the fp8
-    quantizer matches them against the instantiated model."""
+    """Checkpoint renames (VLM `visual.*` -> `model.visual.*`); ignore lists use checkpoint names."""
     try:
         from transformers.conversion_mapping import get_checkpoint_conversion_mapping
     except Exception:
@@ -155,8 +153,7 @@ def _exclusion_patterns(ignore, renames) -> list:
     patterns = []
     for name in ignore:
         variants = [str(name), _renamed(str(name), renames)]
-        # transformers also adds the base model prefix to an unprefixed checkpoint (5.5 has no
-        # registry rename for it); plain names already match under any prefix.
+        # transformers also prefixes an unprefixed checkpoint with the base model (no 5.5 rename).
         variants += ["model." + v for v in variants if not v.startswith(("*", "model."))]
         for variant in variants:
             pattern = _modelopt_pattern(variant)
@@ -278,9 +275,7 @@ def attach_hf_quant_config(
     revision = None,
     hub_kwargs = None,
 ) -> bool:
-    """Older ModelOpt exports (nvidia/Llama-3.1-8B-Instruct-FP8) keep their quantization only in
-    hf_quant_config.json; config.json has none, so they loaded as unquantized fp8 bytes. Attach the
-    block when it is an FP8 plan this module loads; every other ModelOpt format is left as is."""
+    """Older ModelOpt exports (nvidia/Llama-3.1-8B-Instruct-FP8) keep quantization only in hf_quant_config.json."""
     if getattr(config, "quantization_config", None) is not None:
         return False
     name = model_name or getattr(config, "_name_or_path", None)
@@ -364,8 +359,7 @@ def arm_modelopt_fp8_loading(config, verbose: bool = True) -> Optional[dict]:
 
 
 def enable_modelopt_merged_save(config) -> bool:
-    """Install the merged-save dequantization for a ModelOpt FP8 checkpoint, also when the rewrite
-    is skipped because vLLM reads the weights."""
+    """Arm the merged-save dequantization, also when vLLM reads the weights and no rewrite runs."""
     if modelopt_fp8_plan(config) is None:
         return False
     _dequantize_modelopt_on_merged_save()
@@ -430,7 +424,6 @@ def _dequantize_modelopt_on_merged_save() -> None:
 def _is_modelopt_rename(conversion, ours) -> bool:
     if type(conversion).__name__ != "WeightRenaming":
         return False
-    # 5.3 / 5.5 keep only the live patterns; later releases also store `_original_*` copies.
     sources = getattr(conversion, "_original_source_patterns", None) or getattr(
         conversion, "source_patterns", None
     )
@@ -440,9 +433,7 @@ def _is_modelopt_rename(conversion, ours) -> bool:
 
 
 def keep_fp8_scale_names_on_save(model) -> None:
-    """save_pretrained reverses the load-time key_mapping, which would write ModelOpt scale names
-    beside the rewritten fp8 config and leave a checkpoint neither format reloads. Drop just those
-    two renames so a plain save writes transformers' own fp8 names."""
+    """save_pretrained reverses key_mapping; drop the scale renames so names match the fp8 config."""
     ours = set(MODELOPT_FP8_KEY_MAPPING)
     for module in model.modules():
         conversions = getattr(module, "_weight_conversions", None)
@@ -467,8 +458,7 @@ def _from_pretrained_own_kwargs() -> frozenset:
 
 
 def move_config_overrides_onto_config(config, kwargs: dict) -> None:
-    """Without config= transformers consumes kwargs naming config attributes (use_cache=False);
-    the rewritten ModelOpt load passes config=, which would hand them to the strict model init."""
+    """Apply config kwargs (use_cache=False) that a config= load would pass to the strict model init."""
     own = _from_pretrained_own_kwargs()
     for key in list(kwargs):
         if key not in own and hasattr(config, key):

@@ -2613,7 +2613,6 @@ class FastLlamaModel:
                 "local_files_only": kwargs.get("local_files_only", False),
             },
         )
-        # The ModelOpt rewrite lives on model_config, so weights must load against it.
         from .modelopt_fp8 import (
             keep_fp8_scale_names_on_save,
             move_config_overrides_onto_config,
@@ -2815,7 +2814,6 @@ class FastLlamaModel:
                     # on the config and pass the single config object through.
                     if max_position_embeddings is not None:
                         model_config.max_position_embeddings = max_position_embeddings
-                    # rope_scaling kwarg next to config= is rejected by model init.
                     _rope_scaling = kwargs.pop("rope_scaling", None)
                     if _rope_scaling is not None:
                         model_config.rope_scaling = _rope_scaling
