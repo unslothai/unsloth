@@ -372,7 +372,6 @@ def test_xformers_installs_the_cuda_matched_wheel_not_the_package_name(monkeypat
 
 
 def test_a_hidden_xformers_is_not_reinstalled_in_the_same_process(monkeypatch):
-    """A wheel installed while xFormers is hidden cannot be used until restart."""
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
     monkeypatch.setitem(sys.modules, "xformers", None)
 

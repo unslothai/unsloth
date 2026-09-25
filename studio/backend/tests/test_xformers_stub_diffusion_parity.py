@@ -240,7 +240,6 @@ def _probe_broken_xformers(tmp_path, torch_requirement):
 
 
 def test_an_xformers_requiring_a_newer_torch_looks_uninstalled(tmp_path):
-    """Real metadata, real finder: diffusers must see no xformers rather than import a broken one."""
     seen, stderr = _probe_broken_xformers(tmp_path, "torch>=999")
 
     assert seen["visible"] is False
@@ -250,7 +249,6 @@ def test_an_xformers_requiring_a_newer_torch_looks_uninstalled(tmp_path):
 
 
 def test_an_xformers_whose_torch_requirement_holds_is_left_visible(tmp_path):
-    """Only the declared requirement decides: a satisfied one is not second-guessed here."""
     seen, stderr = _probe_broken_xformers(tmp_path, "torch>=1")
 
     assert seen["visible"] is True
