@@ -24,7 +24,6 @@ def _write(path, name, source):
     (path / name).write_text(textwrap.dedent(source))
 
 
-
 _LEGACY_CONFIG = """
 from transformers import PretrainedConfig
 
@@ -182,7 +181,6 @@ def test_legacy_defaults_touch_only_remote_classes(unsloth_loaded):
         assert name not in PretrainedConfig.__dict__
 
 
-
 _SHADOW_CONFIG = """
 from transformers import LlamaConfig as _NativeLlamaConfig
 
@@ -328,7 +326,6 @@ def test_unfetchable_remote_class_is_unknown_not_native(unsloth_loaded):
     assert resolve_remote_code_model_class(
         AutoModelForCausalLM, config, "/nonexistent/unsloth/repo", trust_remote_code = True
     ) == (True, None)
-
 
 
 _CONFIG_ONLY = """

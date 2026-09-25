@@ -2594,7 +2594,6 @@ def _masking_legacy_keyword_changes():
 
 
 def _accept_legacy_mask_keywords(function, changes):
-
     @functools.wraps(function)
     def wrapper(*args, **kwargs):
         for old, new in changes:
