@@ -503,8 +503,10 @@ export function userExtraArgs(
   const out: string[] = [];
   const list = args ?? [];
   for (let i = 0; i < list.length; i++) {
-    if (NGRAM_FLAGS.includes(list[i])) {
-      i++;
+    const eq = list[i].indexOf("=");
+    const name = eq >= 0 ? list[i].slice(0, eq) : list[i];
+    if (NGRAM_FLAGS.includes(name)) {
+      if (eq < 0) i++; // its value is a separate token
       continue;
     }
     out.push(list[i]);

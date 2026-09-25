@@ -159,12 +159,20 @@ def list_runs(limit: int = 100) -> list[dict[str, Any]]:
         ).fetchall()
         counts: dict[str, int] = {}
         means: dict[str, dict[str, float]] = {}
+        run_ids = [row["id"] for row in rows]
         # Server rate per completion, the client rate when a completion lacks one, as the page
-        # aggregates it: the fallback is per run, not per row.
-        for run_id, variant, n, rate in conn.execute(
-            "SELECT run_id, variant, COUNT(*), AVG(COALESCE(tps, client_tps)) FROM benchmark_results"
-            " WHERE warmup = 0 GROUP BY run_id, variant"
-        ).fetchall():
+        # aggregates it: the fallback is per run, not per row. Scoped to the listed runs so the
+        # scan does not grow with every run ever stored.
+        placeholders = ",".join("?" for _ in run_ids)
+        for run_id, variant, n, rate in (
+            conn.execute(
+                "SELECT run_id, variant, COUNT(*), AVG(COALESCE(tps, client_tps)) FROM benchmark_results"
+                f" WHERE warmup = 0 AND run_id IN ({placeholders}) GROUP BY run_id, variant",
+                run_ids,
+            ).fetchall()
+            if run_ids
+            else []
+        ):
             counts[run_id] = counts.get(run_id, 0) + int(n)
             if rate is not None:
                 means.setdefault(run_id, {})[variant] = round(float(rate), 3)
