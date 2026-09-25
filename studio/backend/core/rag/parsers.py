@@ -482,18 +482,19 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
         (codecs.BOM_UTF32_BE, "utf-32"),
         (codecs.BOM_UTF16_LE, "utf-16"),
         (codecs.BOM_UTF16_BE, "utf-16"),
+        (codecs.BOM_UTF8, "utf-8-sig"),
     ):
         if data.startswith(bom):
             return data.decode(codec, errors = "replace")
     try:
-        return data.decode("utf-8-sig")
+        return data.decode("utf-8")
     except UnicodeDecodeError:
         pass
     declared = _declared_charset(data) if html else None
     # WHATWG reads UTF-16 labels as UTF-8, which these bytes already failed.
     if declared and declared != "utf-8":
         return data.decode(declared, errors = "replace")
-    text = data.decode("utf-8-sig", errors = "replace")
+    text = data.decode("utf-8", errors = "replace")
     # Legacy bytes can form a stray valid UTF-8 sequence (cp1252 "à\xa0»"), so one is not enough.
     non_ascii = len(text) - len(text.encode("ascii", "ignore"))
     if non_ascii > 2 * text.count("\ufffd"):

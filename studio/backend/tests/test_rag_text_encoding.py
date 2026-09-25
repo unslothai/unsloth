@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import codecs
+
 from core.rag import parsers
 
 GREETING = "Sehr geehrte Frau Müller,\nviele Grüße aus Köln – 5 €.\n"
@@ -33,6 +35,14 @@ def test_utf8_is_read_as_before(tmp_path):
 def test_a_damaged_byte_in_utf8_costs_only_that_byte(tmp_path):
     data = GREETING.encode("utf-8") + b"\xff"
     assert _text(tmp_path, "damaged.txt", data) == GREETING + "�"
+
+
+def test_a_utf8_byte_order_mark_wins_over_a_damaged_byte_and_a_declared_charset(tmp_path):
+    assert _text(tmp_path, "bom.txt", b"\xef\xbb\xbfhello\xff") == "hello\ufffd"
+    page = '<meta charset="shift_jis"><p>café \xff</p>'.encode("utf-8").replace(
+        b"\xc3\xbf", b"\xff"
+    )
+    assert _text(tmp_path, "bom.html", codecs.BOM_UTF8 + page) == "café \ufffd"
 
 
 def test_a_utf16_file_is_read_by_its_byte_order_mark(tmp_path):
