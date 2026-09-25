@@ -1924,6 +1924,8 @@ class FastModel(FastBaseModel):
                         fast_inference = fast_inference,
                         subfolder = kwargs.get("subfolder"),
                         device_map = device_map,
+                        variant = kwargs.get("variant"),
+                        cache_dir = kwargs.get("cache_dir"),
                     )
                 if (
                     remote_text_only is not None

@@ -962,3 +962,106 @@ def test_loader_and_vision_forward_device_map_to_the_plan():
                 break
             j += 1
         assert "device_map = device_map," in src[i : j + 1], path.name
+
+
+# ---------------------------------------------------------------- variant and cache_dir
+
+
+def _as_variant(repo, variant, layout):
+    # Rename the fixture's weights the way from_pretrained(variant = ...) looks for them.
+    weights_file = repo / "model.safetensors"
+    if layout == "single":
+        weights_file.rename(repo / f"model.{variant}.safetensors")
+    elif layout == "index":
+        from safetensors import safe_open
+
+        shard = f"model-00001-of-00001.{variant}.safetensors"
+        with safe_open(str(weights_file), framework = "pt") as f:
+            weight_map = {k: shard for k in f.keys()}
+        weights_file.rename(repo / shard)
+        (repo / f"model.safetensors.index.{variant}.json").write_text(
+            json.dumps({"metadata": {}, "weight_map": weight_map})
+        )
+    else:
+        _convert_to_sharded_bin(repo)
+        index = repo / "pytorch_model.bin.index.json"
+        shard = "pytorch_model-00001-of-00001.bin"
+        variant_shard = f"pytorch_model-00001-of-00001.{variant}.bin"
+        (repo / shard).rename(repo / variant_shard)
+        weight_map = {k: variant_shard for k in json.loads(index.read_text())["weight_map"]}
+        index.unlink()
+        (repo / f"pytorch_model.bin.index.{variant}.json").write_text(
+            json.dumps({"metadata": {}, "weight_map": weight_map})
+        )
+
+
+@needs_tf5
+@pytest.mark.parametrize("layout", ["single", "index", "bin_index"])
+def test_variant_checkpoint_is_probed_where_the_load_reads_it(tmp_path, monkeypatch, layout):
+    ns = _ns()
+    repo, weights = _write_repo(tmp_path, name = f"variant_{layout}")
+    _as_variant(repo, "fp16", layout)
+    parent = _load_parent_config(repo)
+    assert ns["_checkpoint_weight_names"](str(repo)) is None
+    assert ns["_checkpoint_weight_names"](str(repo), variant = "fp16") == set(weights)
+    text_config, mapping = ns["_get_remote_composite_text_only"](
+        parent, str(repo), trust_remote_code = True, variant = "fp16"
+    )
+    model, info = transformers.AutoModelForCausalLM.from_pretrained(
+        repo,
+        config = text_config,
+        key_mapping = mapping,
+        variant = "fp16",
+        trust_remote_code = True,
+        dtype = torch.float32,
+        local_files_only = True,
+        output_loading_info = True,
+    )
+    assert not info["missing_keys"]
+    assert torch.equal(model.lm_head.weight, weights["language_model.lm_head.weight"])
+    # And from the Hub cache, offline.
+    repo_id, _ = _cache_as_hub_repo(tmp_path, monkeypatch, repo, repo_id = f"fake-org/v-{layout}")
+    assert ns["_checkpoint_weight_names"](repo_id, local_files_only = True, variant = "fp16") == set(
+        weights
+    )
+
+
+@needs_tf5
+def test_custom_cache_dir_is_probed(tmp_path, monkeypatch):
+    # The checkpoint and the nested repo code sit only in the caller's cache_dir, not the default Hub cache.
+    import huggingface_hub.constants as hub_constants
+
+    ns = _ns()
+    repo, weights = _write_repo(
+        tmp_path, name = "cache_dir", text_auto_map = "modeling_tiny_omni.TinyTextLM"
+    )
+    repo_id, _ = _cache_as_hub_repo(tmp_path, monkeypatch, repo, repo_id = "fake-org/cache-dir")
+    cache_dir = str(tmp_path / "hub_cache")
+    empty = tmp_path / "default_cache"
+    empty.mkdir()
+    monkeypatch.setattr(hub_constants, "HF_HUB_CACHE", str(empty))
+    parent = transformers.AutoConfig.from_pretrained(
+        repo_id, trust_remote_code = True, local_files_only = True, cache_dir = cache_dir
+    )
+    assert ns["_checkpoint_weight_names"](repo_id, local_files_only = True) is None
+    assert ns["_checkpoint_weight_names"](
+        repo_id, local_files_only = True, cache_dir = cache_dir
+    ) == set(weights)
+    plan = ns["_get_remote_composite_text_only"](
+        parent, repo_id, trust_remote_code = True, local_files_only = True, cache_dir = cache_dir
+    )
+    assert plan is not None and plan[1] == {r"^language_model\.": ""}
+
+
+def test_loader_and_vision_forward_variant_and_cache_dir_to_the_plan():
+    for path in (LOADER_PATH, VISION_PATH):
+        src = path.read_text(encoding = "utf-8")
+        i = src.index("_get_remote_composite_text_only(\n")
+        depth, j = 0, i
+        while True:
+            depth += {"(": 1, ")": -1}.get(src[j], 0)
+            if src[j] == ")" and depth == 0:
+                break
+            j += 1
+        for arg in ('variant = kwargs.get("variant"),', 'cache_dir = kwargs.get("cache_dir"),'):
+            assert arg in src[i : j + 1], (path.name, arg)

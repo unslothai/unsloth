@@ -1212,14 +1212,23 @@ def _checkpoint_weight_names(
     revision = None,
     local_files_only = False,
     subfolder = None,
+    variant = None,
+    cache_dir = None,
 ):
     # Tensor names stored in a checkpoint, read from a safetensors index or header, or a sharded .bin index. None when unknown.
     # An unsharded pytorch_model.bin is never unpickled just to list its names.
     import json, os
 
-    index_name = "model.safetensors.index.json"
-    single_name = "model.safetensors"
-    bin_index_name = "pytorch_model.bin.index.json"
+    def _add_variant(name):
+        # from_pretrained(variant = "fp16") reads model.fp16.safetensors, model.safetensors.index.fp16.json.
+        if not variant:
+            return name
+        stem, ext = name.rsplit(".", 1)
+        return f"{stem}.{variant}.{ext}"
+
+    index_name = _add_variant("model.safetensors.index.json")
+    single_name = _add_variant("model.safetensors")
+    bin_index_name = _add_variant("pytorch_model.bin.index.json")
     if os.path.isdir(str(model_name)):
         # from_pretrained(subfolder = ...) reads the weights there, whatever folder the config came from.
         model_name = os.path.join(model_name, subfolder) if subfolder else model_name
@@ -1246,6 +1255,7 @@ def _checkpoint_weight_names(
             revision = revision,
             subfolder = subfolder or None,
             local_files_only = local_files_only,
+            cache_dir = cache_dir,
         )
         with open(index_path, "r", encoding = "utf-8") as f:
             return set(json.load(f).get("weight_map", {}))
@@ -1261,13 +1271,14 @@ def _checkpoint_weight_names(
             revision = revision,
             subfolder = subfolder or None,
             local_files_only = True,
+            cache_dir = cache_dir,
         )
         with safe_open(single_path, framework = "pt") as f:
             return set(f.keys())
     except Exception:
         pass
-    if not local_files_only and not subfolder:
-        # get_safetensors_metadata reads the repo root only.
+    if not local_files_only and not subfolder and not variant:
+        # get_safetensors_metadata reads the repo root's unvarianted files only.
         try:
             from huggingface_hub import get_safetensors_metadata
 
@@ -1285,6 +1296,7 @@ def _checkpoint_weight_names(
             revision = revision,
             subfolder = subfolder or None,
             local_files_only = local_files_only,
+            cache_dir = cache_dir,
         )
         with open(bin_index_path, "r", encoding = "utf-8") as f:
             return set(json.load(f).get("weight_map", {})) or None
@@ -1322,6 +1334,7 @@ def _resolve_text_causal_lm_class(
     token = None,
     revision = None,
     local_files_only = False,
+    cache_dir = None,
 ):
     # The class AutoModelForCausalLM.from_pretrained(model_name, config = text_config) will build: repo code first when trusted.
     auto_map = getattr(text_config, "auto_map", None) or {}
@@ -1341,6 +1354,7 @@ def _resolve_text_causal_lm_class(
             token = token,
             revision = revision,
             local_files_only = local_files_only,
+            cache_dir = cache_dir,
         )
     from transformers import AutoModelForCausalLM
 
@@ -1372,6 +1386,8 @@ def _get_remote_composite_text_only(
     fast_inference = False,
     subfolder = None,
     device_map = None,
+    variant = None,
+    cache_dir = None,
 ):
     # Text-only load plan for a repo-code composite (Nemotron-Omni: llm_config + vision/sound) whose text sub-model is a whole causal LM stored under one prefix.
     # Returns (text_config, key_mapping) or None; None keeps the previous full-model load.
@@ -1422,6 +1438,7 @@ def _get_remote_composite_text_only(
             token = token,
             revision = revision,
             local_files_only = local_files_only,
+            cache_dir = cache_dir,
         )
         if text_class is None:
             return None
@@ -1443,6 +1460,8 @@ def _get_remote_composite_text_only(
         revision = revision,
         local_files_only = local_files_only,
         subfolder = subfolder,
+        variant = variant,
+        cache_dir = cache_dir,
     )
     prefix = _infer_text_submodel_prefix(expected, names)
     if prefix is None:
