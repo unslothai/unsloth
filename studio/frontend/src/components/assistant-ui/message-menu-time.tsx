@@ -53,7 +53,8 @@ export const MessageMenuTime: FC<{ onShowDetails: () => void }> = ({
             <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={1.75} className="size-icon" />
           </ActionBarMorePrimitive.Item>
         </TooltipTrigger>
-        <TooltipContent side="right" className="tooltip-compact">
+        {/* Above, so it never covers the time beside it. */}
+        <TooltipContent side="top" className="tooltip-compact">
           See response details
         </TooltipContent>
       </Tooltip>
