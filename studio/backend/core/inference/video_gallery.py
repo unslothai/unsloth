@@ -233,8 +233,11 @@ def first_frame_webp(
             if not src.streams.video:
                 raise RuntimeError("Thumbnail generation failed: the clip has no video stream.")
             stream = src.streams.video[0]
-            if max_pixels is not None and stream.width * stream.height > max_pixels:
-                raise RuntimeError(f"{stream.width}x{stream.height} is too large to thumbnail.")
+            if max_pixels is not None:
+                if stream.width * stream.height > max_pixels:
+                    raise RuntimeError(f"{stream.width}x{stream.height} is too large to thumbnail.")
+                # The header can understate the frames: the decoder itself refuses a larger one.
+                stream.codec_context.options = {"max_pixels": str(max_pixels)}
             frame = next(src.decode(stream), None)
             if frame is None:
                 raise RuntimeError("Thumbnail generation failed: the clip has no decodable frames.")

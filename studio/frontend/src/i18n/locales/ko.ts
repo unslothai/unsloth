@@ -3095,6 +3095,7 @@ export const ko = {
       attachedMany: "파일 {count}개 첨부됨",
       skippedTooLarge: "{count}개는 너무 커서 첨부할 수 없습니다.",
       skippedOverLimit: "{limit}개 파일 한도를 넘는 {count}개는 제외되었습니다.",
+      chatFilesWaiting: "{count}개는 이를 읽을 수 있는 모델이 로드되면 첨부됩니다.",
       openFilesFailed: "파일을 열지 못했습니다",
       speechModel: "{name}은(는) 음성 모델입니다",
       speechModelDescription: "오디오 페이지의 모델 메뉴에서 선택하세요.",

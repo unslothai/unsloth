@@ -3009,6 +3009,7 @@ export const zhCN = {
       attachedMany: "已附加 {count} 个文件",
       skippedTooLarge: "{count} 个文件过大，无法附加。",
       skippedOverLimit: "另有 {count} 个超出 {limit} 个文件的上限。",
+      chatFilesWaiting: "{count} 个文件将在加载可读取它们的模型后附加。",
       openFilesFailed: "无法打开这些文件",
       speechModel: "{name} 是语音模型",
       speechModelDescription: "请在音频页面的模型菜单中选择它。",

@@ -136,7 +136,10 @@ import {
   useNativeIntentStore,
 } from "@/features/native-intents";
 import { nativeAttachmentIntentToFile } from "@/features/native-intents/native-attachment-file";
-import { useLibraryChatHandoffStore } from "@/features/library/chat-handoff-store";
+import {
+  attachLibraryChatFiles,
+  useLibraryChatHandoffStore,
+} from "@/features/library/chat-handoff-store";
 import { cancelResearchRun } from "@/features/chat/api/research-api";
 import {
   ingestResearchUpdate,
@@ -180,7 +183,7 @@ import {
   isMacPlatform,
 } from "@/features/settings";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
-import { useT } from "@/i18n";
+import { translate, useT } from "@/i18n";
 import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
@@ -2981,25 +2984,50 @@ const Composer: FC<{
   nativeAttachmentTargetKeyRef.current = nativeAttachmentTargetKey;
 
   // Library "Chat about this" opens a fresh chat and leaves its files for it; the composer may
-  // already be mounted, so listen as well as look.
+  // already be mounted, so listen as well as look. Files it refuses (image or video generation
+  // unloaded the chat model) wait for the next model to load rather than being dropped.
   useEffect(() => {
     if (!nativeAttachmentTargetKey) return;
     const targetKey = nativeAttachmentTargetKey;
+    const add = (file: File) => aui.composer().addAttachment(file);
     const drain = async () => {
-      const handoff = useLibraryChatHandoffStore.getState().take(targetKey);
-      if (!handoff) return;
-      for (const file of handoff.files) {
-        try {
-          await aui.composer().addAttachment(file);
-        } catch {
-          // The adapter already toasted why (unsupported type, no vision model); keep the rest.
-        }
-      }
+      const held = await attachLibraryChatFiles(targetKey, add);
+      if (held > 0) toast(translate("library.toast.chatFilesWaiting", { count: held }));
     };
     void drain();
-    return useLibraryChatHandoffStore.subscribe((state) => {
+    const offers = useLibraryChatHandoffStore.subscribe((state) => {
       if (state.pending?.targetKey === targetKey) void drain();
     });
+    // One retry at a time; a change during one runs another after it, as it may have read too early.
+    let retrying = false;
+    let again = false;
+    const retry = async () => {
+      if (retrying) {
+        again = true;
+        return;
+      }
+      retrying = true;
+      do {
+        again = false;
+        await attachLibraryChatFiles(targetKey, add, true);
+      } while (again);
+      retrying = false;
+    };
+    const loads = useChatRuntimeStore.subscribe((state, prev) => {
+      if (state.modelLoading) return;
+      if (
+        prev.modelLoading ||
+        state.params.checkpoint !== prev.params.checkpoint ||
+        state.residentCheckpoint !== prev.residentCheckpoint ||
+        state.loadedIsMultimodal !== prev.loadedIsMultimodal
+      ) {
+        void retry();
+      }
+    });
+    return () => {
+      offers();
+      loads();
+    };
   }, [nativeAttachmentTargetKey, aui]);
   const hasPendingImageAttachments = useNativeIntentStore((s) =>
     Boolean(

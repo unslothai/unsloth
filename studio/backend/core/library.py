@@ -1041,14 +1041,21 @@ def safe_file_name(
     if not ext and stem.startswith("."):
         stem, ext = os.path.splitext(stem.lstrip("."))
     stem = _NAME_BREAK_RE.sub(" ", stem).strip(" .") or fallback
-    ext = re.sub(f"[{UNSAFE_NAME_CHARS}]", "", ext).rstrip(" .")
-    ext = ext[:16] if len(ext) > 1 else ""
+    ext = _utf8_prefix(re.sub(f"[{UNSAFE_NAME_CHARS}]", "", ext).rstrip(" ."), 16)
+    ext = ext if len(ext) > 1 else ""
+    # Cut by UTF-8 bytes, as a file system counts its 255, leaving room for a copy's temp name.
+    stem = _utf8_prefix(stem, 160 if item_id else 200).rstrip(" .") or fallback
     # Cleaned, only a device name can still be refused.
     if _bad_name(stem):
         stem = f"_{stem}"
     if item_id:
-        return f"{stem[:80]}-{hashlib.sha1(item_id.encode()).hexdigest()[:8]}{ext}"
-    return f"{stem[:200]}{ext}"
+        return f"{stem}-{hashlib.sha1(item_id.encode()).hexdigest()[:8]}{ext}"
+    return f"{stem}{ext}"
+
+
+def _utf8_prefix(text: str, limit: int) -> str:
+    """The longest start of ``text`` at most ``limit`` bytes long in UTF-8, never half a character."""
+    return text.encode("utf-8", "ignore")[:limit].decode("utf-8", "ignore")
 
 
 class ItemFile:
