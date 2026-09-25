@@ -371,6 +371,11 @@ def test_expert_lora_stays_opt_in():
     ]
     assert packed_expert_target_parameters(model, auto, r".*\.(w1|w2)") == auto
     assert packed_expert_target_parameters(model, auto, r".*(q_proj|down_proj)") is None
+    # A regex naming only a later expert matched that expert's Linear before stacking.
+    last = len(next(m for m in model.modules() if type(m).__name__ == "Mxfp4StackedExperts")) - 1
+    assert packed_expert_target_parameters(model, auto, rf".*experts\.{last}\.w2") == [
+        "experts.down_proj"
+    ]
     # No packed experts: untouched.
     _, plain = _tiny_model("transformers_modules.k3c_lora_b.modeling_tinymoe")
     assert packed_expert_target_parameters(plain, auto, None) is auto

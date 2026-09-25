@@ -351,7 +351,13 @@ def packed_expert_target_parameters(model, target_parameters, requested_leaves):
     PEFT's `re.fullmatch` would have before stacking; a list entry when it is a dotted suffix
     of one (`w1`, `experts.3.w1`, the full path), as PEFT's list matching would have. A stack
     trains every expert, so a single named expert opts its whole stack in."""
-    stacks = [name for name, m in model.named_modules() if _is_packed_experts(m)]
+    counts = {}
+    for name, m in model.named_modules():
+        if _is_packed_experts(m):
+            while hasattr(m, "base_layer"):
+                m = m.base_layer
+            counts[name] = max(int(getattr(m, "num_experts", 1) or 1), 1)
+    stacks = list(counts)
     if not stacks:
         return target_parameters
     names = ("experts.gate_up_proj", "experts.down_proj")
@@ -361,7 +367,11 @@ def packed_expert_target_parameters(model, target_parameters, requested_leaves):
         leaves = {
             leaf
             for leaf in ("w1", "w2", "w3")
-            if any(re.fullmatch(requested_leaves, f"{stack}.0.{leaf}") for stack in stacks)
+            if any(
+                re.fullmatch(requested_leaves, f"{stack}.{e}.{leaf}")
+                for stack in stacks
+                for e in range(counts[stack])
+            )
         }
     else:
         leaves = {
