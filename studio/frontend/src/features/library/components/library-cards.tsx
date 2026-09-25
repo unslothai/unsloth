@@ -200,12 +200,12 @@ export function ItemCard({ item }: { item: LibraryItem }) {
       {thumb ? (
         <>
           <ImageThumb item={item} square={square && fileKind(item) === "image"} />
-          {/* On hover, so the grid stays a wall of pictures. */}
+          {/* On hover or keyboard focus, so the grid stays a wall of pictures; always on touch. */}
           {showTime && (
             <span
               className={cn(
                 GLASS_SURFACE,
-                "pointer-events-none absolute bottom-2 left-2 rounded-full px-2 py-0.5 text-[12px] opacity-0 transition-opacity group-hover/library-card:opacity-100",
+                "pointer-events-none absolute bottom-2 left-2 rounded-full px-2 py-0.5 text-[12px] opacity-0 transition-opacity group-hover/library-card:opacity-100 group-has-[:focus-visible]/library-card:opacity-100 pointer-coarse:opacity-100",
               )}
             >
               {formatCardTime(item.updatedAt, locale)}

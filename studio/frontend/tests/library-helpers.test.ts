@@ -34,6 +34,7 @@ import {
   nextSort,
   sortParam,
 } from "../src/features/library/settings-store.ts";
+import { readSrc } from "./helpers/kit.ts";
 
 /** One test that checks `run(...args)` against `expected` for each [args, expected] row. */
 function table<A extends unknown[], O>(name: string, run: (...args: A) => O, rows: [A, O][]) {
@@ -297,4 +298,15 @@ test("the v1 media switch becomes one setting per tab", () => {
   assert.equal(migrated.sort, "name");
   const media = { images: "always", videos: "always", audio: "always" };
   assert.deepEqual(migrated.tabs, { ...DEFAULT_LIBRARY_SETTINGS.tabs, ...media });
+});
+
+test("a card's date shows on hover, on keyboard focus and always on touch", () => {
+  const date = /"([^"]*)",\s*\)}\s*>\s*\{formatCardTime/.exec(readSrc("features/library/components/library-cards.tsx"))?.[1].split(" ");
+  for (const reveal of [
+    "group-hover/library-card:opacity-100",
+    "group-has-[:focus-visible]/library-card:opacity-100",
+    "pointer-coarse:opacity-100",
+  ]) {
+    assert.ok(date?.includes(reveal), reveal);
+  }
 });
