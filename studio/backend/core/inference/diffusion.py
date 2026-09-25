@@ -4056,8 +4056,7 @@ class DiffusionBackend:
         ``_local_dir_weight_bytes`` for what the filter is for.
 
         ``load_itemsize`` (bytes per element of the load dtype) prices what ``from_pretrained``
-        materialises instead: component files of the default variant only, safetensors over a
-        ``.bin`` twin, and a full-precision file at the dtype it is cast to."""
+        holds instead: default-variant component files, safetensors over ``.bin``, fp32 cast down."""
         sizes: dict[str, int] = {}
         for f in path.rglob("*"):
             if f.suffix.lower() not in (".safetensors", ".bin", ".pt", ".ckpt"):
@@ -4090,10 +4089,8 @@ class DiffusionBackend:
 
     @staticmethod
     def _safetensors_cast_bytes(path: Path, itemsize: int) -> Optional[int]:
-        """Bytes a safetensors file holds once cast to an ``itemsize``-byte float dtype, or None when
-        it keeps its stored size: any float already at or below that width (a mixed file pins its
-        wide tensors on purpose, e.g. norms), packed or fp8 weights (their fp32 scales stay), and an
-        unreadable header. Integer index buffers keep their bytes."""
+        """Bytes once cast to an ``itemsize``-byte float, or None to keep the stored size: mixed
+        precision (pinned norms), packed / fp8 weights (their scales stay fp32), unreadable header."""
         try:
             with open(path, "rb") as fh:
                 length = int.from_bytes(fh.read(8), "little")
@@ -6512,8 +6509,8 @@ class DiffusionBackend:
                 self._cache_bytes(cache_repo) if cache_repo else 0,
             )
             if load_itemsize is not None:
-                # Cached bytes are what the repo STORES: an fp32 repo (SDXL) halves once cast to bf16/fp16, and variant
-                # twins or single-file checkpoints beside the pipeline are never opened. Price what the load holds.
+                # Cached bytes are what the repo STORES: fp32 SDXL halves in bf16/fp16, and variant twins or single
+                # files beside the pipeline are never opened.
                 loaded = max(
                     self._local_dir_weight_bytes(
                         local_repo, exclude_transformer = False, load_itemsize = load_itemsize
