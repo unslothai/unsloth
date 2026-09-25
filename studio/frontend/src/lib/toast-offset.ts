@@ -22,6 +22,8 @@ export function getToastOffsets(
   pathname: string,
   isDesktopApp: boolean,
   usesCustomTitlebar: boolean,
+  /** The page header grows with the UI font size; the titlebar band does not. */
+  uiSpaceScale = 1,
 ): ToastOffsets {
   const hasPageHeader =
     HEADER_ROUTES.has(pathname) || pathname.startsWith("/chat/");
@@ -29,10 +31,9 @@ export function getToastOffsets(
     isDesktopApp && (!hasPageHeader || usesCustomTitlebar)
       ? DESKTOP_TITLEBAR_HEIGHT
       : 0;
-  const defaultTopOffset = hasPageHeader ? HEADER_TOP_OFFSET : EDGE_OFFSET;
-  const mobileTopOffset = hasPageHeader
-    ? HEADER_TOP_OFFSET
-    : MOBILE_EDGE_OFFSET;
+  const headerTopOffset = Math.round(HEADER_TOP_OFFSET * uiSpaceScale);
+  const defaultTopOffset = hasPageHeader ? headerTopOffset : EDGE_OFFSET;
+  const mobileTopOffset = hasPageHeader ? headerTopOffset : MOBILE_EDGE_OFFSET;
 
   return {
     default: {

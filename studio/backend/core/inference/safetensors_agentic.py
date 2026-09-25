@@ -53,6 +53,13 @@ from core.tool_healing import (
     _think_spans_outside_tool_markup,
     strip_outside_think,
 )
+from core.inference.mcp_images import (
+    DETACHED_IMAGE_TURN_TEXT as MCP_DETACHED_IMAGE_TURN_TEXT,
+    IMAGE_TURN_TEXT as MCP_IMAGE_TURN_TEXT,
+    append_placeholder_turn,
+    png_payloads_per_result,
+    trim_image_turns,
+)
 from core.inference.tool_loop_controller import (
     _WORKSPACE_TOOLS,
     ToolLoopController,
@@ -60,6 +67,7 @@ from core.inference.tool_loop_controller import (
     awaiting_approval_status,
     coerce_tool_arguments,
     status_for_tool,
+    tool_call_limit_nudge,
     tool_event_provenance,
 )
 from core.inference.chat_template_helpers import (
@@ -68,10 +76,13 @@ from core.inference.chat_template_helpers import (
 )
 from core.inference.passthrough_healing import nudge_enabled
 from state.tool_approvals import (
+    DECISION_EXPIRED,
+    TOOL_APPROVAL_EXPIRED_MESSAGE,
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
     begin_tool_decision,
     new_approval_id,
+    decision_reason,
     wait_tool_decision,
 )
 
@@ -599,6 +610,8 @@ def run_safetensors_tool_loop(
     context_length: Optional[int] = None,
     max_tokens: Optional[int] = None,
     generation_stats_holder: Optional[dict] = None,
+    images_sink: Optional[list] = None,
+    caller_image_indexes: "tuple[int, ...]" = (),
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -621,6 +634,12 @@ def run_safetensors_tool_loop(
     * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
     """
     conversation = list(messages)
+    # Where the caller's own attachment sits in the seeded sink. The cap is about what
+    # the loop RE-SENDS, so that entry is never the one it drops -- but it is not the
+    # whole seed: a resumed chat seeds replayed pictures too, and exempting those would
+    # let the prompt carry a second full allowance. The route reserves the attachment's
+    # slot by trimming replay to limit - 1 before interleaving it.
+    caller_images = tuple(caller_image_indexes)
     # The branch this request is on, before the loop appends anything. A GGUF-compacted
     # thread keeps its archive across a switch to safetensors, so search_conversation is
     # advertised here too and needs the same filtering: the stored rows are the whole
@@ -1305,6 +1324,7 @@ def run_safetensors_tool_loop(
             return
 
         # Collapse exact-duplicate calls and cap the count (runaway-turn guard).
+        over_cap: list = []
         if tool_calls:
             seen_keys: set = set()
             last_workspace_key = None
@@ -1329,14 +1349,21 @@ def run_safetensors_tool_loop(
                 elif _key in seen_keys:
                     continue
                 seen_keys.add(_key)
-                deduped.append(_tc)
-                if len(deduped) >= _MAX_TOOL_CALLS_PER_TURN:
-                    break
-            if len(deduped) != len(tool_calls):
+                if len(deduped) < _MAX_TOOL_CALLS_PER_TURN:
+                    deduped.append(_tc)
+                else:
+                    over_cap.append(_tc)
+            if len(deduped) + len(over_cap) != len(tool_calls):
                 logger.info(
                     "Safetensors: collapsed %d repeated tool call(s) in one turn to %d",
                     len(tool_calls),
-                    len(deduped),
+                    len(deduped) + len(over_cap),
+                )
+            if over_cap:
+                logger.info(
+                    "Safetensors: skipped %d tool call(s) over the per-turn limit of %d",
+                    len(over_cap),
+                    _MAX_TOOL_CALLS_PER_TURN,
                 )
             tool_calls = deduped
 
@@ -1345,6 +1372,10 @@ def run_safetensors_tool_loop(
         # Collect no-op nudges and flush them after the batch, so a no-op doesn't
         # abort it and drop the parallel calls that follow.
         deferred_noop_msgs: list = []
+        # Per result; see append_image_turn's per_result note.
+        batch_mcp_images: list = []
+        # Where this batch's results start, for the image turn\'s wording.
+        batch_conversation_start = len(conversation)
 
         for _call_index, tc in enumerate(tool_calls or []):
             func = tc.get("function", {}) or {}
@@ -1355,6 +1386,12 @@ def run_safetensors_tool_loop(
                 and tc.get("id", "") == provisional_render_html_id
             )
             decision = tool_controller.prepare_call(tc, provisional = provisional_match)
+            # The frontend keeps a round's tool cards together by this id
+            # (codexLocalToolRoundId) and otherwise flushes each completed pair on its
+            # own. This loop shows a parallel batch as ONE picture, and replay groups
+            # consecutive results the same way -- so without the id a batch persisted
+            # as separate pairs replayed as several pictures on the next request.
+            decision.provenance["round_id"] = iteration
 
             if not decision.should_execute:
                 if content_text and not assistant_appended:
@@ -1433,24 +1470,35 @@ def run_safetensors_tool_loop(
                     if decision_slot is not None
                     else None
                 )
+                # The slot is where the waiter says WHY: the user's refusal, or an approval nobody
+                # answered. Read before decision_slot is dropped in the deny branch below.
+                _decision_reason = decision_reason(decision_slot)
                 if _decision is not None and _decision != "deny":
                     yield {"type": "status", "text": decision.status_text}
                 if _decision == "deny":
                     decision_slot = None
                     if provisional_match:
                         provisional_resolved = True
+                    # An approval nobody answered is not the user's decision, and this string is
+                    # the only account of the call both the model and the reopened card get: the
+                    # buttons are gone by the time it lands.
+                    _denied_text = (
+                        TOOL_APPROVAL_EXPIRED_MESSAGE
+                        if _decision_reason == DECISION_EXPIRED
+                        else TOOL_REJECTED_MESSAGE
+                    )
                     yield {
                         "type": "tool_end",
                         "tool_name": decision.tool_name,
                         "tool_call_id": decision.tool_call_id,
-                        "result": TOOL_REJECTED_MESSAGE,
+                        "result": _denied_text,
                         "provenance": decision.provenance,
                     }
                     tool_denied = True
                     denied_message = {
                         "role": "tool",
                         "name": decision.tool_name,
-                        "content": TOOL_REJECTED_MESSAGE,
+                        "content": _denied_text,
                     }
                     if decision.tool_call_id:
                         denied_message["tool_call_id"] = decision.tool_call_id
@@ -1552,6 +1600,11 @@ def run_safetensors_tool_loop(
                             {"role": "assistant", "content": json.dumps(call, default = str)}
                             for call in pending
                         ]
+                        # the notice restores skipped arguments after the retained results.
+                        if over_cap:
+                            pending_args.append(
+                                tool_call_limit_nudge(over_cap, _MAX_TOOL_CALLS_PER_TURN)
+                            )
                         kwargs["result_budget_tokens"] = tool_result_budget(
                             int(context_length),
                             max_tokens,
@@ -1594,8 +1647,59 @@ def run_safetensors_tool_loop(
             _turn_executed_real_tool = True
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
+            # Parsed only when there is a sink for them.
+            _completion_images = completion.mcp_images() if images_sink is not None else []
+            if _completion_images:
+                batch_mcp_images.append(_completion_images)
 
+        # The turn that ends the loop offers no tools again, so do not ask for a retry there.
+        over_cap_final = bool(over_cap) and (
+            tool_controller.force_final_answer
+            or (not unrestricted_tools and not tool_controller.active_tools())
+            or (_turn_executed_real_tool and _executed_tool_iters + 1 >= max_tool_iterations)
+        )
+        if over_cap:
+            deferred_noop_msgs.append(
+                tool_call_limit_nudge(
+                    over_cap,
+                    _MAX_TOOL_CALLS_PER_TURN,
+                    final = over_cap_final,
+                    unavailable_tools = {
+                        _limit_decision.tool_name
+                        for call in over_cap
+                        if (_limit_decision := tool_controller.prepare_call(call)).action
+                        in ("disabled", "render_html_repeat")
+                    },
+                )
+            )
         append_deferred_nudges(conversation, deferred_noop_msgs)
+        if batch_mcp_images and images_sink is not None:
+            # A sink only when the loaded model reads images; the pixels ride
+            # beside the prompt, so the turn carries markers rather than data.
+            encoded = png_payloads_per_result(batch_mcp_images)
+            if encoded:
+                images_sink.extend(encoded)
+                # Merged into the deferred nudge above when there was one: two
+                # user turns in a row is what a strict VLM template rejects.
+                # Same wording rule as the other loops: several results, and "the
+                # tool call above" names whichever ran last.
+                _batch_results = sum(
+                    1
+                    for m in conversation[batch_conversation_start:]
+                    if isinstance(m, dict) and m.get("role") == "tool"
+                )
+                append_placeholder_turn(
+                    conversation,
+                    len(encoded),
+                    sum(len(r) for r in batch_mcp_images),
+                    lead = MCP_DETACHED_IMAGE_TURN_TEXT
+                    if _batch_results != 1
+                    else MCP_IMAGE_TURN_TEXT,
+                )
+                # Rebased on the way out: this trim deletes entries before the
+                # attachment, and reusing the original index on the next batch
+                # would protect the wrong payload and delete the attachment.
+                caller_images = trim_image_turns(conversation, images_sink, keep = caller_images)
 
         yield {"type": "status", "text": ""}
 
@@ -1611,6 +1715,12 @@ def run_safetensors_tool_loop(
             _executed_tool_iters += 1
         if _executed_tool_iters >= max_tool_iterations and not final_attempt_done:
             final_attempt_done = True
-            conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
+            if over_cap:
+                conversation[-1] = {
+                    **conversation[-1],
+                    "content": f"{conversation[-1]['content']}\n\n{BUDGET_EXHAUSTED_NUDGE}",
+                }
+            else:
+                conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
 
     yield {"type": "status", "text": ""}

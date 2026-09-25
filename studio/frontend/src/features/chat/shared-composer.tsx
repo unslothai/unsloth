@@ -79,7 +79,6 @@ import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
-  BookOpenIcon,
   ChevronDownIcon,
   Columns2Icon,
   GlobeIcon,
@@ -101,6 +100,7 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
+  Scroll01Icon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { useChatActive } from "./runtime-provider";
@@ -116,7 +116,6 @@ import {
 } from "./prompt-storage/prompt-storage-dialog";
 import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
-import { BypassPermissionsMenuItem } from "./bypass-permissions-menu-item";
 import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
@@ -184,15 +183,18 @@ import {
   persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
   saveSpeculativeType,
+  codeToolsOn,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
+  providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
 } from "./provider-capabilities";
+import { codeToolCanRun } from "./api/code-tool-placement";
 import { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
 import {
   type CompositionEvent,
@@ -494,7 +496,8 @@ function PendingImageThumb({
   return (
     <div
       data-reload-snapshot-sensitive
-      className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-foreground/20 bg-muted"
+      data-composer-attachment="image"
+      className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted"
     >
       <img src={src} alt={file.name} className="h-full w-full object-cover" />
       <button
@@ -683,7 +686,7 @@ export function SharedComposer({
   );
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
-  const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
+  const codeToolsEnabled = useChatRuntimeStore(codeToolsOn);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
   const setImageToolsEnabled = useChatRuntimeStore(
@@ -761,6 +764,7 @@ export function SharedComposer({
             isReasoningProvider:
               selectedExternalProvider?.isReasoningModel === true,
             baseUrl: selectedExternalProvider?.baseUrl ?? null,
+            apiType: selectedExternalProvider?.apiType,
           },
         )
       : null;
@@ -793,9 +797,12 @@ export function SharedComposer({
       : reasoningEffort;
   const effectiveReasoningVisualEnabled =
     effectiveReasoningEnabled && displayedEffort !== "none";
-  const reasoningDisabled = !modelLoaded || !effectiveSupportsReasoning;
+  const reasoningDisabled =
+    !modelLoaded || !(effectiveSupportsReasoning || supportsPreserveThinking);
   const showReasoningControl =
-    effectiveSupportsReasoning || effectiveReasoningAlwaysOn;
+    effectiveSupportsReasoning ||
+    effectiveReasoningAlwaysOn ||
+    supportsPreserveThinking;
   // enable_thinking_effort (GLM-5.2: high|max + disable) reuses the effort dropdown; it just also
   // carries an Off row via supportsReasoningOff.
   const isEffort =
@@ -806,22 +813,25 @@ export function SharedComposer({
   const narrowEffortMenu =
     effectiveReasoningStyle === "enable_thinking_effort" &&
     !supportsPreserveThinking;
-  const thinkingActiveLook = isEffort
-    ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
-    : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
-  // Two-pill gating. Search: supportsTools (Code/python plus local web_search) OR
-  // supportsBuiltinWebSearch (OpenAI/Anthropic/OpenRouter/Kimi). Code: the local runtime OR
-  // Anthropic with a model taking code_execution_20250825, the only external code-execution tool
-  // today, per providerSupportsBuiltinCodeExecution.
+  const thinkingActiveLook = !effectiveSupportsReasoning
+    ? preserveThinking && !reasoningDisabled
+    : isEffort
+      ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
+      : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
+  // Search can use Unsloth tools or provider web search independently of Code.
+  // Code follows the provider's sandbox placement and never falls back to local
+  // execution when a hosted model lacks code support.
   const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
     selectedExternalProvider?.providerType,
     effectiveExternalModelId,
     selectedExternalProvider?.baseUrl,
+    selectedExternalProvider?.apiType,
   );
   const supportsBuiltinImageGeneration = providerSupportsBuiltinImageGeneration(
     selectedExternalProvider?.providerType,
     effectiveExternalModelId,
     selectedExternalProvider?.baseUrl,
+    selectedExternalProvider?.apiType,
   );
   const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
     selectedExternalProvider?.providerType,
@@ -844,11 +854,24 @@ export function SharedComposer({
     (isGeminiImageTier
       ? !supportsBuiltinWebSearch
       : !(supportsTools || supportsBuiltinWebSearch));
+  const externalUsesStudioTools =
+    providerModelSupportsStudioTools(
+      selectedExternalProvider?.providerType,
+      externalSelection?.modelId,
+    ) === true;
+  const canRunCode = isExternalModel
+    ? codeToolCanRun({
+        hostedCodeExecutionForThisTurn: supportsBuiltinCodeExecution,
+        providerHostsCodeExecution: providerHostsCodeExecution(
+          selectedExternalProvider?.providerType,
+          selectedExternalProvider?.baseUrl,
+          selectedExternalProvider?.apiType,
+        ),
+        supportsStudioTools: externalUsesStudioTools,
+      })
+    : supportsTools;
   const codeDisabled =
-    (modelLoaded &&
-      (isGeminiImageTier
-        ? true
-        : !(supportsTools || supportsBuiltinCodeExecution))) ||
+    (modelLoaded && (isGeminiImageTier || !canRunCode)) ||
     imageModeDisablesCode;
   // Images pill lights only on OpenAI cloud Responses-API models and the Gemini Nano Banana
   // family. No local tool runtime fallback.
@@ -856,11 +879,6 @@ export function SharedComposer({
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
-  const externalUsesStudioTools =
-    providerModelSupportsStudioTools(
-      selectedExternalProvider?.providerType,
-      externalSelection?.modelId,
-    ) === true;
   const ragDisabled =
     modelLoaded && ((!externalUsesStudioTools && isExternalModel) || !supportsTools);
   const showRagPill = !isExternalModel || externalUsesStudioTools;
@@ -2014,6 +2032,20 @@ export function SharedComposer({
       textFieldException: COMPOSER_INPUT_SELECTOR,
     },
   );
+  // Compare has no follow-up behaviour of its own: a send waits for the run to
+  // finish, so there is nothing to queue behind or steer. Both chords still
+  // register here, or they would be dead on the only composer on screen.
+  const sendFollowUp = () => {
+    if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+    sendRef.current?.();
+  };
+  const followUpOptions = {
+    enabled: chatActive && canSend,
+    skipInTextFields: true,
+    textFieldException: COMPOSER_INPUT_SELECTOR,
+  };
+  useShortcut("queueMessage", sendFollowUp, followUpOptions);
+  useShortcut("steerMessage", sendFollowUp, followUpOptions);
   useShortcut(
     "attachFiles",
     () => {
@@ -2036,7 +2068,7 @@ export function SharedComposer({
         onSelect={() => setRagEnabled(!ragEnabled)}
       >
         <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
-        Chat with Files
+        Chat with files
         {ragEnabled && !ragDisabled ? (
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
         ) : null}
@@ -2057,8 +2089,8 @@ export function SharedComposer({
     ),
     skills: (
       <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
-        <BookOpenIcon />
-        Agent Skills
+        <HugeiconsIcon icon={Scroll01Icon} strokeWidth={2} />
+        Skills
       </DropdownMenuItem>
     ),
     savedPrompts: (
@@ -2069,7 +2101,7 @@ export function SharedComposer({
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent
           collisionPadding={16}
-          className="unsloth-plus-menu w-[208px]"
+          className="unsloth-plus-menu w-[calc(208px*var(--ui-space-scale,1))]"
         >
           {recentPrompts.map((p) => (
             <DropdownMenuItem
@@ -2108,7 +2140,7 @@ export function SharedComposer({
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent
           collisionPadding={16}
-          className="unsloth-plus-menu w-[208px]"
+          className="unsloth-plus-menu w-[calc(208px*var(--ui-space-scale,1))]"
         >
           {[
             { label: "Training JSONL", fn: exportConversationRawJsonl },
@@ -2156,14 +2188,13 @@ export function SharedComposer({
         ) : null}
       </DropdownMenuItem>
     ) : null,
-    bypassPermissions: <BypassPermissionsMenuItem />,
     projects: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
           <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
           Projects
         </DropdownMenuSubTrigger>
-        <DropdownMenuSubContent className="unsloth-plus-menu w-[232px]">
+        <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(232px*var(--ui-space-scale,1))]">
           <DropdownMenuItem onSelect={() => setNewProjectOpen(true)}>
             <HugeiconsIcon icon={FolderAddIcon} strokeWidth={2} />
             New project
@@ -2260,36 +2291,44 @@ export function SharedComposer({
         />
         <span className="text-sm font-medium text-primary">Drop files here</span>
       </div>
-      {(pendingImages.length > 0 || pendingAudio) && (
-        <div className="mb-2 flex w-full flex-row flex-wrap items-center gap-2 px-1.5 pt-0.5 pb-1">
-          {pendingImages.map(({ id, file }) => (
-            <PendingImageThumb
-              key={id}
-              file={file}
-              onRemove={() => removePendingImage(id)}
-            />
-          ))}
-          {pendingAudio && (
-            <div className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs">
-              <HeadphonesIcon className="size-3.5 text-muted-foreground" />
-              <span data-reload-snapshot-sensitive className="max-w-48 truncate">
-                {pendingAudio.name}
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  setPendingAudio(null);
-                  clearPendingAudioStore();
-                }}
-                className="flex size-4 items-center justify-center rounded-full hover:bg-destructive hover:text-destructive-foreground"
-                aria-label="Remove audio"
-              >
-                <XIcon className="size-3" />
-              </button>
-            </div>
-          )}
-        </div>
-      )}
+      {/* Always mounted and hidden while empty, the way the assistant-ui composer's own
+          attachment strip is, so "no attachments" and "this markup moved" are different
+          observations rather than the same absent node. `empty:hidden` keeps the rendered
+          result identical to the previous conditional. */}
+      <div
+        data-composer-attachments=""
+        className="mb-2 flex w-full flex-row flex-wrap items-center gap-2 px-1.5 pt-0.5 pb-1 empty:hidden"
+      >
+        {pendingImages.map(({ id, file }) => (
+          <PendingImageThumb
+            key={id}
+            file={file}
+            onRemove={() => removePendingImage(id)}
+          />
+        ))}
+        {pendingAudio && (
+          <div
+            data-composer-attachment="audio"
+            className="flex items-center gap-2 rounded-lg border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs"
+          >
+            <HeadphonesIcon className="size-3.5 text-muted-foreground" />
+            <span data-reload-snapshot-sensitive className="max-w-48 truncate">
+              {pendingAudio.name}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setPendingAudio(null);
+                clearPendingAudioStore();
+              }}
+              className="flex size-4 items-center justify-center rounded-full hover:bg-destructive hover:text-destructive-foreground"
+              aria-label="Remove audio"
+            >
+              <XIcon className="size-3" />
+            </button>
+          </div>
+        )}
+      </div>
       {skillMentions.popover}
       <ComposerDraftPreview text={text} />
 
@@ -2391,7 +2430,7 @@ export function SharedComposer({
                 aria-label="Tools and attachments"
                 className="unsloth-composer-plus"
               >
-                <PlusIcon className="size-[22px] stroke-[1.75px]" />
+                <PlusIcon className="size-[calc(22px*var(--ui-space-scale,1))] stroke-[1.75px]" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent
@@ -2399,7 +2438,7 @@ export function SharedComposer({
               align="start"
               sideOffset={0}
               avoidCollisions={true}
-              className="unsloth-plus-menu w-[244px]"
+              className="unsloth-plus-menu w-[calc(244px*var(--ui-space-scale,1))]"
               onCloseAutoFocus={(event) => event.preventDefault()}
             >
               <DropdownMenuItem onSelect={() => fileInputRef.current?.click()}>
@@ -2495,7 +2534,7 @@ export function SharedComposer({
                   <MoreHorizontalIcon className="size-4" />
                   More
                 </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
+                <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(248px*var(--ui-space-scale,1))]">
                   {overflowPlusItems.map((id) => (
                     <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
                   ))}
@@ -2522,7 +2561,7 @@ export function SharedComposer({
             aria-label="Exit compare chat"
           >
             <PillGlyph>
-              <Columns2Icon className="size-[14px]" />
+              <Columns2Icon className="size-[calc(14px*var(--ui-space-scale,1))]" />
             </PillGlyph>
             <span>Compare</span>
           </button>
@@ -2550,7 +2589,7 @@ export function SharedComposer({
             }
           >
             <PillGlyph>
-              <GlobeIcon className="size-[15px]" />
+              <GlobeIcon className="size-[calc(15px*var(--ui-space-scale,1))]" />
             </PillGlyph>
             <span>Search</span>
           </button>
@@ -2570,7 +2609,7 @@ export function SharedComposer({
             <PillGlyph>
               <HugeiconsIcon
                 icon={CodeIcon}
-                className="size-[18.5px]"
+                className="size-[calc(18.5px*var(--ui-space-scale,1))]"
                 strokeWidth={2}
               />
             </PillGlyph>
@@ -2635,7 +2674,7 @@ export function SharedComposer({
               <PillGlyph>
                 <HugeiconsIcon
                   icon={PencilRulerIcon}
-                  className="size-[15.5px]"
+                  className="size-[calc(15.5px*var(--ui-space-scale,1))]"
                   strokeWidth={2}
                 />
               </PillGlyph>
@@ -2669,7 +2708,7 @@ export function SharedComposer({
                       reasoningEffort: displayedEffort,
                     })}
                   >
-                    <BulbIcon className="size-[15.5px]" />
+                    <BulbIcon className="size-[calc(15.5px*var(--ui-space-scale,1))]" />
                     {thinkingActiveLook ? (
                       <span className="unsloth-thinking-label">
                         {isEffort
@@ -2680,7 +2719,7 @@ export function SharedComposer({
                           : "Thinking"}
                       </span>
                     ) : null}
-                    <ChevronDownIcon strokeWidth={1.5} className="unsloth-thinking-caret size-[15px]" />
+                    <ChevronDownIcon strokeWidth={1.5} className="unsloth-thinking-caret size-[calc(15px*var(--ui-space-scale,1))]" />
                   </button>
                 )}
               >
@@ -2745,6 +2784,7 @@ export function SharedComposer({
                       ))}
                   </>
                 ) : (
+                  effectiveSupportsReasoning &&
                   effectiveSupportsReasoningOff &&
                   !reasoningLockedOn && (
                     <DropdownMenuItem
@@ -2778,8 +2818,8 @@ export function SharedComposer({
                       e.preventDefault();
                       const next = !preserveThinking;
                       setPreserveThinking(next);
-                      // Preserve thinking requires thinking on.
-                      if (next) {
+                      // Only local models couple this setting to generation controls.
+                      if (next && !isExternalModel) {
                         setReasoningEnabled(true);
                         applyQwenThinkingParams(true);
                       }
@@ -2829,7 +2869,7 @@ export function SharedComposer({
                 })}
               >
                 <PillGlyph>
-                  <BulbIcon className="size-[15.5px]" />
+                  <BulbIcon className="size-[calc(15.5px*var(--ui-space-scale,1))]" />
                 </PillGlyph>
                 {thinkingActiveLook ? (
                   <span className="unsloth-thinking-label">Thinking</span>
@@ -2913,7 +2953,7 @@ export function SharedComposer({
               disabled={!canSend}
               aria-label={t("promptQueue.sendLabel")}
             >
-              <ArrowUpIcon className="unsloth-send-icon size-[22px] stroke-2" />
+              <ArrowUpIcon className="unsloth-send-icon size-[calc(22px*var(--ui-space-scale,1))] stroke-2" />
             </TooltipIconButton>
           )}
         </div>
