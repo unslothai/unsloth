@@ -22,7 +22,14 @@ from typing import Optional
 
 from core.inference.model_ids import public_model_id
 from loggers import get_logger
-from utils.account_context import account_thread, current_account_id, is_owner_context
+from utils.account_context import (
+    AccountContext,
+    account_thread,
+    current_account,
+    current_account_id,
+    is_owner_context,
+    run_as,
+)
 
 logger = get_logger(__name__)
 
@@ -74,14 +81,21 @@ _warming = False
 # is rebuilt off the request path. Callers still pair invalidate_index() with warm_index_soon() for the case where it
 # has retired.
 _warm_pending = False
+_warm_accounts: dict[Optional[str], AccountContext] = {}
+_warm_active_account: Optional[AccountContext] = None
+_warm_retry_scopes: set[Optional[str]] = set()
 _last_scan_s = 0.0
 _managed_last_scan_s: dict[str, float] = {}
 # rescan at most a tenth of the time: on the TTL alone a slow scan would run continuously
 _WARM_DUTY = 10.0
 
 
+def _scope_for_account(account: AccountContext) -> Optional[str]:
+    return None if account.is_owner else account.account_id
+
+
 def _account_scope() -> Optional[str]:
-    return None if is_owner_context() else current_account_id()
+    return _scope_for_account(current_account())
 
 
 def _account_duty_window(account_id: Optional[str]) -> float:
@@ -1055,7 +1069,8 @@ def invalidate_index(*, additions_only: bool = False) -> None:
     # This may have waited out a scan on _lock, so the warmer that just published can still own the slot with a snapshot
     # that is stale again. See _warm_pending.
     with _warm_lock:
-        if _warming:
+        if _warm_active_account is not None:
+            _warm_retry_scopes.add(_scope_for_account(_warm_active_account))
             _warm_pending = True
 
 
@@ -1131,40 +1146,64 @@ def warm_index_soon() -> None:
     stamp = _snapshot()[0]
     if stamp > 0.0 and time.monotonic() - stamp < _duty_window():
         return
+    account = current_account()
+    scope = _scope_for_account(account)
     with _warm_lock:
+        if (
+            _warm_active_account is not None and scope == _scope_for_account(_warm_active_account)
+        ) or scope in _warm_accounts:
+            return
+        _warm_accounts[scope] = account
         if _warming:
             return
         _warming = True
         _warm_pending = False
 
     def _run() -> None:
-        global _warming, _warm_pending
+        global _warm_active_account, _warming, _warm_pending
         released = False
         try:
             while True:
+                with _warm_lock:
+                    if not _warm_accounts:
+                        _warming, _warm_pending, released = False, False, True
+                        return
+                    scope, account = next(iter(_warm_accounts.items()))
+                    del _warm_accounts[scope]
+                    _warm_active_account = account
                 try:
-                    _index()
+                    run_as(account, _index)
                 except Exception:
                     pass
                 with _warm_lock:
-                    if _warm_pending:
-                        _warm_pending = False
-                        continue
-                    _warming, released = False, True
-                    return
+                    _warm_active_account = None
+                    if scope in _warm_retry_scopes:
+                        _warm_retry_scopes.discard(scope)
+                        _warm_accounts[scope] = account
+                    _warm_pending = bool(_warm_retry_scopes)
         finally:
-            # Only on a BaseException: leaving the slot held would kill background warming for the life of the process
-            # and put scans back on requests.
+            # Only on a BaseException: leaving scopes queued without a worker would kill background warming for the
+            # life of the process and put scans back on requests.
             if not released:
                 with _warm_lock:
+                    _warm_accounts.clear()
+                    _warm_retry_scopes.clear()
+                    _warm_active_account = None
                     _warming = _warm_pending = False
 
-    # Pinned to the caller's account, or the rebuild would publish under the owner's scope.
+    # Capture a real account context for the thread; queued scans rebind to their own account above.
     account_thread(target = _run, name = "local-model-index-warm", daemon = True).start()
 
 
 def _miss_scope() -> Optional[str]:
     return _account_scope()
+
+
+def _scope_is_warming(scope: Optional[str]) -> bool:
+    with _warm_lock:
+        return scope in _warm_accounts or (
+            _warm_active_account is not None and _scope_for_account(_warm_active_account) == scope
+        )
 
 
 def resolve_local_gguf_for_switch(
@@ -1186,7 +1225,7 @@ def resolve_local_gguf_for_switch(
     if (
         _misses.get(key) == generation
         and ts > 0.0
-        and started - ts < 2 * _duty_window()
+        and (started - ts < 2 * _duty_window() or _scope_is_warming(key[0]))
         and _resolve_from_index(requested, index) is None
     ):
         warm_index_soon()

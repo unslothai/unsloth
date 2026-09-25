@@ -8,6 +8,8 @@ one's checkpoint path and the load then refuses it as foreign."""
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -23,6 +25,7 @@ from utils.account_context import OWNER, AccountContext, arun_as, current_accoun
 
 ALICE = AccountContext("a" * 32, "alice")
 BOB = AccountContext("b" * 32, "bob")
+_REAL_WARM_INDEX_SOON = resolver.warm_index_soon
 
 
 @pytest.fixture
@@ -139,3 +142,67 @@ def test_a_fast_account_scan_does_not_expire_another_accounts_slow_scan_miss(hom
     clock.now += 10.0
     assert run_as(ALICE, resolver.resolve_local_gguf_for_switch, "missing") is None
     assert scans == [ALICE.account_id, BOB.account_id]
+
+
+def test_a_warm_scan_queues_behind_another_accounts_scan(home, monkeypatch):
+    now = time.monotonic()
+    monkeypatch.setattr(
+        resolver,
+        "_managed_scans",
+        {
+            ALICE.account_id: (now - 2 * resolver._CACHE_TTL_S - 1, {}),
+            BOB.account_id: (now - resolver._CACHE_TTL_S - 1, {}),
+        },
+    )
+    monkeypatch.setattr(
+        resolver,
+        "_managed_last_scan_s",
+        {ALICE.account_id: 0.0, BOB.account_id: 0.0},
+    )
+    monkeypatch.setattr(resolver, "_warming", False)
+    monkeypatch.setattr(resolver, "_warm_pending", False)
+    monkeypatch.setattr(resolver, "_warm_accounts", {}, raising = False)
+    monkeypatch.setattr(resolver, "_warm_active_account", None, raising = False)
+    monkeypatch.setattr(resolver, "_warm_retry_scopes", set(), raising = False)
+    monkeypatch.setattr(
+        resolver,
+        "_misses",
+        {(ALICE.account_id, "missing"): resolver._generation},
+    )
+    scans = []
+    bob_started = threading.Event()
+    release_bob = threading.Event()
+    alice_finished = threading.Event()
+
+    def _scan():
+        bob_started.set()
+        account_id = current_account_id()
+        scans.append(account_id)
+        if account_id == BOB.account_id:
+            assert release_bob.wait(5)
+        else:
+            alice_finished.set()
+        return {}
+
+    monkeypatch.setattr(resolver, "_index", _scan)
+    stale = run_as(
+        BOB,
+        lambda: (
+            resolver._snapshot()[0],
+            resolver.time.monotonic(),
+            resolver._duty_window(),
+        ),
+    )
+    assert stale[1] - stale[0] > stale[2], stale
+    run_as(BOB, _REAL_WARM_INDEX_SOON)
+    assert bob_started.wait(5), (resolver._warming, scans)
+    run_as(ALICE, _REAL_WARM_INDEX_SOON)
+    assert run_as(ALICE, resolver.resolve_local_gguf_for_switch, "missing") is None
+    assert scans == [BOB.account_id], "the queued refresh must keep the miss nonblocking"
+    release_bob.set()
+
+    try:
+        assert alice_finished.wait(1)
+        assert scans == [BOB.account_id, ALICE.account_id]
+    finally:
+        release_bob.set()
