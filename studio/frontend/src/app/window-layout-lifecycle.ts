@@ -10,7 +10,6 @@ import {
 
 export type WindowLayoutGuard = () => boolean;
 
-/** Clear native layout state before showing the compact repair/setup window. */
 export async function prepareSetupWindow(options: {
   resetLayout: () => Promise<unknown>;
   unmaximize: () => Promise<void>;
