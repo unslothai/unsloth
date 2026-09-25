@@ -256,6 +256,7 @@ from .import_fixes import (
     fix_transformers_chunked_mask_block_sequence_ids,
     fix_transformers_longcat_lsa_config,
     fix_transformers_rope_scaling_drops_theta,
+    fix_transformers_fp8_modulelist_experts,
     fix_transformers_validate_rope_ignore_keys,
     fix_transformers5_remote_code_legacy_defaults,
     fix_transformers_config_only_remote_code,
@@ -320,6 +321,7 @@ del check_transformers_prequantized_vlm_quant_state
 # RoPE base frequency. Ordered here, before any config is built, so the object-style delegation
 # retry in models/llama.py sees a config that kept its base (#2405).
 fix_transformers_rope_scaling_drops_theta()
+fix_transformers_fp8_modulelist_experts()
 fix_transformers_validate_rope_ignore_keys()
 fix_transformers5_remote_code_legacy_defaults()
 fix_transformers_config_only_remote_code()
@@ -382,6 +384,7 @@ patch_accelerate_recursively_apply()
 
 del fix_transformers5_bare_annotation_configs
 del fix_transformers_rope_scaling_drops_theta
+del fix_transformers_fp8_modulelist_experts
 del fix_transformers_validate_rope_ignore_keys
 del fix_transformers_longcat_lsa_config
 del fix_transformers_remote_rope_scaling_none

@@ -388,11 +388,19 @@ def _adapter_targets_text_core(
     return isinstance(targets, str) and not any(child in targets for child in children)
 
 
-def _is_forwardless_composition(model_config, trust_remote_code = None, **hub_kwargs):
+def _is_forwardless_composition(
+    model_config,
+    trust_remote_code = None,
+    **hub_kwargs,
+):
     # Only a wrapper with no forward (Qwen3-Omni) can have a thinker-trained adapter; VLM adapters never.
-    auto_class = _resolve_omni_auto_model(model_config, trust_remote_code = trust_remote_code, **hub_kwargs)
+    auto_class = _resolve_omni_auto_model(
+        model_config, trust_remote_code = trust_remote_code, **hub_kwargs
+    )
     model_class = (
-        resolve_model_class(auto_class, model_config, trust_remote_code = trust_remote_code, **hub_kwargs)
+        resolve_model_class(
+            auto_class, model_config, trust_remote_code = trust_remote_code, **hub_kwargs
+        )
         if auto_class is not None
         else None
     )
@@ -2127,7 +2135,8 @@ class FastModel(FastBaseModel):
                     text_only_decoder = True
             elif (
                 is_vlm
-                and resolve_model_class(AutoModelForCausalLM, model_config, **_probe_hub_kwargs) is None
+                and resolve_model_class(AutoModelForCausalLM, model_config, **_probe_hub_kwargs)
+                is None
                 and _resolve_omni_auto_model(model_config, **_probe_hub_kwargs) is not None
             ):
                 # Qwen3-Omni has no causal-LM class; load the composition, text_intent picks the thinker.
