@@ -884,6 +884,30 @@ def test_a_sandbox_file_is_reachable_by_id_only_as_the_listing_walks_it(
     assert not os.path.exists(os.path.join(directory, "a.txt"))
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "no FIFOs on this OS")
+def test_a_file_swapped_for_a_fifo_is_refused_without_waiting_for_a_writer(tmp_path):
+    import threading
+
+    fifo = tmp_path / "out.png"
+    os.mkfifo(fifo)
+    outcome = []
+
+    def open_it():
+        try:
+            library._open_regular(str(fifo)).close()
+            outcome.append("opened")
+        except LookupError:
+            outcome.append("refused")
+
+    worker = threading.Thread(target = open_it, daemon = True)
+    worker.start()
+    worker.join(5)
+    if worker.is_alive():
+        # Unblock the stuck open so the thread ends, then fail.
+        os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+    assert outcome == ["refused"]
+
+
 @pytest.mark.parametrize("route", ["download", "stream"])
 def test_a_sandbox_file_swapped_for_a_link_after_the_check_is_not_read(
     client, signed_in, monkeypatch, tmp_path, route

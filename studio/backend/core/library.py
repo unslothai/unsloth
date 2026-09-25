@@ -108,8 +108,6 @@ def _fingerprint(info: os.stat_result) -> str:
     return str(info.st_ino) if birth is None else f"{info.st_ino}:{birth!r}"
 
 
-
-
 def uploads_dir() -> Path:
     return ensure_dir(account_path("library"))
 
@@ -279,8 +277,6 @@ def _upload_items() -> list[dict]:
     return items
 
 
-
-
 def _attachment_id(message_id: str, attachment_id: str) -> str:
     """The item id of a chat attachment. A message id can be any string, so it is encoded: the
     attachment id is what follows its first colon."""
@@ -318,8 +314,6 @@ def _attachment_items() -> list[dict]:
             )
         )
     return items
-
-
 
 
 _NAME_BREAK_RE = re.compile(f"[{UNSAFE_NAME_CHARS}\\s]+")
@@ -394,7 +388,6 @@ def _audio_items() -> list[dict]:
     return _gallery_items("audio")
 
 
-
 MODEL_CONTENT_TYPE = "application/x-unsloth-model"
 
 
@@ -462,8 +455,6 @@ def _model_items() -> list[dict]:
             )
         )
     return items
-
-
 
 
 def _sandbox_sessions() -> list[tuple[str, Optional[str], Optional[str]]]:
@@ -566,7 +557,13 @@ def _open_regular(path: str) -> BinaryIO:
     Another process can swap a checked name for a link before it is opened again. O_NOFOLLOW where
     the OS has it, then the path must still resolve to itself and to this same file, which also
     refuses a parent swapped for a link (the only way in on Windows)."""
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    # O_NONBLOCK: a FIFO swapped in for the file would otherwise hang here before the S_ISREG check.
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     try:
         fd = os.open(path, flags)
     except OSError:
@@ -773,8 +770,6 @@ def item_type(item_id: str) -> str:
     return _guess_type(ref) if kind == "sandbox" else ""
 
 
-
-
 def _account_key() -> str:
     """Which account's stores a cached answer came from: each has a studio.db of its own."""
     from utils.paths import studio_db_path
@@ -867,7 +862,6 @@ def _remembered(
 
     remembered.__name__ = name
     return remembered
-
 
 
 _SOURCES = (
@@ -1070,7 +1064,6 @@ def local_path(item_id: str) -> Path:
     ):
         raise LookupError(item_id)
     return Path(resolved)
-
 
 
 _THUMBNAIL_WIDTH = 640
@@ -1291,7 +1284,6 @@ def delete_item(item_id: str, fingerprint: Optional[str] = None) -> bool:
     elif kind == "video":
         from core.inference import video_gallery
         from routes.video import _forget_openai_job, _forget_terminal_video
-
         if video_gallery.get_record(ref) is not None:
             # The job goes first, as the Video page's cleanup, so /v1/videos never keeps a ghost
             # of the clip. Failing there leaves the clip listed, and deleting it again finishes.
