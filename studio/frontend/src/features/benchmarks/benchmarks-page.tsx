@@ -237,7 +237,7 @@ function BenchSubNav({
     label: ReactNode;
     disabled: boolean;
   }> = [
-    { value: "benchmark", label: "Benchmark", disabled: false },
+    { value: "benchmark", label: "Config sweeps", disabled: false },
     {
       value: "history",
       label: (
