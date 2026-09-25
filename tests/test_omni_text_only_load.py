@@ -576,3 +576,28 @@ def test_saved_modules_on_a_kept_wrapper_skip_the_talker(monkeypatch):
     trained = [n for n, p in peft_model.named_parameters() if p.requires_grad]
     assert any("thinker.lm_head" in n for n in trained)
     assert not any(".talker." in n for n in trained)
+
+
+def test_full_finetuning_keeps_a_kept_wrappers_siblings_frozen(monkeypatch):
+    """prepare_model_for_training(full_finetuning = True) turned every parameter back on."""
+    from unsloth.models import vision
+
+    monkeypatch.setenv("UNSLOTH_ENABLE_FULL_FINETUNING", "1")
+    model = vision._text_trainable_core(_tiny_omni(), text_intent = False)
+    try:
+        vision.FastBaseModel.post_patch_model(model, use_gradient_checkpointing = False)
+    except RuntimeError as error:
+        if "inner_training_loop" not in str(error):
+            raise
+    assert any(p.requires_grad for p in model.thinker.parameters())
+    assert not any(p.requires_grad for p in model.talker.parameters())
+
+
+def test_suffix_target_parameters_on_a_kept_wrapper_skip_the_talker(monkeypatch):
+    """PEFT suffix-matches target_parameters; bare expert names also adapted the talker's experts."""
+    peft_model = _kept_wrapper_peft(
+        monkeypatch, target_modules = ["q_proj"], target_parameters = ["mlp.experts.gate_up_proj"]
+    )
+    trained = [n for n, p in peft_model.named_parameters() if p.requires_grad]
+    assert any("thinker." in n and "experts" in n for n in trained)
+    assert not any(".talker." in n for n in trained)

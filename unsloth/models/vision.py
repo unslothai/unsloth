@@ -1425,16 +1425,45 @@ def _delegate_text_forward(model, name, core):
         model.set_input_embeddings = core.set_input_embeddings
     if wrapper_output is None:
         model.set_output_embeddings = core.set_output_embeddings
-    # Siblings never reach the loss: freeze them, else DDP full finetuning fails on unused parameters.
+    model._unsloth_text_core = name
+    _freeze_unused_siblings(model)
+    return model
+
+
+def _freeze_unused_siblings(model):
+    """Siblings never reach the loss: freeze them, else DDP full finetuning fails on unused parameters."""
+    name = getattr(model, "_unsloth_text_core", None)
+    core = getattr(model, name, None) if isinstance(name, str) else None
+    if core is None:
+        return
     core_parameters = {id(parameter) for parameter in core.parameters()}
-    for child_name, child in model.named_children():
+    for child in model.children():
         if child is core:
             continue
         for parameter in child.parameters():
             if id(parameter) not in core_parameters:
                 parameter.requires_grad_(False)
-    model._unsloth_text_core = name
-    return model
+
+
+def _scope_parameter_targets_to_core(model, target_parameters):
+    """PEFT suffix-matches target_parameters too: on a kept wrapper "mlp.experts.gate_up_proj"
+    also hits the talker's experts, which never train."""
+    name = getattr(model, "_unsloth_text_core", None)
+    core = getattr(model, name, None) if isinstance(name, str) else None
+    if core is None or not target_parameters or isinstance(target_parameters, str):
+        return target_parameters
+    scoped = []
+    for entry in target_parameters:
+        if entry.startswith(name + "."):
+            scoped.append(entry)
+            continue
+        paths = [
+            f"{name}.{path}"
+            for path, _ in core.named_parameters()
+            if path == entry or path.endswith("." + entry)
+        ]
+        scoped.extend(paths or [entry])
+    return scoped
 
 
 def _scope_modules_to_save_to_core(model, modules_to_save):
@@ -2964,7 +2993,9 @@ class FastBaseModel:
         _moe_module_targets = get_moe_target_modules(model, _moe_module_detect)
 
         # Auto-detect MoE models and populate target_parameters for expert layers.
-        if target_parameters is None:
+        if target_parameters is not None:
+            target_parameters = _scope_parameter_targets_to_core(model, target_parameters)
+        else:
             target_parameters = get_moe_target_parameters(
                 model,
                 _moe_module_detect,
@@ -3162,6 +3193,9 @@ class FastBaseModel:
             float32_mixed_precision = float32_mixed_precision,
             patch_modules_to_save = True,
         )
+        if full_finetuning:
+            # prepare_model_for_training re-enabled every parameter, a kept wrapper's siblings too.
+            _freeze_unused_siblings(model)
         # Persist the configured GC mode so the trainer restores it verbatim: for_inference() clears the module flags every GRPO generation step, and TrainingArguments defaults gradient_checkpointing=False, which would silently disable it at train time (#4735).
         model._unsloth_gradient_checkpointing = use_gradient_checkpointing
 
