@@ -1202,16 +1202,13 @@ function VideoGenerator({
     if (viewerVideoRef.current) recordViewer(viewerVideoRef.current);
     setViewer(null);
   };
-  // Also after leaving the page closed it mid-render. Only for the clip the viewer showed (a generation
-  // finishing may have selected another), and once that clip's link is minted.
+  // Also after leaving the page closed it mid-render. Only to the clip the viewer showed, once its link
+  // is minted: if a generation finishing selected another, it waits until that clip is shown again.
+  // Opening the viewer again replaces it, so at most one waits.
   const shownId = selected?.id;
   useEffect(() => {
     const last = handback.current;
-    if (viewer || !last) return;
-    if (last.id !== shownId) {
-      handback.current = null;
-      return;
-    }
+    if (viewer || !last || last.id !== shownId) return;
     const inline = previewRef.current;
     if (!selectedSrc || !inline) return;
     handback.current = null;
@@ -1220,6 +1217,8 @@ function VideoGenerator({
     inline.muted = playback.muted;
     inline.volume = playback.volume;
     if (playback.playing && activeRef.current) void playWithMutedFallback(inline);
+    // A clip shown again loads afresh and would autoplay.
+    else inline.pause();
   }, [viewer, shownId, selectedSrc]);
 
   // The resolution presets + temporal lattice for the loaded family, or the fallbacks before anything is loaded.

@@ -155,13 +155,16 @@ test("the Video viewer plays only if the inline clip was, and hands its place ba
   // Opened from its Open button: the native controls also take clicks on the frame.
   const inline = slice(page, "ref={previewRef}", "/>");
   assert.ok(!inline.includes("onClick") && !inline.includes("openViewer"));
-  // The handback is dropped once another clip is shown, and waits for the shown clip's link.
+  // The handback waits while another clip is shown and for its own clip's link, then keeps its pause.
   const effect = slice(page, "const last = handback.current;", "}, [viewer, shownId, selectedSrc]);");
   for (const line of [
-    "if (last.id !== shownId) {\n      handback.current = null;",
+    "if (viewer || !last || last.id !== shownId) return;",
     "if (!selectedSrc || !inline) return;",
     "playback.playing && activeRef.current",
+    "else inline.pause();",
   ]) {
     assert.ok(effect.includes(line), line);
   }
+  // Only a successful apply or a newer opening clears it.
+  assert.equal(page.split("handback.current = null;").length - 1, 2);
 });
