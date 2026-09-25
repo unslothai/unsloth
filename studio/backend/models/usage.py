@@ -39,8 +39,3 @@ class UsageRetentionSetting(BaseModel):
     mode: Literal["months", "forever"] = "forever"
     value: Optional[int] = None
 
-
-class UsageExportParams(BaseModel):
-    format: Literal["csv", "json"] = "csv"
-    start: Optional[int] = None
-    end: Optional[int] = None
