@@ -128,7 +128,7 @@ def test_a_failed_encode_asks_for_libx264(monkeypatch, tmp_path):
     "gpu, nvenc_ok, expect", [(None, None, "x264"), (0, True, "nvenc"), (0, False, "x264")]
 )
 def test_encode_mp4_falls_back_to_libx264(monkeypatch, gpu, nvenc_ok, expect):
-    import diffusers.utils.export_utils as eu
+    eu = pytest.importorskip("diffusers.utils.export_utils")
 
     from core.inference import video as video_mod
 
