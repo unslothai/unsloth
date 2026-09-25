@@ -1371,10 +1371,14 @@ def _get_remote_composite_text_only(
     local_files_only = False,
     fast_inference = False,
     subfolder = None,
+    device_map = None,
 ):
     # Text-only load plan for a repo-code composite (Nemotron-Omni: llm_config + vision/sound) whose text sub-model is a whole causal LM stored under one prefix.
     # Returns (text_config, key_mapping) or None; None keeps the previous full-model load.
     if not trust_remote_code or not _is_remote_code_config(model_config):
+        return None
+    if isinstance(device_map, dict) and any(key != "" for key in device_map):
+        # Keys name the composite's modules (language_model, vision_model), which the standalone decoder does not have.
         return None
     if fast_inference:
         # vLLM loads the repo's own composite config and weights by name, with no prefix rewrite for a standalone text config.

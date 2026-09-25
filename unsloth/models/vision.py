@@ -1316,6 +1316,7 @@ class FastBaseModel:
                     local_files_only = local_files_only,
                     fast_inference = fast_inference,
                     subfolder = kwargs.get("subfolder"),
+                    device_map = device_map,
                 )
                 if remote_text_only is not None:
                     auto_config, _text_key_mapping = remote_text_only

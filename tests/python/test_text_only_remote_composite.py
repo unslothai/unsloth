@@ -916,3 +916,49 @@ def test_loader_and_vision_forward_subfolder_to_the_plan():
                 break
             j += 1
         assert 'subfolder = kwargs.get("subfolder"),' in src[i : j + 1], path.name
+
+
+# ---------------------------------------------------------------- caller device maps
+
+
+@needs_tf5
+def test_module_keyed_device_map_keeps_the_full_composite(tmp_path):
+    # {"language_model": 0, "vision_model": "cpu"} names the wrapper's modules; the standalone decoder
+    # has none of them, so from_pretrained refuses the map ("does not give any device").
+    ns = _ns()
+    repo, _ = _write_repo(tmp_path, name = "dmap")
+    parent = _load_parent_config(repo)
+    composite_map = {"language_model": "cpu", "vision_model": "cpu", "mlp1": "cpu"}
+    plan = ns["_get_remote_composite_text_only"](parent, str(repo), trust_remote_code = True)
+    text_config, mapping = plan
+    model = transformers.LlamaForCausalLM(text_config)
+    # None of the standalone decoder's parameters falls under any key of the composite's map.
+    assert not any(
+        name == key or name.startswith(key + ".")
+        for name, _ in model.named_parameters()
+        for key in composite_map
+    )
+    assert (
+        ns["_get_remote_composite_text_only"](
+            parent, str(repo), trust_remote_code = True, device_map = composite_map
+        )
+        is None
+    )
+    # Maps that place the whole model keep the text-only plan.
+    for device_map in ({"": "cpu"}, "cpu", "auto", "sequential", None):
+        assert ns["_get_remote_composite_text_only"](
+            parent, str(repo), trust_remote_code = True, device_map = device_map
+        ), device_map
+
+
+def test_loader_and_vision_forward_device_map_to_the_plan():
+    for path in (LOADER_PATH, VISION_PATH):
+        src = path.read_text(encoding = "utf-8")
+        i = src.index("_get_remote_composite_text_only(\n")
+        depth, j = 0, i
+        while True:
+            depth += {"(": 1, ")": -1}.get(src[j], 0)
+            if src[j] == ")" and depth == 0:
+                break
+            j += 1
+        assert "device_map = device_map," in src[i : j + 1], path.name
