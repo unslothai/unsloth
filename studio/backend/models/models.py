@@ -153,9 +153,20 @@ class GgufVariantDetail(BaseModel):
 
     filename: str = Field(..., description = "GGUF filename (e.g., 'gemma-3-4b-it-Q4_K_M.gguf')")
     quant: str = Field(..., description = "Quantization label or internal GGUF variant key")
-    # Mirrors hub.schemas.inventory.GgufVariantDetail. The route builds THIS model, so a field that exists only
-    # on the hub twin is dropped by pydantic without a word and a qualified row falls back to rendering its whole
-    # relative path.
+    cache_path: Optional[str] = Field(
+        None, description = "Owning cache repository for this complete variant"
+    )
+    # Mirrors hub.schemas.inventory.GgufVariantDetail; see display_label below. FastAPI
+    # serializes through THIS model, so an undeclared redacted reference is dropped.
+    cache_ref: Optional[str] = Field(
+        None, description = "Opaque stand-in for cache_path, stable for the server's life"
+    )
+    context_length: Optional[int] = Field(
+        None, description = "Native context limit from this variant's cached source"
+    )
+    # Mirrors hub.schemas.inventory.GgufVariantDetail. The route builds THIS model, so a field that
+    # exists only on the hub twin is dropped by pydantic without a word and a qualified row falls back
+    # to rendering its whole relative path.
     display_label: Optional[str] = Field(
         None, description = "Optional user-facing label when quant is an internal key"
     )
