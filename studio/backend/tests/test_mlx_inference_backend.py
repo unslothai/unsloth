@@ -254,7 +254,6 @@ def _all_fusions_refuse(monkeypatch, patches):
 
 
 def test_mlx_vlm_generation_survives_every_fusion_refusing(monkeypatch, mlx_inference_patches):
-    """The VLM path holds its fusions in its own ExitStack."""
     from core.inference import mlx_inference
     from core.inference.mlx_inference import MLXInferenceBackend
 

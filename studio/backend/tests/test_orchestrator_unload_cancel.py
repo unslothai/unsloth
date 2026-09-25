@@ -263,7 +263,6 @@ def _watch_teardown(
     *,
     dead = True,
 ):
-    """Record teardowns, clearing the handle like the real one."""
     torn_down = []
 
     def shutdown(timeout):

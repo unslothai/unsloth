@@ -242,8 +242,6 @@ _GPU_TIMEOUT = (
 
 
 class _WorkerQueue:
-    """Replies to whichever request was just sent; a step is a response or a callable."""
-
     def __init__(self, sent, *steps):
         self._sent = sent
         self._steps = list(steps)

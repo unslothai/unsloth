@@ -1089,7 +1089,6 @@ class InferenceOrchestrator:
         timeout: float = 1.0,
         observe: bool = True,
     ) -> Optional[dict]:
-        """``observe = False`` leaves retiring to the caller."""
         # Handle before queue, else a reload between them blames the replacement.
         worker = self._proc
         resp_queue = self._resp_queue
