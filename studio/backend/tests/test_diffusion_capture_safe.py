@@ -394,3 +394,29 @@ def test_real_diffusers_hunyuanimage_rewrite_is_bit_identical(fresh_cache):
         want = cls.forward(model, latents, timestep, **kw)[0]
         got = safe(model, latents, timestep, **kw)[0]
     assert torch.equal(want, got)
+
+
+def test_qwen_image_21_is_declined_with_the_reason(fresh_cache):
+    QwenImage21Transformer2DModel = type(
+        "QwenImage21Transformer2DModel", (), {"forward": lambda self, hidden_states: hidden_states}
+    )
+    forward, why = cs.resolve(QwenImage21Transformer2DModel)
+    assert forward is None
+    assert why == (
+        "QwenImage21Transformer2DModel forward is not capture-safe (its pipeline passes the prefix KV "
+        "cache as a Python object on every step and its forward syncs the host)"
+    )
+    # A subclass that brings its own forward is a different forward.
+    Sub = type("Sub", (QwenImage21Transformer2DModel,), {"forward": lambda self, x: x})
+    assert cs.resolve(Sub) == (None, None)
+
+
+def test_graph_eligible_declines_qwen_image_21_at_load(fresh_cache, monkeypatch):
+    monkeypatch.delenv(cg.CUDA_GRAPH_DISABLE_ENV, raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    QwenImage21Transformer2DModel = type(
+        "QwenImage21Transformer2DModel", (), {"forward": lambda self, hidden_states: hidden_states}
+    )
+    ok, why = _eligible_for(QwenImage21Transformer2DModel())
+    assert ok is False
+    assert why.startswith("QwenImage21Transformer2DModel forward is not capture-safe")

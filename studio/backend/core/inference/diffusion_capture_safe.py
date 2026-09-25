@@ -204,6 +204,15 @@ _REWRITES: dict[str, tuple[str, Callable[[Callable], Callable]]] = {
     ),
 }
 
+# class name -> why its stock call cannot be captured at all, with no rewrite to offer. Declined at
+# load, so status says "off" with the reason instead of arming a wrapper that refuses every step.
+_UNCAPTURABLE: dict[str, str] = {
+    # The pipeline passes its prefix KV cache (a QwenImage21KVCache) on every step, and the forward
+    # syncs the host (repeat_interleave, boolean indexing, nonzero, .tolist) before its first block.
+    "QwenImage21Transformer2DModel": "its pipeline passes the prefix KV cache as a Python object "
+    "on every step and its forward syncs the host",
+}
+
 _CACHE: dict = {}
 _CACHE_LOCK = threading.Lock()
 
@@ -223,6 +232,8 @@ def resolve(cls: type) -> tuple[Optional[Callable], Optional[str]]:
 
     Never raises. Cheap for an unknown class: a name lookup, no torch import."""
     owner = _defining_class(cls)
+    if owner is not None and owner.__name__ in _UNCAPTURABLE and owner.__name__ not in _REWRITES:
+        return None, f"{owner.__name__} forward is not capture-safe ({_UNCAPTURABLE[owner.__name__]})"
     if owner is None or owner.__name__ not in _REWRITES:
         return None, None
     why, rewrite = _REWRITES[owner.__name__]
