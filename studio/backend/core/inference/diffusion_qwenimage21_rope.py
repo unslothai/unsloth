@@ -69,7 +69,9 @@ def _digest(fn: Any) -> Optional[str]:
         src = textwrap.dedent(inspect.getsource(inspect.unwrap(fn)))
         tree = ast.parse(src)
         comments = [
-            tok.start for tok in tokenize.generate_tokens(io.StringIO(src).readline) if tok.type == tokenize.COMMENT
+            tok.start
+            for tok in tokenize.generate_tokens(io.StringIO(src).readline)
+            if tok.type == tokenize.COMMENT
         ]
     except (OSError, TypeError, SyntaxError, ValueError, tokenize.TokenError):
         return None
@@ -110,7 +112,10 @@ def _addcmul_lowering() -> tuple:
         if getattr(torch.version, "hip", None):
             return False, False
         src = inspect.getsource(lowering.addcmul)
-        return "ops.fma(t1_val, t2_val, self_val)" in src, "not config.emulate_precision_casts" in src
+        return (
+            "ops.fma(t1_val, t2_val, self_val)" in src,
+            "not config.emulate_precision_casts" in src,
+        )
     except Exception:  # noqa: BLE001 - no inductor, or its source is unreadable
         return False, False
 
@@ -164,8 +169,12 @@ def probe_fusion(device: Any) -> Optional[tuple]:
     ).cpu()
     fb = f.unsqueeze(1).expand(64, 4, 16, 2).unsqueeze(0)
     return classify_fusion(
-        x[..., 0].numpy(), x[..., 1].numpy(), fb[..., 0].numpy(), fb[..., 1].numpy(),
-        out[..., 0].numpy(), out[..., 1].numpy(),
+        x[..., 0].numpy(),
+        x[..., 1].numpy(),
+        fb[..., 0].numpy(),
+        fb[..., 1].numpy(),
+        out[..., 0].numpy(),
+        out[..., 1].numpy(),
     )
 
 
@@ -197,14 +206,18 @@ def _real_rope(x: Any, freqs_cis: Any, fusion: tuple) -> Any:
 def _inductor_emulates() -> bool:
     """Read at trace time (dynamo guards on it): without the flag torch 2.11 splits ``addcmul``."""
     from torch._inductor import config
-
     return bool(getattr(config, "emulate_precision_casts", False))
 
 
 def _make_rope(stock: Any) -> Any:
     import torch
 
-    def apply_rotary_emb_qwen(x, freqs_cis, use_real = True, use_real_unbind_dim = -1):
+    def apply_rotary_emb_qwen(
+        x,
+        freqs_cis,
+        use_real = True,
+        use_real_unbind_dim = -1,
+    ):
         if (
             not use_real
             and torch.compiler.is_compiling()
@@ -217,7 +230,9 @@ def _make_rope(stock: Any) -> Any:
                 return _real_rope(x, freqs_cis, fusion)
         return stock(x, freqs_cis, use_real, use_real_unbind_dim)
 
-    functools.update_wrapper(apply_rotary_emb_qwen, stock, assigned = ("__name__", "__doc__"), updated = ())
+    functools.update_wrapper(
+        apply_rotary_emb_qwen, stock, assigned = ("__name__", "__doc__"), updated = ()
+    )
     apply_rotary_emb_qwen.__unsloth_real_rope__ = True
     return apply_rotary_emb_qwen
 
@@ -233,7 +248,11 @@ def install(logger: Any = None, device: Any = None) -> bool:
     try:
         import torch
 
-        dev = torch.device(device) if device is not None else torch.device("cuda", torch.cuda.current_device())
+        dev = (
+            torch.device(device)
+            if device is not None
+            else torch.device("cuda", torch.cuda.current_device())
+        )
         if dev.type != "cuda":
             return False
         index = dev.index if dev.index is not None else torch.cuda.current_device()
@@ -241,7 +260,9 @@ def install(logger: Any = None, device: Any = None) -> bool:
             _FUSION[index] = probe_fusion(torch.device("cuda", index))
         if _FUSION[index] is None:
             if logger is not None:
-                logger.info("diffusion.qwenimage21: complex RoPE kept: this card's complex multiply is not a known fma form")
+                logger.info(
+                    "diffusion.qwenimage21: complex RoPE kept: this card's complex multiply is not a known fma form"
+                )
             return False
     except Exception as exc:  # noqa: BLE001 - no CUDA, or the probe failed: keep the complex form
         if logger is not None:
@@ -249,7 +270,6 @@ def install(logger: Any = None, device: Any = None) -> bool:
         return False
     try:
         import importlib
-
         mod = importlib.import_module(_MODULE)
     except Exception:  # noqa: BLE001 - diffusers without Qwen-Image 2.1
         return False
@@ -268,7 +288,9 @@ def install(logger: Any = None, device: Any = None) -> bool:
         _INSTALLED[mod] = current
         mod.apply_rotary_emb_qwen = wrapper
     if logger is not None:
-        logger.info("diffusion.qwenimage21: RoPE runs in real arithmetic inside the compiled blocks")
+        logger.info(
+            "diffusion.qwenimage21: RoPE runs in real arithmetic inside the compiled blocks"
+        )
     return True
 
 

@@ -25,6 +25,7 @@ def _cuda_dtype():
     """bf16 where the card has it natively (sm80+), else fp16, as the Studio loaders pick."""
     return torch.bfloat16 if torch.cuda.get_device_capability() >= (8, 0) else torch.float16
 
+
 _needs_exact = pytest.mark.skipif(
     not (torch.cuda.is_available() and rope.inductor_addcmul_is_fma()),
     reason = "needs CUDA and inductor's fma addcmul lowering (torch 2.11+)",
@@ -51,7 +52,11 @@ def _stock_after(monkeypatch):
     torch._dynamo.reset()
 
 
-def _attention(device, heads = 4, dim_head = 32):
+def _attention(
+    device,
+    heads = 4,
+    dim_head = 32,
+):
     torch.manual_seed(0)
     attn = qmod.QwenImage21Attention(dim = heads * dim_head, heads = heads, dim_head = dim_head)
     attn = attn.to(device, _cuda_dtype() if device == "cuda" else torch.bfloat16).eval()
@@ -70,7 +75,9 @@ def _qk(attn, seq, device):
     freqs = torch.polar(torch.ones_like(ang), ang)
 
     def prep(hidden_states, rotary_emb):
-        q, k, _, _ = qmod._qwenimage21_prepare_qkv(attn, hidden_states, rotary_emb, None, None, None)
+        q, k, _, _ = qmod._qwenimage21_prepare_qkv(
+            attn, hidden_states, rotary_emb, None, None, None
+        )
         return q, k
 
     return prep, x, freqs
@@ -102,7 +109,12 @@ def test_compiled_real_rope_matches_the_complex_one(dynamic, seq, emulating):
         moved = (r != s).sum().item()
         assert moved <= 2 * (s != e).sum().item() + 16
         if moved:
-            pair = s.float().unflatten(-1, (-1, 2)).norm(dim = -1, keepdim = True).expand(*s.shape[:-1], -1, 2)
+            pair = (
+                s.float()
+                .unflatten(-1, (-1, 2))
+                .norm(dim = -1, keepdim = True)
+                .expand(*s.shape[:-1], -1, 2)
+            )
             bound = 3 * torch.finfo(s.dtype).eps * pair.flatten(-2)
             assert bool(((r.float() - s.float()).abs() <= bound).all())
 
@@ -111,7 +123,9 @@ def test_compiled_real_rope_matches_the_complex_one(dynamic, seq, emulating):
 def test_the_real_form_runs_inside_the_compiled_block(monkeypatch, emulating):
     calls = []
     real = rope._real_rope
-    monkeypatch.setattr(rope, "_real_rope", lambda x, f, fusion: calls.append(x.shape) or real(x, f, fusion))
+    monkeypatch.setattr(
+        rope, "_real_rope", lambda x, f, fusion: calls.append(x.shape) or real(x, f, fusion)
+    )
     assert rope.install()
     attn = _attention("cuda")
     prep, x, freqs = _qk(attn, 64, "cuda")
@@ -129,7 +143,9 @@ def _fake_fusion(monkeypatch):
 def test_eager_calls_keep_the_complex_form(monkeypatch):
     _fake_fusion(monkeypatch)
     assert rope.install()
-    monkeypatch.setattr(rope, "_real_rope", lambda *a: pytest.fail("real form used outside a compile"))
+    monkeypatch.setattr(
+        rope, "_real_rope", lambda *a: pytest.fail("real form used outside a compile")
+    )
     attn = _attention("cpu")
     prep, x, freqs = _qk(attn, 16, "cpu")
     with torch.inference_mode():
@@ -163,14 +179,21 @@ def test_a_drifted_rope_is_left_alone(monkeypatch):
     _fake_fusion(monkeypatch)
     fake = types.SimpleNamespace(**vars(qmod))
 
-    def apply_rotary_emb_qwen(x, freqs_cis, use_real = True, use_real_unbind_dim = -1):
+    def apply_rotary_emb_qwen(
+        x,
+        freqs_cis,
+        use_real = True,
+        use_real_unbind_dim = -1,
+    ):
         return x
 
     fake.apply_rotary_emb_qwen = apply_rotary_emb_qwen
     assert "apply_rotary_emb_qwen differs" in rope.why_unsupported(fake)
     real_import = importlib.import_module
     monkeypatch.setattr(
-        importlib, "import_module", lambda name, *a: fake if name == rope._MODULE else real_import(name, *a)
+        importlib,
+        "import_module",
+        lambda name, *a: fake if name == rope._MODULE else real_import(name, *a),
     )
     assert rope.install() is False
     assert fake.apply_rotary_emb_qwen is apply_rotary_emb_qwen
@@ -219,7 +242,9 @@ def test_a_torch_that_needs_the_emulate_flag_keeps_the_complex_form_without_it(m
     monkeypatch.setattr(icfg, "emulate_precision_casts", False)
     calls = []
     real = rope._real_rope
-    monkeypatch.setattr(rope, "_real_rope", lambda x, f, fusion: calls.append(1) or real(x, f, fusion))
+    monkeypatch.setattr(
+        rope, "_real_rope", lambda x, f, fusion: calls.append(1) or real(x, f, fusion)
+    )
     attn = _attention("cuda")
     prep, x, freqs = _qk(attn, 16, "cuda")
     torch._dynamo.reset()
@@ -236,7 +261,6 @@ def test_a_torch_that_needs_the_emulate_flag_keeps_the_complex_form_without_it(m
 def _fused(a, c, bd):
     """float32 fma(a, c, bd) for float32 numpy inputs in [1, 2): exact in float64, one rounding."""
     import numpy as np
-
     return (a.astype(np.float64) * c.astype(np.float64) + bd.astype(np.float64)).astype(np.float32)
 
 
@@ -246,7 +270,9 @@ def test_classify_fusion_names_each_half(even, odd):
     import numpy as np
 
     rng = np.random.default_rng(0)
-    a, b, c, d = (((rng.random(4096) + 1) * rng.choice([-1, 1], 4096)).astype(np.float32) for _ in range(4))
+    a, b, c, d = (
+        ((rng.random(4096) + 1) * rng.choice([-1, 1], 4096)).astype(np.float32) for _ in range(4)
+    )
     real = _fused(a, c, -(b * d)) if even == "x" else _fused(-b, d, a * c)
     imag = _fused(b, c, a * d) if odd == "x" else _fused(a, d, b * c)
     assert rope.classify_fusion(a, b, c, d, real, imag) == (even, odd)
@@ -256,7 +282,12 @@ def test_classify_fusion_names_each_half(even, odd):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
 def test_this_card_multiplies_complex_numbers_in_a_known_fused_form():
-    assert rope.probe_fusion(torch.device("cuda")) in {("x", "x"), ("x", "s"), ("s", "x"), ("s", "s")}
+    assert rope.probe_fusion(torch.device("cuda")) in {
+        ("x", "x"),
+        ("x", "s"),
+        ("s", "x"),
+        ("s", "s"),
+    }
 
 
 @_needs_exact
@@ -267,8 +298,12 @@ def test_each_fusion_form_compiles_to_that_fma(fusion, emulating):
     import numpy as np
 
     g = torch.Generator(device = "cpu").manual_seed(1)
-    x = (torch.rand(1, 64, 4, 32, generator = g) + 1) * (torch.randint(0, 2, (1, 64, 4, 32), generator = g) * 2 - 1)
-    f = (torch.rand(64, 16, 2, generator = g) + 1) * (torch.randint(0, 2, (64, 16, 2), generator = g) * 2 - 1)
+    x = (torch.rand(1, 64, 4, 32, generator = g) + 1) * (
+        torch.randint(0, 2, (1, 64, 4, 32), generator = g) * 2 - 1
+    )
+    f = (torch.rand(64, 16, 2, generator = g) + 1) * (
+        torch.randint(0, 2, (64, 16, 2), generator = g) * 2 - 1
+    )
     freqs = torch.view_as_complex(f.contiguous())
     fn = torch.compile(lambda x, fr: rope._real_rope(x, fr, fusion))
     out = fn(x.cuda(), freqs.cuda()).cpu().numpy()
