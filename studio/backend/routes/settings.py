@@ -2080,13 +2080,13 @@ def update_openai_auto_switch_override(
                 llama_extra_args = extra_args,
                 keep_empty_extra_args = keep_empty,
                 engine_parallelism = payload.engine_parallelism
-                if payload.engine_parallelism is not None
+                if payload.engine_parallelism is not None or is_removal
                 else get_model_override(target_id).get("engine_parallelism"),
                 engine_precision = payload.engine_precision
-                if payload.engine_precision is not None
+                if payload.engine_precision is not None or is_removal
                 else get_model_override(target_id).get("engine_precision"),
                 engine = payload.engine
-                if payload.engine is not None
+                if payload.engine is not None or is_removal
                 else get_model_override(target_id).get("engine"),
                 max_seq_length = max_seq_length,
                 custom_context_length = custom_context_length,
