@@ -372,12 +372,10 @@ def test_text_only_orphaned_fp8_weight_is_dequantized():
     raw_fp8 = (torch.randn(4, 4) * 100).to(_FP8)
     scale = torch.rand(2, 2, dtype = torch.float32) + 0.1
 
-    # Text-only layout, weight left in fp8.
     text_only = nn.Module()
     text_only.config = _fp8_config((2, 2))
     text_only.model = nn.Module()
     text_only.model.gate_proj = _fp8_linear(4, 4, raw_fp8.clone())
-    # Unrenamed layout, weight already cast to bf16 by transformers (the pre-existing restore path).
     full = nn.Module()
     full.config = _fp8_config((2, 2))
     full.anchor = _fp8_anchor()

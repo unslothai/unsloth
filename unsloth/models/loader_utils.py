@@ -1436,7 +1436,6 @@ def _restore_dropped_fp8_scales(
                 continue
             store_key = None
             if weight.device.type == "meta":
-                # Offloaded: scale the tensor accelerate materializes from.
                 if offload_store is _unset:
                     offload_store = _accelerate_offload_store(model)
                 store_key = f"{name_by_module.get(id(module), '')}.weight"
