@@ -96,8 +96,8 @@ export async function getLibraryFavorites(): Promise<string[]> {
   return ((await response.json()) as { ids: string[] }).ids;
 }
 
-// Edits to one item go out in order, so a quick second toggle never lands before the first.
-const itemQueues = new Map<string, Promise<void>>();
+// Writes to one item or folder, in the order they were made.
+const writeQueues = new Map<string, Promise<void>>();
 
 /** Throws once the session that `epoch` came from has ended. */
 function sameSession(epoch: number, message: TranslationKey): () => void {
@@ -113,32 +113,37 @@ function sendWrite(input: string, init: RequestInit): Promise<Response> {
   });
 }
 
+/**
+ * Sends one write for `target` after the ones before it, so a quick second change never lands
+ * first. Per session too: another account can have an item or folder of this id, and must not
+ * wait on a write of the account that left, which a sign-out does not cut short.
+ */
+function inOrder(target: string, send: (check: () => void) => Promise<Response>): Promise<void> {
+  const epoch = getAuthSessionEpoch();
+  const key = `${epoch}:${target}`;
+  const request = (writeQueues.get(key) ?? Promise.resolve())
+    .catch(() => {})
+    .then(async () => {
+      // Queued behind a write that outlived a sign-out: it belongs to the account that left.
+      const check = sameSession(epoch, "library.toast.signedOutBeforeSave");
+      check();
+      await ensureOk(await send(check));
+    });
+  writeQueues.set(key, request);
+  const settle = () => {
+    if (writeQueues.get(key) === request) writeQueues.delete(key);
+  };
+  request.then(settle, settle);
+  return request;
+}
+
 export function updateLibraryItem(
   id: string,
   patch: { name?: string; favorite?: boolean; folderId?: string | null },
 ): Promise<void> {
-  const epoch = getAuthSessionEpoch();
-  // Per session too: another account can have an item of this id, and must not wait on an edit
-  // of the account that left, which a sign-out does not cut short.
-  const key = `${epoch}:${id}`;
-  const request = (itemQueues.get(key) ?? Promise.resolve())
-    .catch(() => {})
-    .then(async () => {
-      // Queued behind an edit that outlived a sign-out: it belongs to the account that left.
-      const check = sameSession(epoch, "library.toast.signedOutBeforeSave");
-      check();
-      await ensureOk(
-        await authFetch("/api/library/items", jsonInit("PATCH", { id, ...patch }), {
-          beforeRetry: check,
-        }),
-      );
-    });
-  itemQueues.set(key, request);
-  const settle = () => {
-    if (itemQueues.get(key) === request) itemQueues.delete(key);
-  };
-  request.then(settle, settle);
-  return request;
+  return inOrder(`item:${id}`, (check) =>
+    authFetch("/api/library/items", jsonInit("PATCH", { id, ...patch }), { beforeRetry: check }),
+  );
 }
 
 export async function markLibraryItemOpened(id: string): Promise<void> {
@@ -290,32 +295,60 @@ export async function createLibraryFolder(
   return response.json();
 }
 
-export async function updateLibraryFolder(
+export function updateLibraryFolder(
   id: string,
   patch: { name?: string; parentId?: string | null },
 ): Promise<void> {
-  await ensureOk(
-    await sendWrite(
-      `/api/library/folders/${encodeURIComponent(id)}`,
-      jsonInit("PATCH", patch),
-    ),
-  );
-}
-
-export async function deleteLibraryFolder(id: string): Promise<void> {
-  await ensureOk(
-    await sendWrite(`/api/library/folders/${encodeURIComponent(id)}`, {
-      method: "DELETE",
+  return inOrder(`folder:${id}`, (check) =>
+    authFetch(`/api/library/folders/${encodeURIComponent(id)}`, jsonInit("PATCH", patch), {
+      beforeRetry: check,
     }),
   );
 }
 
+export function deleteLibraryFolder(id: string): Promise<void> {
+  return inOrder(`folder:${id}`, (check) =>
+    authFetch(`/api/library/folders/${encodeURIComponent(id)}`, { method: "DELETE" }, {
+      beforeRetry: check,
+    }),
+  );
+}
+
+/** A file past the most the caller would hold, found from what the server sends. */
+export class LibraryFileTooLarge extends Error {}
+
 /** The item's bytes as `type`: sources serve most files as opaque downloads, so the caller says
- *  what they are (see file-name.ts for the rules). */
-export async function fetchLibraryBlob(item: LibraryItem, type: string): Promise<Blob> {
+ *  what they are (see file-name.ts for the rules). Past `maxBytes` it stops reading and throws
+ *  LibraryFileTooLarge: the listed size can be out of date, or unknown. */
+export async function fetchLibraryBlob(
+  item: LibraryItem,
+  type: string,
+  maxBytes = Infinity,
+): Promise<Blob> {
   const response = await ensureOk(await authFetch(item.fileUrl));
-  const blob = await response.blob();
-  return blob.type === type ? blob : new Blob([blob], { type });
+  if (Number(response.headers.get("content-length")) > maxBytes) {
+    void response.body?.cancel();
+    throw new LibraryFileTooLarge(item.name);
+  }
+  const reader = maxBytes === Infinity ? undefined : response.body?.getReader();
+  if (!reader) {
+    const blob = await response.blob();
+    if (blob.size > maxBytes) throw new LibraryFileTooLarge(item.name);
+    return blob.type === type ? blob : new Blob([blob], { type });
+  }
+  const chunks: Uint8Array<ArrayBuffer>[] = [];
+  let read = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    read += value.length;
+    if (read > maxBytes) {
+      void reader.cancel();
+      throw new LibraryFileTooLarge(item.name);
+    }
+    chunks.push(value);
+  }
+  return new Blob(chunks, { type });
 }
 
 /**
