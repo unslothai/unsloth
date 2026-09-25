@@ -182,25 +182,26 @@ import {
 
 const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
-  "min-w-0 truncate text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg";
+  "min-w-0 truncate text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground";
 const LABEL_CLASS_WRAP =
-  "min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg";
+  "min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground";
+// Same surface token as the panel's fields and textareas.
 const CONTROL_SURFACE =
-  "rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1]";
+  "rounded-full border-transparent bg-[var(--panel-input-surface)] hover:bg-[var(--panel-input-surface-hover)] dark:bg-[var(--panel-input-surface)] dark:hover:bg-[var(--panel-input-surface-hover)]";
 // One width for every typed field: a box that resized per keystroke would jump under the
 // caret. Narrow, so the label beside it is not clipped in a ~240px panel.
-const INPUT_WIDTH_CLASS = "w-[84px] shrink-0";
+const INPUT_WIDTH_CLASS = "w-[calc(84px*var(--ui-space-scale,1))] shrink-0";
 // A select holds one of a known set of values, so it sizes to that value.
 const SELECT_WIDTH_CLASS = "w-auto max-w-full shrink-0";
-// 14px each side optically. The chevron's stroke fills 14 of its 24 viewBox units, so its
-// box carries ~3px of slack; pr-[11px] pays that back.
-const SELECT_TRIGGER_CLASS = `grid h-8! min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 ${SELECT_WIDTH_CLASS} ${CONTROL_SURFACE} pl-3.5 pr-[11px] py-0 text-ui-13! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
-// Left-aligned like every other value here. These fields share one width, so reading from
-// the left puts their values on a single edge.
-const NUMBER_INPUT_CLASS = `h-8 ${INPUT_WIDTH_CLASS} ${CONTROL_SURFACE} px-3.5 py-0 text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`;
-const TEXT_INPUT_CLASS = `h-8 ${INPUT_WIDTH_CLASS} min-w-0 ${CONTROL_SURFACE} px-3.5 py-0 text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`;
+// .panel-select-trigger carries the surface, padding and type; this adds the layout.
+const SELECT_TRIGGER_CLASS = `panel-select-trigger grid h-8! min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 ${SELECT_WIDTH_CLASS} [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
+// .panel-field carries the surface and the value's alignment; the field adds its size.
+const NUMBER_INPUT_CLASS = `panel-field h-8 ${INPUT_WIDTH_CLASS}`;
+const TEXT_INPUT_CLASS = `panel-field h-8 ${INPUT_WIDTH_CLASS} min-w-0`;
 // Matches the Preset section's Save/Delete pair rather than the Button's own `sm` metrics.
-const FOOTER_BUTTON_CLASS = "h-9 rounded-full text-ui-13 font-medium tracking-nav";
+// Width is the label plus this padding, so a pill is never wider than what it says.
+const FOOTER_BUTTON_CLASS =
+  "h-9 w-auto px-4 rounded-full text-ui-13 font-medium tracking-nav";
 
 // Mirrors the backend's Auto default once GPU-only placement is impossible.
 const AUTO_OFFLOAD_CONTEXT_LENGTH = 8192;
@@ -387,8 +388,8 @@ function ChatTemplateSetting({
         <span className={LABEL_CLASS}>Chat Template</span>
         <InfoHint>
           {readOnly
-            ? "Preview the model's chat template. This model's backend cannot take a custom one."
-            : "Override the model's chat template with custom Jinja. Applies when the model loads."}
+            ? "Preview the model's chat template. This backend cannot take a custom one."
+            : "Replace the model's chat template with custom Jinja. Applies on load."}
         </InfoHint>
       </div>
       <div className="flex shrink-0 items-center gap-2">
@@ -434,15 +435,14 @@ function MaxSeqLengthSetting({
   // shows the length that will be served, not "Auto". A dash only while it is unknown.
   const label = isMlx ? "Context Length" : "Max Seq Length";
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>{label}</span>
           <InfoHint>
             {isMlx
-              ? "Tokens of context the model is sized for. Whether it also caps the " +
-                "cache depends on the architecture."
-              : "Maximum context window size in tokens. Applies when the model loads."}
+              ? "Tokens of context the model is sized for."
+              : "Maximum context window in tokens. Applies on load."}
           </InfoHint>
         </div>
         <NumericValueInput
@@ -504,7 +504,7 @@ function AdvancedGpuSlider({
   disabled?: boolean;
 }) {
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>{label}</span>
@@ -724,7 +724,7 @@ function VramBudgetRow() {
           type="button"
           disabled={locked}
           onClick={resetBudget}
-          className="text-ui-11 text-muted-foreground underline underline-offset-2 hover:text-nav-fg"
+          className="text-ui-11 text-muted-foreground underline underline-offset-2 hover:text-foreground"
         >
           Reset to the server default
         </button>
@@ -824,8 +824,7 @@ function GpuMemorySettings({
               </div>
               <div>
                 <span className="font-medium">Manual:</span> set GPU Layers
-                yourself. Leave it on Auto to let llama.cpp size the context and
-                offload overflow (including MoE experts) to RAM.
+                yourself.
               </div>
             </div>
           </InfoHint>
@@ -880,8 +879,7 @@ function GpuMemorySettings({
             info={
               <>
                 Layers to keep on the GPU (--gpu-layers); the rest run on CPU.
-                Auto lets llama.cpp size the split (and the context) to fit
-                VRAM. At the maximum, the whole model is on the GPU.
+                Auto sizes the split to fit VRAM.
               </>
             }
           />
@@ -896,8 +894,7 @@ function GpuMemorySettings({
               info={
                 <>
                   Keep the experts of this many MoE layers on the CPU
-                  (--n-cpu-moe) to save VRAM. 0 = all experts on the GPU; at the
-                  maximum, all are on the CPU.
+                  (--n-cpu-moe) to save VRAM. 0 keeps every expert on the GPU.
                 </>
               }
             />
@@ -909,11 +906,11 @@ function GpuMemorySettings({
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>GPUs</span>
             <InfoHint>
-              By default, Unsloth chooses GPUs automatically. Editing this list
-              makes the checked GPUs the explicit candidate pool.
+              Unsloth picks GPUs automatically. Checking them here limits it to
+              those.
               {!isDiffusion &&
-                " Their order here is the order they are given to the model, so the first one takes the prompt."}{" "}
-              At least one GPU must stay selected.
+                " Their order here is the order the model gets them."}{" "}
+              Keep at least one selected.
             </InfoHint>
           </div>
           <div className="flex flex-col gap-2">
@@ -922,7 +919,7 @@ function GpuMemorySettings({
                 key={d.index}
                 className="flex items-center justify-between gap-3"
               >
-                <span className="min-w-0 truncate text-ui-12 text-nav-fg/80">
+                <span className="min-w-0 truncate text-ui-12 text-muted-foreground">
                   GPU {d.index}: {d.name}
                   {d.memoryTotalGb
                     ? ` · ${Math.round(d.memoryTotalGb)} GiB`
@@ -935,7 +932,7 @@ function GpuMemorySettings({
                   <div className="flex shrink-0 items-center gap-0.5">
                     <button
                       type="button"
-                      className="rounded px-1 text-ui-12 text-nav-fg/60 hover:text-nav-fg disabled:opacity-30"
+                      className="rounded px-1 text-ui-12 text-muted-foreground hover:text-foreground disabled:opacity-30"
                       aria-label={`Move GPU ${d.index} earlier`}
                       disabled={position === 0}
                       onClick={() => moveGpu(d.index, -1)}
@@ -944,7 +941,7 @@ function GpuMemorySettings({
                     </button>
                     <button
                       type="button"
-                      className="rounded px-1 text-ui-12 text-nav-fg/60 hover:text-nav-fg disabled:opacity-30"
+                      className="rounded px-1 text-ui-12 text-muted-foreground hover:text-foreground disabled:opacity-30"
                       aria-label={`Move GPU ${d.index} later`}
                       disabled={position >= orderedGpuIds.length - 1}
                       onClick={() => moveGpu(d.index, 1)}
@@ -979,7 +976,7 @@ function AdvancedSettingsToggle({
 }) {
   return (
     // Ruled off from the context controls above, matching the estimate row's divider.
-    <div className={`${ROW_CLASS} border-t border-border/60 pt-3.5`}>
+    <div className={`${ROW_CLASS} border-t border-border pt-5`}>
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
           Advanced settings
@@ -1018,16 +1015,16 @@ function MlxAdvancedSettings({
   templateOutcome: string | null;
 }) {
   return (
-    <div className="flex flex-col gap-1">
+    // Same row spacing as the GGUF rows, whose fragment sits in the list above.
+    <div className="flex flex-col gap-5">
       {servedByMlx && (
-        <>
+        <div className="space-y-1">
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>KV Cache Dtype</span>
           <InfoHint>
-            Lower KV cache precision to save memory at the cost of some
-            quality. Auto keeps full precision; 8-bit is the safest reduction,
-            and lower widths save more memory.
+            Lower KV cache precision to save memory, at some cost to quality.
+            Auto keeps full precision; 8-bit is the safest step down.
           </InfoHint>
         </div>
         <Select
@@ -1055,22 +1052,20 @@ function MlxAdvancedSettings({
         </Select>
       </div>
       {outcome ? (
-        <p className="text-ui-11 leading-snug text-muted-foreground">
-          {outcome}
-        </p>
+        <p className="text-ui-11 text-muted-foreground">{outcome}</p>
       ) : null}
-        </>
+        </div>
       )}
-      <ChatTemplateSetting
-        config={config}
-        onEditTemplate={onEditTemplate}
-        readOnly={!servedByMlx}
-      />
-      {templateOutcome ? (
-        <p className="text-ui-11 leading-snug text-muted-foreground">
-          {templateOutcome}
-        </p>
-      ) : null}
+      <div className="space-y-1">
+        <ChatTemplateSetting
+          config={config}
+          onEditTemplate={onEditTemplate}
+          readOnly={!servedByMlx}
+        />
+        {templateOutcome ? (
+          <p className="text-ui-11 text-muted-foreground">{templateOutcome}</p>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -1111,14 +1106,10 @@ function LoadModeRow({
           <span className={LABEL_CLASS}>Mmap/Mlock</span>
           <InfoHint>
             How the weights are read off disk (--load-mode). Auto is the
-            default: Unsloth picks None when it can prove the model fits without
-            paging, since a mapped read is slower, and otherwise leaves the
-            choice to llama.cpp, which memory-maps unless a device cannot. mmap
-            forces the mapping, mlock keeps the model in RAM rather than letting
-            it swap or compress, mmap+mlock does both, DirectIO streams the file
-            where the platform supports it, and None asks for no special mode.
-            Model Memory, in Settings, owns this when either of its toggles is
-            on.
+            default and lets Unsloth pick. mmap maps the file, mlock keeps the
+            model in RAM, DirectIO streams it, and None asks for no special
+            mode.
+            Model Memory, in Settings, overrides this when it is on.
           </InfoHint>
         </div>
         <Select
@@ -1212,9 +1203,8 @@ function GgufAdvancedSettings({
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>KV Cache Dtype</span>
           <InfoHint>
-            Lower KV cache precision to save VRAM at the cost of some quality.
-            f16 is the default; bf16 and f32 are full precision; q8_0 through
-            iq4_nl are quantized.
+            Lower KV cache precision to save VRAM, at some cost to quality. f16
+            is the default; q8_0 through iq4_nl are quantized.
           </InfoHint>
         </div>
         <Select
@@ -1249,12 +1239,9 @@ function GgufAdvancedSettings({
           <span className={LABEL_CLASS_WRAP}>Speculative Decoding</span>
           <InfoHint>
             Faster generation. Auto picks the best strategy for the model and
-            platform: DSpark or DFlash when the model ships a drafter sidecar,
-            otherwise MTP / ngram. Pick a strategy to force it, or Off to
-            disable. DSpark downloads a sidecar of about 11 GB and DFlash one of
-            about 1.5 GB, both trading VRAM for speed; on quantized targets
-            their greedy output can differ from a non speculative run. MTP and
-            ngram do not change output.
+            platform, or choose one to force it. DSpark and DFlash download a
+            drafter sidecar (about 11 GB and 1.5 GB) and trade VRAM for speed;
+            MTP and ngram do not change output.
           </InfoHint>
         </div>
         <Select
@@ -1296,8 +1283,8 @@ function GgufAdvancedSettings({
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Draft Tokens</span>
             <InfoHint>
-              Max draft tokens per step. Leave blank for the default (MTP and
-              DFlash: 2 on GPU, 3 on CPU/Mac; DSpark: 3).
+              Max draft tokens per step. Leave blank for the default (2 or 3,
+              depending on the strategy and device).
             </InfoHint>
           </div>
           <input
@@ -1329,12 +1316,9 @@ function GgufAdvancedSettings({
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS_WRAP}>Spec Decoding KV Cache Dtype</span>
             <InfoHint>
-              KV cache precision for the draft model's own context
-              (--spec-draft-type-k / --spec-draft-type-v). Separate from the KV
-              Cache Dtype above, which is the target model's. f16 is the
-              default; bf16 and f32 are full precision; q8_0 through iq4_nl are
-              quantized, and a quantized draft cache saves VRAM on a drafter
-              whose output is verified by the target anyway.
+              KV cache precision for the draft model's own context, separate
+              from the KV Cache Dtype above. f16 is the default; quantizing it
+              saves VRAM on a drafter the target verifies anyway.
             </InfoHint>
           </div>
           <Select
@@ -1371,10 +1355,9 @@ function GgufAdvancedSettings({
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>Parallel Slots</span>
           <InfoHint>
-            llama-server decode slots (--parallel) for concurrent requests.
-            Leave blank for the server default. More slots share the context
-            pool and use more VRAM; if they don't fit on GPU, fewer slots are
-            launched.
+            Decode slots (--parallel) for concurrent requests. Leave blank for
+            the server default. More slots share the context pool and use more
+            VRAM.
           </InfoHint>
         </div>
         <input
@@ -1412,8 +1395,7 @@ function GgufAdvancedSettings({
               <span className={LABEL_CLASS}>Batch Size</span>
               <InfoHint>
                 Logical prompt batch size (--batch-size). Leave blank for the
-                llama.cpp default (2048). Rarely needs changing; the micro-batch
-                below is what usually matters.
+                default (2048). The micro-batch below usually matters more.
               </InfoHint>
             </div>
             <input
@@ -1458,11 +1440,10 @@ function GgufAdvancedSettings({
             <div className="flex min-w-0 items-center gap-1.5">
               <span className={LABEL_CLASS}>Micro-batch Size</span>
               <InfoHint>
-                Physical prompt micro-batch size (--ubatch-size). Leave blank for
-                the llama.cpp default (512), raised to 1120 on Gemma 4 vision
-                models, whose images do not fit in 512. Other vision models keep
-                the 512 default. Larger values speed up prompt processing but use
-                more VRAM for the compute buffer; capped at the batch size.
+                Physical prompt micro-batch size (--ubatch-size). Leave blank
+                for the default (512, or 1120 on Gemma 4 vision models). Larger
+                values speed up prompt processing but use more VRAM; capped at
+                the batch size.
               </InfoHint>
             </div>
             <input
@@ -1506,8 +1487,8 @@ function GgufAdvancedSettings({
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Tensor Parallelism</span>
             <InfoHint>
-              No effect on a single GPU. On multi-GPU setups, improves tokens/sec
-              for dense models. MoE models don't benefit.
+              Speeds up dense models across multiple GPUs. No effect on a single
+              GPU, and MoE models don't benefit.
             </InfoHint>
           </div>
           <Switch
@@ -1525,11 +1506,9 @@ function GgufAdvancedSettings({
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Vision</span>
             <InfoHint>
-              Loads the vision projector so the model can read images. Turning it
-              off frees the VRAM the projector would use, which can leave room for
-              more layers on the GPU. Text generation is unaffected either way.
-              Models that ship no projector have nothing to load, so the setting
-              does nothing for them.
+              Loads the vision projector so the model can read images. Turning
+              it off frees that VRAM for more layers on the GPU. Text generation
+              is unaffected either way.
             </InfoHint>
           </div>
           <Switch
@@ -1545,8 +1524,8 @@ function GgufAdvancedSettings({
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Reasoning Budget</span>
             <InfoHint>
-              Maximum thinking tokens. -1 is unrestricted, 0 ends reasoning
-              immediately, and a positive value sets a token budget.
+              Maximum thinking tokens. -1 is unlimited and 0 turns reasoning
+              off.
             </InfoHint>
           </div>
           <input
@@ -1582,8 +1561,8 @@ function GgufAdvancedSettings({
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS_WRAP}>Reasoning Budget Message</span>
             <InfoHint>
-              Optional text injected before the end-of-thinking tag when the
-              model reaches its reasoning budget.
+              Optional text added before the end-of-thinking tag when the budget
+              runs out.
             </InfoHint>
           </div>
           <input
@@ -1624,12 +1603,10 @@ function GgufAdvancedSettings({
             <div className="flex min-w-0 items-center gap-1.5">
               <span className={LABEL_CLASS}>Checkpoints</span>
               <InfoHint>
-                Context checkpoints kept per slot (--ctx-checkpoints), which let
-                a sliding-window model rewind instead of re-processing the
-                prompt. Leave blank for the llama.cpp default (
-                {CTX_CHECKPOINTS_LLAMA_DEFAULT}); 0 disables them. Each one costs
-                host memory, and models without a sliding window ignore the
-                setting.
+                Checkpoints kept per slot (--ctx-checkpoints), which let a
+                sliding-window model rewind instead of re-processing the prompt.
+                Leave blank for the default ({CTX_CHECKPOINTS_LLAMA_DEFAULT}); 0
+                disables them. Each one costs host memory.
               </InfoHint>
             </div>
             <input
@@ -1664,11 +1641,10 @@ function GgufAdvancedSettings({
             <div className="flex min-w-0 items-center gap-1.5">
               <span className={LABEL_CLASS}>Cache RAM</span>
               <InfoHint>
-                Host memory in MiB llama-server may spend caching prompt state it
-                has evicted from a slot (--cache-ram), so a returning
-                conversation is not re-processed. Leave blank for the llama.cpp
-                default ({CACHE_RAM_LLAMA_DEFAULT}); 0 disables the cache and -1
-                lifts the limit.
+                Host memory in MiB for caching prompt state evicted from a slot
+                (--cache-ram), so a returning conversation is not re-processed.
+                Leave blank for the default ({CACHE_RAM_LLAMA_DEFAULT}); 0
+                disables it and -1 lifts the limit.
               </InfoHint>
             </div>
             <input
@@ -1790,6 +1766,9 @@ function ExtraArgsRow({
   const diagnostics = diagnoseExtraArgs(text, catalog, {
     gpuSelectionActive: config.selectedGpuIds != null,
     manualGpuMemory: config.gpuMemoryMode === "manual",
+    // Only manual mode with a resolved layer count of 0 or more rewrites --tensor-split; at Auto
+    // layers the launcher drops it, so the value never reaches llama-server.
+    gpuLayers: config.gpuLayers,
     // The same floor the batch control shows: with Slots blank the count is the server default
     // this page cannot see, so only the hard 2 holds. A build that clamps serves one slot
     // whatever is chosen, so an explicit Slots value must not raise the floor.
@@ -1832,14 +1811,13 @@ function ExtraArgsRow({
         <InfoHint>
           <div className="flex flex-col gap-1.5">
             <div>
-              Passed straight to llama-server for this model, after the settings
-              above, so anything set in both is taken from here.
+              Passed straight to llama-server after the settings above, so
+              anything set in both is taken from here.
             </div>
             <div>
-              Quote a value containing spaces or backslashes, including a
-              Windows path. Nothing runs a shell, so $HOME, ; and | are ordinary
-              characters. Flags Unsloth owns, like the model, the port and the
-              API key, are refused.
+              Quote values with spaces or backslashes. Nothing runs a shell, so
+              $HOME, ; and | are ordinary characters. Flags Unsloth owns, like
+              the model and the port, are refused.
             </div>
           </div>
         </InfoHint>
@@ -1854,7 +1832,7 @@ function ExtraArgsRow({
             placeholder="--rope-scaling yarn --yarn-orig-ctx 32768"
             aria-label="Extra llama-server arguments"
             aria-describedby={diagnostics.length > 0 ? adviceId : undefined}
-            className="block size-full resize-none bg-transparent px-3.5 py-2.5 text-left font-mono text-ui-12 leading-relaxed text-nav-fg outline-none placeholder:text-muted-foreground"
+            className="block size-full resize-none bg-transparent px-3.5 py-2.5 text-left font-mono text-ui-12 leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
           />
         </div>
         {(tokenCount > 0 || diagnostics.length > 0) && (
@@ -3125,7 +3103,7 @@ export function ModelConfigPage({
       {variant === "page" && showHeader && (
         // -ml-1.5 cancels the icon's inset in its 28px circle, so the chevron starts on
         // the same left edge as the rows below.
-        <div className="flex items-center gap-2.5 pb-4">
+        <div className="flex items-center gap-2.5 pb-5">
           {onBack && (
             <button
               type="button"
@@ -3143,14 +3121,14 @@ export function ModelConfigPage({
             <div className="text-ui-10 font-semibold uppercase leading-none tracking-wider text-muted-foreground">
               Run settings
             </div>
-            <div className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-nav-fg">
+            <div className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-foreground">
               {target.displayName}
             </div>
           </div>
         </div>
       )}
 
-      <div className="space-y-3.5">
+      <div className="space-y-5">
         {target.isGguf && (
           <>
             {/* Above Context Length on purpose: that is the control moving this number most, and a readout
@@ -3175,15 +3153,14 @@ export function ModelConfigPage({
               expanded={memoryBreakdownOpen}
               onExpandedChange={setMemoryBreakdownOpen}
             />
-            <div className="space-y-3">
+            <div className="space-y-2">
               <div className={ROW_CLASS}>
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className={LABEL_CLASS}>Context Length</span>
                   <InfoHint>
-                    Drag all the way left for Auto, which chooses a context that
-                    fits while prioritizing GPU speed. Custom values request an
-                    exact context; higher values use more memory and may move
-                    model layers to system RAM.
+                    Drag all the way left for Auto, which picks a context that
+                    fits while keeping GPU speed. Custom values request an exact
+                    context; higher ones use more memory.
                     {contextIsAuto && activeLoadedContext != null
                       ? ` Auto currently selected ${activeLoadedContext.toLocaleString()} tokens.`
                       : ""}
@@ -3209,7 +3186,7 @@ export function ModelConfigPage({
               {/* Grouped so the warning sits 4px under the slider, as advice does elsewhere. */}
               <div className="space-y-1">
                 {nativeContextLength != null ? (
-                  <div className="space-y-1.5">
+                  <div className="space-y-1">
                     <Slider
                       min={0}
                       max={maxContext}
@@ -3319,8 +3296,8 @@ export function ModelConfigPage({
       <div
         className={
           variant === "sidebar"
-            ? "mt-4 flex flex-col gap-3 border-t border-border/60 pt-4"
-            : "mt-4 flex items-center justify-between gap-3 border-t border-border/60 pt-4"
+            ? "mt-5 flex flex-col gap-2 border-t border-border pt-5"
+            : "mt-5 flex items-center justify-between gap-3 border-t border-border pt-5"
         }
       >
         <div className="flex min-w-0 items-center gap-2">
@@ -3336,7 +3313,7 @@ export function ModelConfigPage({
           />
           <label
             htmlFor={rememberId}
-            className="cursor-pointer select-none truncate text-ui-13 text-nav-fg"
+            className="cursor-pointer select-none truncate text-ui-13 text-foreground"
           >
             Remember for this model
           </label>
@@ -3344,15 +3321,35 @@ export function ModelConfigPage({
         <div
           className={
             variant === "sidebar"
-              ? "grid grid-cols-2 gap-3"
+              ? "flex flex-wrap items-center gap-2"
               : "flex shrink-0 items-center gap-2"
           }
         >
+          {/* Primary action first, like the Preset row's Save/Delete. */}
+          <Button
+            type="button"
+            size="sm"
+            className={FOOTER_BUTTON_CLASS}
+            disabled={
+              stagedMetadataPending ||
+              budgetSettling ||
+              (!extraArgsLoadable && !sharedExtraArgsCleared) ||
+              sharedExtraArgsRefused ||
+              extraArgsHydrating ||
+              (isActiveModel &&
+                atBaseline &&
+                !rememberChanged &&
+                !budgetReloadRequired)
+            }
+            onClick={handleRun}
+          >
+            {primaryActionLabel}
+          </Button>
           <Button
             type="button"
             variant="outline"
             size="sm"
-            className={`${FOOTER_BUTTON_CLASS} text-muted-foreground${variant === "sidebar" ? " w-full" : ""}`}
+            className={`${FOOTER_BUTTON_CLASS} text-muted-foreground`}
             disabled={atDefault}
             onClick={() => {
               // Reset writes through setConfig, not update, so it marks the draft itself.
@@ -3369,25 +3366,6 @@ export function ModelConfigPage({
             }}
           >
             Reset
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            className={`${FOOTER_BUTTON_CLASS}${variant === "sidebar" ? " w-full" : ""}`}
-            disabled={
-              stagedMetadataPending ||
-              budgetSettling ||
-              (!extraArgsLoadable && !sharedExtraArgsCleared) ||
-              sharedExtraArgsRefused ||
-              extraArgsHydrating ||
-              (isActiveModel &&
-                atBaseline &&
-                !rememberChanged &&
-                !budgetReloadRequired)
-            }
-            onClick={handleRun}
-          >
-            {primaryActionLabel}
           </Button>
         </div>
       </div>

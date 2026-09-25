@@ -75,14 +75,43 @@ function openingFence(content: string): OpeningFence | null {
  * structure. Recognising the indent when opening the fence and then not removing it is the half of
  * the rule that shows: the reader copies the degraded block into a file and gets an
  * IndentationError from text their model never wrote. `extractHtmlFences` applies the same rule.
+ *
+ * REMOVED BY COLUMNS, NOT BY CHARACTERS, because a tab is not one column. CommonMark expands tabs
+ * to a four-column tab stop when measuring indentation, so a tab opening a line of a one-space
+ * indented fence spans columns 1 to 4 and loses only its first column: the line keeps three
+ * spaces. Taking characters instead left the tab whole, so the body of an indented fence whose
+ * code is tab-indented came out one tab too deep, and a settled fence now renders this text
+ * directly rather than going through streamdown's parser. Checked against `micromark`: for
+ * " ```js\\n\\tx\\n ```" it gives "   x", for two spaces "  x", for three " x".
  */
+const TAB_STOP = 4;
+
 function stripIndent(body: string, indent: number): string {
   if (indent === 0 || body === "") return body;
   const lines = body.split("\n");
   for (let n = 0; n < lines.length; n += 1) {
-    let take = 0;
-    while (take < indent && lines[n][take] === " ") take += 1;
-    lines[n] = lines[n].slice(take);
+    const line = lines[n];
+    let column = 0;
+    let at = 0;
+    let carry = "";
+    while (column < indent && at < line.length) {
+      const ch = line[at];
+      if (ch === " ") {
+        column += 1;
+        at += 1;
+        continue;
+      }
+      if (ch !== "\t") break;
+      column += TAB_STOP - (column % TAB_STOP);
+      at += 1;
+      if (column > indent) {
+        // The tab straddles the boundary, so it is consumed whole and the columns beyond the
+        // indent come back as spaces: the same result as expanding it and re-cutting.
+        carry = " ".repeat(column - indent);
+        break;
+      }
+    }
+    lines[n] = carry + line.slice(at);
   }
   return lines.join("\n");
 }

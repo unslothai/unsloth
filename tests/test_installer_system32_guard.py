@@ -1036,6 +1036,8 @@ def test_cli_guard_pins_every_storage_root_override_studio_reads():
     source = storage_roots.read_text(encoding = "utf-8")
     overrides = set(re.findall(r'environ\.get\(\s*"(UNSLOTH_[A-Z_]*(?:HOME|PATH|DIR))"', source))
     assert overrides, "no storage root overrides found: has storage_roots.py moved?"
+    # Same case: _setup_cache_env fills each only when blank, so a user's relative value survives.
+    overrides |= set(re.findall(r'^\s*"([A-Z][A-Z0-9_]*)":\s*str\(', source, re.MULTILINE))
     missing = sorted(overrides - set(_system_dir_guard._RELATIVE_PATH_ENV))
     assert not missing, f"relative values of {missing} would be retargeted by the move"
 

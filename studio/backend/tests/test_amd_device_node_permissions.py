@@ -4426,9 +4426,19 @@ def test_the_two_quoting_rules_are_the_same_rule(tmp_path):
             assert out.stdout == shlex.quote(value), (value, out.stdout)
 
 
-# The two helpers every tests/sh ROCm harness lifts alongside _has_amd_rocm_gpu.
+# The helpers every tests/sh ROCm harness lifts alongside _has_amd_rocm_gpu. Adding a name
+# here is only honest once all five harnesses lift it too, which is what the test below the
+# invariant checks: each name must appear in every harness that lifts the probe.
 _ROCM_PROBE_CALLEES_THE_SH_HARNESSES_LIFT = frozenset(
-    {"_ensure_rocm_probe_env", "_has_usable_nvidia_gpu"}
+    {
+        "_ensure_rocm_probe_env",
+        "_has_usable_nvidia_gpu",
+        # Reads UNSLOTH_FORCE_ROCM_TORCH, the opt-in that lets a mixed NVIDIA+AMD host ask
+        # for the ROCm stack (#10450). Unlifted it is an undefined command, which exits
+        # non-zero, which reads as "not requested" -- the default answer, so a harness would
+        # keep passing while the branch under test was never the one the flag selects.
+        "_rocm_torch_explicitly_requested",
+    }
 )
 
 
@@ -4455,6 +4465,27 @@ def test_the_rocm_probe_calls_nothing_the_shell_harnesses_do_not_lift():
     back."""
     called = _functions_called_by(_install_sh_lines(), "_has_amd_rocm_gpu")
     assert called <= _ROCM_PROBE_CALLEES_THE_SH_HARNESSES_LIFT, called
+
+
+def test_the_harnesses_really_lift_every_name_the_allowlist_claims():
+    """The control on the allowlist above. That test only fails when the probe grows a call,
+    so widening the frozenset silences it whether or not the harnesses were updated -- which
+    is the same silent failure by a shorter route. Check the harnesses themselves: every
+    tests/sh file that lifts _has_amd_rocm_gpu must lift each allowlisted callee too."""
+    sh_dir = Path(__file__).resolve().parents[3] / "tests" / "sh"
+    harnesses = [
+        path
+        for path in sorted(sh_dir.glob("*.sh"))
+        if "_has_amd_rocm_gpu" in path.read_text(encoding = "utf-8")
+    ]
+    # Guard the guard: a glob that matched nothing would pass this vacuously.
+    assert len(harnesses) >= 5, [p.name for p in harnesses]
+    for path in harnesses:
+        source = path.read_text(encoding = "utf-8")
+        # A harness that only stubs the probe (bad_arch_gate does this for some cases) still
+        # lifts it elsewhere; asking for the name anywhere in the file is the right grain.
+        for callee in sorted(_ROCM_PROBE_CALLEES_THE_SH_HARNESSES_LIFT):
+            assert callee in source, f"{path.name} lifts _has_amd_rocm_gpu but not {callee}"
 
 
 def test_that_check_sees_a_helper_the_harnesses_would_not_have():

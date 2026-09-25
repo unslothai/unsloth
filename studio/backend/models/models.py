@@ -168,7 +168,6 @@ class GgufVariantDetail(BaseModel):
     pending_drafter_size_bytes: int = Field(
         0, description = "Remote size of pending_drafter_filename"
     )
-    shard_count: int = Field(0, description = "Part count for a complete canonical split GGUF")
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
     )

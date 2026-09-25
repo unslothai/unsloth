@@ -346,16 +346,17 @@ jobs:
   linux:
     # See the macOS job: a fork PR's token cannot list drafts, so skip rather than fail.
     if: github.event.pull_request.head.repo.fork != true
-    name: desktop linux ${{ matrix.kind }}
-    runs-on: ubuntu-22.04
+    name: desktop linux ${{ matrix.kind }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - {kind: deb, experimental: false}
-          - {kind: appimage, experimental: false}
+          - {kind: deb, arch: x64, os: ubuntu-22.04, asset: Ubuntu.deb, experimental: false}
+          - {kind: deb, arch: arm64, os: ubuntu-24.04-arm, asset: Ubuntu-ARM64.deb, experimental: false}
+          - {kind: appimage, arch: x64, os: ubuntu-22.04, asset: Linux.AppImage, experimental: false}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -363,16 +364,13 @@ jobs:
           persist-credentials: false
 
       - name: Download the shipped bundle
+        id: download
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dl logs
-          asset_suffix='.deb'
-          pat='*.deb'
-          if [ "${{ matrix.kind }}" = "appimage" ]; then
-            asset_suffix='.AppImage'
-            pat='*.AppImage'
-          fi
+          asset_suffix='${{ matrix.asset }}'
+          pat="*$asset_suffix"
           # See the macOS job. Loud on purpose: no matching bundle means nothing to prove.
           if [ -z "$REL_TAG" ]; then
             releases_json="$RUNNER_TEMP/desktop-releases.json"
@@ -381,8 +379,15 @@ jobs:
               echo "::error::could not list desktop releases in $REL_REPO"
               exit 1
             fi
-            if ! REL_TAG="$(python3 .github/scripts/resolve-desktop-release.py \
-              --repo "$REL_REPO" --asset-suffix "$asset_suffix" < "$releases_json")"; then
+            resolver_rc=0
+            REL_TAG="$(python3 .github/scripts/resolve-desktop-release.py \
+              --repo "$REL_REPO" --asset-suffix "$asset_suffix" < "$releases_json")" || resolver_rc=$?
+            if [ "$resolver_rc" -ne 0 ]; then
+              if [ "$resolver_rc" -eq 1 ] && [ "$asset_suffix" = 'Ubuntu-ARM64.deb' ]; then
+                echo "::notice::no ARM64 release is available; package checks skipped"
+                echo "unreleased=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
               echo "::error::no SemVer v... release with a $asset_suffix asset is visible in $REL_REPO"
               exit 1
             fi
@@ -399,13 +404,14 @@ jobs:
         # maintainer scripts, so installing first let them see the image's toolchain. That
         # install needs no masked tool -- clean-machine-env.sh moves aside only $TOOLS, and
         # the current bundle ships a postrm and no install-time script.
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.strip_toolchain }}
+        if: ${{ steps.download.outputs.unreleased != 'true' && (github.event_name != 'workflow_dispatch' || inputs.strip_toolchain) }}
         run: |
           bash .github/scripts/clean-machine-env.sh mask --remove
           set -a; . ./clean-machine.env; set +a
           bash .github/scripts/clean-machine-assert.sh absent
 
       - name: Install with NO dev tooling, only runtime libs
+        if: steps.download.outputs.unreleased != 'true'
         # The apt preamble below is bounded by the shared helper; the `.deb` install
         # after it deliberately is not, because whether that package resolves its own
         # dependencies is the question this job asks. A step budget bounds it anyway,
@@ -447,6 +453,26 @@ jobs:
             fi
             cat "$apt_log"
             BIN="$(dpkg -L "$(dpkg-deb -f dl/*.deb Package)" | grep -E '/usr/bin/' | head -1)"
+            # In-app .deb updates run the installed binary through a polkit action, so the
+            # package has to carry the action file. tauri ships it via bundle.linux.deb.files,
+            # a mapping nothing else validates: drop the entry and updates fall back to the
+            # release page silently, with no failing test anywhere.
+            POLICY=/usr/share/polkit-1/actions/ai.unsloth.studio.update.policy
+            if ! dpkg -L "$(dpkg-deb -f dl/*.deb Package)" | grep -qx "$POLICY"; then
+              echo "::error::the .deb no longer ships $POLICY, so in-app Debian updates cannot authenticate"
+              exit 1
+            fi
+            # auth_admin on all three implicit cases is what makes the update prompt, rather
+            # than either silently elevating or refusing outright.
+            if [ "$(stat -c '%U:%G %a' "$POLICY")" != "root:root 644" ]; then
+              echo "::error::$POLICY has the wrong owner or mode: $(stat -c '%U:%G %a' "$POLICY")"
+              exit 1
+            fi
+            grep -c 'auth_admin' "$POLICY" | grep -qx 3 || {
+              echo "::error::$POLICY no longer requires auth_admin for all three implicit cases"
+              exit 1
+            }
+            echo "polkit action shipped: $(stat -c '%U:%G %a %n' "$POLICY")"
           else
             sudo apt-get install -y -qq --no-install-recommends \
               libfuse2 libgles2 libgl1 libegl1 libgbm1 libwayland-client0 \
@@ -461,7 +487,7 @@ jobs:
       # that adds git, cmake or a compiler to that list puts one back in /usr/bin after the
       # strip. Re-run `absent` here, before the bundled installer.
       - name: Re-assert the toolchain is still absent after the package install
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.strip_toolchain }}
+        if: ${{ steps.download.outputs.unreleased != 'true' && (github.event_name != 'workflow_dispatch' || inputs.strip_toolchain) }}
         run: |
           set -a; . ./clean-machine.env; set +a
           bash .github/scripts/clean-machine-assert.sh absent
@@ -479,6 +505,7 @@ jobs:
           fi
 
       - name: Run the bundled installer, the path first launch takes
+        if: steps.download.outputs.unreleased != 'true'
         run: |
           set -a; [ -f ./clean-machine.env ] && . ./clean-machine.env; set +a
           set -o pipefail
@@ -517,6 +544,7 @@ jobs:
           "$PY" -c "import torch; print('torch', torch.__version__)"
 
       - name: Launch under Xvfb and prove it stays up
+        if: steps.download.outputs.unreleased != 'true'
         env:
           # Without this a fatal X11 error is completely invisible. GTK3 registers
           # gdk_x_io_error() as its XSetIOErrorHandler, and that handler reports with
@@ -555,7 +583,7 @@ jobs:
           fi
 
       - name: What did its own log say?
-        if: always()
+        if: always() && steps.download.outputs.unreleased != 'true'
         run: |
           for f in "$UNSLOTH_STUDIO_HOME/tauri.log" "$HOME/.unsloth/studio/tauri.log"; do
             [ -f "$f" ] || continue
@@ -605,7 +633,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: desktop-linux-${{ matrix.kind }}
+          name: desktop-linux-${{ matrix.kind }}-${{ matrix.arch }}
           path: logs/
           retention-days: 7
           if-no-files-found: warn

@@ -23,11 +23,10 @@ import {
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 
 import { cn } from "@/lib/utils";
-import { Search01Icon } from "@hugeicons/core-free-icons";
+import { Download01Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   BookmarkIcon,
-  DownloadIcon,
   EyeIcon,
   LayoutListIcon,
   PencilIcon,
@@ -250,7 +249,8 @@ async function loadConversationMessages(
   if (!hasParentIds) return raw;
   // Newest saved turn of the branch on screen: a reply still generating is not stored yet, and falling back to the newest leaf would export the reply it replaces.
   const storedIds = new Set(raw.map((m) => m.id));
-  const headId = liveBranch
+  // An empty list is no opinion, not an empty branch: switching chats sets remoteId before the history load refills the view.
+  const headId = liveBranch?.length
     ? ([...liveBranch].reverse().find((id) => storedIds.has(id)) ?? null)
     : undefined;
   return orderByParentChain(raw, { includeSiblings, headId }) as typeof raw;
@@ -467,15 +467,21 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
   );
 }
 
+// One place decides that markdown carries the branch on screen; callers keep their own empty-state wording.
+const loadDisplayedBranchMessages = (
+  threadId: string,
+  options: { emptyMessage?: string } = {},
+) => loadConversationMessages(threadId, { ...options, includeSiblings: false });
+
 /** Same markdown the download produces, for the "Copy as Markdown" shortcut. */
 export const buildConversationMarkdownForThread =
   createConversationMarkdownBuilder({
-    loadMessages: loadConversationMessages,
+    loadMessages: loadDisplayedBranchMessages,
     renderMessage: messageToMarkdown,
   });
 
 export const exportConversationMarkdown = createConversationMarkdownExporter({
-  loadMessages: loadConversationMessages,
+  loadMessages: loadDisplayedBranchMessages,
   renderMessage: messageToMarkdown,
   download: downloadBlob,
   exportTimestamp: exportTs,
@@ -490,7 +496,7 @@ async function saveConversationAsProjectSource(
   projectId: string,
   title: string,
 ): Promise<SaveSourceOutcome> {
-  const messages = await loadConversationMessages(threadId, {
+  const messages = await loadDisplayedBranchMessages(threadId, {
     emptyMessage: "No messages in this conversation to save.",
   });
   if (!messages) return "skipped";
@@ -1198,7 +1204,7 @@ function ExportModal({
   return (
     <Dialog open onOpenChange={onClose}>
       {/* */}
-      <DialogContent className="sm:max-w-[520px] gap-0 p-0 overflow-hidden">
+      <DialogContent className="sm:max-w-[calc(520px*var(--ui-space-scale,1))] gap-0 p-0 overflow-hidden">
         <div className="flex flex-col gap-5 p-6">
           {/* */}
           <DialogTitle className="text-base font-semibold tracking-tight">Export</DialogTitle>
@@ -1312,7 +1318,7 @@ function ExportModal({
             Cancel
           </Button>
           <Button size="sm" onClick={handleExport}>
-            <DownloadIcon className="mr-1.5 size-3.5" />
+            <HugeiconsIcon icon={Download01Icon} className="mr-1.5 size-3.5" />
             Download
           </Button>
         </div>
@@ -1604,7 +1610,7 @@ function PromptDetail({
           className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           title="Export"
         >
-          <DownloadIcon className="size-4" />
+          <HugeiconsIcon icon={Download01Icon} className="size-4" />
         </button>
         <button
           type="button"
@@ -1932,7 +1938,7 @@ function PromptListDetail({
           className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           title="Export"
         >
-          <DownloadIcon className="size-4" />
+          <HugeiconsIcon icon={Download01Icon} className="size-4" />
         </button>
         <button
           type="button"
@@ -2439,7 +2445,7 @@ export function PromptStorageDialog({
                   onClick={openBulkExport}
                   className="h-8 gap-1.5 text-xs"
                 >
-                  <DownloadIcon className="size-3.5" />
+                  <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
                   Export
                 </Button>
                 <div className="ml-1 h-5 w-px bg-border/60 shrink-0" />
@@ -2513,7 +2519,7 @@ export function PromptStorageDialog({
               wraps on a narrow dialog. */}
           <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 pb-4 sm:pb-6 grid gap-2 sm:gap-4 grid-cols-1 grid-rows-[minmax(132px,30%)_minmax(272px,1fr)] sm:grid-cols-[200px_minmax(0,1fr)] sm:grid-rows-1 lg:grid-cols-[248px_minmax(0,1fr)]">
             {/* */}
-            <div className="flex min-h-[132px] flex-col gap-2 rounded-xl border border-border/50 bg-muted/20 p-2">
+            <div className="flex min-h-[calc(132px*var(--ui-space-scale,1))] flex-col gap-2 rounded-xl border border-border/50 bg-muted/20 p-2">
               <button
                 type="button"
                 onClick={() => {
@@ -2596,7 +2602,7 @@ export function PromptStorageDialog({
             </div>
 
             {/* */}
-            <div className="min-h-[272px] rounded-xl border border-border/60 bg-card p-4">
+            <div className="min-h-[calc(272px*var(--ui-space-scale,1))] rounded-xl border border-border/60 bg-card p-4">
               {activeTab === "prompts" &&
                 (showNewPrompt ? (
                   <NewPromptForm

@@ -7,7 +7,6 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-
 import { readSrc } from "./helpers/kit.ts";
 
 const pickers = readSrc(
@@ -65,7 +64,7 @@ test("capabilities are keyed by the provider's own model id", () => {
   );
   assert.match(
     pickers,
-    /connectedModelMarks\(\{\s*providerType: model\.providerType,\s*modelId: providerModelId,\s*baseUrl,/,
+    /connectedModelMarks\(\{\s*providerType: model\.providerType,\s*modelId: providerModelId,\s*baseUrl,\s*apiType: externalApiTypeById\.get\(model\.providerId\),/,
   );
   // A catalogue lands after first paint, so the marks have to be re-read when it does.
   assert.match(
@@ -92,7 +91,7 @@ test("modality comes from the resolvers the app already has", () => {
   assert.doesNotMatch(marks, /detectCapabilities/);
   assert.match(
     marks,
-    /imageGen: providerSupportsBuiltinImageGeneration\(\s*providerType,\s*modelId,\s*baseUrl,\s*\),/,
+    /imageGen: providerSupportsBuiltinImageGeneration\(\s*providerType,\s*modelId,\s*baseUrl,\s*apiType,\s*\),/,
   );
   // Audio is withheld even where a catalogue publishes it as an input modality: the attachment
   // adapter resolves the active model out of `models`, which carries loaded local models only, so
@@ -380,7 +379,7 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
   // one, and the pin effect's own guard sees no change in the stored string.
   assert.match(
     chatPage,
-    /reconcilePinnedReasoningEffort\(\{\s*checkpoint: inferenceParams\.checkpoint,\s*caps,\s*providerType: provider\?\.providerType,\s*\}\);\s*\}, \[activePinnedEffort,/,
+    /reconcilePinnedReasoningEffort\(\{\s*checkpoint: inferenceParams\.checkpoint,\s*caps,\s*providerType: provider\?\.providerType,\s*apiType: provider\?\.apiType,\s*\}\);\s*\}, \[activePinnedEffort,/,
   );
   assert.match(
     chatPage,
@@ -554,7 +553,7 @@ test("a row with no heading over it still names its connection", () => {
   // own left edge is ~30px in and a tooltip opening that way ran off screen.
   assert.match(
     pickers,
-    /<TooltipContent\s*side="right"\s*className="tooltip-compact max-w-\[15rem\] break-words"/,
+    /<TooltipContent\s*side="right"\s*className="tooltip-compact max-w-\[calc\(15rem\*var\(--ui-space-scale,1\)\)\] break-words"/,
   );
 });
 
@@ -706,7 +705,7 @@ test("a row's name starts where its heading's label does", () => {
     pickers,
     /<span className="flex min-w-0 items-center gap-1\.5 text-ui-10 font-semibold/,
   );
-  const listLabel = /className=\{cn\(\s*"flex items-center justify-between gap-1 px-2\.5 pb-1",\s*divider \? "mt-3 border-t border-border\/50 pt-3" : "pt-3",/;
+  const listLabel = /className=\{cn\(\s*"flex items-center justify-between gap-1 px-2\.5 pb-1",\s*divider \? "mt-3 border-t border-border pt-3" : "pt-3",/;
   assert.match(pickers, listLabel);
   assert.match(
     pickers,
@@ -726,7 +725,7 @@ test("reasoning is read through the resolver the composer uses", () => {
   for (const source of [infoDialog, settingsDialog]) {
     assert.match(
       source,
-      /getExternalReasoningCapabilities\(providerType, modelId, \{\s*isReasoningProvider,\s*baseUrl,\s*\}\)/,
+      /getExternalReasoningCapabilities\(providerType, modelId, \{\s*isReasoningProvider,\s*baseUrl,\s*apiType,\s*\}\)/,
     );
     // "none" is the off switch, not a level on offer.
     assert.match(source, /\(level\) => level !== "none"/);
@@ -734,6 +733,10 @@ test("reasoning is read through the resolver the composer uses", () => {
   assert.doesNotMatch(settingsDialog, /entry\?\.reasoning \? entry\.efforts/);
   // And a self-hosted endpoint's only reasoning signal is the flag on its connection.
   assert.match(pickers, /provider\.isReasoningModel === true,/);
+  // Custom Responses connections must carry their transport into both row dialogs.
+  assert.match(pickers, /apiType: externalApiTypeById\.get\(model\.providerId\)/);
+  assert.match(pickers, /apiType=\{settingsModel\.apiType\}/);
+  assert.match(pickers, /apiType=\{infoModel\.apiType\}/);
 });
 
 test("a Codex connection resolves against OpenAI's catalogue", async () => {

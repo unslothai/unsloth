@@ -47,6 +47,12 @@ import {
   updateHelperPrecacheSettings,
 } from "../api/helper-precache";
 import {
+  type ManagedProviderUrlSettings,
+  loadManagedProviderUrls,
+  updateManagedProviderUrls,
+} from "../api/managed-provider-urls";
+import { isSettingsRouteAbsent } from "../api/settings-route-absent";
+import {
   type PreviewSharingSettings,
   loadPreviewSharing,
   rotatePreviewLinks,
@@ -216,6 +222,16 @@ export function GeneralTab() {
     null,
   );
   const [isSavingPreviewSharing, setIsSavingPreviewSharing] = useState(false);
+  const [managedProviderUrls, setManagedProviderUrls] =
+    useState<ManagedProviderUrlSettings | null>(null);
+  const [managedProviderUrlsError, setManagedProviderUrlsError] = useState<
+    string | null
+  >(null);
+  const [isSavingManagedProviderUrls, setIsSavingManagedProviderUrls] =
+    useState(false);
+  // A backend that does not serve the route has no such setting to show.
+  const [managedProviderUrlsAbsent, setManagedProviderUrlsAbsent] =
+    useState(false);
   const [revokePreviewOpen, setRevokePreviewOpen] = useState(false);
   const [isRevokingPreview, setIsRevokingPreview] = useState(false);
   const launchAtLoginSetting = useDesktopBooleanSetting({
@@ -335,6 +351,31 @@ export function GeneralTab() {
     };
   }, [t, isOwner]);
 
+  useEffect(() => {
+    if (!isOwner) return;
+    let cancelled = false;
+    void loadManagedProviderUrls()
+      .then((settings) => {
+        if (cancelled) return;
+        setManagedProviderUrls(settings);
+        setManagedProviderUrlsError(null);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        if (isSettingsRouteAbsent(error)) {
+          setManagedProviderUrlsAbsent(true);
+          return;
+        }
+        setManagedProviderUrlsError(
+          error instanceof Error
+            ? error.message
+            : t("settings.general.managedProviderUrls.loadError"),
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t, isOwner]);
 
   const saveHelperPrecache = async (enabled: boolean) => {
     setIsSavingHelperPrecache(true);
@@ -369,6 +410,23 @@ export function GeneralTab() {
       );
     } finally {
       setIsSavingPreviewSharing(false);
+    }
+  };
+
+  const saveManagedProviderUrls = async (allowed: boolean) => {
+    setIsSavingManagedProviderUrls(true);
+    setManagedProviderUrlsError(null);
+    try {
+      const settings = await updateManagedProviderUrls(allowed);
+      setManagedProviderUrls(settings);
+    } catch (error) {
+      setManagedProviderUrlsError(
+        error instanceof Error
+          ? error.message
+          : t("settings.general.managedProviderUrls.saveError"),
+      );
+    } finally {
+      setIsSavingManagedProviderUrls(false);
     }
   };
 
@@ -444,9 +502,9 @@ export function GeneralTab() {
           label={t("settings.general.huggingFaceToken")}
           description={t("settings.general.huggingFaceTokenDescription")}
         >
-          <div className="flex flex-col items-end gap-1.5">
-            <div className="flex items-center gap-2">
-              <div className="relative w-[260px]">
+          <div className="flex min-w-0 flex-col items-end gap-1.5">
+            <div className="flex max-w-full items-center gap-2">
+              <div className="relative w-[calc(260px*var(--ui-space-scale,1))] min-w-0">
                 <Input
                   type={showToken ? "text" : "password"}
                   name="hf-token"
@@ -501,7 +559,7 @@ export function GeneralTab() {
               </Button>
             </div>
             {hfTokenPersistenceError ? (
-              <p className="max-w-[330px] text-right text-xs text-destructive">
+              <p className="max-w-[calc(330px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {hfTokenPersistenceError}
               </p>
             ) : tokenValidation.isChecking ? (
@@ -509,7 +567,7 @@ export function GeneralTab() {
                 {t("settings.general.checkingToken")}
               </p>
             ) : tokenValidation.error ? (
-              <p className="max-w-[330px] text-right text-xs text-destructive">
+              <p className="max-w-[calc(330px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {tokenValidation.error}
               </p>
             ) : null}
@@ -561,7 +619,7 @@ export function GeneralTab() {
                 onCheckedChange={(enabled) => void launchAtLoginSetting.update(enabled)}
               />
               {launchAtLoginSetting.error ? (
-                <span className="max-w-[260px] text-right text-xs text-destructive">
+                <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                   {launchAtLoginSetting.error}
                 </span>
               ) : null}
@@ -582,7 +640,7 @@ export function GeneralTab() {
                   onCheckedChange={(enabled) => void closeToTraySetting.update(enabled)}
                 />
                 {closeToTraySetting.error ? (
-                  <span className="max-w-[260px] text-right text-xs text-destructive">
+                  <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                     {closeToTraySetting.error}
                   </span>
                 ) : null}
@@ -645,7 +703,7 @@ export function GeneralTab() {
               onCheckedChange={(enabled) => void savePreviewSharing(enabled)}
             />
             {previewSharingError ? (
-              <span className="max-w-[260px] text-right text-xs text-destructive">
+              <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {previewSharingError}
               </span>
             ) : null}
@@ -666,6 +724,43 @@ export function GeneralTab() {
           </Button>
         </SettingsRow>
       </SettingsSection>
+
+      {managedProviderUrlsAbsent ? null : (
+        <SettingsSection
+          title={t("settings.general.managedProviderUrls.sectionTitle")}
+        >
+          <SettingsRow
+            label={t("settings.general.managedProviderUrls.enableLabel")}
+            description={t(
+              "settings.general.managedProviderUrls.enableDescription",
+            )}
+          >
+            <div className="flex flex-col items-end gap-1">
+              <Switch
+                checked={managedProviderUrls?.allowed ?? false}
+                disabled={
+                  !managedProviderUrls ||
+                  isSavingManagedProviderUrls ||
+                  managedProviderUrls.lockedByEnvironment
+                }
+                onCheckedChange={(allowed) =>
+                  void saveManagedProviderUrls(allowed)
+                }
+              />
+              {managedProviderUrls?.lockedByEnvironment ? (
+                <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
+                  {t("settings.general.managedProviderUrls.lockedByEnvironment")}
+                </span>
+              ) : null}
+              {managedProviderUrlsError ? (
+                <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                  {managedProviderUrlsError}
+                </span>
+              ) : null}
+            </div>
+          </SettingsRow>
+        </SettingsSection>
+      )}
 
       <DocumentsRagSection />
 
@@ -709,7 +804,7 @@ export function GeneralTab() {
               </Button>
             </div>
             {uploadLimitError ? (
-              <span className="max-w-[260px] text-right text-xs text-destructive">
+              <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {uploadLimitError}
               </span>
             ) : null}
@@ -736,11 +831,11 @@ export function GeneralTab() {
               onCheckedChange={(enabled) => void saveHelperPrecache(enabled)}
             />
             {helperPrecache?.disabledByEnv ? (
-              <span className="max-w-[260px] text-right text-xs text-muted-foreground">
+              <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
                 {t("settings.general.helperLlm.disabledByEnv")}
               </span>
             ) : helperPrecacheError ? (
-              <span className="max-w-[260px] text-right text-xs text-destructive">
+              <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {helperPrecacheError}
               </span>
             ) : null}

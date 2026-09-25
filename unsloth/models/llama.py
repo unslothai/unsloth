@@ -1340,6 +1340,83 @@ def _LlamaModel_fast_forward_inference(
 LlamaModel_fast_forward_inference = _LlamaModel_fast_forward_inference()
 
 
+# Copy of unsloth_zoo.device_map_planner's tables, for zoos predating detect_logit_transforms.
+_FALLBACK_TRANSFORM_FIELDS = (
+    ("logit_softcapping", ("final_logit_softcapping", "logits_soft_cap", "output_logit_soft_cap")),
+    ("logit_scale_multiply", ("logit_scale", "lm_head_multiplier", "output_multiplier")),
+    ("logit_scale_divide", ("logits_scaling",)),
+)
+_FALLBACK_TRANSFORM_BUCKETS = tuple(bucket for bucket, _ in _FALLBACK_TRANSFORM_FIELDS)
+# `logits_scaling` is not one knob: Granite divides by it, HyperCLOVA X multiplies (MuP),
+# and MiniCPM3 scales the hidden states before the head, so it is not a logit transform.
+_FALLBACK_BUCKET_OVERRIDES = {
+    ("logits_scaling", "hyperclovax"): "logit_scale_multiply",
+    ("logits_scaling", "minicpm3"): None,
+}
+
+
+def resolve_logit_transforms(config):
+    """What the loss must do to the logits, as (softcapping, multiply, divide).
+
+    Every loss branch reads it from here so they cannot drift apart. 0 means off, so an
+    absent field must read as 0 and not as 1.
+    """
+    if detect_logit_transforms is not None:
+        transforms = detect_logit_transforms(config)
+        return (
+            transforms["logit_softcapping"],
+            transforms["logit_scale_multiply"],
+            transforms["logit_scale_divide"],
+        )
+    # Same table as detect_logit_transforms: the zoo version must not pick the loss.
+    found = dict.fromkeys(_FALLBACK_TRANSFORM_BUCKETS, 0)
+    model_type = getattr(config, "model_type", "") or ""
+    for bucket, names in _FALLBACK_TRANSFORM_FIELDS:
+        for name in names:
+            target = _FALLBACK_BUCKET_OVERRIDES.get((name, model_type), bucket)
+            if target is None or found[target]:
+                continue
+            # Nullable: a None reaches the kernel and raises instead of reading as "off".
+            value = getattr(config, name, 0) or 0
+            if value:
+                found[target] = value
+                break
+    return (
+        found["logit_softcapping"],
+        found["logit_scale_multiply"],
+        found["logit_scale_divide"],
+    )
+
+
+def resolve_logit_scaling(config):
+    """The single factor fast_cross_entropy_loss takes, with the divisor folded in."""
+    logit_softcapping, logit_scale_multiply, logit_scale_divide = resolve_logit_transforms(config)
+    logit_scaling = logit_scale_multiply
+    if logit_scale_divide:
+        logit_scaling = (logit_scaling or 1.0) / logit_scale_divide
+    return logit_softcapping, logit_scaling
+
+
+def apply_logit_transforms(logits, logit_softcapping, logit_scaling):
+    """Scale, then soft cap, the order the kernels and the reference both use. Only for
+    branches that return the logits; the loss paths let the kernel apply them."""
+    if logit_scaling != 0:
+        if logits.requires_grad:
+            logits = logit_scaling * logits
+        else:
+            logits *= logit_scaling
+    if logit_softcapping != 0:
+        if logits.requires_grad:
+            logits = (1.0 / logit_softcapping) * logits
+            logits = torch.tanh(logits)
+            logits = logit_softcapping * logits
+        else:
+            logits *= 1.0 / logit_softcapping
+            logits.tanh_()
+            logits *= logit_softcapping
+    return logits
+
+
 def CausalLM_fast_forward(fast_forward_inference):
     def _CausalLM_fast_forward(
         self,
@@ -1402,8 +1479,6 @@ def CausalLM_fast_forward(fast_forward_inference):
         lm_head = self.lm_head.weight
         lm_head_device = lm_head.device
 
-        logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
-        logit_scaling = getattr(self.config, "logit_scale", 0)
         dtype = lm_head.dtype
         # Skip int max() if either is a tensor (HF selective-decode form).
         if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(logits_to_keep, torch.Tensor):
@@ -1444,8 +1519,16 @@ def CausalLM_fast_forward(fast_forward_inference):
                 if n_items is None:
                     n_items = kwargs.get("n_items", None)
 
-                if self.config.model_type == "falcon_h1":
-                    hidden_states = hidden_states * self.config.lm_head_multiplier
+                # Without these the fused branch optimizes a different loss than the branch below.
+                logit_softcapping, logit_scale_multiply, logit_scale_divide = (
+                    resolve_logit_transforms(self.config)
+                )
+
+                if self.config.model_type == "falcon_h1" and logit_scale_multiply:
+                    # Via the resolver, so a nullable lm_head_multiplier reads as "off".
+                    hidden_states = hidden_states * logit_scale_multiply
+                    # Now folded into the hidden states, so the kernel must not scale again.
+                    logit_scale_multiply = 0
 
                 # Packed-boundary guard on raw labels (the fused kernel shifts internally). This branch RETURNS,
                 # so mask_packed_sequence_boundaries() below is dead on packed paths: it needs
@@ -1470,6 +1553,8 @@ def CausalLM_fast_forward(fast_forward_inference):
                     target_gb = None,
                     torch_compile = True,
                     logit_softcapping = logit_softcapping,
+                    logit_scale_multiply = logit_scale_multiply,
+                    logit_scale_divide = logit_scale_divide,
                 )
                 if not return_dict:
                     # Fused CE never materializes logits; use EMPTY_LOGITS like the return_dict branch below (#2068).
@@ -1489,22 +1574,8 @@ def CausalLM_fast_forward(fast_forward_inference):
 
         logits = logits.to(_get_dtype(dtype_from_config(self.config)))
         loss = None
-        # Which field carries the scale is per family (cohere logit_scale, granite logits_scaling,
-        # falcon_h1 lm_head_multiplier). The planner sizes the head's card from the same answer, so a
-        # new family is taught once, not twice.
-        if detect_logit_transforms is not None:
-            _transforms = detect_logit_transforms(self.config)
-            logit_softcapping = _transforms["logit_softcapping"]
-            logit_scaling = _transforms["logit_scale_multiply"]
-            if not logit_scaling and _transforms["logit_scale_divide"]:
-                logit_scaling = 1 / _transforms["logit_scale_divide"]
-        else:
-            logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
-            logit_scaling = getattr(self.config, "logit_scale", 0)
-            if self.config.model_type == "granite":
-                logit_scaling = 1 / getattr(self.config, "logits_scaling", 1)
-            elif self.config.model_type == "falcon_h1":
-                logit_scaling = self.config.lm_head_multiplier
+        # Same answer the fused branch above reads, so the two branches cannot drift apart.
+        logit_softcapping, logit_scaling = resolve_logit_scaling(self.config)
 
         if labels is not None:
             shift_logits = logits
@@ -1526,20 +1597,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                 n_items = n_items,
             )
         else:
-            if logit_scaling != 0:
-                if logits.requires_grad:
-                    logits = logit_scaling * logits
-                else:
-                    logits *= logit_scaling
-            if logit_softcapping != 0:
-                if logits.requires_grad:
-                    logits = (1.0 / logit_softcapping) * logits
-                    logits = torch.tanh(logits)
-                    logits = logit_softcapping * logits
-                else:
-                    logits *= 1.0 / logit_softcapping
-                    logits.tanh_()
-                    logits *= logit_softcapping
+            logits = apply_logit_transforms(logits, logit_softcapping, logit_scaling)
 
         if not return_dict:
             output = (logits,) + outputs[1:]
@@ -2696,7 +2754,12 @@ class FastLlamaModel:
                 # owns the weights, which it never does here: vLLM has no classification head, so this
                 # branch loaded the weights in-process even though the caller asked for fast_inference.
                 from unsloth.models.vision import _attach_bnb_multidevice_hooks
+                from unsloth.models._remote_code_buffers import (
+                    restore_remote_code_non_persistent_buffers,
+                )
 
+                # transformers 5 leaves remote code's non-persistent buffers (RoPE inv_freq) uninitialised.
+                restore_remote_code_non_persistent_buffers(model)
                 _attach_bnb_multidevice_hooks(
                     model,
                     load_in_4bit = load_in_4bit,
@@ -2744,7 +2807,12 @@ class FastLlamaModel:
                         **kwargs,
                     )
                 from unsloth.models.vision import _attach_bnb_multidevice_hooks
+                from unsloth.models._remote_code_buffers import (
+                    restore_remote_code_non_persistent_buffers,
+                )
 
+                # transformers 5 leaves remote code's non-persistent buffers (RoPE inv_freq) uninitialised.
+                restore_remote_code_non_persistent_buffers(model)
                 _attach_bnb_multidevice_hooks(
                     model,
                     load_in_4bit = load_in_4bit,

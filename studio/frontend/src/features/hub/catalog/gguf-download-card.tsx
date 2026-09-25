@@ -87,6 +87,8 @@ import {
   activeDownloadState,
   applyLiveGgufVariantStates,
   createLiveGgufVariantStatesSelector,
+  createScopedLiveGgufFilesSelector,
+  isScopedLiveVariant,
 } from "./gguf-live-variant-states";
 import {
   GgufDownloadStatusCard,
@@ -144,7 +146,7 @@ const FIT_BADGE: Record<GgufFitClass, FitBadgeMeta> = {
 const CHIP_BASE =
   "inline-flex h-5 shrink-0 items-center justify-center whitespace-nowrap rounded-full border px-2 text-ui-11p5 font-medium tabular-nums leading-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
 const CHIP_DEFAULT =
-  "border-foreground/15 bg-muted text-foreground/85 dark:border-border/60 dark:bg-white/[0.04] dark:text-foreground/85";
+  "border-[color-mix(in_oklab,var(--foreground)_calc(15%*var(--contrast-edge-gain,1)),transparent)] bg-muted text-foreground/85 dark:border-border/60 dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))] dark:text-foreground/85";
 
 function QuantBadge({
   quant,
@@ -481,8 +483,14 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
       className={cn(
         "group relative mx-2 flex cursor-pointer items-center gap-2 rounded-[12px] px-2.5 py-2 text-left transition-colors",
         selected
-          ? "bg-foreground/[0.07] dark:bg-foreground/[0.12]"
-          : "hover:bg-foreground/[0.05] dark:hover:bg-foreground/[0.06]",
+          ? // Dark: --accent, the app's one selection colour. The 12% wash it
+            // carried matched --accent at the default but was scaled by the
+            // wash gain, so it fell away from the token across the slider.
+            "bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-accent"
+          : // Dark hover is --accent held back, so it stays under the selected
+            // row at every contrast. As its own wash it closed to within a few
+            // levels of the selection at the top of the slider.
+            "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_srgb,var(--accent)_55%,transparent)]",
       )}
     >
       {/* Status (On device / Partial) sits beside the quant on the
@@ -504,7 +512,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
             <TooltipTrigger asChild={true}>
               <span className="inline-flex">
                 <DotTag
-                  tone="warning"
+                  tone={liveActive ? "downloading" : "warning"}
                   label={liveActive ? "Downloading" : "Partial"}
                 />
               </span>
@@ -654,6 +662,11 @@ export function GgufDownloadCard({
   const liveVariantStates = useDownloadManagerStore(
     selectLiveGgufVariantStates,
   );
+  const selectScopedLiveFiles = useMemo(
+    () => createScopedLiveGgufFilesSelector(repoId),
+    [repoId],
+  );
+  const scopedLiveFiles = useDownloadManagerStore(selectScopedLiveFiles);
   const sortedVariants = useMemo(() => {
     if (!rawSortedVariants) return null;
     const withLive = applyLiveGgufVariantStates(
@@ -756,9 +769,13 @@ export function GgufDownloadCard({
     ? liveVariantStates.get(normalizeGgufVariantIdentity(selectedQuant))
     : undefined;
   const selectedPresentation = pendingDrafterPresentation(selected);
-  const selectedLiveActive = activeDownloadState(selectedLiveState?.state);
   const downloadingThisVariant =
     progress !== null && ggufVariantsMatch(progress.variant, selectedQuant);
+  // Images/Video stage quants as scoped jobs with no quant-keyed job.
+  const selectedScopedLive =
+    !downloadingThisVariant && isScopedLiveVariant(selected, scopedLiveFiles);
+  const selectedLiveActive =
+    activeDownloadState(selectedLiveState?.state) || selectedScopedLive;
   const ctaDisabled = isLoadingThisModel || !selected;
   const selectedIsActive =
     isActive && activeQuant && ggufVariantsMatch(selected?.quant, activeQuant);
@@ -812,7 +829,7 @@ export function GgufDownloadCard({
       ? true
       : downloadingThisVariant
         ? false
-        : ctaDisabled,
+        : ctaDisabled || selectedScopedLive,
     isPartial: Boolean(selected?.partial),
     partialTransport: selected?.partial_transport ?? null,
     partialResumable: selected?.partial_resumable === true,
@@ -1011,14 +1028,14 @@ export function GgufDownloadCard({
                 e.preventDefault();
                 setOpen((o) => !o);
               }}
-              className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-full px-3 text-left transition-colors hover:bg-foreground/[0.04] data-[state=open]:bg-foreground/[0.06] disabled:cursor-wait disabled:opacity-60 disabled:hover:bg-transparent dark:hover:bg-white/[0.04] dark:data-[state=open]:bg-white/[0.06] dark:disabled:hover:bg-transparent"
+              className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-full px-3 text-left transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] disabled:cursor-wait disabled:opacity-60 disabled:hover:bg-transparent dark:hover:bg-[color-mix(in_srgb,var(--accent)_55%,transparent)] dark:data-[state=open]:bg-accent dark:disabled:hover:bg-transparent"
             >
               {/* Quant label + status tags travel together as one left-aligned
                   group so the fit-info icon never floats orphaned from its tags.
                   The group sizes to its content (it still shrinks when the row
                   is tight) so the chevron follows the tags instead of stranding
                   itself at the far edge of a full-width trigger. */}
-              <span className="flex min-w-0 items-center gap-2 overflow-hidden text-ui-12 text-muted-foreground">
+              <span className="flex min-w-0 items-center gap-2 overflow-hidden text-ui-12 text-muted-foreground max-[360px]:gap-1">
                 {selected ? (
                   <QuantBadge
                     quant={selectedLabel ?? selected.quant}
@@ -1031,14 +1048,20 @@ export function GgufDownloadCard({
                   </span>
                 )}
                 {selected?.downloaded && (
-                  <DotTag tone="success" label="On device" />
+                  // Dot only on phones.
+                  <DotTag
+                    tone="success"
+                    label="On device"
+                    className="max-sm:border-0 max-sm:px-0"
+                    labelClassName="max-sm:sr-only"
+                  />
                 )}
                 {selected && !selected.downloaded && selected.partial && (
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
                       <span className="inline-flex">
                         <DotTag
-                          tone="warning"
+                          tone={selectedLiveActive ? "downloading" : "warning"}
                           label={selectedLiveActive ? "Downloading" : "Partial"}
                         />
                       </span>
@@ -1046,13 +1069,16 @@ export function GgufDownloadCard({
                     <TooltipContent side="top" sideOffset={4}>
                       {/* The badge rides inside the quant trigger, so clicking
                           it opens the menu. Name the button that acts. */}
-                      {selectedLiveActive
-                        ? "Download is running. Use the button on the right to stop it."
-                        : downloadAction.partialHint}
+                      {selectedScopedLive
+                        ? "Download is running. Progress is in the downloads panel."
+                        : selectedLiveActive
+                          ? "Download is running. Use the button on the right to stop it."
+                          : downloadAction.partialHint}
                     </TooltipContent>
                   </Tooltip>
                 )}
-                <DotTag tone="gguf" label="GGUF" />
+                {/* Size beats format tag on phones. */}
+                <DotTag tone="gguf" label="GGUF" className="max-sm:hidden" />
                 {selected &&
                   selectedDownloadSizeLabel &&
                   !selected.downloaded && (
@@ -1072,12 +1098,14 @@ export function GgufDownloadCard({
             side="bottom"
             sideOffset={8}
             avoidCollisions={false}
-            className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[300px] gap-0 overflow-hidden p-0 py-2 ring-0"
+            className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[min(calc(300px*var(--ui-space-scale,1)),calc(100vw-32px))] gap-0 overflow-hidden p-0 py-2 ring-0"
           >
-            <div className="max-h-[344px] overflow-y-auto [scrollbar-width:thin]">
+            <div className="max-h-[calc(344px*var(--ui-space-scale,1))] overflow-y-auto [scrollbar-width:thin]">
               {variantMenuItems.map((item) => {
                 const liveState = liveVariantStates.get(item.key);
-                const liveActive = activeDownloadState(liveState?.state);
+                const liveActive =
+                  activeDownloadState(liveState?.state) ||
+                  isScopedLiveVariant(item, scopedLiveFiles);
                 return (
                   <GgufVariantMenuRow
                     key={item.filename}
@@ -1148,7 +1176,9 @@ export function GgufDownloadCard({
             type="button"
             disabled={downloadAction.disabled}
             onClick={downloadAction.onClick}
-            aria-label={downloadAction.ariaLabel}
+            aria-label={
+              selectedScopedLive ? "Downloading" : downloadAction.ariaLabel
+            }
             className={cn(
               "hub-action-btn w-24",
               ctaDisabled &&
@@ -1177,6 +1207,10 @@ export function GgufDownloadCard({
               <span className="inline-flex items-center gap-2">
                 <Spinner />
                 Starting…
+              </span>
+            ) : selectedScopedLive ? (
+              <span className="inline-flex items-center gap-2 text-muted-foreground">
+                <Spinner />
               </span>
             ) : (
               <>

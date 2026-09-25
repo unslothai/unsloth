@@ -88,12 +88,7 @@ import {
   migrateLegacyQwenDefaults,
   type QwenDefaultsMigration,
 } from "../utils/qwen-defaults-migration";
-import {
-  DEFAULT_AUTO_COMPACT_ENABLED,
-  DEFAULT_COMPACTION_HEADROOM_RATIO,
-  DEFAULT_CONTEXT_POLICY,
-  type LocalContextPolicy,
-} from "../utils/auto-compaction";
+import { DEFAULT_AUTO_COMPACT_ENABLED } from "../utils/auto-compaction";
 import { preserveThinkingDefaultFromLoad } from "../lib/resolve-preserve-thinking-default";
 import {
   THREAD_SCOPED_PARAM_KEYS,
@@ -1878,6 +1873,35 @@ function savePermissionMode(mode: PermissionMode): void {
 
 const INITIAL_PERMISSION_MODE: PermissionMode = loadPermissionMode();
 
+/** Re-picking the level already in force is not a fresh grant, so a manual Code-off stands. */
+function codeDeclinedOnEnteringFullAccess(state: ChatRuntimeStore): boolean {
+  return state.permissionMode === "full"
+    ? state.codeToolsDeclinedUnderFullAccess
+    : false;
+}
+
+/** Effective Code setting. Full access auto-enables it only for local models.
+ *  Read the level live, never a flag armed on entry: Full access outlives a chat switch
+ *  (applyThreadScopedSettings) but codeToolsEnabled does not, so a snapshotted grant missed
+ *  every chat opened afterwards. */
+export function codeToolsOn(
+  state: Pick<
+    ChatRuntimeStore,
+    | "codeToolsEnabled"
+    | "codeToolsDeclinedUnderFullAccess"
+    | "permissionMode"
+    | "supportsTools"
+  > & { params: { checkpoint: string } },
+): boolean {
+  return (
+    state.codeToolsEnabled ||
+    (!state.codeToolsDeclinedUnderFullAccess &&
+      state.permissionMode === "full" &&
+      state.supportsTools &&
+      !isExternalModelId(state.params.checkpoint))
+  );
+}
+
 function loadString(key: string, fallback: string): string {
   return readStorageValue(key) ?? fallback;
 }
@@ -2295,7 +2319,11 @@ type ChatRuntimeStore = {
    *  composer's Fetch pill, independent of Search. */
   supportsBuiltinWebFetch: boolean;
   toolsEnabled: boolean;
+  /** Persisted Code preference. Use codeToolsOn() for the effective value. */
   codeToolsEnabled: boolean;
+  /** Session-only: a manual Code-off under Full access, so the grant is not re-applied over it.
+   *  Cleared on entering or leaving the level. */
+  codeToolsDeclinedUnderFullAccess: boolean;
   imageToolsEnabled: boolean;
   deepResearchEnabled: boolean;
   researchWebsitePolicy: ResearchWebsitePolicy;
@@ -2360,8 +2388,6 @@ type ChatRuntimeStore = {
   autoHealToolCalls: boolean;
   nudgeToolCalls: boolean;
   autoCompactEnabled: boolean;
-  contextPolicy: LocalContextPolicy;
-  compactionHeadroomRatio: number;
   maxToolCallsPerMessage: number;
   toolCallTimeout: number;
   kvCacheDtype: string | null;
@@ -2655,8 +2681,6 @@ type ChatRuntimeStore = {
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
   setAutoCompactEnabled: (enabled: boolean) => void;
-  setContextPolicy: (policy: LocalContextPolicy) => void;
-  setCompactionHeadroomRatio: (ratio: number) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
   setGpuMemoryMode: (mode: "auto" | "manual") => void;
@@ -2702,8 +2726,6 @@ type ScalarSettingKey =
   | "autoHealToolCalls"
   | "nudgeToolCalls"
   | "autoCompactEnabled"
-  | "contextPolicy"
-  | "compactionHeadroomRatio"
   | "maxToolCallsPerMessage"
   | "toolCallTimeout"
   | "reasoningEnabled"
@@ -2755,8 +2777,6 @@ const SCALAR_SETTING_KEYS = [
   "autoHealToolCalls",
   "nudgeToolCalls",
   "autoCompactEnabled",
-  "contextPolicy",
-  "compactionHeadroomRatio",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
   "reasoningEnabled",
@@ -3531,6 +3551,7 @@ export function reconcilePinnedReasoningEffort(opts: {
   checkpoint: string;
   caps: ExternalReasoningCapabilities;
   providerType: string | null | undefined;
+  apiType?: "chat_completions" | "responses";
 }): void {
   const state = useChatRuntimeStore.getState();
   if (state.params.checkpoint !== opts.checkpoint) return;
@@ -3541,6 +3562,7 @@ export function reconcilePinnedReasoningEffort(opts: {
   const next = resolveExternalReasoningEffort({
     caps: opts.caps,
     providerType: opts.providerType,
+    apiType: opts.apiType,
     current: pinned
       ? state.reasoningEffort
       : (takeEffortDisplacedByPin() ?? state.reasoningEffort),
@@ -4098,6 +4120,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   supportsBuiltinWebFetch: false,
   toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
+  codeToolsDeclinedUnderFullAccess: false,
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   deepResearchEnabled: loadBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false),
   researchWebsitePolicy: loadResearchWebsitePolicy(),
@@ -4145,8 +4168,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   autoHealToolCalls: true,
   nudgeToolCalls: true,
   autoCompactEnabled: DEFAULT_AUTO_COMPACT_ENABLED,
-  contextPolicy: DEFAULT_CONTEXT_POLICY,
-  compactionHeadroomRatio: DEFAULT_COMPACTION_HEADROOM_RATIO,
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
   kvCacheDtype: null,
@@ -5289,6 +5310,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         ...(codeToolsEnabled
           ? { codeToolsEnabled, deepResearchEnabled: false }
           : { codeToolsEnabled }),
+        codeToolsDeclinedUnderFullAccess:
+          !codeToolsEnabled && state.permissionMode === "full",
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
@@ -5322,6 +5345,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             deepResearchEnabled,
             toolsEnabled: false,
             codeToolsEnabled: false,
+            codeToolsDeclinedUnderFullAccess: false,
             imageToolsEnabled: false,
             artifactsEnabled: false,
             mcpEnabledForChat: false,
@@ -5436,6 +5460,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           bypassPermissions: true,
           confirmToolCalls: false,
           deepResearchEnabled: false,
+          codeToolsDeclinedUnderFullAccess: codeDeclinedOnEnteringFullAccess(state),
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
         };
       }
@@ -5446,6 +5471,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         permissionMode,
         bypassPermissions: false,
         confirmToolCalls,
+        codeToolsDeclinedUnderFullAccess: false,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
@@ -5461,6 +5487,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           permissionMode: "full" as PermissionMode,
           confirmToolCalls: false,
           deepResearchEnabled: false,
+          codeToolsDeclinedUnderFullAccess: codeDeclinedOnEnteringFullAccess(state),
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
         };
       }
@@ -5471,6 +5498,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         bypassPermissions,
         permissionMode,
         confirmToolCalls: permissionMode === "ask" || permissionMode === "auto",
+        codeToolsDeclinedUnderFullAccess: false,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
@@ -5778,30 +5806,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       );
       return {
         autoCompactEnabled,
-        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
-      };
-    }),
-  setContextPolicy: (contextPolicy) =>
-    set((state) => {
-      setScalarSettingVersion(
-        "contextPolicy",
-        contextPolicy,
-        state.contextPolicy,
-      );
-      return {
-        contextPolicy,
-        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
-      };
-    }),
-  setCompactionHeadroomRatio: (compactionHeadroomRatio) =>
-    set((state) => {
-      setScalarSettingVersion(
-        "compactionHeadroomRatio",
-        compactionHeadroomRatio,
-        state.compactionHeadroomRatio,
-      );
-      return {
-        compactionHeadroomRatio,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
