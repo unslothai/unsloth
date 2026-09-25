@@ -17,6 +17,7 @@ from pathlib import Path
 from storage.studio_db import get_connection
 from hub.utils.paths import normalize_path
 from utils.paths.external_media import is_linux_run_media_path, is_local_filesystem_root
+from utils.paths.path_utils import macos_volume_ignores_case
 from utils.paths.scan_folder_health import is_readable_dir
 from utils.paths.sensitive import (
     contains_sensitive_path_component as _shared_contains_sensitive_path_component,
@@ -58,12 +59,57 @@ def is_denied_system_path(path: str) -> bool:
     /run carve-out keeps Linux removable-media mounts browseable. Expects an
     already-resolved (realpath) path so symlinks cannot escape into a denied subtree.
     """
-    is_win = platform.system() == "Windows"
-    check = os.path.normcase(path) if is_win else path
+    return _denied_prefix(path) is not None
+
+
+def _denied_prefix(path: str) -> str | None:
+    check = _comparable_path(path)
     for prefix in _denied_path_prefixes():
-        if check == prefix or check.startswith(prefix + os.sep):
-            if prefix == "/run" and is_linux_run_media_path(check):
-                continue
+        if is_within_any(path, [prefix]) and not (
+            prefix == "/run" and is_linux_run_media_path(check)
+        ):
+            return prefix
+    return None
+
+
+# Longest first: \\?\UNC\server\share is the share \\server\share. After normcase, so lower case.
+_EXTENDED_PREFIXES = (
+    ("\\\\?\\unc\\", "\\\\"),
+    ("\\\\.\\unc\\", "\\\\"),
+    ("\\\\?\\", ""),
+    ("\\\\.\\", ""),
+)
+
+
+def _comparable_path(path: str, fold: bool | None = None) -> str:
+    """``path`` spelled the way the filesystem compares it, for prefix checks. Windows ignores
+    case, and so does macOS unless the volume is case-sensitive (``fold`` says, else it is asked:
+    /LIBRARY is /Library on a default volume only). realpath() keeps a Windows extended-length
+    prefix (``\\\\?\\C:\\Windows``) that would otherwise hide the folder behind it."""
+    system = platform.system()
+    if system == "Windows":
+        check = os.path.normcase(path)
+        for extended, plain in _EXTENDED_PREFIXES:
+            if check.startswith(extended):
+                return plain + check[len(extended) :]
+        return check
+    if system == "Darwin":
+        if fold is None:
+            fold = macos_volume_ignores_case(path)
+        return path.casefold() if fold else path
+    return path
+
+
+def is_within_any(path: str, prefixes) -> bool:
+    """True if resolved ``path`` is, or is inside, one of ``prefixes``, compared the way the
+    filesystem holding ``path`` compares names (see ``_comparable_path``)."""
+    fold = platform.system() == "Darwin" and macos_volume_ignores_case(path)
+    check = _comparable_path(path, fold)
+    for prefix in prefixes:
+        prefix = _comparable_path(str(prefix), fold).rstrip(os.sep) or os.sep
+        if check == prefix or check.startswith(
+            prefix if prefix.endswith(os.sep) else prefix + os.sep
+        ):
             return True
     return False
 
@@ -112,12 +158,9 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
         raise ValueError("Path is outside this account's workspace")
 
     is_win = platform.system() == "Windows"
-    check = os.path.normcase(normalized) if is_win else normalized
-    for prefix in _denied_path_prefixes():
-        if check == prefix or check.startswith(prefix + os.sep):
-            if prefix == "/run" and is_linux_run_media_path(check):
-                continue
-            raise ValueError(f"Path under {prefix} is not allowed")
+    denied = _denied_prefix(normalized)
+    if denied is not None:
+        raise ValueError(f"Path under {denied} is not allowed")
 
     # Last, so a denied path is never opened. Mirrors studio_db.py.
     if not is_readable_dir(normalized):

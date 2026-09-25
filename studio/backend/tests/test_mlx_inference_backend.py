@@ -9,6 +9,7 @@ import json
 import subprocess
 import sys
 import types
+from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -106,6 +107,76 @@ def test_mlx_fusion_that_cannot_be_entered_keeps_native(
         assert active is model
 
 
+@pytest.mark.parametrize(
+    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
+)
+@pytest.mark.parametrize(
+    "message",
+    [
+        "[METAL] Command buffer execution failed: Caused GPU Timeout Error "
+        "(0000000b:kIOGPUCommandBufferCallbackErrorTimeout)",
+        "[METAL] Command buffer execution failed: Ignored (for causing prior/excessive GPU "
+        "errors) (0000000e:kIOGPUCommandBufferCallbackErrorSubmissionsIgnored)",
+    ],
+    ids = ["watchdog", "ignored"],
+)
+def test_mlx_dead_gpu_queue_is_not_reported_as_a_working_fallback(
+    monkeypatch, mlx_inference_patches, feature, message
+):
+    from core.inference import mlx_inference
+
+    @contextmanager
+    def fault(_model):
+        raise RuntimeError(message)
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(mlx_inference_patches, f"fused_{feature}", fault)
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    with pytest.raises(RuntimeError, match = "METAL"):
+        with getattr(mlx_inference, f"_mlx_fused_{feature}")(object()):
+            pass  # pragma: no cover
+    assert mlx_inference._MLX_FUSION_UNAVAILABLE == set()
+
+
+@pytest.mark.parametrize(
+    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
+)
+def test_mlx_packing_that_runs_out_of_memory_still_keeps_native(
+    monkeypatch, mlx_inference_patches, feature
+):
+    from core.inference import mlx_inference
+
+    @contextmanager
+    def refuse(_model):
+        raise RuntimeError("[METAL] Command buffer execution failed: Insufficient Memory.")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(mlx_inference_patches, f"fused_{feature}", refuse)
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    model = object()
+    with getattr(mlx_inference, f"_mlx_fused_{feature}")(model) as active:
+        assert active is model
+
+
+def test_mlx_dead_gpu_queue_at_load_fails_the_load(monkeypatch, mlx_moe):
+    from core.inference import mlx_inference
+
+    backend = _install_fake_text_stack(monkeypatch, {"p": [1, 2], "generated": [7, 8]}, [])
+    _install_fake_fast_mlx(monkeypatch, [])
+    sys.modules["mlx.core"].clear_cache = lambda: None
+
+    @contextmanager
+    def fault(_model):
+        raise RuntimeError("[METAL] Command buffer execution failed: Caused GPU Timeout Error.")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(mlx_moe, "fused_moe_gate_up", fault)
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
+    with pytest.raises(RuntimeError, match = "METAL"):
+        backend.load_model(config)
+
+
 def test_mlx_fusion_failure_at_load_still_loads_the_model(monkeypatch, mlx_moe):
     """The base-model scope is entered inside load_model, so a fusion that refuses there
     must not turn a good load into a failed one."""
@@ -127,6 +198,138 @@ def test_mlx_fusion_failure_at_load_still_loads_the_model(monkeypatch, mlx_moe):
     assert backend.active_model_name == "fake/text"
     assert backend._model is not None
     assert backend.unload_model("fake/text")
+
+
+def test_mlx_fusion_that_refuses_everywhere_still_generates(monkeypatch, mlx_moe):
+    from core.inference import mlx_inference
+
+    backend = _install_fake_text_stack(monkeypatch, {"p": [1, 2], "generated": [7, 8]}, [])
+    tokenizer = backend._tokenizer
+    _install_fake_fast_mlx(monkeypatch, [])
+    sys.modules["mlx.core"].clear_cache = lambda: None
+    refused = []
+
+    def _refusing(name):
+        @contextmanager
+        def refuse(_model):
+            refused.append(name)
+            raise RuntimeError("no headroom to pack")
+            yield  # pragma: no cover
+
+        return refuse
+
+    for name in ("moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"):
+        monkeypatch.setattr(mlx_moe, f"fused_{name}", _refusing(name))
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
+    assert backend.load_model(config) is True
+    backend._tokenizer = tokenizer
+
+    stream = backend.generate_chat_response(messages = [{"role": "user", "content": "p"}])
+    assert next(stream) == "7"
+    stream.close()
+    assert Counter(refused) == Counter(
+        moe_gate_up = 2, decode_conv_silu = 1, residual_norm = 1, moe_router = 1
+    )
+
+
+def _all_fusions_refuse(monkeypatch, patches):
+    from core.inference import mlx_inference
+
+    refused = []
+
+    def _refusing(name):
+        @contextmanager
+        def refuse(_model):
+            refused.append(name)
+            raise RuntimeError("no headroom to pack")
+            yield  # pragma: no cover
+
+        return refuse
+
+    for name in ("moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"):
+        monkeypatch.setattr(patches, f"fused_{name}", _refusing(name))
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    return refused
+
+
+def test_mlx_vlm_generation_survives_every_fusion_refusing(monkeypatch, mlx_inference_patches):
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {}, apply_chat_template = lambda *_a, **_k: "<image> prompt"
+    )
+    mlx_vlm.stream_generate = lambda *_a, **_k: iter(
+        [SimpleNamespace(text = "ok", prompt_tokens = 1, generation_tokens = 1)]
+    )
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_a, **_k: "<image> prompt",
+    )
+    monkeypatch.setattr(
+        mlx_inference, "_temporary_mlx_adapter_state", lambda *_a, **_k: contextlib.nullcontext()
+    )
+    refused = _all_fusions_refuse(monkeypatch, mlx_inference_patches)
+
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "generic_vlm"})
+    backend._processor = SimpleNamespace(chat_template = "template")
+    args = (
+        [{"role": "user", "content": [{"type": "image"}]}],
+        [object()],
+        0.7,
+        0.9,
+        40,
+        0.01,
+        4,
+        1.0,
+        None,
+    )
+    assert list(backend._generate_vlm(*args)) == ["ok"]
+    assert Counter(refused) == Counter(
+        moe_gate_up = 1, decode_conv_silu = 1, residual_norm = 1, moe_router = 1
+    )
+
+
+def test_mlx_audio_input_generation_survives_every_fusion_refusing(
+    monkeypatch, mlx_inference_patches
+):
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    stats = dict(prompt_tokens = 3, prompt_tps = 1.0, generation_tokens = 3, generation_tps = 1.0)
+    fake_vlm = types.ModuleType("mlx_vlm")
+    fake_vlm.stream_generate = lambda *_a, **_k: (
+        SimpleNamespace(text = text, **stats) for text in ("H", "e", "l")
+    )
+    monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
+    monkeypatch.setattr(
+        mlx_inference,
+        "_render_registered_vlm_prompt",
+        lambda *_a, **_k: "P<audio>",
+    )
+    refused = _all_fusions_refuse(monkeypatch, mlx_inference_patches)
+
+    backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
+    backend._generation_lock = __import__("threading").Lock()
+    backend._model, backend._processor = _audio_model(), _audio_processor()
+    backend.active_model_name = "m"
+    backend.last_generation_stats = None
+    backend.models = {"m": {"audio_type": "audio_vlm"}}
+    assert list(
+        backend.generate_audio_input_response(
+            messages = [{"role": "user", "content": "what is said?"}],
+            system_prompt = "",
+            audio_array = [0.0, 0.1, -0.1],
+            max_new_tokens = 64,
+        )
+    ) == ["H", "e", "l"]
+    assert Counter(refused) == Counter(
+        moe_gate_up = 1, decode_conv_silu = 1, residual_norm = 1, moe_router = 1
+    )
 
 
 @pytest.mark.parametrize(
