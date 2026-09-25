@@ -120,7 +120,9 @@ def nvenc_gpu(device: Any = None, logger: Any = None) -> Optional[int]:
     key = (index, name, os.environ.get("CUDA_VISIBLE_DEVICES"))
     with _probe_lock:
         cached = _probed.get(key)
-        if cached is None or (cached[1] is not None and time.monotonic() - cached[1] >= _PROBE_RETRY_S):
+        if cached is None or (
+            cached[1] is not None and time.monotonic() - cached[1] >= _PROBE_RETRY_S
+        ):
             if set(re.split(r"[\s\-_/]+", name.upper())) & set(_NO_NVENC_GPUS):
                 ok, failed_at = False, None
             else:

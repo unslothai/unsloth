@@ -50,7 +50,14 @@ def test_off_unless_requested(monkeypatch):
 
 @pytest.mark.parametrize(
     "name",
-    ["NVIDIA B200", "NVIDIA A100-SXM4-40GB", "NVIDIA H100 80GB HBM3", "NVIDIA GB200", "NVIDIA H20", "NVIDIA GH200 480GB"],
+    [
+        "NVIDIA B200",
+        "NVIDIA A100-SXM4-40GB",
+        "NVIDIA H100 80GB HBM3",
+        "NVIDIA GB200",
+        "NVIDIA H20",
+        "NVIDIA GH200 480GB",
+    ],
 )
 def test_gpus_without_an_encoder_are_never_probed(monkeypatch, name):
     monkeypatch.setenv(vn.ENCODER_ENV, "nvenc")
