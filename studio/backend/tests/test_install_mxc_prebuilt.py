@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
+import os
 from pathlib import Path
 import stat
 import zipfile
@@ -254,8 +255,19 @@ def test_prepare_host_reports_a_failed_step(monkeypatch, prepared_install):
         installer.prepare_host(install_dir)
 
 
+def _decoded_script(argv):
+    import base64
+    return base64.b64decode(argv[argv.index("-EncodedCommand") + 1]).decode("utf-16-le")
+
+
+@pytest.fixture
+def windows_dirs(monkeypatch):
+    monkeypatch.setattr(installer, "_system_directory", lambda: "C:\\Windows\\System32")
+    return os.path.join("C:\\Windows\\System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+
+
 @pytest.mark.parametrize("elevated", [True, False])
-def test_host_prep_elevates_only_when_needed(monkeypatch, tmp_path, elevated):
+def test_host_prep_elevates_only_when_needed(monkeypatch, tmp_path, elevated, windows_dirs):
     calls: list[tuple] = []
     monkeypatch.setattr(installer, "_is_elevated", lambda: elevated)
     monkeypatch.setattr(
@@ -273,12 +285,42 @@ def test_host_prep_elevates_only_when_needed(monkeypatch, tmp_path, elevated):
     )
     executable = tmp_path / "wxc-host-prep.exe"
     assert installer._run_host_prep(executable, "prepare-null-device") == 0
-    assert calls == [
-        ("run" if elevated else "runas", [str(executable), "prepare-null-device", "--quiet"])
-    ]
+    assert [kind for kind, _argv in calls] == ["run" if elevated else "runas"]
+    argv = calls[0][1]
+    assert argv[0] == windows_dirs
+    script = _decoded_script(argv)
+    assert f"Copy-Item -LiteralPath '{executable}'" in script
+    assert "& $exe 'prepare-null-device' '--quiet'" in script
 
 
-def test_elevated_host_prep_is_never_timed_out(monkeypatch, tmp_path):
+def test_host_prep_runs_elevated_only_from_an_admin_only_copy(tmp_path):
+    # The install dir is user-writable; host-prep LoadLibrary's dbghelp.dll from its own dir.
+    script = installer._host_prep_script(tmp_path / "wxc-host-prep.exe", ["prepare-system-drive"])
+    assert "GetFolderPath('CommonApplicationData')" in script
+    assert "$env:ProgramData" not in script
+    assert "/inheritance:r" in script and "*S-1-5-32-544" in script and "*S-1-5-18" in script
+    lock, empty, copy, hashed, run = (
+        script.index("icacls.exe"),
+        script.index("Get-ChildItem"),
+        script.index("Copy-Item"),
+        script.index(installer.mxc_runtime.WXC_HOST_PREP_SHA256.upper()),
+        script.index("& $exe"),
+    )
+    assert lock < empty < copy < hashed < run
+    assert str(tmp_path) not in script[run:]
+
+
+@pytest.mark.parametrize("code", sorted(installer._HOST_PREP_SCRIPT_ERRORS))
+def test_host_prep_staging_failures_are_errors(monkeypatch, tmp_path, code, windows_dirs):
+    monkeypatch.setattr(installer, "_is_elevated", lambda: True)
+    monkeypatch.setattr(
+        installer.subprocess, "run", lambda argv, **_kwargs: subprocess_result(code)
+    )
+    with pytest.raises(installer.MxcInstallError, match = installer._HOST_PREP_SCRIPT_ERRORS[code]):
+        installer._run_host_prep(tmp_path / "wxc-host-prep.exe", "prepare-system-drive")
+
+
+def test_elevated_host_prep_is_never_timed_out(monkeypatch, tmp_path, windows_dirs):
     # prepare-system-drive ran 3 to 7 minutes on a CI runner; a kill leaves the drive half re-ACLed.
     seen: dict = {}
     monkeypatch.setattr(installer, "_is_elevated", lambda: True)
@@ -289,6 +331,21 @@ def test_elevated_host_prep_is_never_timed_out(monkeypatch, tmp_path):
     )
     assert installer._run_host_prep(tmp_path / "wxc-host-prep.exe", "prepare-system-drive") == 0
     assert "timeout" not in seen
+
+
+@pytest.mark.parametrize("elevated", [True, False])
+def test_an_elevated_prepare_never_replays_the_user_journal(monkeypatch, tmp_path, elevated):
+    # The journal is user-writable and names the ACLs wxc-exec rewrites on replay.
+    seen: dict = {}
+    monkeypatch.setattr(installer.sys, "platform", "win32")
+    monkeypatch.setattr(installer, "_is_elevated", lambda: elevated)
+    monkeypatch.setattr(
+        installer.mxc_runtime,
+        "probe_host_prep_steps",
+        lambda **kwargs: seen.update(kwargs) or (),
+    )
+    assert installer.prepare_host(tmp_path) == ()
+    assert seen["replay_journal"] is (not elevated)
 
 
 def subprocess_result(code):

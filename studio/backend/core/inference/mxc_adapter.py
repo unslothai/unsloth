@@ -120,6 +120,9 @@ def spawn(
         return proc
     except MxcAdapterError:
         raise
+    except mxc_policy.MxcPolicyError as exc:
+        # The workdir or runtime changed since the policy was built: a refusal, never a host replay.
+        raise MxcAdapterError(str(exc), stage = "policy", may_have_started = proc is not None) from exc
     except Exception as exc:
         raise MxcAdapterError(
             str(exc),

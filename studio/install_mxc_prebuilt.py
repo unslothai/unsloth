@@ -205,7 +205,9 @@ def _run_elevated(executable: Path, arguments: list[str], directory: str) -> int
         error = ctypes.get_last_error()
         if error == 1223:
             raise MxcInstallError("the Windows administrator prompt was declined")
-        raise MxcInstallError(f"could not start wxc-host-prep elevated (Windows error {error})")
+        raise MxcInstallError(
+            f"could not start the elevated host preparation (Windows error {error})"
+        )
     if not info.hProcess:
         raise MxcInstallError("wxc-host-prep started without a process handle")
     try:
@@ -220,19 +222,81 @@ def _run_elevated(executable: Path, arguments: list[str], directory: str) -> int
         kernel32.CloseHandle(info.hProcess)
 
 
+def _system_directory() -> str:
+    """System32 from the API: SystemRoot is a user-settable variable, and this path runs elevated."""
+    import ctypes
+
+    buffer = ctypes.create_unicode_buffer(260)
+    if not ctypes.windll.kernel32.GetSystemDirectoryW(buffer, 260):
+        raise MxcInstallError("could not locate the Windows system directory")
+    return buffer.value
+
+
+def _host_prep_script(executable: Path, arguments: list[str]) -> str:
+    """Elevated: copy the pinned exe into a fresh admin-only dir, re-hash it, run it from there.
+
+    The install dir is user-writable, so running host-prep in place would let a planted DLL
+    (it LoadLibrary's dbghelp.dll) execute as administrator.
+    """
+
+    def quote(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
+
+    return "\n".join(
+        (
+            "$ErrorActionPreference = 'Stop'",
+            # Known folder, not $env:ProgramData: user variables can shadow it.
+            "$root = [Environment]::GetFolderPath('CommonApplicationData')",
+            "$dir = Join-Path $root ('unsloth-mxc-host-prep-' + [guid]::NewGuid().ToString('N'))",
+            "New-Item -ItemType Directory -Path $dir | Out-Null",
+            "try {",
+            "  & icacls.exe $dir /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' "
+            "'*S-1-5-18:(OI)(CI)F' | Out-Null",
+            "  if ($LASTEXITCODE -ne 0) { exit 90 }",
+            # Anything planted before the ACL change stays: the dir must still be empty.
+            "  if (@(Get-ChildItem -LiteralPath $dir -Force).Count -ne 0) { exit 92 }",
+            "  $exe = Join-Path $dir 'wxc-host-prep.exe'",
+            f"  Copy-Item -LiteralPath {quote(str(executable))} -Destination $exe",
+            "  $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash",
+            f"  if ($hash -ne '{mxc_runtime.WXC_HOST_PREP_SHA256.upper()}') {{ exit 91 }}",
+            f"  & $exe {' '.join(quote(value) for value in arguments)}",
+            "  exit $LASTEXITCODE",
+            "} finally {",
+            "  Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue",
+            "}",
+        )
+    )
+
+
+_HOST_PREP_SCRIPT_ERRORS = {
+    90: "could not restrict the host-prep staging directory to administrators",
+    91: "the staged wxc-host-prep.exe does not match its pinned digest",
+    92: "the host-prep staging directory was not empty after it was locked down",
+}
+
+
 def _run_host_prep(executable: Path, step: str) -> int:
+    import base64
+
     arguments = [step, "--quiet"] if step == "prepare-null-device" else [step]
-    directory = os.environ.get("SystemRoot") or str(executable.parent)
+    system = _system_directory()
+    powershell = os.path.join(system, "WindowsPowerShell", "v1.0", "powershell.exe")
+    encoded = base64.b64encode(_host_prep_script(executable, arguments).encode("utf-16-le"))
+    launcher = ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded.decode()]
     # Measured 3 to 7 minutes on a CI runner: it propagates an ACE across the whole system drive.
     print(f"[mxc-prebuilt] running wxc-host-prep {step}; this can take several minutes")
     if _is_elevated():
-        return subprocess.run(
-            [str(executable), *arguments],
-            cwd = directory,
+        code = subprocess.run(
+            [powershell, *launcher],
+            cwd = system,
             stdin = subprocess.DEVNULL,
             check = False,
         ).returncode
-    return _run_elevated(executable, arguments, directory)
+    else:
+        code = _run_elevated(Path(powershell), launcher, system)
+    if code in _HOST_PREP_SCRIPT_ERRORS:
+        raise MxcInstallError(_HOST_PREP_SCRIPT_ERRORS[code])
+    return code
 
 
 def prepare_host(install_dir: Path) -> tuple[str, ...]:
@@ -240,7 +304,9 @@ def prepare_host(install_dir: Path) -> tuple[str, ...]:
     if sys.platform != "win32":
         raise MxcInstallError("MXC host preparation is Windows-only")
     install_dir = install_dir.expanduser().resolve()
-    steps = mxc_runtime.probe_host_prep_steps(package_root = install_dir)
+    steps = mxc_runtime.probe_host_prep_steps(
+        package_root = install_dir, replay_journal = not _is_elevated()
+    )
     if steps is None:
         steps = mxc_runtime.HOST_PREP_STEPS
     if not steps:

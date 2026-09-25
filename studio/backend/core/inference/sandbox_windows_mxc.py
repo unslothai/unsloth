@@ -158,7 +158,8 @@ def prepare(plan, capability):
         except Exception as exc:
             may_have_started = bool(getattr(exc, "may_have_started", False))
             cancelled = isinstance(exc, mxc_adapter.MxcLaunchCancelled)
-            if plan.requested_mode == "auto" and not may_have_started and not cancelled:
+            refused = getattr(exc, "stage", None) == "policy"
+            if plan.requested_mode == "auto" and not (may_have_started or cancelled or refused):
                 try:
                     proc = subprocess.Popen(plan.argv, **kwargs)
                 except OSError as fallback_exc:

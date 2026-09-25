@@ -299,3 +299,143 @@ def test_bash_probe_needs_a_working_cat_to_qualify(tmp_path, has_cat):
     env = {"PATH": os.environ["PATH"] if has_cat else str(tmp_path / "empty")}
     out = subprocess.run(argv, cwd = tmp_path, env = env, capture_output = True, text = True).stdout
     assert ("UNSLOTH_MXC_TERMINAL_PROBE_OK" in out) is has_cat
+
+
+def test_the_journal_path_is_absolute_under_a_relative_home(monkeypatch, tmp_path):
+    # wxc-exec runs with the runtime dir as its cwd, so a relative path would name another journal.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", "relative-home")
+    path = mxc_runtime.dacl_state_path()
+    assert path.is_absolute()
+    assert path == tmp_path / "relative-home" / "mxc-runtime" / "dacl-restore"
+
+
+@pytest.mark.parametrize("replay", [True, False])
+def test_probe_journal_is_forced_and_empty_when_not_replaying(monkeypatch, tmp_path, replay):
+    import contextlib
+    import subprocess
+
+    seen = {}
+
+    @contextlib.contextmanager
+    def lease(package_root = None):
+        yield SimpleNamespace(info = SimpleNamespace(path = tmp_path / "wxc-exec.exe"))
+
+    def run(argv, **kwargs):
+        journal = kwargs["env"]["MXC_DACL_STATE_DIR"]
+        seen.update(journal = journal, contents = os.listdir(journal))
+        return subprocess.CompletedProcess(argv, 0, stdout = "{}", stderr = "")
+
+    monkeypatch.setattr(mxc_runtime, "acquire_runtime", lease)
+    monkeypatch.setattr(mxc_runtime.subprocess, "run", run)
+    # An inherited value must not win: a same-user process could point it anywhere.
+    mxc_runtime._run_wxc_probe(
+        None, {"MXC_DACL_STATE_DIR": str(tmp_path / "planted")}, replay_journal = replay
+    )
+    studio_journal = str(mxc_runtime.dacl_state_path())
+    assert (seen["journal"] == studio_journal) is replay
+    assert seen["journal"] != str(tmp_path / "planted")
+    if not replay:
+        assert seen["contents"] == [] and not os.path.exists(seen["journal"])
+
+
+def test_a_policy_refusal_at_dispatch_never_replays_on_the_host(monkeypatch, tmp_path):
+    # A workdir that gained a reparse point after planning refuses, as it would at planning time.
+    plan = os_sandbox.ToolLaunchPlan(
+        argv = (str(tmp_path / "python.exe"), "-c", "print(1)"),
+        workdir = str(tmp_path),
+        env = {},
+        requested_mode = "auto",
+        execution_kind = "python",
+    )
+    capability = os_sandbox.SandboxCapability(
+        backend = "mxc-processcontainer",
+        available = True,
+        reason = "qualified",
+        environment = "win32",
+        profile_id = mxc_runtime.PROFILE_ID,
+        environment_fingerprint = sandbox_windows_mxc._capability_fingerprint(
+            "qualified", "python", plan.argv[0]
+        ),
+    )
+    monkeypatch.setattr(
+        sandbox_windows_mxc.mxc_runtime, "installation_identity", lambda: "qualified"
+    )
+    monkeypatch.setattr(
+        sandbox_windows_mxc.mxc_policy,
+        "build_launch_request",
+        lambda _plan: {"policyHash": "sha256:controlled"},
+    )
+
+    def refuse(*_args, **_kwargs):
+        raise mxc_adapter.MxcAdapterError(
+            "the MXC workdir contains a reparse point", stage = "policy"
+        )
+
+    monkeypatch.setattr(sandbox_windows_mxc.mxc_adapter, "spawn", refuse)
+    monkeypatch.setattr(
+        sandbox_windows_mxc.subprocess,
+        "Popen",
+        lambda *_a, **_k: pytest.fail("a policy refusal was replayed on the host"),
+    )
+    prepared = sandbox_windows_mxc.prepare(plan, capability)
+    with pytest.raises(os_sandbox.SandboxBuildError, match = "without host replay"):
+        os_sandbox.spawn_prepared_launch(prepared)
+
+
+def test_verify_failure_is_reported_as_a_policy_stage(monkeypatch, tmp_path):
+    request = _request({"allowDaclMutation": False})
+    _stub_dispatch(monkeypatch, tmp_path)
+
+    def changed(_request):
+        raise mxc_policy.MxcPolicyError("the MXC workdir changed before WXC dispatch")
+
+    monkeypatch.setattr(mxc_policy, "verify_launch_identities", changed)
+    with pytest.raises(mxc_adapter.MxcAdapterError) as raised:
+        mxc_adapter.spawn(request)
+    assert raised.value.stage == "policy"
+    assert raised.value.may_have_started is False
+
+
+def test_a_probe_error_reclaims_the_running_workload(monkeypatch, tmp_path):
+    aborted = []
+
+    class Running:
+        returncode = None
+
+        def poll(self):
+            return None
+
+        def communicate(self, timeout = None):
+            raise OSError("pipe broke")
+
+    monkeypatch.setattr(mxc_probe.sys, "platform", "win32")
+    monkeypatch.setattr(
+        mxc_probe.sys, "getwindowsversion", lambda: SimpleNamespace(build = 26100), raising = False
+    )
+    monkeypatch.setattr(mxc_probe.mxc_runtime, "wxc_path", lambda: tmp_path / "wxc-exec.exe")
+    monkeypatch.setattr(mxc_probe.mxc_policy, "build_launch_request", lambda _plan: {})
+    monkeypatch.setattr(mxc_probe.mxc_adapter, "spawn", lambda *_a, **_k: Running())
+    monkeypatch.setattr(mxc_probe.mxc_adapter, "abort", lambda proc: aborted.append(proc))
+    monkeypatch.setattr(mxc_probe.mxc_adapter, "release_runtime", lambda _proc: None)
+    monkeypatch.setattr(mxc_probe.subprocess, "CREATE_NO_WINDOW", 0, raising = False)
+    available, reason = mxc_probe._probe(str(tmp_path / "python.exe"), "python")
+    assert available is False and "pipe broke" in reason
+    assert len(aborted) == 1
+
+
+def test_a_model_folder_inside_a_later_one_is_not_granted_twice(monkeypatch, tmp_path):
+    models = tmp_path / "models"
+    child = models / "child"
+    child.mkdir(parents = True)
+    monkeypatch.setattr(os_sandbox, "model_library_roots", lambda: (str(child), str(models)))
+    monkeypatch.setattr(mxc_policy.sys, "platform", "win32")
+    monkeypatch.setattr(
+        mxc_policy,
+        "_runtime_read_roots",
+        lambda executable, extra = (): [str(Path(executable).parent)],
+    )
+    readonly = mxc_policy.build_launch_request(_policy_plan(tmp_path), run_id = "fixed")["config"][
+        "filesystem"
+    ]["readonlyPaths"]
+    assert str(models) in readonly and str(child) not in readonly

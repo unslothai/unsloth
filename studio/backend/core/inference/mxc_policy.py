@@ -216,13 +216,17 @@ def _runtime_read_roots(executable: str, extra: list[str] = ()) -> list[str]:
         if not tail.strip("\\/"):
             raise MxcPolicyError(f"volume-root MXC grant is forbidden: {canonical}")
         result.append(canonical)
-    # A nested grant is redundant, and on the DACL tier each one re-walks its tree (about 9s for site-packages).
+    return _without_nested(result)
+
+
+def _without_nested(roots: list[str]) -> list[str]:
+    """Drop grants inside another, first spelling wins: on the DACL tier each re-walks its tree."""
     return [
         root
-        for index, root in enumerate(result)
+        for index, root in enumerate(roots)
         if not any(
             _within(root, other) and (not _within(other, root) or other_index < index)
-            for other_index, other in enumerate(result)
+            for other_index, other in enumerate(roots)
             if other_index != index
         )
     ]
@@ -316,7 +320,7 @@ def build_launch_request(plan, *, run_id: str | None = None) -> dict:
     limitations = _scan_workdir(workdir, required = required)
     selected_runtime = _selected_runtime(plan)
     readonly = _runtime_read_roots(selected_runtime, _trusted_terminal_path_dirs(plan))
-    readonly += _model_read_roots(workdir, readonly)
+    readonly = _without_nested(readonly + _model_read_roots(workdir, readonly))
     _reject_grants_over_dacl_journal([workdir, *readonly])
     execution_argv = list(plan.argv)
     execution_argv[0] = selected_runtime

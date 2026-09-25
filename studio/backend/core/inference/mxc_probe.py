@@ -221,6 +221,9 @@ def _probe(
             return False, f"the live MXC probe failed: {type(exc).__name__}: {exc}"
         finally:
             if "proc" in locals():
+                # An unexpected error must not leave the probe workload running past its lease.
+                if proc.poll() is None:
+                    mxc_adapter.abort(proc)
                 mxc_adapter.release_runtime(proc)
         if (
             proc.returncode != 0

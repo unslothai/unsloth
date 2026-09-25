@@ -13,6 +13,7 @@ import platform
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 
 MXC_REVISION = "7dac1a952f0c9ad13f0a4cb089c4e0e8b3e0013a"
@@ -96,7 +97,8 @@ def _installed_package_root() -> Path:
 
 def dacl_state_path() -> Path:
     """WXC's DACL restore journal: one fixed place, so every start (probe included) reaps the same orphans."""
-    return _studio_root() / "mxc-runtime" / "dacl-restore"
+    # Absolute: wxc-exec runs with the runtime dir as its cwd, so a relative home would split the journal.
+    return Path(os.path.abspath(_studio_root() / "mxc-runtime" / "dacl-restore"))
 
 
 def dacl_state_dir() -> Path:
@@ -254,24 +256,31 @@ def acquire_host_prep(*, package_root: Path | None = None) -> RuntimeLease:
     return _acquire(selected_host_prep, package_root)
 
 
-def _run_wxc_probe(package_root: Path | None, env: dict[str, str] | None):
+def _run_wxc_probe(
+    package_root: Path | None,
+    env: dict[str, str] | None,
+    *,
+    replay_journal: bool = True,
+):
     # --probe reaps orphaned ACEs first: point it at Studio's journal, not %LOCALAPPDATA%'s.
     env = dict(os.environ if env is None else env)
-    env.setdefault("MXC_DACL_STATE_DIR", str(dacl_state_dir()))
-    with acquire_runtime(package_root = package_root) as lease:
-        return subprocess.run(
-            [str(lease.info.path), "--probe"],
-            stdin = subprocess.DEVNULL,
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            cwd = str(lease.info.path.parent),
-            env = env,
-            timeout = HOST_PREP_PROBE_SECONDS,
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            check = False,
-        )
+    with tempfile.TemporaryDirectory(prefix = "unsloth-mxc-empty-journal-") as empty:
+        # An elevated probe must not replay a user-writable journal: it names the ACLs to rewrite.
+        env["MXC_DACL_STATE_DIR"] = str(dacl_state_dir()) if replay_journal else empty
+        with acquire_runtime(package_root = package_root) as lease:
+            return subprocess.run(
+                [str(lease.info.path), "--probe"],
+                stdin = subprocess.DEVNULL,
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                cwd = str(lease.info.path.parent),
+                env = env,
+                timeout = HOST_PREP_PROBE_SECONDS,
+                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                check = False,
+            )
 
 
 def recover_dacl_state(env: dict[str, str] | None = None) -> bool:
@@ -291,11 +300,14 @@ def recover_dacl_state(env: dict[str, str] | None = None) -> bool:
 
 
 def probe_host_prep_steps(
-    *, package_root: Path | None = None, env: dict[str, str] | None = None
+    *,
+    package_root: Path | None = None,
+    env: dict[str, str] | None = None,
+    replay_journal: bool = True,
 ) -> tuple[str, ...] | None:
     """Host preparation `wxc-exec --probe` reports missing; None when it cannot tell."""
     try:
-        completed = _run_wxc_probe(package_root, env)
+        completed = _run_wxc_probe(package_root, env, replay_journal = replay_journal)
         warnings = json.loads(completed.stdout).get("warnings")
     except Exception:  # noqa: BLE001 - advice only, never a capability verdict
         return None
