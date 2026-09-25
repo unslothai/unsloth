@@ -492,39 +492,12 @@ def reset_cache_verdicts() -> None:
 
 
 def _cache_hazard_within_deadline(name: str, path: str) -> "str | None":
-    signature = _cache_component_signature(path)
-    now = time.monotonic()
-    with _cache_scan_lock:
-        cached = _cache_verdicts.get(path)
-        if cached is not None:
-            expires, cached_signature, witness, verdict = cached
-            if (
-                now < expires
-                and cached_signature == signature
-                and directory_witness_matches(witness)
-            ):
-                return verdict
-            del _cache_verdicts[path]
-
-    verdict, witness = _cache_hazard_uncached(name, path)
-
-    with _cache_scan_lock:
-        # Re-read the signature: the component may have changed during the walk.
-        if _cache_component_signature(path) == signature and witness is not None:
-            _cache_verdicts[path] = (now + _CACHE_VERDICT_TTL_SECONDS, signature, witness, verdict)
-    return verdict
-
-
-def _cache_hazard_uncached(name: str, path: str) -> "tuple[str | None, list[tuple] | None]":
-    """The verdict and its visited directories; the witness is None for an unfinished, non-reusable walk."""
+    """Memo hit or walk, both on the bounded worker: revalidating stats the cache too, and NFS/FUSE can block a stat."""
     answer: list[str | None] = []
-    witness: "list[tuple]" = []
-    complete: list[bool] = []
 
-    def inspect() -> None:
+    def check() -> None:
         try:
-            answer.append(_inspect_cache_component(name, path, witness))
-            complete.append(True)
+            answer.append(_cache_hazard_memoized(name, path))
         except Exception as exc:  # noqa: BLE001 - a launch never fails over this
             answer.append(f"could not be inspected: {exc}")
 
@@ -532,26 +505,42 @@ def _cache_hazard_uncached(name: str, path: str) -> "tuple[str | None, list[tupl
         pending = _cache_scan_pending.get(path)
         if pending is not None:
             if pending.is_alive():
-                return (
-                    "was still being inspected when a previous launch gave up (a wedged mount?)",
-                    None,
-                )
+                return "was still being inspected when a previous launch gave up (a wedged mount?)"
             del _cache_scan_pending[path]
-        worker = threading.Thread(target = inspect, name = f"unsloth-cache-scan-{name}", daemon = True)
+        worker = threading.Thread(target = check, name = f"unsloth-cache-scan-{name}", daemon = True)
         # Start under the lock, or another caller can replace the not-yet-alive worker.
         _cache_scan_pending[path] = worker
         worker.start()
     worker.join(_CACHE_INSPECT_SECONDS)
     if not answer:
-        return (
-            f"could not be inspected within {_CACHE_INSPECT_SECONDS:.0f}s (a wedged mount?)",
-            None,
-        )
+        return f"could not be inspected within {_CACHE_INSPECT_SECONDS:.0f}s (a wedged mount?)"
     with _cache_scan_lock:
         # By identity: another caller may already have replaced it.
         if _cache_scan_pending.get(path) is worker:
             del _cache_scan_pending[path]
-    return answer[0], (witness if complete else None)
+    return answer[0]
+
+
+def _cache_hazard_memoized(name: str, path: str) -> "str | None":
+    signature = _cache_component_signature(path)
+    now = time.monotonic()
+    with _cache_scan_lock:
+        cached = _cache_verdicts.get(path)
+    if cached is not None:
+        expires, cached_signature, witness, verdict = cached
+        # Outside the lock: a stalled stat here must not hold up every other launch.
+        if now < expires and cached_signature == signature and directory_witness_matches(witness):
+            return verdict
+        with _cache_scan_lock:
+            if _cache_verdicts.get(path) is cached:
+                del _cache_verdicts[path]
+    witness: "list[tuple]" = []
+    verdict = _inspect_cache_component(name, path, witness)
+    # Re-read the signature: the component may have changed during the walk.
+    if _cache_component_signature(path) == signature:
+        with _cache_scan_lock:
+            _cache_verdicts[path] = (now + _CACHE_VERDICT_TTL_SECONDS, signature, witness, verdict)
+    return verdict
 
 
 def _model_cache_binds(workdir: str) -> dict[str, str]:

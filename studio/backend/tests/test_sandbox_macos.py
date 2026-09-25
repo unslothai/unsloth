@@ -829,6 +829,26 @@ def test_the_studio_state_deny_keeps_path_traversal_working(monkeypatch, tmp_pat
     assert str(state) in rules[0]
 
 
+def test_the_workdir_under_the_studio_home_is_restored_for_the_operation_the_deny_names(
+    monkeypatch, tmp_path
+):
+    """Measured on macos-15: a later (allow file-read* ...) loses to (deny file-read-data ...), so every Python call in the default workdir failed with Operation not permitted."""
+    from core.inference import sandbox_macos
+
+    state = tmp_path / "studio"
+    workdir = state / "sandbox" / "_default"
+    workdir.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(state))
+
+    deny, restore = sandbox_macos._studio_state_rules((), (), str(workdir), str(tmp_path / "tmp"))
+
+    denied = deny[1:].split(" (", 1)[0].split()[1:]
+    restored = restore[1:].split(" (", 1)[0].split()[1:]
+    assert restore.startswith("(allow ")
+    assert set(denied) <= set(restored), (denied, restored)
+    assert str(workdir) in restore
+
+
 def test_a_registered_model_folder_is_readable(monkeypatch, tmp_path):
     """The approval gate treats registered model folders as read-silent, so a read from one never prompts."""
     from core.inference import os_sandbox, sandbox_macos

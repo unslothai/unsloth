@@ -510,8 +510,12 @@ def _studio_state_rules(
     # file-read-data, NOT file-read*: denying stat on the workdir's ancestors breaks os.makedirs.
     rules = [_rule("deny file-read-data file-map-executable", _state_filters(state))]
     if needed:
+        # file-read-data named, not only file-read*: a rule on the exact operation beats one on its wildcard, whatever the order.
         rules.append(
-            _rule("allow file-read* file-test-existence file-map-executable", _path_filters(needed))
+            _rule(
+                "allow file-read* file-read-data file-test-existence file-map-executable",
+                _path_filters(needed),
+            )
         )
     return [rule for rule in rules if rule]
 

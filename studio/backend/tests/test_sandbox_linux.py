@@ -1084,6 +1084,29 @@ def test_a_wedged_cache_path_is_not_re_scanned_by_every_later_launch(tmp_path, m
     assert len(started) == first, "a second launch started another worker on the same path"
 
 
+def test_revalidating_a_cached_verdict_on_a_wedged_mount_is_bounded_too(monkeypatch, tmp_path):
+    """A memo hit re-stats every directory the walk saw, which blocks on a stalled NFS/FUSE cache just like the walk."""
+    component = tmp_path / "hub"
+    component.mkdir()
+    monkeypatch.setattr(sandbox_linux, "_cache_scan_pending", {})
+    sandbox_linux.reset_cache_verdicts()
+    assert sandbox_linux._cache_hazard_within_deadline("hub", str(component)) is None
+
+    release = threading.Event()
+    monkeypatch.setattr(
+        sandbox_linux, "directory_witness_matches", lambda witness: release.wait(30)
+    )
+    monkeypatch.setattr(sandbox_linux, "_CACHE_INSPECT_SECONDS", 0.5)
+    start = time.monotonic()
+    try:
+        hazard = sandbox_linux._cache_hazard_within_deadline("hub", str(component))
+    finally:
+        release.set()
+
+    assert time.monotonic() - start < 10
+    assert hazard is not None and "wedged" in hazard, hazard
+
+
 def test_a_runtime_entry_whose_target_leaves_the_workdir_gets_no_rule(tmp_path, monkeypatch):
     workdir = tmp_path / "session"
     workdir.mkdir()
@@ -1532,11 +1555,11 @@ def test_an_editable_namespace_package_is_granted_without_an_init(tmp_path, monk
 def test_the_cache_verdict_is_memoized_between_launches(tmp_path, monkeypatch):
     """The walk is O(entries) and was re-paid on every launch."""
     calls = []
-    real = sandbox_linux._cache_hazard_uncached
+    real = sandbox_linux._inspect_cache_component
     monkeypatch.setattr(
         sandbox_linux,
-        "_cache_hazard_uncached",
-        lambda name, path: (calls.append(path), real(name, path))[1],
+        "_inspect_cache_component",
+        lambda name, path, witness = None: (calls.append(path), real(name, path, witness))[1],
     )
     sandbox_linux.reset_cache_verdicts()
     component = tmp_path / "hub"
@@ -1554,11 +1577,11 @@ def test_the_cache_verdict_is_memoized_between_launches(tmp_path, monkeypatch):
 def test_a_changed_cache_is_re_inspected_rather_than_trusted(tmp_path, monkeypatch):
     """The memo key is the component root's identity and mtime, so a change made through the root must invalidate it."""
     calls = []
-    real = sandbox_linux._cache_hazard_uncached
+    real = sandbox_linux._inspect_cache_component
     monkeypatch.setattr(
         sandbox_linux,
-        "_cache_hazard_uncached",
-        lambda name, path: (calls.append(path), real(name, path))[1],
+        "_inspect_cache_component",
+        lambda name, path, witness = None: (calls.append(path), real(name, path, witness))[1],
     )
     sandbox_linux.reset_cache_verdicts()
     component = tmp_path / "hub"
@@ -1576,11 +1599,11 @@ def test_a_changed_cache_is_re_inspected_rather_than_trusted(tmp_path, monkeypat
 def test_a_failed_launch_drops_every_cache_verdict(tmp_path, monkeypatch):
     """tools.py calls this when a launch dies, for the same reason it drops the capability probe: a failed launch is the one signal that something the planner believed about this host has changed."""
     calls = []
-    real = sandbox_linux._cache_hazard_uncached
+    real = sandbox_linux._inspect_cache_component
     monkeypatch.setattr(
         sandbox_linux,
-        "_cache_hazard_uncached",
-        lambda name, path: (calls.append(path), real(name, path))[1],
+        "_inspect_cache_component",
+        lambda name, path, witness = None: (calls.append(path), real(name, path, witness))[1],
     )
     sandbox_linux.reset_cache_verdicts()
     component = tmp_path / "hub"
