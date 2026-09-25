@@ -42,8 +42,6 @@ def _no_env_override(monkeypatch):
     monkeypatch.delenv(OVERSIZED_GENERATE_ENV, raising = False)
 
 
-
-
 @pytest.mark.parametrize("gigabytes", [8, 12, 16])
 def test_a_2048_upscale_that_was_refused_now_runs_tiled(gigabytes):
     card = _card(gigabytes)
@@ -67,8 +65,6 @@ def test_sizes_that_fit_untiled_are_left_alone():
     for gigabytes in (8, 12, 16, 24, 48, 80):
         assert _verdict(1024, 1024, _card(gigabytes), vae_tile_side = 256).action == ACTIVATION_RUN
     assert _verdict(2048, 2048, _card(80), vae_tile_side = 256).action == ACTIVATION_RUN
-
-
 
 
 def _ten_2048_references() -> int:
@@ -107,8 +103,6 @@ def test_a_vae_that_cannot_tile_keeps_the_old_verdict():
     v = _verdict(2048, 2048, _card(16), vae_tile_side = None)
     assert v.action == ACTIVATION_REFUSE
     assert "even with tiled VAE decoding" not in v.message
-
-
 
 
 def test_allow_oversized_turns_a_refusal_into_a_tiled_attempt():
@@ -160,7 +154,6 @@ def test_raiser_returns_the_verdict_and_raises_only_on_refuse():
         dm.raise_on_image_activation_shortfall(
             device_memory = _card(16), width = 2048, height = 2048, family = _QWEN_HINT
         )
-
 
 
 # (hint, tile side, side, measured denoise peak, measured tiled VAE peak), MiB, diffusers img2img.
@@ -221,8 +214,6 @@ def test_a_tiled_vae_without_slicing_is_priced_at_the_whole_batch():
     kw = dict(family = _ZIMAGE_HINT, batch_size = 2, vae_tile_side = 1024, source_driven = True)
     assert _verdict(2048, 2048, card, vae_sliced = True, **kw).action == ACTIVATION_TILE
     assert _verdict(2048, 2048, card, vae_sliced = False, **kw).action == ACTIVATION_REFUSE
-
-
 
 
 class _Vae:
