@@ -111,6 +111,8 @@ export const ja = {
     error: "エラー",
     export: "エクスポート",
     help: "ヘルプ",
+    todayAt: "今日 {time}",
+    yesterdayAt: "昨日 {time}",
     loading: "読み込み中...",
     new: "新規",
     rename: "名前変更",

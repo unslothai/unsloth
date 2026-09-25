@@ -112,6 +112,8 @@ export const hi = {
     error: "त्रुटि",
     export: "एक्सपोर्ट करें",
     help: "सहायता",
+    todayAt: "आज, {time}",
+    yesterdayAt: "कल, {time}",
     loading: "लोड हो रहा है...",
     new: "नया",
     rename: "नाम बदलें",

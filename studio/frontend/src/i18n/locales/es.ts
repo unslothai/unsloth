@@ -111,6 +111,8 @@ export const es = {
     error: "Error",
     export: "Exportar",
     help: "Ayuda",
+    todayAt: "Hoy, {time}",
+    yesterdayAt: "Ayer, {time}",
     loading: "Cargando...",
     new: "Nuevo",
     rename: "Renombrar",

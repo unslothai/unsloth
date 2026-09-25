@@ -112,6 +112,8 @@ export const de = {
     error: "Fehler",
     export: "Exportieren",
     help: "Hilfe",
+    todayAt: "Heute, {time}",
+    yesterdayAt: "Gestern, {time}",
     loading: "Wird geladen…",
     new: "Neu",
     rename: "Umbenennen",

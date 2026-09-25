@@ -112,6 +112,8 @@ export const fr = {
     error: "Erreur",
     export: "Exporter",
     help: "Aide",
+    todayAt: "Aujourd’hui, {time}",
+    yesterdayAt: "Hier, {time}",
     loading: "Chargement...",
     new: "Nouveau",
     rename: "Renommer",

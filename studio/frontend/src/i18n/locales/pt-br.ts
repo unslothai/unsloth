@@ -111,6 +111,8 @@ export const ptBR = {
     error: "Erro",
     export: "Exportar",
     help: "Ajuda",
+    todayAt: "Hoje, {time}",
+    yesterdayAt: "Ontem, {time}",
     loading: "Carregando...",
     new: "Novo",
     rename: "Renomear",

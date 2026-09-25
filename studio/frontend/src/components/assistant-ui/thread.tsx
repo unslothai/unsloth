@@ -25,6 +25,7 @@ import { ComposerDraftPreview } from "@/components/assistant-ui/composer-draft-p
 import { PromptQueueList } from "@/components/assistant-ui/lazy-prompt-queue-list";
 import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
+import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { attachThreadFastCopy } from "@/components/assistant-ui/thread-fast-copy";
 import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
@@ -322,7 +323,6 @@ import {
   FolderAttachmentIcon,
   Folder01Icon,
   FolderAddIcon,
-  HelpCircleIcon,
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
@@ -8450,6 +8450,7 @@ const AssistantActionBar: FC = () => {
           >
             {/* Prevent an outside dismissal from triggering Delete. */}
             <MenuDismissGuard triggerRef={moreMenuTriggerRef} />
+            <MessageMenuTime onShowDetails={() => setDetailsOpen(true)} />
             {!inlineReadAloud && ttsEnabled && (
               <MessagePrimitive.If speaking={false}>
                 <ActionBarPrimitive.Speak asChild={true}>
@@ -8539,17 +8540,6 @@ const AssistantActionBar: FC = () => {
                 Save to project sources
               </ActionBarMorePrimitive.Item>
             )}
-            <ActionBarMorePrimitive.Item
-              onSelect={() => setDetailsOpen(true)}
-              className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
-            >
-              <HugeiconsIcon
-                icon={HelpCircleIcon}
-                strokeWidth={1.75}
-                className="size-icon"
-              />
-              See response details
-            </ActionBarMorePrimitive.Item>
           </ActionBarMorePrimitive.Content>
         </ActionBarMorePrimitive.Root>
         <MessageTiming side="top" className="h-8 px-2" />

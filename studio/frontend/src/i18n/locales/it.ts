@@ -76,6 +76,8 @@ export const it = {
     error: "Errore",
     export: "Esporta",
     help: "Aiuto",
+    todayAt: "Oggi, {time}",
+    yesterdayAt: "Ieri, {time}",
     loading: "Caricamento...",
     new: "Nuovo",
     rename: "Rinomina",

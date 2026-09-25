@@ -110,6 +110,8 @@ export const en = {
     error: "Error",
     export: "Export",
     help: "Help",
+    todayAt: "Today, {time}",
+    yesterdayAt: "Yesterday, {time}",
     loading: "Loading...",
     new: "New",
     rename: "Rename",
