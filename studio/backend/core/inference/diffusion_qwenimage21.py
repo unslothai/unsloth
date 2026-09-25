@@ -198,13 +198,6 @@ def _layout_for(
     return lay
 
 
-def forget_layouts(model: Any) -> None:
-    try:
-        model.__dict__.pop("_unsloth_q21_layouts", None)
-    except Exception:  # noqa: BLE001
-        pass
-
-
 def _cached_step(
     model: Any,
     lay: _Layout,
@@ -486,7 +479,3 @@ def uninstall() -> None:
             if getattr(vars(cls).get("forward"), "__unsloth_q21_fast_step__", False):
                 cls.forward = stock
             _INSTALLED.pop(cls, None)
-
-
-def is_installed() -> bool:
-    return bool(_INSTALLED)
