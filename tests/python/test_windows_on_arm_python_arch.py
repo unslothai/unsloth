@@ -730,12 +730,15 @@ def test_the_architecture_rebuild_does_not_move_the_venv_twice():
     keeps it from being swept is missing."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     branch = source.index("windows on arm: the existing environment runs native ARM64 Python")
-    tail = source[branch : branch + 2500]
-    guard = tail.index("if ($script:StudioVenvRollbackActive)")
-    move = tail.index("Start-StudioVenvRollback -ExistingDir $VenvDir")
+    # Searched forward from the branch rather than inside a fixed-size window: a byte count
+    # measures how long the branch happens to be today, so adding an arm to the same if/elseif
+    # chain pushes the move out of view and fails this for a reason that has nothing to do with
+    # what it tests.
+    guard = source.index("if ($script:StudioVenvRollbackActive)", branch)
+    move = source.index("Start-StudioVenvRollback -ExistingDir $VenvDir", branch)
     assert guard < move, "the rebuild still moves the environment unconditionally"
     assert (
-        "$script:StudioVenvRollbackPreserve = $true" in tail[guard:move]
+        "$script:StudioVenvRollbackPreserve = $true" in source[guard:move]
     ), "an already-active rollback is not marked for preservation"
 
 

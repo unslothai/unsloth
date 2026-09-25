@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export { ChatPage, validateChatSearch, type ChatSearch } from "./chat-page";
+export { isRenderableRenderHtmlToolPart } from "./artifacts/html-fences";
 export {
   addScanFolder,
   browseFolders,
@@ -110,11 +111,17 @@ export {
   type ReasoningRoundState,
 } from "./stores/reasoning-round-store";
 export {
+  setForkBoundary,
+  useForkBoundaryStore,
+  type ForkBoundaryState,
+} from "./stores/fork-boundary-store";
+export {
   folderRingKey,
   planKey,
   planSidebarDrop,
   rowKey,
   sectionRingKey,
+  SIDEBAR_TAIL_SCOPE,
   STAY,
   type DropEdge,
   type SidebarDragItem,
@@ -228,6 +235,7 @@ export {
   resyncInferenceStatusAfterServerModelChange,
 } from "./hooks/use-chat-model-runtime";
 export { compareModelDisplayName } from "./lib/external-model-label";
+export { ModelLoadDescription } from "./components/model-load-status";
 export { chatModelLoaded } from "./lib/chat-model-loaded";
 export type { ChatModelLoadedInput } from "./lib/chat-model-loaded";
 export {
@@ -259,19 +267,24 @@ export { ApiProviderLogo } from "./api-provider-logo";
 export { useExternalProvidersStore } from "./stores/external-providers-store";
 export { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
 export { ChatSearchDialog } from "./components/chat-search-dialog";
+export { NewProjectDialog } from "./components/new-project-dialog";
 export { StopRunningChatsDialog } from "./components/stop-running-chats-dialog";
 export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
 export type { ProjectRecord } from "./types";
 export { EditProjectDialog } from "./components/edit-project-dialog";
 export {
+  canForkChatRow,
   chatExportOptions,
   exportConversationByFormat,
+  forkChatRow,
   getSidebarItemThreadIds,
   recordedSandboxSessionIds,
   sandboxSessionIdsHolding,
   type ConversationExportFormat,
 } from "./components/chat-row-menu";
 export { OpenChatFolderUnavailableItem } from "./components/open-chat-folder-item";
+export { useForkInFlight } from "./utils/fork-in-flight";
+export { showForkCreatedToast } from "./utils/fork-toast";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
@@ -316,6 +329,7 @@ export {
   listStoredChatProjects,
   listStoredChatThreads,
   markThreadIncognito,
+  readBackendChatThread,
 } from "./utils/chat-history-storage";
 export { allRecordedSandboxSessionIds } from "./utils/recorded-sandbox-session";
 export {
@@ -331,7 +345,6 @@ export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
   reasoningFollowsPreference,
   resolveReasoningOpen,
-  resolveReasoningToggle,
   startsNewReasoningRound,
 } from "./utils/reasoning-visibility";
 export {

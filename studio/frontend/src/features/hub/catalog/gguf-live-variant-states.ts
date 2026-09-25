@@ -72,6 +72,42 @@ export function createLiveGgufVariantStatesSelector(repoId: string): (state: {
   };
 }
 
+function scopedFileKey(path: string): string {
+  return path.trim().replaceAll("\\", "/").replace(/^\.\//, "").toLowerCase();
+}
+
+export function createScopedLiveGgufFilesSelector(repoId: string): (state: {
+  jobs: Record<string, ManagedDownload>;
+}) => ReadonlySet<string> {
+  const repoKey = repoId.trim().toLowerCase();
+  let cache: { signature: string; files: ReadonlySet<string> } = {
+    signature: "",
+    files: new Set(),
+  };
+  return (state) => {
+    const files: string[] = [];
+    for (const job of Object.values(state.jobs)) {
+      if (job.kind !== "model" || !job.variant?.startsWith("@")) continue;
+      if (job.repoId.trim().toLowerCase() !== repoKey) continue;
+      if (!activeDownloadState(job.state)) continue;
+      for (const file of job.scopedFiles ?? []) files.push(scopedFileKey(file));
+    }
+    files.sort();
+    const signature = files.join("\u0000");
+    if (signature === cache.signature) return cache.files;
+    cache = { signature, files: new Set(files) };
+    return cache.files;
+  };
+}
+
+export function isScopedLiveVariant(
+  variant: Pick<GgufVariantDetail, "filename"> | null | undefined,
+  scopedLiveFiles: ReadonlySet<string>,
+): boolean {
+  if (!variant?.filename || scopedLiveFiles.size === 0) return false;
+  return scopedLiveFiles.has(scopedFileKey(variant.filename));
+}
+
 export function applyLiveGgufVariantStates(
   variants: readonly GgufVariantDetail[],
   liveStates: ReadonlyMap<string, LiveGgufVariantState>,
