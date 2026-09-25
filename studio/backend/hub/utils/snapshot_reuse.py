@@ -28,6 +28,8 @@ _HASH_CHUNK = 8 * 1024 * 1024
 _DIGEST_CACHE_NAME = "file_digests.json"
 _DIGEST_CACHE_LIMIT = 2048
 _PATHS_INFO_BATCH = 100
+# Old snapshots a plan asks the Hub about; the rest stay counted (the plan is on the request path).
+_REMOTE_DIGEST_COMMITS = 3
 _digest_cache_lock = threading.Lock()
 
 RemoteDigests = Callable[[str, Sequence[str]], Mapping[str, str]]
@@ -254,7 +256,10 @@ def find_reusable_copies(
     hashed = 0
     # Plan estimate only: the worker passes no remote_digests and hashes instead.
     if remote_digests is not None:
+        asked = 0
         for snap in snapshots:
+            if asked >= _REMOTE_DIGEST_COMMITS:
+                break
             here = {
                 path: candidate
                 for path, found in candidates.items()
@@ -264,6 +269,7 @@ def find_reusable_copies(
             }
             if not here:
                 continue
+            asked += 1
             try:
                 remote = remote_digests(snap.name, sorted(here)) or {}
             except Exception as exc:  # noqa: BLE001 - squashed history, offline, 404: hash instead
@@ -328,12 +334,17 @@ def _drop_superseded_partial(repo_dir: Path, digest: str, protected: frozenset[s
     partial = repo_dir / "blobs" / f"{digest}.incomplete"
     if not partial.is_file():
         return
+    lock_path = repo_dir.parent / ".locks" / repo_dir.name / f"{digest}.lock"
     try:
-        from hub.utils.hf_cache_state import blob_download_lock_held
-        if blob_download_lock_held(repo_dir, digest):
-            return
-        partial.unlink()
-    except Exception as exc:  # noqa: BLE001 - leftover partials are swept elsewhere
+        from filelock import FileLock, Timeout
+        lock_path.parent.mkdir(parents = True, exist_ok = True)
+        # Held, not probed: huggingface_hub writes <digest>.incomplete only inside this lock, so
+        # while we hold it no partial is live, and a peer arriving now waits instead of losing it.
+        with FileLock(str(lock_path), timeout = 0):
+            partial.unlink(missing_ok = True)
+    except Timeout:
+        return
+    except Exception as exc:  # noqa: BLE001 - no flock here (SoftFileLock territory): leave it
         logger.debug("could not remove superseded partial %s: %s", partial, exc)
 
 

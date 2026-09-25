@@ -755,3 +755,58 @@ def test_hard_linked_revisions_are_counted_once_in_cache_usage(tmp_path):
     (repo,) = scan_cache_dir(tmp_path / "hub").repos
     assert _repo_gguf_size_bytes(repo) == 2 * len(gguf)
     assert repo_unique_size_bytes(repo) == 2 * len(gguf) + len(b"v1") + len(b"v2")
+
+
+def test_a_plan_asks_the_hub_about_at_most_a_few_old_commits(tmp_path):
+    repo_dir = tmp_path / "hub" / "models--Org--Model"
+    for i in range(6):
+        snap = repo_dir / "snapshots" / (f"{i:x}" * 40)[:40]
+        snap.mkdir(parents = True)
+        (snap / "w.safetensors").write_bytes(_blob(70 + i, 1024))  # same size, new bytes each time
+        os.utime(snap, (1_000 + i, 1_000 + i))
+    asked = []
+
+    matches, _ = snapshot_reuse.find_reusable_copies(
+        repo_dir,
+        NEW,
+        {"w.safetensors": (1024, "f" * 64)},
+        remote_digests = lambda commit, paths: asked.append(commit) or {p: "e" * 64 for p in paths},
+        allow_hashing = False,
+    )
+
+    assert matches == {}
+    assert len(asked) == snapshot_reuse._REMOTE_DIGEST_COMMITS
+
+
+def test_a_partial_is_only_removed_while_holding_the_blob_lock(tmp_path):
+    from filelock import FileLock
+
+    repo_dir = _copy_layout(tmp_path, {"x.bin": b"x"})
+    digest = "d" * 64
+    partial = repo_dir / "blobs" / f"{digest}.incomplete"
+    partial.write_bytes(b"partial")
+    lock = tmp_path / "hub" / ".locks" / repo_dir.name / f"{digest}.lock"
+    lock.parent.mkdir(parents = True)
+
+    with FileLock(str(lock)):  # a peer's download in progress
+        snapshot_reuse._drop_superseded_partial(repo_dir, digest, frozenset())
+        assert partial.exists()
+    snapshot_reuse._drop_superseded_partial(repo_dir, digest, frozenset())
+    assert not partial.exists()
+
+
+def test_companion_cleanup_counts_hard_linked_revisions_once(tmp_path):
+    from huggingface_hub import scan_cache_dir
+
+    from hub.services.models.companion_cleanup import _repo_blob_bytes
+
+    weights = _blob(80, 8192)
+    repo_dir = _copy_layout(tmp_path, {"vae/vae.safetensors": weights})
+    (repo_dir / "snapshots" / NEW / "vae").mkdir(parents = True)
+    os.link(
+        repo_dir / "snapshots" / OLD / "vae" / "vae.safetensors",
+        repo_dir / "snapshots" / NEW / "vae" / "vae.safetensors",
+    )
+
+    (repo,) = scan_cache_dir(tmp_path / "hub").repos
+    assert _repo_blob_bytes(repo) == len(weights)
