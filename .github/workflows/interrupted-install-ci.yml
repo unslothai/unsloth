@@ -84,7 +84,7 @@ concurrency:
   # cannot cancel a pending run (see studio-backend-ci.yml). On a PR branch the group is
   # the ref, so a new push cancels the run for the previous one.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
