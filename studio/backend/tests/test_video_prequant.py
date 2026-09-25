@@ -1174,3 +1174,40 @@ def test_an_unreadable_card_keeps_the_rotation(monkeypatch):
     monkeypatch.setattr(vid, "_h3_dense_denoiser_resident_bytes", lambda fam, **kw: (1, 1))
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: None)
     assert vid._h3_dense_denoiser_fits(vid._h3_dense_denoiser_resident_bytes(None), None) is False
+
+
+def test_unreadability_is_reported_only_when_it_is_what_kept_bfloat16(monkeypatch):
+    """The status may blame an unreadable hosted checkpoint only when every other condition for
+    taking it held. speed off, a derivative base or a card the hosted denoiser does not fit keep
+    bfloat16 for their own reasons, and must not be reported as a torchao problem."""
+    fam, torch, vid = _shared_setup_1()
+    import core.inference.diffusion_prequant as pq
+
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
+    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda *a, **k: False)
+    fired = []
+
+    def ask(**over):
+        kw = dict(
+            target = None,
+            dtype = torch.bfloat16,
+            device = "cuda",
+            te_scheme = "int8",
+            task = "fl2va",
+            base_repo = fam.base_repo,
+            on_unreadable = lambda: fired.append(True),
+        )
+        kw.update(over)
+        return vid._h3_auto_denoiser_scheme(fam, **kw)
+
+    assert ask() is None and fired == [True]
+    fired.clear()
+    assert ask(speed_mode = "off") is None and fired == []
+    assert ask(base_repo = "someone/MiniMax-H3") is None and fired == []
+    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 10 * 1000**3)
+    assert ask() is None and fired == []
+    # Readable again: the pick is made and nothing is reported.
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda *a, **k: True)
+    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
+    assert ask() == vid.H3_AUTO_FALLBACK_SCHEME and fired == []

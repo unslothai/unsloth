@@ -1501,13 +1501,20 @@ def _clear_exception_frames(exc: BaseException) -> None:
 
 
 def _dense_fast_path_reason(
-    fam: Any, scheme: Optional[str], base: Optional[str], kind: str, path_override: Optional[str]
+    fam: Any,
+    scheme: Optional[str],
+    base: Optional[str],
+    kind: str,
+    path_override: Optional[str],
+    loras: Any = None,
 ) -> str:
     """The dense-quantise reason, naming a hosted checkpoint this install could not read: that is
-    the one case where "engaged" hides a full bf16 download the user did not expect."""
+    the one case where "engaged" hides a full bf16 download the user did not expect. Not said when
+    the checkpoint was never in play (a local override, a GGUF pick, a LoRA bake, which always
+    needs the dense transformer)."""
     note = (
         prequant_unreadable_reason(fam, scheme, base_repo = base)
-        if kind == "pipeline" and not path_override
+        if kind == "pipeline" and not path_override and not _has_active_lora(loras)
         else None
     )
     if note:
@@ -5742,6 +5749,7 @@ class DiffusionBackend:
                                     base,
                                     kind,
                                     transformer_prequant_path,
+                                    loras,
                                 ),
                                 # Honored when the quant engaged AND when the ask was "off" (a request NOT to
                                 # quantise, which the GGUF build satisfies)

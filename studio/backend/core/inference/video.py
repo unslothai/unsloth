@@ -1102,6 +1102,7 @@ def _h3_auto_denoiser_scheme(
     base_repo: Optional[str],
     speed_mode: Optional[str] = None,
     free_reader: Any = None,
+    on_unreadable: Any = None,
 ) -> Optional[str]:
     """The hosted scheme an UNSET ``transformer_quant`` resolves to, or None to keep bfloat16.
 
@@ -1157,13 +1158,6 @@ def _h3_auto_denoiser_scheme(
         # Asked per (scheme, PARTITION): a partition with no hosted checkpoint has no fallback, and serving the other
         # partition's would generate the wrong thing.
         return None
-    from .diffusion_prequant import restricted_prequant_load_supported
-
-    if not restricted_prequant_load_supported(H3_AUTO_FALLBACK_SCHEME):
-        # An install that cannot restrict the deserialization cannot open a checkpoint at all, and this runs BEFORE the
-        # download plan: choosing one would drop the dense denoiser shards for an artifact the loader is going to
-        # refuse.
-        return None
     # And the replacement has to fit BEFORE it is chosen. A torchao denoiser cannot ride the offload rotation at all (it
     # does not survive the mid-block move), so taking it means pinning it, which turns the memory floor from a max into
     # a sum: 20.3 GB resident PLUS whatever runs beside it. Under text_encoder_quant="none" that sum is larger than the
@@ -1171,6 +1165,15 @@ def _h3_auto_denoiser_scheme(
     # replacement does not fit either, the released denoiser in the rotation is the configuration that still runs.
     hosted_bytes = int(h3_transformer_resident_gb(H3_AUTO_FALLBACK_SCHEME) * 1000.0**3)
     if not _h3_dense_denoiser_fits((hosted_bytes, sizes[1]), free_bytes):
+        return None
+    from .diffusion_prequant import restricted_prequant_load_supported
+
+    if not restricted_prequant_load_supported(H3_AUTO_FALLBACK_SCHEME):
+        # An install that cannot restrict the deserialization cannot open a checkpoint at all, and this runs BEFORE the
+        # download plan: choosing one would drop the dense denoiser shards for an artifact the loader is going to
+        # refuse. Asked last, so ``on_unreadable`` fires only when this is the one thing that kept bfloat16.
+        if on_unreadable is not None:
+            on_unreadable()
         return None
     return H3_AUTO_FALLBACK_SCHEME
 
@@ -4781,6 +4784,7 @@ class VideoBackend:
             # re-deciding here against a reading that has moved could ask for a component this load can no longer open.
             # Otherwise decide now, against live free memory, which is the reading that describes the card once the
             # previous pipeline is gone (the plan only had the card's capacity to go on).
+            unreadable_blocked: list = []
             auto_fallback_scheme = _h3_auto_denoiser_planned or _h3_auto_denoiser_scheme(
                 fam,
                 target = umem_target,
@@ -4792,15 +4796,18 @@ class VideoBackend:
                 task = workflow,
                 base_repo = base,
                 speed_mode = speed_mode,
+                on_unreadable = lambda: unreadable_blocked.append(True),
             )
-            if auto_fallback_scheme is None:
+            if auto_fallback_scheme is None and unreadable_blocked:
                 from .diffusion_prequant import prequant_unreadable_reason
+
                 unreadable = prequant_unreadable_reason(
                     fam, H3_AUTO_FALLBACK_SCHEME, base_repo = base, task = workflow
+                ) or (
+                    f"the hosted {H3_AUTO_FALLBACK_SCHEME} checkpoint cannot be read by this install"
                 )
-                if unreadable:
-                    transformer_quant_reason = f"released bfloat16 components ({unreadable})"
-                    logger.warning("video.transformer_quant: %s", transformer_quant_reason)
+                transformer_quant_reason = f"released bfloat16 components ({unreadable})"
+                logger.warning("video.transformer_quant: %s", transformer_quant_reason)
             if auto_fallback_scheme is not None:
                 scheme = auto_fallback_scheme
                 logger.info(

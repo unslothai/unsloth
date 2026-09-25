@@ -118,6 +118,13 @@ def test_the_dense_fast_path_reason_says_why_the_hosted_checkpoint_was_skipped(m
         d._dense_fast_path_reason(object(), "int8", "org/base", "gguf", None)
         == "engaged on the dense fast path"
     )
+    # A LoRA bake always takes the dense transformer, readable checkpoint or not.
+    assert (
+        d._dense_fast_path_reason(
+            object(), "int8", "org/base", "pipeline", None, [("org/lora", 1.0)]
+        )
+        == "engaged on the dense fast path"
+    )
 
 
 # ------------------------------------------------------------------------------------ real files
