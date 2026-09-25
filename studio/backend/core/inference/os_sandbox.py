@@ -305,7 +305,8 @@ def _host_channel_hazard(
 
 
 _scan_lock = threading.Lock()
-_scan_pending: dict[str, threading.Thread] = {}
+# root -> (worker, answer, budget, deadline) of the walk in flight, so a concurrent launch shares it.
+_scan_pending: "dict[str, tuple[threading.Thread, list, list, float]]" = {}
 
 
 def _hazard_within_wall_clock(
@@ -317,40 +318,40 @@ def _hazard_within_wall_clock(
     """Scan on a worker so the budget is wall-clock: scandir/lstat on a stalled mount cannot be interrupted."""
     with _scan_lock:
         pending = _scan_pending.get(root)
-        if pending is not None:
-            if pending.is_alive():
-                raise _ScanBudgetExceeded(
-                    "was still being checked for host channels when a previous "
-                    "launch gave up (a wedged mount?)"
-                )
+        if pending is not None and not pending[0].is_alive():
             del _scan_pending[root]
+            pending = None
+        if pending is None:
+            answer: list[str | None] = []
+            budget: list[str] = []
+            deadline = time.monotonic() + seconds
 
-        answer: list[str | None] = []
-        budget: list[str] = []
+            def inspect() -> None:
+                try:
+                    if prepare is not None:
+                        prepare(deadline)
+                    answer.append(
+                        _host_channel_hazard(
+                            root, max_entries, max(0.1, deadline - time.monotonic())
+                        )
+                    )
+                except _ScanBudgetExceeded as exc:
+                    budget.append(str(exc))
+                except Exception as exc:  # noqa: BLE001 - reported, never raised at the caller
+                    budget.append(f"could not be checked for host channels: {exc}")
 
-        deadline = time.monotonic() + seconds
+            worker = threading.Thread(target = inspect, name = "unsloth-workdir-scan", daemon = True)
+            # Register under the lock, or a concurrent caller starts a second walk.
+            pending = (worker, answer, budget, deadline)
+            _scan_pending[root] = pending
+            worker.start()
+    worker, answer, budget, deadline = pending
 
-        def inspect() -> None:
-            try:
-                if prepare is not None:
-                    prepare(deadline)
-                answer.append(
-                    _host_channel_hazard(root, max_entries, max(0.1, deadline - time.monotonic()))
-                )
-            except _ScanBudgetExceeded as exc:
-                budget.append(str(exc))
-            except Exception as exc:  # noqa: BLE001 - reported, never raised at the caller
-                budget.append(f"could not be checked for host channels: {exc}")
-
-        worker = threading.Thread(target = inspect, name = "unsloth-workdir-scan", daemon = True)
-        # Register under the lock, or a concurrent caller starts a second walk.
-        _scan_pending[root] = worker
-        worker.start()
-
-    worker.join(seconds + _SCAN_JOIN_GRACE_SECONDS)
+    # Waits only out the walk's own budget: a walk a previous launch gave up on is past it already.
+    worker.join(max(0.0, deadline + _SCAN_JOIN_GRACE_SECONDS - time.monotonic()))
     with _scan_lock:
         # By identity: another caller may already have replaced the entry.
-        if not worker.is_alive() and _scan_pending.get(root) is worker:
+        if not worker.is_alive() and _scan_pending.get(root) is pending:
             del _scan_pending[root]
     if budget:
         raise _ScanBudgetExceeded(budget[0])

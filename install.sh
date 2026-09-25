@@ -3214,7 +3214,8 @@ _check_linux_tool_sandbox() {
         fi
         return 0
     fi
-    if bwrap --unshare-all --ro-bind / / true </dev/null >/dev/null 2>&1; then
+    # The runtime's namespaces, not --unshare-all: that adds the network namespace, which tool calls never get.
+    if bwrap --unshare-user --unshare-pid --unshare-ipc --unshare-uts --unshare-cgroup --ro-bind / / true </dev/null >/dev/null 2>&1; then
         step "sandbox" "bubblewrap works: tool calls run in an OS sandbox"
         return 0
     fi

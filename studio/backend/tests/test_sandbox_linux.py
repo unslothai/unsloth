@@ -1978,6 +1978,44 @@ def test_a_scratch_entry_that_cannot_be_removed_still_fails_the_call(tmp_path):
         os.chmod(held, 0o700)
 
 
+def test_concurrent_launches_share_one_workdir_scan(monkeypatch, tmp_path):
+    """A second launch used to see the first one's walk in flight and report the workdir unchecked, which required refuses."""
+    import threading
+    import time
+
+    from core.inference import os_sandbox
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    walks = []
+
+    def slow(
+        root,
+        max_entries,
+        seconds,
+        witness = None,
+    ):
+        walks.append(root)
+        time.sleep(0.5)
+        return None
+
+    monkeypatch.setattr(os_sandbox, "_host_channel_hazard", slow)
+    results = []
+    callers = [
+        threading.Thread(
+            target = lambda: results.append(os_sandbox.scan_workdir_for_host_channels(str(workdir)))
+        )
+        for _ in range(3)
+    ]
+    for caller in callers:
+        caller.start()
+    for caller in callers:
+        caller.join(20)
+
+    assert results == [(), (), ()], results
+    assert len(walks) == 1, "each launch walked the workdir again"
+
+
 def test_a_workdir_scan_that_blocks_is_given_up_on_rather_than_waited_out(monkeypatch, tmp_path):
     """The budget is checked between entries, which is only a deadline while the walk is running."""
     import threading
