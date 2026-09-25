@@ -9,7 +9,7 @@ import json
 import math
 from typing import Any, Optional, Union
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -100,7 +100,11 @@ def _validate(name: str, question: QuestionIn) -> None:
 
 
 @router.post("/systemone")
-def system_one(payload: SystemOneRequest, current_subject: str = Depends(get_current_subject)):
+def system_one(
+    payload: SystemOneRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
     if not systemone_settings.get_enabled():
         raise _error(
             404,
@@ -116,6 +120,15 @@ def system_one(payload: SystemOneRequest, current_subject: str = Depends(get_cur
     checkpoint = catalog.resolve(payload.model)
     if checkpoint is None:
         raise _error(400, "api_usage_error", f"Unknown model: {payload.model}")
+    from auth.authentication import request_admitted_without_credential
+
+    # Same rule as the OpenAI routes: a keyless caller never downloads or swaps in another model.
+    if checkpoint != catalog.default_checkpoint() and request_admitted_without_credential(request):
+        raise _error(
+            403,
+            "permission_error",
+            "Keyless requests can only use the configured Decision API model; send an API key to pick another.",
+        )
     state_chars = (
         len(payload.state)
         if isinstance(payload.state, str)

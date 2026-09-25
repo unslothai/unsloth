@@ -477,6 +477,28 @@ def test_turning_it_off_waits_for_a_claimed_load(client, monkeypatch):
     assert client.get("/api/settings/systemone").json()["enabled"] is True
 
 
+def test_keyless_callers_only_reach_the_configured_model(client, monkeypatch, runtime):
+    import auth.authentication
+
+    monkeypatch.setattr(auth.authentication, "request_admitted_without_credential", lambda r: True)
+    refused = _post(client, model = "laya-english")
+    assert refused.status_code == 403
+    assert refused.json()["detail"]["error_type"] == "permission_error"
+    assert _post(client, model = "laya-multilingual").status_code == 200
+    assert _post(client).status_code == 200
+
+
+def test_unload_returns_cached_device_memory(monkeypatch):
+    freed = []
+    fake_torch = SimpleNamespace(
+        cuda = SimpleNamespace(is_initialized = lambda: True, empty_cache = lambda: freed.append("cuda")),
+        backends = SimpleNamespace(mps = SimpleNamespace(is_available = lambda: False)),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    laya_runtime.unload()
+    assert freed == ["cuda"]
+
+
 def test_download_plan_lists_exact_subfolder_files(client, monkeypatch):
     import huggingface_hub
 

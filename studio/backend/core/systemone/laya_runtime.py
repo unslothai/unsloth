@@ -266,6 +266,18 @@ def _release_memory() -> None:
         )
         if clear is not None:
             clear()
+    # Torch's caching allocator likewise keeps the freed weights reserved from training and llama-server.
+    # Only backends already initialised are touched, so a CPU-only Studio never opens a device context here.
+    if (torch := sys.modules.get("torch")) is not None:
+        try:
+            if torch.cuda.is_initialized():
+                torch.cuda.empty_cache()
+            if hasattr(torch, "xpu") and torch.xpu.is_initialized():
+                torch.xpu.empty_cache()
+            if torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+        except Exception:
+            logger.debug("Could not clear the Decision API device cache", exc_info = True)
 
 
 def _evict() -> None:
