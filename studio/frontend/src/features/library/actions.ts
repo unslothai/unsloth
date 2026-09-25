@@ -192,8 +192,8 @@ export async function chatAboutItems(
     const leftOut = fitting.length - chosen.length;
     if (tooLarge > 0 || leftOut > 0) {
       const attached =
-        chosen.length === 1 ? "library.toast.attachedOne" : "library.toast.attachedMany";
-      toast(translate(attached, { count: chosen.length }), {
+        files.length === 1 ? "library.toast.attachedOne" : "library.toast.attachedMany";
+      toast(translate(attached, { count: files.length }), {
         description: [
           tooLarge > 0 && translate("library.toast.skippedTooLarge", { count: tooLarge }),
           leftOut > 0 &&

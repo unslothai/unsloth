@@ -154,6 +154,8 @@ export interface LibraryUploadBatch {
 export const MAX_LIBRARY_UPLOAD_BYTES = 512 * 1024 * 1024;
 // Starlette's form parser refuses more than 1000 files in one request (Request.form max_files).
 const MAX_LIBRARY_UPLOAD_FILES = 1000;
+// And more than 1000 other fields (max_fields): the leases, with room for folderId.
+const MAX_LEASES_PER_REQUEST = 999;
 
 function uploadGroups(files: File[]): File[][] {
   const groups: File[][] = [];
@@ -185,8 +187,14 @@ export async function uploadLibraryFiles(
     for (const file of group) form.append("files", file, file.name);
     return form;
   });
+  for (let start = 0; start < leases.length; start += MAX_LEASES_PER_REQUEST) {
+    const form = new FormData();
+    for (const lease of leases.slice(start, start + MAX_LEASES_PER_REQUEST)) {
+      form.append("nativePathLeases", lease);
+    }
+    requests.push(form);
+  }
   if (requests.length === 0) requests.push(new FormData());
-  for (const lease of leases) requests[0]!.append("nativePathLeases", lease);
   const check = sameSession(
     batch.sessionEpoch ?? getAuthSessionEpoch(),
     "library.toast.signedOutBeforeUpload",
