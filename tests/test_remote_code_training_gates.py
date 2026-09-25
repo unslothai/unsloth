@@ -296,6 +296,28 @@ def test_core_carries_the_wrapper_loader_state():
     assert core.config.quantization_config == model.config.quantization_config
 
 
+def test_core_inherits_the_wrapper_dtype_and_repo_path():
+    """A sub-config with no dtype left bnb's compute dtype None (backward crashed), and no path broke adapter reloads."""
+    model = _OmniWrapper(_Cfg())
+    model.language_model.config = _Cfg()
+    model.language_model.config.dtype = None
+    model.config.dtype = torch.bfloat16
+    model.config._name_or_path = "org/omni-repo"
+    core = _text_trainable_core(model)
+    assert core.config.dtype == torch.bfloat16
+    assert core.config._name_or_path == "org/omni-repo"
+    assert core.name_or_path == "org/omni-repo"
+
+
+def test_merged_save_of_a_text_core_is_refused(tmp_path):
+    """The merge re-reads the wrapper-layout shards: it wrote an unmerged or unloadable checkpoint."""
+    from unsloth.save import unsloth_generic_save
+
+    core = _text_trainable_core(_OmniWrapper(_Cfg()))
+    with pytest.raises(NotImplementedError, match = "text_only = True"):
+        unsloth_generic_save(core, None, str(tmp_path), save_method = "merged_16bit")
+
+
 def test_core_without_loader_state_gets_none_invented():
     model = _OmniWrapper(_Cfg())
     core = _text_trainable_core(model)

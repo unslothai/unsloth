@@ -1424,6 +1424,21 @@ def _carry_loader_state_to_core(model, core, name):
             core.hf_device_map = carried
     wrapper_config = getattr(model, "config", None)
     core_config = getattr(core, "config", None)
+    # A sub-config without its own dtype leaves correct_dtype None, so bnb quant_state.dtype becomes None.
+    wrapper_dtype = getattr(wrapper_config, "dtype", None)
+    # A child built in __init__ has no _name_or_path: adapter_config and merged saves need the repo.
+    wrapper_path = getattr(wrapper_config, "_name_or_path", "") or getattr(model, "name_or_path", "")
+    if core_config is not None and wrapper_path and not getattr(core_config, "_name_or_path", ""):
+        core_config._name_or_path = wrapper_path
+        try:
+            core.name_or_path = wrapper_path
+        except Exception:
+            pass
+    if core_config is not None and wrapper_dtype is not None and getattr(core_config, "dtype", None) is None:
+        try:
+            core_config.dtype = wrapper_dtype
+        except Exception:
+            pass
     quantization_config = getattr(wrapper_config, "quantization_config", None)
     if (
         quantization_config is not None
@@ -2038,7 +2053,8 @@ class FastBaseModel:
                 if _cfg_val is not None:
                     setattr(model_config, "max_position_embeddings", _cfg_val)
                 with _tolerate_dtype_cast_on_quantized_model(
-                    bool(trust_remote_code) and (load_in_4bit or load_in_8bit)
+                    bool(trust_remote_code)
+                    and (load_in_4bit or load_in_8bit or kwargs.get("quantization_config") is not None)
                 ):
                     model = auto_model.from_pretrained(
                         model_name,
