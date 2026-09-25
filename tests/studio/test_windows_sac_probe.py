@@ -1087,7 +1087,10 @@ def test_prepare_proves_the_audit_policy_actually_evaluates_loads():
     # An enforcing machine refuses the control outright: that 3077 is stronger
     # evidence of evaluation than the 3076 an audit-only machine produces, and
     # under an installed audit policy either answers the question.
-    assert "function Test-AuditPolicyEvaluating([int[]] $AcceptIds = @(3076, 3077), [string] $FromPolicy = $null) {" in fn
+    assert (
+        "function Test-AuditPolicyEvaluating([int[]] $AcceptIds = @(3076, 3077), [string] $FromPolicy = $null) {"
+        in fn
+    )
     assert "$AcceptIds -contains $_.Id" in fn
     # Polled, not slept once, and never staged into the evidence.
     assert "foreach ($attempt in 1..10)" in fn
@@ -1575,7 +1578,10 @@ def test_the_sac_positive_control_counts_only_an_enforced_refusal():
     Evaluation mode logs nothing to this channel, so a 3076 there was written by
     some other audit policy and says nothing about enforcement."""
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
-    assert "function Test-AuditPolicyEvaluating([int[]] $AcceptIds = @(3076, 3077), [string] $FromPolicy = $null) {" in ps1
+    assert (
+        "function Test-AuditPolicyEvaluating([int[]] $AcceptIds = @(3076, 3077), [string] $FromPolicy = $null) {"
+        in ps1
+    )
     fn = ps1[
         ps1.index("function Test-AuditPolicyEvaluating") : ps1.index("function Invoke-Prepare")
     ]
@@ -2106,7 +2112,16 @@ function Start-Sleep { }
         encoding = "utf-8",
     )
     proc = subprocess.run(
-        [pwsh, "-NoProfile", "-File", str(driver), "-Src", str(PROBE_DIR / "sac-probe.ps1"), "-Work", str(tmp_path)],
+        [
+            pwsh,
+            "-NoProfile",
+            "-File",
+            str(driver),
+            "-Src",
+            str(PROBE_DIR / "sac-probe.ps1"),
+            "-Work",
+            str(tmp_path),
+        ],
         capture_output = True,
         text = True,
         timeout = 120,
@@ -2120,7 +2135,9 @@ def test_the_audit_policy_control_needs_an_event_from_the_audit_policy_itself(tm
     NoISG audit policy evaluates anything. Accepting that 3077 as proof let an
     empty later window be graded as a signature-only allow."""
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
-    prepare = ps1[ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")]
+    prepare = ps1[
+        ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")
+    ]
     run = ps1[ps1.index("function Invoke-Run") : ps1.index("function Invoke-Collect")]
     for stage in (prepare, run):
         assert "$controlFired = Test-AuditPolicyEvaluating -FromPolicy $NOISG_GUID" in stage
@@ -2152,7 +2169,12 @@ exit 0
     _drive_probe(
         tmp_path,
         body,
-        ["Get-EventDataMap", "Test-EventFromPolicy", "Test-EventDataFromPolicy", "Test-AuditPolicyEvaluating"],
+        [
+            "Get-EventDataMap",
+            "Test-EventFromPolicy",
+            "Test-EventDataFromPolicy",
+            "Test-AuditPolicyEvaluating",
+        ],
     )
 
 
@@ -2216,7 +2238,7 @@ def test_collect_counts_only_the_installed_policys_audit_events(tmp_path):
     collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
     assert "Test-EventDataFromPolicy $e.EventData $NOISG_GUID" in collect
     assert "$audits = @($ours | Where-Object { & $isOurAudit $_ }).Count" in collect
-    assert "$collectionProblems += \"$otherPolicyAudits audit event(s)" in collect
+    assert '$collectionProblems += "$otherPolicyAudits audit event(s)' in collect
     # The old unattributed count is gone.
     assert "$audits = @($ours | Where-Object { $_.Id -eq 3076 }).Count" not in collect
     body = r"""
@@ -2233,7 +2255,9 @@ if ($true -eq (Test-EventDataFromPolicy $null $NOISG)) { exit 54 }
     # applied Smart App Control logs no 3076, so none may count as a verdict.
     start = collect.index("    $isOurAudit = {")
     predicate = collect[start : collect.index("\n    }\n", start) + 6]
-    body += predicate + r"""
+    body += (
+        predicate
+        + r"""
 $NOISG_GUID = $NOISG
 $evOurs = [pscustomobject]@{ Id = 3076; EventData = $ours }
 $evOther = [pscustomobject]@{ Id = 3076; EventData = $other }
@@ -2245,4 +2269,5 @@ if ($true -eq (& $isOurAudit $evOurs)) { exit 57 }
 if ($true -eq (& $isOurAudit $evOther)) { exit 58 }
 exit 0
 """
+    )
     _drive_probe(tmp_path, body, ["Test-EventDataFromPolicy"])
