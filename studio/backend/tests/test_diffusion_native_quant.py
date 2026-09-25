@@ -237,7 +237,6 @@ def test_zero_rows_do_not_divide_by_zero():
 
 
 def test_native_buffers_move_with_module_to_and_state_dict():
-    # Offload hooks move modules with Module.to(); torchao tensors reject that, plain buffers do not.
     lin = torch.nn.Linear(64, 64).to(torch.bfloat16)
     layer = nq.native_linear_class()(lin, "int8")
     keys = set(layer.state_dict())
@@ -449,7 +448,6 @@ def test_quantize_transformer_auto_on_rocm_stays_dense(rocm, monkeypatch):
 
 
 def test_quantize_transformer_failure_is_reported_as_dirty(rocm, monkeypatch):
-    # A partial conversion must read as quantised, not dense.
     model = _toy()
     real = nq.native_linear_class()
     calls = []

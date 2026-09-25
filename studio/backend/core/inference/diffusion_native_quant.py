@@ -87,8 +87,7 @@ def native_linear_class():
                 else:
                     wq = (w / scale).to(torch.float8_e4m3fn)
                 del w
-            # Integer views, so a module-wide ``.to(dtype)`` (which casts every floating buffer) can neither widen
-            # the fp8 payload back to bf16 nor round the fp32 scales.
+            # Integer views: a module-wide ``.to(dtype)`` casts floating buffers, which would widen fp8 or round the scales.
             self.register_buffer("weight_q", wq.view(torch.uint8) if scheme == NATIVE_FP8 else wq)
             self.register_buffer(
                 "weight_scale", scale.squeeze(1).to(torch.float32).contiguous().view(torch.int32)
