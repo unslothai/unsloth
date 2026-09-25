@@ -298,7 +298,6 @@ fix_transformers5_bare_annotation_configs()
 # nothing. Ordered here, before anything imports a model, so a plain transformers.generate in the
 # same process is covered too (#9708).
 fix_transformers_fully_masked_rows()
-# Mutates the live mask mapping, so install order vs unsloth_zoo's mask wrapper is irrelevant.
 fix_transformers_chunked_mask_block_sequence_ids()
 # Probe-gated: no-ops unless this transformers merges a submodule's own prefix renaming into a
 # composite model's conversion mapping. Ordered here, before anything loads a checkpoint, so a

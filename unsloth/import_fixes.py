@@ -1670,7 +1670,7 @@ def _accepts_keyword(function, name):
     try:
         parameters = inspect.signature(function).parameters
     except Exception:
-        return True  # Unknown: claim yes, so the fix stays out of the way.
+        return True  # Unknown signature: leave it alone.
     if name in parameters:
         return True
     return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())

@@ -74,7 +74,6 @@ def test_static_cache_generate_matches_dynamic(unpatched):
     if not _chunked_mask_rejects_block_sequence_ids(masking_utils):
         pytest.skip("this transformers does not pass block_sequence_ids to chunked masks")
     model = _tiny_llama4()
-    # Without the defect reproducing upstream, this test proves nothing.
     with pytest.raises(TypeError, match = "block_sequence_ids"):
         _generate(model, "static")
 
