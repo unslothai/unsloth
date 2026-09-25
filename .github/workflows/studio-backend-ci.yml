@@ -81,6 +81,7 @@ on:
       - '.github/workflows/docker-publish.yml'
       - '.pre-commit-config.yaml'
       - '.github/workflows/studio-backend-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
       - '.github/workflows/security-audit.yml'
 
 concurrency:
