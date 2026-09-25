@@ -3977,7 +3977,8 @@ def apply_accepts_loss_kwargs_fix(model):
     if value is None:
         declared = _instance_accepts_loss_kwargs(model)
         if declared is not None:
-            # Set in __init__ (or by an earlier call here); HF honours it, so leave it.
+            # Set in __init__ (or by an earlier call here): keep it, and carry it onto any wrapper added since.
+            _shadow_accepts_loss_kwargs(model, declared)
             return f"{declared} (instance accepts_loss_kwargs)"
         causal_lm = _forward_ignores_num_items_in_batch(model)
         if causal_lm is not None:
@@ -4033,6 +4034,22 @@ _CE_PARAMS = {
 }
 
 
+_TORCH_CE_OWNERS = frozenset(
+    ("nn", "torch.nn", "F", "functional", "nn.functional", "torch.nn.functional")
+)
+
+
+def _dotted_name(node):
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
 def _is_const(node, allowed):
     return isinstance(node, ast.Constant) and node.value in allowed
 
@@ -4048,7 +4065,13 @@ def _ce_calls_all_mean(source):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+        if isinstance(func, ast.Attribute):
+            # Only the PyTorch spellings; a model's own helper named cross_entropy may reduce however it likes.
+            if _dotted_name(func.value) not in _TORCH_CE_OWNERS:
+                continue
+            name = func.attr
+        else:
+            name = getattr(func, "id", None)
         params = _CE_PARAMS.get(name)
         if params is None:
             continue
@@ -4091,8 +4114,12 @@ def _forward_ignores_num_items_in_batch(model):
         m = nxt
     else:
         return None
-    forward = getattr(type(m), "forward", None)
-    forward = inspect.unwrap(forward) if forward is not None else None
+    # The instance forward is what Trainer inspects and calls (accelerate hooks and loaders replace it).
+    forward = getattr(m, "forward", None)
+    try:
+        forward = inspect.unwrap(forward) if forward is not None else None
+    except ValueError:
+        return None
     try:
         params = inspect.signature(forward).parameters.values()
         source = inspect.getsource(forward)

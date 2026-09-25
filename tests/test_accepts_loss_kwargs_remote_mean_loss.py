@@ -42,6 +42,8 @@ _NAMES = {
     "_ce_calls_all_mean",
     "_CE_PARAMS",
     "_is_const",
+    "_TORCH_CE_OWNERS",
+    "_dotted_name",
     "apply_accepts_loss_kwargs_fix",
 }
 
@@ -348,3 +350,73 @@ def test_a_mention_without_a_call_is_not_a_mean_loss():
         "    return (logits - labels).abs().sum()\n"
     )
     assert ns["_ce_calls_all_mean"](source) is False
+
+
+def test_a_model_helper_named_cross_entropy_is_not_the_torch_op():
+    ns = _load()
+    source = (
+        "def forward(self, logits, labels, **kwargs):\n"
+        "    return self.loss_helpers.cross_entropy(logits, labels)\n"
+    )
+    assert ns["_ce_calls_all_mean"](source) is False
+    for torch_spelling in (
+        "torch.nn.functional.cross_entropy(logits, labels)",
+        "F.cross_entropy(logits, labels)",
+        "nn.CrossEntropyLoss()(logits, labels)",
+        "CrossEntropyLoss()(logits, labels)",
+    ):
+        source = f"def forward(self, logits, labels, **kwargs):\n    return {torch_spelling}\n"
+        assert ns["_ce_calls_all_mean"](source) is True, torch_spelling
+
+
+def test_a_wrapper_added_after_load_gets_the_load_time_answer(tmp_path):
+    ns = _load()
+    mods = _models(tmp_path)
+    inner = mods.NemotronHForCausalLM()
+    ns["apply_accepts_loss_kwargs_fix"](inner)
+
+    class UserWrapper(nn.Module):
+        def __init__(self, model):
+            super().__init__()
+            self.model = model
+
+        def forward(self, *args, **kwargs):
+            return self.model(*args, **kwargs)
+
+    wrapped = UserWrapper(inner)
+    ns["apply_accepts_loss_kwargs_fix"](wrapped)
+    assert wrapped.accepts_loss_kwargs is False
+    assert inner.accepts_loss_kwargs is False
+
+
+def test_the_instance_forward_is_the_one_inspected(tmp_path):
+    import functools
+
+    ns = _load()
+    mods = _models(tmp_path)
+
+    # A replacement forward that consumes num_items_in_batch keeps the HF default.
+    model = mods.NemotronHForCausalLM()
+
+    def consuming_forward(
+        input_ids = None,
+        labels = None,
+        num_items_in_batch = None,
+        **kwargs,
+    ):
+        return None
+
+    model.forward = consuming_forward
+    ns["apply_accepts_loss_kwargs_fix"](model)
+    assert not hasattr(model, "accepts_loss_kwargs")
+
+    # An accelerate-style hook (partial + update_wrapper) still resolves to the original mean-loss forward.
+    hooked = mods.NemotronHForCausalLM()
+    old_forward = hooked.forward
+
+    def new_forward(module, *args, **kwargs):
+        return old_forward(*args, **kwargs)
+
+    hooked.forward = functools.update_wrapper(functools.partial(new_forward, hooked), old_forward)
+    ns["apply_accepts_loss_kwargs_fix"](hooked)
+    assert hooked.accepts_loss_kwargs is False
