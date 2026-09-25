@@ -22,7 +22,7 @@ _HOOK_ATTR = "_unsloth_prefix_kv_compaction"
 def _takes_prefix_kv(module: Any) -> bool:
     try:
         params = inspect.signature(module.forward).parameters
-    except (TypeError, ValueError):
+    except Exception:  # noqa: BLE001 - no inspectable forward: nothing to hook
         return False
     return "kv_cache" in params and "kv_cache_mode" in params
 
