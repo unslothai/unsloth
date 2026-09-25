@@ -1943,9 +1943,7 @@ def test_a_reused_label_never_archives_an_earlier_upgrade_transcript():
     prepare = ps1[
         ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")
     ]
-    clear = prepare.index(
-        "Remove-Item -LiteralPath (Join-Path $dir 'winget-upgrade.log')"
-    )
+    clear = prepare.index("Remove-Item -LiteralPath (Join-Path $dir 'winget-upgrade.log')")
     # Before the block that writes it, and not conditional on the switch.
     assert clear < prepare.index("if ($UpgradePackages) {")
     assert clear < prepare.index("Tee-Object -FilePath (Join-Path $dir 'winget-upgrade.log')")
@@ -1962,7 +1960,7 @@ def test_events_are_scoped_by_the_evaluated_file_not_the_requesting_process():
     assert "foreach ($field in @('File Name', 'FileNameBuffer'))" in shaped
     assert 'if ($subject -like "*$tail*")' in shaped
     assert 'elseif ($subject -like "*$venvTail*")' in shaped
-    assert '$msg -like' not in shaped
+    assert "$msg -like" not in shaped
     # The message stays the fallback for events with no file name, and the
     # EventData map is read once and exported as before.
     assert "$subject = $msg" in shaped
