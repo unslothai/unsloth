@@ -11793,3 +11793,12 @@ def test_image_auto_toggle_armed_only_where_the_cache_can_engage(
         assert backend.status()["transformer_cache"] is None
         assert backend._state.cache_auto is supported
         backend.unload()
+
+
+def test_image_auto_below_max_names_an_uncacheable_model(fake_runtime, tmp_path, monkeypatch):
+    _record_step_cache(monkeypatch, supported = False)
+    backend = _loaded_backend(tmp_path, family_override = "qwen-image", speed_mode = "default")
+    assert (
+        backend.status()["resolved"]["transformer_cache"]["reason"]
+        == "auto: model does not support step caching"
+    )

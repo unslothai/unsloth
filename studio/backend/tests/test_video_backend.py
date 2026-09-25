@@ -9680,3 +9680,17 @@ def test_the_boundary_marker_waits_out_a_busy_capture_lock(fake_runtime, monkeyp
     assert marks["calls"] == 1
     assert marks["ok"] is True
     assert at_decode.get("phase") == "decode"
+
+
+def test_video_auto_below_max_names_an_uncacheable_dit(fake_runtime, monkeypatch):
+    monkeypatch.setattr(
+        "core.inference.video.step_cache_supported", lambda pipe, logger = None: False
+    )
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "default"
+    )
+    assert status["resolved"]["transformer_cache"]["reason"] == (
+        "auto: model does not support step caching"
+    )
+    backend.unload()

@@ -4451,7 +4451,12 @@ class VideoBackend:
         )
         if cache_auto:
             if not cache_auto_live:
-                cache_reason = "auto: step caching engages on the max speed tier only"
+                # Only name the max tier where it would help: SDXL / LTX-2 never cache on any tier.
+                cache_reason = (
+                    "auto: step caching engages on the max speed tier only"
+                    if step_cache_supported(pipe, logger = logger)
+                    else "auto: model does not support step caching"
+                )
             elif cache_engaged:
                 cache_reason = (
                     f"auto: {default_cache_steps}-step default schedule reaches "
