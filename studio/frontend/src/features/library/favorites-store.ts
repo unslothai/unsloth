@@ -6,7 +6,7 @@ import { create } from "zustand";
 import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth";
 import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
-import { getLibraryFavorites, updateLibraryItem } from "./api";
+import { errorMessage, getLibraryFavorites, updateLibraryItem } from "./api";
 
 /** What `adopt` needs to tell stars toggled since from a snapshot being fetched. */
 export interface FavoritesSnapshotStart {
@@ -110,7 +110,7 @@ export const useLibraryFavoritesStore = create<FavoritesState>((set, get) => {
         if (latestAttempt.get(id) !== attempt) return;
         apply(id, !favorite);
         toast.error(translate("library.toast.favoritesFailed"), {
-          description: error instanceof Error ? error.message : String(error),
+          description: errorMessage(error),
         });
       }
     },

@@ -8,6 +8,7 @@ import { getAuthSessionEpoch } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 // eslint-disable-next-line no-restricted-imports -- the chat barrel imports the Library back
 import { clearNewChatDraft } from "@/features/chat/utils/composer-draft";
+import { createModelConfigHandoffRequestId } from "@/features/model-picker";
 import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { MAX_VIDEO_SIZE } from "@/lib/video-utils";
@@ -18,15 +19,6 @@ import {
 import { mediaFileName } from "@/lib/prompt-text";
 
 type Navigate = ReturnType<typeof useNavigate>;
-
-// crypto.randomUUID only exists in secure contexts, and Studio is also served over plain http to
-// the LAN.
-function createNonce(): string {
-  if (typeof globalThis.crypto?.randomUUID === "function") {
-    return globalThis.crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
 
 export function resetToNewChat(): void {
   clearNewChatDraft();
@@ -41,7 +33,8 @@ export function startLibraryChat(
   navigate: Navigate,
   handoff: LibraryChatHandoff,
 ): void {
-  const nonce = createNonce();
+  // A UUID, or a fallback where plain http to the LAN has no crypto.randomUUID.
+  const nonce = createModelConfigHandoffRequestId();
   resetToNewChat();
   useLibraryChatHandoffStore.getState().offer(`single:${nonce}`, handoff);
   void navigate({ to: "/chat", search: { new: nonce } });

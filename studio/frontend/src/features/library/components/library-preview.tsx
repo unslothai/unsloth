@@ -20,6 +20,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
   type LibraryItem,
   addLibraryItemToProject,
+  errorMessage,
   fetchLibraryText,
   writeLibraryText,
 } from "../api";
@@ -30,8 +31,8 @@ import {
   isTextPreviewable,
   modelLabelKey,
 } from "../file-kind";
-import { formatCardTime, formatPercent, formatSize } from "../format";
-import type { EmbeddedBody } from "../file-name";
+import { formatCardTime, formatSize } from "../format";
+import { type EmbeddedBody, hasOwnFile } from "../file-name";
 import { useLibraryPreviewUrl } from "../hooks";
 import { type NoteFormat, type NoteReadOnlyReason, encodeNote } from "../note-text";
 import { canReveal, revealInFolder, useRevealLabel } from "../reveal";
@@ -64,27 +65,13 @@ function bodyFor(item: LibraryItem): Body {
 function generatedOn(item: LibraryItem) {
   if (item.archived) return null;
   const [kind, ...rest] = item.id.split(":");
-  const id = rest.join(":");
-  if (kind === "image") {
-    return { label: "library.preview.viewInImages", to: "/images", search: { item: id } } as const;
-  }
-  if (kind === "video") {
-    return { label: "library.preview.viewInVideo", to: "/video", search: { item: id } } as const;
-  }
-  if (kind === "audio") {
-    // Generated clips list in Speak mode.
-    return {
-      label: "library.preview.viewInAudio",
-      to: "/audio",
-      search: { task: "text-to-speech", item: id },
-    } as const;
-  }
+  const search = { item: rest.join(":") };
+  if (kind === "image") return { label: "library.preview.viewInImages", to: "/images", search } as const;
+  if (kind === "video") return { label: "library.preview.viewInVideo", to: "/video", search } as const;
+  // Generated clips list in Speak mode.
+  const speak = { ...search, task: "text-to-speech" } as const;
+  if (kind === "audio") return { label: "library.preview.viewInAudio", to: "/audio", search: speak } as const;
   return null;
-}
-
-/** Items with a file of their own; chat attachments live inside messages, fine-tunes are folders. */
-function canAddToProject(item: LibraryItem): boolean {
-  return /^(upload|image|video|audio|sandbox):/.test(item.id);
 }
 
 /** Library-owned text files can be edited in place; everything else is read-only. */
@@ -119,9 +106,7 @@ function useItemText(item: LibraryItem | null, enabled: boolean) {
     fetchLibraryText(item, MAX_TEXT_PREVIEW_BYTES).then(
       ({ text, truncated, format, readOnlyReason }) =>
         !cancelled && setState({ key, itemId, text, truncated, format, readOnlyReason }),
-      (err: unknown) =>
-        !cancelled &&
-        setState({ key, itemId, error: err instanceof Error ? err.message : String(err) }),
+      (err: unknown) => !cancelled && setState({ key, itemId, error: errorMessage(err) }),
     );
     return () => {
       cancelled = true;
@@ -278,23 +263,18 @@ function PreviewBody({
     if (!retry()) onMediaError();
   };
   const { text, truncated, readOnlyReason, error: textError } = itemText;
+  const noPreview = (message: string) => (
+    <NoPreview item={item} message={message} onDownload={onDownload} />
+  );
 
-  if (mediaFailed) {
-    return (
-      <NoPreview
-        item={item}
-        message={t("library.preview.cannotPreview")}
-        onDownload={onDownload}
-      />
-    );
-  }
-  if (urlError) return <NoPreview item={item} message={urlError} onDownload={onDownload} />;
-  if (textError) {
-    return <p className="m-auto text-sm text-muted-foreground">{textError}</p>;
-  }
+  if (mediaFailed) return noPreview(t("library.preview.cannotPreview"));
+  if (urlError) return noPreview(urlError);
+  if (textError) return <p className="m-auto text-sm text-muted-foreground">{textError}</p>;
   if ((embedded && !url) || ((body === "text" || body === "web") && text === null)) {
     return <Spinner className="m-auto size-6" />;
   }
+  // What shows of a text file the preview only has the start of.
+  const prefix = truncated ? `${text}\n\n…` : text!;
   switch (body) {
     case "model":
       return <ModelDetails item={item} />;
@@ -328,7 +308,7 @@ function PreviewBody({
           />
         );
       }
-      if (truncated) return <TextPrefix text={`${text!}\n\n…`} />;
+      if (truncated) return <TextPrefix text={prefix} />;
       // The chat canvas frame: served by the backend under its own CSP, so it renders the same in
       // the browser and the desktop app, and honors the canvas network-access setting.
       return (
@@ -363,19 +343,13 @@ function PreviewBody({
           <p className="text-[13px] text-muted-foreground">
             {t(READ_ONLY_REASONS[readOnlyReason])}
           </p>
-          <TextPrefix text={truncated ? `${text!}\n\n…` : text!} className="min-h-0 flex-1" />
+          <TextPrefix text={prefix} className="min-h-0 flex-1" />
         </div>
       ) : (
-        <TextPrefix text={truncated ? `${text!}\n\n…` : text!} />
+        <TextPrefix text={prefix} />
       );
     default:
-      return (
-        <NoPreview
-          item={item}
-          message={t("library.preview.noPreview")}
-          onDownload={onDownload}
-        />
-      );
+      return noPreview(t("library.preview.noPreview"));
   }
 }
 
@@ -402,6 +376,7 @@ export function LibraryPreview({
   const locale = useLocale();
   const body = item ? bodyFor(item) : "none";
   const itemText = useItemText(item, body === "text" || body === "web");
+  const version = item && `${item.id}@${item.updatedAt}`;
   // Tagged with its item, so a draft never follows the preview to another file.
   // `savedAt` marks text already written: the item version it was saved over, shown until the
   // refreshed item's text has loaded, so the editor never falls back to the old text.
@@ -414,7 +389,7 @@ export function LibraryPreview({
   if (
     current?.savedAt !== undefined &&
     item!.updatedAt !== current.savedAt &&
-    itemText.loadedKey === `${item!.id}@${item!.updatedAt}`
+    itemText.loadedKey === version
   ) {
     setEdit(null);
   }
@@ -430,7 +405,7 @@ export function LibraryPreview({
   const [closeError, setCloseError] = useState<string | null>(null);
   // Tagged with the version that failed to decode, so a new file (or version) tries again.
   const [brokenMedia, setBrokenMedia] = useState<string | null>(null);
-  const mediaFailed = item !== null && brokenMedia === `${item.id}@${item.updatedAt}`;
+  const mediaFailed = version !== null && brokenMedia === version;
   // Tagged too, and cleared on close, so every file opens on its preview at 100%.
   const [codeFor, setCodeFor] = useState<string | null>(null);
   const [zoom, setZoom] = useState<{ itemId: string; scale: number } | null>(null);
@@ -466,7 +441,7 @@ export function LibraryPreview({
       onSaved();
       return null;
     } catch (error) {
-      return error instanceof Error ? error.message : String(error);
+      return errorMessage(error);
     } finally {
       setSaving(false);
     }
@@ -512,6 +487,7 @@ export function LibraryPreview({
         formatCardTime(item.updatedAt, locale),
       ].filter(Boolean)
     : [];
+  const download = item && isFileItem(item) ? () => void saveThen(() => onDownload(item)) : undefined;
   // A file the browser cannot decode gets no scale menu or zoom stage.
   const media = (body === "image" || body === "video") && !mediaFailed;
 
@@ -535,12 +511,8 @@ export function LibraryPreview({
         <>
           {body === "web" && item && !showCode && (
             <ScaleMenu
-              label={formatPercent(pageScale, locale)}
-              value={String(pageScale)}
-              options={PAGE_SCALES.map((scale) => ({
-                value: String(scale),
-                label: formatPercent(scale, locale),
-              }))}
+              value={pageScale}
+              scales={PAGE_SCALES}
               onChange={(value) => setZoom({ itemId: item.id, scale: Number(value) })}
             />
           )}
@@ -578,7 +550,7 @@ export function LibraryPreview({
                 disabled: saving,
                 onClick: () => void saveThen(() => onChat(item)),
               },
-              onDownload: isFileItem(item) ? () => void saveThen(() => onDownload(item)) : undefined,
+              onDownload: download,
               viewOriginal: item.threadId
                 ? {
                     label: t("library.preview.viewOriginalChat"),
@@ -600,7 +572,7 @@ export function LibraryPreview({
                   : undefined,
               favorite: item.favorite,
               onToggleFavorite: () => onToggleFavorite(item),
-              onAddToProject: canAddToProject(item)
+              onAddToProject: hasOwnFile(item.id)
                 ? async (projectId) => {
                     // The project gets the text on screen, not the last saved copy.
                     if (!(await save())) throw new Error(t("library.toast.saveNoteFirst"));
@@ -621,8 +593,8 @@ export function LibraryPreview({
           showCode={showCode}
           pageScale={pageScale}
           mediaFailed={mediaFailed}
-          onMediaError={() => setBrokenMedia(`${item.id}@${item.updatedAt}`)}
-          onDownload={isFileItem(item) ? () => void saveThen(() => onDownload(item)) : undefined}
+          onMediaError={() => setBrokenMedia(version)}
+          onDownload={download}
         />
       )}
       {/* Portalled, so it sits over the preview whatever the body is. */}

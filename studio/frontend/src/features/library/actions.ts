@@ -16,9 +16,9 @@ import { isTauri } from "@/lib/api-base";
 import { downloadFile, downloadUrlStreaming, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { MAX_VIDEO_SIZE } from "@/lib/video-utils";
-import { type LibraryItem, libraryDownloadUrl, libraryItemFile } from "./api";
+import { type LibraryItem, errorMessage, libraryDownloadUrl, libraryItemFile } from "./api";
 import { fileKind } from "./file-kind";
-import { libraryFileName, uniqueFileNames } from "./file-name";
+import { hasOwnFile, libraryFileName, uniqueFileNames } from "./file-name";
 import { MAX_IMAGE_OR_TEXT_BYTES, resetToNewChat, startLibraryChat } from "./start-chat";
 
 type Navigate = ReturnType<typeof useNavigate>;
@@ -44,19 +44,11 @@ function fitsInChat(item: LibraryItem): boolean {
   return item.sizeBytes === null || item.sizeBytes <= chatSizeLimit(item);
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-// Items with a file of their own, which the Library can serve by id. Chat attachments live inside
-// messages and stay small.
-const STREAMABLE = /^(upload|image|video|audio|sandbox):/;
-
 export async function downloadLibraryItem(item: LibraryItem): Promise<void> {
   try {
     // The desktop app streams to the chosen path: a Blob plus its IPC copy would hold the file
     // in memory twice.
-    if (isTauri && !item.textOnly && STREAMABLE.test(item.id)) {
+    if (isTauri && !item.textOnly && hasOwnFile(item.id)) {
       await downloadUrlStreaming(await libraryDownloadUrl(item), libraryFileName(item));
       return;
     }

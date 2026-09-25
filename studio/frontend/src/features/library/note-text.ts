@@ -14,20 +14,16 @@ export interface NoteFormat {
   eol: "\n" | "\r\n";
 }
 
+/** Why a note opens read-only: saves go back in the file's own encoding, so only text that decodes
+ *  cleanly is editable. */
+export type NoteReadOnlyReason = "utf16" | "notUtf8";
+
 export interface DecodedNote {
   /** With "\n" line endings, as a textarea reports its value. */
   text: string;
   format: NoteFormat;
-  /** Why the file opens read-only, or null when it can be edited and saved back as it was. */
   readOnlyReason: NoteReadOnlyReason | null;
 }
-
-/** Saves go back in the file's own encoding, so only text that decodes cleanly is editable. The
- * preview words these. */
-export type NoteReadOnlyReason = "utf16" | "notUtf8";
-
-const UTF16_READ_ONLY: NoteReadOnlyReason = "utf16";
-const NOT_UTF8_READ_ONLY: NoteReadOnlyReason = "notUtf8";
 
 function detectEncoding(bytes: Uint8Array): { encoding: NoteEncoding; bom: boolean } {
   if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
@@ -36,13 +32,6 @@ function detectEncoding(bytes: Uint8Array): { encoding: NoteEncoding; bom: boole
   if (bytes[0] === 0xff && bytes[1] === 0xfe) return { encoding: "utf-16le", bom: true };
   if (bytes[0] === 0xfe && bytes[1] === 0xff) return { encoding: "utf-16be", bom: true };
   return { encoding: "utf-8", bom: false };
-}
-
-/** The ending most of the file's lines use; one with no line breaks gets "\n". */
-function detectEol(text: string): "\n" | "\r\n" {
-  const crlf = text.match(/\r\n/g)?.length ?? 0;
-  const lf = (text.match(/\n/g)?.length ?? 0) - crlf;
-  return crlf > lf ? "\r\n" : "\n";
 }
 
 /**
@@ -60,18 +49,21 @@ export function decodeNote(bytes: Uint8Array, truncated = false): DecodedNote {
     raw = new TextDecoder(encoding, { fatal: true }).decode(bytes, { stream: truncated });
   } catch {
     raw = new TextDecoder(encoding).decode(bytes, { stream: truncated });
-    readOnlyReason = encoding === "utf-8" ? NOT_UTF8_READ_ONLY : UTF16_READ_ONLY;
+    readOnlyReason = encoding === "utf-8" ? "notUtf8" : "utf16";
   }
+  // The ending most lines use; a file with no line breaks gets "\n".
+  const crlf = raw.match(/\r\n/g)?.length ?? 0;
+  const lf = (raw.match(/\n/g)?.length ?? 0) - crlf;
   return {
     text: raw.replace(/\r\n/g, "\n"),
-    format: { encoding, bom, eol: detectEol(raw) },
+    format: { encoding, bom, eol: crlf > lf ? "\r\n" : "\n" },
     readOnlyReason,
   };
 }
 
 /** The text to write for an edit of a file read as `format`: its line endings and BOM restored. */
 export function encodeNote(text: string, format: NoteFormat): string {
-  // A textarea reports "\n" alone; "\r\n" typed or pasted in collapses first so it is not doubled.
+  // "\r\n" typed or pasted in collapses first, so it is not doubled.
   const lines = text.replace(/\r\n/g, "\n");
   const body = format.eol === "\r\n" ? lines.replace(/\n/g, "\r\n") : lines;
   return format.bom ? `\uFEFF${body}` : body;

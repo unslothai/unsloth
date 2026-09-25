@@ -2844,7 +2844,6 @@ export const hi = {
       tryAgain: "फिर कोशिश करें",
     },
     sections: {
-      folders: "फ़ोल्डर",
       items: "आइटम",
     },
     breadcrumb: "ब्रेडक्रंब",
@@ -2857,8 +2856,6 @@ export const hi = {
     selectItem: "{name} चुनें",
     selection: {
       startChat: "चैट शुरू करें",
-      download: "डाउनलोड करें",
-      moreActions: "और कार्रवाइयाँ",
       move: "ले जाएँ",
       clear: "चयन हटाएँ",
     },
@@ -2901,7 +2898,6 @@ export const hi = {
       audio: "ऑडियो",
       model: "मॉडल",
       folder: "फ़ोल्डर",
-      uploadFiles: "फ़ाइलें अपलोड करें",
       untitledNote: "बिना शीर्षक का नोट",
     },
     list: {
@@ -2927,8 +2923,6 @@ export const hi = {
       model: "मॉडल",
     },
     dialog: {
-      name: "नाम",
-      newFolder: "नया फ़ोल्डर",
       create: "बनाएँ",
       renameFolder: "फ़ोल्डर का नाम बदलें",
       renameFile: "फ़ाइल का नाम बदलें",
@@ -2947,7 +2941,6 @@ export const hi = {
       unsavedDescription: "{reason} फिर कोशिश करें, या फ़ाइल बंद करने के लिए अपने बदलाव छोड़ दें।",
       keepEditing: "एडिट करते रहें",
       discardChanges: "बदलाव छोड़ें",
-      tryAgain: "फिर कोशिश करें",
     },
     preview: {
       code: "कोड",
@@ -2971,8 +2964,6 @@ export const hi = {
     viewer: {
       scale: "स्केल",
       fit: "फ़िट",
-      download: "डाउनलोड करें",
-      close: "बंद करें",
       moreActionsImage: "इस इमेज के लिए और कार्रवाइयाँ",
       moreActionsVideo: "इस वीडियो के लिए और कार्रवाइयाँ",
       moreActionsClip: "इस क्लिप के लिए और कार्रवाइयाँ",

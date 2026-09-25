@@ -63,6 +63,11 @@ const TYPE_OPTIONS: MenuOption<LibraryTypeFilter>[] = [
   { value: "pdfs", label: "library.toolbar.pdfs", icon: Pdf01Icon },
 ];
 
+const VIEW_OPTIONS = [
+  { value: "grid", label: "library.toolbar.gridView", icon: GridViewIcon },
+  { value: "list", label: "library.toolbar.listView", icon: LeftToRightListBulletIcon },
+] satisfies MenuOption<LibraryView>[];
+
 function toggled<T>(set: Set<T>, value: T): Set<T> {
   const next = new Set(set);
   if (next.has(value)) next.delete(value);
@@ -189,7 +194,7 @@ function NewMenu({ onSelect }: { onSelect: (action: NewAction) => void }) {
         <DropdownMenuSeparator className="mx-3" />
         <DropdownMenuItem onSelect={() => onSelect("upload")}>
           <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.75} className={ICON} />
-          {t("library.create.uploadFiles")}
+          {t("library.empty.uploadFiles")}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -225,35 +230,28 @@ export function LibraryToolbar({
   return (
       <div className="flex min-w-0 items-center gap-2">
         {filterMode !== "none" && (
-          <FilterMenu
-            filters={filters}
-            onChange={onFiltersChange}
-            showTypes={filterMode === "all"}
-          />
+          <>
+            <FilterMenu
+              filters={filters}
+              onChange={onFiltersChange}
+              showTypes={filterMode === "all"}
+            />
+            <span className="mx-1.5 h-6 w-px shrink-0 bg-border" aria-hidden="true" />
+          </>
         )}
-        {filterMode !== "none" && (
-          <span className="mx-1.5 h-6 w-px shrink-0 bg-border" aria-hidden="true" />
-        )}
-        <button
-          type="button"
-          aria-label={t("library.toolbar.gridView")}
-          data-active={view === "grid"}
-          aria-pressed={view === "grid"}
-          onClick={() => onViewChange("grid")}
-          className={ROUND_BUTTON}
-        >
-          <HugeiconsIcon icon={GridViewIcon} strokeWidth={1.75} className="size-5" />
-        </button>
-        <button
-          type="button"
-          aria-label={t("library.toolbar.listView")}
-          data-active={view === "list"}
-          aria-pressed={view === "list"}
-          onClick={() => onViewChange("list")}
-          className={ROUND_BUTTON}
-        >
-          <HugeiconsIcon icon={LeftToRightListBulletIcon} strokeWidth={1.75} className="size-5" />
-        </button>
+        {VIEW_OPTIONS.map(({ value, label, icon }) => (
+          <button
+            key={value}
+            type="button"
+            aria-label={t(label)}
+            data-active={view === value}
+            aria-pressed={view === value}
+            onClick={() => onViewChange(value)}
+            className={ROUND_BUTTON}
+          >
+            <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-5" />
+          </button>
+        ))}
         {/* Outlined on light; a lighter fill than the page on dark, where an outline reads as a hole. */}
         <label className="relative ml-2 flex h-9 w-[min(26rem,40vw)] min-w-40 items-center rounded-full border border-border px-4 focus-within:border-ring dark:border-transparent dark:bg-card dark:focus-within:border-ring">
           <HugeiconsIcon

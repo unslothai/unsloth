@@ -2745,7 +2745,6 @@ export const zhCN = {
       tryAgain: "重试",
     },
     sections: {
-      folders: "文件夹",
       items: "项目",
     },
     breadcrumb: "路径导航",
@@ -2758,8 +2757,6 @@ export const zhCN = {
     selectItem: "选择 {name}",
     selection: {
       startChat: "开始聊天",
-      download: "下载",
-      moreActions: "更多操作",
       move: "移动",
       clear: "清除选择",
     },
@@ -2802,7 +2799,6 @@ export const zhCN = {
       audio: "音频",
       model: "模型",
       folder: "文件夹",
-      uploadFiles: "上传文件",
       untitledNote: "未命名笔记",
     },
     list: {
@@ -2828,8 +2824,6 @@ export const zhCN = {
       model: "模型",
     },
     dialog: {
-      name: "名称",
-      newFolder: "新建文件夹",
       create: "创建",
       renameFolder: "重命名文件夹",
       renameFile: "重命名文件",
@@ -2848,7 +2842,6 @@ export const zhCN = {
       unsavedDescription: "{reason} 请重试，或放弃更改以关闭文件。",
       keepEditing: "继续编辑",
       discardChanges: "放弃更改",
-      tryAgain: "重试",
     },
     preview: {
       code: "代码",
@@ -2872,8 +2865,6 @@ export const zhCN = {
     viewer: {
       scale: "缩放",
       fit: "适应",
-      download: "下载",
-      close: "关闭",
       moreActionsImage: "此图像的更多操作",
       moreActionsVideo: "此视频的更多操作",
       moreActionsClip: "此片段的更多操作",
