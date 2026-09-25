@@ -53,7 +53,7 @@ function formatSize(bytes: number): string {
 // Projects created with staged files, so the landing can open on Sources.
 const projectsWithPendingSources = new Set<string>();
 
-function markProjectSourcesPending(projectId: string): void {
+export function markProjectSourcesPending(projectId: string): void {
   projectsWithPendingSources.add(projectId);
 }
 
@@ -66,6 +66,23 @@ export function hasProjectSourcesPending(projectId: string): boolean {
 /** Drop the marker once the landing has committed. */
 export function consumeProjectSourcesPending(projectId: string): void {
   projectsWithPendingSources.delete(projectId);
+}
+
+// Landings mounted now, counted, so a caller can tell whether a marker would still be read.
+const mountedProjectLandings = new Map<string, number>();
+
+/** Call from the landing's mount effect; returns the cleanup. */
+export function noteProjectLandingMounted(projectId: string): () => void {
+  mountedProjectLandings.set(projectId, (mountedProjectLandings.get(projectId) ?? 0) + 1);
+  return () => {
+    const count = (mountedProjectLandings.get(projectId) ?? 1) - 1;
+    if (count > 0) mountedProjectLandings.set(projectId, count);
+    else mountedProjectLandings.delete(projectId);
+  };
+}
+
+export function isProjectLandingMounted(projectId: string): boolean {
+  return mountedProjectLandings.has(projectId);
 }
 
 /** Upload staged files to a new project. Indexing runs in the background; a

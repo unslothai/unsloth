@@ -12205,3 +12205,52 @@ def test_candidate_overrides_price_the_encoder_the_load_opens(monkeypatch):
         ]
         == 0
     )
+
+
+def test_status_reports_cuda_graph_off_once_every_armed_step_ran_eager():
+    backend = DiffusionBackend()
+    handle = types.SimpleNamespace(
+        cache = {},
+        stats = {"captures": 0, "replays": 0, "eager_calls": 0, "refused_object": 0},
+        poisoned = False,
+        capture_error = None,
+    )
+    resolved = {
+        "cuda_graph": {
+            "value": "on",
+            "requested": None,
+            "source": "auto",
+            "status": "applied",
+            "reason": "denoiser step captured per input shape, replayed bit-identically",
+        }
+    }
+    backend._state = _LoadState(
+        pipe = object(),
+        family = detect_family("unsloth/Z-Image-GGUF"),
+        repo_id = "r",
+        base_repo = "b",
+        device = "cuda",
+        dtype = "bfloat16",
+        cpu_offload = False,
+        speed_optims = ("compiled", "cuda_graph"),
+        resolved = resolved,
+        cuda_graphs = (handle,),
+    )
+
+    st = backend.status()
+    assert st["resolved"]["cuda_graph"]["value"] == "on"
+    assert st["speed_optims"] == ["compiled", "cuda_graph"]
+
+    handle.stats.update(eager_calls = 25, refused_object = 25)
+    st = backend.status()
+    assert st["resolved"]["cuda_graph"]["value"] == "off"
+    assert st["resolved"]["cuda_graph"]["reason"] == (
+        "armed, but all 25 denoiser call(s) so far ran eager (25 with a non-tensor argument)"
+    )
+    assert st["speed_optims"] == ["compiled"]
+    assert resolved["cuda_graph"]["value"] == "on"
+
+    handle.stats.update(captures = 1, replays = 24)
+    st = backend.status()
+    assert st["resolved"]["cuda_graph"]["value"] == "on"
+    assert st["speed_optims"] == ["compiled", "cuda_graph"]
