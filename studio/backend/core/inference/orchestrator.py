@@ -3144,6 +3144,8 @@ class InferenceOrchestrator:
         context_policy: Optional[str] = None,
         compaction_headroom_ratio: Optional[float] = None,
         compact_context: bool = False,
+        tool_choice = None,
+        disable_parallel_tool_use: bool = False,
         **_unused,
     ):
         """Run the safetensors agentic tool loop in the parent process, calling the worker for each
@@ -3348,6 +3350,8 @@ class InferenceOrchestrator:
             # then no sink to protect anything in.
             caller_image_indexes = tuple(caller_image_indexes) if loop_images else (),
             context_fitter = _fit_iteration,
+            tool_choice = tool_choice,
+            disable_parallel_tool_use = disable_parallel_tool_use,
         )
 
     def generate_with_adapter_control(

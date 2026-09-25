@@ -34240,6 +34240,8 @@ async def produce_openai_chat_completions(
                 auto_heal_tool_calls = _sf_auto_heal_tool_calls,
                 deduplicate_tool_calls = payload.deduplicate_tool_calls is not False,
                 nudge_tool_calls = payload.nudge_tool_calls,
+                tool_choice = payload.tool_choice,
+                disable_parallel_tool_use = payload.parallel_tool_calls is False,
                 max_tool_iterations = _sf_tool_budget,
                 tool_call_timeout = payload.tool_call_timeout
                 if payload.tool_call_timeout is not None
@@ -41486,6 +41488,12 @@ async def _mlx_count_chat_tokens(
             system_prompt, request, image = _renders_media, controls = _date_controls
         )
 
+    from core.inference.chat_template_helpers import (
+        forced_tool_name,
+        forced_turn_tools,
+        mapped_chat_template,
+        renderable_tool_catalog,
+    )
     from state.tool_policy import get_tool_policy as _get_tool_policy_mlx
 
     _tools_on = bool(_effective_enable_tools(payload))
@@ -41700,6 +41708,21 @@ async def _mlx_count_chat_tokens(
             else _msg
             for _msg in messages
         ]
+        # The first turn renders only a forced tool, narrowed as the loop narrows the catalog it
+        # authorizes: a forced tool the sanitizer drops narrows nothing. The nudge names them all.
+        _choice = getattr(payload, "tool_choice", None)
+        if forced_tool_name(_choice):
+            # Off the loop: the first call may fetch the native template.
+            _safe_tools = await asyncio.to_thread(
+                lambda: renderable_tool_catalog(
+                    _tools_to_use,
+                    entry.get("tokenizer"),
+                    entry,
+                    active_model_name = active,
+                    template = mapped_chat_template(entry, active),
+                )
+            )
+            _tools_to_use = forced_turn_tools(_choice, _safe_tools)
 
     # Nothing to price: the template would render its generation marker alone and the
     # total would describe a conversation nobody has started (#8882). The GGUF branch

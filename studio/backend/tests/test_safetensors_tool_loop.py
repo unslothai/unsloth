@@ -1124,6 +1124,9 @@ def _collect_events(generator, max_events = 200):
     return events
 
 
+_MAKE_LOOP_TOOLS = ["web_search", "python", "terminal"]
+
+
 def _make_loop(
     *,
     turns,
@@ -1136,7 +1139,8 @@ def _make_loop(
     """
     turn_iter = iter(turns)
 
-    def _gen(_messages):
+    def _gen(_messages, **kw):
+        exec_fn.offered.append([t["function"]["name"] for t in kw.get("active_tools") or []])
         try:
             chunks = next(turn_iter)
         except StopIteration:
@@ -1147,14 +1151,11 @@ def _make_loop(
             yield acc
 
     exec_fn = FakeExecuteTool(exec_results or [])
+    exec_fn.offered = []
     return run_safetensors_tool_loop(
         single_turn = _gen,
         messages = [{"role": "user", "content": "hi"}],
-        tools = [
-            {"type": "function", "function": {"name": "web_search"}},
-            {"type": "function", "function": {"name": "python"}},
-            {"type": "function", "function": {"name": "terminal"}},
-        ],
+        tools = [{"type": "function", "function": {"name": n}} for n in _MAKE_LOOP_TOOLS],
         execute_tool = exec_fn,
         **kwargs,
     ), exec_fn
@@ -6010,3 +6011,14 @@ def test_a_browser_turn_is_nudged_after_retrieval_was_injected(monkeypatch):
         )
     )
     assert [name for name, _ in exec_fn.calls] == ["browser_snapshot", "browser_click"]
+
+
+def test_a_forced_tool_is_offered_alone_until_it_runs_and_the_cap_runs_one_call():
+    loop, exec_fn = _make_loop(
+        turns = [["<function=web_search></function><function=python></function>"], ["Done."]],
+        tool_choice = {"type": "function", "function": {"name": "web_search"}},
+        disable_parallel_tool_use = True,
+    )
+    _collect_events(loop)
+    assert exec_fn.offered == [["web_search"], _MAKE_LOOP_TOOLS]
+    assert exec_fn.calls == [("web_search", {})]
