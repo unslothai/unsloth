@@ -1358,8 +1358,12 @@ def get_hub(current_subject: str = Depends(get_current_subject)) -> HubSettingsR
 
 @_owner_settings_router.put("/hub", response_model = HubSettingsResponse)
 def update_hub(
-    payload: HubSettingsPayload, current_subject: str = Depends(get_current_subject)
+    payload: HubSettingsPayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ) -> HubSettingsResponse:
+    # The endpoint receives the installation's Hugging Face token, like the token routes above.
+    require_ui_session(via_api_key)
     try:
         settings = set_hub_settings(payload.hf_endpoint, payload.datasets_server_follows_endpoint)
     except ValueError as exc:
@@ -1375,8 +1379,11 @@ def update_hub(
 
 @_owner_settings_router.put("/hub/source", response_model = HubSettingsResponse)
 def update_hub_source(
-    payload: HubSourcePayload, current_subject: str = Depends(get_current_subject)
+    payload: HubSourcePayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ) -> HubSettingsResponse:
+    require_ui_session(via_api_key)
     return _hub_settings_response(set_hub_source(payload.source))
 
 

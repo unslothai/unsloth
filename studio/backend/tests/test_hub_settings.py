@@ -121,6 +121,7 @@ def client(store):
     app = FastAPI()
     app.include_router(settings.router)
     app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
+    app.dependency_overrides[settings.authenticated_via_api_key] = lambda: False
     return TestClient(app, raise_server_exceptions = False)
 
 
@@ -147,6 +148,24 @@ def test_only_the_owner_reads_the_endpoint(client, monkeypatch):
 
     monkeypatch.setattr(settings.policy, "require_owner", refuse)
     assert client.get("/hub").status_code == 403
+
+
+def test_an_api_key_cannot_move_the_endpoint_or_source(client, store):
+    before = client.get("/hub").json()
+    client.app.dependency_overrides[settings.authenticated_via_api_key] = lambda: True
+    assert (
+        client.put(
+            "/hub",
+            json = {
+                "hf_endpoint": "https://collector.example",
+                "datasets_server_follows_endpoint": True,
+            },
+        ).status_code
+        == 403
+    )
+    assert client.put("/hub/source", json = {"source": "modelscope"}).status_code == 403
+    client.app.dependency_overrides[settings.authenticated_via_api_key] = lambda: False
+    assert client.get("/hub").json() == before
 
 
 @pytest.mark.parametrize(
@@ -348,3 +367,42 @@ def test_route_switches_the_source(client, store, monkeypatch):
     assert client.get("/hub").json()["source"] == "modelscope"
     assert client.put("/hub/source", json = {"source": "gitee"}).status_code == 422
     client.put("/hub/source", json = {"source": "huggingface"})
+
+
+def test_modelscope_adapter_is_reached_past_a_configured_proxy(store, monkeypatch):
+    import http.server
+    import socket
+    import threading
+    import hub.modelscope.router as modelscope
+    from huggingface_hub.utils import _http
+
+    class Ok(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *_a):
+            pass
+
+    adapter = http.server.HTTPServer(("127.0.0.1", 0), Ok)
+    threading.Thread(target = adapter.serve_forever, daemon = True).start()
+    closed = socket.socket()
+    closed.bind(("127.0.0.1", 0))
+    dead_proxy = f"http://127.0.0.1:{closed.getsockname()[1]}"
+    for name in ("HTTP_PROXY", "http_proxy"):
+        monkeypatch.setenv(name, dead_proxy)
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.setenv(name, "example.com")
+    url = f"http://127.0.0.1:{adapter.server_port}"
+    monkeypatch.setattr(modelscope, "internal_endpoint", lambda: url)
+    _http.close_session()
+    _http.get_session()
+    try:
+        hub_settings.set_hub_source("modelscope")
+        assert _http.get_session().get(url + "/").status_code == 200
+        assert os.environ["NO_PROXY"] == "example.com,127.0.0.1"
+    finally:
+        hub_settings.set_hub_source("huggingface")
+        _http.close_session()
+        adapter.shutdown()
+        closed.close()
