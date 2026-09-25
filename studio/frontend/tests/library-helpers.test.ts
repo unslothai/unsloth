@@ -323,6 +323,14 @@ test("the v1 media switch becomes one setting per tab", () => {
   assert.deepEqual(migrated.tabs, { ...DEFAULT_LIBRARY_SETTINGS.tabs, ...media });
 });
 
+test("an empty Fine-tunes tab hides by default, and for settings saved before that", () => {
+  assert.equal(DEFAULT_LIBRARY_SETTINGS.tabs.models, "auto");
+  const saved = { ...DEFAULT_LIBRARY_SETTINGS.tabs, models: "always" };
+  assert.equal((migrateLibrarySettings({ tabs: saved }, 2).tabs as typeof saved).models, "auto");
+  const hidden = { ...saved, models: "hidden" };
+  assert.equal((migrateLibrarySettings({ tabs: hidden }, 2).tabs as typeof saved).models, "hidden");
+});
+
 test("a card's date shows on hover, on keyboard focus and always on touch", () => {
   const date = /"([^"]*)",\s*\)}\s*>\s*\{formatCardTime/.exec(readSrc("features/library/components/library-cards.tsx"))?.[1].split(" ");
   for (const reveal of [

@@ -43,7 +43,7 @@ export const DEFAULT_LIBRARY_SETTINGS: LibrarySettings = {
     images: "auto",
     videos: "auto",
     audio: "auto",
-    models: "always",
+    models: "auto",
     all: "always",
   },
   suggestedLimit: 40,
@@ -83,13 +83,18 @@ interface LibrarySettingsState extends LibrarySettings {
   reset: () => void;
 }
 
-/** v1 had one mediaTabs switch for Images, Videos and Audio together. */
+/** v1 had one mediaTabs switch for Images, Videos and Audio together; before v3, Fine-tunes
+ * always showed. */
 export function migrateLibrarySettings(persisted: unknown, version: number): Record<string, unknown> {
   const state = { ...(persisted as Record<string, unknown>) };
   if (version < 2) {
     const media = state.mediaTabs === "always" ? "always" : "auto";
     state.tabs = { ...DEFAULT_LIBRARY_SETTINGS.tabs, images: media, videos: media, audio: media };
     delete state.mediaTabs;
+  }
+  if (version < 3) {
+    const tabs = state.tabs as Record<string, string> | undefined;
+    if (tabs?.models === "always") state.tabs = { ...tabs, models: "auto" };
   }
   return state;
 }
@@ -103,7 +108,7 @@ export const useLibrarySettingsStore = create<LibrarySettingsState>()(
     }),
     {
       name: LIBRARY_SETTINGS_STORAGE_KEY,
-      version: 2,
+      version: 3,
       migrate: (persisted, version) =>
         migrateLibrarySettings(persisted, version) as unknown as LibrarySettingsState,
     },
