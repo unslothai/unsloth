@@ -8260,14 +8260,16 @@ exit 0
     }
 
     # "source;cudaMajor;cudaMinor;cap,cap" from NVML, else the CUDA driver API; "" when neither
-    # answers. Versions are major*1000 + minor*10. Read in a runspace of its own under a deadline:
-    # a wedged driver can block inside the library, and the deadline leaves that runspace behind.
+    # answers. Versions are major*1000 + minor*10. Each reader runs in a runspace of its own under
+    # its own deadline: a wedged driver can block inside the library, and the deadline leaves that
+    # runspace behind. One shared deadline let a slow NVML (~23s on a congested 8x B200 driver)
+    # use up the time the CUDA driver API needed.
     function Read-NvidiaLibraryRaw {
-        param([int]$TimeoutMs = 10000)
+        param([int]$TimeoutMs = 30000)
         $type = Get-NvidiaLibraryProbeType
         if (-not $type) { return "" }
         $reader = {
-            param($T)
+            param($T, $Which)
             function Read-Nvml {
                 if ($T::nvmlInit_v2() -ne 0) { return "" }
                 try {
@@ -8309,26 +8311,30 @@ exit 0
                 return "cuda;$([int][math]::Floor($ver / 1000));$([int][math]::Floor(($ver % 1000) / 10));$($caps -join ',')"
             }
             $r = ""
-            try { $r = Read-Nvml } catch { $r = "" }
-            if (-not $r) { try { $r = Read-Cuda } catch { $r = "" } }
+            try { if ($Which -eq "nvml") { $r = Read-Nvml } else { $r = Read-Cuda } } catch { $r = "" }
             return "$r"
         }
-        $ps = $null; $handle = $null
-        try {
-            $ps = [powershell]::Create()
-            $null = $ps.AddScript($reader.ToString()).AddArgument($type)
-            $handle = $ps.BeginInvoke()
-            if (-not $handle.AsyncWaitHandle.WaitOne($TimeoutMs)) { return "" }
-            return "$(@($ps.EndInvoke($handle)) | Select-Object -Last 1)"
-        } catch { return "" }
-        finally { if ($ps -and $handle -and $handle.IsCompleted) { $ps.Dispose() } }
+        foreach ($which in @("nvml", "cuda")) {
+            $ps = $null; $handle = $null; $r = ""
+            try {
+                $ps = [powershell]::Create()
+                $null = $ps.AddScript($reader.ToString()).AddArgument($type).AddArgument($which)
+                $handle = $ps.BeginInvoke()
+                if ($handle.AsyncWaitHandle.WaitOne($TimeoutMs)) {
+                    $r = "$(@($ps.EndInvoke($handle)) | Select-Object -Last 1)"
+                }
+            } catch { $r = "" }
+            finally { if ($ps -and $handle -and $handle.IsCompleted) { $ps.Dispose() } }
+            if ($r) { return $r }
+        }
+        return ""
     }
 
     # NVIDIA inventory from the driver's own libraries (NVML, then the CUDA driver API), for a
     # host whose nvidia-smi is absent, stale or hangs (#9255). Twin of studio/nvidia_probe.py.
     # Cached. $null, or @{ Source; CudaMajor; CudaMinor; ComputeCaps ("8.9" strings); Count }.
     function Get-NvidiaLibraryInventory {
-        param([int]$TimeoutSec = 10)
+        param([int]$TimeoutSec = 30)
         if ($script:NvidiaLibraryInventoryProbed) { return $script:NvidiaLibraryInventory }
         $script:NvidiaLibraryInventoryProbed = $true
         $script:NvidiaLibraryInventory = $null
@@ -9262,6 +9268,11 @@ exit 0
         if ($NvidiaSmiExe) {
             try {
                 $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe
+                if ($LASTEXITCODE -eq 124) {
+                    # One retry with a longer bound: a congested driver took ~28s (8x B200).
+                    substep "nvidia-smi did not answer within 10s; retrying with a 45s limit..." "Yellow"
+                    $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe -TimeoutSec 45
+                }
                 if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
                     $major = [int]$Matches[1]; $minor = [int]$Matches[2]
                 }
@@ -9276,6 +9287,10 @@ exit 0
                 return "$baseUrl/cpu"
             } else {
                 substep "could not determine CUDA version from nvidia-smi, defaulting to cu126" "Yellow"
+                # cu126 has no Blackwell kernels, and nothing else will say so until training fails.
+                $pinHint = if ($env:UNSLOTH_PYTORCH_MIRROR) { "UNSLOTH_TORCH_INDEX_FAMILY=" } else { "UNSLOTH_TORCH_INDEX_URL=$baseUrl/" }
+                substep "cu126 has no kernels for Blackwell (sm_100 / sm_120). To choose the wheel yourself, re-run with" "Yellow"
+                substep "  ${pinHint}cu128   (or cu130 on a driver that supports CUDA 13)" "Yellow"
                 return "$baseUrl/cu126"
             }
         }

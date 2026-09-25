@@ -57,6 +57,8 @@ _FAKE_ROCM_DIR=$(mktemp -d)
     echo ""
     sed -n '/^_nvidia_library_inventory()/,/^}/p' "$INSTALL_SH"
     echo ""
+    sed -n '/^_nvidia_driver_cuda_version()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^_nvidia_cu126_verdict()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_cap_cuda_family_for_pre_turing()/,/^}/p' "$INSTALL_SH"
@@ -80,6 +82,7 @@ _FAKE_ROCM_DIR=$(mktemp -d)
     sed -n '/^get_torch_index_url()/,/^}/p' "$INSTALL_SH"
 } | sed -e "s|/usr/bin/nvidia-smi|$_FAKE_SMI_DIR/nvidia-smi-absent|g" \
       -e "s|/opt/rocm|$_FAKE_ROCM_DIR|g" \
+      -e "s|/proc/driver/nvidia/version|$_FAKE_SMI_DIR/proc-nvidia-version|g" \
   > "$_FUNC_FILE"
 
 for _fn in _rocm_tag_from_amd_smi _rocm_tag_from_version_file _rocm_tag_from_hipconfig \
@@ -322,6 +325,59 @@ _assign=$(grep -n -F 'TORCH_INDEX_URL=$(get_torch_index_url)' "$INSTALL_SH" | he
 if [ -n "$_prime" ] && [ -n "$_assign" ] && [ "$_prime" -lt "$_assign" ]; then _result=ordered; else _result="prime=$_prime assign=$_assign"; fi
 assert_eq "presence check primes the inventory before the index substitution" "ordered" "$_result"
 assert_eq "the prime is skipped for a pinned index or no torch" 'if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ]; then' "$_guard"
+
+# 8i) nvidia-smi and the library inventory cannot answer (a congested driver): the CUDA
+# driver API's cuDriverGetVersion still names the version, with no cuInit, so Blackwell does
+# not land on cu126. The mock answers only the version-only call (-c), not the inventory (-).
+_dir=$(mktemp -d)
+cat > "$_dir/nvidia-smi" <<'MOCK'
+#!/bin/sh
+case "$1" in
+    -L) echo "GPU 0: NVIDIA B200 (UUID: GPU-fake-uuid)" ;;
+    *)  echo "something completely unexpected" ;;
+esac
+MOCK
+chmod +x "$_dir/nvidia-smi"
+printf '#!/bin/sh\ncat >/dev/null\n[ "$2" = "-c" ] && echo "13.1" && exit 0\nexit 1\n' > "$_dir/python3"
+chmod +x "$_dir/python3"
+_result=$(run_func "$_dir")
+assert_eq "no inventory, cuDriverGetVersion says 13.1 -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
+_err=$(PATH="$_dir:$_TOOLS_DIR" bash -c "unset CUDA_VISIBLE_DEVICES; _ARCH=x86_64; . '$_FUNC_FILE'; get_torch_index_url" 2>&1 >/dev/null)
+case "$_err" in *"Selecting the cu130 PyTorch wheels"*UNSLOTH_TORCH_INDEX_URL=*) _result=warned ;; *) _result="$_err" ;; esac
+assert_eq "driver-only selection names the index and the override" "warned" "$_result"
+# 8j) No interpreter answers either: the kernel module version in /proc bounds the CUDA version.
+printf '#!/bin/sh\ncat >/dev/null\nexit 1\n' > "$_dir/python3"
+for _case in "590.48.01 cu130" "575.51.03 cu128" "565.57.01 cu126" "535.183.01 cu124"; do
+    printf 'NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  %s  Release Build  (dvs-builder@U22)  Mon Dec  8 13:05:00 UTC 2025\n' "${_case% *}" > "$_FAKE_SMI_DIR/proc-nvidia-version"
+    _result=$(run_func "$_dir")
+    assert_eq "/proc driver ${_case% *} -> ${_case#* }" "https://download.pytorch.org/whl/${_case#* }" "$_result"
+done
+# The probe switched off turns the /proc bound off too, like studio/nvidia_probe.py.
+_result=$(PATH="$_dir:$_TOOLS_DIR" bash -c "unset CUDA_VISIBLE_DEVICES; _ARCH=x86_64; UNSLOTH_NVIDIA_LIBRARY_PROBE=0; . '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null)
+assert_eq "probe off ignores /proc -> cu126 default" "https://download.pytorch.org/whl/cu126" "$_result"
+rm -f "$_FAKE_SMI_DIR/proc-nvidia-version"
+# 8k) Nothing answers and there is no /proc version: still cu126, now with the override named.
+_err=$(PATH="$_dir:$_TOOLS_DIR" bash -c "unset CUDA_VISIBLE_DEVICES; _ARCH=x86_64; . '$_FUNC_FILE'; get_torch_index_url" 2>&1 >/dev/null)
+case "$_err" in *"defaulting to cu126"*"UNSLOTH_TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128"*) _result=warned ;; *) _result="$_err" ;; esac
+assert_eq "cu126 default names the override" "warned" "$_result"
+rm -rf "$_dir"
+
+# 8l) nvidia-smi timing out once is retried with a longer bound before any fallback. A fake
+# `timeout` reports 124 for the first 10s banner call and runs every other call.
+_dir=$(make_mock_smi "13.0" "10.0")
+cat > "$_dir/timeout" <<MOCK
+#!/bin/sh
+if [ "\$1" = 10 ] && [ "\$#" = 2 ] && [ ! -f "$_dir/timed-out" ]; then : > "$_dir/timed-out"; exit 124; fi
+echo "\$1" >> "$_dir/bounds"
+shift
+exec "\$@"
+MOCK
+chmod +x "$_dir/timeout"
+_result=$(run_func "$_dir")
+assert_eq "banner timed out once, retry reads 13.0 -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
+case "$(tr '\n' ' ' < "$_dir/bounds")" in *45*) _result=retried ;; *) _result="bounds: $(cat "$_dir/bounds")" ;; esac
+assert_eq "the retry uses the 45s bound" "retried" "$_result"
+rm -rf "$_dir"
 
 # 9) ROCm 6.3 (no nvidia-smi) -> rocm6.3
 _dir=$(make_mock_amd_smi "6.3")

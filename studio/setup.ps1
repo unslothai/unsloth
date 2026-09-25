@@ -1301,14 +1301,16 @@ function Get-NvidiaLibraryProbeType {
 }
 
 # "source;cudaMajor;cudaMinor;cap,cap" from NVML, else the CUDA driver API; "" when neither
-# answers. Versions are major*1000 + minor*10. Read in a runspace of its own under a deadline:
-# a wedged driver can block inside the library, and the deadline leaves that runspace behind.
+# answers. Versions are major*1000 + minor*10. Each reader runs in a runspace of its own under
+# its own deadline: a wedged driver can block inside the library, and the deadline leaves that
+# runspace behind. One shared deadline let a slow NVML (~23s on a congested 8x B200 driver)
+# use up the time the CUDA driver API needed.
 function Read-NvidiaLibraryRaw {
-    param([int]$TimeoutMs = 10000)
+    param([int]$TimeoutMs = 30000)
     $type = Get-NvidiaLibraryProbeType
     if (-not $type) { return "" }
     $reader = {
-        param($T)
+        param($T, $Which)
         function Read-Nvml {
             if ($T::nvmlInit_v2() -ne 0) { return "" }
             try {
@@ -1350,26 +1352,30 @@ function Read-NvidiaLibraryRaw {
             return "cuda;$([int][math]::Floor($ver / 1000));$([int][math]::Floor(($ver % 1000) / 10));$($caps -join ',')"
         }
         $r = ""
-        try { $r = Read-Nvml } catch { $r = "" }
-        if (-not $r) { try { $r = Read-Cuda } catch { $r = "" } }
+        try { if ($Which -eq "nvml") { $r = Read-Nvml } else { $r = Read-Cuda } } catch { $r = "" }
         return "$r"
     }
-    $ps = $null; $handle = $null
-    try {
-        $ps = [powershell]::Create()
-        $null = $ps.AddScript($reader.ToString()).AddArgument($type)
-        $handle = $ps.BeginInvoke()
-        if (-not $handle.AsyncWaitHandle.WaitOne($TimeoutMs)) { return "" }
-        return "$(@($ps.EndInvoke($handle)) | Select-Object -Last 1)"
-    } catch { return "" }
-    finally { if ($ps -and $handle -and $handle.IsCompleted) { $ps.Dispose() } }
+    foreach ($which in @("nvml", "cuda")) {
+        $ps = $null; $handle = $null; $r = ""
+        try {
+            $ps = [powershell]::Create()
+            $null = $ps.AddScript($reader.ToString()).AddArgument($type).AddArgument($which)
+            $handle = $ps.BeginInvoke()
+            if ($handle.AsyncWaitHandle.WaitOne($TimeoutMs)) {
+                $r = "$(@($ps.EndInvoke($handle)) | Select-Object -Last 1)"
+            }
+        } catch { $r = "" }
+        finally { if ($ps -and $handle -and $handle.IsCompleted) { $ps.Dispose() } }
+        if ($r) { return $r }
+    }
+    return ""
 }
 
 # NVIDIA inventory from the driver's own libraries (NVML, then the CUDA driver API), for a
 # host whose nvidia-smi is absent, stale or hangs (#9255). Twin of studio/nvidia_probe.py.
 # Cached. $null, or @{ Source; CudaMajor; CudaMinor; ComputeCaps ("8.9" strings); Count }.
 function Get-NvidiaLibraryInventory {
-    param([int]$TimeoutSec = 10)
+    param([int]$TimeoutSec = 30)
     if ($script:NvidiaLibraryInventoryProbed) { return $script:NvidiaLibraryInventory }
     $script:NvidiaLibraryInventoryProbed = $true
     $script:NvidiaLibraryInventory = $null
