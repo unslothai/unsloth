@@ -400,7 +400,13 @@ jobs:
           # so its exit code is reported, not thrown on: the verdict step reads
           # the event log, which is the authoritative record either way.
           & $server.FullName --version 2>&1 | Write-Host
-          Write-Host "llama-server --version exited $LASTEXITCODE"
+          $code = $LASTEXITCODE
+          # Recorded for the verdict: under an audit policy a signature finding
+          # never stops the load, so a non-zero exit is some other failure
+          # (a missing dependency, a loader error) that may have ended before
+          # the DLL graph was mapped, and an empty window then proves nothing.
+          Add-Content -Path $env:GITHUB_ENV -Value "EXERCISE_EXIT=$code"
+          Write-Host "llama-server --version exited $code"
 
       - name: Verdict
         if: always() && steps.control.outputs.control_fired == 'true'
@@ -489,6 +495,18 @@ jobs:
             [pscustomobject]@{ Time = $e.TimeCreated; File = $file }
           }
           if ($rows) { $rows | Format-Table -AutoSize | Out-String | Write-Host }
+
+          # An allow needs a load that completed. With no matching 3076 and a
+          # --version that did not exit 0 (or never reported an exit code), the
+          # runtime may never have been mapped, so the window is inconclusive.
+          # A matching 3076 is a finding whatever the exit code, so blocks
+          # still fall through to the verdict below.
+          if ($ours.Count -eq 0 -and $env:EXERCISE_EXIT -ne '0') {
+            Write-Host "::error::llama-server --version exited '$env:EXERCISE_EXIT' and no 3076 names the shipped runtime, so the load may never have happened; no verdict"
+            "## App Control audit (signature-only)`n`nNo verdict: llama-server --version exited '$env:EXERCISE_EXIT', so the runtime was not shown to load under the policy.`n" |
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY
+            exit 1
+          }
 
           $summary = "## App Control audit (signature-only)`n`n" +
             "Policy: SmartAppControlAuditNoISG (signatures only, no cloud reputation)`n`n" +

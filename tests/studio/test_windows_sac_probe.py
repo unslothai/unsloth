@@ -1087,7 +1087,7 @@ def test_prepare_proves_the_audit_policy_actually_evaluates_loads():
     # An enforcing machine refuses the control outright: that 3077 is stronger
     # evidence of evaluation than the 3076 an audit-only machine produces, and
     # under an installed audit policy either answers the question.
-    assert "function Test-AuditPolicyEvaluating([int[]] $AcceptIds = @(3076, 3077)) {" in fn
+    assert "function Test-AuditPolicyEvaluating([int[]] $AcceptIds = @(3076, 3077), [string] $FromPolicy = $null) {" in fn
     assert "$AcceptIds -contains $_.Id" in fn
     # Polled, not slept once, and never staged into the evidence.
     assert "foreach ($attempt in 1..10)" in fn
@@ -1575,7 +1575,7 @@ def test_the_sac_positive_control_counts_only_an_enforced_refusal():
     Evaluation mode logs nothing to this channel, so a 3076 there was written by
     some other audit policy and says nothing about enforcement."""
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
-    assert "function Test-AuditPolicyEvaluating([int[]] $AcceptIds = @(3076, 3077)) {" in ps1
+    assert "function Test-AuditPolicyEvaluating([int[]] $AcceptIds = @(3076, 3077), [string] $FromPolicy = $null) {" in ps1
     fn = ps1[
         ps1.index("function Test-AuditPolicyEvaluating") : ps1.index("function Invoke-Prepare")
     ]
@@ -1586,10 +1586,10 @@ def test_the_sac_positive_control_counts_only_an_enforced_refusal():
     prepare = ps1[
         ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")
     ]
-    assert "$controlFired = Test-AuditPolicyEvaluating\n" in prepare
+    assert "$controlFired = Test-AuditPolicyEvaluating -FromPolicy $NOISG_GUID\n" in prepare
     assert "$sacFired = Test-AuditPolicyEvaluating -AcceptIds @(3077)" in prepare
     run = ps1[ps1.index("function Invoke-Run") : ps1.index("function Invoke-Collect")]
-    assert "$controlFired = Test-AuditPolicyEvaluating\n" in run
+    assert "$controlFired = Test-AuditPolicyEvaluating -FromPolicy $NOISG_GUID\n" in run
     assert "$sacFired = Test-AuditPolicyEvaluating -AcceptIds @(3077)" in run
     # And neither refusal message still offers a 3076 as proof of enforcement.
     for msg in (prepare, run):
@@ -2080,3 +2080,128 @@ exit 0
         timeout = 120,
     )
     assert proc.returncode == 0, proc.stdout[-1500:] + proc.stderr[-1500:]
+
+
+def _drive_probe(tmp_path, body, names):
+    import shutil
+
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is required to drive the probe functions")
+    driver = tmp_path / "drive.ps1"
+    driver.write_text(
+        r"""
+param([string]$Src,[string]$Work)
+$a=[System.Management.Automation.Language.Parser]::ParseFile($Src,[ref]$null,[ref]$null)
+$ErrorActionPreference = 'Stop'
+$want = '"""
+        + ",".join(names)
+        + r"""'.Split(',')
+foreach($f in $a.FindAll({$args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true)){
+  if($want -contains $f.Name){ Invoke-Expression $f.Extent.Text } }
+$CI_LOG = 'Microsoft-Windows-CodeIntegrity/Operational'
+function Start-Sleep { }
+"""
+        + body,
+        encoding = "utf-8",
+    )
+    proc = subprocess.run(
+        [pwsh, "-NoProfile", "-File", str(driver), "-Src", str(PROBE_DIR / "sac-probe.ps1"), "-Work", str(tmp_path)],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    assert proc.returncode == 0, proc.stdout[-1500:] + proc.stderr[-1500:]
+
+
+def test_the_audit_policy_control_needs_an_event_from_the_audit_policy_itself(tmp_path):
+    """On a Smart App Control enforcing machine the unsigned control is refused
+    by Smart App Control's own policy with a 3077 whether or not the installed
+    NoISG audit policy evaluates anything. Accepting that 3077 as proof let an
+    empty later window be graded as a signature-only allow."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    prepare = ps1[ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")]
+    run = ps1[ps1.index("function Invoke-Run") : ps1.index("function Invoke-Collect")]
+    for stage in (prepare, run):
+        assert "$controlFired = Test-AuditPolicyEvaluating -FromPolicy $NOISG_GUID" in stage
+        # The Smart App Control cell asks a different question and is unchanged.
+        assert "$sacFired = Test-AuditPolicyEvaluating -AcceptIds @(3077)" in stage
+    body = r"""
+$WorkDir = $Work; $Label = 't'
+$NOISG = '{5283AC0F-FFF1-49AE-ADA1-8A933130CAD6}'
+function Add-Type { param($TypeDefinition,$OutputAssembly,$OutputType)
+  Set-Content -LiteralPath $OutputAssembly -Value "#!/bin/sh`ntrue"; chmod +x $OutputAssembly }
+function New-Ev([int]$id, [hashtable]$data) {
+  $x = '<Event><EventData>' + (($data.GetEnumerator() | ForEach-Object { "<Data Name='$($_.Key)'>$($_.Value)</Data>" }) -join '') + '</EventData></Event>'
+  $e = [pscustomobject]@{ Id = $id; Message = 'a process attempted to load C:\x\unsigned-control.exe' }
+  $e | Add-Member -MemberType ScriptMethod -Name ToXml -Value ({ $x }.GetNewClosure())
+  $e }
+# Smart App Control's own enforced policy refusing the control.
+$global:evs = @(New-Ev 3077 @{ 'File Name' = 'C:\x\unsigned-control.exe'; PolicyGUID = '{0283AC0F-FFF1-49AE-ADA1-8A933130CAD6}'; PolicyNameBuffer = 'VerifiedAndReputableDesktop' })
+function Get-WinEvent { $global:evs }
+if ($true -eq (Test-AuditPolicyEvaluating -FromPolicy $NOISG)) { exit 31 }
+# Without the attribution requirement (the Smart App Control cell) it still counts.
+if ($true -ne (Test-AuditPolicyEvaluating -AcceptIds @(3077))) { exit 32 }
+# The audit policy's own 3076, by GUID and by name.
+$global:evs = @(New-Ev 3076 @{ 'File Name' = 'C:\x\unsigned-control.exe'; PolicyGUID = $NOISG.ToLower() })
+if ($true -ne (Test-AuditPolicyEvaluating -FromPolicy $NOISG)) { exit 33 }
+$global:evs = @(New-Ev 3076 @{ 'File Name' = 'C:\x\unsigned-control.exe'; PolicyNameBuffer = 'VerifiedAndReputableDesktopEvaluationAuditNoISG' })
+if ($true -ne (Test-AuditPolicyEvaluating -FromPolicy $NOISG)) { exit 34 }
+exit 0
+"""
+    _drive_probe(
+        tmp_path,
+        body,
+        ["Get-EventDataMap", "Test-EventFromPolicy", "Test-AuditPolicyEvaluating"],
+    )
+
+
+def test_collect_waits_for_code_integrity_delivery_to_settle(tmp_path):
+    """The channel is written asynchronously, so a single snapshot taken soon
+    after run could grade zero events and print a clean allow."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
+    assert "$events = @(Read-SettledCiEvents $start $CI_EVENT_IDS)" in collect
+    assert "Get-WinEvent -FilterHashtable" not in collect[: collect.index("$shaped = @($events")]
+    body = r"""
+$global:reads = 0
+$global:script = @('none', 1, 3, 3, 3)
+function Get-WinEvent { param($FilterHashtable, $ErrorAction)
+  $n = $global:script[[math]::Min($global:reads, $global:script.Count - 1)]; $global:reads++
+  if ($n -eq 'none') { Write-Error -ErrorId 'NoMatchingEventsFound' -Message 'No events were found' -ErrorAction Stop }
+  if ($n -eq 'denied') { Write-Error -ErrorId 'AccessDenied' -Message 'denied' -ErrorAction Stop }
+  foreach ($i in 1..$n) { [pscustomobject]@{ Id = 3076 } }
+  [pscustomobject]@{ Id = 3000 } }
+$got = @(Read-SettledCiEvents ([datetime]::UtcNow) @(3076, 3077))
+if ($got.Count -ne 3) { Write-Host "got $($got.Count) after $global:reads reads"; exit 41 }
+# Bounded: a channel that never stops growing still returns.
+$global:reads = 0; $global:script = @(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+$got = @(Read-SettledCiEvents ([datetime]::UtcNow) @(3076) -Attempts 5)
+if ($global:reads -ne 5 -or $got.Count -ne 5) { exit 42 }
+# An unreadable channel is not an empty one.
+$global:reads = 0; $global:script = @('denied')
+$threw = $false
+try { [void](Read-SettledCiEvents ([datetime]::UtcNow) @(3076)) } catch { $threw = $true }
+if (-not $threw) { exit 43 }
+exit 0
+"""
+    _drive_probe(tmp_path, body, ["Read-SettledCiEvents"])
+
+
+def test_the_ci_verdict_needs_a_completed_exercise_before_an_allow():
+    """A --version that exited non-zero for a reason that raises no 3076 (a
+    missing dependency, a loader failure before the DLL graph is mapped) used
+    to reach the clean signature-only verdict."""
+    workflow = WORKFLOW.read_text(encoding = "utf-8")
+    exercise = workflow[workflow.index("      - name: Load the shipped runtime under the policy") :]
+    exercise = exercise[: exercise.index("      - name: Verdict")]
+    assert '"EXERCISE_EXIT=$code"' in exercise
+    assert exercise.index("$code = $LASTEXITCODE") < exercise.index('"EXERCISE_EXIT=$code"')
+    verdict = workflow[workflow.index("      - name: Verdict\n        if: always()") :]
+    verdict = verdict[: verdict.index("      - name: Export the CodeIntegrity events")]
+    gate = verdict.index("if ($ours.Count -eq 0 -and $env:EXERCISE_EXIT -ne '0') {")
+    # After the polled read, before any allow is written.
+    assert verdict.index("foreach ($attempt in 1..10) {") < gate
+    assert gate < verdict.index("No binary in the shipped runtime would be refused")
+    assert gate < verdict.index('$summary = "## App Control audit (signature-only)')
+    assert "exit 1" in verdict[gate : verdict.index('$summary = "## App Control audit')]

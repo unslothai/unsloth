@@ -865,7 +865,28 @@ function Save-Baseline([string] $dir) {
 # and only a 3077 shows that: Smart App Control in evaluation mode logs nothing
 # to this channel, so a 3076 there was written by some other audit policy on the
 # machine and says nothing about enforcement.
-function Test-AuditPolicyEvaluating([int[]] $AcceptIds = @(3076, 3077)) {
+# True when a CodeIntegrity record was raised by the policy $Guid rather than
+# by some other policy that happens to be active. Smart App Control's own
+# policy refuses an unsigned binary with a 3077 on an enforcing machine, so a
+# control event that only names the file says nothing about whether the audit
+# policy this probe installed is evaluating. Microsoft's App Control event
+# docs say block events "include information that identifies the policy"; on
+# the records themselves that is the PolicyGUID / PolicyID(Buffer) and
+# PolicyName(Buffer) EventData fields. Matched on any field carrying the GUID
+# so a renamed field fails toward "not attributed", never toward an allow.
+function Test-EventFromPolicy($record, [string] $Guid, [string] $NamePattern = '*AuditNoISG*') {
+    $bare = $Guid.Trim('{', '}').ToLowerInvariant()
+    $data = Get-EventDataMap $record
+    foreach ($key in @($data.Keys)) {
+        $value = [string] $data[$key]
+        if (-not $value) { continue }
+        if ($value.ToLowerInvariant().Contains($bare)) { return $true }
+        if ($key -like 'PolicyName*' -and $NamePattern -and $value -like $NamePattern) { return $true }
+    }
+    return $false
+}
+
+function Test-AuditPolicyEvaluating([int[]] $AcceptIds = @(3076, 3077), [string] $FromPolicy = $null) {
     $dir = Join-Path $WorkDir ".control-$Label"
     Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
@@ -902,7 +923,13 @@ function Test-AuditPolicyEvaluating([int[]] $AcceptIds = @(3076, 3077)) {
             $fired = @(Get-WinEvent -FilterHashtable @{
                 LogName = $CI_LOG; StartTime = $since
             } -ErrorAction SilentlyContinue |
-                Where-Object { $AcceptIds -contains $_.Id -and $_.Message -like '*unsigned-control*' })
+                Where-Object {
+                    $AcceptIds -contains $_.Id -and $_.Message -like '*unsigned-control*' -and
+                    # Under an installed audit policy the evidence has to come from
+                    # that policy: a 3077 from Smart App Control's own enforced
+                    # policy fires whether or not ours is evaluating anything.
+                    (-not $FromPolicy -or (Test-EventFromPolicy $_ $FromPolicy))
+                })
             if ($fired.Count -gt 0) {
                 $what = if ($fired[0].Id -eq 3077) { 'refused on this machine' } else { 'evaluated on this machine' }
                 Write-Host "positive control raised $($fired[0].Id): unsigned code is $what"
@@ -1122,9 +1149,9 @@ function Invoke-Prepare {
         }
 
         Write-Section 'Positive control'
-        $controlFired = Test-AuditPolicyEvaluating
+        $controlFired = Test-AuditPolicyEvaluating -FromPolicy $NOISG_GUID
         if ($false -eq $controlFired) {
-            throw "the audit policy $NOISG_GUID is listed as active but an unsigned control binary raised no 3076 or 3077 event, so it is not evaluating loads on this machine; a run with no events would be meaningless. Run revert and re-apply the policy."
+            throw "the audit policy $NOISG_GUID is listed as active but an unsigned control binary raised no 3076 or 3077 attributed to that policy, so it is not evaluating loads on this machine; a run with no events would be meaningless. Run revert and re-apply the policy."
         }
         $baseline.AuditPolicyControlFired = $controlFired
         $baseline | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $baselinePath -Encoding UTF8
@@ -1323,9 +1350,9 @@ function Invoke-Run {
                 # The control that fired belongs to the previous boot. Ask again
                 # on this one, and record the answer where collect reads it.
                 Write-Host 'the machine booted after this baseline was captured; re-running the positive control on this boot'
-                $controlFired = Test-AuditPolicyEvaluating
+                $controlFired = Test-AuditPolicyEvaluating -FromPolicy $NOISG_GUID
                 if ($false -eq $controlFired) {
-                    throw "the audit policy $NOISG_GUID is listed as active but an unsigned control raised no 3076 or 3077 on this boot, so it is not evaluating loads and this run would be meaningless. Run revert and prepare again."
+                    throw "the audit policy $NOISG_GUID is listed as active but an unsigned control raised no 3076 or 3077 attributed to that policy on this boot, so it is not evaluating loads and this run would be meaningless. Run revert and prepare again."
                 }
                 $runBaseline.AuditPolicyControlFired = $controlFired
                 $runBaseline | ConvertTo-Json -Depth 6 |
@@ -1520,6 +1547,32 @@ function Invoke-Run {
     Write-Host "run complete. Next: .\sac-probe.ps1 -Stage collect -Label $Label"
 }
 
+# Reads the event window until delivery has settled. Code integrity writes to
+# its channel asynchronously (the positive control and the CI verdict poll for
+# the same reason), so one snapshot taken soon after run can miss the last
+# records and grade an empty window as an allow. Re-read until two reads a few
+# seconds apart agree, bounded. "Nothing matched" is an empty read; any other
+# failure propagates, because an unreadable channel is not an empty one.
+function Read-SettledCiEvents([datetime] $Start, [int[]] $Ids, [int] $Attempts = 10, [int] $IntervalSeconds = 3) {
+    $previous = -1
+    $events = @()
+    foreach ($attempt in 1..$Attempts) {
+        $events = @()
+        try {
+            $events = @(Get-WinEvent -FilterHashtable @{
+                LogName   = $CI_LOG
+                StartTime = $Start
+            } -ErrorAction Stop | Where-Object { $Ids -contains $_.Id })
+        } catch {
+            if ($_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') { throw }
+        }
+        if ($events.Count -eq $previous) { break }
+        $previous = $events.Count
+        if ($attempt -lt $Attempts) { Start-Sleep -Seconds $IntervalSeconds }
+    }
+    return $events
+}
+
 function Invoke-Collect {
     Assert-Elevated
     $dir = Get-RunDir
@@ -1541,20 +1594,15 @@ function Invoke-Collect {
     $collectionProblems = @()
     $events = @()
     try {
-        $events = @(Get-WinEvent -FilterHashtable @{
-            LogName   = $CI_LOG
-            StartTime = $start
-        } -ErrorAction Stop | Where-Object { $CI_EVENT_IDS -contains $_.Id })
+        $events = @(Read-SettledCiEvents $start $CI_EVENT_IDS)
+        if ($events.Count -eq 0) { Write-Host 'no CodeIntegrity events in the window' }
     } catch {
-        # Only "nothing matched" is an empty window. A channel that could not
-        # be read is a failed collection, and writing [] for it would ship a
-        # clean-looking allow verdict with no events behind it.
-        if ($_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') {
-            Write-Host 'no CodeIntegrity events in the window'
-        } else {
-            $_.ToString() | Set-Content -LiteralPath (Join-Path $dir 'events-collection-error.txt') -Encoding UTF8
-            throw "could not read $CI_LOG, so the event window was not collected: $_"
-        }
+        # Only "nothing matched" is an empty window, and Read-SettledCiEvents
+        # already treats it as one. A channel that could not be read is a
+        # failed collection, and writing [] for it would ship a clean-looking
+        # allow verdict with no events behind it.
+        $_.ToString() | Set-Content -LiteralPath (Join-Path $dir 'events-collection-error.txt') -Encoding UTF8
+        throw "could not read $CI_LOG, so the event window was not collected: $_"
     }
     # A retry that got through clears the earlier attempt's marker; leaving it
     # put an artifact claiming this window was never collected into a zip that
