@@ -176,7 +176,7 @@ def encode_nvenc(
         return False
     try:
         import av
-        with av.open(path, mode = "w") as container:
+        with av.open(path, mode = "w", format = "mp4") as container:
             _encode(container, frames, fps, gpu, audio, audio_sample_rate)
         return True
     except Exception:  # noqa: BLE001 - e.g. the GeForce session limit; the caller re-encodes with libx264
