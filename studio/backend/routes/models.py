@@ -4086,7 +4086,11 @@ async def get_kv_cache_estimate(
                 _cc_caps,
                 None,
                 ctx_checkpoints,
-                per_checkpoint_bytes = getattr(be, "_rollback_state_bytes", lambda _n: 0)(1),
+                per_checkpoint_bytes = getattr(be, "_ctx_checkpoint_bytes", lambda *_a, **_k: 0)(
+                    _effective_cache_type,
+                    swa_full = _plan_kwargs.get("swa_full", False),
+                    flash_attn = _plan_kwargs.get("flash_attn", True),
+                ),
                 n_parallel = n_parallel,
                 total_host_bytes = (_total_ram_mib * 1024 * 1024) if _total_ram_mib else None,
             )

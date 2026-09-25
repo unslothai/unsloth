@@ -15810,14 +15810,42 @@ class LlamaCppBackend:
             n_parallel
         )
 
+    def _ctx_checkpoint_bytes(
+        self,
+        cache_type_kv: Optional[str] = None,
+        *,
+        swa_full: bool = False,
+        flash_attn: bool = True,
+    ) -> int:
+        """Host bytes of one slot's context checkpoint: the recurrent state, else the SWA window."""
+        recurrent = self._rollback_state_bytes(1)
+        if recurrent > 0:
+            return recurrent
+
+        # By difference, so the cap and the KV estimate's charge cannot drift.
+        def kv(checkpoints: int) -> int:
+            return self._estimate_kv_cache_bytes(
+                1,
+                cache_type_kv,
+                swa_full = swa_full,
+                ctx_checkpoints = checkpoints,
+                flash_attn = flash_attn,
+            )
+
+        return max(0, kv(1) - kv(0))
+
     def _bounded_ctx_checkpoints(
         self,
         n_parallel: int,
         server_caps: Mapping[str, object],
         extra_args: Optional[Iterable[str]] = None,
         env: Optional[Mapping[str, str]] = None,
+        *,
+        cache_type_kv: Optional[str] = None,
+        swa_full: bool = False,
+        flash_attn: bool = True,
     ) -> Optional[int]:
-        """Return an automatic recurrent-checkpoint cap, or None to preserve the argv."""
+        """Return an automatic context-checkpoint cap, or None to preserve the argv."""
         flag = server_caps.get("ctx_checkpoints_flag")
         if not flag:
             return None
@@ -15826,7 +15854,9 @@ class LlamaCppBackend:
             return None
         if _env_ctx_checkpoints_override(env) is not None:
             return None
-        per_checkpoint = self._rollback_state_bytes(1)
+        per_checkpoint = self._ctx_checkpoint_bytes(
+            cache_type_kv, swa_full = swa_full, flash_attn = flash_attn
+        )
         if per_checkpoint <= 0:
             return None
         total_ram_mib = self._host_memory_capacity_mib()
@@ -15842,7 +15872,7 @@ class LlamaCppBackend:
             return None
         logger.info(
             "Capping llama-server context checkpoints at %d per slot (this build's default %d): "
-            "each one snapshots this model's whole recurrent state (%.1f MiB), so the default "
+            "each one snapshots %.1f MiB of this model's state, so the default "
             "would hold %.1f GiB of host RAM across %d slot(s).",
             bounded,
             upstream_default,
@@ -23337,7 +23367,9 @@ class LlamaCppBackend:
                         server_caps,
                         extra_args,
                         ctx_checkpoints,
-                        per_checkpoint_bytes = self._rollback_state_bytes(1),
+                        per_checkpoint_bytes = self._ctx_checkpoint_bytes(
+                            cache_type_kv, swa_full = swa_full, flash_attn = planned_flash_attn
+                        ),
                         n_parallel = n_parallel,
                         total_host_bytes = ((self._host_memory_capacity_mib() or 0) * 1024 * 1024)
                         or None,
@@ -27293,7 +27325,14 @@ class LlamaCppBackend:
                 def _decide_auto_ctx_checkpoints() -> Optional[int]:
                     """The cap for the slots n_parallel currently names, or None to stand down."""
                     return (
-                        self._bounded_ctx_checkpoints(n_parallel, server_caps, extra_args)
+                        self._bounded_ctx_checkpoints(
+                            n_parallel,
+                            server_caps,
+                            extra_args,
+                            cache_type_kv = cache_type_kv,
+                            swa_full = swa_full,
+                            flash_attn = planned_flash_attn,
+                        )
                         if ctx_checkpoints is None
                         else None
                     )
