@@ -348,7 +348,7 @@ class TestGfx211AllowlistParity:
     gfx1152 (Krackan Point) turned this class red without any installer
     actually disagreeing with another."""
 
-    EXPECTED = {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152"}
+    EXPECTED = {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152", "gfx103x-all", "gfx110x-all"}
 
     @staticmethod
     def _leaves(blob: str) -> set[str]:
