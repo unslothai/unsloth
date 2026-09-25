@@ -110,6 +110,10 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
+import {
+  SaveTemporaryChatButton,
+  TemporaryChatSaveBridge,
+} from "./components/temporary-chat-save";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import {
   type CSSProperties,
@@ -4242,6 +4246,9 @@ export function ChatPage({
                 className="h-[var(--studio-chat-control-height,34px)]"
               />
             ) : null}
+            {view.mode === "single" && incognito ? (
+              <SaveTemporaryChatButton className="mr-[calc(6px*var(--ui-space-scale,1))] flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:text-white" />
+            ) : null}
             {view.mode === "single" && (
               <Tooltip>
                 <TooltipPrimitive.Trigger asChild={true}>
@@ -4398,6 +4405,7 @@ export function ChatPage({
                   <NativeAttachmentTargetContext.Provider
                     value={baseAttachmentTargetKey}
                   >
+                    <TemporaryChatSaveBridge />
                     <SingleContent
                       threadId={baseView.threadId}
                       artifact={selectedArtifact}
