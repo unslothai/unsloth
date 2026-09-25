@@ -1057,3 +1057,23 @@ def test_video_begin_load_rechecks_with_the_memory_request(monkeypatch, memory_m
     with pytest.raises(_GateSeen):
         v.VideoBackend().begin_load("some/repo", transformer_quant = "int8", memory_mode = memory_mode)
     assert seen.get("memory_mode") == memory_mode
+
+
+def test_qkv_fusion_skips_a_native_quantised_denoiser():
+    from core.inference import diffusion_speed
+
+    calls = []
+
+    class _Dit(torch.nn.Module):
+        def __init__(self, native):
+            super().__init__()
+            lin = torch.nn.Linear(64, 64).to(torch.bfloat16)
+            self.to_q = nq.native_linear_class()(lin, "int8") if native else lin
+
+        def fuse_qkv_projections(self):
+            calls.append(self)
+
+    native = types.SimpleNamespace(transformer = _Dit(native = True))
+    assert diffusion_speed._fuse_qkv(native, None) is False and not calls
+    dense = types.SimpleNamespace(transformer = _Dit(native = False))
+    assert diffusion_speed._fuse_qkv(dense, None) is True and len(calls) == 1
