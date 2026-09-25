@@ -47,8 +47,6 @@ def _blob(seed: int, size: int) -> bytes:
     return bytes(out[:size])
 
 
-
-
 def _copy_layout(
     tmp_path: Path,
     files: dict[str, bytes],
@@ -435,7 +433,6 @@ def test_reusable_paths_makes_no_request_without_a_local_candidate(tmp_path):
     )
 
     assert found == set()
-
 
 
 _UNCHANGED = _blob(100, 3 * 1024 * 1024)

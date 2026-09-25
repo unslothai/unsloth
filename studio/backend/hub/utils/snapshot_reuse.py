@@ -390,7 +390,6 @@ def paths_in_snapshot(
 
 
 def hub_remote_digests(repo_type: str, repo_id: str, token) -> RemoteDigests:
-
     def lookup(commit: str, paths: Sequence[str]) -> Mapping[str, str]:
         from huggingface_hub import HfApi
 
