@@ -39503,7 +39503,10 @@ async def generate_diffusion_image(
                     workflow = request.workflow,
                     reference_resolution = request.reference_resolution,
                     localized_edit = localized_edit,
-                    allow_oversized = request.allow_oversized,
+                    # Owner only: on Windows an oversized run spills into RAM instead of raising OOM, so a managed
+                    # account could stall the shared host. The operator env var still applies to everyone.
+                    allow_oversized = request.allow_oversized
+                    and not account_access.managed_account(),
                     loras = [(l.id, l.weight) for l in request.loras] if request.loras else None,
                     controlnet = (
                         (

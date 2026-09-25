@@ -1444,7 +1444,8 @@ def _activation_refusal_message(
         f"{', use fewer input images or a lower reference detail' if condition_pixels else ''}, "
         "or free GPU memory by closing other applications. To try anyway, turn on "
         f"'{OVERSIZED_GENERATE_SETTING_LABEL}' under Advanced on the Images page "
-        f"(server and API users can send allow_oversized or set {OVERSIZED_GENERATE_ENV}=1)."
+        "(API callers of /api/inference/images/generate can send allow_oversized; server installs "
+        f"can set {OVERSIZED_GENERATE_ENV}=1)."
     )
 
 

@@ -2746,3 +2746,25 @@ def test_generate_schema_bounds_for_unified_editing(client):
     assert _post_generate(client, prompt = "p", width = 2768).status_code == 422
     bad_mode = _post_generate(client, prompt = "p", localized_edit = {"mode": "lasso", "image": "QUJD"})
     assert bad_mode.status_code == 422
+
+
+def test_a_managed_account_cannot_send_allow_oversized(client, monkeypatch):
+    from hub.services.models import account_access
+
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+    seen = []
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(account_access, "require_media_adapters", lambda *a, **k: None)
+    monkeypatch.setattr(account_access, "require_media_generation_access", lambda *a, **k: None)
+    monkeypatch.setattr(
+        backend,
+        "generate",
+        lambda **kw: seen.append(kw.get("allow_oversized"))
+        or {"images": [], "seed": 1, "seeds": []},
+    )
+    resp = client.post(
+        "/api/inference/images/generate", json = {"prompt": "p", "allow_oversized": True}
+    )
+    assert resp.status_code == 200
+    assert seen == [False]
