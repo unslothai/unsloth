@@ -26,10 +26,13 @@ import threading
 from typing import Any, Callable, Optional
 
 from core.inference.diffusion_device import resolve_diffusion_device_target
+from core.inference.capability_snapshot import memoize_capability_snapshot
 from core.inference.diffusion_families import (
     DiffusionFamily,
     family_pipeline_available,
     family_sd_cpp_supported,
+    pipeline_available_family_names,
+    supported_family_names,
 )
 from core.inference.sd_cpp_backend import (
     _install_allowed,
@@ -455,11 +458,18 @@ def family_buildable_here(fam: Optional[DiffusionFamily], *, model_kind: Optiona
         return False
 
 
+@memoize_capability_snapshot(lambda names: len(names) == len(supported_family_names()))
+def _supported_family_capabilities() -> tuple[str, ...]:
+    """Diffusers capability snapshot used by status responses."""
+    return tuple(pipeline_available_family_names())
+
+
 def annotate_status(status: dict[str, Any]) -> dict[str, Any]:
     """Tag a backend status dict with the active engine + any fallback reason."""
     out = dict(status)
     out["engine"] = _active_engine_name
     out["fallback_reason"] = _fallback_reason
+    out["supported_families"] = list(_supported_family_capabilities())
     return out
 
 

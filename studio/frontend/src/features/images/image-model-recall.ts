@@ -5,6 +5,8 @@ export interface RememberedImageModel {
   repoId: string;
   kind: "gguf" | "single_file" | "pipeline";
   filename?: string;
+  // An opaque pipeline reloads only under the family it was loaded with.
+  familyOverride?: string;
 }
 
 const KEY = "unsloth:images:last-model";
@@ -25,6 +27,11 @@ export function readImageModel(): RememberedImageModel | null {
       kind: value.kind,
       ...(typeof value.filename === "string"
         ? { filename: value.filename }
+        : {}),
+      ...(typeof value.familyOverride === "string" &&
+      value.familyOverride.trim() &&
+      value.familyOverride.trim().toLowerCase() !== "auto"
+        ? { familyOverride: value.familyOverride.trim() }
         : {}),
     };
   } catch {

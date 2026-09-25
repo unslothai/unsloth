@@ -5,6 +5,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  diffusionPipelineLoadTarget,
+  isPinnedDiffusionLoadId,
+} from "../src/lib/diffusion-pipeline-load-target.ts";
+import {
   type DiffusionRouteSearch,
   diffusionRouteSearch,
   routedGgufFilename,
@@ -12,6 +16,39 @@ import {
 } from "../src/lib/diffusion-route-search.ts";
 
 const REPO = "unsloth/Z-Image-Turbo-GGUF";
+
+test("a cached pipeline loads the exact snapshot that established its manifest", () => {
+  assert.deepEqual(
+    diffusionPipelineLoadTarget("Org/Opaque", {
+      source: "hub",
+      loadId: " /cache/models--Org--Opaque/snapshots/abc ",
+    }),
+    {
+      repoId: "/cache/models--Org--Opaque/snapshots/abc",
+      displayRepoId: "Org/Opaque",
+      source: "hub",
+    },
+  );
+  assert.deepEqual(
+    diffusionPipelineLoadTarget("Org/Opaque", { source: "hub" }),
+    { repoId: "Org/Opaque", displayRepoId: "Org/Opaque", source: "hub" },
+  );
+  assert.deepEqual(
+    diffusionPipelineLoadTarget("Org/Opaque", {
+      source: "hub",
+      loadId: "Org/Opaque",
+    }),
+    { repoId: "Org/Opaque", displayRepoId: "Org/Opaque", source: "hub" },
+  );
+  assert.equal(isPinnedDiffusionLoadId("Org/Opaque", "Org/Opaque"), false);
+  assert.equal(
+    isPinnedDiffusionLoadId(
+      "Org/Opaque",
+      "/cache/models--Org--Opaque/snapshots/abc",
+    ),
+    true,
+  );
+});
 
 test("an expander pick routes its exact filename as the quant", () => {
   assert.deepEqual(

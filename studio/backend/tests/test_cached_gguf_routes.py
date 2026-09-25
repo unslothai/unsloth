@@ -1948,8 +1948,24 @@ def test_list_cached_models_tags_diffusers_pipeline_as_text_to_image(monkeypatch
         [_file("config.json", 1_000), _file("model.safetensors", 9_000)],
         tmp_path / "models--unsloth--Llama-3.2-1B-Instruct",
     )
+    snapshot = diffusion.repo_path / "snapshots" / "revision"
+    (snapshot / "transformer").mkdir(parents = True)
+    (snapshot / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "ZImagePipeline",
+                "transformer": ["diffusers", "ZImageTransformer2DModel"],
+            }
+        )
+    )
+    (snapshot / "transformer" / "config.json").write_text("{}")
+    (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+    (diffusion.repo_path / "refs").mkdir()
+    (diffusion.repo_path / "refs" / "main").write_text("revision")
+    diffusion.revisions[0].snapshot_path = snapshot
 
     _scanned_repos(monkeypatch, diffusion, checkpoint)
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path)
 
     result = asyncio.run(models_route.list_cached_models(current_subject = "test-user"))
     by_repo = {c["repo_id"]: c["task"] for c in result["cached"]}
@@ -1957,6 +1973,10 @@ def test_list_cached_models_tags_diffusers_pipeline_as_text_to_image(monkeypatch
         "Tongyi-MAI/Z-Image-Turbo": "text-to-image",
         "unsloth/Llama-3.2-1B-Instruct": None,
     }
+    rows = {c["repo_id"]: c for c in result["cached"]}
+    assert rows["Tongyi-MAI/Z-Image-Turbo"]["artifact_kind"] == "diffusers_pipeline"
+    assert "load_id" not in rows["Tongyi-MAI/Z-Image-Turbo"]
+    assert rows["unsloth/Llama-3.2-1B-Instruct"].get("artifact_kind", "unknown") == "unknown"
 
 
 def test_list_cached_models_marks_companion_only_pipeline_partial(monkeypatch, tmp_path):
@@ -4961,7 +4981,14 @@ def test_a_pure_text_gguf_folder_is_never_promoted_to_a_media_task(tmp_path, mon
 
 def _saved_pipeline(root: Path, class_name: str) -> Path:
     root.mkdir(parents = True, exist_ok = True)
-    (root / "model_index.json").write_text(json.dumps({"_class_name": class_name}))
+    (root / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": class_name,
+                "transformer": ["diffusers", "Transformer2DModel"],
+            }
+        )
+    )
     for component in ("transformer", "vae", "text_encoder"):
         (root / component).mkdir(parents = True, exist_ok = True)
         (root / component / "config.json").write_text("{}")
@@ -6425,6 +6452,10 @@ def test_cached_model_rows_flag_a_selected_modular_pipeline_as_diffusers(monkeyp
 
     assert row.get("task") is None
     assert row["diffusers"] is True
+    assert row["artifact_kind"] == "diffusers_modular_pipeline"
+    assert row["load_id"] == str(snapshot)
+    response = models_route.CachedModelsResponse(cached = [row])
+    assert response.cached[0].artifact_kind == "diffusers_modular_pipeline"
 
 
 def test_cached_model_rows_flag_a_diffusion_repo_this_backend_cannot_load(monkeypatch, tmp_path):

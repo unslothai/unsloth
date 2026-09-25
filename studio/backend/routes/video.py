@@ -176,6 +176,7 @@ async def video_download_plan(
             request.model_path,
             gguf_filename = request.gguf_filename,
             family_override = request.family_override,
+            display_repo_id = request.display_repo_id,
             model_kind = kind,
             base_repo = request.base_repo,
             transformer_quant = request.transformer_quant,
@@ -211,6 +212,7 @@ async def video_download_plan(
             gguf_filename = request.gguf_filename,
             base_repo = request.base_repo,
             family_override = request.family_override,
+            display_repo_id = request.display_repo_id,
             model_kind = kind,
             hf_token = request.hf_token,
             # The plan must see the encoder policy the load will use: an fp8 request takes a hosted pre-cast encoder, so
@@ -333,6 +335,7 @@ async def load_video_model_gated(
             gguf_filename = request.gguf_filename,
             base_repo = request.base_repo,
             family_override = request.family_override,
+            display_repo_id = request.display_repo_id,
             model_kind = kind,
             transformer_quant = request.transformer_quant,
             text_encoder_quant = request.text_encoder_quant,
@@ -384,6 +387,7 @@ async def load_video_model_gated(
             # network-free.
             return backend.begin_load(
                 request.model_path,
+                display_repo_id = request.display_repo_id,
                 # a load nobody asked for may not reach the hub: the switch verified locality
                 # from the outside, and this makes that promise the loader's own rule
                 local_files_only = not user_initiated,
@@ -734,7 +738,7 @@ async def video_status(
     from core.inference.video import get_video_backend
     from hub.utils.host_paths import redact_host_paths
 
-    status_dict = get_video_backend().status()
+    status_dict = await asyncio.to_thread(get_video_backend().status)
     if account_access.resident_hidden("video", status_dict.get("repo_id")):
         return account_access.hidden_resident_response()
     # This route answers long after the request that resolved the reference ended, so there is

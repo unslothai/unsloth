@@ -49,6 +49,7 @@ from .diffusion_families import (
     DiffusionModelReplacedError,  # re-exported: callers import it from either module
     LoadIdentity,
     load_identity,
+    local_pipeline_components_are_complete,
     assert_flux2_gguf_matches_base,
     assert_pipeline_class_available,
     _is_local_path,
@@ -95,6 +96,7 @@ from .diffusion_hidream import (
     hidream_te4_kwargs,
 )
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
+from .model_ids import hf_cache_repo_id
 from .diffusion_memory import (
     MEMORY_MODE_BALANCED,
     MEMORY_MODE_LOW_VRAM,
@@ -719,7 +721,13 @@ def _is_trusted_diffusion_repo(repo_id: str) -> bool:
     return rid.startswith("unsloth/") or rid in _TRUSTED_NON_GGUF_REPOS
 
 
-def _assert_local_base_is_pipeline(base_repo: str, *, allow_modular: bool = False) -> None:
+def _assert_local_base_is_pipeline(
+    base_repo: str,
+    *,
+    allow_modular: bool = False,
+    excluded_components: Sequence[str] = (),
+    config_only_model_components: bool = False,
+) -> None:
     """A companion ``base_repo`` fed to ``from_pretrained(base)`` (or ``config=base``) must be a
     diffusers PIPELINE directory (has ``model_index.json``). ``_is_trusted_diffusion_repo`` accepts
     ANY existing local path, so without this a local base that is not a pipeline dir would pass the
@@ -730,9 +738,17 @@ def _assert_local_base_is_pipeline(base_repo: str, *, allow_modular: bool = Fals
 
     ``allow_modular`` accepts ``modular_model_index.json`` as well, for a caller whose loader is
     ``ModularPipeline.from_pretrained``: that IS the valid on-disk layout for a Modular Diffusers
-    pipeline (MiniMax-H3 ships no ``model_index.json`` at all). Off by default: a conventional
-    ``DiffusionPipeline`` load still needs the conventional index.
-    """
+    pipeline (MiniMax-H3 ships no ``model_index.json`` at all), and the local-model scanners
+    already count either index. Off by default -- a conventional ``DiffusionPipeline`` load still
+    needs the conventional index, and accepting a modular directory there would only move the
+    failure back into the loader.
+
+    ``excluded_components`` are constructor components supplied by the caller rather than loaded
+    from the base. This keeps transformer-only checkpoint companions space-efficient without
+    weakening the completeness rule for a selected full pipeline.
+
+    ``config_only_model_components`` is for whole-pipeline single-file checkpoints whose weights
+    come from the checkpoint while the companion base supplies their component configs."""
     base = (base_repo or "").strip()
     if not base:
         return
@@ -746,10 +762,18 @@ def _assert_local_base_is_pipeline(base_repo: str, *, allow_modular: bool = Fals
     indexes = ["model_index.json"]
     if allow_modular:
         indexes.append("modular_model_index.json")
-    if not root.is_dir() or not any((root / name).is_file() for name in indexes):
+    if not root.is_dir() or not any(
+        local_pipeline_components_are_complete(
+            root,
+            name,
+            excluded_components = excluded_components,
+            config_only_model_components = config_only_model_components,
+        )
+        for name in indexes
+    ):
         raise ValueError(
             f"Local base_repo is not a diffusers pipeline directory "
-            f"(no {' or '.join(indexes)}): {base}"
+            f"(no valid {' or '.join(indexes)}): {base}"
         )
 
 
@@ -935,6 +959,7 @@ class _LoadState:
     device: str
     dtype: str
     cpu_offload: bool
+    display_repo_id: Optional[str] = None
     # Defaulted so older positional constructions keep working.
     offload_policy: str = OFFLOAD_NONE
     vae_tiling: bool = False
@@ -2340,7 +2365,16 @@ class DiffusionBackend:
                 f"base_repo is restricted to unsloth/* repos (or a local path); got '{base_repo}'."
             )
         # A local base_repo loads as a full pipeline; reject a non-pipeline one before eviction
-        _assert_local_base_is_pipeline(base_repo)
+        overridden_components = (
+            (fam.denoiser_attr,)
+            if kind == "gguf" or (kind == "single_file" and not fam.single_file_is_pipeline)
+            else ()
+        )
+        _assert_local_base_is_pipeline(
+            base_repo,
+            excluded_components = overridden_components,
+            config_only_model_components = kind == "single_file" and fam.single_file_is_pipeline,
+        )
         local_root = Path(repo_id).expanduser()
         # Path-shaped: "."/".." prefix, a backslash (never in "org/name"), or an absolute path.
         path_shaped = (
@@ -2371,9 +2405,9 @@ class DiffusionBackend:
                     "a 'pipeline' load takes a full diffusers repo, not a single-file name."
                 )
             if local_root.exists():
-                if not (local_root / "model_index.json").exists():
+                if not local_pipeline_components_are_complete(local_root, "model_index.json"):
                     raise FileNotFoundError(
-                        f"Local pipeline directory has no model_index.json: {repo_id}"
+                        f"Local pipeline directory has no complete valid model_index.json: {repo_id}"
                     )
             elif path_shaped:
                 raise FileNotFoundError(f"Local model path does not exist: {repo_id}")
@@ -2429,6 +2463,7 @@ class DiffusionBackend:
         self,
         repo_id: str,
         *,
+        display_repo_id: Optional[str] = None,
         local_files_only: bool = False,
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
@@ -2456,12 +2491,10 @@ class DiffusionBackend:
             entry_token = _load_token
             self._raise_if_load_cancelled(entry_token)
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
-        # Resolved ONCE, here, and carried to the worker: outside it so a bad pick is the route's 400 rather than a
-        # load that dies mid-download, and only once so free VRAM cannot re-rank the choice after the weights land.
-        # Gated on the resolved backend, since XPU / MPS / CPU ignore physical ids and would otherwise 400 a selection
-        # the contract says to drop. Re-ranked only when the caller did not already do it: free VRAM moves between the
-        # route's preflight and here, so resolving twice can approve a scheme against one card and place the weights
-        # on another.
+        display_repo_id = (
+            display_repo_id.strip() if isinstance(display_repo_id, str) else display_repo_id
+        ) or None
+        # Resolve once, here: re-ranking after free VRAM moves can approve one card and place weights on another.
         if gpu_ordinal is None:
             gpu_ordinal = (
                 resolve_selected_cuda_ordinal(gpu_ids)
@@ -2509,6 +2542,7 @@ class DiffusionBackend:
             target = self._run_load,
             kwargs = dict(
                 repo_id = repo_id,
+                display_repo_id = display_repo_id,
                 local_files_only = local_files_only,
                 gguf_filename = gguf_filename,
                 base_repo = base_repo,
@@ -4240,6 +4274,7 @@ class DiffusionBackend:
         self,
         repo_id: str,
         *,
+        display_repo_id: Optional[str] = None,
         local_files_only: bool = False,
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
@@ -4277,6 +4312,9 @@ class DiffusionBackend:
         # A blank token must degrade to anonymous, not be passed as a credential. Normalize once.
         hf_token = hf_token.strip() if isinstance(hf_token, str) else hf_token
         hf_token = hf_token or None
+        display_repo_id = (
+            display_repo_id.strip() if isinstance(display_repo_id, str) else display_repo_id
+        ) or None
 
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
         fam = self.validate_load_request(
@@ -5760,6 +5798,13 @@ class DiffusionBackend:
                     # explicit.
                     resolved = build_resolved_record(
                         {
+                            "family_override": (
+                                family_override,
+                                fam.name,
+                                "detected from the model"
+                                if family_override is None
+                                else "requested",
+                            ),
                             "speed_mode": (
                                 speed_mode,
                                 "deferred" if speed_deferred else effective_speed,
@@ -5872,6 +5917,7 @@ class DiffusionBackend:
                         pipe = pipe,
                         family = fam,
                         repo_id = repo_id,
+                        display_repo_id = display_repo_id,
                         base_repo = base,
                         device = device,
                         gpu_ordinal = target.ordinal,
@@ -6273,10 +6319,12 @@ class DiffusionBackend:
         already handled in the plan.
 
         Left alone entirely for single-file/GGUF kinds, whose on-disk size IS their resident size,
-        on any target not sized in bf16, and for a LOCAL directory: the table is keyed on upstream
-        repo ids, so a local checkpoint can only reach the coarse family entry, and a family
-        covering more than one size would be lowered to a number less than half what it loads.
-        """
+        on any target that is not sized in bf16, and for a LOCAL directory outside the Hugging Face
+        cache: the table is keyed on upstream repo ids, so an arbitrary local checkpoint can only
+        ever reach the coarse family entry, and a family covering more than one size (a local
+        FLUX.2-klein 9B against klein's 4B default) would be lowered to a number less than half what
+        it loads. On disk is the measured truth there. A ``models--*/snapshots/*`` path can recover
+        its Hub provenance and earns the substitution only when the exact id is recognised."""
         try:
             # A whole-pipeline single file (SDXL) carries the U-Net, VAE and text encoders itself, and the base repo
             # is read for config only, but the plan still adds the base's cached companion weights, so a user who once
@@ -6294,7 +6342,11 @@ class DiffusionBackend:
                         },
                     )
                 return plan
-            if kind != "pipeline" or _is_local_path(base):
+            if kind != "pipeline":
+                return plan
+            local_base = _is_local_path(base)
+            table_base = self._configured_hf_cache_repo_id(base) if local_base else base
+            if local_base and table_base is None:
                 return plan
             import torch
 
@@ -6305,13 +6357,13 @@ class DiffusionBackend:
             # carrying two sizes that entry is the smaller one, so a 9B derivative would be lowered to the 4B number
             # and walk past the refusal. Accept the family's own default base and anything with an explicit override;
             # anything else keeps its measured size.
-            canonical = canonical_base(base)
+            canonical = canonical_base(table_base)
             if (
-                base_repo_bf16_components_gb(base) is None
+                base_repo_bf16_components_gb(table_base) is None
                 and canonical.lower() != str(getattr(fam, "base_repo", "") or "").lower()
             ):
                 return plan
-            table = family_bf16_components_gb(fam, base)
+            table = family_bf16_components_gb(fam, table_base)
             if table is None:
                 return plan
             # The table's encoder term is the DENSE one. When this pick takes its encoder pre-cast from a hosted fp8
@@ -6324,7 +6376,7 @@ class DiffusionBackend:
                 fam,
                 te_quant_mode = text_encoder_quant,
                 target = target,
-                base = base,
+                base = table_base,
             )
             transformer_gb, text_encoders_gb, vae_gb = table
             resident_gb = transformer_gb + text_encoders_gb * te_scale + vae_gb
@@ -6338,6 +6390,25 @@ class DiffusionBackend:
             )
         except Exception:  # noqa: BLE001 - sizing aid only; refuse on the plan as built
             return plan
+
+    @staticmethod
+    def _configured_hf_cache_repo_id(path: str) -> Optional[str]:
+        """Recover a repo id only from a snapshot below a configured HF cache root."""
+        repo_id = hf_cache_repo_id(path)
+        if repo_id is None:
+            return None
+        try:
+            from utils.hf_cache_settings import known_hf_hub_caches
+            candidate = Path(path).expanduser().resolve(strict = False)
+            for root in known_hf_hub_caches():
+                try:
+                    candidate.relative_to(Path(root).expanduser().resolve(strict = False))
+                    return repo_id
+                except (OSError, RuntimeError, ValueError):
+                    continue
+        except Exception:  # noqa: BLE001 -- an unreadable cache setting keeps measured sizing
+            return None
+        return None
 
     def declared_footprint_shortfall(
         self,
@@ -7649,7 +7720,7 @@ class DiffusionBackend:
                     "images": list(images),
                     "seed": int(seed),
                     "seeds": [int(s) for s in per_image_seeds],
-                    "repo_id": state.repo_id,
+                    "repo_id": state.display_repo_id or state.repo_id,
                     # The BUILD this ran on, not just the repo id: a GGUF quant and a torchao scheme each change the
                     # pixels.
                     "model_kind": state.kind,
@@ -7846,6 +7917,7 @@ class DiffusionBackend:
             return {
                 "loaded": False,
                 "repo_id": None,
+                "display_repo_id": None,
                 "family": None,
                 "base_repo": None,
                 "device": None,
@@ -7877,6 +7949,7 @@ class DiffusionBackend:
         return {
             "loaded": True,
             "repo_id": state.repo_id,
+            "display_repo_id": state.display_repo_id,
             "family": state.family.name,
             "base_repo": state.base_repo,
             "device": state.device,

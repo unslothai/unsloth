@@ -3754,6 +3754,12 @@ class DiffusionLoadRequest(BaseModel):
     """Request to load a local diffusion (text-to-image) checkpoint."""
 
     model_path: str = Field(..., description = "Diffusion repo id or local path")
+    display_repo_id: Optional[str] = Field(
+        None,
+        description = "Logical Hub repo id shown by clients when model_path is an exact local "
+        "snapshot. Display metadata only; model_path remains the physical load identity.",
+    )
+
     # The same inventory handle the picker was shown; see `resolve_inventory_handle`.
     _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
     gguf_filename: Optional[str] = Field(
@@ -4466,7 +4472,15 @@ class DiffusionStatusResponse(BaseModel):
 
     loaded: bool = Field(False, description = "Whether a diffusion model is loaded")
     repo_id: Optional[str] = Field(None, description = "Loaded repo id or local path")
+    display_repo_id: Optional[str] = Field(
+        None,
+        description = "Logical Hub repo id for display when repo_id is a pinned local snapshot",
+    )
     family: Optional[str] = Field(None, description = "Detected diffusion family")
+    supported_families: List[str] = Field(
+        default_factory = list,
+        description = "Canonical family overrides whose pipelines are available on this host",
+    )
     base_repo: Optional[str] = Field(None, description = "Companion diffusers base repo")
     device: Optional[str] = Field(None, description = "Device the pipeline is on")
     dtype: Optional[str] = Field(None, description = "Compute dtype")
@@ -4787,6 +4801,13 @@ class VideoLoadRequest(BaseModel):
     """Request to load a local text-to-video checkpoint."""
 
     model_path: str = Field(..., description = "Video repo id or local path")
+    display_repo_id: Optional[str] = Field(
+        None,
+        description = "Logical Hub repo id shown by clients when model_path is an exact local "
+        "snapshot. Used for family detection only when the physical path is opaque; model_path "
+        "remains the physical load identity.",
+    )
+
     # The same inventory handle the picker was shown; see `resolve_inventory_handle`.
     _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
     gguf_filename: Optional[str] = Field(
@@ -5282,7 +5303,19 @@ class VideoStatusResponse(BaseModel):
 
     loaded: bool = Field(False, description = "Whether a video model is loaded")
     repo_id: Optional[str] = Field(None, description = "Loaded repo id or local path")
+    display_repo_id: Optional[str] = Field(
+        None,
+        description = "Logical Hub repo id for display when repo_id is a pinned local snapshot",
+    )
     family: Optional[str] = Field(None, description = "Detected video family")
+    supported_families: List[str] = Field(
+        default_factory = list,
+        description = "Canonical family overrides whose pipelines are available on this host",
+    )
+    modular_families: List[str] = Field(
+        default_factory = list,
+        description = "Available family overrides whose loader accepts a Modular Diffusers root",
+    )
     base_repo: Optional[str] = Field(None, description = "Companion diffusers base repo")
     device: Optional[str] = Field(None, description = "Device the pipeline is on")
     dtype: Optional[str] = Field(None, description = "Compute dtype")

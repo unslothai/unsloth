@@ -39496,6 +39496,7 @@ async def load_diffusion_model_gated(
             # Kicks the slow load onto a background thread and returns at once (the client polls images/load-progress).
             return engine.begin_load(
                 request.model_path,
+                display_repo_id = request.display_repo_id,
                 # a load nobody asked for may not reach the hub: the switch verified locality
                 # from the outside, and this is what makes that promise the loader's own rule
                 local_files_only = not user_initiated,
@@ -39557,7 +39558,7 @@ async def load_diffusion_model_gated(
             *account_access.media_adapter_references(request),
         )
         reset_media_load_progress("image")
-        return DiffusionStatusResponse(**annotate_status(status_dict))
+        return DiffusionStatusResponse(**(await asyncio.to_thread(annotate_status, status_dict)))
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
     except account_access.GpuBusyForAnotherAccountError as exc:
@@ -40243,7 +40244,9 @@ async def unload_diffusion_model(
     from hub.utils.host_paths import redact_host_paths, restore_inventory_handles
 
     return redact_host_paths(
-        restore_inventory_handles(DiffusionStatusResponse(**annotate_status(status_dict))),
+        restore_inventory_handles(
+            DiffusionStatusResponse(**(await asyncio.to_thread(annotate_status, status_dict)))
+        ),
         via_api_key = via_api_key,
     )
 
@@ -40258,7 +40261,7 @@ async def diffusion_status(
     from core.inference.diffusion_engine_router import active_status
     from hub.utils.host_paths import redact_host_paths
 
-    status_dict = active_status()
+    status_dict = await asyncio.to_thread(active_status)
     if account_access.resident_hidden("diffusion", status_dict.get("repo_id")):
         return account_access.hidden_resident_response()
     # Answered long after the resolving request ended, so no handle is in context.

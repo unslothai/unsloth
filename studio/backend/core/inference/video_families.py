@@ -391,6 +391,23 @@ def supported_video_family_names() -> tuple[str, ...]:
     return tuple(fam.name for fam in _FAMILIES)
 
 
+def pipeline_available_video_families(*, device: Optional[str] = None) -> tuple[VideoFamily, ...]:
+    """Video-family overrides whose pipeline can be built by installed Diffusers."""
+    from .diffusion_families import family_pipeline_strictly_available
+
+    target = (device or "").strip().lower()
+    return tuple(
+        fam
+        for fam in _FAMILIES
+        if family_pipeline_strictly_available(fam)
+        and not (target == "mps" and fam.modular_workflow)
+    )
+
+
+def pipeline_available_video_family_names(*, device: Optional[str] = None) -> tuple[str, ...]:
+    return tuple(fam.name for fam in pipeline_available_video_families(device = device))
+
+
 def resolve_video_base_repo(fam: VideoFamily, base_repo: Optional[str]) -> str:
     """The companion diffusers repo: caller-supplied if given, else the family fallback."""
     base = (base_repo or "").strip()
