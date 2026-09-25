@@ -1389,20 +1389,26 @@ _UNSHARDED_PIPELINE_WEIGHT_RE = re.compile(
 
 
 def _transformer_folder_complete(folder: Path) -> bool:
-    """Every shard the canonical index names (else the unsharded file) exists; variant twins do not count."""
+    """Whether the checkpoint diffusers' default load picks here is complete; variant twins do not count.
+
+    That load reads a canonical ``.safetensors`` index if one exists (and fails on its missing shards
+    rather than falling back), else an unsharded file. It never reads a ``.bin`` index."""
     if not folder.is_dir():
         return False
+    names = {f.name for f in folder.iterdir() if f.is_file()}
     indexes = [
-        f for f in folder.glob("*.index.json") if _DEFAULT_PIPELINE_WEIGHT_INDEX_RE.match(f.name)
+        n
+        for n in names
+        if n.endswith(".safetensors.index.json") and _DEFAULT_PIPELINE_WEIGHT_INDEX_RE.match(n)
     ]
     if indexes:
         for index in indexes:
-            with open(index, encoding = "utf-8") as fh:
+            with open(folder / index, encoding = "utf-8") as fh:
                 shards = set((json.load(fh).get("weight_map") or {}).values())
-            if shards and all((folder / shard).is_file() for shard in shards):
+            if shards and shards <= names:
                 return True
         return False
-    return any(_UNSHARDED_PIPELINE_WEIGHT_RE.match(f.name) for f in folder.iterdir() if f.is_file())
+    return any(_UNSHARDED_PIPELINE_WEIGHT_RE.match(n) for n in names)
 
 
 def _dense_candidate_is_prequant(

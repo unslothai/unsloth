@@ -1226,6 +1226,25 @@ def test_a_partial_sharded_transformer_is_not_a_cached_release(tmp_path):
     assert DiffusionBackend._released_transformer_cached(str(tmp_path))
 
 
+def test_a_complete_bin_set_does_not_cover_a_partial_safetensors_index(tmp_path):
+    # Diffusers loads the safetensors index when present and never a .bin index by default.
+    folder = tmp_path / "transformer"
+    bins = [f"diffusion_pytorch_model-0000{i}-of-00002.bin" for i in (1, 2)]
+    folder.mkdir()
+    (folder / "diffusion_pytorch_model.bin.index.json").write_text(
+        json.dumps({"weight_map": {"a": bins[0], "b": bins[1]}})
+    )
+    for shard in bins:
+        (folder / shard).write_bytes(b"x")
+    assert not DiffusionBackend._released_transformer_cached(str(tmp_path))
+    shards = [f"diffusion_pytorch_model-0000{i}-of-00002.safetensors" for i in (1, 2)]
+    _write_index(folder, shards)
+    (folder / shards[0]).write_bytes(b"x")
+    assert not DiffusionBackend._released_transformer_cached(str(tmp_path))
+    (folder / shards[1]).write_bytes(b"x")
+    assert DiffusionBackend._released_transformer_cached(str(tmp_path))
+
+
 def test_shards_scattered_across_revisions_are_not_a_cached_release(monkeypatch, tmp_path):
     repo_dir = tmp_path / "models--org--repo"
     shards = [f"diffusion_pytorch_model-0000{i}-of-00002.safetensors" for i in (1, 2)]
