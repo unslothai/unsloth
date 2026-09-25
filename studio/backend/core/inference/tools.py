@@ -9617,7 +9617,9 @@ def _reaches_host_paths(kind: str, text: str) -> bool:
         if kind == "python":
             tree, error = _parse_python(text)
             return error is None and _python_reaches_outside_sandbox(tree, text)
-        command = text.replace("\r\n", ";").replace("\n", ";").replace("\r", ";")
+        # Decoded like the approval classifier, or cat $'/home/u/x' prompts yet stays isolated.
+        decoded = _decode_ansi_c(text, keep_one_word = True)
+        command = decoded.replace("\r\n", ";").replace("\n", ";").replace("\r", ";")
         for variant in {command, _expand_shell_assignments(_expand_param_defaults(command))}:
             lexer = shlex.shlex(variant, posix = True, punctuation_chars = ";&|()")
             lexer.whitespace_split = True

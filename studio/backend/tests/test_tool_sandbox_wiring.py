@@ -813,3 +813,16 @@ def test_an_approval_does_not_lift_the_jail_for_a_call_that_needs_no_host_path(m
     monkeypatch.setattr(os_sandbox, "prepare_tool_launch", prepare)
     assert "3" in tools._python_exec("print(1 + 2)", None, 60, _SESSION, host_access_approved = True)
     assert len(planned) == 1
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat /srv/private/report.txt",
+        "cat $'/srv/private/report.txt'",
+        "cat $'/srv/private/rep\\x6frt.txt'",
+    ],
+)
+def test_an_approved_ansi_c_quoted_host_path_is_recognised(command):
+    """The approval classifier decodes $'...' and prompts; the reach check must agree, or the approved call stays jailed."""
+    assert tools._reaches_host_paths("terminal", command)
