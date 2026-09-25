@@ -70,11 +70,67 @@ def _remove_upload(stored_path: str | None, *, keep_path: str | None = None) -> 
         logger.warning("failed to remove RAG upload %s", stored_path, exc_info = True)
 
 
+class ReplacementClaimUnavailable(RuntimeError):
+    """The source an edit replaces is already being saved or indexed by someone else."""
+
+
+def _release_replaced_claim(replaces: tuple[str, str | None] | None) -> None:
+    """Hand back the source this ingestion was replacing when the replacement did not land.
+
+    Editing a source claims it with ``status='running'`` so a second edit of it cannot start
+    (in ``start_ingestion``'s admission transaction). A successful ingestion deletes that
+    row, so this matches nothing; every other outcome -- a failed parse or embed, a lost lease,
+    a cancellation -- would otherwise leave the source reading as indexing forever, polled
+    endlessly and refusing both a retry and a removal.
+
+    Guarded on ``status='running'`` so the other caller of ``replaces`` (the stale-embedder and
+    empty-ingest dedupe branch of ``start_ingestion``, whose old row is ``completed``) is
+    untouched. Best-effort for the same reason ``_remove_upload`` is: a logged warning beats
+    turning a failed job into a second failure.
+    """
+    if replaces is None:
+        return
+    old_id, _ = replaces
+    try:
+        conn = rag_db.get_connection()
+        try:
+            conn.execute(
+                "UPDATE documents SET status='completed' WHERE id=? AND status='running'",
+                (old_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 - the job is already settling
+        logger.warning("failed to release the edit claim on %s", old_id, exc_info = True)
+
+
 def _emit(job_id: str, event: dict) -> None:
     with _jobs_lock:
         q = _jobs.get(account_key(job_id))
     if q is not None:
         q.put(event)
+
+
+def _set_job_in_tx(
+    conn,
+    job_id: str,
+    *,
+    status: str | None = None,
+    stage: str | None = None,
+    progress: float | None = None,
+    error: str | None = None,
+) -> None:
+    """Write the job row without committing, for a caller that owns the transaction."""
+    conn.execute(
+        "UPDATE ingestion_jobs SET "
+        "status=COALESCE(?, status), "
+        "stage=COALESCE(?, stage), "
+        "progress=COALESCE(?, progress), "
+        "error=COALESCE(?, error) "
+        "WHERE id=?",
+        (status, stage, progress, error, job_id),
+    )
 
 
 def _set_job(
@@ -86,15 +142,7 @@ def _set_job(
     progress: float | None = None,
     error: str | None = None,
 ) -> None:
-    conn.execute(
-        "UPDATE ingestion_jobs SET "
-        "status=COALESCE(?, status), "
-        "stage=COALESCE(?, stage), "
-        "progress=COALESCE(?, progress), "
-        "error=COALESCE(?, error) "
-        "WHERE id=?",
-        (status, stage, progress, error, job_id),
-    )
+    _set_job_in_tx(conn, job_id, status = status, stage = stage, progress = progress, error = error)
     conn.commit()
 
 
@@ -124,13 +172,29 @@ def _abort_if_document_deleted(conn, job_id: str, document_id: str) -> bool:
     return True
 
 
+def _withdraw_replacement(conn, job_id: str, reason: str) -> None:
+    """Settle a job whose replacement was withdrawn rather than published.
+
+    ``_replace_old_document`` has already removed the row; this only reports it. The reason is
+    carried through (unlike ``_abort_if_document_deleted``, whose caller has no one waiting)
+    because the preview modal polls this job to decide whether a save succeeded, and would
+    otherwise blame the re-index for a deletion the user asked for.
+    """
+    _set_job(conn, job_id, status = "cancelled", stage = "done", progress = 1.0, error = reason)
+    _emit(job_id, {"type": "error", "stage": "cancelled", "error": reason})
+
+
 def _embed_pass(
     texts: list[str],
     model_name: str | None,
     on_progress: Callable[[int, int], None] | None = None,
 ):
     """One batched pass. Returns ``(vectors, identity, changed)``, ``changed`` when the
-    embedder swapped part way and the vectors therefore span two spaces."""
+    embedder swapped part way and the vectors therefore span two spaces.
+
+    ``on_progress(done, total)`` is called after each batch, which is what makes a long embed
+    observably alive: it is the only work in a job that can run for many minutes, and
+    without it the persisted stage and progress do not move for its whole duration."""
     vectors: list = []
     identity: str | None = None
     changed = False
@@ -235,28 +299,71 @@ def _ocr_scanned_pages(
     return out, ocred
 
 
+def _discard_replacement(conn, document_id: str, stored_path: str) -> None:
+    """Remove a replacement that must not be published, row and upload included.
+
+    Called after the caller rolled its write transaction back, so the chunks it wrote are
+    already gone; this clears the pending row created at admission and the file behind it.
+    Deleting the row alone would not be enough had they been committed: retrieval filters
+    by scope, not status, so chunks left behind stay citable under a document the user was
+    told did not land.
+    """
+    try:
+        store.delete_document(conn, document_id)
+        _remove_upload(stored_path)
+    except Exception:  # noqa: BLE001 - already on a failure path
+        logger.warning("failed to discard replacement document %s", document_id, exc_info = True)
+
+
 def _replace_old_document(
     conn, replaces: tuple[str, str | None] | None, keep_path: str, document_id: str
-) -> None:
+) -> tuple[str | None, str | None]:
     """Drop the document this ingestion replaced (stale embedder / empty prior
     ingest), called only after the replacement completed successfully.
 
-    Checked against the replacement inside the transaction that retires the old row: every
-    store helper commits, so a delete that removed the replacement between the completion and
-    this call would otherwise take the still-searchable document it was replacing with it.
+    Returns ``(withdrawn_reason, retired_path)``: the reason is ``None`` when the
+    replacement stands, and the path is the retired document's file for the caller to
+    delete *after* the commit. Runs inside the caller's write transaction -- the same one
+    that published the replacement's chunks -- so a delete landing between a check and a
+    write cannot be lost, and no query can observe the moment where both versions are
+    indexed.
+
+    Exactly one document survives every outcome:
+
+    * the replacement gone means a delete already removed it, so there is nothing to publish
+      and the document it was replacing keeps its chunks
+    * the *old* row gone means the user deleted the source while this ingestion ran. Their
+      delete wins, so the replacement is withdrawn rather than bringing back a source they
+      just removed under a new id
+    * the retirement failing (``BEGIN IMMEDIATE`` timing out behind a long writer, say) also
+      withdraws the replacement. Reporting success there would leave the old and the edited
+      copy both searchable, since the claim release then restores the old row to `completed`
     """
     if replaces is None:
-        return
+        return None, None
     old_id, old_path = replaces
     try:
-        conn.execute("BEGIN IMMEDIATE")
         if store.get_document(conn, document_id) is None:
-            conn.rollback()
-            return
-        store.delete_document(conn, old_id)
-        _remove_upload(old_path, keep_path = keep_path)
-    except Exception:  # noqa: BLE001 - the new document is already live
-        logger.warning("failed to remove replaced document %s", old_id, exc_info = True)
+            return "Document was deleted", None
+        if store.get_document(conn, old_id) is not None:
+            store.delete_document(conn, old_id, commit = False)
+            # Settled: drop the pointer in the same transaction that retires the row it
+            # named. It exists so recovery can finish an edit the process died in the
+            # middle of, and a cleared one says plainly that there is nothing left to
+            # finish -- so "still set" can never be confused with "already done", whatever
+            # else a later crash leaves behind.
+            conn.execute(
+                "UPDATE documents SET replaces_document_id=NULL WHERE id=?", (document_id,)
+            )
+            # Returned, not deleted here: the row deletion is still uncommitted, and a
+            # rollback (or a failing commit) would restore a document whose bytes this
+            # had already removed for good. The caller removes it once the commit lands.
+            return None, old_path
+    except Exception:  # noqa: BLE001 - withdrawn below rather than published unsettled
+        logger.warning("failed to settle replaced document %s", old_id, exc_info = True)
+        return "Could not retire the source this edit replaces", None
+    # The original is gone: the user deleted it while this ran.
+    return "Document was deleted", None
 
 
 def _retire_orphan_after_failure(
@@ -389,6 +496,30 @@ def _run(
             if not job_leases.renew_owned(conn, job_leases.INGESTION, job_id):
                 conn.rollback()
                 raise job_leases.JobLeaseLost("Ingestion job lease was reclaimed")
+            # An edit that empties a source still completes: the user cleared the text
+            # on purpose and the replacement is the version they asked for. An upload
+            # that parses to nothing keeps failing below, since that is a mistake the
+            # user can act on rather than an intentional blank.
+            if replaces is not None:
+                store.set_document_status(
+                    conn, document_id, "completed", num_chunks = 0, commit = False
+                )
+                withdrawn, retired_path = _replace_old_document(
+                    conn, replaces, stored_path, document_id
+                )
+                if withdrawn is not None:
+                    conn.rollback()
+                    _discard_replacement(conn, document_id, stored_path)
+                    _withdraw_replacement(conn, job_id, withdrawn)
+                    return
+                # The job's own completion rides in this transaction too, and the retired
+                # file is removed only after it commits: a rollback or a failing commit
+                # would otherwise leave the original's row restored with its bytes gone.
+                _set_job_in_tx(conn, job_id, status = "completed", stage = "done", progress = 1.0)
+                conn.commit()
+                _remove_upload(retired_path, keep_path = stored_path)
+                _emit(job_id, {"type": "complete", "num_chunks": 0})
+                return
             raise ValueError(
                 "No extractable text found in file. Upload a document containing readable text."
             )
@@ -418,17 +549,33 @@ def _run(
                 regions = None
 
         _progress(conn, job_id, "storing", 0.95)
+        # One transaction from the guard to the commit below. The chunks, the completed
+        # status and the retirement of the document being replaced all land together, so
+        # nothing can observe the gap in which both versions are indexed -- retrieval
+        # filters by scope, not status, so a query landing there answered from both.
         if _abort_if_document_deleted(conn, job_id, document_id):
             return
-        store.add_chunks(conn, scope, document_id, chunks, vectors, regions)
-        # add_chunks commits and releases the lock, so retake it: a delete landing in that gap must not be
-        # recorded as a completed ingestion.
-        if _abort_if_document_deleted(conn, job_id, document_id):
+        store.add_chunks(conn, scope, document_id, chunks, vectors, regions, commit = False)
+        store.set_document_status(
+            conn, document_id, "completed", num_chunks = len(chunks), commit = False
+        )
+        withdrawn, retired_path = _replace_old_document(conn, replaces, stored_path, document_id)
+        if withdrawn is not None:
+            # Nothing this job wrote may survive: roll the chunks back rather than
+            # deleting them again, then settle the job on a clean connection.
+            conn.rollback()
+            _discard_replacement(conn, document_id, stored_path)
+            _withdraw_replacement(conn, job_id, withdrawn)
             return
-        store.set_document_status(conn, document_id, "completed", num_chunks = len(chunks))
-        _replace_old_document(conn, replaces, stored_path, document_id)
-
-        _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
+        # The job's own completion rides in this transaction too. Left to a separate
+        # commit, a crash in between would leave a completed replacement whose original
+        # is already gone -- which is exactly what recovery reads as "the user deleted
+        # the original", so it would withdraw a replacement that had in fact succeeded.
+        _set_job_in_tx(conn, job_id, status = "completed", stage = "done", progress = 1.0)
+        conn.commit()
+        # Only now: a rollback or a failing commit above would otherwise have left the
+        # original's row restored and its bytes already deleted.
+        _remove_upload(retired_path, keep_path = stored_path)
         _emit(job_id, {"type": "complete", "num_chunks": len(chunks)})
     except job_leases.JobLeaseLost:
         logger.info("ingestion job %s stopped after its lease was reclaimed", job_id)
@@ -443,6 +590,11 @@ def _run(
             logger.exception("failed to record ingestion failure for job %s", job_id)
         _emit(job_id, {"type": "error", "stage": "error", "error": str(exc)})
     finally:
+        # Hand back an edit's claim *before* the orphan sweep. The claim marks the source as
+        # 'running', which is exactly what the sweep reads as a never-indexed orphan, so left
+        # claimed it would retire the original the edit was supposed to preserve. A genuine
+        # orphan retry (the sweep's own case) is 'pending', not 'running', so it is untouched.
+        _release_replaced_claim(replaces)
         if conn is not None:
             # Every exit but a completed one, which already retired its orphan. Nothing relaunches
             # ingestion, so a lost lease ends the work too: only _new_job ever claims one.
@@ -470,6 +622,7 @@ def start_ingestion(
     linked_relative_path: str | None = None,
     background: bool = True,
     content_hash: str | None = None,
+    replaces: tuple[str, str | None] | None = None,
 ) -> tuple[str, str]:
     """Create the document + job rows and spawn the worker, returning
     ``(document_id, job_id)``. A duplicate content hash in this scope returns the
@@ -480,7 +633,15 @@ def start_ingestion(
     reconciliation hashes it to detect content-identical renames) pass that digest
     through instead of paying for a second full read of the file. Must be the lowercase
     hex sha256 of ``stored_path``; a mismatched value would misfile the document under
-    the wrong hash, so it is trusted as given and never reverified here."""
+    the wrong hash, so it is trusted as given and never reverified here.
+
+    ``replaces`` is ``(old_document_id, old_stored_path)``: the named document is
+    retired by the worker only once this ingestion completes, so a failed re-index
+    never destroys the still-searchable original. It is how an edited source
+    replaces the one it was edited from. Only valid with ``dedupe=False``, because
+    the dedupe branch owns that value and its early return would drop a caller's."""
+    if replaces is not None and dedupe:
+        raise ValueError("replaces requires dedupe=False")
     account_path(stored_path)
     if account_is_retired():
         raise RuntimeError("Account is retired")
@@ -508,9 +669,28 @@ def start_ingestion(
         ).fetchone():
             conn.rollback()
             raise RuntimeError("Owning scope is being deleted")
-        # (old_document_id, old_stored_path) replaced by this upload; deleted by the worker only after the
-        # replacement completes, so a failed re-index never destroys the still-searchable original.
-        replaces: tuple[str, str | None] | None = None
+        if replaces is not None:
+            # Claim the source being replaced *here*, in the transaction that also writes
+            # the replacement row carrying `replaces_document_id`. Claiming in a separate
+            # earlier transaction left a window -- this function hashes the file and can
+            # run slow embedder discovery before reaching this point -- in which a crash
+            # left the original 'running' with nothing recording what it was waiting for,
+            # so recovery could neither identify nor release it. Committed together, the
+            # claim never outlives the row that explains it.
+            #
+            # The precondition rides on the UPDATE, so testing and claiming are one
+            # statement and a second concurrent save of the same source matches no row.
+            if not conn.execute(
+                "UPDATE documents SET status='running' WHERE id=? AND status NOT IN "
+                "('pending','running')",
+                (replaces[0],),
+            ).rowcount:
+                conn.rollback()
+                raise ReplacementClaimUnavailable("This source is already being saved or indexed")
+        # A re-upload of identical bytes can also retire the document it supersedes
+        # (see the stale-embedder and empty-ingest cases below). Only reachable under
+        # dedupe, which the caller-supplied `replaces` parameter excludes -- assigning
+        # here would otherwise overwrite the value an edit came in with.
         existing = store.document_by_hash(conn, scope, sha) if dedupe else None
         if existing is not None:
             doc = store.get_document(conn, existing)
@@ -570,6 +750,10 @@ def start_ingestion(
             embedding_model = effective_identity,
             linked_folder_id = linked_folder_id,
             linked_relative_path = linked_relative_path,
+            # Persisted, not just held in the worker's arguments: a crash before the
+            # retirement leaves startup reconciliation as the only thing that can hand the
+            # original's edit claim back, and it needs the relationship to do it.
+            replaces_document_id = replaces[0] if replaces else None,
             commit = False,
         )
         job_id = _new_job(conn, document_id, scope)
@@ -608,6 +792,9 @@ def start_ingestion(
             _workers.pop(account_key(job_id), None)
         job_leases.release(job_leases.INGESTION, job_id)
         fail_stalled_job(job_id, "Ingestion worker could not start")
+        # The claim first, for the same reason as _run's finally: swept while still claimed,
+        # the original reads as an orphan and would be retired rather than handed back.
+        _release_replaced_claim(replaces)
         # _run never entered, so its finally cannot retire the orphan this retry replaced.
         conn = rag_db.get_connection()
         try:

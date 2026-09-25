@@ -258,6 +258,7 @@ def create_document(
     embedding_model: str | None = None,
     linked_folder_id: str | None = None,
     linked_relative_path: str | None = None,
+    replaces_document_id: str | None = None,
     archive_messages: int | None = None,
     archive_ordinal: int | None = None,
     created_at: str | None = None,
@@ -282,8 +283,8 @@ def create_document(
     conn.execute(
         "INSERT INTO documents(rowid, id, scope, kb_id, thread_id, project_id, filename, sha256, "
         "status, stored_path, created_at, embedding_model, linked_folder_id, "
-        "linked_relative_path, archive_messages, archive_ordinal) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "linked_relative_path, replaces_document_id, archive_messages, archive_ordinal) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             rowid,
             document_id,
@@ -299,6 +300,7 @@ def create_document(
             embedding_model,
             linked_folder_id,
             linked_relative_path,
+            replaces_document_id,
             archive_messages,
             archive_ordinal,
         ),
@@ -315,12 +317,14 @@ def set_document_status(
     *,
     num_chunks: int | None = None,
     error: str | None = None,
+    commit: bool = True,
 ) -> None:
     conn.execute(
         "UPDATE documents SET status=?, num_chunks=COALESCE(?, num_chunks), error=? WHERE id=?",
         (status, num_chunks, error, document_id),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def set_document_embedding_model(
@@ -337,7 +341,7 @@ def set_document_embedding_model(
 def list_documents(conn: sqlite3.Connection, scope: str) -> list[dict]:
     rows = conn.execute(
         "SELECT id, scope, kb_id, thread_id, project_id, filename, sha256, status, error, "
-        "num_chunks, created_at, linked_folder_id "
+        "num_chunks, stored_path, created_at, linked_folder_id "
         "FROM documents d WHERE scope=? AND NOT EXISTS "
         "(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
         "ORDER BY created_at DESC",
@@ -451,10 +455,16 @@ def add_chunks(
     chunks,
     vectors,
     regions = None,
+    *,
+    commit: bool = True,
 ) -> None:
     """Incrementally index one document's chunks into chunks + FTS5 + vec0.
     ``vectors`` parallels ``chunks``; optional ``regions`` (also parallel) holds
-    per-chunk PDF highlight rects, stored as JSON."""
+    per-chunk PDF highlight rects, stored as JSON.
+
+    ``commit=False`` leaves the rows in the caller's transaction, so a replacement can
+    publish its chunks and retire the chunks it replaces in one commit -- retrieval
+    filters by scope rather than status, so between two commits both versions answer."""
     if len(vectors):
         rag_db.ensure_vec(conn, len(vectors[0]))
     for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
@@ -487,7 +497,8 @@ def add_chunks(
             "INSERT INTO chunks_vec(scope, chunk_id, embedding) VALUES(?,?,?)",
             (scope, chunk_id, _f32(vector)),
         )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def delete_document(
