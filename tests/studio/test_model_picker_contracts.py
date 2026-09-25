@@ -665,7 +665,7 @@ def test_variant_expander_refreshes_after_delete():
     shown as downloaded and clickable and tries to reload the removed file."""
     src = _read("features/model-picker/components/model-selector/pickers.tsx")
     del_confirm = re.search(
-        r"await onDeleteVariant\(v\.quant\);.*?setRefreshKey\(\(key\) => key \+ 1\)",
+        r"await onDeleteVariant\(v\.quant, v\.cache_ref \?\? v\.cache_path\);.*?setRefreshKey\(\(key\) => key \+ 1\)",
         src,
         re.S,
     )
@@ -865,15 +865,16 @@ def test_pinned_validation_uses_cached_local_variant_listing():
 
 
 def test_chat_autoload_scopes_variant_lookup_to_cached_repo_path():
-    """Autoload must probe the exact cache row it will load, including rows
-    retained from a previously selected Hugging Face cache."""
+    """Autoload probes its load ID: a logical chat GGUF repo spans remembered roots,
+    while an explicit local row still scans only its own directory."""
     src = _read("features/chat/api/chat-adapter.ts")
-    # Both cache-backed sources scan the exact path they will load from, not the
-    # bare repo id.
+    # Logical chat repositories use the same load_id for listing and loading; explicit
+    # local rows remain scoped to the physical path they name.
     sources = src.split("function buildAutoLoadSources", 1)[1]
     sources = sources.split("function isRememberedSource", 1)[0]
     assert sources.count("preferLocalCache: true") == 2
-    assert "localPath: repo.cache_path" in sources
+    assert "localPath: repo.load_id || repo.cache_path" in sources
+    assert "loadId: repo.load_id || repo.repo_id" in sources
     assert "localPath: row.path" in sources
 
     # #7767 moved the query building out of chat-api into its own module, so the listing

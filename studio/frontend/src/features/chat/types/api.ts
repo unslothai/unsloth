@@ -160,6 +160,11 @@ export interface ValidateModelResponse {
 }
 
 export interface GgufVariantDetail {
+  context_length?: number | null;
+  cache_path?: string | null;
+  /** Opaque stand-in for `cache_path` under host-path redaction; the only name an API-key
+   *  caller has for one specific copy, so a delete keeps it instead of the cleared path. */
+  cache_ref?: string | null;
   filename: string;
   /** Selection identity. Path-qualified when a repo holds several checkpoints at one quant. */
   quant: string;
