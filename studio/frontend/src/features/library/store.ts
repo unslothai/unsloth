@@ -198,6 +198,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
         // Fine-tunes go through the models route, which refuses while one is training or loaded,
         // and drops the Library's name, folder and star with the files.
         async () => {
+          const epoch = getAuthSessionEpoch();
           try {
             if (model) {
               await deleteFineTunedModel({
@@ -211,6 +212,8 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
           } finally {
             settle();
           }
+          // Signed in as another account meanwhile: its chats can hold an attachment of this id.
+          if (getAuthSessionEpoch() !== epoch) return;
           // Those pages stay mounted off-screen and would keep showing it; an open chat would
           // keep an attachment, and write it back with its next save.
           const [kind, messageId, ...rest] = id.split(":");

@@ -1044,6 +1044,11 @@ def list_items() -> list[dict]:
     return items
 
 
+def path_derived(item_id: str) -> bool:
+    """Whether the id names a path, which another file can take later."""
+    return item_id.partition(":")[0] in ("sandbox", "model")
+
+
 def fingerprint(item_id: str) -> Optional[str]:
     """The fingerprint of the file a path-derived id names now, for its overlay row; None for other
     ids (never given to another file) and for a file that is gone."""

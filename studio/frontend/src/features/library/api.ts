@@ -118,7 +118,10 @@ export function updateLibraryItem(
   patch: { name?: string; favorite?: boolean; folderId?: string | null },
 ): Promise<void> {
   const epoch = getAuthSessionEpoch();
-  const request = (itemQueues.get(id) ?? Promise.resolve())
+  // Per session too: another account can have an item of this id, and must not wait on an edit
+  // of the account that left, which a sign-out does not cut short.
+  const key = `${epoch}:${id}`;
+  const request = (itemQueues.get(key) ?? Promise.resolve())
     .catch(() => {})
     .then(async () => {
       // Queued behind an edit that outlived a sign-out: it belongs to the account that left.
@@ -130,9 +133,9 @@ export function updateLibraryItem(
         }),
       );
     });
-  itemQueues.set(id, request);
+  itemQueues.set(key, request);
   const settle = () => {
-    if (itemQueues.get(id) === request) itemQueues.delete(id);
+    if (itemQueues.get(key) === request) itemQueues.delete(key);
   };
   request.then(settle, settle);
   return request;
