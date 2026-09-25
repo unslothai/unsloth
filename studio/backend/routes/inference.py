@@ -3938,6 +3938,43 @@ async def artifact_preview_frame(allow_network: bool = False):
 _BARE_JSON_NAME_MARKER_RE = _re.compile(r'\{\s*\\?"(?:name|function)\\?"\s*:')
 
 
+def _sf_rendered_features(
+    backend,
+    model_info: dict,
+    tools = None,
+    **kwargs,
+):
+    """Classify the template generation renders, returning ``(features, template)``.
+
+    An applied MLX override renders every turn but one on a text model: a tool turn whose schemas
+    the override drops renders through the shipped template (``render_with_native_template_fallback``),
+    so it is classified from it, and a plain turn keeps that route to tools. A vision model renders
+    through the processor, which has no such fallback. ``chat_template_info`` keeps the shipped
+    template as the editor's default; the MLX backend records a reason for every override it did
+    not install.
+    """
+    info = model_info.get("chat_template_info")
+    shipped = info.get("template") if isinstance(info, dict) else None
+    if tools is not None:
+        kwargs["tools"] = tools
+    override = model_info.get("chat_template_override_requested")
+    if (
+        not isinstance(override, str)
+        or not override.strip()
+        or model_info.get("chat_template_override_reason")
+    ):
+        return _detect_safetensors_features(backend, shipped, **kwargs), shipped
+    features = _detect_safetensors_features(backend, override, **kwargs)
+    if features.get("supports_tools") or model_info.get("is_vision"):
+        return features, override
+    fallback = _detect_safetensors_features(backend, shipped, **kwargs)
+    if not fallback.get("supports_tools"):
+        return features, override
+    if tools:
+        return fallback, shipped
+    return dict(features, supports_tools = True), override
+
+
 def _detect_safetensors_features(
     backend,
     chat_template: Optional[str],
@@ -16375,7 +16412,7 @@ async def _load_model_impl(
                         f"Could not retrieve chat template for {backend.active_model_name}: {e}"
                     )
                 # Classify via the same path as GGUF.
-                _sf_flags = _detect_safetensors_features(backend, _chat_template)
+                _sf_flags, _ = _sf_rendered_features(backend, _model_info)
                 _sf_supports_reasoning = _sf_flags["supports_reasoning"]
                 _sf_reasoning_style = _sf_flags["reasoning_style"]
                 # Requested chat model already resident: assert CHAT ownership (no-op when held) to correct a drifted owner.
@@ -17173,7 +17210,7 @@ async def _load_model_impl(
             pass
 
         # Classify reasoning/tool flags via the GGUF sniffer.
-        _sf_flags = _detect_safetensors_features(backend, _chat_template)
+        _sf_flags, _ = _sf_rendered_features(backend, _model_info)
 
         # Report validate_model's requirement (raw auto_map OR YAML) plus the value the
         # load used, and persist it, so a later retry/rollback doesn't send
@@ -19620,7 +19657,7 @@ async def get_status(current_subject: str):
         )
 
         # Non-GGUF: classify from the loaded template.
-        _sf_flags = _detect_safetensors_features(backend, chat_template)
+        _sf_flags, _ = _sf_rendered_features(backend, model_info)
         inference_config = (
             load_inference_config(backend.active_model_name) if backend.active_model_name else None
         )
@@ -28200,7 +28237,6 @@ async def produce_openai_chat_completions(
         decode_cache = _sf_mcp_decode_cache,
         caller_images = images or served_images,
     )
-    _sf_tpl = (_sf_model_info.get("chat_template_info") or {}).get("template")
     # Resolve the tool policy BEFORE the protocol is classified: the template
     # branch chosen here must be the one generation renders. Reading the raw
     # policy and withdrawing it later would classify with the ``tool_use``
@@ -28284,13 +28320,15 @@ async def produce_openai_chat_completions(
         template = None,
         prefer_tool_use = True,
     ):
-        body = _sf_tpl if template is None else template
         # Forward only the non-default: unconditional breaks stubs predating the parameter.
         _pref = {} if prefer_tool_use else {"prefer_tool_use": False}
-        if template is not None:
+        if template is None:
+            features, body = _sf_rendered_features(backend, _sf_model_info, tools, **_pref)
+        else:
+            body = template
             # One specific body, so no reasoning rescue from an unselected branch.
             _pref["reasoning_fallback"] = False
-        features = _detect_safetensors_features(backend, body, tools = tools, **_pref)
+            features = _detect_safetensors_features(backend, body, tools = tools, **_pref)
         # The prefill probe needs the ONE body that renders, not the collection (#10092).
         try:
             from core.inference.chat_template_helpers import (
@@ -34682,7 +34720,6 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
     # exposes tool markup only in its tool_use branch, and which branch is read depends on
     # the tools handed in -- so hand it a placeholder for the schemas selected below.
     # Without them it reads the plain branch and prices away the whole catalog.
-    _tpl = (entry.get("chat_template_info") or {}).get("template")
     # Detection only, exactly as the completion draws it: which branch is read, never what is
     # rendered, so it must not follow tool_choice. A count reading the plain branch for a tool
     # conversation loses the assistant's calls and the result correlation fields to
@@ -34695,9 +34732,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
     ):
         _template_tools = ({},)
     _takes_tools = bool(
-        _detect_safetensors_features(backend, _tpl, tools = _template_tools).get(
-            "supports_tools", False
-        )
+        _sf_rendered_features(backend, entry, tools = _template_tools)[0].get("supports_tools", False)
     )
     # A budget of zero never enters the loop, so the relay is what renders.
     _budget = getattr(payload, "max_tool_calls_per_message", None)
@@ -40462,6 +40497,11 @@ async def generate_diffusion_image(
     )
 
     from core.inference.diffusion_conditioning import LocalizedEdit
+    from core.inference.diffusion_memory import (
+        IMAGE_REFUSAL_HEADER,
+        IMAGE_REFUSAL_MEMORY_ESTIMATE,
+        ImageActivationShortfallError,
+    )
 
     backend = get_active_diffusion_engine()
     if account_access.managed_account():
@@ -40512,6 +40552,10 @@ async def generate_diffusion_image(
                     workflow = request.workflow,
                     reference_resolution = request.reference_resolution,
                     localized_edit = localized_edit,
+                    # Owner only: on Windows an oversized run spills into RAM instead of raising OOM, so a managed
+                    # account could stall the shared host. The operator env var still applies to everyone.
+                    allow_oversized = request.allow_oversized
+                    and not account_access.managed_account(),
                     loras = [(l.id, l.weight) for l in request.loras] if request.loras else None,
                     controlnet = (
                         (
@@ -40527,6 +40571,13 @@ async def generate_diffusion_image(
                     ),
                 )
             break
+        except ImageActivationShortfallError as exc:
+            # Tagged so the Images page can offer "Generate anyway".
+            raise HTTPException(
+                status_code = 400,
+                detail = str(exc),
+                headers = {IMAGE_REFUSAL_HEADER: IMAGE_REFUSAL_MEMORY_ESTIMATE},
+            )
         except ValueError as exc:
             raise HTTPException(status_code = 400, detail = str(exc))
         except DiffusionModelReplacedError as exc:
@@ -41097,6 +41148,18 @@ async def diffusion_status(
     status_dict = active_status()
     if account_access.resident_hidden("diffusion", status_dict.get("repo_id")):
         return account_access.hidden_resident_response()
+    # Step-skip counters trace a render as it runs, which generate-progress hides from other accounts:
+    # shown only to the account whose generation produced them, from one owner-then-stats read.
+    if (
+        status_dict.get("transformer_cache_stats") is not None
+        and account_access.account_scope() is not None
+    ):
+        from core.inference.diffusion_engine_router import get_active_diffusion_engine
+
+        view = getattr(get_active_diffusion_engine(), "static_skip_view", None)
+        owner, stats = view() if callable(view) else (None, status_dict["transformer_cache_stats"])
+        visible = owner is None or owner == current_account_id()
+        status_dict = {**status_dict, "transformer_cache_stats": stats if visible else None}
     # Answered long after the resolving request ended, so no handle is in context.
     return redact_host_paths(DiffusionStatusResponse(**status_dict), via_api_key = via_api_key)
 

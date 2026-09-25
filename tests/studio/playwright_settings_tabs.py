@@ -38,6 +38,7 @@ TABS = [
     "chat",
     "voice",
     "connections",
+    "library",
     "data",
     "api-keys",
     "remote-lan",

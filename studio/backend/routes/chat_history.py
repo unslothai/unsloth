@@ -8,6 +8,7 @@ handlers explicitly send their database transaction through Starlette's threadpo
 """
 
 import asyncio
+import re
 import sqlite3
 from typing import Annotated, Any, Literal, Optional, Union
 
@@ -966,6 +967,9 @@ def _decode_attachment_base64(payload: str) -> bytes:
     corrupted bytes, so raise 422."""
     import base64
 
+    # An imported file part can keep its data URL; base64 has no ':', so this never cuts a payload.
+    if payload[:5].lower() == "data:" and "," in payload:
+        payload = payload.split(",", 1)[1]
     normalized = "".join(payload.split())
     altchars = b"-_" if ("-" in normalized or "_" in normalized) else None
     normalized += "=" * (-len(normalized) % 4)
@@ -1000,7 +1004,7 @@ def get_attachment_file(
     attachment_id: str,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Serve one attachment's stored content: image or audio bytes, or
+    """Serve one attachment's stored content: image, audio or video bytes, or
     extracted text."""
     import urllib.parse
 
@@ -1048,6 +1052,16 @@ def get_attachment_file(
                     )
                 )
                 return Response(content = data, media_type = media_type)
+        file_data = part.get("data")
+        mime_type = str(part.get("mimeType") or attachment_content_type or "")
+        mime_type = mime_type.split(";", 1)[0].strip().lower()
+        if (
+            part.get("type") == "file"
+            and isinstance(file_data, str)
+            and file_data
+            and re.fullmatch(r"video/[a-z0-9.+-]+", mime_type)
+        ):
+            return Response(content = _decode_attachment_base64(file_data), media_type = mime_type)
         text = part.get("text")
         if isinstance(text, str) and text:
             texts.append(text)

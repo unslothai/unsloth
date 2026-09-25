@@ -104,7 +104,8 @@ FIXTURE = """(() => {
         } else if (url.pathname === '/api/chat/threads') {
             if (fixture.listFail) { status = 503; body = { detail: 'Chat list unavailable' }; }
             else body = { threads: fixture.rows };
-        } else if (url.pathname === '/api/chat/projects') body = { projects: fixture.projects.filter(project => url.searchParams.get('include_archived') !== 'false' || !project.archived) };
+        } else if (url.pathname === '/api/library') body = { items: [], disk: null };
+        else if (url.pathname === '/api/chat/projects') body = { projects: fixture.projects.filter(project => url.searchParams.get('include_archived') !== 'false' || !project.archived) };
         else if (url.pathname === '/api/chat/export') {
             if (fixture.holdExport) await new Promise(resolve => { fixture.releaseExport = resolve; });
             body = { threads: fixture.rows, messages: [], projects: [] };

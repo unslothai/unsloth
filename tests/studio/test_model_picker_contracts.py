@@ -2225,7 +2225,7 @@ def test_parallel_slots_setting_wired_end_to_end():
     signature = _read("features/model-picker/model-config/config-signature.ts")
     assert 'config.nParallel ?? "",' in signature
     sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
-    assert "key={modelConfigInstanceKey(modelId, settingsGgufVariant, loadedConfig)}" in sidebar
+    assert "key={modelConfigInstanceKey(modelId, target.ggufVariant, loadedConfig)}" in sidebar
 
 
 def test_parallel_slots_reach_an_api_load_through_the_server_mirror():
@@ -2934,9 +2934,9 @@ def test_backfill_includes_a_standalone_gguf_with_no_variant():
     """A standalone .gguf picked directly has no quant to choose between, so it is stored
     with a null variant."""
     src = " ".join(_read("features/model-picker/api/migrate-model-overrides.ts").split())
-    assert 'entry.modelId.toLowerCase().endsWith(".gguf")' in src
-    # Still excluded for safetensors, which auto-switch does not resolve.
-    assert "entry.ggufVariant != null ||" in src
+    # No GGUF clause at all: auto-switch resolves non-GGUF weights too.
+    assert "cachedRepoConfigId(entry.modelId, entry.ggufVariant) === null &&" in src
+    assert "entry.ggufVariant != null ||" not in src
 
 
 def test_monitor_overlay_does_not_pull_in_the_lazy_page():
@@ -3069,9 +3069,11 @@ def test_the_chat_picker_marks_ollama_targets_unloadable_by_the_api():
     """A settings target opened from the Chat model picker carried no apiLoadable, so the
     `??"""
     handoff = " ".join(_read("features/model-picker/model-config/model-config-handoff.ts").split())
-    assert "apiLoadable: isGguf && !isOllamaLinkPath(id) && !isOllamaLinkPath(loadId)," in handoff
-    sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
-    assert "apiLoadable: isGguf && !isOllamaLinkPath(modelId)," in sidebar
+    assert "apiLoadable: apiAutoSwitchMayLoad([id, loadId], meta.isLora)," in handoff
+    # The sidebar builds its target here too.
+    assert "apiLoadable: apiAutoSwitchMayLoad([modelId], isLora)," in handoff
+    predicate = " ".join(_read("features/model-picker/model-config/model-identity.ts").split())
+    assert "return !isLora && !ids.some(isOllamaLinkPath);" in predicate
     # The same classification gates the backfill, or an older config still reaches the server.
     backfill = " ".join(_read("features/model-picker/api/migrate-model-overrides.ts").split())
     assert "!isOllamaLinkPath(entry.modelId) &&" in backfill
@@ -3143,7 +3145,7 @@ def test_public_model_identity_matches_the_backend_for_path_loaded_models():
 def test_the_sidebar_settings_editor_reseeds_when_the_live_config_lands():
     """ModelConfigPage primes the shared draft when loadedConfigSignature changes."""
     sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
-    assert "key={modelConfigInstanceKey(modelId, settingsGgufVariant, loadedConfig)}" in sidebar
+    assert "key={modelConfigInstanceKey(modelId, target.ggufVariant, loadedConfig)}" in sidebar
 
     signature = " ".join(_read("features/model-picker/model-config/config-signature.ts").split())
     # "No live config yet" needs its own value: that transition is the one that must remount.
@@ -3196,15 +3198,16 @@ def test_a_standalone_gguf_has_one_settings_identity_in_the_picker():
     """A loose .gguf has no quant to choose between, but llama_cpp falls back to
     _extract_quant_label(gguf_path) when a load names no variant, and /status echoes
     that as gguf_variant."""
-    sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
+    resident = " ".join(_read("features/model-picker/model-config/model-config-handoff.ts").split())
     # Nulled for the settings identity, and used for every field that keys it.
     assert (
-        "const settingsGgufVariant = isStandaloneGgufPath(modelId) ? null : ggufVariant;" in sidebar
+        "const settingsGgufVariant = isStandaloneGgufPath(modelId) ? null : ggufVariant;"
+        in resident
     )
-    assert "ggufVariant: settingsGgufVariant," in sidebar
-    assert "ggufVariant: settingsGgufVariant ?? undefined," in sidebar
+    assert "ggufVariant: settingsGgufVariant," in resident
+    assert "ggufVariant: settingsGgufVariant ?? undefined," in resident
     # The label still shows the quant; only the identity drops it.
-    assert "displayName: ggufVariant ? `${leaf} · ${ggufVariant}` : leaf," in sidebar
+    assert "displayName: ggufVariant ? `${leaf} · ${ggufVariant}` : leaf," in resident
 
     identity = _read("features/hub/lib/model-identity.ts")
     assert "export function isStandaloneGgufPath(" in identity

@@ -35,8 +35,10 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
+from contextlib import contextmanager
 from functools import lru_cache
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from . import diffusion_gguf_compile as gguf_compile
 
@@ -58,6 +60,52 @@ _INDUCTOR_FLAGS = (
 _INDUCTOR_TRITON_FLAGS = (("unique_kernel_names", "inductor_triton_unique_kernel_names"),)
 
 
+# allow_fp16_accumulation has one owner: writes during an open scope go to the recorded process value, so closing
+# the scope restores the latest value, not a stale copy.
+_FP16_ACCUM_LOCK = threading.RLock()
+_fp16_accum_scopes: list = []
+_fp16_accum_base: Optional[bool] = None
+
+
+def _read_fp16_accum(matmul: Any) -> bool:
+    with _FP16_ACCUM_LOCK:
+        if _fp16_accum_scopes:
+            return bool(_fp16_accum_base)
+        return bool(matmul.allow_fp16_accumulation)
+
+
+def _write_fp16_accum(matmul: Any, value: Any) -> None:
+    global _fp16_accum_base
+    with _FP16_ACCUM_LOCK:
+        if _fp16_accum_scopes:
+            _fp16_accum_base = bool(value)
+        else:
+            matmul.allow_fp16_accumulation = bool(value)
+
+
+@contextmanager
+def fp16_accumulation_scope(value: bool) -> Iterator[None]:
+    """Hold ``allow_fp16_accumulation`` at ``value`` for the body, then restore the latest process value."""
+    global _fp16_accum_base
+    import torch
+
+    matmul = torch.backends.cuda.matmul
+    token = object()
+    with _FP16_ACCUM_LOCK:
+        if not _fp16_accum_scopes:
+            _fp16_accum_base = bool(matmul.allow_fp16_accumulation)
+        _fp16_accum_scopes.append((token, bool(value)))
+        matmul.allow_fp16_accumulation = bool(value)
+    try:
+        yield
+    finally:
+        with _FP16_ACCUM_LOCK:
+            _fp16_accum_scopes[:] = [e for e in _fp16_accum_scopes if e[0] is not token]
+            matmul.allow_fp16_accumulation = (
+                _fp16_accum_scopes[-1][1] if _fp16_accum_scopes else bool(_fp16_accum_base)
+            )
+
+
 def snapshot_backend_flags() -> Optional[dict]:
     """Capture the process-wide torch backend flags this layer may mutate, for restore on unload. None
     without torch. Each flag is read defensively: a build missing one still captures the rest."""
@@ -70,7 +118,7 @@ def snapshot_backend_flags() -> Optional[dict]:
     if matmul is not None and hasattr(matmul, "allow_tf32"):
         state["matmul_tf32"] = bool(matmul.allow_tf32)
     if matmul is not None and hasattr(matmul, "allow_fp16_accumulation"):
-        state["matmul_fp16_accum"] = bool(matmul.allow_fp16_accumulation)
+        state["matmul_fp16_accum"] = _read_fp16_accum(matmul)
     cudnn = getattr(torch.backends, "cudnn", None)
     if cudnn is not None:
         if hasattr(cudnn, "allow_tf32"):
@@ -122,7 +170,15 @@ def restore_backend_flags(state: Optional[dict]) -> None:
             pass
     matmul = getattr(getattr(torch.backends, "cuda", None), "matmul", None)
     _set(matmul, "allow_tf32", "matmul_tf32")
-    _set(matmul, "allow_fp16_accumulation", "matmul_fp16_accum")
+    if (
+        matmul is not None
+        and "matmul_fp16_accum" in state
+        and hasattr(matmul, "allow_fp16_accumulation")
+    ):
+        try:
+            _write_fp16_accum(matmul, state["matmul_fp16_accum"])
+        except Exception:  # noqa: BLE001 - best-effort per-flag restore
+            pass
     cudnn = getattr(torch.backends, "cudnn", None)
     _set(cudnn, "allow_tf32", "cudnn_tf32")
     _set(cudnn, "benchmark", "cudnn_benchmark")
@@ -225,6 +281,30 @@ def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
 def fp16_compile_explicit_only(target: Any) -> bool:
     """fp16 compiles only on an explicit tier, never the deferred profile (T4 SDXL-Turbo: ~245 s for ~0.1 s/image)."""
     return _is_float16(getattr(target, "dtype", None))
+
+
+def family_compiles_regionally(family: Any) -> bool:
+    """False only for an EMPTY ``_repeated_blocks`` (``compile_repeated_blocks`` raises); unknown reads True."""
+    if getattr(family, "denoiser_attr", "transformer") != "transformer":
+        return True
+    name = getattr(family, "transformer_class", None)
+    if not isinstance(name, str) or not name:
+        return True
+    # Called before load_pipeline's guard; `import diffusers` imports torch._dynamo, so wait for the torch warm.
+    try:
+        from loggers import get_logger
+        from utils.torch_warmup import close_dynamo_import_window
+        close_dynamo_import_window(get_logger(__name__))
+    except Exception:  # noqa: BLE001, S110 - optimisation only
+        pass
+    try:
+        import diffusers
+        cls = getattr(diffusers, name, None)
+    except Exception:  # noqa: BLE001 - an unanswerable probe keeps today's behaviour
+        return True
+    if cls is None or not hasattr(cls, "_repeated_blocks"):
+        return True
+    return bool(cls._repeated_blocks)
 
 
 def _is_bfloat16(dtype: Any) -> bool:
@@ -531,6 +611,12 @@ def _compile_repeated_blocks(
         dit_kwargs["dynamic"] = compile_dynamic(transformer, kwargs["dynamic"])
         # Read by auto_dynamic_active: the generalising recompile on a new text length must reach the bundle.
         transformer._unsloth_auto_dynamic = dit_kwargs["dynamic"] is None
+        if type(transformer).__name__ == "QwenImage21Transformer2DModel":
+            try:
+                from .diffusion_qwenimage21_rope import install as install_real_rope
+                install_real_rope(logger)
+            except Exception as exc:  # noqa: BLE001 - optimisation only
+                _warn(logger, "qwen-image-2.1 real rope", exc)
         try:
             transformer.compile_repeated_blocks(**dit_kwargs)
             engaged = True
@@ -861,7 +947,7 @@ def _enable_fp16_accumulation(
 
         if not _is_consumer_gpu():
             return False
-        matmul.allow_fp16_accumulation = True
+        _write_fp16_accum(matmul, True)
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "fp16_accum", exc)
@@ -869,6 +955,15 @@ def _enable_fp16_accumulation(
 
 
 def _fuse_qkv(pipe: Any, logger: Any) -> bool:
+    from .diffusion_native_quant import is_native_quantised
+
+    # Fusing reads each projection's .weight, which a native layer dequantises: a dense to_qkv beside the int8 buffers.
+    if any(is_native_quantised(dit) for dit in _denoiser_dits(pipe)):
+        if logger is not None:
+            logger.info(
+                "diffusion.speed: fuse_qkv skipped (native quantised projections stay unfused)"
+            )
+        return False
     # Prefer the pipe-level fuse (covers every component); else fuse each denoiser DiT so a dual-DiT family fuses BOTH
     # experts.
     fn = getattr(pipe, "fuse_qkv_projections", None)
