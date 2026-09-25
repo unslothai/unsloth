@@ -359,6 +359,15 @@ def test_html_block_elements_start_new_lines(tmp_path):
     assert text == "Install guide\nOne\nTwo items\nline one\nline two\ncell a\ncell b"
 
 
+def test_html_legend_and_options_stay_separate_words(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<fieldset><legend>Size</legend>Pick one</fieldset>"
+        "<select><option>Small</option><option>Large</option></select>",
+    )
+    assert text == "Size\nPick one\nSmall\nLarge"
+
+
 def test_html_keeps_text_after_the_last_block(tmp_path):
     text = _parse_html(tmp_path, "<p>First</p>Trailing <b>text</b>")
     assert text == "First\nTrailing text"
