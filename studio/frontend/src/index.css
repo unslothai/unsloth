@@ -3639,36 +3639,42 @@ body.sidebar-row-dragging * {
    the area is hovered, so the rail never sits visible over content. */
 .sidebar-scroll-fade,
 .run-settings-scroll,
+.aui-thread-viewport,
 .hover-scrollbar {
 	scrollbar-color: transparent transparent;
 }
 
 .sidebar-scroll-fade::-webkit-scrollbar-thumb,
 .run-settings-scroll::-webkit-scrollbar-thumb,
+.aui-thread-viewport::-webkit-scrollbar-thumb,
 .hover-scrollbar::-webkit-scrollbar-thumb {
 	background: transparent;
 }
 
 .sidebar-scroll-fade:hover,
 .run-settings-scroll:hover,
+.aui-thread-viewport:hover,
 .hover-scrollbar:hover {
 	scrollbar-color: oklch(0.5 0 0 / 0.4) transparent;
 }
 
 .sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,
 .run-settings-scroll:hover::-webkit-scrollbar-thumb,
+.aui-thread-viewport:hover::-webkit-scrollbar-thumb,
 .hover-scrollbar:hover::-webkit-scrollbar-thumb {
 	background: oklch(0.5 0 0 / 0.4);
 }
 
 .dark .sidebar-scroll-fade:hover,
 .dark .run-settings-scroll:hover,
+.dark .aui-thread-viewport:hover,
 .dark .hover-scrollbar:hover {
 	scrollbar-color: oklch(0.72 0 0 / 0.4) transparent;
 }
 
 .dark .sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,
 .dark .run-settings-scroll:hover::-webkit-scrollbar-thumb,
+.dark .aui-thread-viewport:hover::-webkit-scrollbar-thumb,
 .dark .hover-scrollbar:hover::-webkit-scrollbar-thumb {
 	background: oklch(0.72 0 0 / 0.4);
 }
@@ -3680,6 +3686,8 @@ body.sidebar-row-dragging * {
 	:root.client-windows .sidebar-scroll-fade:hover,
 	:root.client-windows .run-settings-scroll,
 	:root.client-windows .run-settings-scroll:hover,
+	:root.client-windows .aui-thread-viewport,
+	:root.client-windows .aui-thread-viewport:hover,
 	:root.client-windows .hover-scrollbar,
 	:root.client-windows .hover-scrollbar:hover {
 		scrollbar-width: auto;
@@ -3698,10 +3706,8 @@ body.sidebar-row-dragging * {
 	padding-right: var(--overlay-scrollbar-gutter, 0px);
 }
 
-/* Chat viewport: solid track matching sidebar so the scrollbar reads as a
-   full-height rail flush to the right edge, without a separate decorative strip. */
+/* Chat viewport: scrollbar styled with Run settings above, so no track to clip at the corner. */
 .aui-thread-viewport {
-	scrollbar-color: oklch(0.5 0 0 / 0.54) var(--sidebar);
 	/* Reserve scrollbar space always so absolute-positioned overlays (topbar)
 	   can stop flush with the gutter edge without covering the scrollbar.
 	   both-edges: a one-sided gutter pushes the centred column off-centre by
@@ -3752,21 +3758,6 @@ body.sidebar-row-dragging * {
 	padding-bottom: var(--aui-scroll-stabilizer, 0px);
 }
 
-.dark .aui-thread-viewport {
-	scrollbar-color: oklch(0.72 0 0 / 0.25) #23252a;
-}
-
-.dark .aui-thread-viewport::-webkit-scrollbar-thumb {
-	background: oklch(0.72 0 0 / 0.25);
-}
-
-.aui-thread-viewport::-webkit-scrollbar-track {
-	background: var(--sidebar);
-}
-
-.dark .aui-thread-viewport::-webkit-scrollbar-track {
-	background: #23252a;
-}
 
 
 /* Search list: re-enable the native scrollbar (CommandList defaults to no-scrollbar). */

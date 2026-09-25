@@ -5354,11 +5354,7 @@ export function ImagesPage({
                   )}
                   <button
                     type="button"
-                    onClick={() => {
-                      setSelectedId(image.id);
-                      // Show the prompt this image was made with.
-                      setPrompt(image.prompt);
-                    }}
+                    onClick={() => setSelectedId(image.id)}
                     className="relative size-full overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     {srcById[image.id] ? (

@@ -1685,7 +1685,7 @@ function GgufVariantExpander({
     getDeleteSuccessMessage?: (quant: string) => string;
     deleteDisabled?: boolean;
   };
-  /** On Device rows honor the Show all quantizations setting; browse lists always show every quant. */
+  /** On Device rows honor the All quantizations setting; browse lists always show every quant. */
   onDevice?: boolean;
   /** Only managed cached-Hub rows can surface quant pins in the Pinned section; local-path
    *  expanders leave this false. */
@@ -1936,7 +1936,7 @@ function GgufVariantExpander({
     });
   }, [variants, variantGroups, effectiveRecommendedByGroup, getVariantFit]);
 
-  // On Device only: with Show all quantizations off, list quants already on disk, torn ones included.
+  // On Device only: with All quantizations off, list quants already on disk, torn ones included.
   const showAllQuantizations = useChatRuntimeStore(
     (s) => s.showAllQuantizations,
   );
@@ -5776,7 +5776,7 @@ export function HubModelPicker({
     );
   };
 
-  // One quant on disk with "Show all quantizations" off: the expander would list just that
+  // One quant on disk with "All quantizations" off: the expander would list just that
   // quant, so the row carries it as a chip and loads it in one click.
   const renderSoleQuantGgufRow = (
     c: (typeof visibleCachedGguf)[number],
