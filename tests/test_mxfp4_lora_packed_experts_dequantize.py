@@ -84,15 +84,21 @@ def sizes(monkeypatch):
             self.rfilename, self.size = name, size
 
     class _Api:
-        def model_info(self, repo_id, files_metadata = False):
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+        ):
             if state["hub_raises"]:
                 raise OSError("offline")
             half = int(state["checkpoint"] * GiB / 2)
-            return types.SimpleNamespace(siblings = [
-                _Sibling("model-00001-of-00002.safetensors", half),
-                _Sibling("model-00002-of-00002.safetensors", half),
-                _Sibling("config.json", 1000),
-            ])
+            return types.SimpleNamespace(
+                siblings = [
+                    _Sibling("model-00001-of-00002.safetensors", half),
+                    _Sibling("model-00002-of-00002.safetensors", half),
+                    _Sibling("config.json", 1000),
+                ]
+            )
 
     monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
@@ -218,7 +224,9 @@ def test_placement_strategy_that_would_offload_keeps_native_load(zoo, sizes):
     sizes["free"] = [40, 40]
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b") is True
     # A caller's max_memory caps each card and leaves unnamed cards out.
-    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b", {0: "30GiB", 1: "30GiB"}) is False
+    assert (
+        _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b", {0: "30GiB", 1: "30GiB"}) is False
+    )
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b", {0: 40 * 2**30}) is False
     # A named device or a planned map is not a strategy and is not sized here.
     assert _helper()("mxfp4", False, {"": 0}, "openai/gpt-oss-120b") is True

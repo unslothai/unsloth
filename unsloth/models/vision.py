@@ -1228,7 +1228,6 @@ def _mxfp4_lora_keeps_experts_packed(
                 )
             else:
                 from huggingface_hub import HfApi
-
                 info = HfApi().model_info(str(model_name), files_metadata = True)
                 checkpoint_bytes = sum(
                     (sibling.size or 0)
@@ -1241,7 +1240,6 @@ def _mxfp4_lora_keeps_experts_packed(
                 budget = (max_memory or {}).get(index, (max_memory or {}).get(str(index)))
                 if isinstance(budget, str):
                     from accelerate.utils import convert_file_size_to_int
-
                     budget = convert_file_size_to_int(budget)
                 if isinstance(budget, int):
                     free = min(free, budget)
