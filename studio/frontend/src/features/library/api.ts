@@ -20,6 +20,8 @@ export interface LibraryItem {
   source: LibrarySource;
   contentType: string;
   sizeBytes: number | null;
+  /** The file a path-derived item (sandbox) was listed as; a delete only takes that file. */
+  fingerprint?: string;
   createdAt: number;
   updatedAt: number;
   /** Served by the item's own source route; always fetched with auth. */
@@ -149,9 +151,9 @@ export async function revealLibraryItem(id: string): Promise<void> {
   await ensureOk(await sendWrite("/api/library/items/reveal", jsonInit("POST", { id })));
 }
 
-export async function deleteLibraryItem(id: string): Promise<void> {
+export async function deleteLibraryItem(id: string, fingerprint?: string): Promise<void> {
   await ensureOk(
-    await sendWrite("/api/library/items/delete", jsonInit("POST", { id })),
+    await sendWrite("/api/library/items/delete", jsonInit("POST", { id, fingerprint })),
   );
 }
 
