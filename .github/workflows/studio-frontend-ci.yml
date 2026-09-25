@@ -22,6 +22,7 @@ on:
       - 'tests/studio/playwright_composer_icons.py'
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
+      - 'tests/studio/playwright_research_review.py'
       - 'tests/studio/playwright_heavy_thread.py'
       - 'tests/studio/probe_dismiss_guard.py'
       - 'tests/studio/playwright_nonmodal_menus.py'
@@ -44,10 +45,46 @@ on:
       - 'tests/studio/test_playwright_server_lifecycle.py'
       - 'scripts/sync_allow_scripts_pins.py'
       - 'tests/studio/test_sync_allow_scripts_pins.py'
+      # Both the Linux and Windows jobs execute this checked-out script before installing
+      # dependencies (lines 154 and 649), so an edit to it changes what they run.
+      - 'scripts/lockfile_supply_chain_audit.py'
       - '.github/workflows/studio-frontend-ci.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
   push:
     branches: [main]
+    paths:
+      - 'studio/frontend/**'
+      - 'scripts/check_frontend_dep_removal.py'
+      - 'tests/studio/test_frontend_dep_removal.py'
+      - 'tests/studio/playwright_strip_ansi_smoke.py'
+      - 'tests/studio/playwright_composer_icons.py'
+      - 'tests/studio/playwright_chat_autoscroll.py'
+      - 'tests/studio/playwright_research_freeze.py'
+      - 'tests/studio/playwright_research_review.py'
+      - 'tests/studio/playwright_heavy_thread.py'
+      - 'tests/studio/probe_dismiss_guard.py'
+      - 'tests/studio/playwright_nonmodal_menus.py'
+      - 'tests/studio/playwright_settings_tabs.py'
+      - 'tests/studio/playwright_data_settings.py'
+      - 'tests/studio/playwright_keyboard_shortcuts.py'
+      - 'tests/studio/playwright_find_in_page.py'
+      - 'tests/studio/playwright_tool_activity.py'
+      - 'tests/studio/playwright_stream_pacing.py'
+      - 'tests/studio/playwright_code_block_flicker.py'
+      - 'tests/studio/playwright_link_definition_probe.py'
+      - 'tests/studio/_code_block_flicker_analysis.py'
+      - 'tests/studio/test_code_block_flicker_contract.py'
+      - 'tests/studio/_playwright_robust.py'
+      - 'tests/studio/test_autoscroll_harness_contract.py'
+      - 'tests/studio/test_heavy_thread_harness_contract.py'
+      - 'tests/studio/test_heavy_thread_gap_contract.py'
+      - 'tests/studio/test_heavy_thread_measurement_integrity.py'
+      - 'tests/studio/test_playwright_server_lifecycle.py'
+      - 'scripts/sync_allow_scripts_pins.py'
+      - 'tests/studio/test_sync_allow_scripts_pins.py'
+      - 'scripts/lockfile_supply_chain_audit.py'
+      - '.github/workflows/studio-frontend-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
@@ -410,6 +447,10 @@ jobs:
       - name: Browser smoke for research freeze
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_research_freeze.py
+
+      - name: Browser smoke for reopening the research plan
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_research_review.py
 
       # A gate, not a measurement. The released and streamdown variants are positive controls
       # that MUST flicker: a run where neither collapses means the detector stopped seeing, not

@@ -92,7 +92,6 @@ _FINAL_PATH_CHAIN = (
     "Get-StudioSubstTarget",
     "Get-StudioEarlyPython",
     "Invoke-StudioEarlyPythonScript",
-    "Invoke-StudioEarlyPythonScriptViaCmdlets",
     "New-StudioChildScriptDirectory",
     "Test-StudioChildScriptDirectoryElevated",
     "Test-StudioPathUnderAdminRoot",
@@ -102,7 +101,6 @@ _FINAL_PATH_CHAIN = (
     "Test-StudioDirectoryIsAdminOnly",
     "Get-StudioLexicalParent",
     "Get-StudioSystem32Tool",
-    "Remove-StudioTrailingNewline",
     "Invoke-StudioEarlyPython",
     "Get-StudioPythonFinalPath",
     "Resolve-StudioFinalPathsInOneChild",
@@ -137,7 +135,6 @@ def _mutex_helpers(source: str) -> str:
             "Get-StudioSubstTarget",
             "Get-StudioEarlyPython",
             "Invoke-StudioEarlyPythonScript",
-            "Invoke-StudioEarlyPythonScriptViaCmdlets",
             "New-StudioChildScriptDirectory",
             "Test-StudioChildScriptDirectoryElevated",
             "Test-StudioPathUnderAdminRoot",
@@ -147,7 +144,6 @@ def _mutex_helpers(source: str) -> str:
             "Test-StudioDirectoryIsAdminOnly",
             "Get-StudioLexicalParent",
             "Get-StudioSystem32Tool",
-            "Remove-StudioTrailingNewline",
             "Invoke-StudioEarlyPython",
             "Get-StudioPythonFinalPath",
             "Resolve-StudioFinalPathsInOneChild",
@@ -184,7 +180,6 @@ def _process_helpers(source: str) -> str:
             "Get-StudioSubstTarget",
             "Get-StudioEarlyPython",
             "Invoke-StudioEarlyPythonScript",
-            "Invoke-StudioEarlyPythonScriptViaCmdlets",
             "New-StudioChildScriptDirectory",
             "Test-StudioChildScriptDirectoryElevated",
             "Test-StudioPathUnderAdminRoot",
@@ -194,7 +189,6 @@ def _process_helpers(source: str) -> str:
             "Test-StudioDirectoryIsAdminOnly",
             "Get-StudioLexicalParent",
             "Get-StudioSystem32Tool",
-            "Remove-StudioTrailingNewline",
             "Invoke-StudioEarlyPython",
             "Get-StudioPythonFinalPath",
             "Resolve-StudioFinalPathsInOneChild",
@@ -1151,11 +1145,7 @@ def test_the_extracted_helpers_can_call_everything_they_call(helpers):
     provided = set(re.findall(r"^    function ([\w-]+) \{", extracted, flags = re.M))
     assert provided, "the helper extraction produced nothing"
 
-    # Comments first: a function named in prose is not a call, and treating it as one forces the
-    # extraction list to grow to satisfy a mention rather than a dependency. Same reason
-    # tests/python/test_uv_requirements_path_space.py drops comment lines before asserting.
-    # Whole-line comments only, since a trailing # inside a string literal is not a comment and
-    # cutting there would hide real calls.
+    # Whole-line comments dropped: a function named in prose is not a call.
     code = "\n".join(line for line in extracted.splitlines() if not line.lstrip().startswith("#"))
     called = set(re.findall(r"(?<![\w-])([A-Z][\w]*-[\w-]+)", code))
     missing = sorted((called & installer_functions) - provided)

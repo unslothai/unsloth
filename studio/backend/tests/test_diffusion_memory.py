@@ -2050,3 +2050,50 @@ def test_an_automatic_load_still_hands_over_a_bare_device():
         assert expected[0] in pipe.calls
         if policy is OFFLOAD_MODEL:
             assert pipe.offload_device == "cuda"
+
+
+def _a100_40gb():
+    """An idle A100-SXM4-40GB, the card the pipeline-load report came from."""
+    return diffusion_memory.DeviceMemory("cuda", "cuda", "discrete_vram", 40200, 40960)
+
+
+def _offloadable():
+    return types.SimpleNamespace(supports_model_cpu_offload = True)
+
+
+def test_a_pipeline_load_without_a_companion_split_says_unknown_not_over_budget():
+    # Both group tiers are `... is not None and ...`, so an unknown split fails them by
+    # construction rather than on arithmetic. Reporting that as "companions exceed budget" sends
+    # someone on a 40 GB card looking for a bigger card.
+    plan = diffusion_memory.plan_diffusion_memory(
+        target = _offloadable(),
+        device_memory = _a100_40gb(),
+        model_dense_mib = 31566,
+        runtime_headroom_mib = 8192,
+        companion_dense_mib = None,
+        text_encoder_dense_mib = None,
+    )
+    assert plan.offload_policy == OFFLOAD_MODEL
+    reason = "; ".join(plan.reasons)
+    assert "companion size unknown" in reason
+    assert "exceed budget" not in reason
+
+
+def test_the_same_load_reaches_group_offload_once_the_split_is_known():
+    # The CONTROL for the case above, and it passes before the fix too: the planner could always
+    # reach this tier, the pipeline branch just never handed it a split to reach it with. Pinned so
+    # the two halves of the decision stay visible side by side.
+    #
+    # Qwen-Image-2.1 on a 40 GB card: 31,566 MiB of weights do not fit resident, but the 28,264 MiB
+    # group floor does. Whole-module offload pages every component per step and drags VAE tiling on
+    # with it, so losing this tier costs speed and decode quality at once.
+    plan = diffusion_memory.plan_diffusion_memory(
+        target = _offloadable(),
+        device_memory = _a100_40gb(),
+        model_dense_mib = 31566,
+        runtime_headroom_mib = 8192,
+        companion_dense_mib = 18024,
+        text_encoder_dense_mib = 16689,
+    )
+    assert plan.offload_policy == OFFLOAD_GROUP
+    assert plan.vae_tiling is False

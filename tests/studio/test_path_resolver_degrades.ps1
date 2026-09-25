@@ -118,8 +118,7 @@ Check "the deleted-type rule can fire at all" ($banSelfTest -match [regex]::Esca
 $fns = @(
     "Write-StudioFinalPathDegraded",
     "Resolve-StudioLinkTarget", "Get-StudioSubstTarget", "Get-StudioLexicalPath",
-    "Get-StudioEarlyPython", "Remove-StudioTrailingNewline",
-    "Invoke-StudioEarlyPythonScript", "Invoke-StudioEarlyPythonScriptViaCmdlets",
+    "Get-StudioEarlyPython", "Invoke-StudioEarlyPythonScript",
     "Invoke-StudioEarlyPython", "Get-StudioPythonFinalPath",
     "Resolve-StudioFinalPathInfo",
     # Get-StudioProcessImagePath calls this one between Get-Process and WMI. It is listed
@@ -192,11 +191,13 @@ if (`$missingInfo) {
 # 4. The Python-less host, which is the whole point of the change. The kill switch is
 #    the supported way to produce it, and it reaches the same branch a machine with no
 #    interpreter reaches: Get-StudioEarlyPython returns nothing, so the ladder drops to
-#    the lexical rung. The latch has to be cleared too, or the answer from step 1 is
-#    simply replayed and this checks nothing.
+#    the lexical rung. The latch and the per-path answer cache have to be cleared too, or
+#    the answer from step 1 is simply replayed and this checks nothing: a real run sets the
+#    switch before anything is resolved, so it never has a cached answer to replay.
 `$env:UNSLOTH_EARLY_PYTHON_PROBE = "0"
 `$script:StudioEarlyPythonProbed = `$false
 `$script:StudioEarlyPython = `$null
+`$script:StudioPythonFinalPathCache = `$null
 `$script:StudioFinalPathWarned = `$false
 Write-Host "KILLSWITCH_DECLINES: `$(`$null -eq (Get-StudioEarlyPython))"
 `$info = `$null

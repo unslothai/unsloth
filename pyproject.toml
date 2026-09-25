@@ -155,8 +155,9 @@ studio = [
     "nest_asyncio==1.6.0",
     "datasets==4.3.0",
     "pyjwt==2.13.0",
-    "huggingface-hub>=1.23.0,<2.0 ; python_version >= '3.10'",
+    "huggingface-hub>=1.31.0,<2.0 ; python_version >= '3.10'",
     "huggingface-hub==0.36.2 ; python_version < '3.10'",
+    "hf-xet>=1.5.2,<2.0 ; python_version >= '3.10' and (platform_machine == 'x86_64' or platform_machine == 'amd64' or platform_machine == 'AMD64' or platform_machine == 'arm64' or platform_machine == 'aarch64' or platform_machine == 'ARM64')",
     "urllib3>=2.3.0",
     "jinja2>=3.1.0",
     "structlog>=24.1.0",
@@ -201,16 +202,24 @@ triton = [
 
 huggingfacenotorch = [
     # unsloth_zoo.compiler embeds its own copy of the empty-logits sentinel in the code it
-    # generates for the compiled trainers, so fixing _utils.py here does not reach the
-    # compiled path while an older zoo is resolvable: 2026.9.4, the newest on PyPI, still
-    # hands FSDP2 mixed precision a sentinel that answers `__dataclass_fields__` and dies in
-    # `dataclasses.replace`. The release carrying the matching fix
-    # (unslothai/unsloth-zoo#1259) is not published yet, and a floor no release satisfies
-    # makes the package uninstallable, so the floor stays at 2026.9.4 for now and the
-    # eager-path fix below stands on its own. Raise the floor once #1259 ships; the
-    # compiled-path probes in tests/test_empty_logits_compiled_path_probes.py gate on the
-    # INSTALLED zoo, not on this pin, so they start running on their own.
-    "unsloth_zoo>=2026.9.4",
+    # generates for the compiled trainers, so fixing _utils.py here never reached the compiled
+    # path while an older zoo stayed resolvable: 2026.9.4 hands FSDP2 mixed precision a
+    # sentinel that answers `__dataclass_fields__` and then dies in `dataclasses.replace`.
+    # 2026.9.5 carries the matching fix (unslothai/unsloth-zoo#1259), so the floor moves to it
+    # and the compiled path is covered for the first time rather than resting on the eager
+    # fix alone. The compiled-path probes in tests/test_empty_logits_compiled_path_probes.py
+    # gate on the INSTALLED zoo rather than on this pin, so they start running by themselves
+    # wherever 2026.9.5 or newer is the zoo actually present.
+    #
+    # This branch needs that same floor for a second, independent reason: 2026.9.5 is also the
+    # first release to export `grpo_vision_chunks`, which both vision GRPO logprob paths in
+    # unsloth/models/rl_replacements.py refuse to run without.
+    #
+    # This does NOT lift the transformers ceiling below. 2026.9.5 still declares
+    # `transformers<=5.5.0` in its own metadata, so the resolver intersects our transformers
+    # range down to 5.5.0 whatever this file says. That one waits on
+    # unslothai/unsloth-zoo#1227 and a later zoo release.
+    "unsloth_zoo>=2026.9.7",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -276,7 +285,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.9.4",
+    "unsloth_zoo>=2026.9.7",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -895,7 +904,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.9.4",
+    "unsloth_zoo>=2026.9.7",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",

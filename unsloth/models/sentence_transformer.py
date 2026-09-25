@@ -23,6 +23,7 @@ from ._utils import (
     resolve_model_class,
     resolve_encoder_attention_implementation,
     maybe_prefetch_hf_snapshot,
+    _mark_full_finetuning,
 )
 import inspect
 import json
@@ -70,10 +71,40 @@ import shutil
 _CREATE_TRANSFORMER_MODULE_LOCK = threading.RLock()
 
 
+def _ensure_sentence_attention_masks(model):
+    """Match Gemma3's advertised backend to its patched SDPA implementation."""
+    config = getattr(model, "config", None)
+    if getattr(config, "model_type", None) != "gemma3_text" or "flash" not in str(
+        getattr(config, "_attn_implementation", "")
+    ):
+        return False
+    # Zoo's Gemma3 attention preserves FP32 Q/K but consumes SDPA masks. With
+    # a Flash backend, Transformers omits those masks and ST can flatten rows;
+    # that implementation does not consume the resulting sequence boundaries.
+    patched = any(
+        getattr(module.forward, "__module__", "").startswith("unsloth_zoo.temporary_patches.gemma")
+        for module in model.modules()
+        if type(module).__name__ == "Gemma3Attention"
+    )
+    if patched:
+        if hasattr(model, "set_attn_implementation"):
+            model.set_attn_implementation("sdpa")
+        else:
+            config._attn_implementation = "sdpa"
+        logging.warning(
+            "Unsloth: Using SDPA for patched Gemma3 sentence attention to preserve "
+            "padding, sequence boundaries and bidirectional window masks."
+        )
+        return True
+    return False
+
+
 def _normalize_save_method(save_method):
     """Fold "MERGED_16BIT" and "merged 16bit" onto "merged_16bit". unsloth_save_model (save.py) normalizes case and spaces before validating, so the same spelling has to mean the same thing here, else a keyword call that worked before starts raising."""
     if isinstance(save_method, str):
-        return save_method.lower().replace(" ", "_")
+        # Stripped BEFORE the spaces are folded, or " lora " becomes "_lora_" and the
+        # adapter guard below sends the request to the merge path instead.
+        return save_method.strip().lower().replace(" ", "_")
     return save_method
 
 
@@ -180,7 +211,6 @@ def _save_pretrained_gguf(
     temporary_location = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage = 0.85,
     imatrix_file = None,
-    gguf_shard_size = None,
     **kwargs,
 ):
     """Saves the SentenceTransformer model to GGUF format by saving the inner transformer model, converting it, and placing the resulting GGUF files in the save directory."""
@@ -226,7 +256,6 @@ def _save_pretrained_gguf(
         # transformer_dir is the ST's own 0_Transformer module, not a throwaway: reclaiming it would hand back a folder that no longer loads as a SentenceTransformer, so a short disk fails loudly.
         merge_is_disposable = False,
         imatrix_file = imatrix_file,
-        gguf_shard_size = gguf_shard_size,
     )
 
     gguf_files = result.get("gguf_files", [])
@@ -308,7 +337,6 @@ def _push_to_hub_gguf(
     revision = None,
     tags = None,
     imatrix_file = None,
-    gguf_shard_size = None,
     **kwargs,
 ):
     """
@@ -354,7 +382,6 @@ def _push_to_hub_gguf(
         create_pr (bool): Whether to create a pull request instead of pushing directly.
         revision (str, optional): Branch/revision to push to.
         tags (list, optional): Additional tags for the repo.
-        gguf_shard_size (str, optional): Maximum final f32, f16 or bf16 GGUF shard size.
 
     Returns:
         str: The full repo ID on Hugging Face Hub.
@@ -401,7 +428,6 @@ def _push_to_hub_gguf(
             temporary_location = temporary_location,
             maximum_memory_usage = maximum_memory_usage,
             imatrix_file = imatrix_file,
-            gguf_shard_size = gguf_shard_size,
         )
 
         gguf_files = result.get("gguf_files", [])
@@ -1526,6 +1552,11 @@ class FastSentenceTransformer(FastModel):
                 st_kwargs["cache_folder"] = _st_cache
 
             st_model = SentenceTransformer(model_name, **st_kwargs)
+            if _ensure_sentence_attention_masks(
+                getattr(st_model[0], "auto_model", None)
+            ) and hasattr(st_model[0], "unpad_inputs"):
+                # Refresh ST's cached capability decision after changing the backend.
+                st_model[0].unpad_inputs = st_model[0].unpad_inputs
             return st_model
 
         if "auto_model" not in kwargs:
@@ -1625,6 +1656,7 @@ class FastSentenceTransformer(FastModel):
             )
 
             st_model._unsloth_fast_encoder = True
+            _mark_full_finetuning(st_model[0].auto_model, full_finetuning)
             st_model._compile_mode = compile_mode
             st_model._dtype = dtype
             st_model._load_in_4bit = load_in_4bit
@@ -1797,6 +1829,8 @@ class FastSentenceTransformer(FastModel):
         finally:
             os.environ["UNSLOTH_WARN_UNINITIALIZED"] = old_environ
 
+        _ensure_sentence_attention_masks(model)
+
         from sentence_transformers import SentenceTransformer
 
         modules, no_modules = FastSentenceTransformer._load_modules(
@@ -1839,6 +1873,28 @@ class FastSentenceTransformer(FastModel):
                     f"for this SentenceTransformer: no modules.json was found, "
                     f"so Unsloth falls back to merge_and_unload, which can only "
                     f"produce 'merged_16bit'."
+                )
+            # Imported here rather than at module scope: a module-scope bind out of
+            # unsloth.save closes an import cycle, which is why the two shims above are
+            # deferred too. See tests/test_cold_import_order.py.
+            from ..save import _is_adapter_save_method
+
+            if _is_adapter_save_method(save_method):
+                # Refused because nothing here writes base weights: self.save_pretrained writes the
+                # sentence-transformers scaffolding and, for a PEFT auto_model, an adapter, and the
+                # lines below then delete that adapter and hand the transformer module to
+                # save_pretrained_merged, leaving modules.json and an adapter with no config.json
+                # and no weights, which SentenceTransformer cannot load. Before unsloth#11067
+                # "lora" matched no branch in merge_and_overwrite_lora and fell through to a 16bit
+                # merge, which happened to write something loadable; an error is the honest
+                # replacement. Save the adapter with self[0].auto_model.save_pretrained(...).
+                raise NotImplementedError(
+                    f"Unsloth: save_method = {save_method!r} is not supported for a "
+                    f"SentenceTransformer: `save_pretrained_merged` writes a loadable "
+                    f"SentenceTransformer, and an adapter-only save has no base weights "
+                    f"for one. Use `save_pretrained_merged(..., save_method = "
+                    f"'merged_16bit')` for a loadable model, or save the adapter on its "
+                    f"own with `model[0].auto_model.save_pretrained(save_directory)`."
                 )
             if save_method is not None:
                 kwargs.setdefault("save_method", save_method)

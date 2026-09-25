@@ -712,10 +712,12 @@ class TestTorch211PinAllowlistParity:
 
 
 class TestShadowingIntegratedGfxParity:
-    """The shadowing-APU skip (#7776) exists twice: studio/setup.ps1 resolves the
-    arch and builds $ROCmIndexUrl before it ever invokes the Python stack
-    installer, so both copies of the list have to agree or one entry point keeps
-    installing the iGPU's wheel family."""
+    """The shadowing-APU skip (#7776) exists four times now: studio/setup.ps1
+    resolves the arch and builds $ROCmIndexUrl before it ever invokes the Python
+    stack installer, install_llama_prebuilt.py honours setup's repick, and
+    install.sh answers the ROCm-request route on Linux before the Python stack
+    runs at all. Every copy has to agree or one entry point keeps installing the
+    iGPU's wheel family."""
 
     _STRIX = {"gfx1150", "gfx1151", "gfx1152"}
 
@@ -734,6 +736,20 @@ class TestShadowingIntegratedGfxParity:
                 return set(ast.literal_eval(node.value.args[0]))
         raise AssertionError("SHADOWING_INTEGRATED_GFX not found in install_llama_prebuilt.py")
 
+    def _install_sh_list(self):
+        body = _sh_function_body(
+            _INSTALL_SH.read_text(encoding = "utf-8"), "_amd_gfx_is_shadowing_integrated"
+        )
+        m = re.search(r"\n\s*(gfx[^)]*)\)\s*return 0", body)
+        assert m, "the shadowing-APU arm was not found in _amd_gfx_is_shadowing_integrated"
+        return {arch.strip() for arch in m.group(1).split("|")}
+
+    def test_install_sh_matches_install_python_stack(self):
+        # install.sh exports the family it chose and _ensure_rocm_torch returns on its first
+        # line for a non-ROCm one, so the shell picking the iGPU here is final and the Python
+        # preference never runs to correct it.
+        assert self._install_sh_list() == set(stack_mod._SHADOWING_INTEGRATED_GFX)
+
     def test_setup_ps1_matches_install_python_stack(self):
         assert self._setup_ps1_list() == set(stack_mod._SHADOWING_INTEGRATED_GFX)
 
@@ -748,6 +764,122 @@ class TestShadowingIntegratedGfxParity:
         assert not (self._STRIX & set(stack_mod._SHADOWING_INTEGRATED_GFX))
         assert not (self._STRIX & self._setup_ps1_list())
         assert not (self._STRIX & self._prebuilt_list())
+        assert not (self._STRIX & self._install_sh_list())
+
+
+def _sh_call_site_offsets(source: str, helper: str) -> list[int]:
+    """Offsets where `helper` is invoked, excluding its definition and comments."""
+    offsets = []
+    for match in re.finditer(re.escape(helper), source):
+        line_start = source.rfind("\n", 0, match.start()) + 1
+        line_end = source.find("\n", match.start())
+        line = source[line_start : line_end if line_end != -1 else len(source)]
+        before = line[: match.start() - line_start]
+        if "#" in before:
+            continue
+        if re.match(rf"\s*{re.escape(helper)}\s*\(\)", line):
+            continue
+        offsets.append(match.start())
+    return offsets
+
+
+class TestShadowingPreferenceIsApplied:
+    """A table can be in parity while nothing calls the helper that reads it: that was
+    #11143, where studio/setup.sh (all `unsloth studio update` runs) had neither, so
+    install_llama_prebuilt.py had no repick to honour on Linux. These assert the
+    preference is REACHED on each entry point's path, not merely defined in the file.
+    """
+
+    _VISIBILITY_ENV = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+
+    _SHELL_RESOLVERS = ("install.sh", "studio/setup.sh")
+
+    def _shadowing_arm(self, path: Path) -> set[str]:
+        body = _sh_function_body(
+            path.read_text(encoding = "utf-8"), "_amd_gfx_is_shadowing_integrated"
+        )
+        m = re.search(r"\n\s*(gfx[^)]*)\)\s*return 0", body)
+        assert m, f"the shadowing-APU arm was not found in {path.name}"
+        return {arch.strip() for arch in m.group(1).split("|")}
+
+    def test_setup_sh_defines_the_same_shadowing_table(self):
+        """studio/setup.sh was the copy that did not exist at all (#11143)."""
+        assert self._shadowing_arm(_SETUP_SH) == set(stack_mod._SHADOWING_INTEGRATED_GFX)
+
+    @pytest.mark.parametrize("rel", _SHELL_RESOLVERS)
+    def test_every_shell_gfx_resolver_calls_the_preference(self, rel):
+        source = (PACKAGE_ROOT / rel).read_text(encoding = "utf-8")
+        assert "_amd_prefer_discrete_gfx() {" in source, (
+            f"{rel} resolves an AMD gfx arch but does not define _amd_prefer_discrete_gfx; "
+            "a table without the preference leaves a hybrid host on its iGPU (#7776, #11143)"
+        )
+        assert _sh_call_site_offsets(source, "_amd_prefer_discrete_gfx"), (
+            f"{rel} defines _amd_prefer_discrete_gfx but never calls it, so the arch it "
+            "forwards is still whatever enumerated first"
+        )
+
+    # The argv-append sites, not a bare "--rocm-gfx", which matches an earlier comment
+    # and so cannot be satisfied by any correct placement.
+    _ROCM_GFX_FORWARDS = ("_PREBUILT_CMD+=(--rocm-gfx", "_WHISPER_CMD+=(--rocm-gfx")
+
+    def test_setup_sh_applies_the_preference_before_forwarding_rocm_gfx(self):
+        """Both consumers read $_setup_gfx, so the repick must precede both."""
+        source = _SETUP_SH.read_text(encoding = "utf-8")
+        calls = _sh_call_site_offsets(source, "_amd_prefer_discrete_gfx")
+        assert calls, "studio/setup.sh never calls _amd_prefer_discrete_gfx"
+        forwards = {}
+        for needle in self._ROCM_GFX_FORWARDS:
+            at = source.find(needle)
+            assert at != -1, f"studio/setup.sh no longer forwards via {needle}"
+            forwards[needle] = at
+        late = {n: at for n, at in forwards.items() if at < min(calls)}
+        assert not late, (
+            f"studio/setup.sh repicks the arch only after forwarding it via {sorted(late)}, "
+            "so that consumer still receives the iGPU's arch"
+        )
+
+    def test_pick_rocm_gfx_target_consults_the_shadowing_table(self):
+        """install_llama_prebuilt.py holds the table; this is the function that has
+        to read it. It ended `return _tokens[0]` with no preference at all."""
+        tree = ast.parse(_PREBUILT_PY.read_text(encoding = "utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_pick_rocm_gfx_target":
+                names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+                assert "SHADOWING_INTEGRATED_GFX" in names, (
+                    "_pick_rocm_gfx_target does not consult SHADOWING_INTEGRATED_GFX, so a "
+                    "leading iGPU still wins on a hybrid host (#11143)"
+                )
+                return
+        raise AssertionError("_pick_rocm_gfx_target not found in install_llama_prebuilt.py")
+
+    @pytest.mark.parametrize("rel", _SHELL_RESOLVERS)
+    def test_an_explicit_visibility_mask_is_honoured_by_each_shell_copy(self, rel):
+        """`HIP_VISIBLE_DEVICES=1` is the documented #7624 / #7669 workaround; a repick
+        that second-guesses a mask would break it."""
+        body = _sh_function_body(
+            (PACKAGE_ROOT / rel).read_text(encoding = "utf-8"), "_amd_prefer_discrete_gfx"
+        )
+        missing = [env for env in self._VISIBILITY_ENV if env not in body]
+        assert not missing, f"{rel}'s _amd_prefer_discrete_gfx ignores {missing}"
+
+    def test_pick_rocm_gfx_target_honours_an_explicit_visibility_mask(self):
+        source = _PREBUILT_PY.read_text(encoding = "utf-8")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_pick_rocm_gfx_target":
+                body = ast.get_source_segment(source, node) or ""
+                missing = [env for env in self._VISIBILITY_ENV if env not in body]
+                assert not missing, f"_pick_rocm_gfx_target ignores {missing}"
+                return
+        raise AssertionError("_pick_rocm_gfx_target not found in install_llama_prebuilt.py")
+
+    def test_gfx906_is_never_a_repick_candidate(self):
+        """Naming gfx906 on a mixed host strands BOTH cards."""
+        for rel in self._SHELL_RESOLVERS:
+            body = _sh_function_body(
+                (PACKAGE_ROOT / rel).read_text(encoding = "utf-8"), "_amd_prefer_discrete_gfx"
+            )
+            assert "gfx906" in body, f"{rel}'s repick does not exclude gfx906"
 
 
 if __name__ == "__main__":

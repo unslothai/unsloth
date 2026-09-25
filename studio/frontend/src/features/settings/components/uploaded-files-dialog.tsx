@@ -585,11 +585,11 @@ export function UploadedFilesView() {
                   <span className="flex min-w-0 items-center gap-2">
                     {/* Floor keeps the name visible when the chip and fixed
                       columns squeeze the cell at narrow widths. */}
-                    <span className="min-w-[3.5rem] truncate underline-offset-2 group-hover/name:underline">
+                    <span className="min-w-[calc(3.5rem*var(--ui-space-scale,1))] truncate underline-offset-2 group-hover/name:underline">
                       {row.name}
                     </span>
                     {row.typeLabel ? (
-                      <span className="shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px text-ui-9 font-medium uppercase tracking-wide text-muted-foreground dark:bg-white/[0.1]">
+                      <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-1.5 py-px text-ui-9 font-medium uppercase tracking-wide text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]">
                         {row.typeLabel}
                       </span>
                     ) : null}

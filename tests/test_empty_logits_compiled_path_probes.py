@@ -53,19 +53,19 @@ class EmptyLogits:
 """
 
 
-# The first unsloth_zoo release expected to generate a fixed sentinel, i.e. the one that
-# carries unslothai/unsloth-zoo#1259. Not yet published: 2026.9.4 is the newest on PyPI.
+# The first unsloth_zoo release that generates a fixed sentinel, i.e. the one that carries
+# unslothai/unsloth-zoo#1259. Published, and pyproject.toml's floor now names it too.
 #
 # This deliberately does NOT read the `unsloth_zoo>=` floor out of pyproject.toml, which is
-# what it used to do. That coupling was only correct while the pin and the fix named the
-# same release. The pin is now held at 2026.9.4 because a floor no release satisfies makes
-# unsloth uninstallable, and 2026.9.4 is exactly the zoo that still generates the BROKEN
-# sentinel -- so a gate reading the pin would let these probes run against a zoo that has
-# the bug, and they would fail on a correct tree. What the probes assert is a property of
+# what it used to do. The two agree again today, but the coupling is only ever correct while
+# the pin and the fix name the same release, and they came apart once already: the pin sat at
+# 2026.9.4 for as long as #1259 was unpublished, and 2026.9.4 is exactly the zoo that still
+# generates the BROKEN sentinel, so a gate reading the pin would have run these probes against
+# a zoo carrying the bug and failed on a correct tree. What the probes assert is a property of
 # the INSTALLED zoo, so the gate names the release that fixes it, directly.
 #
-# Until that release exists, every probe below skips and the always-on canary at the bottom
-# of this file is what keeps the assertions honest. Move this constant when #1259 ships.
+# Where an older zoo is what is actually installed, every probe below skips and the always-on
+# canary at the bottom of this file is what keeps the assertions honest.
 ZOO_RELEASE_WITH_GENERATED_SENTINEL_FIX = Version("2026.9.5")
 
 
@@ -116,9 +116,9 @@ def generated_sentinel():
         pytest.skip(
             f"installed unsloth_zoo {installed} still generates the pre-fix sentinel; it is "
             f"fixed from {ZOO_RELEASE_WITH_GENERATED_SENTINEL_FIX} "
-            f"(unslothai/unsloth-zoo#1259) onwards, which is not published yet. The "
-            f"canary test in this file runs unconditionally and shows these probes have "
-            f"teeth."
+            f"(unslothai/unsloth-zoo#1259) onwards, which pyproject.toml's floor now "
+            f"requires, so upgrade unsloth_zoo here to run these. The canary test in this "
+            f"file runs unconditionally and shows these probes have teeth."
         )
     return _build(_generated_sentinel_source(compiler))
 

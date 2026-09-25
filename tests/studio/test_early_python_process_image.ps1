@@ -1,22 +1,8 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Ask Python for the process image table when the native helper cannot be built.
-#
-# Get-StudioProcessImagePath decides whether a venv is in use by a running Unsloth, and every
-# rung that fails makes the installer likelier to conclude "nothing is running" and overwrite an
-# environment that is open. The native rung needs a type defined at runtime; Get-Process needs
-# PROCESS_VM_READ, which is refused across a security boundary; the last rung needs a healthy WMI
-# repository. This adds a rung that needs none of those: ctypes calling
-# QueryFullProcessImageNameW with PROCESS_QUERY_LIMITED_INFORMATION, in one child for the whole
-# run rather than one per process.
-#
-# Strictly additive. It runs only after Get-Process has already declined, and returning $null
-# leaves the WMI rung reached exactly as before.
-#
-# The table itself is Windows-only, so on any other host the rung declines and the checks below
-# drive the parsing and the caching through a stubbed runner. The generic child-process runner is
-# cross-platform and is exercised for real.
+# The ctypes process-image rung between Get-Process and WMI. The runner is exercised for real;
+# the table is Windows-only, so its parsing and caching go through a stubbed runner.
 # Run: pwsh -NoProfile -File tests/studio/test_early_python_process_image.ps1
 
 $ErrorActionPreference = "Stop"
@@ -33,11 +19,8 @@ $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPs1, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 has parse errors" }
 foreach ($name in @(
-    "Remove-StudioTrailingNewline", "Invoke-StudioEarlyPythonScript",
-    "Invoke-StudioEarlyPythonScriptViaCmdlets", "Invoke-StudioEarlyPython",
-    "New-StudioChildScriptDirectory", "Get-StudioEarlyPython",
-    "New-StudioChildScriptDirectory",
-    "Test-StudioChildScriptDirectoryElevated",
+    "Invoke-StudioEarlyPythonScript", "Invoke-StudioEarlyPython", "Get-StudioEarlyPython",
+    "New-StudioChildScriptDirectory", "Test-StudioChildScriptDirectoryElevated",
     "Get-StudioPythonProcessImageTable", "Get-StudioProcessImagePath"
 )) {
     $fn = $ast.FindAll({ param($n)
@@ -115,9 +98,7 @@ Write-Host "  interpreter: $exe"
 $out = Invoke-StudioEarlyPythonScript -Exe $exe -Script "import sys;sys.stdout.write('ok')"
 Check "the runner returns the child's stdout" ($out -eq "ok")
 
-# Arguments have to survive the 5.1 branch that builds a command line by hand, so the awkward
-# shapes are the point: a space, and a trailing backslash that would otherwise escape its own
-# closing quote.
+# The 5.1 branch quotes by hand: a space, and a trailing backslash that could escape its quote.
 $probeArgs = @("a b", "c\")
 $echo = Invoke-StudioEarlyPythonScript -Exe $exe `
     -Script "import sys;sys.stdout.write('|'.join(sys.argv[1:]))" -ScriptArgs $probeArgs
@@ -126,8 +107,6 @@ Check "arguments survive quoting, including a space and a trailing backslash" ($
 $nonZero = Invoke-StudioEarlyPythonScript -Exe $exe -Script "import sys;sys.stdout.write('x');sys.exit(4)"
 Check "a non-zero exit is refused even though the child printed" ($null -eq $nonZero)
 
-# Bites control: the same script exiting 0 does return its output, so the check above is about the
-# exit code and not about the runner simply never answering.
 $zero = Invoke-StudioEarlyPythonScript -Exe $exe -Script "import sys;sys.stdout.write('x')"
 Check "control: the identical script exiting 0 does answer" ($zero -eq "x")
 
@@ -142,237 +121,6 @@ Check "non-ASCII output survives the host's console codepage" ($utf8 -eq ([char]
 
 $missing = Invoke-StudioEarlyPythonScript -Exe (Join-Path $root "no-such-interpreter") -Script "pass"
 Check "an interpreter that does not exist yields null, not a throw" ($null -eq $missing)
-
-# --------------------------------------------- the Constrained Language Mode launcher, for real
-#
-# Not a detail. CLM is one of the two policies that stop a type being defined at runtime, which is
-# the reason this whole ladder exists, and CLM also refuses New-Object and every method call on
-# System.Diagnostics.Process. A launcher that only worked outside CLM would be absent from half
-# the population it is for, while looking perfectly healthy everywhere it is not needed.
-
-$echoScript = "import sys;sys.stdout.write('|'.join(sys.argv[1:]))"
-$awkward = @("a b", "c\")
-
-$primaryAnswer = Invoke-StudioEarlyPythonScript -Exe $exe -Script $echoScript -ScriptArgs $awkward
-$cmdletAnswer = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe -Script $echoScript -ScriptArgs $awkward
-Check "the cmdlet launcher answers at all" ($cmdletAnswer -eq "a b|c\")
-# The property that matters. Start-Process redirection appends a trailing newline the child never
-# wrote, so without normalising both ends a caller silently reads one of two different strings
-# depending on the host's language mode.
-Check "both launchers return the same string, byte for byte" ($primaryAnswer -ceq $cmdletAnswer)
-
-# One payload is not a contract. The check above used a single line with no newline in it, and
-# passed for a year of edits while the two launchers actually DISAGREED on anything containing a
-# CRLF: the ProcessStartInfo launcher reads the child's bytes straight through, and the cmdlet
-# launcher's redirection goes via a file. Measured at the time this was added: a child writing
-# 61 0d 0a 62 came back 61 0d 0a 62 from one and 61 0a 62 from the other.
-#
-# Driven over a table instead, with the shapes a child actually produces: an embedded CRLF, an
-# embedded LF, trailing newlines of both kinds, no newline at all, and a tab.
-function Get-LauncherHex($s) {
-    if ($null -eq $s) { return "<null>" }
-    return ((([System.Text.Encoding]::UTF8.GetBytes($s)) | ForEach-Object { $_.ToString("x2") }) -join " ")
-}
-$payloads = @(
-    @{ Name = "an embedded CRLF";      Py = "b'a\r\nb'" },
-    @{ Name = "an embedded LF";        Py = "b'a\nb'" },
-    @{ Name = "a trailing CRLF";       Py = "b'x\r\n'" },
-    @{ Name = "several trailing LFs";  Py = "b'p\nq\n\n'" },
-    @{ Name = "no newline at all";     Py = "b'solo'" },
-    @{ Name = "an embedded tab";       Py = "b'tab\ttab'" }
-)
-foreach ($case in $payloads) {
-    $src = "import sys" + [char]10 + "sys.stdout.buffer.write($($case.Py))"
-    $viaPrimary = Invoke-StudioEarlyPythonScript -Exe $exe -Script $src
-    $viaCmdlet = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe -Script $src
-    Check "the launchers agree on $($case.Name)" ($viaPrimary -ceq $viaCmdlet)
-    if ($viaPrimary -cne $viaCmdlet) {
-        Write-Host "        primary=$(Get-LauncherHex $viaPrimary)  cmdlet=$(Get-LauncherHex $viaCmdlet)" -ForegroundColor Red
-    }
-}
-
-# And the bites control for the whole group: the harness must be able to SEE a difference, or
-# every row above passes because both launchers are broken in the same way or neither ran.
-Check "control: the comparison distinguishes different strings" (
-    ("a`nb" -ceq "a`r`nb") -eq $false)
-# Parenthesised on purpose: an unparenthesised concatenation in an argument position binds its
-# first term to -Script and the rest positionally, which lands [char]10 on -TimeoutMs.
-$roundTripSrc = "import sys" + [char]10 + "sys.stdout.buffer.write(b'tab\ttab')"
-Check "control: a payload really did round-trip" (
-    (Invoke-StudioEarlyPythonScript -Exe $exe -Script $roundTripSrc) -ceq "tab`ttab")
-
-# The cmdlet launcher's millisecond-to-second conversion must be a real ceiling.
-#
-# It used the +999 idiom, which is a C integer-DIVISION trick. PowerShell's / is floating point
-# and [int] rounds to nearest rather than truncating, so every exact multiple gained a second:
-# 10000 measured as 11 and 20000 as 21. Wait-Process then waited a second longer than the caller
-# asked and the two launchers no longer shared a deadline. Driven over the boundary values rather
-# than asserted, since the failure was entirely in values that look obviously right.
-$cmdletFn = @($ast.FindAll({ param($n)
-    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-    $n.Name -eq "Invoke-StudioEarlyPythonScriptViaCmdlets"
-}, $true))[0].Extent.Text
-$convStart = $cmdletFn.IndexOf('$seconds = ($TimeoutMs')
-$convEnd = $cmdletFn.IndexOf('$timedOut = $false', [Math]::Max($convStart, 0))
-Check "the conversion is still computed in the launcher" ($convStart -ge 0 -and $convEnd -gt $convStart)
-$conversionSrc = ""
-if ($convStart -ge 0 -and $convEnd -gt $convStart) {
-    $conversionSrc = $cmdletFn.Substring($convStart, $convEnd - $convStart)
-}
-Check "the sliced conversion is not empty (bites)" (
-    $conversionSrc -match '\$seconds' -and $conversionSrc -match '%')
-foreach ($case in @(
-    @{ Ms = 10000; Want = 10 }, @{ Ms = 20000; Want = 20 }, @{ Ms = 1000; Want = 1 },
-    @{ Ms = 1500;  Want = 2 },  @{ Ms = 999;   Want = 1 },  @{ Ms = 1;    Want = 1 },
-    @{ Ms = 2500;  Want = 3 },  @{ Ms = 0;     Want = 1 }
-)) {
-    $TimeoutMs = $case.Ms
-    # The installer's OWN expression, sliced out and executed. Retyping the formula here would
-    # test this file's copy of it and pass even if the shipped one still had the +999 idiom.
-    Invoke-Expression $conversionSrc
-    Check "$($case.Ms) ms is $($case.Want) s" ($seconds -eq $case.Want)
-}
-# Bites control: the idiom this replaced really did get the round numbers wrong, so these rows
-# are not passing because any arithmetic would.
-Check "control: the old +999 idiom disagreed on an exact multiple" (
-    ([int]((10000 + 999) / 1000)) -eq 11)
-Check "and the shipped launcher no longer uses it" ($cmdletFn -notmatch '\+ 999')
-
-$cmdletUtf8 = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe `
-    -Script "import sys;sys.stdout.buffer.write((chr(0xe9)+chr(0x4e2d)).encode('utf-8'))"
-Check "the cmdlet launcher keeps non-ASCII intact" (
-    $cmdletUtf8 -eq ([string][char]0xE9 + [string][char]0x4E2D))
-
-Check "the cmdlet launcher refuses a non-zero exit" (
-    $null -eq (Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe -Script "import sys;sys.exit(4)"))
-
-$cmdletStart = Get-Date
-$cmdletHung = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe -Script "import time;time.sleep(90)" -TimeoutMs 2000
-Check "the cmdlet launcher kills a hung child too" (
-    $null -eq $cmdletHung -and ((Get-Date) - $cmdletStart).TotalSeconds -lt 30)
-
-# The whole chain, driven in a runspace that is genuinely in Constrained Language Mode.
-#
-# Two mistakes are baked into this block because both were made here first.
-#
-# One: setting $ExecutionContext.SessionState.LanguageMode partway through a script proves
-# nothing. PowerShell fixes a function's language mode when the function is DEFINED, so functions
-# defined before the switch keep running in FullLanguage and the primary launcher keeps
-# succeeding. A runspace created with InitialSessionState.LanguageMode set is constrained before
-# anything is defined in it, which is what a locked-down host actually looks like.
-#
-# Two: testing the launcher alone proves nothing either. The launcher was fixed first and this
-# check passed while the rung as a whole was still dead, because Get-StudioEarlyPython THREW on
-# [System.IO.Path]::GetDirectoryName before the launcher was ever reached. CLM refuses method
-# calls on System.IO.Path and on Int32, and it throws rather than returning null, so the ladder
-# did not degrade, it failed. Every function between the entry point and the answer runs here.
-$clmFunctions = (@(
-    "New-StudioChildScriptDirectory",
-    "Test-StudioChildScriptDirectoryElevated",
-    "Remove-StudioTrailingNewline", "Invoke-StudioEarlyPythonScript",
-    "Invoke-StudioEarlyPythonScriptViaCmdlets", "Invoke-StudioEarlyPython",
-    "Get-StudioEarlyPython", "Get-StudioPythonFinalPath", "Get-StudioPythonProcessImageTable"
-) | ForEach-Object {
-    $name = $_
-    ($ast.FindAll({ param($n)
-        $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name
-    }, $true)[0]).Extent.Text
-}) -join "`n"
-
-$rs = $null
-$ps = $null
-try {
-    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
-    $iss.LanguageMode = "ConstrainedLanguage"
-    $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace($iss)
-    $rs.Open()
-    $ps = [System.Management.Automation.PowerShell]::Create()
-    $ps.Runspace = $rs
-    $null = $ps.AddScript($clmFunctions + @"
-
-Write-Output "MODE=`$(`$ExecutionContext.SessionState.LanguageMode)"
-try { `$null = New-Object System.Diagnostics.ProcessStartInfo; Write-Output 'PSI-ALLOWED' }
-catch { Write-Output 'PSI-BLOCKED' }
-Write-Output ("ANSWER=" + (Invoke-StudioEarlyPythonScript -Exe '$exe' -Script "$echoScript" -ScriptArgs @('a b', 'c\')))
-`$script:StudioEarlyPythonProbed = `$false
-`$script:StudioEarlyPython = `$null
-try { Write-Output ("DISCOVERY=" + (Get-StudioEarlyPython)) } catch { Write-Output "DISCOVERY-THREW" }
-try { Write-Output ("REALPATH=" + (Get-StudioPythonFinalPath -Path '$root')) } catch { Write-Output "REALPATH-THREW" }
-"@)
-    $clmOut = @($ps.Invoke() | ForEach-Object { "$_".Trim() })
-    Check "the runspace really is constrained" ($clmOut -contains "MODE=ConstrainedLanguage")
-    # The premise of the whole fallback, measured rather than assumed.
-    Check "Constrained Language Mode really does refuse ProcessStartInfo" ($clmOut -contains "PSI-BLOCKED")
-    # So this answer can only have come from the fallback launcher.
-    Check "under Constrained Language Mode the answer still comes back, through the fallback" (
-        $clmOut -contains "ANSWER=a b|c\")
-    # And the rungs around it survive too. A throw here is worse than a null: the ladder stops
-    # instead of falling through to the rung below.
-    Check "interpreter discovery survives Constrained Language Mode" (
-        -not ($clmOut -contains "DISCOVERY-THREW") -and ($clmOut | Where-Object { $_ -like "DISCOVERY=?*" }))
-    Check "the path resolver answers under Constrained Language Mode" (
-        -not ($clmOut -contains "REALPATH-THREW") -and
-        ($clmOut | Where-Object { $_ -eq "REALPATH=$root" }))
-} finally {
-    if ($ps) { $ps.Dispose() }
-    if ($rs) { $rs.Dispose() }
-}
-
-# The cmdlet launcher is the only new code that writes anything at all: three temporary files per
-# call. Idempotency means the tenth install leaves the machine as the first one found it, so every
-# exit path has to clean up, not just the happy one. The timeout path is the one that matters,
-# since it returns while the child is still being killed.
-#
-# Pointed at a private empty directory rather than counting the shared one: anything else running
-# on the machine writes there too, and a check that another process can move is not a measurement.
-$tempProbe = Join-Path ([System.IO.Path]::GetTempPath()) ("tempprobe-" + [guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Force -Path $tempProbe | Out-Null
-$savedTmp = @{ TMPDIR = $env:TMPDIR; TEMP = $env:TEMP; TMP = $env:TMP }
-try {
-    $env:TMPDIR = $tempProbe; $env:TEMP = $tempProbe; $env:TMP = $tempProbe
-    for ($i = 0; $i -lt 3; $i++) {
-        $null = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe -Script "import sys;sys.stdout.write('ok')"
-    }
-    $null = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe -Script "import sys;sys.exit(3)"
-    $null = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe $exe -Script "import time;time.sleep(60)" -TimeoutMs 1500
-    $null = Invoke-StudioEarlyPythonScriptViaCmdlets -Exe (Join-Path $root "no-such-interpreter") -Script "pass"
-    $left = @(Get-ChildItem -LiteralPath $tempProbe -Force -ErrorAction SilentlyContinue)
-    Check "the cmdlet launcher leaves no temporary files behind, on any exit path" ($left.Count -eq 0)
-    if ($left.Count -gt 0) { $left | ForEach-Object { Write-Host "        left behind: $($_.Name)" } }
-    # The two halves of what makes that true on Windows, read out of the launcher, because the
-    # row above cannot see the difference from here.
-    #
-    # It is a Windows sharing violation. Stop-Process returns when the kill has been REQUESTED,
-    # and Windows keeps the redirected stdout and stderr handles open until the process is
-    # actually gone, so the finally deletes a file that is still held and silently fails. This
-    # host's POSIX filesystem unlinks an open file happily, which is why the same run passed
-    # under pwsh 7 and failed under Windows PowerShell 5.1 in parity CI, on the .out of the
-    # timeout case.
-    $cmdletSrc = @($ast.FindAll({ param($n)
-        $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-        $n.Name -eq "Invoke-StudioEarlyPythonScriptViaCmdlets"
-    }, $true))[0].Extent.Text
-    $killAt = $cmdletSrc.IndexOf("Stop-Process")
-    $returnAt = $cmdletSrc.IndexOf("return `$null", [Math]::Max($killAt, 0))
-    Check "the timeout path still kills the child (bites)" ($killAt -ge 0 -and $returnAt -gt $killAt)
-    Check "and waits for it to be gone before the files are deleted" (
-        $killAt -ge 0 -and
-        $cmdletSrc.Substring($killAt, [Math]::Max($returnAt - $killAt, 0)) -match 'Wait-Process')
-    # And the deletion is retried rather than attempted once, since a file that has just stopped
-    # being written can also be held for a moment by an on-access scanner.
-    $finallyAt = $cmdletSrc.LastIndexOf("} finally {")
-    Check "the cleanup block is still where this expects it (bites)" ($finallyAt -ge 0)
-    $finallySrc = ""
-    if ($finallyAt -ge 0) { $finallySrc = $cmdletSrc.Substring($finallyAt) }
-    Check "the cleanup retries instead of giving up on the first refusal" (
-        $finallySrc -match 'for \(\$attempt' -and $finallySrc -match 'Test-Path -LiteralPath \$f')
-} finally {
-    foreach ($k in $savedTmp.Keys) {
-        if ($null -eq $savedTmp[$k]) { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
-        else { Set-Item "Env:$k" $savedTmp[$k] }
-    }
-    Remove-Item -LiteralPath $tempProbe -Recurse -Force -ErrorAction SilentlyContinue
-}
 
 # ------------------------------------------------------- the table, through a stubbed runner
 
@@ -404,11 +152,7 @@ try {
     Check "a child that answers nothing yields null, so the WMI rung is still reached" (
         $null -eq (Get-StudioPythonProcessImageTable))
 
-    # The caching contract. Get-RunningStudioVenvProcesses calls Get-StudioProcessImagePath once
-    # per process on the machine, so a rung that re-probes on every miss would spawn a child per
-    # process: slower than the WMI rung it is meant to sit in front of. A $null table is the case
-    # that matters, since "no table yet" and "asked, got nothing" look identical without a
-    # separate probed flag.
+    # A $null table must not re-probe: "not asked" and "asked, got nothing" need the probed flag.
     Reset-RungState
     $script:RunnerCalls = 0
     $script:RunnerOutput = ""
@@ -426,8 +170,6 @@ try {
         $first -eq "C:\d\python.exe" -and $second -eq "C:\d\python.exe")
     Check "an answering probe is also cached" ($script:RunnerCalls -eq 1)
 
-    # Bites control: a pid the table does not carry must fall through rather than be invented.
-    # Here the rung below throws, so falling through has to end at null.
     Reset-RungState
     $script:RunnerOutput = "77|C:\d\python.exe"
     Check "control: an unknown pid falls through to the rung below" (
@@ -450,15 +192,12 @@ $probeFn = $ast.FindAll({ param($n)
 }, $true)[0]
 $probeText = $probeFn.Extent.Text
 
-# ctypes defaults every return value to a C int. A HANDLE truncated to a signed 32-bit int is
-# sign-extended back on the way into CloseHandle, so the handle closed is not the handle opened
-# and the child leaks one per process it inspects. Declaring the signature is what prevents it.
+# ctypes defaults restype to int, which truncates a HANDLE and closes the wrong one.
 Check "the probe declares OpenProcess's return type" (
     $probeText -match "OpenProcess\.restype\s*=\s*wintypes\.HANDLE")
 Check "the probe declares CloseHandle's argument type" (
     $probeText -match "CloseHandle\.argtypes")
-# PROCESS_QUERY_LIMITED_INFORMATION. PROCESS_QUERY_INFORMATION (0x400) is the right that a
-# protected or cross-session process refuses, which is the whole reason for this rung.
+# 0x400 is refused by protected and cross-session processes; 0x1000 is not.
 Check "the probe asks for the limited-information right only" ($probeText -match "OpenProcess\(0x1000,")
 # EnumProcesses reports the bytes it used. Equal to the buffer size means it may have run out, so
 # only a strictly smaller figure proves the enumeration was complete.
@@ -482,6 +221,7 @@ Check "no emitted process-image type remains" ($installWhole -notmatch "UnslothS
 Check "no native process-image helper remains" (
     $installWhole -notmatch "Get-StudioNativeProcessImagePath|Initialize-StudioProcessImageNativeType")
 
+# EnumProcesses filling the buffer exactly may mean truncation; only a smaller count is complete.
 Check "the probe grows its buffer until the enumeration is provably complete" (
     $probeText -match "b\.value\s*<\s*ctypes\.sizeof\(a\)")
 

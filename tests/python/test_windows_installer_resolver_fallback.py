@@ -108,7 +108,6 @@ LOCK_CHAIN = (
     "Get-StudioSubstTarget",
     "Get-StudioEarlyPython",
     "Invoke-StudioEarlyPythonScript",
-    "Invoke-StudioEarlyPythonScriptViaCmdlets",
     "New-StudioChildScriptDirectory",
     "Test-StudioChildScriptDirectoryElevated",
     "Get-StudioSystem32Tool",
@@ -118,7 +117,6 @@ LOCK_CHAIN = (
     "Test-StudioSddlWritableByNonAdmin",
     "Test-StudioDirectoryIsAdminOnly",
     "Get-StudioLexicalParent",
-    "Remove-StudioTrailingNewline",
     "Invoke-StudioEarlyPython",
     "Get-StudioPythonFinalPath",
     "Get-StudioLexicalPath",
@@ -301,7 +299,15 @@ def test_the_interpreter_is_looked_for_once_however_many_paths_are_resolved(tmp_
     five resolutions cost five children plus the ONE search: six calls, not ten. Without
     the latch every resolution pays the search again, and on a host whose first few
     candidates are slow or broken that is the expensive half.
+
+    Five DIFFERENT paths. The same path five times is served by the per-path answer cache
+    after the first child, which would make this count two and hide whether the search is
+    latched at all.
     """
+    paths = []
+    for i in range(5):
+        (tmp_path / f"p{i}").mkdir()
+        paths.append(f"'{tmp_path / f'p{i}'}'")
     result = _run_powershell(
         _script(
             f"""
@@ -314,7 +320,7 @@ function Invoke-StudioEarlyPython {{
     $global:Probes++
     & $global:RealProbe -Exe $Exe -Path $Path -TimeoutMs $TimeoutMs
 }}
-foreach ($i in 1..5) {{ Get-StudioFinalPath -Path '{tmp_path}' | Out-Null }}
+foreach ($p in @({', '.join(paths)})) {{ Get-StudioFinalPath -Path $p | Out-Null }}
 Write-Output "PROBES:$global:Probes"
 """,
             sabotage = False,

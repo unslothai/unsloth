@@ -267,7 +267,7 @@ function ReadmePlaceholder({
 }) {
   return (
     <div
-      className="min-h-[108px] space-y-3 py-0.5"
+      className="min-h-[calc(108px*var(--ui-space-scale,1))] space-y-3 py-0.5"
       aria-busy="true"
       aria-live="polite"
     >
@@ -504,7 +504,7 @@ export function ModelReadme({
         ? current.error
         : readmeUnavailableMessage(subject);
     return (
-      <p className="min-h-[44px] text-ui-12p5 text-muted-foreground">
+      <p className="min-h-[calc(44px*var(--ui-space-scale,1))] text-ui-12p5 text-muted-foreground">
         {errorMessage}
       </p>
     );
@@ -512,7 +512,7 @@ export function ModelReadme({
 
   if (!current.body) {
     return (
-      <p className="min-h-[44px] text-ui-12p5 text-muted-foreground">
+      <p className="min-h-[calc(44px*var(--ui-space-scale,1))] text-ui-12p5 text-muted-foreground">
         {readmeMissingMessage(subject)}
       </p>
     );

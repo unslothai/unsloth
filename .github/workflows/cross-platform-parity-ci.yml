@@ -77,6 +77,13 @@ on:
       - 'tests/python/test_windows_setup_output_encoding.py'
       - 'tests/python/test_windows_installer_resolver_fallback.py'
       - 'tests/python/test_pwsh_runner_encoding.py'
+      # The deliberate unreadable-directory and traversal-limit cases for the
+      # no-compiler detector's temp scan live in this job, and only here. The
+      # no-compiler workflow runs the scanner's positive control but never creates
+      # those conditions, so without both lines a PR touching only the scanner
+      # could regress the error handling with nothing red.
+      - '.github/scripts/Watch-ForCompiler.ps1'
+      - 'tests/python/test_compiler_watch_temp_scan.py'
       # Every PowerShell test in this job shells out through it, so a change here can break
       # all of them. It was in no path filter, so it triggered nothing.
       - 'tests/_shared/unsloth_pwsh_runner.py'
@@ -162,6 +169,13 @@ on:
       - 'tests/python/test_windows_setup_output_encoding.py'
       - 'tests/python/test_windows_installer_resolver_fallback.py'
       - 'tests/python/test_pwsh_runner_encoding.py'
+      # The deliberate unreadable-directory and traversal-limit cases for the
+      # no-compiler detector's temp scan live in this job, and only here. The
+      # no-compiler workflow runs the scanner's positive control but never creates
+      # those conditions, so without both lines a PR touching only the scanner
+      # could regress the error handling with nothing red.
+      - '.github/scripts/Watch-ForCompiler.ps1'
+      - 'tests/python/test_compiler_watch_temp_scan.py'
       # Every PowerShell test in this job shells out through it, so a change here can break
       # all of them. It was in no path filter, so it triggered nothing.
       - 'tests/_shared/unsloth_pwsh_runner.py'
@@ -266,6 +280,7 @@ jobs:
           tests/python/test_windows_setup_output_encoding.py
           tests/python/test_windows_installer_resolver_fallback.py
           tests/python/test_pwsh_runner_encoding.py
+          tests/python/test_compiler_watch_temp_scan.py
           tests/test_installer_skip_autostart.py
           tests/test_installer_system32_guard.py
           tests/test_installer_interactive_prompts.py
@@ -355,8 +370,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: powershell -NoProfile -File tests\studio\test_early_python_path_resolver.ps1
-      # Both legs again: the generic child-process runner takes a different branch on 5.1,
-      # which has no ProcessStartInfo.ArgumentList and so builds the command line by hand.
+      # 5.1 too: the runner builds the command line by hand there (no ArgumentList).
       - name: Early Python process image tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_early_python_process_image.ps1
