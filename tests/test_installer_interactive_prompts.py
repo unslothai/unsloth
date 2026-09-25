@@ -44,6 +44,7 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "scripts/install_rocm_wsl_strixhalo.sh",
     "scripts/uninstall.sh",
     "scripts/uninstall.ps1",
+    "studio/install_lemonade_prebuilt.py",
     "studio/install_llama_prebuilt.py",
     "studio/install_manifest.py",
     "studio/install_mxc_prebuilt.py",

@@ -45,9 +45,9 @@ def _repo_blob_bytes(repo_info, *, only = None) -> int:
                     pass
             if only is not None and not only(name):
                 continue
-            blob_path = getattr(f, "blob_path", None)
-            size = int(getattr(f, "size_on_disk", 0) or 0)
-            unique[str(blob_path) if blob_path else f"{rev_id}:{name}"] = size
+            from hub.services.models.cache_inventory import _blob_key
+
+            unique[_blob_key(f, f"{rev_id}:{name}")] = int(getattr(f, "size_on_disk", 0) or 0)
     return sum(unique.values())
 
 

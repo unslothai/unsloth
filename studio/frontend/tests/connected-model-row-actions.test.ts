@@ -47,11 +47,11 @@ test("a connected row draws its badges through ModelRow", () => {
   // drop there could not be honoured.
   assert.match(
     pickers,
-    /pinnedConnectedRows\.map\(\(model\) =>\s*renderConnectedModelRow\(model, true, true\)/,
+    /pinnedConnectedRows\.map\(\(model\) =>\s*renderPinnedDragRow\(\s*pinnedConnectedDrag,\s*model\.id,\s*renderConnectedModelRow\(model, true\)/,
   );
   assert.match(
     pickers,
-    /group\.models\.map\(\(model\) =>\s*renderConnectedModelRow\(model, false, !headed\)/,
+    /group\.models\.map\(\(model\) =>\s*renderConnectedModelRow\(model, !headed\)/,
   );
 });
 
@@ -539,8 +539,8 @@ test("live effort edits use the shared runtime action", () => {
 test("a row with no heading over it still names its connection", () => {
   // Pinned rows and the name-sorted flat list have no provider heading, and two connections can
   // serve one model id, so the tooltip carries the connection name those rows have nowhere else.
-  assert.match(pickers, /renderConnectedModelRow\(model, true, true\)/);
-  assert.match(pickers, /renderConnectedModelRow\(model, false, !headed\)/);
+  assert.match(pickers, /renderConnectedModelRow\(model, true\)/);
+  assert.match(pickers, /renderConnectedModelRow\(model, !headed\)/);
   assert.match(pickers, /<span className="block text-ui-10 mt-1">\s*\{model\.providerName\}/);
   // No logo in the leading slot: down the pinned group it read as a second glyph column, and a
   // row is there to carry its name. So nothing goes in the slot at all now.
