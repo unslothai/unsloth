@@ -207,6 +207,81 @@ def _loaded_skip_modules(model_config):
     )
 
 
+def _config_uses_remote_code(config):
+    """Whether the model code lives outside transformers: an `auto_map` naming a model or
+    config class, on this config or a sub-config, or a config class out of
+    `transformers_modules`. The flag alone does not mean remote code, and skipping the
+    compiler for a native architecture costs the fast LoRA forward, the fused loss and the
+    compiled norms. No config keeps the old, conservative answer."""
+    if config is None:
+        return True
+
+    def _remote(cfg):
+        if (getattr(type(cfg), "__module__", "") or "").startswith("transformers_modules"):
+            return True
+        auto_map = getattr(cfg, "auto_map", None)
+        if isinstance(cfg, dict):
+            auto_map = cfg.get("auto_map", auto_map)
+        if not auto_map:
+            return False
+        config_is_native = (getattr(type(cfg), "__module__", "") or "").startswith("transformers.")
+        # A custom tokenizer, processor or feature extractor is not code the compiler traces.
+        return any(
+            str(k).startswith("AutoModel")
+            or (str(k).startswith("AutoConfig") and not config_is_native)
+            for k in auto_map
+        )
+
+    # Sub-configs go beyond text/vision/audio (Qwen-Omni thinker_config, nested llm_config) and nest;
+    # a remote child read as native puts the compiler on untraceable code, so walk every level.
+    try:
+        from transformers import PretrainedConfig as _config_class
+    except Exception:
+        _config_class = ()
+
+    def _is_config(value):
+        return isinstance(value, dict) or (bool(_config_class) and isinstance(value, _config_class))
+
+    def _children(node):
+        if isinstance(node, dict):
+            return [value for value in node.values() if _is_config(value)]
+        names = ["text_config", "vision_config", "audio_config"]
+        # Instance read: transformers 4.57 makes backbone configs' `sub_configs` a property.
+        sub_configs = getattr(node, "sub_configs", None)
+        for sub in sub_configs if isinstance(sub_configs, dict) else ():
+            if sub not in names:
+                names.append(sub)
+        # A callable (e.g. a Mock) is not a config.
+        children = [
+            child
+            for child in (getattr(node, name, None) for name in names)
+            if child is not None and (_is_config(child) or not callable(child))
+        ]
+        try:
+            children.extend(value for value in vars(node).values() if _is_config(value))
+        except TypeError:
+            pass
+        return children
+
+    pending = [(config, 0)]
+    seen = set()
+    while pending:
+        current, depth = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if _remote(current):
+            return True
+        children = _children(current)
+        if not children:
+            continue
+        # Past the bound, answer conservatively.
+        if depth >= 8:
+            return True
+        pending.extend((child, depth + 1) for child in children)
+    return False
+
+
 def _config_diff(config):
     if isinstance(config, dict):
         return config
@@ -224,6 +299,48 @@ def _config_diff(config):
 def _has_sequence_classification_architecture(config):
     architectures = _config_get(config, "architectures", None) or []
     return any(str(arch).endswith("ForSequenceClassification") for arch in architectures)
+
+
+# Most to least specific, so a config mapped under several gets its own family's
+# class. Every name must also be in vision.py's _multimodal_auto_classes(), since
+# the class picked here decides processor selection (asserted by
+# test_every_class_the_resolver_can_return_takes_a_processor).
+_OMNI_AUTO_CLASS_NAMES = (
+    "AutoModelForImageTextToText",
+    "AutoModelForTextToWaveform",
+)
+
+
+def _config_has_native_class(auto_class, config):
+    """True when transformers itself maps ``type(config)`` in ``auto_class`` (no repo code needed)."""
+    try:
+        return auto_class is not None and type(config) in auto_class._model_mapping
+    except Exception:
+        return False
+
+
+def _resolve_omni_auto_model(model_config):
+    """A multimodal auto class that really maps this config, or None.
+
+    Qwen3-Omni names Qwen3OmniMoeForConditionalGeneration so it reads as a VLM,
+    but transformers registers qwen3_omni_moe only under
+    AutoModelForTextToWaveform, and asking a class with no mapping is a hard
+    load failure, not a fallback.
+    """
+    import transformers
+
+    for name in _OMNI_AUTO_CLASS_NAMES:
+        auto_class = getattr(transformers, name, None)
+        if auto_class is None:
+            continue
+        try:
+            if resolve_model_class(auto_class, model_config) is not None:
+                return auto_class
+        except Exception:
+            continue
+    # Falling back to the concrete class the checkpoint names is WRONG: it is in no
+    # auto mapping, so it leaves the processor set and downgrades to AutoTokenizer.
+    return None
 
 
 def _get_user_task_config_attrs(user_config):
@@ -601,8 +718,11 @@ class FastLanguageModel(FastLlamaModel):
                     f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
                     f"4bit/8bit/fp8 loading is disabled and the model will "
                     f"load in 16bit, which needs far more VRAM. Unsloth loads "
-                    f"4bit by default; point at the 4bit repo instead if you "
-                    f"wanted that."
+                    f"4bit by default. To train in 4bit, point at a 4bit repo or "
+                    f"pass quantization_config = BitsAndBytesConfig(load_in_4bit = True, "
+                    f"bnb_4bit_use_double_quant = True, bnb_4bit_quant_type = 'nf4', "
+                    f"bnb_4bit_compute_dtype = torch.bfloat16), which quantizes this "
+                    f"checkpoint while it loads."
                 )
             load_in_4bit = False
             load_in_8bit = False
@@ -790,8 +910,11 @@ class FastLanguageModel(FastLlamaModel):
                         f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
                         f"4bit/8bit/fp8 loading is disabled and the model will "
                         f"load in 16bit, which needs far more VRAM. Unsloth loads "
-                        f"4bit by default; point at the 4bit repo instead if you "
-                        f"wanted that."
+                        f"4bit by default. To train in 4bit, point at a 4bit repo or "
+                        f"pass quantization_config = BitsAndBytesConfig(load_in_4bit = True, "
+                        f"bnb_4bit_use_double_quant = True, bnb_4bit_quant_type = 'nf4', "
+                        f"bnb_4bit_compute_dtype = torch.bfloat16), which quantizes this "
+                        f"checkpoint while it loads."
                     )
                 load_in_4bit = False
                 load_in_8bit = False
@@ -1384,8 +1507,11 @@ class FastModel(FastBaseModel):
                     f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
                     f"4bit/8bit/fp8 loading is disabled and the model will "
                     f"load in 16bit, which needs far more VRAM. Unsloth loads "
-                    f"4bit by default; point at the 4bit repo instead if you "
-                    f"wanted that."
+                    f"4bit by default. To train in 4bit, point at a 4bit repo or "
+                    f"pass quantization_config = BitsAndBytesConfig(load_in_4bit = True, "
+                    f"bnb_4bit_use_double_quant = True, bnb_4bit_quant_type = 'nf4', "
+                    f"bnb_4bit_compute_dtype = torch.bfloat16), which quantizes this "
+                    f"checkpoint while it loads."
                 )
             load_in_4bit = False
             load_in_8bit = False
@@ -1723,8 +1849,11 @@ class FastModel(FastBaseModel):
                         f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
                         f"4bit/8bit/fp8 loading is disabled and the model will "
                         f"load in 16bit, which needs far more VRAM. Unsloth loads "
-                        f"4bit by default; point at the 4bit repo instead if you "
-                        f"wanted that."
+                        f"4bit by default. To train in 4bit, point at a 4bit repo or "
+                        f"pass quantization_config = BitsAndBytesConfig(load_in_4bit = True, "
+                        f"bnb_4bit_use_double_quant = True, bnb_4bit_quant_type = 'nf4', "
+                        f"bnb_4bit_compute_dtype = torch.bfloat16), which quantizes this "
+                        f"checkpoint while it loads."
                     )
                 load_in_4bit = False
                 load_in_8bit = False
@@ -1800,7 +1929,8 @@ class FastModel(FastBaseModel):
                 import_from_cache = False,
                 disable = False,
                 return_logits = return_logits,
-                trust_remote_code = trust_remote_code,
+                # Only real remote code is untraceable; a native architecture keeps every optimization.
+                trust_remote_code = trust_remote_code and _config_uses_remote_code(model_config),
                 unsloth_force_compile = unsloth_force_compile,
             )
         for model_type in DISABLE_SDPA_MODEL_NAMES:
@@ -1867,6 +1997,24 @@ class FastModel(FastBaseModel):
                 _auto_map = getattr(model_config, "auto_map", {}) or {}
                 _vlm_class_name = AutoModelForVision2Seq.__name__
                 _has_vlm_class = _vlm_class_name in _auto_map
+                # Untrusted: keep only auto_map entries transformers builds natively (Step-3.7: step3p7 is image-text).
+                if not trust_remote_code:
+                    import transformers as _transformers
+
+                    _native_map = {
+                        _name: _ref
+                        for _name, _ref in _auto_map.items()
+                        if _config_has_native_class(
+                            getattr(_transformers, _name, None), model_config
+                        )
+                    }
+                    # Remote causal LM class: native AutoModel would be a headless backbone (Kimi-K2.5).
+                    if (
+                        "AutoModelForCausalLM" in _auto_map
+                        and "AutoModelForCausalLM" not in _native_map
+                    ):
+                        _native_map.pop("AutoModel", None)
+                    _auto_map = _native_map
                 if not _has_vlm_class and "AutoModelForCausalLM" in _auto_map:
                     auto_model = AutoModelForCausalLM
                 elif not _has_vlm_class and "AutoModel" in _auto_map:
@@ -1874,6 +2022,10 @@ class FastModel(FastBaseModel):
                     auto_model = AutoModel
                 else:
                     auto_model = AutoModelForVision2Seq
+                    # Only when the image-text class has no mapping, so anything that
+                    # resolves today keeps the class it resolves to now.
+                    if resolve_model_class(auto_model, model_config) is None:
+                        auto_model = _resolve_omni_auto_model(model_config) or auto_model
             else:
                 auto_model = AutoModelForCausalLM
 

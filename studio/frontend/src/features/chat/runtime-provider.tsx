@@ -54,6 +54,7 @@ import {
   ChatGenerationStalledError,
   followChatGenerationRun,
   isTerminalChatGenerationRun,
+  toolApprovalIsPending,
 } from "./api/chat-generation-api";
 import {
   TEXT_ATTACHMENT_ACCEPT,
@@ -155,7 +156,9 @@ import {
   markThreadIncognito,
   saveStoredChatMessage,
   saveStoredChatThread,
+  syncStoredChatMessages,
   trackStoredChatThreadRecord,
+  unmarkThreadIncognito,
   updateStoredChatThread,
 } from "./utils/chat-history-storage";
 import {
@@ -869,7 +872,25 @@ function scheduleGenerationRecovery(
     if (!Number.isSafeInteger(cursor) || cursor < 0) cursor = 0;
     const stored = generationRawContent(storedMessage.content);
     const carried = stored.carried;
-    const toolRecovery = createGenerationToolRecovery(carried, runId, cursor);
+    // A durable tool turn can be parked on an approval when the tab closes; the backend keeps waiting
+    // for the returning session, so this tab has to be able to answer. Keyed and scoped exactly as the
+    // live stream keys it (chat-adapter's toolConfirmationScopeId), so a card armed here and a card
+    // armed there are the same card to the store and to "Always allow".
+    const toolRecovery = createGenerationToolRecovery(carried, runId, cursor, {
+      register: (partId, approvalId, sessionId) =>
+        useChatRuntimeStore
+          .getState()
+          .setToolConfirmation(
+            partId,
+            approvalId,
+            sessionId,
+            `${sessionId || "_default"}:${threadId}`,
+          ),
+      resolve: (partId) =>
+        useChatRuntimeStore.getState().clearToolConfirmation(partId),
+    });
+    // Settled before disarmAll so an arm cannot land after the run is over.
+    let seededApprovals: Promise<void> | null = null;
     let { raw, reasoningOpen } = stored;
     let parseThink = metadata.parseThinkTags !== false;
     let completionTokens: number | undefined;
@@ -1046,6 +1067,34 @@ function scheduleGenerationRecovery(
                 raw = lastRequestMessage.content;
               }
             }
+            // The run's session is known now, and the decision is resolved against it. A call that
+            // parked before the tab closed has no frame left to re-fold, so this is the only thing
+            // that puts its Approve/Deny back in front of the user.
+            //
+            // Only while the run can still be answered. A run that settled while parked (a backend
+            // restart terminalises surviving rows) has no _pending slot left, and no tool_end is
+            // coming to disarm the card, so arming from the seed would leave permanent Approve/Deny
+            // buttons whose confirm can only 404.
+            if (!isTerminalChatGenerationRun(update.run)) {
+              // Deliberately NOT awaited: this generator is suspended at the snapshot yield, so
+              // awaiting holds /events closed, and /events is the only thing that marks the run
+              // attended server-side (state/run_subscribers.py). A tab returning near the park
+              // ceiling would expire its approval during the very request asking whether it is
+              // still pending. Settled at the end of the loop instead.
+              seededApprovals = toolRecovery.armSeededApprovals(
+                update.run.requestPayload?.session_id,
+                (approvalId) =>
+                  toolApprovalIsPending(
+                    approvalId,
+                    typeof update.run.requestPayload?.session_id === "string"
+                      ? update.run.requestPayload.session_id
+                      : "",
+                  ),
+              );
+              // armSeededApprovals already treats an unanswerable check as "still parked"; this
+              // only stops an unhandled rejection before the join below reaches it.
+              seededApprovals.catch(() => {});
+            }
             if (typeof metadata.parseThinkTags !== "boolean") {
               parseThink = requestParsesThinkTags(update.run.requestPayload);
               currentMetadata = {
@@ -1151,6 +1200,8 @@ function scheduleGenerationRecovery(
             await publish(update.run);
           }
           if (isTerminalChatGenerationRun(update.run)) {
+            // The disarm itself now lives in the finally, so it also covers the exits this branch
+            // never sees (a permanent follower error, a thread deleted in another tab).
             // Only another successful active-list sync would otherwise drop it, so the thread would keep
             // reading as durable and a later subscriber-owned stream would be capped, losing the
             // checkpoints that are its only persistence.
@@ -1183,6 +1234,14 @@ function scheduleGenerationRecovery(
         );
       }
     } finally {
+      // EVERY exit, not just the terminal one: a permanent follower error (another tab deletes the
+      // thread, the run row cascades, the request 404s) throws past the terminal branch into the
+      // outer catch, leaving a seeded card in the global store for the session. `soleRequest` counts
+      // entries, so a later real approval reads as non-sole and loses its Enter/Escape chords.
+      // Joined first because the arming is no longer awaited at its call site, so without this a
+      // late arm lands after the disarm and leaves the card up on a finished run.
+      if (seededApprovals) await seededApprovals.catch(() => {});
+      toolRecovery.disarmAll();
       const store = useChatRuntimeStore.getState();
       store.setThreadRunning(threadId, false, { owner: serverCancel });
       store.clearThreadServerCancel(threadId, serverCancel);
@@ -1192,6 +1251,12 @@ function scheduleGenerationRecovery(
     .finally(() => generationRecoveries.delete(runId));
   generationRecoveries.set(runId, { promise: recovery, views });
 }
+
+/** What a temporary thread was started with, so saving it later keeps its starting model. */
+const temporaryThreadCreation = new Map<
+  string,
+  { modelId: string; modelGgufVariant: string | null | undefined; createdAt: number }
+>();
 
 export async function ensureThreadRecord({
   threadId,
@@ -1235,8 +1300,14 @@ export async function ensureThreadRecord({
   // A temporary chat skips the history list so a storage outage cannot block its first send.
   // Gated on the caller knowing the thread is new, not on its id: a `__LOCALID_` id is the
   // permanent key of every chat the app creates, so keying on the prefix tagged SAVED chats.
+  const creation = {
+    modelId: modelIdAtInit,
+    modelGgufVariant: modelGgufVariantAtInit,
+    createdAt: createdAtInit,
+  };
   if (incognitoAtInit && neverSent) {
     markThreadIncognito(threadId);
+    temporaryThreadCreation.set(threadId, creation);
     return;
   }
   // A point lookup, not a listing: this must not scale with how many chats exist.
@@ -1248,6 +1319,7 @@ export async function ensureThreadRecord({
   // real chat saving normally when the toggle flips on mid-stream.
   if (incognitoAtInit) {
     markThreadIncognito(threadId);
+    temporaryThreadCreation.set(threadId, creation);
     return;
   }
 
@@ -1274,6 +1346,79 @@ export async function ensureThreadRecord({
     if (existingAfterRace) {
       return;
     }
+    throw error;
+  }
+}
+
+/** Parents before children, so every saved message's parent already exists. */
+function parentsFirst(
+  items: readonly ExportedMessageRepositoryItem[],
+): ExportedMessageRepositoryItem[] {
+  const byId = new Map(items.map((item) => [item.message.id, item]));
+  const seen = new Set<string>();
+  const ordered: ExportedMessageRepositoryItem[] = [];
+  const visit = (item: ExportedMessageRepositoryItem) => {
+    if (seen.has(item.message.id)) return;
+    seen.add(item.message.id);
+    const parent = item.parentId ? byId.get(item.parentId) : undefined;
+    if (parent) visit(parent);
+    ordered.push(item);
+  };
+  items.forEach(visit);
+  return ordered;
+}
+
+/** Save a temporary chat to history: its row, then every message on every branch in one batch,
+ *  after which it saves like any other chat. The batch is one transaction, so a failure leaves at
+ *  most an empty row, which a retry reuses; the chat stays temporary until then. */
+export async function persistTemporaryThread({
+  threadId,
+  modelType,
+  messages,
+}: {
+  threadId: string;
+  modelType: ModelType;
+  messages: readonly ExportedMessageRepositoryItem[];
+}): Promise<void> {
+  unmarkThreadIncognito(threadId);
+  try {
+    const times = messages
+      .map(({ message }) => message.createdAt?.getTime?.())
+      .filter((time): time is number => typeof time === "number");
+    const creation = temporaryThreadCreation.get(threadId);
+    await ensureThreadRecord({
+      threadId,
+      modelType,
+      projectId: null,
+      incognito: false,
+      ...(creation && {
+        modelId: creation.modelId,
+        modelGgufVariant: creation.modelGgufVariant,
+      }),
+      createdAt:
+        creation?.createdAt ?? (times.length > 0 ? Math.min(...times) : Date.now()),
+    });
+    const records: MessageRecord[] = parentsFirst(messages).map(({ parentId, message }) => {
+      const attachments =
+        message.role === "user" ? cloneAttachments(message.attachments) : [];
+      const metadata = message.metadata?.custom as
+        | Record<string, unknown>
+        | undefined;
+      return {
+        id: message.id,
+        threadId,
+        parentId: parentId ?? null,
+        role: message.role,
+        content: cloneContent(message.content),
+        ...(attachments.length > 0 && { attachments }),
+        ...(metadata && { metadata }),
+        createdAt: message.createdAt?.getTime?.() ?? Date.now(),
+      };
+    });
+    await syncStoredChatMessages(threadId, records, { pruneMissing: false });
+    temporaryThreadCreation.delete(threadId);
+  } catch (error) {
+    markThreadIncognito(threadId);
     throw error;
   }
 }

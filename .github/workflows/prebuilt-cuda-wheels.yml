@@ -72,6 +72,8 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       count: ${{ steps.plan.outputs.count }}
+      warm_matrix: ${{ steps.plan.outputs.warm_matrix }}
+      warm_count: ${{ steps.plan.outputs.warm_count }}
     steps:
       - name: Harden runner (egress block)
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
@@ -106,31 +108,31 @@ jobs:
           # quotes and braces and there is no reason to send it through a shell round trip.
           python3 .github/scripts/prebuilt_wheels.py matrix --github
 
-  build:
-    name: ${{ matrix.label }}
+  warm:
+    name: warm ${{ matrix.label }}
     needs: plan
-    if: needs.plan.outputs.count != '0'
-    # ubuntu-22.04 deliberately, not ubuntu-latest. These wheels are tagged linux_x86_64, which
-    # pip installs without checking glibc, so the runner's glibc IS the compatibility floor: 2.35
-    # here against 2.39 on 24.04. Upstream builds its own wheels on 22.04 for the same reason.
+    if: needs.plan.outputs.warm_count != '0'
     runs-on: ubuntu-22.04
-    # flash-attn is ~4.5 h of nvcc at MAX_JOBS=1. GitHub's hard job limit is 6 h and a job that
-    # hits it is reported as "cancelled" with no logs kept, so the build step carries its own
-    # shorter `timeout` and this sits just above it.
+    # Best effort: the build job compiles whatever a warm job did not.
+    continue-on-error: true
     timeout-minutes: 340
     permissions:
       contents: read
     strategy:
       fail-fast: false
-      # One cell at a time would be safe and would also take a week. Five is what the free
-      # runner pool serves without pushing every other workflow in the org behind it.
-      max-parallel: 5
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+      max-parallel: 16
+      matrix: ${{ fromJSON(needs.plan.outputs.warm_matrix) }}
+    env:
+      # Not a hidden directory: upload-artifact skips those by default.
+      CCACHE_DIR: ${{ github.workspace }}/ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_NOHASHDIR: 'true'
+      CCACHE_MAXSIZE: 20G
+      # torch reads this for the nvcc in build.ninja.
+      PYTORCH_NVCC: ccache /usr/local/cuda-13.0/bin/nvcc
     steps:
       - name: Harden runner (audit)
-        # Audit, not block. This job talks to the apt CUDA repository, PyPI, the PyTorch wheel
-        # index and two upstream GitHub repositories, and a blocklist tuned on one of those
-        # moving would fail a four-hour build at the last step.
+        # Audit egress because package downloads use changing endpoints.
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
@@ -189,6 +191,19 @@ jobs:
           echo "/usr/local/cuda-13.0/bin" >> "$GITHUB_PATH"
           echo "CUDA_HOME=/usr/local/cuda-13.0" >> "$GITHUB_ENV"
 
+      # Cache hits require matching compiler commands and checkout paths in both jobs.
+      - name: Install ccache
+        timeout-minutes: 13
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '300'
+        run: |
+          set -euo pipefail
+          bash unsloth/.github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get update && apt-get install -y --no-install-recommends ccache'
+          ccache --version | head -1
+          mkdir -p "$CCACHE_DIR"
+
       # 10 GB of swap. nvcc's peak RSS on the sm_100 flash-attn kernels is the reason MAX_JOBS is
       # 1; swap is what keeps a single job that briefly exceeds the runner's 16 GB from being
       # OOM-killed four hours in.
@@ -217,8 +232,7 @@ jobs:
               sys.exit(f"installed torch {torch.__version__}, wanted {want_torch}")
           if not torch.version.cuda.startswith("13."):
               sys.exit(f"torch reports CUDA {torch.version.cuda}, wanted 13.x")
-          # The wheel filename claims cxx11abiTRUE. If torch ever ships abiFALSE wheels again the
-          # name would be a lie, and a lie in a filename is worse than a failure here.
+          # Verify the ABI matches the wheel's cxx11abiTRUE tag.
           if not torch._C._GLIBCXX_USE_CXX11_ABI:
               sys.exit("torch was built with _GLIBCXX_USE_CXX11_ABI=0; the cxx11abiTRUE tag would be wrong")
           PY
@@ -234,6 +248,201 @@ jobs:
       - name: Patch mamba-ssm for the torch 2.13 C++20 requirement
         if: matrix.patch == 'cxx20'
         run: python3 unsloth/.github/scripts/patch_mamba_cxx20.py src/setup.py
+
+      - name: Restore this slice's ccache from earlier runs
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ccache
+          key: prebuilt-ccache-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-${{ github.run_id }}
+          restore-keys: |
+            prebuilt-ccache-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-
+
+      - name: Compile slice ${{ matrix.shard }} of ${{ matrix.shards }}
+        working-directory: src
+        env:
+          MAX_JOBS: ${{ matrix.max_jobs }}
+          NVCC_THREADS: ${{ matrix.nvcc_threads }}
+          BUILD_ENV: ${{ matrix.build_env }}
+          BUILD_TIMEOUT: ${{ matrix.build_timeout }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ matrix.shards }}
+        run: |
+          set -euo pipefail
+          for pair in $BUILD_ENV; do
+            export "${pair?}"
+            echo "export $pair"
+          done
+          ccache -z
+          timeout --signal=INT --kill-after=120 "$BUILD_TIMEOUT" \
+            python ../unsloth/.github/scripts/prebuilt_wheels_shard.py "$SHARD" "$SHARDS"
+
+      - name: ccache stats
+        if: always()
+        run: ccache -s
+
+      - name: Hand the slice to the build job
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ccache-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}
+          path: ccache
+          if-no-files-found: warn
+          # ccache compresses its own entries.
+          compression-level: 0
+          retention-days: 1
+          # A re-run attempt uploads under the same name, which fails without this.
+          overwrite: true
+
+      # Save partial progress after failures. Immutable caches need a key per run attempt.
+      - name: Save this slice's ccache for later runs
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ccache
+          key: prebuilt-ccache-${{ matrix.dist }}-${{ matrix.ref }}-torch${{ matrix.torch }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}of${{ matrix.shards }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+  build:
+    name: ${{ matrix.label }}
+    needs: [plan, warm]
+    # Run even if warm was skipped or failed; compile any cache misses here.
+    if: ${{ !cancelled() && needs.plan.outputs.count != '0' }}
+    # Keep the glibc floor at 2.35; pip does not check it for linux_x86_64 wheels.
+    runs-on: ubuntu-22.04
+    # Allow cleanup after the build step's timeout, below GitHub's 6-hour limit.
+    timeout-minutes: 340
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_NOHASHDIR: 'true'
+      CCACHE_MAXSIZE: 20G
+      PYTORCH_NVCC: ccache /usr/local/cuda-13.0/bin/nvcc
+    steps:
+      # Keep setup through the mamba patch in sync with warm.
+      - name: Harden runner (audit)
+        # Audit egress because package downloads use changing endpoints.
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout Unsloth (build scripts only)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          path: unsloth
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout ${{ matrix.repo }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.ref }}
+          path: src
+          submodules: ${{ matrix.submodules }}
+          persist-credentials: false
+
+      - name: Free up disk space
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/lib/android || true
+          df -h /
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install the CUDA ${{ matrix.cuda_tag }} toolkit
+        timeout-minutes: 25
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '600'
+        run: |
+          set -euo pipefail
+          keyring=cuda-keyring_1.1-1_all.deb
+          curl --fail --silent --show-error --location --retry 5 --retry-delay 5 \
+            -o "$keyring" \
+            "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/$keyring"
+          sudo dpkg -i "$keyring"
+          bash unsloth/.github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get update && apt-get install -y --no-install-recommends cuda-toolkit-13-0'
+          echo "/usr/local/cuda-13.0/bin" >> "$GITHUB_PATH"
+          echo "CUDA_HOME=/usr/local/cuda-13.0" >> "$GITHUB_ENV"
+
+      - name: Install ccache
+        timeout-minutes: 13
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '300'
+        run: |
+          set -euo pipefail
+          bash unsloth/.github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get update && apt-get install -y --no-install-recommends ccache'
+          ccache --version | head -1
+          mkdir -p "$CCACHE_DIR"
+
+      - name: Set up swap space
+        run: |
+          set -euo pipefail
+          sudo fallocate -l 10G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+
+      - name: Install torch ${{ matrix.torch }}+cu130
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install 'setuptools>=77' wheel ninja packaging
+          python -m pip install --no-cache-dir "torch==${{ matrix.torch }}" \
+            --index-url https://download.pytorch.org/whl/cu130
+          nvcc --version
+          python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cxx11abi', torch._C._GLIBCXX_USE_CXX11_ABI)"
+          python - <<'PY'
+          import os, sys, torch
+          want_torch = os.environ["MATRIX_TORCH"]
+          if torch.__version__.split("+")[0] != want_torch:
+              sys.exit(f"installed torch {torch.__version__}, wanted {want_torch}")
+          if not torch.version.cuda.startswith("13."):
+              sys.exit(f"torch reports CUDA {torch.version.cuda}, wanted 13.x")
+          # Verify the ABI matches the wheel's cxx11abiTRUE tag.
+          if not torch._C._GLIBCXX_USE_CXX11_ABI:
+              sys.exit("torch was built with _GLIBCXX_USE_CXX11_ABI=0; the cxx11abiTRUE tag would be wrong")
+          PY
+        env:
+          MATRIX_TORCH: ${{ matrix.torch }}
+
+      - name: Patch mamba-ssm for the torch 2.13 C++20 requirement
+        if: matrix.patch == 'cxx20'
+        run: python3 unsloth/.github/scripts/patch_mamba_cxx20.py src/setup.py
+
+      - name: Download the warm slices
+        if: matrix.shards > 0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: ccache-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}-shard*
+          path: ccache-slices
+
+      # The slices are disjoint, so copying them over one another loses nothing.
+      - name: Merge the warm slices into the ccache
+        if: matrix.shards > 0
+        run: |
+          set -euo pipefail
+          for slice in ccache-slices/*/; do
+            [ -d "$slice" ] || continue
+            echo "merging $slice ($(find "$slice" -type f | wc -l) files, $(du -sh "$slice" | cut -f1))"
+            cp -a "$slice." "$CCACHE_DIR/"
+          done
+          rm -rf ccache-slices
+          ccache -z
 
       - name: Build the wheel
         id: build
@@ -254,6 +463,10 @@ jobs:
           echo "MAX_JOBS=$MAX_JOBS NVCC_THREADS=$NVCC_THREADS timeout=$BUILD_TIMEOUT"
           timeout --signal=INT --kill-after=120 "$BUILD_TIMEOUT" \
             python setup.py bdist_wheel --dist-dir=dist
+
+      - name: ccache stats
+        if: always()
+        run: ccache -s
 
       # Upstream's own naming, reproduced rather than approximated: the local version segment is
       # what stops pip installing a torch 2.13 wheel into a torch 2.14 environment. Asserting the
@@ -297,9 +510,39 @@ jobs:
           "$RUNNER_TEMP/smoke/bin/python" -m pip install --quiet --upgrade pip
           "$RUNNER_TEMP/smoke/bin/python" -m pip install --quiet --no-cache-dir \
             "torch==${MATRIX_TORCH}" --index-url https://download.pytorch.org/whl/cu130
-          # --no-deps: causal-conv1d and mamba-ssm declare each other and transformers, none of
-          # which has anything to do with whether this .so loads, and all of which would drag a
-          # second torch resolution into the venv.
+          # The wheel is installed with --no-deps so nothing can drag a second torch into the
+          # venv; every other runtime dependency the package declares is installed first, read
+          # from the wheel's own metadata rather than from a hand-kept list. The hand-kept list
+          # broke twice: einops was missing, then huggingface_hub (mamba_ssm.modules.mamba2
+          # imports PyTorchModelHubMixin at module load). Excluded on purpose: torch itself and
+          # the two sibling packages built by this same workflow, which pip would otherwise try
+          # to compile from source because no matching wheel exists on PyPI. The constraints
+          # file pins torch and triton to what is already in the venv, so a dependency that
+          # wants a different one fails the step loudly instead of swapping torch under us.
+          "$RUNNER_TEMP/smoke/bin/python" -m pip freeze | grep -E '^(torch|triton)==' \
+            > "$RUNNER_TEMP/smoke-constraints.txt"
+          # tvm-ffi 0.1.12 with tilelang 0.1.8 breaks mamba_ssm imports (import test only).
+          echo 'apache-tvm-ffi==0.1.11' >> "$RUNNER_TEMP/smoke-constraints.txt"
+          cat "$RUNNER_TEMP/smoke-constraints.txt"
+          "$RUNNER_TEMP/smoke/bin/python" - "src/dist/${WHEEL_NAME}" "$RUNNER_TEMP/smoke-constraints.txt" <<'PY'
+          import email.parser, pathlib, re, subprocess, sys, zipfile
+          wheel = pathlib.Path(sys.argv[1])
+          with zipfile.ZipFile(wheel) as zf:
+              meta = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
+              headers = email.parser.Parser().parsestr(zf.read(meta).decode())
+          excluded = {"torch", "flash-attn", "flash_attn", "causal-conv1d", "causal_conv1d", "mamba-ssm", "mamba_ssm"}
+          deps = []
+          for req in headers.get_all("Requires-Dist") or []:
+              if ";" in req:  # extras and environment markers: not runtime requirements
+                  continue
+              name = re.split(r"[\s<>=!~\[;]", req.strip(), maxsplit=1)[0].lower()
+              if name in excluded:
+                  continue
+              deps.append(req.strip())
+          deps += ["numpy"]  # torch wants numpy for its tensor conversions and only warns without it
+          print("runtime dependencies from METADATA:", deps)
+          subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "--constraint", sys.argv[2], *deps])
+          PY
           "$RUNNER_TEMP/smoke/bin/python" -m pip install --quiet --no-deps \
             "src/dist/${WHEEL_NAME}"
           for name in $IMPORT_NAMES; do
@@ -328,7 +571,8 @@ jobs:
   gpu-smoke:
     name: GPU forward pass
     needs: [plan, build]
-    if: inputs.gpu_smoke
+    # A skipped warm (no flash-attn) would otherwise skip every job downstream of build.
+    if: ${{ !cancelled() && inputs.gpu_smoke && needs.build.result == 'success' }}
     runs-on: [self-hosted, gpu]
     timeout-minutes: 90
     permissions:
@@ -369,6 +613,7 @@ jobs:
   sign:
     name: Sign and attest
     needs: [plan, build]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # Named for the same reason release-desktop.yml and woa-wheelhouse.yml name it: it is what
@@ -481,7 +726,7 @@ jobs:
   publish:
     name: Publish the release
     needs: sign
-    if: inputs.publish
+    if: ${{ !cancelled() && inputs.publish && needs.sign.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

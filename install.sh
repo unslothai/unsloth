@@ -2644,8 +2644,10 @@ _wsl_amd_gpu_name() {
 
 # ── Bounded command runner ──
 _run_bounded() {
+    _rb_secs=10
+    if [ "${1:-}" = "--secs" ]; then _rb_secs=$2; shift 2; fi
     if command -v timeout >/dev/null 2>&1; then
-        timeout 10 "$@"
+        timeout "$_rb_secs" "$@"
     else
         "$@"
     fi
@@ -2676,7 +2678,11 @@ _nvidia_library_inventory() {
     else return 1
     fi
     _NVIDIA_LIBRARY_INVENTORY_STATE="none"
-    _NVIDIA_LIBRARY_INVENTORY_VALUE=$(_run_bounded "$_nli_py" -I - 2>/dev/null <<'PY'
+    _NVIDIA_LIBRARY_INVENTORY_VALUE=""
+    # One deadline per reader: a shared bound let slow NVML starve the CUDA driver API reader.
+    for _nli_reader in nvml cuda; do
+        case "$_nli_reader" in nvml) _nli_secs=30 ;; *) _nli_secs=20 ;; esac
+        _NVIDIA_LIBRARY_INVENTORY_VALUE=$(_run_bounded --secs "$_nli_secs" "$_nli_py" -I - "$_nli_reader" 2>/dev/null <<'PY'
 import ctypes, os, sys
 
 def load(*names):
@@ -2733,8 +2739,10 @@ def cuda():
         caps.append(f"{major.value}.{minor.value}")
     return version.value, caps
 
+# argv[1] runs one reader ("nvml" / "cuda") so each gets its own deadline; none runs both.
+only = {"nvml": (nvml,), "cuda": (cuda,)}.get(sys.argv[1] if len(sys.argv) > 1 else "")
 found = None
-for reader in (nvml, cuda):  # a reader that raises (a missing symbol) yields to the next
+for reader in only or (nvml, cuda):  # a reader that raises (a missing symbol) yields to the next
     try:
         found = reader()
     except Exception:
@@ -2746,9 +2754,50 @@ if not found or not found[1]:
 version, caps = found
 print(f"{version // 1000}.{version % 1000 // 10} {','.join(caps)}")
 PY
-) && [ -n "$_NVIDIA_LIBRARY_INVENTORY_VALUE" ] || return 1
+) && [ -n "$_NVIDIA_LIBRARY_INVENTORY_VALUE" ] && break
+        _NVIDIA_LIBRARY_INVENTORY_VALUE=""
+    done
+    [ -n "$_NVIDIA_LIBRARY_INVENTORY_VALUE" ] || return 1
     _NVIDIA_LIBRARY_INVENTORY_STATE="found"
     printf '%s\n' "$_NVIDIA_LIBRARY_INVENTORY_VALUE"
+}
+
+# Driver CUDA version without cuInit (cuDriverGetVersion, else /proc as in nvidia_probe.py _DRIVER_MAJOR_CUDA); picks a family only.
+_nvidia_driver_cuda_version() {
+    [ "${UNSLOTH_NVIDIA_LIBRARY_PROBE:-1}" != "0" ] || return 1
+    if command -v python3 >/dev/null 2>&1; then _ndv_py=python3
+    elif [ -n "${VENV_DIR:-}" ] && [ -x "$VENV_DIR/bin/python" ]; then _ndv_py="$VENV_DIR/bin/python"
+    else _ndv_py=""
+    fi
+    if [ -n "$_ndv_py" ]; then
+        _ndv_ver=$(_run_bounded "$_ndv_py" -I -c '
+import ctypes, sys
+for name in ("libcuda.so.1", "libcuda.so"):
+    try:
+        lib = ctypes.CDLL(name)
+        break
+    except OSError:
+        lib = None
+v = ctypes.c_int()
+if lib is None or lib.cuDriverGetVersion(ctypes.byref(v)) != 0 or v.value < 1000:
+    sys.exit(1)
+print(f"{v.value // 1000}.{v.value % 1000 // 10}")
+' 2>/dev/null </dev/null | awk 'NR == 1 { print $1 }') || _ndv_ver=""
+        case "$_ndv_ver" in
+            [0-9]*.[0-9]*) printf '%s\n' "$_ndv_ver"; return 0 ;;
+        esac
+    fi
+    # "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  590.48.01  Release Build ..."
+    _ndv_drv=$(awk 'NR == 1 { for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+\.[0-9]+(\.[0-9]+)?$/) { split($i, v, "."); print v[1]; exit } }' \
+        /proc/driver/nvidia/version 2>/dev/null) || _ndv_drv=""
+    case "$_ndv_drv" in ''|*[!0-9]*) return 1 ;; esac
+    if [ "$_ndv_drv" -ge 580 ]; then echo "13.0"
+    elif [ "$_ndv_drv" -ge 570 ]; then echo "12.8"
+    elif [ "$_ndv_drv" -ge 560 ]; then echo "12.6"
+    elif [ "$_ndv_drv" -ge 525 ]; then echo "12.0"
+    elif [ "$_ndv_drv" -ge 450 ]; then echo "11.0"
+    else return 1
+    fi
 }
 
 # ── NVIDIA usable-GPU helper ──
@@ -5235,19 +5284,37 @@ get_torch_index_url() {
         echo "$_base/cpu"; return
     fi
     # CUDA version from nvidia-smi: accept "CUDA Version:" and the newer "CUDA UMD Version:".
-    _cuda_ver=$(export LC_ALL=C; _run_bounded "$_smi" 2>/dev/null \
+    _smi_rc=0
+    _smi_out=$(export LC_ALL=C; _run_bounded "$_smi" 2>/dev/null) || _smi_rc=$?
+    if [ "$_smi_rc" = "124" ]; then
+        echo "[INFO] nvidia-smi did not answer within 10s; retrying with a 45s limit..." >&2
+        _smi_rc=0
+        _smi_out=$(export LC_ALL=C; _run_bounded --secs 45 "$_smi" 2>/dev/null) || _smi_rc=$?
+        # Still hung: do not spend another bound asking it for compute capabilities below.
+        [ "$_smi_rc" = "124" ] && _smi=""
+    fi
+    _cuda_ver=$(printf '%s\n' "$_smi_out" \
         | sed -n \
             -e 's/.*CUDA UMD Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
             -e 's/.*CUDA Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
         | head -1)
     _inventory_caps=""
+    _cuda_from_driver=""
+    # A mirror base can carry credentials, so name only the leaf.
+    if [ -n "${UNSLOTH_PYTORCH_MIRROR:-}" ]; then _pin_hint="UNSLOTH_TORCH_INDEX_FAMILY="
+    else _pin_hint="UNSLOTH_TORCH_INDEX_URL=$_base/"
+    fi
     if [ -z "$_cuda_ver" ]; then
         # nvidia-smi absent, stale or hung: the driver library knows both; cu126 is the last resort.
         if _inventory=$(_nvidia_library_inventory) && [ -n "$_inventory" ]; then
             _cuda_ver=${_inventory%% *}
             _inventory_caps=$(printf '%s' "${_inventory#* }" | tr ',' '\n')
+        elif _cuda_ver=$(_nvidia_driver_cuda_version) && [ -n "$_cuda_ver" ]; then
+            _cuda_from_driver=1
         else
             echo "[WARN] Could not determine CUDA version from nvidia-smi, defaulting to cu126" >&2
+            echo "[WARN] cu126 has no kernels for Blackwell (sm_100 / sm_120). To choose the wheel yourself, re-run with" >&2
+            echo "[WARN]   ${_pin_hint}cu128   (or cu130 on a driver that supports CUDA 13)" >&2
             echo "$_base/cu126"; return
         fi
     fi
@@ -5259,7 +5326,14 @@ get_torch_index_url() {
     elif [ "$_major" -ge 12 ]; then _cuda_tag=cu124
     elif [ "$_major" -ge 11 ]; then _cuda_tag=cu118
     else echo "$_base/cpu"; return; fi
-    echo "$_base/$(_cap_cuda_family_for_pre_turing "$_cuda_tag" "$_smi" "$_inventory_caps")"
+    _cuda_tag=$(_cap_cuda_family_for_pre_turing "$_cuda_tag" "$_smi" "$_inventory_caps")
+    if [ -n "$_cuda_from_driver" ]; then
+        echo "[WARN] nvidia-smi and the NVIDIA driver libraries did not answer in time; the driver supports CUDA $_cuda_ver." >&2
+        echo "[WARN] Selecting the $_cuda_tag PyTorch wheels from the driver version alone. If that is wrong for this GPU, re-run with" >&2
+        echo "[WARN]   ${_pin_hint}cu126   (Maxwell to Hopper, sm_50-90)" >&2
+        echo "[WARN]   ${_pin_hint}cu128   (Turing and newer, including Blackwell)" >&2
+    fi
+    echo "$_base/$_cuda_tag"
 }
 
 # ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
@@ -5921,7 +5995,7 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
                     fi
                     # Off the family, not the arch: no family straddles this boundary.
                     case "$_amd_family" in
-                        gfx120X-all|gfx1151|gfx1150|gfx1152)
+                        gfx120X-all|gfx1151|gfx1150|gfx1152|gfx103X-all|gfx110X-all)
                             TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
                             TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
                             TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
@@ -6008,7 +6082,7 @@ fi
 
 # rocm7.2 and per-gfx indexes ship torch 2.11.0: raise the floor, matching the FINAL leaf only.
 case "$_torch_index_leaf" in
-    rocm7.2|gfx120x-all|gfx1151|gfx1150|gfx1152)
+    rocm7.2|gfx120x-all|gfx1151|gfx1150|gfx1152|gfx103x-all|gfx110x-all)
         TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
         TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
         TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
@@ -7002,7 +7076,7 @@ _unsloth_desktop_install_spec=""
 if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
-_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.9.7}"
+_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.9.11}"
 
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo, keeping torch unless the ROCm repair fires.
@@ -7015,7 +7089,7 @@ if [ "$_MIGRATED" = true ]; then
         # (tests/test_installer_zoo_floor_parity.py enforces that).
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.6"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.7"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -7030,7 +7104,7 @@ if [ "$_MIGRATED" = true ]; then
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.6"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.7"
         [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
         _UNSLOTH_TORCH_OVERRIDES=""
     fi
@@ -7238,7 +7312,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # --no-deps: this spec IS the zoo floor here. Kept equal to pyproject.toml's.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.6"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.7"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -7257,7 +7331,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.6"
+            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.7"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
@@ -7288,7 +7362,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.9.6" "$_unsloth_release_install_spec" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.9.7" "$_unsloth_release_install_spec" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
@@ -7369,6 +7443,112 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
             substep "[WARN]   uv pip install --python \"$_VENV_PY\" \"$(_torch_spec_with_extra "$TORCH_CONSTRAINT")\" \"$(_torch_spec_with_extra "$TORCHVISION_CONSTRAINT")\" \"$TORCHAUDIO_CONSTRAINT\" --default-index $(_strip_index_url_credentials "$TORCH_INDEX_URL") --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio" "$C_WARN"
         fi
     fi
+fi
+
+# A wrong CUDA family fails only at first kernel launch; never cuInit here (minutes on a congested driver).
+if [ "$SKIP_TORCH" = false ] && ! _cvd_hides_nvidia; then
+    case "${_expected_torch_tag:-}" in
+        cu[0-9]*)
+            _arch_check=$(_run_bounded --secs 120 "$_VENV_PY" -c '
+import ctypes, sys
+
+def load(*names):
+    for name in names:
+        try:
+            return ctypes.CDLL(name)
+        except OSError:
+            pass
+
+def nvml_caps():
+    lib = load("libnvidia-ml.so.1", "libnvidia-ml.so")
+    if lib is None or lib.nvmlInit_v2() != 0:
+        return None
+    try:
+        count, caps = ctypes.c_uint(), set()
+        if lib.nvmlDeviceGetCount_v2(ctypes.byref(count)) != 0 or not count.value:
+            return None
+        for i in range(count.value):
+            dev, major, minor = ctypes.c_void_p(), ctypes.c_int(), ctypes.c_int()
+            if lib.nvmlDeviceGetHandleByIndex_v2(i, ctypes.byref(dev)) != 0 or \
+               lib.nvmlDeviceGetCudaComputeCapability(dev, ctypes.byref(major), ctypes.byref(minor)) != 0:
+                return None
+            caps.add((major.value, minor.value))
+        return sorted(caps)
+    finally:
+        lib.nvmlShutdown()
+
+try:
+    import torch
+    if not torch.version.cuda or getattr(torch.version, "hip", None):
+        sys.exit(0)
+    try:
+        archs = torch._C._cuda_getArchFlags().split()
+    except Exception:
+        archs = torch.cuda.get_arch_list()
+    try:
+        caps = nvml_caps()
+    except Exception:
+        caps = None
+    if caps is None:
+        if not torch.cuda.is_available():
+            sys.exit(0)
+        caps = sorted({torch.cuda.get_device_capability(i) for i in range(torch.cuda.device_count())})
+except Exception:
+    sys.exit(0)
+
+def runs(arch, cap):
+    kind, _, rest = arch.partition("_")
+    n = len(rest) - len(rest.lstrip("0123456789"))
+    digits, suffix = rest[:n], rest[n:]
+    if n < 2:
+        return False
+    built = (int(digits[:-1]), int(digits[-1]))
+    if suffix == "a":  # arch-specific cubin / PTX: that exact GPU only
+        return built == cap
+    if kind == "sm":  # a cubin runs on its own major at the same or a newer minor
+        return built[0] == cap[0] and built[1] <= cap[1]
+    return kind == "compute" and built <= cap  # PTX is JIT-compiled forward
+
+missing = [c for c in caps if not any(runs(a, c) for a in archs)]
+if not archs or not caps or not missing:
+    sys.exit(0)
+driver = ctypes.c_int()
+cuda = load("libcuda.so.1", "libcuda.so")  # cuDriverGetVersion needs no cuInit
+if cuda is None or cuda.cuDriverGetVersion(ctypes.byref(driver)) != 0:
+    driver.value = 0
+family = "cu126" if min(missing) < (7, 5) else ("cu130" if driver.value >= 13000 else "cu128")
+status = "none" if len(missing) == len(caps) else "some"
+# No wheel to point at (pre-Maxwell, or the family already installed): warn, never fail the install.
+if min(missing) < (5, 0) or family == "cu" + torch.version.cuda.replace(".", ""):
+    status = "nofix"
+fmt = lambda cs: ",".join(f"{a}.{b}" for a, b in cs)
+print("UNSLOTH_ARCH_CHECK=%s|%s|%s|%s|%s" % (status, fmt(missing), torch.__version__, " ".join(archs), family))
+' 2>/dev/null | sed -n 's/^UNSLOTH_ARCH_CHECK=//p' | tail -n 1 || true)
+            if [ -n "$_arch_check" ]; then
+                IFS='|' read -r _ac_status _ac_caps _ac_torch _ac_archs _ac_family <<EOF_ARCH
+$_arch_check
+EOF_ARCH
+                if [ -n "${UNSLOTH_PYTORCH_MIRROR:-}" ]; then _ac_pin="UNSLOTH_TORCH_INDEX_FAMILY=$_ac_family"
+                else _ac_pin="UNSLOTH_TORCH_INDEX_URL=https://download.pytorch.org/whl/$_ac_family"
+                fi
+                if [ "$_ac_status" = "none" ] && [ "$_torch_index_pinned" = false ]; then
+                    tauri_log "ERROR" "PyTorch $_ac_torch has no kernels for this GPU (compute capability $_ac_caps)"
+                    substep "[ERROR] PyTorch $_ac_torch has no kernels for this GPU (compute capability $_ac_caps)." "$C_ERR"
+                    substep "[ERROR] It was built for: $_ac_archs" "$C_ERR"
+                    substep "[ERROR] Training would fail with \"no kernel image is available for execution on the device\"." "$C_ERR"
+                    substep "[ERROR] Re-run this installer with the matching PyTorch wheels:" "$C_ERR"
+                    substep "[ERROR]   $_ac_pin" "$C_ERR"
+                    exit 1
+                fi
+                substep "[WARN] PyTorch $_ac_torch has no kernels for the GPUs with compute capability $_ac_caps." "$C_WARN"
+                if [ "$_ac_status" = "nofix" ]; then
+                    substep "[WARN] It was built for: $_ac_archs. Those GPUs will not be usable for training." "$C_WARN"
+                else
+                    substep "[WARN] It was built for: $_ac_archs. Those GPUs will not be usable; for them, re-run with $_ac_pin" "$C_WARN"
+                fi
+            fi
+            ;;
+    esac
 fi
 
 # An extras pin lands on a leaf the flavor enforcement above does not recognise, so it skips

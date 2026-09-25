@@ -49,7 +49,10 @@ import { Fragment, type ReactNode, memo, useMemo } from "react";
 import { confirmExternalLink } from "../stores/external-link-confirm";
 import type { DiscoverRow } from "../types";
 import { HubOptionMenu } from "./hub-option-menu";
-import { buildRowStatusTooltip } from "./models-catalog-rows";
+import {
+  DOWNLOADING_DOT_CLASS,
+  buildRowStatusTooltip,
+} from "./models-catalog-rows";
 import { OwnerAvatar } from "./owner-avatar";
 import { AccessGlyphs, CapabilityPill } from "./shared";
 
@@ -72,11 +75,11 @@ export type AllModelsView = "grid" | "two" | "split";
 const LIST_COLS = {
   model: "flex min-w-0 flex-[2.4] items-center gap-3",
   caps: "hidden min-w-0 flex-[1.7] items-center gap-1.5 md:flex",
-  capsModel: "hidden w-[132px] shrink-0 items-center gap-1.5 md:flex",
+  capsModel: "hidden w-[calc(132px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 md:flex",
   size: "hidden w-[calc(60px*var(--ui-space-scale,1))] shrink-0 lg:block",
-  updated: "hidden w-[82px] shrink-0 xl:block",
-  downloads: "hidden w-[104px] shrink-0 items-center gap-1.5 sm:flex",
-  likes: "hidden w-[76px] shrink-0 items-center gap-1.5 sm:flex",
+  updated: "hidden w-[calc(82px*var(--ui-space-scale,1))] shrink-0 xl:block",
+  downloads: "hidden w-[calc(104px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 sm:flex",
+  likes: "hidden w-[calc(76px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 sm:flex",
   actions: "flex w-[calc(64px*var(--ui-space-scale,1))] shrink-0 items-center justify-end gap-0.5",
 } as const;
 
@@ -143,7 +146,7 @@ export function InventorySortControl({
       title={selected?.label}
       // Capped and shrinkable so a long label truncates instead of wrapping
       // the "On device" heading beside these pills in the narrow split pane.
-      className="h-8 min-w-[72px] max-w-[124px] shrink text-ui-11p5"
+      className="h-8 min-w-[calc(72px*var(--ui-space-scale,1))] max-w-[calc(124px*var(--ui-space-scale,1))] shrink text-ui-11p5"
       triggerContent={
         <span className="flex min-w-0 items-center gap-1">
           <HugeiconsIcon
@@ -179,7 +182,7 @@ export function InventoryTypeFilterControl({
       title={selected?.label}
       // Capped and shrinkable so a long label ("Speech to text") truncates
       // instead of wrapping the "On device" heading beside these pills.
-      className="h-8 min-w-[72px] max-w-[124px] shrink text-ui-11p5"
+      className="h-8 min-w-[calc(72px*var(--ui-space-scale,1))] max-w-[calc(124px*var(--ui-space-scale,1))] shrink text-ui-11p5"
     />
   );
 }
@@ -254,7 +257,7 @@ export function HubListHeader({
                 <HugeiconsIcon
                   icon={Refresh01Icon}
                   strokeWidth={1.75}
-                  className={cn("size-[11px]", isRefreshing && "animate-spin")}
+                  className={cn("size-[calc(11px*var(--ui-space-scale,1))]", isRefreshing && "animate-spin")}
                 />
               </button>
             </TooltipTrigger>
@@ -325,13 +328,14 @@ export function ResultListHeader({ isDataset }: { isDataset: boolean }) {
   );
 }
 
-const STATUS_DOT_CLASS = "inline-block size-[6px] shrink-0 rounded-full";
+const STATUS_DOT_CLASS = "inline-block size-[calc(6px*var(--ui-space-scale,1))] shrink-0 rounded-full";
 
 function TitleMarkers({
   format,
   gated,
   isPrivate,
   partial,
+  downloading = false,
   unsupported,
   onDevice,
 }: {
@@ -339,6 +343,7 @@ function TitleMarkers({
   gated?: false | "auto" | "manual";
   isPrivate?: boolean;
   partial: boolean;
+  downloading?: boolean;
   unsupported: boolean;
   onDevice: boolean;
 }) {
@@ -359,11 +364,18 @@ function TitleMarkers({
         />
       )}
       <AccessGlyphs gated={gated} isPrivate={isPrivate} tooltip={false} />
-      {partial && (
+      {partial && !downloading && (
         <span
           role="img"
           aria-label="Partial download"
           className={cn(STATUS_DOT_CLASS, "bg-status-warning")}
+        />
+      )}
+      {partial && downloading && (
+        <span
+          role="img"
+          aria-label="Downloading"
+          className={cn(STATUS_DOT_CLASS, DOWNLOADING_DOT_CLASS)}
         />
       )}
       {unsupported && (
@@ -521,7 +533,7 @@ function RowActions({
             />
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="min-w-[184px]">
+        <DropdownMenuContent align="end" className="min-w-[calc(184px*var(--ui-space-scale,1))]">
           <DropdownMenuItem
             onClick={async (event) => {
               event.stopPropagation();
@@ -584,6 +596,10 @@ function useResultRowModel(
     support,
     unsupported,
     partial: row.isAvailableOnDevice && row.isPartialOnDevice,
+    downloading:
+      row.isAvailableOnDevice &&
+      row.isPartialOnDevice &&
+      row.isDownloadingOnDevice === true,
     onDevice: row.isAvailableOnDevice && !row.isPartialOnDevice,
     sizeLabel: sizeLabel !== "N/A" ? sizeLabel : null,
     taskLabel,
@@ -594,18 +610,34 @@ export const ResultCard = memo(function ResultCard({
   row,
   deviceType,
   isDataset,
+  showFormatDot = true,
   onSelect,
 }: {
   row: DiscoverRow;
   deviceType: string | null;
   isDataset: boolean;
+  showFormatDot?: boolean;
   onSelect: (id: string) => void;
 }) {
-  const { support, unsupported, partial, onDevice, sizeLabel, taskLabel } =
+  const {
+    support,
+    unsupported,
+    partial,
+    downloading,
+    onDevice,
+    sizeLabel,
+    taskLabel,
+  } =
     useResultRowModel(row, deviceType, isDataset);
-  const format = isDataset ? null : row.result.isGguf ? "gguf" : "checkpoint";
+  const format =
+    isDataset || !showFormatDot
+      ? null
+      : row.result.isGguf
+        ? "gguf"
+        : "checkpoint";
   const tip = buildRowStatusTooltip({
     partialRepoId: partial ? row.result.id : undefined,
+    downloading,
     unsupported,
     unsupportedReason: support?.reason ?? null,
     resourceLabel: isDataset ? "dataset" : "model",
@@ -658,6 +690,7 @@ export const ResultCard = memo(function ResultCard({
             gated={row.result.gated}
             isPrivate={row.result.private}
             partial={partial}
+            downloading={downloading}
             unsupported={unsupported}
             onDevice={onDevice}
           />
@@ -706,7 +739,7 @@ export const ResultCard = memo(function ResultCard({
   return (
     <Tooltip>
       <TooltipTrigger asChild={true}>{card}</TooltipTrigger>
-      <TooltipContent side="top" className="tooltip-compact max-w-[260px]">
+      <TooltipContent side="top" className="tooltip-compact max-w-[calc(260px*var(--ui-space-scale,1))]">
         {tip}
       </TooltipContent>
     </Tooltip>
@@ -717,19 +750,35 @@ export const ResultGridRow = memo(function ResultGridRow({
   row,
   deviceType,
   isDataset,
+  showFormatDot = true,
   onSelect,
 }: {
   row: DiscoverRow;
   deviceType: string | null;
   isDataset: boolean;
+  showFormatDot?: boolean;
   onSelect: (id: string) => void;
 }) {
-  const { support, unsupported, partial, onDevice, sizeLabel, taskLabel } =
+  const {
+    support,
+    unsupported,
+    partial,
+    downloading,
+    onDevice,
+    sizeLabel,
+    taskLabel,
+  } =
     useResultRowModel(row, deviceType, isDataset);
   const sizeDisplay = isDataset ? null : sizeLabel;
-  const format = isDataset ? null : row.result.isGguf ? "gguf" : "checkpoint";
+  const format =
+    isDataset || !showFormatDot
+      ? null
+      : row.result.isGguf
+        ? "gguf"
+        : "checkpoint";
   const tip = buildRowStatusTooltip({
     partialRepoId: partial ? row.result.id : undefined,
+    downloading,
     unsupported,
     unsupportedReason: support?.reason ?? null,
     resourceLabel: isDataset ? "dataset" : "model",
@@ -751,7 +800,7 @@ export const ResultGridRow = memo(function ResultGridRow({
           <TooltipContent
             side="top"
             align="start"
-            className="tooltip-compact max-w-[280px]"
+            className="tooltip-compact max-w-[calc(280px*var(--ui-space-scale,1))]"
           >
             {tip}
           </TooltipContent>
@@ -777,6 +826,7 @@ export const ResultGridRow = memo(function ResultGridRow({
                 gated={row.result.gated}
                 isPrivate={row.result.private}
                 partial={partial}
+                downloading={downloading}
                 unsupported={unsupported}
                 onDevice={onDevice}
               />
@@ -854,22 +904,31 @@ export const ResultSplitRow = memo(function ResultSplitRow({
   deviceType,
   isDataset,
   selected,
+  showFormatDot = true,
   onSelect,
 }: {
   row: DiscoverRow;
   deviceType: string | null;
   isDataset: boolean;
   selected: boolean;
+  showFormatDot?: boolean;
   onSelect: (id: string) => void;
 }) {
-  const { support, unsupported, partial, onDevice } = useResultRowModel(
+  const { support, unsupported, partial, downloading, onDevice } =
+    useResultRowModel(
     row,
     deviceType,
     isDataset,
   );
-  const format = isDataset ? null : row.result.isGguf ? "gguf" : "checkpoint";
+  const format =
+    isDataset || !showFormatDot
+      ? null
+      : row.result.isGguf
+        ? "gguf"
+        : "checkpoint";
   const tip = buildRowStatusTooltip({
     partialRepoId: partial ? row.result.id : undefined,
+    downloading,
     unsupported,
     unsupportedReason: support?.reason ?? null,
     resourceLabel: isDataset ? "dataset" : "model",
@@ -881,7 +940,7 @@ export const ResultSplitRow = memo(function ResultSplitRow({
       aria-current={selected || undefined}
       data-selected={selected || undefined}
       onClick={() => onSelect(row.id)}
-      className="group/row flex h-full w-full cursor-pointer items-center gap-2.5 rounded-[12px] px-2.5 text-left outline-none transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[selected]:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset dark:hover:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:data-[selected]:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]"
+      className="group/row flex h-full w-full cursor-pointer items-center gap-2.5 rounded-[12px] px-2.5 text-left outline-none transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[selected]:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset dark:hover:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:data-[selected]:bg-accent"
     >
       <OwnerAvatar
         owner={row.owner}
@@ -899,6 +958,7 @@ export const ResultSplitRow = memo(function ResultSplitRow({
             gated={row.result.gated}
             isPrivate={row.result.private}
             partial={partial}
+            downloading={downloading}
             unsupported={unsupported}
             onDevice={onDevice}
           />
@@ -913,7 +973,7 @@ export const ResultSplitRow = memo(function ResultSplitRow({
             <HugeiconsIcon
               icon={FavouriteIcon}
               strokeWidth={1.75}
-              className="size-[11px] shrink-0"
+              className="size-[calc(11px*var(--ui-space-scale,1))] shrink-0"
             />
             {formatCompact(row.result.likes)}
           </span>
@@ -921,7 +981,7 @@ export const ResultSplitRow = memo(function ResultSplitRow({
             <HugeiconsIcon
               icon={Download01Icon}
               strokeWidth={1.75}
-              className="size-[11px] shrink-0"
+              className="size-[calc(11px*var(--ui-space-scale,1))] shrink-0"
             />
             {formatCompact(row.result.downloads)}
           </span>
@@ -940,7 +1000,7 @@ export const ResultSplitRow = memo(function ResultSplitRow({
   return (
     <Tooltip>
       <TooltipTrigger asChild={true}>{node}</TooltipTrigger>
-      <TooltipContent side="top" className="tooltip-compact max-w-[260px]">
+      <TooltipContent side="top" className="tooltip-compact max-w-[calc(260px*var(--ui-space-scale,1))]">
         {tip}
       </TooltipContent>
     </Tooltip>

@@ -2,11 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export {
+  DOWNLOAD_KIND,
   DownloadProgressBar,
   downloadManager,
   finishExternalJob,
   jobKeyOf,
   pendingDrafterPresentation,
+  scopedVariant,
+  type StagedDownloadProgress,
   startExternalJob,
   subscribeJobListeners,
   type TransportMode,
@@ -24,6 +27,7 @@ export {
   useHubModelSearch,
 } from "./hooks/use-hub-model-search";
 export { useHubInfiniteScroll } from "./hooks/use-hub-infinite-scroll";
+export type { CapabilityKey } from "./lib/model-capabilities";
 export { useLatestRef } from "./hooks/use-latest-ref";
 export { useOnlineStatus } from "./hooks/use-online-status";
 export {

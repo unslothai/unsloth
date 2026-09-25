@@ -494,6 +494,11 @@ def _same_identity(recorded: str, current: str) -> bool:
         return False
     if _is_linux():
         return recorded.split(":", 1)[0] == current.split(":", 1)[0]
+    if sys.platform == "darwin":
+        # lstart alone, as on Linux: a framework python re-execs into Python.app, changing comm.
+        recorded_start, current_start = recorded.split()[:5], current.split()[:5]
+        if len(recorded_start) == 5 and len(current_start) == 5:
+            return recorded_start == current_start
     return recorded == current
 
 

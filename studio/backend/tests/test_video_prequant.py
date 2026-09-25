@@ -36,7 +36,9 @@ def _assume_the_restricted_load_is_available(monkeypatch):
     Without this, a machine with no (or a skewed) torchao turns every hosted-prequant decision
     below into "keep the dense weights". The capability is covered in test_diffusion_prequant.py."""
     import core.inference.diffusion_prequant as _pq
-    monkeypatch.setattr(_pq, "restricted_prequant_load_supported", lambda scheme = None: True)
+    monkeypatch.setattr(
+        _pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
+    )
 
 
 from core.inference.video_families import (
@@ -123,14 +125,13 @@ def test_both_h3_schemes_resolve_to_one_repo():
 # ── repo-root naming ─────────────────────────────────────────────────────────────
 @pytest.mark.parametrize(
     "scheme, expected",
-    # int8 is the ConvRot-rotated denoiser, which the family names explicitly; fp8 keeps the
-    # derived <Model>-<SCHEME>.pt.
-    [("int8", "MiniMax-H3-INT8-ConvRot.pt"), ("fp8", "MiniMax-H3-FP8.pt")],
+    # int8 is the ConvRot-rotated denoiser, which the family names explicitly; fp8 leads with the
+    # derived safetensors spelling, with <Model>-<SCHEME>.pt behind it.
+    [("int8", "MiniMax-H3-INT8-ConvRot.pt"), ("fp8", "MiniMax-H3-FP8.safetensors")],
 )
 def test_h3_resolves_the_primary_name_at_the_repo_root(scheme, expected):
-    # The name the hosted repo actually publishes. It has to be the PRIMARY, not the fallback:
-    # cached_checkpoint_path deliberately credits only the primary, so landing on the fallback
-    # would report a cached checkpoint as "this would have to download" and hand the pick to GGUF.
+    # The name the hosted repo actually publishes has to come FIRST in the chain, because that is
+    # the order the downloader walks: a name behind it is only reached after the one ahead 404s.
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
     src = resolve_prequant_source(fam, scheme)
     assert src.filename == expected
@@ -145,8 +146,13 @@ def test_h3_int8_keeps_the_plain_denoiser_as_its_fallback():
     # this one takes the rotated file when the repo has it.
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
     src = resolve_prequant_source(fam, "int8")
-    assert src.fallback_filename == "MiniMax-H3-INT8.pt"
-    assert "/" not in src.fallback_filename and "\\" not in src.fallback_filename
+    # The declared rotated name leads; the derived chain follows, safetensors before the pickle.
+    assert src.fallback_filenames == (
+        "MiniMax-H3-INT8.safetensors",
+        "MiniMax-H3-INT8.pt",
+        "transformer_int8.pt",
+    )
+    assert all("/" not in n and "\\" not in n for n in src.candidate_filenames)
 
 
 def test_the_h3_primary_name_is_what_memory_planning_credits():
@@ -183,10 +189,13 @@ def test_the_names_are_built_from_the_repo_and_the_scheme():
     # One repo serves both schemes, so the -FP8 suffix on the repo must be stripped and REPLACED by
     # the requested scheme rather than carried through.
     fam = _fam(prequant_repos = (("int8", "unsloth/Test-FP8"), ("fp8", "unsloth/Test-FP8")))
-    assert resolve_prequant_source(fam, "int8").filename == "Test-INT8.pt"
-    assert resolve_prequant_source(fam, "fp8").filename == "Test-FP8.pt"
-    # The legacy per-scheme name stays available for repos that have not been renamed.
-    assert resolve_prequant_source(fam, "int8").fallback_filename == "transformer_int8.pt"
+    assert resolve_prequant_source(fam, "int8").filename == "Test-INT8.safetensors"
+    assert resolve_prequant_source(fam, "fp8").filename == "Test-FP8.safetensors"
+    # The pickle spellings stay available for repos that host no safetensors artifact.
+    assert resolve_prequant_source(fam, "int8").fallback_filenames == (
+        "Test-INT8.pt",
+        "transformer_int8.pt",
+    )
 
 
 # ── task-keyed artifacts: one repo, one scheme, two denoiser partitions ──────────
@@ -230,7 +239,12 @@ def test_a_task_specific_artifact_gets_no_filename_fallback():
     )
     assert resolve_prequant_source(fam, "int8", task = "ref2va").fallback_filename is None
     # The task-agnostic pick keeps its fallback, unchanged.
-    assert resolve_prequant_source(fam, "int8").fallback_filename == "Test-INT8.pt"
+    assert resolve_prequant_source(fam, "int8").candidate_filenames == (
+        "Test-INT8-ConvRot.pt",
+        "Test-INT8.safetensors",
+        "Test-INT8.pt",
+        "transformer_int8.pt",
+    )
 
 
 def test_a_scheme_without_a_task_row_resolves_exactly_what_it_did_before():
@@ -295,9 +309,9 @@ def test_h3_keyframe_and_text_only_resolve_exactly_what_they_resolved_before(tas
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
     int8 = resolve_prequant_source(fam, "int8", task = task)
     assert int8.filename == "MiniMax-H3-INT8-ConvRot.pt"
-    assert int8.fallback_filename == "MiniMax-H3-INT8.pt"
+    assert "MiniMax-H3-INT8.pt" in int8.fallback_filenames
     fp8 = resolve_prequant_source(fam, "fp8", task = task)
-    assert fp8.filename == "MiniMax-H3-FP8.pt"
+    assert fp8.filename == "MiniMax-H3-FP8.safetensors"
 
 
 def test_the_h3_partition_task_matches_the_reference_workflow_name():
@@ -1160,3 +1174,44 @@ def test_an_unreadable_card_keeps_the_rotation(monkeypatch):
     monkeypatch.setattr(vid, "_h3_dense_denoiser_resident_bytes", lambda fam, **kw: (1, 1))
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: None)
     assert vid._h3_dense_denoiser_fits(vid._h3_dense_denoiser_resident_bytes(None), None) is False
+
+
+def test_unreadability_is_reported_only_when_it_is_what_kept_bfloat16(monkeypatch):
+    try:
+        import importlib
+        import importlib.metadata
+
+        importlib.metadata.version("torch")
+        assert hasattr(importlib.import_module("torch"), "Tensor")
+    except Exception:  # noqa: BLE001 - a stand-in torch in sys.modules is not an install
+        pytest.skip("needs torch installed")
+    fam, torch, vid = _shared_setup_1()
+    import core.inference.diffusion_prequant as pq
+
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
+    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda *a, **k: False)
+    fired = []
+
+    def ask(**over):
+        kw = dict(
+            target = None,
+            dtype = torch.bfloat16,
+            device = "cuda",
+            te_scheme = "int8",
+            task = "fl2va",
+            base_repo = fam.base_repo,
+            on_unreadable = lambda: fired.append(True),
+        )
+        kw.update(over)
+        return vid._h3_auto_denoiser_scheme(fam, **kw)
+
+    assert ask() is None and fired == [True]
+    fired.clear()
+    assert ask(speed_mode = "off") is None and fired == []
+    assert ask(base_repo = "someone/MiniMax-H3") is None and fired == []
+    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 10 * 1000**3)
+    assert ask() is None and fired == []
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda *a, **k: True)
+    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
+    assert ask() == vid.H3_AUTO_FALLBACK_SCHEME and fired == []

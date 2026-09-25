@@ -83,9 +83,9 @@ export function WebUpdateBanner({
           className={cn(
             // Wider than the other overlays: notes preview plus three buttons.
             positioned
-              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
+              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
               : cn(
-                  "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[448px] shrink-0 flex-col",
+                  "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] shrink-0 flex-col",
                   // Only rendered notes may shrink in the capped rail. Without
                   // them, shrink-0 keeps the compact card at its natural height.
                   // How far it may shrink is the surface's own content floor
@@ -106,7 +106,8 @@ export function WebUpdateBanner({
               yields. That is the floor the constant was approximating, except
               it is measured rather than guessed and it holds at every type
               size. */}
-          <div className="relative flex max-h-[calc(100dvh_-_2rem)] grow flex-col rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+          <div className="relative flex max-h-[calc(100dvh_-_2rem)] grow flex-col rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
+
             <button
               type="button"
               onClick={dismiss}

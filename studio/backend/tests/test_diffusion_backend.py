@@ -185,7 +185,7 @@ def _all_cached(monkeypatch):
 
 def test_gated_mirror_table_round_trips():
     """Both directions, exact case: canonical_base must hand back a real repo id."""
-    assert len(_MIRROR_PAIRS) == 24
+    assert len(_MIRROR_PAIRS) == 25
     for upstream, mirror in _MIRROR_PAIRS:
         assert mirror_repo(upstream) == mirror
         assert canonical_base(mirror) == upstream
@@ -208,7 +208,7 @@ def test_only_the_genuinely_gated_half_reads_as_gated():
     is mirrored, and which the Hub serves anonymously.
     """
     assert len(_GATED_MIRROR_PAIRS) == 12
-    assert len(_UNGATED_MIRROR_PAIRS) == 12
+    assert len(_UNGATED_MIRROR_PAIRS) == 13
     for upstream, _mirror in _GATED_MIRROR_PAIRS:
         assert upstream_is_gated(upstream), upstream
         assert upstream_is_gated(upstream.upper()), upstream
@@ -231,6 +231,12 @@ def test_no_mirror_is_a_companion_only_repo():
     companions = sd_cpp_companion_only_repo_ids()
     for _upstream, mirror in _MIRROR_PAIRS:
         assert mirror.lower() not in companions, mirror
+
+
+# Vendor bases the catalog offers before their unsloth mirror exists on the Hub. A mirror row for a
+# repo that is not there would 404 every fetch it redirects, so the table cannot lead the upload;
+# this names the gap instead of letting the check below go red on every PR until it closes.
+_MIRRORS_NOT_YET_PUBLISHED: frozenset[str] = frozenset()
 
 
 def test_every_third_party_bf16_pipeline_the_catalog_offers_is_mirrored():
@@ -261,8 +267,18 @@ def test_every_third_party_bf16_pipeline_the_catalog_offers_is_mirrored():
         if not repo.lower().startswith("unsloth/")
         and "hunyuan" not in repo.lower()
         and repo.lower() not in mirrored
+        and repo.lower() not in _MIRRORS_NOT_YET_PUBLISHED
     )
     assert not missing, f"catalog offers these vendor bases with no unsloth mirror: {missing}"
+    # Each pending entry has to still be pending and still offered, so the exception cannot
+    # outlive the gap it names.
+    for repo in _MIRRORS_NOT_YET_PUBLISHED:
+        assert (
+            repo not in mirrored
+        ), f"{repo} is in the mirror table now; drop it from _MIRRORS_NOT_YET_PUBLISHED"
+        assert repo in {
+            o.lower() for o in offered
+        }, f"the catalog no longer offers {repo}; drop it from _MIRRORS_NOT_YET_PUBLISHED"
 
 
 def test_the_qwen_2512_mirror_covers_the_card_tag_route(monkeypatch):
@@ -303,6 +319,22 @@ def test_prefer_ungated_mirror_declines(monkeypatch):
     # 2. already on disk: switching would re-pull tens of GiB
     _all_cached(monkeypatch)
     assert prefer_ungated_mirror(gated) == gated
+
+
+def test_the_opt_out_maps_a_direct_mirror_pick_back_to_its_upstream(monkeypatch):
+    """The picker lists mirror ids, so the opt-out must also undo a mirror picked directly."""
+    mirror, upstream = "unsloth/FLUX.1-dev", "black-forest-labs/FLUX.1-dev"
+    _no_cache(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
+    assert prefer_ungated_mirror(mirror) == upstream
+    # Even a cached mirror: the estimator lists it on the Hub before loading.
+    _all_cached(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
+    for files in (None, [], ["model_index.json"], ["vae/diffusion_pytorch_model.safetensors"]):
+        assert prefer_ungated_mirror(mirror, files = files) == upstream
+    # Without the opt-out a mirror pick is fetched as is.
+    _no_cache(monkeypatch)
+    assert prefer_ungated_mirror(mirror) == mirror
 
 
 def test_a_local_base_directory_is_never_mirrored(monkeypatch, tmp_path):
@@ -1161,6 +1193,36 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
     assert status_off["resolved"]["speed_mode"]["value"] == "off"
     for p in ("a", "b", "c"):
         backend.generate(prompt = p)
+    assert backend.status()["speed_mode"] == "off"
+    backend.unload()
+
+
+def test_deferred_speed_stays_off_when_only_an_explicit_tier_may_compile(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion as dmod
+
+    seen = []
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
+    monkeypatch.setattr(
+        dmod, "fp16_compile_explicit_only", lambda target: seen.append(target) or True
+    )
+    engaged = []
+    monkeypatch.setattr(
+        DiffusionBackend, "_engage_deferred_speed", lambda self, state: engaged.append(1)
+    )
+    monkeypatch.setattr(dmod.compile_cache, "begin", lambda **k: None)
+
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    status = _load_into(
+        backend, tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image"
+    )
+    assert seen
+    assert status["resolved"]["speed_mode"]["value"] == "off"
+    for p in ("one", "two", "three"):
+        backend.generate(prompt = p)
+    assert engaged == []
     assert backend.status()["speed_mode"] == "off"
     backend.unload()
 
@@ -5686,7 +5748,7 @@ _HOSTED_PREQUANT = types.SimpleNamespace(
     kind = "repo",
     location = "unsloth/Z-Image-Turbo-FP8",
     filename = "Z-Image-Turbo-FP8.pt",
-    fallback_filename = "transformer_fp8.pt",
+    fallback_filenames = ("transformer_fp8.pt",),
 )
 
 
@@ -6660,7 +6722,7 @@ def test_plan_memory_sizes_a_pipeline_load_from_the_other_root_snapshot(monkeypa
     # Same hole on the full-pipeline branch, where the whole repo IS the base: _cache_bytes walks
     # the live root's blobs, so a repo served from the other root sizes as unknown and a 4 GiB
     # pipeline that does not fit stays resident.
-    from core.inference.diffusion_memory import OFFLOAD_MODEL, OFFLOAD_NONE
+    from core.inference.diffusion_memory import OFFLOAD_GROUP, OFFLOAD_NONE
 
     snapshot = _other_root_base_snapshot(tmp_path, monkeypatch)
     target = _small_card(monkeypatch)
@@ -6680,7 +6742,12 @@ def test_plan_memory_sizes_a_pipeline_load_from_the_other_root_snapshot(monkeypa
     plan = _plan(base_local_dir = str(snapshot))
     # A pipeline load keeps transformer/: 4096 + 150 + 50 = 4296 MiB, well past the 2509 MiB margin.
     assert plan.estimates["model_dense_mib"] == 4296
-    assert plan.offload_policy == OFFLOAD_MODEL
+    # Group, not whole-module: this branch now hands the planner the companion split too, so the
+    # 2348 MiB group floor (200 companions + 100 headroom + 2048 overhead) is sized and fits. The
+    # assertion read OFFLOAD_MODEL while that split was None, which made every group tier fail the
+    # `is not None` check rather than lose on its arithmetic.
+    assert plan.estimates["companion_dense_mib"] == 200
+    assert plan.offload_policy == OFFLOAD_GROUP
 
 
 def test_plan_memory_keeps_companions_a_partial_staged_snapshot_omits(monkeypatch, tmp_path):
@@ -7633,6 +7700,130 @@ def test_download_plan_omits_a_cached_gguf_but_keeps_missing_companions(monkeypa
     assert plan["checkpoint_bytes"] == 7 * GB
 
 
+def test_download_plan_stages_but_does_not_count_a_file_an_older_snapshot_holds(monkeypatch):
+    """README-only commit on a no-symlink cache: the GGUF is still staged but counts no bytes."""
+    _fake_flux_hub(monkeypatch)
+    _no_cache(monkeypatch)
+    asked = []
+
+    def reusable(repo_id, names, revision, declared_sizes, hf_token):
+        asked.append((repo_id, tuple(names)))
+        return {"flux1-dev-Q4_K_M.gguf"} if repo_id == "unsloth/FLUX.1-dev-GGUF" else set()
+
+    monkeypatch.setattr(DiffusionBackend, "_reusable_from_older_snapshot", staticmethod(reusable))
+
+    plan = _flux_download_plan()
+
+    checkpoint, base = plan["entries"]
+    assert checkpoint["repo_id"] == "unsloth/FLUX.1-dev-GGUF"
+    assert checkpoint["files"] == ["flux1-dev-Q4_K_M.gguf"]
+    assert checkpoint["bytes"] == 0
+    assert checkpoint["checkpoint"] is True
+    assert base["bytes"] > 0
+    assert plan["total_bytes"] == base["bytes"]
+    assert plan["checkpoint_bytes"] == 7 * GB
+    assert ("unsloth/FLUX.1-dev-GGUF", ("flux1-dev-Q4_K_M.gguf",)) in asked
+
+
+def test_reusable_from_older_snapshot_reads_the_live_cache_without_hashing(monkeypatch, tmp_path):
+    from hub.utils import snapshot_reuse
+
+    old, new = "1" * 40, "2" * 40
+    same, changed = b"s" * 4096, b"c" * 4096
+    snap = tmp_path / "models--unsloth--Qwen-Image-2.1-FP8" / "snapshots" / old
+    (snap / "vae").mkdir(parents = True)
+    (snap / "text_encoder.safetensors").write_bytes(same)
+    (snap / "vae" / "vae.safetensors").write_bytes(changed)
+    digests = {
+        old: {"text_encoder.safetensors": "a" * 64, "vae/vae.safetensors": "b" * 64},
+        new: {"text_encoder.safetensors": "a" * 64, "vae/vae.safetensors": "c" * 64},
+    }
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        snapshot_reuse,
+        "hub_remote_digests",
+        lambda repo_type, repo_id, token: lambda commit, paths: {
+            p: digests[commit][p] for p in paths
+        },
+    )
+    monkeypatch.setattr(snapshot_reuse, "file_digest", lambda *a, **k: pytest.fail("plan hashed"))
+
+    found = DiffusionBackend._reusable_from_older_snapshot(
+        "unsloth/Qwen-Image-2.1-FP8",
+        ["text_encoder.safetensors", "vae/vae.safetensors"],
+        new,
+        {"text_encoder.safetensors": len(same), "vae/vae.safetensors": len(changed)},
+        None,
+    )
+
+    assert found == {"text_encoder.safetensors"}
+    assert not (snap.parent / new).exists()
+    assert (
+        DiffusionBackend._reusable_from_older_snapshot(
+            "unsloth/Qwen-Image-2.1-FP8", ["text_encoder.safetensors"], None, {}, None
+        )
+        == set()
+    )
+
+
+def test_reusable_from_older_snapshot_targets_the_main_ref_when_unpinned(monkeypatch, tmp_path):
+    from hub.utils import snapshot_reuse
+
+    old, new = "1" * 40, "2" * 40
+    encoder = b"s" * 4096
+    repo = tmp_path / "models--unsloth--Qwen-Image-2.1-FP8"
+    (repo / "snapshots" / old).mkdir(parents = True)
+    (repo / "snapshots" / new / "vae").mkdir(parents = True)
+    (repo / "snapshots" / old / "te.safetensors").write_bytes(encoder)
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text(new)
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path))
+    head = {"main": "a" * 64}
+    asked = []
+
+    def digests(repo_type, repo_id, token):
+        def lookup(commit, paths):
+            asked.append(commit)
+            return {p: head.get(commit, "a" * 64) for p in paths}
+
+        return lookup
+
+    monkeypatch.setattr(snapshot_reuse, "hub_remote_digests", digests)
+
+    def reusable():
+        return DiffusionBackend._reusable_from_older_snapshot(
+            "unsloth/Qwen-Image-2.1-FP8",
+            ["te.safetensors"],
+            None,
+            {"te.safetensors": len(encoder)},
+            None,
+        )
+
+    assert reusable() == {"te.safetensors"}
+    assert asked[0] == "main"  # the worker fetches the Hub head, not the cached ref
+    head["main"] = "b" * 64
+    assert reusable() == set()
+
+
+def test_reusable_from_older_snapshot_keeps_the_anonymous_token_sentinel(monkeypatch, tmp_path):
+    from hub.utils import snapshot_reuse
+
+    tokens = []
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        snapshot_reuse,
+        "hub_remote_digests",
+        lambda repo_type, repo_id, token: tokens.append(token) or (lambda commit, paths: {}),
+    )
+
+    for token in (False, "", None, "hf_x"):
+        DiffusionBackend._reusable_from_older_snapshot(
+            "unsloth/Qwen-Image-2.1-FP8", ["te.safetensors"], "2" * 40, {"te.safetensors": 1}, token
+        )
+
+    assert tokens == [False, None, None, "hf_x"]
+
+
 def test_download_plan_is_empty_when_every_required_file_is_cached(monkeypatch):
     _fake_flux_hub(monkeypatch)
     _all_cached(monkeypatch)
@@ -8171,7 +8362,7 @@ def test_download_plan_counts_a_cached_lower_auto_prequant(monkeypatch):
         kind = "repo",
         location = "unsloth/Qwen-Image-FP8",
         filename = "Qwen-Image-INT8.pt",
-        fallback_filename = "transformer_int8.pt",
+        fallback_filenames = ("transformer_int8.pt",),
     )
     _fake_hf_api(
         monkeypatch,
@@ -8193,21 +8384,39 @@ def test_download_plan_counts_a_cached_lower_auto_prequant(monkeypatch):
         lambda fam, scheme, **kw: source if scheme == "int8" else None,
     )
     monkeypatch.setattr(dmod, "prequant_checkpoint_cached", lambda *a, **k: True)
-
-    plan = DiffusionBackend().download_plan(
-        "unsloth/Qwen-Image-GGUF",
-        gguf_filename = "Qwen-Image-Q4_K_M.gguf",
-        text_encoder_quant = "off",
-    )
-    baseline = DiffusionBackend().download_plan(
-        "unsloth/Qwen-Image-GGUF",
-        gguf_filename = "Qwen-Image-Q4_K_M.gguf",
-        text_encoder_quant = "off",
-        speed_mode = "off",
+    # Whether this install can OPEN an int8 pickle is its own question (#11394): the plan skips a
+    # name it cannot read. torchao 0.18 no longer carries the int8 pickle constructors, so leaving
+    # it to the installed torchao made this test answer that question instead of the one it asks.
+    readable = {"answer": True}
+    monkeypatch.setattr(
+        "core.inference.diffusion_prequant.restricted_prequant_load_supported",
+        lambda *a, **k: readable["answer"],
     )
 
+    def plans():
+        plan = DiffusionBackend().download_plan(
+            "unsloth/Qwen-Image-GGUF",
+            gguf_filename = "Qwen-Image-Q4_K_M.gguf",
+            text_encoder_quant = "off",
+        )
+        baseline = DiffusionBackend().download_plan(
+            "unsloth/Qwen-Image-GGUF",
+            gguf_filename = "Qwen-Image-Q4_K_M.gguf",
+            text_encoder_quant = "off",
+            speed_mode = "off",
+        )
+        return plan, baseline
+
+    plan, baseline = plans()
     assert plan["required_bytes"] - baseline["required_bytes"] == 6 * GB
     assert any(source.filename in entry["files"] for entry in plan["entries"])
+
+    # And the converse, so the pin above cannot hide the gate: an artifact this install cannot
+    # open is not budgeted.
+    readable["answer"] = False
+    plan, baseline = plans()
+    assert plan["required_bytes"] == baseline["required_bytes"]
+    assert not any(source.filename in entry["files"] for entry in plan["entries"])
 
 
 def test_download_plan_omits_the_prequant_under_a_definite_offload_policy(monkeypatch):
@@ -8483,6 +8692,30 @@ def test_a_raising_unload_still_drains_the_teardown_fence(fake_runtime, tmp_path
     monkeypatch.setattr(diffusion_module, "clear_gpu_cache", real_clear)
     _load_into(backend, tmp_path)
     assert backend.generate(prompt = "after", steps = 2)["images"]
+
+
+def test_unload_returns_freed_host_pages_after_the_gpu_cache(fake_runtime, tmp_path, monkeypatch):
+    # The trim must run after clear_gpu_cache() (which runs gc) and with the state gone.
+    from core.inference import diffusion as diffusion_module
+
+    backend = _loaded_backend(tmp_path)
+    order = []
+    real_clear = diffusion_module.clear_gpu_cache
+
+    def _clear(*args, **kwargs):
+        order.append("clear")
+        return real_clear(*args, **kwargs)
+
+    def _trim(logger = None):
+        order.append(("trim", backend._state is None))
+        return True
+
+    monkeypatch.setattr(diffusion_module, "clear_gpu_cache", _clear)
+    monkeypatch.setattr(diffusion_module, "reclaim_host_memory", _trim)
+    assert backend.unload()["loaded"] is False
+    assert order == ["clear", ("trim", True)]
+    backend.unload()
+    assert order == ["clear", ("trim", True)]
 
 
 class _RecordingGate(threading.Event):
@@ -11622,7 +11855,7 @@ def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypa
         kind = "repo",
         location = "unsloth/some-prequant",
         filename = "transformer_fp8.safetensors",
-        fallback_filename = "transformer.fp8.safetensors",
+        fallback_filenames = ("transformer.fp8.safetensors",),
     )
     monkeypatch.setattr(diffusion_mod, "usable_prequant_source", lambda *a, **k: source)
     monkeypatch.setattr(diffusion_mod, "select_transformer_quant_scheme", lambda *a, **k: "fp8")
@@ -11649,3 +11882,91 @@ def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypa
         failures
     ), "a configured prequant that is not in its repo left the plan calling itself complete"
     assert "prequant artifact missing" in str(failures[0])
+
+
+def test_unload_drains_pinned_host_memory_after_the_pipeline_is_gone(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion as diffusion_module
+
+    backend = _loaded_backend(tmp_path)
+    calls: list = []
+    monkeypatch.setattr(
+        diffusion_module, "clear_gpu_cache", lambda: calls.append(("clear", backend._state))
+    )
+    monkeypatch.setattr(
+        diffusion_module,
+        "release_pinned_host_memory",
+        lambda: calls.append(("host", backend._state)),
+    )
+    backend.unload()
+    assert calls == [("clear", None), ("host", None)]
+
+
+def test_unload_drains_pinned_host_memory_even_when_gpu_cleanup_raises(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion as diffusion_module
+
+    backend = _loaded_backend(tmp_path)
+    drained: list = []
+
+    def _sticky():
+        raise RuntimeError("CUDA error: an illegal memory access was encountered")
+
+    monkeypatch.setattr(diffusion_module, "clear_gpu_cache", _sticky)
+    monkeypatch.setattr(
+        diffusion_module, "release_pinned_host_memory", lambda: drained.append(True)
+    )
+    with pytest.raises(RuntimeError, match = "illegal memory access"):
+        backend.unload()
+    assert drained == [True]
+
+
+def test_status_reports_cuda_graph_off_once_every_armed_step_ran_eager():
+    backend = DiffusionBackend()
+    handle = types.SimpleNamespace(
+        cache = {},
+        stats = {"captures": 0, "replays": 0, "eager_calls": 0, "refused_object": 0},
+        poisoned = False,
+        capture_error = None,
+    )
+    resolved = {
+        "cuda_graph": {
+            "value": "on",
+            "requested": None,
+            "source": "auto",
+            "status": "applied",
+            "reason": "denoiser step captured per input shape, replayed bit-identically",
+        }
+    }
+    backend._state = _LoadState(
+        pipe = object(),
+        family = detect_family("unsloth/Z-Image-GGUF"),
+        repo_id = "r",
+        base_repo = "b",
+        device = "cuda",
+        dtype = "bfloat16",
+        cpu_offload = False,
+        speed_optims = ("compiled", "cuda_graph"),
+        resolved = resolved,
+        cuda_graphs = (handle,),
+    )
+
+    st = backend.status()
+    assert st["resolved"]["cuda_graph"]["value"] == "on"
+    assert st["speed_optims"] == ["compiled", "cuda_graph"]
+
+    handle.stats.update(eager_calls = 25, refused_object = 25)
+    st = backend.status()
+    assert st["resolved"]["cuda_graph"]["value"] == "off"
+    assert st["resolved"]["cuda_graph"]["reason"] == (
+        "armed, but all 25 denoiser call(s) so far ran eager (25 with a non-tensor argument)"
+    )
+    assert st["speed_optims"] == ["compiled"]
+    assert resolved["cuda_graph"]["value"] == "on"
+
+    handle.stats.update(captures = 1, replays = 24)
+    st = backend.status()
+    assert st["resolved"]["cuda_graph"]["value"] == "on"
+    assert st["speed_optims"] == ["compiled", "cuda_graph"]

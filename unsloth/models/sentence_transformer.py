@@ -23,6 +23,7 @@ from ._utils import (
     resolve_model_class,
     resolve_encoder_attention_implementation,
     maybe_prefetch_hf_snapshot,
+    _mark_full_finetuning,
 )
 import inspect
 import json
@@ -68,6 +69,34 @@ import shutil
 
 
 _CREATE_TRANSFORMER_MODULE_LOCK = threading.RLock()
+
+
+def _ensure_sentence_attention_masks(model):
+    """Match Gemma3's advertised backend to its patched SDPA implementation."""
+    config = getattr(model, "config", None)
+    if getattr(config, "model_type", None) != "gemma3_text" or "flash" not in str(
+        getattr(config, "_attn_implementation", "")
+    ):
+        return False
+    # Zoo's Gemma3 attention preserves FP32 Q/K but consumes SDPA masks. With
+    # a Flash backend, Transformers omits those masks and ST can flatten rows;
+    # that implementation does not consume the resulting sequence boundaries.
+    patched = any(
+        getattr(module.forward, "__module__", "").startswith("unsloth_zoo.temporary_patches.gemma")
+        for module in model.modules()
+        if type(module).__name__ == "Gemma3Attention"
+    )
+    if patched:
+        if hasattr(model, "set_attn_implementation"):
+            model.set_attn_implementation("sdpa")
+        else:
+            config._attn_implementation = "sdpa"
+        logging.warning(
+            "Unsloth: Using SDPA for patched Gemma3 sentence attention to preserve "
+            "padding, sequence boundaries and bidirectional window masks."
+        )
+        return True
+    return False
 
 
 def _normalize_save_method(save_method):
@@ -1523,6 +1552,11 @@ class FastSentenceTransformer(FastModel):
                 st_kwargs["cache_folder"] = _st_cache
 
             st_model = SentenceTransformer(model_name, **st_kwargs)
+            if _ensure_sentence_attention_masks(
+                getattr(st_model[0], "auto_model", None)
+            ) and hasattr(st_model[0], "unpad_inputs"):
+                # Refresh ST's cached capability decision after changing the backend.
+                st_model[0].unpad_inputs = st_model[0].unpad_inputs
             return st_model
 
         if "auto_model" not in kwargs:
@@ -1622,6 +1656,7 @@ class FastSentenceTransformer(FastModel):
             )
 
             st_model._unsloth_fast_encoder = True
+            _mark_full_finetuning(st_model[0].auto_model, full_finetuning)
             st_model._compile_mode = compile_mode
             st_model._dtype = dtype
             st_model._load_in_4bit = load_in_4bit
@@ -1793,6 +1828,8 @@ class FastSentenceTransformer(FastModel):
             )
         finally:
             os.environ["UNSLOTH_WARN_UNINITIALIZED"] = old_environ
+
+        _ensure_sentence_attention_masks(model)
 
         from sentence_transformers import SentenceTransformer
 

@@ -24,6 +24,7 @@ from loggers import get_logger
 import shutil
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -471,10 +472,13 @@ from core.inference.tool_loop_controller import (
     tool_call_limit_nudge,
 )
 from state.tool_approvals import (
+    DECISION_EXPIRED,
+    TOOL_APPROVAL_EXPIRED_MESSAGE,
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
     begin_tool_decision,
     new_approval_id,
+    decision_reason,
     wait_tool_decision,
 )
 from utils.paths.path_utils import _is_wsl, is_appledouble_metadata
@@ -4456,6 +4460,20 @@ def _swa_full_from_args_or_env(
     return value in _LLAMA_ARG_TRUE_VALUES
 
 
+def _reasoning_from_env(env: Mapping[str, str]) -> Optional[bool]:
+    value = env.get("LLAMA_ARG_REASONING")
+    if value in _LLAMA_ARG_TRUE_VALUES:
+        return True
+    if value in _LLAMA_ARG_FALSE_VALUES:
+        return False
+    return None
+
+
+def _reasoning_effort_from_env(env: Mapping[str, str]) -> Optional[str]:
+    value = env.get("LLAMA_ARG_REASONING_EFFORT")
+    return None if value == "default" else value
+
+
 def _env_asks_for_the_native_context(env: Optional[Mapping[str, str]] = None) -> bool:
     """Whether an inherited LLAMA_ARG_CTX_SIZE is 0.
 
@@ -6384,9 +6402,6 @@ def _build_launch_reasoning_args(
     tools/server/server-common.cpp then overrides from the merged kwarg anyway. If
     llama.cpp stops writing that kwarg, or stops letting it override, this becomes a
     behaviour change rather than a substitution.
-
-    An exported LLAMA_ARG_REASONING is still overridden by the command line, exactly as
-    the kwargs channel overrides it on main; honouring it is #8521.
     """
     remaining = dict(reasoning_kwargs)
     args: list[str] = []
@@ -6982,6 +6997,12 @@ def _extra_args_have_tensor_split(
         if str(token).split("=", 1)[0] in ("--tensor-split", "-ts", "--tensor_split"):
             return True
     return bool(str((env or {}).get("LLAMA_ARG_TENSOR_SPLIT", "")).strip())
+
+
+@functools.lru_cache(maxsize = 1)
+def _count_ssl_context() -> ssl.SSLContext:
+    # httpx loads the CA bundle per Client (~15 ms); admission counts once per chat request.
+    return ssl.create_default_context()
 
 
 class LlamaCppBackend:
@@ -7853,7 +7874,11 @@ class LlamaCppBackend:
     def reasoning_default(self) -> bool:
         return self._reasoning_default
 
-    def _reasoning_kwargs(self, enable_thinking: bool) -> dict:
+    def _reasoning_kwargs(
+        self,
+        enable_thinking: bool,
+        effort: Optional[str] = None,
+    ) -> dict:
         if self._reasoning_style == "enable_thinking_effort":
             # GLM-5.2-style: enable_thinking is the on/off gate; when on, leave
             # the template's default effort (max) in place.
@@ -7861,7 +7886,7 @@ class LlamaCppBackend:
         if self._reasoning_style == "reasoning_effort":
             return _coerce_reasoning_effort(
                 getattr(self, "_architecture", None),
-                {"reasoning_effort": "high" if enable_thinking else "low"},
+                {"reasoning_effort": effort or ("high" if enable_thinking else "low")},
             )
         return {"enable_thinking": enable_thinking}
 
@@ -15428,9 +15453,17 @@ class LlamaCppBackend:
             ]:
                 if os.path.isdir(cuda_lib):
                     lib_dirs.append(cuda_lib)
+
+            # Vendored dirs go last: rescue only, never displace a runtime already found.
+            from utils.llama_cpp_freshness import read_install_marker
+            from utils.prebuilt.runtime_libs import vendored_cuda_runtime_dirs
+
+            marker_binary = str(_resolve_llama_binary(binary))
+            vendored_cuda_dirs = vendored_cuda_runtime_dirs(read_install_marker(marker_binary))
             existing_ld = env.get("LD_LIBRARY_PATH", "")
-            new_ld = ":".join(lib_dirs)
-            env["LD_LIBRARY_PATH"] = f"{new_ld}:{existing_ld}" if existing_ld else new_ld
+            env["LD_LIBRARY_PATH"] = ":".join(
+                path for path in [*lib_dirs, existing_ld, *vendored_cuda_dirs] if path
+            )
 
         return env
 
@@ -27093,8 +27126,17 @@ class LlamaCppBackend:
                             # <= 9, not < 9: 9B is the top of the Small tier, so it is off too.
                             if size_b <= 9:
                                 thinking_default = False
-                    self._reasoning_default = thinking_default
-                    reasoning_kw = self._reasoning_kwargs(thinking_default)
+                    # argv beats the env `unsloth start` pins these through, so repeat it.
+                    _env_reasoning = _reasoning_from_env(env)
+                    if _env_reasoning is not None:
+                        thinking_default = _env_reasoning
+                    reasoning_kw = self._reasoning_kwargs(
+                        thinking_default, _reasoning_effort_from_env(env)
+                    )
+                    # An effort ladder thinks at every level but "none" (Inkling: 0), low included.
+                    self._reasoning_default = reasoning_kw.get(
+                        "enable_thinking", reasoning_kw.get("reasoning_effort") not in ("none", 0)
+                    )
                     # preserve_thinking is independent of the thinking gate.
                     # Qwen3.8 defaults it on; Qwen3.6, Gemma 4, and every other
                     # supporting family keep the existing off default. The
@@ -36979,6 +37021,9 @@ class LlamaCppBackend:
                             if decision_slot is not None
                             else None
                         )
+                        # The slot is where the waiter says WHY: the user's refusal, or an approval
+                        # nobody answered. Read before decision_slot is dropped in the deny branch.
+                        _decision_reason = decision_reason(decision_slot)
                         if _decision is not None and _decision != "deny":
                             # Approved: now it really is running.
                             yield {"type": "status", "text": decision.status_text}
@@ -36986,17 +37031,25 @@ class LlamaCppBackend:
                             decision_slot = None
                             _forced_choice_resolved = True
                             resolved_provisional_tool_call_ids.add(decision.tool_call_id)
+                            # An approval nobody answered is not the user's decision, and this
+                            # string is the only account of the call both the model and the
+                            # reopened card get: the buttons are gone by the time it lands.
+                            _denied_text = (
+                                TOOL_APPROVAL_EXPIRED_MESSAGE
+                                if _decision_reason == DECISION_EXPIRED
+                                else TOOL_REJECTED_MESSAGE
+                            )
                             yield {
                                 "type": "tool_end",
                                 "tool_name": decision.tool_name,
                                 "tool_call_id": decision.tool_call_id,
-                                "result": TOOL_REJECTED_MESSAGE,
+                                "result": _denied_text,
                                 "provenance": decision.provenance,
                             }
                             denied_message = {
                                 "role": "tool",
                                 "name": decision.tool_name,
-                                "content": TOOL_REJECTED_MESSAGE,
+                                "content": _denied_text,
                             }
                             if decision.tool_call_id:
                                 denied_message["tool_call_id"] = decision.tool_call_id
@@ -38801,6 +38854,7 @@ class LlamaCppBackend:
         chat_template_kwargs = None,
         continue_final_message: bool = False,
         should_abort = None,
+        prefer_native: bool = False,
     ) -> int:
         """Count prompt tokens for a chat request via llama-server.
 
@@ -38814,6 +38868,8 @@ class LlamaCppBackend:
         ``should_abort`` is polled between the two llama-server calls. Admission is the
         caller's job; this only stops a count that was admitted while idle from spending its
         second round trip once the answer stopped mattering. Raises when it fires.
+
+        ``prefer_native`` tries /v1/chat/completions/input_tokens first (one round trip).
         """
         if not self.is_loaded:
             if strict:
@@ -38862,7 +38918,12 @@ class LlamaCppBackend:
         tools = neutralize_tool_descriptions(tools, None, _profile)
 
         try:
-            with httpx.Client(timeout = 10, headers = self._auth_headers, trust_env = False) as client:
+            with httpx.Client(
+                timeout = 10,
+                headers = self._auth_headers,
+                trust_env = False,
+                verify = _count_ssl_context(),
+            ) as client:
 
                 def _tokenize(text: str) -> int:
                     r = client.post(
@@ -38909,6 +38970,22 @@ class LlamaCppBackend:
                     if continue_final_message:
                         template_body["continue_final_message"] = True
                         template_body["add_generation_prompt"] = False
+                    if prefer_native:
+                        if should_abort is not None and should_abort():
+                            raise CountAborted()
+                        try:
+                            native = client.post(
+                                f"{self.base_url}/v1/chat/completions/input_tokens",
+                                json = template_body,
+                            )
+                            if native.status_code == 200:
+                                count = native.json().get("input_tokens")
+                                if type(count) is int and count > 0:
+                                    return count
+                        except Exception:
+                            pass
+                        if should_abort is not None and should_abort():
+                            raise CountAborted()
                     resp = client.post(
                         f"{self.base_url}/apply-template",
                         json = template_body,

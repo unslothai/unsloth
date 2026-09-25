@@ -77,7 +77,8 @@ export function ProjectSwitcher({
             className="size-icon shrink-0 text-foreground/70"
           />
           <span className="flex min-w-0 flex-1 items-baseline">
-            <span className="min-w-0 flex max-w-[150px] flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-white">
+            {/* Block: text-overflow skips flex containers, so the ellipsis never showed. */}
+            <span className="block min-w-0 max-w-[calc(150px*var(--ui-space-scale,1))] flex-1 truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground">
               {label}
             </span>
           </span>

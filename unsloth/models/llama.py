@@ -43,6 +43,7 @@ from .loader_utils import (
     planner_quantization_kwargs,
     requested_device_map,
     resolve_unsloth_device_map,
+    warn_if_bitsandbytes_quantized_nothing,
 )
 from ..utils.packing import (
     get_packed_info_from_kwargs,
@@ -2750,11 +2751,19 @@ class FastLlamaModel:
                         and not _head.weight.is_floating_point()
                     ):
                         _head.to(dtype)
+                warn_if_bitsandbytes_quantized_nothing(
+                    model, kwargs.get("quantization_config", None), model_name
+                )
                 # Attach dispatch hooks for bnb multi-device loads. The hooks stand aside only when vLLM
                 # owns the weights, which it never does here: vLLM has no classification head, so this
                 # branch loaded the weights in-process even though the caller asked for fast_inference.
                 from unsloth.models.vision import _attach_bnb_multidevice_hooks
+                from unsloth.models._remote_code_buffers import (
+                    restore_remote_code_non_persistent_buffers,
+                )
 
+                # transformers 5 leaves remote code's non-persistent buffers (RoPE inv_freq) uninitialised.
+                restore_remote_code_non_persistent_buffers(model)
                 _attach_bnb_multidevice_hooks(
                     model,
                     load_in_4bit = load_in_4bit,
@@ -2773,6 +2782,7 @@ class FastLlamaModel:
                     subfolder = kwargs.get("subfolder"),
                     cache_dir = kwargs.get("cache_dir"),
                     variant = kwargs.get("variant"),
+                    dtype = dtype,
                 )
             elif not fast_inference:
                 if user_config is not None:
@@ -2801,8 +2811,16 @@ class FastLlamaModel:
                         revision = revision,
                         **kwargs,
                     )
+                warn_if_bitsandbytes_quantized_nothing(
+                    model, kwargs.get("quantization_config", None), model_name
+                )
                 from unsloth.models.vision import _attach_bnb_multidevice_hooks
+                from unsloth.models._remote_code_buffers import (
+                    restore_remote_code_non_persistent_buffers,
+                )
 
+                # transformers 5 leaves remote code's non-persistent buffers (RoPE inv_freq) uninitialised.
+                restore_remote_code_non_persistent_buffers(model)
                 _attach_bnb_multidevice_hooks(
                     model,
                     load_in_4bit = load_in_4bit,
@@ -2821,6 +2839,7 @@ class FastLlamaModel:
                     subfolder = kwargs.get("subfolder"),
                     cache_dir = kwargs.get("cache_dir"),
                     variant = kwargs.get("variant"),
+                    dtype = dtype,
                 )
                 model.fast_generate = make_fast_generate_wrapper(model.generate)
                 model.fast_generate_batches = None

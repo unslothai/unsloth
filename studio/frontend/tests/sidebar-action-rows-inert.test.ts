@@ -69,10 +69,11 @@ test("navigation rows align while the profile footer ignores the scroll rail", a
   // lose the rail's width, so New Chat adds it back and both end on one edge.
   // The profile footer is unrelated to that list and must keep its full width
   // when the scrollbar appears. Logical sides, since the rail moves under rtl.
+  // Both insets scale; only the measured rail stays fixed.
   const source = APP_SIDEBAR;
   assert.match(
     source,
-    /const rowPadding = usesDesktopTitlebar\s*\?\s*"ps-\[5px\] pe-\[calc\(var\(--sidebar-rail,0px\)\+5px\)\]"\s*:\s*"ps-1\.5 pe-\[calc\(var\(--sidebar-rail,0px\)\+6px\)\]"/,
+    /const rowPadding = usesDesktopTitlebar\s*\?\s*"ps-\[5px\] pe-\[calc\(var\(--sidebar-rail,0px\)\+5px\*var\(--ui-space-scale,1\)\)\]"\s*:\s*"ps-1\.5 pe-\[calc\(var\(--sidebar-rail,0px\)\+6px\*var\(--ui-space-scale,1\)\)\]"/,
   );
   assert.match(
     source,
