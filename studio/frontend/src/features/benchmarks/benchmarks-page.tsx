@@ -276,16 +276,17 @@ function BenchSubNav({
   );
 }
 
-/** Layer counts for the offload sweep: the loaded model's from status, a picked one's from
- * its GGUF header. */
+/** Layer counts (offload sweep) and context window (context sweep): the loaded model's from
+ * status, a picked one's from its GGUF header. */
 function useModelShape(
   status: InferenceStatusResponse | null,
   model: string | null,
   variant: string | null,
-): ModelShape | null {
+): { shape: ModelShape | null; contextLength: number | null } {
   const [picked, setPicked] = useState<{
     key: string;
     shape: ModelShape;
+    contextLength: number | null;
   } | null>(null);
   const key = model ? `${model}\u0000${variant ?? ""}` : null;
   useEffect(() => {
@@ -297,6 +298,7 @@ function useModelShape(
           setPicked({
             key,
             shape: { layers: m.layerCount, moeLayers: m.moeLayerCount },
+            contextLength: m.contextLength,
           });
       })
       .catch(() => undefined);
@@ -304,11 +306,17 @@ function useModelShape(
       cancelled = true;
     };
   }, [model, variant, key]);
-  if (key) return picked?.key === key ? picked.shape : null;
-  if (!status?.active_model) return null;
+  if (key) {
+    const p = picked?.key === key ? picked : null;
+    return { shape: p?.shape ?? null, contextLength: p?.contextLength ?? null };
+  }
+  if (!status?.active_model) return { shape: null, contextLength: null };
   return {
-    layers: status.n_layers ?? null,
-    moeLayers: status.n_moe_layers ?? null,
+    shape: {
+      layers: status.n_layers ?? null,
+      moeLayers: status.n_moe_layers ?? null,
+    },
+    contextLength: null,
   };
 }
 
@@ -324,15 +332,19 @@ export function BenchmarksPage(): ReactElement {
   const cancel = useBenchmarksStore((s) => s.cancel);
   const error = useBenchmarksStore((s) => s.error);
   const status = useLoadedModel(Boolean(live));
-  const maxContext =
-    status?.max_context_length ?? status?.native_context_length ?? null;
   const config = useBenchmarksStore((s) => s.config);
   const choosePreset = useBenchmarksStore((s) => s.choosePreset);
-  const shape = useModelShape(
+  const { shape, contextLength: pickedContext } = useModelShape(
     status,
     config.tuneModel ?? null,
     config.tuneVariant ?? null,
   );
+  // A picked model sweeps its own context window; while its header loads, fall back to chat's.
+  const residentContext =
+    status?.max_context_length ?? status?.native_context_length ?? null;
+  const maxContext = config.tuneModel
+    ? (pickedContext ?? residentContext)
+    : residentContext;
   // The offload rows are scaled to the model, so a new model or a late shape rebuilds them.
   const shapeKey = shape ? `${shape.layers}/${shape.moeLayers}` : "";
   const offloadSweep = config.sweep === "offload";

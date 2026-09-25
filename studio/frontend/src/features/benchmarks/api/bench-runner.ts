@@ -276,6 +276,8 @@ export async function runBenchmark(
   signal: AbortSignal,
 ): Promise<BenchRun> {
   let status = await getInferenceStatus(signal);
+  // Chat's model before the sweep; a run that names its own model still restores this one.
+  const original = status;
   const prompts = promptsFor(config.promptSet, config.customPrompt);
   if (prompts.length === 0)
     throw new BenchSetupError("The custom prompt is empty.");
@@ -334,7 +336,6 @@ export async function runBenchmark(
     events.onOutcome(o);
   };
 
-  let promptCursor = 0;
   let fastest = 0;
   // Once a context size runs out of memory, every larger one will too.
   let failedContext: number | null = null;
@@ -412,6 +413,8 @@ export async function runBenchmark(
       });
       const total = config.warmup + config.repetitions;
       let rowFailure: string | null = null;
+      // Only a genuine memory/limit/floor failure should skip the hungrier rows after it.
+      let rowFailureLimited = false;
       for (let rep = 0; rep < total; rep++) {
         if (signal.aborted) throw abortError();
         const warmup = rep < config.warmup;
@@ -420,9 +423,9 @@ export async function runBenchmark(
             ? `${variant.label} · warm-up ${rep + 1}/${config.warmup}`
             : `${variant.label} · run ${rep + 1 - config.warmup}/${config.repetitions}`,
         );
-        const promptIndex = config.rotatePrompts
-          ? promptCursor++ % prompts.length
-          : 0;
+        // Rotate within a variant, but start every variant on the same prompt so a
+        // throughput gap reflects the setting, not a different prompt subset.
+        const promptIndex = config.rotatePrompts ? rep % prompts.length : 0;
         let c: Completion;
         try {
           c = await withLimit(
@@ -435,6 +438,8 @@ export async function runBenchmark(
         } catch (err) {
           if (signal.aborted) throw abortError();
           rowFailure = err instanceof Error ? err.message : String(err);
+          rowFailureLimited =
+            err instanceof RowLimitError || looksOutOfMemory(rowFailure);
           break;
         }
         const t = c.timings;
@@ -469,15 +474,18 @@ export async function runBenchmark(
             (relativeFloor && fastest > 0 && rate < fastest * FLOOR_FRACTION))
         ) {
           rowFailure = `ran at ${rate.toFixed(1)} tok/s, far below the other rows, which means it spilled out of VRAM. Stopped to keep the machine responsive`;
+          rowFailureLimited = true;
           break;
         }
         if (!warmup) fastest = Math.max(fastest, rate);
       }
       if (rowFailure) {
-        if (ctx !== undefined && demand === null)
-          failedContext = Math.min(failedContext ?? ctx, ctx);
-        if (demand !== null)
-          failedDemand = Math.min(failedDemand ?? demand, demand);
+        if (rowFailureLimited) {
+          if (ctx !== undefined && demand === null)
+            failedContext = Math.min(failedContext ?? ctx, ctx);
+          if (demand !== null)
+            failedDemand = Math.min(failedDemand ?? demand, demand);
+        }
         setOutcome({
           label: variant.label,
           state: "error",
@@ -504,9 +512,10 @@ export async function runBenchmark(
     }
   } finally {
     run.finishedAt = Date.now();
-    if (config.restoreAfter) {
+    if (config.restoreAfter && original.active_model) {
       events.onProgress("Restoring your original settings");
-      await restore(status, base).catch(() => undefined);
+      // Restore the model chat had open, not the one a tuneModel run swapped in.
+      await restore(original, chatBaseLoad(original)).catch(() => undefined);
     }
   }
   return run;
