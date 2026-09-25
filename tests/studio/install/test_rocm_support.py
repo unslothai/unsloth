@@ -2550,6 +2550,16 @@ class TestGfx1102Rocm64Floor:
         preamble = f'export UNSLOTH_ROCM_GFX_ARCH="{gfx}"'
         assert self._install_sh_routing_result(preamble, leaf = leaf)[0] == expected
 
+    @pytest.mark.parametrize(("py", "expected"), (("3.9", "rocm6.4"), ("3.12", _RDNA4_LEAF)))
+    def test_install_sh_keeps_rdna4_generic_on_python_39(self, tmp_path, py, expected):
+        """gfx120X-all has no cp39 wheels, so a 3.9 venv keeps the generic rocm6.4 route."""
+        (tmp_path / "bin").mkdir()
+        stub = tmp_path / "bin" / "python"
+        stub.write_text(f"#!/bin/sh\necho {py}\n")
+        stub.chmod(0o755)
+        preamble = f'export UNSLOTH_ROCM_GFX_ARCH="gfx1201"\nVENV_DIR="{tmp_path}"'
+        assert self._install_sh_routing_result(preamble, leaf = "rocm6.4")[0] == expected
+
 
 # TEST: install_python_stack.py -- torch-index MARKER mechanism (PR #6692)
 
@@ -8398,3 +8408,18 @@ class TestBnbRocmProvenance:
         with patch.object(stack_mod, "pip_install_try", return_value = True) as mock_pip:
             assert stack_mod._install_bnb_windows_rocm() is True
         assert mock_pip.call_count == 0
+
+
+class _Py39(tuple):
+    major, minor, micro = 3, 9, 18
+
+
+def test_python_39_keeps_rdna4_off_the_amd_arch_index(monkeypatch):
+    """gfx120X-all has no cp39 wheels; Strix keeps its route, as before."""
+    monkeypatch.setattr(sys, "version_info", _Py39((3, 9, 18, "final", 0)))
+    spec = importlib.util.spec_from_file_location("studio_install_python_stack_py39", _STACK_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert not {"gfx1200", "gfx1201"} & mod._AMD_ARCH_INDEX_FLOOR_GFX
+    assert {"gfx1150", "gfx1151", "gfx1152"} <= mod._AMD_ARCH_INDEX_FLOOR_GFX
+    assert {"gfx1200", "gfx1201"} <= stack_mod._AMD_ARCH_INDEX_FLOOR_GFX

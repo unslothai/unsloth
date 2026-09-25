@@ -6240,6 +6240,10 @@ case "$_torch_index_leaf" in
                 gfx1200|gfx1201) _rdna4_gfx="$_runtime_gfx" ;;
             esac
         fi
+        # gfx120X-all publishes cp310+ only, so a 3.9 venv keeps the generic wheels.
+        if [ -n "$_rdna4_gfx" ] && [ "$("${VENV_DIR:-}/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)" = "3.9" ]; then
+            _rdna4_gfx=""
+        fi
         if [ -n "$_rdna4_gfx" ] && _rocm_leaf_below "$_torch_index_leaf" 7 13; then
             echo "" >&2
             echo "  [WARN] $_rdna4_gfx (RDNA 4) detected -- routing to the AMD arch-specific index" >&2

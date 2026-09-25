@@ -196,8 +196,10 @@ def _strix_needs_amd_arch_index(ver: tuple[int, int]) -> bool:
 
 
 # Rerouted to AMD's per-arch index below 7.13 (RDNA 4: TheRock #5284). Mirrors install.sh.
+# gfx120X-all publishes cp310+ only, so RDNA 4 on 3.9 keeps the generic wheels.
 _AMD_ARCH_INDEX_FLOOR_GFX: frozenset[str] = frozenset(
-    {"gfx1151", "gfx1150", "gfx1152", "gfx1200", "gfx1201"}
+    {"gfx1151", "gfx1150", "gfx1152"}
+    | ({"gfx1200", "gfx1201"} if sys.version_info >= (3, 10) else set())
 )
 
 
