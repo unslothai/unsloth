@@ -76,6 +76,7 @@ on:
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
       - 'tests/python/test_windows_installer_native_type_fallback.py'
+      - 'tests/python/test_installer_embedded_nvidia_probe.py'
       - 'tests/python/test_pwsh_runner_encoding.py'
       # The deliberate unreadable-directory and traversal-limit cases for the
       # no-compiler detector's temp scan live in this job, and only here. The
@@ -168,6 +169,7 @@ on:
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
       - 'tests/python/test_windows_installer_native_type_fallback.py'
+      - 'tests/python/test_installer_embedded_nvidia_probe.py'
       - 'tests/python/test_pwsh_runner_encoding.py'
       # The deliberate unreadable-directory and traversal-limit cases for the
       # no-compiler detector's temp scan live in this job, and only here. The
@@ -281,6 +283,7 @@ jobs:
           tests/python/test_windows_installer_native_type_fallback.py
           tests/python/test_pwsh_runner_encoding.py
           tests/python/test_compiler_watch_temp_scan.py
+          tests/python/test_installer_embedded_nvidia_probe.py
           tests/test_installer_skip_autostart.py
           tests/test_installer_system32_guard.py
           tests/test_installer_interactive_prompts.py
