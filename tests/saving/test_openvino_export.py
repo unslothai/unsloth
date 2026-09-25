@@ -48,6 +48,7 @@ def test_openvino_export_signatures():
 
 def test_openvino_methods_attached_by_patch_saving_functions():
     """Verify patch_saving_functions attaches OpenVINO methods to model."""
+
     class DummyModel(nn.Module):
         def __init__(self):
             super().__init__()
@@ -56,7 +57,6 @@ def test_openvino_methods_attached_by_patch_saving_functions():
 
         def push_to_hub(self, repo_id, **kwargs):
             """Push to hub docstring."""
-            pass
 
     model = DummyModel()
     patched = patch_saving_functions(model)
@@ -69,6 +69,7 @@ def test_openvino_methods_attached_by_patch_saving_functions():
 
 def test_openvino_missing_dependency_error(tmp_path):
     """Verify helpful error is raised when optimum-intel is not installed."""
+
     class DummyModel(nn.Module):
         def __init__(self):
             super().__init__()
@@ -76,7 +77,7 @@ def test_openvino_missing_dependency_error(tmp_path):
 
     model = DummyModel()
     with patch.dict("sys.modules", {"optimum.intel.openvino": None}):
-        with pytest.raises(ImportError, match="requires `optimum-intel` and `openvino`"):
+        with pytest.raises(ImportError, match = "requires `optimum-intel` and `openvino`"):
             _unsloth_save_openvino(
                 model = model,
                 save_directory = str(tmp_path / "ov_out"),
@@ -85,6 +86,7 @@ def test_openvino_missing_dependency_error(tmp_path):
 
 def test_openvino_invalid_quantization_type(tmp_path):
     """Verify ValueError on unsupported quantization type."""
+
     class DummyModel(nn.Module):
         def __init__(self):
             super().__init__()
@@ -93,10 +95,9 @@ def test_openvino_invalid_quantization_type(tmp_path):
 
     mock_ov_module = MagicMock()
     with patch.dict("sys.modules", {"optimum.intel.openvino": mock_ov_module}):
-        with pytest.raises(ValueError, match="Unknown OpenVINO quantization_type"):
+        with pytest.raises(ValueError, match = "Unknown OpenVINO quantization_type"):
             _unsloth_save_openvino(
                 model = DummyModel(),
                 save_directory = str(tmp_path / "ov_out"),
                 quantization_type = "unsupported_quant_scheme",
             )
-

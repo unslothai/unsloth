@@ -6930,6 +6930,7 @@ def _unsloth_save_openvino(
         # Step 4: Push to Hub if requested
         if push_to_hub and repo_id:
             from huggingface_hub import HfApi
+
             api = HfApi(token = token)
             api.create_repo(repo_id = repo_id, exist_ok = True)
             api.upload_folder(
@@ -7208,7 +7209,9 @@ def patch_saving_functions(model, vision = False):
             model.push_to_hub_gguf = types.MethodType(unsloth_push_to_hub_gguf, model)
             model.save_pretrained_gguf = types.MethodType(unsloth_save_pretrained_gguf, model)
             model.save_pretrained_torchao = types.MethodType(unsloth_save_pretrained_torchao, model)
-            model.save_pretrained_openvino = types.MethodType(unsloth_save_pretrained_openvino, model)
+            model.save_pretrained_openvino = types.MethodType(
+                unsloth_save_pretrained_openvino, model
+            )
             model.push_to_hub_openvino = types.MethodType(unsloth_push_to_hub_openvino, model)
             model.push_to_hub_ggml = types.MethodType(
                 unsloth_convert_lora_to_ggml_and_push_to_hub, model
