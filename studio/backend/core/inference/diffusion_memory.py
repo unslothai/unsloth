@@ -251,14 +251,22 @@ def _pin_host_weights(
             vm = psutil.virtual_memory()
         except Exception:  # noqa: BLE001 - no way to size it, so do not lock memory
             return 0
-        reserve = max(_PIN_RESERVE_MIN_BYTES, int(vm.total * _PIN_RESERVE_FRACTION))
-        if vm.available - need < reserve:
+        # psutil reads the host; pinned pages are charged to an enforcing cgroup, so size from the container.
+        available, total = vm.available, vm.total
+        remainder = _cgroup_available_memory_mib()
+        if remainder is not None:
+            available = min(available, int(remainder) << 20)
+        limit = _cgroup_memory_limit_mib()
+        if limit is not None:
+            total = min(total, int(limit) << 20)
+        reserve = max(_PIN_RESERVE_MIN_BYTES, int(total * _PIN_RESERVE_FRACTION))
+        if available - need < reserve:
             if logger is not None:
                 logger.info(
                     "diffusion.memory: not pinning %s (%.1f GiB): %.1f GiB of host RAM available",
                     type(module).__name__,
                     need / 2**30,
-                    vm.available / 2**30,
+                    available / 2**30,
                 )
             return 0
     bufs: list = []

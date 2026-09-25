@@ -301,3 +301,67 @@ def test_a_weight_reassigned_through_data_on_the_device_is_copied_back():
     pipe.transformer._hf_hook.init_hook(pipe.transformer)
     assert pipe.transformer.weight.device.type == "cpu"
     assert torch.equal(pipe.transformer.weight.detach(), torch.full((8, 8), 7.0))
+
+
+def _fake_cgroup(tmp_path, monkeypatch, limit, current, version = 2):
+    import core.inference.llama_cpp as llama_cpp_module
+
+    root = tmp_path / "cgroup"
+    leaf = root / ("studio.slice" if version == 2 else "memory/studio.slice")
+    leaf.mkdir(parents = True)
+    names = ("memory.max", "memory.current") if version == 2 else ("memory.limit_in_bytes", "memory.usage_in_bytes")
+    if limit is not None:
+        (leaf / names[0]).write_text(str(limit), encoding = "utf-8")
+        (leaf / names[1]).write_text(str(current), encoding = "utf-8")
+    proc = tmp_path / "self.cgroup"
+    line = "0::/studio.slice" if version == 2 else "4:memory:/studio.slice"
+    proc.write_text(line + "\n", encoding = "utf-8")
+    monkeypatch.setattr(llama_cpp_module, "_CGROUP_ROOT", str(root))
+    monkeypatch.setattr(llama_cpp_module, "_PROC_SELF_CGROUP", str(proc))
+
+
+@pytest.mark.parametrize(
+    "version, limit, current, host_available, pinned",
+    [
+        # 64 GiB container on a 512 GiB host, 10 GiB left in it: the host reading would pin 16 GiB.
+        (2, 64 << 30, 54 << 30, 400 << 30, False),
+        (1, 64 << 30, 54 << 30, 400 << 30, False),
+        # 40 GiB left: fits over a reserve of 15% of the container; 15% of the host would refuse it.
+        (2, 64 << 30, 24 << 30, 400 << 30, True),
+        (1, 64 << 30, 24 << 30, 400 << 30, True),
+        # 24 GiB left: 8 GiB would remain, under the container's 9.6 GiB reserve.
+        (2, 64 << 30, 40 << 30, 400 << 30, False),
+        # A limit above the host changes nothing.
+        (2, 1 << 50, 0, 400 << 30, True),
+        (2, 1 << 50, 0, 90 << 30, False),
+        # No limit: the host reading, as before.
+        (2, None, 0, 400 << 30, True),
+        (2, None, 0, 90 << 30, False),
+    ],
+)
+def test_the_ram_gate_is_sized_from_the_container(
+    tmp_path, monkeypatch, version, limit, current, host_available, pinned
+):
+    psutil = pytest.importorskip("psutil")
+    _fake_cgroup(tmp_path, monkeypatch, limit, current, version)
+    monkeypatch.setattr(
+        psutil,
+        "virtual_memory",
+        lambda: types.SimpleNamespace(total = 512 << 30, available = host_available),
+    )
+    # 16 GiB of weights (a power of two, so no chunk rounding), never allocated: the gate only reads sizes, and the first allocation is refused.
+    data = types.SimpleNamespace(nbytes = 16 << 30, is_contiguous = lambda: True, is_pinned = lambda: False)
+    weight = types.SimpleNamespace(device = torch.device("cpu"), data = data)
+    module = types.SimpleNamespace(named_parameters = lambda: [("weight", weight)])
+    allocated = []
+
+    def empty(*args, **kwargs):
+        allocated.append(args)
+        raise RuntimeError("not allocating in a test")
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(dm, "_keepable", lambda p: True)
+    monkeypatch.setattr(dm, "_host_empty_cache", lambda: None)
+    monkeypatch.setattr(torch, "empty", empty)
+    assert dm._pin_host_weights(module, {"weight": data}) == 0
+    assert bool(allocated) is pinned
