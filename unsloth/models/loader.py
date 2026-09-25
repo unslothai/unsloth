@@ -311,6 +311,97 @@ _OMNI_AUTO_CLASS_NAMES = (
 )
 
 
+def _adapter_file_keys(path):
+    if path.endswith(".safetensors"):
+        from safetensors import safe_open
+        with safe_open(path, framework = "pt") as handle:
+            return list(handle.keys())
+    return list(torch.load(path, map_location = "meta", weights_only = True).keys())
+
+
+def _adapter_weight_keys(
+    adapter_name,
+    token = None,
+    revision = None,
+    local_files_only = False,
+    cache_dir = None,
+):
+    """Tensor names of a saved adapter without loading weights, or None."""
+    filenames = ("adapter_model.safetensors", "adapter_model.bin")
+    try:
+        local = os.path.expanduser(adapter_name)
+        if os.path.isdir(local):
+            for filename in filenames:
+                path = os.path.join(local, filename)
+                if os.path.exists(path):
+                    return _adapter_file_keys(path)
+            return None
+        from huggingface_hub import hf_hub_download
+
+        for filename in filenames:
+            try:
+                path = hf_hub_download(
+                    adapter_name,
+                    filename,
+                    revision = revision,
+                    token = token,
+                    cache_dir = cache_dir,
+                    local_files_only = local_files_only,
+                )
+            except Exception:
+                continue
+            return _adapter_file_keys(path)
+    except Exception:
+        pass
+    return None
+
+
+def _composition_children(model_config):
+    names = [
+        name[: -len("_config")]
+        for name in (getattr(model_config, "sub_configs", None) or {})
+        if name.endswith("_config")
+    ]
+    return tuple(names) or ("thinker",)
+
+
+def _adapter_targets_text_core(
+    peft_config,
+    weight_keys = None,
+    wrapper_children = ("thinker",),
+):
+    """True when an adapter was trained on an extracted thinker (`text_only = True`).
+
+    Saved keys decide (wrapper-trained keys are rooted at a wrapper child); else the saved
+    regex. A leaf-name list matches either layout, so it cannot decide alone.
+    """
+    children = set(wrapper_children)
+    if weight_keys:
+        roots = {
+            (key[len("base_model.model.") :] if key.startswith("base_model.model.") else key).split(
+                ".", 1
+            )[0]
+            for key in weight_keys
+        }
+        return not (roots & children)
+    targets = getattr(peft_config, "target_modules", None)
+    return isinstance(targets, str) and not any(child in targets for child in children)
+
+
+def _is_forwardless_composition(model_config, trust_remote_code = None, **hub_kwargs):
+    # Only a wrapper with no forward (Qwen3-Omni) can have a thinker-trained adapter; VLM adapters never.
+    auto_class = _resolve_omni_auto_model(model_config, trust_remote_code = trust_remote_code, **hub_kwargs)
+    model_class = (
+        resolve_model_class(auto_class, model_config, trust_remote_code = trust_remote_code, **hub_kwargs)
+        if auto_class is not None
+        else None
+    )
+    if model_class is None:
+        return False
+    forward = getattr(model_class, "forward", None)
+    return forward is None or forward is torch.nn.Module.forward
+
+
 def _config_has_native_class(auto_class, config):
     """True when transformers itself maps ``type(config)`` in ``auto_class`` (no repo code needed)."""
     try:
@@ -1965,12 +2056,6 @@ class FastModel(FastBaseModel):
         for _cfg_key, _cfg_val in task_config_attrs.items():
             set_task_config_attr(model_config, _cfg_key, _cfg_val)
 
-        architectures = getattr(model_config, "architectures", None)
-        if architectures is None:
-            architectures = []
-        is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
-        is_vlm = is_vlm or hasattr(model_config, "vision_config")
-        load_text_only = text_only and auto_model is None
         # Class probes below fetch remote modeling code exactly as the load will.
         _probe_hub_kwargs = dict(
             trust_remote_code = trust_remote_code,
@@ -1982,6 +2067,40 @@ class FastModel(FastBaseModel):
             force_download = kwargs.get("force_download", None),
             proxies = kwargs.get("proxies", None),
         )
+        architectures = getattr(model_config, "architectures", None)
+        if architectures is None:
+            architectures = []
+        is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
+        is_vlm = is_vlm or hasattr(model_config, "vision_config")
+        if (
+            is_peft
+            and not text_only
+            and auto_model is None
+            and _is_forwardless_composition(model_config, **_probe_hub_kwargs)
+        ):
+            _adapter_keys = _adapter_weight_keys(
+                old_model_name,
+                token = token,
+                revision = adapter_revision,
+                local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
+            )
+            if _adapter_targets_text_core(
+                peft_config, _adapter_keys, _composition_children(model_config)
+            ):
+                print(
+                    "Unsloth: this adapter was trained on the thinker alone (`text_only = True`), "
+                    "so its base is loaded the same way."
+                )
+                text_only = True
+            elif not _adapter_keys and not isinstance(
+                getattr(peft_config, "target_modules", None), str
+            ):
+                print(
+                    "Unsloth: could not read this adapter's weight names, so the full model is "
+                    "loaded. If it was trained with `text_only = True`, pass `text_only = True` here too."
+                )
+        load_text_only = text_only and auto_model is None
         text_only_decoder = False
         if load_text_only:
             if hasattr(model_config, "vision_config"):
@@ -2006,6 +2125,13 @@ class FastModel(FastBaseModel):
                     is_vlm = False
                     # model_config is no longer the repo's config, so anything rebuilding it from model_name (the device-map planner) sees a different model.
                     text_only_decoder = True
+            elif (
+                is_vlm
+                and resolve_model_class(AutoModelForCausalLM, model_config, **_probe_hub_kwargs) is None
+                and _resolve_omni_auto_model(model_config, **_probe_hub_kwargs) is not None
+            ):
+                # Qwen3-Omni has no causal-LM class; load the composition, text_intent picks the thinker.
+                load_text_only = False
             else:
                 is_vlm = False
         for _cfg_key, _cfg_val in task_config_attrs.items():

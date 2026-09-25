@@ -944,7 +944,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     if do_bfloat16_mixed_precision:
         dtype = torch.bfloat16
 
-    # text_only configs have architectures=None.
+    # A core built from a sub-config (Qwen3-Omni's thinker) carries no architectures.
     architectures = getattr(self.config, "architectures", None) or [type(self).__name__]
     is_vlm = any(
         x.endswith(("ForConditionalGeneration", "ForVisionText2Text")) for x in architectures
@@ -1364,27 +1364,25 @@ def _required_non_text_inputs(forward):
     ]
 
 
-def _text_trainable_core(model, text_intent = True):
-    """Nemotron-3-Nano-Omni's forward requires `pixel_values`: with text_only, train the one text child instead."""
-    if os.environ.get("UNSLOTH_KEEP_COMPOSED_WRAPPER", "0") == "1":
-        return model
-    forward = getattr(type(model), "forward", None)
-    if forward is None or forward is torch.nn.Module.forward:
-        return model
-    required = _required_non_text_inputs(forward)
-    if not required:
-        return model
-    if not text_intent:
-        print(
-            f"Unsloth: `{type(model).__name__}.forward` requires {', '.join(required)}, so it "
-            "trains on multimodal batches only. Pass `text_only = True` to from_pretrained to "
-            "train its language model on text batches instead."
-        )
-        return model
+def _output_embeddings_of(module):
+    # transformers 4.x returns None unless overridden; Qwen3-Omni's thinker does not override.
+    try:
+        output_embeddings = module.get_output_embeddings()
+    except Exception:
+        output_embeddings = None
+    if output_embeddings is None:
+        output_embeddings = getattr(module, "lm_head", None)
+        if not isinstance(output_embeddings, torch.nn.Module):
+            output_embeddings = None
+    return output_embeddings
+
+
+def _find_text_core(model):
+    """(name, child) of the one direct child a text batch can run through, else None."""
     try:
         from transformers import PreTrainedModel
     except Exception:
-        return model
+        return None
     cores = []
     for name, child in model.named_children():
         if not isinstance(child, PreTrainedModel):
@@ -1397,7 +1395,7 @@ def _text_trainable_core(model, text_intent = True):
         try:
             has_embeddings = (
                 child.get_input_embeddings() is not None
-                and child.get_output_embeddings() is not None
+                and _output_embeddings_of(child) is not None
             )
         except Exception:
             has_embeddings = False
@@ -1407,16 +1405,180 @@ def _text_trainable_core(model, text_intent = True):
     if len(preferred) == 1:
         cores = preferred
     if len(cores) != 1:
+        return None
+    return cores[0]
+
+
+def _text_core_output_embeddings(model):
+    return _output_embeddings_of(getattr(model, model._unsloth_text_core))
+
+
+def _delegate_text_forward(model, name, core):
+    """Instance-only (class and generate untouched): forward + embeddings from the core."""
+    if "_old_forward" in vars(model):
+        # accelerate's hook calls _old_forward.
+        model._old_forward = core.forward
+    else:
+        model.forward = core.forward
+    try:
+        wrapper_output = model.get_output_embeddings()
+    except Exception:
+        wrapper_output = None
+    if wrapper_output is None:
+        # Bound method, not a closure, so deepcopy and pickle follow it.
+        model.get_output_embeddings = types.MethodType(_text_core_output_embeddings, model)
+    # Gradient checkpointing needs this, else transformers 5 raises and LoRA gets no gradient.
+    try:
+        wrapper_input = model.get_input_embeddings()
+    except Exception:
+        wrapper_input = None
+    if wrapper_input is None:
+        model.get_input_embeddings = core.get_input_embeddings
+        # resize_token_embeddings pairs the getters with these setters.
+        model.set_input_embeddings = core.set_input_embeddings
+    if wrapper_output is None:
+        model.set_output_embeddings = core.set_output_embeddings
+    model._unsloth_text_core = name
+    _freeze_unused_siblings(model)
+    return model
+
+
+def _freeze_unused_siblings(model):
+    """Siblings never reach the loss: freeze them, else DDP full finetuning fails on unused parameters."""
+    name = getattr(model, "_unsloth_text_core", None)
+    core = getattr(model, name, None) if isinstance(name, str) else None
+    if core is None:
+        return
+    core_parameters = {id(parameter) for parameter in core.parameters()}
+    for child in model.children():
+        if child is core:
+            continue
+        for parameter in child.parameters():
+            if id(parameter) not in core_parameters:
+                parameter.requires_grad_(False)
+
+
+def _scope_parameter_targets_to_core(model, target_parameters):
+    """PEFT suffix-matches target_parameters too: on a kept wrapper "mlp.experts.gate_up_proj"
+    also hits the talker's experts, which never train."""
+    name = getattr(model, "_unsloth_text_core", None)
+    core = getattr(model, name, None) if isinstance(name, str) else None
+    if core is None or not target_parameters or isinstance(target_parameters, str):
+        return target_parameters
+    scoped = []
+    for entry in target_parameters:
+        if entry.startswith(name + "."):
+            scoped.append(entry)
+            continue
+        paths = [
+            f"{name}.{path}"
+            for path, _ in core.named_parameters()
+            if path == entry or path.endswith("." + entry)
+        ]
+        scoped.extend(paths or [entry])
+    return scoped
+
+
+def _scope_modules_to_save_to_core(model, modules_to_save):
+    """PEFT suffix-matches modules_to_save over the whole model: on a kept wrapper an unqualified
+    "lm_head" also hits the talker's code_predictor.lm_head, a ModuleList PEFT refuses."""
+    name = getattr(model, "_unsloth_text_core", None)
+    core = getattr(model, name, None) if isinstance(name, str) else None
+    if core is None or not modules_to_save:
+        return modules_to_save
+    scoped = []
+    for entry in modules_to_save:
+        paths = [
+            f"{name}.{child}"
+            for child, _ in core.named_modules()
+            if child and (child == entry or child.endswith("." + entry))
+        ]
+        scoped.extend(paths or [entry])
+    return scoped
+
+
+def _text_core_decoder_prefix(model):
+    name = getattr(model, "_unsloth_text_core", None)
+    core = getattr(model, name, None) if isinstance(name, str) else None
+    if core is None:
+        return None
+    try:
+        decoder = core.get_decoder()
+    except Exception:
+        decoder = None
+    if isinstance(decoder, torch.nn.Module) and decoder is not core:
+        for child_name, module in core.named_modules():
+            if module is decoder and child_name:
+                return f"{name}.{child_name}"
+    # transformers 5.4's thinker returns itself from get_decoder: use the embeddings' owner.
+    try:
+        embeddings = core.get_input_embeddings()
+    except Exception:
+        embeddings = None
+    if embeddings is not None:
+        for child_name, child in core.named_children():
+            try:
+                # A vision tower raises here on transformers 5.
+                if child.get_input_embeddings() is embeddings:
+                    return f"{name}.{child_name}"
+            except Exception:
+                continue
+    return name
+
+
+def _text_trainable_core(model, text_intent = True):
+    """With text_intent, the text child to train when the wrapper's forward needs non-text
+    inputs (Nemotron-3-Nano-Omni) or has none (Qwen3-Omni); else a hint, and a forward-less
+    wrapper gets its core's forward on the instance."""
+    if os.environ.get("UNSLOTH_KEEP_COMPOSED_WRAPPER", "0") == "1":
         return model
-    name, core = cores[0]
+    forward = getattr(type(model), "forward", None)
+    has_no_forward = forward is None or forward is torch.nn.Module.forward
+    required = [] if has_no_forward else _required_non_text_inputs(forward)
+    if not has_no_forward and not required:
+        return model
+    if not text_intent:
+        if has_no_forward:
+            found = _find_text_core(model)
+            if found is not None:
+                _delegate_text_forward(model, *found)
+                print(
+                    f"Unsloth: `{type(model).__name__}` has no forward of its own, so a text "
+                    f"forward runs through its `{found[0]}` and the rest is kept for generation. "
+                    "Pass `text_only = True` to from_pretrained to train the "
+                    f"`{found[0]}` alone and free the rest."
+                )
+            else:
+                print(
+                    f"Unsloth: `{type(model).__name__}` has no forward of its own, so it cannot be "
+                    "trained as loaded. Pass `text_only = True` to from_pretrained to train its "
+                    "thinker on text batches instead."
+                )
+        else:
+            print(
+                f"Unsloth: `{type(model).__name__}.forward` requires {', '.join(required)}, so it "
+                "trains on multimodal batches only. Pass `text_only = True` to from_pretrained to "
+                "train its language model on text batches instead."
+            )
+        return model
+    found = _find_text_core(model)
+    if found is None:
+        return model
+    name, core = found
     dropped = [child_name for child_name, _ in model.named_children() if child_name != name]
     for child_name in dropped:
         delattr(model, child_name)
     gc.collect()
     clean_gpu_cache()
+    if has_no_forward:
+        reason = f"`{type(model).__name__}` has no forward of its own"
+    else:
+        reason = (
+            f"`{type(model).__name__}.forward` requires {', '.join(required)}, which a text "
+            "batch does not carry"
+        )
     print(
-        f"Unsloth: `{type(model).__name__}.forward` requires {', '.join(required)}, which a text "
-        f"batch does not carry, so training uses its `{name}` (`{type(core).__name__}`)."
+        f"Unsloth: {reason}, so training uses its `{name}` (`{type(core).__name__}`)."
         + (f" Dropped {', '.join(dropped)}: not used by text training." if dropped else "")
         + " Saving writes a checkpoint of that module."
     )
@@ -1458,20 +1620,26 @@ def _carry_loader_state_to_core(model, core, name):
                 carried[key[len(prefix) :]] = device
         if carried:
             core.hf_device_map = carried
+    # PEFT writes name_or_path into base_model_name_or_path; sub-config children lack one.
+    wrapper_name = getattr(model, "name_or_path", None) or getattr(
+        getattr(model, "config", None), "_name_or_path", None
+    )
+    if wrapper_name:
+        if not getattr(core, "name_or_path", None):
+            try:
+                core.name_or_path = wrapper_name
+            except Exception:
+                pass
+        _core_cfg = getattr(core, "config", None)
+        if _core_cfg is not None and not getattr(_core_cfg, "_name_or_path", None):
+            try:
+                _core_cfg._name_or_path = wrapper_name
+            except Exception:
+                pass
     wrapper_config = getattr(model, "config", None)
     core_config = getattr(core, "config", None)
     # A sub-config without its own dtype leaves correct_dtype None, so bnb quant_state.dtype becomes None.
     wrapper_dtype = getattr(wrapper_config, "dtype", None)
-    # A child built in __init__ has no _name_or_path: adapter_config and merged saves need the repo.
-    wrapper_path = getattr(wrapper_config, "_name_or_path", "") or getattr(
-        model, "name_or_path", ""
-    )
-    if core_config is not None and wrapper_path and not getattr(core_config, "_name_or_path", ""):
-        core_config._name_or_path = wrapper_path
-        try:
-            core.name_or_path = wrapper_path
-        except Exception:
-            pass
     if (
         core_config is not None
         and wrapper_dtype is not None
@@ -1479,6 +1647,12 @@ def _carry_loader_state_to_core(model, core, name):
     ):
         try:
             core_config.dtype = wrapper_dtype
+        except Exception:
+            pass
+    # A sub-config names no architecture; generate and save read it off the core.
+    if core_config is not None and not getattr(core_config, "architectures", None):
+        try:
+            core_config.architectures = [type(core).__name__]
         except Exception:
             pass
     # generation_config.json is loaded onto the wrapper only; the child has config defaults (EOS etc).
@@ -2686,6 +2860,16 @@ class FastBaseModel:
             )
         else:
             _audio_kwargs = {}
+        # No language tag matches `thinker.model`; without this LoRA hits only the vision tower.
+        _core_prefix = _text_core_decoder_prefix(model)
+        if _core_prefix and "language_tags" in inspect.signature(get_peft_regex).parameters:
+            _language_tag_default = (
+                inspect.signature(get_peft_regex).parameters["language_tags"].default
+            )
+            if isinstance(_language_tag_default, (list, tuple)):
+                _audio_kwargs["language_tags"] = list(_language_tag_default) + [
+                    re.escape(_core_prefix)
+                ]
         # Remember the caller's ORIGINAL explicit leaf list for MoE expert detection: routing it through get_peft_regex adds the full "mlp|feed_forward|ffn|dense" block even for attention-only leaves, so keying on that regex would train the experts. Only the auto path relies on the regex.
         _moe_detect_target = target_modules if type(target_modules) in (list, tuple) else None
 
@@ -2713,6 +2897,7 @@ class FastBaseModel:
                 f"`modules_to_save`, so they are trained as full weight matrices.\n"
                 f"This uses more VRAM than LoRA. Please list them in `modules_to_save` directly."
             )
+        modules_to_save = _scope_modules_to_save_to_core(model, modules_to_save)
         _raise_if_fast_inference_modules_to_save(model, modules_to_save)
 
         # Only a regex generated here may be widened to expert submodules below.
@@ -2736,7 +2921,14 @@ class FastBaseModel:
                 or not finetune_attention_modules
                 or not finetune_mlp_modules
             )
-            if type(target_modules) in (list, tuple) and (_scoping or finetune_audio_layers):
+            # A kept wrapper (Qwen3-Omni) also holds a talker the forward never reaches: scope leaves to the text core.
+            _leaf_list = type(target_modules) in (list, tuple) and all(
+                "." not in str(name) for name in target_modules
+            )
+            # Qualified paths already name their module; get_peft_regex treats every entry as a leaf.
+            if type(target_modules) in (list, tuple) and (
+                _scoping or finetune_audio_layers or (_core_prefix and _leaf_list)
+            ):
                 if _scoping:
                     print(
                         "Unsloth: Explicit target_modules are constrained by the "
@@ -2809,12 +3001,26 @@ class FastBaseModel:
         _moe_module_targets = get_moe_target_modules(model, _moe_module_detect)
 
         # Auto-detect MoE models and populate target_parameters for expert layers.
-        if target_parameters is None:
+        if target_parameters is not None:
+            target_parameters = _scope_parameter_targets_to_core(model, target_parameters)
+        else:
             target_parameters = get_moe_target_parameters(
                 model,
                 _moe_module_detect,
                 moe_module_targets = _moe_module_targets,
             )
+            # A forward-less wrapper's config hides the thinker's experts; resolve on the core and
+            # name full paths, since PEFT suffix-matches and would also hit the talker's experts.
+            _core_name = getattr(model, "_unsloth_text_core", None)
+            _core = getattr(model, _core_name, None) if isinstance(_core_name, str) else None
+            if target_parameters is None and _core is not None:
+                _core_parameters = get_moe_target_parameters(_core, _moe_module_detect)
+                if _core_parameters:
+                    target_parameters = [
+                        f"{_core_name}.{name}"
+                        for name, _ in _core.named_parameters()
+                        if any(name == t or name.endswith("." + t) for t in _core_parameters)
+                    ] or None
 
         if _moe_module_targets:
             if isinstance(target_modules, (list, tuple)):
@@ -2837,6 +3043,10 @@ class FastBaseModel:
 
         if finetune_last_n_layers is not None and layers_to_transform is None:
             _total_layers = _get_total_transformer_layers(model)
+            _core_name = getattr(model, "_unsloth_text_core", None)
+            if _total_layers is None and isinstance(_core_name, str):
+                # A kept wrapper's config nests the count (Qwen3-Omni: thinker.config.text_config).
+                _total_layers = _get_total_transformer_layers(getattr(model, _core_name, None))
             if _total_layers is not None and _total_layers > 0:
                 n = max(1, min(int(finetune_last_n_layers), _total_layers))
                 layers_to_transform = list(range(_total_layers - n, _total_layers))
@@ -2991,6 +3201,9 @@ class FastBaseModel:
             float32_mixed_precision = float32_mixed_precision,
             patch_modules_to_save = True,
         )
+        if full_finetuning:
+            # prepare_model_for_training re-enabled every parameter, a kept wrapper's siblings too.
+            _freeze_unused_siblings(model)
         # Persist the configured GC mode so the trainer restores it verbatim: for_inference() clears the module flags every GRPO generation step, and TrainingArguments defaults gradient_checkpointing=False, which would silently disable it at train time (#4735).
         model._unsloth_gradient_checkpointing = use_gradient_checkpointing
 
