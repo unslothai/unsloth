@@ -170,7 +170,20 @@ def open_native_upload(lease: str):
     it, never the webview, and the grant is spent here before a byte is read."""
     grant = _verify_native(lease, consume = True)
     name = grant.canonical_path.name
-    return name, _guess_type(name), open(grant.canonical_path, "rb")
+    # Opened once, and the file opened must be the one the grant checked: the name can be
+    # swapped for a link to outside the account's workspace in between.
+    try:
+        handle = _open_regular(str(grant.canonical_path))
+    except LookupError:
+        raise ValueError("The dropped file changed after it was checked.") from None
+    info = os.fstat(handle.fileno())
+    identity = (grant.device_id, grant.file_id)
+    if (None not in identity and (info.st_dev, info.st_ino) != identity) or (
+        grant.size_bytes is not None and info.st_size != grant.size_bytes
+    ):
+        handle.close()
+        raise ValueError("The dropped file changed after it was checked.")
+    return name, _guess_type(name), handle
 
 
 # Deletes and note saves check a row, then change the file and the row: one at a time, or a file
@@ -569,18 +582,17 @@ def _sandbox_path(ref: str) -> str:
     return path
 
 
-def _open_sandbox_file(ref: str) -> tuple[BinaryIO, str]:
-    """(open file, path) for a ``sandbox:`` id, opened once and checked by its descriptor.
+def _open_regular(path: str) -> BinaryIO:
+    """`path` opened once and checked by its descriptor; LookupError unless it is a regular file.
 
-    Tool code runs here, so a name checked then reopened can be a link by then. O_NOFOLLOW where the
-    OS has it, then the path must still resolve to itself and to this same regular file, which also
+    Another process can swap a checked name for a link before it is opened again. O_NOFOLLOW where
+    the OS has it, then the path must still resolve to itself and to this same file, which also
     refuses a parent swapped for a link (the only way in on Windows)."""
-    path = _sandbox_path(ref)
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     try:
         fd = os.open(path, flags)
     except OSError:
-        raise LookupError(ref) from None
+        raise LookupError(path) from None
     try:
         info = os.fstat(fd)
         checked = os.stat(path, follow_symlinks = False)
@@ -589,14 +601,24 @@ def _open_sandbox_file(ref: str) -> tuple[BinaryIO, str]:
             or not same_path(os.path.realpath(path), path)
             or (checked.st_dev, checked.st_ino) != (info.st_dev, info.st_ino)
         ):
-            raise LookupError(ref)
+            raise LookupError(path)
     except OSError:
         os.close(fd)
-        raise LookupError(ref) from None
+        raise LookupError(path) from None
     except BaseException:
         os.close(fd)
         raise
-    return os.fdopen(fd, "rb"), path
+    return os.fdopen(fd, "rb")
+
+
+def _open_sandbox_file(ref: str) -> tuple[BinaryIO, str]:
+    """(open file, path) for a ``sandbox:`` id, opened once and checked by its descriptor: tool
+    code runs here."""
+    path = _sandbox_path(ref)
+    try:
+        return _open_regular(path), path
+    except LookupError:
+        raise LookupError(ref) from None
 
 
 def _delete_sandbox_file(ref: str) -> bool:
@@ -1206,6 +1228,7 @@ def _decode(mime_type: str, source: BinaryIO) -> bytes:
             width = _THUMBNAIL_WIDTH,
             container = _THUMBNAIL_VIDEO_CONTAINERS[mime_type],
             max_pixels = _THUMBNAIL_MAX_PIXELS,
+            max_height = round(_THUMBNAIL_WIDTH * _THUMBNAIL_MAX_RATIO),
         )
     if mime_type.startswith("image/") and mime_type != "image/svg+xml":
         return _image_thumbnail(source)

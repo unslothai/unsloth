@@ -74,6 +74,9 @@ function loadApi(session: { epoch: number }, authFetch: (url: string, init?: Req
   return loadWithStubs<{
     uploadLibraryFiles: (batch: object, folderId: string | null) => Promise<string[]>;
     updateLibraryItem: (id: string, patch: { name?: string }) => Promise<void>;
+    updateLibraryFolder: (id: string, patch: { name?: string }) => Promise<void>;
+    fetchLibraryBlob: (item: object, type: string, maxBytes?: number) => Promise<Blob>;
+    LibraryFileTooLarge: new () => Error;
   }>(new URL("../src/features/library/api.ts", import.meta.url), {
     "@/features/auth": {
       authFetch,
@@ -87,6 +90,44 @@ function loadApi(session: { epoch: number }, authFetch: (url: string, init?: Req
     "./note-text": {},
   });
 }
+
+test("two quick changes to one folder reach the server in the order they were made", async () => {
+  const sent: string[] = [];
+  let answerFirst = () => {};
+  const { updateLibraryFolder } = loadApi({ epoch: 1 }, (_url, init) => {
+    const { name } = JSON.parse(String(init?.body)) as { name: string };
+    sent.push(name);
+    if (name !== "first") return Promise.resolve(new Response("{}"));
+    return new Promise((resolve) => (answerFirst = () => resolve(new Response("{}"))));
+  });
+  const first = updateLibraryFolder("f1", { name: "first" });
+  const second = updateLibraryFolder("f1", { name: "second" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(sent, ["first"]);
+  answerFirst();
+  await Promise.all([first, second]);
+  assert.deepEqual(sent, ["first", "second"]);
+});
+
+test("a preview stops reading at its cap, whatever size the listing said", async () => {
+  const bytes = (n: number) =>
+    new ReadableStream({
+      start(controller) {
+        for (let i = 0; i < n; i++) controller.enqueue(new Uint8Array(4));
+        controller.close();
+      },
+    });
+  const answer = { body: (): BodyInit => bytes(1), headers: {} as Record<string, string> };
+  const api = loadApi({ epoch: 1 }, async () => new Response(answer.body(), { headers: answer.headers }));
+  const item = { name: "grew.png", fileUrl: "/f", sizeBytes: 4 };
+  assert.equal((await api.fetchLibraryBlob(item, "image/png", 10)).size, 4);
+  // Grown since it was listed, with no length said, or a length past the cap.
+  answer.body = () => bytes(4);
+  await assert.rejects(api.fetchLibraryBlob(item, "image/png", 10), api.LibraryFileTooLarge);
+  answer.body = () => "x".repeat(40);
+  answer.headers = { "content-length": "40" };
+  await assert.rejects(api.fetchLibraryBlob(item, "image/png", 10), api.LibraryFileTooLarge);
+});
 
 test("an upload's grants from before a sign-in are not sent under it", async () => {
   const session = { epoch: 1 };
@@ -317,6 +358,26 @@ test("a download started before a sign-in saves nothing of the next account's", 
   ]);
   assert.deepEqual(names(saved), []);
   assert.deepEqual(fetched, ["a.txt"]);
+});
+
+test("a zip whose last file is read as another account signs in is not saved", async () => {
+  const saved: Blob[] = [];
+  const session = { epoch: 1 };
+  const download = loadDownloads(fflate, saved, { uniqueFileNames }, session);
+  const read = File.prototype.arrayBuffer;
+  File.prototype.arrayBuffer = function (this: File) {
+    session.epoch += 1;
+    return read.call(this);
+  };
+  try {
+    await download([
+      { name: "a.txt", sizeBytes: 1 },
+      { name: "b.txt", sizeBytes: 1 },
+    ]);
+  } finally {
+    File.prototype.arrayBuffer = read;
+  }
+  assert.deepEqual(saved, []);
 });
 
 test("a file named __proto__ is kept in a zipped download", async () => {

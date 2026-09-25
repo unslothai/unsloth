@@ -653,6 +653,30 @@ def lease_secret(monkeypatch):
     monkeypatch.setattr(leases, "_CACHED_LEASE_SECRET", None, raising = False)
 
 
+@pytest.mark.parametrize("swap", ["link", "file"])
+def test_a_desktop_drop_swapped_after_its_check_is_refused(
+    client, lease_secret, tmp_path, monkeypatch, swap
+):
+    path = _file(tmp_path / "notes.txt", "mine")
+    outside = _file(tmp_path / "outside.txt", "your")
+    lease = _sign(path)
+    real = library._verify_native
+
+    def swapped_after_the_check(*args, **kwargs):
+        grant = real(*args, **kwargs)
+        if kwargs.get("consume"):
+            path.unlink()
+            if swap == "link":
+                path.symlink_to(outside)
+            else:
+                os.replace(outside, path)
+        return grant
+
+    monkeypatch.setattr(library, "_verify_native", swapped_after_the_check)
+    assert _send(client, [], nativePathLeases = [lease]).status_code == 400
+    assert _items(client)[0] == {}
+
+
 def test_a_desktop_drop_is_read_from_its_signed_path_once_the_whole_batch_checks(
     client, lease_secret, tmp_path
 ):
@@ -1093,6 +1117,25 @@ def test_containment_ignores_the_windows_long_path_prefix(path, root, inside):
 def test_image_thumbnail_is_bounded_and_cropped_as_the_card_shows_it(client, size, mode, thumbnail):
     [image] = _upload(client, ("pic.png", _png(*size, mode), "application/octet-stream"))
     assert _thumbnail_size(client, image) == thumbnail
+
+
+def _clip(width, height) -> bytes:
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+    buf = io.BytesIO()
+    with av.open(buf, mode = "w", format = "mp4") as out:
+        stream = out.add_stream("libx264", rate = 4)
+        stream.width, stream.height, stream.pix_fmt = width, height, "yuv420p"
+        pixels = np.full((height, width, 3), 80, dtype = np.uint8)
+        out.mux(stream.encode(av.VideoFrame.from_ndarray(pixels, format = "rgb24")))
+        out.mux(stream.encode())
+    return buf.getvalue()
+
+
+def test_a_tall_clip_thumbnail_is_bounded_in_height_too(client):
+    # Small to decode, but a card showing it at full height would hold every row.
+    [clip] = _upload(client, ("tall.mp4", _clip(32, 4000), "video/mp4"))
+    assert _thumbnail_size(client, clip) == (8, 960)
 
 
 def test_video_upload_thumbnail_is_its_first_frame(client):

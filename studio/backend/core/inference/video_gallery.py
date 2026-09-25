@@ -207,8 +207,10 @@ def first_frame_webp(
     *,
     container: Optional[str] = None,
     max_pixels: Optional[int] = None,
+    max_height: Optional[int] = None,
 ) -> bytes:
-    """The first frame of a clip (a file or an open binary stream), at most `width` wide, as WebP.
+    """The first frame of a clip (a file or an open binary stream), at most `width` wide and
+    `max_height` tall (four widths unless given), as WebP.
 
     ``container`` forces the demuxer instead of probing for one, and then nothing but the stream
     itself is read: a probed HLS or concat playlist names other files to open. ``max_pixels``
@@ -240,8 +242,10 @@ def first_frame_webp(
             if frame is None:
                 raise RuntimeError("Thumbnail generation failed: the clip has no decodable frames.")
             image = frame.to_image()
-            if image.width > width:
-                scale = width / image.width
+            # Both sides: a frame a few pixels wide and very tall is small to decode but not to
+            # show, and every card on screen would hold it.
+            scale = min(1, width / image.width, (max_height or width * 4) / image.height)
+            if scale < 1:
                 image = image.resize(
                     (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
                     Image.LANCZOS,

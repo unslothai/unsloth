@@ -112,6 +112,8 @@ export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> 
     }
     // Stored, not deflated: most of a Library is media that is compressed already.
     const archive = zipSync(entries, { level: 0 });
+    // Each read above awaits too: an account signed in meanwhile gets nothing of this one's.
+    if (getAuthSessionEpoch() !== epoch) return;
     await downloadFile(
       new Blob([archive], { type: "application/zip" }),
       `${translate("library.toast.zipFileName")}.zip`,
