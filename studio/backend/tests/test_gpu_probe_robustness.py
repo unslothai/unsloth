@@ -120,12 +120,11 @@ def test_the_winner_is_unchanged_when_every_probe_succeeds(monkeypatch):
         ("not-a-pci-address", None),
     ],
 )
-def test_the_pci_address_tells_a_discrete_card_from_an_igpu(tmp_path, address, discrete):
-    target = tmp_path / "pci" / address
-    target.mkdir(parents = True)
-    link = tmp_path / "card0-device"
-    link.symlink_to(target)
-    assert hw._pci_function_is_behind_a_port(str(link)) is discrete
+def test_the_pci_address_tells_a_discrete_card_from_an_igpu(monkeypatch, address, discrete):
+    # realpath stubbed, since Windows cannot create a directory named with ":".
+    target = f"/sys/devices/pci0000:00/{address}"
+    monkeypatch.setattr(hw.os.path, "realpath", lambda p: target if p == "card0-device" else p)
+    assert hw._pci_function_is_behind_a_port("card0-device") is discrete
 
 
 def test_a_discrete_intel_record_establishes_a_mismatch(monkeypatch):
