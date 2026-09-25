@@ -1572,7 +1572,7 @@ mod tests {
     // Model stdout arriving last, hiding the stderr error.
     fn observe_missing_script_output(context: &mut InstallFailureContext) {
         context.observe_stderr(concat!(
-            r"The argument 'C:\Users\Owner\AppData\Local\Unsloth Studio (Desktop)\install.ps1' ",
+            r"The argument 'C:\Users\Owner\AppData\Local\Unsloth\install.ps1' ",
             "to the -File parameter does not exist. Provide the path to an existing '.ps1' file as ",
             "an argument to the -File parameter.",
         ));
