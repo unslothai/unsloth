@@ -11968,8 +11968,6 @@ def test_precast_text_encoder_mib_prices_an_uncached_checkpoint_from_the_family_
     assert got[0] > 8959
 
 
-# ── a torchao denoiser kept resident while only the encoders stream ───────────
-
 
 def _resident_transformer(plan):
     """``plan`` as the tier that keeps the denoiser resident and streams only the text encoders."""
@@ -11992,8 +11990,7 @@ def _record_placement(monkeypatch):
 
 
 def test_a_pipeline_quantises_where_only_the_encoders_stream(fake_runtime, tmp_path, monkeypatch):
-    """The quantised transformer fits once the encoders stream, so it is converted and placed once;
-    torchao weights only reject the per-forward hooks that stream the transformer itself."""
+    """torchao weights fit once the encoders stream, so the transformer is converted and placed once."""
     backend = DiffusionBackend()
     calls = _stub_pipeline_dense_quant(backend, monkeypatch)
     real_plan = DiffusionBackend._plan_memory
@@ -12022,8 +12019,7 @@ def test_a_pipeline_quantises_where_only_the_encoders_stream(fake_runtime, tmp_p
 def test_a_pipeline_quant_replan_prices_the_encoder_the_load_opens(
     fake_runtime, tmp_path, monkeypatch
 ):
-    """The in-place replan hands the planner the same encoder pricing as the other candidate
-    replans, not the dense family-table encoder."""
+    """The in-place replan prices encoders like the other candidate replans, not the family table."""
     backend = DiffusionBackend()
     _stub_pipeline_dense_quant(backend, monkeypatch)
     priced = {"companion_override_mib": 1234, "text_encoder_override_mib": 567}
@@ -12080,8 +12076,7 @@ def test_a_pipeline_whose_quantised_plan_still_streams_the_transformer_stays_den
 
 
 def _gguf_candidate_backend(monkeypatch, tmp_path, *, initial_policy, candidate_plan):
-    """A GGUF load whose own plan is ``initial_policy`` and whose quantised candidate plans as
-    ``candidate_plan(real_plan)``. Returns the backend and the dense-load attempts."""
+    """GGUF load planned as ``initial_policy`` whose candidate plans as ``candidate_plan(real_plan)``."""
     from core.inference import diffusion as dmod
 
     backend = _cuda_backend(tmp_path, monkeypatch)
@@ -12154,8 +12149,7 @@ def test_a_gguf_pick_declines_the_quant_where_the_transformer_would_stream(
 def test_a_resident_gguf_plan_sizes_the_prequant_that_replaces_it(
     fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
-    """The GGUF fits resident, but the INT8 artifact that replaces it is bigger: it loads under its own
-    plan (here, encoders streamed) rather than the GGUF's."""
+    """The INT8 artifact outgrows the GGUF, so it loads under its own plan rather than the GGUF's."""
     sized: list = []
 
     def _candidate(real):

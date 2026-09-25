@@ -614,9 +614,7 @@ def _safe_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
 
 
 def plan_keeps_transformer_resident(plan: Any) -> bool:
-    """Whether ``plan`` places the denoiser(s) once and never moves them again: fully resident, or
-    the group tier that streams only the text encoders. torchao weights survive that one placement
-    but not the per-forward offload hooks, so this is the test for combining the two."""
+    """Whether ``plan`` never moves the denoiser after placement: torchao survives placement, not per-forward hooks."""
     policy = getattr(plan, "offload_policy", OFFLOAD_NONE)
     if policy == OFFLOAD_NONE:
         return True
@@ -1426,7 +1424,6 @@ def _apply_group_offload(
                     raise
                 if not stream_transformer and not transformer_demoted:
                     if _pipe_denoisers_hold_torchao(pipe):
-                        # torchao weights cannot be streamed either, so there is no placement left that fits.
                         raise
                     # Hooks exist on an earlier encoder, so whole-module offload is gone. Stream the transformer
                     # after all (the streamed-encoder group tier, with this encoder degraded to resident as there)

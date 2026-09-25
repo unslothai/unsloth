@@ -4662,9 +4662,8 @@ class DiffusionBackend:
                                 transformer_resident_override_mib = (
                                     candidate.transient_transformer_mib
                                 ),
-                                # Pass the companion estimate so prefetched base shards aren't double-counted, and its
-                                # text-encoder share (priced as the encoder the load opens) so the planner can still
-                                # price the streamed-encoder tiers on this path.
+                                # Companion estimate avoids double-counting prefetched shards; its encoder share
+                                # keeps the streamed-encoder tiers priceable.
                                 **self._candidate_companion_overrides(
                                     candidate, fam, base, target, text_encoder_quant
                                 ),
@@ -4911,9 +4910,8 @@ class DiffusionBackend:
                                     "loading the GGUF",
                                     prequant_candidate.transient_transformer_mib,
                                 )
-                        # The GGUF-sized plan says nothing about the prequant that replaces it (the INT8 artifact
-                        # outweighs a Q4 GGUF), so size the artifact and load it under its own placement: resident, or
-                        # resident with the encoders streamed. A plan that would stream it cannot carry torchao weights.
+                        # The INT8 artifact outweighs the GGUF, so plan it on its own; a plan streaming the
+                        # transformer cannot carry torchao.
                         if (
                             prequant is not None
                             and not dense_declined
@@ -4950,7 +4948,6 @@ class DiffusionBackend:
                                 if plan_keeps_transformer_resident(sized_plan):
                                     quant_plan = sized_plan
                                     if sized_plan.offload_policy != OFFLOAD_NONE:
-                                        # This placement is sized for the artifact, not a dense bf16 build.
                                         dense_fallback_allowed = False
                                 else:
                                     dense_declined = True
@@ -6289,9 +6286,7 @@ class DiffusionBackend:
         target: Any,
         text_encoder_quant: Optional[str],
     ) -> dict[str, Optional[int]]:
-        """``_plan_memory`` companion / encoder overrides for a dense-quant candidate, with the
-        encoder share priced the way ``_precast_scaled_companions_mib`` prices it, so the split the
-        planner reads for the resident-transformer tier matches the encoder the load opens."""
+        """``_plan_memory`` overrides for a dense-quant candidate, pricing the encoder the load actually opens."""
         companions = DiffusionBackend._precast_scaled_companions_mib(
             candidate, fam, base, target, text_encoder_quant
         )

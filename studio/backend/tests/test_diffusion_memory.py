@@ -2422,7 +2422,6 @@ def test_the_pin_reserve_is_sized_from_the_container_not_the_host(monkeypatch):
     monkeypatch.setattr(mem, "_available_system_memory_mib", lambda: 60_000)
     monkeypatch.setattr(mem, "_cgroup_memory_limit_mib", lambda: 65_536)
     assert mem._pin_budget_mib() == 60_000 - int(65_536 * 0.15)
-    # A limit above the host total changes nothing.
     monkeypatch.setattr(mem, "_cgroup_memory_limit_mib", lambda: 10_000_000)
     assert mem._pin_budget_mib() == max(0, 60_000 - int(524_288 * 0.15))
 
@@ -2483,8 +2482,6 @@ def test_pinned_host_pricing_rounds_each_tensor_to_a_power_of_two(monkeypatch):
     assert mem._module_host_mib(_M()) == 13
 
 
-# ── a torchao denoiser kept resident beside streamed encoders ─────────────────
-
 
 def test_only_resident_and_encoder_only_plans_keep_the_transformer_in_place():
     from types import SimpleNamespace
@@ -2536,8 +2533,7 @@ def test_torchao_weights_are_told_apart_from_gguf_and_plain_ones():
 
 
 def test_a_refusing_encoder_never_hands_a_torchao_transformer_to_whole_module_offload(monkeypatch):
-    # Whole-module offload moves the transformer on every call, which torchao weights do not survive, so the load
-    # fails with the reason instead of running a broken denoiser.
+    # Whole-module offload moves the transformer every call, which torchao weights do not survive.
     import core.inference.diffusion_memory as mem
 
     pipe = _RecordingPipe()

@@ -953,8 +953,7 @@ def _encoders_streamed(**_k):
 
 
 def test_an_artifact_that_fits_once_the_encoders_stream_is_seeded(monkeypatch):
-    """The artifact-sized plan keeps the denoiser resident and streams only the encoders, which a
-    torchao denoiser survives: the hosted checkpoint is seeded, not declined."""
+    """An artifact-sized plan streaming only the encoders keeps the torchao seed."""
     backend = _settle_backend(monkeypatch)
     monkeypatch.setattr(DiffusionBackend, "_plan_memory", lambda *_a, **k: _encoders_streamed(**k))
     assert _settle(backend) == "fp8"
