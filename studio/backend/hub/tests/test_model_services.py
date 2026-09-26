@@ -703,6 +703,103 @@ def test_local_inventory_prefers_active_cache_when_copies_are_equally_complete(t
     assert local_inventory._dedupe_local_models([previous, active]) == [active]
 
 
+def _path_model_row(tmp_path: Path, source: str):
+    path = tmp_path / "models" / "gpt-oss-20b-GGUF"
+    return model_common._local_model_info(
+        scan_path = path,
+        load_path = path,
+        source = source,
+        model_format = "gguf",
+        model_id = "unsloth/gpt-oss-20b-GGUF" if source == "lmstudio" else None,
+        size_bytes = 10,
+    )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_local_inventory_dedupes_same_path_across_lmstudio_and_custom(tmp_path, reverse):
+    lmstudio = _path_model_row(tmp_path, "lmstudio")
+    custom = local_inventory._promote_to_custom_source(lmstudio)
+    alternate_path = str(Path(lmstudio.path).parent) + "/./" + Path(lmstudio.path).name
+    custom = custom.model_copy(
+        update = {
+            "path": alternate_path,
+            "load_id": alternate_path,
+            "id": alternate_path,
+        }
+    )
+    rows = [lmstudio, custom]
+    if reverse:
+        rows.reverse()
+
+    assert local_inventory._dedupe_local_models(rows) == [lmstudio]
+
+
+def test_local_inventory_keeps_formats_separate_at_same_path(tmp_path):
+    path = tmp_path / "models" / "shared"
+    gguf = model_common._local_model_info(
+        scan_path = path,
+        load_path = path,
+        source = "lmstudio",
+        model_format = "gguf",
+        size_bytes = 10,
+    )
+    safetensors = model_common._local_model_info(
+        scan_path = path,
+        load_path = path,
+        source = "lmstudio",
+        model_format = "safetensors",
+        size_bytes = 20,
+    )
+
+    result = local_inventory._dedupe_local_models([gguf, safetensors])
+
+    assert {row.model_format for row in result} == {"gguf", "safetensors"}
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_local_inventory_dedupes_physical_file_aliases_across_sources(tmp_path, reverse):
+    original = tmp_path / "Model-Q4.gguf"
+    alias = tmp_path / "model-latest.gguf"
+    original.write_bytes(b"model")
+    alias.hardlink_to(original)
+    rows = [
+        model_common._local_model_info(
+            scan_path = path,
+            load_path = path,
+            source = source,
+            model_format = "gguf",
+            format_variant = variant,
+        )
+        for path, source, variant in [
+            (original, "lmstudio", "Q4"),
+            (alias, "custom", "latest"),
+        ]
+    ]
+    expected = rows[0]
+    assert original.samefile(alias)
+    if reverse:
+        rows.reverse()
+    assert local_inventory._dedupe_local_models(rows) == [expected]
+
+
+def test_local_inventory_keeps_distinct_case_sensitive_files(tmp_path):
+    paths = [tmp_path / "Model.gguf", tmp_path / "model.gguf"]
+    for path in paths:
+        path.write_bytes(b"model")
+    if paths[0].samefile(paths[1]):
+        pytest.skip("filesystem is case insensitive")
+    rows = [
+        model_common._local_model_info(
+            scan_path = path,
+            load_path = path,
+            source = source,
+            model_format = "gguf",
+        )
+        for path, source in zip(paths, ["lmstudio", "custom"])
+    ]
+    assert len(local_inventory._dedupe_local_models(rows)) == 2
+
+
 def test_loaded_repo_match_accepts_previous_cache_snapshot_path(monkeypatch, tmp_path):
     repo_dir = tmp_path / "old-hub" / "models--Org--Model"
     snapshot = repo_dir / "snapshots" / "revision"
