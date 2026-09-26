@@ -173,6 +173,13 @@ for SH in dash bash; do
     printf 'native-tls = true\n' > "$_WORK/proj/src/uv.toml"
     assert_contains "[$SH] the nearest uv.toml hides a parent pyproject.toml" "$(cd "$_WORK/proj/src" && _run "$SH" MOCK_PYPI=blocked)" "UV_DEFAULT_INDEX=$M/pypi/web/simple"
     rm -rf "$_WORK/proj"
+    mkdir -p "$_WORK/xdg a/pip" "$_WORK/xdg2/uv"
+    printf '[global]\nindex-url = https://corp.example/simple\n' > "$_WORK/xdg a/pip/pip.conf"
+    printf 'index-url = "https://corp.example/simple"\n' > "$_WORK/xdg2/uv/uv.toml"
+    out=$(_run "$SH" MOCK_PYPI=blocked XDG_CONFIG_DIRS="$_WORK/none:$_WORK/xdg a:$_WORK/xdg2")
+    assert_not_contains "[$SH] an index in an XDG_CONFIG_DIRS pip.conf: pip untouched" "$out" "PIP_INDEX_URL"
+    assert_not_contains "[$SH] an index in an XDG_CONFIG_DIRS uv.toml: uv untouched" "$out" "UV_DEFAULT_INDEX"
+    rm -rf "$_WORK/xdg a" "$_WORK/xdg2"
     mkdir -p "$_WORK/home/.pip"
     printf '[global]\nindex-url = https://corp.example/simple\n' > "$_WORK/home/.pip/pip.conf"
     out=$(_run "$SH" MOCK_PYPI=blocked)
@@ -268,6 +275,13 @@ assert_eq "retry: a PyPI transport failure reruns once on the mirror, which late
 assert_eq "retry: ... also when the output was streamed (verbose)" "RUN pip install foo |STEP PyPI failed; retrying through $M/pypi/web/simple|RUN pip install foo $M/pypi/web/simple|RC 0 INDEX=$M/pypi/web/simple TORCH=https://download.pytorch.org/whl/cu128 SPARE=torch|UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl" "$(_pipe _retry 'run_install_cmd deps uv pip install foo' FAIL="$_fail_uv_timeout" VERBOSE=1)"
 assert_eq "retry: a version not found, with nothing spared behind the mirror, keeps the default and its spares" "RUN pip install foo |RC 7 INDEX= TORCH=https://download.pytorch.org/whl/cu128 SPARE=pypi|UV_DEFAULT_INDEX=$M/pypi/web/simple torch|UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl" "$(_pipe _retry 'run_install_cmd deps uv pip install foo' FAIL="$_fail_nover")"
 assert_eq "retry: a failed mirror rerun restores the default for later steps" "RUN pip install foo |STEP PyPI failed; retrying through $M/pypi/web/simple|RUN pip install foo $M/pypi/web/simple|RC 8 INDEX= TORCH=https://download.pytorch.org/whl/cu128 SPARE=torch|UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl" "$(_pipe _retry 'run_install_cmd deps uv pip install foo' FAIL="$_fail_uv_timeout" MIRROR_FAILS=1)"
+sed -n '/^fast_install_sidecar() (/,/^)$/p' "$SETUP_SH" > "$_WORK/sidecar.sh"
+_sidecar() { env -i PATH=/usr/bin:/bin UV_OVERRIDE=x "$@" bash -c "set -euo pipefail
+fast_install() { echo \"RUN \$* \${UV_INDEX:-}\${UV_OVERRIDE:-}\"; [ -n \"\${UV_INDEX:-}\" ] || return 7; }
+. '$_WORK/sidecar.sh'
+fast_install_sidecar --target d transformers==9 && echo RC 0 || echo RC \$?; echo AFTER \${UV_INDEX:-}" | paste -sd'|' -; }
+assert_eq "sidecar: nothing armed: one run, its code, UV_OVERRIDE dropped as before" "RUN --target d transformers==9 |RC 7|AFTER" "$(_sidecar)"
+assert_eq "sidecar: a pin the mirror lacks reruns once with pypi.org behind it, inside the sidecar only" "RUN --target d transformers==9 |RUN --target d transformers==9 $M/pypi/web/simple|RC 0|AFTER" "$(_sidecar _UNSLOTH_MIRROR_SPARE="torch|UNSLOTH_PYTORCH_MIRROR=x unsynced|UV_DEFAULT_INDEX=https://pypi.org/simple|UV_INDEX=$M/pypi/web/simple|UV_INDEX_STRATEGY=unsafe-first-match")"
 mkdir -p "$_WORK/tmpd"
 for _vb in "" 1; do
     assert_eq "retry: nothing armed (outside China${_vb:+, verbose}): one run, the original code, no retry" "RUN pip install foo |RC 7 INDEX= TORCH=https://download.pytorch.org/whl/cu128 SPARE=" "$(_pipe _retry 'run_install_cmd deps uv pip install foo' FAIL="$_fail_uv_timeout" _UNSLOTH_MIRROR_SPARE= TMPDIR="$_WORK/tmpd" VERBOSE=$_vb)"

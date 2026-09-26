@@ -8662,10 +8662,24 @@ $SidecarCommonPins = @("huggingface_hub==1.8.0", "hf_xet==1.4.2")
 function Fast-Install-Sidecar {
     param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
     $savedOverride = $env:UV_OVERRIDE
+    $savedUnsynced = @{}
     try {
         Remove-Item Env:UV_OVERRIDE -ErrorAction SilentlyContinue
         Fast-Install @Args_
+        # A pin the PyPI mirror has not synced yet: one rerun with pypi.org behind it, armed only after a slow pypi.org was switched.
+        $unsynced = @(-split "$env:_UNSLOTH_MIRROR_SPARE" | Where-Object { $_ -like 'unsynced|*' })
+        if ($LASTEXITCODE -ne 0 -and $unsynced) {
+            foreach ($pair in @($unsynced[0].Split('|') | Select-Object -Skip 1)) {
+                $name, $value = $pair.Split('=', 2)
+                $savedUnsynced[$name] = [Environment]::GetEnvironmentVariable($name)
+                Set-Item "Env:$name" $value
+            }
+            Fast-Install @Args_
+        }
     } finally {
+        foreach ($name in $savedUnsynced.Keys) {
+            if ($null -eq $savedUnsynced[$name]) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue } else { Set-Item "Env:$name" $savedUnsynced[$name] }
+        }
         if ($null -ne $savedOverride) { $env:UV_OVERRIDE = $savedOverride }
     }
 }

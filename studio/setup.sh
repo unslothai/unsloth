@@ -204,11 +204,19 @@ _mirror_configured() {
             [ -n "${PIP_INDEX_URL:-}${PIP_EXTRA_INDEX_URL:-}${PIP_NO_INDEX:-}" ] && return 0
             _mic_key='(index[-_]url|extra[-_]index[-_]url|no[-_]index)[[:space:]]*[=:]' ;;
     esac
+    _mic_suffix=uv/uv.toml
+    [ "$1" != pip ] || _mic_suffix=pip/pip.conf
     if [ "$1" = pip ]; then
         set -- "${PIP_CONFIG_FILE:-}" "${VENV_DIR:+$VENV_DIR/pip.conf}" "${XDG_CONFIG_HOME:-$HOME/.config}/pip/pip.conf" "$HOME/.pip/pip.conf" "$HOME/Library/Application Support/pip/pip.conf" /etc/xdg/pip/pip.conf /etc/pip.conf
     else
         set -- "${UV_CONFIG_FILE:-}" "$(_mirror_uv_project_config)" "${XDG_CONFIG_HOME:-$HOME/.config}/uv/uv.toml" /etc/xdg/uv/uv.toml /etc/uv/uv.toml
     fi
+    # pip and uv both read every directory in XDG_CONFIG_DIRS.
+    _mic_xdg=${XDG_CONFIG_DIRS:-}
+    while [ -n "$_mic_xdg" ]; do
+        set -- "$@" "${_mic_xdg%%:*}/$_mic_suffix"
+        case "$_mic_xdg" in *:*) _mic_xdg=${_mic_xdg#*:} ;; *) _mic_xdg="" ;; esac
+    done
     for _mic_file in "$@"; do
         if [ -f "$_mic_file" ] && grep -Eq "^[[:space:]]*($_mic_key)" "$_mic_file" 2>/dev/null; then
             return 0
@@ -2085,8 +2093,8 @@ elif [ "$NODE_SOURCE" = bundled ]; then
             "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" >>"$_NODE_LOG" 2>&1
             _NODE_STATUS=$?
         fi
-        # A failed download gets one retry through the mirror; 3 is another install holding the lock, which no mirror fixes.
-        [ "$_NODE_STATUS" -ne 0 ] && [ "$_NODE_STATUS" -ne 3 ] && [ "$_node_try" = default ] || break
+        # A failed download gets one retry through the mirror; 3 (another install holds the lock) and 4 (permission denied) are not network failures.
+        [ "$_NODE_STATUS" -ne 0 ] && [ "$_NODE_STATUS" -ne 3 ] && [ "$_NODE_STATUS" -ne 4 ] && [ "$_node_try" = default ] || break
         _mirror_switch node || break
     done
     set -e
@@ -3070,7 +3078,16 @@ fast_install() {
 
 fast_install_sidecar() (
     unset UV_OVERRIDE
-    fast_install "$@"
+    fast_install "$@" && return 0
+    _fis_rc=$?
+    # A pin the PyPI mirror has not synced yet: one rerun with pypi.org behind it, armed only after a slow pypi.org was switched.
+    for _fis_entry in ${_UNSLOTH_MIRROR_SPARE:-}; do
+        [ "${_fis_entry%%|*}" = unsynced ] || continue
+        for _fis_pair in $(printf '%s' "${_fis_entry#*|}" | tr '|' ' '); do export "$_fis_pair"; done
+        fast_install "$@"
+        return
+    done
+    return "$_fis_rc"
 )
 
 cd "$SCRIPT_DIR"
