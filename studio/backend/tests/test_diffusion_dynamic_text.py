@@ -102,11 +102,7 @@ def test_fingerprint_only_for_automatic_dynamic():
 
 
 def test_first_segment_start_stays_static():
-    # A symbol for segments[0][0] (always 0) trips torchao's CantSplit.
-    builder = pytest.importorskip("torch._dynamo.variables.builder")
-    is_dynamic = getattr(builder, "is_dynamic_source", None)
-    if is_dynamic is None:
-        pytest.skip("regex allowlist needs torch 2.8+")
+    from torch._dynamo.variables.builder import is_dynamic_source as is_dynamic
     cfg = _cfg()
     before = cfg.dynamic_sources
     try:
@@ -183,10 +179,7 @@ def test_qwen_image_text_stream_is_armed():
 
 
 def test_qwen_image_hook_paths_match_on_regex_torch():
-    builder = pytest.importorskip("torch._dynamo.variables.builder")
-    is_dynamic = getattr(builder, "is_dynamic_source", None)
-    if is_dynamic is None:
-        pytest.skip("regex allowlist needs torch 2.8+")
+    from torch._dynamo.variables.builder import is_dynamic_source as is_dynamic
     cfg = _cfg()
     before = cfg.dynamic_sources
     try:
