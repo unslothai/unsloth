@@ -1728,6 +1728,29 @@ def _probe_tier(
     return _cache(floor, skipped = False)
 
 
+def _probe_tokenizer_tier(model_name: str, hf_token: str | None, reason: str) -> str:
+    """Resolve a tokenizer-only 5.x signal without demoting a sufficient ambient default.
+
+    Tokenizer-only models can require remote code, which the secure AutoConfig probe is
+    deliberately unable to execute. When the ambient Transformers is already 5.x, keep it
+    as the first candidate and as the safe fallback; older ambient versions retain the
+    historical 5.3.0 floor.
+    """
+    try:
+        default_major = int(str(TRANSFORMERS_DEFAULT_VERSION).split(".", 1)[0])
+    except (TypeError, ValueError):
+        default_major = 0
+    if default_major >= 5:
+        return _probe_tier(
+            model_name,
+            hf_token,
+            reason,
+            include_default = True,
+            floor = "default",
+        )
+    return _probe_tier(model_name, hf_token, reason)
+
+
 def _norm_separators(s: str) -> str:
     """Collapse ``_``/whitespace to ``-`` (underscore aliases) but keep ``.`` so a
     version dot (``qwen3.5``) isn't conflated with a size separator (``Qwen3-5B``)."""
@@ -1891,7 +1914,7 @@ def get_transformers_tier(
             if _safe_is_file(local_tc) and _check_tokenizer_config_needs_v5(model_name, hf_token):
                 if not probe:
                     return "530"
-                return _probe_tier(model_name, hf_token, "local tokenizer needs 5.x")
+                return _probe_tokenizer_tier(model_name, hf_token, "local tokenizer needs 5.x")
             if _config_saved_by_transformers_5(cfg):
                 if not probe:
                     return "530"  # cheap 5.x hint; the real path resolves the exact tier
@@ -1971,7 +1994,7 @@ def get_transformers_tier(
     if _check_tokenizer_config_needs_v5(model_name, hf_token):
         if not probe:
             return "530"
-        return _probe_tier(model_name, hf_token, "tokenizer needs 5.x")
+        return _probe_tokenizer_tier(model_name, hf_token, "tokenizer needs 5.x")
 
     if _config_saved_by_transformers_5(_cached_config_json(model_name, hf_token)):
         if not probe:
