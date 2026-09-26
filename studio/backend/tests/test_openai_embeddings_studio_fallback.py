@@ -161,7 +161,6 @@ def test_resident_embedding_gguf_checks_dimensions_against_its_width(
             **_kwargs,
         ):
             forwarded.append(json)
-            # llama-server ignores `dimensions` and always returns its full width
             vector = [0.5, 0.5]
             if encoding_format == "base64":
                 vector = base64.b64encode(np.asarray(vector, dtype = np.float32).tobytes()).decode()

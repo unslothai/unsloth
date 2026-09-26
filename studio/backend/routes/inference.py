@@ -30807,7 +30807,7 @@ def _embedding_width(resp) -> Optional[int]:
         if isinstance(embedding, str):
             return len(base64.b64decode(embedding)) // 4
         return len(embedding)
-    except Exception:  # noqa: BLE001 - an unreadable vector has no width to match
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -30906,7 +30906,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     # no-pooling error on /v1/embeddings against a non-embedding GGUF), so claiming before the
     # upstream response would strand a preview-owned checkpoint as Unsloth-owned.
 
-    # llama-server ignores `dimensions`, so it is checked against the width it returns instead.
+    # llama-server ignores `dimensions`; checked against the returned width below.
     body = dict(body)
     dimensions = body.pop("dimensions", None)
     target_url = f"{llama_backend.base_url}/v1/embeddings"
