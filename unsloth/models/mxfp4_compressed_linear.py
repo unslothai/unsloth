@@ -102,10 +102,12 @@ _FUSED_MAX_ROWS = _fused_max_rows()
 
 def mxfp4_packed_matmul(x, packed, scale, transpose = False, out = None, bias = None):
     """``x @ W^T (+ bias)`` (``transpose=False``) or ``x @ W`` for the packed ``[out, in / 2]`` weight, in x's dtype.
-    Skinny inputs (decode, LoRA-sized batches) never build the 16-bit weight; wide ones decode it once for cuBLAS."""
+    Skinny forward inputs (decode, small batches) never build the 16-bit weight; the rest decode it once for cuBLAS."""
     rows = x.numel() // x.shape[-1] if x.shape[-1] else 0
+    # dX (transpose) stays on decode + cuBLAS: the fused kernel only wins it for a few wide shapes.
     if (
-        _zoo_mxfp4_matmul is not None
+        not transpose
+        and _zoo_mxfp4_matmul is not None
         and rows <= _FUSED_MAX_ROWS
         and x.is_cuda
         and mxfp4_gemm_available(x.device, x.dtype)
