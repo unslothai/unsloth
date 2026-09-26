@@ -708,6 +708,28 @@
 	background-color: color-mix(in srgb, var(--card), var(--th-fg) 4%);
 }
 
+/* Collapsed rail takes the page color, as it does in dark mode. */
+:root:where([data-palette="blue-raspberry"], [data-palette="blueberry"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"])[data-palette]:not(.dark)
+	[data-collapsible="icon"] [data-sidebar="sidebar"] {
+	--sidebar-surface: var(--background);
+}
+
+/* Neon Cyberpunk: cyan edge glow on the dark composer. */
+:root[data-palette="neon-cyberpunk"].dark
+	:is(.chat-composer-surface, .unsloth-composer-surface) {
+	box-shadow:
+		0 0 0 1px rgb(0 240 255 / 0.35),
+		0 0 28px -8px rgb(0 240 255 / 0.45),
+		0 4px 20px 4px var(--background);
+}
+:root[data-palette="neon-cyberpunk"].dark
+	:is(.chat-composer-surface, .unsloth-composer-surface):focus-within {
+	box-shadow:
+		0 0 0 1px rgb(0 240 255 / 0.6),
+		0 0 32px -6px rgb(0 240 255 / 0.55),
+		0 4px 20px 4px var(--background);
+}
+
 
 /* Blue Raspberry */
 :root[data-palette="blue-raspberry"]:not(.dark) {
@@ -1179,38 +1201,46 @@
 
 /* Neon Cyberpunk */
 :root[data-palette="neon-cyberpunk"]:not(.dark) {
-	--th-bg: #fbf8e4;
-	--th-surface: #f4efcc;
-	--th-raised: #ece5bb;
-	--th-hover: #e4dcac;
-	--th-border: #dbd29c;
-	--th-fg: #0a0d12;
-	--th-muted: #4a4a33;
-	--th-subtle: #8c8a66;
-	--th-accent: #e6002e;
-	--th-accent-fg: #ffffff;
-	--th-chart-1: #e6002e;
-	--th-chart-2: #00869a;
-	--th-chart-3: #b89f00;
-	--th-chart-4: #8a1fd1;
-	--th-chart-5: #00875f;
+	--th-bg: #f6f6f1;
+	--th-surface: #ecece5;
+	--th-raised: #e4e4dc;
+	--th-hover: #dcdcd2;
+	--th-border: #d2d2c7;
+	--th-fg: #0a0a0f;
+	--th-muted: #4a4a52;
+	--th-subtle: #8a8a92;
+	--th-accent: #0a0a0f;
+	--th-accent-fg: #fcee0a;
+	--th-chart-1: #0a0a0f;
+	--th-chart-2: #00a8b5;
+	--th-chart-3: #d1004b;
+	--th-chart-4: #5b1fd1;
+	--th-chart-5: #b8a200;
+	--ring: #0a0a0f;
+	--control-accent: #00f0ff;
+	--control-accent-foreground: #0a0a0f;
 }
 :root[data-palette="neon-cyberpunk"].dark {
-	--th-bg: #0a0d12;
-	--th-surface: #11161d;
-	--th-raised: #171e27;
-	--th-hover: #1e2733;
-	--th-border: #27323f;
-	--th-fg: #e8f6f7;
-	--th-muted: #8fb6bb;
-	--th-subtle: #5b7c82;
+	--th-bg: #070b14;
+	--th-surface: #0d1424;
+	--th-raised: #121b30;
+	--th-hover: #0f2b3b;
+	--th-border: #21506a;
+	--th-fg: #eafcff;
+	--th-muted: #7fdbe6;
+	--th-subtle: #4f8a96;
 	--th-accent: #fcee0a;
-	--th-accent-fg: #0a0d12;
+	--th-accent-fg: #070b14;
 	--th-chart-1: #fcee0a;
-	--th-chart-2: #02d7f2;
-	--th-chart-3: #ff003c;
+	--th-chart-2: #00f0ff;
+	--th-chart-3: #ff2a6d;
 	--th-chart-4: #b026ff;
-	--th-chart-5: #00ff9f;
+	--th-chart-5: #05ffa1;
+	--ring: #00f0ff;
+	--sidebar-ring: #00f0ff;
+	--control-accent: #00f0ff;
+	--control-accent-foreground: #070b14;
+	--nav-icon-idle-base: #3fb8c6;
 }
 
 /* Oat Milk */
