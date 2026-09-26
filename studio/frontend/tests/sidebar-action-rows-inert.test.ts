@@ -160,10 +160,8 @@ test("the sidebar list measures its scroll rail", async () => {
   );
 });
 
-test("Tauri chat Recents label keeps its 2px shift", async () => {
+test("Tauri chat Recents label takes the shared header inset, not a shift", async () => {
   const source = APP_SIDEBAR;
-  assert.match(
-    source,
-    /scrolled && "is-scrolled",\s*usesDesktopTitlebar && "translate-x-\[2px\]"/,
-  );
+  assert.match(source, /headerInset,\s*scrolled && "is-scrolled",\s*!chatOpen/);
+  assert.doesNotMatch(source, /translate-x-\[2px\]/);
 });
