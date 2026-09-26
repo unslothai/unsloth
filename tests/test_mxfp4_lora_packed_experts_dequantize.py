@@ -105,6 +105,7 @@ def sizes(monkeypatch):
     monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: len(state["free"]))
+
     def _mem_get_info(i):
         state["probes"] += 1
         return (int(state["free"][i] * GiB), 0)

@@ -1242,9 +1242,7 @@ def _mxfp4_lora_keeps_experts_packed(
                 from huggingface_hub import HfApi
 
                 # The revision the config and weights are loaded from, not the default branch.
-                info = HfApi().model_info(
-                    str(model_name), revision = revision, files_metadata = True
-                )
+                info = HfApi().model_info(str(model_name), revision = revision, files_metadata = True)
                 checkpoint_bytes = sum(
                     (sibling.size or 0)
                     for sibling in (info.siblings or ())
@@ -1257,7 +1255,6 @@ def _mxfp4_lora_keeps_experts_packed(
                 budget = (max_memory or {}).get(index, (max_memory or {}).get(str(index)))
                 if isinstance(budget, str):
                     from accelerate.utils import convert_file_size_to_int
-
                     budget = convert_file_size_to_int(budget)
                 if isinstance(budget, int):
                     free = min(free, budget)
