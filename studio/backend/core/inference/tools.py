@@ -17260,7 +17260,7 @@ def _check_signal_escape_patterns(code: str):
             # was star-imported. A shadow only takes effect for calls that CANNOT run before it:
             # dropping the alias for the whole tree let `fetch(url)` written ABOVE `fetch = print`
             # go unrecognised, when that call really is `requests.get`.
-            self.shadow_lines: "dict[str, list[tuple[tuple[int, int], int]]]" = {}
+            self.shadow_lines: "dict[tuple[str, int], list[tuple[int, int]]]" = {}
             self.star_lines: "list[tuple[int, int]]" = []
             # Name -> the positions where a network alias was registered for it. A shadow only
             # counts while no alias registration follows it: `r = object()` then `r = requests`
@@ -17579,7 +17579,7 @@ def _check_signal_escape_patterns(code: str):
                     # The module set is deliberately NOT dropped: see __init__. A bare function
                     # alias is shadowed, so a local `def get(...)` still shadows
                     # `from requests import get` for the calls that follow it.
-                    self.shadow_lines.setdefault(name, []).append((where, scope))
+                    self.shadow_lines.setdefault((name, scope), []).append(where)
 
         def generic_visit(self, node):
             """`ast.NodeVisitor.generic_visit`, inlined, plus the rebinding hook.
@@ -17628,10 +17628,10 @@ def _check_signal_escape_patterns(code: str):
             """
             registrations = self.star_lines if after_star else self.alias_lines.get(name, ())
             floor = max((where for where in registrations if where < at), default = (0, -1))
-            here = self.scope_stack[-1]
+            # Keyed by scope: one `self` entry per method made a scan over all of them quadratic.
             return any(
-                scope == here and floor < where < at
-                for where, scope in self.shadow_lines.get(name, ())
+                floor < where < at
+                for where in self.shadow_lines.get((name, self.scope_stack[-1]), ())
             )
 
         def _star_imported_fq(self, name: str, at) -> "str | None":
@@ -17651,7 +17651,7 @@ def _check_signal_escape_patterns(code: str):
                 where = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
                 for name in _binding_names(node):
                     if name != getattr(node, "name", None):
-                        self.shadow_lines.setdefault(name, []).append((where, id(node)))
+                        self.shadow_lines.setdefault((name, id(node)), []).append(where)
             # Decorators, defaults, annotations and bases are evaluated in the ENCLOSING scope, at
             # the moment the def is executed, BEFORE any parameter is bound. Visiting them inside
             # the new scope let a parameter shadow a call the parameter cannot possibly reach:
